@@ -22,11 +22,11 @@ use phux_protocol::caps::ClientCapabilities;
 use phux_protocol::input::paste::{PasteEvent, PasteTrust};
 use phux_protocol::wire::frame::FrameKind;
 use phux_relay::{RelayConfig, cert_fingerprint};
+use phux_server::LaunchCommand as CommandBuilder;
+use phux_server::ServerConfig;
 use phux_server::workload::WorkloadPaths;
-use phux_server::{ServerConfig, ServerRuntime};
 use phux_server_testkit::relay::RelayHarness;
 use phux_server_testkit::{WIRE_RECV_TIMEOUT, attach_by_name, encode_frame, seed_pty};
-use portable_pty::CommandBuilder;
 use tempfile::TempDir;
 use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
 use tokio::sync::oneshot;
@@ -107,7 +107,7 @@ impl Server {
         phux_server_testkit::embedder::embed_owner_engine(&mut cfg);
         let (stop, stopped) = oneshot::channel();
         let task = tokio::task::spawn_local(async move {
-            ServerRuntime::new(cfg)
+            phux_server_testkit::terminal_server(cfg)
                 .connectors(vec![connector], None)
                 .run_async(async move {
                     let _ = stopped.await;

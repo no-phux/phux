@@ -27,7 +27,7 @@ use phux_protocol::wire::frame::{
     AttachTarget, FrameKind, TYPE_ATTACH_READY, TYPE_ATTACHED, TYPE_BOOTSTRAP_BEGIN,
     TYPE_BOOTSTRAP_CHUNK, TYPE_BOOTSTRAP_READY, TYPE_DETACHED, TYPE_HELLO_OK, ViewportInfo,
 };
-use portable_pty::CommandBuilder;
+use phux_server::LaunchCommand as CommandBuilder;
 use support::{Comparison, Corpus, MEASURED_SAMPLES, Threshold, WARMUP_SAMPLES, percentile};
 
 async fn native_warm_attach(socket: &std::path::Path) -> Duration {

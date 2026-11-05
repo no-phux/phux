@@ -403,7 +403,7 @@ async fn real_uds_upload_retains_multiple_chunks_and_empty_file() {
                 ..ServerConfig::with_default_socket()
             };
             let server = tokio::task::spawn_local(async move {
-                ServerRuntime::new(config)
+                ServerRuntime::new(config, std::sync::Arc::new(phux_terminal::TerminalEngine))
                     .run_async(async {
                         let _ = stop.await;
                     })

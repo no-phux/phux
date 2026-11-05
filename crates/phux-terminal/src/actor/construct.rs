@@ -114,12 +114,7 @@ impl TerminalActor {
             None,
             HangupPolicy::default(),
         )?;
-        bundle.actor.terminal.borrow_mut().vt_write(seed);
-        bundle.actor.restore_program_status();
-        // The seed replays the old image's OSC title; sync it now so the
-        // detector and `title_changed` start from it, not from empty.
-        bundle.actor.refresh_title();
-        bundle.actor.publish_input_snapshot();
+        bundle.actor.seed_before_run(seed);
         Ok(bundle)
     }
 
@@ -317,15 +312,23 @@ impl TerminalActor {
             size_report,
         };
         let facet = TerminalHandle {
+            presentation: phux_terminal_api::TerminalEngineFactory::presentation(
+                &crate::TerminalEngine,
+            ),
             consumer_attach: consumer_attach_tx,
             consumer_detach: consumer_detach_tx,
             consumer_ack: consumer_ack_tx,
             upgrade: upgrade_tx,
             control: control_tx,
             input: input_tx,
-            encoded_input: encoded_input_tx,
-            input_credits: super::InputCreditPool::default(),
-            input_snapshot: input_snapshot_rx,
+            ordered_input: phux_terminal_api::input::InputPort::new(
+                crate::ordered_input::EngineInput {
+                    encoded: encoded_input_tx,
+                    credits: super::InputCreditPool::default(),
+                    snapshot: input_snapshot_rx,
+                    fast: fast_pty.as_ref().map(std::sync::Arc::downgrade),
+                },
+            ),
             #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
             native_bootstrap: native_bootstrap_tx,
             #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
@@ -342,7 +345,6 @@ impl TerminalActor {
             resize: resize_tx,
             cols,
             rows,
-            fast_pty: fast_pty.as_ref().map(std::sync::Arc::downgrade),
         };
         let handle = ResourceHandle::new(actor.core.parent(), core_channels.output, facet)
             .with_companion(phux_agent_session::parent::AgentParent {
@@ -432,11 +434,16 @@ impl TerminalActor {
         bytes: &[u8],
     ) -> Result<TerminalActorBundle, TerminalActorError> {
         let mut bundle = Self::new(cols, rows)?;
-        bundle.actor.terminal.borrow_mut().vt_write(bytes);
-        bundle.actor.restore_program_status();
-        bundle.actor.refresh_title();
-        bundle.actor.publish_input_snapshot();
+        bundle.actor.seed_before_run(bytes);
         Ok(bundle)
+    }
+
+    /// Restore engine-owned state before reports and the actor loop start.
+    pub(crate) fn seed_before_run(&mut self, bytes: &[u8]) {
+        self.terminal.borrow_mut().vt_write(bytes);
+        self.restore_program_status();
+        self.refresh_title();
+        self.publish_input_snapshot();
     }
 }
 

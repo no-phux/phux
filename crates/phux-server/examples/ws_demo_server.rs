@@ -34,8 +34,8 @@
 )]
 
 use phux_protocol::wire::RemoteListenerTransport;
+use phux_server::LaunchCommand as CommandBuilder;
 use phux_server::{ServerConfig, ServerEnv, ServerRuntime};
-use portable_pty::CommandBuilder;
 
 fn main() {
     // stderr is the browser gate's server.log. Without a subscriber, `RUST_LOG`
@@ -78,7 +78,7 @@ fn main() {
         .expect("tokio runtime");
     tokio::task::LocalSet::new().block_on(&runtime, async move {
         let server = tokio::task::spawn_local(
-            ServerRuntime::new(cfg)
+            ServerRuntime::new(cfg, std::sync::Arc::new(phux_terminal::TerminalEngine))
                 .listen_ws(addr)
                 .run_async(async { tokio::signal::ctrl_c().await.expect("shutdown signal") }),
         );

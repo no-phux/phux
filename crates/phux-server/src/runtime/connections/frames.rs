@@ -6,12 +6,13 @@ use super::hello::{HelloRequest, negotiate_hello};
 use super::plumbing::{
     AttachIdVerdict, ConnectionClose, classify_attach_id, detach_on_request, reply_pong,
 };
-use crate::runtime::apps::terminal::attach::{SpawnRequest, handle_attach, handle_move_terminal};
+use crate::runtime::apps::ResourceFrame;
+use crate::runtime::apps::terminal::attach::{SpawnRequest, handle_move_terminal};
 use crate::runtime::apps::terminal::commands::handle_viewport_resize;
 use crate::runtime::apps::terminal::terminal_streams::{
     AttachFrame, direction_invalid, is_input_frame, is_metadata_frame, is_stream_frame,
 };
-use crate::runtime::apps::{ResourceFrame, app_serving};
+use crate::runtime::session_attach::handle_attach;
 use crate::transport::FrameReader;
 use phux_protocol::ids::ResourceId as WireResourceId;
 use phux_protocol::wire::frame::{Command, DetachReason, ErrorCode, FrameKind};
@@ -125,17 +126,9 @@ impl<R: FrameReader> FrameDispatch<'_, R> {
         let Some(selection) = self.negotiated.as_ref() else {
             return FrameFlow::Continue(());
         };
-        // A session ATTACH is a Terminal stream: refused, not closed, on a
-        // connection that offered no Terminal profile.
-        let Some(profile) = selection.profile else {
-            crate::runtime::send_error(
-                &self.plumbing.out_tx,
-                ErrorCode::CodecUnavailable,
-                crate::runtime::apps::terminal::commands::NO_TERMINAL_PROFILE,
-            )
-            .await;
-            return FrameFlow::Continue(());
-        };
+        // SESSION ATTACH preflights actual membership: only a session with
+        // Terminals requires a Terminal profile.
+        let profile = selection.profile;
         debug!(
             client_id = ?self.client_id,
             attach_id,
@@ -147,7 +140,7 @@ impl<R: FrameReader> FrameDispatch<'_, R> {
         let attach_started = std::time::Instant::now();
         // QUIC multi-stream: content streams start at STREAM_BIND.
         let defer_subscription = selection.quic_streams();
-        handle_attach(
+        let published = handle_attach(
             self.state,
             self.client_id,
             attach_id,
@@ -166,6 +159,12 @@ impl<R: FrameReader> FrameDispatch<'_, R> {
             defer_subscription,
         )
         .await;
+        if published && defer_subscription {
+            // A successful aggregate replacement fences its prior pumps. End
+            // their exact bindings too, so a fresh STREAM_BIND cannot race an
+            // old stream-end event into unsubscribing the new generation.
+            self.plumbing.drop_all_stream_bindings().await;
+        }
         crate::perf::ATTACH_HANDLE.record_elapsed(attach_started);
         FrameFlow::Continue(())
     }
@@ -233,10 +232,6 @@ impl<R: FrameReader> FrameDispatch<'_, R> {
             handle_viewport_resize(self.state, self.client_id, &viewport);
             return FrameFlow::Continue(());
         }
-        let Some(resource) = frame_resource(&frame) else {
-            return direction_invalid(self.client_id, &frame);
-        };
-        let app = app_serving(self.state, resource);
         let ctx = ResourceFrame {
             state: self.state,
             client_id: self.client_id,
@@ -246,7 +241,7 @@ impl<R: FrameReader> FrameDispatch<'_, R> {
             negotiated: *self.negotiated,
             input_credits: self.input_credits,
         };
-        app.frame(ctx, frame).await
+        super::resource_frames::serve(ctx, frame).await
     }
 
     /// Resource and filesystem frames; any other kind is not valid from a
@@ -356,7 +351,7 @@ impl<R: FrameReader> FrameDispatch<'_, R> {
 
 /// The resource a stream or input frame is about; `None` for one that
 /// names no resource.
-const fn frame_resource(frame: &FrameKind) -> Option<&WireResourceId> {
+pub(super) const fn frame_resource(frame: &FrameKind) -> Option<&WireResourceId> {
     match frame {
         FrameKind::InputKey { terminal_id, .. }
         | FrameKind::InputMouse { terminal_id, .. }

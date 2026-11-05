@@ -79,6 +79,6 @@ export const commands: Record<string, Command> = {
   "build-features-check": {
     summary: "Check production dependency feature boundaries from `cargo tree` (compile-free).",
     run: () =>
-      report(violations(readGraphs()), "production feature boundaries hold (full, lean, mcp)"),
+      report(violations(readGraphs()), "production feature and host/engine boundaries hold"),
   },
 };

@@ -19,12 +19,12 @@ use phux_protocol::wire::frame::{
     AgentEvent, Command, CommandResult, CommandValue, ControlAction, ErrorCode, FrameKind,
     InputMode, Scope, SpawnError, SpawnResource, SpawnResult, StateScope,
 };
-use phux_server::{ServerConfig, ServerError, ServerRuntime};
+use phux_server::LaunchCommand;
+use phux_server::{ServerConfig, ServerError};
 use phux_server_testkit::{
     Spawn, ascii_key, bound_listener_addr, encode_frame, recv_typed, recv_until_deadline,
-    send_frame, spawn_resource, wait_for_raw_socket, wait_for_socket,
+    send_frame, spawn_resource, terminal_server, wait_for_raw_socket, wait_for_socket,
 };
-use portable_pty::CommandBuilder;
 use tempfile::TempDir;
 use tokio::net::{TcpStream, UnixStream};
 use tokio::sync::oneshot;
@@ -104,7 +104,7 @@ fn satellite_entry(name: &str, port: u16) -> SatelliteConfigEntry {
 /// so no neighbour can take it first.
 async fn spawn_satellite_runtime(
     socket_path: PathBuf,
-    seed: Option<CommandBuilder>,
+    seed: Option<LaunchCommand>,
 ) -> (u16, oneshot::Sender<()>, ServerTask) {
     let (tx, rx) = oneshot::channel::<()>();
     let mut cfg = ServerConfig {
@@ -119,7 +119,7 @@ async fn spawn_satellite_runtime(
     // admitted, which no `phux server` mode does (ADR-0179).
     phux_server_testkit::embedder::embed_owner_engine(&mut cfg);
     let handle = tokio::task::spawn_local(async move {
-        ServerRuntime::new(cfg)
+        terminal_server(cfg)
             .listen_ws("127.0.0.1:0".parse().unwrap())
             .run_async(async move {
                 let _ = rx.await;
@@ -164,7 +164,7 @@ fn spawn_hub_with_env(
         ..ServerConfig::with_default_socket()
     };
     let handle = tokio::task::spawn_local(async move {
-        ServerRuntime::new(cfg)
+        terminal_server(cfg)
             .hub(satellites)
             .run_async(async move {
                 let _ = rx.await;
@@ -263,7 +263,7 @@ impl Fed {
 
     /// Boot the satellite (PTY-seeded with `seed` if given) and a hub
     /// (pre-seeding local session `hub_session` if given).
-    async fn boot_with(seed: Option<CommandBuilder>, hub_session: Option<&str>) -> Self {
+    async fn boot_with(seed: Option<LaunchCommand>, hub_session: Option<&str>) -> Self {
         let tmp = TempDir::new().unwrap();
         let (ws_port, sat_shutdown, sat_task) =
             spawn_satellite_runtime(tmp.path().join("sat.sock"), seed).await;
@@ -944,7 +944,7 @@ async fn attach_terminal_until_ok(hub: &mut UnixStream, sat_id: &ResourceId) -> 
 #[test]
 fn two_hop_attach_snapshot_output_input_ack_and_detach() {
     phux_server_testkit::run_local(async {
-        let fed = Fed::boot_with(Some(CommandBuilder::new("/bin/cat")), None).await;
+        let fed = Fed::boot_with(Some(LaunchCommand::new("/bin/cat")), None).await;
         let sat_id = fed.sat_id();
         let mut hub = fed.hub().await;
 

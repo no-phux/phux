@@ -409,6 +409,10 @@ impl ResourceTable {
         terminal: ResourceId,
         bootstrap_id: BootstrapId,
     ) -> AttachResourcePumpReplacement {
+        // SESSION ATTACH supplies a shared generation rather than allocating
+        // one per resource. Its first lag recovery must still choose a fresh id.
+        let next = self.next_bootstrap.entry(client).or_insert(1);
+        *next = (*next).max(bootstrap_id.get().saturating_add(1));
         let cancel = CancellationToken::new();
         let done = CancellationToken::new();
         let last_valid_seq: LastValidAttachSequence = Arc::new(AtomicU64::new(0));

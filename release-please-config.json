@@ -84,7 +84,7 @@
         {
           "type": "toml",
           "path": "Cargo.lock",
-          "jsonpath": "$.package[?(!@.source && (@.name.value=='phux' || @.name.value=='phux-agent-host' || @.name.value=='phux-agent-rules' || @.name.value=='phux-agent-session' || @.name.value=='phux-client' || @.name.value=='phux-client-core' || @.name.value=='phux-client-ffi' || @.name.value=='phux-client-runtime' || @.name.value=='phux-config' || @.name.value=='phux-config-core' || @.name.value=='phux-core' || @.name.value=='phux-crash' || @.name.value=='phux-dial' || @.name.value=='phux-frozen' || @.name.value=='phux-git' || @.name.value=='phux-mcp' || @.name.value=='phux-mission' || @.name.value=='phux-perf' || @.name.value=='phux-plugin' || @.name.value=='phux-protocol' || @.name.value=='phux-record' || @.name.value=='phux-relay' || @.name.value=='phux-resource' || @.name.value=='phux-server' || @.name.value=='phux-server-testkit' || @.name.value=='phux-terminal' || @.name.value=='phux-tree' || @.name.value=='phux-tui' || @.name.value=='phux-usage' || @.name.value=='phux-work' || @.name.value=='portable-pty-adopt' || @.name.value=='quictun'))].version"
+          "jsonpath": "$.package[?(!@.source && (@.name.value=='phux' || @.name.value=='phux-agent-host' || @.name.value=='phux-agent-rules' || @.name.value=='phux-agent-session' || @.name.value=='phux-client' || @.name.value=='phux-client-core' || @.name.value=='phux-client-ffi' || @.name.value=='phux-client-runtime' || @.name.value=='phux-config' || @.name.value=='phux-config-core' || @.name.value=='phux-core' || @.name.value=='phux-crash' || @.name.value=='phux-dial' || @.name.value=='phux-frozen' || @.name.value=='phux-git' || @.name.value=='phux-mcp' || @.name.value=='phux-mission' || @.name.value=='phux-perf' || @.name.value=='phux-plugin' || @.name.value=='phux-protocol' || @.name.value=='phux-record' || @.name.value=='phux-relay' || @.name.value=='phux-resource' || @.name.value=='phux-server' || @.name.value=='phux-server-testkit' || @.name.value=='phux-terminal' || @.name.value=='phux-terminal-api' || @.name.value=='phux-tree' || @.name.value=='phux-tui' || @.name.value=='phux-usage' || @.name.value=='phux-work' || @.name.value=='portable-pty-adopt' || @.name.value=='quictun'))].version"
         },
         {
           "type": "toml",
@@ -100,6 +100,11 @@
           "type": "toml",
           "path": "clients/rune/Cargo.lock",
           "jsonpath": "$.package[?(!@.source && (@.name.value=='phux-client-core' || @.name.value=='phux-client-runtime' || @.name.value=='phux-config-core' || @.name.value=='phux-core' || @.name.value=='phux-dial' || @.name.value=='phux-perf' || @.name.value=='phux-protocol' || @.name.value=='quictun'))].version"
+        },
+        {
+          "type": "toml",
+          "path": "crates/phux-server/tests/fixtures/host-only-engine/Cargo.lock",
+          "jsonpath": "$.package[?(!@.source && (@.name.value=='phux-agent-rules' || @.name.value=='phux-agent-session' || @.name.value=='phux-client-core' || @.name.value=='phux-config' || @.name.value=='phux-config-core' || @.name.value=='phux-core' || @.name.value=='phux-dial' || @.name.value=='phux-git' || @.name.value=='phux-perf' || @.name.value=='phux-plugin' || @.name.value=='phux-protocol' || @.name.value=='phux-resource' || @.name.value=='phux-server' || @.name.value=='phux-terminal-api' || @.name.value=='phux-tree' || @.name.value=='phux-work' || @.name.value=='quictun'))].version"
         },
         {
           "type": "toml",

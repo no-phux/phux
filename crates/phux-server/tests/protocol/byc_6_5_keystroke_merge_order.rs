@@ -13,7 +13,7 @@ use phux_protocol::input::key::PhysicalKey;
 use phux_protocol::wire::frame::{
     FrameKind, TYPE_ATTACHED, TYPE_BOOTSTRAP_BEGIN, TYPE_RESOURCE_OUTPUT,
 };
-use portable_pty::CommandBuilder;
+use phux_server::LaunchCommand as CommandBuilder;
 use tempfile::TempDir;
 use tokio::net::UnixStream;
 

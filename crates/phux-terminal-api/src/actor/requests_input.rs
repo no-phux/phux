@@ -1,6 +1,5 @@
 use crate::TerminalInput;
 use bytes::Bytes;
-use tokio::sync::mpsc;
 
 /// Default depth of the per-pane input mailbox.
 pub const DEFAULT_INPUT_MAILBOX: usize = 64;
@@ -79,31 +78,6 @@ impl Drop for InputCredit {
     }
 }
 
-/// Queue `request` for the PTY writer.
-///
-/// An uncredited request (a terminal
-/// reply, or input from the no-lane path) may not take a slot reserved for
-/// credited input, so it is refused as `Full` once only those remain.
-///
-/// # Errors
-///
-/// The request back, as `try_send` would return it.
-pub fn try_send_to_writer(
-    tx: &mpsc::Sender<EncodedInputRequest>,
-    mut request: EncodedInputRequest,
-) -> Result<(), mpsc::error::TrySendError<EncodedInputRequest>> {
-    let result = if request.credit.is_none() && tx.capacity() <= INPUT_CREDITS {
-        Err(mpsc::error::TrySendError::Full(request))
-    } else {
-        request.writer_queued_at = Some(std::time::Instant::now());
-        tx.try_send(request)
-    };
-    if matches!(&result, Err(mpsc::error::TrySendError::Full(_))) {
-        crate::perf::INPUT_WRITER_FULL.incr();
-    }
-    result
-}
-
 /// Final disposition of a PTY write, reported on
 /// [`EncodedInputRequest::completion`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -144,7 +118,7 @@ impl WriteCompletionSink {
     }
 
     /// A sink backed by a plain channel (tests).
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     #[must_use]
     pub fn channel() -> (Self, std::sync::mpsc::Receiver<WriteCompletion>) {
         let (tx, rx) = std::sync::mpsc::channel();
@@ -180,23 +154,23 @@ pub struct EncodedInputRequest {
     pub bytes: Bytes,
     /// Whether this may arm the `echo.server` sample (keys and pastes, not
     /// mouse, focus, or terminal replies).
-    pub(crate) echo_probe: bool,
+    pub echo_probe: bool,
     /// See [`WriteCompletionSink`]; dropping it reports indeterminate.
     pub completion: Option<WriteCompletionSink>,
     /// The pane input credit this request holds (ADR-0144), released when
     /// the request drops: after the writer thread's `write(2)`, or at
     /// whichever step discards it.
-    pub(crate) credit: Option<InputCredit>,
+    pub credit: Option<InputCredit>,
     /// Stamped only at the final writer handoff, not the lane/actor queue.
-    pub(crate) writer_queued_at: Option<std::time::Instant>,
-    /// Set by [`super::super::fast_pty::PtyFastPath::enqueue`]. The writer decrements
+    pub writer_queued_at: Option<std::time::Instant>,
+    /// Set by ordered writer admission. The writer decrements
     /// the pane's pending count only for these, so a test `try_send` does not
     /// underflow it.
-    pub(crate) counts_pending: bool,
-    /// In-flight input-lane key. [`super::super::fast_pty::PtyFastPath::enqueue`]
+    pub counts_pending: bool,
+    /// In-flight input-lane key. Ordered writer admission
     /// drops it after `pending` is published; every earlier discard drops it
     /// with the request.
-    pub(crate) lane_ahead: Option<super::super::fast_pty::LaneAhead>,
+    pub lane_ahead: Option<crate::input::LaneAhead>,
 }
 
 impl EncodedInputRequest {
@@ -229,10 +203,7 @@ impl EncodedInputRequest {
     /// This request keeps the inline path closed until the writer queue
     /// counts it.
     #[must_use]
-    pub fn with_lane_ahead(
-        mut self,
-        lane_ahead: Option<super::super::fast_pty::LaneAhead>,
-    ) -> Self {
+    pub fn with_lane_ahead(mut self, lane_ahead: Option<crate::input::LaneAhead>) -> Self {
         self.lane_ahead = lane_ahead;
         self
     }

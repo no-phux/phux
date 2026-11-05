@@ -21,7 +21,12 @@ pub mod builder;
 pub mod embedder;
 pub mod relay;
 pub mod screen;
+mod server;
 pub mod tracing_capture;
+pub use server::{
+    ServerHandles, seed_pty, spawn_server, spawn_server_seed_pty_no_cmd, spawn_server_with,
+    spawn_server_with_seed_cmd, terminal_server,
+};
 
 use std::future::Future;
 use std::path::{Path, PathBuf};
@@ -37,7 +42,7 @@ use phux_protocol::wire::frame::{
     AttachTarget, Command, CommandResult, CommandValue, DetachReason, FrameKind, SpawnResource,
     SpawnResult, StateScope, TYPE_COMMAND_RESULT, TYPE_DETACHED, TYPE_HELLO_OK, ViewportInfo,
 };
-use phux_server::{ServerConfig, ServerError, ServerRuntime};
+use phux_server::ServerError;
 use tempfile::TempDir;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::UnixStream;
@@ -55,64 +60,6 @@ pub const SOCKET_CONNECT_DEADLINE: Duration = Duration::from_secs(10);
 
 /// Deadline for joining a `ServerRuntime` that was told to shut down.
 pub const SERVER_JOIN_DEADLINE: Duration = Duration::from_secs(30);
-
-pub type ServerHandles = (oneshot::Sender<()>, JoinHandle<Result<(), ServerError>>);
-
-/// Spawn a [`ServerRuntime`] on the current `LocalSet` (ADR-0014: pane actors
-/// are `!Send`, so call from inside [`run_local`]), optionally pre-seeding a
-/// session without a PTY. Returns the shutdown sender and join handle.
-pub fn spawn_server(socket_path: PathBuf, pre_seeded: Option<&str>) -> ServerHandles {
-    spawn_server_with(socket_path, pre_seeded, |_| {})
-}
-
-/// Like [`spawn_server`] but lets the caller edit the [`ServerConfig`] first.
-pub fn spawn_server_with(
-    socket_path: PathBuf,
-    pre_seeded: Option<&str>,
-    configure: impl FnOnce(&mut ServerConfig),
-) -> ServerHandles {
-    let (tx, rx) = oneshot::channel::<()>();
-    let mut cfg = ServerConfig {
-        socket_path,
-        pre_seeded_session: pre_seeded.map(str::to_owned),
-        seed_with_pty: false,
-        seed_command: None,
-        ..ServerConfig::with_default_socket()
-    };
-    configure(&mut cfg);
-    let handle = tokio::task::spawn_local(async move {
-        ServerRuntime::new(cfg)
-            .run_async(async move {
-                let _ = rx.await;
-            })
-            .await
-    });
-    (tx, handle)
-}
-
-/// Pre-seed `pre_seeded` with a PTY-backed pane running `cmd`.
-pub fn spawn_server_with_seed_cmd(
-    socket_path: PathBuf,
-    pre_seeded: &str,
-    cmd: portable_pty::CommandBuilder,
-) -> ServerHandles {
-    spawn_server_with(socket_path, Some(pre_seeded), |cfg| seed_pty(cfg, cmd))
-}
-
-/// Configure `cfg` to seed panes with a real PTY running `cmd`.
-pub fn seed_pty(cfg: &mut ServerConfig, cmd: portable_pty::CommandBuilder) {
-    cfg.seed_with_pty = true;
-    cfg.seed_command = Some(cmd);
-}
-
-/// Seed panes with a real PTY but no override command, so a wire
-/// `CREATE_SESSION { command }` decides what runs.
-pub fn spawn_server_seed_pty_no_cmd(
-    socket_path: PathBuf,
-    pre_seeded: Option<&str>,
-) -> ServerHandles {
-    spawn_server_with(socket_path, pre_seeded, |cfg| cfg.seed_with_pty = true)
-}
 
 /// Block on `fut` inside a fresh `current_thread` runtime + `LocalSet`.
 pub fn run_local<F>(fut: F)
@@ -166,7 +113,7 @@ impl SpawnedServer {
     }
 }
 
-/// Spawn a [`ServerRuntime`] (optionally pre-seeded) in a temp dir and return
+/// Spawn a [`phux_server::ServerRuntime`] (optionally pre-seeded) in a temp dir and return
 /// a HELLO'd client. Extra clients use [`SpawnedServer::connect`].
 #[must_use = "dropping the shutdown sender stops the server"]
 pub async fn spawn_server_connected(pre_seeded: Option<&str>) -> (SpawnedServer, UnixStream) {

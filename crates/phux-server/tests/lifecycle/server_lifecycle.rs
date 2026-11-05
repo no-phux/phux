@@ -9,13 +9,13 @@ use std::time::Duration;
 use phux_protocol::wire::frame::{
     Command, FrameKind, SESSION_KEEP_EMPTY_KEY, Scope, encode_session_keep_empty,
 };
+use phux_server::LaunchCommand as CommandBuilder;
 use phux_server::ServerError;
-use phux_server::runtime::{ServerConfig, ServerRuntime};
+use phux_server::runtime::ServerConfig;
 use phux_server_testkit::{
     SERVER_JOIN_DEADLINE, SOCKET_CONNECT_DEADLINE, join_after_shutdown, recv_typed, run_local,
     send_frame, spawn_server, wait_for_raw_socket, wait_for_socket,
 };
-use portable_pty::CommandBuilder;
 use tempfile::TempDir;
 use tokio::io::AsyncWriteExt;
 use tokio::task::JoinHandle;
@@ -46,7 +46,7 @@ fn seeded(
         ..ServerConfig::with_default_socket()
     };
     let handle = tokio::task::spawn_local(async move {
-        ServerRuntime::new(cfg)
+        phux_server_testkit::terminal_server(cfg)
             .run_async(std::future::pending::<()>())
             .await
     });
@@ -107,7 +107,7 @@ fn a_second_server_on_a_live_socket_is_socket_busy() {
             socket_path: socket_path.clone(),
             ..ServerConfig::with_default_socket()
         };
-        let second = ServerRuntime::new(cfg)
+        let second = phux_server_testkit::terminal_server(cfg)
             .run_async(std::future::pending::<()>())
             .await;
         assert!(

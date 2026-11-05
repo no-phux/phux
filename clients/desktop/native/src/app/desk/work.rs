@@ -8,11 +8,14 @@ impl Desk {
             return;
         };
         let session = self.session.clone();
-        self.workspace_call(|link| link.workspace.close_pane(&link.connection, Some(&id)));
         let remote = self.remote.clone();
-        self.desktop.update(cx, |desktop, cx| {
-            desktop.open_moved(session, terminal, remote, cx);
+        let opened = self.desktop.update(cx, |desktop, cx| {
+            desktop.open_moved(session, terminal.clone(), remote, cx)
         });
+        match opened {
+            Ok(target) => self.finish_window_transfer(target, terminal, id, cx),
+            Err(error) => self.post(Kind::Error, "Could not move pane", Some(error.to_string())),
+        }
     }
 
     /// Move the focused placement into the next open window on the same
@@ -44,20 +47,82 @@ impl Desk {
             cx.notify();
             return;
         };
-        let placement = self
-            .focused_placement()
-            .map(|placement| placement.id.clone());
-        self.workspace_call(|link| {
-            link.workspace
-                .close_pane(&link.connection, placement.as_deref())
-        });
-        cx.notify();
+        let Some(placement) = self.focused_id() else {
+            return;
+        };
+        self.finish_window_transfer(desk.clone(), terminal.clone(), placement, cx);
         // Deferred: the target is another window, updated outside this one.
         cx.defer(move |cx| {
             cx.activate(true);
             let _ = handle.update(cx, |_, window, _| window.activate_window());
             desk.update(cx, |desk, cx| desk.show_project_terminal(terminal, cx));
         });
+    }
+
+    /// Release the source only after the other client has admitted and placed
+    /// the exact resource on the same server incarnation. Failure keeps it here.
+    pub(super) fn finish_window_transfer(
+        &mut self,
+        target: Entity<Desk>,
+        resource: ResourceId,
+        placement: String,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(server) = self
+            .link
+            .as_ref()
+            .and_then(|link| link.connection.server_id())
+        else {
+            return;
+        };
+        let binding = self
+            .link
+            .as_ref()
+            .and_then(|link| link.connection.resource_record(&resource));
+        let navigation = self.upload_epoch;
+        cx.spawn(async move |source, cx| {
+            let deadline = Instant::now() + Duration::from_secs(10);
+            loop {
+                let admitted = target.update(cx, |desk, _| desk.transfer_target_ready(&resource, &server, binding.as_ref()));
+                if admitted || Instant::now() >= deadline {
+                    let _ = source.update(cx, |desk, cx| {
+                        if desk.upload_epoch != navigation { return; }
+                        if admitted && desk.transfer_target_ready(&resource, &server, binding.as_ref())
+                            && desk.placement(&placement).and_then(|item| item.terminal_id.as_ref()) == Some(&resource) {
+                            desk.workspace_call(|link| link.workspace.close_pane(&link.connection, Some(&placement)));
+                        } else {
+                            desk.post(Kind::Refusal, "Pane kept in this window", Some("The destination did not admit the same live resource. Nothing was closed.".into()));
+                        }
+                        cx.notify();
+                    });
+                    break;
+                }
+                cx.background_executor().timer(Duration::from_millis(50)).await;
+            }
+        }).detach();
+    }
+
+    pub(super) fn transfer_target_ready(
+        &self,
+        resource: &ResourceId,
+        server: &str,
+        expected: Option<&phux_protocol::wire::frame::ResourceRecord>,
+    ) -> bool {
+        let Some(link) = self.link.as_ref() else {
+            return false;
+        };
+        if link.connection.server_id().as_deref() != Some(server) {
+            return false;
+        }
+        if !link.connection.resource_binding_matches(resource, expected) {
+            return false;
+        }
+        let Some(placed) = self.placement_of(resource) else {
+            return false;
+        };
+        self.terminal_reveal_ready(resource)
+            && link.connection.subscription_ready(resource)
+            && (link.connection.document_kind(resource).is_some() || placed.view_id.is_some())
     }
 
     pub(super) fn open_folder(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -178,7 +243,7 @@ impl Desk {
             link.connection.status == Status::Attached
                 && link.connection.session_validated()
                 && link.workspace.restored()
-                && link.connection.pane(terminal).is_some()
+                && link.connection.resource_known(terminal)
         })
     }
 

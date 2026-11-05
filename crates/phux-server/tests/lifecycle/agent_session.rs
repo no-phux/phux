@@ -13,8 +13,8 @@ use phux_protocol::wire::frame::{
     AgentEvent, CloseReason, Command, CommandResult, ErrorCode, FrameKind, ReportedAgentState,
     Scope, SpawnError, SpawnResource, SpawnResult, TerminalSignal,
 };
+use phux_server::LaunchCommand as CommandBuilder;
 use phux_server_testkit::{Spawn, ascii_key, command, send_frame, spawn_resource};
-use portable_pty::CommandBuilder;
 use tokio::net::UnixStream;
 
 use crate::common::{Server, attach, get_metadata, sh, spawned, state, subscribe, wait_frame};

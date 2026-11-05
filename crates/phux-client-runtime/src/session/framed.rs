@@ -118,7 +118,7 @@ impl Session {
     pub async fn recv(&mut self) -> Result<FrameKind, SessionError> {
         let result = self.recv_frame().await;
         if let Ok(frame) = &result {
-            self.retire_closed_terminal(frame);
+            self.retire_obsolete_streams(frame);
         }
         if let Err(SessionError::Framing(violation)) = &result {
             self.answer_framing_violation(*violation).await;
@@ -126,9 +126,16 @@ impl Session {
         result
     }
 
-    /// A lifecycle close on control retires the independent Terminal stream
-    /// before queued output can reach the caller's closed session resource.
-    fn retire_closed_terminal(&mut self, frame: &FrameKind) {
+    /// Control-plane replacement/close retires independent stream origins
+    /// before queued output can reach a new or closed session generation.
+    fn retire_obsolete_streams(&mut self, frame: &FrameKind) {
+        if matches!(frame, FrameKind::Attached { .. }) {
+            // ATTACHED starts a new aggregate generation. Retire origins
+            // before the caller rebinds: queued frames from old QUIC streams
+            // must not enter the replacement's kernel or keep bind() a no-op.
+            self.unbind_all_terminals();
+            return;
+        }
         if let FrameKind::ResourceClosed { terminal_id, .. } = frame
             && let Some(mux) = self.multistream.as_mut()
         {
@@ -166,7 +173,7 @@ impl Session {
     pub fn try_recv(&mut self) -> Result<Option<FrameKind>, SessionError> {
         let result = self.try_recv_frame();
         if let Ok(Some(frame)) = &result {
-            self.retire_closed_terminal(frame);
+            self.retire_obsolete_streams(frame);
         }
         if let Err(SessionError::Framing(violation)) = &result {
             let _ = self.answer_framing_violation(*violation).now_or_never();

@@ -350,7 +350,9 @@ pub enum Event {
     /// drain (`take_events`) or, after [`take_events_leased`](super::ControlPlane::take_events_leased),
     /// [`ControlPlane::accept_agent_publication`](super::ControlPlane::accept_agent_publication).
     /// Acceptance is the consumer taking delivery, not the end of a view
-    /// borrow. The record vector is not copied. `stream` on the publication
+    /// borrow. A full retained cut supersedes prior same-resource unaccepted
+    /// publications; resume appends keep their prefix. The vector is not copied.
+    /// `stream` on the publication
     /// is the commit watermark, including an empty publication.
     AgentPublication {
         /// The committed batch and its watermark.

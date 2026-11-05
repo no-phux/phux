@@ -453,8 +453,8 @@ impl Desk {
             .placement_of(terminal)
             .map(|placement| placement.terminal_label.clone());
         self.workspace_call(|link| {
-            if let Some(pane) = link.connection.pane(terminal).cloned() {
-                link.workspace.open(&link.connection, &pane);
+            if link.connection.resource_known(terminal) {
+                link.workspace.open_resource(&link.connection, terminal);
             } else if let Some(label) = label {
                 let _ = link.workspace.reveal(&label);
             }

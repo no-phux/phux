@@ -11,7 +11,7 @@ use phux_protocol::PROTOCOL_VERSION;
 use phux_protocol::caps::{ClientCapabilities, ColorSupport, LayerSet};
 use phux_protocol::ids::ResourceId;
 use phux_protocol::wire::frame::{Command, CommandResult, FrameKind, StateScope};
-use portable_pty::CommandBuilder;
+use phux_server::LaunchCommand as CommandBuilder;
 use tokio::net::UnixStream;
 
 use phux_server_testkit::{

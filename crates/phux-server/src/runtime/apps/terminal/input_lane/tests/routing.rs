@@ -102,8 +102,8 @@ fn encoder_cache_tracks_actor_generations() {
     assert_eq!(encoders.len(), 1);
     assert!(
         encoders[&pane]
-            .snapshot
-            .same_channel(&facet(&second).input_snapshot)
+            .port
+            .same_generation(&facet(&second).ordered_input)
     );
     drop(second);
     prune_closed_encoders(&mut encoders);

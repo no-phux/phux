@@ -226,7 +226,7 @@ fn an_attach_snapshot_holds_only_observable_terminals() {
         .with(|s| s.find_session_by_name("alpha"))
         .unwrap();
     let (tx, _rx) = tokio::sync::mpsc::channel(8);
-    let (snapshot, ..) = super::super::commands::prepare_attach(
+    let (snapshot, ..) = super::super::session_attach::prepare::prepare_attach(
         &fixture.state,
         CLIENT,
         alpha,
@@ -269,7 +269,7 @@ fn a_pinned_attach_follows_the_session_id_through_a_rename_race() {
     assert_eq!(state.with(|s| s.find_session_by_name("work")), Some(secret));
 
     let (tx, _rx) = tokio::sync::mpsc::channel(8);
-    super::super::commands::prepare_attach(
+    super::super::session_attach::prepare::prepare_attach(
         &state,
         CLIENT,
         pinned,

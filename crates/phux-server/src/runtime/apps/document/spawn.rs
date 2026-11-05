@@ -74,8 +74,12 @@ pub(crate) async fn spawn_document<A: DocumentApi>(spawn: ResourceSpawn<'_>) {
         let actor = s.actor_for(client_id);
         let core = A::create(s, core_parent, target, &actor)
             .map_err(|_| SpawnError::ParentKindMismatch)?;
-        let _ = s.spawn_resource_actor(core, bundle.handle.clone(), token, bundle.actor.run());
-        let wire = s.intern_resource_wire(core);
+        let wire = s
+            .spawn_resource_actor(core, bundle.handle.clone(), token, bundle.actor.run())
+            .map_err(|error| {
+                s.reap_resource(core);
+                SpawnError::SpawnFailed(error.to_string())
+            })?;
         let announcement = crate::state::EventRecord::new(
             Some(wire.clone()),
             AgentEvent::ResourceSpawned {

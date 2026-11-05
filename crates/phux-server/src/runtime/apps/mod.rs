@@ -94,6 +94,16 @@ pub(crate) struct ResourceSpawn<'a> {
     pub(crate) connection_token: &'a CancellationToken,
 }
 
+/// One already-committed launch effect. The app must execute this exact
+/// resource activation, never substitute another kind's default launch.
+#[derive(Clone, Copy)]
+pub(crate) struct ResourceLaunch<'a> {
+    pub(crate) state: &'a SharedState,
+    pub(crate) resource: phux_core::ids::ResourceId,
+    pub(crate) spec: &'a phux_core::LaunchSpec,
+    pub(crate) root_token: &'a CancellationToken,
+}
+
 /// The agent-session streams one graceful upgrade carries. From the moment it
 /// exists until exec, the host holds it; dropping it releases whatever it
 /// still holds, and a successful exec replaces the process instead.
@@ -138,8 +148,39 @@ pub(crate) struct ResourceFrame<'a> {
     pub(crate) input_credits: &'a mut InputCredits,
 }
 
+/// The host-side check an app needs before it sees a local frame. These
+/// distinctions preserve the wire's input, hint, and refusal semantics.
+#[derive(Clone, Copy)]
+pub(crate) enum FrameAdmission {
+    /// No attachment is needed (e.g. exact resize or an in-band refusal).
+    Unrestricted,
+    /// Only a live subscriber may receive this frame's answer.
+    Subscription,
+    /// Attached input also respects retained exits, guardians, and leases.
+    AttachedInput,
+}
+
 /// What the host asks of the app serving a kind.
 pub(crate) trait ResourceApp: Sync {
+    /// Whether ordinary organization creation/relaunch can execute this kind.
+    /// Producer-bound projections instead open through their producer's app.
+    fn supports_organization_launch(&self) -> bool;
+
+    /// Execute a committed launch. A failure is reported against the effect's
+    /// activation by the host; it cannot undo the accepted operation.
+    fn launch(&self, launch: ResourceLaunch<'_>) -> Result<(), String>;
+
+    /// Stage this kind's bounded session bootstrap and a parked live pump.
+    /// Nothing may publish until the host opens the aggregate live gate.
+    /// A cursor-driven app may defer its stream to explicit `ATTACH_RESOURCE`;
+    /// returning no frames does not close or remove its catalog membership.
+    fn stage_session<'a>(
+        &'a self,
+        capture: super::session_attach::SessionCapture<'a>,
+        staging: &'a mut super::session_attach::staging::SessionStaging,
+        pane: crate::state::AttachSnapshotPane,
+    ) -> LocalBoxFuture<'a, Result<(), super::session_attach::staging::CaptureFailure>>;
+
     /// Whether a multi-stream connection waits for `STREAM_BIND` before
     /// bootstrapping this kind's content.
     fn defers_stream_bootstrap(&self) -> bool;
@@ -198,6 +239,9 @@ pub(crate) trait ResourceApp: Sync {
         resource: &ResourceKey,
         expected: Revision,
     ) -> Option<CommandResult>;
+
+    /// Which connection check precedes this kind's handling of `frame`.
+    fn frame_admission(&self, frame: &FrameKind) -> FrameAdmission;
 
     /// Serve a stream or input frame about a resource of this kind: the
     /// `INPUT_*`, `RESIZE_TERMINAL`, `FRAME_ACK` and `HISTORY_REQUEST`
@@ -288,16 +332,18 @@ pub(crate) fn rebuild_session(
     agent_session::upgrade::rebuild(carried, parent, parent_handle, log_bytes, token)
 }
 
-/// The app serving the resource `wire` names. A resource this host does
-/// not know, remote or already gone, is served as a Terminal, which relays
-/// or drops the frame as it always has.
-pub(crate) fn app_serving(state: &SharedState, wire: &WireResourceId) -> &'static dyn ResourceApp {
+/// The app serving a local resource, if this host still has its handle.
+/// Remote and unknown ids belong to host routing, never a default app.
+pub(crate) fn app_serving(
+    state: &SharedState,
+    wire: &WireResourceId,
+) -> Option<&'static dyn ResourceApp> {
     let kind = state.with(|s| {
         s.resource_from_wire(wire)
             .and_then(|core| s.resource_handle(core))
             .map(|handle| handle.kind)
     });
-    kind.map_or(&terminal::TerminalApp, app_for)
+    kind.map(app_for)
 }
 
 /// Every app's rows of the `GET_PERF` report.
@@ -306,8 +352,10 @@ pub(crate) fn metric_tables() -> Vec<&'static [phux_perf::Metric]> {
 }
 
 /// The native bootstrap profiles this server can offer at HELLO.
-pub(crate) fn bootstrap_capabilities() -> phux_protocol::caps::BootstrapCapabilities {
-    terminal::bootstrap_capabilities()
+pub(crate) fn bootstrap_capabilities(
+    state: &SharedState,
+) -> phux_protocol::caps::BootstrapCapabilities {
+    terminal::bootstrap_capabilities(state)
 }
 
 /// The app that owns `command` in the catalog; `None` for a host command.

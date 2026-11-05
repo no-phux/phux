@@ -98,6 +98,9 @@ impl Desk {
             self.modal_key(modal, event, action, tx);
             return true;
         }
+        if self.native_text_shortcut(event) {
+            return false;
+        }
         if let Some(action) = action {
             self.shortcut(action, tx);
             return true;
@@ -183,7 +186,8 @@ impl Desk {
         let (Some(client), Some(shown)) = (self.client.clone(), &self.shown) else {
             return;
         };
-        let (terminal, view) = (shown.terminal.clone(), shown.view);
+        let Some(view) = shown.view else { return };
+        let terminal = shown.terminal.clone();
         let frame = client.acquire_view(view);
         let behind = frame.as_ref().is_some_and(|f| !f.scrollbar.at_tail());
         let sent = client.with_control(|control| {
@@ -212,7 +216,7 @@ impl Desk {
     /// Plain characters arrive as keys instead. While something else has the
     /// keyboard none of it is the terminal's.
     pub fn ime(&mut self, event: &rune::Ime) -> bool {
-        if self.modal().is_some() {
+        if self.modal().is_some() || self.shown.as_ref().is_none_or(|s| s.view.is_none()) {
             self.preedit = None;
             return false;
         }
@@ -233,7 +237,7 @@ impl Desk {
     pub fn shortcut(&mut self, action: Shortcut, tx: &mut Tx) {
         match action {
             Shortcut::Copy => self.copy(tx),
-            Shortcut::SelectAll => self.select_all(),
+            Shortcut::SelectAll => self.select_all(tx),
             Shortcut::Paste => self.paste_clipboard(tx),
             Shortcut::NewTerminal => self.new_tab(),
             Shortcut::Tab(index) => self.select_tab(usize::from(index)),
@@ -290,6 +294,9 @@ impl Desk {
     /// The user's paste into `terminal`. One that would type line breaks into
     /// a program without bracketed paste waits for confirmation.
     pub(super) fn paste(&mut self, terminal: &ResourceId, text: &str) {
+        if self.is_document(terminal) {
+            return;
+        }
         if text.is_empty() {
             return;
         }
@@ -308,9 +315,14 @@ impl Desk {
 
     pub fn confirm_pending(&mut self) {
         match self.pending.take() {
+            Some(Pending::Mirror(source, target)) => self.start_mirror(source, &target),
             Some(Pending::Paste(terminal, text)) => self.send_paste(&terminal, &text),
             Some(Pending::Close(terminal)) => self.close_now(&terminal),
             Some(Pending::CloseTab(terminals)) => {
+                let terminals = terminals
+                    .into_iter()
+                    .filter(|id| !self.is_document(id))
+                    .collect();
                 if let Some(client) = &self.client {
                     let _ = client.close_terminals(terminals);
                 }
@@ -356,6 +368,9 @@ impl Desk {
         let Some(terminal) = self.shown.as_ref().map(|s| s.terminal.clone()) else {
             return;
         };
+        if self.is_document(&terminal) {
+            return self.hide_documents(&[terminal]);
+        }
         if !self.settings.confirm_close || self.vouched_idle(&terminal) {
             self.close_now(&terminal);
         } else {
@@ -377,6 +392,9 @@ impl Desk {
     }
 
     fn close_now(&mut self, terminal: &ResourceId) {
+        if self.is_document(terminal) {
+            return self.hide_documents(std::slice::from_ref(terminal));
+        }
         if let Some(client) = &self.client {
             let _ = client.close_terminals(vec![terminal.clone()]);
         }
@@ -399,6 +417,9 @@ impl Desk {
     /// Paste as the user, remembering the receipt so a refused or unknown
     /// delivery reaches them. False: the terminal can't take input now.
     pub(super) fn deliver_paste(&mut self, terminal: &ResourceId, text: &str) -> bool {
+        if self.is_document(terminal) {
+            return false;
+        }
         let Some(client) = self.client.clone() else {
             return false;
         };
@@ -436,7 +457,7 @@ impl Desk {
         let (Some(client), Some(shown)) = (&self.client, &self.shown) else {
             return;
         };
-        let view = shown.view;
+        let Some(view) = shown.view else { return };
         let _ = client.with_control(|control| control.scroll_view(view, scroll));
         self.generation += 1;
     }
@@ -453,56 +474,11 @@ impl Desk {
     /// The view showing `terminal`, focused or not.
     pub(super) fn view_of(&self, terminal: &ResourceId) -> Option<ViewId> {
         match &self.shown {
-            Some(shown) if &shown.terminal == terminal => Some(shown.view),
-            _ => self.others.get(terminal).copied(),
+            Some(shown) if &shown.terminal == terminal => shown.view,
+            _ => self.others.get(terminal).copied().flatten(),
         }
     }
 }
 
 #[cfg(test)]
-mod tests {
-    use super::{Modal, Shortcut, paste_needs_confirmation};
-
-    #[test]
-    fn nothing_pastes_past_a_question() {
-        assert!(Modal::FindField.allows(Shortcut::Paste));
-        assert!(!Modal::Confirm.allows(Shortcut::Paste));
-        assert!(!Modal::Settings.allows(Shortcut::Paste));
-    }
-
-    #[test]
-    fn the_find_field_leaves_commands_running() {
-        assert!(Modal::FindField.allows(Shortcut::FindNext));
-        assert!(Modal::FindField.allows(Shortcut::FindPrevious));
-    }
-
-    #[test]
-    fn sheets_stop_what_they_hide() {
-        assert!(!Modal::Inbox.allows(Shortcut::CloseTerminal));
-        assert!(Modal::Settings.allows(Shortcut::ZoomIn));
-        assert!(!Modal::Confirm.allows(Shortcut::ZoomIn));
-        assert!(!Modal::Palette.allows(Shortcut::FindNext));
-        assert!(Modal::Palette.allows(Shortcut::Palette));
-    }
-
-    #[test]
-    fn only_rune_modals_take_the_pointer() {
-        assert!(Modal::ContextMenu.takes_pointer());
-        assert!(Modal::Palette.takes_pointer());
-        assert!(!Modal::FindField.takes_pointer());
-        assert!(!Modal::Confirm.takes_pointer());
-    }
-
-    #[test]
-    fn line_breaks_ask_only_without_bracketed_paste() {
-        assert!(paste_needs_confirmation(false, "ls\nrm -rf x\n"));
-        assert!(paste_needs_confirmation(false, "a\rb"));
-        assert!(!paste_needs_confirmation(true, "ls\nrm -rf x\n"));
-        assert!(!paste_needs_confirmation(false, "one line"));
-    }
-
-    #[test]
-    fn the_bracket_terminator_always_asks() {
-        assert!(paste_needs_confirmation(true, "x\x1b[201~y"));
-    }
-}
+mod tests;

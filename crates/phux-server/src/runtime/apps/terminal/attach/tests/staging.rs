@@ -75,6 +75,7 @@ fn bootstrap_adaptation_peak_includes_sources_scratch_and_outputs() {
     assert!(!crate::downsample::caps_pass_through(caps));
 
     let adapted = adapt_bootstrap_snapshot(
+        &phux_terminal_api::TerminalEngineFactory::presentation(&phux_terminal::TerminalEngine),
         phux_terminal::grid::SnapshotBytes {
             cols: 80,
             rows: 24,
@@ -113,6 +114,7 @@ fn bootstrap_adaptation_restores_images_only_for_kitty_consumers() {
     ] {
         let snapshot = phux_terminal::grid::synthesize(&source).unwrap();
         let adapted = adapt_bootstrap_snapshot(
+            &phux_terminal_api::TerminalEngineFactory::presentation(&phux_terminal::TerminalEngine),
             snapshot,
             ClientCapabilities::default().with_image_protocols(image_protocols),
             1024 * 1024,
@@ -155,7 +157,12 @@ fn native_live_bytes_ignore_restrictive_presentation_caps() {
         codec: phux_protocol::caps::EngineCodec::LibghosttySnapshotV1,
     };
 
-    let adapted = live_bytes_for_profile(&bytes, caps, profile);
+    let adapted = live_bytes_for_profile(
+        &phux_terminal_api::TerminalEngineFactory::presentation(&phux_terminal::TerminalEngine),
+        &bytes,
+        caps,
+        profile,
+    );
 
     assert_eq!(adapted, bytes);
     assert_eq!(
@@ -183,7 +190,13 @@ fn aggregate_staging_charges_tiny_rewrites_by_retained_capacity() {
     let caps = ClientCapabilities::default()
         .with_color_support(phux_protocol::caps::ColorSupport::Indexed256)
         .with_image_protocols(phux_protocol::caps::ImageProtocolSet::new());
-    let sample = adapt_bootstrap_snapshot(kitty_snapshot(), caps, 2 * 64 * 1024).expect("rewrite");
+    let sample = adapt_bootstrap_snapshot(
+        &phux_terminal_api::TerminalEngineFactory::presentation(&phux_terminal::TerminalEngine),
+        kitty_snapshot(),
+        caps,
+        2 * 64 * 1024,
+    )
+    .expect("rewrite");
     let retained_per_pane = sample.retained_bytes;
     let wire_per_pane = sample.payloads.iter().map(bytes::Bytes::len).sum::<usize>();
     assert!(
@@ -196,6 +209,7 @@ fn aggregate_staging_charges_tiny_rewrites_by_retained_capacity() {
     let mut staged = Vec::new();
     for pane in 0..4_u32 {
         let adapted = adapt_bootstrap_snapshot(
+            &phux_terminal_api::TerminalEngineFactory::presentation(&phux_terminal::TerminalEngine),
             kitty_snapshot(),
             caps,
             retained_per_pane.checked_mul(2).expect("peak budget"),

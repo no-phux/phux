@@ -9,19 +9,17 @@ use super::*;
 /// Adapt a chunk to a client's capabilities without copying when neither
 /// the capabilities nor the bytes require rewriting.
 pub(crate) fn downsample_for_caps(
+    presentation: &phux_terminal_api::Presentation,
     bytes: &bytes::Bytes,
     caps: phux_protocol::ClientCapabilities,
 ) -> bytes::Bytes {
-    if crate::downsample::caps_pass_through(caps) || memchr::memchr(0x1b, bytes).is_none() {
-        bytes.clone()
-    } else {
-        crate::downsample::rewrite_bytes_with_caps(bytes, caps).into()
-    }
+    (presentation.adapt_bytes)(bytes, caps)
 }
 
 /// Preserve native live bytes exactly; only synthesized profiles may adapt
 /// presentation capabilities.
 pub(crate) fn live_bytes_for_profile(
+    presentation: &phux_terminal_api::Presentation,
     bytes: &bytes::Bytes,
     caps: phux_protocol::ClientCapabilities,
     profile: phux_protocol::caps::BootstrapStreamProfile,
@@ -32,84 +30,27 @@ pub(crate) fn live_bytes_for_profile(
     ) {
         bytes.clone()
     } else {
-        downsample_for_caps(bytes, caps)
+        downsample_for_caps(presentation, bytes, caps)
     }
 }
 
 pub(crate) fn bootstrap_source_ceiling(
+    presentation: &phux_terminal_api::Presentation,
     remaining_bytes: usize,
     caps: phux_protocol::ClientCapabilities,
 ) -> usize {
-    if crate::downsample::caps_pass_through(caps) {
-        remaining_bytes
-    } else {
-        // The source and one equally bounded rewrite are live together.
-        remaining_bytes / 2
-    }
+    (presentation.source_ceiling)(remaining_bytes, caps)
 }
 
-#[derive(Debug)]
-pub(crate) struct AdaptedBootstrap {
-    pub(crate) payloads: Vec<bytes::Bytes>,
-    pub(super) retained_bytes: usize,
-    pub(super) peak_bytes: usize,
-}
+pub(crate) use phux_terminal_api::AdaptedBootstrap;
 
 pub(crate) fn adapt_bootstrap_snapshot(
-    snapshot: phux_terminal::grid::SnapshotBytes,
+    presentation: &phux_terminal_api::Presentation,
+    snapshot: phux_terminal_api::grid::SnapshotBytes,
     caps: phux_protocol::ClientCapabilities,
     peak_budget: usize,
 ) -> Result<AdaptedBootstrap, ()> {
-    let sources = [snapshot.scrollback, snapshot.bytes];
-    let mut remaining_source = sources
-        .iter()
-        .try_fold(0_usize, |total, source| {
-            total.checked_add(source.capacity())
-        })
-        .ok_or(())?;
-    let passthrough = crate::downsample::caps_pass_through(caps);
-    if remaining_source > bootstrap_source_ceiling(peak_budget, caps) {
-        return Err(());
-    }
-    let mut peak_bytes = remaining_source;
-
-    let mut retained_output = 0_usize;
-    let mut payloads = Vec::new();
-    payloads.try_reserve(2).map_err(|_| ())?;
-    for source in sources {
-        if source.is_empty() {
-            remaining_source = remaining_source.checked_sub(source.capacity()).ok_or(())?;
-            continue;
-        }
-        let source_capacity = source.capacity();
-        let (output, output_allocation) = if passthrough {
-            (bytes::Bytes::from(source), source_capacity)
-        } else {
-            let rewritten = crate::downsample::rewrite_bytes_with_caps(&source, caps);
-            let output_allocation = rewritten.capacity();
-            if output_allocation > source_capacity {
-                return Err(());
-            }
-            let peak = retained_output
-                .checked_add(remaining_source)
-                .and_then(|bytes| bytes.checked_add(output_allocation))
-                .ok_or(())?;
-            if peak > peak_budget {
-                return Err(());
-            }
-            peak_bytes = peak_bytes.max(peak);
-            drop(source);
-            (bytes::Bytes::from(rewritten), output_allocation)
-        };
-        remaining_source = remaining_source.checked_sub(source_capacity).ok_or(())?;
-        retained_output = retained_output.checked_add(output_allocation).ok_or(())?;
-        payloads.push(output);
-    }
-    Ok(AdaptedBootstrap {
-        payloads,
-        retained_bytes: retained_output,
-        peak_bytes,
-    })
+    (presentation.adapt_snapshot)(snapshot, caps, peak_budget)
 }
 
 pub(crate) const fn bootstrap_stream_profile(
@@ -127,7 +68,7 @@ pub(crate) const fn bootstrap_stream_profile(
     }
 }
 
-pub(super) const fn initial_bootstrap_id() -> BootstrapId {
+pub(crate) const fn initial_bootstrap_id() -> BootstrapId {
     match BootstrapId::new(1) {
         Some(id) => id,
         None => unreachable!(),
@@ -156,68 +97,22 @@ pub(super) struct SnapshotGate {
     #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
     pub(super) wire_terminal_id: phux_protocol::ids::ResourceId,
     /// Terminal facet, for the native publication fence.
-    pub(super) terminal: phux_terminal::actor::TerminalHandle,
+    #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
+    pub(super) terminal: phux_terminal_api::actor::TerminalHandle,
     pub(super) gate: oneshot::Sender<OutputPumpStart>,
     pub(super) cut: Option<u64>,
     #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
-    pub(super) native_cursor: Option<phux_terminal::native_state::OpaqueHistoryCursor>,
+    pub(super) native_cursor: Option<phux_terminal_api::native_state::OpaqueHistoryCursor>,
 }
 
-/// Connection-wide retention ceiling for an aggregate ATTACH: every pane's
-/// bootstrap is held until the atomic publication, so the aggregate is capped
-/// at one maximal native prefix rather than scaling with the pane count.
-pub(crate) const MAX_STAGED_BOOTSTRAP_BYTES: usize = 64 * 1024 * 1024;
-pub(crate) const MAX_STAGED_BOOTSTRAP_FRAMES: usize = 4_096 + 2;
+// Compatibility re-exports for Terminal bootstrap helpers and their tests.
+#[cfg(test)]
+pub(crate) use crate::runtime::session_attach::staging::MAX_AGGREGATE_BOOTSTRAP_PANES;
+pub(crate) use crate::runtime::session_attach::staging::{
+    MAX_STAGED_BOOTSTRAP_BYTES, MAX_STAGED_BOOTSTRAP_FRAMES,
+};
 
-/// Maximum panes in one aggregate bootstrap: each needs at least
-/// `BEGIN`/`CHUNK`/`READY`, so more cannot fit the frame budget.
-pub(crate) const MAX_AGGREGATE_BOOTSTRAP_PANES: usize = MAX_STAGED_BOOTSTRAP_FRAMES / 3;
-
-#[derive(Debug)]
-pub(super) struct BootstrapStagingBudget {
-    pub(super) max_bytes: usize,
-    pub(super) max_frames: usize,
-    pub(super) staged_bytes: usize,
-    pub(super) staged_frames: usize,
-}
-
-impl BootstrapStagingBudget {
-    pub(super) const fn with_limits(max_bytes: usize, max_frames: usize) -> Self {
-        Self {
-            max_bytes,
-            max_frames,
-            staged_bytes: 0,
-            staged_frames: 0,
-        }
-    }
-
-    pub(super) const fn remaining_bytes(&self) -> usize {
-        self.max_bytes.saturating_sub(self.staged_bytes)
-    }
-
-    pub(super) const fn remaining_frames(&self) -> usize {
-        self.max_frames.saturating_sub(self.staged_frames)
-    }
-
-    pub(super) fn append_accounted(
-        &mut self,
-        staged: &mut Vec<FrameKind>,
-        incoming: &mut Vec<FrameKind>,
-        incoming_bytes: usize,
-    ) -> Result<(), ()> {
-        let incoming_frames = incoming.len();
-        let next_frames = self.staged_frames.checked_add(incoming_frames).ok_or(())?;
-        let next_bytes = self.staged_bytes.checked_add(incoming_bytes).ok_or(())?;
-        if next_frames > self.max_frames || next_bytes > self.max_bytes {
-            return Err(());
-        }
-        staged.try_reserve(incoming_frames).map_err(|_| ())?;
-        staged.append(incoming);
-        self.staged_frames = next_frames;
-        self.staged_bytes = next_bytes;
-        Ok(())
-    }
-}
+pub(crate) use crate::runtime::session_attach::staging::BootstrapStagingBudget;
 
 /// Is `profile` publishing native libghostty checkpoints?
 #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
@@ -239,7 +134,7 @@ pub(crate) enum NativeRequestFailure {
     /// The actor dropped the reply.
     Dropped,
     /// The actor refused the request.
-    Refused(phux_terminal::native_state::NativeStateError),
+    Refused(phux_terminal_api::native_state::NativeStateError),
 }
 
 #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
@@ -255,16 +150,16 @@ impl NativeRequestFailure {
 /// Send the native checkpoint request `make` builds and await its reply.
 #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
 pub(in crate::runtime) async fn request_native_checkpoint(
-    terminal: &phux_terminal::actor::TerminalHandle,
+    terminal: &phux_terminal_api::actor::TerminalHandle,
     make: impl FnOnce(
         oneshot::Sender<
             Result<
-                phux_terminal::actor::NativeBootstrapReply,
-                phux_terminal::native_state::NativeStateError,
+                phux_terminal_api::actor::NativeBootstrapReply,
+                phux_terminal_api::native_state::NativeStateError,
             >,
         >,
-    ) -> phux_terminal::actor::NativeBootstrapRequest,
-) -> Result<phux_terminal::actor::NativeBootstrapReply, NativeRequestFailure> {
+    ) -> phux_terminal_api::actor::NativeBootstrapRequest,
+) -> Result<phux_terminal_api::actor::NativeBootstrapReply, NativeRequestFailure> {
     let (reply_tx, reply_rx) = oneshot::channel();
     terminal
         .native_bootstrap
@@ -280,8 +175,8 @@ pub(in crate::runtime) async fn request_native_checkpoint(
 #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
 pub(crate) async fn publish_native_bootstrap(
     out_tx: &tokio::sync::mpsc::Sender<Outbound>,
-    reply: phux_terminal::actor::NativeBootstrapReply,
-) -> Result<(u64, phux_terminal::native_state::OpaqueHistoryCursor), ()> {
+    reply: phux_terminal_api::actor::NativeBootstrapReply,
+) -> Result<(u64, phux_terminal_api::native_state::OpaqueHistoryCursor), ()> {
     let cut = reply.base_seq;
     let cursor = reply.publication_cursor;
     for frame in reply.frames {
@@ -292,17 +187,17 @@ pub(crate) async fn publish_native_bootstrap(
 
 #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
 pub(crate) async fn activate_native_publication(
-    handle: &phux_terminal::actor::TerminalHandle,
+    handle: &phux_terminal_api::actor::TerminalHandle,
     owner: u64,
     terminal_id: phux_protocol::ids::ResourceId,
     stream_id: StreamId,
     bootstrap_id: BootstrapId,
-    cursor: phux_terminal::native_state::OpaqueHistoryCursor,
-) -> Result<phux_terminal::actor::NativePublicationReply, NativeRequestFailure> {
+    cursor: phux_terminal_api::native_state::OpaqueHistoryCursor,
+) -> Result<phux_terminal_api::actor::NativePublicationReply, NativeRequestFailure> {
     let (reply, publication) = oneshot::channel();
     handle
         .native_publication
-        .send(phux_terminal::actor::NativePublicationRequest {
+        .send(phux_terminal_api::actor::NativePublicationRequest {
             owner,
             terminal_id,
             stream_id,

@@ -20,7 +20,78 @@ use tracing::warn;
 
 use crate::mailbox::Outbound;
 use crate::resource::ResourceOutput;
+use crate::runtime::session_attach::{
+    SessionCapture,
+    staging::{CaptureFailure, SessionStaging},
+};
 use crate::state::{ClientId, SharedState};
+
+/// Capture without allocating an independent attach generation or publishing.
+/// This uses the same cut, framing and lag-recovery pump as `ATTACH_RESOURCE`.
+pub(super) async fn stage_session<A: DocumentApi>(
+    capture: SessionCapture<'_>,
+    staging: &mut SessionStaging,
+    pane: crate::state::AttachSnapshotPane,
+) -> Result<(), CaptureFailure> {
+    let document = pane
+        .handle
+        .document::<A>()
+        .map_err(|error| error.to_string())?;
+    let live = pane.handle.output.subscribe();
+    let cut = snapshot(&document.snapshot).await.ok_or_else(|| {
+        CaptureFailure::Closed(format!("{} closed before its snapshot", A::LABEL))
+    })?;
+    let bytes = cut.document.as_ref().map_or(0, Bytes::len);
+    if bytes > staging.budget.remaining_bytes() {
+        return Err("document exceeds aggregate bootstrap source budget"
+            .to_owned()
+            .into());
+    }
+    if let Some(bytes) = &cut.document {
+        A::validate_bootstrap(bytes).map_err(CaptureFailure::Failed)?;
+    }
+    let frames = staging.collect_frames(bootstrap_frames(
+        &pane.wire_terminal_id,
+        capture.stream_id,
+        capture.bootstrap_id,
+        A::PROFILE,
+        &cut,
+        capture.limits,
+    ))?;
+    staging.append(frames, bytes)?;
+    let (cancel, done, last_seq, prior) = capture.state.with_mut(|s| {
+        s.replace_attach_terminal_pump(capture.client_id, pane.terminal_id, capture.bootstrap_id)
+    });
+    if let Some((_, done, _)) = prior {
+        done.cancelled().await;
+    }
+    last_seq.store(cut.base_seq, Ordering::Release);
+    let pump_done = done.drop_guard();
+    let pump = LivePump {
+        state: capture.state.clone(),
+        client_id: capture.client_id,
+        core: pane.terminal_id,
+        snapshot: document.snapshot.clone(),
+        profile: A::PROFILE,
+        label: A::LABEL,
+        out_tx: capture.out_tx.clone(),
+        terminal_id: pane.wire_terminal_id.clone(),
+        stream_id: capture.stream_id,
+        bootstrap_id: capture.bootstrap_id,
+        limits: capture.limits,
+        cancel,
+        last_seq,
+    };
+    staging.park(
+        &capture,
+        &pane,
+        Box::pin(async move {
+            let _done = pump_done;
+            pump.run(live, cut.base_seq).await;
+        }),
+    );
+    Ok(())
+}
 
 /// Bootstrap a viewer at one cut of the newest document, then live.
 #[allow(

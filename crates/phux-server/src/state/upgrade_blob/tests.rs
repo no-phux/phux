@@ -34,6 +34,7 @@ async fn build_upgrade_blob_captures_tree_and_snapshot() {
             tokio::task::spawn_local(bundle.actor.run());
             let pane_wire = state
                 .register_resource_handle(tid, handle, token)
+                .unwrap()
                 .local_id()
                 .expect("local wire id");
 
@@ -94,7 +95,9 @@ async fn rebuild_from_blob_round_trips_the_tree() {
         state.intern_window_wire(sid);
         let bundle = seeded_terminal(20, 5, b"hello");
         tokio::task::spawn_local(bundle.actor.run());
-        state.register_resource_handle(tid, bundle.handle, bundle.token);
+        state
+            .register_resource_handle(tid, bundle.handle, bundle.token)
+            .unwrap();
 
         // A persistent session with no members survives the round trip.
         let parked = state.seed_empty_session("parked").expect("parked");
@@ -236,7 +239,9 @@ async fn upgrade_twice(user_title: Option<&str>, seed: &[u8]) -> ServerState {
     state.intern_window_wire(sid);
     let bundle = seeded_terminal(20, 5, seed);
     tokio::task::spawn_local(bundle.actor.run());
-    state.register_resource_handle(tid, bundle.handle, bundle.token);
+    state
+        .register_resource_handle(tid, bundle.handle, bundle.token)
+        .unwrap();
 
     let blob = state.build_upgrade_blob(7).await;
     let mut once = ServerState::new();

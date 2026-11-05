@@ -67,7 +67,7 @@ async fn bounded_snapshot_request_omits_unsupported_resident_images() {
                 if image_protocols == ImageProtocolSet::all() {
                     assert!(matches!(
                         result,
-                        Err(crate::grid::SynthesisError::LimitExceeded)
+                        Err(phux_terminal_api::grid::CaptureError::LimitExceeded)
                     ));
                 } else {
                     assert_text_snapshot(&result.expect("text fits independently of images").0);

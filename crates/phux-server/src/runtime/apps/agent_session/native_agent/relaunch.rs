@@ -19,6 +19,12 @@ pub(crate) fn claim_relaunch(
     resource: &ResourceKey,
     expected: Revision,
 ) -> Option<CommandResult> {
+    if let Some(result) = ctx
+        .state
+        .with(|s| replay_native_relaunch(s, operation, resource, expected))
+    {
+        return Some(result);
+    }
     match ctx
         .state
         .with(|s| native_relaunch_spec(s, resource, expected))
@@ -27,6 +33,41 @@ pub(crate) fn claim_relaunch(
         Ok(None) => None,
         Err(result) => Some(result),
     }
+}
+
+/// Native launch records its derived executable recipe in the receipt, while
+/// `RESOURCE_RELAUNCH` carries only the original target and revision. Replay
+/// that exact request before reading the now-newer guardian or binding again.
+fn replay_native_relaunch(
+    s: &ServerState,
+    operation: OperationId,
+    resource: &ResourceKey,
+    expected: Revision,
+) -> Option<CommandResult> {
+    let receipt = s.org().receipt(&ow::core_operation(&operation))?;
+    let phux_core::Op::ResourceRelaunch {
+        resource: original,
+        expected: revision,
+        launch: Some(phux_core::LaunchSpec::Terminal(launch)),
+    } = &receipt.op
+    else {
+        return None;
+    };
+    if !launch
+        .env
+        .iter()
+        .any(|(key, _)| key == NATIVE_HOST_SPEC_ENV)
+    {
+        return None;
+    }
+    Some(
+        if *original == ow::core_resource_key(resource) && *revision == ow::core_revision(expected)
+        {
+            CommandResult::Accepted { operation }
+        } else {
+            CommandResult::Refused(ow::refusal(&Refusal::DuplicateOperation))
+        },
+    )
 }
 
 /// Recognize only the reserved structured recipe, never a command/binary name.

@@ -102,7 +102,7 @@ pub(super) async fn answer_native_attach(
         native
             .reply
             .send(Err(
-                phux_terminal::native_state::NativeStateError::LimitExceeded,
+                phux_terminal_api::native_state::NativeStateError::LimitExceeded,
             ))
             .expect("continuation-cap failure reply");
         return;
@@ -195,7 +195,8 @@ async fn deferred_session_attach_applies_the_declared_role() {
                 80, 24,
             ));
             let wire = state.with_mut(|s| {
-                let _ = s.register_resource_handle(pane, handle, CancellationToken::new());
+                s.register_resource_handle(pane, handle, CancellationToken::new())
+                    .unwrap();
                 s.intern_resource_wire(pane)
             });
             let (out_tx, _out_rx) = tokio::sync::mpsc::channel::<crate::state::Outbound>(
@@ -245,14 +246,14 @@ async fn a_pane_closed_mid_capture_is_published_closed_not_a_failed_attach() {
             )
             .expect("test terminal actor");
             let (live_wire, closed_wire) = state.with_mut(|s| {
-                let _ = s.register_resource_handle(live, bundle.handle.clone(), token.clone());
+                s.register_resource_handle(live, bundle.handle.clone(), token.clone()).unwrap();
                 let closed = s
                     .add_pane_to_session(window)
                     .expect("second pane");
                 let ended = detached_handle(
                     phux_terminal::actor::TerminalHandle::detached_for_test(80, 24),
                 );
-                let _ = s.register_resource_handle(closed, ended, CancellationToken::new());
+                s.register_resource_handle(closed, ended, CancellationToken::new()).unwrap();
                 (s.intern_resource_wire(live), s.intern_resource_wire(closed))
             });
             tokio::task::spawn_local(bundle.actor.run());

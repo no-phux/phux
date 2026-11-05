@@ -1,0 +1,34 @@
+[package]
+name = "phux-terminal-api"
+description = "Engine-independent Terminal operations and composition contract."
+publish = false
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[lints]
+workspace = true
+
+[features]
+default = []
+native-engine = []
+test-support = []
+
+[dependencies]
+phux-protocol.workspace = true
+phux-core.workspace = true
+phux-resource.workspace = true
+phux-agent-session.workspace = true
+phux-agent-rules.workspace = true
+phux-config.workspace = true
+phux-perf.workspace = true
+bytes.workspace = true
+serde.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+tokio-util = { version = "0.7", default-features = false, features = ["rt"] }
+tracing.workspace = true
+rustix = { version = "1.1", default-features = false, features = ["std", "fs"] }

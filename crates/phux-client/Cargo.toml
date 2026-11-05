@@ -59,6 +59,7 @@ sha2 = "0.11"
 
 [dev-dependencies]
 phux-server.workspace = true
+phux-terminal = { workspace = true, features = ["native-engine"] }
 tempfile.workspace = true
 # The scripted QUIC and WebSocket servers in `tests/connection`.
 quinn = { workspace = true }

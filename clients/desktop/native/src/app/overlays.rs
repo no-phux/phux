@@ -71,4 +71,5 @@ pub enum InputSlot {
     HostTarget,
     HostName,
     Project,
+    MirrorTarget,
 }

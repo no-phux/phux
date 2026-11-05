@@ -33,6 +33,7 @@ use crate::settings::TuiSettings;
 /// Hard cap on waiting for the matching aggregate attach barrier.
 const ATTACH_READY_DEADLINE: Duration = Duration::from_secs(3);
 
+mod agents;
 mod completion;
 mod recording;
 
@@ -105,6 +106,8 @@ struct HeadlessSession {
     /// Pane cwd + branch memo so the composited sidebar carries
     /// the same branch lines a live attach would.
     vcs: VcsIndex,
+    /// Shared one-shot request namespace for metadata and explicit agent streams.
+    next_request_id: u32,
 }
 
 impl HeadlessSession {
@@ -128,6 +131,7 @@ impl HeadlessSession {
             agents_share: chrome.agents_share,
             viewport_dims,
             vcs: VcsIndex::default(),
+            next_request_id: 1000,
         }
     }
 
@@ -169,30 +173,9 @@ impl HeadlessSession {
         Ok(())
     }
 
-    /// ADR-0040: one `phux.agent/v1` GET per pane (no SUBSCRIBE), with request
-    /// ids far above the layout GET's so the replies cannot collide.
-    #[allow(
-        clippy::future_not_send,
-        reason = "client-side libghostty Terminal is !Send; ADR-0003 binds us to current-thread"
-    )]
-    async fn request_agent_records(&mut self, conn: &mut Connection) -> Result<(), AttachError> {
-        let mut req_id: u32 = 1000;
-        for id in self.mirror.panes.keys() {
-            self.mirror.agent_meta.pending.insert(req_id, id.clone());
-            conn.send(&FrameKind::GetMetadata {
-                request_id: req_id,
-                scope: Scope::Resource(id.clone()),
-                key: RESOURCE_AGENT_KEY.to_owned(),
-            })
-            .await?;
-            req_id = req_id.wrapping_add(1);
-        }
-        Ok(())
-    }
-
-    /// Whether every one-shot `phux.agent/v1` reply has landed.
+    /// Whether every metadata and explicit agent-stream reply has landed.
     fn agent_metadata_complete(&self) -> bool {
-        self.mirror.agent_meta.pending.is_empty()
+        self.mirror.agent_meta.pending.is_empty() && self.mirror.pending_resource_ops.is_empty()
     }
 
     /// Seed the window/tab strip exactly as the live loop does before its
@@ -388,6 +371,9 @@ async fn drain_until_settled(
             *attach_id = restart_attach(conn, &session.mirror.session_name, completion).await?;
             continue;
         }
+        session
+            .request_agent_streams(conn, &outcome.attach_panes)
+            .await?;
         if let Some(request) = outcome.history_request {
             request_history_page(conn, completion, request).await?;
         }
@@ -439,8 +425,8 @@ pub async fn run_headless_rendered(
     let mut session =
         HeadlessSession::new(engine_kernel, headless_chrome(viewport_dims), viewport_dims);
 
-    // Replay ATTACHED once. The composite never subscribes, so its only
-    // layout input is the GET answer it asked for.
+    // Replay ATTACHED once. The composite does not watch layout changes;
+    // its only layout input is the GET answer it asked for.
     let outcome = session.ingest(attached, None, None)?;
     session.vcs.apply_snapshot(outcome.pane_cwds);
     let focused_session = outcome.sessions.map(|(_, focused)| focused);

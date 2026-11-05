@@ -14,6 +14,9 @@ const CATALOG: &str = "\
     theme | Select Theme… | General |  | Preview themes as you move through them; Enter keeps one, Escape restores. | colors colours appearance dark light
     new | New Terminal | Terminal | cmd+t | Open a new terminal in its own tab. | shell
     native-agent | New Agent… | Terminal |  | Start a native agent in the focused folder, on this host. | agent acp opencode remote headless login
+    mirror-page | Mirror Browser Page… | Panes |  | Start a read-only page mirror from an existing local CDP browser. | browser page cdp json png resource
+    mirror-tree | Mirror Accessibility Tree… | Panes |  | Start a read-only accessibility mirror of a local macOS app. | accessibility app tree json resource
+    mirror-surface | Mirror Window or Display… | Panes |  | Start a read-only pixel mirror of a local macOS window or display. | surface window display png resource
     new-session | New Session… | Terminal | cmd+shift+n | Create a named session. |
     switch-session | Switch Session… | Terminal | cmd+shift+s | Filter the sessions on every machine; Enter switches this window, or creates a session with the name you typed. | session switch create filter
     rename-session | Rename Session… | Terminal |  | Change the current session's name. |
@@ -30,9 +33,9 @@ const CATALOG: &str = "\
     split-down | Split Down | Panes | cmd+shift+d | Open a terminal below the focused pane. | horizontal
     split-left | Split Left | Panes |  | Open a terminal to the left of the focused pane. |
     split-up | Split Up | Panes |  | Open a terminal above the focused pane. |
-    view | Mirror Pane | Panes | cmd+alt+d | Show the focused terminal in another pane. | duplicate open another view
-    close | Close Pane | Panes | cmd+w | End this pane's process and remove all its views. |
-    close-tab | Close Tab | Tabs | cmd+shift+w | End every process in this tab and remove their views. |
+    view | Mirror Pane | Panes | cmd+alt+d | Show the focused resource in another pane. | duplicate open another view
+    close | Close Pane | Panes | cmd+w | Remove this document view, or end this terminal's process and all its views. |
+    close-tab | Close Tab | Tabs | cmd+shift+w | Remove document views and end every terminal process in this tab. |
     zoom | Zoom Pane | Panes | cmd+shift+enter | Expand the focused pane or restore its splits. |
     equalize | Equalize Splits | Panes | cmd+ctrl+= | Give the active tab's panes equal space. | balance
     pane-left | Focus Pane Left | Panes | cmd+alt+left | Focus the neighboring pane on the left. |

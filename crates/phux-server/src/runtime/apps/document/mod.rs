@@ -15,7 +15,9 @@ use phux_tree::{
 };
 use tokio::sync::oneshot;
 
-use super::{ResourceApp, ResourceFrame, ResourceSpawn, StreamBootstrap};
+use super::{
+    FrameAdmission, ResourceApp, ResourceFrame, ResourceLaunch, ResourceSpawn, StreamBootstrap,
+};
 use crate::resource::{ResourceHandle, ResourceKind, WrongResourceKind};
 use crate::runtime::commands::{AttachResourceFailure, CommandContext};
 use crate::runtime::connections::dispatch::FrameFlow;
@@ -30,6 +32,8 @@ pub(crate) use spawn::spawn_document;
 
 /// What the host needs from a document kind beyond its engine.
 pub(crate) trait DocumentApi: DocumentKind {
+    /// Validate a captured payload without constructing a second document.
+    fn validate_bootstrap(bytes: &[u8]) -> Result<(), String>;
     /// The stream profile a viewer's bootstrap names.
     const PROFILE: BootstrapStreamProfile;
     /// The kind on the wire.
@@ -46,6 +50,12 @@ pub(crate) trait DocumentApi: DocumentKind {
 }
 
 impl DocumentApi for TreeDocument {
+    fn validate_bootstrap(bytes: &[u8]) -> Result<(), String> {
+        serde_json::from_slice::<serde::de::IgnoredAny>(bytes)
+            .map(|_| ())
+            .map_err(|error| format!("the document is not JSON: {error}"))
+    }
+
     const PROFILE: BootstrapStreamProfile = BootstrapStreamProfile::AccessibilityTreeJsonV1;
     const WIRE_KIND: phux_protocol::ids::ResourceKind =
         phux_protocol::ids::ResourceKind::AccessibilityTree;
@@ -68,6 +78,10 @@ impl DocumentApi for TreeDocument {
 }
 
 impl DocumentApi for SurfaceDocument {
+    fn validate_bootstrap(bytes: &[u8]) -> Result<(), String> {
+        phux_tree::png_size(bytes).map(|_| ())
+    }
+
     const PROFILE: BootstrapStreamProfile = BootstrapStreamProfile::PixelSurfacePngV1;
     const WIRE_KIND: phux_protocol::ids::ResourceKind =
         phux_protocol::ids::ResourceKind::PixelSurface;
@@ -99,6 +113,26 @@ pub(crate) static TREE_APP: DocumentApp<TreeDocument> = DocumentApp(std::marker:
 pub(crate) static SURFACE_APP: DocumentApp<SurfaceDocument> = DocumentApp(std::marker::PhantomData);
 
 impl<A: DocumentApi> ResourceApp for DocumentApp<A> {
+    fn supports_organization_launch(&self) -> bool {
+        false
+    }
+
+    fn launch(&self, _launch: ResourceLaunch<'_>) -> Result<(), String> {
+        Err(format!(
+            "a {} projection must be opened by its producer",
+            A::LABEL
+        ))
+    }
+
+    fn stage_session<'a>(
+        &'a self,
+        capture: super::super::session_attach::SessionCapture<'a>,
+        staging: &'a mut super::super::session_attach::staging::SessionStaging,
+        pane: crate::state::AttachSnapshotPane,
+    ) -> LocalBoxFuture<'a, Result<(), super::super::session_attach::staging::CaptureFailure>> {
+        attach::stage_session::<A>(capture, staging, pane).boxed_local()
+    }
+
     fn defers_stream_bootstrap(&self) -> bool {
         false
     }
@@ -149,7 +183,8 @@ impl<A: DocumentApi> ResourceApp for DocumentApp<A> {
         _resource: &ResourceKey,
         _expected: Revision,
     ) -> Option<CommandResult> {
-        // A document is never relaunched: its producer spawns a fresh one.
+        // The producer spawns a fresh document. Ordinary relaunch falls
+        // through to the host's app-support refusal before any commit.
         None
     }
 
@@ -205,6 +240,11 @@ impl<A: DocumentApi> ResourceApp for DocumentApp<A> {
             }
         }
         .boxed_local()
+    }
+
+    fn frame_admission(&self, _frame: &FrameKind) -> FrameAdmission {
+        // Preserve the document app's unconditional wrong-kind refusals.
+        FrameAdmission::Unrestricted
     }
 
     /// A document serves no stream or input frame: it has no history, no

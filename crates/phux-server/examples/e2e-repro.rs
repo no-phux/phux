@@ -17,8 +17,8 @@
 use std::path::Path;
 
 use phux_protocol::wire::frame::ViewportInfo;
+use phux_server::LaunchCommand as CommandBuilder;
 use phux_server_testkit::builder::{DEFAULT_IDLE_MS, E2eBuilder};
-use portable_pty::CommandBuilder;
 
 /// Ten in-place repaints of an 80x40 grid with one 256-color SGR per cell
 /// (the worst-case colored shape), then `stty size` in a loop so the resize

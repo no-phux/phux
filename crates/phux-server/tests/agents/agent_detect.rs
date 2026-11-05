@@ -11,7 +11,7 @@ use phux_protocol::wire::frame::{
     Command, CommandResult, FrameKind, RESOURCE_AGENT_KEY, RESOURCE_PANE_OCCUPANT_KEY,
     ReportedAgentState, Scope,
 };
-use portable_pty::CommandBuilder;
+use phux_server::LaunchCommand;
 use serde_json::Value;
 use tempfile::TempDir;
 use tokio::net::UnixStream;
@@ -137,7 +137,7 @@ struct Pane {
 
 impl Pane {
     /// Seed session `demo` with `cmd`, attach, and subscribe to `key`.
-    async fn start(tmp: &TempDir, cmd: CommandBuilder, key: &str) -> Self {
+    async fn start(tmp: &TempDir, cmd: LaunchCommand, key: &str) -> Self {
         let socket_path = tmp.path().join("phux.sock");
         let server = spawn_server_with_seed_cmd(socket_path.clone(), "demo", cmd);
         let mut stream = wait_for_socket(&socket_path, SOCKET_CONNECT_DEADLINE).await;
@@ -160,7 +160,7 @@ impl Pane {
     /// As [`Self::start`] for an agent script, subscribed to the agent key
     /// and past the paint barrier.
     async fn agent(tmp: &TempDir, agent: &Path) -> Self {
-        let pane = Self::start(tmp, CommandBuilder::new(agent), RESOURCE_AGENT_KEY).await;
+        let pane = Self::start(tmp, LaunchCommand::new(agent), RESOURCE_AGENT_KEY).await;
         let painted = tmp.path().join("painted");
         let end = tokio::time::Instant::now() + PANE_PAINT_DEADLINE;
         while !painted.exists() {
@@ -342,7 +342,7 @@ fn a_plain_shell_pane_never_gets_an_agent_record() {
     shorten_detector_timers();
     run_local(async {
         let tmp = TempDir::new().unwrap();
-        let mut cmd = CommandBuilder::new("/bin/sh");
+        let mut cmd = LaunchCommand::new("/bin/sh");
         cmd.args([
             "-c",
             "echo 'Do you want to proceed?'; echo '1. Yes'; sleep 20",

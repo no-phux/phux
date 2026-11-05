@@ -262,7 +262,8 @@ fn reap_exited_pane(
     let cascaded = cascade_children(s, pane, &wire_terminal_id);
     // Every subscriber, including `ATTACH_RESOURCE`-only ones (L1 §3.1).
     let targets: Vec<mpsc::Sender<Outbound>> = s.terminal_fanout_targets(pane);
-    let drains = s.begin_terminal_output_drain(pane, wire_terminal_id.clone());
+    let mut drains = s.begin_terminal_output_drain(pane, wire_terminal_id.clone());
+    drains.extend(s.attach_publication_fences(pane));
     // ADR-0123: `pane_closed` is journaled in the lock that removes the pane.
     let attribution = s.take_close_attribution(pane);
     journal_pane_closed(
@@ -319,6 +320,7 @@ fn cascade_children(
         };
         let wire_child_id = s.intern_resource_wire(child);
         let child_targets = s.terminal_fanout_targets(child);
+        let publication_fences = s.attach_publication_fences(child);
         let child_exit = s.retained_outcome(child).unwrap_or(ExitOutcome::UNKNOWN);
         let attribution = s.take_close_attribution(child);
         journal_pane_closed(
@@ -333,6 +335,7 @@ fn cascade_children(
         cascaded.push(CascadedClose {
             wire_terminal_id: wire_child_id,
             targets: child_targets,
+            publication_fences,
             reason: child_reason,
             exit: child_exit,
         });
@@ -367,11 +370,12 @@ async fn announce_close(
 
     // Children first: the order the tree came apart in.
     for child in &cascaded {
-        broadcast_resource_closed(
+        broadcast_terminal_closed_after_drain(
             &child.wire_terminal_id,
             &child.targets,
             child.exit,
             child.reason,
+            &child.publication_fences,
         )
         .await;
     }
@@ -436,23 +440,15 @@ struct ReapAndNotify {
 struct CascadedClose {
     wire_terminal_id: WireResourceId,
     targets: Vec<mpsc::Sender<Outbound>>,
+    publication_fences: Vec<(mpsc::Sender<Outbound>, Vec<CancellationToken>)>,
     reason: CloseReason,
     /// Unknown unless the child is a retained exited pane.
     exit: ExitOutcome,
 }
 
-/// Send `RESOURCE_CLOSED` to every mailbox in `targets`, gathered by the
-/// caller under the reap lock. Best-effort: closed mailboxes are skipped.
-pub(crate) async fn broadcast_resource_closed(
-    wire_terminal_id: &WireResourceId,
-    targets: &[mpsc::Sender<Outbound>],
-    exit: ExitOutcome,
-    reason: phux_protocol::wire::frame::CloseReason,
-) {
-    broadcast_terminal_closed_after_drain(wire_terminal_id, targets, exit, reason, &[]).await;
-}
-
-async fn broadcast_terminal_closed_after_drain(
+/// Send `RESOURCE_CLOSED` after each target's resource drains and any aggregate
+/// publication. Captured under the reap lock; closed mailboxes are skipped.
+pub(crate) async fn broadcast_terminal_closed_after_drain(
     wire_terminal_id: &WireResourceId,
     targets: &[mpsc::Sender<Outbound>],
     exit: ExitOutcome,

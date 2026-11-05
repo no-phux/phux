@@ -47,12 +47,12 @@ use phux_protocol::input::paste::{PasteEvent, PasteTrust};
 use phux_protocol::wire::frame::{
     Command, CommandResult, FrameKind, InputMode, SpawnResource, SpawnResult,
 };
+use phux_server::LaunchCommand;
 use phux_server::ServerError;
 use phux_server_testkit::{
     SOCKET_CONNECT_DEADLINE, Spawn, attach_by_name, command, join_after_shutdown, recv_until,
     run_local, seed_pty, send_frame, spawn_resource, spawn_server_with, wait_for_socket,
 };
-use portable_pty::CommandBuilder;
 use tempfile::TempDir;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::net::{UnixListener, UnixStream};
@@ -808,7 +808,7 @@ fn grid_text(client: *mut PhuxClient, terminal: u32) -> String {
 }
 
 fn start_server(socket: &Path) -> (oneshot::Sender<()>, JoinHandle<Result<(), ServerError>>) {
-    let seed = CommandBuilder::new("/bin/cat");
+    let seed = LaunchCommand::new("/bin/cat");
     spawn_server_with(socket.to_path_buf(), Some(SESSION), move |config| {
         config.agent_log_bytes = RING_BYTES;
         seed_pty(config, seed);

@@ -34,8 +34,13 @@ pub(super) async fn dispatch_local(
     // A substrate command addressed to a resource's state goes to the app
     // serving that resource's kind.
     if let Command::PublishResourceState { terminal_id, .. } = &command {
-        let app = crate::runtime::apps::app_serving(state, terminal_id);
-        return app.command(ctx, command, claim).await;
+        return match crate::runtime::apps::app_serving(state, terminal_id) {
+            Some(app) => app.command(ctx, command, claim).await,
+            None => CommandResult::Error {
+                code: ErrorCode::InvalidCommand,
+                message: "command not supported by this server".to_owned(),
+            },
+        };
     }
 
     match command {
@@ -60,7 +65,7 @@ pub(super) async fn dispatch_local(
         }
         Command::GetPerf { reset } => handle_get_perf(state, reset),
         Command::DescribeApi => super::super::api::describe(state),
-        Command::PerfControl { op } => super::super::perf_control::handle(op).await,
+        Command::PerfControl { op } => super::super::perf_control::handle(state, op).await,
         Command::KillResources { ids, operation_id } => {
             handle_kill_terminals(state, client_id, &ids, operation_id).await
         }

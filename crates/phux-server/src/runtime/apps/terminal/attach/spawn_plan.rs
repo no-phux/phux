@@ -47,7 +47,7 @@ pub(super) fn log_spawn_request(
 /// What one `SPAWN_RESOURCE` asks the PTY layer to build.
 pub(super) struct PaneSpawnPlan {
     /// The child to exec, fully configured from the wire frame.
-    pub(super) builder: phux_terminal::pty::CommandBuilder,
+    pub(super) builder: phux_terminal_api::launch::LaunchCommand,
     /// Scrollback rows the new pane retains.
     pub(super) scrollback: phux_config::ScrollbackLimits,
     /// Host palette the pane starts with, when the spawner advertised one.
@@ -159,10 +159,10 @@ pub(super) fn validate_local_spawn(
 pub(super) fn spawn_argv_builder(
     state: &SharedState,
     command: Option<Vec<String>>,
-) -> phux_terminal::pty::CommandBuilder {
+) -> phux_terminal_api::launch::LaunchCommand {
     crate::runtime::apps::terminal::launch::argv_command(command).unwrap_or_else(|| {
         let (shell, login_shell) = state.with(|s| (s.shell().to_owned(), s.login_shell()));
-        phux_terminal::actor::default_shell_command(&shell, login_shell)
+        phux_terminal_api::launch::default_shell_command(&shell, login_shell)
     })
 }
 
@@ -176,12 +176,12 @@ pub(super) async fn build_spawn_command(
     cwd: Option<String>,
     env: Option<Vec<(String, String)>>,
     term: Option<&str>,
-) -> phux_terminal::pty::CommandBuilder {
+) -> phux_terminal_api::launch::LaunchCommand {
     let mut builder = spawn_argv_builder(state, command);
     let default_term = state.with(|s| s.term().to_owned());
-    phux_terminal::actor::apply_term(&mut builder, &default_term);
+    phux_terminal_api::launch::apply_term(&mut builder, &default_term);
     if let Some(t) = term {
-        phux_terminal::actor::apply_term(&mut builder, t);
+        phux_terminal_api::launch::apply_term(&mut builder, t);
     }
     if let Some(path) = cwd {
         builder.cwd(path);

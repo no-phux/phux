@@ -11,7 +11,7 @@ use tokio::sync::watch;
 use crate::hooks::HookEvent;
 use crate::state::{ServerState, SharedState};
 use phux_agent_session::agent_record::AgentRecordJson;
-use phux_terminal::actor::program_status::Record;
+use phux_terminal_api::agent_detect::ProgramStatusRecord as Record;
 
 pub(in crate::runtime) fn spawn_drain(
     state: SharedState,

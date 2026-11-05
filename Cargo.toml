@@ -55,6 +55,7 @@ phux-tree = { path = "crates/phux-tree" }
 phux-server = { path = "crates/phux-server" }
 phux-resource = { path = "crates/phux-resource" }
 phux-terminal = { path = "crates/phux-terminal", default-features = false }
+phux-terminal-api = { path = "crates/phux-terminal-api" }
 phux-client = { path = "crates/phux-client" }
 phux-tui = { path = "crates/phux-tui" }
 phux-client-core = { path = "crates/phux-client-core" }

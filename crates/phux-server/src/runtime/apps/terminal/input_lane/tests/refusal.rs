@@ -76,14 +76,16 @@ async fn apply_input_reports_mailbox_full_without_handoff() {
     let facet = bundle.handle.terminal().expect("facet");
     for _ in 0..DEFAULT_INPUT_MAILBOX {
         facet
-            .encoded_input
-            .try_send(EncodedInputRequest::legacy(vec![b'x']))
+            .ordered_input
+            .submit(EncodedInputRequest::legacy(vec![b'x']))
             .expect("fill mailbox");
     }
     let state = SharedState::new();
     let (wire, client) = state.with_mut(|s| {
         let pane = s.seed_session("s").1;
-        let wire = s.register_resource_handle(pane, bundle.handle.clone(), bundle.token.clone());
+        let wire = s
+            .register_resource_handle(pane, bundle.handle.clone(), bundle.token.clone())
+            .unwrap();
         (wire, s.new_client_id())
     });
     let lane = spawn_input_lane(state.clone()).expect("spawn lane");
@@ -119,6 +121,7 @@ async fn apply_input_reports_not_written_when_no_writer_can_receive() {
                     let wire = state.with_mut(|s| {
                         let pane = s.seed_session("s").1;
                         s.register_resource_handle(pane, handle, token.clone())
+                            .unwrap()
                     });
                     (token, wire)
                 };

@@ -144,8 +144,12 @@ pub(super) async fn spawn_agent_session(spawn: ResourceSpawn<'_>) {
         let core = s
             .create_agent_session(core_parent, &facet, &actor)
             .map_err(|_| SpawnError::ParentNotFound)?;
-        let _ = s.spawn_resource_actor(core, bundle.handle.clone(), token, bundle.actor.run());
-        let wire = s.intern_resource_wire(core);
+        let wire = s
+            .spawn_resource_actor(core, bundle.handle.clone(), token, bundle.actor.run())
+            .map_err(|error| {
+                s.reap_resource(core);
+                SpawnError::SpawnFailed(error.to_string())
+            })?;
         // Journaled before the exit watcher exists (ADR-0123), and fanned out
         // to the parent's subscribers too: nobody can be subscribed to a
         // resource they are hearing about for the first time.

@@ -168,7 +168,21 @@ impl super::SessionLoop {
         };
         let sidebar = self.sidebar();
         self.size_workspace_panes(conn, sidebar).await?;
-        self.subscribe_bootstrap(conn, subscribe_layout).await
+        self.subscribe_bootstrap(conn, subscribe_layout).await?;
+        // Initial ATTACHED bypasses fold_frame_outcome. Its declared agents
+        // still need explicit streams, but only after the first close drain.
+        let agents = self
+            .mirror
+            .engine_kernel
+            .agent_sessions()
+            .filter(|agent| {
+                agent
+                    .parent
+                    .is_some_and(|parent| self.mirror.engine_kernel.active_attach_contains(parent))
+            })
+            .map(|agent| agent.terminal_id.clone())
+            .collect::<Vec<_>>();
+        self.attach_discovered_panes(conn, &agents).await
     }
 
     /// Install the ADR-0053 replay journal the CLI's reconnect loop owns.

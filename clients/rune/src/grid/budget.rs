@@ -365,7 +365,7 @@ fn window_phase() {
     ));
     desk.shown = Some(Shown {
         terminal: replica.terminal.clone(),
-        view: replica.views[0],
+        view: Some(replica.views[0]),
     });
     let mut runtime = Runtime::new(desk, crate::ui::view, SIZE, Env::new(true, SCALE));
     runtime.frame(0.0);
@@ -397,7 +397,7 @@ fn non_typing_keys_follow_runtime_input_and_stop_at_settings() {
     ));
     desk.shown = Some(Shown {
         terminal: replica.terminal.clone(),
-        view: replica.views[0],
+        view: Some(replica.views[0]),
     });
     let mut runtime = Runtime::new(desk, crate::ui::view, SIZE, Env::new(true, SCALE));
     runtime.on_key = Some(Desk::key);

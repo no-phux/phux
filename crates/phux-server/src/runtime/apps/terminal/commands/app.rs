@@ -8,11 +8,13 @@ use futures_util::FutureExt as _;
 use futures_util::future::LocalBoxFuture;
 use phux_protocol::ids::{OperationId, ResourceKey, Revision};
 use phux_protocol::wire::frame::SpawnError;
-use phux_terminal::actor::TerminalResource as _;
+use phux_terminal_api::actor::TerminalResource as _;
 
 use super::*;
 use crate::resource::ResourceKind;
-use crate::runtime::apps::{ResourceApp, ResourceFrame, ResourceSpawn, StreamBootstrap};
+use crate::runtime::apps::{
+    FrameAdmission, ResourceApp, ResourceFrame, ResourceLaunch, ResourceSpawn, StreamBootstrap,
+};
 use crate::runtime::connections::dispatch::FrameFlow;
 use crate::runtime::operation_dedupe::OperationClaim;
 
@@ -25,6 +27,24 @@ pub(crate) struct TerminalApp;
 pub(crate) const NO_TERMINAL_PROFILE: &str = "this connection offered no Terminal bootstrap profile at HELLO, so it cannot consume a Terminal stream";
 
 impl ResourceApp for TerminalApp {
+    fn supports_organization_launch(&self) -> bool {
+        true
+    }
+
+    fn launch(&self, launch: ResourceLaunch<'_>) -> Result<(), String> {
+        super::super::launch::execute(launch)
+    }
+
+    fn stage_session<'a>(
+        &'a self,
+        capture: crate::runtime::session_attach::SessionCapture<'a>,
+        staging: &'a mut crate::runtime::session_attach::staging::SessionStaging,
+        pane: crate::state::AttachSnapshotPane,
+    ) -> LocalBoxFuture<'a, Result<(), crate::runtime::session_attach::staging::CaptureFailure>>
+    {
+        super::super::attach::stage_session(capture, staging, pane).boxed_local()
+    }
+
     fn defers_stream_bootstrap(&self) -> bool {
         true
     }
@@ -38,7 +58,7 @@ impl ResourceApp for TerminalApp {
     }
 
     fn metrics(&self) -> &'static [phux_perf::Metric] {
-        phux_terminal::perf::TABLE
+        &[] // Engine metrics are supplied explicitly by the runtime composition.
     }
 
     fn release_consumer(&self, handle: &ResourceHandle, client: ClientId) {
@@ -67,6 +87,17 @@ impl ResourceApp for TerminalApp {
         stream: StreamBootstrap<'a>,
     ) -> LocalBoxFuture<'a, Result<(), AttachResourceFailure>> {
         bootstrap_stream(stream).boxed_local()
+    }
+
+    fn frame_admission(&self, frame: &FrameKind) -> FrameAdmission {
+        match frame {
+            FrameKind::InputKey { .. }
+            | FrameKind::InputMouse { .. }
+            | FrameKind::InputFocus { .. }
+            | FrameKind::InputPaste { .. } => FrameAdmission::AttachedInput,
+            FrameKind::FrameAck { .. } => FrameAdmission::Subscription,
+            _ => FrameAdmission::Unrestricted,
+        }
     }
 
     fn frame<'a>(
@@ -120,7 +151,7 @@ impl ResourceApp for TerminalApp {
 
 /// The Terminal facet of a handle `app_for` routed here. A miss means the
 /// handle's kind and facet disagree, which leaks a consumer: say so.
-fn routed_terminal(handle: &ResourceHandle) -> Option<&phux_terminal::actor::TerminalHandle> {
+fn routed_terminal(handle: &ResourceHandle) -> Option<&phux_terminal_api::actor::TerminalHandle> {
     handle
         .terminal()
         .inspect_err(|error| tracing::error!(%error, "consumer teardown skipped"))
@@ -136,11 +167,11 @@ fn release_terminal_consumer(handle: &ResourceHandle, client_id: ClientId) {
     #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
     let _ = terminal
         .native_release
-        .try_send(phux_terminal::actor::NativeReleaseRequest { owner: client_id.0 });
+        .try_send(phux_terminal_api::actor::NativeReleaseRequest { owner: client_id.0 });
     let (reply_tx, _reply_rx) = oneshot::channel();
     match terminal
         .consumer_detach
-        .try_send(phux_terminal::actor::ConsumerDetachRequest {
+        .try_send(phux_terminal_api::actor::ConsumerDetachRequest {
             client_id: crate::runtime::wire_client(client_id),
             reply: reply_tx,
         }) {
@@ -169,7 +200,7 @@ async fn fence_terminal_consumer(handle: &ResourceHandle, client_id: ClientId) {
     let (reply_tx, reply_rx) = oneshot::channel();
     let _ = terminal
         .consumer_detach
-        .send(phux_terminal::actor::ConsumerDetachRequest {
+        .send(phux_terminal_api::actor::ConsumerDetachRequest {
             client_id: crate::runtime::wire_client(client_id),
             reply: reply_tx,
         })

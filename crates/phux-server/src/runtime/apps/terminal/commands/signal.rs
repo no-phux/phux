@@ -5,7 +5,7 @@
 )]
 
 use super::*;
-use phux_terminal::actor::TerminalResource as _;
+use phux_terminal_api::actor::TerminalResource as _;
 
 /// Handle `SIGNAL_TERMINAL` (ADR-0033): signal the pane's process group via
 /// its actor, leaving the pane addressable.

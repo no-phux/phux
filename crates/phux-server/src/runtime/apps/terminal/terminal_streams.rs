@@ -13,7 +13,7 @@ use crate::transport::quic::{
 use phux_dial::window::SendWindow;
 use phux_protocol::ids::{ResourceId as WireResourceId, StreamId};
 use phux_protocol::wire::frame::{DetachReason, ErrorCode, FrameKind};
-use phux_terminal::TerminalInput;
+use phux_terminal_api::TerminalInput;
 use tokio::task::JoinSet;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, warn};
@@ -332,32 +332,23 @@ fn try_inline_key(
     if !phux_perf::echo_hop::fast_path_enabled() {
         return false;
     }
-    let TerminalInput::Key(event) = input else {
+    if !matches!(input, TerminalInput::Key(_)) {
         return false;
-    };
-    let Some(prepared) = crate::runtime::with_attached_input_destination(
+    }
+    let result = crate::runtime::with_attached_input_destination(
         state,
         client_id,
         terminal_id,
         "INPUT_KEY",
-        |destination| {
-            let options = destination.handle.input_snapshot.borrow().key;
-            let text = phux_terminal::input::key::legacy_printable(event, options)?;
-            let fast = destination.handle.fast_pty.as_ref()?.upgrade()?;
-            Some((fast, text.as_bytes().to_vec()))
-        },
-    ) else {
-        return false;
-    };
-    let Some((fast, bytes)) = prepared else {
-        return false;
-    };
-    match fast.try_direct(&bytes) {
-        phux_terminal::actor::DirectWrite::Wrote | phux_terminal::actor::DirectWrite::Handled => {
-            true
-        }
-        phux_terminal::actor::DirectWrite::Busy => false,
-    }
+        |destination| destination.handle.ordered_input.try_inline(input),
+    );
+    matches!(
+        result,
+        Some(
+            phux_terminal_api::input::DirectWrite::Wrote
+                | phux_terminal_api::input::DirectWrite::Handled
+        )
+    )
 }
 
 /// Route one decoded `INPUT_*` event: a local pane id goes to the input lane
@@ -370,7 +361,7 @@ pub(in crate::runtime) async fn route_client_input(
     client_id: ClientId,
     terminal_id: WireResourceId,
     input: TerminalInput,
-    credit: Option<phux_terminal::actor::InputCredit>,
+    credit: Option<phux_terminal_api::actor::InputCredit>,
 ) {
     phux_perf::echo_hop::record("server_recv");
     if try_inline_key(state, client_id, &terminal_id, &input) {

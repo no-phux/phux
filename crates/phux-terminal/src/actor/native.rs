@@ -86,9 +86,9 @@ impl TerminalActor {
         let chunk_bytes = match usize::try_from(limits.max_chunk_bytes()) {
             Ok(size) if size != 0 => size.min(req.max_bytes),
             _ => {
-                let _ = req
-                    .reply
-                    .send(Err(crate::native_state::NativeStateError::LimitExceeded));
+                let _ = req.reply.send(Err(
+                    crate::native_state::NativeStateError::LimitExceeded.into()
+                ));
                 return;
             }
         };
@@ -96,24 +96,24 @@ impl TerminalActor {
             .max_frames
             .checked_sub(crate::native_state::NATIVE_BOOTSTRAP_FRAMING_FRAMES)
         else {
-            let _ = req
-                .reply
-                .send(Err(crate::native_state::NativeStateError::LimitExceeded));
+            let _ = req.reply.send(Err(
+                crate::native_state::NativeStateError::LimitExceeded.into()
+            ));
             return;
         };
         let Some(capture_bytes) = req
             .max_bytes
             .checked_sub(phux_protocol::wire::frame::MAX_HISTORY_CURSOR_BYTES)
         else {
-            let _ = req
-                .reply
-                .send(Err(crate::native_state::NativeStateError::LimitExceeded));
+            let _ = req.reply.send(Err(
+                crate::native_state::NativeStateError::LimitExceeded.into()
+            ));
             return;
         };
         if max_chunks == 0 || capture_bytes == 0 {
-            let _ = req
-                .reply
-                .send(Err(crate::native_state::NativeStateError::LimitExceeded));
+            let _ = req.reply.send(Err(
+                crate::native_state::NativeStateError::LimitExceeded.into()
+            ));
             return;
         }
         let capture = {
@@ -123,7 +123,7 @@ impl TerminalActor {
             }) {
                 Ok(capture) => capture,
                 Err(error) => {
-                    let _ = req.reply.send(Err(error));
+                    let _ = req.reply.send(Err(error.into()));
                     return;
                 }
             }
@@ -137,7 +137,7 @@ impl TerminalActor {
                 if let CanonicalTerminal::Native(manager) = &mut *self.terminal.borrow_mut() {
                     manager.abort_generation_capture(capture);
                 }
-                let _ = req.reply.send(Err(error));
+                let _ = req.reply.send(Err(error.into()));
                 return;
             }
         };
@@ -148,7 +148,7 @@ impl TerminalActor {
                 if let CanonicalTerminal::Native(manager) = &mut *self.terminal.borrow_mut() {
                     manager.abort_generation_capture(capture);
                 }
-                let _ = req.reply.send(Err(error));
+                let _ = req.reply.send(Err(error.into()));
                 return;
             }
         };
@@ -298,7 +298,7 @@ impl TerminalActor {
             Err(error) => {
                 self.apply_native_replay(&pending.replay);
                 for waiter in pending.waiters {
-                    let _ = waiter.reply.send(Err(error));
+                    let _ = waiter.reply.send(Err(error.into()));
                 }
                 self.start_next_native_bootstrap();
                 return;

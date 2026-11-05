@@ -315,18 +315,26 @@ pub fn synthesize(terminal: &GhosttyTerminal<'_, '_>) -> Result<SnapshotBytes, S
     SnapshotSynthesizer::new()?.synthesize(terminal)
 }
 
-/// Result of one snapshot synthesis: the dimensions and the VT byte body.
-#[derive(Debug, Clone)]
-pub struct SnapshotBytes {
-    /// Grid width in cells at the moment of synthesis.
-    pub cols: u16,
-    /// Grid height in cells at the moment of synthesis.
-    pub rows: u16,
-    /// VT byte sequence; opaque, mosh-style, fed to the client's `Terminal`.
-    pub bytes: Vec<u8>,
-    /// Scrollback-priming VT bytes the client applies before `bytes`; empty
-    /// when no scrollback was requested or none is retained.
-    pub scrollback: Vec<u8>,
+pub use phux_terminal_api::grid::SnapshotBytes;
+
+impl From<SynthesisError> for phux_terminal_api::grid::CaptureError {
+    fn from(error: SynthesisError) -> Self {
+        match error {
+            SynthesisError::LimitExceeded => Self::LimitExceeded,
+            SynthesisError::OutOfMemory => Self::OutOfMemory,
+            SynthesisError::TerminalUnavailable => Self::TerminalUnavailable,
+            SynthesisError::RenderBudgetExceeded { required, budget } => {
+                Self::RenderBudgetExceeded { required, budget }
+            }
+            other => Self::Engine(other.to_string()),
+        }
+    }
+}
+
+impl From<SynthesisError> for phux_terminal_api::actor::ConsumerAttachError {
+    fn from(error: SynthesisError) -> Self {
+        Self::Synth(error.into())
+    }
 }
 
 /// The active SGR pen: style plus resolved fg/bg. Colors are part of the key

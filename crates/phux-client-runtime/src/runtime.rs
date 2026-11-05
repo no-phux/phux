@@ -500,13 +500,12 @@ impl Client {
 
     /// Drain events without accepting agent publications, and re-arm the wake.
     ///
-    /// Each returned [`Event::AgentPublication`] arc stays journaled until
+    /// Each [`Event::AgentPublication`] arc stays journaled until acceptance via
     /// [`ControlPlane::accept_agent_publication`](crate::control::ControlPlane::accept_agent_publication).
-    /// That call is delivery acceptance, not the end of a pointer borrow.
-    /// The C adapter invalidates effect pointers on the next mutable call,
-    /// but staged effects persist until `phux_client_effect_clear`, which is
-    /// its acceptance point. Unaccepted allocations replay after transport
-    /// loss or replacement once the next catalog and attach are ready.
+    /// A newer full cut supersedes prior deliveries without accepting them.
+    /// The C adapter likewise supersedes staged effects, and otherwise accepts
+    /// in `phux_client_effect_clear`, not when a pointer borrow ends. Remaining
+    /// unaccepted allocations replay once the next catalog and attach are ready.
     #[must_use]
     pub fn take_events_leased(&self) -> Vec<Event> {
         self.inner.wakes.pending.store(false, Ordering::Release);

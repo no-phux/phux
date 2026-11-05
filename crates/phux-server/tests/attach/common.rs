@@ -13,12 +13,12 @@ use phux_protocol::ids::ResourceId;
 use phux_protocol::input::key::{KeyAction, KeyEvent, ModSet, PhysicalKey};
 use phux_protocol::wire::frame::{AttachTarget, FrameKind, ViewportInfo};
 use phux_protocol::wire::info::SessionSnapshot;
+use phux_server::LaunchCommand as CommandBuilder;
 use phux_server_testkit::screen::Screen;
 use phux_server_testkit::{
     SOCKET_CONNECT_DEADLINE, WIRE_RECV_TIMEOUT, ascii_key, recv_typed, recv_until,
     recv_until_deadline, send_frame, wait_for_raw_socket,
 };
-use portable_pty::CommandBuilder;
 use tokio::net::UnixStream;
 
 /// `/bin/sh -c script`.

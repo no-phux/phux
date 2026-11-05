@@ -10,7 +10,7 @@ use bytes::Bytes;
 use phux_agent_session::session::AgentSessionResource as _;
 use phux_protocol::caps::{BootstrapLimits, BootstrapStreamProfile};
 use phux_protocol::wire::frame::{CommandResult, ErrorCode, FrameKind};
-use tokio::sync::oneshot;
+use tokio::sync::{mpsc, oneshot};
 use tokio_util::sync::CancellationToken;
 use tracing::debug;
 
@@ -18,6 +18,46 @@ use super::DEFAULT_AGENT_CHUNK_BYTES;
 use crate::mailbox::Outbound;
 use crate::state::{ClientId, SharedState};
 use phux_agent_session::session::{AgentSessionBootstrap, BootstrapRequest};
+
+fn validate_cut(cut: &AgentSessionBootstrap) -> Result<(), String> {
+    let mut ended = false;
+    for record in &cut.records {
+        let records = phux_agent_session::session::record::validate(record, ended)
+            .map_err(|error| error.to_string())?;
+        ended = records
+            .last()
+            .is_some_and(phux_agent_session::session::record::ValidRecord::ends_session);
+    }
+    Ok(())
+}
+
+/// The same validated cut serves explicit subscriptions and lag recovery.
+async fn capture_cut(
+    bootstrap: &mpsc::Sender<BootstrapRequest>,
+    after_seq: Option<u64>,
+) -> Result<AgentSessionBootstrap, CommandResult> {
+    let (reply, rx) = oneshot::channel();
+    bootstrap
+        .send(BootstrapRequest {
+            reply,
+            seal: None,
+            after_seq,
+        })
+        .await
+        .map_err(|_| CommandResult::Error {
+            code: ErrorCode::TerminalNotFound,
+            message: "the session closed before its bootstrap was cut".to_owned(),
+        })?;
+    let cut = rx.await.map_err(|_| CommandResult::Error {
+        code: ErrorCode::TerminalNotFound,
+        message: "the session closed before its bootstrap was cut".to_owned(),
+    })?;
+    validate_cut(&cut).map_err(|message| CommandResult::Error {
+        code: ErrorCode::CodecUnavailable,
+        message,
+    })?;
+    Ok(cut)
+}
 /// Bootstrap an `AgentSession` at one atomic cut: a full retained replacement
 /// or a cursor-anchored suffix, followed by live records. The live subscription
 /// precedes the cut so nothing appended between them is lost.
@@ -56,27 +96,9 @@ pub(crate) async fn attach_agent_session(
     // output between this replacement's bootstrap frames.
     crate::runtime::pump::stop_output(state, client_id, core).await;
 
-    let (reply, rx) = oneshot::channel();
-    if session
-        .bootstrap
-        .send(BootstrapRequest {
-            reply,
-            seal: None,
-            after_seq,
-        })
-        .await
-        .is_err()
-    {
-        return CommandResult::Error {
-            code: ErrorCode::TerminalNotFound,
-            message: "the session closed before its bootstrap was cut".to_owned(),
-        };
-    }
-    let Ok(cut) = rx.await else {
-        return CommandResult::Error {
-            code: ErrorCode::TerminalNotFound,
-            message: "the session closed before its bootstrap was cut".to_owned(),
-        };
+    let cut = match capture_cut(&session.bootstrap, after_seq).await {
+        Ok(cut) => cut,
+        Err(result) => return result,
     };
     if cut.dropped > 0 {
         debug!(

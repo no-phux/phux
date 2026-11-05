@@ -1,11 +1,38 @@
 # Resource kinds beyond terminals
 
-The design for hosting resources that are not terminals: an application's
-accessibility tree, a window's pixels, a browser page. This is a target
-design tracked by Beads `phux-phiio`, not a description of what ships. Where
-a part has landed, the live contract moves to its home page
+Hosting resources that are not terminals: an application's accessibility tree,
+a window's pixels, a browser page. The available contract below is implemented;
+later sections retain the remaining target design tracked by Beads `phux-phiio`.
+Where a part has landed, the live contract also lives in its home page
 ([architecture](./architecture.md), [protocol](./protocol.md),
 [decisions](./decisions.md)) and this page links to it.
+
+## Available now
+
+The host supports Terminal, AgentSession, AccessibilityTree and PixelSurface.
+Session membership and aggregate attach are kind-neutral. Apps supply bounded
+captures; the host publishes the complete attach barrier before releasing live
+output or lifecycle closes. AgentSession is catalogued at session attach, but
+its app defers records to explicit, cursor-bearing `ATTACH_RESOURCE` requests.
+It does not gate aggregate readiness or emit an unsolicited full replacement.
+Document-only and agent-only sessions can attach without a Terminal codec.
+The server links only the pure Terminal contract; the executable
+supplies the concrete engine ([architecture](./architecture.md#where-to-look)).
+
+Desktop and Rune discover tree/surface resources before the first frame,
+render plain JSON or letterboxed PNGs, and distinguish pending, empty and invalid
+documents. Documents can occupy mixed or document-only arrangements and survive
+restore/reconnect. They are **read-only mirrors**: typing, paste, terminal grid
+resizing and file uploads do not control their source. Desktop can transfer a
+view between windows once the destination accepts the exact subscription;
+closing a document placement leaves its producer and other viewers running.
+
+Both native clients offer mirror startup actions. These launch a dedicated
+supervised producer with argv, not commands typed into a person's shell.
+Browser mirroring needs an existing Chrome DevTools endpoint; macOS capture
+needs the relevant system permission. Local-only startup actions refuse remote
+or unsupported platforms. Moving or reopening a view keeps the source on its
+original host; it is not browser interactivity or cross-host process migration.
 
 ## Why
 
@@ -17,13 +44,12 @@ a terminal:
 - The command plane is already per kind. A kind is a `ResourceApp`, and the
   kind catalog routes and authorizes its commands
   ([architecture](./architecture.md#where-to-look)).
-- The stream plane is only partly so. Input, `FRAME_ACK`, history and
+- The stream plane is per kind. Input, `FRAME_ACK`, history and
   resize frames now reach their resource's app through `ResourceApp::frame`
   ([decisions](./decisions.md)), and `HELLO` admits a client with no
-  terminal profile, but `VIEWPORT_RESIZE` is a per-connection Terminal
-  vote. Viewports, layout leaves and windows are cells and Terminals
-  only. The client kernel has one terminal engine plus a
-  hard-coded agent lane.
+  terminal profile. `VIEWPORT_RESIZE` remains a per-connection Terminal
+  vote; document image dimensions are pixels, not cells. Native layout leaves
+  can be documents without creating a Terminal engine view.
 - Per-consumer delivery (StateSync: a reference per viewer, deltas against
   it, acknowledgements, RTT-adaptive cadence) lives inside the terminal actor.
 - A producer process is modelled as a Terminal: an `AgentSession` needs a

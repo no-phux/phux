@@ -1,6 +1,49 @@
 use super::*;
 
 #[tokio::test(flavor = "current_thread")]
+async fn routed_native_relaunch_retry_replays_without_rebinding_or_reexecuting() {
+    tokio::task::LocalSet::new().run_until(async {
+        let fx = Fixture::new();
+        let operation = phux_protocol::ids::OperationId::new([97; 16]).unwrap();
+        let (guardian, resource, expected) = fx.state.with_mut(|s| {
+            let record = s.registry().record(fx.parent).unwrap().clone();
+            let phux_core::LaunchSpec::Terminal(launch) = record.launch.unwrap() else {
+                panic!("native guardian has a Terminal recipe");
+            };
+            let (_, guardian) = s.create_terminal(
+                crate::state::TerminalTarget::Session(s.registry().session_of(fx.parent).unwrap()), launch.clone(),
+                phux_core::ExitPolicy::Retain, &s.actor_for(fx.owner),
+            ).unwrap();
+            s.activation_ended(guardian, phux_core::ExitOutcome::exited(0), false);
+            let record = s.registry().record(guardian).unwrap().clone();
+            s.relaunch_native_guardian(
+                guardian, &launch, fx.owner,
+                Some(crate::org_wire::core_operation(&operation)), Some(record.revision),
+            ).unwrap();
+            (guardian, crate::org_wire::resource_key(record.key).unwrap(), crate::org_wire::revision(record.revision))
+        });
+        let before = fx.state.with(|s| s.registry().record(guardian).unwrap().clone());
+        let (tx, mut rx) = mpsc::channel(4);
+        let ctx = crate::runtime::commands::CommandContext::for_test(&fx.state, fx.owner, &tx);
+        for (request_id, revision) in [(1, expected), (2, phux_protocol::ids::Revision::new(0))] {
+            crate::runtime::commands::handle_command(&ctx, request_id, phux_protocol::wire::frame::Command::ResourceRelaunch {
+                operation, resource, expected: revision,
+            }).await;
+            let Some(crate::state::Outbound::Frame(phux_protocol::wire::frame::FrameKind::CommandResult { result, .. })) = rx.recv().await else {
+                panic!("correlated relaunch result");
+            };
+            if request_id == 1 {
+                assert!(matches!(result, CommandResult::Accepted { operation: replay } if replay == operation), "{result:?}");
+            } else {
+                assert!(matches!(result, CommandResult::Refused(phux_protocol::wire::frame::Refusal::DuplicateOperation)), "{result:?}");
+            }
+        }
+        assert_eq!(fx.state.with(|s| s.registry().record(guardian).unwrap().clone()), before);
+        assert!(fx.state.with(|s| s.resource_handle(guardian).is_none()));
+    }).await;
+}
+
+#[tokio::test(flavor = "current_thread")]
 async fn queued_is_not_admission_and_eventual_receipts_are_truthful() {
     tokio::task::LocalSet::new()
         .run_until(async {

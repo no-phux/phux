@@ -8,7 +8,7 @@ use tokio::time::timeout;
 #[test]
 fn event_only_subscription_before_spawn_content_attach_keeps_link_and_events_live() {
     phux_server_testkit::run_local(async {
-        let fed = Fed::boot_with(Some(CommandBuilder::new("/bin/cat")), None).await;
+        let fed = Fed::boot_with(Some(LaunchCommand::new("/bin/cat")), None).await;
         let mut a = fed.linked_hub().await;
         let mut observer = fed.hub().await;
         let mut legacy = fed.hub().await;
@@ -206,7 +206,7 @@ async fn cycle(a: &mut UnixStream, b: &mut UnixStream, round: u32) -> ResourceId
 #[test]
 fn satellite_detach_fences_twenty_live_spawns_and_preserves_shared_consumers() {
     phux_server_testkit::run_local(async {
-        let fed = Fed::boot_with(Some(CommandBuilder::new("/bin/cat")), None).await;
+        let fed = Fed::boot_with(Some(LaunchCommand::new("/bin/cat")), None).await;
         let mut a = fed.linked_hub().await;
         let mut b = fed.hub().await;
         let mut spawned = Vec::new();

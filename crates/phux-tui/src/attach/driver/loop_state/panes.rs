@@ -7,14 +7,22 @@ use super::{
 };
 
 impl super::SessionLoop {
-    /// Attach layout leaves this client is not subscribed to yet (a peer's
-    /// headless placement, a returned satellite).
+    /// Attach discovered layout leaves or agent children, coalescing pending
+    /// requests for the same resource.
     pub(super) async fn attach_discovered_panes(
         &mut self,
         conn: &mut Connection,
         terminal_ids: &[ResourceId],
     ) -> Result<(), AttachError> {
         for terminal_id in terminal_ids {
+            if self
+                .mirror
+                .pending_resource_ops
+                .values()
+                .any(|pending| pending == terminal_id)
+            {
+                continue;
+            }
             let request_id = self.take_request_id();
             // Correlate the refusal: it is the only evidence a restored leaf
             // names a resource that died with a previous server.
@@ -27,23 +35,34 @@ impl super::SessionLoop {
         Ok(())
     }
 
-    /// `ATTACH_RESOURCE` one pane under `request_id`, tracking the QUIC
-    /// stream bind its affirmative reply opens.
+    /// `ATTACH_RESOURCE` one resource under `request_id`. Only a Terminal
+    /// opens a QUIC stream bind; agents use the control lane and a safe cursor.
     pub(super) async fn send_attach_resource(
         &mut self,
         conn: &mut Connection,
         request_id: u32,
         terminal_id: &ResourceId,
     ) -> Result<(), AttachError> {
-        if conn.multistream_enabled() {
+        let is_agent = self.mirror.engine_kernel.resource_kind(terminal_id)
+            == Some(phux_protocol::ResourceKind::AgentSession);
+        if conn.multistream_enabled() && !is_agent {
             self.track_pending_stream_bind(request_id, terminal_id.clone())?;
         }
+        let role = crate::attach::attach_role::pane_attach_role();
+        let command = if is_agent {
+            let after_seq = conn
+                .server_features_ext()
+                .contains(phux_protocol::ServerFeatureExt::AgentStreamResume)
+                .then(|| self.mirror.engine_kernel.agent_stream_info(terminal_id))
+                .flatten()
+                .map(|stream| stream.last_seq);
+            Command::attach_agent_session(terminal_id.clone(), role, after_seq)
+        } else {
+            Command::attach_terminal(terminal_id.clone(), role)
+        };
         let frame = FrameKind::Command {
             request_id,
-            command: Command::attach_terminal(
-                terminal_id.clone(),
-                crate::attach::attach_role::pane_attach_role(),
-            ),
+            command,
         };
         if let Err(error) = send_unless_peer_gone(conn, &frame).await {
             self.pending_stream_binds.remove(&request_id);

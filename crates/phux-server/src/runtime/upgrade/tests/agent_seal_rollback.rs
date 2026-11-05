@@ -24,16 +24,17 @@ async fn upgrade_capture_ignores_agent_sessions_and_orphan_handles() {
                 let live =
                     crate::runtime::apps::terminal::test_support::seeded_terminal(20, 5, b"live");
                 let live_token = live.token.clone();
-                let _ =
-                    s.spawn_resource_actor(live_pane, live.handle, live_token, live.actor.run());
+                s.spawn_resource_actor(live_pane, live.handle, live_token, live.actor.run())
+                    .unwrap();
 
                 // A leaked handle: its engine is gone and its record was
-                // removed before the handle was registered.
+                // removed while the handle was still registered.
                 let orphan = s.add_pane_to_session(sid).unwrap();
-                s.retire_record(orphan, phux_core::process::ExitOutcome::UNKNOWN);
                 let dead =
                     crate::runtime::apps::terminal::test_support::seeded_terminal(20, 5, b"");
-                let _ = s.register_resource_handle(orphan, dead.handle, dead.token);
+                s.register_resource_handle(orphan, dead.handle, dead.token)
+                    .unwrap();
+                s.retire_record(orphan, phux_core::process::ExitOutcome::UNKNOWN);
                 drop(dead.actor);
 
                 // An agent session bound to the live pane.
@@ -51,7 +52,8 @@ async fn upgrade_capture_ignores_agent_sessions_and_orphan_handles() {
                     token.clone(),
                     4096,
                 );
-                let _ = s.spawn_resource_actor(agent, bundle.handle, token, bundle.actor.run());
+                s.spawn_resource_actor(agent, bundle.handle, token, bundle.actor.run())
+                    .unwrap();
 
                 let _ = s.build_session_snapshot(sid);
                 let _ = s.intern_window_wire(sid);

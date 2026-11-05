@@ -4,7 +4,7 @@
 use std::net::{SocketAddr, UdpSocket};
 use std::sync::{Arc, Mutex};
 
-use phux_server::{ServerConfig, ServerEnv, ServerRuntime};
+use phux_server::{ServerConfig, ServerEnv};
 use tokio::sync::oneshot;
 
 use super::*;
@@ -70,7 +70,7 @@ impl QuicServer {
                 .build()
                 .expect("runtime");
             tokio::task::LocalSet::new().block_on(&runtime, async move {
-                ServerRuntime::new(config)
+                phux_server_testkit::terminal_server(config)
                     .listen_quic(addr)
                     .run_async(async move {
                         let _ = stopped.await;
@@ -135,7 +135,7 @@ impl QuicServer {
                 .build()
                 .expect("runtime");
             tokio::task::LocalSet::new().block_on(&runtime, async move {
-                ServerRuntime::new(config)
+                phux_server_testkit::terminal_server(config)
                     .listen_quic(addr)
                     .run_async(async move {
                         let _ = stopped.await;
@@ -247,7 +247,7 @@ impl RelayedServer {
                     env,
                     ..ServerConfig::with_default_socket()
                 };
-                ServerRuntime::new(config)
+                phux_server_testkit::terminal_server(config)
                     .connectors(vec![connector], None)
                     .run_async(async move {
                         let _ = stopped.await;

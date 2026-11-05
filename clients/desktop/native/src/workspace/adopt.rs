@@ -20,7 +20,7 @@ impl Workspace {
             .iter()
             .filter(|pane| pane.session_name == self.session)
             .map(|pane| pane.terminal_id.clone())
-            .chain(connection.surfaces_in(&self.session))
+            .chain(connection.documents_in(&self.session))
             .filter(|terminal| self.considered.insert(terminal_label(terminal)))
             .collect();
         for terminal in unseen {
@@ -30,6 +30,9 @@ impl Workspace {
                 continue;
             }
             if connection.ready(&terminal) {
+                if connection.document_kind(&terminal).is_some() {
+                    let _ = connection.subscribe_resource(&terminal);
+                }
                 self.land(
                     connection,
                     &terminal_label(&terminal),
@@ -39,9 +42,7 @@ impl Workspace {
             }
             self.awaiting
                 .insert(terminal_label(&terminal), Destination::QuietTab);
-            let _ = connection
-                .client
-                .attach_terminal_preserving_geometry(&terminal);
+            let _ = connection.subscribe_resource(&terminal);
         }
     }
 }

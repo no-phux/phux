@@ -17,7 +17,7 @@ use phux_protocol::caps::{
 use phux_protocol::input::paste::{PasteEvent, PasteTrust};
 use phux_protocol::wire::frame::{AttachTarget, DetachReason, FrameKind, ViewportInfo};
 use phux_protocol::{BootstrapId, ResourceId, StreamId};
-use portable_pty::CommandBuilder;
+use phux_server::LaunchCommand;
 use tempfile::TempDir;
 use tokio::net::UnixStream;
 use tokio::sync::Barrier;
@@ -186,7 +186,7 @@ fn reconnect_succeeds_after_every_bootstrap_milestone() {
     run_local(async {
         let tmp = TempDir::new().expect("tempdir");
         let socket = tmp.path().join("release.sock");
-        let mut command = CommandBuilder::new("/bin/sh");
+        let mut command = LaunchCommand::new("/bin/sh");
         command.arg("-c");
         command
             .arg("printf '\x1b[?1049h\x1b[2J\x1b[1;1Hrelease-reconnect\x1b[?1049l'; exec /bin/cat");
@@ -532,7 +532,7 @@ fn warm_50k_fullscreen_eight_clients_one_stalled_history_cache() {
              : > '{}'; exec /bin/cat",
             warm.display(),
         );
-        let mut command = CommandBuilder::new("/bin/sh");
+        let mut command = LaunchCommand::new("/bin/sh");
         command.arg("-c");
         command.arg(script);
         let (shutdown, server) = spawn_server_with_seed_cmd(socket.clone(), "release", command);

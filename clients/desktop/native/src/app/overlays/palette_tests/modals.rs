@@ -51,6 +51,7 @@ fn every_modal_shares_one_placement_and_dismissal(cx: &mut TestAppContext) {
         Modal::Notifications,
         Modal::AgentFleet,
         Modal::NativeLaunch,
+        Modal::Mirror { source: "page" },
         Modal::Path,
         Modal::Goto,
         Modal::WindowSession,

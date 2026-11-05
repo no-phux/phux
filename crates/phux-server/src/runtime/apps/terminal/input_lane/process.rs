@@ -7,8 +7,8 @@ use phux_protocol::{MAX_APPLY_INPUT_COMMAND_BODY, MAX_APPLY_INPUT_EVENTS};
 use tokio::sync::{mpsc, oneshot};
 
 use crate::state::{ClientId, SharedState};
-use phux_terminal::TerminalInput;
-use phux_terminal::actor::{EncodedInputRequest, InputCredit, LaneAhead, TerminalHandle};
+use phux_terminal_api::TerminalInput;
+use phux_terminal_api::actor::{InputCredit, LaneAhead, TerminalHandle};
 
 use super::{
     AcknowledgedReservation, CompletionTicket, CompletionWaiterHandle, LaneEncoderSet,
@@ -22,26 +22,19 @@ use super::{
 fn redeliver(
     encoded_for: &TerminalHandle,
     current: &crate::runtime::InputDestination,
-    bytes: Option<Vec<u8>>,
-    input: &TerminalInput,
+    bytes: Option<phux_terminal_api::input::PreparedInput>,
+    _input: &TerminalInput,
     credit: Option<InputCredit>,
     lane_ahead: Option<LaneAhead>,
 ) -> Result<bool, CommandResult> {
     if !encoded_for
-        .input_snapshot
-        .same_channel(&current.handle.input_snapshot)
+        .ordered_input
+        .same_generation(&current.handle.ordered_input)
     {
         drop(lane_ahead);
         return Ok(false);
     }
-    handoff_encoded(
-        current.pane,
-        &current.handle,
-        bytes,
-        phux_terminal::actor::echo_probe_for(input),
-        credit,
-        lane_ahead,
-    )
+    handoff_encoded(current.pane, &current.handle, bytes, credit, lane_ahead)
 }
 
 #[allow(
@@ -191,7 +184,7 @@ pub(super) fn acknowledged_not_written(message: &str) -> CommandResult {
 /// binding, paste safety, and encoding.
 struct PreparedBatch {
     destination: crate::runtime::InputDestination,
-    bytes: Vec<u8>,
+    input: phux_terminal_api::input::PreparedInput,
 }
 
 fn prepare_acknowledged_batch(
@@ -218,36 +211,26 @@ fn prepare_acknowledged_batch(
             return Err(invalid_command("APPLY_INPUT encoder unavailable"));
         }
     };
-    if inputs.iter().any(
-        |input| matches!(input, TerminalInput::Paste(event) if phux_terminal::input::paste::PerTerminalPasteEncoder::would_reject(event)),
-    ) {
-        return Err(CommandResult::Error {
-            code: ErrorCode::UnsafePaste,
-            message: "APPLY_INPUT batch contains an unsafe paste".to_owned(),
-        });
-    }
+    let input = encoder
+        .prepare_batch(&inputs, MAX_APPLY_INPUT_COMMAND_BODY)
+        .map_err(batch_encode_error)?;
+    Ok(PreparedBatch { destination, input })
+}
 
-    let snapshot = *encoder.snapshot.borrow();
-    let mut bytes = Vec::new();
-    for input in &inputs {
-        match encoder.encode_with_snapshot(input, snapshot) {
-            Ok(Some(event_bytes)) => {
-                if bytes.len().saturating_add(event_bytes.len()) > MAX_APPLY_INPUT_COMMAND_BODY {
-                    return Err(invalid_command(
-                        "APPLY_INPUT encoded PTY bytes exceed 64 KiB",
-                    ));
-                }
-                bytes.extend_from_slice(&event_bytes);
-            }
-            Ok(None) => {}
-            Err(err) => {
-                tracing::warn!(error = %err, pane = ?destination.pane, "APPLY_INPUT encode failed");
-                return Err(invalid_command("APPLY_INPUT event encoding failed"));
-            }
+fn batch_encode_error(error: phux_terminal_api::input::InputError) -> CommandResult {
+    match error {
+        phux_terminal_api::input::InputError::UnsafePaste => CommandResult::Error {
+            code: ErrorCode::UnsafePaste,
+            message: "APPLY_INPUT batch contains an unsafe paste".into(),
+        },
+        phux_terminal_api::input::InputError::LimitExceeded => {
+            invalid_command("APPLY_INPUT encoded PTY bytes exceed 64 KiB")
+        }
+        error @ phux_terminal_api::input::InputError::Engine(_) => {
+            tracing::warn!(%error, "APPLY_INPUT encode failed");
+            invalid_command("APPLY_INPUT event encoding failed")
         }
     }
-
-    Ok(PreparedBatch { destination, bytes })
 }
 
 /// Validate, encode, register with the completion waiter, and hand off one
@@ -306,8 +289,8 @@ pub(super) fn process_apply_input(
         if !prepared
             .destination
             .handle
-            .input_snapshot
-            .same_channel(&current.handle.input_snapshot)
+            .ordered_input
+            .same_generation(&current.handle.ordered_input)
         {
             // The actor was replaced since admission; nothing was sent.
             return Err(acknowledged_not_written(
@@ -320,10 +303,10 @@ pub(super) fn process_apply_input(
                 "pane actor input mailbox is full",
             ));
         };
-        let request = EncodedInputRequest::acknowledged(prepared.bytes, waiter.sink(ticket))
-            .with_credit(credit)
-            .with_lane_ahead(lane_ahead);
-        match current.handle.encoded_input.try_send(request) {
+        let mut request = prepared.input.into_request();
+        request.completion = Some(waiter.sink(ticket));
+        let request = request.with_credit(credit).with_lane_ahead(lane_ahead);
+        match current.handle.ordered_input.submit(request) {
             Ok(()) => Ok(()),
             Err(mpsc::error::TrySendError::Full(request)) => {
                 let refusal = acknowledged_resource_exhausted("pane actor input mailbox is full");

@@ -13,12 +13,35 @@
 
 pub mod actor;
 pub mod agent_detect;
+pub mod downsample;
+mod engine;
 pub mod grid;
 pub mod input;
 pub mod mailbox;
 #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
 pub mod native_state;
+mod ordered_input;
 pub mod perf;
+pub use engine::TerminalEngine;
+#[cfg(feature = "test-support")]
+#[must_use]
+pub fn fixture_input_port(
+    encoded: tokio::sync::mpsc::Sender<actor::EncodedInputRequest>,
+) -> (
+    phux_terminal_api::input::InputPort,
+    tokio::sync::watch::Sender<input::InputEncoderSnapshot>,
+) {
+    let (publisher, snapshot) = tokio::sync::watch::channel(input::InputEncoderSnapshot::default());
+    (
+        phux_terminal_api::input::InputPort::new(ordered_input::EngineInput {
+            encoded,
+            credits: actor::InputCreditPool::default(),
+            snapshot,
+            fast: None,
+        }),
+        publisher,
+    )
+}
 
 /// The process spawn vocabulary the host builds a pane's launch from.
 pub mod pty {

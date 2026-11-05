@@ -139,7 +139,7 @@ impl Fixture {
         credential_id: String,
         engine: Arc<dyn PolicyEngine>,
     ) -> Self {
-        let state = SharedState::new();
+        let state = crate::runtime::apps::terminal::test_support::terminal_state();
         let root = CancellationToken::new();
         let alpha_core = super::commands::seed_session_with_actor(
             &state,

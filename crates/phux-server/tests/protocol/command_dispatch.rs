@@ -16,8 +16,8 @@ use phux_protocol::wire::frame::{
     SESSION_NAME_KEY, Scope, SpawnResult, StateScope,
 };
 use phux_protocol::wire::info::SessionSnapshot;
+use phux_server::LaunchCommand as CommandBuilder;
 use phux_server_testkit::screen::Screen;
-use portable_pty::CommandBuilder;
 use tempfile::TempDir;
 use tokio::net::UnixStream;
 use tokio::time::timeout;

@@ -30,6 +30,17 @@ pub(super) fn mk_handle() -> ResourceHandle {
     crate::runtime::apps::terminal::test_support::detached_terminal()
 }
 
+pub(super) fn mk_agent_handle(parent: ResourceId, token: CancellationToken) -> ResourceHandle {
+    phux_agent_session::session::AgentSessionActor::build(
+        parent,
+        "test-producer",
+        None,
+        token,
+        1024,
+    )
+    .handle
+}
+
 #[test]
 fn new_client_id_is_monotonic_from_one() {
     let mut s = ServerState::new();
@@ -298,7 +309,7 @@ fn attach_stores_hello_selected_bootstrap_contract_unchanged() {
     )
     .unwrap();
     let attached = &s.attached()[&cid];
-    assert_eq!(attached.bootstrap_profile, profile);
+    assert_eq!(attached.bootstrap_profile, Some(profile));
     assert_eq!(attached.bootstrap_limits, limits);
 }
 
@@ -352,8 +363,10 @@ fn attach_snapshot_panes_collects_live_handles_for_session_tree() {
     let pid_b = s.add_pane_to_session(sid).expect("second pane");
     let pid_c = s.add_pane_to_session(sid).expect("third pane");
 
-    let _ = s.register_resource_handle(pid_a, mk_handle(), CancellationToken::new());
-    let _ = s.register_resource_handle(pid_c, mk_handle(), CancellationToken::new());
+    s.register_resource_handle(pid_a, mk_handle(), CancellationToken::new())
+        .unwrap();
+    s.register_resource_handle(pid_c, mk_handle(), CancellationToken::new())
+        .unwrap();
     // pid_b intentionally has no handle and must be excluded.
 
     let panes = s.attach_snapshot_panes(sid);

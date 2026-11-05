@@ -14,20 +14,23 @@ fn pane_exited(s: &ServerState, wire_terminal_id: &WireResourceId) -> bool {
 }
 
 /// Spawn the per-pane detector metadata drain (ADR-0046): the actor emits
-/// edge-filtered [`AgentDetectEvent`](phux_terminal::agent_detect::AgentDetectEvent)s
+/// edge-filtered [`AgentDetectEvent`](phux_terminal_api::agent_detect::AgentDetectEvent)s
 /// and this task, which can reach `ServerState`, performs the authority check
 /// and the metadata write.
 pub(crate) fn spawn_agent_state_drain(
     state: SharedState,
     wire_terminal_id: WireResourceId,
-    mut rx: tokio::sync::mpsc::Receiver<phux_terminal::agent_detect::AgentDetectEvent>,
+    mut rx: tokio::sync::mpsc::Receiver<phux_terminal_api::agent_detect::AgentDetectEvent>,
 ) {
-    use phux_terminal::agent_detect::AgentDetectEvent;
+    use phux_terminal_api::agent_detect::AgentDetectEvent;
 
     tokio::task::spawn_local(async move {
         while let Some(event) = rx.recv().await {
             let _publish_span = tracing::debug_span!("agent_publish", ?wire_terminal_id,).entered();
-            let _timer = phux_terminal::perf::AGENT_PUBLISH.timer();
+            let metrics = state
+                .terminal_engine()
+                .and_then(|engine| engine.host_metrics());
+            let _timer = metrics.map(|metrics| metrics.agent_publish.timer());
             // Both the ask broadcast and the hook re-take the state lock, so
             // they are resolved under it and fired after it is released.
             let mut asked = None;
@@ -207,7 +210,7 @@ fn drain_state(
     wire_terminal_id: &WireResourceId,
     scope: &Scope,
     hooks_live: bool,
-    report: &phux_terminal::agent_detect::AgentReport,
+    report: &phux_terminal_api::agent_detect::AgentReport,
 ) -> Option<HookEvent> {
     let program_status = s.metadata().contains(
         scope,
@@ -236,7 +239,7 @@ fn drain_state(
         && phux_agent_session::state::explicit_kind_is_contradicted(
             existing.as_deref(),
             &report.kind,
-            &phux_terminal::agent_detect::rules::global(),
+            &phux_agent_rules::rules::global(),
         );
     let (to, bytes) = if contradicted {
         let bytes = phux_agent_session::state::withdraw_state(existing.as_deref())?;

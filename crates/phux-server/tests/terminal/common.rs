@@ -12,8 +12,8 @@ use phux_protocol::input::key::{KeyAction, KeyEvent, ModSet, PhysicalKey};
 use phux_protocol::wire::frame::{Command, CommandResult, CommandValue, StateScope};
 use tokio::net::UnixStream;
 
+use phux_server::LaunchCommand as CommandBuilder;
 use phux_server_testkit::command;
-use portable_pty::CommandBuilder;
 
 /// `/bin/sh -c script`.
 pub(crate) fn sh(script: &str) -> CommandBuilder {

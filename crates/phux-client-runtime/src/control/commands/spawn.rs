@@ -1,9 +1,12 @@
 //! Terminal creation with an explicit reconnect policy for interactive setup.
+#[cfg(test)]
+#[path = "spawn_tests.rs"]
+mod tests;
 use phux_protocol::ids::IdempotencyKey;
 use phux_protocol::wire::frame::SpawnResource;
 
 use super::super::{
-    ControlPlane, FrameKind, GroupId, Pending, ServerFeature, SpawnRequest, Status,
+    ControlPlane, Event, FrameKind, GroupId, Pending, ServerFeature, SpawnRequest, Status,
 };
 
 impl ControlPlane {
@@ -24,16 +27,24 @@ impl ControlPlane {
 
     fn spawn_terminal_with_replay(&mut self, request: SpawnRequest, allow_replay: bool) -> u32 {
         let request_id = self.next_request_id();
-        // A spawn into the attached (home) session needs no owner; any
-        // other session is addressed through one of its existing panes.
+        // A foreign session is addressed by an explicit member of any kind.
+        // Never omit the owner and accidentally execute in the home session.
         let target_session = request.session_id.or(self.selected_session);
-        let owner_terminal = target_session
+        let owner_terminal = match target_session
             .filter(|session| Some(*session) != self.attached_session)
-            .and_then(|session| {
-                self.topology
-                    .as_ref()
-                    .and_then(|topology| topology.first_pane_of(session).cloned())
-            });
+        {
+            Some(session) => {
+                let Some(owner) = self.spawn_session_owner(session) else {
+                    self.push_event(Event::TerminalSpawned {
+                        request_id, terminal_id: None,
+                        error: Some("selected session has no confirmed live resource to host the new terminal; refresh or open a terminal in that session first".to_owned()),
+                    });
+                    return request_id;
+                };
+                Some(owner)
+            }
+            None => None,
+        };
         let keyed = allow_replay
             && self.status == Status::Attached
             && self.server_has(ServerFeature::SpawnIdempotency);
@@ -69,5 +80,21 @@ impl ControlPlane {
         );
         self.queue_frame(&frame);
         request_id
+    }
+
+    fn spawn_session_owner(&self, session: u32) -> Option<phux_protocol::ids::ResourceId> {
+        let member = self
+            .organization
+            .is_live()
+            .then(|| {
+                let record = self
+                    .organization
+                    .session_by_live(phux_protocol::ids::SessionId::new(session))?;
+                self.organization
+                    .members(&record.key)
+                    .find_map(|resource| resource.live.clone())
+            })
+            .flatten();
+        member.or_else(|| self.topology.as_ref()?.first_pane_of(session).cloned())
     }
 }

@@ -6,6 +6,7 @@ use rune::{Color, Cx, El, TextStyle, Transition, col, el, row, text};
 use crate::desk::Desk;
 use crate::theme::{Marks, SELECTED_WASH, Selection, Theme, on_fill};
 
+mod documents;
 mod icons;
 mod inbox;
 mod machines;

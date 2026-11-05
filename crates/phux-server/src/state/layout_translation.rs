@@ -230,11 +230,13 @@ mod tests {
     use super::*;
 
     fn handle_for(state: &mut ServerState, pane: phux_core::ids::ResourceId) {
-        let _ = state.register_resource_handle(
-            pane,
-            super::super::tests::mk_handle(),
-            tokio_util::sync::CancellationToken::new(),
-        );
+        state
+            .register_resource_handle(
+                pane,
+                super::super::tests::mk_handle(),
+                tokio_util::sync::CancellationToken::new(),
+            )
+            .unwrap();
     }
 
     #[test]

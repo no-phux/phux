@@ -74,7 +74,7 @@ use ask_marker::*;
 use canonical::*;
 use hangup::HangupPolicy;
 
-pub use fast_pty::{DirectWrite, LaneAhead};
+pub use phux_terminal_api::input::{DirectWrite, LaneAhead};
 pub use requests::*;
 pub use spawn::*;
 pub use sync::*;

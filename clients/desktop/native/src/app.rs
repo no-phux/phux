@@ -29,6 +29,7 @@ mod overlays;
 mod pane_identity;
 mod panes;
 mod performance;
+mod resource_mirror;
 mod reviews;
 mod session;
 mod settings_panel;

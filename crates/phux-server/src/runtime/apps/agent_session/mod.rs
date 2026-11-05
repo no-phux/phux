@@ -5,7 +5,9 @@ use futures_util::future::LocalBoxFuture;
 use phux_protocol::ids::{OperationId, ResourceKey, Revision};
 use phux_protocol::wire::frame::{Command, CommandResult, ErrorCode, FrameKind};
 
-use super::{ResourceApp, ResourceFrame, ResourceSpawn, StreamBootstrap};
+use super::{
+    FrameAdmission, ResourceApp, ResourceFrame, ResourceLaunch, ResourceSpawn, StreamBootstrap,
+};
 use crate::resource::{ResourceHandle, ResourceKind, WrongResourceKind};
 use crate::runtime::commands::{AttachResourceFailure, CommandContext};
 use crate::runtime::connections::dispatch::FrameFlow;
@@ -28,6 +30,26 @@ const DEFAULT_AGENT_CHUNK_BYTES: usize = 64 * 1024;
 pub(crate) struct AgentSessionApp;
 
 impl ResourceApp for AgentSessionApp {
+    fn supports_organization_launch(&self) -> bool {
+        false
+    }
+
+    fn launch(&self, _launch: ResourceLaunch<'_>) -> Result<(), String> {
+        Err("an agent-session projection must be opened by its producer".to_owned())
+    }
+
+    fn stage_session<'a>(
+        &'a self,
+        _capture: super::super::session_attach::SessionCapture<'a>,
+        _staging: &'a mut super::super::session_attach::staging::SessionStaging,
+        _pane: crate::state::AttachSnapshotPane,
+    ) -> LocalBoxFuture<'a, Result<(), super::super::session_attach::staging::CaptureFailure>> {
+        // Session ATTACH has no per-agent cursor. Retain catalog membership,
+        // but let ATTACH_RESOURCE request the committed suffix instead of
+        // overwriting it with an unsolicited full retained bootstrap.
+        std::future::ready(Ok(())).boxed_local()
+    }
+
     fn defers_stream_bootstrap(&self) -> bool {
         false
     }
@@ -42,6 +64,21 @@ impl ResourceApp for AgentSessionApp {
             required: ResourceKind::Terminal,
             actual: ResourceKind::AgentSession,
         })
+    }
+
+    fn frame_admission(&self, frame: &FrameKind) -> FrameAdmission {
+        if matches!(
+            frame,
+            FrameKind::InputKey { .. }
+                | FrameKind::InputMouse { .. }
+                | FrameKind::InputFocus { .. }
+                | FrameKind::InputPaste { .. }
+                | FrameKind::InputTerminalReply { .. }
+        ) {
+            FrameAdmission::Subscription
+        } else {
+            FrameAdmission::Unrestricted
+        }
     }
 
     /// An agent session serves no stream or input frame: it is raw-profile

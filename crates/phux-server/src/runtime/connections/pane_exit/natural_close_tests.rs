@@ -53,8 +53,9 @@ impl Fixture {
         let terminal = actor.handle.terminal().unwrap().clone();
         let (pane, wire) = state.with_mut(|s| {
             let (_, pane) = s.seed_session("close-test");
-            let wire =
-                s.spawn_resource_actor(pane, actor.handle, actor.token.clone(), actor.actor.run());
+            let wire = s
+                .spawn_resource_actor(pane, actor.handle, actor.token.clone(), actor.actor.run())
+                .unwrap();
             (pane, wire)
         });
         Self {

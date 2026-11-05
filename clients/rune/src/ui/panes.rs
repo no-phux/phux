@@ -175,10 +175,26 @@ fn float(id: &ResourceId, card: El) -> El {
 
 fn pane(desk: &Desk, id: &ResourceId, several: bool, ink: &Ink) -> El {
     let focused = desk.shown.as_ref().is_some_and(|s| &s.terminal == id);
+    if desk.is_document(id) {
+        let lit = if focused && several {
+            Lit::Focused
+        } else {
+            Lit::Resting
+        };
+        return float(
+            id,
+            card(super::documents::view(desk, id, ink), ink.bg, lit, ink),
+        );
+    }
+    terminal_pane(desk, id, several, ink)
+}
+
+fn terminal_pane(desk: &Desk, id: &ResourceId, several: bool, ink: &Ink) -> El {
+    let focused = desk.shown.as_ref().is_some_and(|s| &s.terminal == id);
     let view = if focused {
-        desk.shown.as_ref().map(|s| s.view)
+        desk.shown.as_ref().and_then(|s| s.view)
     } else {
-        desk.others.get(id).copied()
+        desk.others.get(id).copied().flatten()
     };
     perf::RENDERS.incr();
     let acquiring = Instant::now();
@@ -188,15 +204,7 @@ fn pane(desk: &Desk, id: &ResourceId, several: bool, ink: &Ink) -> El {
         .zip(view)
         .and_then(|(client, view)| client.acquire_view(view).map(|f| (f, view)));
     perf::ACQUIRE.record_elapsed(acquiring);
-    let (laid, wheel, press, moved, left, dropped, menu) = (
-        id.clone(),
-        id.clone(),
-        id.clone(),
-        id.clone(),
-        id.clone(),
-        id.clone(),
-        id.clone(),
-    );
+    let laid = id.clone();
     let host = el()
         .key(format!("pane-host-{id}"))
         .w_full()
@@ -221,26 +229,7 @@ fn pane(desk: &Desk, id: &ResourceId, several: bool, ink: &Ink) -> El {
         // The exact frame this build paints, for the drawn receipt.
         desk.painting(view, &frame);
     }
-    let metrics = desk.metrics();
-    let keyboard = focused && desk.focused;
-    let mut grid_layer = el()
-        .child(grid::paint(
-            &frame,
-            keyboard,
-            desk.blink_on,
-            &metrics,
-            ink.selection,
-        ))
-        .children(overlay::link_underline(desk, id, &metrics, ink));
-    if keyboard && desk.modal().is_none() {
-        grid_layer = grid_layer.child(grid::ime_layer(
-            &frame,
-            desk.preedit.as_deref(),
-            &metrics,
-            (ink.text, ink.raised),
-        ));
-    }
-    let linked = desk.pointer.hover.as_ref().is_some_and(|(t, _)| t == id);
+    let grid_layer = terminal_layer(desk, id, &frame, focused, ink);
     let area = desk.pane_area(id).unwrap_or([0.0, 0.0]);
     let ground = grid::background(&frame);
     let lit = if several && focused {
@@ -248,54 +237,7 @@ fn pane(desk: &Desk, id: &ResourceId, several: bool, ink: &Ink) -> El {
     } else {
         Lit::Resting
     };
-    let host = host
-        .fill(ground)
-        .cursor(if linked { rune::Cursor::Pointer } else { rune::Cursor::Text })
-        .on_pointer_move_local(move |d: &mut Desk, event, tx| {
-            d.hover(&moved, event.x - PAD, event.y - PAD, tx.mods());
-        })
-        .on_drop_files(move |d: &mut Desk, paths, _| d.drop_files(&dropped, paths))
-        .pointer_buttons([PointerButton::Middle, PointerButton::Back, PointerButton::Forward])
-        .on_secondary_press_local(move |d: &mut Desk, event, tx| {
-            let at = Press {
-                phase: Phase::Down,
-                x: event.x - PAD,
-                y: event.y - PAD,
-                clicks: 1,
-                mods: tx.mods(),
-                button: PointerButton::Secondary,
-            };
-            d.secondary_press(&menu, at, event.window());
-        })
-        .on_hover_change(move |d: &mut Desk, inside, _| {
-            if !inside {
-                d.pointer_left(&left);
-            }
-        })
-        .on_wheel(move |d: &mut Desk, event, _| {
-            d.wheel(&wheel, event.x - PAD, event.y - PAD, event.dy, event.mods);
-            true
-        })
-        .on_drag(move |d: &mut Desk, drag, tx| {
-            // Drag points include the padding; the grid starts inside it.
-            let (x, y, mods) = (drag.x - PAD, drag.y - PAD, tx.mods());
-            // Only the primary button opens links; the rest are the program's.
-            let cmd = mods.cmd && tx.button() == PointerButton::Primary;
-            if !d.press_link(&press, drag.phase, x, y, cmd, tx) {
-                let step = Press {
-                    phase: drag.phase,
-                    x,
-                    y,
-                    clicks: drag.clicks,
-                    mods,
-                    button: tx.button(),
-                };
-                d.pointer(&press, &step, tx);
-                if drag.phase == Phase::Up {
-                    d.selection_done(tx);
-                }
-            }
-        })
+    let host = terminal_input(host.fill(ground), desk, id)
         .child(grid_layer)
         .children(overlay::history(desk, id, &frame, area, ink))
         .children(overlay::find_bar(desk, id, area, ink))
@@ -312,4 +254,100 @@ fn framed(desk: &Desk, content: El, ground: Color, lit: Lit, ink: &Ink) -> El {
         return content.fill(ground);
     }
     card(content, ground, lit, ink)
+}
+
+fn terminal_layer(
+    desk: &Desk,
+    id: &ResourceId,
+    frame: &phux_client_runtime::publication::GridFrame,
+    focused: bool,
+    ink: &Ink,
+) -> El {
+    let metrics = desk.metrics();
+    let keyboard = focused && desk.focused;
+    let mut layer = el()
+        .child(grid::paint(
+            frame,
+            keyboard,
+            desk.blink_on,
+            &metrics,
+            ink.selection,
+        ))
+        .children(overlay::link_underline(desk, id, &metrics, ink));
+    if keyboard && desk.modal().is_none() {
+        layer = layer.child(grid::ime_layer(
+            frame,
+            desk.preedit.as_deref(),
+            &metrics,
+            (ink.text, ink.raised),
+        ));
+    }
+    layer
+}
+
+/// Only terminal cards install terminal mouse, drop, and history handlers.
+fn terminal_input(host: El, desk: &Desk, id: &ResourceId) -> El {
+    let (wheel, press, moved, left, dropped, menu) = (
+        id.clone(),
+        id.clone(),
+        id.clone(),
+        id.clone(),
+        id.clone(),
+        id.clone(),
+    );
+    let linked = desk.pointer.hover.as_ref().is_some_and(|(t, _)| t == id);
+    host.cursor(if linked {
+        rune::Cursor::Pointer
+    } else {
+        rune::Cursor::Text
+    })
+    .on_pointer_move_local(move |d: &mut Desk, event, tx| {
+        d.hover(&moved, event.x - PAD, event.y - PAD, tx.mods());
+    })
+    .on_drop_files(move |d: &mut Desk, paths, _| d.drop_files(&dropped, paths))
+    .pointer_buttons([
+        PointerButton::Middle,
+        PointerButton::Back,
+        PointerButton::Forward,
+    ])
+    .on_secondary_press_local(move |d: &mut Desk, event, tx| {
+        let at = Press {
+            phase: Phase::Down,
+            x: event.x - PAD,
+            y: event.y - PAD,
+            clicks: 1,
+            mods: tx.mods(),
+            button: PointerButton::Secondary,
+        };
+        d.secondary_press(&menu, at, event.window());
+    })
+    .on_hover_change(move |d: &mut Desk, inside, _| {
+        if !inside {
+            d.pointer_left(&left);
+        }
+    })
+    .on_wheel(move |d: &mut Desk, event, _| {
+        d.wheel(&wheel, event.x - PAD, event.y - PAD, event.dy, event.mods);
+        true
+    })
+    .on_drag(move |d: &mut Desk, drag, tx| {
+        // Drag points include the padding; the grid starts inside it.
+        let (x, y, mods) = (drag.x - PAD, drag.y - PAD, tx.mods());
+        // Only the primary button opens links; the rest are the program's.
+        let cmd = mods.cmd && tx.button() == PointerButton::Primary;
+        if !d.press_link(&press, drag.phase, x, y, cmd, tx) {
+            let step = Press {
+                phase: drag.phase,
+                x,
+                y,
+                clicks: drag.clicks,
+                mods,
+                button: tx.button(),
+            };
+            d.pointer(&press, &step, tx);
+            if drag.phase == Phase::Up {
+                d.selection_done(tx);
+            }
+        }
+    })
 }

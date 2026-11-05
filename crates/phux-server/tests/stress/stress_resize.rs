@@ -1,7 +1,7 @@
 //! Resize storms against a live PTY: a panicked actor surfaces as a
 //! `wait_until` timeout or as the `run_async` error the teardown unwraps.
 
-use portable_pty::CommandBuilder;
+use phux_server::LaunchCommand as CommandBuilder;
 
 use phux_server_testkit::builder::E2eBuilder;
 use phux_server_testkit::run_local;

@@ -16,7 +16,7 @@ use phux_protocol::wire::frame::{DetachReason, ErrorCode, FrameKind, Scope, WHOA
 use phux_server::ServerError;
 use phux_server::auth::AuthenticatedCredential;
 use phux_server::policy::{GrantFuture, PolicyEngine, PolicyError, PostureError, ScopedPolicy};
-use phux_server::runtime::{ServerConfig, ServerRuntime};
+use phux_server::runtime::ServerConfig;
 use phux_server::workload::ReloadingWorkloadRegistry;
 use tempfile::TempDir;
 use tokio::io::AsyncReadExt as _;
@@ -76,7 +76,7 @@ where
     let socket_path = cfg.socket_path.clone();
     let (tx, rx) = tokio::sync::oneshot::channel::<()>();
     let handle = tokio::task::spawn_local(async move {
-        ServerRuntime::new(cfg)
+        phux_server_testkit::terminal_server(cfg)
             .run_async(async move {
                 let _ = rx.await;
             })
@@ -198,7 +198,7 @@ fn local_mode_with_a_remote_listener_refuses_to_start() {
             policy_mode: Some(phux_config::PolicyMode::Local),
             ..cfg(socket_path.clone(), None)
         };
-        let started = ServerRuntime::new(cfg)
+        let started = phux_server_testkit::terminal_server(cfg)
             .listen_quic("127.0.0.1:0".parse().unwrap())
             .run_async(async {})
             .await;
@@ -220,7 +220,7 @@ fn an_unset_mode_with_a_remote_listener_refuses_to_start() {
     run_local(async {
         let tmp = TempDir::new().unwrap();
         let socket_path = tmp.path().join("phux.sock");
-        let started = ServerRuntime::new(cfg(socket_path.clone(), None))
+        let started = phux_server_testkit::terminal_server(cfg(socket_path.clone(), None))
             .listen_quic("127.0.0.1:0".parse().unwrap())
             .run_async(async {})
             .await;

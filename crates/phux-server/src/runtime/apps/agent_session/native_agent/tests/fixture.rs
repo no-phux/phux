@@ -17,7 +17,7 @@ impl Drop for Fixture {
 }
 impl Fixture {
     pub(super) fn new() -> Self {
-        let state = SharedState::new();
+        let state = crate::runtime::apps::terminal::test_support::terminal_state();
         let root = CancellationToken::new();
         let dir = tempfile::tempdir().unwrap();
         let peer = PeerIdentity {
@@ -145,12 +145,14 @@ impl Fixture {
             root.child_token(),
         );
         let parent_wire = state.with_mut(|s| {
-            let wire = s.spawn_resource_actor(
-                parent,
-                terminal.handle,
-                root.child_token(),
-                terminal.actor.run(),
-            );
+            let wire = s
+                .spawn_resource_actor(
+                    parent,
+                    terminal.handle,
+                    root.child_token(),
+                    terminal.actor.run(),
+                )
+                .unwrap();
             s.activation_started(
                 parent,
                 Some(phux_core::ProcIdentity {
@@ -188,7 +190,9 @@ impl Fixture {
                 .unwrap();
             let token = root.child_token();
             let bundle = AgentSessionActor::build(parent, "omp", None, token.clone(), 1024 * 1024);
-            let agent = s.spawn_resource_actor(core, bundle.handle, token, bundle.actor.run());
+            let agent = s
+                .spawn_resource_actor(core, bundle.handle, token, bundle.actor.run())
+                .unwrap();
             s.native_agents_mut().bindings.insert(
                 agent.clone(),
                 NativeBinding {

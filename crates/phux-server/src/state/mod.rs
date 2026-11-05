@@ -97,6 +97,7 @@ pub use org::{OrgCommit, OsKeys, Reconciled, TerminalTarget, fresh_org, now_stam
 pub(crate) use resolve::{RelayRoute, Resolved, ResolvedOwned};
 use resource_table::ResourceTable;
 use session_table::SessionTable;
+pub use terminals::ResourceRegistrationError;
 pub use upgrade_blob::RebuildError;
 pub(crate) use upgrade_blob::UpgradeHandoffs;
 
@@ -150,6 +151,8 @@ pub struct CloseAttribution {
 /// Single owner of all server-side state; share it as [`SharedState`].
 #[derive(Debug)]
 pub struct ServerState {
+    /// Explicit composition; empty host-only state has no Terminal engine.
+    terminal_engine: Option<Arc<dyn phux_terminal_api::TerminalEngineFactory>>,
     /// The organization registry plus per-session ledgers (last touch,
     /// frozen roots, last cwd); see [`session_table`].
     sessions: SessionTable,
@@ -295,6 +298,16 @@ impl Drop for ClearBorrowed {
 }
 
 impl SharedState {
+    /// Supply the Terminal engine for this state, before creating resources.
+    pub fn set_terminal_engine(&self, engine: Arc<dyn phux_terminal_api::TerminalEngineFactory>) {
+        self.with_mut(|state| state.terminal_engine = Some(engine));
+    }
+
+    pub(crate) fn terminal_engine(
+        &self,
+    ) -> Option<Arc<dyn phux_terminal_api::TerminalEngineFactory>> {
+        self.with(|state| state.terminal_engine.clone())
+    }
     /// Wrap a fresh [`ServerState`].
     #[must_use]
     pub fn new() -> Self {

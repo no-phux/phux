@@ -18,21 +18,21 @@ impl TerminalActor {
                 && binding.bootstrap_id == req.bootstrap_id
         });
         if !valid {
-            let _ = req
-                .reply
-                .send(Err(crate::native_state::NativeStateError::InvalidHandle));
+            let _ = req.reply.send(Err(
+                crate::native_state::NativeStateError::InvalidHandle.into()
+            ));
             return;
         }
         let Some(publication) = self.native_publications.get_mut(&req.cursor) else {
-            let _ = req
-                .reply
-                .send(Err(crate::native_state::NativeStateError::InvalidHandle));
+            let _ = req.reply.send(Err(
+                crate::native_state::NativeStateError::InvalidHandle.into()
+            ));
             return;
         };
         if !publication.waiting.remove(&key) {
-            let _ = req
-                .reply
-                .send(Err(crate::native_state::NativeStateError::InvalidHandle));
+            let _ = req.reply.send(Err(
+                crate::native_state::NativeStateError::InvalidHandle.into()
+            ));
             return;
         }
         let replay = publication.replay.iter().cloned().collect();
@@ -319,7 +319,7 @@ pub(in crate::actor) fn fail_native_waiters(
     error: crate::native_state::NativeStateError,
 ) {
     for (waiter, _) in prepared {
-        let _ = waiter.reply.send(Err(error));
+        let _ = waiter.reply.send(Err(error.into()));
     }
 }
 
@@ -430,7 +430,10 @@ pub(in crate::actor) fn answer_history(
     permit: tokio::sync::mpsc::OwnedPermit<phux_resource::mailbox::Outbound>,
     result: Result<FrameKind, crate::native_state::NativeStateError>,
 ) {
-    let _ = reply.send(NativeHistoryReply { permit, result });
+    let _ = reply.send(NativeHistoryReply {
+        permit,
+        result: result.map_err(Into::into),
+    });
 }
 
 #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]

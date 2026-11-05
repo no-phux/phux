@@ -75,7 +75,10 @@ impl Desk {
         let (Some(engine), Some(shown)) = (engine, &self.shown) else {
             return Selected::Nothing;
         };
-        match engine.selection_text_view_bounded(shown.view, COPY_LIMIT) {
+        let Some(view) = shown.view else {
+            return Selected::Nothing;
+        };
+        match engine.selection_text_view_bounded(view, COPY_LIMIT) {
             Ok(BoundedSelectionText::Text(bytes)) => {
                 copyable(&bytes).map_or(Selected::Nothing, Selected::Text)
             }
@@ -87,6 +90,9 @@ impl Desk {
     }
 
     pub(in crate::desk) fn copy(&mut self, tx: &mut Tx) {
+        if self.copy_document(tx) {
+            return;
+        }
         match self.selected() {
             Selected::Text(text) => tx.copy(text),
             Selected::TooLarge => self.say(
@@ -98,10 +104,14 @@ impl Desk {
     }
 
     /// Everything the focused view holds, scrollback included.
-    pub(in crate::desk) fn select_all(&mut self) {
+    pub(in crate::desk) fn select_all(&mut self, tx: &mut Tx) {
+        if let Some(key) = self.document_text_key() {
+            tx.select_all_text(key);
+            return;
+        }
         let engine = self.client.as_ref().and_then(|client| client.engine());
-        if let (Some(engine), Some(shown)) = (engine, &self.shown) {
-            let _ = engine.select_all_view(shown.view);
+        if let (Some(engine), Some(view)) = (engine, self.shown.as_ref().and_then(|s| s.view)) {
+            let _ = engine.select_all_view(view);
             self.generation += 1;
         }
     }

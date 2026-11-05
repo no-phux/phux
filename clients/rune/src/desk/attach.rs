@@ -31,6 +31,9 @@ impl Desk {
     /// Read the clipboard for the terminal on screen now: the reply comes
     /// back later, and the keyboard may have moved on by then.
     pub(super) fn paste_clipboard(&mut self, tx: &mut Tx) {
+        if self.shown.as_ref().is_some_and(|s| s.view.is_none()) {
+            return;
+        }
         let Some(shown) = &self.shown else {
             return self.say(NoticeKind::Error, "No terminal to paste into.");
         };
@@ -64,6 +67,9 @@ impl Desk {
 
     /// A paste of any kind: files, then an image, then text.
     fn paste_content(&mut self, terminal: &ResourceId, content: &ClipboardContent) {
+        if self.is_document(terminal) {
+            return;
+        }
         if !content.files().is_empty() {
             return self.paste(terminal, &paths_line(content.files()));
         }
@@ -77,6 +83,9 @@ impl Desk {
     }
 
     fn upload_image(&mut self, terminal: &ResourceId, png: Vec<u8>) {
+        if self.is_document(terminal) {
+            return;
+        }
         let Some(client) = &self.client else {
             return;
         };
@@ -87,6 +96,9 @@ impl Desk {
 
     /// Files dropped on a pane land in that pane.
     pub fn drop_files(&mut self, terminal: &ResourceId, paths: &[PathBuf]) {
+        if self.is_document(terminal) {
+            return;
+        }
         if !self.pastes_allowed() {
             return;
         }
@@ -156,7 +168,7 @@ mod tests {
         )));
         desk.shown = Some(crate::desk::Shown {
             terminal: ResourceId::local(terminal),
-            view: phux_client_runtime::ViewId::from_raw(1).expect("nonzero"),
+            view: phux_client_runtime::ViewId::from_raw(1),
         });
     }
 

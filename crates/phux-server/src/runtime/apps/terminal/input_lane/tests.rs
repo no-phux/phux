@@ -92,14 +92,15 @@ struct Pane {
 fn spawn_pane(state: &SharedState, session: &str, seed: &[u8]) -> Pane {
     let bundle = TerminalActor::new_with_seed(80, 24, seed).expect("actor");
     let handle = bundle.handle.clone();
-    let credits = handle.terminal().expect("facet").input_credits.clone();
+    let credits = handle.terminal().expect("facet").ordered_input.credits();
     let token = bundle.token.clone();
     let mut actor = bundle.actor;
     let (_pty_evt_tx, writer_rx) = actor.install_test_pty_channels();
     let (wire, core) = state.with_mut(|s| {
         let (_sid, core) = s.seed_session(session);
         (
-            s.register_resource_handle(core, handle, token.clone()),
+            s.register_resource_handle(core, handle, token.clone())
+                .unwrap(),
             core,
         )
     });

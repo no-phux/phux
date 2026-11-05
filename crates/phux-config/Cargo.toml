@@ -16,7 +16,7 @@ workspace = true
 # The client-neutral half of the file (layers, `[[remote]]`, `[organize]`,
 # instance paths), re-exported so every `phux_config::` path keeps working.
 phux-config-core.workspace = true
-phux-protocol = { workspace = true, features = ["server"] }
+phux-protocol.workspace = true
 serde.workspace = true
 # Used to build `Cell::text` inline; matches phux-protocol's storage type
 # for `Cell::text` (see phux-x7a).

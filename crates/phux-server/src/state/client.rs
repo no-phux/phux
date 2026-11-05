@@ -28,8 +28,9 @@ pub struct AttachedClient {
     /// Capabilities from HELLO (SPEC §6.2); outbound bytes are downsampled
     /// to them. Without a HELLO, the permissive default.
     pub client_caps: ClientCapabilities,
-    /// Immutable bootstrap profile selected for this HELLO.
-    pub bootstrap_profile: BootstrapProfile,
+    /// Immutable Terminal profile selected for this HELLO, if one was offered.
+    /// Sessions containing only other kinds do not need one.
+    pub bootstrap_profile: Option<BootstrapProfile>,
     /// Immutable payload limits selected for this HELLO.
     pub bootstrap_limits: BootstrapLimits,
     /// Current outer viewport; shared-Terminal geometry applies the
@@ -44,16 +45,19 @@ pub struct AttachedClient {
     /// The session attach declared `VIEWER` (ADR-0127); panes it spawns are
     /// observe-only too.
     pub viewer: bool,
+    /// The connection-local SESSION ATTACH publication, if still in progress.
+    pub(crate) publication_gate: Option<CancellationToken>,
 }
 
-/// One pane target in an ATTACH snapshot pass.
+/// One resource target in an ATTACH snapshot pass. The field names retain the
+/// legacy pane vocabulary; no Terminal facet is implied by membership.
 #[derive(Debug, Clone)]
 pub struct AttachSnapshotPane {
-    /// Core pane identifier.
+    /// Core resource identifier.
     pub terminal_id: ResourceId,
-    /// Cross-task handle to the pane's engine.
+    /// Cross-task handle to the resource's engine.
     pub handle: ResourceHandle,
-    /// Stable wire id to use in `TERMINAL_SNAPSHOT` / `RESOURCE_OUTPUT`.
+    /// Stable wire id for the bootstrap and live output.
     pub wire_terminal_id: WireResourceId,
 }
 
@@ -70,6 +74,9 @@ pub enum AttachError {
     /// The session cannot fit the bounded aggregate attach preflight.
     #[error("session exceeds aggregate attach resource limits")]
     ResourceLimit,
+    /// A session containing Terminals requires a negotiated Terminal profile.
+    #[error("session contains Terminals but HELLO selected no Terminal profile")]
+    TerminalProfileUnavailable,
 }
 
 impl ServerState {
@@ -77,6 +84,44 @@ impl ServerState {
     #[must_use]
     pub const fn attached(&self) -> &HashMap<ClientId, AttachedClient> {
         &self.clients.attached
+    }
+
+    /// Start under the subscription lock; the guard releases on publication,
+    /// rollback, or cancellation of the host's attach future.
+    pub(crate) fn begin_attach_publication(
+        &mut self,
+        client: ClientId,
+    ) -> tokio_util::sync::DropGuard {
+        let gate = CancellationToken::new();
+        if let Some(attached) = self.clients.attached.get_mut(&client)
+            && let Some(prior) = attached.publication_gate.replace(gate.clone())
+        {
+            prior.cancel();
+        }
+        gate.drop_guard()
+    }
+
+    /// Retained by close fanout under the reap lock. A committed kill must not
+    /// abort the host's publication fence along with its resource pumps.
+    pub(crate) fn attach_publication_fences(
+        &self,
+        resource: ResourceId,
+    ) -> Vec<(mpsc::Sender<Outbound>, Vec<CancellationToken>)> {
+        self.subscribers_for_resource(resource)
+            .iter()
+            .filter_map(|client| {
+                let gate = self
+                    .clients
+                    .attached
+                    .get(client)?
+                    .publication_gate
+                    .as_ref()?;
+                if gate.is_cancelled() {
+                    return None;
+                }
+                Some((self.client_mailbox(*client)?, vec![gate.clone()]))
+            })
+            .collect()
     }
 
     /// Record the HELLO layer set (latest wins).
@@ -122,7 +167,7 @@ impl ServerState {
             .cloned()
     }
 
-    /// Attach a client to `session_name`, subscribing it to every pane in
+    /// Attach a client to `session_name`, subscribing it to every resource in
     /// the session. `client_caps` come from HELLO; see
     /// [`Self::attach_default_caps`] otherwise.
     pub fn attach(
@@ -131,15 +176,19 @@ impl ServerState {
         session_name: &str,
         tx: mpsc::Sender<Outbound>,
         client_caps: ClientCapabilities,
-        bootstrap_profile: BootstrapProfile,
+        bootstrap_profile: impl Into<Option<BootstrapProfile>>,
         bootstrap_limits: BootstrapLimits,
     ) -> Result<SessionId, AttachError> {
+        let bootstrap_profile = bootstrap_profile.into();
         // Resolve first: re-attaching the same session is a re-bootstrap;
         // switching sessions is refused; an unknown name stays
         // UnknownSession.
         let session_id = self
             .find_session_by_name(session_name)
             .ok_or_else(|| AttachError::UnknownSession(session_name.to_owned()))?;
+        if bootstrap_profile.is_none() && !self.session_terminals(session_id).is_empty() {
+            return Err(AttachError::TerminalProfileUnavailable);
+        }
         if let Some(existing) = self.clients.attached.get(&client_id) {
             if existing.session != session_id {
                 return Err(AttachError::AlreadyAttached(client_id));
@@ -160,6 +209,7 @@ impl ServerState {
                     viewport_seq: 0,
                     active_seq: 0,
                     viewer: false,
+                    publication_gate: None,
                 },
             );
             // Attaching arms tmux-model last-session self-exit (phux-60s).
@@ -168,7 +218,7 @@ impl ServerState {
 
         // Subscribe every pane, not just the active one: the input gate
         // drops keys to unsubscribed panes, and every pane renders live.
-        let session_panes: Vec<ResourceId> = self.sessions.terminal_members(session_id);
+        let session_panes = self.registry().members(session_id);
         for pane in session_panes {
             self.resources.subscribe(client_id, pane);
         }
@@ -205,7 +255,11 @@ impl ServerState {
             .get(&client_id)
             .is_some_and(|client| client.viewport.is_some_and(|v| v.cols > 0 && v.rows > 0));
         let geometry_targets = self.viewport_terminals(client_id);
-        self.clients.attached.remove(&client_id);
+        if let Some(attached) = self.clients.attached.remove(&client_id)
+            && let Some(gate) = attached.publication_gate
+        {
+            gate.cancel();
+        }
         // Drop local and satellite leases; the runtime already broadcast and
         // relayed the releases. Each local release opens a new epoch.
         self.release_all_input_leases(client_id);

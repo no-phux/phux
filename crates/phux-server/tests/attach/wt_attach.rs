@@ -10,7 +10,7 @@ use phux_protocol::PROTOCOL_VERSION;
 use phux_protocol::caps::ClientCapabilities;
 use phux_protocol::wire::RemoteListenerTransport;
 use phux_protocol::wire::frame::{AttachTarget, FrameKind};
-use phux_server::{ServerConfig, ServerRuntime};
+use phux_server::ServerConfig;
 use phux_server_testkit::{WIRE_RECV_TIMEOUT, bound_listener_addr, encode_frame_vec, run_local};
 use tempfile::TempDir;
 use tokio::sync::oneshot;
@@ -48,7 +48,7 @@ fn wt_hello_attach_receives_attached_and_snapshot() {
         phux_server_testkit::embedder::embed_owner_engine(&mut cfg);
         let (_shutdown, stop) = oneshot::channel::<()>();
         let _server = tokio::task::spawn_local(async move {
-            ServerRuntime::new(cfg)
+            phux_server_testkit::terminal_server(cfg)
                 .listen_webtransport("127.0.0.1:0".parse().unwrap())
                 .run_async(async move {
                     let _ = stop.await;

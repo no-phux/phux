@@ -46,19 +46,44 @@ fn pending_terminal(missing: bool, look: &Look) -> AnyElement {
         .into_any_element()
 }
 
-/// A surface pane's body: the newest frame, letterboxed to the card.
-fn surface_body(desk: &Desk, placement: &Placement, look: &Look) -> AnyElement {
-    let image = placement
+/// A native document: plain JSON or letterboxed PNG, never a terminal entity.
+fn document_body(desk: &Desk, placement: &Placement, look: &Look) -> AnyElement {
+    use crate::connection::documents::Content;
+    let content = placement
         .terminal_id
         .as_ref()
-        .and_then(|id| desk.surface(id));
-    match image {
-        Some(image) => img(image)
+        .and_then(|id| desk.link.as_ref()?.connection.document_content(id));
+    let body = match content {
+        Some(Content::Image(image)) => img(image.clone())
             .size_full()
             .object_fit(ObjectFit::Contain)
             .into_any_element(),
-        None => pending_terminal(false, look),
-    }
+        Some(Content::Text(text)) => div()
+            .id(SharedString::from(format!(
+                "document-text-{}",
+                placement.id
+            )))
+            .size_full()
+            .overflow_y_scroll()
+            .font_family("monospace")
+            .text_size(px(13.))
+            .child(text.clone())
+            .into_any_element(),
+        Some(Content::Empty) => div().child("Document is empty").into_any_element(),
+        Some(Content::Invalid(message)) => div().child(*message).into_any_element(),
+        None => div()
+            .child("Waiting for a document from the source…")
+            .into_any_element(),
+    };
+    div()
+        .debug_selector(|| "read-only-document".into())
+        .size_full()
+        .flex()
+        .flex_col()
+        .text_color(from_hex(&look.chrome.muted))
+        .child(div().flex_shrink_0().pb(px(8.)).child("Read-only mirror"))
+        .child(div().flex_1().min_h(px(0.)).overflow_hidden().child(body))
+        .into_any_element()
 }
 
 /// A terminal pane's body: its cached view, or a placeholder while the
@@ -135,7 +160,7 @@ pub(super) fn pane_view(
     let body = match identity.kind {
         PaneKind::Conversation => conversation::render(desk, &placement_id, colors, window, cx),
         PaneKind::Terminal => terminal_body(desk, placement, focused, &look, window, cx),
-        PaneKind::Surface => surface_body(desk, placement, &look),
+        PaneKind::Surface | PaneKind::AccessibilityTree => document_body(desk, placement, &look),
     };
     let tab = desk.active_tab();
     let zoomed = tab.is_some_and(|tab| tab.zoomed_id.is_some());
@@ -195,7 +220,8 @@ pub(super) fn pane_view(
         .overflow_hidden()
         .block_mouse_except_scroll()
         .on_hover(track_hover(id.clone(), |desk| &mut desk.motion.hover, cx));
-    let card = file_drop_target(card, &id, cx)
+    let card = file_drop_target(card, &id, identity.kind, cx);
+    let card = card
         .child(
             div()
                 .flex_grow(1.)
@@ -292,8 +318,12 @@ fn controls_bar(
 fn file_drop_target(
     card: gpui::Stateful<gpui::Div>,
     id: &str,
+    kind: PaneKind,
     cx: &Context<Desk>,
 ) -> gpui::Stateful<gpui::Div> {
+    if matches!(kind, PaneKind::Surface | PaneKind::AccessibilityTree) {
+        return card;
+    }
     let drag_id = id.to_owned();
     let drop_id = id.to_owned();
     let exit_id = id.to_owned();

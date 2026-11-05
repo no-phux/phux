@@ -5,17 +5,7 @@
 )]
 
 use super::*;
-use phux_terminal::actor::TerminalResource as _;
-
-/// What `handle_attach` needs after leaving the state lock: the snapshot, the
-/// initial client id, the panes to bootstrap, and snapshot participants with
-/// no actor (published as `RESOURCE_CLOSED` before `ATTACH_READY`).
-pub(crate) type AttachPrepared = (
-    phux_protocol::wire::info::SessionSnapshot,
-    phux_protocol::ids::ClientId,
-    Vec<AttachSnapshotPane>,
-    Vec<phux_protocol::ids::ResourceId>,
-);
+use phux_terminal_api::actor::TerminalResource as _;
 
 /// Resolve `target` to the session the attach joins: the one the dispatch
 /// guard authorized, pinned by id before the first await, or the one a
@@ -120,8 +110,8 @@ pub(crate) async fn resolve_create_if_missing(
 
     let seed_result = if with_pty {
         let mut seed_cmd = spawn_argv_builder(state, command);
-        phux_terminal::actor::apply_spawn_cwd(&mut seed_cmd, cwd.as_deref(), &name);
-        phux_terminal::actor::apply_term(&mut seed_cmd, &term);
+        phux_terminal_api::launch::apply_spawn_cwd(&mut seed_cmd, cwd.as_deref(), &name);
+        phux_terminal_api::launch::apply_term(&mut seed_cmd, &term);
         seed_session_with_pty_and_colors(
             state,
             &name,

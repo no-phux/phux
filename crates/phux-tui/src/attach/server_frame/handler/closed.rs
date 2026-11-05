@@ -42,8 +42,8 @@ pub(super) fn handle_terminal_closed<W: crate::attach::RenderSink>(
         ctx.members.remove(terminal_id);
         return outcome;
     }
-    // An AgentSession has no slot or leaf; its close removes only its row.
-    if ctx.is_agent_session(terminal_id) {
+    // A non-Terminal resource has no slot or layout leaf to close.
+    if ctx.is_non_terminal(terminal_id) {
         return FrameOutcome {
             chrome_dirty: true,
             ..FrameOutcome::default()

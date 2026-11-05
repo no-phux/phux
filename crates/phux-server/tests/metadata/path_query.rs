@@ -65,7 +65,7 @@ fn paths_are_host_absolute_typed_and_refused_without_rerouting() {
         let tree = tmp.path().join("tree");
         std::fs::create_dir_all(tree.join("nested")).unwrap();
         std::fs::write(tree.join("nested/abc file.txt"), b"x").unwrap();
-        let mut cmd = portable_pty::CommandBuilder::new("/bin/sh");
+        let mut cmd = phux_server::LaunchCommand::new("/bin/sh");
         cmd.arg("-c");
         cmd.arg("sleep 30");
         let (shutdown, server) = spawn_server_with_seed_cmd(socket.clone(), "paths", cmd);

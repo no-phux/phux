@@ -208,6 +208,7 @@ pub async fn open_kind(
     target: &str,
 ) -> Result<Opened, TreeError> {
     require_kind(conn, kind)?;
+    validate_target(target)?;
     let frame = FrameKind::SpawnResource {
         request_id: REQUEST_SPAWN,
         group: GroupId::new(1),
@@ -245,6 +246,16 @@ pub async fn open_kind(
         ))
         .into()),
     }
+}
+
+fn validate_target(target: &str) -> Result<(), TreeError> {
+    let max = phux_protocol::wire::frame::MAX_RESOURCE_PROVIDER_BYTES;
+    if target.is_empty() || target.len() > max {
+        return Err(TreeError::Invalid(format!(
+            "target must contain 1–{max} UTF-8 bytes"
+        )));
+    }
+    Ok(())
 }
 
 /// Replace the tree's document.
@@ -448,6 +459,13 @@ impl Reader {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn invalid_target_labels_are_refused_before_spawn() {
+        assert!(super::validate_target("").is_err());
+        assert!(super::validate_target(&"x".repeat(121)).is_err());
+        assert!(super::validate_target(&"雪".repeat(41)).is_err());
+        assert!(super::validate_target(&"雪".repeat(40)).is_ok());
+    }
     use super::*;
     use phux_protocol::caps::BootstrapStreamProfile;
     use phux_protocol::ids::{BootstrapId, StreamId};

@@ -1,6 +1,6 @@
 //! Workspace state over one connection: tabs, split trees, focus, and pending
-//! terminals. User closes terminate processes; releasing views for a window
-//! move or disconnect never does.
+//! resources. User closes terminate terminal processes, but only remove document
+//! views. Releasing views for a window move or disconnect never terminates.
 
 pub mod layout;
 pub mod persist;
@@ -9,16 +9,15 @@ mod adopt;
 mod operations;
 mod restore;
 
-pub use persist::{SavedLayout, layout_paths};
+pub use persist::{SavedLayout, layout_paths, snapshot_layout};
 
 use crate::connection::{Connection, parse_terminal, terminal_label};
-use crate::settings::DisplayPrefs;
 use layout::{
     Axis, DeskTab, Direction, LayoutNode, Placement, cycle, equalize, find_placement,
     focused_placement, leaf, neighbor, new_id, nudge, placements, placements_mut, refocus,
     remove_leaves, reorder, set_ratio, split_at, step_index, without_terminal,
 };
-use persist::{SavedNode, SavedTab, save_layout};
+use persist::{SavedNode, SavedTab};
 use phux_client_core::organization::{self, Place, PlaceSource};
 use phux_client_runtime::ViewId;
 use phux_client_runtime::control::{Event, PaneDescriptor, SpawnRequest, Status};
@@ -31,7 +30,7 @@ use std::collections::{HashMap, HashSet};
 pub struct WorkspaceOptions {
     /// Open a fresh terminal instead of the session's home pane.
     pub fresh: bool,
-    /// Show this existing terminal. Used by Move Pane to New Window; Move Pane
+    /// Show this existing resource. Used by Move Pane to New Window; Move Pane
     /// to Next Window reveals it in an open window instead.
     pub initial_terminal: Option<ResourceId>,
 }
@@ -236,6 +235,11 @@ impl Workspace {
         if connection.status != Status::Attached || !connection.session_validated() {
             return;
         }
+        // On organization hosts, absence from terminal-only topology cannot
+        // prove an empty session. Await the kind-neutral inventory first.
+        if connection.organization() && !connection.with_organization(|replica| replica.is_live()) {
+            return;
+        }
         self.rearm_views(connection);
         self.land_answered(connection);
         if !self.restored {
@@ -293,9 +297,7 @@ impl Workspace {
             .keys()
             .filter_map(|label| parse_terminal(label))
         {
-            let _ = connection
-                .client
-                .attach_terminal_preserving_geometry(&terminal);
+            let _ = connection.subscribe_resource(&terminal);
         }
         let epoch = connection.connection_epoch();
         if self.views_epoch == Some(epoch) {
@@ -308,9 +310,7 @@ impl Workspace {
         {
             // A placed spawn may still lack bootstrap and be absent from the
             // home inventory. Recover its exact id on every new connection too.
-            let _ = connection
-                .client
-                .attach_terminal_preserving_geometry(terminal);
+            let _ = connection.subscribe_resource(terminal);
         }
     }
 
@@ -469,15 +469,18 @@ impl Workspace {
             .filter(|id| !id.is_empty())
             .unwrap_or_else(|| new_id("place"));
         let terminal_id = parse_terminal(label);
-        // A surface draws from the connection's newest frame, not a view.
-        let surface = terminal_id
+        // Documents have no terminal view, even before their first publication.
+        let document = terminal_id
             .as_ref()
-            .is_some_and(|terminal| connection.surfaces.contains_key(terminal));
+            .is_some_and(|terminal| connection.document_kind(terminal).is_some());
+        if document && let Some(resource) = terminal_id.as_ref() {
+            let _ = connection.subscribe_resource(resource);
+        }
         let view_id = terminal_id
             .as_ref()
-            .filter(|terminal| !surface && connection.ready(terminal))
+            .filter(|terminal| !document && connection.ready(terminal))
             .and_then(|terminal| self.view_for(connection, terminal, &id));
-        if view_id.is_none() && !surface {
+        if view_id.is_none() && !document {
             self.unresolved.insert(id.clone());
         }
         Placement {
@@ -542,26 +545,6 @@ fn insert_beside(
     tab.zoomed_id = None;
     tab.focused_id = placement.id.clone();
     split_at(&mut tab.root, target_id, placement, axis, before);
-}
-
-/// Save the current tabs when the incarnation matches. Display-only updates
-/// stay with the caller.
-#[must_use]
-pub fn snapshot_layout(
-    workspace: &Workspace,
-    connection: &Connection,
-    display: &DisplayPrefs,
-) -> Option<SavedLayout> {
-    let server = workspace.server_id()?;
-    if connection.server_id().as_deref() != Some(server) || connection.status != Status::Attached {
-        return None;
-    }
-    Some(save_layout(
-        server,
-        &workspace.tabs,
-        display,
-        Some(&workspace.active_id),
-    ))
 }
 
 /// Refuse a `phux new` that would fall back to the desktop process directory.

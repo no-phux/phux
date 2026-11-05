@@ -203,7 +203,7 @@ fn output_flood_publications_per_frame() {
         let (shutdown, server) = spawn_server_with_seed_cmd(
             socket.clone(),
             "flood",
-            portable_pty::CommandBuilder::new("/bin/sh"),
+            phux_server::LaunchCommand::new("/bin/sh"),
         );
         let options = PhuxConnectOptions {
             size: std::mem::size_of::<PhuxConnectOptions>(),

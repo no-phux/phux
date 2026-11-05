@@ -5,7 +5,7 @@
 )]
 
 use super::*;
-use phux_terminal::actor::TerminalResource as _;
+use phux_terminal_api::actor::TerminalResource as _;
 
 /// Highest `GET_SCREEN.format` selector (low 7 bits) this build renders:
 /// `1` HTML, `2` VT.
@@ -244,12 +244,12 @@ fn reconcile_process_exit(
 /// Ask a Terminal's actor for its typed process facet; `None` when it cannot
 /// answer.
 async fn query_process_facet(
-    terminal: &phux_terminal::actor::TerminalHandle,
+    terminal: &phux_terminal_api::actor::TerminalHandle,
 ) -> Option<phux_core::process::TerminalProcessState> {
     let (reply, reply_rx) = oneshot::channel();
     terminal
         .process
-        .send(phux_terminal::actor::ProcessFacetRequest { reply })
+        .send(phux_terminal_api::actor::ProcessFacetRequest { reply })
         .await
         .ok()?;
     reply_rx.await.ok()
