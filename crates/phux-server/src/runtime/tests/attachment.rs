@@ -179,7 +179,8 @@ async fn native_resync_capture_failure_closes_connection_and_rolls_back_consumer
             let (handle, mut rx) = stub_terminal();
             let output_tx = handle.output.clone();
             state.with_mut(|s| {
-                let _ = s.register_resource_handle(terminal, handle, CancellationToken::new());
+                s.register_resource_handle(terminal, handle, CancellationToken::new())
+                    .unwrap();
             });
 
             let client_id = state.with_mut(crate::state::ServerState::new_client_id);

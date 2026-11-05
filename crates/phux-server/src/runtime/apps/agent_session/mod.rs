@@ -5,7 +5,7 @@ use futures_util::future::LocalBoxFuture;
 use phux_protocol::ids::{OperationId, ResourceKey, Revision};
 use phux_protocol::wire::frame::{Command, CommandResult, ErrorCode, FrameKind};
 
-use super::{ResourceApp, ResourceFrame, ResourceSpawn, StreamBootstrap};
+use super::{ResourceApp, ResourceFrame, ResourceLaunch, ResourceSpawn, StreamBootstrap};
 use crate::resource::{ResourceHandle, ResourceKind, WrongResourceKind};
 use crate::runtime::commands::{AttachResourceFailure, CommandContext};
 use crate::runtime::connections::dispatch::FrameFlow;
@@ -28,6 +28,14 @@ const DEFAULT_AGENT_CHUNK_BYTES: usize = 64 * 1024;
 pub(crate) struct AgentSessionApp;
 
 impl ResourceApp for AgentSessionApp {
+    fn supports_organization_launch(&self) -> bool {
+        false
+    }
+
+    fn launch(&self, _launch: ResourceLaunch<'_>) -> Result<(), String> {
+        Err("an agent-session projection must be opened by its producer".to_owned())
+    }
+
     fn defers_stream_bootstrap(&self) -> bool {
         false
     }

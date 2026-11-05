@@ -94,6 +94,16 @@ pub(crate) struct ResourceSpawn<'a> {
     pub(crate) connection_token: &'a CancellationToken,
 }
 
+/// One already-committed launch effect. The app must execute this exact
+/// resource activation, never substitute another kind's default launch.
+#[derive(Clone, Copy)]
+pub(crate) struct ResourceLaunch<'a> {
+    pub(crate) state: &'a SharedState,
+    pub(crate) resource: phux_core::ids::ResourceId,
+    pub(crate) spec: &'a phux_core::LaunchSpec,
+    pub(crate) root_token: &'a CancellationToken,
+}
+
 /// The agent-session streams one graceful upgrade carries. From the moment it
 /// exists until exec, the host holds it; dropping it releases whatever it
 /// still holds, and a successful exec replaces the process instead.
@@ -140,6 +150,14 @@ pub(crate) struct ResourceFrame<'a> {
 
 /// What the host asks of the app serving a kind.
 pub(crate) trait ResourceApp: Sync {
+    /// Whether ordinary organization creation/relaunch can execute this kind.
+    /// Producer-bound projections instead open through their producer's app.
+    fn supports_organization_launch(&self) -> bool;
+
+    /// Execute a committed launch. A failure is reported against the effect's
+    /// activation by the host; it cannot undo the accepted operation.
+    fn launch(&self, launch: ResourceLaunch<'_>) -> Result<(), String>;
+
     /// Whether a multi-stream connection waits for `STREAM_BIND` before
     /// bootstrapping this kind's content.
     fn defers_stream_bootstrap(&self) -> bool;

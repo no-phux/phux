@@ -15,7 +15,7 @@ use phux_tree::{
 };
 use tokio::sync::oneshot;
 
-use super::{ResourceApp, ResourceFrame, ResourceSpawn, StreamBootstrap};
+use super::{ResourceApp, ResourceFrame, ResourceLaunch, ResourceSpawn, StreamBootstrap};
 use crate::resource::{ResourceHandle, ResourceKind, WrongResourceKind};
 use crate::runtime::commands::{AttachResourceFailure, CommandContext};
 use crate::runtime::connections::dispatch::FrameFlow;
@@ -99,6 +99,17 @@ pub(crate) static TREE_APP: DocumentApp<TreeDocument> = DocumentApp(std::marker:
 pub(crate) static SURFACE_APP: DocumentApp<SurfaceDocument> = DocumentApp(std::marker::PhantomData);
 
 impl<A: DocumentApi> ResourceApp for DocumentApp<A> {
+    fn supports_organization_launch(&self) -> bool {
+        false
+    }
+
+    fn launch(&self, _launch: ResourceLaunch<'_>) -> Result<(), String> {
+        Err(format!(
+            "a {} projection must be opened by its producer",
+            A::LABEL
+        ))
+    }
+
     fn defers_stream_bootstrap(&self) -> bool {
         false
     }
@@ -149,7 +160,8 @@ impl<A: DocumentApi> ResourceApp for DocumentApp<A> {
         _resource: &ResourceKey,
         _expected: Revision,
     ) -> Option<CommandResult> {
-        // A document is never relaunched: its producer spawns a fresh one.
+        // The producer spawns a fresh document. Ordinary relaunch falls
+        // through to the host's app-support refusal before any commit.
         None
     }
 

@@ -99,7 +99,8 @@ fn spawn_pane(state: &SharedState, session: &str, seed: &[u8]) -> Pane {
     let (wire, core) = state.with_mut(|s| {
         let (_sid, core) = s.seed_session(session);
         (
-            s.register_resource_handle(core, handle, token.clone()),
+            s.register_resource_handle(core, handle, token.clone())
+                .unwrap(),
             core,
         )
     });

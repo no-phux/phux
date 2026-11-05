@@ -51,5 +51,6 @@ fn run<F: std::future::Future<Output = ()>>(f: F) {
 
 mod arrangements;
 mod create;
+mod launch_kinds;
 mod paging;
 mod session;

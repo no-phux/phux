@@ -170,3 +170,95 @@ fn a_restart_marks_survivors_lost_and_the_gone_unobserved_and_relaunches_nothing
         drop(orphan);
     });
 }
+
+#[test]
+fn restarted_projections_refuse_wire_relaunch_without_starting_a_default_shell() {
+    use phux_protocol::ids::{OperationId, Revision};
+    use phux_protocol::wire::frame::{Command as WireCommand, CommandResult, Refusal};
+
+    run_local(async {
+        let dir = TempDir::new().unwrap();
+        let store_path = dir.path().join("org.sqlite3");
+        let mut state = ServerState::new();
+        let store = SqliteOrgStore::open(&store_path).unwrap();
+        let org = fresh_org(state.instance_id(), now_stamp());
+        state.install_org(Box::new(store), org, false);
+        state.persist_first_start().unwrap();
+        let (_, parent) = state.seed_session("work");
+        let actor = Actor::owner();
+        let agent = state
+            .create_agent_session(
+                parent,
+                &phux_core::resource::AgentFacet {
+                    provider: "test-producer".into(),
+                    native_id: None,
+                    state: None,
+                },
+                &actor,
+            )
+            .unwrap();
+        let tree = state
+            .create_document(
+                parent,
+                phux_core::LaunchSpec::Tree(phux_core::resource::TreeLaunch {
+                    target: "test-app".into(),
+                }),
+                &actor,
+            )
+            .unwrap();
+        let surface = state
+            .create_document(
+                parent,
+                phux_core::LaunchSpec::Surface(phux_core::resource::SurfaceLaunch {
+                    target: "test-window".into(),
+                }),
+                &actor,
+            )
+            .unwrap();
+        let keys = [agent, tree, surface].map(|id| state.registry().resource_key(id).unwrap());
+        drop(state); // Simulate a crash: no graceful teardown of records.
+
+        let location = OrgStoreLocation::Path(store_path.clone());
+        let socket = dir.path().join("phux.sock");
+        let (shutdown, handle) = spawn_server_with(socket.clone(), None, move |cfg| {
+            cfg.org_store = location;
+            // The vulnerable path would create a real default-shell PTY.
+            cfg.seed_with_pty = true;
+        });
+        let mut client = wait_for_socket(&socket, SOCKET_CONNECT_DEADLINE).await;
+        let reconciled = load(&store_path);
+        for (index, key) in keys.into_iter().enumerate() {
+            let before = reconciled
+                .resources
+                .iter()
+                .find(|record| record.key == key)
+                .unwrap();
+            assert_eq!(
+                state_of(&reconciled, key),
+                (ExecState::Completed, Some(Outcome::Unobserved))
+            );
+            let result = phux_server_testkit::command(
+                &mut client,
+                u32::try_from(index + 1).unwrap(),
+                WireCommand::ResourceRelaunch {
+                    operation: OperationId::new([u8::try_from(index + 1).unwrap(); 16]).unwrap(),
+                    resource: phux_server::org_wire::resource_key(key).unwrap(),
+                    expected: Revision::new(before.revision.get()),
+                },
+            )
+            .await;
+            assert!(
+                matches!(result, CommandResult::Refused(Refusal::Unsupported { .. })),
+                "{result:?}"
+            );
+            let after = load(&store_path);
+            assert_eq!(
+                after.resources.iter().find(|record| record.key == key),
+                Some(before)
+            );
+            assert_eq!(after.resources.len(), reconciled.resources.len());
+        }
+        drop(client);
+        join_after_shutdown(shutdown, handle).await;
+    });
+}

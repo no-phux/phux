@@ -64,7 +64,9 @@ async fn native_preflight_failure_flushes_error_then_duplex_eof() {
             // Nothing answers a detach here, so teardown must not wait for one.
             stub.consumer_detach.close();
             let client_id = state.with_mut(|server| {
-                let _ = server.register_resource_handle(terminal, handle, CancellationToken::new());
+                server
+                    .register_resource_handle(terminal, handle, CancellationToken::new())
+                    .unwrap();
                 let client_id = server.new_client_id();
                 server.set_peer_identity(
                     client_id,

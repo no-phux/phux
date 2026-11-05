@@ -69,7 +69,8 @@ async fn upgrade_capture_names_what_no_client_has_read() {
     state.with_mut(|s| {
         let (_session, pane) = s.seed_session("quiet");
         let bundle = crate::runtime::apps::terminal::test_support::blank_terminal(80, 24);
-        let _ = s.register_resource_handle(pane, bundle.handle, bundle.token);
+        s.register_resource_handle(pane, bundle.handle, bundle.token)
+            .unwrap();
         let _ = s.seed_empty_session("empty").expect("seed");
         s.set_upgrade_context(
             7,

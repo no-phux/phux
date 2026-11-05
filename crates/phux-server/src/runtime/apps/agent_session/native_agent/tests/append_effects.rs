@@ -9,7 +9,8 @@ fn delayed_parent(fx: &Fixture, capacity: usize) -> mpsc::Receiver<AgentParentRe
             .unwrap()
             .clone()
             .with_companion(AgentParent { mailbox: control });
-        s.register_resource_handle(fx.parent, handle, fx.root.child_token());
+        s.register_resource_handle(fx.parent, handle, fx.root.child_token())
+            .unwrap();
     });
     receive
 }

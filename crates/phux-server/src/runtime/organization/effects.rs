@@ -13,7 +13,13 @@ use super::ORPHAN_GRACE;
 /// Run one effect a commit asked for.
 pub(super) fn run_effect(state: &SharedState, effect: Effect, root_token: &CancellationToken) {
     match effect {
-        Effect::Launch { resource, spec, .. } => launch(state, resource, &spec, root_token),
+        Effect::Launch {
+            resource,
+            activation,
+            spec,
+        } => {
+            launch(state, resource, activation, &spec, root_token);
+        }
         Effect::Terminate {
             resource,
             mode,
@@ -28,40 +34,62 @@ pub(super) fn run_effect(state: &SharedState, effect: Effect, root_token: &Cance
 fn launch(
     state: &SharedState,
     resource: phux_core::ResourceKey,
+    activation: phux_core::ActivationId,
     spec: &phux_core::LaunchSpec,
     root_token: &CancellationToken,
 ) {
-    let Some((terminal, with_pty, scrollback, cmd)) = state.with_mut(|s| {
+    let Some((id, kind)) = state.with(|s| {
         let id = s.registry().resource_id(&resource)?;
-        let with_pty = s.attach_create_seeds_pty();
-        let cmd = with_pty.then(|| crate::runtime::apps::terminal::launch::spec_command(s, spec));
-        if let phux_core::LaunchSpec::Terminal(t) = spec {
-            let wire = s.intern_resource_wire(id);
-            super::super::commands::set_agent_session(s, wire, t.restore.clone());
-        }
-        Some((id, with_pty, s.scrollback_limits(), cmd))
+        let record = s.org().resource(&resource)?;
+        let current = record.activation.as_ref()?;
+        (current.id == activation && current.state == phux_core::ExecState::Starting)
+            .then_some((id, record.kind))
     }) else {
         return;
     };
-    let cmd = cmd.map(|mut cmd| {
-        state.with_mut(|s| {
-            let _ = super::super::commands::register_pty_command(s, terminal, &mut cmd);
-        });
-        cmd
-    });
-    if let Err(error) = super::super::commands::launch_pane_actor_with_failure_policy(
-        state,
-        terminal,
-        cmd,
-        super::super::commands::DEFAULT_SPAWN_DIMS,
-        scrollback,
-        root_token,
-        None,
-        super::super::commands::SpawnAttribution::default(),
-        true,
-    ) {
-        warn!(?terminal, with_pty, %error, "launch effect failed");
+    let result = if spec.kind() == kind {
+        crate::runtime::apps::app_for(kind).launch(crate::runtime::apps::ResourceLaunch {
+            state,
+            resource: id,
+            spec,
+            root_token,
+        })
+    } else {
+        Err("committed resource kind and launch spec disagree".to_owned())
+    };
+    if let Err(error) = result {
+        fail_launch(state, resource, activation);
+        warn!(?resource, ?activation, %error, "launch effect failed");
     }
+}
+
+/// An execution failure settles only the effect that failed. A newer
+/// activation, or a failure already reported by the engine, is untouched.
+fn fail_launch(
+    state: &SharedState,
+    resource: phux_core::ResourceKey,
+    activation: phux_core::ActivationId,
+) {
+    state.with_mut(|s| {
+        let still_starting = s
+            .org()
+            .resource(&resource)
+            .and_then(|record| record.activation.as_ref())
+            .is_some_and(|current| {
+                current.id == activation && current.state == phux_core::ExecState::Starting
+            });
+        if !still_starting {
+            return;
+        }
+        if let Err(refusal) = s.commit_system(phux_core::Op::ActivationEnded {
+            resource,
+            activation,
+            state: phux_core::ExecState::Failed,
+            outcome: phux_core::Outcome::Exit(phux_core::ExitOutcome::UNKNOWN),
+        }) {
+            warn!(?resource, ?activation, %refusal, "failed launch outcome was not recorded");
+        }
+    });
 }
 
 /// End an activation. A live engine closes through the legacy kill's

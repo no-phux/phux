@@ -41,7 +41,9 @@ fn register_seeded_pane(
     let bundle = seeded_terminal(20, 5, b"seeded");
     let token = bundle.token;
     tokio::task::spawn_local(bundle.actor.run());
-    let wire = state.register_resource_handle(pane, bundle.handle, token.clone());
+    let wire = state
+        .register_resource_handle(pane, bundle.handle, token.clone())
+        .unwrap();
     (pane, wire, token)
 }
 
@@ -157,7 +159,8 @@ fn register_stub(state: &SharedState, pane: phux_core::ids::ResourceId) -> StubR
         rx.native_publication.close();
     }
     state.with_mut(|s| {
-        let _ = s.register_resource_handle(pane, handle, CancellationToken::new());
+        s.register_resource_handle(pane, handle, CancellationToken::new())
+            .unwrap();
     });
     rx
 }

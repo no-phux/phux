@@ -69,6 +69,73 @@ async fn pane_actor_failure_does_not_install_a_partial_tree() {
         .await;
 }
 
+#[tokio::test(flavor = "current_thread")]
+async fn wrong_kind_rebuild_rolls_back_prior_panes_without_running_the_rejected_actor() {
+    use crate::org_store::{OrgStore as _, SqliteOrgStore};
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("org.sqlite3");
+    tokio::task::LocalSet::new()
+        .run_until(async {
+            let mut state = ServerState::new();
+            state.set_org_store(Box::new(SqliteOrgStore::open(&path).unwrap()));
+            let (_, original) = state.seed_session("already-here");
+            state.persist_first_start().unwrap();
+            let original_wire = state.intern_resource_wire(original);
+            let before = SqliteOrgStore::open(&path)
+                .unwrap()
+                .load()
+                .unwrap()
+                .unwrap();
+            let handoff = blob(
+                vec![session(1, vec![2])],
+                vec![window(2, 1, vec![3, 4])],
+                vec![no_pty_pane(3, 2), no_pty_pane(4, 2)],
+            );
+            let rejected_ran = std::rc::Rc::new(std::cell::Cell::new(false));
+            let ran = rejected_ran.clone();
+            let result = state.rebuild_from_blob(
+                &handoff,
+                |core, pane, scrollback| {
+                    let mut rebuilt =
+                        crate::runtime::apps::terminal::upgrade::unwired(core, pane, scrollback)?;
+                    if pane.wire_id == 4 {
+                        rebuilt.handle = phux_tree::TreeActor::build(
+                            core,
+                            "test-app",
+                            tokio_util::sync::CancellationToken::new(),
+                        )
+                        .handle;
+                        let ran = ran.clone();
+                        rebuilt.engine = Box::pin(async move {
+                            ran.set(true);
+                        });
+                    }
+                    Ok(rebuilt)
+                },
+                crate::runtime::apps::rebuild_session,
+            );
+            assert!(matches!(result, Err(RebuildError::Registration(_))));
+            tokio::task::yield_now().await;
+            assert!(!rejected_ran.get());
+            assert_eq!(state.resource_from_wire(&original_wire), Some(original));
+            assert_eq!(state.resource_wire_of(original), Some(original_wire));
+            assert_eq!(
+                session_names(&state),
+                vec!["already-here".to_owned(), "intake".to_owned()]
+            );
+            assert!(state.resource_ids().is_empty());
+            let after = SqliteOrgStore::open(&path)
+                .unwrap()
+                .load()
+                .unwrap()
+                .unwrap();
+            assert_eq!(after.resources, before.resources);
+            assert_eq!(after.sessions, before.sessions);
+            assert_eq!(after.arrangements, before.arrangements);
+        })
+        .await;
+}
+
 /// #1207: a hot-swap upgrade used to drop every Group-scope key, so
 /// each session's `phux.tui.layout/v1/<id>` vanished and attached TUIs
 /// fell back to one pane. Group and Global entries must cross; Terminal

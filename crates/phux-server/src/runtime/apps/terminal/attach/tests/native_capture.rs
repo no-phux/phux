@@ -158,7 +158,8 @@ async fn fresh_native_capacity_failure_sends_error_then_closes_without_publicati
                 mut native_publication_rx,
             ) = native_attach_handle();
             state.with_mut(|s| {
-                let _ = s.register_resource_handle(terminal, handle, CancellationToken::new());
+                s.register_resource_handle(terminal, handle, CancellationToken::new())
+                    .unwrap();
             });
             let client_id = state.with_mut(crate::state::ServerState::new_client_id);
             let (out_tx, mut out_rx) =
@@ -220,7 +221,8 @@ async fn replacement_native_capacity_failure_closes_but_preserves_terminal_state
                 mut native_publication_rx,
             ) = native_attach_handle();
             state.with_mut(|s| {
-                let _ = s.register_resource_handle(terminal, handle, CancellationToken::new());
+                s.register_resource_handle(terminal, handle, CancellationToken::new())
+                    .unwrap();
             });
             let client_id = state.with_mut(crate::state::ServerState::new_client_id);
             let (out_tx, mut out_rx) =

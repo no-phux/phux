@@ -193,7 +193,11 @@ pub(in crate::runtime) fn launch_pane_actor_with_failure_policy(
     // Sinks go in before `actor.run()` consumes the actor.
     let wiring = wire_pane_actor(state, terminal, &mut actor);
     let wire_terminal_id = state.with_mut(|s| {
-        let _ = s.spawn_resource_actor(terminal, handle, terminal_token, actor.run());
+        let wire = s
+            .spawn_resource_actor(terminal, handle, terminal_token, actor.run())
+            .map_err(|error| {
+                phux_terminal::actor::TerminalActorError::Refused(error.to_string())
+            })?;
         // The executor report: the activation now holds a live process.
         s.activation_started(terminal, proc);
         if has_pty {
@@ -205,10 +209,9 @@ pub(in crate::runtime) fn launch_pane_actor_with_failure_policy(
                 s.note_retain_request(terminal, secs);
             }
         }
-        let wire = s.intern_resource_wire(terminal);
         journal_pane_spawned(s, &wire, attribution);
-        wire
-    });
+        Ok::<_, phux_terminal::actor::TerminalActorError>(wire)
+    })?;
     let events = wiring.start(state, &wire_terminal_id);
     spawn_resource_exit_watcher(
         state.clone(),

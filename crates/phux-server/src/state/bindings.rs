@@ -306,11 +306,14 @@ mod tests {
         let mut tokens = Vec::new();
         for resource in [grandparent, child, grandchild] {
             let token = CancellationToken::new();
-            let _ = state.register_resource_handle(
-                resource,
-                crate::state::tests::mk_handle(),
-                token.clone(),
-            );
+            let handle = if resource == grandparent {
+                crate::state::tests::mk_handle()
+            } else {
+                crate::state::tests::mk_agent_handle(grandparent, token.clone())
+            };
+            state
+                .register_resource_handle(resource, handle, token.clone())
+                .unwrap();
             tokens.push(token);
         }
 

@@ -86,7 +86,7 @@ impl ServerState {
             arranged_now,
         } = fresh.rebuild_records(self.org(), self.org.loaded, blob)?;
         let mut panes = fresh.rebuild_panes(blob, &keyed, build_pane)?;
-        fresh.rebuild_agent_sessions(blob, &keyed, &mut panes, build_session);
+        fresh.rebuild_agent_sessions(blob, &keyed, &mut panes, build_session)?;
         if imported {
             self.org.store.import(
                 fresh.org(),
@@ -225,7 +225,7 @@ impl ServerState {
             self.idspace
                 .bind_resource(core, WireResourceId::local(p.wire_id));
             panes.wired.push((core, wired));
-            self.spawn_resource_actor(core, handle, token, engine);
+            self.spawn_resource_actor(core, handle, token, engine)?;
             // ADR-0124: what the old image knew about this pane's retention.
             if let Some(secs) = p.retain_secs {
                 self.note_retain_request(core, secs);
@@ -259,7 +259,7 @@ impl ServerState {
             u32,
             CancellationToken,
         ) -> RebuiltSession,
-    ) {
+    ) -> Result<(), RebuildError> {
         let log_bytes = self.config.agent_log_bytes;
         for carried in &blob.agent_sessions {
             let Some(&parent) = panes.core_ids.get(&carried.parent_wire_id) else {
@@ -300,9 +300,10 @@ impl ServerState {
             // Pre-bind so the registration's intern returns the blob's id.
             self.idspace
                 .bind_resource(core, WireResourceId::local(carried.wire_id));
-            self.spawn_resource_actor(core, rebuilt.handle, token, rebuilt.engine);
+            self.spawn_resource_actor(core, rebuilt.handle, token, rebuilt.engine)?;
             panes.exit_watchers.push((core, rebuilt.exit_notify));
         }
+        Ok(())
     }
 
     /// Reinstate the carried Group- and Global-scope metadata. No client is

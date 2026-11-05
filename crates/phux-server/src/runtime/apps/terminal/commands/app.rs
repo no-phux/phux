@@ -12,7 +12,9 @@ use phux_terminal::actor::TerminalResource as _;
 
 use super::*;
 use crate::resource::ResourceKind;
-use crate::runtime::apps::{ResourceApp, ResourceFrame, ResourceSpawn, StreamBootstrap};
+use crate::runtime::apps::{
+    ResourceApp, ResourceFrame, ResourceLaunch, ResourceSpawn, StreamBootstrap,
+};
 use crate::runtime::connections::dispatch::FrameFlow;
 use crate::runtime::operation_dedupe::OperationClaim;
 
@@ -25,6 +27,14 @@ pub(crate) struct TerminalApp;
 pub(crate) const NO_TERMINAL_PROFILE: &str = "this connection offered no Terminal bootstrap profile at HELLO, so it cannot consume a Terminal stream";
 
 impl ResourceApp for TerminalApp {
+    fn supports_organization_launch(&self) -> bool {
+        true
+    }
+
+    fn launch(&self, launch: ResourceLaunch<'_>) -> Result<(), String> {
+        super::super::launch::execute(launch)
+    }
+
     fn defers_stream_bootstrap(&self) -> bool {
         true
     }

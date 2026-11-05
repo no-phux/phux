@@ -80,6 +80,9 @@ pub(crate) struct RebuiltSession {
 /// Errors rebuilding a [`ServerState`] from a [`StateBlob`].
 #[derive(Debug, thiserror::Error)]
 pub enum RebuildError {
+    /// A rebuilt engine does not match the resource record it would own.
+    #[error("engine registration: {0}")]
+    Registration(#[from] super::ResourceRegistrationError),
     /// The carried records break an organization invariant.
     #[error("organization rebuild: {0}")]
     Organization(#[from] phux_core::InvariantViolation),

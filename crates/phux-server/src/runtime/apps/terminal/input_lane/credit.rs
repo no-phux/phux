@@ -160,6 +160,7 @@ mod tests {
         let wire = state.with_mut(|s| {
             let pane = s.seed_session("s").1;
             s.register_resource_handle(pane, bundle.handle.clone(), bundle.token.clone())
+                .unwrap()
         });
         (wire, pool)
     }

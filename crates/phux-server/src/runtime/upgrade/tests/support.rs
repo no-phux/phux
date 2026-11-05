@@ -170,7 +170,9 @@ pub(super) fn spawn_agent_session(
         4096,
     );
     let append = bundle.handle.agent_session().unwrap().append.clone();
-    let wire = s.spawn_resource_actor(core, bundle.handle, token, bundle.actor.run());
+    let wire = s
+        .spawn_resource_actor(core, bundle.handle, token, bundle.actor.run())
+        .unwrap();
     (wire, append)
 }
 
@@ -192,13 +194,16 @@ pub(super) fn old_image_with_agent_sessions(
     let (sid, live_pane) = s.seed_session("main");
     let live = crate::runtime::apps::terminal::test_support::seeded_terminal(20, 5, b"live");
     let live_token = live.token.clone();
-    let pane_wire = s.spawn_resource_actor(live_pane, live.handle, live_token, live.actor.run());
+    let pane_wire = s
+        .spawn_resource_actor(live_pane, live.handle, live_token, live.actor.run())
+        .unwrap();
     let (agent_wire, append) = spawn_agent_session(s, live_pane, "claude", Some("native-1"));
 
     let exited = s.add_pane_to_session(sid).unwrap();
     let dead = crate::runtime::apps::terminal::test_support::seeded_terminal(20, 5, b"");
     let dead_token = dead.token.clone();
-    let _ = s.spawn_resource_actor(exited, dead.handle, dead_token, dead.actor.run());
+    s.spawn_resource_actor(exited, dead.handle, dead_token, dead.actor.run())
+        .unwrap();
     let _ = spawn_agent_session(s, exited, "pi", None);
     s.note_retain_request(exited, 60);
     let _ = s

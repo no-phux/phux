@@ -245,6 +245,12 @@ the Terminal engine and only `runtime/apps/agent_session` the `AgentSession`
 engine;
 `seam_tests.rs` fails if any host module does. The host holds a launch command
 as an opaque `LaunchCommand`; deciding what a pane runs is the app's job.
+Organization launches also pass through the app: support is checked before
+commit, then the committed effect executes only through the recorded kind.
+Producer-bound projections refuse ordinary relaunch; no other kind inherits
+a default shell. Execution failure settles only the effect's exact activation.
+Engine registration rejects absent records and record/handle kind mismatches
+before allocating a wire identity, replacing a handle, or spawning the actor.
 Stream and input frames reach their resource's app through
 `ResourceApp::frame`. Connection negotiation, `VIEWPORT_RESIZE` and client
 engines still assume a Terminal;

@@ -119,7 +119,18 @@ fn spawn_transaction(
         proof,
         &delegation.credential.id,
     );
-    install_native_session(ctx, spec, &resources, binding, operation);
+    if let Err(error) = install_native_session(ctx, spec, &resources, binding, operation) {
+        crate::runtime::delegation::revoke_delegated_agent(state, &delegation.credential.id);
+        state.with_mut(|s| {
+            s.reap_resource(resources.agent);
+            if target.existing.is_some() {
+                s.activation_ended(resources.parent, phux_core::ExitOutcome::UNKNOWN, true);
+            } else {
+                s.reap_resource(resources.parent);
+            }
+        });
+        return Err(error);
+    }
     launch_native_guardian(
         ctx,
         &resources,
@@ -428,7 +439,7 @@ fn install_native_session(
     resources: &NativeSpawnResources,
     binding: NativeBinding,
     operation: Option<phux_protocol::ids::OperationId>,
-) {
+) -> Result<(), CommandResult> {
     let state = &ctx.state;
     let token = ctx.root_token.child_token();
     let bundle = AgentSessionActor::build(
@@ -439,18 +450,19 @@ fn install_native_session(
         state.with(crate::state::ServerState::agent_log_bytes),
     );
     state.with_mut(|s| {
+        s.spawn_resource_actor(
+            resources.agent,
+            bundle.handle.clone(),
+            token,
+            bundle.actor.run(),
+        )
+        .map_err(|error| refusal(error.to_string()))?;
         s.native_agents_mut()
             .bindings
             .insert(resources.agent_wire.clone(), binding);
         s.native_agents_mut()
             .wakes
             .insert(resources.agent_wire.clone(), Arc::new(Notify::new()));
-        s.spawn_resource_actor(
-            resources.agent,
-            bundle.handle.clone(),
-            token,
-            bundle.actor.run(),
-        );
         s.record_spawn(resources.parent, ctx.client_id);
         s.record_spawn(resources.agent, ctx.client_id);
         s.mark_if_viewer_session(ctx.client_id, &resources.parent_wire);
@@ -466,7 +478,8 @@ fn install_native_session(
         .with_actor(Some(ctx.client_id))
         .with_operation_id(operation);
         s.record_and_fanout(announcement);
-    });
+        Ok(())
+    })?;
     crate::runtime::connections::spawn_resource_exit_watcher(
         state.clone(),
         resources.agent,
@@ -474,6 +487,7 @@ fn install_native_session(
         ctx.root_token.clone(),
         None,
     );
+    Ok(())
 }
 
 fn launch_native_guardian(

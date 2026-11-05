@@ -97,6 +97,7 @@ pub use org::{OrgCommit, OsKeys, Reconciled, TerminalTarget, fresh_org, now_stam
 pub(crate) use resolve::{RelayRoute, Resolved, ResolvedOwned};
 use resource_table::ResourceTable;
 use session_table::SessionTable;
+pub use terminals::ResourceRegistrationError;
 pub use upgrade_blob::RebuildError;
 pub(crate) use upgrade_blob::UpgradeHandoffs;
 

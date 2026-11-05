@@ -88,11 +88,8 @@ pub(crate) fn seed_pane_command(
 
 /// The command a Terminal launch spec runs: its argv, else the default
 /// shell, in its cwd, with its environment and the server's `TERM`.
-pub(crate) fn spec_command(s: &ServerState, spec: &phux_core::LaunchSpec) -> LaunchCommand {
-    let launch = match spec {
-        phux_core::LaunchSpec::Terminal(t) => t.clone(),
-        _ => phux_core::TerminalLaunch::default(),
-    };
+pub(crate) fn spec_command(s: &ServerState, launch: &phux_core::TerminalLaunch) -> LaunchCommand {
+    let launch = launch.clone();
     let mut cmd = argv_command((!launch.argv.is_empty()).then_some(launch.argv))
         .unwrap_or_else(|| phux_terminal::actor::default_shell_command(s.shell(), s.login_shell()));
     // A recorded launch directory is intent, not a hint. If it disappears
@@ -105,4 +102,43 @@ pub(crate) fn spec_command(s: &ServerState, spec: &phux_core::LaunchSpec) -> Lau
     }
     phux_terminal::actor::apply_term(&mut cmd, s.term());
     cmd
+}
+
+/// Execute a Terminal launch only. The host already committed the resource
+/// activation; the existing launch path reports process creation failures.
+pub(crate) fn execute(launch: super::super::ResourceLaunch<'_>) -> Result<(), String> {
+    let super::super::ResourceLaunch {
+        state,
+        resource,
+        spec,
+        root_token,
+    } = launch;
+    let phux_core::LaunchSpec::Terminal(spec) = spec else {
+        return Err("the Terminal app received another kind's launch spec".to_owned());
+    };
+    let (scrollback, cmd) = state.with_mut(|s| {
+        let cmd = s.attach_create_seeds_pty().then(|| spec_command(s, spec));
+        let wire = s.intern_resource_wire(resource);
+        super::commands::set_agent_session(s, wire, spec.restore.clone());
+        (s.scrollback_limits(), cmd)
+    });
+    let cmd = cmd.map(|mut cmd| {
+        state.with_mut(|s| {
+            let _ = super::commands::register_pty_command(s, resource, &mut cmd);
+        });
+        cmd
+    });
+    super::commands::launch_pane_actor_with_failure_policy(
+        state,
+        resource,
+        cmd,
+        super::commands::DEFAULT_SPAWN_DIMS,
+        scrollback,
+        root_token,
+        None,
+        super::commands::SpawnAttribution::default(),
+        true,
+    )
+    .map(|_| ())
+    .map_err(|error| error.to_string())
 }
