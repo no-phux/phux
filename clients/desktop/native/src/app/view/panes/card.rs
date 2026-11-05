@@ -5,7 +5,7 @@ use std::time::Instant;
 use gpui::prelude::*;
 use gpui::{
     AnyElement, App, Context, DragMoveEvent, ExternalPaths, FileDropEvent, Hsla, IntoElement,
-    ParentElement, SharedString, Styled, Window, div, px,
+    ObjectFit, ParentElement, SharedString, Styled, Window, div, img, px,
 };
 
 use crate::workspace::layout::{self, Placement};
@@ -44,6 +44,21 @@ fn pending_terminal(missing: bool, look: &Look) -> AnyElement {
                 .child("Saved terminal is not on this server"),
         )
         .into_any_element()
+}
+
+/// A surface pane's body: the newest frame, letterboxed to the card.
+fn surface_body(desk: &Desk, placement: &Placement, look: &Look) -> AnyElement {
+    let image = placement
+        .terminal_id
+        .as_ref()
+        .and_then(|id| desk.surface(id));
+    match image {
+        Some(image) => img(image)
+            .size_full()
+            .object_fit(ObjectFit::Contain)
+            .into_any_element(),
+        None => pending_terminal(false, look),
+    }
 }
 
 /// A terminal pane's body: its cached view, or a placeholder while the
@@ -120,6 +135,7 @@ pub(super) fn pane_view(
     let body = match identity.kind {
         PaneKind::Conversation => conversation::render(desk, &placement_id, colors, window, cx),
         PaneKind::Terminal => terminal_body(desk, placement, focused, &look, window, cx),
+        PaneKind::Surface => surface_body(desk, placement, &look),
     };
     let tab = desk.active_tab();
     let zoomed = tab.is_some_and(|tab| tab.zoomed_id.is_some());

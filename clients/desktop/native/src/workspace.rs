@@ -469,11 +469,15 @@ impl Workspace {
             .filter(|id| !id.is_empty())
             .unwrap_or_else(|| new_id("place"));
         let terminal_id = parse_terminal(label);
+        // A surface draws from the connection's newest frame, not a view.
+        let surface = terminal_id
+            .as_ref()
+            .is_some_and(|terminal| connection.surfaces.contains_key(terminal));
         let view_id = terminal_id
             .as_ref()
-            .filter(|terminal| connection.ready(terminal))
+            .filter(|terminal| !surface && connection.ready(terminal))
             .and_then(|terminal| self.view_for(connection, terminal, &id));
-        if view_id.is_none() {
+        if view_id.is_none() && !surface {
             self.unresolved.insert(id.clone());
         }
         Placement {

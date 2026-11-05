@@ -4,6 +4,10 @@
 
 ### Features
 
+- Show a mirrored window as a pane: a session's pixel surfaces
+  (`phux agent surface mirror`) land as leaves of their own, drawing the
+  newest frame letterboxed in the card.
+
 - Make the Emblem Fox the app icon and the fleet playground's piece; the
   piece follows the window theme by default, and a palette button cycles
   fixed colour schemes and saves the choice.

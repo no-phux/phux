@@ -20,6 +20,7 @@ impl Workspace {
             .iter()
             .filter(|pane| pane.session_name == self.session)
             .map(|pane| pane.terminal_id.clone())
+            .chain(connection.surfaces_in(&self.session))
             .filter(|terminal| self.considered.insert(terminal_label(terminal)))
             .collect();
         for terminal in unseen {

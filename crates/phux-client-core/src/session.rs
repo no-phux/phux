@@ -45,8 +45,8 @@ mod replicas;
 mod update;
 
 pub use effects::{
-    EffectBuffer, KernelDamage, KernelDamageKind, KernelEffect, KernelJob, KernelSend,
-    KernelStatus, TombstoneRecord,
+    DocumentPublication, EffectBuffer, KernelDamage, KernelDamageKind, KernelEffect, KernelJob,
+    KernelSend, KernelStatus, TombstoneRecord,
 };
 pub use error::{HistoryRejectionReason, HistoryUnavailableReason, KernelError};
 pub use kernel_input::{
@@ -212,8 +212,9 @@ pub struct SessionKernel<E: EngineAdapter> {
     retain_replica_on_close: HashSet<ResourceId>,
     /// Kind per resource; survives closure, released with the resource.
     kinds: HashMap<ResourceId, ResourceKind>,
-    /// Accessibility trees whose streams this kernel passes through.
-    trees: std::collections::HashSet<ResourceId>,
+    /// Document resources (trees, surfaces) and the bootstrap cut each is
+    /// staging; the kernel keeps no document, only the cut in flight.
+    documents: HashMap<ResourceId, DocumentStaging>,
     /// `AgentSession` resources: record streams without replicas.
     agents: HashMap<ResourceId, AgentStream>,
     /// Last controller views for closed native sources, readable but unavailable.
@@ -278,7 +279,7 @@ impl<E: EngineAdapter> SessionKernel<E> {
             closed_replicas: HashMap::new(),
             retain_replica_on_close: HashSet::new(),
             kinds: HashMap::new(),
-            trees: std::collections::HashSet::new(),
+            documents: HashMap::new(),
             agents: HashMap::new(),
             closed_native_views: HashMap::new(),
             closed: HashSet::new(),
@@ -426,11 +427,24 @@ const fn is_agent_profile(profile: BootstrapStreamProfile) -> bool {
     )
 }
 
-/// Whether a stream profile names an accessibility tree's document codec.
-/// The kernel models no such stream: its frames pass through to the caller
-/// untouched, like its bytes, which are one JSON document each.
-const fn is_tree_profile(profile: BootstrapStreamProfile) -> bool {
-    matches!(profile, BootstrapStreamProfile::AccessibilityTreeJsonV1)
+/// The document kind a stream profile carries, if it is a document codec.
+/// The kernel models no replica for one: a bootstrap is the document in
+/// chunks and every live frame is a whole newer document, each handed on as
+/// a [`KernelEffect::Document`].
+const fn document_kind(profile: BootstrapStreamProfile) -> Option<ResourceKind> {
+    match profile {
+        BootstrapStreamProfile::AccessibilityTreeJsonV1 => Some(ResourceKind::AccessibilityTree),
+        BootstrapStreamProfile::PixelSurfacePngV1 => Some(ResourceKind::PixelSurface),
+        _ => None,
+    }
+}
+
+/// The bootstrap cut of one document, gathered chunk by chunk until READY.
+#[derive(Debug, Default)]
+struct DocumentStaging {
+    kind: Option<ResourceKind>,
+    base_seq: u64,
+    buffer: Vec<u8>,
 }
 
 const fn profile_matches(selected: BootstrapProfile, incoming: BootstrapStreamProfile) -> bool {
@@ -455,6 +469,8 @@ pub mod agent_transcript;
 
 #[cfg(test)]
 mod agent_gap_tests;
+#[cfg(test)]
+mod document_stream_tests;
 
 #[cfg(test)]
 mod kernel_rig;

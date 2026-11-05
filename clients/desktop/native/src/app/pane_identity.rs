@@ -231,6 +231,8 @@ pub enum PaneKind {
     Terminal,
     /// The native conversation face of the agent bound to its terminal.
     Conversation,
+    /// The newest frame of a pixel surface, a window mirrored into phux.
+    Surface,
 }
 
 /// A pane's kind and origin together.
@@ -280,9 +282,20 @@ impl Desk {
             .map_or(PaneOrigin::Human, |terminal| self.terminal_origin(terminal))
     }
 
+    /// The newest frame of pixel surface `id`, once one has arrived.
+    pub(crate) fn surface(&self, id: &ResourceId) -> Option<std::sync::Arc<gpui::RenderImage>> {
+        self.link.as_ref()?.connection.surfaces.get(id).cloned()
+    }
+
     /// What `placement` shows and who drives it.
     pub(crate) fn pane_identity(&self, placement: &Placement) -> PaneIdentity {
-        let kind = if self.conversation_visible(&placement.id) {
+        let kind = if placement
+            .terminal_id
+            .as_ref()
+            .is_some_and(|id| self.surface(id).is_some())
+        {
+            PaneKind::Surface
+        } else if self.conversation_visible(&placement.id) {
             PaneKind::Conversation
         } else {
             PaneKind::Terminal

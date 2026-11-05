@@ -218,6 +218,13 @@ impl Connection {
                     publication,
                     session,
                 } if live => self.publish(publication, session, epoch),
+                Event::DocumentPublished { publication } if live => {
+                    if publication.kind == ResourceKind::PixelSurface
+                        && let Some(image) = surface_image(&publication.bytes)
+                    {
+                        self.surfaces.insert(publication.resource_id.clone(), image);
+                    }
+                }
                 Event::AgentSessionClosed { terminal_id, .. } if live => {
                     if let Some(conversation) = self.conversations.get_mut(terminal_id) {
                         conversation.closed = true;
@@ -230,6 +237,7 @@ impl Connection {
                 Event::TerminalClosed { terminal_id, .. } => {
                     self.agents.remove(terminal_id);
                     self.admitted.remove(terminal_id);
+                    self.surfaces.remove(terminal_id);
                     self.conversation_heads.remove(terminal_id);
                     self.conversations
                         .retain(|_, conversation| &conversation.parent != terminal_id);
@@ -401,4 +409,16 @@ pub(super) fn note_agent(
     }
     agents.insert(terminal.clone(), next);
     true
+}
+
+/// Decode one published PNG for GPUI's atlas, which takes straight-alpha
+/// BGRA. A frame that does not decode leaves the last one showing.
+fn surface_image(png: &[u8]) -> Option<Arc<gpui::RenderImage>> {
+    let mut buffer = image::load_from_memory(png).ok()?.to_rgba8();
+    for pixel in buffer.as_chunks_mut::<4>().0 {
+        pixel.swap(0, 2);
+    }
+    Some(Arc::new(gpui::RenderImage::new([image::Frame::new(
+        buffer,
+    )])))
 }

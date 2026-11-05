@@ -207,6 +207,8 @@ impl Connection {
                 }
                 KernelEffect::Damage(_) => outcome.render = true,
                 KernelEffect::AgentPublication(_) => outcome.badges = true,
+                // The web client draws no tree or surface yet.
+                KernelEffect::Document(_) => {}
                 KernelEffect::Status(KernelStatus::Engine {
                     key,
                     status: EngineStatus::Bell,

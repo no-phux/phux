@@ -2,7 +2,8 @@
 
 use super::{
     AgentPublication, BootstrapId, CloseReason, EngineJob, EngineStatus, HistoryStatus,
-    HistoryUnavailableReason, InputEvent, ReplicaKey, ResourceId, StreamId, TombstoneReason,
+    HistoryUnavailableReason, InputEvent, ReplicaKey, ResourceId, ResourceKind, StreamId,
+    TombstoneReason,
 };
 #[cfg(doc)]
 use super::{KernelInput, SessionKernel, agent_stream};
@@ -179,6 +180,24 @@ pub enum KernelEffect {
     /// Invalid staging never emits this effect. Raw stream bytes never reach
     /// a frontend.
     AgentPublication(AgentPublication),
+    /// One whole replicated document (`docs/resource-kinds.md`): a bootstrap
+    /// cut or a live publish of an `AccessibilityTree` or `PixelSurface`.
+    /// The kernel keeps no copy; the newest one wins at the consumer.
+    Document(DocumentPublication),
+}
+
+/// A replicated document as the server published it, whole.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DocumentPublication {
+    /// The document resource.
+    pub resource_id: ResourceId,
+    /// Which kind of document, so the consumer knows the codec: JSON for a
+    /// tree, PNG for a surface.
+    pub kind: ResourceKind,
+    /// The publish sequence this document is, within the resource.
+    pub seq: u64,
+    /// The document bytes.
+    pub bytes: Vec<u8>,
 }
 
 /// Reusable high-water-mark effect queue.
