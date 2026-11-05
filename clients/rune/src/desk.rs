@@ -204,6 +204,7 @@ pub struct Desk {
     clock: f64,
     /// Spawns this window sent, to show the terminal when it lands.
     pending_spawns: Vec<u32>,
+    receipts: events::Receipts,
     /// Bumped by every frame change of the shown terminal, so the view runs.
     pub generation: u64,
     pub font_size: f32,
@@ -394,6 +395,7 @@ impl Desk {
             blink_since: 0.0,
             clock: 0.0,
             pending_spawns: Vec::new(),
+            receipts: events::Receipts::default(),
             generation: 0,
             font_size,
             scale: Cell::new(2.0),

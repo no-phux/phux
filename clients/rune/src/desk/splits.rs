@@ -4,6 +4,7 @@
 use std::time::{Duration, Instant};
 
 use phux_client_core::layout::{LayoutNode, SplitDir, leaves, split_at};
+use phux_client_core::org_ops::OrgOutcome;
 use phux_client_runtime::Client;
 use phux_client_runtime::control::SpawnRequest;
 use phux_protocol::ids::{OperationId, ResourceId, Revision};
@@ -62,6 +63,9 @@ impl Desk {
     /// waiting for the replica to show the last: a write from an old document
     /// is refused, or worse, splits a target that isn't in it.
     pub(super) fn place_pending_splits(&mut self, client: &Client) {
+        if self.receipts.waiting() {
+            return;
+        }
         self.finish_split(client);
         while self.split_write.is_none() && !self.unplaced_splits.is_empty() {
             if self.arrangement(client).is_none() {
@@ -145,6 +149,44 @@ impl Desk {
             "The layout could not be saved; it shows on its own.",
         );
         self.want(new);
+    }
+
+    /// Resolve one layout correlation. An uncertain receipt must not become a
+    /// fresh write with a new operation id, or masquerade as a saved layout.
+    pub(super) fn layout_outcome(
+        &mut self,
+        client: &Client,
+        operation: OperationId,
+        outcome: OrgOutcome,
+    ) -> bool {
+        match outcome {
+            OrgOutcome::Unknown { reason } | OrgOutcome::NotSent { reason } => {
+                self.abandon_layout(operation, &reason)
+            }
+            other => {
+                if !self.layout_ops.remove(&operation) {
+                    return false;
+                }
+                self.layout_written(client, operation, !other.succeeded());
+                true
+            }
+        }
+    }
+
+    /// Drop a failed/uncertain write without focusing or retrying old handles.
+    pub(super) fn abandon_layout(&mut self, operation: OperationId, reason: &str) -> bool {
+        if !self.layout_ops.remove(&operation) {
+            return false;
+        }
+        if self
+            .split_write
+            .as_ref()
+            .is_some_and(|w| w.sent == Some(operation))
+        {
+            self.split_write = None;
+        }
+        self.say(NoticeKind::Error, format!("Layout write did not settle: {reason}. Check the server’s panes in the palette before retrying."));
+        true
     }
 
     /// An arrangement write settled. A split's waits for the replica to

@@ -227,7 +227,8 @@ impl Desk {
         }
         self.resources.entries.clear();
         self.resources.pending.clear();
-        self.resources.starting.clear();
+        // starting holds command correlations, not live resource handles;
+        // reconnect receipts must settle them (including producer failures).
         self.resources.producers.clear();
     }
 

@@ -1,12 +1,14 @@
 //! What each runtime event does to the window.
 
-use phux_client_core::org_ops::OrgOutcome;
 use phux_client_runtime::Client;
 use phux_client_runtime::control::{Event, Observation};
 use phux_protocol::ids::ResourceId;
 use rune::Tx;
 
 use super::{Desk, NoticeKind, layout};
+
+mod receipts;
+pub(super) use receipts::Receipts;
 
 impl Desk {
     /// Reconcile a coalesced event batch with its latest-incarnation snapshot
@@ -17,8 +19,9 @@ impl Desk {
         mut observation: Observation,
         tx: &mut Tx,
     ) -> (bool, bool) {
-        retain_current_epoch(&mut observation.events, observation.connection_epoch);
+        self.fence_epoch_events(&mut observation.events, observation.connection_epoch);
         let mut changed = self.follow_connection(client, &mut observation);
+        changed |= self.reconcile_receipts(client, tx);
         // Output alone can't move anything: no layout pass per keystroke.
         let rearrange = changed || observation.events.iter().any(moves_layout);
         for event in observation.events {
@@ -65,12 +68,8 @@ impl Desk {
                 exit_status,
                 ..
             } => self.resource_closed(client, &terminal_id, exit_status),
-            Event::OrganizationOperation { operation, outcome }
-                if self.layout_ops.remove(&operation) =>
-            {
-                let refused = matches!(outcome, OrgOutcome::Refused(_) | OrgOutcome::Error { .. });
-                self.layout_written(client, operation, refused);
-                true
+            Event::OrganizationOperation { operation, outcome } => {
+                self.layout_outcome(client, operation, outcome)
             }
             // OSC 52 only from the terminal on screen, while the window has
             // focus; never retained for later.
@@ -218,21 +217,4 @@ pub(super) const fn changes_resources(event: &Event) -> bool {
             | Event::Attached { .. }
             | Event::ConnectionOpened { .. }
     )
-}
-
-/// An observation carries the latest snapshot but may span several socket
-/// incarnations. Never apply earlier resource events against that snapshot.
-/// Unknown paste receipts still reach the user; they do not address resources.
-pub(super) fn retain_current_epoch(events: &mut Vec<Event>, epoch: u64) {
-    let Some(start) = events.iter().rposition(|event| {
-        matches!(event,
-        Event::ConnectionOpened { connection_epoch } if *connection_epoch == epoch)
-    }) else {
-        return;
-    };
-    let receipts: Vec<_> = events
-        .drain(..start)
-        .filter(|event| matches!(event, Event::InputDelivery { .. }))
-        .collect();
-    events.splice(0..0, receipts);
 }
