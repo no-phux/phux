@@ -392,7 +392,8 @@ impl Desk {
         next.clock = self.clock;
         next.focused = self.focused;
         next.waker = self.waker.clone();
-        next.resources.images = self.resources.images.take().or_else(|| {
+        self.resources.carry_images(&mut next.resources);
+        next.resources.images = next.resources.images.take().or_else(|| {
             next.waker
                 .as_ref()
                 .map(|waker| rune::ImageCache::new(waker.clone()))

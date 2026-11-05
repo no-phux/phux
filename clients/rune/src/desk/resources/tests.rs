@@ -388,13 +388,14 @@ fn png_uses_real_decoder_and_reports_truncated_png() {
         let _ = decoded.send(());
     }));
     let mut d = Document::new(record(1, ResourceKind::PixelSurface));
+    let mut decodes = surface::Decodes::default();
     let mut publication = DocumentPublication {
         resource_id: id(1),
         kind: ResourceKind::PixelSurface,
         seq: 0,
         bytes: PNG.to_vec(),
     };
-    assert!(d.publish(&publication, Some(&cache)));
+    assert!(d.publish(&publication, Some(&cache), &mut decodes));
     let Body::Surface(image) = &d.body else {
         panic!("image")
     };
@@ -402,18 +403,18 @@ fn png_uses_real_decoder_and_reports_truncated_png() {
     wake.recv_timeout(std::time::Duration::from_secs(10))
         .unwrap();
     assert!(
-        !d.publish(&publication, Some(&cache)),
+        !d.publish(&publication, Some(&cache), &mut decodes),
         "stale sequence ignored"
     );
     publication.seq = 1;
     publication.bytes = PNG[..24].to_vec();
-    assert!(d.publish(&publication, Some(&cache)));
+    assert!(d.publish(&publication, Some(&cache), &mut decodes));
     // Retire the completed first decode, then decode the queued next cut.
-    d.finish_surface(Some(&cache));
+    d.finish_surface(Some(&cache), &mut decodes);
     assert!(d.surface.flight.as_ref().unwrap().image.wait().is_err());
     wake.recv_timeout(std::time::Duration::from_secs(10))
         .unwrap();
-    d.finish_surface(Some(&cache));
+    d.finish_surface(Some(&cache), &mut decodes);
     assert!(matches!(&d.body, Body::Invalid(error) if error.contains("PNG")));
 }
 

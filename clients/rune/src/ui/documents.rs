@@ -60,6 +60,7 @@ fn message(words: impl Into<String>, ink: &Ink) -> El {
 fn body(body: &Body, area: [f32; 2], ink: &Ink, id: &ResourceId) -> El {
     match body {
         Body::Pending => message("Waiting for the producer’s first document…", ink),
+        Body::Decoding => message("Decoding PNG…", ink),
         Body::Empty => message("Empty document · waiting for the next publication", ink),
         Body::Invalid(error) => message(error.clone(), ink),
         Body::Tree(json) => el()

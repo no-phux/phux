@@ -6,6 +6,8 @@ use std::sync::{
 };
 use std::time::Duration;
 
+mod retirement;
+
 fn crc(bytes: &[u8]) -> u32 {
     let mut crc = !0u32;
     for byte in bytes {
@@ -18,6 +20,7 @@ fn crc(bytes: &[u8]) -> u32 {
 }
 
 fn png(marker: u32) -> Vec<u8> {
+    static NEXT: AtomicUsize = AtomicUsize::new(0);
     // Nontrivial screenshot dimensions, real encoding and mip generation.
     let (w, h) = (1024, 576);
     let pixels: Vec<_> = (0..w * h)
@@ -33,7 +36,11 @@ fn png(marker: u32) -> Vec<u8> {
         .collect();
     let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("target-rune")
-        .join(format!("stream-fixture-{}.png", std::process::id()));
+        .join(format!(
+            "stream-fixture-{}-{}.png",
+            std::process::id(),
+            NEXT.fetch_add(1, Ordering::Relaxed)
+        ));
     std::fs::create_dir_all(path.parent().unwrap()).unwrap();
     rune::render::write_png(&path, w, h, &pixels).unwrap();
     let bytes = std::fs::read(&path).unwrap();

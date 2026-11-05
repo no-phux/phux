@@ -26,6 +26,7 @@ mod tests;
 pub struct Resources {
     pub entries: HashMap<ResourceId, Document>,
     pub images: Option<rune::ImageCache>,
+    decodes: surface::Decodes,
     pub(super) dismissed: HashSet<ResourceKey>,
     pub(super) returning: Option<ResourceKey>,
     pub(super) starting: HashMap<u32, Source>,
@@ -49,6 +50,7 @@ pub struct Document {
 
 pub enum Body {
     Pending,
+    Decoding,
     Empty,
     Invalid(String),
     Tree(String),
@@ -81,6 +83,7 @@ impl Document {
         &mut self,
         publication: &DocumentPublication,
         images: Option<&rune::ImageCache>,
+        decodes: &mut surface::Decodes,
     ) -> bool {
         if publication.kind != self.record.kind
             || self.seq.is_some_and(|seq| seq >= publication.seq)
@@ -88,7 +91,7 @@ impl Document {
             return false;
         }
         if publication.kind == ResourceKind::PixelSurface {
-            self.publish_surface(&publication.bytes, images);
+            self.publish_surface(&publication.bytes, images, decodes);
         } else {
             self.body = decode(publication);
         }
@@ -121,9 +124,27 @@ fn same_execution(a: &ResourceRecord, b: &ResourceRecord) -> bool {
 
 impl Desk {
     pub(super) fn finish_document_images(&mut self) -> bool {
+        self.resources.decodes.reap();
         let mut changed = false;
-        for document in self.resources.entries.values_mut() {
-            changed |= document.finish_surface(self.resources.images.as_ref());
+        // A document waiting for admission gets first use of freed slots;
+        // continuously publishing surfaces cannot monopolize all decoders.
+        for document in self
+            .resources
+            .entries
+            .values_mut()
+            .filter(|d| d.surface.flight.is_none())
+        {
+            changed |= document
+                .finish_surface(self.resources.images.as_ref(), &mut self.resources.decodes);
+        }
+        for document in self
+            .resources
+            .entries
+            .values_mut()
+            .filter(|d| d.surface.flight.is_some())
+        {
+            changed |= document
+                .finish_surface(self.resources.images.as_ref(), &mut self.resources.decodes);
         }
         if changed {
             self.generation += 1;
@@ -193,7 +214,11 @@ impl Desk {
             }
             return false;
         };
-        let changed = document.publish(publication, self.resources.images.as_ref());
+        let changed = document.publish(
+            publication,
+            self.resources.images.as_ref(),
+            &mut self.resources.decodes,
+        );
         if changed {
             self.generation += 1;
         }
