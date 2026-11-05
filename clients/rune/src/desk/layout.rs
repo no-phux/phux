@@ -85,6 +85,9 @@ impl Desk {
             .and_then(|tree| prune(tree, &listed, &shown))
             .filter(|tree| leaves(tree).contains(&shown));
         self.sync_tabs(client, &listed);
+        // A phone shows one terminal at a time; its tabs and the session
+        // switcher reach the rest.
+        let tree = if self.phone.is_some() { None } else { tree };
         let tree = match (&self.zoomed, tree) {
             (Some(zoomed), Some(tree)) if leaves(&tree).contains(zoomed) => {
                 LayoutNode::Leaf(zoomed.clone())

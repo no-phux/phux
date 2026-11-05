@@ -179,7 +179,7 @@ impl Desk {
     /// returns to the live tail first and clears a stale highlight, as
     /// Ghostty does. Input the connection can't take now is said, not dropped
     /// quietly.
-    fn send_input(&mut self, send: impl FnOnce(&mut ControlPlane, &ResourceId) -> bool) {
+    pub(super) fn send_input(&mut self, send: impl FnOnce(&mut ControlPlane, &ResourceId) -> bool) {
         let (Some(client), Some(shown)) = (self.client.clone(), &self.shown) else {
             return;
         };

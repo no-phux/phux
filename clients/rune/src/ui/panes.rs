@@ -31,6 +31,9 @@ pub fn view(desk: &Desk, ink: &Ink, cx: &mut Cx<Desk>) -> El {
             .h_full()
             .center()
             .child(placeholder(desk, ink));
+        if desk.phone.is_some() {
+            return area.child(waiting);
+        }
         return area.child(card(waiting, ink.bg, Lit::Resting, ink));
     };
     let several = matches!(tree, LayoutNode::Split { .. });
@@ -212,7 +215,7 @@ fn pane(desk: &Desk, id: &ResourceId, several: bool, ink: &Ink) -> El {
             .fill(ink.bg)
             .center()
             .child(rune::text("Opening…").font(super::CAPTION).color(ink.dim));
-        return float(id, card(opening, ink.bg, Lit::Resting, ink));
+        return float(id, framed(desk, opening, ink.bg, Lit::Resting, ink));
     };
     if focused {
         // The exact frame this build paints, for the drawn receipt.
@@ -299,5 +302,14 @@ fn pane(desk: &Desk, id: &ResourceId, several: bool, ink: &Ink) -> El {
         .children(focused.then(|| super::inbox::ask_card(desk, id, area, ink)).flatten())
         // Panes without the keyboard sit back a little.
         .children((several && !focused).then(|| el().absolute(0.0, 0.0).w_full().h_full().fill(ground.alpha(0.42)).inert()));
-    float(id, card(host, ground, lit, ink))
+    float(id, framed(desk, host, ground, lit, ink))
+}
+
+/// A pane as a card, or bare on a phone, where the terminal runs edge to edge
+/// under the controls.
+fn framed(desk: &Desk, content: El, ground: Color, lit: Lit, ink: &Ink) -> El {
+    if desk.phone.is_some() {
+        return content.fill(ground);
+    }
+    card(content, ground, lit, ink)
 }

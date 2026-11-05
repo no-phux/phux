@@ -7,8 +7,8 @@
 #   clients/rune/scripts/qualify.sh ARCHIVE PHUX [EVIDENCE_DIR]
 #
 # PHUX is a dev build (target/debug/phux). Checks the notices, what the binary
-# links, its version, and that a headless frame shows the session; on Linux it
-# also opens a real window under Xvfb.
+# links, its version, and that a headless frame shows the session in the
+# desktop and phone forms; on Linux it also opens a real window under Xvfb.
 set -euo pipefail
 
 archive="${1:?usage: qualify.sh ARCHIVE PHUX [EVIDENCE_DIR]}"
@@ -96,6 +96,14 @@ tree="$scratch/launch.json"
     --snap "$snap" --tree "$tree" --at 3 --size 1100x720
 [[ -s "$snap" ]] || fail "no frame was drawn"
 grep -q "$marker" "$tree" || fail "the window never showed session $marker"
+
+# The phone form (clients/rune/MOBILE.md) ships in the same binary.
+phone_snap="$scratch/phone.png"
+phone_tree="$scratch/phone.json"
+"${clean[@]}" "$binary" --phone --socket "$socket" --session "$marker" \
+    --snap "$phone_snap" --tree "$phone_tree" --at 3 --size 393x852
+[[ -s "$phone_snap" ]] || fail "the phone form drew no frame"
+grep -q "$marker" "$phone_tree" || fail "the phone form never showed session $marker"
 
 if [[ "$(uname -s)" == Linux ]]; then
     command -v xvfb-run >/dev/null || fail "Linux qualification needs xvfb-run"

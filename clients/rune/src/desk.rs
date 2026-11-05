@@ -33,6 +33,7 @@ mod links;
 pub mod machines;
 pub mod mouse;
 mod palette;
+pub mod phone;
 mod sessions;
 mod settings;
 mod shown;
@@ -249,6 +250,8 @@ pub struct Desk {
     /// The arrangement write in flight for a split or tab. One at a time:
     /// each write's base is the document the last one made.
     split_write: Option<splits::SplitWrite>,
+    /// The phone form's state, when this window is one.
+    pub phone: Option<phone::Phone>,
 }
 
 impl Desk {
@@ -275,7 +278,8 @@ impl Desk {
     /// keys worth learning first. The palette lists them; `Keyboard
     /// Shortcuts: Essentials` reopens the list any time.
     pub(crate) fn offer_tour(&mut self) {
-        if self.prefs.get::<bool>("tour_offered").unwrap_or(false) {
+        // The tour teaches chords; a phone has the accessory bar instead.
+        if self.phone.is_some() || self.prefs.get::<bool>("tour_offered").unwrap_or(false) {
             return;
         }
         let _ = self.prefs.set("tour_offered", &true);
@@ -410,6 +414,7 @@ impl Desk {
             painted: RefCell::new(None),
             focus_told: None,
             split_write: None,
+            phone: None,
         }
     }
 

@@ -271,7 +271,9 @@ pub fn view(desk: &Desk, ink: &Ink) -> El {
     };
     let drawer = col()
         .key("inbox")
-        .w(WIDTH)
+        // The phone form is narrower than the drawer.
+        .w_full()
+        .max_w(WIDTH)
         .h_full()
         .fill(ink.raised)
         .border(1.0, ink.separator)
