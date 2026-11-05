@@ -7,6 +7,7 @@
 mod activity;
 mod commands;
 mod connect;
+pub(crate) mod documents;
 pub mod home;
 pub mod org;
 pub mod path;
@@ -165,9 +166,8 @@ pub struct Connection {
     /// Committed native conversations keyed by their AgentSession resource.
     pub conversations: HashMap<ResourceId, transcript::Conversation>,
     conversation_heads: HashMap<ResourceId, ResourceId>,
-    /// The newest frame of each pixel surface this window attached
-    /// (`docs/resource-kinds.md`), decoded for GPUI.
-    pub surfaces: HashMap<ResourceId, Arc<gpui::RenderImage>>,
+    /// Whole read-only documents, fenced by their organization identity.
+    pub(crate) documents: HashMap<ResourceId, documents::Document>,
     /// Project label from each session's typed organization attributes.
     pub projects: HashMap<u32, String>,
     /// The project a person linked each session into, which outranks its

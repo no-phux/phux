@@ -15,6 +15,7 @@ use phux_protocol::{
 
 use std::sync::Arc;
 
+pub(crate) mod documents;
 mod fixture;
 
 use fixture::{SESSION, bootstrap, reconnect, stream, terminal};

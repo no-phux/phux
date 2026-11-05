@@ -3,6 +3,11 @@
 use super::*;
 
 impl Desk {
+    pub(crate) fn document_resource(&self, id: &ResourceId) -> bool {
+        self.link
+            .as_ref()
+            .is_some_and(|link| link.connection.document_kind(id).is_some())
+    }
     /// The home session's durable key, as the live connection learned it.
     pub(super) fn link_home_key(&self) -> Option<SessionKey> {
         self.link.as_ref()?.connection.home_key()
@@ -140,6 +145,14 @@ impl Desk {
         let Some((link, terminal)) = self.link.as_ref().zip(terminal) else {
             return pane_label(None, None);
         };
+        if let Some(label) = link.connection.document_label(terminal) {
+            let label = display_title(&label);
+            return if label.is_empty() {
+                "Read-only mirror".into()
+            } else {
+                label
+            };
+        }
         pane_label(
             link.connection.pane(terminal),
             link.connection.group_name(terminal),
@@ -356,6 +369,12 @@ impl Desk {
     pub(super) fn retain_panes(&mut self) {
         let live: Vec<_> = self
             .placements()
+            .filter(|placement| {
+                placement
+                    .terminal_id
+                    .as_ref()
+                    .is_none_or(|id| !self.document_resource(id))
+            })
             .map(|placement| placement.id.clone())
             .collect();
         self.panes.retain(&live);

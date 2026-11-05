@@ -156,7 +156,7 @@ impl Connection {
             agents_noted: false,
             conversations: HashMap::new(),
             conversation_heads: HashMap::new(),
-            surfaces: HashMap::new(),
+            documents: HashMap::new(),
             projects: HashMap::new(),
             links: HashMap::new(),
             directories: HashMap::new(),

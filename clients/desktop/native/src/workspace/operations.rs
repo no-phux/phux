@@ -225,6 +225,10 @@ impl Workspace {
             .find(|placement| placement.id == placement_id)
             .and_then(|placement| placement.terminal_id.clone());
         if let Some(terminal) = terminal {
+            if connection.document_kind(&terminal).is_some() {
+                self.close_pane(connection, Some(placement_id));
+                return;
+            }
             if self.dismiss_unavailable(connection, placement_id, &terminal) {
                 return;
             }
@@ -331,12 +335,19 @@ impl Workspace {
 
     /// Open a topology pane, attaching it without a geometry vote when needed.
     pub fn open(&mut self, connection: &Connection, pane: &PaneDescriptor) {
-        if !self.reveal(&terminal_label(&pane.terminal_id))
-            && self.tab_when_ready(connection, &pane.terminal_id)
-        {
+        self.open_resource(connection, &pane.terminal_id);
+    }
+
+    /// Open an exact live resource. Documents subscribe without terminal views.
+    pub(crate) fn open_resource(&mut self, connection: &Connection, resource: &ResourceId) {
+        if self.reveal(&terminal_label(resource)) {
+            return;
+        }
+        let waiting = self.tab_when_ready(connection, resource);
+        if waiting || connection.document_kind(resource).is_some() {
             let _ = connection
                 .client
-                .attach_terminal_preserving_geometry(&pane.terminal_id);
+                .attach_terminal_preserving_geometry(resource);
         }
     }
 

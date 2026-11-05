@@ -274,6 +274,34 @@ fn tree(desk: &mut Desk, node: &LayoutNode, look: &Look) -> AnyElement {
 }
 
 fn miniature(desk: &mut Desk, placement: &Placement, look: &Look) -> AnyElement {
+    if let Some(resource) = placement
+        .terminal_id
+        .as_ref()
+        .filter(|id| desk.document_resource(id))
+    {
+        let content = desk
+            .link
+            .as_ref()
+            .and_then(|link| link.connection.document_content(resource));
+        if let Some(crate::connection::documents::Content::Image(image)) = content {
+            return gpui::img(image.clone())
+                .size_full()
+                .object_fit(gpui::ObjectFit::Contain)
+                .into_any_element();
+        }
+        return div()
+            .size_full()
+            .flex()
+            .items_center()
+            .justify_center()
+            .text_xs()
+            .text_color(from_hex(&look.chrome.muted))
+            .child(format!(
+                "{} · Read-only mirror",
+                desk.pane_title(Some(resource))
+            ))
+            .into_any_element();
+    }
     let frame = placement
         .view_id
         .and_then(|view| desk.client()?.acquire_view(view));

@@ -157,6 +157,12 @@ impl Desk {
     }
 
     pub(super) fn refuse_native_input(&mut self, terminal: &ResourceId) -> bool {
+        if self.document_resource(terminal) {
+            self.refuse_paste(
+                "Read-only mirrors do not accept terminal input or file drops. Nothing was sent.",
+            );
+            return true;
+        }
         if !self.native_owned_terminal(terminal) {
             return false;
         }
@@ -202,6 +208,9 @@ impl Desk {
     /// Command-V: the server brackets it for the program and does not refuse
     /// a line break, which an untrusted paste would drop on the floor.
     pub(crate) fn queue_paste(&self, terminal: &ResourceId, text: &str) -> Option<bool> {
+        if self.document_resource(terminal) {
+            return Some(false);
+        }
         let client = self.client()?;
         let queued = client.with_control(|control| {
             if crate::input::native_owned(control, terminal) || !control.input_ready(terminal) {
@@ -348,10 +357,12 @@ impl Desk {
         &self,
         terminal: &ResourceId,
     ) -> Option<crate::attach::UploadDestination> {
-        if self.native_owned_terminal(terminal) {
+        if self.document_resource(terminal) || self.native_owned_terminal(terminal) {
             return None;
         }
-        self.placement_of(terminal)?;
+        // A document remains input-inert while fresh organization state is
+        // unavailable after reconnect too: it never owns a terminal view.
+        self.placement_of(terminal)?.view_id?;
         Some(crate::attach::UploadDestination {
             terminal: terminal.clone(),
             host: crate::attach::terminal_host(

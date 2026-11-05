@@ -40,34 +40,34 @@ pub(super) fn record_row(
 ) -> AnyElement {
     let key = resource.key;
     let selected = desk.organization.selected.contains(&key);
-    let kind = match resource.kind {
-        ResourceKind::Terminal => "Terminal",
-        ResourceKind::PixelSurface => "Surface",
-        _ => "Item",
-    };
+    let kind = resource_kind_label(resource.kind);
     let label = record_label(resource);
-    let state = match exec_state(resource) {
-        Some(ExecState::Starting) => "Starting",
-        Some(ExecState::Running) => "Running",
-        Some(ExecState::Stopping) => "Stopping",
-        Some(ExecState::Completed) => "Exited",
-        Some(ExecState::Failed) => "Failed to start",
-        Some(ExecState::Lost | ExecState::Abandoned) => "Lost",
-        None => "Not running",
-    };
+    let state = resource_state_label(resource);
     let tooltip_label = label.clone();
     let keys = desk.organization.drag_keys(key);
     let drag = ResourceDrag {
         label: drag_label(&keys, &label),
         keys,
     };
+    let document = crate::connection::documents::is_document(resource.kind)
+        .then(|| resource.live.clone())
+        .flatten();
     child_row(SharedString::from(format!("resource-{key}")), look)
         .when(selected, |row| row.bg(look.active))
         .child(row_icon(dot(5., from_hex(&look.chrome.muted))))
         .child(row_label(label, Emphasis::Quiet, look))
         .when(state != "Running", |row| row.child(row_detail(state, look)))
         .on_drag(drag, |drag, _, _, cx| cx.new(|_| drag.clone()))
-        .on_click(cx.listener(move |desk, _, _, cx| desk.toggle_resource_selection(key, cx)))
+        .on_click(cx.listener(move |desk, event: &ClickEvent, window, cx| {
+            if !event.modifiers().platform
+                && let Some(id) = document.as_ref()
+            {
+                desk.reveal_terminal(id);
+                desk.after_command(window, cx);
+            } else {
+                desk.toggle_resource_selection(key, cx);
+            }
+        }))
         .tooltip(move |window, cx| {
             Tooltip::new(format!("{tooltip_label}\n{kind} · {state}\n{key}")).build(window, cx)
         })
@@ -191,13 +191,22 @@ pub(super) fn catalog_record_row(
     cx: &mut Context<Desk>,
 ) -> AnyElement {
     let destination = work.destination.clone();
+    let document = crate::connection::documents::is_document(resource.kind)
+        .then(|| resource.live.clone())
+        .flatten();
     child_row(
         SharedString::from(format!("resource-{}", resource.key)),
         look,
     )
     .child(row_icon(dot(5., from_hex(&look.chrome.faint))))
     .child(row_label(record_label(resource), Emphasis::Quiet, look))
-    .on_click(cx.listener(move |desk, _, _, cx| desk.navigate_work(destination.clone(), cx)))
+    .on_click(cx.listener(move |desk, _, _, cx| {
+        if let Some(id) = document.as_ref() {
+            desk.open_work_terminal(destination.clone(), id.clone(), cx);
+        } else {
+            desk.navigate_work(destination.clone(), cx);
+        }
+    }))
     .into_any_element()
 }
 
@@ -247,17 +256,34 @@ fn terminal_glyph(look: &Look) -> Icon {
         .text_color(from_hex(&look.chrome.faint))
 }
 
+fn resource_kind_label(kind: ResourceKind) -> &'static str {
+    match kind {
+        ResourceKind::Terminal => "Terminal",
+        ResourceKind::PixelSurface => "Surface",
+        ResourceKind::AccessibilityTree => "Accessibility tree",
+        _ => "Item",
+    }
+}
+
+fn resource_state_label(resource: &ResourceRecord) -> &'static str {
+    match exec_state(resource) {
+        Some(ExecState::Starting) => "Starting",
+        Some(ExecState::Running) => "Running",
+        Some(ExecState::Stopping) => "Stopping",
+        Some(ExecState::Completed) => "Exited",
+        Some(ExecState::Failed) => "Failed to start",
+        Some(ExecState::Lost | ExecState::Abandoned) => "Lost",
+        None => "Not running",
+    }
+}
+
 fn record_label(resource: &ResourceRecord) -> String {
     resource
         .name
         .as_deref()
         .map(crate::app::desk::display_title)
         .filter(|name| !name.is_empty())
-        .unwrap_or_else(|| match resource.kind {
-            ResourceKind::Terminal => "Terminal".into(),
-            ResourceKind::PixelSurface => "Surface".into(),
-            _ => "Item".into(),
-        })
+        .unwrap_or_else(|| resource_kind_label(resource.kind).into())
 }
 
 /// Detail stays available on hover without repeating it in every row.

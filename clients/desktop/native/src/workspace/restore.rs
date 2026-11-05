@@ -30,10 +30,9 @@ impl Workspace {
         // An explicit project open may have reseeded a shell since this
         // window last saved its layout. Keep the splits, but show that
         // shell too (or reveal its existing placement).
-        if let Some(initial) = self.options.initial_terminal.as_ref()
-            && let Some(pane) = connection.pane(initial).cloned()
-        {
-            self.open(connection, &pane);
+        if let Some(initial) = self.options.initial_terminal.as_ref() {
+            let initial = initial.clone();
+            self.open_resource(connection, &initial);
         }
     }
 
@@ -69,10 +68,9 @@ impl Workspace {
     }
 
     pub(super) fn open_initial(&mut self, connection: &Connection) {
-        if let Some(initial) = self.options.initial_terminal.as_ref()
-            && let Some(pane) = connection.pane(initial).cloned()
-        {
-            self.open(connection, &pane);
+        if let Some(initial) = self.options.initial_terminal.as_ref() {
+            let initial = initial.clone();
+            self.open_resource(connection, &initial);
             return;
         }
         if self.options.fresh {
@@ -84,8 +82,9 @@ impl Workspace {
             .iter()
             .find(|pane| pane.session_name == self.session)
             .map(|pane| pane.terminal_id.clone());
+        let home = home.or_else(|| connection.documents_in(&self.session).into_iter().next());
         if let Some(home) = home {
-            self.tab_when_ready(connection, &home);
+            self.open_resource(connection, &home);
         } else if !self.preserve_empty {
             self.request(connection, Destination::Tab, None, None);
         }
@@ -167,6 +166,14 @@ impl Workspace {
             }
             return;
         }
+        if connection.document_kind(&terminal).is_some() {
+            let _ = connection
+                .client
+                .attach_terminal_preserving_geometry(&terminal);
+            self.unresolved.remove(&placement.id);
+            placement.view_id = None;
+            return;
+        }
         if let Some(view) = self.view_for(connection, &terminal, &placement.id) {
             self.unresolved.remove(&placement.id);
             placement.view_id = Some(view);
@@ -180,6 +187,9 @@ impl Workspace {
         terminal: &ResourceId,
         placement_id: &str,
     ) -> Option<ViewId> {
+        if connection.document_kind(terminal).is_some() {
+            return None;
+        }
         let view = connection.client.create_view(terminal);
         log::debug!("create view for {terminal:?}: {view:?}");
         match view {
