@@ -48,6 +48,26 @@ pub(super) struct Page {
     pub(super) ws: String,
 }
 
+/// Spawn's provider field is a short label, not a lossless browser URL. The
+/// producer retains the full source address in its startup receipt.
+fn page_label(page: &Page) -> &str {
+    let label = if page.title.trim().is_empty() {
+        &page.url
+    } else {
+        &page.title
+    };
+    if label.is_empty() {
+        return "Browser page";
+    }
+    let mut end = label
+        .len()
+        .min(phux_protocol::wire::frame::MAX_RESOURCE_PROVIDER_BYTES);
+    while !label.is_char_boundary(end) {
+        end -= 1;
+    }
+    &label[..end]
+}
+
 /// The page whose title or URL contains `spec` (`first` takes the first),
 /// among the `page` targets of a `/json` listing.
 pub(super) fn pick_page(spec: &str, listing: &str) -> Result<Page, String> {
@@ -165,15 +185,9 @@ pub(super) fn run_mirror(args: MirrorArgs<'_>) -> ExitCode {
     };
     rt.block_on(async move {
         let socket_path = socket.unwrap_or_else(default_socket_path);
-        let pane = match pane {
-            Some(selector) => match resolve(&socket_path, selector, "agent page mirror", json).await {
-                Ok(pane) => pane,
-                Err(code) => return code,
-            },
-            None => match own_pane() {
-                Some(pane) => pane,
-                None => return usage(json, "not running in a phux pane and no `--pane` given"),
-            },
+        let pane = match mirror_parent(&socket_path, pane, json).await {
+            Ok(pane) => pane,
+            Err(code) => return code,
         };
         let found = match list_pages(port).await.and_then(|listing| pick_page(page, &listing)) {
             Ok(found) => found,
@@ -183,12 +197,8 @@ pub(super) fn run_mirror(args: MirrorArgs<'_>) -> ExitCode {
             Ok(conn) => conn,
             Err(code) => return code,
         };
-        let tree_res = match tree::open_kind(&mut conn, Kind::Tree, &pane, &found.title).await {
-            Ok(opened) => opened.resource,
-            Err(err) => return report(json, &err),
-        };
-        let surface = match tree::open_kind(&mut conn, Kind::Surface, &pane, &found.url).await {
-            Ok(opened) => opened.resource,
+        let (tree_res, surface) = match open_page_resources(&mut conn, &pane, &found).await {
+            Ok(resources) => resources,
             Err(err) => return report(json, &err),
         };
         let (tree_id, surface_id) = (
@@ -218,6 +228,33 @@ pub(super) fn run_mirror(args: MirrorArgs<'_>) -> ExitCode {
             ),
         }
     })
+}
+
+async fn mirror_parent(
+    socket: &std::path::Path,
+    pane: Option<&str>,
+    json: bool,
+) -> Result<ResourceId, ExitCode> {
+    match pane {
+        Some(selector) => resolve(socket, selector, "agent page mirror", json).await,
+        None => own_pane()
+            .ok_or_else(|| usage(json, "not running in a phux pane and no `--pane` given")),
+    }
+}
+
+async fn open_page_resources(
+    conn: &mut Connection,
+    parent: &ResourceId,
+    page: &Page,
+) -> Result<(ResourceId, ResourceId), tree::TreeError> {
+    let label = page_label(page);
+    let tree = tree::open_kind(conn, Kind::Tree, parent, label)
+        .await?
+        .resource;
+    let surface = tree::open_kind(conn, Kind::Surface, parent, label)
+        .await?
+        .resource;
+    Ok((tree, surface))
 }
 
 enum Failure {
@@ -352,12 +389,41 @@ fn own_pane() -> Option<ResourceId> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use phux_protocol::wire::frame::SpawnResource;
 
     const LISTING: &str = r#"[
         {"type":"background_page","title":"ext","url":"chrome-extension://x","webSocketDebuggerUrl":"ws://127.0.0.1:9222/devtools/page/A"},
         {"type":"page","title":"phux - terminal multiplexer","url":"https://phux.sh/","webSocketDebuggerUrl":"ws://127.0.0.1:9222/devtools/page/B"},
         {"type":"page","title":"Docs","url":"https://phux.sh/docs","webSocketDebuggerUrl":"ws://127.0.0.1:9222/devtools/page/C"}
     ]"#;
+
+    #[test]
+    fn browser_labels_fit_spawn_bounds_without_changing_source_identity() {
+        let mut page = Page {
+            title: "雪".repeat(50),
+            url: format!("https://example.test/{}", "a".repeat(250)),
+            ws: "ws://localhost/devtools/page/1".into(),
+        };
+        let original = page.clone();
+        assert_eq!(page_label(&page).len(), 120);
+        assert_eq!(page, original);
+        page.title.clear();
+        assert_eq!(page_label(&page).len(), 120);
+        page.url.clear();
+        assert_eq!(page_label(&page), "Browser page");
+        page.title = format!("{}雪", "a".repeat(119));
+        assert_eq!(page_label(&page), "a".repeat(119));
+        let label = page_label(&page);
+        for resource in [
+            SpawnResource::accessibility_tree(ResourceId::local(1), label),
+            SpawnResource::pixel_surface(ResourceId::local(1), label),
+        ] {
+            assert!(
+                resource.provider.unwrap().len()
+                    <= phux_protocol::wire::frame::MAX_RESOURCE_PROVIDER_BYTES
+            );
+        }
+    }
 
     #[test]
     fn a_page_is_picked_by_title_or_url_and_never_an_extension() {
