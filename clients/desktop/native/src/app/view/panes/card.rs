@@ -71,7 +71,7 @@ fn document_body(desk: &Desk, placement: &Placement, look: &Look) -> AnyElement 
             .into_any_element(),
         Some(Content::Empty) => div().child("Document is empty").into_any_element(),
         Some(Content::Invalid(message)) => div().child(*message).into_any_element(),
-        None => div()
+        Some(Content::Pending(_)) | None => div()
             .child("Waiting for a document from the source…")
             .into_any_element(),
     };

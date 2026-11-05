@@ -3,6 +3,9 @@ use super::*;
 use phux_client_core::session::DocumentPublication;
 use phux_protocol::wire::frame::ResourceRecord;
 
+mod store;
+pub(crate) use store::Documents;
+
 pub(crate) struct Document {
     record: ResourceRecord,
     pub content: Content,
@@ -13,6 +16,8 @@ pub(crate) enum Content {
     Invalid(&'static str),
     Text(String),
     Image(Arc<gpui::RenderImage>),
+    /// A surface frame waiting for the decode worker.
+    Pending(Vec<u8>),
 }
 
 pub(crate) fn is_document(kind: ResourceKind) -> bool {
@@ -30,13 +35,14 @@ impl Connection {
         else {
             return;
         };
-        self.documents.insert(
-            publication.resource_id.clone(),
-            Document {
-                content: decode(record.kind, &publication.bytes),
-                record,
-            },
-        );
+        let id = publication.resource_id.clone();
+        if record.kind == ResourceKind::PixelSurface {
+            let content = Content::Pending(publication.bytes.clone());
+            self.documents.submit(id, Document { record, content });
+            return;
+        }
+        let content = decode(record.kind, &publication.bytes);
+        self.documents.insert(id, Document { record, content });
     }
 
     pub(super) fn retain_documents(&mut self) {
@@ -97,6 +103,36 @@ fn surface_image(png: &[u8]) -> Option<Arc<gpui::RenderImage>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_replaced_or_closed_frame_is_handed_back_for_the_atlas() {
+        let (wake, _rx) = async_channel::bounded(1);
+        let mut documents = Documents::new(wake);
+        let record = ResourceRecord::new(
+            phux_protocol::ids::ResourceKey::new([4; 16]).unwrap(),
+            phux_protocol::ids::SessionKey::new([2; 16]).unwrap(),
+            phux_protocol::ids::Revision::new(1),
+        )
+        .with_kind(ResourceKind::PixelSurface);
+        let png = crate::workspace::view_tests::documents::png();
+        for _ in 0..2 {
+            let content = Content::Pending(png.clone());
+            documents.submit(
+                ResourceId::local(9),
+                Document {
+                    record: record.clone(),
+                    content,
+                },
+            );
+        }
+        assert_eq!(documents.take_retired().len(), 1, "the first frame retires");
+        documents.remove(&ResourceId::local(9));
+        assert_eq!(
+            documents.take_retired().len(),
+            1,
+            "closing retires the last"
+        );
+    }
 
     #[test]
     fn empty_and_invalid_documents_have_explicit_states() {

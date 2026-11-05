@@ -218,6 +218,12 @@ fn build_overlays(desk: &mut Desk, window: &mut Window, cx: &mut Context<Desk>) 
 }
 
 pub fn render(desk: &mut Desk, window: &mut Window, cx: &mut Context<Desk>) -> impl IntoElement {
+    // Frames a newer one replaced leave the GPU atlas before this paint.
+    if let Some(link) = desk.link.as_mut() {
+        for image in link.connection.documents.take_retired() {
+            cx.drop_image(image, Some(window));
+        }
+    }
     let _frame = crate::devtools::frames::FrameTimer::start();
     let tab_position = desk.tab_position();
     desk.set_viewport(window.viewport_size());

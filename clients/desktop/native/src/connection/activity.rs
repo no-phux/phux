@@ -54,6 +54,7 @@ impl Connection {
             self.error = None;
         }
         self.accept(&observation.events, observation.connection_epoch);
+        self.documents.collect();
         self.retain_documents();
         self.refresh_document_subscriptions();
         self.attach_pinned_home();
