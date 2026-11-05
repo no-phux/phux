@@ -26,6 +26,7 @@ export const STANDALONE_LOCKS = [
   "clients/phux-web/Cargo.lock",
   "clients/desktop/native/Cargo.lock",
   "clients/rune/Cargo.lock",
+  "crates/phux-server/tests/fixtures/host-only-engine/Cargo.lock",
   "scripts/plugin-index/Cargo.lock",
 ];
 
