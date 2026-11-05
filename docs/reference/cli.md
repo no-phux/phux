@@ -738,6 +738,8 @@ Usage: phux agent surface <SUBCOMMAND>
 
 Commands:
   follow    Write every image as it arrives, each replacing the file.
+  mirror    Mirror a macOS window, or the main display, into a surface until
+            Ctrl-C.
   open      Open a surface under the pane its producer runs in.
   publish   Replace the surface's image from a PNG file, or stdin.
   snapshot  Write the surface's newest image to a file.
@@ -763,6 +765,29 @@ Arguments:
 Flags:
       --out <PATH>      Where each PNG goes; stdout when absent.
       --timeout <SECS>  Give up after this many seconds.
+      --json
+  -h, --help            Print help
+
+Global flags:
+      --socket <PATH>   Server socket to dial (default: `$PHUX_SOCKET`)
+```
+
+## `phux agent surface mirror`
+
+```text
+Mirror a macOS window, or the main display, into a surface until Ctrl-C.
+
+Usage: phux agent surface mirror [FLAGS] <WINDOW>
+
+Arguments:
+  <WINDOW>  The window as `App` or `App:title`, or `display` for the main
+            display.
+
+Flags:
+      --window-id <ID>  The CoreGraphics window id, instead of a name.
+      --pane <PANE>     The pane the surface binds to; this process's own pane
+                        when absent.
+      --interval <MS>   Milliseconds between captures (default 1000).
       --json
   -h, --help            Print help
 
