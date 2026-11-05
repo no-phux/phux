@@ -5,6 +5,7 @@ use std::collections::HashSet;
 use phux_protocol::ids::{ClientId, ResourceId};
 use phux_protocol::wire::frame::SessionLifetime;
 
+use super::super::engine_route::{attach_agent_sessions, attach_participants};
 use super::windows::focused_session_name;
 use super::{FrameCtx, FrameOutcome, KernelRoute, is_terminal};
 use crate::attach::outcome::AttachError;
@@ -81,6 +82,10 @@ pub(super) fn handle_attached<W: crate::attach::RenderSink>(
     // The session graph for the session picker.
     let session_cache = (snapshot.sessions.clone(), snapshot.focused_session);
     Ok(FrameOutcome {
+        attach_panes: attach_agent_sessions(snapshot, &attach_participants(snapshot))
+            .into_iter()
+            .map(|agent| agent.id.clone())
+            .collect(),
         subscribe_layout: true,
         sessions: Some(session_cache),
         inventory: Some((snapshot.windows.clone(), snapshot.resources.clone())),

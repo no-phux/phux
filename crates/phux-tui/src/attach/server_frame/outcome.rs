@@ -88,7 +88,7 @@ pub(in crate::attach) struct FrameOutcome {
     /// The pending layout GET was answered with a correlated `ERROR`: the
     /// request settles, but nothing was read, so the write fence stays.
     pub(in crate::attach) layout_get_refused: bool,
-    /// Layout leaves discovered from peer metadata, for the driver to attach.
+    /// Discovered layout leaves or admitted agent children needing a stream.
     pub(in crate::attach) attach_panes: Vec<ResourceId>,
     /// Windows/splits for satellite panes just spawned through the hub; each
     /// opens or applies only when its `ATTACH_RESOURCE` succeeds.

@@ -38,6 +38,23 @@ fn document(h: &mut H, id: &ResourceId, profile: phux_protocol::BootstrapStreamP
 }
 
 #[test]
+fn attached_requests_only_agent_children_of_admitted_participants() {
+    let mut snapshot = mixed_kind_snapshot(&tid(1), &tid(2));
+    let mut orphan = snapshot.resources[1].clone();
+    orphan.id = tid(3);
+    orphan.parent = Some(tid(99));
+    snapshot.resources.push(orphan.clone());
+    orphan.id = tid(4);
+    orphan.parent = None;
+    snapshot.resources.push(orphan);
+    let mut h = H::new();
+    let outcome = h.send(attached(snapshot, 1));
+    assert_eq!(outcome.attach_panes, vec![tid(2)]);
+    assert!(h.mirror.engine_kernel.agent_session(&tid(3)).is_none());
+    assert!(h.mirror.engine_kernel.agent_session(&tid(4)).is_none());
+}
+
+#[test]
 fn mixed_document_ready_never_requires_a_terminal_replica_or_writes_document_bytes_to_tty() {
     let (pane, agent, tree, surface) = (tid(1), tid(2), tid(3), tid(4));
     let mut snapshot = mixed_kind_snapshot(&pane, &agent);

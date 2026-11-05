@@ -10,6 +10,9 @@ use phux_protocol::input::key::{KeyAction, KeyEvent, ModSet, PhysicalKey};
 use phux_protocol::wire::frame::SESSION_NAME_KEY;
 use phux_protocol::wire::info::{ResourceInfo, SessionInfo, SessionSnapshot, WindowInfo};
 
+#[path = "loop_state_tests/agent_streams.rs"]
+mod agent_streams;
+
 // Keep the test namespace and snapshot identity while grouping by responsibility.
 include!("loop_state_tests/layout_read.rs");
 include!("loop_state_tests/bootstrap_resize.rs");
