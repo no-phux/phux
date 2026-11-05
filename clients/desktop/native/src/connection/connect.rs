@@ -144,6 +144,7 @@ impl Connection {
 
     pub(crate) fn from_client(client: Client, session: String) -> Self {
         let (tx, wake_rx) = async_channel::bounded(1);
+        let documents = documents::Documents::new(tx.clone());
         client.set_listener(Arc::new(ActivityListener { tx }));
         let status = client.status();
         Self {
@@ -156,7 +157,7 @@ impl Connection {
             agents_noted: false,
             conversations: HashMap::new(),
             conversation_heads: HashMap::new(),
-            documents: HashMap::new(),
+            documents,
             document_subscriptions: Default::default(),
             projects: HashMap::new(),
             links: HashMap::new(),

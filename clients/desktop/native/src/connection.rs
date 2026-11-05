@@ -168,7 +168,7 @@ pub struct Connection {
     pub conversations: HashMap<ResourceId, transcript::Conversation>,
     conversation_heads: HashMap<ResourceId, ResourceId>,
     /// Whole read-only documents, fenced by their organization identity.
-    pub(crate) documents: HashMap<ResourceId, documents::Document>,
+    pub(crate) documents: documents::Documents,
     document_subscriptions: std::cell::RefCell<HashMap<ResourceId, subscriptions::Subscription>>,
     /// Project label from each session's typed organization attributes.
     pub projects: HashMap<u32, String>,
