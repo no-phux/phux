@@ -157,6 +157,7 @@ impl Connection {
             conversations: HashMap::new(),
             conversation_heads: HashMap::new(),
             documents: HashMap::new(),
+            document_subscriptions: Default::default(),
             projects: HashMap::new(),
             links: HashMap::new(),
             directories: HashMap::new(),

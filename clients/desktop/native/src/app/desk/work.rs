@@ -114,18 +114,14 @@ impl Desk {
         if link.connection.server_id().as_deref() != Some(server) {
             return false;
         }
-        if let Some(expected) = expected {
-            let Some(current) = link.connection.resource_record(resource) else {
-                return false;
-            };
-            if current.key != expected.key || current.activation != expected.activation {
-                return false;
-            }
+        if !link.connection.resource_binding_matches(resource, expected) {
+            return false;
         }
         let Some(placed) = self.placement_of(resource) else {
             return false;
         };
         self.terminal_reveal_ready(resource)
+            && link.connection.subscription_ready(resource)
             && (link.connection.document_kind(resource).is_some() || placed.view_id.is_some())
     }
 

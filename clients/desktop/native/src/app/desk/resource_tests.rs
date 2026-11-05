@@ -6,10 +6,20 @@ use gpui::{TestAppContext, VisualTestContext};
 use phux_protocol::caps::BootstrapStreamProfile;
 
 fn fixture(cx: &mut TestAppContext) -> (gpui::AnyWindowHandle, gpui::Entity<Desk>) {
+    fixture_with_subscription(cx, true)
+}
+
+fn fixture_with_subscription(
+    cx: &mut TestAppContext,
+    accepted: bool,
+) -> (gpui::AnyWindowHandle, gpui::Entity<Desk>) {
     let (handle, desk) = crate::app::overlays::palette_tests::fixture(cx);
-    let connection = documents::connection();
+    let mut connection = documents::connection();
     let mut workspace = Workspace::new("docs".into(), WorkspaceOptions::default());
     workspace.settle(&connection);
+    if accepted {
+        documents::acknowledge_subscriptions(&mut connection, false);
+    }
     desk.update(cx, |desk, cx| {
         desk.session = "docs".into();
         desk.link = Some(Link {
@@ -142,6 +152,155 @@ fn transfer_releases_only_the_source_document_view_after_destination_admission(
 }
 
 #[gpui::test]
+fn withheld_destination_subscription_keeps_source_until_success(cx: &mut TestAppContext) {
+    let _dial = crate::connection::DeterministicDial::arm();
+    let (_, source) = fixture(cx);
+    let (_, target) = fixture_with_subscription(cx, false);
+    let resource = ResourceId::local(8);
+    source.update(cx, |desk, cx| {
+        desk.reveal_terminal(&resource);
+        desk.finish_window_transfer(
+            target.clone(),
+            resource.clone(),
+            desk.focused_id().unwrap(),
+            cx,
+        );
+    });
+    cx.run_until_parked();
+    source.read_with(cx, |desk, _| {
+        assert!(desk.placement_of(&resource).is_some())
+    });
+    target.update(cx, |desk, _| {
+        documents::acknowledge_subscriptions(&mut desk.link.as_mut().unwrap().connection, false)
+    });
+    cx.executor().advance_clock(Duration::from_millis(50));
+    cx.run_until_parked();
+    source.read_with(cx, |desk, _| {
+        assert!(desk.placement_of(&resource).is_none())
+    });
+}
+
+#[gpui::test]
+fn refused_destination_subscription_keeps_source(cx: &mut TestAppContext) {
+    let _dial = crate::connection::DeterministicDial::arm();
+    let (_, source) = fixture(cx);
+    let (_, target) = fixture_with_subscription(cx, false);
+    let resource = ResourceId::local(8);
+    source.update(cx, |desk, cx| {
+        desk.reveal_terminal(&resource);
+        desk.finish_window_transfer(
+            target.clone(),
+            resource.clone(),
+            desk.focused_id().unwrap(),
+            cx,
+        );
+    });
+    target.update(cx, |desk, _| {
+        documents::acknowledge_subscriptions(&mut desk.link.as_mut().unwrap().connection, true)
+    });
+    cx.run_until_parked();
+    source.read_with(cx, |desk, _| {
+        assert!(desk.placement_of(&resource).is_some())
+    });
+    target.read_with(cx, |desk, _| {
+        assert!(
+            !desk
+                .link
+                .as_ref()
+                .unwrap()
+                .connection
+                .subscription_ready(&resource)
+        )
+    });
+}
+
+#[gpui::test]
+fn retained_terminal_view_is_not_transfer_admission_after_connection_loss(cx: &mut TestAppContext) {
+    let _dial = crate::connection::DeterministicDial::arm();
+    let (_, desk) = fixture(cx);
+    let mut connection = crate::workspace::view_tests::attached();
+    let workspace = crate::workspace::view_tests::opened(&mut connection);
+    desk.update(cx, |desk, _| {
+        desk.link = Some(Link {
+            connection,
+            workspace,
+        });
+        let resource = ResourceId::local(7);
+        let server = desk.link.as_ref().unwrap().connection.server_id().unwrap();
+        assert!(desk.transfer_target_ready(&resource, &server, None));
+        desk.client().unwrap().with_control(|control| {
+            control.connection_lost(None);
+            control.connection_opened();
+        });
+        assert!(
+            desk.focused_view().is_some(),
+            "retained paint survives reconnect"
+        );
+        assert!(!desk.transfer_target_ready(&resource, &server, None));
+        reconnect_without_bootstrap(&mut desk.link.as_mut().unwrap().connection);
+        assert_ne!(desk.client().unwrap().status(), Status::Attached);
+        assert!(desk.focused_view().is_some());
+        assert!(
+            !desk.transfer_target_ready(&resource, &server, None),
+            "a new attach awaiting bootstrap does not admit a retained terminal replica"
+        );
+    });
+}
+
+fn reconnect_without_bootstrap(connection: &mut Connection) {
+    use phux_protocol::{
+        caps::{BootstrapLimits, BootstrapProfile, ServerCapabilities},
+        ids::{ClientId, SessionId, WindowId},
+        wire::{
+            frame::FrameKind,
+            info::{ResourceInfo, SessionInfo, SessionSnapshot, WindowInfo},
+        },
+    };
+    let client = &connection.client;
+    let _ = client.take_outbound();
+    client
+        .feed(FrameKind::HelloOk {
+            protocol_major: phux_protocol::PROTOCOL_VERSION.major,
+            protocol_minor: phux_protocol::PROTOCOL_VERSION.minor,
+            protocol_patch: phux_protocol::PROTOCOL_VERSION.patch,
+            server_caps: ServerCapabilities::new(),
+            server_id: vec![1; 16],
+            selected_profile: Some(BootstrapProfile::SynthesizedVtRaw),
+            bootstrap_limits: BootstrapLimits::default(),
+        })
+        .unwrap();
+    let attach_id = client
+        .take_outbound()
+        .iter()
+        .find_map(|bytes| match FrameKind::decode(bytes).unwrap().0 {
+            FrameKind::Attach { attach_id, .. } => Some(attach_id),
+            _ => None,
+        })
+        .unwrap();
+    let snapshot = SessionSnapshot::new(SessionId::new(1), WindowId::new(1), ResourceId::local(7))
+        .with_sessions(vec![SessionInfo::new(SessionId::new(1), "views")])
+        .with_windows(vec![WindowInfo::new(
+            WindowId::new(1),
+            SessionId::new(1),
+            "shell",
+        )])
+        .with_resources(vec![ResourceInfo::new(
+            ResourceId::local(7),
+            WindowId::new(1),
+            20,
+            4,
+        )]);
+    client
+        .feed(FrameKind::Attached {
+            attach_id,
+            snapshot,
+            initial_client_id: ClientId::new(1),
+        })
+        .unwrap();
+    connection.drain();
+}
+
+#[gpui::test]
 fn new_window_transfer_keeps_the_source_until_the_exact_document_is_ready(cx: &mut TestAppContext) {
     let _dial = crate::connection::DeterministicDial::arm();
     let (source_handle, source) = fixture(cx);
@@ -175,7 +334,7 @@ fn new_window_transfer_keeps_the_source_until_the_exact_document_is_ready(cx: &m
         })
         .unwrap();
     target.update(cx, |desk, cx| {
-        let connection = documents::connection();
+        let mut connection = documents::connection();
         let mut workspace = Workspace::new(
             "docs".into(),
             WorkspaceOptions {
@@ -184,6 +343,7 @@ fn new_window_transfer_keeps_the_source_until_the_exact_document_is_ready(cx: &m
             },
         );
         workspace.settle(&connection);
+        documents::acknowledge_subscriptions(&mut connection, false);
         desk.link = Some(Link {
             connection,
             workspace,

@@ -31,9 +31,7 @@ impl Workspace {
             }
             if connection.ready(&terminal) {
                 if connection.document_kind(&terminal).is_some() {
-                    let _ = connection
-                        .client
-                        .attach_terminal_preserving_geometry(&terminal);
+                    let _ = connection.subscribe_resource(&terminal);
                 }
                 self.land(
                     connection,
@@ -44,9 +42,7 @@ impl Workspace {
             }
             self.awaiting
                 .insert(terminal_label(&terminal), Destination::QuietTab);
-            let _ = connection
-                .client
-                .attach_terminal_preserving_geometry(&terminal);
+            let _ = connection.subscribe_resource(&terminal);
         }
     }
 }

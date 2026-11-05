@@ -160,16 +160,12 @@ impl Workspace {
             if live.contains(&placement.terminal_label)
                 && self.attaching.insert(placement.terminal_label.clone())
             {
-                let _ = connection
-                    .client
-                    .attach_terminal_preserving_geometry(&terminal);
+                let _ = connection.subscribe_resource(&terminal);
             }
             return;
         }
         if connection.document_kind(&terminal).is_some() {
-            let _ = connection
-                .client
-                .attach_terminal_preserving_geometry(&terminal);
+            let _ = connection.subscribe_resource(&terminal);
             self.unresolved.remove(&placement.id);
             placement.view_id = None;
             return;

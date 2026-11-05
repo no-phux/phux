@@ -24,9 +24,7 @@ pub(crate) fn is_document(kind: ResourceKind) -> bool {
 
 impl Connection {
     pub(super) fn publish_document(&mut self, publication: &DocumentPublication) {
-        let record = self.with_organization(|replica| {
-            replica.resource_by_live(&publication.resource_id).cloned()
-        });
+        let record = self.document_request_record(&publication.resource_id);
         let Some(record) =
             record.filter(|record| record.kind == publication.kind && is_document(record.kind))
         else {
@@ -58,7 +56,7 @@ impl Connection {
     }
 
     pub(crate) fn document_content(&self, id: &ResourceId) -> Option<&Content> {
-        if self.status != Status::Attached {
+        if !self.subscription_ready(id) {
             return None;
         }
         self.documents.get(id).map(|document| &document.content)

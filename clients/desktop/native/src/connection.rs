@@ -12,6 +12,7 @@ pub mod home;
 pub mod org;
 pub mod path;
 mod ready;
+mod subscriptions;
 pub mod transcript;
 
 #[cfg(test)]
@@ -168,6 +169,7 @@ pub struct Connection {
     conversation_heads: HashMap<ResourceId, ResourceId>,
     /// Whole read-only documents, fenced by their organization identity.
     pub(crate) documents: HashMap<ResourceId, documents::Document>,
+    document_subscriptions: std::cell::RefCell<HashMap<ResourceId, subscriptions::Subscription>>,
     /// Project label from each session's typed organization attributes.
     pub projects: HashMap<u32, String>,
     /// The project a person linked each session into, which outranks its

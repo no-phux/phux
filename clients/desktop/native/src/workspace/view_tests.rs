@@ -15,6 +15,7 @@ use phux_protocol::{
 
 use std::sync::Arc;
 
+mod document_lifecycle;
 pub(crate) mod documents;
 mod fixture;
 

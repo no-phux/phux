@@ -247,6 +247,7 @@ impl Workspace {
         let mut seen = HashSet::new();
         for placement in leaves {
             if let Some(terminal) = &placement.terminal_id
+                && connection.document_kind(terminal).is_none()
                 && (!self.unresolved.contains(&placement.id)
                     || self.spawned.contains(&placement.terminal_label))
                 && !seen.insert(terminal.clone())
@@ -345,9 +346,7 @@ impl Workspace {
         }
         let waiting = self.tab_when_ready(connection, resource);
         if waiting || connection.document_kind(resource).is_some() {
-            let _ = connection
-                .client
-                .attach_terminal_preserving_geometry(resource);
+            let _ = connection.subscribe_resource(resource);
         }
     }
 

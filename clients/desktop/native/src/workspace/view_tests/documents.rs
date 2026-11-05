@@ -17,7 +17,7 @@ pub(crate) fn connection() -> Connection {
     connection_with_terminal(false)
 }
 
-fn connection_with_terminal(mixed: bool) -> Connection {
+pub(super) fn connection_with_terminal(mixed: bool) -> Connection {
     let mut connection =
         Connection::browse(std::path::Path::new("/isolated-documents.sock"), None).unwrap();
     let client = connection.client.clone();
@@ -183,6 +183,19 @@ pub(crate) fn publish(
     bytes: &[u8],
 ) {
     let resource = ResourceId::local(id);
+    connection.subscribe_resource(&resource);
+    acknowledge_subscriptions(connection, false);
+    queue_document(connection, id, profile, bytes);
+    connection.drain();
+}
+
+pub(super) fn queue_document(
+    connection: &Connection,
+    id: u32,
+    profile: BootstrapStreamProfile,
+    bytes: &[u8],
+) {
+    let resource = ResourceId::local(id);
     let stream_id = StreamId::new(u64::from(id)).unwrap();
     let bootstrap_id = BootstrapId::new(1).unwrap();
     for frame in [
@@ -211,7 +224,33 @@ pub(crate) fn publish(
     ] {
         connection.client.feed(frame).unwrap();
     }
-    connection.drain();
+}
+
+pub(crate) fn acknowledge_subscriptions(connection: &mut Connection, refused: bool) {
+    // A replaced binding recuts after the detach receipt, never concurrently.
+    for _ in 0..2 {
+        for bytes in connection.client.take_outbound() {
+            if let FrameKind::Command {
+                request_id,
+                command: Command::AttachResource { .. } | Command::DetachResource { .. },
+            } = FrameKind::decode(&bytes).unwrap().0
+            {
+                let result = if refused {
+                    CommandResult::Error {
+                        code: phux_protocol::wire::frame::ErrorCode::InvalidCommand,
+                        message: "fixture subscription refused".into(),
+                    }
+                } else {
+                    CommandResult::Ok
+                };
+                connection
+                    .client
+                    .feed(FrameKind::CommandResult { request_id, result })
+                    .unwrap();
+            }
+        }
+        connection.drain();
+    }
 }
 
 pub(crate) fn png() -> Vec<u8> {
@@ -366,6 +405,10 @@ fn whole_json_and_real_png_are_native_documents_and_invalid_new_frames_do_not_sh
         control.connection_lost(None);
         control.connection_opened();
     });
+    assert!(
+        !connection.document_subscribed(&ResourceId::local(9)),
+        "the cached receipt belongs to the old connection epoch"
+    );
     connection.drain();
     assert!(
         connection.documents.is_empty(),

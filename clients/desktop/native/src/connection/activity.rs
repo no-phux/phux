@@ -55,6 +55,7 @@ impl Connection {
         }
         self.accept(&observation.events, observation.connection_epoch);
         self.retain_documents();
+        self.refresh_document_subscriptions();
         self.attach_pinned_home();
         // Inventory needs the same arrangement-group label fallback as an
         // attached window. These are metadata reads, never terminal attaches.
@@ -219,6 +220,16 @@ impl Connection {
 
     fn accept_publication(&mut self, event: &Event, epoch: u64) {
         match event {
+            Event::TerminalAttached {
+                request_id,
+                terminal_id,
+                error,
+            } => self.note_document_subscription(terminal_id, *request_id, error.as_deref(), epoch),
+            Event::TerminalDetached {
+                request_id,
+                terminal_id,
+                error,
+            } => self.note_document_detach(terminal_id, *request_id, error.as_deref(), epoch),
             Event::AgentMetadata { terminal_id, value } => {
                 self.agents_noted |=
                     note_agent(&mut self.agents, terminal_id, value.as_deref(), now_ms());
@@ -242,6 +253,7 @@ impl Connection {
         if starts_connection(event) {
             self.forget_session_metadata();
             self.documents.clear();
+            self.forget_old_document_subscriptions();
             self.admitted.clear();
             return;
         }
@@ -263,6 +275,7 @@ impl Connection {
                 self.agents.remove(terminal_id);
                 self.admitted.remove(terminal_id);
                 self.documents.remove(terminal_id);
+                self.document_subscriptions.borrow_mut().remove(terminal_id);
                 self.conversation_heads.remove(terminal_id);
                 self.conversations
                     .retain(|_, conversation| &conversation.parent != terminal_id);

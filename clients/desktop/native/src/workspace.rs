@@ -297,9 +297,7 @@ impl Workspace {
             .keys()
             .filter_map(|label| parse_terminal(label))
         {
-            let _ = connection
-                .client
-                .attach_terminal_preserving_geometry(&terminal);
+            let _ = connection.subscribe_resource(&terminal);
         }
         let epoch = connection.connection_epoch();
         if self.views_epoch == Some(epoch) {
@@ -312,9 +310,7 @@ impl Workspace {
         {
             // A placed spawn may still lack bootstrap and be absent from the
             // home inventory. Recover its exact id on every new connection too.
-            let _ = connection
-                .client
-                .attach_terminal_preserving_geometry(terminal);
+            let _ = connection.subscribe_resource(terminal);
         }
     }
 
@@ -478,9 +474,7 @@ impl Workspace {
             .as_ref()
             .is_some_and(|terminal| connection.document_kind(terminal).is_some());
         if document && let Some(resource) = terminal_id.as_ref() {
-            let _ = connection
-                .client
-                .attach_terminal_preserving_geometry(resource);
+            let _ = connection.subscribe_resource(resource);
         }
         let view_id = terminal_id
             .as_ref()
