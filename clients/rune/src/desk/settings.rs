@@ -152,7 +152,7 @@ impl Desk {
 mod tests {
     use rune::accesskit::{Action, ActionData};
     use rune::prefs::Prefs;
-    use rune::{Env, Runtime};
+    use rune::{Env, Runtime, TouchPhase};
     use serde_json::{Value, json};
 
     use crate::desk::{Desk, Notice, NoticeKind};
@@ -186,6 +186,79 @@ mod tests {
 
     fn checked(on: bool) -> &'static str {
         if on { "checked" } else { "unchecked" }
+    }
+
+    #[test]
+    fn a_touch_taps_a_setting_once_and_leaves_no_hover() {
+        let mut desk = Desk::new(&Resolved::offline("touch"));
+        desk.prefs = Prefs::memory();
+        desk.settings_open = true;
+        let mut runtime = runtime(desk);
+        runtime.update(|_, tx| {
+            tx.instant();
+            tx.scroll_into_view("set-copy-select");
+        });
+        runtime.frame(0.0);
+        let before = runtime.state.settings.copy_on_select;
+        let (x, y) = runtime.find("set-copy-select").unwrap();
+        runtime.touch(1, TouchPhase::Started, x, y, 0.0);
+        runtime.frame(1.0 / 60.0);
+        assert_eq!(runtime.state.settings.copy_on_select, before);
+        runtime.touch(1, TouchPhase::Ended, x, y, 0.05);
+        runtime.frame(1.0 / 60.0);
+        assert_eq!(runtime.state.settings.copy_on_select, !before);
+        assert_eq!(runtime.pointer(), None);
+        assert!(!runtime.touching());
+    }
+
+    #[test]
+    fn a_cancelled_touch_and_a_second_finger_change_no_settings() {
+        let mut desk = Desk::new(&Resolved::offline("touch"));
+        desk.prefs = Prefs::memory();
+        desk.settings_open = true;
+        let mut runtime = runtime(desk);
+        runtime.update(|_, tx| {
+            tx.instant();
+            tx.scroll_into_view("set-copy-select");
+        });
+        runtime.frame(0.0);
+        let before = runtime.state.settings.copy_on_select;
+        let (x, y) = runtime.find("set-copy-select").unwrap();
+        runtime.touch(1, TouchPhase::Started, x, y, 0.0);
+        runtime.frame(1.0 / 60.0);
+        runtime.touch(2, TouchPhase::Started, x, y, 0.01);
+        runtime.touch(2, TouchPhase::Ended, x, y, 0.02);
+        runtime.frame(1.0 / 60.0);
+        assert_eq!(runtime.state.settings.copy_on_select, before);
+        assert!(runtime.touching(), "the first finger is still down");
+        runtime.touch(1, TouchPhase::Cancelled, x, y, 0.03);
+        runtime.frame(1.0 / 60.0);
+        assert_eq!(runtime.state.settings.copy_on_select, before);
+        assert!(!runtime.touching());
+    }
+
+    #[test]
+    fn a_touch_pans_the_settings_sheet_without_choosing_a_theme() {
+        let mut desk = Desk::new(&Resolved::offline("touch"));
+        desk.prefs = Prefs::memory();
+        desk.settings_open = true;
+        let before = desk.settings.theme;
+        let mut runtime = runtime(desk);
+        let (x, y) = runtime.find("theme-Nord").unwrap();
+        runtime.touch(1, TouchPhase::Started, x, y, 0.0);
+        runtime.frame(1.0 / 60.0);
+        runtime.touch(1, TouchPhase::Moved, x, y - 100.0, 0.05);
+        runtime.frame(1.0 / 60.0);
+        // Hold before lifting, so this checks the pan without a fling.
+        runtime.touch(1, TouchPhase::Ended, x, y - 100.0, 0.3);
+        runtime.frame(1.0 / 60.0);
+        let (_, after) = runtime.find("theme-Nord").unwrap();
+        assert!(
+            after < y - 90.0,
+            "the sheet followed the finger: {y} → {after}"
+        );
+        assert_eq!(runtime.state.settings.theme, before);
+        assert!(!runtime.touching());
     }
 
     #[test]
