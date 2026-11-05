@@ -1,30 +1,56 @@
 {
   "$schema": "https://raw.githubusercontent.com/googleapis/release-please/main/schemas/config.json",
-
   "draft-pull-request": true,
   "always-update": true,
   "draft": true,
   "force-tag-creation": true,
   "separate-pull-requests": false,
   "sequential-calls": true,
-
   "include-v-in-tag": true,
   "include-component-in-tag": false,
   "bump-minor-pre-major": true,
   "bump-patch-for-minor-pre-major": false,
-
   "changelog-sections": [
-    { "type": "feat", "section": "Features" },
-    { "type": "fix", "section": "Bug Fixes" },
-    { "type": "perf", "section": "Performance" },
-    { "type": "refactor", "section": "Refactors" },
-    { "type": "docs", "section": "Documentation" },
-    { "type": "build", "section": "Build System" },
-    { "type": "ci", "section": "CI", "hidden": true },
-    { "type": "chore", "section": "Chores", "hidden": true },
-    { "type": "test", "section": "Tests", "hidden": true }
+    {
+      "type": "feat",
+      "section": "Features"
+    },
+    {
+      "type": "fix",
+      "section": "Bug Fixes"
+    },
+    {
+      "type": "perf",
+      "section": "Performance"
+    },
+    {
+      "type": "refactor",
+      "section": "Refactors"
+    },
+    {
+      "type": "docs",
+      "section": "Documentation"
+    },
+    {
+      "type": "build",
+      "section": "Build System"
+    },
+    {
+      "type": "ci",
+      "section": "CI",
+      "hidden": true
+    },
+    {
+      "type": "chore",
+      "section": "Chores",
+      "hidden": true
+    },
+    {
+      "type": "test",
+      "section": "Tests",
+      "hidden": true
+    }
   ],
-
   "packages": {
     ".": {
       "release-type": "simple",
@@ -54,20 +80,33 @@
         {
           "type": "generic",
           "path": ".agents/skills/using-phux-mcp/SKILL.md"
+        },
+        {
+          "type": "toml",
+          "path": "Cargo.lock",
+          "jsonpath": "$.package[?(!@.source && (@.name.value=='phux' || @.name.value=='phux-agent-host' || @.name.value=='phux-agent-rules' || @.name.value=='phux-agent-session' || @.name.value=='phux-client' || @.name.value=='phux-client-core' || @.name.value=='phux-client-ffi' || @.name.value=='phux-client-runtime' || @.name.value=='phux-config' || @.name.value=='phux-config-core' || @.name.value=='phux-core' || @.name.value=='phux-crash' || @.name.value=='phux-dial' || @.name.value=='phux-frozen' || @.name.value=='phux-git' || @.name.value=='phux-mcp' || @.name.value=='phux-mission' || @.name.value=='phux-perf' || @.name.value=='phux-plugin' || @.name.value=='phux-protocol' || @.name.value=='phux-record' || @.name.value=='phux-relay' || @.name.value=='phux-resource' || @.name.value=='phux-server' || @.name.value=='phux-server-testkit' || @.name.value=='phux-terminal' || @.name.value=='phux-tree' || @.name.value=='phux-tui' || @.name.value=='phux-usage' || @.name.value=='phux-work' || @.name.value=='portable-pty-adopt' || @.name.value=='quictun'))].version"
+        },
+        {
+          "type": "toml",
+          "path": "clients/phux-web/Cargo.lock",
+          "jsonpath": "$.package[?(!@.source && (@.name.value=='phux-client-core' || @.name.value=='phux-perf' || @.name.value=='phux-protocol'))].version"
+        },
+        {
+          "type": "toml",
+          "path": "clients/desktop/native/Cargo.lock",
+          "jsonpath": "$.package[?(!@.source && (@.name.value=='phux-client-core' || @.name.value=='phux-client-ffi' || @.name.value=='phux-client-runtime' || @.name.value=='phux-config-core' || @.name.value=='phux-core' || @.name.value=='phux-dial' || @.name.value=='phux-git' || @.name.value=='phux-perf' || @.name.value=='phux-protocol' || @.name.value=='quictun'))].version"
+        },
+        {
+          "type": "toml",
+          "path": "clients/rune/Cargo.lock",
+          "jsonpath": "$.package[?(!@.source && (@.name.value=='phux-client-core' || @.name.value=='phux-client-runtime' || @.name.value=='phux-config-core' || @.name.value=='phux-core' || @.name.value=='phux-dial' || @.name.value=='phux-perf' || @.name.value=='phux-protocol' || @.name.value=='quictun'))].version"
+        },
+        {
+          "type": "toml",
+          "path": "scripts/plugin-index/Cargo.lock",
+          "jsonpath": "$.package[?(!@.source && (@.name.value=='phux-config' || @.name.value=='phux-config-core' || @.name.value=='phux-protocol'))].version"
         }
       ]
-    },
-    "clients/desktop": {
-      "release-type": "node",
-      "component": "desktop",
-      "separate-pull-requests": true,
-      "include-component-in-tag": true,
-      "include-v-in-tag": true,
-      "tag-separator": "-",
-      "changelog-path": "CHANGELOG.md",
-      "versioning": "prerelease",
-      "prerelease-type": "alpha.1",
-      "prerelease": false
     },
     "integrations/pi": {
       "release-type": "node",
