@@ -145,24 +145,10 @@ async fn route_input(
         }
         None => None,
     };
-    if is_use(&input) {
-        super::commands::handle_client_activity(ctx.state, ctx.client_id);
-    }
+    // The host accounted for view activity before delivery admission. Do not
+    // count accepted input a second time after waiting for its lane credit.
     route_client_input(ctx.state, lane, ctx.client_id, terminal_id, input, credit).await;
     FrameFlow::Continue(())
-}
-
-/// Whether `input` is someone using this view, for the `active` window-size
-/// policy: a key, a paste, a click, or focus arriving. Pointer motion and
-/// focus leaving are not.
-const fn is_use(input: &TerminalInput) -> bool {
-    use phux_protocol::input::focus::FocusEvent;
-    use phux_protocol::input::mouse::MouseAction;
-    match input {
-        TerminalInput::Key(_) | TerminalInput::Paste(_) => true,
-        TerminalInput::Mouse(event) => matches!(event.action, MouseAction::Press),
-        TerminalInput::Focus(event) => matches!(event, FocusEvent::Gained),
-    }
 }
 
 /// Hand one `INPUT_TERMINAL_REPLY` to the pane if the connection advertised

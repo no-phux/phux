@@ -26,6 +26,7 @@ use crate::runtime::test_support::{Feed, Wire, encode, hello, owner_peer};
 use crate::state::{ClientId, SharedState};
 
 const CLIENT: ClientId = ClientId(21);
+const DESKTOP: ClientId = ClientId(20);
 
 #[derive(Debug)]
 struct FixedGrant(TerminalScopeSet);
@@ -79,6 +80,17 @@ fn frames(id: ResourceId) -> Vec<FrameKind> {
 
 /// PONG is a dispatch fence: every preceding relay enqueue already happened.
 async fn exchange(state: &SharedState, hello: FrameKind, frames: Vec<FrameKind>) -> Vec<FrameKind> {
+    exchange_inspecting(state, hello, frames, || {}).await
+}
+
+/// Inspect live connection state after the dispatch fence, before cancellation
+/// detaches the client and withdraws its viewport vote.
+async fn exchange_inspecting(
+    state: &SharedState,
+    hello: FrameKind,
+    frames: Vec<FrameKind>,
+    inspect: impl FnOnce(),
+) -> Vec<FrameKind> {
     let wire = Wire::default();
     let token = CancellationToken::new();
     let mut script = vec![hello];
@@ -108,9 +120,109 @@ async fn exchange(state: &SharedState, hello: FrameKind, frames: Vec<FrameKind>)
     .await
     .expect("client loop reaches PONG");
     let output = wire.frames.borrow().clone();
+    inspect();
     token.cancel();
     task.await.unwrap().unwrap();
     output
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn local_focus_updates_activity_before_delivery_admission_but_after_authorization() {
+    LocalSet::new()
+        .run_until(async {
+            for (leased, retained, authorized) in [
+                (true, false, true),
+                (false, false, true),
+                (false, true, true),
+                (true, false, false),
+            ] {
+                local_focus_activity_case(leased, retained, authorized).await;
+            }
+        })
+        .await;
+}
+
+async fn local_focus_activity_case(leased: bool, retained: bool, authorized: bool) {
+    use crate::runtime::apps::terminal::test_support::{TerminalResource as _, stub_terminal};
+    use phux_protocol::input::focus::FocusEvent;
+    use phux_protocol::wire::frame::ViewportInfo;
+
+    let state = SharedState::new();
+    let (handle, mut received) = stub_terminal();
+    let input = handle.terminal().unwrap().input.clone();
+    let capacity = input.capacity();
+    let (pane, wire, desktop_activity) = state.with_mut(|s| {
+        let (_, pane) = s.seed_session("active-views");
+        let wire = s.register_resource_handle(pane, handle, CancellationToken::new());
+        for client in [DESKTOP, CLIENT] {
+            s.set_peer_identity(client, owner_peer());
+            let (out, _rx) = tokio::sync::mpsc::channel(8);
+            s.attach_default_caps(client, "active-views", out).unwrap();
+        }
+        s.set_window_size(phux_config::WindowSize::Active);
+        s.set_client_viewport(CLIENT, ViewportInfo::new(60, 20));
+        s.set_client_viewport(DESKTOP, ViewportInfo::new(120, 48));
+        s.registry_mut().terminal_mut(pane).unwrap().dims = (120, 48);
+        configure_focus_admission(s, pane, leased, retained, authorized);
+        (pane, wire, s.attached()[&DESKTOP].active_seq)
+    });
+    let focus = FrameKind::InputFocus {
+        terminal_id: wire,
+        event: FocusEvent::Gained,
+    };
+    exchange_inspecting(&state, hello("phone-focus"), vec![focus], || {
+        state.with(|s| {
+            assert_eq!(
+                s.attached()[&CLIENT].active_seq > desktop_activity,
+                authorized
+            );
+            let expected = if authorized && !retained {
+                (60, 20)
+            } else {
+                (120, 48)
+            };
+            assert_eq!(s.registry().terminal(pane).unwrap().dims, expected);
+            assert_eq!(s.input_lease_holder(pane), leased.then_some(DESKTOP));
+        });
+        let delivered = authorized && !leased && !retained;
+        assert_eq!(
+            input.capacity(),
+            capacity - usize::from(delivered),
+            "delivery admission remains independent of activity"
+        );
+        if authorized && !retained {
+            let resize = received
+                .resize
+                .try_recv()
+                .expect("phone becomes geometry authority");
+            assert_eq!((resize.cols, resize.rows), (60, 20));
+        }
+        assert!(
+            received.resize.try_recv().is_err(),
+            "at most one activity resize"
+        );
+    })
+    .await;
+}
+
+fn configure_focus_admission(
+    s: &mut crate::state::ServerState,
+    pane: phux_core::ids::ResourceId,
+    leased: bool,
+    retained: bool,
+    authorized: bool,
+) {
+    if leased {
+        s.set_input_lease(pane, DESKTOP);
+    }
+    if retained {
+        s.restore_retained_exit(pane, phux_protocol::wire::info::ExitFacet::new(0, 1));
+    }
+    if !authorized {
+        s.set_policy_engine(Arc::new(FixedGrant(
+            TerminalScopeSet::parse_all(&["observe@global".to_owned()]).unwrap(),
+        )));
+    }
 }
 
 #[tokio::test(flavor = "current_thread")]

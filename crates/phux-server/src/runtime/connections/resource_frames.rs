@@ -14,7 +14,7 @@ use phux_protocol::wire::frame::{ErrorCode, FrameKind, HistoryTombstoneReason};
 use super::dispatch::FrameFlow;
 use super::frames::frame_resource;
 use crate::runtime::apps::terminal::terminal_streams::direction_invalid;
-use crate::runtime::apps::{ResourceFrame, app_for};
+use crate::runtime::apps::{FrameAdmission, ResourceFrame, app_for};
 use crate::state::{Outbound, ResolvedOwned};
 
 /// Route only after the production policy guard has authorized the frame.
@@ -26,7 +26,14 @@ pub(super) async fn serve(ctx: ResourceFrame<'_>, frame: FrameKind) -> FrameFlow
     match resolved {
         ResolvedOwned::Local(local) => {
             let app = app_for(local.handle.kind);
-            if !input::admit(&ctx, app.frame_admission(&frame), local.id) {
+            let admission = app.frame_admission(&frame);
+            // Using a view changes its active-size vote even when a lease,
+            // retained exit, or guardian blocks delivery. Authorization has
+            // already run; activity must precede these delivery checks.
+            if matches!(admission, FrameAdmission::AttachedInput) {
+                note_activity(&ctx, &frame);
+            }
+            if !input::admit(&ctx, admission, local.id) {
                 return FrameFlow::Continue(());
             }
             app.frame(ctx, frame).await
@@ -46,8 +53,8 @@ pub(super) async fn serve(ctx: ResourceFrame<'_>, frame: FrameKind) -> FrameFlow
     }
 }
 
-/// Remote and unknown structured input used to pass through the Terminal
-/// path's active-view accounting too; moving routing must not lose that vote.
+/// Structured Terminal input changes the active view independently of delivery
+/// admission. Remote and unknown ids retain the same activity accounting.
 fn note_activity(ctx: &ResourceFrame<'_>, frame: &FrameKind) {
     use phux_protocol::input::{focus::FocusEvent, mouse::MouseAction};
     let used = match frame {
