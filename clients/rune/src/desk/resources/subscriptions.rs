@@ -61,6 +61,7 @@ impl Desk {
         }
         client.with_control(|control| control.release_terminal(id));
         document.subscription = Subscription::Refused;
+        document.invalidate_surface();
         document.seq = None;
         document.body = Body::Invalid(format!(
             "Mirror subscription failed: {result:?}. Reopen this mirror from the palette to retry."
@@ -74,6 +75,7 @@ impl Desk {
             return false;
         };
         document.subscription = Subscription::Unrequested;
+        document.invalidate_surface();
         document.seq = None;
         document.body = Body::Pending;
         true

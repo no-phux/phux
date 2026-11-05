@@ -15,6 +15,7 @@ use super::Desk;
 mod selection;
 mod startup;
 mod subscriptions;
+mod surface;
 pub use startup::Source;
 use subscriptions::Subscription;
 
@@ -42,7 +43,7 @@ pub struct Document {
     pub record: ResourceRecord,
     pub seq: Option<u64>,
     pub body: Body,
-    image_ready: bool,
+    surface: surface::Surface,
     subscription: Subscription,
 }
 
@@ -71,7 +72,7 @@ impl Document {
             record,
             seq: None,
             body: Body::Pending,
-            image_ready: false,
+            surface: surface::Surface::default(),
             subscription: Subscription::Unrequested,
         }
     }
@@ -86,14 +87,17 @@ impl Document {
         {
             return false;
         }
-        self.body = decode(publication, images);
-        self.image_ready = false;
+        if publication.kind == ResourceKind::PixelSurface {
+            self.publish_surface(&publication.bytes, images);
+        } else {
+            self.body = decode(publication);
+        }
         self.seq = Some(publication.seq);
         true
     }
 }
 
-fn decode(publication: &DocumentPublication, images: Option<&rune::ImageCache>) -> Body {
+fn decode(publication: &DocumentPublication) -> Body {
     if publication.bytes.is_empty() {
         return Body::Empty;
     }
@@ -104,20 +108,8 @@ fn decode(publication: &DocumentPublication, images: Option<&rune::ImageCache>) 
                 Err(error) => Body::Invalid(format!("Invalid JSON: {error}")),
             }
         }
-        ResourceKind::PixelSurface => decode_surface(&publication.bytes, images),
         _ => Body::Invalid("Unsupported document kind".to_owned()),
     }
-}
-
-fn decode_surface(bytes: &[u8], images: Option<&rune::ImageCache>) -> Body {
-    // ImageCache can also decode SVG and JPEG. This contract accepts PNG only.
-    if !bytes.starts_with(b"\x89PNG\r\n\x1a\n") {
-        return Body::Invalid("Invalid PNG signature".to_owned());
-    }
-    images.map_or_else(
-        || Body::Invalid("Image decoder unavailable; reopen this window.".to_owned()),
-        |cache| Body::Surface(cache.load(bytes.to_vec())),
-    )
 }
 
 fn same_execution(a: &ResourceRecord, b: &ResourceRecord) -> bool {
@@ -131,13 +123,7 @@ impl Desk {
     pub(super) fn finish_document_images(&mut self) -> bool {
         let mut changed = false;
         for document in self.resources.entries.values_mut() {
-            if let Body::Surface(image) = &document.body
-                && image.is_ready()
-                && !document.image_ready
-            {
-                document.image_ready = true;
-                changed = true;
-            }
+            changed |= document.finish_surface(self.resources.images.as_ref());
         }
         if changed {
             self.generation += 1;

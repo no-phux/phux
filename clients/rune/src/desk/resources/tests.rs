@@ -383,7 +383,10 @@ fn document_focus_cannot_send_terminal_input_upload_history_resize_or_paint_ack(
 
 #[test]
 fn png_uses_real_decoder_and_reports_truncated_png() {
-    let cache = rune::ImageCache::new(Arc::new(|| {}));
+    let (decoded, wake) = std::sync::mpsc::channel();
+    let cache = rune::ImageCache::new(Arc::new(move || {
+        let _ = decoded.send(());
+    }));
     let mut d = Document::new(record(1, ResourceKind::PixelSurface));
     let mut publication = DocumentPublication {
         resource_id: id(1),
@@ -396,6 +399,8 @@ fn png_uses_real_decoder_and_reports_truncated_png() {
         panic!("image")
     };
     assert_eq!(image.wait(), Ok([4, 2]));
+    wake.recv_timeout(std::time::Duration::from_secs(10))
+        .unwrap();
     assert!(
         !d.publish(&publication, Some(&cache)),
         "stale sequence ignored"
@@ -403,10 +408,13 @@ fn png_uses_real_decoder_and_reports_truncated_png() {
     publication.seq = 1;
     publication.bytes = PNG[..24].to_vec();
     assert!(d.publish(&publication, Some(&cache)));
-    let Body::Surface(image) = &d.body else {
-        panic!("decoder receives PNG")
-    };
-    assert!(image.wait().is_err());
+    // Retire the completed first decode, then decode the queued next cut.
+    d.finish_surface(Some(&cache));
+    assert!(d.surface.flight.as_ref().unwrap().image.wait().is_err());
+    wake.recv_timeout(std::time::Duration::from_secs(10))
+        .unwrap();
+    d.finish_surface(Some(&cache));
+    assert!(matches!(&d.body, Body::Invalid(error) if error.contains("PNG")));
 }
 
 #[test]
@@ -551,3 +559,4 @@ fn mixed_layout_keeps_terminal_view_and_readonly_secondary_document() {
 mod native;
 mod receipts;
 mod review;
+mod streaming;

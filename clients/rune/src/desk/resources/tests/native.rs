@@ -161,6 +161,10 @@ fn native_png_headless_renderer_smoke() {
         ],
         &doc(split(1, 2)),
     );
+    let (decoded, wake) = std::sync::mpsc::channel();
+    rt.state.resources.images = Some(rune::ImageCache::new(Arc::new(move || {
+        let _ = decoded.send(());
+    })));
     publish(&client, 1, ResourceKind::PixelSurface, PNG);
     publish(&client, 2, ResourceKind::AccessibilityTree, br#"{"role":"document","title":"Native JSON inspector","children":[{"role":"button","name":"Read-only mirror"}]}"#);
     step(&mut rt);
@@ -168,9 +172,11 @@ fn native_png_headless_renderer_smoke() {
         panic!("surface")
     };
     image.wait().unwrap();
+    wake.recv_timeout(std::time::Duration::from_secs(10))
+        .unwrap();
     rt.update(|d, _| {
         d.finish_document_images();
-        assert!(d.resources.entries[&id(1)].image_ready);
+        assert!(d.resources.entries[&id(1)].surface.flight.is_none());
     });
     rt.frame(1.0);
     rt.frame(1.0);
