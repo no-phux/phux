@@ -12,8 +12,11 @@ Where a part has landed, the live contract also lives in its home page
 The host supports Terminal, AgentSession, AccessibilityTree and PixelSurface.
 Session membership and aggregate attach are kind-neutral. Apps supply bounded
 captures; the host publishes the complete attach barrier before releasing live
-output or lifecycle closes. A document-only session can attach without a
-Terminal codec. The server links only the pure Terminal contract; the executable
+output or lifecycle closes. AgentSession is catalogued at session attach, but
+its app defers records to explicit, cursor-bearing `ATTACH_RESOURCE` requests.
+It does not gate aggregate readiness or emit an unsolicited full replacement.
+Document-only and agent-only sessions can attach without a Terminal codec.
+The server links only the pure Terminal contract; the executable
 supplies the concrete engine ([architecture](./architecture.md#where-to-look)).
 
 Desktop and Rune discover tree/surface resources before the first frame,

@@ -10,113 +10,53 @@ use bytes::Bytes;
 use phux_agent_session::session::AgentSessionResource as _;
 use phux_protocol::caps::{BootstrapLimits, BootstrapStreamProfile};
 use phux_protocol::wire::frame::{CommandResult, ErrorCode, FrameKind};
-use tokio::sync::oneshot;
+use tokio::sync::{mpsc, oneshot};
 use tokio_util::sync::CancellationToken;
 use tracing::debug;
 
 use super::DEFAULT_AGENT_CHUNK_BYTES;
 use crate::mailbox::Outbound;
-use crate::runtime::session_attach::{
-    SessionCapture,
-    staging::{CaptureFailure, SessionStaging},
-};
 use crate::state::{ClientId, SharedState};
 use phux_agent_session::session::{AgentSessionBootstrap, BootstrapRequest};
 
-pub(super) async fn stage_session(
-    capture: SessionCapture<'_>,
-    staging: &mut SessionStaging,
-    pane: crate::state::AttachSnapshotPane,
-) -> Result<(), CaptureFailure> {
-    let session = pane
-        .handle
-        .agent_session()
-        .map_err(|error| error.to_string())?;
-    let live = pane.handle.output.subscribe();
-    let (reply, rx) = oneshot::channel();
-    session
-        .bootstrap
-        .send(BootstrapRequest {
-            reply,
-            seal: None,
-            after_seq: None,
-        })
-        .await
-        .map_err(|_| CaptureFailure::Closed("agent session closed before its cut".to_owned()))?;
-    let cut = rx
-        .await
-        .map_err(|_| CaptureFailure::Closed("agent session dropped its cut".to_owned()))?;
-    stage_cut(&capture, staging, &pane.wire_terminal_id, &cut)?;
-    let (cancel, done, last_seq, prior) = capture.state.with_mut(|s| {
-        s.replace_attach_terminal_pump(capture.client_id, pane.terminal_id, capture.bootstrap_id)
-    });
-    if let Some((_, done, _)) = prior {
-        done.cancelled().await;
-    }
-    last_seq.store(cut.base_seq, std::sync::atomic::Ordering::Release);
-    let pump_done = done.drop_guard();
-    let pump = live::LivePump {
-        state: capture.state.clone(),
-        client_id: capture.client_id,
-        core: pane.terminal_id,
-        bootstrap: session.bootstrap.clone(),
-        out_tx: capture.out_tx.clone(),
-        terminal_id: pane.wire_terminal_id.clone(),
-        stream_id: capture.stream_id,
-        bootstrap_id: capture.bootstrap_id,
-        limits: capture.limits,
-        cancel,
-        last_seq,
-    };
-    staging.park(
-        &capture,
-        &pane,
-        Box::pin(async move {
-            let _done = pump_done;
-            pump.run(live, cut.base_seq).await;
-        }),
-    );
-    Ok(())
-}
-
-fn stage_cut(
-    capture: &SessionCapture<'_>,
-    staging: &mut SessionStaging,
-    wire: &phux_protocol::ids::ResourceId,
-    cut: &AgentSessionBootstrap,
-) -> Result<(), CaptureFailure> {
-    let bytes = cut
-        .records
-        .iter()
-        .try_fold(0_usize, |total, record| total.checked_add(record.len()))
-        .ok_or_else(|| "agent bootstrap size overflow".to_owned())?;
-    // Source records and the framed copy coexist. Refuse before framing.
-    if bytes > staging.budget.remaining_bytes() / 2 {
-        return Err("agent session exceeds aggregate bootstrap peak budget"
-            .to_owned()
-            .into());
-    }
-    validate_cut(cut)?;
-    let frames = staging.collect_frames(bootstrap_frames(
-        wire,
-        capture.stream_id,
-        capture.bootstrap_id,
-        cut,
-        capture.limits,
-    ))?;
-    staging.append(frames, bytes)
-}
-
-fn validate_cut(cut: &AgentSessionBootstrap) -> Result<(), CaptureFailure> {
+fn validate_cut(cut: &AgentSessionBootstrap) -> Result<(), String> {
     let mut ended = false;
     for record in &cut.records {
         let records = phux_agent_session::session::record::validate(record, ended)
-            .map_err(|error| CaptureFailure::Failed(error.to_string()))?;
+            .map_err(|error| error.to_string())?;
         ended = records
             .last()
             .is_some_and(phux_agent_session::session::record::ValidRecord::ends_session);
     }
     Ok(())
+}
+
+/// The same validated cut serves explicit subscriptions and lag recovery.
+async fn capture_cut(
+    bootstrap: &mpsc::Sender<BootstrapRequest>,
+    after_seq: Option<u64>,
+) -> Result<AgentSessionBootstrap, CommandResult> {
+    let (reply, rx) = oneshot::channel();
+    bootstrap
+        .send(BootstrapRequest {
+            reply,
+            seal: None,
+            after_seq,
+        })
+        .await
+        .map_err(|_| CommandResult::Error {
+            code: ErrorCode::TerminalNotFound,
+            message: "the session closed before its bootstrap was cut".to_owned(),
+        })?;
+    let cut = rx.await.map_err(|_| CommandResult::Error {
+        code: ErrorCode::TerminalNotFound,
+        message: "the session closed before its bootstrap was cut".to_owned(),
+    })?;
+    validate_cut(&cut).map_err(|message| CommandResult::Error {
+        code: ErrorCode::CodecUnavailable,
+        message,
+    })?;
+    Ok(cut)
 }
 /// Bootstrap an `AgentSession` at one atomic cut: a full retained replacement
 /// or a cursor-anchored suffix, followed by live records. The live subscription
@@ -156,27 +96,9 @@ pub(crate) async fn attach_agent_session(
     // output between this replacement's bootstrap frames.
     crate::runtime::pump::stop_output(state, client_id, core).await;
 
-    let (reply, rx) = oneshot::channel();
-    if session
-        .bootstrap
-        .send(BootstrapRequest {
-            reply,
-            seal: None,
-            after_seq,
-        })
-        .await
-        .is_err()
-    {
-        return CommandResult::Error {
-            code: ErrorCode::TerminalNotFound,
-            message: "the session closed before its bootstrap was cut".to_owned(),
-        };
-    }
-    let Ok(cut) = rx.await else {
-        return CommandResult::Error {
-            code: ErrorCode::TerminalNotFound,
-            message: "the session closed before its bootstrap was cut".to_owned(),
-        };
+    let cut = match capture_cut(&session.bootstrap, after_seq).await {
+        Ok(cut) => cut,
+        Err(result) => return result,
     };
     if cut.dropped > 0 {
         debug!(

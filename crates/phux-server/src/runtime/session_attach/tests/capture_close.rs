@@ -95,15 +95,12 @@ async fn close_during_capture(kill: bool, cancel: bool) {
     let (session, parent) = parent(&state, false);
     let (core, handle) = watched_tree(&state, parent, session);
     publish::<TreeDocument>(&handle, Bytes::from_static(b"{\"initial\":true}")).await;
-    let (_, mut later) = agent_stub(&state, parent, session);
+    let (_, parked, actor) = parked_tree(&state, parent, session);
     let wire = state.with_mut(|s| s.intern_resource_wire(core));
     let mut viewer = Connection::start(&state, false).await;
     let mut producer = Connection::start(&state, false).await;
     viewer.attach(1).await;
-    let cut = tokio::time::timeout(std::time::Duration::from_secs(5), later.recv())
-        .await
-        .unwrap()
-        .unwrap();
+    wait_for_capture(&parked).await;
     close_from(&mut producer, &wire, kill).await;
     wait_reaped(&state, core).await;
     assert!(
@@ -111,10 +108,12 @@ async fn close_during_capture(kill: bool, cancel: bool) {
         "CLOSE must not escape ahead of ATTACHED"
     );
     if cancel {
+        let viewer_client = viewer.client;
         viewer.finish().await; // must not wait for the later actor's reply
-        assert!(cut.reply.is_closed());
+        assert!(state.with(|s| !s.attached().contains_key(&viewer_client)));
+        drop(actor);
     } else {
-        cut.reply.send(agent_cut(Vec::new())).unwrap();
+        tokio::task::spawn_local(actor.run());
         prefix(&mut viewer, 2, 1).await;
         assert!(
             matches!(viewer.next().await, FrameKind::ResourceClosed { terminal_id, .. } if terminal_id == wire)

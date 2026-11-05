@@ -34,11 +34,11 @@ impl ControlPlane {
     /// Drain events without accepting agent publications.
     ///
     /// Returned [`Event::AgentPublication`] arcs stay journaled until
-    /// [`Self::accept_agent_publication`]. That call is delivery acceptance.
-    /// The C adapter's pointer borrow ends on the next mutable call; its
-    /// staged effects persist, and it accepts in `phux_client_effect_clear`.
-    /// Loss or replacement replays any still unaccepted allocation after the
-    /// next catalog and attach are ready.
+    /// [`Self::accept_agent_publication`] or a newer full cut supersedes them.
+    /// Only the explicit call accepts delivery; ending a pointer borrow does not.
+    /// The C adapter also supersedes staged effects on a full cut, and otherwise
+    /// accepts in `phux_client_effect_clear`. Loss replays unsuperseded,
+    /// unaccepted allocations once the next catalog and attach are ready.
     #[must_use]
     pub fn take_events_leased(&mut self) -> Vec<Event> {
         self.drain_events()

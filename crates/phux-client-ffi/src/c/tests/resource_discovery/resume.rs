@@ -119,3 +119,41 @@ fn c_full_agent_cut_supersedes_uncleared_effects_without_accepting_its_resume() 
     // SAFETY: this fixture owns the client through final free.
     unsafe { phux_client_free(client) };
 }
+
+#[test]
+fn c_empty_full_cut_supersedes_uncleared_records_without_resetting_the_resume_cursor() {
+    use phux_protocol::BootstrapStreamProfile::{AgentEventsJsonlResumeV1, AgentEventsJsonlV1};
+    let client = attached_resume_client();
+    open_agent_stream(client);
+    feed_agent_bootstrap(
+        client,
+        agent_bootstrap_frames(6, AgentEventsJsonlV1, 3, String::new()),
+    );
+    let mut log = vec![serde_json::json!({"seq": 99})];
+    assert_eq!(
+        drain_agent_log(client, &mut log),
+        [(AGENT_RECORDS_RETAINED, 6, 0)]
+    );
+    assert!(
+        log.is_empty(),
+        "empty full cut clears both pending and host history"
+    );
+    // Effect seq 0 describes the empty record vector, not the committed cursor.
+    feed_agent_bootstrap(
+        client,
+        agent_bootstrap_frames(
+            7,
+            AgentEventsJsonlResumeV1 { after_seq: 3 },
+            4,
+            record(4, "tool_end", "{}"),
+        ),
+    );
+    assert_eq!(
+        drain_agent_log(client, &mut log),
+        [(AGENT_RECORDS_LIVE, 7, 4)]
+    );
+    assert_eq!(log.len(), 1);
+    assert_eq!(log[0]["seq"], 4);
+    // SAFETY: this fixture owns the client through final free.
+    unsafe { phux_client_free(client) };
+}

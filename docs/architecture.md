@@ -257,9 +257,12 @@ before allocating a wire identity, replacing a handle, or spawning the actor.
 Stream and input frames reach their resource's app through
 `ResourceApp::frame`, after host authorization, connection/subscription gates
 and satellite routing. `runtime/session_attach` owns aggregate capture,
-accounting and publication. Each app stages its own bounded bootstrap under
-the same generation, with live output and lifecycle closes held behind the
-aggregate barrier. A document-only session needs no Terminal codec; a mixed
+accounting and publication. Apps stage bounded bootstraps under the same
+generation, with live output and lifecycle closes held behind the aggregate
+barrier. The AgentSession app retains catalog membership but defers its stream
+to cursor-bearing `ATTACH_RESOURCE`: session `ATTACH` has no per-agent cursor
+and must not replace committed history with an unsolicited full cut.
+A document-only or agent-only session needs no Terminal codec; a mixed
 session refuses a missing Terminal codec before changing subscriptions or
 geometry. Viewport votes, terminal roles, colors and grid resizing remain
 Terminal-specific. Desktop and Rune render read-only document panes without

@@ -193,9 +193,11 @@ Immutable Rust grid frames can outlive a later publication. C grid/draw/effect
 pointers instead last only until the next mutable call: copy before retaining.
 A pointer borrow ending is **not delivery acceptance**. Ordinary event drains
 accept agent publications; leased drains retain their journal allocation
-until explicit `accept_agent_publication` (C: `phux_client_effect_clear`).
-Unaccepted publications replay after replacement once catalog/attach are
-ready. This acceptance is also not the drawable-presented receipt that
+until explicit `accept_agent_publication` (C: `phux_client_effect_clear`), unless
+a newer full retained cut supersedes earlier same-resource publications.
+Resume appends preserve their unaccepted prefix. Remaining unaccepted
+publications replay after replacement once catalog/attach are ready.
+This acceptance is also not the drawable-presented receipt that
 clears an unknown-input fence; see
 [GPUI presentation](../clients/desktop/native/phux-gpui/PRESENTATION.md).
 

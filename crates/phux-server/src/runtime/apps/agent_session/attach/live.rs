@@ -15,7 +15,7 @@ use phux_protocol::caps::BootstrapLimits;
 use phux_protocol::ids::{BootstrapId, StreamId};
 use phux_protocol::wire::frame::{FrameKind, TombstoneReason};
 use tokio::sync::broadcast::error::RecvError;
-use tokio::sync::{broadcast, mpsc, oneshot};
+use tokio::sync::{broadcast, mpsc};
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, warn};
 
@@ -125,14 +125,7 @@ impl LivePump {
     /// Cut the session after `cursor`: the retained suffix, or the full ring
     /// when part of the suffix was evicted. `None` when the session is gone.
     async fn cut_after(&self, cursor: u64) -> Option<AgentSessionBootstrap> {
-        let (reply, rx) = oneshot::channel();
-        let request = BootstrapRequest {
-            reply,
-            seal: None,
-            after_seq: Some(cursor),
-        };
-        self.bootstrap.send(request).await.ok()?;
-        rx.await.ok()
+        super::capture_cut(&self.bootstrap, Some(cursor)).await.ok()
     }
 
     /// Forward a contiguous suffix after `cursor`, one record per frame.

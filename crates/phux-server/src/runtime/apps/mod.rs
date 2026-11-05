@@ -172,6 +172,8 @@ pub(crate) trait ResourceApp: Sync {
 
     /// Stage this kind's bounded session bootstrap and a parked live pump.
     /// Nothing may publish until the host opens the aggregate live gate.
+    /// A cursor-driven app may defer its stream to explicit `ATTACH_RESOURCE`;
+    /// returning no frames does not close or remove its catalog membership.
     fn stage_session<'a>(
         &'a self,
         capture: super::session_attach::SessionCapture<'a>,

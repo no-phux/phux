@@ -259,10 +259,10 @@ impl ControlPlane {
     ///
     /// This is consumer delivery acceptance, not the end of a pointer borrow.
     /// The C adapter invalidates effect pointers on the next mutable call,
-    /// but staged effects persist until `phux_client_effect_clear`, which
-    /// calls this. A generic leased drain retains the allocation until the
-    /// same call. Drops the journal hold and any not-yet-drained replay of
-    /// that allocation. Unknown or already-accepted pointers are ignored.
+    /// but unsuperseded staged effects persist until `phux_client_effect_clear`,
+    /// which calls this. Drops the journal hold and any not-yet-drained replay
+    /// of that allocation. Unknown, superseded or already-accepted pointers
+    /// are ignored.
     pub fn accept_agent_publication(&mut self, publication: &Arc<AgentPublication>) {
         self.agent_delivery.accept(publication);
         self.events

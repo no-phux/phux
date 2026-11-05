@@ -21,9 +21,12 @@ use super::*;
 use crate::resource::{ResourceHandle, ResourceOutput};
 use crate::transport::{FrameReader, FrameWriter};
 
+mod agents;
 mod backpressure;
 mod capture_close;
 mod failure;
+mod fixtures;
+use fixtures::{agent_cut, agent_stub, parked_tree, wait_for_capture};
 
 struct Reader(mpsc::Receiver<BytesMut>);
 impl FrameReader for Reader {
@@ -217,61 +220,6 @@ fn tree(
     )
 }
 
-fn agent_stub(
-    state: &SharedState,
-    parent: phux_core::ids::ResourceId,
-    session: phux_core::ids::SessionId,
-) -> (
-    phux_core::ids::ResourceId,
-    mpsc::Receiver<phux_agent_session::session::BootstrapRequest>,
-) {
-    let core = state.with_mut(|s| {
-        let core = s
-            .new_agent_session(
-                parent,
-                &phux_core::resource::AgentFacet {
-                    provider: "fixture".to_owned(),
-                    native_id: None,
-                    state: None,
-                },
-            )
-            .unwrap();
-        s.move_resource_to(core, session, &Actor::owner()).unwrap();
-        core
-    });
-    let (bootstrap, rx) = mpsc::channel(4);
-    let (append, _append_rx) = mpsc::channel(1);
-    let (output, _) = tokio::sync::broadcast::channel(8);
-    let handle = ResourceHandle::new(
-        Some(parent),
-        output,
-        phux_agent_session::session::AgentSessionHandle {
-            provider: "fixture".into(),
-            native_id: None,
-            append,
-            bootstrap,
-            ended: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
-        },
-    );
-    state.with_mut(|s| {
-        s.register_resource_handle(core, handle, CancellationToken::new())
-            .unwrap();
-    });
-    (core, rx)
-}
-
-fn agent_cut(records: Vec<Bytes>) -> phux_agent_session::session::AgentSessionBootstrap {
-    phux_agent_session::session::AgentSessionBootstrap {
-        base_seq: 0,
-        resume_after_seq: None,
-        records,
-        dropped: 0,
-        ended: false,
-        native_publications: Vec::new(),
-        native_publication_high_water: 0,
-    }
-}
-
 #[test]
 fn aggregate_generation_is_not_reused_by_document_lag_recovery() {
     let mut state = crate::state::ServerState::new();
@@ -322,6 +270,14 @@ async fn prefix(
         snapshot.focused_resource,
         phux_protocol::ids::ResourceId::local(0)
     );
+    let bootstrap_count = snapshot
+        .resources
+        .iter()
+        .filter(|resource| {
+            resource.session == Some(snapshot.focused_session)
+                && resource.kind != phux_protocol::ResourceKind::AgentSession
+        })
+        .count();
     let mut profiles = Vec::new();
     let mut ready = 0;
     let mut generation = None;
@@ -357,8 +313,8 @@ async fn prefix(
             frame => panic!("interleaved aggregate frame: {frame:?}"),
         }
     }
-    assert_eq!(ready, count);
-    assert_eq!(profiles.len(), count);
+    assert_eq!(ready, bootstrap_count);
+    assert_eq!(profiles.len(), bootstrap_count);
     profiles
 }
 
@@ -394,7 +350,7 @@ async fn document_only_without_terminal_profile_and_reattach_are_live() {
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn mixed_four_kinds_share_barrier_and_only_terminal_gets_a_lease() {
+async fn mixed_four_kinds_defer_agent_stream_and_only_terminal_gets_a_lease() {
     LocalSet::new()
         .run_until(async {
             let state = SharedState::new();
@@ -450,8 +406,21 @@ async fn mixed_four_kinds_share_barrier_and_only_terminal_gets_a_lease() {
             let mut connection = Connection::start(&state, true).await;
             connection.attach(1).await;
             let profiles = prefix(&mut connection, 4, 1).await;
-            assert!(profiles.contains(&BootstrapStreamProfile::AgentEventsJsonlV1));
+            assert_eq!(profiles.len(), 3);
+            assert!(!profiles.contains(&BootstrapStreamProfile::AgentEventsJsonlV1));
             assert!(profiles.contains(&BootstrapStreamProfile::PixelSurfacePngV1));
+            let wire = state.with_mut(|s| s.intern_resource_wire(agent));
+            connection.send(FrameKind::Command {
+                request_id: 70,
+                command: phux_protocol::wire::frame::Command::attach_agent_session(wire.clone(), None, None),
+            }).await;
+            assert!(matches!(connection.next().await, FrameKind::BootstrapBegin {
+                terminal_id, profile: BootstrapStreamProfile::AgentEventsJsonlV1, ..
+            } if terminal_id == wire));
+            assert!(matches!(connection.next().await, FrameKind::BootstrapReady { terminal_id, .. } if terminal_id == wire));
+            assert!(matches!(connection.next().await, FrameKind::CommandResult {
+                request_id: 70, result: phux_protocol::wire::frame::CommandResult::Ok
+            }));
             for core in [agent, tree, surface] {
                 assert!(state.with(|s| s.input_lease_holder(core).is_none()));
             }
@@ -512,13 +481,10 @@ async fn captured_document_output_waits_for_every_resource_ready() {
             let (session, parent) = parent(&state, false);
             let (_, handle) = tree(&state, parent, session);
             publish::<TreeDocument>(&handle, Bytes::from_static(b"{}")).await;
-            let (_, mut cut) = agent_stub(&state, parent, session);
+            let (_, parked, actor) = parked_tree(&state, parent, session);
             let mut connection = Connection::start(&state, false).await;
             connection.attach(1).await;
-            let last_capture = tokio::time::timeout(std::time::Duration::from_secs(5), cut.recv())
-                .await
-                .unwrap()
-                .unwrap();
+            wait_for_capture(&parked).await;
             handle
                 .output
                 .send(ResourceOutput::Live {
@@ -532,7 +498,7 @@ async fn captured_document_output_waits_for_every_resource_ready() {
                 connection.rx.try_recv().is_err(),
                 "no partial publication or document-generation leak"
             );
-            last_capture.reply.send(agent_cut(Vec::new())).unwrap();
+            tokio::task::spawn_local(actor.run());
             prefix(&mut connection, 2, 1).await;
             assert!(matches!(
                 connection.next().await,

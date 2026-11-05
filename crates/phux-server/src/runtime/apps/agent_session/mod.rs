@@ -40,11 +40,14 @@ impl ResourceApp for AgentSessionApp {
 
     fn stage_session<'a>(
         &'a self,
-        capture: super::super::session_attach::SessionCapture<'a>,
-        staging: &'a mut super::super::session_attach::staging::SessionStaging,
-        pane: crate::state::AttachSnapshotPane,
+        _capture: super::super::session_attach::SessionCapture<'a>,
+        _staging: &'a mut super::super::session_attach::staging::SessionStaging,
+        _pane: crate::state::AttachSnapshotPane,
     ) -> LocalBoxFuture<'a, Result<(), super::super::session_attach::staging::CaptureFailure>> {
-        attach::stage_session(capture, staging, pane).boxed_local()
+        // Session ATTACH has no per-agent cursor. Retain catalog membership,
+        // but let ATTACH_RESOURCE request the committed suffix instead of
+        // overwriting it with an unsolicited full retained bootstrap.
+        std::future::ready(Ok(())).boxed_local()
     }
 
     fn defers_stream_bootstrap(&self) -> bool {
