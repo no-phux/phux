@@ -23,6 +23,7 @@ mod no_terminal_profile;
 mod overlay_startup;
 mod pixel_surface;
 mod plugin_startup;
+mod resource_frames;
 mod retain_on_exit;
 mod server_lifecycle;
 mod spawn_terminal;

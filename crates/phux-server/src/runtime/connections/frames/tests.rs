@@ -18,11 +18,9 @@ fn a_stream_frame_names_its_resource_and_a_viewport_vote_names_none() {
 }
 
 #[test]
-fn an_unknown_resource_is_served_as_a_terminal() {
+fn remote_and_unknown_resources_have_no_default_app() {
     let state = SharedState::new();
-    let app = app_serving(&state, &WireResourceId::local(999));
-    assert!(std::ptr::addr_eq(
-        app,
-        crate::runtime::apps::app_for(crate::resource::ResourceKind::Terminal)
-    ));
+    assert!(crate::runtime::apps::app_serving(&state, &WireResourceId::local(999)).is_none());
+    let remote = WireResourceId::satellite(phux_protocol::ids::SatelliteHost::from("remote"), 1);
+    assert!(crate::runtime::apps::app_serving(&state, &remote).is_none());
 }

@@ -19,6 +19,7 @@ mod metadata_mutation;
 mod metadata_read;
 pub(in crate::runtime) mod metadata_subscriptions;
 pub(in crate::runtime) mod plumbing;
+pub(in crate::runtime) mod resource_frames;
 mod session_create;
 mod unsupported;
 mod writer;

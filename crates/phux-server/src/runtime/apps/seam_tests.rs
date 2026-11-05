@@ -232,6 +232,52 @@ fn connections_hand_resource_frames_to_the_app() {
     assert!(hits.is_empty(), "connections routes by kind: {hits:?}");
 }
 
+fn frame_delegations(path: &str, source: &str) -> usize {
+    let Some(app) = path
+        .strip_prefix("runtime/apps/")
+        .and_then(|p| p.split_once('/').map(|(app, _)| app))
+    else {
+        return 0;
+    };
+    let mut tokens = vec![".frame(", "app_serving("];
+    if app != "terminal" {
+        tokens.extend(["TerminalApp", "terminal::frames"]);
+    }
+    if app != "agent_session" {
+        tokens.extend(["AgentSessionApp", "agent_session::frames"]);
+    }
+    if app != "document" {
+        tokens.extend(["DocumentApp", "document::TREE_APP", "document::SURFACE_APP"]);
+    }
+    count(source, &tokens)
+}
+
+#[test]
+fn resource_apps_do_not_delegate_frames_to_another_app() {
+    assert!(
+        crossings(frame_delegations).is_empty(),
+        "an app delegates resource frames"
+    );
+}
+
+#[test]
+fn the_frame_delegation_check_sees_dispatch_and_sibling_handlers() {
+    let path = "runtime/apps/agent_session/frames.rs";
+    assert_eq!(frame_delegations(path, "TerminalApp.frame(ctx, frame)"), 2);
+    assert_eq!(
+        frame_delegations(path, "super::terminal::frames::serve_frame(ctx, frame)"),
+        1
+    );
+    assert_eq!(
+        frame_delegations(path, "// TerminalApp.frame(ctx, frame)"),
+        0
+    );
+    assert_eq!(
+        frame_delegations("runtime/connections/frames.rs", "app.frame(ctx, frame)"),
+        0
+    );
+}
+
 #[test]
 fn the_host_reaches_the_terminal_engine_only_through_its_app() {
     let found = crossings(terminal_crossings);

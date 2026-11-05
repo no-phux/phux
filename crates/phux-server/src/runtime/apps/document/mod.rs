@@ -15,7 +15,7 @@ use phux_tree::{
 };
 use tokio::sync::oneshot;
 
-use super::{ResourceApp, ResourceFrame, ResourceLaunch, ResourceSpawn, StreamBootstrap};
+use super::{FrameAdmission, ResourceApp, ResourceFrame, ResourceLaunch, ResourceSpawn, StreamBootstrap};
 use crate::resource::{ResourceHandle, ResourceKind, WrongResourceKind};
 use crate::runtime::commands::{AttachResourceFailure, CommandContext};
 use crate::runtime::connections::dispatch::FrameFlow;
@@ -217,6 +217,11 @@ impl<A: DocumentApi> ResourceApp for DocumentApp<A> {
             }
         }
         .boxed_local()
+    }
+
+    fn frame_admission(&self, _frame: &FrameKind) -> FrameAdmission {
+        // Preserve the document app's unconditional wrong-kind refusals.
+        FrameAdmission::Unrestricted
     }
 
     /// A document serves no stream or input frame: it has no history, no

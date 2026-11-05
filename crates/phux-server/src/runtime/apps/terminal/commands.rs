@@ -28,7 +28,6 @@ use crate::runtime::apps::terminal::attach::AttachPrepared;
 use crate::runtime::apps::terminal::input_lane::InputLaneHandle;
 #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
 use crate::runtime::commands::attach_terminal::native_checkpoint_profile;
-use crate::runtime::commands::satellite_lease::relay_satellite_frame;
 #[allow(
     clippy::wildcard_imports,
     reason = "shared with the host's command namespace"

@@ -148,6 +148,18 @@ pub(crate) struct ResourceFrame<'a> {
     pub(crate) input_credits: &'a mut InputCredits,
 }
 
+/// The host-side check an app needs before it sees a local frame. These
+/// distinctions preserve the wire's input, hint, and refusal semantics.
+#[derive(Clone, Copy)]
+pub(crate) enum FrameAdmission {
+    /// No attachment is needed (e.g. exact resize or an in-band refusal).
+    Unrestricted,
+    /// Only a live subscriber may receive this frame's answer.
+    Subscription,
+    /// Attached input also respects retained exits, guardians, and leases.
+    AttachedInput,
+}
+
 /// What the host asks of the app serving a kind.
 pub(crate) trait ResourceApp: Sync {
     /// Whether ordinary organization creation/relaunch can execute this kind.
@@ -216,6 +228,9 @@ pub(crate) trait ResourceApp: Sync {
         resource: &ResourceKey,
         expected: Revision,
     ) -> Option<CommandResult>;
+
+    /// Which connection check precedes this kind's handling of `frame`.
+    fn frame_admission(&self, frame: &FrameKind) -> FrameAdmission;
 
     /// Serve a stream or input frame about a resource of this kind: the
     /// `INPUT_*`, `RESIZE_TERMINAL`, `FRAME_ACK` and `HISTORY_REQUEST`
@@ -306,16 +321,18 @@ pub(crate) fn rebuild_session(
     agent_session::upgrade::rebuild(carried, parent, parent_handle, log_bytes, token)
 }
 
-/// The app serving the resource `wire` names. A resource this host does
-/// not know, remote or already gone, is served as a Terminal, which relays
-/// or drops the frame as it always has.
-pub(crate) fn app_serving(state: &SharedState, wire: &WireResourceId) -> &'static dyn ResourceApp {
+/// The app serving a local resource, if this host still has its handle.
+/// Remote and unknown ids belong to host routing, never a default app.
+pub(crate) fn app_serving(
+    state: &SharedState,
+    wire: &WireResourceId,
+) -> Option<&'static dyn ResourceApp> {
     let kind = state.with(|s| {
         s.resource_from_wire(wire)
             .and_then(|core| s.resource_handle(core))
             .map(|handle| handle.kind)
     });
-    kind.map_or(&terminal::TerminalApp, app_for)
+    kind.map(app_for)
 }
 
 /// Every app's rows of the `GET_PERF` report.

@@ -5,7 +5,7 @@ use futures_util::future::LocalBoxFuture;
 use phux_protocol::ids::{OperationId, ResourceKey, Revision};
 use phux_protocol::wire::frame::{Command, CommandResult, ErrorCode, FrameKind};
 
-use super::{ResourceApp, ResourceFrame, ResourceLaunch, ResourceSpawn, StreamBootstrap};
+use super::{FrameAdmission, ResourceApp, ResourceFrame, ResourceLaunch, ResourceSpawn, StreamBootstrap};
 use crate::resource::{ResourceHandle, ResourceKind, WrongResourceKind};
 use crate::runtime::commands::{AttachResourceFailure, CommandContext};
 use crate::runtime::connections::dispatch::FrameFlow;
@@ -50,6 +50,21 @@ impl ResourceApp for AgentSessionApp {
             required: ResourceKind::Terminal,
             actual: ResourceKind::AgentSession,
         })
+    }
+
+    fn frame_admission(&self, frame: &FrameKind) -> FrameAdmission {
+        if matches!(
+            frame,
+            FrameKind::InputKey { .. }
+                | FrameKind::InputMouse { .. }
+                | FrameKind::InputFocus { .. }
+                | FrameKind::InputPaste { .. }
+                | FrameKind::InputTerminalReply { .. }
+        ) {
+            FrameAdmission::Subscription
+        } else {
+            FrameAdmission::Unrestricted
+        }
     }
 
     /// An agent session serves no stream or input frame: it is raw-profile

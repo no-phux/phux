@@ -13,7 +13,7 @@ use phux_terminal::actor::TerminalResource as _;
 use super::*;
 use crate::resource::ResourceKind;
 use crate::runtime::apps::{
-    ResourceApp, ResourceFrame, ResourceLaunch, ResourceSpawn, StreamBootstrap,
+    FrameAdmission, ResourceApp, ResourceFrame, ResourceLaunch, ResourceSpawn, StreamBootstrap,
 };
 use crate::runtime::connections::dispatch::FrameFlow;
 use crate::runtime::operation_dedupe::OperationClaim;
@@ -77,6 +77,17 @@ impl ResourceApp for TerminalApp {
         stream: StreamBootstrap<'a>,
     ) -> LocalBoxFuture<'a, Result<(), AttachResourceFailure>> {
         bootstrap_stream(stream).boxed_local()
+    }
+
+    fn frame_admission(&self, frame: &FrameKind) -> FrameAdmission {
+        match frame {
+            FrameKind::InputKey { .. }
+            | FrameKind::InputMouse { .. }
+            | FrameKind::InputFocus { .. }
+            | FrameKind::InputPaste { .. } => FrameAdmission::AttachedInput,
+            FrameKind::FrameAck { .. } => FrameAdmission::Subscription,
+            _ => FrameAdmission::Unrestricted,
+        }
     }
 
     fn frame<'a>(

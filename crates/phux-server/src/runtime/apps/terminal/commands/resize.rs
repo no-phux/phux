@@ -22,30 +22,7 @@ pub(crate) fn handle_terminal_resize(
     let cell_px = cell_px.filter(|&(w, h)| w > 0 && h > 0);
     state.with_mut(|s| {
         let local = match s.resolve_resource(wire_terminal_id).into_owned() {
-            ResolvedOwned::Remote(route) => {
-                if !relay_satellite_frame(
-                    client_id,
-                    wire_terminal_id,
-                    &route,
-                    "RESIZE_TERMINAL",
-                    |id| FrameKind::ResizeTerminal {
-                        terminal_id: id,
-                        cols,
-                        rows,
-                        cell_px,
-                    },
-                ) {
-                    warn!(
-                        ?client_id,
-                        ?wire_terminal_id,
-                        cols,
-                        rows,
-                        "RESIZE_TERMINAL: SATELLITE-routed pane id rejected on non-federation-hub server",
-                    );
-                }
-                return;
-            }
-            ResolvedOwned::Unknown => {
+            ResolvedOwned::Remote(_) | ResolvedOwned::Unknown => {
                 debug!(
                     ?client_id,
                     ?wire_terminal_id,
@@ -57,32 +34,45 @@ pub(crate) fn handle_terminal_resize(
             }
             ResolvedOwned::Local(local) => local,
         };
-        let terminal = local.id;
-        // ADR-0124: a retained pane's grid records how its process ended.
-        if s.retained_exit(terminal).is_some() {
-            debug!(?client_id, ?wire_terminal_id, "RESIZE_TERMINAL: pane exited; ignored");
+        let Some(terminal) = resize_destination(s, client_id, local.id, &local.handle) else {
             return;
-        }
+        };
         // Match the actor's clamp. Record this target only after admission;
         // the replacement bootstrap carries the actor's settled geometry.
         let cols = cols.max(1);
         let rows = rows.max(1);
-        let terminal = match local.handle.terminal() {
-            Ok(terminal) => terminal,
-            Err(error) => {
-                debug!(?client_id, ?terminal, %error, "RESIZE_TERMINAL: not a Terminal; dropping");
-                // L1 §1.1: no reply frame, so an uncorrelated ERROR.
-                send_wrong_kind_error(s, client_id, error);
-                return;
-            }
-        };
         // Without a cell size (ADR-0145) the actor keeps its last one.
-        if try_resize(terminal, (cols, rows), cell_px, "RESIZE_TERMINAL", client_id)
-            && let Some(pane) = s.registry_mut().terminal_mut(local.id)
+        if try_resize(
+            terminal,
+            (cols, rows),
+            cell_px,
+            "RESIZE_TERMINAL",
+            client_id,
+        ) && let Some(pane) = s.registry_mut().terminal_mut(local.id)
         {
             pane.dims = (cols, rows);
         }
     });
+}
+
+fn resize_destination<'a>(
+    s: &crate::state::ServerState,
+    client_id: ClientId,
+    resource: phux_core::ids::ResourceId,
+    handle: &'a ResourceHandle,
+) -> Option<&'a TerminalHandle> {
+    // ADR-0124: a retained pane's grid records how its process ended.
+    if s.retained_exit(resource).is_some() {
+        return None;
+    }
+    match handle.terminal() {
+        Ok(terminal) => Some(terminal),
+        Err(error) => {
+            // L1 §1.1: no reply frame, so an uncorrelated ERROR.
+            send_wrong_kind_error(s, client_id, error);
+            None
+        }
+    }
 }
 
 /// Refuse a reply-less frame aimed at the wrong resource kind with an

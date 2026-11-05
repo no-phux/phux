@@ -21,26 +21,8 @@ pub(super) fn serve(request: &ResourceFrame<'_>, frame: &FrameKind) -> FrameFlow
             ErrorCode::WrongResourceKind,
             "an agent-session stream retains no history beyond its bootstrap".to_owned(),
         ),
-        FrameKind::InputKey { terminal_id, .. }
-        | FrameKind::InputMouse { terminal_id, .. }
-        | FrameKind::InputFocus { terminal_id, .. }
-        | FrameKind::InputPaste { terminal_id, .. }
-        | FrameKind::InputTerminalReply { terminal_id, .. } => {
-            // Input from a revoked or unsubscribed connection earns no
-            // answer, on any kind.
-            let answered = request.state.with(|s| {
-                !s.connection_revoked(request.client_id)
-                    && s.resource_from_wire(terminal_id).is_some_and(|core| {
-                        s.subscribers_for_resource(core)
-                            .contains(&request.client_id)
-                    })
-            });
-            if !answered {
-                return FrameFlow::Continue(());
-            }
-            wrong_kind()
-        }
-        // RESIZE_TERMINAL; only frames about a resource reach an app.
+        // The host already checked input subscription and revocation.
+        // RESIZE_TERMINAL needs no subscription.
         _ => wrong_kind(),
     };
     let _ = request

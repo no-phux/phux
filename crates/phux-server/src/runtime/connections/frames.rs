@@ -6,12 +6,12 @@ use super::hello::{HelloRequest, negotiate_hello};
 use super::plumbing::{
     AttachIdVerdict, ConnectionClose, classify_attach_id, detach_on_request, reply_pong,
 };
+use crate::runtime::apps::ResourceFrame;
 use crate::runtime::apps::terminal::attach::{SpawnRequest, handle_attach, handle_move_terminal};
 use crate::runtime::apps::terminal::commands::handle_viewport_resize;
 use crate::runtime::apps::terminal::terminal_streams::{
     AttachFrame, direction_invalid, is_input_frame, is_metadata_frame, is_stream_frame,
 };
-use crate::runtime::apps::{ResourceFrame, app_serving};
 use crate::transport::FrameReader;
 use phux_protocol::ids::ResourceId as WireResourceId;
 use phux_protocol::wire::frame::{Command, DetachReason, ErrorCode, FrameKind};
@@ -233,10 +233,6 @@ impl<R: FrameReader> FrameDispatch<'_, R> {
             handle_viewport_resize(self.state, self.client_id, &viewport);
             return FrameFlow::Continue(());
         }
-        let Some(resource) = frame_resource(&frame) else {
-            return direction_invalid(self.client_id, &frame);
-        };
-        let app = app_serving(self.state, resource);
         let ctx = ResourceFrame {
             state: self.state,
             client_id: self.client_id,
@@ -246,7 +242,7 @@ impl<R: FrameReader> FrameDispatch<'_, R> {
             negotiated: *self.negotiated,
             input_credits: self.input_credits,
         };
-        app.frame(ctx, frame).await
+        super::resource_frames::serve(ctx, frame).await
     }
 
     /// Resource and filesystem frames; any other kind is not valid from a
@@ -356,7 +352,7 @@ impl<R: FrameReader> FrameDispatch<'_, R> {
 
 /// The resource a stream or input frame is about; `None` for one that
 /// names no resource.
-const fn frame_resource(frame: &FrameKind) -> Option<&WireResourceId> {
+pub(super) const fn frame_resource(frame: &FrameKind) -> Option<&WireResourceId> {
     match frame {
         FrameKind::InputKey { terminal_id, .. }
         | FrameKind::InputMouse { terminal_id, .. }
