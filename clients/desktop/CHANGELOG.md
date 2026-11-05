@@ -59,6 +59,13 @@
 - Reject raw terminal input and file drops for pending or retained ACP owners
   before filesystem access or remote upload, including during reconnects.
 
+## [0.56.0](https://github.com/no-phux/phux/compare/desktop-v0.55.0...desktop-v0.56.0) (2026-11-05)
+
+
+### Features
+
+* finish kind-neutral resource hosting and native panes ([#1987](https://github.com/no-phux/phux/issues/1987)) ([38b118a](https://github.com/no-phux/phux/commit/38b118aaa58b03b919632dd7c95a47effa327e3e))
+
 ## [0.55.0](https://github.com/no-phux/phux/compare/desktop-v0.54.1...desktop-v0.55.0) (2026-11-05)
 
 
