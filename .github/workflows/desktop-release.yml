@@ -142,7 +142,8 @@ jobs:
           echo "PHUX_BUILD_SHA=$(git rev-parse HEAD)" >> "$GITHUB_ENV"
           # The archive name is release-manifest's naming rule.
           version="$(jq -er .version clients/desktop/package.json)"
-          test "$(jq -er '."clients/desktop"' .release-please-manifest.json)" = "$version"
+          # Older tags keep the desktop in the root manifest; newer ones in its own.
+          test "$(jq -ers 'map(."clients/desktop" // empty)[0]' .release-please-manifest*.json)" = "$version"
           identity="$version"
           if [[ "$PHUX_BUILD_CHANNEL" == next ]]; then
             identity="next.$PHUX_BUILD_SHA"
@@ -305,7 +306,8 @@ jobs:
           echo "PHUX_BUILD_SHA=$PHUX_BUILD_SHA" >> "$GITHUB_ENV"
           # The archive name is release-manifest's naming rule.
           version="$(jq -er .version clients/desktop/package.json)"
-          test "$(jq -er '."clients/desktop"' .release-please-manifest.json)" = "$version"
+          # Older tags keep the desktop in the root manifest; newer ones in its own.
+          test "$(jq -ers 'map(."clients/desktop" // empty)[0]' .release-please-manifest*.json)" = "$version"
           identity="$version"
           if [[ "$PHUX_BUILD_CHANNEL" == next ]]; then
             identity="next.$PHUX_BUILD_SHA"

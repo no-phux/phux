@@ -4,6 +4,7 @@
 // manifest that does not name the newest published release. It reads GitHub
 // state, not workflow logs, so it catches a stall whichever step failed.
 import { readFileSync } from "node:fs";
+import { TRAINS } from "../cargo/release-orchestration.ts";
 import { describe, Failure } from "../lib/command.ts";
 import { git } from "../lib/git.ts";
 import { gh, ghLines } from "../lib/github.ts";
@@ -25,11 +26,16 @@ export interface Snapshot {
   readonly releases: readonly Release[];
   /** Merged PRs still labelled `autorelease: pending`: `{number, title, merged}`. */
   readonly pending: readonly Table[];
-  /** .release-please-manifest.json, the config's `packages`, and when the manifest last moved. */
+  /** One per Release Please train. */
+  readonly trains: readonly Train[];
+  readonly stable: Table | string;
+}
+
+/** A train's manifest, its config's `packages`, and when the manifest last moved. */
+export interface Train {
   readonly manifest: Table;
   readonly packages: Table;
   readonly bumped: string;
-  readonly stable: Table | string;
 }
 
 /** The newest published `<prefix>X.Y.Z` version, or undefined. */
@@ -65,10 +71,13 @@ export function problems(state: Snapshot, graceMs: number, now = Date.now()): st
     );
   }
   const tags = new Set(releases.map((release) => release.tag));
-  for (const [path, version] of late(state.bumped) ? Object.entries(state.manifest) : []) {
-    const component = str(table(state.packages[path])["component"]);
-    const tag = `${component ? `${component}-` : ""}v${String(version)}`;
-    if (!tags.has(tag)) found.push(`${path} is at ${String(version)}, but ${tag} has no release.`);
+  for (const train of state.trains.filter((train) => late(train.bumped))) {
+    for (const [path, version] of Object.entries(train.manifest)) {
+      const component = str(table(train.packages[path])["component"]);
+      const tag = `${component ? `${component}-` : ""}v${String(version)}`;
+      if (!tags.has(tag))
+        found.push(`${path} is at ${String(version)}, but ${tag} has no release.`);
+    }
   }
   if (typeof state.stable === "string") {
     return [...found, `channels/stable.json is unreadable: ${state.stable}`];
@@ -119,9 +128,11 @@ function snapshot(repo: string): Snapshot {
     repo,
     releases,
     pending,
-    manifest: readJson(".release-please-manifest.json"),
-    packages: table(readJson("release-please-config.json")["packages"]),
-    bumped: git(["log", "-1", "--format=%cI", "--", ".release-please-manifest.json"]).trim(),
+    trains: TRAINS.map(({ config, manifest }) => ({
+      manifest: readJson(manifest),
+      packages: table(readJson(config)["packages"]),
+      bumped: git(["log", "-1", "--format=%cI", "--", manifest]).trim(),
+    })),
     stable: stableManifest(repo),
   };
 }

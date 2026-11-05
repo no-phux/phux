@@ -3,6 +3,7 @@
 // A root release PR rewrites version fields, the changelog, and skill version
 // lines; treating those as binary inputs rebuilt FFI, Zig and the CLI. Fail
 // closed: any other hunk, path, or unreadable side keeps the normal routes.
+import { DESKTOP_TRAIN, ROOT_TRAIN, WORKSPACE_LOCKS } from "../cargo/release-orchestration.ts";
 import { deepEqual, isTable, str, type Table } from "../lib/value.ts";
 
 const SEMVER = /^[0-9]+\.[0-9]+\.[0-9]+$/;
@@ -64,9 +65,15 @@ export const workspaceLockOnly: Check = (before, after) => {
   const [old, now] = [splitLock(before), splitLock(after)];
   if (!old || !now || !deepEqual(old.registry, now.registry) || old.path.size !== now.path.size)
     return false;
-  return [...old.path].every(([name, { version: _old, ...previous }]) => {
+  // A crate the bump leaves alone (the Rune client's alpha) may keep any version.
+  return [...old.path].every(([name, { version: was, ...previous }]) => {
     const { version, ...current } = now.path.get(name) ?? {};
-    return now.path.has(name) && deepEqual(previous, current) && SEMVER.test(str(version) ?? "");
+    const moved = version !== was;
+    return (
+      now.path.has(name) &&
+      deepEqual(previous, current) &&
+      (!moved || SEMVER.test(str(version) ?? ""))
+    );
   });
 };
 
@@ -97,10 +104,10 @@ export const skillOnly: Check = (before, after) => {
 
 const CHECKS: Record<string, Check> = {
   "Cargo.toml": workspaceManifestOnly,
-  "Cargo.lock": workspaceLockOnly,
-  "clients/phux-web/Cargo.lock": workspaceLockOnly,
+  ...Object.fromEntries(WORKSPACE_LOCKS.map((lock) => [lock, workspaceLockOnly])),
   "clients/desktop/package.json": desktopPackageOnly,
-  ".release-please-manifest.json": manifestOnly,
+  [ROOT_TRAIN.manifest]: manifestOnly,
+  [DESKTOP_TRAIN.manifest]: manifestOnly,
   ".agents/skills/using-phux/SKILL.md": skillOnly,
   ".agents/skills/using-phux-mcp/SKILL.md": skillOnly,
 };
@@ -109,10 +116,20 @@ export type ReadPair = (
   path: string,
 ) => readonly [string | undefined, string | undefined] | undefined;
 
+/**
+ * A workspace version bump moves every lock with it. One that leaves a lock
+ * behind breaks `--locked` builds, so it takes the normal routes and fails
+ * there instead of skipping straight to a release.
+ */
+function locksMoveWithWorkspace(paths: readonly string[]): boolean {
+  return !paths.includes("Cargo.toml") || WORKSPACE_LOCKS.every((lock) => paths.includes(lock));
+}
+
 /** True when every path is release metadata and each side differs only in versions. */
 export function releaseMetadataOnly(paths: readonly string[], readPair: ReadPair): boolean {
   return (
     paths.length > 0 &&
+    locksMoveWithWorkspace(paths) &&
     paths.every((path) => {
       const check = /(^|\/)CHANGELOG\.md$/.test(path) ? () => true : CHECKS[path];
       const [before, after] = (check && readPair(path)) ?? [];

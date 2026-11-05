@@ -36,11 +36,12 @@ renderer lives in the tap and installs the signed, notarized DMG.
 ## Stable
 
 1. Conventional commits land on `main`. Release Please keeps one draft
-   release PR for the root and one for the desktop, each carrying the
-   version bump, changelog, and synced lockfiles. Nothing merges it
-   automatically.
+   release PR for the root (CLI and integrations) and one for the desktop.
+   Each is one commit carrying the version bump, changelog, and every
+   lockfile entry the bump moves. Nothing merges it automatically.
 2. A maintainer marks the release PR ready and squash-merges it once `ci`
-   is green. That creates the tag and a private draft release.
+   is green. That creates the tag and a private draft release. The PRs
+   are independent: merge either, both, in any order.
 3. `release.yml` runs after a successful push `ci` on `main`, daily,
    or by dispatch. It picks every draft whose exact tagged commit has a successful push
    `ci` on `main` (not another commit's green status), builds the assets from the tag using the harness on `main`,
@@ -152,9 +153,18 @@ tag disagrees with Cargo. Do not edit a version by hand.
 Pre-1.0: `fix:` bumps the patch, `feat:` bumps the minor, and a breaking
 change also bumps the minor.
 
-Release Please cannot update `Cargo.lock`; the `release-prs` job commits
-the lockfiles to the release branch, which returns the PR to draft until
-that push lands. Do not merge a release PR while it is a draft.
+There are two Release Please trains, each a config and manifest pair:
+`release-please-config.json` with `.release-please-manifest.json` for the
+root and integrations, and `release-please-config.desktop.json` with
+`.release-please-manifest.desktop.json` for the desktop. They share no file,
+so merging one release PR never conflicts the other.
+
+The root train rewrites `Cargo.toml` and the workspace crates' entries in
+every `Cargo.lock` in the same commit, through `toml` extra-files whose
+jsonpaths name those crates. A release PR is therefore complete the moment
+it exists; nothing patches it afterwards. Adding or removing a workspace
+crate changes those jsonpaths: `bun tools/main.ts release-orchestration-check --fix`
+regenerates them, and the tools tests fail until it has.
 
 ## Signing and verification
 
