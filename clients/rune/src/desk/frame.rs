@@ -46,7 +46,7 @@ impl Desk {
     }
 
     /// Typing shows the cursor and restarts its blink.
-    pub(super) fn restart_blink(&mut self) {
+    pub(crate) fn restart_blink(&mut self) {
         self.blink_since = self.clock;
         self.blink_on = true;
     }

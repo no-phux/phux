@@ -210,6 +210,10 @@ cancels).
 
 ## Develop
 
+`--phone` opens the phone form, where the phone app is growing ahead of
+Rune's phone support: [MOBILE.md](./MOBILE.md) lists what works and what
+waits on upstream.
+
 Rune is pinned to a `dev` revision in `Cargo.toml`; this crate has its own
 workspace and lock so Rune's graph stays out of the rest of phux. The
 [Rune upstream follower](../../scripts/rune-upstream/README.md) moves the pin

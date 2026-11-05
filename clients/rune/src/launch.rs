@@ -10,7 +10,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
-pub const USAGE: &str = "usage: phux-rune [--socket PATH] [--session NAME] [--phux PATH]";
+pub const USAGE: &str = "usage: phux-rune [--socket PATH] [--session NAME] [--phux PATH] [--phone]";
 
 /// The line that installs the CLI, for the window that can't find one.
 pub const INSTALL: &str = "curl -fsSL https://phux.sh/install | sh";
@@ -20,6 +20,8 @@ pub struct Options {
     pub socket: Option<PathBuf>,
     pub session: Option<String>,
     pub phux: Option<PathBuf>,
+    /// The phone form: a phone-sized window with a drawn keyboard.
+    pub phone: bool,
 }
 
 impl Options {
@@ -36,6 +38,7 @@ impl Options {
                 "--socket" => options.socket = Some(value("--socket")?.into()),
                 "--session" => options.session = Some(value("--session")?),
                 "--phux" => options.phux = Some(value("--phux")?.into()),
+                "--phone" => options.phone = true,
                 // macOS passes a process serial number to apps Finder opens.
                 arg if arg.starts_with("-psn_") => {}
                 "-h" | "--help" => return Err(USAGE.to_owned()),
@@ -270,11 +273,14 @@ mod tests {
             "work",
             "--phux",
             "/bin/phux",
+            "--phone",
         ])
         .expect("valid flags");
         assert_eq!(options.socket, Some(PathBuf::from("/tmp/s")));
         assert_eq!(options.session.as_deref(), Some("work"));
         assert_eq!(options.phux, Some(PathBuf::from("/bin/phux")));
+        assert!(options.phone);
+        assert!(!parse(&[]).expect("no flags").phone);
     }
 
     #[test]

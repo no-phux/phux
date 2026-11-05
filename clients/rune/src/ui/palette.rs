@@ -17,7 +17,8 @@ const MENU_W: f32 = 240.0;
 const MENU_ROW: f32 = 28.0;
 const MENU_PAD: f32 = 4.0;
 
-pub fn view(desk: &Desk, ink: &Ink) -> El {
+/// `top` is the room above the panel; a short window scrolls its rows.
+pub fn view(desk: &Desk, ink: &Ink, top: f32) -> El {
     let hits = desk.palette_hits();
     let picked = desk.palette_picked.min(hits.len().saturating_sub(1));
     let mode = desk.palette_mode;
@@ -77,8 +78,11 @@ pub fn view(desk: &Desk, ink: &Ink) -> El {
     };
     let panel = col()
         .key("palette")
-        .w(width)
+        // A narrow window (the phone form) takes what it has.
+        .w_full()
         .max_w(width)
+        .shrink()
+        .min_h(0.0)
         .radius(14.0)
         .clip_rounded(14.0)
         .fill(ink.raised)
@@ -104,6 +108,7 @@ pub fn view(desk: &Desk, ink: &Ink) -> El {
             col()
                 .w_full()
                 .max_h(if mode == Mode::Paths { 240.0 } else { 380.0 })
+                .shrink()
                 .min_h(0.0)
                 .scroll(rune::ScrollSpec {
                     stick_bottom: false,
@@ -130,7 +135,10 @@ pub fn view(desk: &Desk, ink: &Ink) -> El {
         .transition(Transition::opacity())
         .modal(true, |d: &mut Desk| d.close_palette());
     // Paths open where they'll land, as the GPUI desktop's picker does.
-    let at_cursor = (mode == Mode::Paths).then(|| desk.cursor_point()).flatten();
+    // A phone has no room beside the cursor: its paths take the sheet.
+    let at_cursor = (mode == Mode::Paths && desk.phone.is_none())
+        .then(|| desk.cursor_point())
+        .flatten();
     match at_cursor {
         Some([x, y]) => {
             let [window_w, window_h] = desk.pointer.window;
@@ -143,9 +151,16 @@ pub fn view(desk: &Desk, ink: &Ink) -> El {
             };
             scrim.child(panel.absolute(fit(x, PATHS_WIDTH, window_w), y))
         }
-        None => scrim
-            .fill(Color::BLACK.alpha(0.32))
-            .child(col().w_full().pt(96.0).items_center().child(panel)),
+        None => scrim.fill(Color::BLACK.alpha(0.32)).child(
+            col()
+                .w_full()
+                .h_full()
+                .pt(top)
+                .px(12.0)
+                .pb(12.0)
+                .items_center()
+                .child(panel),
+        ),
     }
 }
 

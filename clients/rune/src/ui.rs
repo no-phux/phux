@@ -13,6 +13,7 @@ mod overlay;
 mod palette;
 mod panes;
 pub(crate) use panes::DIVIDER;
+mod phone;
 mod settings;
 mod sidebar;
 mod status;
@@ -121,6 +122,9 @@ fn ink(dark: bool, accent: Color, theme: Option<&Theme>) -> Ink {
 }
 
 pub fn view(desk: &Desk, cx: &mut Cx<Desk>) -> El {
+    if desk.phone.is_some() {
+        return phone::view(desk, cx);
+    }
     let p = ink(cx.system_dark(), cx.accent(), desk.settings.theme);
     // `titlebar_inset` is the traffic lights' width; zero when the system
     // draws its own titlebar.
@@ -181,7 +185,7 @@ pub fn view(desk: &Desk, cx: &mut Cx<Desk>) -> El {
         .children(desk.settings_open.then(|| settings::view(desk, &p)))
         .children(machines::sheet(desk, &p))
         .children(tabs::rename_sheet(desk, &p))
-        .children(desk.palette_open.then(|| palette::view(desk, &p)))
+        .children(desk.palette_open.then(|| palette::view(desk, &p, 96.0)))
         .children(desk.pointer.menu.map(|at| palette::context_menu(desk, at, &p)))
 }
 
@@ -223,7 +227,8 @@ impl Sheet {
             ));
         let panel = col()
             .key(self.key)
-            .w(self.width)
+            // A narrow window (the phone form) takes what it has.
+            .w_full()
             .max_w(self.width)
             .max_h(MAX_H)
             .shrink()
@@ -254,6 +259,7 @@ impl Sheet {
             .w_full()
             .h_full()
             .py(MARGIN)
+            .px(MARGIN)
             .items_center()
             .fill(Color::BLACK.alpha(self.scrim))
             .transition(Transition::opacity())
