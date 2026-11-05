@@ -15,7 +15,9 @@ use phux_tree::{
 };
 use tokio::sync::oneshot;
 
-use super::{FrameAdmission, ResourceApp, ResourceFrame, ResourceLaunch, ResourceSpawn, StreamBootstrap};
+use super::{
+    FrameAdmission, ResourceApp, ResourceFrame, ResourceLaunch, ResourceSpawn, StreamBootstrap,
+};
 use crate::resource::{ResourceHandle, ResourceKind, WrongResourceKind};
 use crate::runtime::commands::{AttachResourceFailure, CommandContext};
 use crate::runtime::connections::dispatch::FrameFlow;

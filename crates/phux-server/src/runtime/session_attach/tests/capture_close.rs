@@ -24,7 +24,8 @@ fn watched_tree(
     let bundle = DocumentActor::<TreeDocument>::build(parent, "watched", token.clone());
     let handle = bundle.handle;
     state.with_mut(|s| {
-        s.register_resource_handle(core, handle.clone(), token.clone()).unwrap();
+        s.register_resource_handle(core, handle.clone(), token.clone())
+            .unwrap();
     });
     crate::runtime::connections::spawn_resource_exit_watcher(
         state.clone(),

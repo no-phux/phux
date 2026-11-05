@@ -161,6 +161,7 @@ fn parent(
     terminal: bool,
 ) -> (phux_core::ids::SessionId, phux_core::ids::ResourceId) {
     if terminal {
+        state.set_terminal_engine(std::sync::Arc::new(phux_terminal::TerminalEngine));
         let id = crate::runtime::commands::seed_session_with_actor(
             state,
             "target",
@@ -194,7 +195,8 @@ fn document<K: DocumentKind>(
     let bundle = DocumentActor::<K>::build(parent, "fixture", token.clone());
     let handle = bundle.handle;
     state.with_mut(|s| {
-        s.register_resource_handle(core, handle.clone(), token).unwrap();
+        s.register_resource_handle(core, handle.clone(), token)
+            .unwrap();
     });
     tokio::task::spawn_local(bundle.actor.run());
     (core, handle)
@@ -252,7 +254,8 @@ fn agent_stub(
         },
     );
     state.with_mut(|s| {
-        s.register_resource_handle(core, handle, CancellationToken::new()).unwrap();
+        s.register_resource_handle(core, handle, CancellationToken::new())
+            .unwrap();
     });
     (core, rx)
 }
@@ -440,7 +443,8 @@ async fn mixed_four_kinds_share_barrier_and_only_terminal_gets_a_lease() {
                 4096,
             );
             state.with_mut(|s| {
-                s.register_resource_handle(agent, bundle.handle.clone(), token).unwrap();
+                s.register_resource_handle(agent, bundle.handle.clone(), token)
+                    .unwrap();
             });
             tokio::task::spawn_local(bundle.actor.run());
             let mut connection = Connection::start(&state, true).await;

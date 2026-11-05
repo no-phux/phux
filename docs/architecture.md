@@ -90,6 +90,7 @@ Cargo manifests define the actual edges.
 | `phux-agent-session` | the `AgentSession` record-stream engine, the `phux.agent/v1` state, asked, and record authority, and the mailbox of a resource that hosts an agent |
 | `phux-tree` | the replicated-document engine behind `AccessibilityTree` (JSON) and `PixelSurface` (PNG): one document a producer replaces whole, and the newest for every viewer |
 | `phux-terminal` | the Terminal kind: PTY child, libghostty engine actor, grid and replay, input encoding, native checkpoints, agent detection; never depends on the host |
+| `phux-terminal-api` | engine-independent Terminal contracts: launch intent, factory, input and presentation ports, opaque captures and report types; no VT or PTY implementation |
 | `phux-server` | the daemon: hosts resources and serves them to clients; links no VT library and no PTY directly |
 | `phux-agent-host` | guardian process for native agent sessions over ACP |
 | `phux-tui` | the terminal UI: attach driver, ratatui chrome, overlays; the only crate that links ratatui |
@@ -240,11 +241,13 @@ A new kind does not compile until `app_for` names its app, and neither
 also takes one `APPS` row, which a test holds to `app_for`. A surface that is
 not every kind's, such as the `AgentParent` mailbox of a resource that hosts an
 agent, is a companion on the handle, typed by the crate that owns it, so the
-host can use it without naming an engine. Only `runtime/apps/terminal` may name
-the Terminal engine and only `runtime/apps/agent_session` the `AgentSession`
-engine;
-`seam_tests.rs` fails if any host module does. The host holds a launch command
-as an opaque `LaunchCommand`; deciding what a pane runs is the app's job.
+host can use it without naming an engine. The server's production dependency
+graph contains no Terminal engine, libghostty or PTY implementation. The
+executable explicitly injects a `TerminalEngineFactory`; no built-in engine is
+selected by the host. The private Terminal app uses `phux-terminal-api` ports;
+native encoding, ordered PTY writes and capability adaptation stay engine-owned.
+`seam_tests.rs` and `tests/engine_boundary.rs` enforce this separation. The host
+holds a lossless OS-native `LaunchCommand`; deciding what a pane runs is the app's job.
 Organization launches also pass through the app: support is checked before
 commit, then the committed effect executes only through the recorded kind.
 Producer-bound projections refuse ordinary relaunch; no other kind inherits
@@ -252,10 +255,15 @@ a default shell. Execution failure settles only the effect's exact activation.
 Engine registration rejects absent records and record/handle kind mismatches
 before allocating a wire identity, replacing a handle, or spawning the actor.
 Stream and input frames reach their resource's app through
-`ResourceApp::frame`. Connection negotiation, `VIEWPORT_RESIZE` and client
-engines still assume a Terminal;
-[resource kinds beyond terminals](./resource-kinds.md) is the design that
-removes those assumptions.
+`ResourceApp::frame`, after host authorization, connection/subscription gates
+and satellite routing. `runtime/session_attach` owns aggregate capture,
+accounting and publication. Each app stages its own bounded bootstrap under
+the same generation, with live output and lifecycle closes held behind the
+aggregate barrier. A document-only session needs no Terminal codec; a mixed
+session refuses a missing Terminal codec before changing subscriptions or
+geometry. Viewport votes, terminal roles, colors and grid resizing remain
+Terminal-specific. Desktop and Rune render read-only document panes without
+Terminal views; see [resource kinds beyond terminals](./resource-kinds.md).
 
 The runtime root exports the server interface. Its `server` module assembles
 startup using `startup`, `posture`, `services`, and `listeners`; configuration

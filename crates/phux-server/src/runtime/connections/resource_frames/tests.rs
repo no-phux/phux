@@ -153,7 +153,9 @@ async fn local_focus_activity_case(leased: bool, retained: bool, authorized: boo
     let capacity = input.capacity();
     let (pane, wire, desktop_activity) = state.with_mut(|s| {
         let (_, pane) = s.seed_session("active-views");
-        let wire = s.register_resource_handle(pane, handle, CancellationToken::new());
+        let wire = s
+            .register_resource_handle(pane, handle, CancellationToken::new())
+            .unwrap();
         for client in [DESKTOP, CLIENT] {
             s.set_peer_identity(client, owner_peer());
             let (out, _rx) = tokio::sync::mpsc::channel(8);
@@ -347,7 +349,7 @@ async fn unavailable_history_preserves_the_negotiated_codec_first_outcome() {
                     HistoryTombstoneReason::Released,
                 ),
             ] {
-                let state = SharedState::new();
+                let state = crate::runtime::apps::terminal::test_support::terminal_state();
                 state.with_mut(|s| s.set_peer_identity(CLIENT, owner_peer()));
                 let mut hello = hello("history-no-app");
                 if let FrameKind::Hello { client_caps, .. } = &mut hello {

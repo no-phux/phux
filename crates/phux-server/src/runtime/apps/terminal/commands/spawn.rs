@@ -207,7 +207,9 @@ pub(in crate::runtime) fn launch_pane_actor_with_failure_policy(
     let wire_terminal_id = state.with_mut(|s| {
         let wire = s
             .spawn_resource_actor(terminal, handle, terminal_token, run)
-            .map_err(|error| phux_terminal_api::actor::TerminalActorError::Refused(error.to_string()))?;
+            .map_err(|error| {
+                phux_terminal_api::actor::TerminalActorError::Refused(error.to_string())
+            })?;
         // The executor report: the activation now holds a live process.
         s.activation_started(terminal, proc);
         if has_pty {

@@ -9,7 +9,7 @@ use phux_protocol::wire::frame::{
     Command, CommandResult, ErrorCode, FrameKind, SpawnResource, SpawnResult,
 };
 use phux_server_testkit::{Spawn, ascii_key, command, send_frame, spawn_resource};
-use portable_pty::CommandBuilder;
+use phux_terminal_api::launch::LaunchCommand as CommandBuilder;
 use tokio::net::UnixStream;
 
 use crate::common::{Server, attach, sh, spawned, wait_frame};

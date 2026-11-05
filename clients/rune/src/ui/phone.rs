@@ -39,7 +39,7 @@ pub fn view(desk: &Desk, cx: &mut Cx<Desk>) -> El {
         .client
         .as_ref()
         .zip(desk.shown.as_ref())
-        .and_then(|(client, shown)| client.acquire_view(shown.view))
+        .and_then(|(client, shown)| client.acquire_view(shown.view?))
         .map_or(p.bg, |frame| crate::grid::background(&frame));
     // On a desktop the traffic lights sit where a status bar would.
     let top = if cx.titlebar_inset() > 0.0 {
