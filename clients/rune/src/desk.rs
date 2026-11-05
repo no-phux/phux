@@ -463,6 +463,7 @@ impl Desk {
         for event in std::mem::take(&mut observation.events) {
             changed |= self.apply(&client, event, tx);
         }
+        changed |= self.drop_dead_views(&client);
         let opened = self.settle_home(&client) | self.open_wanted(&client);
         changed |= opened;
         let unfocused = self.sync_focus(&client);

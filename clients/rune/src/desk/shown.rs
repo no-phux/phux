@@ -45,6 +45,26 @@ impl Desk {
         true
     }
 
+    /// Let go of views the engine forgot. A terminal whose replica leaves
+    /// and comes back (a resync, a detach) loses every view on it, and a
+    /// dead view paints "Opening…" forever. The shown one is asked for again
+    /// and the layout reopens the rest, as soon as the replica is back.
+    pub(super) fn drop_dead_views(&mut self, client: &Client) -> bool {
+        let dead = |view| client.view_generation(view).is_none();
+        let before = self.others.len();
+        self.others.retain(|_, view| !dead(*view));
+        let mut changed = self.others.len() != before;
+        if self.shown.as_ref().is_some_and(|s| dead(s.view))
+            && let Some(terminal) = self.drop_shown(client)
+        {
+            if self.wanted.is_none() {
+                self.want(terminal);
+            }
+            changed = true;
+        }
+        changed
+    }
+
     /// Which terminal should be on screen, if it is not yet: the one the user
     /// asked for, a new session's once it is selected, else the server's
     /// focus. `None` also while waiting on one of those.
@@ -142,6 +162,29 @@ mod tests {
 
     fn desk() -> Desk {
         Desk::new(&Resolved::offline("not launched"))
+    }
+
+    #[test]
+    fn a_view_the_engine_forgot_is_asked_for_again() {
+        let mut desk = desk();
+        let client = std::sync::Arc::new(phux_client_runtime::Runtime::embedded(
+            phux_client_runtime::control::ControlOptions::default(),
+        ));
+        let view = |raw| phux_client_runtime::ViewId::from_raw(raw).expect("nonzero");
+        // Nothing is published for either view: both died with the replica.
+        desk.shown = Some(Shown {
+            terminal: ResourceId::local(1),
+            view: view(1),
+        });
+        desk.others.insert(ResourceId::local(2), view(2));
+        assert!(desk.drop_dead_views(&client));
+        assert!(desk.shown.is_none());
+        assert!(desk.others.is_empty());
+        assert_eq!(
+            desk.wanted.as_ref().map(|(t, _)| t),
+            Some(&ResourceId::local(1))
+        );
+        assert!(!desk.drop_dead_views(&client), "nothing left to drop");
     }
 
     #[test]

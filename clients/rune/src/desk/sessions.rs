@@ -23,13 +23,7 @@ impl Desk {
         let Some(client) = self.client.clone() else {
             return;
         };
-        // A click on the shown terminal whose view died reopens it.
-        if let Some(shown) = &self.shown
-            && shown.terminal == terminal
-            && client.acquire_view(shown.view).is_none()
-        {
-            self.drop_shown(&client);
-        }
+        self.drop_dead_views(&client);
         self.pending_session = None;
         self.want(terminal);
         self.open_wanted(&client);
