@@ -18,18 +18,28 @@ if [[ "${1:-}" == --zip-only ]]; then
     zip_only=1
     shift
 fi
-if [[ $# != 2 || "$2" != *.zip ]]; then
+# --binaries: sign and notarize bare Mach-O executables in place (the CLI
+# archives), so the firewall's signed-software allowance covers them
+# (phux-9lj9). A bare executable cannot hold a stapled ticket; Gatekeeper
+# looks it up online.
+binaries=()
+if [[ "${1:-}" == --binaries ]]; then
+    shift
+    [[ $# -gt 0 ]] || { echo 'Usage: sign-macos-desktop.sh --binaries FILE...' >&2; exit 2; }
+    for file in "$@"; do test -x "$file"; done
+    binaries=("$@")
+elif [[ $# != 2 || "$2" != *.zip ]]; then
     echo 'Usage: sign-macos-desktop.sh [--zip-only] APP OUTPUT.zip (also writes OUTPUT.dmg unless --zip-only)' >&2
     exit 2
+else
+    app="$(cd "$(dirname "$1")" && pwd)/$(basename "$1")"
+    mkdir -p "$(dirname "$2")"
+    archive="$(cd "$(dirname "$2")" && pwd)/$(basename "$2")"
+    dmg="${archive%.zip}.dmg"
+    test -f "$app/Contents/Info.plist"
+    test ! -e "$archive"
+    test ! -e "$dmg"
 fi
-
-app="$(cd "$(dirname "$1")" && pwd)/$(basename "$1")"
-mkdir -p "$(dirname "$2")"
-archive="$(cd "$(dirname "$2")" && pwd)/$(basename "$2")"
-dmg="${archive%.zip}.dmg"
-test -f "$app/Contents/Info.plist"
-test ! -e "$archive"
-test ! -e "$dmg"
 harness="$(cd "$(dirname "$0")/../.." && pwd)"
 work="$(mktemp -d "${TMPDIR:-/tmp}/phux-apple-sign.XXXXXX")"
 keychain="$work/release.keychain-db"
@@ -72,14 +82,6 @@ if [[ -z "$identities" || "$identities" == *$'\n'* ]]; then
     exit 1
 fi
 
-# Sign the bundled coordinator before sealing the app; never mutate it after signing.
-if [[ -e "$app/Contents/MacOS/phux" ]]; then
-    test -x "$app/Contents/MacOS/phux"
-    codesign --force --keychain "$keychain" --sign "$identities" --options runtime --timestamp "$app/Contents/MacOS/phux"
-fi
-codesign --force --keychain "$keychain" --sign "$identities" --options runtime --timestamp "$app"
-codesign --verify --deep --strict --verbose=2 "$app"
-
 notarize() {
     local file="$1" receipt="$2"
     if ! xcrun notarytool submit "$file" --key "$work/notary.p8" \
@@ -95,6 +97,24 @@ notarize() {
         return 1
     fi
 }
+
+if [[ ${#binaries[@]} -gt 0 ]]; then
+    for file in "${binaries[@]}"; do
+        codesign --force --keychain "$keychain" --sign "$identities" --options runtime --timestamp "$file"
+        codesign --verify --strict --verbose=2 "$file"
+    done
+    zip -qj "$work/submission.zip" "${binaries[@]}"
+    notarize "$work/submission.zip" "$work/binaries-notary.json"
+    exit 0
+fi
+
+# Sign the bundled coordinator before sealing the app; never mutate it after signing.
+if [[ -e "$app/Contents/MacOS/phux" ]]; then
+    test -x "$app/Contents/MacOS/phux"
+    codesign --force --keychain "$keychain" --sign "$identities" --options runtime --timestamp "$app/Contents/MacOS/phux"
+fi
+codesign --force --keychain "$keychain" --sign "$identities" --options runtime --timestamp "$app"
+codesign --verify --deep --strict --verbose=2 "$app"
 
 # Staple the app BEFORE making either final container so ZIP updaters receive
 # the same ticket as Finder installs (including on an offline first launch).
