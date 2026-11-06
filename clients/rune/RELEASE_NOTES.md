@@ -1,23 +1,21 @@
-**Phux Rune 0.1.0-alpha.11**: every split floats as a glass card, and a first look at the phone app.
+**Phux Rune 0.1.0-alpha.12**: read-only document mirrors beside your terminals, and the latest Rune.
 
-- **Glass cards.** Each pane of a split is its own rounded card, lifted off
-  the window and edged with a rim of light; the one with the keyboard glows
-  in your accent. The gaps between cards are the dividers, with a grip that
-  shows under the pointer. The confirm bar and notices are frosted over the
-  terminal behind them.
-- **Learn the keys where you are.** Hovering + Terminal or + Session shows
-  the shortcut that does the same. **Keyboard Shortcuts: Essentials** in the
-  palette lists the handful worth learning first, and a new install offers
-  it once.
-- **No more stuck "Opening…".** A pane that lost its connection to the
-  terminal behind it opens again on its own, instead of waiting for you to
-  switch away and back.
-- **Screen readers.** Settings reads out its switches, choices and text
-  size, every icon button has a name, and reopening the window with a
-  screen reader running no longer crashes the app.
-- **The phone app, early.** `--phone` opens Phux Rune as a phone: the
-  terminal edge to edge, glass controls over it, tabs, an accessory bar with
-  Ctrl, Option, Shift and an arrow pad, and an on-screen keyboard. It runs
-  in a phone-sized window for now, ahead of Rune on phones; on macOS,
-  `open -a "Phux Rune" --args --phone`.
-- **The latest Rune.** Smoother scrolling and native touch input.
+- **Read-only mirrors.** Open live accessibility trees and PNG surfaces from
+  the palette, switch their tabs, or put them beside terminals in a split.
+  Trees are selectable JSON; images fit without cropping. These are native
+  views, not embedded browsers: typing, paste and file drops never reach a
+  document pane, and closing a view leaves its producer running.
+- **Start a source.** **Start page/tree/surface mirror…** in the palette
+  explains the prerequisite and starts a dedicated local producer terminal,
+  never a command in your focused shell. Page capture needs Chrome debugging
+  on localhost:9222 with a separate profile; tree and surface capture need
+  macOS Accessibility and Screen Recording permission, respectively. Remote
+  producer starts are refused rather than guessing the other machine's
+  platform or permissions.
+- **Live images stay live.** PNG decoding is bounded and coalesced so busy
+  sources and closed views do not bury a newer frame under old work.
+- **The latest Rune.** Updated text shaping and script-appropriate CJK font
+  fallbacks, plus upstream text-selection and rendering corrections. Terminal
+  cell geometry and instant output stay unchanged. Desktop and phone forms
+  are both qualified; this is still a phone-sized desktop window, not an iOS
+  or Android build.
