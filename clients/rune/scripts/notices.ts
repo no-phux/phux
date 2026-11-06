@@ -7,10 +7,10 @@
 import { dirname, resolve } from "node:path";
 import {
   canonicalLicenses,
-  noticeTexts,
   renderNotices,
   shippedCrates,
 } from "../../desktop/scripts/notices.ts";
+import { runeNoticeReader } from "./notice-texts.ts";
 
 const [target] = process.argv.slice(2);
 if (target === undefined) throw new Error("usage: notices.ts TARGET");
@@ -32,5 +32,5 @@ const metadata = Bun.spawnSync(
 if (!metadata.success) throw new Error("cargo metadata failed");
 const canonical = canonicalLicenses();
 const crates = shippedCrates(metadata.stdout.toString());
-const read = (crate: (typeof crates)[number]) => noticeTexts(crate, canonical);
+const read = runeNoticeReader(crates, canonical);
 process.stdout.write(renderNotices(crates, read, "Phux Rune"));
