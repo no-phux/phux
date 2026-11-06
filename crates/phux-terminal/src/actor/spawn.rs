@@ -123,6 +123,10 @@ pub(crate) fn spawn_pty(
     cmd.env("COLORTERM", "truecolor");
     let child = super::fd_shrink::spawn_pane_child(&*pair.slave, &*pair.master, cmd)
         .map_err(|reason| TerminalActorError::Spawn(spawn_failure_reason(&reason)))?;
+    #[cfg(target_os = "linux")]
+    if let Some(pid) = child.process_id() {
+        super::pane_scope::detach(pid);
+    }
     // Our slave copy would prevent EOF on the master after the child exits.
     drop(pair.slave);
 
