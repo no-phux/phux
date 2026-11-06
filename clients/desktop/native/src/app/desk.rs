@@ -113,6 +113,8 @@ pub struct Desk {
     pub phux: PathBuf,
     /// CLI discovery found or installed. `phux` may still be the command name.
     pub(crate) cli_install: Option<super::CliInstall>,
+    /// Window and app mirrors this window runs as its own children.
+    pub(crate) mirrors: Vec<super::resource_mirror::LocalMirror>,
     pub(crate) path_prompt: cli_path::Prompt,
     pub focus: FocusHandle,
     pub prefs: DisplayPrefs,
