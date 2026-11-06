@@ -130,6 +130,11 @@ mod macos {
                     }
                 },
             };
+            // A refused capture must not leave an empty surface behind.
+            let first = match capture(target) {
+                Ok(bytes) => bytes,
+                Err(message) => return refused(json, &message),
+            };
             let mut conn = match dial(&socket_path, json).await {
                 Ok(conn) => conn,
                 Err(code) => return code,
@@ -148,7 +153,7 @@ mod macos {
                 outln!("{resource}");
             }
             let interval = Duration::from_millis(interval_ms.max(100));
-            publish_until_gone(&mut conn, &opened.resource, target, interval, json).await
+            publish_until_gone(&mut conn, &opened.resource, target, first, interval, json).await
         })
     }
 
@@ -162,10 +167,14 @@ mod macos {
         conn: &mut phux_client::attach::connection::Connection,
         resource: &ResourceId,
         target: Target,
+        first: Vec<u8>,
         interval: Duration,
         json: bool,
     ) -> ExitCode {
-        let mut last: Option<Vec<u8>> = None;
+        if let Err(err) = tree::publish(conn, resource, first.clone()).await {
+            return report(json, &err);
+        }
+        let mut last = Some(first);
         let mut misses = 0;
         loop {
             match capture(target) {
@@ -181,15 +190,7 @@ mod macos {
                 Err(message) => {
                     misses += 1;
                     if misses >= 3 {
-                        return json_err::emit(
-                            json,
-                            &json_err::CliError::new(
-                                json_err::codes::WORKLOAD,
-                                format!("capture failed three times: {message}"),
-                                "the window may be gone; grant Screen Recording to the terminal (or phux) in System Settings if images are blank",
-                            ),
-                            EXIT_FAILURE,
-                        );
+                        return refused(json, &format!("capture failed three times: {message}"));
                     }
                 }
             }
@@ -198,6 +199,21 @@ mod macos {
                 () = tokio::time::sleep(interval) => {}
             }
         }
+    }
+
+    /// A capture macOS refused or that failed. macOS grants Screen Recording
+    /// to the app that owns the process, and a phux pane's processes belong
+    /// to the server, which no grant reaches.
+    fn refused(json: bool, message: &str) -> ExitCode {
+        json_err::emit(
+            json,
+            &json_err::CliError::new(
+                json_err::codes::WORKLOAD,
+                message,
+                "start the mirror from the phux desktop app (Mirror surface) or from Terminal, and grant that app Screen Recording; a phux pane cannot hold the grant",
+            ),
+            EXIT_FAILURE,
+        )
     }
 
     /// The pane this process runs in, from the injected `PHUX_TERMINAL_ID`.
