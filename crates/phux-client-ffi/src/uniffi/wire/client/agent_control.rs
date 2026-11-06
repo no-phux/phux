@@ -21,6 +21,13 @@ pub(super) fn project_agent_control(event: Event, projected: &mut Vec<WireEvent>
             terminal_id: id::encode(&terminal_id),
             asked,
         },
+        Event::BackgroundWork {
+            terminal_id,
+            running,
+        } => WireEvent::BackgroundWork {
+            terminal_id: id::encode(&terminal_id),
+            running,
+        },
         Event::NativeAgentResult {
             agent_session_id,
             operation_id,
