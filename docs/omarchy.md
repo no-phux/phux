@@ -68,7 +68,11 @@ $ phux omarchy status
 ✓ desktop_keys
 ✓ autostart
 ✓ menu
+✓ hyprland_config
 ```
+
+`hyprland_config` fails while `hyprctl configerrors` reports anything, with
+the errors printed below; setup prints them too after it reloads Hyprland.
 
 ## Phux Rune
 
