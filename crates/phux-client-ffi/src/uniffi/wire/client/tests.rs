@@ -408,6 +408,26 @@ fn asked_levels_lower_after_their_announcement_in_order() {
 }
 
 #[test]
+fn background_work_reaches_bindings() {
+    let remote = RemoteClient::new("unused".into(), 80, 24, None, None);
+    let mut projected = Vec::new();
+    remote.project_event(
+        Event::BackgroundWork {
+            terminal_id: ResourceId::local(7),
+            running: true,
+        },
+        &mut projected,
+    );
+    assert_eq!(
+        projected,
+        vec![WireEvent::BackgroundWork {
+            terminal_id: "local:7".into(),
+            running: true,
+        }]
+    );
+}
+
+#[test]
 fn a_published_surface_reaches_bindings_whole_and_named() {
     let remote = RemoteClient::new("unused".into(), 80, 24, None, None);
     let mut projected = Vec::new();
