@@ -221,6 +221,16 @@ pub enum WireEvent {
         seq: u64,
         jsonl: String,
     },
+    /// A whole document arrived for an attached `AccessibilityTree` or
+    /// `PixelSurface` (`kind` is `accessibility_tree` or `pixel_surface`):
+    /// the bootstrap cut, or a newer publish. `bytes` is JSON for a tree and
+    /// PNG for a surface; the newest `seq` per resource is the one to show.
+    DocumentPublished {
+        resource_id: String,
+        kind: String,
+        seq: u64,
+        bytes: Vec<u8>,
+    },
     /// The server reported an ERROR frame.
     ServerError { message: String },
     /// The transport dropped; the runtime is reconnecting. Delivered only by
@@ -247,6 +257,13 @@ impl core::fmt::Debug for WireEvent {
                         .debug_struct("ClipboardWrite")
                         .field("terminal_id", terminal_id)
                         .field("bytes", &text.len())
+                        .finish(),
+                    Self::DocumentPublished { resource_id, kind, seq, bytes } => f
+                        .debug_struct("DocumentPublished")
+                        .field("resource_id", resource_id)
+                        .field("kind", kind)
+                        .field("seq", seq)
+                        .field("bytes", &bytes.len())
                         .finish(),
                     $(Self::$variant $({ $($field),* })? => {
                         let mut value = f.debug_struct(stringify!($variant));
