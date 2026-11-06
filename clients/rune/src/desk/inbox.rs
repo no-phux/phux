@@ -359,7 +359,7 @@ impl Desk {
         let clicks = self.inbox.alerts.take_clicks();
         let clicked = !clicks.is_empty();
         for target in clicks {
-            rune_mac::notify::bring_to_front();
+            crate::alerts::bring_to_front();
             match target {
                 Target::Inbox if !self.inbox.open => self.toggle_inbox(),
                 Target::Inbox => {}
