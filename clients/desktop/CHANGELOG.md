@@ -59,6 +59,13 @@
 - Reject raw terminal input and file drops for pending or retained ACP owners
   before filesystem access or remote upload, including during reconnects.
 
+## [0.57.0](https://github.com/no-phux/phux/compare/desktop-v0.56.1...desktop-v0.57.0) (2026-11-06)
+
+
+### Features
+
+* **desktop:** run window and app mirrors as the app's own children ([#1994](https://github.com/no-phux/phux/issues/1994)) ([f513a26](https://github.com/no-phux/phux/commit/f513a26383a9d8aad84759be0e8f727e03b34dfb))
+
 ## [0.56.1](https://github.com/no-phux/phux/compare/desktop-v0.56.0...desktop-v0.56.1) (2026-11-05)
 
 
