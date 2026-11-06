@@ -108,9 +108,7 @@ impl Client {
         terminal_id: &ResourceId,
         text: String,
     ) -> Result<bool, crate::engine::EngineError> {
-        lock(&self.inner.control)
-            .engine()
-            .cloned()
+        self.engine()
             .ok_or(crate::engine::EngineError::Stopped)?
             .predict_text(terminal_id, text)
     }
@@ -121,9 +119,7 @@ impl Client {
         &self,
         terminal_id: &ResourceId,
     ) -> Result<bool, crate::engine::EngineError> {
-        lock(&self.inner.control)
-            .engine()
-            .cloned()
+        self.engine()
             .ok_or(crate::engine::EngineError::Stopped)?
             .clear_predictions(terminal_id)
     }
@@ -198,9 +194,7 @@ impl Client {
     #[cfg(feature = "engine")]
     #[must_use]
     pub fn is_alt_screen(&self, terminal_id: &ResourceId) -> bool {
-        lock(&self.inner.control)
-            .engine()
-            .cloned()
+        self.engine()
             .is_some_and(|engine| engine.is_alt_screen(terminal_id))
     }
 
@@ -230,18 +224,14 @@ impl Client {
     /// Whether the kernel holds a live (or retained) replica.
     #[must_use]
     pub fn has_projection(&self, terminal_id: &ResourceId) -> bool {
-        lock(&self.inner.control)
-            .engine()
-            .cloned()
+        self.engine()
             .is_some_and(|engine| engine.has_projection(terminal_id))
     }
 
     /// Whether the kernel has permanently closed the terminal.
     #[must_use]
     pub fn is_closed(&self, terminal_id: &ResourceId) -> bool {
-        lock(&self.inner.control)
-            .engine()
-            .cloned()
+        self.engine()
             .is_some_and(|engine| engine.is_closed(terminal_id))
     }
 
@@ -249,9 +239,7 @@ impl Client {
     #[cfg(not(feature = "engine"))]
     #[must_use]
     pub fn take_output(&self, terminal_id: &ResourceId) -> Vec<u8> {
-        lock(&self.inner.control)
-            .engine()
-            .cloned()
+        self.engine()
             .map(|engine| engine.take_output(terminal_id))
             .unwrap_or_default()
     }

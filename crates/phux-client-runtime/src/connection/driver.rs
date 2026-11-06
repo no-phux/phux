@@ -13,7 +13,7 @@ use super::io::{Io, LinkError};
 use super::{ConnectOptions, ConnectionEnd, Shared, Signals, Target, Transport, Wake, lock};
 use crate::reconnect::{earned_immediate, ladder_for};
 
-use crate::control::{ControlError, InboundDelivery, Status};
+use crate::control::{ControlError, ControlPlane, InboundDelivery, Status};
 
 mod ping;
 use ping::peel_queued_pings;
@@ -477,24 +477,26 @@ impl<'a> Pump<'a> {
         if frames.is_empty() {
             return Ok(());
         }
-        let (fed, outbound, pongs) = {
+        // A binding that keeps its own per-frame state on one owning
+        // thread takes delivery itself; the socket is still ours.
+        let queued = lock(self.shared).options().deliver_inbound == InboundDelivery::Queued;
+        let (fed, outbound, pongs) = if queued {
             let mut control = lock(self.shared);
-            // A binding that keeps its own per-frame state on one owning
-            // thread takes delivery itself; the socket is still ours.
-            let (fed, pongs) = if control.options().deliver_inbound == InboundDelivery::Queued {
-                // Answer Ping on the driver before enqueue so a stalled
-                // consumer cannot strand liveness replies behind UI drain.
-                let (to_queue, pongs) = peel_queued_pings(frames);
-                let fed = if to_queue.is_empty() {
-                    Ok(())
-                } else {
-                    control.queue_inbound_batch(to_queue)
-                };
-                (fed, pongs)
+            // Answer Ping on the driver before enqueue so a stalled
+            // consumer cannot strand liveness replies behind UI drain.
+            let (to_queue, pongs) = peel_queued_pings(frames);
+            let fed = if to_queue.is_empty() {
+                Ok(())
             } else {
-                (control.feed_shared_batch(&frames), Vec::new())
+                control.queue_inbound_batch(to_queue)
             };
             (fed, control.take_outbound(), pongs)
+        } else {
+            // The lock is released across engine round trips: a reconnect
+            // replays a snapshot per terminal, and holding it through that
+            // apply stalled every reader, a consumer's UI thread included.
+            let fed = ControlPlane::feed_shared_unlocked(self.shared, frames);
+            (fed, lock(self.shared).take_outbound(), Vec::new())
         };
         // Pongs first: the peer's probe must not wait on consumer-queued
         // outbound that may still be draining.
