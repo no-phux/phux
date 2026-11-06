@@ -212,6 +212,9 @@ impl ServerState {
                 desc.dims = (p.cols, p.rows);
                 desc.cwd.clone_from(&p.cwd);
                 desc.title.clone_from(&p.title);
+                // The engine is seeded with this title without emitting a
+                // change, so the registry takes it from the blob directly.
+                desc.program_title.clone_from(&p.osc_title);
             }
 
             let RebuiltPane {

@@ -9,7 +9,8 @@ use super::{
 
 /// Build the snapshot extension block: `RESOURCE_STATE` per non-default
 /// resource, the journal head, `RESOURCE_SESSION` per resource with a
-/// reported session, then `SESSION_STATE` per session with a reported
+/// reported session, `RESOURCE_PROGRAM_TITLE` per resource whose program set
+/// a title, then `SESSION_STATE` per session with a reported
 /// lifetime, key, attribute, or recent input target; empty means nothing is
 /// written.
 pub(super) fn encode_snapshot_extension(
@@ -34,6 +35,14 @@ pub(super) fn encode_snapshot_extension(
             enc.write_field_with(field::snapshot_extension::RESOURCE_SESSION, |e| {
                 encode_terminal_id(&info.id, e);
                 e.write_u32_be(session.get());
+            });
+        }
+    }
+    for info in resources {
+        if let Some(title) = info.program_title.as_deref().filter(|t| !t.is_empty()) {
+            enc.write_field_with(field::snapshot_extension::RESOURCE_PROGRAM_TITLE, |e| {
+                encode_terminal_id(&info.id, e);
+                e.write_str(title);
             });
         }
     }
@@ -106,8 +115,8 @@ pub(super) fn decode_exit_facet(dec: &mut Decoder<'_>) -> Result<ExitFacet, Deco
         .with_reason(reason))
 }
 
-/// Read the extension block if bytes remain, joining each `RESOURCE_STATE`
-/// and `RESOURCE_SESSION` onto its resource and each `SESSION_STATE` onto
+/// Read the extension block if bytes remain, joining each `RESOURCE_STATE`,
+/// `RESOURCE_SESSION` and `RESOURCE_PROGRAM_TITLE` onto its resource and each `SESSION_STATE` onto
 /// its session by id, and return its journal head.
 pub(super) fn decode_snapshot_extension(
     dec: &mut Decoder<'_>,
@@ -134,6 +143,14 @@ pub(super) fn decode_snapshot_extension(
                 }
             }
             field::snapshot_extension::SESSION_STATE => apply_session_state(value, sessions)?,
+            field::snapshot_extension::RESOURCE_PROGRAM_TITLE => {
+                let mut v = Decoder::new(value);
+                let resource = decode_terminal_id(&mut v)?;
+                let title = v.read_str()?;
+                if let Some(info) = resources.iter_mut().find(|r| r.id == resource) {
+                    info.program_title = Some(title.to_owned()).filter(|t| !t.is_empty());
+                }
+            }
             _ => {}
         }
     }
