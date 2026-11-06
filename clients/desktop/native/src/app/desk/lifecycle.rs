@@ -72,6 +72,7 @@ impl Desk {
             expected_authority: request.authority,
             phux,
             cli_install,
+            mirrors: Vec::new(),
             path_prompt: super::cli_path::Prompt::default(),
             focus,
             prefs,

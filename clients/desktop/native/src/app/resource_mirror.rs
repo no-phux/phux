@@ -5,6 +5,9 @@ use gpui::{Context, Window};
 use phux_client_runtime::control::SpawnRequest;
 use phux_protocol::caps::ServerFeatureExt;
 
+mod local;
+pub(crate) use local::LocalMirror;
+
 impl Desk {
     /// Reuse the CLI this desktop already resolved; never bootstrap or search
     /// the producer's PATH for a different executable.
@@ -103,6 +106,23 @@ impl Desk {
                 return;
             }
         };
+        // A page needs no grant; a window or app capture needs this app's.
+        if source != "page" {
+            let pane = self.mirror_parent();
+            let result = pane
+                .ok_or_else(|| {
+                    "Open a terminal in this session first; a mirror binds to a pane.".to_owned()
+                })
+                .and_then(|pane| {
+                    self.start_local_mirror(&local::local_argv(command, &pane), &target, cx)
+                });
+            match result {
+                Ok(()) => self.close_modal(window, cx),
+                Err(reason) => self.post(Kind::Refusal, "Could not start mirror", Some(reason)),
+            }
+            cx.notify();
+            return;
+        }
         let Some(link) = self.link.as_mut() else {
             return;
         };
@@ -120,6 +140,29 @@ impl Desk {
             ),
         }
         cx.notify();
+    }
+}
+
+impl Desk {
+    /// The pane a local mirror binds to: the focused terminal, else the
+    /// home session's first one.
+    fn mirror_parent(&self) -> Option<String> {
+        let connection = &self.link.as_ref()?.connection;
+        let focused = self
+            .focused_terminal()
+            .filter(|id| connection.pane(id).is_some());
+        let home = connection.home_session();
+        let id = focused.or_else(|| {
+            connection
+                .panes()
+                .iter()
+                .find(|pane| Some(pane.session_id) == home)
+                .map(|pane| pane.terminal_id.clone())
+        })?;
+        match id {
+            phux_protocol::ResourceId::Local { id } => Some(format!("@{id}")),
+            _ => None,
+        }
     }
 }
 
