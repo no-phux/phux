@@ -19,15 +19,13 @@ Document-only and agent-only sessions can attach without a Terminal codec.
 The server links only the pure Terminal contract; the executable
 supplies the concrete engine ([architecture](./architecture.md#where-to-look)).
 
-Desktop and Rune discover tree/surface resources before the first frame,
+Phux Rune discovers tree/surface resources before the first frame,
 render plain JSON or letterboxed PNGs, and distinguish pending, empty and invalid
 documents. Documents can occupy mixed or document-only arrangements and survive
 restore/reconnect. They are **read-only mirrors**: typing, paste, terminal grid
-resizing and file uploads do not control their source. Desktop can transfer a
-view between windows once the destination accepts the exact subscription;
-closing a document placement leaves its producer and other viewers running.
+resizing and file uploads do not control their source. Closing a document placement leaves its producer and other viewers running.
 
-Both native clients offer mirror startup actions. These launch a dedicated
+Phux Rune offers mirror startup actions. These launch a dedicated
 supervised producer with argv, not commands typed into a person's shell.
 Browser mirroring needs an existing Chrome DevTools endpoint; macOS capture
 needs the relevant system permission. Local-only startup actions refuse remote

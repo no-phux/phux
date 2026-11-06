@@ -7,7 +7,6 @@ import { list, table } from "../lib/value.ts";
 import { parseLock } from "./lock.ts";
 import {
   configViolations,
-  DESKTOP_TRAIN,
   expectedLockFiles,
   lockFileViolations,
   locksInStep,
@@ -20,19 +19,15 @@ import {
 
 test("the repository's settings and locks hold", () => {
   const config = readConfig();
-  expect(configViolations(config, readConfig(ROOT, DESKTOP_TRAIN.config))).toEqual([]);
+  expect(configViolations(config)).toEqual([]);
   expect(lockFileViolations(config)).toEqual([]);
   expect(locksInStep()).toBe(true);
 });
 
-test("the trains share no file, so neither release PR conflicts the other", () => {
-  const files = TRAINS.flatMap(({ config, manifest }) => [config, manifest]);
-  expect(new Set(files).size).toBe(files.length);
-  const released = TRAINS.map(({ manifest }) =>
-    Object.keys(table(JSON.parse(readFileSync(join(ROOT, manifest), "utf8")))),
-  );
-  expect(released.flat()).toHaveLength(new Set(released.flat()).size);
-  expect(released[1]).toEqual(["clients/desktop"]);
+test("the root train is the only release train", () => {
+  expect(TRAINS.map(({ config }) => config)).toEqual(["release-please-config.json"]);
+  const manifest = table(JSON.parse(readFileSync(join(ROOT, TRAINS[0].manifest), "utf8")));
+  expect(Object.keys(manifest)).not.toContain("clients/desktop");
 });
 
 test("a release bumps every lock's workspace crates in the release commit", () => {
@@ -59,19 +54,6 @@ test("a stale or missing lock bump is reported with its fix", () => {
   expect(failures.join("\n")).toContain("Cargo.lock");
   expect(failures.join("\n")).toContain("clients/rune/Cargo.lock");
   expect(failures[0]).toContain("release-orchestration-check --fix");
-});
-
-test("the desktop releases from its own train alone", () => {
-  const desktop = readConfig(ROOT, DESKTOP_TRAIN.config);
-  const extra = { packages: { ...table(table(desktop)["packages"]), ".": {} } };
-  expect(configViolations(readConfig(), { ...table(desktop), ...extra }).join("\n")).toContain(
-    "must release clients/desktop alone",
-  );
-  const shared = table(readConfig());
-  const packages = { ...table(shared["packages"]), "clients/desktop": {} };
-  expect(configViolations({ ...shared, packages }, desktop).join("\n")).toContain(
-    "a shared manifest conflicts its PR",
-  );
 });
 
 test("each broken setting is reported", () => {

@@ -52,6 +52,8 @@ pack() {
   printf '%s\n' "$VERSION" > "$dir/phux-rune.release"
   printf 'license\n' > "$dir/LICENSE"
   printf 'notice\n' > "$dir/NOTICE"
+  printf 'ofl\n' > "$dir/Inter-OFL.txt"
+  printf 'ofl\n' > "$dir/JetBrainsMono-OFL.txt"
   cp "$ROOT/clients/rune/packaging/sh.phux.rune.desktop" "$dir/"
   printf 'png' > "$dir/sh.phux.rune.png"
 }
@@ -98,7 +100,7 @@ grep -Fxq "url: $BASE/rune-v$VERSION/$ARCHIVE" <<<"$out" || fail "Linux url: $ou
 installer >"$TMP/out" 2>"$TMP/err" || fail "install: $(cat "$TMP/err")"
 bundle="$XDG_DATA_HOME/phux-rune"
 grep -q first "$bundle/phux-rune" || fail "binary not installed"
-for file in phux-rune.release LICENSE NOTICE; do
+for file in phux-rune.release LICENSE NOTICE Inter-OFL.txt JetBrainsMono-OFL.txt; do
   [[ -f "$bundle/$file" ]] || fail "$file not installed"
 done
 grep -Fq 'without its release signature' "$TMP/err" || fail "an unsigned install must say so"
@@ -115,6 +117,12 @@ serve
 installer >/dev/null 2>"$TMP/err" || fail "update: $(cat "$TMP/err")"
 grep -q second "$bundle/phux-rune" || fail "not updated"
 [[ -z "$(find "$XDG_DATA_HOME" -name '.phux-desktop-install*')" ]] || fail "install litter"
+
+# --desktop, the retired GPUI desktop's flag, installs Phux Rune.
+PATH="$TMP/bin:/usr/bin:/bin" "$SH" "$ROOT/scripts/install.sh" --os linux --arch x86_64 --desktop \
+  >/dev/null 2>"$TMP/err" || fail "--desktop: $(cat "$TMP/err")"
+grep -Fq 'installing Phux Rune' "$TMP/err" || fail "--desktop notice: $(cat "$TMP/err")"
+grep -Fq 'installed Phux Rune' "$TMP/err" || fail "--desktop did not install Phux Rune"
 
 # --- refusals, with the install untouched ------------------------------------
 pack third
@@ -196,7 +204,7 @@ mkdir -p "$TMP/other/phux-rune"
 pack third
 serve
 refused 'unrelated' --applications-dir "$TMP/other"
-refused 'combine with --rune' --desktop
+refused 'combine with --rune' --desktop --channel next
 refused 'combine with --rune' --channel next
 refused 'combine with --rune' --version 1.2.3
 if PATH="$TMP/bin:/usr/bin:/bin" "$SH" "$ROOT/scripts/install.sh" --os linux --arch arm64 --rune >/dev/null 2>"$TMP/err"; then

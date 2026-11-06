@@ -1,11 +1,6 @@
 //! The performance tools `phux_perf` and `phux_perf_trace`: thin transports
-//! for `phux perf --json` and `phux perf trace --json`, so the report, the
-//! trace capture, and the dev-mode desktop's socket discovery each have one
-//! implementation, in the CLI.
-//!
-//! The argument picking the process is `source`, not `target`: across this
-//! catalog `target` is a resource selector and gains a `resource_id` alias
-//! (`contracts::enhance`), which a server-or-desktop switch must not.
+//! for `phux perf --json` and `phux perf trace --json`, so the report and the
+//! trace capture each have one implementation, in the CLI.
 //!
 //! `phux_perf` takes no `reset`: `GET_PERF { reset: true }` needs `BIND`,
 //! and a reset would make the tool a write. Zeroing the metrics is left to
@@ -21,12 +16,9 @@ use std::time::Duration;
 
 use serde_json::{Value, json};
 
-use crate::cli_adapter::{CliAdapter, DEFAULT_CALL_TIMEOUT, enum_string, push_socket};
+use crate::cli_adapter::{CliAdapter, DEFAULT_CALL_TIMEOUT, push_socket};
 use crate::cli_tools::schema;
 use crate::tools::{ToolError, strict_object};
-
-/// The processes either tool can read; the first is the default.
-const SOURCES: [&str; 2] = ["server", "desktop"];
 
 /// The longest trace an agent may ask for, in seconds.
 const MAX_TRACE_SECS: f64 = 60.0;
@@ -39,8 +31,8 @@ const DEFAULT_TRACE_SECS: f64 = 5.0;
 const TRACE_SLACK: Duration = Duration::from_secs(60);
 
 /// Shared `socket` description.
-const SOCKET_DESC: &str = "Override the UDS path of the server. Defaults to PHUX_SOCKET or the \
-    daemon default. With `source: desktop` the dev-mode desktop is found beside this socket.";
+const SOCKET_DESC: &str =
+    "Override the UDS path of the server. Defaults to PHUX_SOCKET or the daemon default.";
 
 /// Every schema in this family, in catalog order.
 #[must_use]
@@ -81,7 +73,7 @@ fn perf_schema() -> Value {
         "phux_perf",
         "Read the performance telemetry phux keeps about itself: the same document as \
          `phux perf --json`. READ-ONLY: it changes no metric and never starts a server. \
-         `source: server` (default) returns the server's report: `{schema_version, role, pid, \
+         Returns the server's report: `{schema_version, role, pid, \
          captured_unix_ms, uptime_ms, process, metrics, rss_bytes?, alloc?, \
          stream_diagnostics?}`. `process` is {cpu_user_us, cpu_system_us, max_rss_bytes, \
          voluntary_ctx_switches, involuntary_ctx_switches} or null; `rss_bytes` is the current \
@@ -97,17 +89,10 @@ fn perf_schema() -> Value {
          HEAP: `alloc` {allocs, alloc_bytes, frees, live_bytes, peak_bytes} appears only when \
          heap accounting is on — a process started with PHUX_DEV=1, or after the operator ran \
          `phux perf alloc on`; its absence is not an error. \
-         `source: desktop` reads a phux desktop running in dev mode (started with PHUX_DEV=1, \
-         or with Developer mode on in its Settings) \
-         and returns `{report, frames}`: `report` is the desktop's own report in the same shape \
-         (`desktop.*` metrics), and `frames` is {fps, frames, build_p50_us, build_p99_us, \
-         build_max_us, over_budget, janks, worst_gap_us} over the recent frame window. With no \
-         dev-mode desktop the call fails with `no_desktop`; `desktop_unreachable`, \
-         `desktop_refused`, and `desktop_protocol` are the other refusals. \
          Figures are cumulative since start (counters and histograms only grow). FOR AN \
          INTERVAL, CALL TWICE AND SUBTRACT: counts, sums, and bucket counts diff cleanly; \
          min and max do not. Use phux_perf_trace for a timeline of individual spans.",
-        source_properties(json!({})),
+        socket_properties(json!({})),
         &[],
     )
 }
@@ -117,22 +102,16 @@ fn trace_schema() -> Value {
         "phux_perf_trace",
         "Record a Perfetto trace for `seconds` and return where it was written: the same \
          document as `phux perf trace --json`. The call blocks for the whole recording. \
-         `source: server` (default) traces the server and returns `{path, events, dropped, \
-         duration_ms}`; `source: desktop` traces a dev-mode desktop (started with PHUX_DEV=1, \
-         or with Developer mode on in its Settings) \
-         and the server onto ONE merged timeline and returns `{ok, path, desktop, server, \
-         server_error, events, dropped, duration_ms}` — a non-null `server_error` means the \
-         server did not take part and the file holds only the desktop. `dropped` > 0 means the \
+         It traces the server and returns `{path, events, dropped, duration_ms}`. \
+         `dropped` > 0 means the \
          capture buffer overflowed and the trace is missing spans. \
          `path` IS ON THE HOST RUNNING PHUX, not necessarily yours: open it in \
          https://ui.perfetto.dev or read it as JSON. The file is Chrome trace-event JSON: `X` \
          events are spans with `name`, `cat`, `ts` and `dur` in MICROSECONDS; span names are \
-         metric names such as `cmd.handle`, `desktop.frame`, `desktop.paint`. `C` events are \
-         counter tracks (the desktop's `memory.rss_bytes`, `memory.heap_live_bytes`, \
-         `frames.fps`). Recording arms the server's span capture for the duration, so it is \
+         metric names such as `cmd.handle`. Recording arms the server's span capture for the duration, so it is \
          not read-only; it ends no process and changes no session. Use phux_perf for \
          cumulative histograms instead of a timeline.",
-        source_properties(json!({
+        socket_properties(json!({
             "seconds": {
                 "type": "number",
                 "exclusiveMinimum": 0,
@@ -144,24 +123,11 @@ fn trace_schema() -> Value {
     )
 }
 
-/// `extra` plus the shared `source` and `socket` properties.
-fn source_properties(mut extra: Value) -> Value {
-    extra["source"] = json!({
-        "type": "string",
-        "enum": SOURCES,
-        "description": "Which process to read: `server` (default) or a dev-mode `desktop`.",
-    });
+/// `extra` plus the shared `socket` property.
+fn socket_properties(mut extra: Value) -> Value {
     extra["socket"] =
         json!({ "type": "string", "minLength": 1, "maxLength": 4096, "description": SOCKET_DESC });
     extra
-}
-
-/// `--desktop` when `source` asks for the desktop.
-fn push_source(argv: &mut Vec<String>, args: &Value) -> Result<(), ToolError> {
-    if enum_string(args, "source", &SOURCES, Some(SOURCES[0]))? == "desktop" {
-        argv.push("--desktop".to_owned());
-    }
-    Ok(())
 }
 
 /// The validated `seconds`, its default when absent.
@@ -175,19 +141,18 @@ fn trace_seconds(args: &Value) -> Result<f64, ToolError> {
         .ok_or_else(|| ToolError::new("`seconds` must be a number greater than 0 and at most 60"))
 }
 
-/// Execute `phux perf --json [--desktop]`.
+/// Execute `phux perf --json`.
 async fn run_perf(args: &Value, adapter: &CliAdapter) -> Result<Value, ToolError> {
-    strict_object(args, &["source", "socket"], &[])?;
+    strict_object(args, &["socket"], &[])?;
     let mut argv = vec!["perf".to_owned(), "--json".to_owned()];
-    push_source(&mut argv, args)?;
     push_socket(&mut argv, args)?;
     adapter.run_json(argv, DEFAULT_CALL_TIMEOUT).await
 }
 
-/// Execute `phux perf trace --seconds S --json [--desktop]`, allowing the
-/// recording plus [`TRACE_SLACK`].
+/// Execute `phux perf trace --seconds S --json`, allowing the recording plus
+/// [`TRACE_SLACK`].
 async fn run_trace(args: &Value, adapter: &CliAdapter) -> Result<Value, ToolError> {
-    strict_object(args, &["seconds", "source", "socket"], &[])?;
+    strict_object(args, &["seconds", "socket"], &[])?;
     let seconds = trace_seconds(args)?;
     let mut argv = vec![
         "perf".to_owned(),
@@ -196,7 +161,6 @@ async fn run_trace(args: &Value, adapter: &CliAdapter) -> Result<Value, ToolErro
         seconds.to_string(),
         "--json".to_owned(),
     ];
-    push_source(&mut argv, args)?;
     push_socket(&mut argv, args)?;
     adapter
         .run_json(argv, Duration::from_secs_f64(seconds) + TRACE_SLACK)
@@ -260,37 +224,28 @@ mod tests {
         result
     }
 
-    /// `phux_perf` runs the canonical argv for each source and returns the
-    /// report unchanged, and the document satisfies the published schema.
+    /// `phux_perf` runs the canonical argv and returns the report unchanged,
+    /// and the document satisfies the published schema.
     #[tokio::test]
-    async fn perf_executes_canonical_argv_for_each_source() {
+    async fn perf_executes_canonical_argv() {
         let report = server_report();
         let (_temp, adapter, log) = scripted_cli(&format!("{report}\n"), "", 0);
         for (args, expected) in [
             (json!({}), &["perf", "--json"][..]),
-            (json!({ "source": "server" }), &["perf", "--json"][..]),
             (
-                json!({ "source": "desktop", "socket": "/sock" }),
-                &["perf", "--json", "--desktop", "--socket", "/sock"][..],
+                json!({ "socket": "/sock" }),
+                &["perf", "--json", "--socket", "/sock"][..],
             ),
         ] {
             let result = assert_argv(&adapter, &log, "phux_perf", args, expected).await;
             assert_eq!(result, report, "the report passes through unchanged");
             crate::contract_tests::validate_output("phux_perf", &result);
         }
-
-        let desktop = json!({
-            "report": report,
-            "frames": { "fps": 60.0, "frames": 240, "build_p50_us": 900, "build_p99_us": 4000,
-                        "build_max_us": 9000, "over_budget": 1, "janks": 0, "worst_gap_us": 17000 },
-        });
-        crate::contract_tests::validate_output("phux_perf", &desktop);
     }
 
-    /// `phux_perf_trace` always names `--seconds`, defaulting to 5, and
-    /// `source: desktop` asks for the merged timeline.
+    /// `phux_perf_trace` always names `--seconds`, defaulting to 5.
     #[tokio::test]
-    async fn trace_executes_canonical_argv_for_each_source() {
+    async fn trace_executes_canonical_argv() {
         let server = json!({ "path": "/state/trace.json", "events": 12, "dropped": 0,
                              "duration_ms": 5001 });
         let (_temp, adapter, log) = scripted_cli(&format!("{server}\n"), "", 0);
@@ -312,31 +267,26 @@ mod tests {
                 ][..],
             ),
             (
-                json!({ "seconds": 60, "source": "desktop" }),
-                &["perf", "trace", "--seconds", "60", "--json", "--desktop"][..],
+                json!({ "seconds": 60 }),
+                &["perf", "trace", "--seconds", "60", "--json"][..],
             ),
         ] {
             let result = assert_argv(&adapter, &log, "phux_perf_trace", args, expected).await;
             assert_eq!(result, server);
             crate::contract_tests::validate_output("phux_perf_trace", &result);
         }
-
-        let merged = json!({ "ok": true, "path": "/state/merged.json", "desktop": 30,
-                             "server": 12, "server_error": null, "events": 42, "dropped": 0,
-                             "duration_ms": 5002 });
-        crate::contract_tests::validate_output("phux_perf_trace", &merged);
     }
 
-    /// A desktop refusal arrives as the CLI's stderr error contract.
+    /// A refusal arrives as the CLI's stderr error contract.
     #[tokio::test]
-    async fn a_missing_desktop_reports_the_cli_error_contract() {
-        let contract = r#"{"schema_version":1,"error":{"code":"no_desktop","message":"no phux desktop in dev mode is serving /run"}}"#;
+    async fn a_refusal_reports_the_cli_error_contract() {
+        let contract = r#"{"schema_version":1,"error":{"code":"no_server","message":"no phux server is serving /run"}}"#;
         let (_temp, adapter, _log) = scripted_cli("", &format!("{contract}\n"), 1);
         for name in ["phux_perf", "phux_perf_trace"] {
-            let err = call_with_adapter(name, &json!({ "source": "desktop" }), &adapter)
+            let err = call_with_adapter(name, &json!({}), &adapter)
                 .await
-                .expect_err("a missing desktop is refused");
-            assert!(err.0.contains("no_desktop"), "{name}: {err:?}");
+                .expect_err("the refusal is reported");
+            assert!(err.0.contains("no_server"), "{name}: {err:?}");
         }
     }
 
@@ -349,8 +299,7 @@ mod tests {
             // Resetting would need BIND; the tool stays read-only.
             ("phux_perf", json!({ "reset": true })),
             ("phux_perf", json!({ "target": "desktop" })),
-            ("phux_perf", json!({ "source": "tui" })),
-            ("phux_perf", json!({ "source": 1 })),
+            ("phux_perf", json!({ "source": "desktop" })),
             ("phux_perf", json!({ "socket": "" })),
             ("phux_perf", json!({ "seconds": 5 })),
             ("phux_perf_trace", json!({ "seconds": 0 })),
@@ -358,7 +307,7 @@ mod tests {
             ("phux_perf_trace", json!({ "seconds": 60.5 })),
             ("phux_perf_trace", json!({ "seconds": "5" })),
             ("phux_perf_trace", json!({ "out": "/tmp/t.json" })),
-            ("phux_perf_trace", json!({ "source": "both" })),
+            ("phux_perf_trace", json!({ "source": "desktop" })),
             ("phux_perf_flame", json!({})),
         ] {
             assert!(
@@ -380,7 +329,6 @@ mod tests {
             "PHUX_DEV=1",
             "phux perf alloc on",
             "CALL TWICE AND SUBTRACT",
-            "`no_desktop`",
             "READ-ONLY",
         ] {
             assert!(perf.contains(needle), "phux_perf lacks {needle}: {perf}");
@@ -391,9 +339,7 @@ mod tests {
             "ON THE HOST RUNNING PHUX",
             "ui.perfetto.dev",
             "`cmd.handle`",
-            "`memory.rss_bytes`",
             "MICROSECONDS",
-            "merged timeline",
         ] {
             assert!(
                 trace.contains(needle),

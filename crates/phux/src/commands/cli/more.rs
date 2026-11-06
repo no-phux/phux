@@ -43,21 +43,12 @@ pub(crate) struct WhoamiArgs {
 ///
 /// `phux perf trace` records a span trace of the server for Perfetto;
 /// `phux perf alloc on|off` switches its heap accounting.
-///
-/// `--desktop` reads a phux desktop running in dev mode (`PHUX_DEV=1`, or
-/// Developer mode in its Settings) instead: its frame rate, frame build
-/// times, jank, CPU, memory, heap and every desktop histogram. `phux perf trace --desktop` records the
-/// desktop and the server onto one timeline; `phux perf hud on|off`
-/// shows the desktop's in-window HUD.
 #[derive(Debug, Args)]
 pub(crate) struct PerfArgs {
     #[usage(subcommand)]
     pub(crate) action: Option<PerfAction>,
     #[usage(flatten)]
     pub(crate) json: JsonOpt,
-    /// Read the dev-mode phux desktop serving this socket, not the server.
-    #[usage(long)]
-    pub(crate) desktop: bool,
     /// Poll every SECS seconds and print each interval as a delta.
     #[usage(long, value_name = "SECS")]
     pub(crate) watch: Option<f64>,

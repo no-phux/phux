@@ -1,7 +1,7 @@
 # Brand assets
 
 Approved artwork comes from the private `no-phux/phux-brand` library.
-Desktop, mobile, and website consume versioned export bundles. The public
+This repository, mobile, and website consume versioned export bundles. The public
 kit and retained releases are published at [phux.sh/brand](https://phux.sh/brand).
 
 `brand.config.json` owns the mapping from public export paths to local asset
@@ -23,33 +23,25 @@ to own behavior, animation, and platform resource packaging.
 
 ## Choosing branding in the apps
 
-Open **Settings → Appearance → Brand profile** to choose Flat Fox, Silver Fox or
-Classic Prompt. All choices ship offline. Desktop remembers one choice across
-windows and workspaces; mobile saves it on the device. Changing a host or account
-does not reset it. The picker reports icon or preference-save failures.
+In the mobile app, open **Settings → Appearance → Brand profile** to choose Flat
+Fox, Silver Fox or Classic Prompt. All choices ship offline and are saved on the
+device. Changing a host or account does not reset it. The picker reports icon or
+preference-save failures. Phux Rune ships the selected default icon and has no
+picker.
 
-macOS changes the running Dock icon and restores the choice on launch; Finder
-keeps the signed release icon. Linux updates a user-local launcher entry while
-preserving its command; refresh timing belongs to the launcher. iOS uses alternate
-app icons and Android uses launcher aliases alongside the selected in-app marks.
+iOS uses alternate app icons and Android uses launcher aliases alongside the
+selected in-app marks.
 
 ## Selecting the release default
 
 The private library's `profiles.json.selected` sets the shared release default for
 Flat Fox, Silver Fox or Classic Prompt. Run `just profile <id>` there to
 render the chosen profile for every platform, then review and publish its kit.
-Flat Fox is the default. `identity/profile.json` travels with the assets and
-is installed as `clients/desktop/packaging/brand-profile.json` here.
-
-Desktop packaging uses `desktopBrand()` for the selected profile and its
-PNG/SVG paths. Native apps additionally bundle every approved choice. Mobile drawing and launch
-silhouettes use their native brand interface over the selected geometry and finish.
-Desktop's process-wide branding interface owns its saved choice, preview and
-platform icon. Clients keep stable asset paths and do not branch on profile names.
-
-README and DMG artwork reuse the pinned wordmark and app icon. The DMG
-packager verifies the lock and composites a Retina background and badged
-disk icon; Finder metadata sets the layout without GUI automation.
+Flat Fox is the default. Here the selected app icon lands in
+`clients/rune/packaging/AppIcon.{png,svg}`, which Phux Rune's packager reads,
+and the docs wordmark in `docs/assets`. Mobile drawing and launch silhouettes
+use their native brand interface over the selected geometry and finish. Clients
+keep stable asset paths and do not branch on profile names.
 
 ## Publishing and updates
 

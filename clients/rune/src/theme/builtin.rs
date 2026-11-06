@@ -1,4 +1,4 @@
-//! The built-in themes: the GPUI desktop's set, as hex.
+//! The built-in themes, as hex.
 
 use super::Theme;
 
@@ -6,8 +6,7 @@ use super::Theme;
 pub(super) const MOCHA: usize = 3;
 pub(super) const LATTE: usize = 18;
 
-/// Built in, in picker order: dark themes, then light, as the GPUI desktop
-/// lists them.
+/// Built in, in picker order: dark themes, then light.
 pub const THEMES: &[Theme] = &[
     Theme {
         id: "midnight",

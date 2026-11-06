@@ -10,8 +10,7 @@ license = "Apache-2.0"
 name = "phux-rune"
 path = "src/main.rs"
 
-# Rune's wgpu/winit graph stays out of the main phux workspace and the GPUI
-# desktop's lock, as the GPUI host keeps its own.
+# Rune's wgpu/winit graph stays out of the main phux workspace's lock.
 [workspace]
 
 [dependencies]

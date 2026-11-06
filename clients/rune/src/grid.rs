@@ -26,13 +26,11 @@ use crate::theme::Selection;
 
 mod glyphs;
 
-/// Inter, which replacing Rune's built-in fonts has to name again, and the
-/// Nerd Font GPUI bundles, for the private-use icons no system face has.
+/// Inter, which replacing Rune's built-in fonts has to name again, and a
+/// Nerd Font, for the private-use icons no system face has.
 pub const FONTS: &[&[u8]] = &[
-    include_bytes!("../../desktop/native/assets/fonts/Inter.ttf"),
-    include_bytes!(
-        "../../desktop/native/phux-gpui/assets/fonts/JetBrainsMonoNLNerdFontMono-Regular.ttf"
-    ),
+    include_bytes!("../assets/fonts/Inter.ttf"),
+    include_bytes!("../assets/fonts/JetBrainsMonoNLNerdFontMono-Regular.ttf"),
 ];
 /// The sans and mono slots. `Family::SystemMono` stacks the system's faces
 /// over the mono slot, so the Nerd Font only ever fills in missing glyphs.

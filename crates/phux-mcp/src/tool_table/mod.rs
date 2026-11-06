@@ -451,17 +451,13 @@ pub(crate) const TOOLS: &[Row] = &[
     residue(
         "phux_perf",
         "perf",
-        "the report document and the dev-mode desktop's socket discovery are the CLI command's",
-        // `source: desktop` reads the desktop's dev socket, which is not a
-        // catalog method, and sends the server nothing.
+        "the report document is the CLI command's",
         Touches::Wire(&[PERF_READ]),
     ),
     residue(
         "phux_perf_trace",
         "perf trace",
-        "the capture window, the trace file, and the merged desktop timeline are the CLI \
-         command's",
-        // `source: desktop` asks the desktop, which sends `PERF_CONTROL` itself.
+        "the capture window and the trace file are the CLI command's",
         Touches::Wire(&["PERF_CONTROL"]),
     ),
     cli(

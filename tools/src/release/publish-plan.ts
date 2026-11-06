@@ -172,13 +172,12 @@ function reconcile(plan: Plan, candidates: readonly Row[], ciState: CiState): Pl
 
 export function splitLanes(tags: readonly string[]): {
   phux: string;
-  desktop: string;
   integration: string[];
 } {
-  const lanes = { phux: "", desktop: "", integration: [] as string[] };
+  const lanes = { phux: "", integration: [] as string[] };
   for (const tag of tags) {
     const component = parseTag(tag)?.component;
-    if (component === "phux" || component === "desktop") lanes[component] = tag;
+    if (component === "phux") lanes.phux = tag;
     else if (component !== undefined) lanes.integration.push(tag);
   }
   return lanes;
@@ -246,7 +245,6 @@ export function main(): number {
   const lanes = splitLanes(plan.publish);
   writeOutputs({
     phux_tag: lanes.phux,
-    desktop_tag: lanes.desktop,
     integration_tags: JSON.stringify(lanes.integration),
   });
   if (plan.wait) console.log(`ci.yml still running for ${eventSha}; publish retries when it ends`);

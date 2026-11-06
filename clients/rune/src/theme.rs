@@ -156,7 +156,7 @@ pub struct Roles {
 }
 
 impl Theme {
-    /// Marks with no theme installed: Catppuccin's, as the GPUI desktop uses.
+    /// Marks with no theme installed: Catppuccin's.
     pub fn system_marks(dark: bool) -> Marks {
         THEMES[if dark { MOCHA } else { LATTE }].roles().marks
     }

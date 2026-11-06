@@ -1,6 +1,74 @@
 
 # --- Phux Rune ---------------------------------------------------------------
 
+plist() {
+  /usr/libexec/PlistBuddy -c "Print :$2" "$1/Contents/Info.plist" 2>/dev/null
+}
+
+macos_at_least() {
+  awk -v actual="$1" -v minimum="$2" 'BEGIN {
+    pattern = "^[0-9]+([.][0-9]+){0,2}$"
+    if (actual !~ pattern || minimum !~ pattern) exit 1
+    split(actual, a, "."); split(minimum, b, ".")
+    for (i = 1; i <= 3; i++) {
+      if (a[i]+0 > b[i]+0) exit 0
+      if (a[i]+0 < b[i]+0) exit 1
+    }
+  }'
+}
+
+lock_applications() {
+  mkdir -p "$applications_dir"
+  exec 9>"${applications_dir}/.phux-desktop-install.lock"
+  lockf -s -t 0 9 || die "another install is publishing to ${applications_dir}"
+}
+
+rollback_app() {
+  [ "$app_publishing" -eq 1 ] || return 0
+  [ "$app_published" -eq 0 ] || rm -rf "$installed"
+  [ ! -d "${app_publish}/previous.app" ] || mv -f "${app_publish}/previous.app" "$installed" || {
+    phux_message error "rollback failed; the previous app is at ${app_publish}/previous.app"
+    app_publish=""
+  }
+}
+
+has_cli() {
+  for candidate in "${install_dir}/phux" "${HOME:-}/.local/bin/phux" "${HOME:-}/.cargo/bin/phux" /opt/homebrew/bin/phux /usr/local/bin/phux /usr/bin/phux; do
+    [ ! -x "$candidate" ] || return 0
+  done
+  command -v phux >/dev/null 2>&1
+}
+
+linux_data_home() {
+  case "${XDG_DATA_HOME:-}" in
+    /*) printf '%s\n' "$XDG_DATA_HOME" ;;
+    *) printf '%s\n' "${HOME:-}/.local/share" ;;
+  esac
+}
+
+register_desktop_entry() {
+  desktop_source="$1"
+  [ -f "$desktop_source" ] || return 1
+  bundle_path="$(cd "$installed" && pwd -P)" || return 1
+  case "$bundle_path" in *'
+'*) return 1 ;; esac
+  executable="$(printf '%s' "${bundle_path}/$3" | sed 's/%/%%/g; s/[\\"`$]/\\&/g; s/\\/\\\\/g')"
+  icon="$(printf '%s' "${bundle_path}/$4" | sed 's/\\/\\\\/g')"
+  entries="$(linux_data_home)/applications"
+  mkdir -p "$entries" || return 1
+  [ ! -d "${entries}/$2.desktop" ] || return 1
+  entry="$(mktemp "${entries}/.phux-desktop.XXXXXX")" || return 1
+  if PHUX_DESKTOP_EXEC="\"${executable}\"" PHUX_DESKTOP_ICON="$icon" awk '
+    /^Exec=/ { print "Exec=" ENVIRON["PHUX_DESKTOP_EXEC"]; next }
+    /^Icon=/ { print "Icon=" ENVIRON["PHUX_DESKTOP_ICON"]; next }
+    { print }
+  ' "$desktop_source" > "$entry" && chmod 644 "$entry" && mv -f "$entry" "${entries}/$2.desktop"; then
+    return 0
+  fi
+  rm -f "$entry"
+  return 1
+}
+
 # The update feed names one version, with a digest per target. Sets build_id,
 # build_sha256 and the asset names; versions keep their -alpha.N here.
 resolve_rune() {
@@ -72,6 +140,7 @@ install_rune_macos() {
 rune_member() {
   case "${1#*/}" in
     phux-rune | phux-rune.release | README.md | LICENSE | NOTICE | THIRD-PARTY-NOTICES.txt | \
+    Inter-OFL.txt | JetBrainsMono-OFL.txt | \
     sh.phux.rune.desktop | sh.phux.rune.png) return 0 ;;
     *) return 1 ;;
   esac
@@ -137,8 +206,8 @@ install_rune_linux() {
   printf 'next: %s\n' "$(shell_quote "${bundle}/phux-rune")"
 }
 
-# Beside the GPUI desktop, on its own feed: there is no channel to pick and
-# nothing to pin, and the app updates itself from here on.
+# On its own feed: there is no channel to pick and nothing to pin, and the
+# app updates itself from here on.
 install_rune() {
   case "$target" in
     aarch64-apple-darwin | x86_64-unknown-linux-gnu) ;;

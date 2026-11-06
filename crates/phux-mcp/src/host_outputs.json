@@ -360,12 +360,6 @@
         "type": "object"
       },
       "stream_diagnostics": {},
-      "report": {
-        "type": "object"
-      },
-      "frames": {
-        "type": "object"
-      },
       "resource_id": {
         "type": "string",
         "description": "Exact reusable resource ID, when this result identifies one resource."
@@ -375,19 +369,8 @@
   "phux_perf_trace": {
     "type": "object",
     "properties": {
-      "ok": {
-        "type": "boolean"
-      },
       "path": {
         "type": "string"
-      },
-      "desktop": {},
-      "server": {},
-      "server_error": {
-        "type": [
-          "string",
-          "null"
-        ]
       },
       "events": {
         "type": "integer"

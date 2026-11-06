@@ -7,8 +7,8 @@
 # Both carry the engine for iOS devices, the arm64 simulator, and arm64 macOS.
 #
 # Release Please owns tags, draft releases and notes. This workflow only adds
-# verified assets to an existing release, the same contract release.yml and
-# desktop-release.yml follow, and release.yml dispatches it once each root
+# verified assets to an existing release, the same contract release.yml
+# follows, and release.yml dispatches it once each root
 # release is public. It never gates the draft's publication: the CLI tarballs
 # are the release contract; the xcframework is the mobile pin's input.
 #

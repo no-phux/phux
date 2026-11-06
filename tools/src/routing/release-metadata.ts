@@ -3,12 +3,10 @@
 // A root release PR rewrites version fields, the changelog, and skill version
 // lines; treating those as binary inputs rebuilt FFI, Zig and the CLI. Fail
 // closed: any other hunk, path, or unreadable side keeps the normal routes.
-import { DESKTOP_TRAIN, ROOT_TRAIN, WORKSPACE_LOCKS } from "../cargo/release-orchestration.ts";
+import { ROOT_TRAIN, WORKSPACE_LOCKS } from "../cargo/release-orchestration.ts";
 import { deepEqual, isTable, str, type Table } from "../lib/value.ts";
 
 const SEMVER = /^[0-9]+\.[0-9]+\.[0-9]+$/;
-// Desktop shipped alphas before stable; a diff across the graduation counts.
-const DESKTOP_VERSION = /^(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)(?:-alpha\.[1-9]\d*)?$/;
 const SKILL_VERSION =
   /^(\s*)version:\s*"([0-9]+\.[0-9]+\.[0-9]+)"\s*#\s*x-release-please-version\s*$/;
 
@@ -42,7 +40,6 @@ function versionOnly(format: "toml" | "json", pattern: RegExp, path: string[] = 
 }
 
 export const workspaceManifestOnly = versionOnly("toml", SEMVER, ["workspace", "package"]);
-const desktopPackageOnly = versionOnly("json", DESKTOP_VERSION);
 
 /** Path packages by name and registry packages in order, or undefined if malformed. */
 function splitLock(text: string): { path: Map<string, Table>; registry: Table[] } | undefined {
@@ -83,11 +80,7 @@ export const manifestOnly: Check = (before, after) => {
   const keys = Object.keys(old);
   if (!deepEqual(keys.toSorted(), Object.keys(now).toSorted())) return false;
   return keys.every((path) =>
-    [old[path], now[path]].every((value) => {
-      const version = str(value) ?? "";
-      const pattern = path === "clients/desktop" && version !== "0.0.0" ? DESKTOP_VERSION : SEMVER;
-      return pattern.test(version);
-    }),
+    [old[path], now[path]].every((value) => SEMVER.test(str(value) ?? "")),
   );
 };
 
@@ -105,9 +98,7 @@ export const skillOnly: Check = (before, after) => {
 const CHECKS: Record<string, Check> = {
   "Cargo.toml": workspaceManifestOnly,
   ...Object.fromEntries(WORKSPACE_LOCKS.map((lock) => [lock, workspaceLockOnly])),
-  "clients/desktop/package.json": desktopPackageOnly,
   [ROOT_TRAIN.manifest]: manifestOnly,
-  [DESKTOP_TRAIN.manifest]: manifestOnly,
   ".agents/skills/using-phux/SKILL.md": skillOnly,
   ".agents/skills/using-phux-mcp/SKILL.md": skillOnly,
 };

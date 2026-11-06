@@ -77,7 +77,6 @@ pub(crate) mod pair;
 pub(crate) mod partial;
 pub(crate) mod paste;
 pub(crate) mod perf;
-pub(crate) mod perf_desktop;
 pub(crate) mod plan_usage;
 pub(crate) mod play;
 pub(crate) mod plugin;

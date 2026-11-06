@@ -3,7 +3,7 @@
 //! a bell. The sidebar and palette draw from it; ⌘J jumps to whatever
 //! needs a person.
 //!
-//! The attention rules match the GPUI desktop's: a blocked agent, one that
+//! The attention rules: a blocked agent, one that
 //! finished, or one declaring high attention needs you; the shown terminal
 //! never does, since you are looking at it.
 

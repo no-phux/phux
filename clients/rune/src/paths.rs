@@ -1,5 +1,5 @@
 //! Paths on the pane's host, found by the server, and the one shell word a
-//! picked path becomes at the prompt. Matches the GPUI desktop's picker.
+//! picked path becomes at the prompt.
 
 /// `path` as one POSIX-shell word for a prompt standing in `origin`: relative
 /// when it lies under `origin`, bare when every character is safe, otherwise

@@ -1,7 +1,7 @@
 //! Which session the window selects. The client connects with no attach, so
 //! a server with nothing to open still gives a working window; this picks
 //! once the server's inventory is in, and again whenever the selected session
-//! is gone. Ported from the GPUI client's `home::choose`.
+//! is gone.
 
 use phux_client_runtime::Client;
 use phux_client_runtime::control::{SessionDescriptor, SessionRecovery, Status, Topology};

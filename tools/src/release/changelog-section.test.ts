@@ -20,7 +20,7 @@ const CHANGELOG = `# Changelog
 `;
 
 test("the version from root and component tags", () => {
-  expect(["v0.36.0", "desktop-v0.2.0", "opencode-plugin-v0.3.0"].map(versionFromTag)).toEqual([
+  expect(["v0.36.0", "pi-v0.2.0", "opencode-plugin-v0.3.0"].map(versionFromTag)).toEqual([
     "0.36.0",
     "0.2.0",
     "0.3.0",

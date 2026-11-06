@@ -19,9 +19,9 @@ const greenOnly =
 
 test("parseTag accepts stable component versions only", () => {
   expect(
-    ["v0.42.0", "desktop-v0.28.0", "pi-extension-v0.3.0"].map((t) => parseTag(t)?.component),
-  ).toEqual(["phux", "desktop", "pi-extension"]);
-  for (const tag of ["next", "v0.1.0-alpha.1", "v01.2.3", "desktop-v0.1.0-beta.1", "pi-v0.1.0+b"]) {
+    ["v0.42.0", "pi-v0.28.0", "pi-extension-v0.3.0"].map((t) => parseTag(t)?.component),
+  ).toEqual(["phux", "pi", "pi-extension"]);
+  for (const tag of ["next", "v0.1.0-alpha.1", "v01.2.3", "pi-v0.1.0-beta.1", "pi-v0.1.0+b"]) {
     expect(parseTag(tag)).toBeUndefined();
   }
 });
@@ -58,11 +58,11 @@ describe("decide", () => {
   test("an event publishes every component on a green commit", () => {
     const releases = [
       rel("v0.42.0", true, "abc"),
-      rel("desktop-v0.28.0", true, "abc"),
+      rel("pi-v0.28.0", true, "abc"),
       rel("v0.41.0", false, "old"),
     ];
     expect(decide(releases, green, { eventSha: "abc" })).toEqual({
-      publish: ["v0.42.0", "desktop-v0.28.0"],
+      publish: ["v0.42.0", "pi-v0.28.0"],
       delete: [],
       wait: false,
       fail: undefined,
@@ -95,27 +95,27 @@ describe("decide", () => {
     const releases = [
       rel("v0.42.0", false, "new"),
       rel("v0.39.0", true, "old"),
-      rel("desktop-v0.27.1", false, "pub"),
-      rel("desktop-v0.24.0", true, "oldd"),
+      rel("pi-v0.27.1", false, "pub"),
+      rel("pi-v0.24.0", true, "oldd"),
       rel("next", true, "moving"),
     ];
     const plan = decide(releases, green, { eventSha: "old" });
     expect(plan.publish).toEqual([]);
-    expect(plan.delete.toSorted()).toEqual(["desktop-v0.24.0", "v0.39.0"]);
+    expect(plan.delete.toSorted()).toEqual(["pi-v0.24.0", "v0.39.0"]);
   });
 
   test("reconcile ships each component's newest green draft", () => {
     const releases = [
-      rel("desktop-v0.1.0", false, "pub"),
-      rel("desktop-v0.2.0", true, "green"),
-      rel("desktop-v0.1.1", true, "patch"),
+      rel("pi-v0.1.0", false, "pub"),
+      rel("pi-v0.2.0", true, "green"),
+      rel("pi-v0.1.1", true, "patch"),
       rel("pi-extension-v0.3.0", true, "red"),
       rel("v0.42.0", true, "running"),
     ];
     const ci = (sha: string): string =>
       sha === "running" ? "in_progress" : greenOnly("green")(sha);
     const plan = decide(releases, ci);
-    expect(plan.publish).toEqual(["desktop-v0.2.0"]);
+    expect(plan.publish).toEqual(["pi-v0.2.0"]);
     expect(plan.blocked).toBe(
       "still draft, ci is not green: pi-extension-v0.3.0 (ci.yml failure for red)",
     );
@@ -123,12 +123,12 @@ describe("decide", () => {
   });
 
   type DispatchCase = [string, Release[], string, CiState, string | undefined, string[]];
-  const draft = [rel("desktop-v0.1.0", true, "d")];
+  const draft = [rel("pi-v0.1.0", true, "d")];
   const superseded = [rel("v0.42.0", false, "new"), rel("v0.39.0", true, "old")];
   test.each<DispatchCase>([
     ["a published tag is a no-op", [rel("v0.42.0", false, "abc")], "v0.42.0", green, undefined, []],
-    ["a green draft ships", draft, "desktop-v0.1.0", green, undefined, ["desktop-v0.1.0"]],
-    ["a red draft stays", draft, "desktop-v0.1.0", () => "failure", "failure", []],
+    ["a green draft ships", draft, "pi-v0.1.0", green, undefined, ["pi-v0.1.0"]],
+    ["a red draft stays", draft, "pi-v0.1.0", () => "failure", "failure", []],
     ["an unknown tag fails", [], "v9.9.9", green, "no release named v9.9.9", []],
     ["a superseded draft fails", superseded, "v0.39.0", green, "older", []],
   ])("dispatch: %s", (_, releases, tag, ci, fail, publish) => {
@@ -139,10 +139,9 @@ describe("decide", () => {
   });
 });
 
-test("lanes split root, desktop and integrations", () => {
-  expect(splitLanes(["v0.42.0", "desktop-v0.28.0", "pi-extension-v0.3.0", "next"])).toEqual({
+test("lanes split root and integrations", () => {
+  expect(splitLanes(["v0.42.0", "pi-extension-v0.3.0", "next"])).toEqual({
     phux: "v0.42.0",
-    desktop: "desktop-v0.28.0",
     integration: ["pi-extension-v0.3.0"],
   });
 });

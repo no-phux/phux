@@ -50,13 +50,12 @@ A binary run from `target/` uses the `dev` profile and its own socket.
 [build from source](./install.md#build-from-source).
 
 On Windows, the CLI, server, and terminal UI run under WSL 2 only.
-PowerShell launchers call into that WSL install. Desktop 0.50.0 and later
-also publish a native Windows x64 app, backed by the WSL server, not a
-native Windows CLI/server. See
+PowerShell launchers call into that WSL install. There is no native
+Windows CLI, server, or desktop app. See
 [Windows (WSL)](./install.md#windows-wsl) and
 [requirements](./install.md#requirements).
 
-The desktop app (Phux) is separate. The CLI is what scripts drive. See
+The desktop app (Phux Rune) is separate. The CLI is what scripts drive. See
 [desktop app](./install.md#desktop-app).
 
 ```sh
