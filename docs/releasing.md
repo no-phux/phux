@@ -216,8 +216,14 @@ standalone CLI's Mach-O floor stays at macOS 11.0. Both the bundle's minimum
 version and each executable's Mach-O deployment floor are checked before
 publication; a newer build host must not raise either one.
 
+The standalone CLI's macOS archive carries `phux` and `phux-mcp` signed with
+the same Developer ID (hardened runtime) and notarized, so the macOS
+firewall's signed-software allowance covers them without a per-version
+allowlist entry. A bare executable cannot hold a stapled ticket; Gatekeeper
+checks it online. `next` builds stay ad hoc.
+
 The Apple credentials are separate from minisign. Configure these repository
-Actions secrets before marking the desktop release PR ready:
+Actions secrets before marking a release PR ready:
 
 | Secret | Value |
 | --- | --- |
