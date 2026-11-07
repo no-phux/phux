@@ -200,4 +200,7 @@ pub mod resource_state {
     pub const INPUT_HOLDER: u32 = 3;
     /// `ClientId` (`u32`) of one `VIEWER` (ADR-0127); repeated.
     pub const VIEWER: u32 = 4;
+    /// A document's producer connection: `1` connected, `0` gone; absent =
+    /// not a document or not reported.
+    pub const PRODUCER: u32 = 5;
 }

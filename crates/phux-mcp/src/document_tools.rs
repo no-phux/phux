@@ -32,7 +32,7 @@ pub(crate) fn schemas() -> Vec<Value> {
     vec![
         schema(
             "phux_documents",
-            "List the live document resources: accessibility trees (JSON) and pixel surfaces (PNG), each with its id, kind, parent pane, and name. Read them with phux_tree_snapshot, phux_tree_wait, or phux_surface_snapshot. Read-only.",
+            "List the live document resources: accessibility trees (JSON) and pixel surfaces (PNG), each with its id, kind, parent pane, name, and `producer` (`connected`, or `gone` once the process feeding it disconnected; the last frame stays readable). Read them with phux_tree_snapshot, phux_tree_wait, or phux_surface_snapshot. Read-only.",
             json!({ "socket": string_schema() }),
             &[],
         ),
@@ -113,6 +113,7 @@ async fn documents(args: &Value) -> Result<Value, ToolError> {
                 "kind": kind_name(info.kind),
                 "parent": info.parent.as_ref().map(format_terminal_id),
                 "name": info.title,
+                "producer": phux_client::resource::producer_name(info),
             })
         })
         .collect();
@@ -271,6 +272,7 @@ mod tests {
                 .map(|doc| doc["kind"].as_str().unwrap())
                 .collect();
             assert_eq!(kinds, ["accessibility_tree", "pixel_surface"], "{listed}");
+            assert_eq!(listed["documents"][0]["producer"], "connected", "{listed}");
 
             let snap = invoke("phux_tree_snapshot", &socket, tree_target.clone()).await;
             assert_eq!(snap["document"], json!({ "title": "hello" }));

@@ -212,10 +212,8 @@ pub fn document(
         .into_iter()
         .map(|s| session_json(snapshot, organization, s))
         .collect();
-    // `terminals` stays the Terminal-kind inventory — the ids a Terminal-facet
-    // verb accepts — so a consumer that iterates it and calls `snapshot` on
-    // each keeps working; every resource, with its kind and parent, is the
-    // additive `resources` array.
+    // `terminals` stays the Terminal-kind inventory (the ids a Terminal-facet
+    // verb accepts); every resource is the additive `resources` array.
     let terminals = resource::terminals(snapshot)
         .map(|pane| format_terminal_id(&pane.id))
         .collect();
@@ -228,6 +226,7 @@ pub fn document(
             parent: pane.parent.as_ref().map(format_terminal_id),
             lifecycle: resource::lifecycle_name(pane.lifecycle).to_owned(),
             exit: pane.exit.as_ref().map(resource_exit_json),
+            producer: resource::producer_name(pane).map(str::to_owned),
             key: organization
                 .and_then(|org| org.resource_by_live(&pane.id))
                 .map(|record| record.key.to_string()),

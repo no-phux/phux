@@ -104,3 +104,20 @@ use strategies::{arb_frame_kind, arb_resource_info, arb_resource_kind};
 // -----------------------------------------------------------------------------
 // Resource kinds: the additive spawn / close / snapshot / command shapes.
 // -----------------------------------------------------------------------------
+
+/// A document's producer liveness rides `RESOURCE_STATE`; unreported stays
+/// `None`.
+#[test]
+fn producer_liveness_round_trips() {
+    let doc = |id, up| {
+        ResourceInfo::resource(ResourceId::local(id), ResourceKind::Document)
+            .with_producer_connected(up)
+    };
+    assert_round_trip(&FrameKind::CommandResult {
+        request_id: 1,
+        result: CommandResult::OkWith(CommandValue::State(
+            SessionSnapshot::new(SessionId::new(1), WindowId::new(1), ResourceId::local(1))
+                .with_resources(vec![doc(1, Some(true)), doc(2, Some(false)), doc(3, None)]),
+        )),
+    });
+}

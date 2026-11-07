@@ -127,6 +127,10 @@ pub struct ResourceJson {
     /// How a retained resource's process ended; `null` while it runs.
     #[serde(default)]
     pub exit: Option<ResourceExitJson>,
+    /// A document's producer: `connected` or `gone`; omitted for another
+    /// kind or from an older server.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub producer: Option<String>,
     /// The resource record's full 26-character persistent key, the text a
     /// workload `resource:<key>` scope names; `null` when no organization
     /// record executes as this resource.
@@ -330,6 +334,7 @@ mod tests {
                     exited_at_ms: 10,
                     retained_until_ms: 20,
                 }),
+                producer: None,
                 key: Some("0123456789ABCDEFGHJKMNPQRT".to_owned()),
             },
             ResourceJson {
@@ -338,6 +343,7 @@ mod tests {
                 parent: Some("@7".to_owned()),
                 lifecycle: "running".to_owned(),
                 exit: None,
+                producer: None,
                 key: None,
             },
         ])

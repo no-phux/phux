@@ -74,6 +74,14 @@ pub const fn lifecycle_name(lifecycle: ResourceLifecycle) -> &'static str {
     }
 }
 
+/// A document's producer as the `--json` documents spell it: `connected`
+/// or `gone`; `None` for another kind or an older server.
+#[must_use]
+pub fn producer_name(info: &ResourceInfo) -> Option<&'static str> {
+    info.producer_connected
+        .map(|up| if up { "connected" } else { "gone" })
+}
+
 /// The `snake_case` name of a close reason (the `RESOURCE_CLOSED.reason`
 /// vocabulary), or `None` when the server stated none.
 #[must_use]

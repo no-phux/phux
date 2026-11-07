@@ -55,6 +55,7 @@ impl ResourceDetails {
             "cwd": info.cwd,
             "lifecycle": super::lifecycle_name(info.lifecycle),
             "exit": info.exit.as_ref().map(super::exit_facet_json),
+            "producer": super::producer_name(info),
             "input_holder": info.input_holder.map(ClientId::get),
             // ADR-0127: connections watching without input, ascending.
             "viewers": info.viewers.iter().copied().map(ClientId::get).collect::<Vec<_>>(),
