@@ -17,6 +17,7 @@ const CATALOG: &str = "\
     mirror-page | Mirror Browser Page… | Panes |  | Start a read-only page mirror from an existing local CDP browser. | browser page cdp json png resource
     mirror-tree | Mirror Accessibility Tree… | Panes |  | Start a read-only accessibility mirror of a local macOS app. | accessibility app tree json resource
     mirror-surface | Mirror Window or Display… | Panes |  | Start a read-only pixel mirror of a local macOS window or display. | surface window display png resource
+    open-app | Open App… | Panes |  | Launch a local app as this app's child and mirror its window and tree; closing this window quits it. | application launch textedit browser chrome resource
     new-session | New Session… | Terminal | cmd+shift+n | Create a named session. |
     switch-session | Switch Session… | Terminal | cmd+shift+s | Filter the sessions on every machine; Enter switches this window, or creates a session with the name you typed. | session switch create filter
     rename-session | Rename Session… | Terminal |  | Change the current session's name. |

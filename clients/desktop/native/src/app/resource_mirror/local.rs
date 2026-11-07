@@ -1,4 +1,5 @@
-//! Window and application mirrors run as this app's own children.
+//! Local producers run as this app's own children: window and application
+//! mirrors, and the `phux agent app run` helper behind Open App.
 //!
 //! macOS grants Screen Recording and Accessibility to the app that owns a
 //! process. A producer the server spawns runs under the server's launchd job,
@@ -6,9 +7,10 @@
 //! the producer and the `screencapture` it calls are attributed to the app the
 //! person already granted.
 //!
-//! A mirror that fails is restarted with backoff, and each is given this
+//! A producer that fails is restarted with backoff, and each is given this
 //! app's pid so it exits if the app dies without dropping it
-//! (`docs/resource-kinds.md#supervision`).
+//! (`docs/resource-kinds.md#supervision`). Dropping one sends `SIGTERM`
+//! first, so an app helper quits the app it launched before it exits.
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
@@ -21,16 +23,38 @@ use super::super::notifications::Kind;
 /// A running producer. Dropping it stops the process.
 pub(crate) struct LocalMirror {
     id: u64,
-    child: Child,
+    /// Always `Some` until dropped.
+    child: Option<Child>,
     log: PathBuf,
     started: Instant,
 }
 
+/// How long a dropped producer gets to finish after `SIGTERM`: an app helper
+/// spends it quitting its app. Then it is killed.
+const GRACE: Duration = Duration::from_secs(3);
+
 impl Drop for LocalMirror {
     fn drop(&mut self) {
-        let _ = self.child.kill();
-        let _ = self.child.wait();
+        if let Some(child) = self.child.take() {
+            // Off the UI thread: the window may be closing.
+            std::thread::spawn(move || stop(child, GRACE));
+        }
     }
+}
+
+/// `SIGTERM` `child`, give it `grace` to exit, then kill it; always reaped.
+fn stop(mut child: Child, grace: Duration) {
+    #[cfg(unix)]
+    if let Ok(pid) = i32::try_from(child.id()) {
+        use nix::sys::signal::{Signal, kill};
+        let _ = kill(nix::unistd::Pid::from_raw(pid), Signal::SIGTERM);
+    }
+    let deadline = Instant::now() + grace;
+    while matches!(child.try_wait(), Ok(None)) && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    let _ = child.kill();
+    let _ = child.wait();
 }
 
 /// Waits before each restart of a failed mirror; once spent, it stays stopped.
@@ -131,7 +155,7 @@ impl Desk {
         log::info!("local mirror {id} started: {label}");
         self.mirrors.push(LocalMirror {
             id,
-            child,
+            child: Some(child),
             log,
             started: Instant::now(),
         });
@@ -143,7 +167,7 @@ impl Desk {
         let Some(index) = self.mirrors.iter().position(|mirror| mirror.id == id) else {
             return Reaped::Done;
         };
-        let Ok(Some(status)) = self.mirrors[index].child.try_wait() else {
+        let Some(Ok(Some(status))) = self.mirrors[index].child.as_mut().map(Child::try_wait) else {
             return Reaped::Running;
         };
         let mirror = self.mirrors.remove(index);
@@ -199,6 +223,47 @@ mod tests {
             argv,
             ["/bin/phux", "agent", "--pane", "@7", "--parent-pid", &pid]
         );
+    }
+
+    #[test]
+    fn a_stopped_producer_gets_sigterm_then_is_killed() {
+        // Exits 0 on SIGTERM: stopped well inside the grace.
+        let polite = Command::new("sh")
+            .args(["-c", "trap 'exit 0' TERM; while :; do sleep 0.05; done"])
+            .spawn()
+            .unwrap();
+        let begun = Instant::now();
+        stop(polite, Duration::from_secs(5));
+        assert!(
+            begun.elapsed() < Duration::from_secs(3),
+            "{:?}",
+            begun.elapsed()
+        );
+        // Ignores SIGTERM: killed once the grace is spent.
+        let mut stubborn = Command::new("sh")
+            .args([
+                "-c",
+                "trap '' TERM; echo ready; while :; do sleep 0.05; done",
+            ])
+            .stdout(Stdio::piped())
+            .spawn()
+            .unwrap();
+        // Only once the trap is set.
+        let mut ready = String::new();
+        std::io::BufRead::read_line(
+            &mut std::io::BufReader::new(stubborn.stdout.take().unwrap()),
+            &mut ready,
+        )
+        .unwrap();
+        let pid = stubborn.id();
+        let begun = Instant::now();
+        stop(stubborn, Duration::from_millis(300));
+        assert!(begun.elapsed() >= Duration::from_millis(300));
+        let alive = Command::new("kill")
+            .args(["-0", &pid.to_string()])
+            .status()
+            .unwrap();
+        assert!(!alive.success(), "killed and reaped");
     }
 
     #[test]

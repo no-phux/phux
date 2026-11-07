@@ -20,7 +20,7 @@ pub(super) fn exit_with(pid: Option<u32>) {
 /// Run `gone` on a background thread once `kill(pid, 0)` reports no such
 /// process. `EPERM` means it exists under another user, so it counts as alive;
 /// a pid that cannot name a process counts as gone at once.
-fn watch(pid: u32, gone: impl FnOnce() + Send + 'static) {
+pub(super) fn watch(pid: u32, gone: impl FnOnce() + Send + 'static) {
     let pid = i32::try_from(pid).ok().and_then(Pid::from_raw);
     std::thread::spawn(move || {
         if let Some(pid) = pid {

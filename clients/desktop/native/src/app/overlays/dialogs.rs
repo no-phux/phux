@@ -63,19 +63,40 @@ pub(super) fn mirror_dialog(
         "tree" => {
             "Use a running macOS application's name, such as Safari. macOS may require Accessibility permission for the producer."
         }
+        "app" => {
+            "Use an application's name, such as TextEdit, to launch a new instance and mirror its window and tree. For a browser, add --browser and an optional URL, and --headless to keep it off screen."
+        }
         _ => {
             "Use App, App:window title, or display for the main screen. macOS may require Screen Recording permission for the producer."
         }
     };
-    dialog_card("New Read-only Mirror", colors, look)
+    let (title, footer, start) = if source == "app" {
+        (
+            "Open App",
+            "Runs as this app's child, so macOS applies this app's Screen Recording and Accessibility grants. Its documents open under the focused pane. Closing this window quits the app.",
+            "Open app",
+        )
+    } else {
+        (
+            "New Read-only Mirror",
+            "Starts a dedicated producer terminal on this Mac. Closing a mirror view does not stop its producer. Stop the producer explicitly in its terminal. No input is sent to your shell.",
+            "Start mirror",
+        )
+    };
+    dialog_card(title, colors, look)
         .child(div().text_sm().child(explanation))
         .child(Input::new(&input))
-        .child(div().text_xs().child("Starts a dedicated producer terminal on this Mac. Closing a mirror view does not stop its producer. Stop the producer explicitly in its terminal. No input is sent to your shell."))
-        .child(dialog_buttons(Button::new("mirror-start").label("Start mirror").primary()
-            .on_click(cx.listener(|desk, _, window, cx| {
-                let target = desk.input_value(InputSlot::MirrorTarget, cx);
-                desk.start_resource_mirror(target, window, cx);
-            })), cx))
+        .child(div().text_xs().child(footer))
+        .child(dialog_buttons(
+            Button::new("mirror-start")
+                .label(start)
+                .primary()
+                .on_click(cx.listener(|desk, _, window, cx| {
+                    let target = desk.input_value(InputSlot::MirrorTarget, cx);
+                    desk.start_resource_mirror(target, window, cx);
+                })),
+            cx,
+        ))
         .into_any_element()
 }
 

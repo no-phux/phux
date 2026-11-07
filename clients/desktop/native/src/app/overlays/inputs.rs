@@ -13,12 +13,16 @@ use crate::app::desk::{self, Desk, Modal};
 pub(crate) fn prepare(desk: &mut Desk, window: &mut Window, cx: &mut Context<Desk>) {
     match desk.modal.clone() {
         Modal::None => {}
-        Modal::Mirror { .. } => {
+        Modal::Mirror { source } => {
             let input = modal_input(
                 desk,
                 InputSlot::MirrorTarget,
                 "",
-                "Source name or page title / URL fragment",
+                if source == "app" {
+                    "TextEdit, or chrome --browser URL --headless"
+                } else {
+                    "Source name or page title / URL fragment"
+                },
                 window,
                 cx,
             );

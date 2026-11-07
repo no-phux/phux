@@ -113,7 +113,7 @@ wgpu = { version = "30.0", default-features = false, features = ["std", "parking
 naga = { version = "30.0", features = ["wgsl-in"] }
 
 [target.'cfg(unix)'.dependencies]
-nix = { version = "0.31", features = ["process", "socket", "user"] }
+nix = { version = "0.31", features = ["process", "signal", "socket", "user"] }
 
 # GPUI Kit pins gpui-pre; the compatibility crates under `toolchain/compat`
 # carry those names and re-export gpui-fast, so Kit and this host share one
