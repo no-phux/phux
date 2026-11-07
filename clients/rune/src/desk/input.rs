@@ -284,7 +284,7 @@ impl Desk {
                 self.copy_diagnostics(tx);
                 self.say(NoticeKind::Info, "Diagnostics copied.");
             }
-            Shortcut::ToggleFullScreen => rune_mac::toggle_full_screen(),
+            Shortcut::ToggleFullScreen => tx.toggle_full_screen(),
             Shortcut::KeyboardShortcuts => self.show_shortcuts(),
             Shortcut::EssentialShortcuts => self.show_essentials(),
             Shortcut::JumpToAttention => self.jump_to_attention(),
