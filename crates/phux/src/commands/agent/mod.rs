@@ -181,6 +181,7 @@ pub(crate) fn run_agent(action: &AgentAction, socket: Option<PathBuf>) -> ExitCo
         } => resource_session::run_log(target, *follow, *tail, *json, socket),
         AgentAction::Tree { action } => tree::run_tree(action, socket),
         AgentAction::Surface { action } => tree::run_surface(action, socket),
+        AgentAction::Doc { action } => tree::run_doc(action, socket),
         AgentAction::Page { action } => tree::run_page(action, socket),
         AgentAction::Wait {
             target,

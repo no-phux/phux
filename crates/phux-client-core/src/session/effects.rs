@@ -181,7 +181,8 @@ pub enum KernelEffect {
     /// a frontend.
     AgentPublication(AgentPublication),
     /// One whole replicated document (`docs/resource-kinds.md`): a bootstrap
-    /// cut or a live publish of an `AccessibilityTree` or `PixelSurface`.
+    /// cut or a live publish of an `AccessibilityTree`, `PixelSurface` or
+    /// typed `Document`.
     /// The kernel keeps no copy; the newest one wins at the consumer.
     Document(DocumentPublication),
 }
@@ -192,12 +193,15 @@ pub struct DocumentPublication {
     /// The document resource.
     pub resource_id: ResourceId,
     /// Which kind of document, so the consumer knows the codec: JSON for a
-    /// tree, PNG for a surface.
+    /// tree, PNG for a surface, [`Self::content_type`] for a typed document.
     pub kind: ResourceKind,
     /// The publish sequence this document is, within the resource.
     pub seq: u64,
     /// The document bytes.
     pub bytes: Vec<u8>,
+    /// A typed document's content type, e.g. `text/markdown`; `None` for a
+    /// tree or surface.
+    pub content_type: Option<String>,
 }
 
 /// Reusable high-water-mark effect queue.

@@ -475,6 +475,34 @@ pub(crate) const TOOLS: &[Row] = &[
         "resource methods",
         Touches::Wire(&[RESOLVE]),
     ),
+    Row {
+        name: "phux_documents",
+        surface: Surface::AutomationOnly(
+            "the document-kind subset of `phux ls --json`'s `resources`, with each one's name",
+        ),
+        exec: Exec::InProcess,
+        touches: Touches::Wire(&[RESOLVE]),
+    },
+    cli(
+        "phux_tree_snapshot",
+        "agent tree snapshot",
+        Touches::Wire(&[RESOLVE, "ATTACH_RESOURCE", "DETACH_RESOURCE"]),
+    ),
+    cli(
+        "phux_tree_wait",
+        "agent tree follow",
+        Touches::Wire(&[
+            RESOLVE,
+            "ATTACH_RESOURCE",
+            "SUBSCRIBE_EVENTS",
+            "DETACH_RESOURCE",
+        ]),
+    ),
+    cli(
+        "phux_surface_snapshot",
+        "agent surface snapshot",
+        Touches::Wire(&[RESOLVE, "ATTACH_RESOURCE", "DETACH_RESOURCE"]),
+    ),
     cli(
         "phux_approvals",
         "approvals",

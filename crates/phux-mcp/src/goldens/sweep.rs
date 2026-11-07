@@ -18,12 +18,18 @@ fn sweep_args(tool: &str) -> Value {
         "phux_api_describe" | "phux_ls" | "phux_spawn" | "phux_agent_clear" | "phux_approvals" => {
             json!({})
         }
-        "phux_snapshot" | "phux_resource_methods" | "phux_resource_show" => {
+        "phux_snapshot"
+        | "phux_resource_methods"
+        | "phux_resource_show"
+        | "phux_tree_snapshot"
+        | "phux_surface_snapshot" => {
             json!({ "target": "@1" })
         }
         "phux_wait" | "phux_watch" | "phux_resource_wait" => {
             json!({ "target": "@1", "timeout_secs": 1 })
         }
+        "phux_tree_wait" => json!({ "target": "@1", "until": "x", "timeout_secs": 1 }),
+        "phux_documents" => json!({}),
         "phux_send_keys" => json!({ "target": "@1", "keys": ["x"] }),
         "phux_paste" => json!({ "target": "@1", "text": "x" }),
         "phux_upload" => json!({ "target": "@1", "path": "local.bin" }),

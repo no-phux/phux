@@ -389,5 +389,138 @@
     "required": [
       "path"
     ]
+  },
+  "phux_documents": {
+    "type": "object",
+    "properties": {
+      "schema_version": {
+        "type": "integer"
+      },
+      "documents": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "properties": {
+            "id": {
+              "type": "string"
+            },
+            "kind": {
+              "type": "string",
+              "enum": [
+                "accessibility_tree",
+                "pixel_surface"
+              ]
+            },
+            "parent": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "name": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "id",
+            "kind",
+            "parent",
+            "name"
+          ]
+        }
+      },
+      "unreachable": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        }
+      }
+    },
+    "required": [
+      "schema_version",
+      "documents",
+      "unreachable"
+    ]
+  },
+  "phux_tree_snapshot": {
+    "type": "object",
+    "properties": {
+      "schema_version": {
+        "type": "integer"
+      },
+      "seq": {
+        "type": "integer"
+      },
+      "document": {
+        "description": "The tree's JSON document; null before the first publish."
+      }
+    },
+    "required": [
+      "schema_version",
+      "seq",
+      "document"
+    ]
+  },
+  "phux_tree_wait": {
+    "type": "object",
+    "properties": {
+      "schema_version": {
+        "type": "integer"
+      },
+      "outcome": {
+        "type": "string",
+        "enum": [
+          "matched",
+          "closed",
+          "timed_out"
+        ]
+      },
+      "seq": {
+        "type": "integer"
+      },
+      "document": {
+        "description": "The matching document, when `outcome` is matched."
+      }
+    },
+    "required": [
+      "schema_version",
+      "outcome"
+    ]
+  },
+  "phux_surface_snapshot": {
+    "type": "object",
+    "properties": {
+      "schema_version": {
+        "type": "integer"
+      },
+      "seq": {
+        "type": "integer"
+      },
+      "bytes": {
+        "type": "integer"
+      },
+      "width": {
+        "type": [
+          "integer",
+          "null"
+        ]
+      },
+      "height": {
+        "type": [
+          "integer",
+          "null"
+        ]
+      }
+    },
+    "required": [
+      "schema_version",
+      "seq",
+      "bytes",
+      "width",
+      "height"
+    ]
   }
 }

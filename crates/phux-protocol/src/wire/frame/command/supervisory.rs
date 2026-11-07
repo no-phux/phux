@@ -304,6 +304,17 @@ macro_rules! supervisory_commands {
         /// One complete document under the resource's codec.
         bytes: Vec<u8>,
     },
+    /// Relay one typed input intent to the connection producing a document
+    /// resource, as an unjournaled `document_input` event. Refused with
+    /// [`ErrorCode::WrongResourceKind`] for a non-document, and
+    /// [`ErrorCode::NotProducer`] when no producer is connected. Owner
+    /// socket only (`docs/resource-kinds.md#authority`).
+    SendDocumentInput {
+        /// The document (a page's tree or surface) whose producer acts.
+        terminal_id: ResourceId,
+        /// What to do.
+        intent: super::DocumentInput,
+    },
     /// Kill one resource only if every precondition holds, checked and
     /// applied atomically (`docs/protocol.md`, ADR-0109); otherwise
     /// `PRECONDITION_FAILED`. Gated on

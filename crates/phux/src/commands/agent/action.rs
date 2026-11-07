@@ -308,6 +308,13 @@ pub(crate) enum AgentAction {
         #[usage(subcommand)]
         action: super::tree::SurfaceAction,
     },
+    /// A typed document is a pane's child resource that a producer feeds
+    /// with whole documents of the content type it was opened with
+    /// (Markdown, SVG, CSV, JSON, PNG...). Needs `TYPED_DOCUMENT`.
+    Doc {
+        #[usage(subcommand)]
+        action: super::tree::DocAction,
+    },
     /// A browser page over the Chrome debugging protocol (CDP), as a tree (its
     /// accessibility tree) and a surface (its screencast) under one pane.
     /// Needs a browser started with `--remote-debugging-port`.

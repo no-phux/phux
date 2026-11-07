@@ -253,8 +253,8 @@ sending. Reports remain schema 1, with optional `rss_bytes` and `alloc`
 JSON fields that old readers ignore.
 
 Panes are **resources** with a **kind**: `Terminal`, `AgentSession`,
-`AccessibilityTree` or `PixelSurface` so far, each with its own methods and
-events. A client
+`AccessibilityTree`, `PixelSurface` or `Document` so far, each with its own
+methods and events. A client
 tolerates kinds it does not know. The kind catalog in `phux-protocol::kinds`
 lists every method with the authorization verb it needs; the generated
 [kinds reference](./reference/kinds.md) renders it.
@@ -272,6 +272,23 @@ arrives as one `RESOURCE_OUTPUT`. A viewer the broadcast laps is tombstoned
 (`OUTBOUND_GAP`) and recut from the newest document, so the only thing a
 slow viewer skips is intermediate documents. The stream takes no input, no
 acknowledgement and no history request.
+
+A `Document` (wire tag 4, `features_ext.TYPED_DOCUMENT`) is one for any
+format: `SPAWN_RESOURCE` names its MIME content type in `provider` and an
+optional name in `native_id`. Its `DocumentTypedV1` bootstrap (codec tag 6)
+carries the content type ahead of the document
+([typed documents](./resource-kinds.md#typed-documents)).
+
+Input for a document goes to its producer, not into the stream:
+`SEND_DOCUMENT_INPUT` (command tag `0x48`) names a document resource and one
+typed intent (navigate to a URL, click at a point in the surface image's
+pixels, insert text, press a named key, or scroll). The server relays it,
+unread, as an unstamped `document_input` event (tag `0x20`) on the
+connection that spawned the document, and answers `OK` once queued;
+`NOT_PRODUCER` when that connection is gone, `OVERFLOW` when its mailbox is
+full. Nobody else sees the event and it is never journaled. Input to a page
+or window is control of the machine, so the rule is owner socket only: no
+terminal or remote grant reaches it ([resource kinds](./resource-kinds.md#authority)).
 
 `GET_METADATA` / `SET_METADATA` / `SUBSCRIBE_METADATA` (`0x50`-`0x54`)
 attach small keyed values to resources. Some keys are plain storage; some

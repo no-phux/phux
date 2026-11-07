@@ -1,6 +1,6 @@
 [package]
 name = "phux-tree"
-description = "Accessibility trees: the replicated-document engine behind the AccessibilityTree resource kind."
+description = "The replicated-document engine behind the AccessibilityTree, PixelSurface and Document resource kinds."
 publish = false
 version.workspace = true
 edition.workspace = true

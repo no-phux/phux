@@ -108,6 +108,7 @@ Answered by every resource kind.
 | `LIST_METADATA` | frame `0x53` | INVENTORY | no | none | shipped |
 | `SUBSCRIBE_METADATA` | frame `0x54` | OBSERVE | no | none | shipped |
 | `PUBLISH_RESOURCE_STATE` | command `0x42` | BIND, INPUT | yes | none | shipped |
+| `SEND_DOCUMENT_INPUT` | command `0x48` | INPUT (owner socket only) | yes | none | shipped |
 
 ## Substrate events
 
@@ -116,6 +117,7 @@ Answered by every resource kind.
 | `pane_spawned` | `0x04` |
 | `pane_closed` | `0x05` |
 | `source_gap` | `0x0c` |
+| `document_input` | `0x20` |
 
 ## Kind `TERMINAL`
 
@@ -234,6 +236,25 @@ None.
 
 None.
 
+## Kind `DOCUMENT`
+
+Wire tag `4`; gate: `typed_document` (features_ext).
+
+### Methods
+
+The kind's facet.
+
+| Method | Carrier | Requires | Mutating | Gate | Status |
+|---|---|---|---|---|---|
+
+### Events
+
+None.
+
+### Resource metadata keys
+
+None.
+
 ## Client frame classification
 
 Every client-originated frame lands on exactly one row.
@@ -319,6 +340,7 @@ Every command nested in `COMMAND` lands on exactly one row; the envelope alone g
 | `PERF_CONTROL` | OBSERVE+BIND + owner-UDS transport | `Global { owner_uds_only: true }` |
 | `APPEND_RESOURCE_OUTPUT` | BIND+INPUT | `ParentOfNamed` |
 | `PUBLISH_RESOURCE_STATE` | BIND+INPUT | `ParentOfNamed` |
+| `SEND_DOCUMENT_INPUT` | INPUT + owner-UDS transport | `Global { owner_uds_only: true }` |
 | `NATIVE_AGENT { type: spawn }` | CREATE+BIND | `KeyedSession` |
 | `NATIVE_AGENT { type: list_integrations }` | INVENTORY | `OrganizationView` |
 | `NATIVE_AGENT { type: launch_integration }` | CREATE+BIND+INPUT | `KeyedSession` |

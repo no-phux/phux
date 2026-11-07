@@ -227,15 +227,18 @@ pub enum WireEvent {
         seq: u64,
         jsonl: String,
     },
-    /// A whole document arrived for an attached `AccessibilityTree` or
-    /// `PixelSurface` (`kind` is `accessibility_tree` or `pixel_surface`):
-    /// the bootstrap cut, or a newer publish. `bytes` is JSON for a tree and
-    /// PNG for a surface; the newest `seq` per resource is the one to show.
+    /// A whole document arrived for an attached `AccessibilityTree`,
+    /// `PixelSurface` or typed `Document` (`kind` is `accessibility_tree`,
+    /// `pixel_surface` or `document`): the bootstrap cut, or a newer
+    /// publish. `bytes` is JSON for a tree, PNG for a surface and of
+    /// `content_type` (set only for a typed document) otherwise; the newest
+    /// `seq` per resource is the one to show.
     DocumentPublished {
         resource_id: String,
         kind: String,
         seq: u64,
         bytes: Vec<u8>,
+        content_type: Option<String>,
     },
     /// The server reported an ERROR frame.
     ServerError { message: String },
@@ -264,12 +267,13 @@ impl core::fmt::Debug for WireEvent {
                         .field("terminal_id", terminal_id)
                         .field("bytes", &text.len())
                         .finish(),
-                    Self::DocumentPublished { resource_id, kind, seq, bytes } => f
+                    Self::DocumentPublished { resource_id, kind, seq, bytes, content_type } => f
                         .debug_struct("DocumentPublished")
                         .field("resource_id", resource_id)
                         .field("kind", kind)
                         .field("seq", seq)
                         .field("bytes", &bytes.len())
+                        .field("content_type", content_type)
                         .finish(),
                     $(Self::$variant $({ $($field),* })? => {
                         let mut value = f.debug_struct(stringify!($variant));

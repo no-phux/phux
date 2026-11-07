@@ -235,6 +235,7 @@ const fn runtime_server_features_ext() -> ServerFeatureExtSet {
         ServerFeatureExt::HostServiceHttp,
         ServerFeatureExt::AccessibilityTree,
         ServerFeatureExt::PixelSurface,
+        ServerFeatureExt::TypedDocument,
     ])
 }
 

@@ -11,6 +11,10 @@ const PIXEL_SURFACE: FeatureGate = FeatureGate::FeaturesExt {
     mask: ServerFeatureExt::PixelSurface.mask(),
     wire_name: ServerFeatureExt::PixelSurface.wire_name(),
 };
+const TYPED_DOCUMENT: FeatureGate = FeatureGate::FeaturesExt {
+    mask: ServerFeatureExt::TypedDocument.mask(),
+    wire_name: ServerFeatureExt::TypedDocument.wire_name(),
+};
 
 /// The substrate every kind shares (L1 §1.1): spawn and close, the output
 /// subscription, kill, events, inventory, and the resource's L3 scope.
@@ -123,6 +127,12 @@ pub static SUBSTRATE_METHODS: &[MethodSpec] = &[
         Carrier::Command(COMMAND_TAG_PUBLISH_RESOURCE_STATE),
         [C_PUBLISH_RESOURCE_STATE]
     ),
+    // A viewer's input intent for a document, relayed to its producer.
+    method!(
+        "SEND_DOCUMENT_INPUT",
+        Carrier::Command(COMMAND_TAG_SEND_DOCUMENT_INPUT),
+        [C_SEND_DOCUMENT_INPUT]
+    ),
 ];
 
 /// Events about the server or one subscription rather than one resource.
@@ -215,10 +225,14 @@ pub static SUBSTRATE_EVENTS: &[EventSpec] = &[
         name: "source_gap",
         tag: EVENT_TAG_SOURCE_GAP,
     },
+    EventSpec {
+        name: "document_input",
+        tag: EVENT_TAG_DOCUMENT_INPUT,
+    },
 ];
 
 /// Every resource kind this build serves, in wire-tag order.
-pub static KINDS: [KindSpec; 4] = [
+pub static KINDS: [KindSpec; 5] = [
     KindSpec {
         kind: ResourceKind::Terminal,
         name: "TERMINAL",
@@ -421,6 +435,15 @@ pub static KINDS: [KindSpec; 4] = [
         kind: ResourceKind::PixelSurface,
         name: "PIXEL_SURFACE",
         gate: Some(PIXEL_SURFACE),
+        // Fed through the substrate's `PUBLISH_RESOURCE_STATE`.
+        methods: &[],
+        events: &[],
+        metadata_keys: &[],
+    },
+    KindSpec {
+        kind: ResourceKind::Document,
+        name: "DOCUMENT",
+        gate: Some(TYPED_DOCUMENT),
         // Fed through the substrate's `PUBLISH_RESOURCE_STATE`.
         methods: &[],
         events: &[],

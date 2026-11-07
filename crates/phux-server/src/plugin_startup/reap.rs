@@ -314,8 +314,8 @@ fn linux_group_has_later_member(pgid: i32, recorded: &str) -> bool {
 
 #[cfg(target_os = "macos")]
 fn macos_group_has_later_member(pgid: i32, recorded: &str) -> bool {
-    // `proc_listpgrppids` returns a byte count. A null buffer asks for the
-    // size; divide by `pid_t` to get a pid count.
+    // A null buffer asks for the size and gets bytes; a filled buffer
+    // answers with the number of pids written, not bytes.
     let needed = unsafe { libc::proc_listpgrppids(pgid, std::ptr::null_mut(), 0) };
     let count = pid_count_from_bytes(needed);
     if count == 0 {
@@ -324,7 +324,7 @@ fn macos_group_has_later_member(pgid: i32, recorded: &str) -> bool {
     let mut pids = vec![0_i32; count];
     let bytes = i32::try_from(pids.len() * std::mem::size_of::<libc::pid_t>()).unwrap_or(i32::MAX);
     let got = unsafe { libc::proc_listpgrppids(pgid, pids.as_mut_ptr().cast(), bytes) };
-    let count = pid_count_from_bytes(got).min(pids.len());
+    let count = usize::try_from(got).unwrap_or(0).min(pids.len());
     if count == 0 {
         return false;
     }
@@ -342,7 +342,8 @@ fn macos_group_has_later_member(pgid: i32, recorded: &str) -> bool {
     false
 }
 
-/// `proc_listpgrppids` reports bytes. Zero and errors are an empty list.
+/// The size query of `proc_listpgrppids` reports bytes. Zero and errors are
+/// an empty list.
 #[cfg(target_os = "macos")]
 fn pid_count_from_bytes(bytes: i32) -> usize {
     let Ok(bytes) = usize::try_from(bytes) else {

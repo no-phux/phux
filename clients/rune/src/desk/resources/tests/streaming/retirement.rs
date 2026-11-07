@@ -270,6 +270,7 @@ fn waiting_surface_gets_a_freed_slot_before_busy_surfaces_restart() {
             kind: ResourceKind::PixelSurface,
             seq,
             bytes: stamped(&base, stamp),
+            content_type: None,
         })
     };
     for (n, resource) in ids[..4].iter().enumerate() {

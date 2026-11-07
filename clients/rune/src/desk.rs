@@ -24,6 +24,7 @@ mod attach;
 mod events;
 mod find;
 mod frame;
+pub mod galaxy;
 mod home;
 mod inbox;
 mod input;
@@ -178,6 +179,8 @@ pub struct Desk {
     pub pointer: links::Pointer,
     /// Everything waiting on you, and the system's view of it.
     pub inbox: inbox::Inbox,
+    /// The fleet as a galaxy, while open.
+    pub galaxy: galaxy::Galaxy,
     pub settings: settings::Settings,
     pub settings_open: bool,
     pub tabs: tabs::Tabs,
@@ -378,6 +381,7 @@ impl Desk {
             find_query: rune::TextEdit::new(""),
             pointer: links::Pointer::default(),
             inbox: inbox::Inbox::default(),
+            galaxy: galaxy::Galaxy::default(),
             settings,
             settings_open: false,
             tabs: tabs::Tabs::default(),
@@ -462,6 +466,7 @@ impl Desk {
         changed |= self.take_paths(&client);
         changed |= self.sync_alerts();
         changed |= self.tick_inbox(tx);
+        changed |= self.tick_galaxy(tx);
         self.settle_pointer();
         changed |= self.autoscroll(tx);
         self.keep_find();

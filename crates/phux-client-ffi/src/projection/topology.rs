@@ -54,6 +54,7 @@ pub fn kind_word(kind: ResourceKind) -> String {
         ResourceKind::AgentSession => "agent_session".to_owned(),
         ResourceKind::AccessibilityTree => "accessibility_tree".to_owned(),
         ResourceKind::PixelSurface => "pixel_surface".to_owned(),
+        ResourceKind::Document => "document".to_owned(),
         other => format!("kind-{}", other.as_wire()),
     }
 }

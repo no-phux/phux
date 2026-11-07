@@ -1,5 +1,5 @@
-//! The replicated-document engine behind the `AccessibilityTree` and
-//! `PixelSurface` kinds: one document a producer replaces whole, and viewers
+//! The replicated-document engine behind the `AccessibilityTree`,
+//! `PixelSurface` and `Document` kinds: one document a producer replaces whole, and viewers
 //! that always want the newest (`docs/resource-kinds.md`).
 //!
 //! The engine keeps the latest document and its sequence. Every publish
@@ -30,8 +30,9 @@ pub const TREE_MAILBOX: usize = 64;
 pub trait DocumentKind: std::fmt::Debug + Send + Sync + 'static {
     /// The resource kind an engine of this document serves.
     const KIND: ResourceKind;
-    /// Whether `bytes` is one complete document; `Err` says why not.
-    fn validate(bytes: &[u8]) -> Result<(), String>;
+    /// Whether `bytes` is one complete document of a resource opened on
+    /// `target` (for a typed document, its content type); `Err` says why not.
+    fn validate(target: &str, bytes: &[u8]) -> Result<(), String>;
 }
 
 /// An accessibility tree: one JSON value.
@@ -41,10 +42,8 @@ pub struct TreeDocument;
 impl DocumentKind for TreeDocument {
     const KIND: ResourceKind = ResourceKind::AccessibilityTree;
 
-    fn validate(bytes: &[u8]) -> Result<(), String> {
-        serde_json::from_slice::<serde_json::Value>(bytes)
-            .map(|_| ())
-            .map_err(|error| format!("the document is not JSON: {error}"))
+    fn validate(_target: &str, bytes: &[u8]) -> Result<(), String> {
+        json(bytes)
     }
 }
 
@@ -55,9 +54,57 @@ pub struct SurfaceDocument;
 impl DocumentKind for SurfaceDocument {
     const KIND: ResourceKind = ResourceKind::PixelSurface;
 
-    fn validate(bytes: &[u8]) -> Result<(), String> {
+    fn validate(_target: &str, bytes: &[u8]) -> Result<(), String> {
         png_size(bytes).map(|_| ())
     }
+}
+
+/// The largest typed document, the `PUBLISH_RESOURCE_STATE` payload bound.
+pub const MAX_DOCUMENT_BYTES: usize = 4 * 1024 * 1024;
+
+/// A document of the content type its resource was opened with. The engine
+/// checks only what is cheap: a PNG has its header, JSON parses, text is
+/// UTF-8; any other type is opaque bytes.
+#[derive(Debug)]
+pub struct TypedDocument;
+
+impl DocumentKind for TypedDocument {
+    const KIND: ResourceKind = ResourceKind::Document;
+
+    fn validate(content_type: &str, bytes: &[u8]) -> Result<(), String> {
+        if bytes.len() > MAX_DOCUMENT_BYTES {
+            return Err(format!(
+                "the document is {} bytes; the most is {MAX_DOCUMENT_BYTES}",
+                bytes.len()
+            ));
+        }
+        let essence = content_type
+            .split(';')
+            .next()
+            .unwrap_or_default()
+            .trim()
+            .to_ascii_lowercase();
+        if essence == "image/png" {
+            png_size(bytes).map(|_| ())
+        } else if essence == "application/json" {
+            json(bytes)
+        } else if essence.starts_with("text/")
+            || essence.ends_with("+xml")
+            || essence.ends_with("+json")
+        {
+            std::str::from_utf8(bytes)
+                .map(|_| ())
+                .map_err(|error| format!("a {essence} document is UTF-8: {error}"))
+        } else {
+            Ok(())
+        }
+    }
+}
+
+fn json(bytes: &[u8]) -> Result<(), String> {
+    serde_json::from_slice::<serde_json::Value>(bytes)
+        .map(|_| ())
+        .map_err(|error| format!("the document is not JSON: {error}"))
 }
 
 /// The width and height of a PNG from its signature and `IHDR` chunk, or
@@ -139,6 +186,8 @@ pub struct DocumentHandle<K: DocumentKind> {
 pub type TreeHandle = DocumentHandle<TreeDocument>;
 /// The `PixelSurface` facet.
 pub type SurfaceHandle = DocumentHandle<SurfaceDocument>;
+/// The `Document` facet; its `target` is the content type.
+pub type TypedHandle = DocumentHandle<TypedDocument>;
 
 impl<K: DocumentKind> ResourceFacet for DocumentHandle<K> {
     const KIND: ResourceKind = K::KIND;
@@ -226,6 +275,7 @@ pub type TreeBundle = DocumentBundle<TreeDocument>;
 #[derive(Debug)]
 pub struct DocumentActor<K: DocumentKind> {
     core: ResourceCore,
+    target: Arc<str>,
     latest: Option<Bytes>,
     publish_rx: mpsc::Receiver<PublishRequest>,
     snapshot_rx: mpsc::Receiver<SnapshotRequest>,
@@ -254,8 +304,9 @@ impl<K: DocumentKind> DocumentActor<K> {
         } = channels;
         let (publish_tx, publish_rx) = mpsc::channel(TREE_MAILBOX);
         let (snapshot_tx, snapshot_rx) = mpsc::channel(TREE_MAILBOX);
+        let target: Arc<str> = Arc::from(target);
         let facet = DocumentHandle::<K> {
-            target: Arc::from(target),
+            target: Arc::clone(&target),
             publish: publish_tx,
             snapshot: snapshot_tx,
             kind: PhantomData,
@@ -264,6 +315,7 @@ impl<K: DocumentKind> DocumentActor<K> {
         DocumentBundle {
             actor: Self {
                 core,
+                target,
                 latest: None,
                 publish_rx,
                 snapshot_rx,
@@ -307,7 +359,7 @@ impl<K: DocumentKind> DocumentActor<K> {
     /// Validate, sequence, retain and broadcast one document, all or nothing.
     fn handle_publish(&mut self, request: PublishRequest) {
         let PublishRequest { bytes, reply } = request;
-        if let Err(error) = K::validate(&bytes) {
+        if let Err(error) = K::validate(&self.target, &bytes) {
             let _ = reply.send(Err(PublishRejection::Invalid(error)));
             return;
         }
@@ -407,10 +459,28 @@ mod tests {
         png.extend_from_slice(&480u32.to_be_bytes());
         png.extend_from_slice(&[8, 6, 0, 0, 0]);
         assert_eq!(png_size(&png), Ok((640, 480)));
-        assert!(SurfaceDocument::validate(&png).is_ok());
-        assert!(SurfaceDocument::validate(b"{\"not\":\"png\"}").is_err());
+        assert!(SurfaceDocument::validate("", &png).is_ok());
+        assert!(SurfaceDocument::validate("", b"{\"not\":\"png\"}").is_err());
         let mut flat = png.clone();
         flat[20..24].copy_from_slice(&0u32.to_be_bytes());
-        assert!(SurfaceDocument::validate(&flat).is_err());
+        assert!(SurfaceDocument::validate("", &flat).is_err());
+    }
+
+    #[test]
+    fn a_typed_document_is_checked_by_its_content_type_family() {
+        let mut png = b"\x89PNG\r\n\x1a\n\x00\x00\x00\x0dIHDR".to_vec();
+        png.extend_from_slice(&[0, 0, 0, 1, 0, 0, 0, 1]);
+        let check = |content_type: &str, bytes: &[u8]| TypedDocument::validate(content_type, bytes);
+        assert!(check("image/png", &png).is_ok());
+        assert!(check("image/png", b"not a png").is_err());
+        assert!(check("application/json", b"{\"a\":[1]}").is_ok());
+        assert!(check("Application/JSON; charset=utf-8", b"{oops").is_err());
+        assert!(check("text/markdown", "# héllo".as_bytes()).is_ok());
+        assert!(check("text/csv", b"a,\xff").is_err());
+        assert!(check("image/svg+xml", b"\xc3").is_err());
+        assert!(check("application/ld+json", b"{}").is_ok());
+        assert!(check("image/jpeg", b"\xff\xd8 anything").is_ok());
+        assert!(check("application/octet-stream", &[0xff; 16]).is_ok());
+        assert!(check("text/plain", &vec![b'a'; MAX_DOCUMENT_BYTES + 1]).is_err());
     }
 }

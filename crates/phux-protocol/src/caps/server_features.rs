@@ -384,6 +384,9 @@ pub enum ServerFeatureExt {
     /// The server serves the `PixelSurface` resource kind: a producer-fed,
     /// replicated image of a window or display.
     PixelSurface = 0x0001_0000,
+    /// The server serves the `Document` resource kind: a producer-fed,
+    /// replicated document whose content type is fixed when it is opened.
+    TypedDocument = 0x0002_0000,
 }
 
 impl ServerFeatureExt {
@@ -406,6 +409,7 @@ impl ServerFeatureExt {
         Self::ApiDescription,
         Self::AccessibilityTree,
         Self::PixelSurface,
+        Self::TypedDocument,
     ];
 
     /// The `docs/protocol.md#handshake` constant, e.g. `"PATH_QUERY"`.
@@ -429,6 +433,7 @@ impl ServerFeatureExt {
             Self::ApiDescription => "API_DESCRIPTION",
             Self::AccessibilityTree => "ACCESSIBILITY_TREE",
             Self::PixelSurface => "PIXEL_SURFACE",
+            Self::TypedDocument => "TYPED_DOCUMENT",
         }
     }
 

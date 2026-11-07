@@ -16,6 +16,23 @@ fn observed_text(plane: &ControlPlane) -> String {
     String::from_utf8_lossy(&plane.engine().expect("engine").take_output(&terminal())).into_owned()
 }
 
+/// Both batch entry points. `feed_shared_batch` runs the stepped path the
+/// connection driver uses with the control lock released across engine
+/// round trips; it must order, publish and fail exactly as
+/// `feed_bytes_batch` does.
+type BatchFeed = fn(&mut ControlPlane, &[Vec<u8>]) -> Result<(), ControlError>;
+const BATCH_FEEDS: [(&str, BatchFeed); 2] = [
+    ("bytes", |plane, frames| plane.feed_bytes_batch(frames)),
+    ("shared", |plane, frames| {
+        let shared = frames
+            .iter()
+            .cloned()
+            .map(bytes::Bytes::from)
+            .collect::<Vec<_>>();
+        plane.feed_shared_batch(&shared)
+    }),
+];
+
 #[test]
 #[expect(
     clippy::cognitive_complexity,
@@ -120,145 +137,147 @@ fn a_fed_attach_publishes_the_terminal_and_input_goes_out_as_frames() {
 #[cfg(feature = "engine")]
 #[test]
 fn a_transport_batch_publishes_once_and_preserves_ordered_changes() {
-    let (mut plane, attach_id) = negotiated();
-    attach(&mut plane, attach_id, b"ready");
-    let _ = plane.take_events();
-    // A caught-up consumer, so the batch publishes without being asked.
-    let before = plane
-        .publication()
-        .acquire(&terminal())
-        .expect("bootstrap published")
-        .generation;
-    let event_count = 32_u64;
-    let frames = (1..=event_count)
-        .map(|seq| {
-            encode(&FrameKind::ResourceOutput {
-                terminal_id: terminal(),
-                stream_id: StreamId::new(1).expect("stream"),
-                bootstrap_id: BootstrapId::new(1).expect("bootstrap"),
-                seq,
-                bytes: b"x".to_vec().into(),
+    for (_, feed) in BATCH_FEEDS {
+        let (mut plane, attach_id) = negotiated();
+        attach(&mut plane, attach_id, b"ready");
+        let _ = plane.take_events();
+        // A caught-up consumer, so the batch publishes without being asked.
+        let before = plane
+            .publication()
+            .acquire(&terminal())
+            .expect("bootstrap published")
+            .generation;
+        let event_count = 32_u64;
+        let frames = (1..=event_count)
+            .map(|seq| {
+                encode(&FrameKind::ResourceOutput {
+                    terminal_id: terminal(),
+                    stream_id: StreamId::new(1).expect("stream"),
+                    bootstrap_id: BootstrapId::new(1).expect("bootstrap"),
+                    seq,
+                    bytes: b"x".to_vec().into(),
+                })
             })
-        })
-        .collect::<Vec<_>>();
+            .collect::<Vec<_>>();
 
-    plane
-        .feed_bytes_batch(&frames)
-        .expect("ordered transport batch");
+        feed(&mut plane, &frames).expect("ordered transport batch");
 
-    assert_eq!(
-        plane.publication().generation(&terminal()),
-        Some(before + 1)
-    );
-    assert_eq!(
-        observed_text(&plane).matches('x').count(),
-        usize::try_from(event_count).expect("fixture count fits usize")
-    );
-    assert_eq!(
-        plane
-            .take_events()
-            .into_iter()
-            .filter(|event| matches!(event, Event::TerminalChanged { .. }))
-            .count(),
-        1,
-        "the binding wake queue coalesces duplicate terminal changes"
-    );
+        assert_eq!(
+            plane.publication().generation(&terminal()),
+            Some(before + 1)
+        );
+        assert_eq!(
+            observed_text(&plane).matches('x').count(),
+            usize::try_from(event_count).expect("fixture count fits usize")
+        );
+        assert_eq!(
+            plane
+                .take_events()
+                .into_iter()
+                .filter(|event| matches!(event, Event::TerminalChanged { .. }))
+                .count(),
+            1,
+            "the binding wake queue coalesces duplicate terminal changes"
+        );
+    }
 }
 
 #[cfg(feature = "engine")]
 #[test]
 fn a_control_frame_splits_engine_batches_without_reordering() {
-    let (mut plane, attach_id) = negotiated();
-    attach(&mut plane, attach_id, b"ready");
-    let _ = plane.take_outbound();
-    let before = plane
-        .publication()
-        .acquire(&terminal())
-        .expect("bootstrap published")
-        .generation;
-    let output = |seq, bytes: &'static [u8]| {
-        encode(&FrameKind::ResourceOutput {
-            terminal_id: terminal(),
-            stream_id: StreamId::new(1).expect("stream"),
-            bootstrap_id: BootstrapId::new(1).expect("bootstrap"),
-            seq,
-            bytes: bytes.to_vec().into(),
-        })
-    };
-    let frames = vec![
-        output(1, b"one"),
-        encode(&FrameKind::Ping { nonce: 17 }),
-        output(2, b"two"),
-    ];
+    for (_, feed) in BATCH_FEEDS {
+        let (mut plane, attach_id) = negotiated();
+        attach(&mut plane, attach_id, b"ready");
+        let _ = plane.take_outbound();
+        let before = plane
+            .publication()
+            .acquire(&terminal())
+            .expect("bootstrap published")
+            .generation;
+        let output = |seq, bytes: &'static [u8]| {
+            encode(&FrameKind::ResourceOutput {
+                terminal_id: terminal(),
+                stream_id: StreamId::new(1).expect("stream"),
+                bootstrap_id: BootstrapId::new(1).expect("bootstrap"),
+                seq,
+                bytes: bytes.to_vec().into(),
+            })
+        };
+        let frames = vec![
+            output(1, b"one"),
+            encode(&FrameKind::Ping { nonce: 17 }),
+            output(2, b"two"),
+        ];
 
-    plane.feed_bytes_batch(&frames).expect("ordered batch");
+        feed(&mut plane, &frames).expect("ordered batch");
 
-    let frame = plane.publication().acquire(&terminal()).expect("published");
-    assert_eq!(frame.generation, before + 2);
-    assert_eq!(frame.last_seq, 2);
-    assert!(matches!(
-        decode(&plane.take_outbound()[0]),
-        FrameKind::Pong { nonce: 17 }
-    ));
+        let frame = plane.publication().acquire(&terminal()).expect("published");
+        assert_eq!(frame.generation, before + 2);
+        assert_eq!(frame.last_seq, 2);
+        assert!(matches!(
+            decode(&plane.take_outbound()[0]),
+            FrameKind::Pong { nonce: 17 }
+        ));
+    }
 }
 
 #[cfg(feature = "engine")]
 #[test]
 fn a_valid_batch_prefix_is_applied_before_a_later_decode_error() {
-    let (mut plane, attach_id) = negotiated();
-    attach(&mut plane, attach_id, b"ready");
-    let before = plane
-        .publication()
-        .generation(&terminal())
-        .expect("bootstrap published");
-    let frames = vec![
-        encode(&FrameKind::ResourceOutput {
-            terminal_id: terminal(),
-            stream_id: StreamId::new(1).expect("stream"),
-            bootstrap_id: BootstrapId::new(1).expect("bootstrap"),
-            seq: 1,
-            bytes: b"valid".to_vec().into(),
-        }),
-        vec![0, 0, 0, 0],
-    ];
+    for (_, feed) in BATCH_FEEDS {
+        let (mut plane, attach_id) = negotiated();
+        attach(&mut plane, attach_id, b"ready");
+        let before = plane
+            .publication()
+            .generation(&terminal())
+            .expect("bootstrap published");
+        let frames = vec![
+            encode(&FrameKind::ResourceOutput {
+                terminal_id: terminal(),
+                stream_id: StreamId::new(1).expect("stream"),
+                bootstrap_id: BootstrapId::new(1).expect("bootstrap"),
+                seq: 1,
+                bytes: b"valid".to_vec().into(),
+            }),
+            vec![0, 0, 0, 0],
+        ];
 
-    let error = plane
-        .feed_bytes_batch(&frames)
-        .expect_err("malformed second frame");
+        let error = feed(&mut plane, &frames).expect_err("malformed second frame");
 
-    assert!(matches!(error, ControlError::Protocol(_)));
-    let frame = plane.publication().acquire(&terminal()).expect("published");
-    assert_eq!(frame.generation, before + 1);
-    assert_eq!(frame.last_seq, 1);
+        assert!(matches!(error, ControlError::Protocol(_)));
+        let frame = plane.publication().acquire(&terminal()).expect("published");
+        assert_eq!(frame.generation, before + 1);
+        assert_eq!(frame.last_seq, 1);
+    }
 }
 
 #[cfg(feature = "engine")]
 #[test]
 fn a_control_ending_outranks_an_earlier_stale_engine_frame() {
-    let (mut plane, attach_id) = negotiated();
-    attach(&mut plane, attach_id, b"ready");
-    let frames = vec![
-        encode(&FrameKind::ResourceOutput {
-            terminal_id: terminal(),
-            stream_id: StreamId::new(2).expect("stale stream"),
-            bootstrap_id: BootstrapId::new(1).expect("bootstrap"),
-            seq: 1,
-            bytes: b"stale".to_vec().into(),
-        }),
-        encode(&FrameKind::Detached {
-            reason: Some(DetachReason::ProtocolError),
-            message: "fatal ending".to_owned(),
-        }),
-    ];
+    for (_, feed) in BATCH_FEEDS {
+        let (mut plane, attach_id) = negotiated();
+        attach(&mut plane, attach_id, b"ready");
+        let frames = vec![
+            encode(&FrameKind::ResourceOutput {
+                terminal_id: terminal(),
+                stream_id: StreamId::new(2).expect("stale stream"),
+                bootstrap_id: BootstrapId::new(1).expect("bootstrap"),
+                seq: 1,
+                bytes: b"stale".to_vec().into(),
+            }),
+            encode(&FrameKind::Detached {
+                reason: Some(DetachReason::ProtocolError),
+                message: "fatal ending".to_owned(),
+            }),
+        ];
 
-    let error = plane
-        .feed_bytes_batch(&frames)
-        .expect_err("fatal ending must not be hidden");
+        let error = feed(&mut plane, &frames).expect_err("fatal ending must not be hidden");
 
-    assert!(
-        matches!(&error, ControlError::Refused(message) if message.contains("fatal ending")),
-        "expected the ending to outrank stale generation, got {error:?}"
-    );
+        assert!(
+            matches!(&error, ControlError::Refused(message) if message.contains("fatal ending")),
+            "expected the ending to outrank stale generation, got {error:?}"
+        );
+    }
 }
 
 /// A revoked or expired authorization ends the attach before the socket

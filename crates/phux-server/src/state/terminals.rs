@@ -249,6 +249,12 @@ impl ServerState {
         self.resources.unsubscribe(client, terminal);
     }
 
+    /// The connection that spawned `resource`; a document's producer.
+    #[must_use]
+    pub fn resource_spawner(&self, resource: ResourceId) -> Option<ClientId> {
+        self.resources.spawner(resource)
+    }
+
     /// Record that `client` spawned `terminal` (ADR-0109), before anything
     /// subscribes to it.
     pub fn record_spawn(&mut self, terminal: ResourceId, client: ClientId) {

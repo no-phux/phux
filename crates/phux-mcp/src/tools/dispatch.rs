@@ -48,6 +48,9 @@ async fn dispatch_family(name: &str, args: &Value) -> Result<Value, ToolError> {
         }
         perf if crate::perf_tools::owns(perf) => crate::perf_tools::call(perf, args).await,
         coord if crate::coord_tools::owns(coord) => crate::coord_tools::call(coord, args).await,
+        document if crate::document_tools::owns(document) => {
+            crate::document_tools::call(document, args).await
+        }
         resource if crate::resource_tools::owns(resource) => {
             crate::resource_tools::call(resource, args).await
         }

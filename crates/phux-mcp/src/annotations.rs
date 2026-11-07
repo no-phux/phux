@@ -243,6 +243,7 @@ mod tests {
             "phux_resource_show",
             "phux_resource_wait",
             "phux_resource_methods",
+            "phux_documents",
             "phux_plugin_profile",
             "phux_project_inspect",
         ] {
@@ -275,6 +276,10 @@ mod tests {
             "phux_relaunch",
             "phux_organize",
             "phux_perf_trace",
+            // A document read attaches, which needs `BIND`.
+            "phux_tree_snapshot",
+            "phux_tree_wait",
+            "phux_surface_snapshot",
         ] {
             let hints = annotation(tool);
             assert!(

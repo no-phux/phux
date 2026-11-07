@@ -41,21 +41,23 @@ pub(super) async fn stage_session<A: DocumentApi>(
     let cut = snapshot(&document.snapshot).await.ok_or_else(|| {
         CaptureFailure::Closed(format!("{} closed before its snapshot", A::LABEL))
     })?;
-    let bytes = cut.document.as_ref().map_or(0, Bytes::len);
+    let payload = A::bootstrap_payload(&document.target, cut.document.as_ref());
+    let bytes = payload.len();
     if bytes > staging.budget.remaining_bytes() {
         return Err("document exceeds aggregate bootstrap source budget"
             .to_owned()
             .into());
     }
     if let Some(bytes) = &cut.document {
-        A::validate_bootstrap(bytes).map_err(CaptureFailure::Failed)?;
+        A::validate_bootstrap(&document.target, bytes).map_err(CaptureFailure::Failed)?;
     }
     let frames = staging.collect_frames(bootstrap_frames(
         &pane.wire_terminal_id,
         capture.stream_id,
         capture.bootstrap_id,
         A::PROFILE,
-        &cut,
+        cut.base_seq,
+        payload,
         capture.limits,
     ))?;
     staging.append(frames, bytes)?;
@@ -72,6 +74,8 @@ pub(super) async fn stage_session<A: DocumentApi>(
         client_id: capture.client_id,
         core: pane.terminal_id,
         snapshot: document.snapshot.clone(),
+        target: document.target.clone(),
+        payload: A::bootstrap_payload,
         profile: A::PROFILE,
         label: A::LABEL,
         out_tx: capture.out_tx.clone(),
@@ -156,7 +160,8 @@ pub(crate) async fn attach_document<A: DocumentApi>(
         stream_id,
         bootstrap_id,
         A::PROFILE,
-        &cut,
+        cut.base_seq,
+        A::bootstrap_payload(&document.target, cut.document.as_ref()),
         limits,
     ) {
         if out_tx.send(Outbound::Frame(frame)).await.is_err() {
@@ -173,6 +178,8 @@ pub(crate) async fn attach_document<A: DocumentApi>(
         client_id,
         core,
         snapshot: document.snapshot.clone(),
+        target: document.target.clone(),
+        payload: A::bootstrap_payload,
         profile: A::PROFILE,
         label: A::LABEL,
         out_tx: out_tx.clone(),
@@ -204,14 +211,16 @@ async fn snapshot(cut: &mpsc::Sender<SnapshotRequest>) -> Option<TreeSnapshot> {
     rx.await.ok()
 }
 
-/// The bootstrap frame run for one cut: BEGIN, the document in chunks,
-/// then READY. Before the first publish there is no document and no chunk.
+/// The bootstrap frame run for one cut at `base_seq`: BEGIN, the payload
+/// in chunks, then READY. An empty payload (a tree or surface before its
+/// first publish) has no chunk.
 fn bootstrap_frames(
     terminal_id: &phux_protocol::ids::ResourceId,
     stream_id: StreamId,
     bootstrap_id: BootstrapId,
     profile: BootstrapStreamProfile,
-    cut: &TreeSnapshot,
+    base_seq: u64,
+    document: Bytes,
     limits: BootstrapLimits,
 ) -> impl Iterator<Item = FrameKind> {
     let budget = usize::try_from(limits.max_chunk_bytes())
@@ -224,9 +233,8 @@ fn bootstrap_frames(
         profile,
         cols: 0,
         rows: 0,
-        base_seq: cut.base_seq,
+        base_seq,
     };
-    let document = cut.document.clone().unwrap_or_default();
     let owner = terminal_id.clone();
     let chunks = (0..document.len())
         .step_by(budget)
@@ -251,6 +259,9 @@ fn bootstrap_frames(
 
 /// One viewer's live subscription to a document.
 struct LivePump {
+    /// What the resource was opened on, and how a recut frames its payload.
+    target: Arc<str>,
+    payload: fn(&str, Option<&Bytes>) -> Bytes,
     profile: BootstrapStreamProfile,
     label: &'static str,
     state: SharedState,
@@ -345,7 +356,8 @@ impl LivePump {
             self.stream_id,
             self.bootstrap_id,
             self.profile,
-            &cut,
+            cut.base_seq,
+            (self.payload)(&self.target, cut.document.as_ref()),
             self.limits,
         ) {
             if self.cancel.is_cancelled() || !self.send(frame).await {

@@ -438,6 +438,7 @@ fn a_published_surface_reaches_bindings_whole_and_named() {
                 kind: phux_protocol::ResourceKind::PixelSurface,
                 seq: 4,
                 bytes: b"\x89PNG".to_vec(),
+                content_type: None,
             }),
         },
         &mut projected,
@@ -448,6 +449,7 @@ fn a_published_surface_reaches_bindings_whole_and_named() {
             kind,
             seq,
             bytes,
+            ..
         },
     ] = projected.as_slice()
     else {
@@ -464,5 +466,38 @@ fn a_published_surface_reaches_bindings_whole_and_named() {
     assert!(
         !format!("{:?}", projected[0]).contains("137"),
         "Debug prints a length, not bytes"
+    );
+}
+
+#[test]
+fn a_published_typed_document_names_its_content_type() {
+    let remote = RemoteClient::new("unused".into(), 80, 24, None, None);
+    let mut projected = Vec::new();
+    remote.project_event(
+        Event::DocumentPublished {
+            publication: Arc::new(phux_client_runtime::control::DocumentPublication {
+                resource_id: phux_protocol::ResourceId::local(5),
+                kind: phux_protocol::ResourceKind::Document,
+                seq: 2,
+                bytes: b"# hi".to_vec(),
+                content_type: Some("text/markdown".to_owned()),
+            }),
+        },
+        &mut projected,
+    );
+    let [
+        WireEvent::DocumentPublished {
+            kind,
+            bytes,
+            content_type,
+            ..
+        },
+    ] = projected.as_slice()
+    else {
+        panic!("expected one document: {projected:?}");
+    };
+    assert_eq!(
+        (kind.as_str(), bytes.as_slice(), content_type.as_deref()),
+        ("document", b"# hi" as &[u8], Some("text/markdown"))
     );
 }

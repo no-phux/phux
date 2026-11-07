@@ -220,4 +220,8 @@ pub(crate) const EVENT_TAG_NATIVE_AGENT_RESULT: u8 = 0x1c;
 /// Wire tag for [`AgentEvent::SessionProjectSet`] (`docs/organization.md`),
 /// after `NATIVE_AGENT_RESULT`.
 pub(crate) const EVENT_TAG_SESSION_PROJECT_SET: u8 = 0x1d;
+/// Wire tag for [`AgentEvent::DocumentInput`]: a viewer's input intent,
+/// relayed unjournaled to a document's producer. `0x1e` and `0x1f` are left
+/// free for concurrent work.
+pub(crate) const EVENT_TAG_DOCUMENT_INPUT: u8 = 0x20;
 }

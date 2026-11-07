@@ -172,6 +172,8 @@ pub const RESOURCE_KIND_TAG_AGENT_SESSION: u8 = 1;
 pub const RESOURCE_KIND_TAG_ACCESSIBILITY_TREE: u8 = 2;
 /// Wire tag of [`ResourceKind::PixelSurface`].
 pub const RESOURCE_KIND_TAG_PIXEL_SURFACE: u8 = 3;
+/// Wire tag of [`ResourceKind::Document`].
+pub const RESOURCE_KIND_TAG_DOCUMENT: u8 = 4;
 
 /// What backs a served resource.
 ///
@@ -196,6 +198,10 @@ pub enum ResourceKind {
     /// bound to the Terminal its producer runs in (wire tag = 3). Newest
     /// image wins; its size is the surface's geometry.
     PixelSurface,
+    /// A producer-fed document of any content type (a MIME type fixed when
+    /// it is opened), bound to the Terminal its producer runs in (wire tag
+    /// = 4). Newest document wins.
+    Document,
     /// A kind this build does not recognise, preserved for relays.
     Unknown {
         /// The unrecognised wire tag.
@@ -212,6 +218,7 @@ impl ResourceKind {
             Self::AgentSession => RESOURCE_KIND_TAG_AGENT_SESSION,
             Self::AccessibilityTree => RESOURCE_KIND_TAG_ACCESSIBILITY_TREE,
             Self::PixelSurface => RESOURCE_KIND_TAG_PIXEL_SURFACE,
+            Self::Document => RESOURCE_KIND_TAG_DOCUMENT,
             Self::Unknown { tag } => tag,
         }
     }
@@ -224,6 +231,7 @@ impl ResourceKind {
             RESOURCE_KIND_TAG_AGENT_SESSION => Self::AgentSession,
             RESOURCE_KIND_TAG_ACCESSIBILITY_TREE => Self::AccessibilityTree,
             RESOURCE_KIND_TAG_PIXEL_SURFACE => Self::PixelSurface,
+            RESOURCE_KIND_TAG_DOCUMENT => Self::Document,
             other => Self::Unknown { tag: other },
         }
     }
@@ -242,6 +250,7 @@ impl ResourceKind {
             Self::AgentSession => "agent_session",
             Self::AccessibilityTree => "accessibility_tree",
             Self::PixelSurface => "pixel_surface",
+            Self::Document => "document",
             Self::Unknown { .. } => "unknown",
         }
     }
