@@ -214,6 +214,8 @@ pub(super) fn connect(target: Target) -> Result<Client, String> {
                 scrollback_lines: SCROLLBACK_LINES,
                 // Typed text shows as typed, never underlined while unconfirmed.
                 prediction_style: PredictionStyle::Plain,
+                // ACP questions arrive as AgentSession views.
+                subscribe_agent_sessions: true,
                 ..ControlOptions::default()
             },
             ..ClientOptions::default()

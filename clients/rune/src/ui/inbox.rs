@@ -25,8 +25,6 @@ const APPROVE: &str = if cfg!(target_os = "macos") {
 } else {
     "Approve  Ctrl+Shift+↩"
 };
-/// An ACP agent answers over the protocol, which only the GPUI app speaks.
-const ACP_ELSEWHERE: &str = "ACP question: answer it in the Phux desktop app.";
 
 fn pick_hint(keys: &'static str, what: &'static str, ink: &Ink) -> El {
     row()
@@ -139,7 +137,7 @@ fn waiting_card(desk: &Desk, waiting: &Waiting, picked: bool, ink: &Ink) -> El {
     };
     card = card.child(text(ask.text.clone()).font(LABEL).color(ink.text).wrap());
     if !ask.typed() {
-        return card.child(text(ACP_ELSEWHERE).font(CAPTION).color(ink.dim).wrap());
+        return card.child(super::questions::panel(desk, &waiting.terminal, ask, ink));
     }
     if !ask.suggestions.is_empty() {
         card = card.child(chips(&waiting.terminal, ask, picked, busy, ink));
@@ -354,7 +352,7 @@ pub fn ask_card(desk: &Desk, id: &ResourceId, area: [f32; 2], ink: &Ink) -> Opti
         ))
         .child(text(ask.text.clone()).font(LABEL).color(ink.text).wrap());
     if !ask.typed() {
-        return Some(card.child(text(ACP_ELSEWHERE).font(CAPTION).color(ink.dim).wrap()));
+        return Some(card.child(super::questions::panel(desk, id, &ask, ink)));
     }
     if !ask.suggestions.is_empty() {
         card = card.child(chips(id, &ask, false, busy, ink));
