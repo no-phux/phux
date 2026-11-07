@@ -122,9 +122,10 @@ pub enum FollowEnd {
 /// What can go wrong with a tree.
 #[derive(Debug, thiserror::Error)]
 pub enum TreeError {
-    /// The server does not serve accessibility trees.
-    #[error("this server does not serve accessibility trees (needs ACCESSIBILITY_TREE)")]
-    Unsupported,
+    /// The server does not serve the kind named, or no document kind when
+    /// `None`.
+    #[error("{}", unsupported(*.0))]
+    Unsupported(Option<Kind>),
     /// The named resource is not an accessibility tree.
     #[error("{resource} is not an accessibility tree")]
     WrongKind {
@@ -160,6 +161,19 @@ pub enum TreeError {
     Protocol(#[from] AttachError),
 }
 
+fn unsupported(kind: Option<Kind>) -> String {
+    kind.map_or_else(
+        || "this server does not serve documents (needs ACCESSIBILITY_TREE, PIXEL_SURFACE or TYPED_DOCUMENT)".to_owned(),
+        |kind| {
+            format!(
+                "this server does not serve {}s (needs {})",
+                kind.label(),
+                kind.feature().wire_name()
+            )
+        },
+    )
+}
+
 /// Whether the server advertises `kind`.
 ///
 /// # Errors
@@ -169,7 +183,7 @@ pub fn require_kind(conn: &Connection, kind: Kind) -> Result<(), TreeError> {
     if conn.server_features_ext().contains(kind.feature()) {
         Ok(())
     } else {
-        Err(TreeError::Unsupported)
+        Err(TreeError::Unsupported(Some(kind)))
     }
 }
 
@@ -186,7 +200,7 @@ pub fn require_support(conn: &Connection) -> Result<(), TreeError> {
     {
         Ok(())
     } else {
-        Err(TreeError::Unsupported)
+        Err(TreeError::Unsupported(None))
     }
 }
 
@@ -298,7 +312,7 @@ async fn open_spawn(
         SpawnResult::Err(SpawnError::ParentKindMismatch) => {
             Err(TreeError::ParentKindMismatch { parent: id(parent) })
         }
-        SpawnResult::Err(SpawnError::UnsupportedKind) => Err(TreeError::Unsupported),
+        SpawnResult::Err(SpawnError::UnsupportedKind) => Err(TreeError::Unsupported(Some(kind))),
         SpawnResult::Err(other) => Err(TreeError::Refused(format!("{other:?}"))),
         other => Err(AttachError::Protocol(format!(
             "SPAWN_RESOURCE answered with an unrecognised spawn result: {other:?}"
