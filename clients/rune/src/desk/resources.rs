@@ -16,6 +16,7 @@ mod selection;
 mod startup;
 mod subscriptions;
 mod surface;
+mod typed;
 pub use startup::Source;
 use subscriptions::Subscription;
 
@@ -44,6 +45,8 @@ pub struct Document {
     pub record: ResourceRecord,
     pub seq: Option<u64>,
     pub body: Body,
+    /// A typed document's content type, and what is shown of it.
+    pub detail: Option<String>,
     surface: surface::Surface,
     subscription: Subscription,
 }
@@ -53,6 +56,7 @@ pub enum Body {
     Decoding,
     Empty,
     Invalid(String),
+    /// Source text: accessibility JSON or a typed text document.
     Tree(String),
     Surface(rune::Image),
 }
@@ -60,7 +64,7 @@ pub enum Body {
 pub const fn document_kind(kind: ResourceKind) -> bool {
     matches!(
         kind,
-        ResourceKind::AccessibilityTree | ResourceKind::PixelSurface
+        ResourceKind::AccessibilityTree | ResourceKind::PixelSurface | ResourceKind::Document
     )
 }
 
@@ -74,6 +78,7 @@ impl Document {
             record,
             seq: None,
             body: Body::Pending,
+            detail: None,
             surface: surface::Surface::default(),
             subscription: Subscription::Unrequested,
         }
@@ -90,8 +95,17 @@ impl Document {
         {
             return false;
         }
+        let content_type = publication.content_type.as_deref().unwrap_or_default();
+        self.detail = publication.content_type.clone();
         if publication.kind == ResourceKind::PixelSurface {
             self.publish_surface(&publication.bytes, images, decodes);
+        } else if publication.kind == ResourceKind::Document && typed::image(content_type) {
+            self.publish_image(&publication.bytes, images, decodes);
+        } else if publication.kind == ResourceKind::Document && !publication.bytes.is_empty() {
+            self.invalidate_surface();
+            let (body, detail) = typed::decode(content_type, &publication.bytes);
+            self.body = body;
+            self.detail = Some(detail);
         } else {
             self.body = decode(publication);
         }
