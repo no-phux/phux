@@ -81,30 +81,78 @@ fn zones_split_the_width_and_grow_the_same_coral_each_launch() {
 }
 
 #[test]
+fn the_canopy_tops_every_coral() {
+    let hosts = [None, Some("mini".to_owned()), Some("nas".to_owned())];
+    let sim = Sim::new(1200., 780., &hosts, &[], false);
+    let (s, eps) = (sim.s, 1e-3);
+    for z in &sim.zones {
+        assert_eq!(z.home_y, z.canopy, "the buoy rope ends on the canopy");
+        for c in &z.corals {
+            assert!(z.canopy <= sim.sand_y(c.x) + 3. * s - c.hmax + eps);
+        }
+        for f in &z.fans {
+            assert!(z.canopy <= sim.sand_y(f.x) + 2. * s - f.h + eps);
+        }
+        for a in &z.anemones {
+            assert!(z.canopy <= sim.sand_y(a.x) + 3. * s - a.r * 0.9 - a.len + eps);
+        }
+        for b in &z.brains {
+            assert!(z.canopy <= sim.sand_y(b.x) + 4. * s - b.r * 0.78 + eps);
+        }
+        let (top, bottom) = sim.band(z);
+        assert!(
+            top < bottom && bottom < z.canopy,
+            "working band above the coral"
+        );
+    }
+}
+
+#[test]
 fn moods_pick_their_places_over_their_own_reef() {
     let hosts = [None, Some("nas".to_owned())];
     let agents = [
         agent(Some("nas"), 1, "claude", "p", AgentState::Blocked),
         agent(Some("nas"), 2, "codex", "q", AgentState::Done),
         agent(Some("nas"), 3, "gemini", "r", AgentState::Idle),
+        agent(Some("nas"), 4, "codex", "s", AgentState::Done),
+        agent(Some("nas"), 5, "gemini", "t", AgentState::Idle),
     ];
     let sim = Sim::new(1200., 780., &hosts, &agents, false);
     let zone = &sim.zones[1];
-    let [waiting, done, idle] = [0, 1, 2].map(|i| sim.target(&sim.fish[i]));
-    for (x, _) in [waiting, done, idle] {
+    let [waiting, done, idle, done2, idle2] = [0, 1, 2, 3, 4].map(|i| sim.target(&sim.fish[i]));
+    for (x, _) in [waiting, done, idle, done2, idle2] {
         assert!(x > zone.l && x < zone.r, "over its reef");
     }
     assert!(
         waiting.1 < sim.surface_y + 40. * sim.s,
         "just under the surface"
     );
-    assert!(
-        done.1 < zone.home_y && done.1 > waiting.1,
-        "just above the reef"
-    );
-    assert!(idle.1 > zone.home_y && idle.1 < sim.floor_y, "in a nook");
+    for (_, y) in [done, done2] {
+        assert!(
+            y < zone.canopy - 40. * sim.s && y > waiting.1,
+            "above the reef"
+        );
+    }
+    for (_, y) in [idle, idle2] {
+        assert!(y < zone.canopy && y > done.1, "resting on the reef");
+    }
+    // Two of a mood spread across the reef, not stacked.
+    assert!((done2.0 - done.0).abs() > zone.w * 0.25);
+    assert!((idle2.0 - idle.0).abs() > zone.w * 0.25);
     // Settled: the waiting fish has risen to the surface.
     assert!((sim.fish[0].y - waiting.1).abs() < 30.);
+}
+
+#[test]
+fn schools_prefer_their_own_depths() {
+    let a = agent(Some("nas"), 1, "claude", "phux", AgentState::Working);
+    let b = agent(Some("nas"), 2, "claude", "docs", AgentState::Working);
+    let mate = agent(Some("nas"), 3, "codex", "phux", AgentState::Working);
+    assert_eq!(lane(&a), lane(&mate), "one school, one depth");
+    assert!((lane(&a) - lane(&b)).abs() > 0.2, "schools differ");
+    for l in [lane(&a), lane(&b)] {
+        assert!((0. ..1.).contains(&l));
+    }
 }
 
 #[test]
@@ -146,7 +194,11 @@ fn a_long_swim_stays_in_the_water_and_follows_mood_changes() {
     for f in &sim.fish {
         assert!(f.x.is_finite() && f.y.is_finite());
         assert!(f.x > zone.l - 60. && f.x < zone.r + 60., "{}", f.x);
-        assert!(f.y > sim.surface_y && f.y < sim.floor_y, "{}", f.y);
+        assert!(
+            f.y > sim.surface_y && f.y < zone.canopy,
+            "above the coral {}",
+            f.y
+        );
     }
     assert!(sim.fish[3].y < sim.surface_y + 60. * sim.s, "risen");
     assert!(sim.nt < 0.01, "the day came back");

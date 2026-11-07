@@ -62,13 +62,15 @@ pub(crate) struct Zone {
     pub l: f32,
     pub r: f32,
     pub w: f32,
+    /// Where the buoy rope ends: the reef's canopy.
     pub home_y: f32,
+    /// The highest point of any coral: fish keep above it.
+    pub canopy: f32,
     pub rocks: Vec<Rock>,
     pub fans: Vec<Fan>,
     pub corals: Vec<Coral>,
     pub brains: Vec<Brain>,
     pub anemones: Vec<Anemone>,
-    pub nooks: Vec<(f32, f32)>,
     pub vent_x: f32,
     pub(super) vent_next: f32,
     pub(super) vent_left: u8,
@@ -120,6 +122,11 @@ pub(super) fn branch(
     }
 }
 
+/// The sand's height at `x`, the prototype's `sandY`.
+pub(super) fn sand_y(floor_y: f32, s: f32, x: f32) -> f32 {
+    floor_y + (x * 0.007 + 1.3).sin() * 7. * s + (x * 0.019 + 0.4).sin() * 3.5 * s
+}
+
 pub(super) fn zone(host: Option<&str>, i: usize, zw: f32, s: f32, floor_y: f32) -> Zone {
     let name = host.unwrap_or("Local").to_owned();
     let mut r = Rng::new(hash(&name));
@@ -136,7 +143,7 @@ pub(super) fn zone(host: Option<&str>, i: usize, zw: f32, s: f32, floor_y: f32) 
             ry: (14. + r.next() * 16.) * s,
         })
         .collect();
-    let fans = (0..1 + usize::from(r.next() < 0.6))
+    let fans: Vec<Fan> = (0..1 + usize::from(r.next() < 0.6))
         .map(|_| Fan {
             x: at(&mut r),
             h: (70. + r.next() * 40.) * s,
@@ -144,7 +151,7 @@ pub(super) fn zone(host: Option<&str>, i: usize, zw: f32, s: f32, floor_y: f32) 
             seed: r.next() * TAU,
         })
         .collect();
-    let corals = (0..4)
+    let corals: Vec<Coral> = (0..4)
         .map(|_| {
             let mut segs = Vec::new();
             let max_d = 4 + usize::from(r.next() < 0.5);
@@ -174,14 +181,14 @@ pub(super) fn zone(host: Option<&str>, i: usize, zw: f32, s: f32, floor_y: f32) 
             }
         })
         .collect();
-    let brains = (0..2)
+    let brains: Vec<Brain> = (0..2)
         .map(|_| Brain {
             x: at(&mut r),
             r: (16. + r.next() * 14.) * s,
             col: pick(&mut r),
         })
         .collect();
-    let anemones = (0..2 + usize::from(r.next() < 0.5))
+    let anemones: Vec<Anemone> = (0..2 + usize::from(r.next() < 0.5))
         .map(|_| Anemone {
             x: at(&mut r),
             r: (10. + r.next() * 6.) * s,
@@ -191,25 +198,29 @@ pub(super) fn zone(host: Option<&str>, i: usize, zw: f32, s: f32, floor_y: f32) 
             seed: r.next() * TAU,
         })
         .collect();
-    let nooks = (0..6)
-        .map(|_| {
-            let x = at(&mut r) * 0.92 + cx * 0.08;
-            (x, floor_y - (24. + r.next() * 34.) * s)
-        })
-        .collect();
+    let sand = |x: f32| sand_y(floor_y, s, x);
+    let canopy = (corals.iter().map(|c| sand(c.x) + 3. * s - c.hmax))
+        .chain(fans.iter().map(|f| sand(f.x) + 2. * s - f.h))
+        .chain(
+            anemones
+                .iter()
+                .map(|a| sand(a.x) + 3. * s - a.r * 0.9 - a.len),
+        )
+        .chain(brains.iter().map(|b| sand(b.x) + 4. * s - b.r * 0.78))
+        .fold(floor_y, f32::min);
     Zone {
         name,
         cx,
         l: zw * i as f32,
         r: zw * (i as f32 + 1.),
         w: zw,
-        home_y: floor_y - 95. * s,
+        home_y: canopy,
+        canopy,
         rocks,
         fans,
         corals,
         brains,
         anemones,
-        nooks,
         vent_x,
         vent_next,
         vent_left: 0,
