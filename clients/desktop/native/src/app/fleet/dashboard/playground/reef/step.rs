@@ -97,6 +97,7 @@ impl Sim {
                 ax += (dx / d * want - fvx) * 2.6;
                 ay += (dy / d * want - fvy) * 2.6;
             }
+            let max_sp = max_sp * TIERS[self.fish[i].tier].speed;
             let mut emit = None;
             {
                 let f = &mut self.fish[i];
@@ -154,6 +155,7 @@ impl Sim {
             }
         }
 
+        self.grow(dt);
         // Vents: six bubbles, 140 ms apart, every few seconds.
         for zi in 0..self.zones.len() {
             self.zones[zi].vent_next -= dt;

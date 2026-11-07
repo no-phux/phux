@@ -5,10 +5,12 @@
 
 use std::f32::consts::{PI, TAU};
 
+use super::tier::{REEF_FISH, TIERS, tier};
 use crate::app::fleet::Agent;
 use crate::app::pane_identity::Harness;
 use crate::connection::{AgentInfo, AgentState};
 
+mod grow;
 mod sim;
 mod species;
 mod step;
@@ -16,6 +18,7 @@ mod step;
 mod tests;
 mod zone;
 
+pub(crate) use self::grow::*;
 pub(crate) use self::sim::*;
 pub(crate) use self::species::*;
 pub(crate) use self::zone::*;

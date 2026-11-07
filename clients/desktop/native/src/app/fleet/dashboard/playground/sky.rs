@@ -11,6 +11,8 @@ use super::super::cards::{state_color, state_label, tile_id};
 use super::galaxy::{self, Detail, Galaxy, Mood};
 use super::nodes::{Node, Planet, Sky};
 use super::plan::Pt;
+use super::reef::species;
+use super::tier::{self as tiers, harness, tier};
 use super::{Camera, Paint, stage};
 use crate::app::color::from_hex;
 use crate::app::desk::Desk;
@@ -46,22 +48,36 @@ pub(super) fn scene(
         view.camera.look_at(galaxy.core, scale, width, height);
     }
     let camera = view.camera;
+    let now_ms = crate::connection::now_ms();
     let mut placed = Vec::new();
     let mut nodes = Vec::new();
     for system in &galaxy.systems {
         for (index, agent) in system.agents.iter().enumerate() {
             let at = system.point(index, time, agent.info.working());
             let color = state_color(&agent.info, look);
+            let id = tile_id(agent.destination.host.as_deref(), &agent.terminal);
+            let grade = tier(agent, now_ms);
+            let level_up = level_up(&mut view.grades, &id, grade, time);
+            let [r, g, b] = species(harness(agent)).body;
             nodes.push(Node {
                 planet: system.centre,
                 at,
                 color,
                 mood: Mood::of(&agent.info),
+                tier: grade,
+                level_up,
+                hue: gpui::Rgba {
+                    r: r / 255.,
+                    g: g / 255.,
+                    b: b / 255.,
+                    a: 1.,
+                }
+                .into(),
             });
             placed.push(Placed {
                 agent: agent.clone(),
                 at,
-                id: tile_id(agent.destination.host.as_deref(), &agent.terminal),
+                id,
                 color,
             });
         }
@@ -112,10 +128,21 @@ pub(super) fn scene(
         nodes,
     };
     let detail = Detail::at(camera.scale);
+    let focus_id = hovered.or_else(|| {
+        placed
+            .iter()
+            .find(|p| selected.is_some_and(|s| p.agent.same_target(s)))
+            .map(|p| p.id.clone())
+    });
     let labels = placed
         .iter()
         .filter(|p| detail != Detail::Waiting || p.agent.info.needs_you())
-        .map(|p| node_label(p, &camera, detail, look))
+        .map(|p| {
+            let rows = (focus_id.as_ref() == Some(&p.id))
+                .then(|| tiers::detail(&p.agent, now_ms))
+                .flatten();
+            node_label(p, &camera, detail, rows, look)
+        })
         .collect::<Vec<_>>();
     let targets = placed
         .iter()
@@ -169,8 +196,15 @@ fn short(name: &str) -> String {
     }
 }
 
-/// The agent's name, and its state word in tracked capitals in its colour.
-fn node_label(p: &Placed, camera: &Camera, detail: Detail, look: &Look) -> AnyElement {
+/// The agent's name, its state word in tracked capitals in its colour, and
+/// for the focused agent its form and work when its host keeps a tally.
+fn node_label(
+    p: &Placed,
+    camera: &Camera,
+    detail: Detail,
+    rows: Option<[String; 2]>,
+    look: &Look,
+) -> AnyElement {
     let at = camera.screen(p.at);
     let gap = 18. * camera.scale.max(0.6);
     div()
@@ -197,7 +231,41 @@ fn node_label(p: &Placed, camera: &Camera, detail: Detail, look: &Look) -> AnyEl
                     .child(tracked(&state_label(&p.agent.info))),
             )
         })
+        .when_some(rows, |label, rows| {
+            label.child(
+                div()
+                    .mt(px(2.))
+                    .flex()
+                    .flex_col()
+                    .items_center()
+                    .text_size(px(9.5))
+                    .whitespace_nowrap()
+                    .text_color(from_hex(&look.chrome.subtext))
+                    .children(rows),
+            )
+        })
         .into_any_element()
+}
+
+/// A node's level-up glow at `time`: 1 the frame its tier rose since last
+/// drawn, fading over 2.2 seconds. A first sight and a drop do not flash; a
+/// panel clock that restarted ends any glow.
+fn level_up(
+    grades: &mut std::collections::HashMap<String, (usize, f32)>,
+    id: &str,
+    grade: usize,
+    time: f32,
+) -> f32 {
+    let was = grades.get(id).copied();
+    let mut start = was.map_or(f32::NEG_INFINITY, |(_, start)| start);
+    if tiers::rose(was.map(|(tier, _)| tier), grade) {
+        start = time;
+    }
+    if time < start {
+        start = f32::NEG_INFINITY;
+    }
+    grades.insert(id.to_owned(), (grade, start));
+    (1. - (time - start) * 0.45).clamp(0., 1.)
 }
 
 /// The clickable node: the card's own selector, so the tests and the

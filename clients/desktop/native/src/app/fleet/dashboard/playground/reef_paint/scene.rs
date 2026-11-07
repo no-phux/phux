@@ -2,6 +2,7 @@
 //! name pills, the click targets and the readout.
 
 use super::super::Map;
+use super::super::tier::detail;
 use super::*;
 
 pub(in super::super) fn scene(
@@ -76,6 +77,13 @@ pub(in super::super) fn scene(
         } else if shown {
             let at = screen(&frame, f.x, f.y + l * 0.95);
             labels.push(pill(at, f.agent.info.name.clone(), false, None));
+        }
+        // The selected fish's form and work, when its host keeps a tally.
+        if Some(index) == focus
+            && let Some(rows) = detail(&f.agent, crate::connection::now_ms())
+        {
+            let at = screen(&frame, f.x, f.y + l * 0.95);
+            labels.push(card((at.0, at.1 + 14.), rows));
         }
     }
     let targets = frame
@@ -214,6 +222,30 @@ pub(super) fn pill(at: P, text: String, amber: bool, badge: Option<String>) -> A
                             .child(badge),
                     )
                 }),
+        )
+        .into_any_element()
+}
+
+/// The detail rows under a selected fish's name.
+fn card(at: P, rows: [String; 2]) -> AnyElement {
+    div()
+        .absolute()
+        .left(px(at.0 - 160.))
+        .top(px(at.1))
+        .w(px(320.))
+        .flex()
+        .justify_center()
+        .child(
+            div()
+                .px(px(8.))
+                .py(px(4.))
+                .rounded(px(6.))
+                .bg(rgba([4., 20., 34.], 0.72))
+                .text_size(px(11.))
+                .text_color(rgba([228., 245., 247.], 1.))
+                .flex()
+                .flex_col()
+                .children(rows),
         )
         .into_any_element()
 }
