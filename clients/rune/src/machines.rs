@@ -13,6 +13,21 @@ use crate::launch::run_for;
 
 const LIST_TIMEOUT: Duration = Duration::from_secs(15);
 
+/// The most rows of one listing this keeps. The sidebar lays out every row it's
+/// given on each frame, so a lying or broken CLI mustn't choose how many.
+const MAX_ROWS: usize = 512;
+/// The longest name kept. A name is an address, so a longer one is dropped
+/// rather than cut into a different one.
+const MAX_NAME: usize = 255;
+
+/// `value` as a name this can show and dial.
+fn name(value: &Value) -> Option<String> {
+    value
+        .as_str()
+        .filter(|name| name.len() <= MAX_NAME)
+        .map(str::to_owned)
+}
+
 /// What the sidebar calls the server on this computer.
 pub const LOCAL: &str = if cfg!(target_os = "macos") {
     "This Mac"
@@ -80,13 +95,14 @@ fn parse_hosts(value: &Value) -> Vec<Host> {
         .filter(|host| host["role"] == "remote")
         .filter_map(|host| {
             Some(Host {
-                name: host["name"].as_str()?.to_owned(),
-                ssh: host["ssh"].as_str().map(str::to_owned),
+                name: name(&host["name"])?,
+                ssh: name(&host["ssh"]),
                 needs_direct: host["endpoint"]
                     .as_str()
                     .is_some_and(|endpoint| endpoint.trim().starts_with("ssh://")),
             })
         })
+        .take(MAX_ROWS)
         .collect()
 }
 
@@ -126,11 +142,12 @@ fn parse_peers(value: &Value) -> Vec<Peer> {
         .filter(|peer| peer["supported"] == true && peer["registered"].is_null())
         .filter_map(|peer| {
             Some(Peer {
-                name: peer["name"].as_str()?.to_owned(),
-                ssh_host: peer["ssh_host"].as_str()?.to_owned(),
+                name: name(&peer["name"])?,
+                ssh_host: name(&peer["ssh_host"])?,
                 online: peer["online"] == true,
             })
         })
+        .take(MAX_ROWS)
         .collect()
 }
 
@@ -161,11 +178,12 @@ fn parse_glances(value: &Value) -> Vec<Glance> {
     sessions
         .filter_map(|session| {
             Some(Glance {
-                name: session["name"].as_str()?.to_owned(),
+                name: name(&session["name"])?,
                 terminals: session["members"].as_u64().unwrap_or(0),
                 running: session["exec"]["running"].as_u64().unwrap_or(0),
             })
         })
+        .take(MAX_ROWS)
         .collect()
 }
 
@@ -247,6 +265,19 @@ pub fn add(phux: &Path, request: &Add, report: &dyn Fn(String)) -> Result<(), St
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn a_lying_listing_cant_choose_how_much_the_sidebar_lays_out() {
+        let many: Vec<_> = (0..MAX_ROWS + 9)
+            .map(|i| json!({ "name": format!("s{i}") }))
+            .collect();
+        assert_eq!(parse_glances(&json!({ "sessions": many })).len(), MAX_ROWS);
+        let long = "N".repeat(MAX_NAME + 1);
+        let doc = json!({ "sessions": [{ "name": long }, { "name": "ok" }] });
+        assert_eq!(parse_glances(&doc)[0].name, "ok");
+        let doc = json!({ "hosts": [{ "name": "h", "role": "remote", "ssh": long }] });
+        assert_eq!(parse_hosts(&doc)[0].ssh, None);
+    }
 
     #[test]
     fn a_listing_glances_at_each_session() {

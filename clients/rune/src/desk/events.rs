@@ -3,6 +3,7 @@
 use phux_client_runtime::Client;
 use phux_client_runtime::control::{Event, Observation};
 use phux_protocol::ids::ResourceId;
+use phux_protocol::wire::frame::DetachReason;
 use rune::Tx;
 
 use super::{Desk, NoticeKind, layout};
@@ -95,7 +96,7 @@ impl Desk {
                 .is_some_and(|s| &s.terminal == id && s.view.is_some())
     }
 
-    fn apply_connection(&mut self, client: &Client, event: Event) -> bool {
+    pub(super) fn apply_connection(&mut self, client: &Client, event: Event) -> bool {
         match event {
             Event::Exited {
                 terminal_id,
@@ -106,6 +107,12 @@ impl Desk {
                 self.retire_documents(client);
                 true
             }
+            // The server ended this attach and keeps the socket. Nothing is
+            // lost: `settle_home` picks another session on this connection.
+            Event::Detached {
+                reason: Some(DetachReason::SessionKilled),
+                ..
+            } => true,
             Event::Detached { reason, message } => {
                 let said = reason.map(|reason| reason.describe().to_owned());
                 self.link.ended = said.or((!message.is_empty()).then_some(message));

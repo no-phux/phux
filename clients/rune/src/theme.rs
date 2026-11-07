@@ -228,6 +228,18 @@ pub fn find(id: &str) -> Option<&'static Theme> {
     all().find(|t| t.id == id)
 }
 
+/// The most a theme file may hold.
+const MAX_CONFIG: u64 = 1 << 20;
+
+/// A theme file's text. `None` unless it's a regular file of a sane size: a
+/// FIFO would block its reader forever, and a device might never end.
+fn read_config(path: &std::path::Path) -> Option<String> {
+    let meta = std::fs::metadata(path).ok()?;
+    (meta.is_file() && meta.len() <= MAX_CONFIG)
+        .then(|| std::fs::read_to_string(path).ok())
+        .flatten()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
