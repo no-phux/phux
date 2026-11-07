@@ -25,9 +25,13 @@ supplies the concrete engine ([architecture](./architecture.md#where-to-look)).
 
 Desktop and Rune discover tree/surface resources before the first frame,
 render plain JSON or letterboxed PNG or JPEG frames, and distinguish pending, empty and invalid
-documents. Desktop draws a Document by its content type: PNG, JPEG, GIF and
+documents. Desktop and Rune draw a Document by its content type: PNG, JPEG, GIF and
 WebP as images, JSON pretty-printed, text and `+xml`/`+json` as source
-(Markdown and HTML are not rendered), anything else as its size and type. Documents can occupy mixed or document-only arrangements and survive
+(Markdown and HTML are not rendered), anything else as its size and type.
+A tree or surface is named for what it observes (`--app Safari`, `--window
+display`, a mirrored page's title) and a typed document for its `--name`;
+that name is the tab title in both clients, `name` in `phux ls --json`
+resources and MCP `phux_documents`, and `title` in `phux resource show`. Documents can occupy mixed or document-only arrangements and survive
 restore/reconnect. Their streams are **read-only**: typing, paste, terminal grid
 resizing and file uploads do not control their source. Input goes to the
 producer instead: `SEND_DOCUMENT_INPUT` relays one typed intent to the
@@ -50,8 +54,13 @@ original host; it is not browser interactivity or cross-host process migration.
 
 A surface frame is a PNG or a JPEG, told apart by its signature; the codec
 keeps its `PixelSurfacePngV1` name. `phux agent surface mirror` and `phux
-agent page mirror` take `--format png|jpeg` (default png, which every viewer
-decodes), `--quality 1..100` (default 70) and `--max-width PX`. A page
+agent page mirror` take `--format png|jpeg`, `--quality 1..100` (default
+70) and `--max-width PX`. A page mirror defaults to JPEG: pages are the
+high-frame-rate case and JPEG frames are several times smaller. A window
+or display mirror defaults to PNG, because desktop before 0.57.0 and Rune
+before 0.1.0-alpha.17 cannot decode JPEG (they show the frame as invalid);
+mobile decodes either. Pass `--format png` to a page mirror for an older
+viewer. A page
 scales its screencast in the browser and maps clicks by each frame's size;
 the window mirror re-encodes its capture with macOS's `sips`, and on Linux
 asks `grim` for the format and scale.
@@ -91,6 +100,15 @@ frame and reports `"gone"`. Other kinds omit the field (`null` in
 `resource show`). On the wire it is `RESOURCE_STATE` field `PRODUCER`
 (`u8`, `1` connected, `0` gone), absent from an older server. A restarted
 producer opens a fresh document; a gone one is not re-bound.
+
+A server restart (not `phux upgrade`, which keeps every pane running)
+ends producers with every other program. A mirror run as a pane
+(`phux new -- phux agent page mirror ...`, or a Rune startup action) is an
+ordinary pane with a recorded command, so `phux restore` relaunches it
+and it opens fresh documents (`phux service install --restore` keeps the
+panes; it does not run `phux restore`). The old document records cannot
+be relaunched: `phux restore` lists them as refused, and `phux rm ^KEY`
+forgets one.
 
 The desktop runs window and app mirrors as its own children. A mirror that
 exits non-zero is restarted up to three times, after 1 s, 4 s and 16 s,
