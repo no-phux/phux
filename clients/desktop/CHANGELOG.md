@@ -62,6 +62,14 @@
 - Reject raw terminal input and file drops for pending or retained ACP owners
   before filesystem access or remote upload, including during reconnects.
 
+## [0.59.1](https://github.com/no-phux/phux/compare/desktop-v0.59.0...desktop-v0.59.1) (2026-11-07)
+
+
+### Bug Fixes
+
+* **desktop:** seed reef school lanes through mulberry32 ([#2047](https://github.com/no-phux/phux/issues/2047)) ([d965231](https://github.com/no-phux/phux/commit/d965231f4b6a540b19b345484bd841f4af059a11))
+* **desktop:** space reef fish above the coral ([#2045](https://github.com/no-phux/phux/issues/2045)) ([a04ea4a](https://github.com/no-phux/phux/commit/a04ea4a1d15538aa7113e1956a069c846ac0e27d))
+
 ## [0.59.0](https://github.com/no-phux/phux/compare/desktop-v0.58.0...desktop-v0.59.0) (2026-11-07)
 
 
