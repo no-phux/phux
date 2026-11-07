@@ -1,0 +1,60 @@
+# Ships Phux Rune alphas with no human, the way phux-mobile's auto-release
+# ships TestFlight: every two hours, if feat/fix/perf commits touched
+# clients/rune since the last rune-v tag, open the next alpha's bump PR with
+# generated notes and auto-merge it. After a green push ci on main, tag a
+# merged bump; rune-client.yml then builds, qualifies and publishes it.
+# Repository variable RUNE_AUTO_RELEASE=false stops it; docs/releasing.md's
+# hand steps still work. Logic: clients/rune/scripts/release.py.
+#
+# Push as the release App, never GITHUB_TOKEN: its pushes trigger no
+# workflows, so the bump PR would get no ci and the tag no release.
+name: rune-auto-release
+
+on:
+  schedule:
+    # Every two hours, off the hour.
+    - cron: "53 */2 * * *"
+  workflow_run:
+    workflows: [ci]
+    types: [completed]
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: rune-auto-release
+  cancel-in-progress: false
+
+jobs:
+  step:
+    if: >-
+      vars.RUNE_AUTO_RELEASE != 'false'
+      && (github.event_name != 'workflow_run'
+          || (github.event.workflow_run.event == 'push'
+              && github.event.workflow_run.conclusion == 'success'))
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        id: app-token
+        with:
+          client-id: ${{ vars.RELEASE_APP_ID }}
+          private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: main
+          fetch-depth: 0
+          fetch-tags: true
+          token: ${{ steps.app-token.outputs.token }}
+      - uses: ./.github/actions/setup-bun
+      - name: One step of the Rune train
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          # After ci, only tag; new bumps wait for the schedule.
+          RUNE_RELEASE_TAG_ONLY: ${{ github.event_name == 'workflow_run' && '1' || '' }}
+        run: |
+          git config user.name "phux-release[bot]"
+          git config user.email "phux-release[bot]@users.noreply.github.com"
+          python3 clients/rune/scripts/release.py
