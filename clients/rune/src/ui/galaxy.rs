@@ -95,7 +95,7 @@ pub(super) fn view(desk: &Desk, p: &Ink, cx: &mut Cx<Desk>) -> El {
             color,
             planets[at].online,
         );
-        if desk.galaxy.picked.as_ref() == Some(&star.terminal) {
+        if desk.galaxy.picked.as_ref() == Some(&star.id) {
             picked_at = Some(point);
         }
     }
@@ -156,7 +156,7 @@ pub(super) fn view(desk: &Desk, p: &Ink, cx: &mut Cx<Desk>) -> El {
     for &(at, i, point) in &placed {
         let star = &planets[at].stars[i];
         let s = camera.screen(point);
-        let (terminal, session) = (star.terminal.clone(), star.session.clone());
+        let id = star.id.clone();
         let word = word(star.mark);
         let named = match detail {
             Detail::Urgent => star.mark.needs_you(),
@@ -164,13 +164,13 @@ pub(super) fn view(desk: &Desk, p: &Ink, cx: &mut Cx<Desk>) -> El {
         };
         let worded = detail == Detail::Full || (named && detail == Detail::Urgent);
         labels.push(
-            pressable(format!("galaxy-star-{:?}", star.terminal), p)
+            pressable(format!("galaxy-star-{:?}", star.id), p)
                 .absolute(s[0] - 60.0, s[1] - 22.0)
                 .w(120.0)
                 .radius(8.0)
                 .pt(40.0)
                 .label(format!("{}, {word}", star.name))
-                .on_press(move |desk: &mut Desk| desk.open_star(terminal.clone(), &session))
+                .on_press(move |desk: &mut Desk| desk.open_star(&id))
                 .children(named.then(|| {
                     col()
                         .w_full()

@@ -118,12 +118,12 @@ impl Desk {
             .iter()
             .zip(schools)
             .map(|((at, s), school)| Swimmer {
-                id: s.terminal.clone(),
+                id: s.id.clone(),
                 session: s.session.clone(),
                 name: s.name.clone(),
                 host: *at,
                 mood: Mood::of(s.mark),
-                species: reef::species(self.activities.agent_kind(&s.terminal), &s.name),
+                species: reef::species(s.kind.as_deref(), &s.name),
                 project: s.project.clone(),
                 school,
                 lane: lanes[school],
@@ -191,9 +191,9 @@ impl Desk {
         let Some(f) = self.reef.scene.selected_fish() else {
             return;
         };
-        let (terminal, session) = (f.who.id.clone(), f.who.session.clone());
+        let id = f.who.id.clone();
         self.close_reef();
-        self.show(terminal, &session);
+        self.go_to_star(&id);
     }
 }
 
