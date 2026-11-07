@@ -53,6 +53,8 @@ pub enum Shortcut {
     FindPrevious,
     FindSelection,
     Inbox,
+    /// The fleet as a galaxy: machines, their agents, and how they relate.
+    Galaxy,
     Settings,
     /// The themes, previewed live as the highlight moves.
     ChangeTheme,
@@ -86,6 +88,7 @@ impl Shortcut {
         matches!(
             self,
             Self::Inbox
+                | Self::Galaxy
                 | Self::Settings
                 | Self::ChangeTheme
                 | Self::ZoomIn

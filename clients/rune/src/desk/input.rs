@@ -24,6 +24,7 @@ pub(super) const INPUT_PAUSED: &str = "Not connected; input isn't reaching the t
 pub enum Modal {
     ContextMenu,
     Inbox,
+    Galaxy,
     Machines,
     Settings,
     Rename,
@@ -45,7 +46,7 @@ impl Modal {
                 Shortcut::Copy | Shortcut::Paste | Shortcut::SelectAll
             ),
             Self::Palette => matches!(action, Shortcut::Palette),
-            Self::Inbox | Self::Settings => action.works_over_sheets(),
+            Self::Inbox | Self::Galaxy | Self::Settings => action.works_over_sheets(),
             Self::ContextMenu | Self::Machines | Self::Rename | Self::Confirm => false,
         }
     }
@@ -80,6 +81,7 @@ impl Desk {
         [
             (self.pointer.menu.is_some(), Modal::ContextMenu),
             (self.inbox.open, Modal::Inbox),
+            (self.galaxy.open, Modal::Galaxy),
             (self.machines.open, Modal::Machines),
             (self.settings_open, Modal::Settings),
             (self.tabs.renaming.is_some(), Modal::Rename),
@@ -126,6 +128,8 @@ impl Desk {
             Modal::ContextMenu if escape => self.close_menu(),
             Modal::Rename if escape => self.cancel_rename(),
             Modal::Inbox if self.inbox_key(event, tx) => {}
+            Modal::Galaxy if escape => self.close_galaxy(),
+            Modal::Galaxy if event.key == rune::Key::Enter => self.open_picked(),
             Modal::Machines => {
                 self.machines_key(event, tx);
             }
@@ -262,6 +266,7 @@ impl Desk {
             Shortcut::Palette => self.toggle_palette(),
             Shortcut::ToggleSidebar => self.toggle_sidebar(),
             Shortcut::Inbox => self.toggle_inbox(),
+            Shortcut::Galaxy => self.toggle_galaxy(),
             Shortcut::Settings => self.toggle_settings(),
             Shortcut::ChangeTheme => self.open_themes(),
             Shortcut::SwitchSession => self.open_palette(crate::palette::Mode::Sessions),

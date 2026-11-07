@@ -8,6 +8,7 @@ mod alerts;
 mod desk;
 mod diag;
 mod dock;
+mod galaxy;
 mod grid;
 mod inbox;
 mod keys;
