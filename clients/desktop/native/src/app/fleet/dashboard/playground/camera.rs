@@ -15,7 +15,7 @@ impl Map {
         match id {
             "matrix" => Map::Matrix,
             "galaxy" => Map::Galaxy,
-            _ => Map::Office,
+            _ => Map::Galaxy,
         }
     }
 
@@ -113,6 +113,8 @@ pub(crate) struct View {
     pub map: Option<Map>,
     /// The waiting agent the galaxy's readout flew to last, so the next click moves on.
     pub last_waiting: Option<String>,
+    /// The galaxy node under the pointer, by its tile id: the reticle's target.
+    pub hovered: Option<String>,
     /// Where the camera first landed, which a fixture film moves from.
     #[cfg(feature = "ui-fixtures")]
     pub film_base: Option<Camera>,

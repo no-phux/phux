@@ -100,15 +100,15 @@ fn agent_fleet_is_opt_in_and_round_trips_without_coercion() {
 }
 
 #[test]
-fn the_playground_map_is_office_unless_a_known_map_is_saved() {
+fn the_playground_map_is_galaxy_unless_a_known_map_is_saved() {
     for value in [
         json!({}),
         json!({"playgroundMap": "lava"}),
         json!({"playgroundMap": 3}),
     ] {
-        assert_eq!(parse_display(&value).playground_map, "office");
+        assert_eq!(parse_display(&value).playground_map, "galaxy");
     }
-    for map in ["matrix", "galaxy"] {
+    for map in ["office", "matrix"] {
         let saved = DisplayPrefs {
             playground_map: map.to_owned(),
             ..default_display()

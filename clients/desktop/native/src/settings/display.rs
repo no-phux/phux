@@ -154,7 +154,7 @@ pub struct DisplayPrefs {
     pub native_agents: bool,
     /// Experimental tiled agent overview, enabled from Layout settings.
     pub agent_fleet: bool,
-    /// The fleet playground's map: `office`, `matrix` or `galaxy`.
+    /// The fleet playground's map: `galaxy` (the default), `office` or `matrix`.
     pub playground_map: String,
     /// The playground piece's colour scheme, by id (`theme` unless known).
     pub playground_scheme: String,
@@ -198,7 +198,7 @@ pub fn default_display() -> DisplayPrefs {
         plain: false,
         native_agents: false,
         agent_fleet: false,
-        playground_map: "office".to_owned(),
+        playground_map: "galaxy".to_owned(),
         playground_scheme: "theme".to_owned(),
         animations: true,
         backdrop_shader: crate::shader::library::OFF.to_owned(),

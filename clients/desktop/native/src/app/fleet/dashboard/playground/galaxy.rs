@@ -60,6 +60,8 @@ pub(crate) struct Galaxy {
     pub core: Pt,
     /// From the core to every planet.
     pub orbit: f32,
+    /// The bezel's radius: the orbit plus the widest system's reach.
+    pub rim: f32,
     /// The world is `side` by `side`, origin zero.
     pub side: f32,
 }
@@ -129,6 +131,7 @@ impl Galaxy {
             systems,
             core,
             orbit,
+            rim: if count == 0 { 120. } else { orbit + reach },
             side: 2. * half,
         }
     }
@@ -180,6 +183,49 @@ pub(crate) fn arc(a: Pt, b: Pt, core: Pt, t: f32) -> Pt {
     Pt {
         x: u * u * a.x + 2. * u * t * control.x + t * t * b.x,
         y: u * u * a.y + 2. * u * t * control.y + t * t * b.y,
+    }
+}
+
+/// What an agent node shows: its state, read once for the painter and labels.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum Mood {
+    Working,
+    Waiting,
+    Done,
+    Idle,
+}
+
+impl Mood {
+    pub fn of(info: &crate::connection::AgentInfo) -> Mood {
+        use crate::connection::AgentState;
+        match info.state {
+            _ if info.urgent() => Mood::Waiting,
+            AgentState::Blocked => Mood::Waiting,
+            AgentState::Done => Mood::Done,
+            AgentState::Working => Mood::Working,
+            AgentState::Idle | AgentState::Unknown => Mood::Idle,
+        }
+    }
+}
+
+/// How much text the fitted zoom can carry: names and state words, names
+/// only, or only the agents that need you.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum Detail {
+    Full,
+    Names,
+    Waiting,
+}
+
+impl Detail {
+    pub fn at(scale: f32) -> Detail {
+        if scale >= 0.6 {
+            Detail::Full
+        } else if scale >= 0.45 {
+            Detail::Names
+        } else {
+            Detail::Waiting
+        }
     }
 }
 
@@ -293,5 +339,27 @@ mod tests {
         assert_eq!(arc(a, b, core, 0.), a);
         assert_eq!(arc(a, b, core, 1.), b);
         assert!(arc(a, b, core, 0.5).y > 100., "bows outward");
+    }
+
+    #[test]
+    fn the_rim_holds_every_agent_and_detail_thins_with_zoom() {
+        let agents: Vec<_> = (0..8)
+            .map(|_| agent(None, "s", None, AgentState::Working))
+            .collect();
+        let galaxy = Galaxy::new(vec![(None, true), (Some("b".into()), true)], &agents);
+        for system in &galaxy.systems {
+            for index in 0..system.agents.len() {
+                let p = system.point(index, 13., true);
+                assert!(distance(p, galaxy.core) < galaxy.rim);
+            }
+        }
+        assert!(galaxy.rim < galaxy.side / 2.);
+        assert_eq!(Detail::at(1.), Detail::Full);
+        assert_eq!(Detail::at(0.5), Detail::Names);
+        assert_eq!(Detail::at(0.3), Detail::Waiting);
+        let mut blocked = agent(None, "s", None, AgentState::Idle).info;
+        assert_eq!(Mood::of(&blocked), Mood::Idle);
+        blocked.attention = AgentAttention::High;
+        assert_eq!(Mood::of(&blocked), Mood::Waiting);
     }
 }
