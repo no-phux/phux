@@ -246,6 +246,12 @@ impl ResourceTable {
         }
     }
 
+    /// The connection that spawned `terminal`, when a client did.
+    #[must_use]
+    pub(super) fn spawner(&self, terminal: ResourceId) -> Option<ClientId> {
+        self.spawns.get(&terminal).map(|record| record.spawner)
+    }
+
     /// Whether `terminal` was client-spawned and only its spawner has used
     /// it.
     #[must_use]

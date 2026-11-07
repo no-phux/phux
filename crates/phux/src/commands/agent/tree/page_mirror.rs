@@ -2,8 +2,9 @@
 //! `DevTools` Protocol. A page is two documents in phux's ladder: its
 //! accessibility tree (semantic, for an agent) and its screencast (pixels,
 //! for a person), published into an `AccessibilityTree` and a
-//! `PixelSurface` under one pane. No browser kind of its own: a page has
-//! no verb the two kinds lack yet.
+//! `PixelSurface` under one pane. No browser kind of its own: viewers'
+//! input intents (`SEND_DOCUMENT_INPUT`) reach this producer as relayed
+//! events, and it carries them out over `DevTools`.
 //!
 //! The browser must listen for `DevTools` clients, for example
 //! `chrome --remote-debugging-port=9222`.
@@ -22,7 +23,8 @@ use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
 use tokio::net::TcpStream;
 use tokio_tungstenite::tungstenite::Message;
 
-use super::{dial, report, resolve};
+use super::page_input::{Viewport, cdp_calls};
+use super::{dial, png_size, report, resolve};
 use crate::commands::{cli_runtime, json_err};
 use crate::exit_codes::{EXIT_FAILURE, EXIT_USAGE};
 
@@ -88,12 +90,14 @@ pub(super) fn pick_page(spec: &str, listing: &str) -> Result<Page, String> {
 }
 
 /// What one `DevTools` message means to the mirror.
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq)]
 pub(super) enum Incoming {
-    /// A screencast frame: its PNG and the session id to acknowledge.
+    /// A screencast frame: its PNG, the session id to acknowledge, and the
+    /// viewport's CSS size from its metadata.
     Frame {
         png: Vec<u8>,
         session: u64,
+        css: Option<(f64, f64)>,
     },
     /// The answer to `Accessibility.getFullAXTree`: the tree document.
     Tree(Vec<u8>),
@@ -113,9 +117,14 @@ pub(super) fn classify(text: &str, tree_request: u64) -> Incoming {
         else {
             return Incoming::Other;
         };
+        let metadata = &params["metadata"];
+        let css = metadata["deviceWidth"]
+            .as_f64()
+            .zip(metadata["deviceHeight"].as_f64());
         return Incoming::Frame {
             png,
             session: params["sessionId"].as_u64().unwrap_or(0),
+            css,
         };
     }
     if message["id"].as_u64() == Some(tree_request) && message["result"]["nodes"].is_array() {
@@ -305,11 +314,21 @@ impl Cdp {
         self.call("Accessibility.getFullAXTree", serde_json::json!({}))
             .await
     }
+
+    /// Carry out one viewer intent.
+    async fn act(&mut self, intent: &tree::Intent, view: Viewport) -> Result<(), Failure> {
+        for (method, params) in cdp_calls(&intent.input, view) {
+            self.call(method, params).await?;
+        }
+        Ok(())
+    }
 }
 
 /// Drive the page until Ctrl-C or until the browser hangs up: every
-/// screencast frame goes to the surface and is acknowledged, and the
-/// accessibility tree is read every `interval` and published when changed.
+/// screencast frame goes to the surface and is acknowledged, the
+/// accessibility tree is read every `interval` and published when changed,
+/// and every input intent a viewer sends is carried out, then the tree is
+/// read again.
 #[allow(
     clippy::future_not_send,
     reason = "the CLI runtime is single-threaded; the connection is not shared"
@@ -333,11 +352,27 @@ async fn mirror(
     let mut tree_request = cdp.read_tree().await?;
     let mut last_tree: Option<Vec<u8>> = None;
     let mut tick = tokio::time::interval(interval);
+    let mut view = Viewport::IDENTITY;
+    let mut intents = Vec::new();
     loop {
+        if !intents.is_empty() {
+            for intent in std::mem::take(&mut intents) {
+                cdp.act(&intent, view).await?;
+            }
+            tree_request = cdp.read_tree().await?;
+        }
         let message = tokio::select! {
             _ = tokio::signal::ctrl_c() => return Ok(()),
             _ = tick.tick() => {
                 tree_request = cdp.read_tree().await?;
+                continue;
+            }
+            frame = conn.recv() => {
+                match frame {
+                    Ok(frame) => intents.extend(tree::intent(&frame)),
+                    Err(phux_client::attach::AttachError::Disconnected) => return Ok(()),
+                    Err(err) => return Err(Failure::Tree(err.into())),
+                }
                 continue;
             }
             message = cdp.ws.next() => message,
@@ -349,8 +384,11 @@ async fn mirror(
             Some(Err(err)) => return Err(Failure::Browser(err.to_string())),
         };
         match classify(&text, tree_request) {
-            Incoming::Frame { png, session } => {
-                tree::publish(conn, surface, png).await?;
+            Incoming::Frame { png, session, css } => {
+                if let (Some(image), Some(css)) = (png_size(&png), css) {
+                    view = Viewport::of(image, css);
+                }
+                tree::publish_collecting(conn, surface, png, &mut intents).await?;
                 cdp.call(
                     "Page.screencastFrameAck",
                     serde_json::json!({ "sessionId": session }),
@@ -359,7 +397,7 @@ async fn mirror(
             }
             Incoming::Tree(bytes) => {
                 if last_tree.as_deref() != Some(bytes.as_slice()) {
-                    tree::publish(conn, tree_res, bytes.clone()).await?;
+                    tree::publish_collecting(conn, tree_res, bytes.clone(), &mut intents).await?;
                     last_tree = Some(bytes);
                 }
             }
@@ -448,13 +486,13 @@ mod tests {
 
     #[test]
     fn a_screencast_frame_and_a_tree_answer_are_told_apart() {
-        let frame =
-            r#"{"method":"Page.screencastFrame","params":{"data":"iVBORw0=","sessionId":7}}"#;
+        let frame = r#"{"method":"Page.screencastFrame","params":{"data":"iVBORw0=","sessionId":7,"metadata":{"deviceWidth":800,"deviceHeight":600}}}"#;
         assert_eq!(
             classify(frame, 4),
             Incoming::Frame {
                 png: vec![0x89, 0x50, 0x4e, 0x47, 0x0d],
-                session: 7
+                session: 7,
+                css: Some((800.0, 600.0)),
             }
         );
         let tree = r#"{"id":4,"result":{"nodes":[{"nodeId":"1","role":{"value":"RootWebArea"}}]}}"#;

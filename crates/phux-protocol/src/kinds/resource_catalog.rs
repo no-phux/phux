@@ -123,6 +123,12 @@ pub static SUBSTRATE_METHODS: &[MethodSpec] = &[
         Carrier::Command(COMMAND_TAG_PUBLISH_RESOURCE_STATE),
         [C_PUBLISH_RESOURCE_STATE]
     ),
+    // A viewer's input intent for a document, relayed to its producer.
+    method!(
+        "SEND_DOCUMENT_INPUT",
+        Carrier::Command(COMMAND_TAG_SEND_DOCUMENT_INPUT),
+        [C_SEND_DOCUMENT_INPUT]
+    ),
 ];
 
 /// Events about the server or one subscription rather than one resource.
@@ -214,6 +220,10 @@ pub static SUBSTRATE_EVENTS: &[EventSpec] = &[
     EventSpec {
         name: "source_gap",
         tag: EVENT_TAG_SOURCE_GAP,
+    },
+    EventSpec {
+        name: "document_input",
+        tag: EVENT_TAG_DOCUMENT_INPUT,
     },
 ];
 

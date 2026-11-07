@@ -15,6 +15,7 @@ mod attach_roles;
 mod common;
 mod conditional_kill;
 mod crash_restart;
+mod document_input;
 mod idempotency;
 mod keep_empty;
 mod kill_visibility;

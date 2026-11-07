@@ -25,6 +25,7 @@ use crate::runtime::operation_dedupe::OperationClaim;
 use crate::state::{ClientId, ServerState, SharedState};
 
 mod attach;
+mod input;
 mod spawn;
 
 pub(crate) use attach::attach_document;
@@ -203,6 +204,10 @@ impl<A: DocumentApi> ResourceApp for DocumentApp<A> {
                 Command::PublishResourceState { terminal_id, bytes } => {
                     publish::<A>(&ctx.state, ctx.client_id, &terminal_id, Bytes::from(bytes)).await
                 }
+                Command::SendDocumentInput {
+                    terminal_id,
+                    intent,
+                } => input::relay::<A>(&ctx.state, &terminal_id, intent),
                 _ => CommandResult::Error {
                     code: ErrorCode::InvalidCommand,
                     message: "command not supported by this server".to_owned(),
