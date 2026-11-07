@@ -388,10 +388,23 @@ mod tests {
         desk.settings_open = true;
         desk.settings_category(Category::Terminal);
         desk.settings.theme = None;
-        let before = desk.settings.theme;
+        let before = (desk.settings, desk.font_size);
         let mut runtime = runtime(desk);
-        runtime.viewport = (800.0, 360.0);
+        runtime.set_viewport((800.0, 360.0), 2.0);
         runtime.frame(0.0);
+        let elements = runtime.elements();
+        let viewport = elements
+            .iter()
+            .position(|e| e.key.as_deref() == Some("settings-content"))
+            .unwrap();
+        let body = elements
+            .iter()
+            .find(|e| e.parent == Some(viewport))
+            .unwrap();
+        // Linux omits Option as Meta, so the shorter page can reach its end
+        // before a 100-point finger movement. Assert the exact clamped pan.
+        let expected = 100.0_f32.min((body.rect[3] - elements[viewport].rect[3]).max(0.0));
+        assert!(expected > 0.0, "the fixture must have scrollable content");
         let (x, y) = runtime.find("text-size").unwrap();
         runtime.touch(1, TouchPhase::Started, x, y, 0.0);
         runtime.frame(1.0 / 60.0);
@@ -402,10 +415,10 @@ mod tests {
         runtime.frame(1.0 / 60.0);
         let (_, after) = runtime.find("text-size").unwrap();
         assert!(
-            after < y - 90.0,
-            "the sheet followed the finger: {y} → {after}"
+            ((y - after) - expected).abs() < 1.0,
+            "the sheet followed the finger to its content boundary: {y} → {after}, expected {expected}"
         );
-        assert_eq!(runtime.state.settings.theme, before);
+        assert_eq!((runtime.state.settings, runtime.state.font_size), before);
         assert!(!runtime.touching());
     }
 

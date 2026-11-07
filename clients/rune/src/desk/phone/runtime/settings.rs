@@ -74,8 +74,9 @@ fn native_find_focuses_settings_search_instead_of_the_terminal() {
         rt.key(KeyEvent {
             key: Key::Command('f'),
             mods: Mods {
-                cmd: true,
+                cmd: cfg!(target_os = "macos"),
                 ctrl: !cfg!(target_os = "macos"),
+                shift: !cfg!(target_os = "macos"),
                 ..Mods::default()
             },
         });
