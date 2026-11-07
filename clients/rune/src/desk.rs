@@ -35,6 +35,7 @@ pub mod machines;
 pub mod mouse;
 mod palette;
 pub mod phone;
+pub mod reef;
 pub mod resources;
 mod sessions;
 mod settings;
@@ -181,6 +182,8 @@ pub struct Desk {
     pub inbox: inbox::Inbox,
     /// The fleet as a galaxy, while open.
     pub galaxy: galaxy::Galaxy,
+    /// The fleet as a reef, while open.
+    pub reef: reef::Reef,
     pub settings: settings::Settings,
     pub settings_open: bool,
     pub tabs: tabs::Tabs,
@@ -382,6 +385,7 @@ impl Desk {
             pointer: links::Pointer::default(),
             inbox: inbox::Inbox::default(),
             galaxy: galaxy::Galaxy::default(),
+            reef: reef::Reef::default(),
             settings,
             settings_open: false,
             tabs: tabs::Tabs::default(),
@@ -467,6 +471,7 @@ impl Desk {
         changed |= self.sync_alerts();
         changed |= self.tick_inbox(tx);
         changed |= self.tick_galaxy(tx);
+        changed |= self.tick_reef(tx);
         self.settle_pointer();
         changed |= self.autoscroll(tx);
         self.keep_find();
