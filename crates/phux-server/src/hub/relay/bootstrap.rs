@@ -26,6 +26,18 @@ impl RelaySession {
             BootstrapStreamProfile::AgentEventsJsonlResumeV1 { .. } => self
                 .satellite_features_ext
                 .contains(ServerFeatureExt::AgentStreamResume),
+            // Document streams are legal on any connection (phux-phiio.3),
+            // whatever terminal profile the link negotiated; the satellite
+            // serves one only for a kind it advertises.
+            BootstrapStreamProfile::AccessibilityTreeJsonV1 => self
+                .satellite_features_ext
+                .contains(ServerFeatureExt::AccessibilityTree),
+            BootstrapStreamProfile::PixelSurfacePngV1 => self
+                .satellite_features_ext
+                .contains(ServerFeatureExt::PixelSurface),
+            BootstrapStreamProfile::DocumentTypedV1 => self
+                .satellite_features_ext
+                .contains(ServerFeatureExt::TypedDocument),
             _ => Some(profile) == self.expected_stream_profile(),
         }
     }

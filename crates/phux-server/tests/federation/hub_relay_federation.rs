@@ -35,6 +35,7 @@ mod checkout;
 mod conditional_kill;
 mod consumer_filters;
 mod detach_fence;
+mod documents;
 mod event_restamp;
 mod kill_visibility;
 mod link_gap;
@@ -295,7 +296,7 @@ impl Fed {
         wait_for_socket(&self.hub_path(), STEP_DEADLINE).await
     }
 
-    /// A hub client, returned once the hub's link to the satellite answers.
+    /// A hub client once its link to the satellite answers.
     async fn linked_hub(&self) -> UnixStream {
         let mut hub = self.hub().await;
         assert!(matches!(
