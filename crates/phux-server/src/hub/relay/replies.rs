@@ -20,9 +20,11 @@ impl RelaySession {
                         .lock()
                         .unwrap_or_else(std::sync::PoisonError::into_inner);
                     catalog.kinds.clear();
+                    catalog.controls.clear();
                     for resource in &snapshot.resources {
                         if let Some(id) = resource.id.local_id() {
                             catalog.kinds.insert(id, resource.kind);
+                            catalog.controls.insert(id, resource.control);
                         }
                     }
                 }

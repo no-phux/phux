@@ -367,11 +367,13 @@ fn judge_record(
 /// credential revokes its connections and the reconnect gets the hold.
 /// Removing a hold widens and never revokes.
 ///
-/// Control is never inherited (`docs/resource-kinds.md#authority`): a
-/// `resource:` clause carrying `INPUT` controls its document, which no
-/// broader grant does, so only the same selector keeps it.
+/// Control and watching a window or display are never inherited
+/// (`docs/authority.md`): a `resource:` clause carrying `INPUT` or `OBSERVE`
+/// may reach a document no broader grant does, so only the same selector
+/// keeps it.
 fn contains_clause(ceiling: &TerminalScopeSet, clause: &EffectiveClause) -> bool {
-    let controls = clause.verbs.contains(phux_protocol::kinds::Verb::Input);
+    use phux_protocol::kinds::Verb;
+    let controls = clause.verbs.contains(Verb::Input) || clause.verbs.contains(Verb::Observe);
     let keeps = |outer: &Selector, inner: &Selector| {
         if controls && matches!(inner, Selector::Resource(_)) {
             outer == inner

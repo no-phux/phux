@@ -4,7 +4,9 @@ pub struct Denial {
     /// The verbs the refused operation needed; empty for a default-deny row.
     pub verbs: Verbs,
     /// `terminal`, `group`, `host`, `global`, `control`, `approval`, `unclassified`,
-    /// `ungranted`, `expired`, `revoked`, `viewer`, or `held`.
+    /// `ungranted`, `expired`, `revoked`, `viewer`, or `held`; or `window` or
+    /// `display` for a watch only a class grant would admit
+    /// (`docs/authority.md`).
     pub subject: &'static str,
 }
 
@@ -172,7 +174,7 @@ pub fn enforce(
             if covers_all(effective, &needs) && frame_ack_is_current(s, client, request) {
                 Ok(())
             } else {
-                Err(refused)
+                Err(watch_denial(effective, &needs).unwrap_or(refused))
             }
         }
     }
@@ -232,6 +234,23 @@ pub(super) fn covers_all(effective: &EffectiveScopeSet, needs: &[Need]) -> bool 
     })
 }
 
+/// A refused watch of a window or display ([`terminal_needs`]) that the
+/// grant could watch through its parent Terminal before class grants
+/// existed: named by class, so the reply can say which grant is missing.
+/// A caller with no such reach gets the row's anonymous refusal.
+fn watch_denial(effective: &EffectiveScopeSet, needs: &[Need]) -> Option<Denial> {
+    let [rest, Need { point: Point::Control(document), .. }] = needs else {
+        return None;
+    };
+    let inherited = Need::new(OBSERVE, rest.point.clone());
+    (covers_all(effective, std::slice::from_ref(rest))
+        && covers_all(effective, std::slice::from_ref(&inherited)))
+    .then_some(Denial {
+        verbs: OBSERVE,
+        subject: document.class?.name(),
+    })
+}
+
 /// The needs one §6 row places on `request`, or `None` when the subject
 /// cannot be resolved: that is a refusal, never a skip.
 pub(super) fn needs_for(
@@ -243,7 +262,7 @@ pub(super) fn needs_for(
 ) -> Option<Vec<Need>> {
     let one = |point: Point| vec![Need::new(verbs, point)];
     match subject {
-        Subject::NamedTerminal => named_terminal(request).map(|id| one(terminal_subject(s, id))),
+        Subject::NamedTerminal => named_terminal(request).map(|id| terminal_needs(s, verbs, id)),
         Subject::EveryNamedTerminal => Some(every_named(s, verbs, request)),
         Subject::AttachedTerminals => Some(attached_terminals(s, client, verbs)),
         Subject::MovedAndOwnerTerminals => moved_and_owner(s, verbs, request),

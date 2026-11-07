@@ -87,8 +87,10 @@ pub(crate) enum WorkloadAction {
         /// restart with the server, so group:ID and terminal:ID are
         /// refused), or a control class: page, window, display, alone or as
         /// CLASS:HOST, the only selectors besides resource:KEY that let
-        /// input reach a mirrored page, window or display. Repeatable; at
-        /// least one is required.
+        /// input reach a mirrored page, window or display, or let observe
+        /// watch a mirrored window or display. A human device enrolled with
+        /// the full-control pairing ceiling also gets observe@display and
+        /// observe@window. Repeatable; at least one is required.
         #[usage(long, value_name = "VERBS@SELECTOR")]
         scope: Vec<String>,
 
@@ -151,14 +153,15 @@ pub(crate) enum WorkloadAction {
     /// The scope is `<verb>[,<verb>...]@<selector>`, as `add-key --scope`
     /// takes it, plus the control selectors `page`, `window`, `display`
     /// and `page:HOST`, `window:HOST`, `display:HOST`: `input@display` lets
-    /// the device type and click on this machine's mirrored screens, which
-    /// no terminal grant does. Prints what the grant lets the device do.
-    /// The device gets it at its next connection.
+    /// the device type and click on this machine's mirrored screens, and
+    /// `observe@display` lets it watch them, which no terminal grant does.
+    /// Prints what the grant lets the device do. The device gets it at its
+    /// next connection.
     Grant {
         /// The credential's `sha256:...` id from `phux workload list`.
         #[usage(value_name = "CREDENTIAL_ID")]
         credential_id: String,
-        /// The grant, e.g. `input@display` or `input@window:powerhouse-1`.
+        /// The grant, e.g. `observe@display` or `input@window:powerhouse-1`.
         #[usage(value_name = "VERBS@SELECTOR")]
         scope: String,
     },

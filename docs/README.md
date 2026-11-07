@@ -90,6 +90,7 @@ Generated from the `phux` binary, so they match the code these docs describe.
 - [Organization](./organization.md): how the server owns sessions and their contents.
 - [Substrate](./substrate.md): how people, hosts, and agents fit together.
 - [Resource kinds beyond terminals](./resource-kinds.md): the design for accessibility-tree, pixel and browser resources, and the order it lands in.
+- [Authority over pages, windows, and displays](./authority.md): who may watch or control a mirrored page, window, or display, and why no terminal grant does.
 - [Applications as resources](./applications.md): `phux spawn --app`, launching an app with its mirrors and quitting it with its pane.
 - [Server protocol](./protocol.md): framing, handshake, capabilities, and changing the wire.
 - [File transfer and checkout](./protocol-files.md): the commands that move files and inspect a checkout.

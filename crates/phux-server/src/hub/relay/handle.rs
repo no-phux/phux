@@ -88,6 +88,39 @@ impl RelayHandle {
         }
     }
 
+    /// A satellite resource's control class, as the satellite's inventory
+    /// reports it, fetching that inventory once when this link has not
+    /// enumerated it yet. `Ok(None)` for a resource with no class, or one
+    /// the inventory does not hold (the relay itself then refuses it).
+    pub(crate) async fn resource_control(
+        &self,
+        terminal: u32,
+    ) -> Result<Option<phux_protocol::wire::frame::ControlClass>, CommandResult> {
+        let known = |handle: &Self| {
+            handle
+                .resource_kinds
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .controls
+                .get(&terminal)
+                .copied()
+        };
+        if let Some(class) = known(self) {
+            return Ok(class);
+        }
+        match self
+            .command(Command::GetState {
+                scope: phux_protocol::wire::frame::StateScope::Server,
+            })
+            .await
+        {
+            CommandResult::OkWith(phux_protocol::wire::frame::CommandValue::State(_)) => {
+                Ok(known(self).flatten())
+            }
+            refusal => Err(refusal),
+        }
+    }
+
     /// Relay `command` and await the result. Fails fast with a typed error on
     /// a full mailbox or dead link, and is bounded by
     /// [`RELAY_COMMAND_TIMEOUT`], because callers await this inline in a

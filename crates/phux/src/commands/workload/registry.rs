@@ -281,6 +281,7 @@ fn grant_meaning(grant: &ScopeGrant) -> String {
         .map(phux_protocol::scope::verb_name)
         .collect();
     let control = grant.verbs.contains(Verb::Input);
+    let watch = grant.verbs.contains(Verb::Observe);
     let reach = match &grant.selector {
         Selector::Control(class, host) => {
             let place = host.as_ref().map_or_else(
@@ -294,10 +295,14 @@ fn grant_meaning(grant: &ScopeGrant) -> String {
                     "every mirrored display (a display shows every application on that screen)"
                 }
             };
-            let and = if control {
-                "; it can click, type, scroll and navigate there"
-            } else {
-                "; without input it controls nothing"
+            let and = match (watch, control) {
+                (true, true) => "; it can watch them and click, type, scroll and navigate there",
+                (false, true) => "; it can click, type, scroll and navigate there",
+                (true, false) if *class == ControlClass::Page => {
+                    "; a page is also watched through its terminal"
+                }
+                (true, false) => "; it can watch them, and controls nothing without input",
+                (false, false) => "; without observe or input it reaches nothing there",
             };
             let relay = if host.is_some() {
                 " (the satellite must also grant this hub's credential the same class)"
@@ -308,14 +313,15 @@ fn grant_meaning(grant: &ScopeGrant) -> String {
         }
         Selector::Resource(key) => format!(
             "the one resource {key}{}",
-            if control {
-                ", and control it if it is a mirrored page, window or display"
-            } else {
-                ""
+            match (watch, control) {
+                (_, true) =>
+                    ", and watch or control it if it is a mirrored page, window or display",
+                (true, false) => ", and watch it if it is a mirrored window or display",
+                (false, false) => "",
             }
         ),
         other => format!(
-            "{} ({other}); no page, window or display: those need a control grant",
+            "{} ({other}); no window or display, and no input to any mirror: those need a class grant",
             match other {
                 Selector::Global => "every session, terminal and satellite",
                 Selector::HostLocal => "every session and terminal on this machine",

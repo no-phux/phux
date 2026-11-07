@@ -219,6 +219,13 @@ impl WorkloadPaths {
 pub const PAIRED_DEVICE_SCOPE: &str =
     "inventory,observe,create,bind,input,signal,organize,terminate@global";
 
+/// The watch grants a person's device paired with full control also holds.
+///
+/// They reach every window and display on the host (`docs/authority.md`).
+/// Watching them is never inherited from [`PAIRED_DEVICE_SCOPE`], so pairing
+/// a human principal adds these; an automation key never gets them.
+pub const PAIRED_DEVICE_WATCH_SCOPES: [&str; 2] = ["observe@display", "observe@window"];
+
 /// The original pairing ceiling, retained only for legacy principal
 /// inference and an explicit owner-requested repair. Loading it never adds verbs.
 pub(crate) const LEGACY_PAIRED_DEVICE_SCOPE: &str =

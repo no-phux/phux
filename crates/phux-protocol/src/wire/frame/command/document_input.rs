@@ -106,6 +106,15 @@ impl ControlClass {
         Self::ALL.into_iter().find(|class| class.name() == name)
     }
 
+    /// Whether watching such a document needs a grant naming its class
+    /// (`docs/authority.md`): a window or display shows the machine, so no
+    /// terminal grant reaches it; a page shows one site and is watched
+    /// through its parent Terminal.
+    #[must_use]
+    pub const fn guards_observe(self) -> bool {
+        !matches!(self, Self::Page)
+    }
+
     const fn bit(self) -> u8 {
         1 << (self as u8)
     }

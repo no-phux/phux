@@ -114,6 +114,45 @@ fn controlled_document(s: &ServerState, request: Request<'_>) -> Option<Point> {
     Some(Point::Control(document))
 }
 
+/// What a "named Terminal" row needs. `OBSERVE` on a window or display
+/// document shows the machine, so it needs a grant naming the class or the
+/// document itself, never its parent or a broader selector
+/// (`docs/authority.md`); the row's other verbs are judged as usual. The
+/// watch is the second need, which [`watch_denial`] relies on.
+fn terminal_needs(s: &ServerState, verbs: Verbs, wire: &WireResourceId) -> Vec<Need> {
+    let point = terminal_subject(s, wire);
+    let watched = verbs
+        .contains(Verb::Observe)
+        .then(|| watched_document(s, wire))
+        .flatten();
+    let Some(document) = watched else {
+        return vec![Need::new(verbs, point)];
+    };
+    let rest: Vec<Verb> = verbs.iter().filter(|verb| *verb != Verb::Observe).collect();
+    vec![
+        Need::new(Verbs::of(&rest), point),
+        Need::new(OBSERVE, Point::Control(document)),
+    ]
+}
+
+/// The local window or display document `wire` names. A satellite one is
+/// the hub's to judge at relay, where it learns the class
+/// ([`crate::policy::filter::admits_satellite_watch`]).
+pub(super) fn watched_document(s: &ServerState, wire: &WireResourceId) -> Option<ControlPoint> {
+    if !wire.is_local() {
+        return None;
+    }
+    let core = s.resource_from_wire(wire)?;
+    let class = s
+        .document_control(core)
+        .filter(|class| class.guards_observe())?;
+    Some(ControlPoint {
+        class: Some(class),
+        host: None,
+        key: resource_key_of(s, core),
+    })
+}
+
 /// The session a keyed session command names.
 fn keyed_session(s: &ServerState, request: Request<'_>) -> Option<Point> {
     let Request::Command(command) = request else {

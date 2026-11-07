@@ -9,6 +9,8 @@ use super::*;
 mod grants;
 #[path = "tests/paired.rs"]
 mod paired;
+#[path = "tests/watch.rs"]
+mod watch;
 
 /// The CA key's file name: no diagnostic may print it.
 const KEY_FILE: &str = "authority-secret-location.key";
