@@ -8,8 +8,9 @@
 //! hands over an image with no window content rather than an error.
 //!
 //! Viewers' input intents (`phux agent page click|type|key`, or any `SEND_DOCUMENT_INPUT`) are
-//! posted as input events on macOS (`surface_input`); `--dry-run-input`
-//! logs them instead.
+//! posted as input events on macOS (`surface_input`) and run through
+//! `hyprctl`, `wlrctl`, `wtype` or `ydotool` on Linux
+//! (`surface_grim_input`); `--dry-run-input` logs them instead.
 //!
 //! On Linux, `grim` captures from a wlroots compositor (Hyprland, Sway); see
 //! `surface_grim`.
@@ -123,9 +124,7 @@ pub(super) fn run_mirror(args: MirrorArgs<'_>) -> ExitCode {
         #[cfg(target_os = "macos")]
         let act = move |input: &tree::DocumentInput, frame| injector.act(input, frame);
         #[cfg(target_os = "linux")]
-        let act = |input: &tree::DocumentInput, _: (u32, u32)| {
-            tracing::debug!(?input, "this mirror takes no input yet");
-        };
+        let act = platform::injector(&target, dry_run_input);
         let mut platform_capture = platform::capturer(target, frames);
         let mut faked = false;
         // A dry run goes on without a capture grant, on a blank frame.

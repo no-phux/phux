@@ -33,6 +33,8 @@ mod parent_watch;
 mod surface;
 #[cfg(any(target_os = "linux", test))]
 mod surface_grim;
+#[cfg(any(target_os = "linux", test))]
+mod surface_grim_input;
 mod surface_input;
 mod surface_mirror;
 
