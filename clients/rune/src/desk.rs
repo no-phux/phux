@@ -23,6 +23,7 @@ use crate::launch::Resolved;
 mod attach;
 mod events;
 mod find;
+mod fleet;
 mod frame;
 pub mod galaxy;
 mod home;
@@ -184,6 +185,8 @@ pub struct Desk {
     pub galaxy: galaxy::Galaxy,
     /// The fleet as a reef, while open.
     pub reef: reef::Reef,
+    /// The other machines, watched while the galaxy or the reef is open.
+    pub(crate) fleet: fleet::Fleet,
     pub settings: settings::Settings,
     pub settings_open: bool,
     pub tabs: tabs::Tabs,
@@ -386,6 +389,7 @@ impl Desk {
             inbox: inbox::Inbox::default(),
             galaxy: galaxy::Galaxy::default(),
             reef: reef::Reef::default(),
+            fleet: fleet::Fleet::default(),
             settings,
             settings_open: false,
             tabs: tabs::Tabs::default(),
@@ -444,6 +448,7 @@ impl Desk {
         let updated = self.pump_updates(tx)
             | self.finish_document_images()
             | self.pump_machines()
+            | self.tick_fleet()
             | self.pump_link()
             | self.pump_links()
             | self.follow_omarchy()
