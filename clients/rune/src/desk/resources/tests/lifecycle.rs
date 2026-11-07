@@ -281,7 +281,6 @@ fn phone_fallback_uses_the_latest_organization_even_while_topology_is_stale() {
 fn phone_fallback_rejects_a_leaf_that_is_no_longer_a_supported_document() {
     for kind in [
         ResourceKind::AgentSession,
-        ResourceKind::Document,
         ResourceKind::Unknown { tag: 99 },
     ] {
         let records = [
@@ -301,6 +300,54 @@ fn phone_fallback_rejects_a_leaf_that_is_no_longer_a_supported_document() {
         // No observation has refreshed the document map or retained group yet.
         rt.update(|d, _| d.close_shown(&client, &[]));
         assert_eq!(rt.state.wanted.as_ref().map(|(id, _)| id), Some(&id(1)));
+    }
+}
+
+#[test]
+fn supported_document_kinds_are_viewless_phone_fallbacks_and_stay_closed() {
+    for kind in [
+        ResourceKind::AccessibilityTree,
+        ResourceKind::PixelSurface,
+        ResourceKind::Document,
+    ] {
+        let records = [
+            record(1, ResourceKind::Terminal),
+            record(2, kind),
+            record(3, ResourceKind::Terminal),
+        ];
+        let (client, mut rt) = phone_fixture(&records, &doc(three()));
+        let before = stored(&client);
+        rt.update(|d, _| d.focus_pane(&id(3)));
+        close(&client, 3);
+        step(&mut rt);
+        assert_eq!(
+            focus(&rt),
+            id(2),
+            "{kind:?} remains a valid neighboring mirror"
+        );
+        assert!(
+            rt.state.shown.as_ref().unwrap().view.is_none(),
+            "documents never allocate terminal views"
+        );
+        assert_eq!(rt.state.resources.entries[&id(2)].record.kind, kind);
+        close(&client, 2);
+        step(&mut rt);
+        rt.update(|d, _| {
+            d.refresh_resources(&client);
+        });
+        step(&mut rt);
+        assert_eq!(focus(&rt), id(1));
+        assert!(rt.state.shown.as_ref().unwrap().view.is_some());
+        assert!(
+            !rt.state.is_document(&id(2)),
+            "stale inventory cannot reopen a closed {kind:?}"
+        );
+        assert!(rt.state.wanted.is_none());
+        assert_eq!(
+            stored(&client),
+            before,
+            "fallback never edits the arrangement"
+        );
     }
 }
 

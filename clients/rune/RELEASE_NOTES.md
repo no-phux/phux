@@ -22,5 +22,14 @@
   restore by stable identity across organization and reconnect gaps, unless
   you choose another pane. Batched closures cannot reopen a dead sibling;
   immediate replacements no longer flash an unavailable error.
+- **Typed documents stay documents.** PNG, JPEG, GIF and WebP use the image
+  decoder; JSON is formatted, text and structured source stay selectable,
+  and unknown types show their size and content type. HTML and Markdown are
+  source, not executable pages. Typed documents also work as phone fallbacks
+  without allocating a terminal view.
+- **Answer ACP agents in the inbox.** Native questions expose their offered
+  choices and fields, with explicit submit/cancel and receipt status.
+  Nothing is preselected or typed into the terminal; a closed or changed
+  question cannot receive a stale answer.
 
 The phone form remains a desktop-hosted stand-in, not a native iOS app.
