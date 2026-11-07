@@ -351,6 +351,46 @@ fn grouped_listing_keeps_satellite_terminal_selectors() {
     );
 }
 
+/// A satellite pane its session lists as a member is counted on that
+/// session's line and not repeated as its own row (#2051); one no session
+/// claims still gets a row.
+#[test]
+fn claimed_satellite_terminals_are_not_listed_twice() {
+    use phux_protocol::ids::SatelliteHost;
+    use phux_protocol::wire::info::{HostInventory, HostSessionInfo, ResourceInfo};
+
+    let edge = SatelliteHost::new("edge");
+    let pane = |id| {
+        ResourceInfo::new(
+            ResourceId::satellite(edge.clone(), id),
+            WindowId::new(0),
+            80,
+            24,
+        )
+    };
+    let mut snapshot = federated_snapshot();
+    snapshot.resources.extend([pane(9), pane(12)]);
+    let snapshot = snapshot.with_hosts(vec![HostInventory::reachable(
+        edge.clone(),
+        vec![
+            HostSessionInfo::new(SessionId::new(1), "build")
+                .with_window_count(1)
+                .with_pane_count(1)
+                .with_members(vec![ResourceId::satellite(edge.clone(), 9)]),
+        ],
+    )]);
+    assert_eq!(
+        session_lines(&snapshot, None),
+        vec![
+            "This host",
+            "  work: 1 member (1 running), 1 window",
+            "edge",
+            "  build: 1 window, 1 pane",
+            "  edge/@12: satellite terminal",
+        ]
+    );
+}
+
 /// The text-mode "satellite sessions are unavailable" note fires only for
 /// a server that lists satellite Terminals.
 #[test]

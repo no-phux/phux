@@ -66,6 +66,8 @@ pub(super) fn encode_host_session(session: &HostSessionInfo, enc: &mut Encoder<'
         enc.write_u16_be(session.pane_count);
         enc.write_u16_be(session.attached_client_count);
         encode_option_terminal_id(session.active_resource.as_ref(), enc);
+        // Trailing: an older decoder stops before it and ignores the rest.
+        encode_list(&session.members, enc, encode_terminal_id);
     });
 }
 
@@ -102,6 +104,11 @@ pub(super) fn decode_host_session_body(
     let pane_count = dec.read_u16_be()?;
     let attached_client_count = dec.read_u16_be()?;
     let active_resource = decode_option_terminal_id(dec)?;
+    let members = if dec.at_body_end() {
+        Vec::new()
+    } else {
+        decode_list(dec, decode_terminal_id)?
+    };
     Ok(HostSessionInfo {
         id,
         name,
@@ -110,6 +117,7 @@ pub(super) fn decode_host_session_body(
         pane_count,
         attached_client_count,
         active_resource,
+        members,
     })
 }
 
