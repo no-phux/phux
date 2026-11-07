@@ -12,7 +12,7 @@ use base64::Engine as _;
 use phux_client::attach::connection::Connection;
 use phux_client::resource::kind_name;
 use phux_client::selector::format_terminal_id;
-use phux_client::tree::{self, Document, FollowEnd, TreeError, png_size};
+use phux_client::tree::{self, Document, FollowEnd, TreeError, image_size};
 use phux_protocol::ids::{ResourceId, ResourceKind};
 use serde_json::{Value, json};
 
@@ -177,21 +177,23 @@ fn tree_json(document: &Document) -> Value {
     json!({ "schema_version": SCHEMA_VERSION, "seq": document.seq, "document": value })
 }
 
-/// The surface facts, plus the PNG as an MCP image block when there is one.
+/// The surface facts, plus the frame (PNG or JPEG) as an MCP image block
+/// when there is one.
 fn surface_json(document: &Document) -> Value {
-    let size = png_size(&document.bytes);
+    let image = image_size(&document.bytes).ok();
     let mut doc = json!({
         "schema_version": SCHEMA_VERSION,
         "seq": document.seq,
         "bytes": document.bytes.len(),
-        "width": size.map(|s| s.0),
-        "height": size.map(|s| s.1),
+        "format": image.map(|(format, _, _)| format.name()),
+        "width": image.map(|(_, w, _)| w),
+        "height": image.map(|(_, _, h)| h),
     });
-    if size.is_some() {
+    if let Some((format, _, _)) = image {
         doc[IMAGE_CONTENT_KEY] = json!({
             "type": "image",
             "data": base64::engine::general_purpose::STANDARD.encode(&document.bytes),
-            "mimeType": "image/png",
+            "mimeType": format.mime(),
         });
     }
     doc
@@ -215,6 +217,21 @@ mod tests {
     };
 
     use super::*;
+
+    #[test]
+    fn a_jpeg_frame_is_labelled_jpeg() {
+        let bytes = include_bytes!("../../phux-core/testdata/baseline-5x3.jpg").to_vec();
+        let doc = surface_json(&Document {
+            seq: 2,
+            bytes,
+            content_type: None,
+        });
+        assert_eq!(
+            (doc["format"].as_str(), doc["width"].as_u64()),
+            (Some("jpeg"), Some(5))
+        );
+        assert_eq!(doc[IMAGE_CONTENT_KEY]["mimeType"], "image/jpeg");
+    }
 
     /// A 1x1 PNG.
     const PNG: &[u8] = &[
