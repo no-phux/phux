@@ -508,6 +508,31 @@ pub(crate) const TOOLS: &[Row] = &[
         Touches::Wire(&[RESOLVE, "ATTACH_RESOURCE", "DETACH_RESOURCE"]),
     ),
     cli(
+        "phux_document_navigate",
+        "agent page navigate",
+        Touches::Wire(&[RESOLVE, "SEND_DOCUMENT_INPUT"]),
+    ),
+    cli(
+        "phux_document_click",
+        "agent page click",
+        Touches::Wire(&[RESOLVE, "SEND_DOCUMENT_INPUT"]),
+    ),
+    cli(
+        "phux_document_type",
+        "agent page type",
+        Touches::Wire(&[RESOLVE, "SEND_DOCUMENT_INPUT"]),
+    ),
+    cli(
+        "phux_document_key",
+        "agent page key",
+        Touches::Wire(&[RESOLVE, "SEND_DOCUMENT_INPUT"]),
+    ),
+    cli(
+        "phux_document_scroll",
+        "agent page scroll",
+        Touches::Wire(&[RESOLVE, "SEND_DOCUMENT_INPUT"]),
+    ),
+    cli(
         "phux_approvals",
         "approvals",
         Touches::Wire(&["LIST_METADATA", "GET_METADATA"]),

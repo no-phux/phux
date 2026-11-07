@@ -1,4 +1,4 @@
-//! `phux agent page mirror|navigate|click|type|key`: a browser page as a
+//! `phux agent page mirror|navigate|click|type|key|scroll`: a browser page as a
 //! tree and a surface, and input for it.
 
 use std::path::PathBuf;
@@ -73,6 +73,19 @@ pub(crate) enum PageAction {
         #[usage(long)]
         json: bool,
     },
+    /// Scroll a mirrored page or screen by a delta in surface image pixels.
+    Scroll {
+        /// The document's surface or tree.
+        target: String,
+        /// Horizontal pixels; positive scrolls right.
+        #[usage(value_name = "DX", allow_negative_numbers)]
+        dx: i32,
+        /// Vertical pixels; positive scrolls down.
+        #[usage(value_name = "DY", allow_negative_numbers)]
+        dy: i32,
+        #[usage(long)]
+        json: bool,
+    },
 }
 
 pub(crate) fn run_page(action: &PageAction, socket: Option<PathBuf>) -> ExitCode {
@@ -119,5 +132,16 @@ pub(crate) fn run_page(action: &PageAction, socket: Option<PathBuf>) -> ExitCode
             Ok(key) => page_input::run_send(target, DocumentInput::Key { key }, *json, socket),
             Err(code) => code,
         },
+        PageAction::Scroll {
+            target,
+            dx,
+            dy,
+            json,
+        } => page_input::run_send(
+            target,
+            DocumentInput::Scroll { dx: *dx, dy: *dy },
+            *json,
+            socket,
+        ),
     }
 }

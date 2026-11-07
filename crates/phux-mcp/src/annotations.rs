@@ -261,6 +261,12 @@ mod tests {
             "phux_agent_prompt",
             "phux_agent_send_keys",
             "phux_plugin_action",
+            // Input to a page or desktop can do anything it allows.
+            "phux_document_navigate",
+            "phux_document_click",
+            "phux_document_type",
+            "phux_document_key",
+            "phux_document_scroll",
         ] {
             let hints = annotation(tool);
             assert!(

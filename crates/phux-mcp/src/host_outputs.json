@@ -551,5 +551,85 @@
       "width",
       "height"
     ]
+  },
+  "phux_document_navigate": {
+    "type": "object",
+    "properties": {
+      "schema_version": {
+        "type": "integer"
+      },
+      "sent": {
+        "type": "string",
+        "description": "The document the intent was sent to."
+      }
+    },
+    "required": [
+      "schema_version",
+      "sent"
+    ]
+  },
+  "phux_document_click": {
+    "type": "object",
+    "properties": {
+      "schema_version": {
+        "type": "integer"
+      },
+      "sent": {
+        "type": "string",
+        "description": "The document the intent was sent to."
+      }
+    },
+    "required": [
+      "schema_version",
+      "sent"
+    ]
+  },
+  "phux_document_type": {
+    "type": "object",
+    "properties": {
+      "schema_version": {
+        "type": "integer"
+      },
+      "sent": {
+        "type": "string",
+        "description": "The document the intent was sent to."
+      }
+    },
+    "required": [
+      "schema_version",
+      "sent"
+    ]
+  },
+  "phux_document_key": {
+    "type": "object",
+    "properties": {
+      "schema_version": {
+        "type": "integer"
+      },
+      "sent": {
+        "type": "string",
+        "description": "The document the intent was sent to."
+      }
+    },
+    "required": [
+      "schema_version",
+      "sent"
+    ]
+  },
+  "phux_document_scroll": {
+    "type": "object",
+    "properties": {
+      "schema_version": {
+        "type": "integer"
+      },
+      "sent": {
+        "type": "string",
+        "description": "The document the intent was sent to."
+      }
+    },
+    "required": [
+      "schema_version",
+      "sent"
+    ]
   }
 }

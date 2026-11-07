@@ -1,5 +1,5 @@
 //! Input for a mirrored browser page: the viewer verbs (`phux agent page
-//! navigate|click|type|key`) send a typed intent to the page's surface or
+//! navigate|click|type|key|scroll`) send a typed intent to the page's surface or
 //! tree, and the page mirror, its producer, maps each intent it receives to
 //! `DevTools` calls.
 

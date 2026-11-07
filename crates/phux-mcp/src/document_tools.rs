@@ -4,7 +4,9 @@
 //! surface snapshot carries the PNG as MCP image content beside the facts
 //! `phux agent surface snapshot --json` prints; a tree wait is
 //! `phux agent tree follow --until` with a timeout that is a result, not an
-//! error.
+//! error. The input tools (`input`) drive a document as the snapshot shows it.
+
+mod input;
 
 use std::time::Duration;
 
@@ -28,6 +30,12 @@ const WAIT_DEFAULT_SECS: u64 = 60;
 const WAIT_MAX_SECS: u64 = 3600;
 
 pub(crate) fn schemas() -> Vec<Value> {
+    let mut schemas = schemas_read();
+    schemas.extend(input::schemas());
+    schemas
+}
+
+fn schemas_read() -> Vec<Value> {
     let target = || json!({ "type": "string", "minLength": 1, "maxLength": 4096, "description": "The document resource, by the `@N` id phux_documents lists." });
     vec![
         schema(
@@ -66,7 +74,7 @@ pub(crate) fn owns(name: &str) -> bool {
     matches!(
         name,
         "phux_documents" | "phux_tree_snapshot" | "phux_tree_wait" | "phux_surface_snapshot"
-    )
+    ) || input::owns(name)
 }
 
 pub(crate) async fn call(name: &str, args: &Value) -> Result<Value, ToolError> {
@@ -89,7 +97,7 @@ pub(crate) async fn call(name: &str, args: &Value) -> Result<Value, ToolError> {
                 .map_err(|err| tree_error(&err))?;
             Ok(surface_json(&document))
         }
-        other => Err(ToolError::new(format!("unknown document tool: {other}"))),
+        other => input::call(other, args).await,
     }
 }
 

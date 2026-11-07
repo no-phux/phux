@@ -32,7 +32,7 @@ restore/reconnect. Their streams are **read-only**: typing, paste, terminal grid
 resizing and file uploads do not control their source. Input goes to the
 producer instead: `SEND_DOCUMENT_INPUT` relays one typed intent to the
 connection that opened the document ([protocol](./protocol.md#commands-events-resources)),
-and `phux agent page navigate|click|type|key` drive a mirrored browser page
+and `phux agent page navigate|click|type|key|scroll` drive a mirrored browser page
 this way. The same verbs drive a macOS `phux agent surface mirror`: it posts
 clicks, text, keys and scrolls as system input at the window's or display's
 screen points (raising a window's app first), which needs the Accessibility
@@ -73,7 +73,13 @@ opened.
 Agents read documents over MCP the way they read panes: `phux_documents`
 lists them, `phux_tree_snapshot` and `phux_tree_wait` read a tree's JSON, and
 `phux_surface_snapshot` returns a surface's PNG as MCP image content
-([parity](./reference/parity.md)).
+([parity](./reference/parity.md)). They drive one with `phux_document_navigate`,
+`phux_document_click`, `phux_document_type`, `phux_document_key` and
+`phux_document_scroll`, one tool per intent. The loop: find a surface and its
+`control` in `phux_documents`, look at it with `phux_surface_snapshot`, click
+at pixel coordinates read off that image, and snapshot again to confirm. A
+document with no `control` refuses input, and a connection other than the
+owner socket needs an `input@CLASS` grant ([authority](#authority)).
 
 ## Supervision
 
