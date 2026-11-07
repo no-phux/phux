@@ -1,14 +1,12 @@
-**Phux Rune 0.1.0-alpha.16**: steadier phone Find on the latest Rune.
+**Phux Rune 0.1.0-alpha.17**: reef fish swim in open water.
 
-- **Phone Find keeps focus.** Pressing the drawn keyboard or accessory bar
-  no longer takes focus away from Find or sends its typing to the terminal
-  behind it. Palette editing, Return, Escape and one-shot modifiers keep
-  their existing behavior. The phone form is still a phone-sized desktop
-  window, not an iOS or Android app.
-- **Updated Rune engine.** Tracks upstream dev `53c7f60`, including
-  padded-text wrapping, pixel-snapped borders, moving-text rendering fixes
-  and frame timing reports in headless runs.
-- **Fullscreen follows the window.** The existing macOS fullscreen action
-  now targets its owning Rune window through Rune's transaction API.
+- **The reef is easier to read.** Fish no longer crowd into the coral at the
+  bottom of each reef. Working agents school in the open water above it, and
+  each project's school keeps to its own depth so schools stack instead of
+  clumping. Done agents hover above their reef and idle agents rest on top of
+  it, spread across the reef and drawn in front of the coral.
+- **Updated Rune engine.** Tracks upstream dev `a9da7e3`, with no visible
+  change in Rune.
 
-Includes alpha.15's Galaxy and Reef fleet views and JPEG mirror support.
+Includes alpha.16's steadier phone Find and alpha.15's Galaxy and Reef fleet
+views.
