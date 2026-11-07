@@ -4,6 +4,9 @@
 
 ### Features
 
+- Show a typed document (`phux agent doc`) as a pane, drawn by its content
+  type: images as images, JSON pretty-printed, text and Markdown as source.
+
 - Show a mirrored window as a pane: a session's pixel surfaces
   (`phux agent surface mirror`) land as leaves of their own, drawing the
   newest frame letterboxed in the card.

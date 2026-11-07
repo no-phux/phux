@@ -72,8 +72,14 @@ pub(crate) async fn spawn_document<A: DocumentApi>(spawn: ResourceSpawn<'_>) {
             return Err(SpawnError::ParentNotFound);
         }
         let actor = s.actor_for(client_id);
-        let core = A::create(s, core_parent, target, &actor)
-            .map_err(|_| SpawnError::ParentKindMismatch)?;
+        let name = resource.native_id.as_deref();
+        let core =
+            A::create(s, core_parent, target, name, &actor).map_err(|refusal| match refusal {
+                phux_core::Refusal::InvalidArgument { field: "name", .. } => {
+                    SpawnError::SpawnFailed(refusal.to_string())
+                }
+                _ => SpawnError::ParentKindMismatch,
+            })?;
         let wire = s
             .spawn_resource_actor(core, bundle.handle.clone(), token, bundle.actor.run())
             .map_err(|error| {

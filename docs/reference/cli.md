@@ -132,6 +132,10 @@ Usage: phux agent <SUBCOMMAND>
 Commands:
   answer            Answer a pane's pending agent question by validated choice.
   clear             Clear a pane's declared agent identity.
+  doc               A typed document is a pane's child resource that a producer
+                    feeds with whole documents of the content type it was opened
+                    with (Markdown, SVG, CSV, JSON, PNG...). Needs
+                    `TYPED_DOCUMENT`.
   emit              Append one record to a pane's agent session.
   explain           Explain the evidence behind one pane's state.
   install-claude    Make plain `claude` launch inside phux and declare its
@@ -241,6 +245,108 @@ Flags:
       --json           Print the confirmed `{schema_version, action, terminal,
                        record}` document; failures are one JSON error line on
                        stderr.
+  -h, --help           Print help
+
+Global flags:
+      --socket <PATH>  Server socket to dial (default: `$PHUX_SOCKET`)
+```
+
+## `phux agent doc`
+
+```text
+A typed document is a pane's child resource that a producer feeds with whole
+documents of the content type it was opened with (Markdown, SVG, CSV, JSON,
+PNG...). Needs `TYPED_DOCUMENT`.
+
+Usage: phux agent doc <SUBCOMMAND>
+
+Commands:
+  follow    Write every document as it arrives.
+  open      Open a document under the pane its producer runs in.
+  publish   Replace the document from a file, or stdin.
+  snapshot  Write the newest document to a file, or stdout.
+  help      Print this message or the help of the given subcommand(s)
+
+Flags:
+  -h, --help           Print help
+
+Global flags:
+      --socket <PATH>  Server socket to dial (default: `$PHUX_SOCKET`)
+```
+
+## `phux agent doc follow`
+
+```text
+Write every document as it arrives.
+
+Usage: phux agent doc follow [FLAGS] <TARGET>
+
+Arguments:
+  <TARGET>  The document resource.
+
+Flags:
+      --out <PATH>      Where each document goes, replacing the file; stdout
+                        when absent.
+      --timeout <SECS>  Give up after this many seconds.
+      --json
+  -h, --help            Print help
+
+Global flags:
+      --socket <PATH>   Server socket to dial (default: `$PHUX_SOCKET`)
+```
+
+## `phux agent doc open`
+
+```text
+Open a document under the pane its producer runs in.
+
+Usage: phux agent doc open <FLAGS> <TARGET>
+
+Arguments:
+  <TARGET>  The parent pane.
+
+Flags:
+      --type <MIME>    The content type, a MIME type such as `text/markdown`.
+      --name <NAME>    A name for the document.
+      --json
+  -h, --help           Print help
+
+Global flags:
+      --socket <PATH>  Server socket to dial (default: `$PHUX_SOCKET`)
+```
+
+## `phux agent doc publish`
+
+```text
+Replace the document from a file, or stdin.
+
+Usage: phux agent doc publish [--file <PATH>] [--json] <TARGET>
+
+Arguments:
+  <TARGET>  The document resource.
+
+Flags:
+      --file <PATH>    The document; stdin when absent.
+      --json
+  -h, --help           Print help
+
+Global flags:
+      --socket <PATH>  Server socket to dial (default: `$PHUX_SOCKET`)
+```
+
+## `phux agent doc snapshot`
+
+```text
+Write the newest document to a file, or stdout.
+
+Usage: phux agent doc snapshot [--out <PATH>] [--json] <TARGET>
+
+Arguments:
+  <TARGET>  The document resource.
+
+Flags:
+      --out <PATH>     Where the document goes; stdout when absent.
+      --json
   -h, --help           Print help
 
 Global flags:

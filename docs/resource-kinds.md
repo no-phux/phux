@@ -9,7 +9,11 @@ Where a part has landed, the live contract also lives in its home page
 
 ## Available now
 
-The host supports Terminal, AgentSession, AccessibilityTree and PixelSurface.
+The host supports Terminal, AgentSession, AccessibilityTree, PixelSurface and
+Document. A Document carries a content type fixed when it is opened, so a
+producer publishes Markdown, HTML, SVG, CSV, JSON or images without a new
+kind or a wire change; `phux agent doc open|publish|snapshot|follow` drive
+one ([protocol](./protocol.md#commands-events-resources)).
 Session membership and aggregate attach are kind-neutral. Apps supply bounded
 captures; the host publishes the complete attach barrier before releasing live
 output or lifecycle closes. AgentSession is catalogued at session attach, but
@@ -21,7 +25,9 @@ supplies the concrete engine ([architecture](./architecture.md#where-to-look)).
 
 Desktop and Rune discover tree/surface resources before the first frame,
 render plain JSON or letterboxed PNGs, and distinguish pending, empty and invalid
-documents. Documents can occupy mixed or document-only arrangements and survive
+documents. Desktop draws a Document by its content type: PNG, JPEG, GIF and
+WebP as images, JSON pretty-printed, text and `+xml`/`+json` as source
+(Markdown and HTML are not rendered), anything else as its size and type. Documents can occupy mixed or document-only arrangements and survive
 restore/reconnect. Their streams are **read-only**: typing, paste, terminal grid
 resizing and file uploads do not control their source. Input goes to the
 producer instead: `SEND_DOCUMENT_INPUT` relays one typed intent to the
@@ -42,6 +48,18 @@ Agents read documents over MCP the way they read panes: `phux_documents`
 lists them, `phux_tree_snapshot` and `phux_tree_wait` read a tree's JSON, and
 `phux_surface_snapshot` returns a surface's PNG as MCP image content
 ([parity](./reference/parity.md)).
+
+## Typed documents
+
+A `Document`'s content type is ASCII `type/subtype` with optional `;`
+parameters, at most 255 bytes; any other value fails the `SPAWN_RESOURCE`
+frame. It is fixed for the resource's life. A publish (at most 4 MiB) is
+checked by type family: `image/png` must be a PNG, `application/json` must
+parse, `text/*` and `+xml`/`+json` must be UTF-8, and any other type is
+opaque bytes. The `DocumentTypedV1` bootstrap payload is one length byte,
+the content type, then the newest document (empty before the first
+publish), so a late viewer learns the type; each `RESOURCE_OUTPUT` is a
+whole document of that type.
 
 ## Why
 

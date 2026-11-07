@@ -56,6 +56,7 @@ impl Connection {
             let fallback = match record.kind {
                 ResourceKind::AccessibilityTree => "Accessibility tree",
                 ResourceKind::PixelSurface => "Pixel surface",
+                ResourceKind::Document => "Document",
                 _ => return None,
             };
             Some(record.name.clone().unwrap_or_else(|| fallback.into()))

@@ -279,6 +279,7 @@ mod tests {
         assert_eq!(kinds[2]["tag"], 2);
         assert!(kinds[2]["gate"].is_null());
         assert_eq!(kinds[3]["tag"], 3);
+        assert_eq!(kinds[4]["tag"], 4);
     }
 
     /// `kinds` is the compiled catalog: every kind with its facet, and every
@@ -298,7 +299,8 @@ mod tests {
                 "TERMINAL",
                 "AGENT_SESSION",
                 "ACCESSIBILITY_TREE",
-                "PIXEL_SURFACE"
+                "PIXEL_SURFACE",
+                "DOCUMENT"
             ]
         );
         assert_kind_rows(kinds);

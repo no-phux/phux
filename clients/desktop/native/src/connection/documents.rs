@@ -8,6 +8,8 @@ pub(crate) use store::Documents;
 
 pub(crate) struct Document {
     record: ResourceRecord,
+    /// A typed document's content type, which picks how it is drawn.
+    content_type: Option<String>,
     pub content: Content,
 }
 
@@ -16,15 +18,34 @@ pub(crate) enum Content {
     Invalid(&'static str),
     Text(String),
     Image(Arc<gpui::RenderImage>),
-    /// A surface frame waiting for the decode worker.
+    /// A surface frame or typed image waiting for the decode worker.
     Pending(Vec<u8>),
 }
 
 pub(crate) fn is_document(kind: ResourceKind) -> bool {
     matches!(
         kind,
-        ResourceKind::AccessibilityTree | ResourceKind::PixelSurface
+        ResourceKind::AccessibilityTree | ResourceKind::PixelSurface | ResourceKind::Document
     )
+}
+
+/// The image format a document of `kind` and `content_type` decodes as,
+/// if it is an image.
+fn image_format(kind: ResourceKind, content_type: Option<&str>) -> Option<image::ImageFormat> {
+    if kind == ResourceKind::PixelSurface {
+        return Some(image::ImageFormat::Png);
+    }
+    match essence(content_type?).as_str() {
+        "image/png" => Some(image::ImageFormat::Png),
+        "image/jpeg" => Some(image::ImageFormat::Jpeg),
+        "image/gif" => Some(image::ImageFormat::Gif),
+        "image/webp" => Some(image::ImageFormat::WebP),
+        _ => None,
+    }
+}
+
+fn essence(content_type: &str) -> String {
+    phux_protocol::wire::frame::typed_document::essence_of(content_type).to_ascii_lowercase()
 }
 
 impl Connection {
@@ -36,13 +57,24 @@ impl Connection {
             return;
         };
         let id = publication.resource_id.clone();
-        if record.kind == ResourceKind::PixelSurface {
+        let content_type = publication.content_type.clone();
+        if image_format(record.kind, content_type.as_deref()).is_some() {
             let content = Content::Pending(publication.bytes.clone());
-            self.documents.submit(id, Document { record, content });
+            let document = Document {
+                record,
+                content_type,
+                content,
+            };
+            self.documents.submit(id, document);
             return;
         }
-        let content = decode(record.kind, &publication.bytes);
-        self.documents.insert(id, Document { record, content });
+        let content = decode(record.kind, content_type.as_deref(), &publication.bytes);
+        let document = Document {
+            record,
+            content_type,
+            content,
+        };
+        self.documents.insert(id, document);
     }
 
     pub(super) fn retain_documents(&mut self) {
@@ -69,27 +101,50 @@ impl Connection {
     }
 }
 
-fn decode(kind: ResourceKind, bytes: &[u8]) -> Content {
+fn decode(kind: ResourceKind, content_type: Option<&str>, bytes: &[u8]) -> Content {
     if bytes.is_empty() {
         return Content::Empty;
     }
+    if kind == ResourceKind::Document {
+        return decode_typed(content_type.unwrap_or_default(), bytes);
+    }
     match kind {
-        ResourceKind::AccessibilityTree => serde_json::from_slice::<serde_json::Value>(bytes)
-            .ok()
-            .and_then(|value| serde_json::to_string_pretty(&value).ok())
-            .map_or(
-                Content::Invalid("Invalid accessibility JSON"),
-                Content::Text,
-            ),
-        ResourceKind::PixelSurface => {
-            surface_image(bytes).map_or(Content::Invalid("Invalid PNG frame"), Content::Image)
-        }
+        ResourceKind::AccessibilityTree => pretty_json(bytes).map_or(
+            Content::Invalid("Invalid accessibility JSON"),
+            Content::Text,
+        ),
+        ResourceKind::PixelSurface => surface_image(bytes, image::ImageFormat::Png)
+            .map_or(Content::Invalid("Invalid PNG frame"), Content::Image),
         _ => Content::Invalid("Unsupported document kind"),
     }
 }
 
-fn surface_image(png: &[u8]) -> Option<Arc<gpui::RenderImage>> {
-    let mut buffer = image::load_from_memory_with_format(png, image::ImageFormat::Png)
+/// A typed document by its content type: images drawn, JSON pretty, text
+/// and `+xml`/`+json` as source, anything else a line saying what it is.
+/// Markdown and HTML are shown as source; no engine renders them.
+fn decode_typed(content_type: &str, bytes: &[u8]) -> Content {
+    let essence = essence(content_type);
+    if let Some(format) = image_format(ResourceKind::Document, Some(content_type)) {
+        return surface_image(bytes, format)
+            .map_or(Content::Invalid("Invalid image"), Content::Image);
+    }
+    if essence == "application/json" {
+        return pretty_json(bytes).map_or(Content::Invalid("Invalid JSON"), Content::Text);
+    }
+    if essence.starts_with("text/") || essence.ends_with("+xml") || essence.ends_with("+json") {
+        return String::from_utf8(bytes.to_vec())
+            .map_or(Content::Invalid("Invalid UTF-8 text"), Content::Text);
+    }
+    Content::Text(format!("{} bytes of {content_type}", bytes.len()))
+}
+
+fn pretty_json(bytes: &[u8]) -> Option<String> {
+    let value = serde_json::from_slice::<serde_json::Value>(bytes).ok()?;
+    serde_json::to_string_pretty(&value).ok()
+}
+
+fn surface_image(bytes: &[u8], format: image::ImageFormat) -> Option<Arc<gpui::RenderImage>> {
+    let mut buffer = image::load_from_memory_with_format(bytes, format)
         .ok()?
         .to_rgba8();
     for pixel in buffer.as_chunks_mut::<4>().0 {
@@ -121,6 +176,7 @@ mod tests {
                 ResourceId::local(9),
                 Document {
                     record: record.clone(),
+                    content_type: None,
                     content,
                 },
             );
@@ -137,11 +193,35 @@ mod tests {
     #[test]
     fn empty_and_invalid_documents_have_explicit_states() {
         for kind in [ResourceKind::AccessibilityTree, ResourceKind::PixelSurface] {
-            assert!(matches!(decode(kind, b""), Content::Empty));
+            assert!(matches!(decode(kind, None, b""), Content::Empty));
             assert!(matches!(
-                decode(kind, b"not a document"),
+                decode(kind, None, b"not a document"),
                 Content::Invalid(_)
             ));
         }
+    }
+
+    #[test]
+    fn a_typed_document_is_drawn_by_its_content_type() {
+        let typed = |content_type: &str, bytes: &[u8]| {
+            decode(ResourceKind::Document, Some(content_type), bytes)
+        };
+        let png = crate::workspace::view_tests::documents::png();
+        assert!(matches!(typed("image/png", &png), Content::Image(_)));
+        assert!(matches!(typed("image/jpeg", b"nope"), Content::Invalid(_)));
+        assert!(matches!(typed("application/json", b"{\"a\":1}"),
+            Content::Text(text) if text == "{\n  \"a\": 1\n}"));
+        for content_type in ["text/markdown", "text/html; charset=utf-8", "image/svg+xml"] {
+            assert!(matches!(typed(content_type, b"<b>hi</b>"),
+                Content::Text(text) if text == "<b>hi</b>"));
+        }
+        assert!(matches!(typed("text/csv", b"\xff"), Content::Invalid(_)));
+        assert!(matches!(typed("application/pdf", b"%PDF-1.7"),
+            Content::Text(text) if text == "8 bytes of application/pdf"));
+        assert!(matches!(typed("text/plain", b""), Content::Empty));
+        assert_eq!(
+            image_format(ResourceKind::Document, Some("Image/WebP")),
+            Some(image::ImageFormat::WebP)
+        );
     }
 }

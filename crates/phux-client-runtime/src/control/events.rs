@@ -361,8 +361,8 @@ pub enum Event {
         session: AgentSessionInfo,
     },
     /// A replicated document (`docs/resource-kinds.md`) arrived whole: the
-    /// bootstrap cut of an attached `AccessibilityTree` or `PixelSurface`,
-    /// or a newer publish of it. Live-only: nothing is journaled, and the
+    /// bootstrap cut of an attached `AccessibilityTree`, `PixelSurface` or
+    /// typed `Document`, or a newer publish of it. Live-only: nothing is journaled, and the
     /// newest document for a resource is the one to show.
     DocumentPublished {
         /// The document, its kind, and its publish sequence.

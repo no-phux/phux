@@ -5,6 +5,7 @@ use super::{
     ResourceKind, SpawnResource, decode_flag, decode_idempotency_key, decode_terminal_id, field,
     utf8_value,
 };
+use crate::wire::frame::typed_document::{MAX_CONTENT_TYPE_BYTES, validate_content_type};
 
 /// Take one of `SPAWN_RESOURCE`'s resource fields (11-17); ignore other ids.
 pub(super) fn absorb_spawn_resource_field(
@@ -17,7 +18,9 @@ pub(super) fn absorb_spawn_resource_field(
         f::KIND => resource.kind = ResourceKind::from_wire(sub!(value, Decoder::read_u8)),
         f::PARENT => resource.parent = Some(sub!(value, decode_terminal_id)),
         f::PROVIDER => {
-            resource.provider = Some(decode_agent_facet_str(value, MAX_RESOURCE_PROVIDER_BYTES)?);
+            // A document's content type may be longer than a provider name;
+            // `validate_spawn_for_kind` holds every other kind to its bound.
+            resource.provider = Some(decode_agent_facet_str(value, MAX_CONTENT_TYPE_BYTES)?);
         }
         f::NATIVE_ID => {
             resource.native_id = Some(decode_agent_facet_str(value, MAX_RESOURCE_NATIVE_ID_BYTES)?);
@@ -96,6 +99,13 @@ pub(super) fn validate_spawn_for_kind(frame: &FrameKind) -> Result<(), DecodeErr
         field,
         required,
     };
+    if !matches!(kind, ResourceKind::Document)
+        && provider
+            .as_ref()
+            .is_some_and(|p| p.len() > MAX_RESOURCE_PROVIDER_BYTES)
+    {
+        return Err(DecodeError::AgentFacetLimitExceeded);
+    }
     match kind {
         ResourceKind::Terminal => {
             for (field, present) in [
@@ -112,7 +122,8 @@ pub(super) fn validate_spawn_for_kind(frame: &FrameKind) -> Result<(), DecodeErr
         // provider, or the application an accessibility tree observes.
         ResourceKind::AgentSession
         | ResourceKind::AccessibilityTree
-        | ResourceKind::PixelSurface => {
+        | ResourceKind::PixelSurface
+        | ResourceKind::Document => {
             for (field, present) in [
                 (field::spawn_terminal::PARENT, parent.is_some()),
                 (field::spawn_terminal::PROVIDER, provider.is_some()),
@@ -136,6 +147,14 @@ pub(super) fn validate_spawn_for_kind(frame: &FrameKind) -> Result<(), DecodeErr
                 if present {
                     return Err(rule(field, false));
                 }
+            }
+            // A document's content type is a MIME type.
+            if matches!(kind, ResourceKind::Document)
+                && provider
+                    .as_deref()
+                    .is_some_and(|p| validate_content_type(p).is_err())
+            {
+                return Err(rule(field::spawn_terminal::PROVIDER, true));
             }
         }
         ResourceKind::Unknown { .. } => {}

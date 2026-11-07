@@ -435,6 +435,7 @@ const fn document_kind(profile: BootstrapStreamProfile) -> Option<ResourceKind> 
     match profile {
         BootstrapStreamProfile::AccessibilityTreeJsonV1 => Some(ResourceKind::AccessibilityTree),
         BootstrapStreamProfile::PixelSurfacePngV1 => Some(ResourceKind::PixelSurface),
+        BootstrapStreamProfile::DocumentTypedV1 => Some(ResourceKind::Document),
         _ => None,
     }
 }
@@ -445,6 +446,8 @@ struct DocumentStaging {
     kind: Option<ResourceKind>,
     base_seq: u64,
     buffer: Vec<u8>,
+    /// A typed document's content type, from its bootstrap.
+    content_type: Option<String>,
 }
 
 const fn profile_matches(selected: BootstrapProfile, incoming: BootstrapStreamProfile) -> bool {

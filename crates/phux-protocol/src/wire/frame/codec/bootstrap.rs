@@ -29,6 +29,9 @@ pub(in crate::wire) fn encode_bootstrap_codec(codec: BootstrapCodec, enc: &mut E
         BootstrapCodec::PixelSurfacePngV1 => {
             enc.write_u8(BootstrapCodec::PIXEL_SURFACE_PNG_V1_TAG);
         }
+        BootstrapCodec::DocumentTypedV1 => {
+            enc.write_u8(BootstrapCodec::DOCUMENT_TYPED_V1_TAG);
+        }
     }
 }
 
@@ -48,6 +51,7 @@ pub(in crate::wire) fn decode_bootstrap_codec(
             Ok(BootstrapCodec::AccessibilityTreeJsonV1)
         }
         BootstrapCodec::PIXEL_SURFACE_PNG_V1_TAG => Ok(BootstrapCodec::PixelSurfacePngV1),
+        BootstrapCodec::DOCUMENT_TYPED_V1_TAG => Ok(BootstrapCodec::DocumentTypedV1),
         _ => Err(DecodeError::InvalidBootstrapProfile),
     }
 }
@@ -115,6 +119,7 @@ pub(in crate::wire) const fn decode_bootstrap_stream_profile(
         (BootstrapCodec::PixelSurfacePngV1, 0, None) => {
             Ok(BootstrapStreamProfile::PixelSurfacePngV1)
         }
+        (BootstrapCodec::DocumentTypedV1, 0, None) => Ok(BootstrapStreamProfile::DocumentTypedV1),
         _ => Err(DecodeError::InvalidBootstrapProfile),
     }
 }

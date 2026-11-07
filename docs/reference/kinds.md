@@ -236,6 +236,25 @@ None.
 
 None.
 
+## Kind `DOCUMENT`
+
+Wire tag `4`; gate: `typed_document` (features_ext).
+
+### Methods
+
+The kind's facet.
+
+| Method | Carrier | Requires | Mutating | Gate | Status |
+|---|---|---|---|---|---|
+
+### Events
+
+None.
+
+### Resource metadata keys
+
+None.
+
 ## Client frame classification
 
 Every client-originated frame lands on exactly one row.

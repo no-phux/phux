@@ -169,7 +169,7 @@ pub struct ResourceRecordDescriptor {
     pub session_key: String,
     pub name: Option<String>,
     /// `terminal`, `agent_session`, `accessibility_tree`, `pixel_surface`,
-    /// or `kind-<tag>`.
+    /// `document`, or `kind-<tag>`.
     pub kind: String,
     /// `remove` or `retain`.
     pub on_exit: String,

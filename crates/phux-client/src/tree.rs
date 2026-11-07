@@ -1,12 +1,13 @@
-//! The document resources, an `AccessibilityTree` or a `PixelSurface`, over
-//! a [`Connection`].
+//! The document resources, an `AccessibilityTree`, a `PixelSurface` or a
+//! typed `Document`, over a [`Connection`].
 //!
 //! Open one under the Terminal its producer runs in, publish whole
 //! documents to it, read its newest document, or follow every document as
 //! it arrives (`docs/resource-kinds.md`). A tree's documents are JSON; a
-//! surface's are PNG images.
+//! surface's are PNG images; a typed document's are of the content type it
+//! was opened with.
 
-use phux_protocol::caps::ServerFeatureExt;
+use phux_protocol::caps::{BootstrapStreamProfile, ServerFeatureExt};
 use phux_protocol::ids::{GroupId, ResourceId};
 use phux_protocol::wire::frame::{
     AgentEvent, Command, CommandResult, CommandValue, ErrorCode, FrameKind, SpawnError,
@@ -26,6 +27,9 @@ pub enum Kind {
     Tree,
     /// A window or display's pixels, as PNG images.
     Surface,
+    /// A document of the content type it was opened with; the `target` of
+    /// a call that opens one is that content type.
+    Document,
 }
 
 impl Kind {
@@ -35,6 +39,7 @@ impl Kind {
         match self {
             Self::Tree => ServerFeatureExt::AccessibilityTree,
             Self::Surface => ServerFeatureExt::PixelSurface,
+            Self::Document => ServerFeatureExt::TypedDocument,
         }
     }
 
@@ -44,6 +49,7 @@ impl Kind {
         match self {
             Self::Tree => "accessibility tree",
             Self::Surface => "pixel surface",
+            Self::Document => "document",
         }
     }
 
@@ -51,6 +57,7 @@ impl Kind {
         match self {
             Self::Tree => SpawnResource::accessibility_tree(parent, target),
             Self::Surface => SpawnResource::pixel_surface(parent, target),
+            Self::Document => SpawnResource::document(parent, target, None),
         }
     }
 }
@@ -77,8 +84,10 @@ const REQUEST_DETACH: u32 = 5;
 pub struct Document {
     /// The stream sequence of this document.
     pub seq: u64,
-    /// The document, one JSON value.
+    /// The document: JSON for a tree, PNG for a surface.
     pub bytes: Vec<u8>,
+    /// A typed document's content type; `None` for a tree or surface.
+    pub content_type: Option<String>,
 }
 
 /// A publish the server took.
@@ -171,7 +180,7 @@ pub fn require_kind(conn: &Connection, kind: Kind) -> Result<(), TreeError> {
 ///
 /// [`TreeError::Unsupported`] when it serves none.
 pub fn require_support(conn: &Connection) -> Result<(), TreeError> {
-    if [Kind::Tree, Kind::Surface]
+    if [Kind::Tree, Kind::Surface, Kind::Document]
         .iter()
         .any(|kind| require_kind(conn, *kind).is_ok())
     {
@@ -224,8 +233,41 @@ pub async fn open_kind(
     parent: &ResourceId,
     target: &str,
 ) -> Result<Opened, TreeError> {
+    open_spawn(
+        conn,
+        kind,
+        parent,
+        target,
+        kind.spawn(parent.clone(), target),
+    )
+    .await
+}
+
+/// Open a document of `content_type` (a MIME type, e.g. `text/markdown`)
+/// under `parent`, optionally named; the caller becomes its producer.
+///
+/// # Errors
+///
+/// The refusal, or a connection failure.
+pub async fn open_document(
+    conn: &mut Connection,
+    parent: &ResourceId,
+    content_type: &str,
+    name: Option<&str>,
+) -> Result<Opened, TreeError> {
+    let spawn = SpawnResource::document(parent.clone(), content_type, name.map(str::to_owned));
+    open_spawn(conn, Kind::Document, parent, content_type, spawn).await
+}
+
+async fn open_spawn(
+    conn: &mut Connection,
+    kind: Kind,
+    parent: &ResourceId,
+    target: &str,
+    spawn: SpawnResource,
+) -> Result<Opened, TreeError> {
     require_kind(conn, kind)?;
-    validate_target(target)?;
+    validate_target(kind, target)?;
     let frame = FrameKind::SpawnResource {
         request_id: REQUEST_SPAWN,
         group: GroupId::new(1),
@@ -237,7 +279,7 @@ pub async fn open_kind(
         owner_terminal: None,
         agent_session: None,
         initial_size: None,
-        resource: Some(Box::new(kind.spawn(parent.clone(), target))),
+        resource: Some(Box::new(spawn)),
     };
     let (answer, interleaved) = conn.request_spawn(&frame).await?.into_parts();
     crate::state::report_degradation(&interleaved);
@@ -265,7 +307,11 @@ pub async fn open_kind(
     }
 }
 
-fn validate_target(target: &str) -> Result<(), TreeError> {
+fn validate_target(kind: Kind, target: &str) -> Result<(), TreeError> {
+    if kind == Kind::Document {
+        return phux_protocol::wire::frame::typed_document::validate_content_type(target)
+            .map_err(|error| TreeError::Invalid(format!("{target:?}: {error}")));
+    }
     let max = phux_protocol::wire::frame::MAX_RESOURCE_PROVIDER_BYTES;
     if target.is_empty() || target.len() > max {
         return Err(TreeError::Invalid(format!(
@@ -426,6 +472,9 @@ struct Reader {
     tree: ResourceId,
     base_seq: u64,
     buffer: Vec<u8>,
+    /// Whether the bootstrap is typed, and the content type it named.
+    typed: bool,
+    content_type: Option<String>,
 }
 
 impl Reader {
@@ -434,6 +483,30 @@ impl Reader {
             tree,
             base_seq: 0,
             buffer: Vec::new(),
+            typed: false,
+            content_type: None,
+        }
+    }
+
+    /// The bootstrap's document, split from its content type when typed.
+    fn ready(&mut self) -> Result<Document, TreeError> {
+        let buffer = std::mem::take(&mut self.buffer);
+        if !self.typed {
+            return Ok(self.document(self.base_seq, buffer));
+        }
+        let (content_type, bytes) =
+            phux_protocol::wire::frame::typed_document::split_bootstrap(&buffer).ok_or_else(
+                || AttachError::Protocol("a typed bootstrap without a content type".to_owned()),
+            )?;
+        self.content_type = Some(content_type.to_owned());
+        Ok(self.document(self.base_seq, bytes.to_vec()))
+    }
+
+    fn document(&self, seq: u64, bytes: Vec<u8>) -> Document {
+        Document {
+            seq,
+            bytes,
+            content_type: self.content_type.clone(),
         }
     }
 
@@ -442,8 +515,10 @@ impl Reader {
             FrameKind::BootstrapBegin {
                 terminal_id,
                 base_seq,
+                profile,
                 ..
             } if terminal_id == self.tree => {
+                self.typed = profile == BootstrapStreamProfile::DocumentTypedV1;
                 self.base_seq = base_seq;
                 self.buffer.clear();
                 Absorbed::Nothing
@@ -457,20 +532,14 @@ impl Reader {
                 Absorbed::Nothing
             }
             FrameKind::BootstrapReady { terminal_id, .. } if terminal_id == self.tree => {
-                Absorbed::Document(Document {
-                    seq: self.base_seq,
-                    bytes: std::mem::take(&mut self.buffer),
-                })
+                Absorbed::Document(self.ready()?)
             }
             FrameKind::ResourceOutput {
                 terminal_id,
                 seq,
                 bytes,
                 ..
-            } if terminal_id == self.tree => Absorbed::Document(Document {
-                seq,
-                bytes: bytes.to_vec(),
-            }),
+            } if terminal_id == self.tree => Absorbed::Document(self.document(seq, bytes.to_vec())),
             FrameKind::ResourceClosed {
                 terminal_id: terminal,
                 ..
@@ -491,70 +560,4 @@ impl Reader {
 }
 
 #[cfg(test)]
-mod tests {
-    #[test]
-    fn invalid_target_labels_are_refused_before_spawn() {
-        assert!(super::validate_target("").is_err());
-        assert!(super::validate_target(&"x".repeat(121)).is_err());
-        assert!(super::validate_target(&"雪".repeat(41)).is_err());
-        assert!(super::validate_target(&"雪".repeat(40)).is_ok());
-    }
-    use super::*;
-    use phux_protocol::caps::BootstrapStreamProfile;
-    use phux_protocol::ids::{BootstrapId, StreamId};
-
-    #[test]
-    fn a_bootstrap_folds_into_one_document_and_live_frames_into_one_each() {
-        let tree = ResourceId::local(4);
-        let stream_id = StreamId::new(1).unwrap();
-        let bootstrap_id = BootstrapId::new(1).unwrap();
-        let mut reader = Reader::new(tree.clone());
-        let begin = FrameKind::BootstrapBegin {
-            terminal_id: tree.clone(),
-            stream_id,
-            bootstrap_id,
-            profile: BootstrapStreamProfile::AccessibilityTreeJsonV1,
-            cols: 0,
-            rows: 0,
-            base_seq: 7,
-        };
-        assert!(matches!(reader.absorb(begin).unwrap(), Absorbed::Nothing));
-        for (chunk_seq, payload) in [(0, &b"{\"a\":"[..]), (1, &b"1}"[..])] {
-            let chunk = FrameKind::BootstrapChunk {
-                terminal_id: tree.clone(),
-                stream_id,
-                bootstrap_id,
-                chunk_seq,
-                payload: bytes::Bytes::copy_from_slice(payload),
-            };
-            assert!(matches!(reader.absorb(chunk).unwrap(), Absorbed::Nothing));
-        }
-        let ready = FrameKind::BootstrapReady {
-            terminal_id: tree.clone(),
-            stream_id,
-            bootstrap_id,
-            history_cursor: None,
-        };
-        let Absorbed::Document(document) = reader.absorb(ready).unwrap() else {
-            panic!("READY yields the document");
-        };
-        assert_eq!(
-            document,
-            Document {
-                seq: 7,
-                bytes: b"{\"a\":1}".to_vec()
-            }
-        );
-        let live = FrameKind::ResourceOutput {
-            terminal_id: tree,
-            stream_id,
-            bootstrap_id,
-            seq: 8,
-            bytes: bytes::Bytes::from_static(b"{\"a\":2}"),
-        };
-        let Absorbed::Document(document) = reader.absorb(live).unwrap() else {
-            panic!("live output yields a document");
-        };
-        assert_eq!(document.seq, 8);
-    }
-}
+mod tests;

@@ -158,12 +158,14 @@ pub struct SpawnResource {
     /// application an accessibility tree observes (field 13; at most
     /// [`MAX_RESOURCE_PROVIDER_BYTES`](super::MAX_RESOURCE_PROVIDER_BYTES)
     /// bytes, non-empty), or the window or display a pixel surface
-    /// captures. Required for `AgentSession`, `AccessibilityTree` and
-    /// `PixelSurface`.
+    /// captures, or a document's content type (at most
+    /// [`MAX_CONTENT_TYPE_BYTES`](super::typed_document::MAX_CONTENT_TYPE_BYTES)).
+    /// Required for `AgentSession`, `AccessibilityTree`, `PixelSurface` and
+    /// `Document`.
     pub provider: Option<String>,
     /// Opaque provider-native session id (field 14; at most
     /// [`MAX_RESOURCE_NATIVE_ID_BYTES`](super::MAX_RESOURCE_NATIVE_ID_BYTES)
-    /// bytes, non-empty).
+    /// bytes, non-empty), or a document's optional name.
     pub native_id: Option<String>,
     /// Bind the new resource to the server's instance token (field 15,
     /// ADR-0109), answered with [`SpawnResult::OkBound`] by a server
@@ -212,6 +214,23 @@ impl SpawnResource {
             kind: ResourceKind::PixelSurface,
             parent: Some(parent),
             provider: Some(target.into()),
+            ..Self::default()
+        }
+    }
+
+    /// A document of `content_type` under `parent`, the Terminal its
+    /// producer runs in, optionally named.
+    #[must_use]
+    pub fn document(
+        parent: ResourceId,
+        content_type: impl Into<String>,
+        name: Option<String>,
+    ) -> Self {
+        Self {
+            kind: ResourceKind::Document,
+            parent: Some(parent),
+            provider: Some(content_type.into()),
+            native_id: name,
             ..Self::default()
         }
     }

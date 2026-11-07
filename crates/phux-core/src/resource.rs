@@ -38,6 +38,10 @@ pub enum ResourceKind {
     /// a helper that runs in a Terminal; the newest image wins, and its size
     /// is the surface's geometry.
     PixelSurface,
+    /// A replicated document of any content type, fixed when it is opened
+    /// (Markdown, SVG, JSON, PNG...), published by a helper that runs in a
+    /// Terminal; the newest document wins.
+    Document,
 }
 
 impl ResourceKind {
@@ -49,6 +53,7 @@ impl ResourceKind {
             Self::AgentSession => "agent-session",
             Self::AccessibilityTree => "accessibility-tree",
             Self::PixelSurface => "pixel-surface",
+            Self::Document => "document",
         }
     }
 }
@@ -100,6 +105,8 @@ pub enum LaunchSpec {
     Tree(TreeLaunch),
     /// A [`ResourceKind::PixelSurface`] binding.
     Surface(SurfaceLaunch),
+    /// A [`ResourceKind::Document`] binding.
+    Document(DocumentLaunch),
 }
 
 impl LaunchSpec {
@@ -111,6 +118,7 @@ impl LaunchSpec {
             Self::Agent(_) => ResourceKind::AgentSession,
             Self::Tree(_) => ResourceKind::AccessibilityTree,
             Self::Surface(_) => ResourceKind::PixelSurface,
+            Self::Document(_) => ResourceKind::Document,
         }
     }
 }
@@ -129,6 +137,14 @@ pub struct TreeLaunch {
 pub struct SurfaceLaunch {
     /// The captured window or display.
     pub target: String,
+}
+
+/// What a document holds: its content type, a MIME type such as
+/// `text/markdown`, fixed for the resource's life.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DocumentLaunch {
+    /// The documents' content type.
+    pub content_type: String,
 }
 
 /// Where a resource came from.

@@ -1,7 +1,7 @@
 //! The document apps: a producer-fed, replicated document whose newest
 //! version is what every viewer wants (`docs/resource-kinds.md`). One
-//! generic app serves every [`DocumentApi`]: the `AccessibilityTree` (JSON)
-//! and the `PixelSurface` (PNG).
+//! generic app serves every [`DocumentApi`]: the `AccessibilityTree` (JSON),
+//! the `PixelSurface` (PNG) and the `Document` (any content type).
 
 use bytes::Bytes;
 use futures_util::FutureExt as _;
@@ -11,7 +11,7 @@ use phux_protocol::ids::{OperationId, ResourceKey, Revision};
 use phux_protocol::wire::frame::{Command, CommandResult, CommandValue, ErrorCode, FrameKind};
 use phux_tree::{
     DocumentKind, DocumentResource as _, PublishRejection, PublishRequest, SurfaceDocument,
-    TreeDocument,
+    TreeDocument, TypedDocument,
 };
 use tokio::sync::oneshot;
 
@@ -33,25 +33,33 @@ pub(crate) use spawn::spawn_document;
 
 /// What the host needs from a document kind beyond its engine.
 pub(crate) trait DocumentApi: DocumentKind {
-    /// Validate a captured payload without constructing a second document.
-    fn validate_bootstrap(bytes: &[u8]) -> Result<(), String>;
+    /// Validate a captured payload of a resource opened on `target` without
+    /// constructing a second document.
+    fn validate_bootstrap(target: &str, bytes: &[u8]) -> Result<(), String>;
+    /// A viewer's bootstrap payload for the newest `document`: the document
+    /// itself unless the kind's codec frames it.
+    fn bootstrap_payload(_target: &str, document: Option<&Bytes>) -> Bytes {
+        document.cloned().unwrap_or_default()
+    }
     /// The stream profile a viewer's bootstrap names.
     const PROFILE: BootstrapStreamProfile;
     /// The kind on the wire.
     const WIRE_KIND: phux_protocol::ids::ResourceKind;
     /// How a message names the kind, e.g. "accessibility tree".
     const LABEL: &'static str;
-    /// Create the registry record under `parent`, running.
+    /// Create the registry record under `parent`, running; only a typed
+    /// document keeps `name`.
     fn create(
         state: &mut ServerState,
         parent: phux_core::ids::ResourceId,
         target: &str,
+        name: Option<&str>,
         actor: &phux_core::actor::Actor,
     ) -> Result<phux_core::ids::ResourceId, phux_core::Refusal>;
 }
 
 impl DocumentApi for TreeDocument {
-    fn validate_bootstrap(bytes: &[u8]) -> Result<(), String> {
+    fn validate_bootstrap(_target: &str, bytes: &[u8]) -> Result<(), String> {
         serde_json::from_slice::<serde::de::IgnoredAny>(bytes)
             .map(|_| ())
             .map_err(|error| format!("the document is not JSON: {error}"))
@@ -66,6 +74,7 @@ impl DocumentApi for TreeDocument {
         state: &mut ServerState,
         parent: phux_core::ids::ResourceId,
         target: &str,
+        _name: Option<&str>,
         actor: &phux_core::actor::Actor,
     ) -> Result<phux_core::ids::ResourceId, phux_core::Refusal> {
         state.create_document(
@@ -79,7 +88,7 @@ impl DocumentApi for TreeDocument {
 }
 
 impl DocumentApi for SurfaceDocument {
-    fn validate_bootstrap(bytes: &[u8]) -> Result<(), String> {
+    fn validate_bootstrap(_target: &str, bytes: &[u8]) -> Result<(), String> {
         phux_tree::png_size(bytes).map(|_| ())
     }
 
@@ -92,6 +101,7 @@ impl DocumentApi for SurfaceDocument {
         state: &mut ServerState,
         parent: phux_core::ids::ResourceId,
         target: &str,
+        _name: Option<&str>,
         actor: &phux_core::actor::Actor,
     ) -> Result<phux_core::ids::ResourceId, phux_core::Refusal> {
         state.create_document(
@@ -99,6 +109,40 @@ impl DocumentApi for SurfaceDocument {
             phux_core::LaunchSpec::Surface(phux_core::resource::SurfaceLaunch {
                 target: target.to_owned(),
             }),
+            actor,
+        )
+    }
+}
+
+/// A typed document's `target` is its content type, which every viewer's
+/// bootstrap names before the newest document.
+impl DocumentApi for TypedDocument {
+    fn validate_bootstrap(content_type: &str, bytes: &[u8]) -> Result<(), String> {
+        <Self as DocumentKind>::validate(content_type, bytes)
+    }
+
+    fn bootstrap_payload(content_type: &str, document: Option<&Bytes>) -> Bytes {
+        let document = document.map_or(&[][..], |bytes| &bytes[..]);
+        phux_protocol::wire::frame::typed_document::encode_bootstrap(content_type, document).into()
+    }
+
+    const PROFILE: BootstrapStreamProfile = BootstrapStreamProfile::DocumentTypedV1;
+    const WIRE_KIND: phux_protocol::ids::ResourceKind = phux_protocol::ids::ResourceKind::Document;
+    const LABEL: &'static str = "document";
+
+    fn create(
+        state: &mut ServerState,
+        parent: phux_core::ids::ResourceId,
+        content_type: &str,
+        name: Option<&str>,
+        actor: &phux_core::actor::Actor,
+    ) -> Result<phux_core::ids::ResourceId, phux_core::Refusal> {
+        state.create_named_document(
+            parent,
+            phux_core::LaunchSpec::Document(phux_core::resource::DocumentLaunch {
+                content_type: content_type.to_owned(),
+            }),
+            name.map(str::to_owned),
             actor,
         )
     }
@@ -112,6 +156,8 @@ pub(crate) struct DocumentApp<A: DocumentApi>(std::marker::PhantomData<A>);
 pub(crate) static TREE_APP: DocumentApp<TreeDocument> = DocumentApp(std::marker::PhantomData);
 /// Serves [`ResourceKind::PixelSurface`].
 pub(crate) static SURFACE_APP: DocumentApp<SurfaceDocument> = DocumentApp(std::marker::PhantomData);
+/// Serves [`ResourceKind::Document`].
+pub(crate) static DOCUMENT_APP: DocumentApp<TypedDocument> = DocumentApp(std::marker::PhantomData);
 
 impl<A: DocumentApi> ResourceApp for DocumentApp<A> {
     fn supports_organization_launch(&self) -> bool {

@@ -42,6 +42,9 @@ impl FrameKind {
             BootstrapStreamProfile::PixelSurfacePngV1 => {
                 (BootstrapCodec::PixelSurfacePngV1, OutputMode::Raw)
             }
+            BootstrapStreamProfile::DocumentTypedV1 => {
+                (BootstrapCodec::DocumentTypedV1, OutputMode::Raw)
+            }
         };
         enc.write_field_with(field::bootstrap_begin::CODEC, |e| {
             encode_bootstrap_codec(codec, e);

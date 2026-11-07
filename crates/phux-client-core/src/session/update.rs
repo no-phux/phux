@@ -82,11 +82,22 @@ impl<E: EngineAdapter> SessionKernel<E> {
                 if let Some(staging) = self.documents.get_mut(terminal_id)
                     && let Some(kind) = staging.kind
                 {
+                    let mut bytes = std::mem::take(&mut staging.buffer);
+                    // A typed bootstrap names the content type first; one
+                    // that does not leaves the bytes untyped.
+                    if kind == ResourceKind::Document
+                        && let Some((content_type, document)) =
+                            phux_protocol::wire::frame::typed_document::split_bootstrap(&bytes)
+                    {
+                        staging.content_type = Some(content_type.to_owned());
+                        bytes = document.to_vec();
+                    }
                     effects.push(KernelEffect::Document(DocumentPublication {
                         resource_id: terminal_id.clone(),
                         kind,
                         seq: staging.base_seq,
-                        bytes: std::mem::take(&mut staging.buffer),
+                        bytes,
+                        content_type: staging.content_type.clone(),
                     }));
                 }
                 Ok(())
@@ -97,12 +108,15 @@ impl<E: EngineAdapter> SessionKernel<E> {
                 payload,
                 ..
             } if self.documents.contains_key(terminal_id) => {
-                if let Some(kind) = self.documents.get(terminal_id).and_then(|s| s.kind) {
+                if let Some(staging) = self.documents.get(terminal_id)
+                    && let Some(kind) = staging.kind
+                {
                     effects.push(KernelEffect::Document(DocumentPublication {
                         resource_id: terminal_id.clone(),
                         kind,
                         seq,
                         bytes: payload.to_vec(),
+                        content_type: staging.content_type.clone(),
                     }));
                 }
                 Ok(())
