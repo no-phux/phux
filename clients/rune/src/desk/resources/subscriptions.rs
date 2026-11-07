@@ -63,8 +63,12 @@ impl Desk {
         document.subscription = Subscription::Refused;
         document.invalidate_surface();
         document.seq = None;
+        let reason = match result {
+            CommandResult::Error { message, .. } => message,
+            other => format!("{other:?}"),
+        };
         document.body = Body::Invalid(format!(
-            "Mirror subscription failed: {result:?}. Reopen this mirror from the palette to retry."
+            "Mirror subscription failed: {reason}. Reopen this mirror from the palette to retry."
         ));
         self.generation += 1;
         true

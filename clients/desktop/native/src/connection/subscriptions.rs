@@ -10,6 +10,8 @@ pub(super) struct Subscription {
     request: u32,
     detach_request: Option<u32>,
     accepted: bool,
+    /// The server's reason for refusing the attach, shown in the pane.
+    refusal: Option<String>,
 }
 
 pub(super) fn same_binding(a: &ResourceRecord, b: &ResourceRecord) -> bool {
@@ -63,6 +65,7 @@ impl Connection {
                 request,
                 detach_request,
                 accepted: false,
+                refusal: None,
             },
         );
         request
@@ -97,7 +100,17 @@ impl Connection {
             && subscription.epoch == epoch
         {
             subscription.accepted = error.is_none();
+            subscription.refusal = error.map(str::to_owned);
         }
+    }
+
+    /// Why the server refused to show `id` (for example a missing
+    /// `observe@display` grant), once it said.
+    pub(crate) fn document_refusal(&self, id: &ResourceId) -> Option<String> {
+        self.document_subscriptions
+            .borrow()
+            .get(id)
+            .and_then(|subscription| subscription.refusal.clone())
     }
 
     pub(crate) fn document_subscribed(&self, id: &ResourceId) -> bool {

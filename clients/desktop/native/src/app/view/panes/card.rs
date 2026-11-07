@@ -67,6 +67,9 @@ fn document_body(
     let refused = id
         .zip(connection)
         .and_then(|(id, c)| c.document_input_refused(id));
+    let attach_refused = id
+        .zip(connection)
+        .and_then(|(id, c)| c.document_refusal(id));
     let body = match content {
         Some(Content::Image(image)) => {
             let image = img(image.clone())
@@ -91,7 +94,10 @@ fn document_body(
         Some(Content::Empty) => div().child("Document is empty").into_any_element(),
         Some(Content::Invalid(message)) => div().child(*message).into_any_element(),
         Some(Content::Pending(_)) | None => div()
-            .child("Waiting for a document from the source…")
+            .child(
+                attach_refused
+                    .unwrap_or_else(|| "Waiting for a document from the source…".to_owned()),
+            )
             .into_any_element(),
     };
     let caption = match refused {
