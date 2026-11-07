@@ -469,3 +469,30 @@ fn replaced_organization_identity_cannot_reuse_cached_document_content() {
     connection.drain();
     assert!(connection.document_content(&ResourceId::local(9)).is_none());
 }
+
+/// Re-read the topology with document `id` declaring `control`, as a page
+/// or surface mirror's producer does when it opens it.
+pub(crate) fn declare_control(
+    connection: &mut Connection,
+    id: u32,
+    control: Option<phux_protocol::wire::frame::ControlClass>,
+) {
+    // Reads coalesce: this answers the one in flight, whose frame an
+    // earlier helper may already have taken, or a fresh one.
+    let request_id = connection.refresh_topology().unwrap();
+    let document = ResourceInfo::new(ResourceId::local(id), WindowId::new(1), 0, 0)
+        .with_kind(ResourceKind::PixelSurface)
+        .with_control(control);
+    let snapshot = SessionSnapshot::new(SessionId::new(1), WindowId::new(1), ResourceId::local(0))
+        .with_sessions(vec![SessionInfo::new(SessionId::new(1), "docs")])
+        .with_resources(vec![document]);
+    let _ = connection.client.take_outbound();
+    connection
+        .client
+        .feed(FrameKind::CommandResult {
+            request_id,
+            result: CommandResult::OkWith(CommandValue::State(snapshot)),
+        })
+        .unwrap();
+    connection.drain();
+}
