@@ -55,6 +55,8 @@ pub fn snow(pen: &mut Pen, r: &Reef) {
 
 /// The prototype's radial vignette as a darkening in from each edge, in
 /// screen points: the corners take two edges, as a radial one darkens them most.
+/// Each edge is `N` bands, the outer as dark as `N` stacked ones and each
+/// further in one fewer, cut on whole points so no seam shows between them.
 pub fn vignette(pen: &mut Pen, r: &Reef) {
     pen.screen();
     let (w, h) = (r.w, r.h);
@@ -67,16 +69,21 @@ pub fn vignette(pen: &mut Pen, r: &Reef) {
         if depth <= 0.0 {
             continue;
         }
-        let edge = a * depth / (r1 - r0);
-        for k in 1..=N {
-            let dk = depth * k as f32 / N as f32;
+        let edge = a * depth / (r1 - r0) / N as f32;
+        for b in 0..N {
+            let from = (depth * b as f32 / N as f32).round();
+            let to = (depth * (b + 1) as f32 / N as f32).round();
+            if to <= from {
+                continue;
+            }
             let (x, y, rw, rh) = match side {
-                0 => (0.0, 0.0, dk, h),
-                1 => (w - dk, 0.0, dk, h),
-                2 => (0.0, 0.0, w, dk),
-                _ => (0.0, h - dk, w, dk),
+                0 => (from, 0.0, to - from, h),
+                1 => (w - to, 0.0, to - from, h),
+                2 => (0.0, from, w, to - from),
+                _ => (0.0, h - to, w, to - from),
             };
-            pen.rect(x, y, rw, rh, [0.0, 8.0, 16.0], edge / N as f32);
+            let stacked = 1.0 - (1.0 - edge).powi((N - b) as i32);
+            pen.rect(x, y, rw, rh, [0.0, 8.0, 16.0], stacked);
         }
     }
 }
