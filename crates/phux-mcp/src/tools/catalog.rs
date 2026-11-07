@@ -190,6 +190,7 @@ pub(crate) fn catalog() -> Value {
         entries.extend(crate::perf_tools::schemas());
         entries.extend(crate::coord_tools::schemas());
         entries.extend(crate::resource_tools::schemas());
+        entries.extend(crate::document_tools::schemas());
         entries.extend(crate::approval_tools::schemas());
         entries.extend(crate::terminal_tools::schemas());
     }

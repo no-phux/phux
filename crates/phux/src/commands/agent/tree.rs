@@ -14,7 +14,7 @@ use std::process::ExitCode;
 use std::time::Duration;
 
 use phux_client::attach::connection::Connection;
-use phux_client::tree::{self, Document, FollowEnd, Kind, TreeError};
+use phux_client::tree::{self, Document, FollowEnd, Kind, TreeError, png_size};
 use phux_server::runtime::default_socket_path;
 
 use crate::commands::{cli_runtime, json_err, parse_selector, resolve_target};
@@ -215,16 +215,6 @@ pub(super) struct Sink<'a> {
     pub(super) until: Option<&'a str>,
     /// Write each document to this file instead of stdout (surfaces).
     pub(super) out: Option<&'a std::path::Path>,
-}
-
-/// The width and height a PNG's `IHDR` names, when `bytes` starts like one.
-fn png_size(bytes: &[u8]) -> Option<(u32, u32)> {
-    if bytes.len() < 24 || !bytes.starts_with(b"\x89PNG\r\n\x1a\n") || &bytes[12..16] != b"IHDR" {
-        return None;
-    }
-    let be =
-        |at: usize| u32::from_be_bytes([bytes[at], bytes[at + 1], bytes[at + 2], bytes[at + 3]]);
-    Some((be(16), be(20)))
 }
 
 /// Deliver one document: a tree as text or JSON on stdout, a surface as

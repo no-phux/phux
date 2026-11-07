@@ -52,6 +52,17 @@ impl Kind {
     }
 }
 
+/// The width and height a PNG's `IHDR` names, when `bytes` starts like one.
+#[must_use]
+pub fn png_size(bytes: &[u8]) -> Option<(u32, u32)> {
+    if bytes.len() < 24 || !bytes.starts_with(b"\x89PNG\r\n\x1a\n") || &bytes[12..16] != b"IHDR" {
+        return None;
+    }
+    let be =
+        |at: usize| u32::from_be_bytes([bytes[at], bytes[at + 1], bytes[at + 2], bytes[at + 3]]);
+    Some((be(16), be(20)))
+}
+
 const REQUEST_SPAWN: u32 = 1;
 const REQUEST_PUBLISH: u32 = 3;
 const REQUEST_ATTACH: u32 = 4;

@@ -34,6 +34,11 @@ needs the relevant system permission. Local-only startup actions refuse remote
 or unsupported platforms. Moving or reopening a view keeps the source on its
 original host; it is not browser interactivity or cross-host process migration.
 
+Agents read documents over MCP the way they read panes: `phux_documents`
+lists them, `phux_tree_snapshot` and `phux_tree_wait` read a tree's JSON, and
+`phux_surface_snapshot` returns a surface's PNG as MCP image content
+([parity](./reference/parity.md)).
+
 ## Why
 
 [krd](https://github.com/zzjcool/krd) paints a Mac desktop into a terminal
