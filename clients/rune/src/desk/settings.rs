@@ -271,6 +271,22 @@ impl Desk {
 }
 
 #[cfg(test)]
+impl Desk {
+    /// An isolated window for UI interaction/render tests, including actions
+    /// that persist preferences. Never let an acceptance render write real prefs.
+    pub(crate) fn settings_test_fixture() -> Self {
+        let resolved = crate::launch::Resolved::offline("settings layout");
+        let mut desk = Self::new(&resolved);
+        desk.prefs = Prefs::memory();
+        desk.settings = Settings::load(&desk.prefs);
+        desk.updater = super::updates::Updater::new(&desk.prefs, &resolved);
+        desk.font_size = grid::DEFAULT_FONT_SIZE;
+        desk.settings_open = true;
+        desk
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use rune::accesskit::{Action, ActionData};
     use rune::prefs::Prefs;

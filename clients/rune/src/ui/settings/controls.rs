@@ -54,6 +54,7 @@ fn switch(on: bool, ink: &Ink) -> El {
 }
 
 pub(in crate::ui) fn toggle(
+    desk: &Desk,
     key: &'static str,
     title: &'static str,
     detail: &'static str,
@@ -84,11 +85,16 @@ pub(in crate::ui) fn toggle(
                 .gap(3.0)
                 .child(
                     text(title)
-                        .font(TextStyle::new(13.0, 500.0))
+                        .font(super::primary(desk, TextStyle::new(13.0, 500.0)))
                         .color(ink.text)
                         .wrap(),
                 )
-                .child(text(detail).font(CAPTION.lh(15.0)).color(ink.dim).wrap())
+                .child(
+                    text(detail)
+                        .font(super::secondary(desk, CAPTION.lh(15.0)))
+                        .color(ink.dim)
+                        .wrap(),
+                )
                 .a11y_hidden(),
         )
         .child(switch(on, ink).a11y_hidden())
@@ -135,7 +141,7 @@ pub(super) fn stepper(desk: &Desk, ink: &Ink) -> El {
         })
         .child(
             text("Text size")
-                .font(LABEL)
+                .font(super::primary(desk, LABEL))
                 .color(ink.text)
                 .grow(1.0)
                 .a11y_hidden(),
@@ -144,9 +150,12 @@ pub(super) fn stepper(desk: &Desk, ink: &Ink) -> El {
             d.zoom(Some(d.font_size - 1.0))
         }))
         .child(
-            el().w(36.0)
-                .center()
-                .child(text(size).font(CAPTION).color(ink.text).a11y_hidden()),
+            el().w(36.0).center().child(
+                text(size)
+                    .font(super::secondary(desk, CAPTION))
+                    .color(ink.text)
+                    .a11y_hidden(),
+            ),
         )
         .child(step("+", "Larger text", "text-bigger", |d| {
             d.zoom(Some(d.font_size + 1.0))
@@ -164,7 +173,11 @@ pub(super) fn preview(desk: &Desk, ink: &Ink) -> El {
         .key("settings-preview")
         .w_full()
         .gap(8.0)
-        .child(section("Preview", ink).px(16.0))
+        .child(
+            section("Preview", ink)
+                .font(super::secondary(desk, TextStyle::new(12.0, 600.0)))
+                .px(16.0),
+        )
         .child(
             col()
                 .w_full()
@@ -176,24 +189,27 @@ pub(super) fn preview(desk: &Desk, ink: &Ink) -> El {
                 .label("Terminal preview")
                 .child(
                     text("~/workspace  ·  main")
-                        .font(CAPTION.family(Family::SystemMono))
+                        .font(super::secondary(desk, CAPTION).family(Family::SystemMono))
                         .color(fg),
                 )
                 .child(
                     text("❯ phux attach")
-                        .font(TextStyle::new(14.0, 500.0).family(Family::SystemMono))
+                        .font(
+                            super::primary(desk, TextStyle::new(14.0, 500.0))
+                                .family(Family::SystemMono),
+                        )
                         .color(accent),
                 )
                 .child(
                     text("Your sessions, right where you left them.")
-                        .font(CAPTION.family(Family::SystemMono))
+                        .font(super::secondary(desk, CAPTION).family(Family::SystemMono))
                         .color(fg)
                         .wrap(),
                 ),
         )
         .child(
             text("One theme for the interface and terminals. Programs can set their own colours.")
-                .font(CAPTION)
+                .font(super::secondary(desk, CAPTION))
                 .color(ink.dim)
                 .wrap()
                 .px(16.0),

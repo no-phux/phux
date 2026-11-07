@@ -13,6 +13,30 @@ pub(super) use controls::{section, toggle};
 const TITLE: TextStyle = TextStyle::new(21.0, 650.0);
 const COPY: TextStyle = TextStyle::new(13.0, 450.0).lh(18.0);
 
+pub(super) fn primary(desk: &Desk, desktop: TextStyle) -> TextStyle {
+    if desk.phone.is_some() {
+        TextStyle {
+            size: 17.0,
+            line_height: 22.0,
+            ..desktop
+        }
+    } else {
+        desktop
+    }
+}
+
+pub(super) fn secondary(desk: &Desk, desktop: TextStyle) -> TextStyle {
+    if desk.phone.is_some() {
+        TextStyle {
+            size: 13.0,
+            line_height: 18.0,
+            ..desktop
+        }
+    } else {
+        desktop
+    }
+}
+
 fn surface(ink: &Ink) -> Color {
     if crate::theme::on_fill(ink.bg) == Color::WHITE {
         ink.raised
@@ -22,14 +46,15 @@ fn surface(ink: &Ink) -> Color {
 }
 
 fn search(desk: &Desk, ink: &Ink) -> El {
-    let field = text_input(&desk.settings_ui.query, COPY)
+    let style = primary(desk, COPY);
+    let field = text_input(&desk.settings_ui.query, style)
         .key("settings-query")
         .label("Search Settings")
         .single_line()
         .min_h(44.0)
         // Native input lays out from its top inset, not the row's alignment.
-        // COPY has an 18-point line: equal 13-point insets center it in 44.
-        .py(13.0)
+        // Center the 22-point phone or 18-point desktop line in the full target.
+        .py((44.0 - style.line_px()) / 2.0)
         .grow(1.0)
         .min_w(0.0)
         .color(ink.text)
@@ -87,7 +112,8 @@ fn category_row(category: Category, desk: &Desk, ink: &Ink, phone: bool) -> El {
     let selected = desk.settings_ui.category.unwrap_or(Category::Appearance) == category;
     let mut item = pressable(category.key(), ink)
         .w_full()
-        .min_h(48.0)
+        .min_h(if phone { 56.0 } else { 48.0 })
+        .py(if phone { 8.0 } else { 0.0 })
         .px(12.0)
         .gap(10.0)
         .items_center()
@@ -97,24 +123,10 @@ fn category_row(category: Category, desk: &Desk, ink: &Ink, phone: bool) -> El {
         .label(category.name())
         .on_press(move |d: &mut Desk| d.settings_category(category))
         .child(category_icon(category, ink))
-        .child(
-            text(category.name())
-                .font(COPY)
-                .color(ink.text)
-                .grow(1.0)
-                .a11y_hidden(),
-        );
+        .child(category_copy(category, desk, ink, phone));
     if phone {
         item = item
             .a11y_value(entries::category_value(category, desk))
-            .child(
-                text(entries::category_value(category, desk))
-                    .font(CAPTION)
-                    .color(ink.dim)
-                    .max_w(105.0)
-                    .truncate()
-                    .a11y_hidden(),
-            )
             .child(
                 rune::icon(&icons::CHEVRON_RIGHT, 14.0)
                     .color(ink.dim)
@@ -124,6 +136,30 @@ fn category_row(category: Category, desk: &Desk, ink: &Ink, phone: bool) -> El {
         item = item.fill(ink.current).focus_selected(true);
     }
     item
+}
+
+fn category_copy(category: Category, desk: &Desk, ink: &Ink, phone: bool) -> El {
+    let title = text(category.name())
+        .font(primary(desk, COPY))
+        .color(ink.text);
+    if !phone {
+        return title.grow(1.0).a11y_hidden();
+    }
+    row()
+        .grow(1.0)
+        .min_w(0.0)
+        .gap(8.0)
+        .flex_wrap()
+        .items_center()
+        .child(title.w(100.0).min_w(100.0).grow(1.0).wrap())
+        .child(
+            text(entries::category_value(category, desk))
+                .font(secondary(desk, CAPTION))
+                .color(ink.dim)
+                .max_w(140.0)
+                .wrap_anywhere(),
+        )
+        .a11y_hidden()
 }
 
 fn categories(desk: &Desk, ink: &Ink) -> El {
@@ -164,10 +200,14 @@ fn detail(desk: &Desk, ink: &Ink) -> El {
                 .w_full()
                 .py(32.0)
                 .gap(8.0)
-                .child(text("No settings found").font(COPY).color(ink.text))
+                .child(
+                    text("No settings found")
+                        .font(primary(desk, COPY))
+                        .color(ink.text),
+                )
                 .child(
                     text("Try a name, category or current value.")
-                        .font(CAPTION)
+                        .font(secondary(desk, CAPTION))
                         .color(ink.dim)
                         .wrap(),
                 ),
@@ -182,7 +222,11 @@ fn detail(desk: &Desk, ink: &Ink) -> El {
             col()
                 .w_full()
                 .gap(8.0)
-                .child(section(category.name(), ink).px(16.0))
+                .child(
+                    section(category.name(), ink)
+                        .font(secondary(desk, TextStyle::new(12.0, 600.0)))
+                        .px(16.0),
+                )
                 .child(controls::card(rows, ink)),
         );
         if category == Category::Appearance && query.is_empty() {
@@ -315,6 +359,10 @@ fn desktop(desk: &Desk, ink: &Ink) -> El {
         .key("settings-navigation")
         .w(190.0)
         .h_full()
+        .min_h(0.0)
+        .scroll(rune::ScrollSpec {
+            stick_bottom: false,
+        })
         .padding(10.0)
         .gap(4.0)
         .role("navigation")

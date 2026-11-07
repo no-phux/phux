@@ -137,7 +137,8 @@ session (or `--session NAME`). It never creates a session on its own.
 - **Settings.** ⌘, opens grouped Appearance, Terminal, Notifications,
   Remote Hosts, Developer, and About & Updates sections, with local navigation
   on desktop and category drilldown on phone. Search Settings matches names,
-  descriptions, categories and current values across all sections. **Theme**
+  descriptions, categories and current values across all sections, including
+  useful aliases such as **font**, **zoom**, and **colours**. **Theme**
   opens the existing live-preview palette; Return keeps a choice and Escape
   restores the old theme, both returning to Settings. Text size, notifications,
   Option as Meta (macOS), copy on select, and close confirmation are remembered

@@ -106,20 +106,36 @@ impl Entry {
 
     fn matches(self, desk: &Desk, query: &str) -> bool {
         let haystack = format!(
-            "{} {} {} {}",
+            "{} {} {} {} {}",
             self.title(),
             self.detail(),
             self.category().name(),
-            self.value(desk)
+            self.value(desk),
+            self.aliases()
         )
         .to_lowercase();
         query.split_whitespace().all(|word| haystack.contains(word))
+    }
+
+    const fn aliases(self) -> &'static str {
+        match self {
+            Self::Theme => "colors colours appearance palette",
+            Self::TextSize => "font zoom typography",
+            Self::CopySelect => "clipboard selection",
+            Self::OptionMeta => "alt keyboard escape",
+            Self::ConfirmClose => "confirmation closing safety",
+            Self::Notifications => "alerts bell",
+            Self::Hosts => "remote ssh connection",
+            Self::Diagnostics => "logs debug troubleshooting",
+            Self::Updates => "upgrade version automatic",
+        }
     }
 
     pub(super) fn view(self, desk: &Desk, ink: &Ink) -> El {
         match self {
             Self::Theme => self.link(
                 "settings-theme",
+                desk,
                 self.value(desk),
                 Desk::settings_themes,
                 ink,
@@ -127,6 +143,7 @@ impl Entry {
             Self::TextSize => controls::stepper(desk, ink),
             Self::Hosts => self.link(
                 "settings-machines",
+                desk,
                 self.value(desk),
                 Desk::toggle_machines,
                 ink,
@@ -163,10 +180,17 @@ impl Entry {
                 Desk::toggle_notifications,
             ),
         };
-        controls::toggle(key, self.title(), self.detail(), value, press, ink)
+        controls::toggle(desk, key, self.title(), self.detail(), value, press, ink)
     }
 
-    fn link(self, key: &'static str, value: String, press: fn(&mut Desk), ink: &Ink) -> El {
+    fn link(
+        self,
+        key: &'static str,
+        desk: &Desk,
+        value: String,
+        press: fn(&mut Desk),
+        ink: &Ink,
+    ) -> El {
         pressable(key, ink)
             .w_full()
             .min_h(60.0)
@@ -179,33 +203,56 @@ impl Entry {
             .description(self.detail())
             .a11y_value(value.clone())
             .on_press(press)
-            .child(
-                col()
-                    .grow(1.0)
-                    .min_w(0.0)
-                    .gap(3.0)
-                    .child(text(self.title()).font(COPY).color(ink.text))
-                    .child(
-                        text(self.detail())
-                            .font(CAPTION.lh(15.0))
-                            .color(ink.dim)
-                            .wrap(),
-                    )
-                    .a11y_hidden(),
-            )
-            .child(
+            .child(self.link_copy(desk, &value, ink))
+            .children(desk.phone.is_none().then(|| {
                 text(value)
                     .font(CAPTION)
                     .color(ink.dim)
                     .max_w(120.0)
                     .truncate()
-                    .a11y_hidden(),
-            )
+                    .a11y_hidden()
+            }))
             .child(
                 rune::icon(&icons::CHEVRON_RIGHT, 14.0)
                     .color(ink.dim)
                     .a11y_hidden(),
             )
+    }
+
+    fn link_copy(self, desk: &Desk, value: &str, ink: &Ink) -> El {
+        let title = text(self.title())
+            .font(super::primary(desk, COPY))
+            .color(ink.text)
+            .wrap();
+        let heading = if desk.phone.is_some() {
+            row()
+                .w_full()
+                .gap(8.0)
+                .flex_wrap()
+                .items_center()
+                .child(title.w(80.0).min_w(80.0).grow(1.0))
+                .child(
+                    text(value)
+                        .font(super::secondary(desk, CAPTION))
+                        .color(ink.dim)
+                        .max_w(140.0)
+                        .wrap_anywhere(),
+                )
+        } else {
+            title
+        };
+        col()
+            .grow(1.0)
+            .min_w(0.0)
+            .gap(3.0)
+            .child(heading)
+            .child(
+                text(self.detail())
+                    .font(super::secondary(desk, CAPTION.lh(15.0)))
+                    .color(ink.dim)
+                    .wrap(),
+            )
+            .a11y_hidden()
     }
 }
 
@@ -234,12 +281,12 @@ fn diagnostics(desk: &Desk, ink: &Ink) -> El {
                             } else {
                                 "Copy diagnostics"
                             })
-                            .font(COPY)
+                            .font(super::primary(desk, COPY))
                             .color(ink.text),
                         )
                         .child(
                             text(Entry::Diagnostics.detail())
-                                .font(CAPTION)
+                                .font(super::secondary(desk, CAPTION))
                                 .color(ink.dim)
                                 .wrap(),
                         ),

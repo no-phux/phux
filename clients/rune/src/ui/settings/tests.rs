@@ -5,7 +5,6 @@ use rune::{Cx, El, Env, Key, KeyEvent, Mods, Runtime};
 
 use super::*;
 use crate::desk::updates::Work;
-use crate::launch::Resolved;
 
 fn surface(desk: &Desk, cx: &mut Cx<Desk>) -> El {
     let ink = super::super::ink(cx.system_dark(), cx.accent(), desk.settings.theme);
@@ -13,8 +12,7 @@ fn surface(desk: &Desk, cx: &mut Cx<Desk>) -> El {
 }
 
 fn runtime(size: (f32, f32), phone: bool) -> Runtime<Desk> {
-    let mut desk = Desk::new(&Resolved::offline("settings layout")).with_phone(phone);
-    desk.settings_open = true;
+    let mut desk = Desk::settings_test_fixture().with_phone(phone);
     desk.settings.theme = crate::theme::find("catppuccin-latte");
     let mut rt = Runtime::new(desk, surface, size, Env::new(false, 1.0));
     rt.on_key = Some(Desk::key);
@@ -37,6 +35,8 @@ fn phone_categories_search_close_and_back_have_44_point_targets() {
             .map(Category::key)
             .chain(["settings-close", "settings-query"])
         {
+            rt.update(|_, tx| tx.scroll_into_view(key));
+            rt.frame(1.0);
             let [x, y, w, h] = rect(&rt, key);
             assert!(w >= 44.0 && h >= 44.0, "{key}: {w}×{h}");
             assert!(x >= 0.0 && x + w <= size.0 + 0.5, "{key} fits horizontally");
@@ -51,6 +51,83 @@ fn phone_categories_search_close_and_back_have_44_point_targets() {
             assert!(w >= 44.0 && h >= 44.0);
             assert!(x + w <= size.0, "{key} stays in the card");
         }
+    }
+}
+
+#[test]
+fn minimum_desktop_rail_reveals_every_destination_by_tab_and_activates_it() {
+    let mut rt = runtime((640.0, 360.0), false);
+    assert!(rt.accessibility_action("settings-appearance", Action::Focus, None));
+    for category in Category::ALL {
+        rt.frame(1.0);
+        rt.frame(1.0);
+        let item = rt
+            .elements()
+            .into_iter()
+            .find(|el| el.key.as_deref() == Some(category.key()))
+            .unwrap();
+        assert!(item.focused, "Tab reaches {}", category.name());
+        assert!(
+            item.visible[3] >= 47.0,
+            "{} is scroll-revealed: {:?}",
+            category.name(),
+            item.visible
+        );
+        assert!(
+            item.visible[1] >= 84.0 && item.visible[1] + item.visible[3] <= 328.0,
+            "{} stays between panel header and bottom",
+            category.name()
+        );
+        rt.key(KeyEvent {
+            key: Key::Text(" ".into()),
+            mods: Mods::default(),
+        });
+        rt.frame(1.0);
+        assert_eq!(rt.state.settings_ui.category, Some(category));
+        rt.frame(1.0);
+        let selected = rt
+            .elements()
+            .into_iter()
+            .find(|el| el.key.as_deref() == Some(category.key()))
+            .unwrap();
+        assert!(
+            selected.visible[3] >= 47.0,
+            "activated {} remains revealed: {:?}",
+            category.name(),
+            selected.visible
+        );
+        rt.key(KeyEvent {
+            key: Key::Tab,
+            mods: Mods::default(),
+        });
+    }
+}
+
+#[test]
+fn phone_typography_and_wrapping_fit_long_labels_and_values_without_shrinking() {
+    let mut rt = runtime((320.0, 568.0), true);
+    rt.update(|d, tx| {
+        tx.instant();
+        d.settings.theme = crate::theme::find("catppuccin-macchiato");
+        d.machines.current = Some("a-very-long-remote-machine-name.example".into());
+    });
+    rt.frame(1.0);
+    assert_eq!(super::primary(&rt.state, COPY).size, 17.0);
+    assert_eq!(super::primary(&rt.state, COPY).line_px(), 22.0);
+    assert_eq!(super::secondary(&rt.state, CAPTION).size, 13.0);
+    assert_eq!(super::secondary(&rt.state, CAPTION).line_px(), 18.0);
+    for category in Category::ALL {
+        let [x, _, width, height] = rect(&rt, category.key());
+        assert!(height >= 56.0, "{}", category.name());
+        assert!(x >= 0.0 && x + width <= 320.0);
+    }
+    for item in rt.elements().into_iter().filter(|el| el.text.is_some()) {
+        assert!(
+            item.rect[0] >= 0.0 && item.rect[0] + item.rect[2] <= 320.5,
+            "text must wrap inside phone: {:?} {:?}",
+            item.text,
+            item.rect
+        );
     }
 }
 
@@ -178,6 +255,25 @@ fn updater_progress_and_actions_fit_narrow_settings() {
 }
 
 #[test]
+fn phone_update_preference_text_shares_the_card_content_gutter() {
+    let mut rt = runtime((320.0, 568.0), true);
+    downloading(&mut rt);
+    let elements = rt.elements();
+    let x = |text: &str| {
+        elements
+            .iter()
+            .find(|el| el.text.as_deref() == Some(text))
+            .unwrap()
+            .rect[0]
+    };
+    assert_eq!(x("Check automatically"), x("Downloading… 42%"));
+    assert_eq!(
+        x("At launch and every six hours. Nothing installs without a click."),
+        x("Downloading… 42%")
+    );
+}
+
+#[test]
 fn settings_ink_keeps_text_and_control_contrast_on_its_surfaces() {
     use crate::theme::{DIM_BAR, TEXT_BAR, contrast};
     for theme in std::iter::once(None).chain(crate::theme::all().map(Some)) {
@@ -199,6 +295,10 @@ fn render(
     size: (u32, u32),
     name: &str,
 ) {
+    // A focus reveal commits its scroll after layout. Paint the following
+    // frame too, rather than exporting the previous frame's draw instances.
+    rt.frame(1.0);
+    rt.frame(1.0);
     let target = rune::render::Offscreen::new(&gpu.device, size.0, size.1);
     renderer.prepare(
         &gpu.device,
@@ -235,6 +335,7 @@ fn settings_native_render_frames() {
     let gpu = rune::render::Gpu::headless();
     for (phone, size, name) in [
         (false, (1100, 720), "desktop"),
+        (false, (640, 360), "desktop-min"),
         (true, (393, 852), "phone"),
         (true, (320, 568), "small"),
     ] {
@@ -280,6 +381,125 @@ fn settings_native_render_frames() {
             &mut rt,
             size,
             &format!("{name}-typed-search"),
+        );
+        if !phone {
+            rt.update(|d, tx| {
+                tx.instant();
+                d.clear_settings_search();
+                d.blur_settings_search(tx);
+            });
+            rt.frame(0.0);
+            assert!(rt.accessibility_action("settings-appearance", Action::Focus, None));
+            rt.frame(1.0);
+            for _ in 1..Category::ALL.len() {
+                rt.key(KeyEvent {
+                    key: Key::Tab,
+                    mods: Mods::default(),
+                });
+                rt.frame(1.0);
+                rt.frame(1.0);
+            }
+            rt.key(KeyEvent {
+                key: Key::Text(" ".into()),
+                mods: Mods::default(),
+            });
+            rt.frame(1.0);
+            assert_eq!(rt.state.settings_ui.category, Some(Category::About));
+            render(
+                &gpu,
+                &mut renderer,
+                &mut rt,
+                size,
+                &format!("{name}-about-revealed"),
+            );
+        }
+    }
+}
+
+fn theme_scene(desk: &Desk, cx: &mut Cx<Desk>) -> El {
+    if desk.palette_open {
+        // Render the existing palette through its actual phone composition.
+        crate::ui::view(desk, cx)
+    } else {
+        // The parent supplies this stage in the integrated phone shell.
+        surface(desk, cx)
+    }
+}
+
+fn theme_query(rt: &mut Runtime<Desk>) {
+    assert!(rt.accessibility_action("settings-theme", Action::Click, None));
+    rt.frame(1.0);
+    assert!(rt.state.palette_open);
+    rt.key(KeyEvent {
+        key: Key::Text("nord".into()),
+        mods: Mods::default(),
+    });
+    rt.frame(1.0);
+    assert_eq!(rt.state.settings.theme, crate::theme::find("nord"));
+}
+
+#[test]
+fn mobile_appearance_and_real_theme_palette_render_accept_and_cancel() {
+    let gpu = rune::render::Gpu::headless();
+    for (size, name) in [((393, 852), "phone"), ((320, 568), "small")] {
+        let mut desk = Desk::settings_test_fixture().with_phone(true);
+        desk.settings_category(Category::Appearance);
+        desk.settings.theme = crate::theme::find("catppuccin-latte");
+        let before = desk.settings.theme;
+        let mut rt = Runtime::new(
+            desk,
+            theme_scene,
+            (size.0 as f32, size.1 as f32),
+            Env::new(false, 1.0),
+        );
+        rt.on_key = Some(Desk::key);
+        rt.frame(1.0);
+        let mut renderer = rune::render::Renderer::new(&gpu.device, rune::render::OFFSCREEN_FORMAT);
+        render(
+            &gpu,
+            &mut renderer,
+            &mut rt,
+            size,
+            &format!("{name}-appearance-before"),
+        );
+        theme_query(&mut rt);
+        render(
+            &gpu,
+            &mut renderer,
+            &mut rt,
+            size,
+            &format!("{name}-appearance-chooser"),
+        );
+        rt.key(KeyEvent {
+            key: Key::Escape,
+            mods: Mods::default(),
+        });
+        rt.frame(1.0);
+        assert!(rt.state.settings_open);
+        assert!(!rt.state.palette_open);
+        assert_eq!(rt.state.settings.theme, before);
+        render(
+            &gpu,
+            &mut renderer,
+            &mut rt,
+            size,
+            &format!("{name}-appearance-cancel"),
+        );
+        theme_query(&mut rt);
+        rt.key(KeyEvent {
+            key: Key::Enter,
+            mods: Mods::default(),
+        });
+        rt.frame(1.0);
+        assert!(rt.state.settings_open);
+        assert!(!rt.state.palette_open);
+        assert_eq!(rt.state.settings.theme, crate::theme::find("nord"));
+        render(
+            &gpu,
+            &mut renderer,
+            &mut rt,
+            size,
+            &format!("{name}-appearance-accepted"),
         );
     }
 }

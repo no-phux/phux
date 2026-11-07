@@ -67,6 +67,32 @@ fn arrows_outside_a_control_never_change_the_theme() {
 }
 
 #[test]
+fn useful_search_aliases_find_real_controls_without_changing_preferences() {
+    let mut runtime = runtime(settings_desk());
+    let before = runtime.state.settings;
+    let font_size = runtime.state.font_size;
+    for (query, key) in [
+        ("font", "text-size"),
+        ("zoom", "text-size"),
+        ("typography", "text-size"),
+        ("colors", "settings-theme"),
+        ("colours", "settings-theme"),
+        ("clipboard", "set-copy-select"),
+    ] {
+        runtime.update(|d, _| d.settings_ui.query = rune::TextEdit::new(query));
+        runtime.frame(0.0);
+        assert!(runtime.find(key).is_some(), "{query} finds {key}");
+    }
+    if cfg!(target_os = "macos") {
+        runtime.update(|d, _| d.settings_ui.query = rune::TextEdit::new("alt"));
+        runtime.frame(0.0);
+        assert!(runtime.find("set-option-meta").is_some());
+    }
+    assert_eq!(runtime.state.settings, before);
+    assert_eq!(runtime.state.font_size, font_size);
+}
+
+#[test]
 fn theme_palette_returns_to_settings_on_accept_and_cancel() {
     let mut runtime = runtime(settings_desk());
     let before = runtime.state.settings.theme;
