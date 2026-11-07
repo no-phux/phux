@@ -183,6 +183,10 @@ Ctrl-click opens links);
 plain Ctrl chords go to the shell. Ctrl and Alt chords follow the key's
 position, so Ctrl-C is ^C on any layout.
 
+In a text field, use the native editing keys: ⌘C/V/A on macOS, plain
+Ctrl+C/V/A on Linux. Terminal clipboard chords never act on the terminal
+behind a focused Find field.
+
 A paste with line breaks into a program that has not turned on bracketed
 paste would run each line; the window asks first (Return pastes, Esc
 cancels).

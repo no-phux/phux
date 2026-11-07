@@ -33,6 +33,7 @@ const SYMBOLS: [&str; 3] = ["1234567890", "-/:;()$&@\"", ".,?!'`|~"];
 
 pub fn view(desk: &Desk, cx: &mut Cx<Desk>) -> El {
     let p = super::ink(cx.system_dark(), cx.accent(), desk.settings.theme);
+    cx.foreground(p.text);
     let phone = desk.phone.clone().unwrap_or_default();
     // The terminal's own ground runs under everything, as on a phone.
     let ground = desk
