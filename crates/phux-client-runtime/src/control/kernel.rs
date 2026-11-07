@@ -1,9 +1,16 @@
 //! Engine outcomes and kernel effect processing.
 
 use super::{
-    ControlError, ControlPlane, EngineApplyError, EngineEvent, EngineOutcome, Event, FrameKind,
-    InputEvent, KernelEffect, KernelSend, KernelStatus, ResourceId, ServerFeature,
+    ControlError, ControlPlane, EngineApplyError, EngineEvent, EngineHandle, EngineOutcome, Event,
+    FrameKind, InputEvent, KernelEffect, KernelSend, KernelStatus, ResourceId, ServerFeature,
 };
+
+/// One engine batch handed out by [`ControlPlane::prepare_engine_apply`].
+pub(super) struct EngineApply {
+    pub(super) engine: EngineHandle,
+    pub(super) events: Vec<EngineEvent>,
+    pub(super) geometry: Vec<(usize, ResourceId, bool)>,
+}
 
 impl ControlPlane {
     // ----- the kernel --------------------------------------------------
@@ -24,6 +31,22 @@ impl ControlPlane {
         if events.is_empty() {
             return Ok(());
         }
+        let EngineApply {
+            engine,
+            events,
+            geometry,
+        } = self.prepare_engine_apply(events)?;
+        let outcomes = engine.apply_batch(events);
+        self.complete_engine_apply(geometry, outcomes)
+    }
+
+    /// The control-plane half before an engine batch: note what the events
+    /// announce and hand back what the owner thread must apply. The caller
+    /// may release the control lock for the round trip itself.
+    pub(super) fn prepare_engine_apply(
+        &mut self,
+        events: Vec<EngineEvent>,
+    ) -> Result<EngineApply, ControlError> {
         let Some(engine) = self.engine.clone() else {
             return Err(ControlError::Protocol(
                 "stateful frame arrived before the session kernel was initialized".to_owned(),
@@ -33,9 +56,20 @@ impl ControlPlane {
             self.note_engine_event(event);
         }
         let geometry = super::geometry::bootstrap_changes(&events);
-        let outcomes = engine
-            .apply_batch(events)
-            .map_err(|error| ControlError::Protocol(error.to_string()))?;
+        Ok(EngineApply {
+            engine,
+            events,
+            geometry,
+        })
+    }
+
+    /// The control-plane half after an engine batch.
+    pub(super) fn complete_engine_apply(
+        &mut self,
+        geometry: Vec<(usize, ResourceId, bool)>,
+        outcomes: Result<Vec<EngineOutcome>, crate::engine::EngineError>,
+    ) -> Result<(), ControlError> {
+        let outcomes = outcomes.map_err(|error| ControlError::Protocol(error.to_string()))?;
         self.note_geometry_bootstraps(geometry, &outcomes);
         self.process_engine_outcomes(outcomes)
     }

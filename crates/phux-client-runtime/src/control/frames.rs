@@ -7,8 +7,10 @@ use phux_protocol::wire::DecodeError;
 use super::{AgentEvent, ControlError, ControlPlane, EngineEvent, Event, FrameKind};
 
 mod classify;
+mod stepped;
 
 use classify::{ClassifiedFrame, classify_engine_frame};
+use stepped::{BatchStep, SharedBatch};
 
 /// A decoded frame. For one that did not decode, what a newer 1.x server's
 /// value reads as ([`read_undecodable_frame`]): a correlated reply becomes an
@@ -196,24 +198,21 @@ impl ControlPlane {
     }
 
     /// [`Self::feed_bytes_batch`] for frames that are frozen socket views.
+    ///
+    /// Holds `&mut self` across each engine round trip; the connection driver
+    /// steps the same batch instead and releases the control lock for them.
     pub fn feed_shared_batch(&mut self, frames: &[Bytes]) -> Result<(), ControlError> {
-        let mut engine_events = Vec::new();
-        let mut deferred_error = None;
-        for bytes in frames {
-            let frame = match self.decode_shared_frame(bytes) {
-                Ok(Some(frame)) => frame,
-                Ok(None) => continue,
-                Err(error) => {
-                    return self.error_after_engine_batch(
-                        &mut engine_events,
-                        &mut deferred_error,
-                        error,
-                    );
+        let mut batch = SharedBatch::new(frames.to_vec());
+        let mut step = self.step_shared_batch(&mut batch);
+        loop {
+            match step {
+                BatchStep::Done(result) => return result,
+                BatchStep::Apply(apply) => {
+                    let outcomes = apply.engine.apply_batch(apply.events);
+                    step = self.complete_shared_apply(&mut batch, apply.geometry, outcomes);
                 }
-            };
-            self.queue_or_feed_frame(frame, &mut engine_events, &mut deferred_error)?;
+            }
         }
-        self.finish_batch(engine_events, deferred_error)
     }
 
     fn queue_or_feed_frame(
