@@ -345,6 +345,10 @@ fn reassemble_unchanged_tree(
             // Without this, anything new since the capture would be missing
             // from both blobs and look unchanged.
             s.intern_upgrade_wires();
+            s.retry_activation_reports();
+            if s.has_pending_activation_reports() {
+                return None;
+            }
             let current = s.assemble_upgrade_blob(listener_fd, &UpgradeHandoffs::default());
             (current == *tree_identity)
                 .then(|| s.with_upgrade_metadata(s.assemble_upgrade_blob(inherited_fd, handoffs)))

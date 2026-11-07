@@ -384,6 +384,8 @@ pub enum ServerFeatureExt {
     /// The server serves the `PixelSurface` resource kind: a producer-fed,
     /// replicated image of a window or display.
     PixelSurface = 0x0001_0000,
+    /// Read a durable resource record and its current activation without a live engine.
+    DurableResourceInspection = 0x0002_0000,
 }
 
 impl ServerFeatureExt {
@@ -406,6 +408,7 @@ impl ServerFeatureExt {
         Self::ApiDescription,
         Self::AccessibilityTree,
         Self::PixelSurface,
+        Self::DurableResourceInspection,
     ];
 
     /// The `docs/protocol.md#handshake` constant, e.g. `"PATH_QUERY"`.
@@ -429,6 +432,7 @@ impl ServerFeatureExt {
             Self::ApiDescription => "API_DESCRIPTION",
             Self::AccessibilityTree => "ACCESSIBILITY_TREE",
             Self::PixelSurface => "PIXEL_SURFACE",
+            Self::DurableResourceInspection => "DURABLE_RESOURCE_INSPECTION",
         }
     }
 

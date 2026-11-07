@@ -305,7 +305,11 @@ is read-only, needs `INVENTORY` on the original destination session, and
 returns a retained creation receipt or `NOT_FOUND`. A missing receipt cannot
 establish that the original mutation never ran. See the [public contract](./public-api.md).
 
-[File transfer and checkout methods](./protocol-files.md) have their own page.
+### Terminal execution evidence and durable inspection
+
+The activation diagnostic and persistence TLVs, and the
+`DURABLE_RESOURCE_INSPECTION` filter, are in
+[organization](./organization.md#execution-evidence-and-durable-inspection).
 
 ## Minimal client
 

@@ -71,6 +71,8 @@ pub(super) struct OrgSide {
     /// their engines must not write another transition: memory still has the
     /// records, and that write would put the rows back.
     retirement_suppressed: HashSet<ResourceKey>,
+    /// Executor evidence waiting for a durable store write.
+    pending_reports: std::collections::VecDeque<lifecycle::PendingActivation>,
     /// Operations with a stored receipt this binary could not decode, and
     /// when they committed. Whether a retry would repeat their effects is
     /// unknown, so [`ServerState::persist_command_from`] refuses their ids
@@ -87,6 +89,7 @@ impl OrgSide {
             loaded: false,
             terminating: std::collections::HashSet::new(),
             retirement_suppressed: HashSet::new(),
+            pending_reports: std::collections::VecDeque::new(),
             unreadable_receipts: BTreeMap::new(),
         }
     }
@@ -370,6 +373,8 @@ impl ServerState {
             let _ = self.sessions.registry.prune_receipts(floor, RECEIPT_CAP);
             self.org.unreadable_receipts.retain(|_, at| *at >= floor);
         }
+        self.prune_activation_reports();
+        super::notify_activation_reports();
         self.after_commit(&applied.transition, &handles);
         self.journal_org_events(&applied, actor, client);
         OrgCommit { applied, handles }
@@ -427,7 +432,7 @@ impl ServerState {
         }
     }
 
-    // ---- creation --------------------------------------------------------
+    // Creation and activation reports live in `create` and `activation`.
 }
 
 /// What [`ServerState::reconcile`] recorded.
@@ -457,6 +462,7 @@ pub enum TerminalTarget<'a> {
 
 #[cfg(test)]
 mod creation_bounds;
+mod lifecycle;
 
 #[cfg(test)]
 #[allow(clippy::expect_used, clippy::unwrap_used, reason = "tests")]

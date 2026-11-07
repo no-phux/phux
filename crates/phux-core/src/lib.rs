@@ -29,7 +29,8 @@ pub mod session_list;
 pub mod terminal;
 
 pub use activation::{
-    Activation, ExecState, ExitPolicy, Outcome, ProcIdentity, SessionLifetime, Stamp,
+    Activation, ExecState, ExitPolicy, LaunchDiagnostic, LaunchStage, Outcome, ProcIdentity,
+    SessionLifetime, Stamp,
 };
 pub use actor::{Actor, PrincipalId, Verb};
 pub use apply::apply;

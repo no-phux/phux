@@ -4,5 +4,6 @@
 
 mod agent_seal_rollback;
 mod exec_failures_and_capture;
+mod pending_evidence;
 mod resume_hub_and_validate;
 mod support;

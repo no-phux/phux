@@ -48,7 +48,7 @@ pub(in crate::runtime) fn spawn_idle_exit_watchdog(
                         idle_limit_secs = idle_limit.as_secs_f64(),
                         "unattended for the configured idle limit; server exiting"
                     );
-                    state.with_mut(crate::state::ServerState::begin_shutdown);
+                    state.with_mut(crate::state::ServerState::flush_reports_before_shutdown);
                     root_token.cancel();
                 }
                 return;
@@ -73,7 +73,7 @@ pub(in crate::runtime) fn spawn_shutdown_folder<F>(
         debug!("shutdown future resolved; cancelling root token");
         // Records of what the teardown ends stay for the next start to
         // reconcile, as after a crash.
-        state.with_mut(crate::state::ServerState::begin_shutdown);
+        state.with_mut(crate::state::ServerState::flush_reports_before_shutdown);
         token.cancel();
     });
 }
@@ -93,6 +93,47 @@ pub(in crate::runtime) fn arm_idle_exit(
         "ephemeral server: will exit when unattended for the idle limit"
     );
     spawn_idle_exit_watchdog(state.clone(), idle_limit, root_token.clone());
+}
+
+/// Retry bounded lifecycle evidence independently of clients and live engines.
+pub(in crate::runtime) fn spawn_activation_report_retry(
+    state: &SharedState,
+    root_token: &CancellationToken,
+) {
+    let state = state.clone();
+    let token = root_token.clone();
+    tokio::task::spawn_local(async move {
+        let mut delay = Duration::from_millis(20);
+        let cap = Duration::from_secs(2);
+        loop {
+            tokio::select! {
+                () = token.cancelled() => return,
+                () = crate::state::activation_reports_woken() => {}
+            }
+            loop {
+                if token.is_cancelled() {
+                    return;
+                }
+                let pending = state.with_mut(|server| {
+                    server.retry_activation_reports();
+                    server.has_pending_activation_reports()
+                });
+                if !pending {
+                    delay = Duration::from_millis(20);
+                    break;
+                }
+                tokio::select! {
+                    () = token.cancelled() => return,
+                    () = crate::state::activation_reports_woken() => {
+                        delay = Duration::from_millis(20);
+                    }
+                    () = tokio::time::sleep(delay) => {
+                        delay = (delay * 2).min(cap);
+                    }
+                }
+            }
+        }
+    });
 }
 
 /// Spawn the hook dispatcher before the seed/resume paths, so a pre-seeded

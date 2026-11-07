@@ -27,6 +27,7 @@ fn inactive_projection(state: &SharedState, spec: phux_core::LaunchSpec) -> phux
             activation: record.activation.as_ref().unwrap().id,
             state: phux_core::ExecState::Completed,
             outcome: phux_core::Outcome::Unobserved,
+            diagnostic: None,
         })
         .unwrap();
         s.org().resource(&record.key).unwrap().clone()

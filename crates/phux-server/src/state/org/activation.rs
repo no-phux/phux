@@ -8,50 +8,6 @@
 use super::*;
 
 impl ServerState {
-    /// Report that `resource`'s current activation holds a live handle.
-    /// A no-op when it is not `Starting` (an already-running import).
-    pub fn activation_started(&mut self, resource: ResourceId, proc: Option<ProcIdentity>) {
-        let Some((key, activation)) =
-            self.current_activation(resource, |s| s == ExecState::Starting)
-        else {
-            return;
-        };
-        if let Err(refusal) = self.commit_system(Op::ActivationStarted {
-            resource: key,
-            activation,
-            proc,
-        }) {
-            tracing::warn!(?resource, %refusal, "activation start not recorded");
-        }
-    }
-
-    /// Report that `resource`'s current activation ended with an observed
-    /// `outcome`. An [`ExitPolicy::Remove`] record goes in the same commit.
-    /// A no-op once nothing is current, or during shutdown.
-    pub fn activation_ended(&mut self, resource: ResourceId, outcome: ExitOutcome, failed: bool) {
-        if self.org.shutting_down {
-            return;
-        }
-        let Some((key, activation)) =
-            self.current_activation(resource, |s| s.is_current() || s == ExecState::Lost)
-        else {
-            return;
-        };
-        let state = if failed {
-            ExecState::Failed
-        } else {
-            ExecState::Completed
-        };
-        if let Err(refusal) = self.commit_system(Op::ActivationEnded {
-            resource: key,
-            activation,
-            state,
-            outcome: Outcome::Exit(outcome),
-        }) {
-            tracing::warn!(?resource, %refusal, "activation end not recorded");
-        }
-    }
-
     /// End `resource`'s activation if it is still current, then remove its
     /// record: a reap, a kill, a purge. A no-op during shutdown, which
     /// leaves records for the next start to reconcile.
@@ -140,6 +96,7 @@ impl ServerState {
                         activation,
                         state: ExecState::Completed,
                         outcome: Outcome::Unobserved,
+                        diagnostic: None,
                     }
                 }
                 Verdict::NeverLaunched => {
@@ -149,6 +106,7 @@ impl ServerState {
                         activation,
                         state: ExecState::Failed,
                         outcome: Outcome::Unobserved,
+                        diagnostic: None,
                     }
                 }
             };

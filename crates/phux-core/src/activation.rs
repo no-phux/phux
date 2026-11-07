@@ -133,6 +133,9 @@ pub struct Activation {
     /// The host process, for kinds that run one.
     #[serde(default)]
     pub host_proc: Option<ProcIdentity>,
+    /// Bounded launch evidence; never contains command lines or environment.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub diagnostic: Option<LaunchDiagnostic>,
 }
 
 impl Activation {
@@ -147,7 +150,45 @@ impl Activation {
             ended: None,
             outcome: None,
             host_proc: None,
+            diagnostic: None,
         }
+    }
+}
+
+/// The stage at which acquiring the requested execution failed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LaunchStage {
+    /// PTY allocation or bridge setup.
+    Pty,
+    /// OS spawn of the launcher.
+    Spawn,
+    /// Entering the requested directory.
+    Cwd,
+    /// Executing the requested program (including its interpreter).
+    Exec,
+    /// Launcher status was not trustworthy before the bounded deadline.
+    Handshake,
+    /// Terminal engine construction.
+    Engine,
+}
+
+/// Safe, fixed-size failure evidence; errno is platform-specific, not an exit code.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LaunchDiagnostic {
+    /// Failed launch stage.
+    pub stage: LaunchStage,
+    /// OS errno, when available.
+    pub errno: Option<i32>,
+}
+
+impl std::fmt::Display for LaunchDiagnostic {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "launch {:?} failed", self.stage)?;
+        if let Some(errno) = self.errno {
+            write!(f, ": {}", std::io::Error::from_raw_os_error(errno))?;
+        }
+        Ok(())
     }
 }
 
@@ -182,5 +223,23 @@ impl SessionLifetime {
             Self::Persistent => "persistent",
             Self::Ephemeral => "ephemeral",
         }
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod compatibility_tests {
+    use super::*;
+
+    #[test]
+    fn activation_without_new_diagnostic_remains_readable() {
+        let old = Activation::starting(
+            ActivationId::FIRST,
+            InstanceId::from_bytes([1; 16]),
+            Stamp(1),
+        );
+        let value = serde_json::to_value(&old).unwrap();
+        assert!(value.get("diagnostic").is_none());
+        assert_eq!(serde_json::from_value::<Activation>(value).unwrap(), old);
     }
 }

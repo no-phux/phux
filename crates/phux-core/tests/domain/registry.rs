@@ -111,6 +111,7 @@ fn agent_conversations_bind_to_a_terminal_and_outlive_it_as_records() {
         resource: t,
         activation: phux_core::ActivationId::FIRST,
         state: ExecState::Completed,
+        diagnostic: None,
         outcome: Outcome::Exit(ExitOutcome::exited(0)),
     })
     .expect("ended");
@@ -169,6 +170,7 @@ fn commit_reports_released_handles_when_an_ephemeral_session_empties() {
                 resource: t,
                 activation: phux_core::ActivationId::FIRST,
                 state: ExecState::Completed,
+                diagnostic: None,
                 outcome: Outcome::Exit(ExitOutcome::exited(0)),
             },
         },

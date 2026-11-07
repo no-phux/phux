@@ -59,6 +59,12 @@ fn run_show(socket: &Path, target: &str, json: bool) -> ExitCode {
         Err(code) => return code,
     };
     rt.block_on(async {
+        if let Some(key) = target
+            .strip_prefix('^')
+            .and_then(phux_protocol::ids::ResourceKey::parse)
+        {
+            return show_key(socket, key, json).await;
+        }
         let id = match resolve(socket, target, "resource show", json).await {
             Ok(id) => id,
             Err(code) => return code,
@@ -68,6 +74,34 @@ fn run_show(socket: &Path, target: &str, json: bool) -> ExitCode {
             Err(err) => report_lookup_error(json, socket, "resource show", &err),
         }
     })
+}
+
+async fn show_key(socket: &Path, key: phux_protocol::ids::ResourceKey, json: bool) -> ExitCode {
+    match phux_client::resource::show::show_key(socket, key).await {
+        Ok(details) => {
+            if json {
+                return crate::output::json(&details);
+            }
+            outln!("resource: ^{}", details.resource);
+            outln!("session: ^{}", details.session);
+            if let Some(execution) = details.execution {
+                outln!(
+                    "execution: {}",
+                    serde_json::to_value(execution).unwrap_or_default()
+                );
+            }
+            ExitCode::SUCCESS
+        }
+        Err(error) => json_err::emit(
+            json,
+            &CliError::new(
+                error.code(),
+                error.to_string(),
+                "use the full durable resource key on its owning authority; removed or out-of-scope records are absent",
+            ),
+            EXIT_FAILURE,
+        ),
+    }
 }
 
 fn run_methods(socket: &Path, target: &str, json: bool) -> ExitCode {

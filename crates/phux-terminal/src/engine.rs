@@ -75,7 +75,10 @@ impl TerminalEngineFactory for TerminalEngine {
                 bundle
             }),
         }
-        .map_err(|error| phux_terminal_api::TerminalActorError::Engine(error.to_string()))?;
+        .map_err(|error| phux_terminal_api::TerminalActorError::Launch {
+            message: error.to_string(),
+            diagnostic: error.launch_diagnostic(),
+        })?;
         let crate::TerminalActorBundle {
             mut actor,
             handle,

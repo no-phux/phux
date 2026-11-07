@@ -129,15 +129,22 @@ impl OrgError {
     /// A stable lowercase code for `--json` output.
     #[must_use]
     pub const fn code(&self) -> &'static str {
+        self.api_code().as_str()
+    }
+
+    /// Typed code used by public workflow error DTOs and their schemas.
+    #[must_use]
+    pub const fn api_code(&self) -> phux_protocol::api::ErrorCode {
+        use phux_protocol::api::ErrorCode as C;
         match self {
-            Self::Unsupported => "unsupported",
-            Self::Refused(refusal) => refusal.as_str(),
-            Self::Server { .. } => "server_error",
-            Self::Unexpected(_) => "unexpected_reply",
-            Self::OutcomeUnknown { .. } => "outcome_unknown",
-            Self::NotFound(_) => "no_such_target",
-            Self::Ambiguous { .. } => "selector_not_single",
-            Self::Attach(_) => "transport",
+            Self::Unsupported => C::Unsupported,
+            Self::Refused(refusal) => C::from_refusal(refusal),
+            Self::Server { .. } => C::ServerError,
+            Self::Unexpected(_) => C::UnexpectedReply,
+            Self::OutcomeUnknown { .. } => C::OutcomeUnknown,
+            Self::NotFound(_) => C::NoSuchTarget,
+            Self::Ambiguous { .. } => C::SelectorNotSingle,
+            Self::Attach(_) => C::Transport,
         }
     }
 }
