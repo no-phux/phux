@@ -484,6 +484,10 @@ fn samples(world: &World, agent: &WireResourceId) -> Vec<FrameKind> {
             terminal_id: t.clone(),
             bytes: b"{}".to_vec(),
         }),
+        command(Command::SendDocumentInput {
+            terminal_id: t.clone(),
+            intent: phux_protocol::wire::frame::DocumentInput::Click { x: 1, y: 1 },
+        }),
     ]
     .into_iter()
     .chain(organization_samples(world, &t))

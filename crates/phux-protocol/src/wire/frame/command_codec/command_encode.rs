@@ -269,6 +269,14 @@ pub(in crate::wire) fn encode_command(command: &Command, enc: &mut Encoder<'_>) 
             encode_terminal_id(terminal_id, enc);
             enc.write_bytes(bytes);
         }
+        Command::SendDocumentInput {
+            terminal_id,
+            intent,
+        } => {
+            enc.write_u8(crate::wire::frame::COMMAND_TAG_SEND_DOCUMENT_INPUT);
+            encode_terminal_id(terminal_id, enc);
+            intent.encode(enc);
+        }
         org @ (Command::GetOrganization { .. }
         | Command::SessionCreate { .. }
         | Command::SessionRename { .. }

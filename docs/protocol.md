@@ -273,6 +273,17 @@ arrives as one `RESOURCE_OUTPUT`. A viewer the broadcast laps is tombstoned
 slow viewer skips is intermediate documents. The stream takes no input, no
 acknowledgement and no history request.
 
+Input for a document goes to its producer, not into the stream:
+`SEND_DOCUMENT_INPUT` (command tag `0x48`) names a tree or surface and one
+typed intent (navigate to a URL, click at a point in the surface image's
+pixels, insert text, press a named key, or scroll). The server relays it,
+unread, as an unstamped `document_input` event (tag `0x20`) on the
+connection that spawned the document, and answers `OK` once queued;
+`NOT_PRODUCER` when that connection is gone, `OVERFLOW` when its mailbox is
+full. Nobody else sees the event and it is never journaled. Input to a page
+or window is control of the machine, so the rule is owner socket only: no
+terminal or remote grant reaches it ([resource kinds](./resource-kinds.md#authority)).
+
 `GET_METADATA` / `SET_METADATA` / `SUBSCRIBE_METADATA` (`0x50`-`0x54`)
 attach small keyed values to resources. Some keys are plain storage; some
 are read by the server (`phux.agent/v1` is the agent record).

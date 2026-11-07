@@ -90,7 +90,7 @@ pub(in crate::wire) fn decode_command(dec: &mut Decoder<'_>) -> Result<Command, 
 }
 
 /// Decode the producer verbs `APPEND_RESOURCE_OUTPUT` and
-/// `PUBLISH_RESOURCE_STATE`.
+/// `PUBLISH_RESOURCE_STATE`, and the viewer's `SEND_DOCUMENT_INPUT`.
 pub(super) fn decode_resource_command(
     tag: u8,
     dec: &mut Decoder<'_>,
@@ -98,6 +98,10 @@ pub(super) fn decode_resource_command(
     let command = match tag {
         COMMAND_TAG_APPEND_RESOURCE_OUTPUT => decode_append_resource_output_command(dec)?,
         COMMAND_TAG_PUBLISH_RESOURCE_STATE => decode_publish_resource_state_command(dec)?,
+        crate::wire::frame::COMMAND_TAG_SEND_DOCUMENT_INPUT => Command::SendDocumentInput {
+            terminal_id: decode_terminal_id(dec)?,
+            intent: crate::wire::frame::DocumentInput::decode(dec)?,
+        },
         _ => return Ok(None),
     };
     Ok(Some(command))

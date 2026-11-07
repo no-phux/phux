@@ -22,8 +22,12 @@ supplies the concrete engine ([architecture](./architecture.md#where-to-look)).
 Desktop and Rune discover tree/surface resources before the first frame,
 render plain JSON or letterboxed PNGs, and distinguish pending, empty and invalid
 documents. Documents can occupy mixed or document-only arrangements and survive
-restore/reconnect. They are **read-only mirrors**: typing, paste, terminal grid
-resizing and file uploads do not control their source. Desktop can transfer a
+restore/reconnect. Their streams are **read-only**: typing, paste, terminal grid
+resizing and file uploads do not control their source. Input goes to the
+producer instead: `SEND_DOCUMENT_INPUT` relays one typed intent to the
+connection that opened the document ([protocol](./protocol.md#commands-events-resources)),
+and `phux agent page navigate|click|type|key` drive a mirrored browser page
+this way. Desktop and mobile do not send input yet. Desktop can transfer a
 view between windows once the destination accepts the exact subscription;
 closing a document placement leaves its producer and other viewers running.
 
@@ -153,10 +157,16 @@ Two parts change (`phux-phiio.4`):
   it inherits supervision, logs and upgrade survival; a PTY-less supervised
   process is a later kind, added only if a PTY proves costly.
 - The server relays per-viewer feedback to the producer: acknowledgements,
-  viewport and RTT, besides today's typed intents. Encoding happens where the
+  viewport and RTT, besides typed intents. Encoding happens where the
   state is, so the server stays a fenced relay and its single-threaded
-  runtime does no pixel work. This half lands with the first producer that
-  consumes feedback, the accessibility helper of `phux-phiio.6`.
+  runtime does no pixel work. Typed intents landed with the browser page
+  mirror (`phux-xvibq.2`): `SEND_DOCUMENT_INPUT` is a command, and the
+  server queues it on the producer's own connection as an unjournaled
+  `document_input` event, so the producer receives it without polling
+  beside its publishes. The producer is the connection that spawned the
+  document; once it is gone the intent is refused, never held. Per-viewer
+  acknowledgements, viewport and RTT land with the first producer that
+  consumes them.
 
 A macOS helper holds the Screen Recording and Accessibility grants. The
 system ties those grants to a stable signed binary, so the helper is not the
@@ -185,8 +195,9 @@ screencast is already acknowledged per frame. A page needed no kind of its
 own: `phux agent page mirror` drives one over the DevTools Protocol and
 publishes its accessibility tree into an `AccessibilityTree` and its
 screencast into a `PixelSurface` under one pane, so `phux agent tree
-snapshot` and `phux agent surface snapshot` read it like any other. A kind
-of its own waits for a verb the two lack, such as navigation.
+snapshot` and `phux agent surface snapshot` read it like any other.
+Navigation and input did not need one either: they are typed intents to
+the page's producer, addressed to either of its documents.
 
 ## Authority
 
@@ -194,7 +205,10 @@ The kind catalog stays the one table for discovery and authorization, so a
 new kind starts denied. Observing a display shows every application on the
 machine, and input to it is control of the machine, so window and display
 grants are separate from terminal grants and from each other. A device paired
-to watch terminals does not inherit a desktop.
+to watch terminals does not inherit a desktop. Until such grants exist,
+`SEND_DOCUMENT_INPUT` has its own rule that only the owner socket meets: no
+scoped or remote grant, whatever its terminal verbs, can send input to a
+page or window.
 
 ## Order
 

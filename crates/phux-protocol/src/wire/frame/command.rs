@@ -17,6 +17,7 @@ use super::org::{
 };
 
 mod args;
+mod document_input;
 mod event;
 #[macro_use]
 mod organization;
@@ -28,6 +29,7 @@ pub use args::{
     KillConditions, KillPrecondition, ListenerTransport, PerfOp, ReportedAgentState,
     ResourceEventType, StateScope, TerminalSignal,
 };
+pub use document_input::{DocumentInput, DocumentKey, MAX_DOCUMENT_INPUT_TEXT};
 pub use event::{AgentEvent, ApprovalOutcome, ControlAction, ResourceLifecycle};
 
 /// Declares [`Command`] around the variant list the family macros build.

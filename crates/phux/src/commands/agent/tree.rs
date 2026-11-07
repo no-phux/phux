@@ -24,6 +24,7 @@ const SCHEMA_VERSION: u8 = 1;
 
 mod mirror;
 mod page;
+mod page_input;
 mod page_mirror;
 mod surface;
 mod surface_mirror;
@@ -169,7 +170,7 @@ pub(super) async fn dial(
 }
 
 /// Resolve `target` and connect, or report why not.
-async fn connect(
+pub(super) async fn connect(
     target: &str,
     verb: &str,
     json: bool,
@@ -197,6 +198,10 @@ pub(super) fn report(json: bool, err: &TreeError) -> ExitCode {
         TreeError::NotProducer(_) => (
             json_err::codes::WORKLOAD,
             "publish from the local owner connection",
+        ),
+        TreeError::NoProducer(_) => (
+            json_err::codes::WORKLOAD,
+            "keep `phux agent page mirror` running for the page",
         ),
         TreeError::Refused(_) => (json_err::codes::WORKLOAD, "see the message"),
         TreeError::Protocol(_) => (json_err::codes::TRANSPORT, "retry"),

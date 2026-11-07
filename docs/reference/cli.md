@@ -435,10 +435,55 @@ browser started with `--remote-debugging-port`.
 Usage: phux agent page <SUBCOMMAND>
 
 Commands:
-  mirror  Mirror a browser page into a tree and a surface until Ctrl-C.
-  help    Print this message or the help of the given subcommand(s)
+  click     Click a mirrored page at a point of its surface image, in image
+            pixels.
+  key       Press one key in a mirrored page: Enter, Tab, Backspace, Escape, or
+            an arrow.
+  mirror    Mirror a browser page into a tree and a surface until Ctrl-C.
+  navigate  Load a URL in a mirrored page.
+  type      Type text into a mirrored page's focused field.
+  help      Print this message or the help of the given subcommand(s)
 
 Flags:
+  -h, --help           Print help
+
+Global flags:
+      --socket <PATH>  Server socket to dial (default: `$PHUX_SOCKET`)
+```
+
+## `phux agent page click`
+
+```text
+Click a mirrored page at a point of its surface image, in image pixels.
+
+Usage: phux agent page click [--json] <ARGS>…
+
+Arguments:
+  <TARGET>  The page's surface or tree.
+  <X>       Pixels from the image's left edge.
+  <Y>       Pixels from the image's top edge.
+
+Flags:
+      --json
+  -h, --help           Print help
+
+Global flags:
+      --socket <PATH>  Server socket to dial (default: `$PHUX_SOCKET`)
+```
+
+## `phux agent page key`
+
+```text
+Press one key in a mirrored page: Enter, Tab, Backspace, Escape, or an arrow.
+
+Usage: phux agent page key [--json] <TARGET> <KEY>
+
+Arguments:
+  <TARGET>  The page's surface or tree.
+  <KEY>     The key, e.g. `Enter` or `ArrowDown`.
+
+Flags:
+      --json
   -h, --help           Print help
 
 Global flags:
@@ -461,6 +506,44 @@ Flags:
                        when absent.
       --interval <MS>  Milliseconds between accessibility-tree reads (default
                        1000).
+      --json
+  -h, --help           Print help
+
+Global flags:
+      --socket <PATH>  Server socket to dial (default: `$PHUX_SOCKET`)
+```
+
+## `phux agent page navigate`
+
+```text
+Load a URL in a mirrored page.
+
+Usage: phux agent page navigate [--json] <TARGET> <URL>
+
+Arguments:
+  <TARGET>  The page's surface or tree.
+  <URL>     The URL to load.
+
+Flags:
+      --json
+  -h, --help           Print help
+
+Global flags:
+      --socket <PATH>  Server socket to dial (default: `$PHUX_SOCKET`)
+```
+
+## `phux agent page type`
+
+```text
+Type text into a mirrored page's focused field.
+
+Usage: phux agent page type [--json] <TARGET> <TEXT>
+
+Arguments:
+  <TARGET>  The page's surface or tree.
+  <TEXT>    The text to insert.
+
+Flags:
       --json
   -h, --help           Print help
 

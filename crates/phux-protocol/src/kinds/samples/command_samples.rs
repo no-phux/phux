@@ -57,10 +57,11 @@ const fn command_variant(command: &Command) -> usize {
         Command::DescribeApi => 52,
         Command::GetCreation { .. } => 53,
         Command::PublishResourceState { .. } => 54,
+        Command::SendDocumentInput { .. } => 55,
     }
 }
 
-const COMMAND_VARIANTS: usize = 55;
+const COMMAND_VARIANTS: usize = 56;
 
 fn operation() -> IdempotencyKey {
     IdempotencyKey::new([3; 16]).unwrap()
@@ -545,6 +546,13 @@ fn command_samples() -> Vec<(Command, &'static Rule)> {
                 bytes: b"{}".to_vec(),
             },
             &C_PUBLISH_RESOURCE_STATE,
+        ),
+        (
+            Command::SendDocumentInput {
+                terminal_id: terminal(),
+                intent: crate::wire::frame::DocumentInput::Click { x: 1, y: 2 },
+            },
+            &C_SEND_DOCUMENT_INPUT,
         ),
         (
             Command::KillResourceIf {

@@ -451,6 +451,10 @@ fn rows(world: &mut World) -> Vec<Row> {
         denied(command(Command::PerfControl {
             op: PerfOp::TraceStop,
         })),
+        denied(command(Command::SendDocumentInput {
+            terminal_id: t.clone(),
+            intent: phux_protocol::wire::frame::DocumentInput::Click { x: 1, y: 1 },
+        })),
         on_global(command(Command::GetPerf { reset: false }), "observe"),
         on_global(command(Command::GetPerf { reset: true }), "observe,bind"),
         // Through the parent alone: a grant naming only the child fails.

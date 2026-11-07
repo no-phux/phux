@@ -16,6 +16,9 @@ use phux_protocol::wire::frame::{
 use crate::attach::AttachError;
 use crate::attach::connection::{Answer, Connection};
 
+mod input;
+pub use input::{DocumentInput, DocumentKey, Intent, intent, send_input};
+
 /// Which document kind a call is about.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Kind {
@@ -134,6 +137,9 @@ pub enum TreeError {
     /// This connection may not publish.
     #[error("not the producer: {0}")]
     NotProducer(String),
+    /// Nothing produces the document now, so input has nowhere to go.
+    #[error("no producer: {0}")]
+    NoProducer(String),
     /// The document is not JSON.
     #[error("document refused: {0}")]
     Invalid(String),
@@ -279,8 +285,23 @@ pub async fn publish(
     tree: &ResourceId,
     bytes: Vec<u8>,
 ) -> Result<Published, TreeError> {
+    publish_collecting(conn, tree, bytes, &mut Vec::new()).await
+}
+
+/// [`publish`], keeping every input intent the server relayed while it
+/// waited for the reply; a producer that takes input publishes this way.
+///
+/// # Errors
+///
+/// The refusal, or a connection failure.
+pub async fn publish_collecting(
+    conn: &mut Connection,
+    tree: &ResourceId,
+    bytes: Vec<u8>,
+    intents: &mut Vec<Intent>,
+) -> Result<Published, TreeError> {
     require_support(conn)?;
-    let (result, _) = conn
+    let (result, interleaved) = conn
         .request(
             REQUEST_PUBLISH,
             Command::PublishResourceState {
@@ -290,6 +311,7 @@ pub async fn publish(
         )
         .await?
         .into_parts();
+    intents.extend(interleaved.iter().filter_map(intent));
     match result {
         CommandResult::OkWith(CommandValue::Json(text)) => serde_json::from_str(&text)
             .map_err(|error| AttachError::Protocol(format!("publish receipt: {error}")).into()),
