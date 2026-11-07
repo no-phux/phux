@@ -342,8 +342,11 @@ impl Desk {
         if live.iter().any(|r| same_execution(r, &old.record)) {
             return;
         }
-        self.resources.returning = Some(old.record.key);
-        self.close_shown(client);
+        let returning = old.record.key;
+        self.close_shown(client, &[]);
+        // A temporary phone fallback is not an explicit focus change: the
+        // replacement execution of this key still takes priority.
+        self.resources.returning = Some(returning);
         self.mirror_unavailable();
     }
 
@@ -369,8 +372,9 @@ impl Desk {
         let next = self
             .layout
             .as_ref()
+            .filter(|_| self.phone.is_none())
             .and_then(|tree| super::layout::neighbour(tree, &gone));
-        self.close_shown(client);
+        self.close_shown(client, &[]);
         if let Some(next) = next {
             self.want(next);
         }
@@ -399,11 +403,12 @@ impl Desk {
             let next = self
                 .layout
                 .as_ref()
+                .filter(|_| self.phone.is_none())
                 .map(phux_client_core::layout::leaves)
                 .unwrap_or_default()
                 .into_iter()
                 .find(|id| !ids.contains(id));
-            self.close_shown(&client);
+            self.close_shown(&client, ids);
             if let Some(next) = next {
                 self.want(next);
             }

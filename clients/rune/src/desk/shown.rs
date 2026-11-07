@@ -32,20 +32,49 @@ impl Desk {
         Some(shown.terminal)
     }
 
-    pub(super) fn close_shown(&mut self, client: &Client) {
-        // Document removal/hiding also comes through here. Its desktop
-        // callers know only the visible layout, so retain the phone's full
-        // group fallback before dropping the focused leaf.
-        let next = self.phone.as_ref().and_then(|phone| {
-            let shown = self.shown.as_ref()?;
-            super::layout::neighbour(phone.tree.as_ref()?, &shown.terminal)
-        });
+    pub(super) fn close_shown(&mut self, client: &Client, excluded: &[ResourceId]) {
+        let next = self.phone_close_target(client, excluded);
         self.drop_shown(client);
         // Fall back to whatever the server now focuses.
         self.wanted = None;
         if let Some(next) = next {
             self.want(next);
         }
+    }
+
+    /// Mirrors and topology may still describe the beginning of a coalesced
+    /// batch. Choose from the retained phone group, but validate against the
+    /// latest organization and terminal roster, excluding the whole hide batch.
+    fn phone_close_target(&self, client: &Client, excluded: &[ResourceId]) -> Option<ResourceId> {
+        let tree = self.phone.as_ref()?.tree.as_ref()?;
+        let shown = &self.shown.as_ref()?.terminal;
+        let all = phux_client_core::layout::leaves(tree);
+        let at = all.iter().position(|id| id == shown)?;
+        let org = client.organization();
+        if !org.is_live() {
+            return None;
+        }
+        let topology = client.topology();
+        all[..at]
+            .iter()
+            .rev()
+            .chain(all[at + 1..].iter())
+            .filter(|id| !excluded.contains(id))
+            .find(|id| {
+                let Some(record) = org.resource_by_live(id) else {
+                    return false;
+                };
+                if self.resources.dismissed.contains(&record.key) {
+                    return false;
+                }
+                match record.kind {
+                    phux_protocol::ids::ResourceKind::Terminal => {
+                        topology.as_ref().is_some_and(|t| t.pane(id).is_some())
+                    }
+                    kind => super::resources::document_kind(kind),
+                }
+            })
+            .cloned()
     }
 
     /// A new connection may be a new server incarnation, whose engine forgot

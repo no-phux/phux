@@ -185,9 +185,11 @@ impl Desk {
         let document = self.forget_document(id);
         if self.shown.as_ref().is_some_and(|s| &s.terminal == id) {
             let next = self
-                .navigation_tree()
+                .layout
+                .as_ref()
+                .filter(|_| self.phone.is_none())
                 .and_then(|tree| layout::neighbour(tree, id));
-            self.close_shown(client);
+            self.close_shown(client, std::slice::from_ref(id));
             if let Some(next) = next {
                 self.want(next);
             }
