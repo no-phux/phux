@@ -132,3 +132,38 @@ pub struct AdaptedBootstrap {
     pub retained_bytes: usize,
     pub peak_bytes: usize,
 }
+
+#[cfg(test)]
+mod tests {
+    use phux_core::{LaunchDiagnostic, LaunchStage};
+
+    use super::TerminalActorError;
+
+    /// The stage an engine failed at survives the trip to the host; errors
+    /// without one fall back to the stage their variant names.
+    #[test]
+    fn a_launch_failure_keeps_its_stage_across_the_engine_boundary() {
+        let exec = LaunchDiagnostic {
+            stage: LaunchStage::Exec,
+            errno: Some(2),
+        };
+        let launch = TerminalActorError::Launch {
+            message: "exec failed".to_owned(),
+            diagnostic: exec,
+        };
+        assert_eq!(launch.launch_diagnostic(), exec);
+        assert_eq!(launch.to_string(), "exec failed");
+        assert_eq!(
+            TerminalActorError::Refused("taken".into())
+                .launch_diagnostic()
+                .stage,
+            LaunchStage::Spawn
+        );
+        assert_eq!(
+            TerminalActorError::Engine("libghostty".into())
+                .launch_diagnostic()
+                .stage,
+            LaunchStage::Engine
+        );
+    }
+}
