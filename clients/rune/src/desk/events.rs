@@ -182,8 +182,11 @@ impl Desk {
 
     fn resource_closed(&mut self, client: &Client, id: &ResourceId, exit: Option<i32>) -> bool {
         let producer = self.producer_ended(id, exit);
-        let document = self.forget_document(id);
-        if self.shown.as_ref().is_some_and(|s| &s.terminal == id) {
+        let document = self.forget_document(client, id);
+        let pending_phone = self.phone.is_some()
+            && self.shown.is_none()
+            && self.wanted.as_ref().is_some_and(|(wanted, _)| wanted == id);
+        if self.shown.as_ref().is_some_and(|s| &s.terminal == id) || pending_phone {
             let next = self
                 .layout
                 .as_ref()
@@ -199,7 +202,8 @@ impl Desk {
         if let Some(view) = other.flatten() {
             let _ = client.destroy_view(view);
         }
-        producer || document || other.is_some()
+        let cancelled = self.wanted.take_if(|(wanted, _)| wanted == id).is_some();
+        producer || document || other.is_some() || cancelled
     }
 }
 

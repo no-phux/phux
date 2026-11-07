@@ -34,14 +34,19 @@ fn stored(client: &Client) -> ArrangementDoc {
 }
 
 fn replace_records(client: &Client, records: Vec<ResourceRecord>) {
+    let revision = client.organization().snapshot_revision().get() + 1;
     let request_id = client.refresh_organization().unwrap();
-    let page = OrganizationPage::new(AuthorityId::new([1; 16]).unwrap(), Revision::new(2), 0)
-        .with_sessions(vec![
-            SessionRecord::new(session(), "work", Revision::new(1))
-                .with_arrangement(Some(arrangement()))
-                .with_live(Some(SessionId::new(1))),
-        ])
-        .with_resources(records);
+    let page = OrganizationPage::new(
+        AuthorityId::new([1; 16]).unwrap(),
+        Revision::new(revision),
+        0,
+    )
+    .with_sessions(vec![
+        SessionRecord::new(session(), "work", Revision::new(1))
+            .with_arrangement(Some(arrangement()))
+            .with_live(Some(SessionId::new(1))),
+    ])
+    .with_resources(records);
     client
         .feed(FrameKind::CommandResult {
             request_id,
@@ -171,6 +176,13 @@ fn phone_document_replacement_restores_the_same_key_ahead_of_a_temporary_fallbac
             Body::Pending
         ));
         assert!(rt.state.resources.returning.is_none());
+        assert!(
+            rt.state
+                .notice
+                .as_ref()
+                .is_none_or(|n| !n.text.contains("Mirror unavailable")),
+            "immediate replacement is not unavailable"
+        );
         let mut expected = before;
         expected.groups[0].state.tree = Some(LayoutNode::Split {
             dir: SplitDir::Horizontal,
@@ -291,3 +303,6 @@ fn phone_fallback_rejects_a_leaf_that_is_no_longer_a_supported_document() {
         assert_eq!(rt.state.wanted.as_ref().map(|(id, _)| id), Some(&id(1)));
     }
 }
+
+mod closed;
+mod restoration;

@@ -38,7 +38,10 @@ impl Desk {
         // Fall back to whatever the server now focuses.
         self.wanted = None;
         if let Some(next) = next {
+            // Automatic fallback does not cancel a waiting stable key.
+            let returning = self.resources.returning;
             self.want(next);
+            self.resources.returning = returning;
         }
     }
 
@@ -47,7 +50,11 @@ impl Desk {
     /// latest organization and terminal roster, excluding the whole hide batch.
     fn phone_close_target(&self, client: &Client, excluded: &[ResourceId]) -> Option<ResourceId> {
         let tree = self.phone.as_ref()?.tree.as_ref()?;
-        let shown = &self.shown.as_ref()?.terminal;
+        let shown = self
+            .shown
+            .as_ref()
+            .map(|shown| &shown.terminal)
+            .or_else(|| self.wanted.as_ref().map(|(id, _)| id))?;
         let all = phux_client_core::layout::leaves(tree);
         let at = all.iter().position(|id| id == shown)?;
         let org = client.organization();
@@ -71,7 +78,10 @@ impl Desk {
                     phux_protocol::ids::ResourceKind::Terminal => {
                         topology.as_ref().is_some_and(|t| t.pane(id).is_some())
                     }
-                    kind => super::resources::document_kind(kind),
+                    kind => {
+                        super::resources::document_kind(kind)
+                            && !self.resources.execution_closed(record)
+                    }
                 }
             })
             .cloned()
