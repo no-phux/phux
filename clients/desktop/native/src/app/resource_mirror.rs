@@ -30,6 +30,7 @@ impl Desk {
             "mirror-page" => "page",
             "mirror-tree" => "tree",
             "mirror-surface" => "surface",
+            "open-app" => "app",
             _ => return false,
         };
         if let Some(reason) = self.mirror_refusal(source) {
@@ -99,7 +100,12 @@ impl Desk {
         let Some(phux) = self.mirror_cli() else {
             return;
         };
-        let command = match mirror_argv(phux, &self.socket, source, &target) {
+        let argv = if source == "app" {
+            app_argv(phux, &self.socket, &target)
+        } else {
+            mirror_argv(phux, &self.socket, source, &target)
+        };
+        let command = match argv {
             Ok(command) => command,
             Err(reason) => {
                 self.post(Kind::Refusal, "Could not start mirror", Some(reason));
@@ -166,6 +172,62 @@ impl Desk {
     }
 }
 
+/// `phux agent app run` for the dialog's `NAME [--browser [URL]] [--headless]`:
+/// the name is everything before the first ` --`, so it may hold spaces.
+fn app_argv(
+    phux: &std::path::Path,
+    socket: &std::path::Path,
+    input: &str,
+) -> Result<Vec<String>, String> {
+    let input = input.trim();
+    if input.len() > 4096 || input.contains(['\0', '\r', '\n']) {
+        return Err("Enter an app name without line breaks (at most 4096 bytes).".into());
+    }
+    let (name, options) = input
+        .find(" --")
+        .map_or((input, ""), |at| (input[..at].trim_end(), &input[at + 1..]));
+    if name.is_empty() || name.starts_with('-') {
+        return Err("Start with an application name, such as TextEdit.".into());
+    }
+    let mut argv = vec![
+        phux.display().to_string(),
+        "--socket".into(),
+        socket.display().to_string(),
+        "agent".into(),
+        "app".into(),
+        "run".into(),
+        name.into(),
+    ];
+    let mut words = options.split_whitespace().peekable();
+    let (mut browser, mut headless) = (None, false);
+    while let Some(word) = words.next() {
+        match word {
+            "--headless" => headless = true,
+            "--browser" => {
+                let url = words.next_if(|next| !next.starts_with('-'));
+                browser = Some(url.unwrap_or("about:blank"));
+            }
+            other => match other.strip_prefix("--browser=") {
+                Some(url) => browser = Some(url),
+                None => {
+                    return Err(format!(
+                        "Unknown option {other}; use --browser [URL] or --headless."
+                    ));
+                }
+            },
+        }
+    }
+    if let Some(url) = browser {
+        argv.push(format!("--browser={url}"));
+        if headless {
+            argv.push("--headless".into());
+        }
+    } else if headless {
+        return Err("--headless needs --browser.".into());
+    }
+    Ok(argv)
+}
+
 fn mirror_argv(
     phux: &std::path::Path,
     socket: &std::path::Path,
@@ -230,6 +292,58 @@ mod tests {
         }
     }
 
+    #[test]
+    fn app_argv_names_the_helper_and_only_known_flags() {
+        let argv = |input| {
+            app_argv(
+                std::path::Path::new("/checkout/phux"),
+                std::path::Path::new("/isolated.sock"),
+                input,
+            )
+        };
+        let head = [
+            "/checkout/phux",
+            "--socket",
+            "/isolated.sock",
+            "agent",
+            "app",
+            "run",
+        ];
+        let with = |rest: &[&str]| -> Vec<String> {
+            head.iter()
+                .chain(rest)
+                .map(|word| (*word).to_owned())
+                .collect()
+        };
+        assert_eq!(
+            argv("Visual Studio Code").unwrap(),
+            with(&["Visual Studio Code"])
+        );
+        assert_eq!(
+            argv("chrome --browser https://example.test/;rm --headless").unwrap(),
+            with(&["chrome", "--browser=https://example.test/;rm", "--headless"])
+        );
+        assert_eq!(
+            argv("chrome --browser").unwrap(),
+            with(&["chrome", "--browser=about:blank"])
+        );
+        // With the desktop's pane and pid, as Open App runs it.
+        let pid = std::process::id().to_string();
+        assert_eq!(
+            local::local_argv(argv("TextEdit").unwrap(), "@4"),
+            with(&["TextEdit", "--pane", "@4", "--parent-pid", &pid])
+        );
+        for bad in [
+            "",
+            "--pane @1",
+            "TextEdit --headless",
+            "TextEdit --pane @2",
+            "a\nb",
+        ] {
+            assert!(argv(bad).is_err(), "{bad:?}");
+        }
+    }
+
     #[gpui::test]
     fn startup_uses_a_dedicated_supervised_argv_and_refuses_remote_early(
         cx: &mut gpui::TestAppContext,
@@ -282,9 +396,16 @@ mod tests {
                         "first"
                     ]
                 );
+                if cfg!(target_os = "macos") {
+                    assert!(desk.open_resource_mirror("open-app", window, cx));
+                    assert_eq!(desk.modal, Modal::Mirror { source: "app" });
+                    desk.close_modal(window, cx);
+                }
                 desk.remote = Some("other-host".into());
-                assert!(desk.open_resource_mirror("mirror-page", window, cx));
-                assert_eq!(desk.modal, Modal::None);
+                for id in ["mirror-page", "open-app"] {
+                    assert!(desk.open_resource_mirror(id, window, cx));
+                    assert_eq!(desk.modal, Modal::None, "{id} is local-only");
+                }
                 assert!(desk.client().unwrap().take_outbound().is_empty());
             })
         })

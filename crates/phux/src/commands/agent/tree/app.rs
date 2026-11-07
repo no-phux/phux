@@ -58,6 +58,13 @@ pub(crate) enum AppAction {
         /// Print what would be launched and exit, launching nothing.
         #[usage(long)]
         dry_run: bool,
+        /// The pane the documents bind to; this process's own pane when absent.
+        #[usage(long, value_name = "PANE")]
+        pane: Option<String>,
+        /// Quit the app and exit once this process is gone, as the app that
+        /// launched the helper passes its own.
+        #[usage(long, value_name = "PID")]
+        parent_pid: Option<u32>,
         /// Arguments for the application; they follow `--`.
         #[usage(trailing_var_arg)]
         args: Vec<String>,
@@ -72,6 +79,8 @@ pub(crate) fn run_app(action: &AppAction, socket: Option<PathBuf>) -> ExitCode {
         interval,
         frames,
         dry_run,
+        pane,
+        parent_pid,
         args,
     } = action;
     // Pages are the high-frame-rate case and default to JPEG; window
@@ -97,17 +106,22 @@ pub(crate) fn run_app(action: &AppAction, socket: Option<PathBuf>) -> ExitCode {
         );
         return ExitCode::SUCCESS;
     }
-    if std::env::var_os("PHUX_TERMINAL_ID").is_none() {
-        return fail(
-            "not running in a phux pane",
-            "run `phux spawn --app NAME`, or run this inside a pane",
-            EXIT_USAGE,
-        );
+    if pane.is_none() {
+        if std::env::var_os("PHUX_TERMINAL_ID").is_none() {
+            return fail(
+                "not running in a phux pane and no `--pane` given",
+                "run `phux spawn --app NAME`, run this inside a pane, or pass `--pane @N`",
+                EXIT_USAGE,
+            );
+        }
+        // The pane's title names the app.
+        out!("\x1b]2;{name}\x07");
     }
-    // The pane's title names the app.
-    out!("\x1b]2;{name}\x07");
     if let Err(message) = end_app_on_signal() {
         return fail(&message, "retry", EXIT_FAILURE);
+    }
+    if let Some(pid) = *parent_pid {
+        super::parent_watch::watch(pid, quit_and_exit);
     }
     let launched = match Launched::start(&plan, STARTUP) {
         Ok(launched) => launched,
@@ -119,6 +133,7 @@ pub(crate) fn run_app(action: &AppAction, socket: Option<PathBuf>) -> ExitCode {
         interval: *interval,
         frames,
         socket,
+        pane: pane.clone(),
     };
     *LAUNCHED.lock().unwrap_or_else(PoisonError::into_inner) = Some(launched);
     if let Err(message) = start_producers(&plan, mirrors) {
@@ -184,12 +199,17 @@ fn end_app_on_signal() -> Result<(), String> {
                 _ = int.recv() => {}
             }
         });
-        if let Some(launched) = take() {
-            launched.quit();
-        }
-        std::process::exit(0);
+        quit_and_exit();
     });
     Ok(())
+}
+
+/// Quit the app the helper launched, then exit.
+fn quit_and_exit() {
+    if let Some(launched) = take() {
+        launched.quit();
+    }
+    std::process::exit(0);
 }
 
 /// What every mirror the helper runs shares.
@@ -198,6 +218,8 @@ struct Mirrors {
     interval: Option<u64>,
     frames: Frames,
     socket: Option<PathBuf>,
+    /// `--pane`: the documents' parent when not the helper's own pane.
+    pane: Option<String>,
 }
 
 /// Wait for the app's first window (a browser's first page), then run its
@@ -221,7 +243,7 @@ fn start_producers(plan: &Plan, m: Mirrors) -> Result<(), String> {
                 page_mirror::run_mirror(page_mirror::MirrorArgs {
                     page: "first",
                     port,
-                    pane: None,
+                    pane: m.pane.as_deref(),
                     interval_ms: m.interval.unwrap_or(1000),
                     frames: m.frames,
                     json: false,
@@ -278,12 +300,13 @@ const fn linux_window(_pid: u32) -> Result<Option<String>, String> {
 }
 
 fn spawn_tree(m: &Mirrors, pid: u32) {
-    let (name, interval, socket) = (m.name.clone(), m.interval, m.socket.clone());
+    let (name, interval, socket, pane) =
+        (m.name.clone(), m.interval, m.socket.clone(), m.pane.clone());
     std::thread::spawn(move || {
         mirror::run_mirror(mirror::MirrorArgs {
             app: &name,
             pid: Some(pid),
-            pane: None,
+            pane: pane.as_deref(),
             interval_ms: interval.unwrap_or(500),
             depth: 24,
             json: false,
@@ -298,7 +321,7 @@ fn spawn_surface(m: Mirrors, window_id: Option<u32>, class: Option<String>) {
         surface_mirror::run_mirror(surface_mirror::MirrorArgs {
             window: class.as_deref().unwrap_or(&m.name),
             window_id,
-            pane: None,
+            pane: m.pane.as_deref(),
             interval_ms: m.interval.unwrap_or(1000),
             frames: m.frames,
             dry_run_input: false,

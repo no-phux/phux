@@ -5,7 +5,7 @@
 
 use std::time::Duration;
 
-use phux_client::app::{APP_DOCUMENTS, AppSpec, documents_under, helper_argv};
+use phux_client::app::{APP_DOCUMENTS, AppSpec, documents_under, helper_argv, pane_refusal};
 use phux_client::selector::format_terminal_id;
 use phux_protocol::ids::ResourceId;
 use serde_json::{Value, json};
@@ -21,7 +21,7 @@ pub(crate) fn schemas() -> Vec<Value> {
     vec![
         schema(
             "phux_app_open",
-            "Launch an application as resources: a new pane runs `phux agent app run`, which launches the app, mirrors it into documents under the pane (a browser page with control `page`; else a window surface with control `window` and the app's accessibility tree), and quits the app when the pane is killed. `name` is a macOS app name, a Linux command or `.desktop` id, or with `browser` the browser (`chrome`, `chromium`, or a path), opened on `url` (default about:blank) with a fresh profile; `headless` keeps the browser off screen. Returns the pane and the documents opened within 20 s; read them with phux_tree_snapshot or phux_surface_snapshot, and close with phux_app_close. Input to the documents needs the owner socket or an `input@CLASS` grant.",
+            "Launch an application as resources: a new pane runs `phux agent app run`, which launches the app, mirrors it into documents under the pane (a browser page with control `page`; else a window surface with control `window` and the app's accessibility tree), and quits the app when the pane is killed. `name` is a macOS app name, a Linux command or `.desktop` id, or with `browser` the browser (`chrome`, `chromium`, or a path), opened on `url` (default about:blank) with a fresh profile; `headless` keeps the browser off screen. Returns the pane and the documents opened within 20 s; read them with phux_tree_snapshot or phux_surface_snapshot, and close with phux_app_close. Input to the documents needs the owner socket or an `input@CLASS` grant. On macOS a non-browser app is refused, because a pane holds no Screen Recording or Accessibility grant: ask the person to open it from the phux desktop app (Open App…).",
             json!({
                 "name": string_schema(),
                 "browser": { "type": "boolean" },
@@ -77,15 +77,16 @@ async fn open(args: &Value) -> Result<Value, ToolError> {
     if headless && !browser {
         return Err(ToolError::new("`headless` needs `browser`"));
     }
+    let spec = AppSpec {
+        name: &name,
+        browser: browser.then(|| url.as_deref().unwrap_or("about:blank")),
+        headless,
+    };
+    if let Some(refusal) = pane_refusal(&spec) {
+        return Err(ToolError::new(refusal));
+    }
     let program = crate::cli_adapter::phux_program();
-    let helper = helper_argv(
-        &program.to_string_lossy(),
-        AppSpec {
-            name: &name,
-            browser: browser.then(|| url.as_deref().unwrap_or("about:blank")),
-            headless,
-        },
-    );
+    let helper = helper_argv(&program.to_string_lossy(), spec);
     let mut spawn = json!({ "command": helper });
     for key in ["target", "socket"] {
         if let Some(value) = args.get(key) {

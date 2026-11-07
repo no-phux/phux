@@ -268,26 +268,30 @@ Arguments:
   [ARGS]…  Arguments for the application; they follow `--`.
 
 Flags:
-      --browser [URL]    Launch the browser NAME with a fresh profile and a
-                         debugging port, open URL (default `about:blank`), and
-                         mirror the page.
-      --headless         Run the browser with no window on screen.
-      --interval <MS>    Milliseconds between captures and tree reads (each
-                         mirror's default when absent).
-      --format <FORMAT>  Frame encoding: jpeg by default for a page mirror, png
-                         for a window or display mirror. JPEG frames are several
-                         times smaller; viewers older than JPEG support (desktop
-                         before 0.57.0, Rune before 0.1.0-alpha.17) show them as
-                         invalid.
-                         [possible values: png, jpeg]
-      --quality <Q>      JPEG quality, 1 to 100 (default 70).
-      --max-width <PX>   Scale frames down to at most this many pixels wide.
-      --dry-run          Print what would be launched and exit, launching
-                         nothing.
-  -h, --help             Print help
+      --browser [URL]     Launch the browser NAME with a fresh profile and a
+                          debugging port, open URL (default `about:blank`), and
+                          mirror the page.
+      --headless          Run the browser with no window on screen.
+      --interval <MS>     Milliseconds between captures and tree reads (each
+                          mirror's default when absent).
+      --format <FORMAT>   Frame encoding: jpeg by default for a page mirror, png
+                          for a window or display mirror. JPEG frames are
+                          several times smaller; viewers older than JPEG support
+                          (desktop before 0.57.0, Rune before 0.1.0-alpha.17)
+                          show them as invalid.
+                          [possible values: png, jpeg]
+      --quality <Q>       JPEG quality, 1 to 100 (default 70).
+      --max-width <PX>    Scale frames down to at most this many pixels wide.
+      --dry-run           Print what would be launched and exit, launching
+                          nothing.
+      --pane <PANE>       The pane the documents bind to; this process's own
+                          pane when absent.
+      --parent-pid <PID>  Quit the app and exit once this process is gone, as
+                          the app that launched the helper passes its own.
+  -h, --help              Print help
 
 Global flags:
-      --socket <PATH>    Server socket to dial (default: `$PHUX_SOCKET`)
+      --socket <PATH>     Server socket to dial (default: `$PHUX_SOCKET`)
 ```
 
 ## `phux agent clear`

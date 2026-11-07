@@ -28,3 +28,10 @@ that lingers is killed, and its profile is removed. The pane's title is
 the app's name. A producer that cannot start, such as a macOS capture
 without its grant, is logged in the pane; the app and the other
 producer go on. `--dry-run` prints what would be launched.
+
+## macOS apps and the desktop
+
+On macOS a pane holds no capture grant, so `phux spawn --app` and
+`phux_app_open` refuse a non-browser app. The desktop's
+[Open App…](../clients/desktop/OPEN_APP.md) runs the helper as its own
+child instead, so Screen Recording and Accessibility apply.
