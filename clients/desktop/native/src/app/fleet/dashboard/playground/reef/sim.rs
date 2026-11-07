@@ -558,10 +558,11 @@ impl Sim {
     }
 }
 
-/// The school's lane: its key hashed to 0..1, so each school settles at its
-/// own depth. Fish school by project, else by session.
+/// The school's lane, 0..1, so each school settles at its own depth: the
+/// first draw of the generator seeded with its key (raw FNV-1a top bits
+/// cluster for keys sharing a prefix). Fish school by project, else session.
 pub(super) fn lane(agent: &Agent) -> f32 {
     let host = agent.destination.host.as_deref().unwrap_or_default();
     let key = agent.project.as_deref().unwrap_or(&agent.destination.name);
-    (f64::from(hash(&format!("{host}/{key}"))) / 4_294_967_296.) as f32
+    Rng::new(hash(&format!("{host}/{key}"))).next()
 }
