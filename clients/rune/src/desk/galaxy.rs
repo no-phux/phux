@@ -64,6 +64,8 @@ pub struct Planet {
     pub name: String,
     pub online: bool,
     pub stars: Vec<Star>,
+    /// Whether `stars` is its agents: the connected machine's, or a watched one's.
+    pub known: bool,
     pub note: Option<String>,
 }
 
@@ -112,6 +114,7 @@ impl Desk {
             name: current.clone().unwrap_or_else(|| LOCAL.to_owned()),
             online: self.client.is_some(),
             stars: self.stars(),
+            known: true,
             note: None,
         };
         let others = std::iter::once(None)
@@ -134,6 +137,7 @@ impl Desk {
                 Planet {
                     name: host.unwrap_or_else(|| LOCAL.to_owned()),
                     online,
+                    known: stars.is_some(),
                     note: if stars.is_some() { None } else { note },
                     stars: stars.unwrap_or_default(),
                 }

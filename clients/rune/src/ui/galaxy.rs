@@ -126,8 +126,8 @@ pub(super) fn view(desk: &Desk, p: &Ink, cx: &mut Cx<Desk>) -> El {
     for (planet, system) in planets.iter().zip(&plan.systems) {
         let centre = system.centre;
         let at = camera.screen(centre);
-        // Only the connected machine lists its agents; another says what its
-        // session listing says, or nothing.
+        // A machine whose agents aren't known (not watched yet, or not
+        // dialable) says what its session listing says, or nothing.
         let note = if !planet.stars.is_empty() {
             Some(format!("{} agents", planet.stars.len()))
         } else if !planet.online {
