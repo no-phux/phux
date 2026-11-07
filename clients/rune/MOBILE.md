@@ -28,10 +28,10 @@ desktop one, so every CI build and release proves it draws a session.
 
 | Piece | Where |
 | --- | --- |
-| The terminal edge to edge on its own ground, the controls floating on it as glass: blurred, tinted, rimmed in light from above | `src/ui/phone.rs` (`glass`) |
-| Top bar: sessions (back), a capsule with the terminal and its session (tap to switch), commands (⋯) | `src/ui/phone.rs` |
+| The terminal on its own ground, framed by tinted glass controls without covering its text or last-row prompt | `src/ui/phone.rs` (`glass`), `src/ui/spatial.rs` |
+| Top bar: sessions (back), a capsule with the terminal and its session (tap to switch), and a compact split map or single-pane commands (⋯). Commands remain on the accessory bar in either case | `src/ui/phone.rs` |
 | Every pane of the active split tab, in its literal two-dimensional arrangement: a spring camera fills the stage with the focused pane without scaling glyphs; only that pane is resized or marked seen | `src/desk/layout.rs`, `src/ui/spatial.rs` |
-| A small top-right pane map: tap its exact split regions, or swipe the map / dedicated Move handle to one spatial neighbor. Boundary and cancelled drags spring back. Panes opens a named, keyboard-accessible picker for tiny regions | `src/desk/phone/spatial.rs`, `src/ui/spatial.rs` |
+| A small top-right pane map, inline in the header: tap its exact split regions, or swipe the map / dedicated Move handle to one spatial neighbor. Move, Panes and Scroll have a reserved 44-point toolbar outside the measured terminal viewport. Boundary and cancelled drags spring back. Panes opens a named, keyboard-accessible picker for tiny regions | `src/desk/phone/spatial.rs`, `src/ui/spatial.rs` |
 | A dedicated Scroll handle: drag for terminal history; alternate-screen programs receive arrows and mouse-tracking programs receive wheel events through the existing application-aware policy | `src/desk/phone/spatial.rs`, `src/desk/mouse.rs` |
 | Tab pills and a new tab | `src/ui/phone.rs` |
 | Accessory bar: ⌘ commands, esc, tab, one-shot ⌃ ⌥ ⇧ latches, a drag pad that sends arrows, the keyboard toggle | `src/ui/phone.rs`, `src/desk/phone.rs` |

@@ -3,7 +3,7 @@
 
 use phux_client_core::layout::Direction;
 use phux_protocol::ids::ResourceId;
-use rune::{Cursor, El, Key, col, el, row, text, tok};
+use rune::{Color, Cursor, El, Key, col, el, row, text, tok};
 
 use super::{CAPTION, Ink, panes};
 use crate::desk::Desk;
@@ -32,46 +32,78 @@ pub fn view(desk: &Desk, phone: &Phone, ink: &Ink, area: El) -> El {
     } else {
         content
     };
-    let mut stage = area
+    // Only this viewport is measured and clipped. The toolbar is a sibling,
+    // so neither terminal rows nor the camera can extend behind its controls.
+    let viewport = el()
         .key("phone-spatial-stage")
+        .grow(1.0)
+        .w_full()
+        .min_h(0.0)
+        .min_w(0.0)
         .clip_rounded(0.0)
         .on_layout(|d: &mut Desk, r| d.phone_stage_laid_out([r[2], r[3]]))
         .child(content);
-    let mut controls = el()
-        .absolute(0.0, 0.0)
-        .w_full()
-        .h_full()
-        .preserve_focus_on_press(true);
-    if !desk.is_document(&shown.terminal) {
-        controls = controls.child(history(ink));
-    }
-    if all.len() > 1 {
-        controls = controls
-            .child(minimap(&all, &shown.terminal, ink))
-            .child(handle(ink))
-            .child(
-                control(
-                    "phone-pane-picker",
-                    "Choose pane by name or direction",
-                    "Panes  ▴",
-                    ink,
-                )
-                .pin(Some(140.0), None, None, Some(8.0))
-                .on_press(Desk::phone_picker),
-            );
-    }
-    // Keep these hit surfaces over Find/confirmation: their handlers refuse
-    // navigation, but an inert map would pass its press into a tracking
-    // terminal underneath. A pointer-taking sheet (or our own picker) has
-    // its own scrim, so the underlying surfaces can be inert there.
-    if desk.phone_content_blocked() {
-        controls = controls.inert();
-    }
-    stage = stage.child(controls);
+    let mut stage = area.key("phone-spatial-shell").child(
+        col()
+            .w_full()
+            .h_full()
+            .min_h(0.0)
+            .child(viewport)
+            .child(toolbar(desk, all.len() > 1, ink)),
+    );
     if desk.phone_picker_visible() {
         stage = stage.child(picker(desk, &all, &shown.terminal, ink));
     }
     stage
+}
+
+fn toolbar(desk: &Desk, several: bool, ink: &Ink) -> El {
+    let terminal = desk
+        .shown
+        .as_ref()
+        .is_some_and(|s| !desk.is_document(&s.terminal));
+    if !several && !terminal {
+        return el().key("phone-navigation-toolbar").h(0.0);
+    }
+    let mut tools = row()
+        .key("phone-navigation-toolbar")
+        .w_full()
+        .h(TOUCH)
+        .min_h(TOUCH)
+        .gap(2.0)
+        .radius(TOUCH / 2.0)
+        .preserve_focus_on_press(true);
+    if several {
+        tools = tools.child(handle(ink)).child(
+            quiet_control(
+                "phone-pane-picker",
+                "Choose pane by name or direction",
+                "Panes  ▴",
+                ink,
+            )
+            .on_press(Desk::phone_picker),
+        );
+    }
+    if terminal {
+        tools = tools.child(history(ink));
+    }
+    let tools = tools
+        .continuous_corners()
+        .gradient(ink.text.alpha(0.06), ink.text.alpha(0.02))
+        .border_gradient(1.0, ink.text.alpha(0.16), ink.text.alpha(0.04));
+    if desk.modal().is_some() {
+        tools.inert()
+    } else {
+        tools
+    }
+}
+
+fn quiet_control(key: &str, label: &str, words: &str, ink: &Ink) -> El {
+    control(key, label, words, ink)
+        .grow(1.0)
+        .radius(TOUCH / 2.0)
+        .fill(Color::TRANSPARENT)
+        .border(0.0, Color::TRANSPARENT)
 }
 
 fn canvas(desk: &Desk, phone: &Phone, all: &[(ResourceId, Rect)], focus: Rect, ink: &Ink) -> El {
@@ -135,34 +167,49 @@ fn control(key: &str, label: &str, words: &str, ink: &Ink) -> El {
 }
 
 fn handle(ink: &Ink) -> El {
-    control(
+    quiet_control(
         "phone-navigation",
         "Move between panes: swipe left, right, up or down",
         "↔  Move  ↕",
         ink,
     )
-    .pin(Some(8.0), None, None, Some(8.0))
     .cursor(Cursor::Grab)
     .on_drag(|d: &mut Desk, drag, _| d.phone_navigate(drag, false))
 }
 
 fn history(ink: &Ink) -> El {
-    control(
+    quiet_control(
         "phone-history",
         "Scroll focused pane: drag up or down",
         "↕  Scroll",
         ink,
     )
-    .pin(None, None, Some(8.0), Some(8.0))
     .cursor(Cursor::Grab)
     .on_drag(|d: &mut Desk, drag, _| d.phone_history(drag))
 }
 
-fn minimap(all: &[(ResourceId, Rect)], focus: &ResourceId, ink: &Ink) -> El {
+/// Inline top-bar tile, not an overlay over terminal text. It replaces the
+/// redundant More button only when this active group has several panes.
+pub(super) fn minimap(desk: &Desk, ink: &Ink) -> Option<El> {
+    let tree = desk.phone.as_ref()?.tree.as_ref()?;
+    let all = spatial::rects(tree);
+    if all.len() < 2 {
+        return None;
+    }
+    let map = map(&all, &desk.shown.as_ref()?.terminal, ink);
+    Some(if desk.modal().is_some() {
+        map.inert()
+    } else {
+        map
+    })
+}
+
+fn map(all: &[(ResourceId, Rect)], focus: &ResourceId, ink: &Ink) -> El {
     let mut map = el()
         .key("phone-minimap")
-        .pin(None, Some(8.0), Some(8.0), None)
         .size(MAP_W, MAP_H)
+        .min_w(MAP_W)
+        .min_h(MAP_H)
         .fill(ink.bg)
         .radius(8.0)
         .clip_rounded(8.0)

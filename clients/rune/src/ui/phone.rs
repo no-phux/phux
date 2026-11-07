@@ -1,12 +1,13 @@
-//! The phone form: one terminal edge to edge, with its controls floating on
-//! it as glass: a top bar, its tabs, the accessory bar and a keyboard. What
+//! The phone form: a live terminal with glass chrome outside its viewport:
+//! a top bar, navigation toolbar, tabs, accessory bar and keyboard. What
 //! Rune can't do on a phone yet (safe areas, the system keyboard) is drawn
 //! here instead; clients/rune/MOBILE.md lists each piece and what replaces it.
 
 use rune::{Color, Cursor, Cx, Edge, El, Key, TextStyle, Transition, col, el, row, text, tok};
 
 use super::{
-    Ink, TITLEBAR_H, icons, inbox, machines, overlay, palette, panes, settings, status, tabs,
+    Ink, TITLEBAR_H, icons, inbox, machines, overlay, palette, panes, settings, spatial, status,
+    tabs,
 };
 use crate::desk::Desk;
 use crate::desk::phone::{Latch, Phone, Soft};
@@ -167,6 +168,16 @@ fn top_bar(desk: &Desk, p: &Ink) -> El {
                         .child(glyph(&icons::CHEVRON, 12.0, p.dim)),
                 ),
         );
+    let trailing = spatial::minimap(desk, p).unwrap_or_else(|| {
+        round(
+            "phone-more",
+            "Commands",
+            glyph(&icons::MORE, 20.0, p.text),
+            true,
+            p,
+        )
+        .on_press_tx(|d: &mut Desk, tx| d.shortcut(Shortcut::Palette, tx))
+    });
     row()
         .key("phone-top")
         .w_full()
@@ -186,16 +197,7 @@ fn top_bar(desk: &Desk, p: &Ink) -> El {
             .on_press_tx(|d: &mut Desk, tx| d.shortcut(Shortcut::SwitchSession, tx)),
         )
         .child(place)
-        .child(
-            round(
-                "phone-more",
-                "Commands",
-                glyph(&icons::MORE, 20.0, p.text),
-                true,
-                p,
-            )
-            .on_press_tx(|d: &mut Desk, tx| d.shortcut(Shortcut::Palette, tx)),
-        )
+        .child(trailing)
 }
 
 /// The session's tabs as a row of prompts, and a new one.
@@ -347,7 +349,7 @@ fn accessory(phone: &Phone, p: &Ink) -> El {
         } else {
             "Show keyboard"
         })
-        .on_press(Desk::toggle_keyboard)
+        .on_press_tx(Desk::toggle_keyboard)
         .child(glyph(&icons::KEYBOARD, 20.0, p.text));
     let pair = glass(
         row().key("phone-pair").radius(ROUND / 2.0).items_center(),

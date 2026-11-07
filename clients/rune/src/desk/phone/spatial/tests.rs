@@ -2,6 +2,7 @@ use super::*;
 
 mod fixture;
 mod input;
+mod viewport;
 
 fn id(n: u32) -> ResourceId {
     ResourceId::local(n)
