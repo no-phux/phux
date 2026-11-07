@@ -17,18 +17,10 @@ const BUILDERS: Record<Product, string[]> = {
     "scripts/{build-release-binaries,pack-release,check-binary-portability}.sh",
     "scripts/ci/setup-linux-release-userspace.sh",
   ],
-  desktop: [
-    ".github/workflows/desktop-release.yml",
-    ".github/workflows/windows-desktop.yml",
-    "scripts/{install-desktop-windows,test-install-desktop-windows,install-zig-windows}.ps1",
-    "scripts/test-windows-bridge-{teardown.ps1,fixture.py}",
-    "scripts/ci/publish-desktop-release.sh",
-  ],
 };
 
 const SURFACES: Record<Product, (c: Classification) => boolean> = {
   phux: (c) => c.needed.has("phux") || c.needed.has("native"),
-  desktop: (c) => c.needed.has("phux") || c.needed.has("native") || c.needed.has("desktop"),
 };
 
 /** Why `product` needs a build, or undefined when `paths` cannot change it. */
@@ -73,13 +65,12 @@ function log(product: Product, why: string, build: boolean): boolean {
   return build;
 }
 
-/** next.yml's gate: SHA in, `phux` and `desktop` booleans out. */
+/** next.yml's gate: SHA in, the `phux` boolean out. */
 export function main(sha: string): number {
   if (!/^[0-9a-f]{40}$/.test(sha)) throw new Failure(`not a git SHA: ${sha}`);
   writeOutputs({
     sha,
     phux: needsBuild("phux", nextSha("phux"), sha),
-    desktop: needsBuild("desktop", nextSha("desktop"), sha),
   });
   return 0;
 }

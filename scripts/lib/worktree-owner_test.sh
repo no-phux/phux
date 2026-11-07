@@ -158,7 +158,7 @@ else
     for recipe in check rust-lint build build-all build-lean build-release install-dev rebuild \
         fmt lint crate-check integration-check native-smoke \
         test test-report test-archive test-cargo e2e stress e2e-repro examples-smoke agents-fleet-smoke agents-fleet-live \
-        ffi-build desktop-check desktop-lint desktop-test desktop-native-build desktop-app; do
+        ffi-build; do
         if jq -e --arg r "$recipe" '.recipes[$r].dependencies | any(.recipe == "worktree-claim")' <<<"$dump" >/dev/null; then
             ok "just ${recipe} claims the worktree first"
         else

@@ -1,7 +1,7 @@
 // One CI routing contract: changed paths in, lane outputs out.
 //
 // `tests/`, `benches/` and `examples/` are not binary inputs, so they do not
-// rebuild the browser, native setup or desktop. `test_filterset` is the PR
+// rebuild the browser, native setup or Rune client. `test_filterset` is the PR
 // rdeps expression for a library change; empty means the full pool.
 // `unit_mode=narrow` builds one integration-test binary instead. Pushes to
 // main ignore `unit_mode` and keep the full pool.

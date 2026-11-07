@@ -82,7 +82,7 @@ export function problems(state: Snapshot, graceMs: number, now = Date.now()): st
   if (typeof state.stable === "string") {
     return [...found, `channels/stable.json is unreadable: ${state.stable}`];
   }
-  for (const [product, prefix] of Object.entries({ phux: "v", desktop: "desktop-v" })) {
+  for (const [product, prefix] of Object.entries({ phux: "v" })) {
     const listed = str(table(table(state.stable["products"])[product])["version"]);
     const latest = newest(releases, prefix);
     if (listed !== latest) {

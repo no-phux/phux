@@ -93,7 +93,7 @@ changed under a build: check `rustc -V`, `cargo -V`, `mbx doctor`, then
 | server, TUI, CLI, FFI         | Rust, Zig, nextest, platform packages                         | `just doctor server`, then `just crate-check phux-server`                          |
 | agent integrations            | Node 26, Bun                                                  | `just integration-check pi` (or `runtime`, `opencode-v2`, `omp`, `claude`, `grok`) |
 | browser client                | Rust wasm target, Node, wasm tools                            | `just doctor web`                                                                  |
-| desktop                       | Apple silicon Mac with Xcode, or Linux with desktop libraries | `just doctor desktop`, then `just desktop-app`                                     |
+| desktop (Phux Rune)           | Apple silicon Mac, or Linux with desktop libraries            | `just doctor desktop`, then `just rune-check`                                      |
 | everything                    | all of the above plus gate tools                              | `just doctor ci`, then `just check`                                                |
 
 `bash scripts/doctor.sh <area>` works before `just` is installed. It checks
@@ -163,10 +163,13 @@ from the repo root. `bash scripts/build-vt-wasm.sh` rebuilds the engine
 (`--check` verifies it) with the pinned Zig release, installed by
 `scripts/install-zig.sh`, never the one on `PATH`.
 
-## GPUI desktop
+## Rune desktop
 
-Apple silicon macOS, or x86_64/arm64 Linux with X11 or Wayland and a Vulkan
-driver (Mesa's lavapipe works for tests). On Debian-family Linux:
+[Phux Rune](../clients/rune/README.md), the desktop client, is its own Cargo
+workspace in `clients/rune`. It builds on Apple silicon macOS with no Xcode
+beyond the SDK the native build uses, and on x86_64/arm64 Linux with X11 or
+Wayland and a Vulkan driver (Mesa's lavapipe works for tests). On
+Debian-family Linux:
 
 ```sh
 sudo apt-get install -y libfontconfig1-dev libfreetype-dev libxkbcommon-dev \
@@ -174,33 +177,23 @@ sudo apt-get install -y libfontconfig1-dev libfreetype-dev libxkbcommon-dev \
   libvulkan-dev mesa-vulkan-drivers
 ```
 
-On macOS use Mise plus the host Xcode for the daily loop; the desktop
-gates refuse a Nix shell whose compiler is shadowed by Mise. The desktop
-supports macOS 26+ and full Xcode 26+ compatible with the host OS.
-`bash scripts/setup-macos-desktop.sh` detects the host version and selected
-Xcode (or an installed `/Applications/Xcode*.app` when needed), downloads
-only a missing matching Metal component, and verifies that it executes.
-Rerunning it is a no-op when Metal works. An explicit `DEVELOPER_DIR` selects
-that Xcode or fails rather than silently using another. It never installs
-Xcode, changes the global `xcode-select` setting, or replaces the installed app.
-Builds perform this setup automatically and enforce a macOS 26.0 deployment
-target even on newer hosts; `doctor desktop` only checks, never installs.
-
 ```sh
-just doctor desktop
-just desktop-app      # build the app and the CLI from this tree, start a server, open it
+just doctor desktop   # Rust, Bun, and on Linux fontconfig, freetype2, xkbcommon(-x11), wayland-client, x11, xcb
+just rune-check       # format, clippy, tests and release-rule tests
 ```
 
-[`clients/desktop`](../clients/desktop) has the app's own commands and gates.
+The doctor refuses a Nix shell whose compiler is shadowed by Mise. Run the
+app against a disposable dev server on a temp socket, never the installed
+one ([Develop](../clients/rune/README.md#develop)).
 
-For native MSVC builds, isolated WSL coordinator paths, and qualification,
-see [Windows desktop development](./windows-desktop-development.md).
+The GPUI desktop it replaced was retired after Desktop 0.57.0; its source is
+the `gpui-desktop-final` tag (`git checkout gpui-desktop-final -- clients/desktop`).
 
 ## Archived Zig Cockpit
 
 The Zig Cockpit is tabled, not a supported build or install on `main`.
 Published recovery refs are branch `archive/zig-cockpit` and annotated tag
-`archive/zig-cockpit-2026-10-14`. The GPUI desktop is the maintained app.
+`archive/zig-cockpit-2026-10-14`. Phux Rune is the maintained desktop app.
 Use the [snapshot recovery guide](https://github.com/no-phux/phux/blob/3cd9ddac22075c1b3db2674e2edc4e00c91d67f4/docs/consumers/cockpit.md)
 in a separate worktree. Its SDK, fixtures and hooks belong to that snapshot;
 never restore retired CI, installers or publication without an explicit
@@ -227,10 +220,9 @@ its listed test knobs, so add a new knob there. Tracked failures on `main` live
 in `scripts/known-failing-tests.txt`.
 
 `just check` uses the same routing and recipes as `ci.yml`. Guards run on
-every change; Rust lint, unit, e2e, browser, desktop and integration lanes
+every change; Rust lint, unit, e2e, browser, Rune and integration lanes
 run when their inputs change. There is no run-everything recipe. `rust
-icount` and `native setup` are CI-only; stress and real-GPU desktop
-qualification are local. A scoped pass is not a full CI pass.
+icount` and `native setup` are CI-only; stress testing is local. A scoped pass is not a full CI pass.
 
 Fetch `origin` before the preflight when other agents are landing changes.
 `just check` checks committed mergeability first and reports conflicting paths
@@ -243,7 +235,7 @@ validate the working tree before you commit. The committed merge simulation is
 deferred until the merge commit exists; `--preflight` reports that explicitly.
 
 Scoped gates for other surfaces: `just integration-check <pkg>`,
-`just desktop-check`, `just tools-check` (the Bun package under `tools/`,
+`just rune-check`, `just tools-check` (the Bun package under `tools/`,
 including the CI routing table), `just guards` (workflow syntax, pins,
 routing truth table, shell scripts, docs, and install contracts).
 
@@ -301,9 +293,7 @@ shards from that nextest archive. Pull requests restore caches and never
 save them; `main` pushes save one entry per lane under a 10 GB repository
 budget, pruned by `prune-build-cache`, warmed by `cache-warm.yml`.
 Runners are the free hosted ones:
-Ubuntu x64 and arm64, and macOS 26 plus the `xcode-27` image. Desktop releases
-build on macOS 26 (the supported floor); PRs qualify both Apple toolchains.
-The desktop lane shares a handful of macOS slots with release builds.
+Ubuntu x64 and arm64, and macOS 26 plus the `xcode-27` image.
 
 Workflow files carry their own comments; `.github/workflows/` is the
 reference. `just guards` lints them.
@@ -341,25 +331,9 @@ the server retains the newest 20 trace files. Exports use exclusive,
 owner-readable files so simultaneous captures cannot overwrite each other.
 
 `PHUX_DEV=1` is the dev-mode switch every phux process reads
-(`phux_perf::dev`). The desktop also has a saved **Developer mode** setting
-(**Settings > Developer**) that does the same without a restart. In the
-desktop, Developer mode also turns on the performance HUD and
-a dev socket, `desktop-<pid>.dev.sock` beside the server socket, that
-answers line JSON (`clients/desktop/native/src/devtools/socket.rs`).
-`phux perf --desktop [--watch S] [--json]` reads it, `phux perf trace
---desktop` records the desktop and server onto one Perfetto timeline, and
-`phux perf hud on|off` toggles the HUD. Every `phux_perf` histogram becomes
-a trace span with no extra code, so a new hot path needs only a histogram
-in its crate's `TABLE` to show in reports, traces and the HUD.
-The dev socket verifies the connecting UID and requires a non-symlink,
-owner-only parent directory; `PHUX_DESKTOP_DEV_SOCKET` overrides its path
-but does not relax those checks. Discovery checks the associated server
-socket, including when several server sockets share a directory. Development
-builds retain the production-socket guard, including
-explicit dev-socket overrides and desktop calls through an installed CLI;
-an override must identify the same permitted server before dispatch.
-Requests are limited to 64 KiB, 16 concurrent connections, and five-second I/O
-deadlines; a desktop trace records at most 60 seconds. `--reset` returns
+(`phux_perf::dev`). Every `phux_perf` histogram becomes a trace span with no
+extra code, so a new hot path needs only a histogram in its crate's `TABLE`
+to show in reports and traces. `--reset` returns
 each snapshot before clearing its counters, including in watch mode.
 
 ## Mutation testing

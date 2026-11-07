@@ -69,7 +69,7 @@ fn has_selection(frame: &GridFrame) -> bool {
 
 /// A paste that would arrive as typed keys with line breaks, each one an
 /// Enter, or that carries the bracket terminator: the user confirms first,
-/// as Ghostty's `clipboard-paste-protection` and the GPUI desktop do.
+/// as Ghostty's `clipboard-paste-protection` does.
 pub fn paste_needs_confirmation(bracketed: bool, text: &str) -> bool {
     text.contains("\x1b[201~") || (!bracketed && text.contains(['\n', '\r']))
 }

@@ -8,7 +8,7 @@ import { status } from "../lib/output.ts";
 /** One `[[package]]` block, through to the next block or the end of the file. */
 const PACKAGE = /^\[\[package\]\]\n.*?(?=^\[\[package\]\]|(?![\s\S]))/gms;
 const VERSION = /^version = "([^"]+)"$/m;
-export const DEPENDENCIES = /^dependencies = \[\n(.*?)^\]/ms;
+const DEPENDENCIES = /^dependencies = \[\n(.*?)^\]/ms;
 
 export interface Package {
   readonly block: string;
@@ -41,13 +41,8 @@ export function parseLock(text: string): Package[] {
   return [...text.matchAll(PACKAGE)].map(([block]) => parsePackage(block));
 }
 
-export function withVersion(block: string, version: string): string {
+function withVersion(block: string, version: string): string {
   return block.replace(VERSION, () => `version = "${version}"`);
-}
-
-/** Replace the first occurrence of `from` in `text`, literally. */
-export function replaceOnce(text: string, from: string, to: string): string {
-  return text.replace(from, () => to);
 }
 
 /** Rewrite the version of every path package `versions` names. */
@@ -61,7 +56,7 @@ export function syncPathVersions(text: string, versions: ReadonlyMap<string, str
 
 /**
  * Align each target lock's path crate versions with the root lock's (with
- * `check`, only compare). A standalone workspace such as the desktop host
+ * `check`, only compare). A standalone workspace such as the Rune client
  * cannot `cargo update` on a bare checkout, yet a release bump changes its
  * root path crates. Returns whether every target was already in step.
  */

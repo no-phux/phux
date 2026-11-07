@@ -68,7 +68,7 @@ Cargo manifests define the actual edges.
 | `phux-core` | domain records: sessions, resources, arrangements, and the pure `apply()` that organizes them; no I/O |
 | `phux-config-core` | config file location, `extends` layering, `[[remote]]`, `[organize]`, profile and socket paths |
 | `phux-perf` | lock-free histograms and counters behind `GET_PERF` and `phux perf` |
-| `phux-git` | the user's own `git` (and `gh`) for a checkout: status, diffs, history, branches, files, staging, and GitHub pull request review; shared by the desktop Changes panel, desktop Reviews and `CHECKOUT` |
+| `phux-git` | the user's own `git` (and `gh`) for a checkout: status, diffs, history, branches, files, staging, and GitHub pull request review; behind the server's `CHECKOUT` methods |
 | `phux-agent-rules` | agent detection manifests: regions, rules, `phux agent explain` |
 | `phux-crash` | fatal-signal handler that restores the terminal before re-raising |
 | `portable-pty-adopt` | rebuild portable-pty handles from inherited fds after `execve` |
@@ -104,8 +104,8 @@ core generational keys are not wire ids; wire ids are monotonically allocated
 and retired, not recycled within an incarnation. Where both are in scope, import the protocol type
 with a `Wire` prefix (`use phux_protocol::ids::ResourceId as WireResourceId`).
 
-Outside the root workspace: `clients/desktop/native` (the desktop and
-`phux-gpui` workspace), `clients/phux-web` (browser client), `clients/phux-vt-web`
+Outside the root workspace: `clients/rune` (Phux Rune, the desktop client,
+with its own workspace and lock), `clients/phux-web` (browser client), `clients/phux-vt-web`
 (driver for libghostty compiled to wasm). `integrations/` holds the npm
 packages for agent hosts; they run the `phux` CLI and never speak the wire.
 
@@ -128,39 +128,32 @@ and the FFI bindings all sit on the runtime; the browser client sits on the
 core alone and does its own I/O in the page.
 
 The TUI paints pane interiors from libghostty through a cell-diffed front
-buffer and paints chrome with ratatui in disjoint regions. The desktop app
-uses `clients/desktop/native/phux-gpui`, the embeddable GPUI terminal view.
+buffer and paints chrome with ratatui in disjoint regions. Phux Rune paints the
+runtime's draw list with the [Rune](https://github.com/anomalyco/rune) UI
+framework.
 The [runtime consumer contract](./embedding.md#runtime-consumer-contract)
 owns epochs, delivery acceptance and callback retirement. The runtime's
 `draw::DrawList` shares colour, face, cursor, block and
-decoration rules across GPUI and the C ABI's `c/draw_list.rs`; other
+decoration rules across Phux Rune and the C ABI's `c/draw_list.rs`; other
 toolkits paint that same list. See [embedding](./embedding.md). `phux-client-ffi` derives one binding
 vocabulary and encodes it twice: `extern "C"` for native embedders, UniFFI
 for Swift and Kotlin.
-
-The [pane identity seam](./desktop-panes.md)
-keeps the same classification across cards, tabs, and navigator rows. The
-[Changes panel seam](./desktop-changes.md) keeps
-local Git work off the UI thread and rejects results for a stale folder.
 
 ## Layout stability
 
 A click, a selection, a hover or a scroll never resizes or moves other UI
 unless the resize is the point, such as dragging the sidebar edge or a split.
-Tab peeking deliberately translates the workspace under its live thumbnail shelf;
-it retains the full layout allocation and clips the bottom, never resizing a PTY.
 Chrome keeps the size its style names. Something that appears on interaction
 either has space held for it or floats over the content:
 
-- A cached chrome slot (titlebar, sidebar, overlays) is a layout leaf with no
-  measured content, so `chrome_slot` makes it refuse to shrink. Fixed boxes in
-  a flex row take `flex_shrink_0`.
+- Chrome slots (titlebar, sidebar, overlays) and fixed boxes in a flex row
+  refuse to shrink.
 - A label that changes on click is laid out in a slot sized by its widest
   label. A hint shown only on the highlighted row stays laid out, invisible,
   on the others.
 - Controls depend on the mode, never on the highlighted row. Open details
   keep their height when the highlighted row has none.
-- The desktop navigator's host filter and per-session disclosure are independent
+- The desktop sidebar's host filter and per-session disclosure are independent
   of selection. Every session keeps its pane rows and count when inactive;
   sidebar tabs have a fixed-height scrollable shelf outside the session tree.
   Before switching authorities, retain the leaving connection's inventory so a
@@ -168,16 +161,13 @@ either has space held for it or floats over the content:
   layout adoption seeds display preferences; navigation restores destination
   tabs/splits without replacing the current window's display preferences.
 
-Regression tests assert bounds are identical across the interaction, for
-example `switching_tabs_never_resizes_the_chrome` and
-`moving_the_highlight_never_resizes_the_palette`.
+Regression tests assert bounds are identical across the interaction.
 
 ## Frames, wakes, and input
 
 The runtime owns client orchestration; the [renderer contract](./embedding.md#frames-wakes-and-input)
-owns drain/invalidation and unknown-input recovery. Phux Desktop requires
-visible, unclipped drawable presentation before clearing an unknown-input
-fence. The unpatched embedding lane does not provide that product guarantee.
+owns drain/invalidation and unknown-input recovery: a client clears an
+unknown-input fence only after a visible, unclipped presentation.
 
 ## Agents, authority, work
 
@@ -265,7 +255,7 @@ and must not replace committed history with an unsolicited full cut.
 A document-only or agent-only session needs no Terminal codec; a mixed
 session refuses a missing Terminal codec before changing subscriptions or
 geometry. Viewport votes, terminal roles, colors and grid resizing remain
-Terminal-specific. Desktop and Rune render read-only document panes without
+Terminal-specific. Phux Rune renders read-only document panes without
 Terminal views; see [resource kinds beyond terminals](./resource-kinds.md).
 
 The runtime root exports the server interface. Its `server` module assembles

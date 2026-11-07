@@ -1,7 +1,7 @@
 //! Links in terminal output: OSC 8 hyperlinks a program attached to cells,
 //! and URLs written as plain text, including ones soft-wrapped across rows.
 //!
-//! The schemes are GPUI's, so a program can't turn a ⌘-click into launching
+//! The schemes are a fixed list, so a program can't turn a ⌘-click into launching
 //! an arbitrary handler; `file://` links face `open`'s further checks.
 
 use phux_client_core::grid::CELL_HYPERLINK;

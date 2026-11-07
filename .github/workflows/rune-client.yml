@@ -64,8 +64,8 @@ jobs:
           pattern: rune-*
           path: dist
           merge-multiple: true
-      # Minisign stays off the build hosts, as in desktop-release.yml. The
-      # updater refuses a checksum no release key signed.
+      # Minisign stays off the build hosts, as in release.yml. The updater
+      # refuses a checksum no release key signed.
       - name: Sign the checksums
         env:
           PHUX_MINISIGN_SECRET_KEY: ${{ secrets.PHUX_MINISIGN_SECRET_KEY }}
@@ -82,7 +82,7 @@ jobs:
           TAG: ${{ github.ref_name }}
         run: |
           # Never "latest", even at 0.1.0: installers and the release tooling
-          # resolve the CLI and the GPUI desktop from their own tags.
+          # resolve the CLI from its own tags.
           if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
             gh release upload "$TAG" dist/* --clobber --repo "$GITHUB_REPOSITORY"
           else

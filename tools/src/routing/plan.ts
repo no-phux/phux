@@ -2,9 +2,8 @@
 //
 // A pull request runs exactly what its diff can affect. A push to main widens
 // the Rust lanes to the full pool (a non-strict merge can combine two green
-// diffs into a red tree) and leaves desktop to release qualification, which
-// already builds it on macOS for every desktop change. `just check` runs the
-// pull-request plan locally, through the same recipes the jobs call.
+// diffs into a red tree). `just check` runs the pull-request plan locally,
+// through the same recipes the jobs call.
 import type { Classification } from "./classify.ts";
 
 export const LANES = [
@@ -16,7 +15,6 @@ export const LANES = [
   "icount",
   "integrations",
   "web",
-  "desktop",
   "native",
   "rune",
 ] as const;
@@ -37,12 +35,6 @@ export const LANE_RECIPES: Record<Lane, readonly (readonly [string, ...string[]]
   icount: [["perf-icount"]],
   integrations: [["agent-integrations-check"]],
   web: [["web-check"]],
-  desktop: [
-    ["desktop-lint"],
-    ["desktop-tests"],
-    ["desktop-check"],
-    ["desktop-framework-check", "debug"],
-  ],
   native: [["native-smoke"]],
   rune: [["rune-check"], ["rune-deny"]],
 };
@@ -72,7 +64,6 @@ function needed(c: Classification, trigger: Trigger): Record<Lane, boolean> {
     icount: c.perfIcountNeeded,
     integrations: c.needed.has("integrations"),
     web: c.needed.has("web"),
-    desktop: !push && c.needed.has("desktop"),
     native: c.needed.has("native"),
     rune: c.needed.has("rune"),
   };

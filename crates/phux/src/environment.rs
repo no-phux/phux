@@ -159,17 +159,7 @@ pub(crate) const ENV_VARS: &[EnvVarSpec] = &[
         name: "PHUX_DEV",
         lines: &[
             "Set to `1`, `true`, `yes`, or `on` to enable dev telemetry:",
-            "server heap accounting; in the desktop, also the HUD and",
-            "owner-only dev socket, whatever its saved Developer mode",
-            "setting says. Off by default.",
-        ],
-    },
-    EnvVarSpec {
-        name: "PHUX_DESKTOP_DEV_SOCKET",
-        lines: &[
-            "Override the dev-mode desktop socket used by `phux perf",
-            "--desktop` and the desktop. Its parent must be owner-only",
-            "and owned by this user; default: beside the server socket.",
+            "server heap accounting. Off by default.",
         ],
     },
     EnvVarSpec {

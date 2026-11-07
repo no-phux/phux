@@ -54,11 +54,6 @@ test.each<[string[], Surface[]]>([
   [["scripts/agent-verify/run.py"], ["phux"]],
   [["scripts/test-agent-examples.py"], ["phux"]],
   [["scripts/record-readme.sh"], ["phux"]],
-  [["clients/desktop/native/src/main.rs"], ["desktop"]],
-  [["clients/desktop/native/Cargo.toml"], ["desktop"]],
-  [["clients/desktop/native/tests/window.rs"], ["desktop"]],
-  [["clients/desktop/native/assets/icon.png"], ["desktop"]],
-  [["just/desktop.just"], ["desktop"]],
   [["clients/phux-web/src/lib.rs"], ["web"]],
   [["tools/src/web/browser.ts"], ["web"]],
   [["clients/phux-vt-web/vendor/ghostty-vt.wasm"], ["web", "web_engine"]],
@@ -67,61 +62,39 @@ test.each<[string[], Surface[]]>([
   [["integrations/muse/SKILL.md"], ["integrations"]],
   [["integrations/claude/skills/phux/SKILL.md"], ["integrations"]],
   [["crates/phux-server/src/lib.rs"], ["phux", "web"]],
-  [["crates/phux-config-core/src/lib.rs"], ["phux", "web", "desktop", "rune"]],
+  [["crates/phux-config-core/src/lib.rs"], ["phux", "web", "rune"]],
   [["crates/phux-config/src/lib.rs"], ["phux", "web"]],
   [["crates/phux-tui/src/lib.rs"], ["phux", "web"]],
   [["crates/phux-client/src/lib.rs"], ["phux", "web"]],
-  [["crates/phux-protocol/Cargo.toml"], ["phux", "web", "native", "desktop", "rune"]],
-  [["crates/phux-protocol/src/lib.rs"], ["phux", "web", "desktop", "rune"]],
+  [["crates/phux-protocol/Cargo.toml"], ["phux", "web", "native", "rune"]],
+  [["crates/phux-protocol/src/lib.rs"], ["phux", "web", "rune"]],
   [["crates/phux-protocol/tests/wire.rs"], ["phux"]],
   [["crates/phux-mcp/src/lib.rs"], ["phux"]],
   [["crates/phux/build.rs"], ["phux", "web", "native"]],
-  [["Cargo.toml"], ["phux", "web", "native", "desktop", "rune"]],
+  [["Cargo.toml"], ["phux", "web", "native", "rune"]],
   [["Cargo.lock"], ["phux", "web", "native"]],
-  [[".config/zig-toolchain.json"], ["phux", "web", "web_engine", "native", "desktop"]],
-  [["scripts/install-zig.sh"], ["web_engine", "native", "desktop", "rune"]],
-  [["scripts/setup-rust.sh"], ["native", "desktop", "rune"]],
+  [[".config/zig-toolchain.json"], ["phux", "web", "web_engine", "native"]],
+  [["scripts/install-zig.sh"], ["web_engine", "native", "rune"]],
+  [["scripts/setup-rust.sh"], ["native", "rune"]],
   [["scripts/install-windows.ps1"], []],
   [["scripts/test-install-windows.ps1"], []],
   [["scripts/test-windows-wsl.ps1"], []],
   [["scripts/test-windows-mcp.py"], []],
   [["scripts/test-windows-terminal.py"], []],
-  [["scripts/install-desktop-windows.ps1"], []],
-  [["scripts/test-install-desktop-windows.ps1"], []],
-  [["scripts/install-zig-windows.ps1"], []],
-  [["scripts/test-windows-bridge-teardown.ps1"], []],
-  [["scripts/test-windows-bridge-fixture.py"], []],
-  [["clients/desktop/scripts/package-windows.ts"], ["desktop"]],
   [[".github/workflows/windows-wsl.yml"], []],
-  [["clients/desktop/native/Cargo.lock"], ["desktop"]],
-  [["clients/desktop/scripts/package-app.ts"], ["desktop"]],
-  [["clients/desktop/scripts/package-dmg.ts"], ["desktop"]],
-  [["clients/desktop/scripts/dmg-layout.py"], ["desktop"]],
-  [["clients/desktop/scripts/dmg-artwork.swift"], ["desktop"]],
-  [["clients/desktop/packaging/dmg-requirements.txt"], ["desktop"]],
-  [["clients/desktop/tests/tooling/package-dmg.test.ts"], ["desktop"]],
-  [["clients/desktop/tests/tooling/verify-dmg.py"], ["desktop"]],
-  [["clients/desktop/tests/tooling/verify-dmg.swift"], ["desktop"]],
-  [["clients/desktop/phux-protocol"], ALL],
-  [
-    ["clients/desktop/native/src/main.rs", "crates/phux-mcp/src/lib.rs"],
-    ["phux", "desktop"],
-  ],
   [["just/unknown.just"], ALL],
-  [["scripts/fixtures/release-manifest/stable.json"], ["phux", "desktop"]],
+  [["scripts/fixtures/release-manifest/stable.json"], ["phux"]],
   [[".github/workflows/ci.yml"], ALL],
   [[".github/workflows/release.yml"], []],
   [["commitlint.config.mjs"], []],
   [[".github/cockpit-history-tip"], []],
   [[".github/ISSUE_TEMPLATE/bug.yml"], []],
   [[".github/ISSUE_TEMPLATE/config.yml"], []],
-  [["commitlint.config.mjs", "clients/desktop/native/src/main.rs"], ["desktop"]],
   [["scripts/doctor.sh"], ["native"]],
   [["just/gates.just"], ["phux"]],
   [["justfile"], []],
   [[".beads/issues.jsonl"], []],
   [[".beads/config.yaml"], []],
-  [[".beads/issues.jsonl", "clients/desktop/native/src/main.rs"], ["desktop"]],
   [["scripts/check-docs.sh"], []],
   [["scripts/plugin-index/src/lib.rs"], ["phux"]],
   [[".github/workflows/plugin-index.yml"], []],
@@ -138,33 +111,24 @@ test.each<[string[], Surface[]]>([
   ],
   [["brand.config.json", "brand.lock.json"], []],
   [["scripts/brand.py", "scripts/update-brand.py", "scripts/test_brand_update.py"], []],
-  [["brand.lock.json", "clients/desktop/packaging/AppIcon.svg"], ["desktop"]],
-  [
-    ["brand.lock.json", "clients/desktop/packaging/AppIcon.png"],
-    ["desktop", "rune"],
-  ],
-  [
-    [
-      "clients/desktop/packaging/brand-profile.json",
-      "clients/desktop/packaging/brand-profiles.json",
-      "clients/desktop/scripts/brand.ts",
-    ],
-    ["desktop"],
-  ],
   [[".github/workflows/ffi-xcframework.yml"], []],
   [[".github/actions/setup-rust-lane/action.yml"], ALL],
-  [[".cargo/config.toml"], ["phux", "web", "native", "desktop", "rune"]],
-  [["tools/src/desktop/source.ts"], ["desktop"]],
-  [["tools/src/lib/git.ts"], ["web", "desktop"]],
+  [[".cargo/config.toml"], ["phux", "web", "native", "rune"]],
+  [["tools/src/lib/git.ts"], ["web"]],
   [["tools/src/routing/routes.ts"], []],
   [["clients/rune/src/main.rs"], ["rune"]],
+  [["clients/rune/scripts/notices.ts"], ["rune"]],
+  [["clients/rune/packaging/AppIcon.png"], ["rune"]],
+  [["brand.lock.json", "clients/rune/packaging/AppIcon.png"], ["rune"]],
+  [
+    ["clients/rune/src/main.rs", "crates/phux-mcp/src/lib.rs"],
+    ["phux", "rune"],
+  ],
   [["clients/rune/README.md"], []],
   [["just/rune.just"], ["rune"]],
   [[".github/workflows/rune-build.yml"], ["rune"]],
   [[".github/workflows/rune-client.yml"], []],
-  [["clients/desktop/scripts/notices.ts"], ["desktop", "rune"]],
-  [["clients/desktop/packaging/AppIcon.png"], ["desktop", "rune"]],
-  [["crates/phux-client-runtime/src/lib.rs"], ["phux", "web", "desktop", "rune"]],
+  [["crates/phux-client-runtime/src/lib.rs"], ["phux", "web", "rune"]],
   [["docs/development.md", "scripts/doctor.sh"], ["native"]],
   [["docs/development.md", "clients/phux-web/src/lib.rs"], ["web"]],
 ])("%p routes to %p", (paths, wanted) => {
@@ -223,7 +187,7 @@ test("a plugin-index-only diff lints and leaves the unit pool, e2e, and ffi off"
 
 test("docs_only holds only for documentation no build reads", () => {
   expectField("docsOnly", [
-    [["docs/development.md", "clients/desktop/README.md"], true],
+    [["docs/development.md", "clients/rune/README.md"], true],
     [["docs/install.md", "docs/README.md"], true],
     [["README.md"], false],
     [["docs/development.md", "docs/spec/wire-schema.json"], false],
@@ -276,23 +240,21 @@ test("the rdeps filterset is exact for crate diffs and fails safe otherwise", ()
   ]);
 });
 
-test("desktop file inputs outside its tree run the desktop lane", () => {
-  // include_str!/include_bytes! reach past the Cargo graph.
-  const literal = /include_(?:str|bytes)!\(\s*"([^"]+)"/g;
+test("Rune file inputs outside its tree run the Rune lane", () => {
+  // include_str!/include_bytes! and #[path] reach past the Cargo graph.
+  const literal = /(?:include_(?:str|bytes)!\(\s*|#\[path\s*=\s*)"([^"]+)"/g;
   const inputs = new Set<string>();
   for (const directory of ["src", "tests", "examples", "benches"]) {
-    const base = join(ROOT, "clients/desktop/native", directory);
+    const base = join(ROOT, "clients/rune", directory);
     if (!statSync(base, { throwIfNoEntry: false })) continue;
     for (const source of rustSources(base)) {
       for (const match of readFileSync(source, "utf8").matchAll(literal)) {
         const target = relative(ROOT, resolve(dirname(source), match[1] ?? ""));
-        if (!target.startsWith("clients/desktop/")) inputs.add(target);
+        if (!target.startsWith("clients/rune/")) inputs.add(target);
       }
     }
   }
-  expect(inputs.size).toBeGreaterThan(0);
-  for (const path of inputs)
-    expect([path, lanes([path]).includes("desktop")]).toEqual([path, true]);
+  for (const path of inputs) expect([path, lanes([path]).includes("rune")]).toEqual([path, true]);
 });
 
 test("content republishes on docs, installers and product skills only", () => {
@@ -347,7 +309,7 @@ test("the mobile FFI artifacts rebuild on their crate closure only", () => {
     [["scripts/build-mobile-ffi-android.sh"], true],
     [[".github/workflows/ffi-xcframework.yml"], true],
     [["crates/phux-tui/src/lib.rs"], false],
-    [["clients/desktop/native/src/main.rs"], false],
+    [["clients/rune/src/main.rs"], false],
     [["new-product/source.xyz"], false],
   ]);
 });

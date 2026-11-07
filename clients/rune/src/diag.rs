@@ -4,9 +4,7 @@
 //! both on the clipboard for the person to read and share by hand. Every line
 //! is redacted before it reaches a file or the clipboard.
 
-// The GPUI desktop's redaction, verbatim and with its tests: it depends on
-// nothing, while the rest of that diag module is tied to GPUI.
-#[path = "../../desktop/native/src/diag/redact.rs"]
+// Credential redaction, with its tests: it depends on nothing.
 mod redact;
 
 use std::fs::{self, OpenOptions};

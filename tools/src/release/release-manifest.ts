@@ -23,7 +23,6 @@ import {
   manifest,
   now,
   PRODUCTS,
-  PROTOCOL,
   render,
   SHA,
   targets,
@@ -54,22 +53,15 @@ function tagCommit(tag: string): string {
 
 const showAt = (ref: string, path: string): string => gitHere(["show", `${ref}:${path}`]);
 
-function protocolAt(ref: string, product: Product): string {
-  if (product === "desktop") {
-    const pin = showAt(ref, "clients/desktop/phux-protocol");
-    return valid(PROTOCOL, pin, `clients/desktop/phux-protocol at ${ref}`);
-  }
+function protocolAt(ref: string): string {
   const match = PROTOCOL_SOURCE.exec(showAt(ref, "crates/phux-protocol/src/lib.rs"));
   if (match === null) throw new Failure(`PROTOCOL_VERSION not found at ${ref}`);
   return `${Number(match[1])}.${Number(match[2])}`;
 }
 
 function versionAt(ref: string, product: Product): string {
-  const cargo = (): Table => table(Bun.TOML.parse(showAt(ref, "Cargo.toml")));
-  const version =
-    product === "desktop"
-      ? table(JSON.parse(showAt(ref, "clients/desktop/package.json")))["version"]
-      : table(table(cargo()["workspace"])["package"])["version"];
+  const cargo = table(Bun.TOML.parse(showAt(ref, "Cargo.toml")));
+  const version = table(table(cargo["workspace"])["package"])["version"];
   return valid(VERSION, version, `${product} version at ${ref}`);
 }
 
@@ -104,10 +96,7 @@ export function assetDigests(
     return valid(DIGEST, value.slice("sha256:".length), `${name} sha256`);
   };
   return Object.fromEntries(
-    targets(product, channel, id).map((target) => [
-      target,
-      digest(assetName(product, channel, id, target)),
-    ]),
+    targets(product).map((target) => [target, digest(assetName(product, channel, id, target))]),
   );
 }
 
@@ -158,7 +147,7 @@ function publishManifest(document: Table, current: Table | undefined): void {
 
 // --- stable ------------------------------------------------------------------
 
-/** The newest published `vX.Y.Z` and `desktop-vX.Y.Z` release rows. */
+/** The newest published `vX.Y.Z` release row per product. */
 export function newestStable(rows: Iterable<unknown>): Partial<Record<Product, Table>> {
   const newest: Partial<Record<Product, { version: Version; row: Table }>> = {};
   for (const row of [...rows].map(table)) {
@@ -177,7 +166,7 @@ function stableEntry(product: Product, row: Table): Table {
   const version = parseTag(tag)?.version.join(".") ?? "";
   const sha = tagCommit(tag);
   const digests = assetDigests(list(row["assets"]), product, "stable", version);
-  return entry(product, "stable", version, sha, protocolAt(sha, product), digests);
+  return entry(product, "stable", version, sha, protocolAt(sha), digests);
 }
 
 function stable(out: string, publish: boolean): number {
@@ -240,7 +229,7 @@ export function verifiedDist(product: Product, sha: string, dist: string): Recor
  * still downloading the previous build does not 404.
  */
 function pruneNext(product: Product, keep: readonly string[]): void {
-  const family = product === "phux" ? "phux-next." : "phux-desktop-next.";
+  const family = `${product}-next.`;
   const next = release("next");
   if (next === undefined) throw new Failure("the next release is missing");
   for (const name of assetsOf(next).map((asset) => str(asset["name"]) ?? "")) {
@@ -264,7 +253,7 @@ export function nextSha(product: Product): string {
 function publishNext(product: Product, sha: string, dist: string): void {
   valid(SHA, sha, "sha");
   const built = verifiedDist(product, sha, dist);
-  const [version, protocol] = [versionAt(sha, product), protocolAt(sha, product)];
+  const [version, protocol] = [versionAt(sha, product), protocolAt(sha)];
   const current = publishedManifest("next");
 
   ensurePrerelease("next", "Moving next channel (green main). Not a stable release.", sha);
@@ -283,7 +272,7 @@ function publishNext(product: Product, sha: string, dist: string): void {
   products[product] = entry(product, "next", version, sha, protocol, digests);
   publishManifest(manifest("next", products, now()), current);
 
-  const [name, text] = bridgeRecord(product, sha, version, digests);
+  const [name, text] = bridgeRecord(product, sha, version);
   uploadFiles("next", { [name]: text });
 
   if (previousSha) pruneNext(product, [sha, previousSha]);
@@ -294,7 +283,7 @@ function publishNext(product: Product, sha: string, dist: string): void {
 
 function product(value: string | undefined): Product {
   if (value === undefined || !isProduct(value)) {
-    throw new UsageError(`product must be phux or desktop, got ${String(value)}`);
+    throw new UsageError(`product must be one of ${PRODUCTS.join(", ")}, got ${String(value)}`);
   }
   return value;
 }

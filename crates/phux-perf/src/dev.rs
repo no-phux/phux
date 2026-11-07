@@ -2,8 +2,7 @@
 //!
 //! The always-on histograms and counters do not need it. Dev mode adds what
 //! costs something: heap accounting through [`crate::alloc`] (when the binary
-//! installs the counting allocator), and, in the desktop, the dev socket and
-//! the perf HUD. Span capture through [`crate::trace`] is armed on demand and
+//! installs the counting allocator). Span capture through [`crate::trace`] is armed on demand and
 //! does not need dev mode either; it only needs someone to ask.
 
 /// The environment variable that turns dev mode on.

@@ -17,7 +17,6 @@ export HOME="$TMP/home" SHELL=/bin/zsh
 # would refuse this checkout's config without this.
 export MISE_TRUSTED_CONFIG_PATHS="$ROOT"
 unset ZDOTDIR XDG_CONFIG_HOME PHUX_NO_MODIFY_PATH PHUX_CHANNEL PHUX_INSTALL_DIR
-unset PHUX_DESKTOP_PROGRESS
 mkdir -p "$HOME" "$TMP/bin" "$TMP/served"
 export SERVED="$TMP/served" CALLS="$TMP/calls" METER_CALLS="$TMP/meter-calls"
 
@@ -91,7 +90,7 @@ refuse_manifest() {
 }
 refuse_manifest stable '.schema_version = 2' 'unsupported schema'
 refuse_manifest stable '.channel = "next"' 'names another channel'
-refuse_manifest stable 'del(.products.phux)' 'no phux release is published'
+refuse_manifest stable '.products |= with_entries(.key = "other")' 'no phux release is published'
 refuse_manifest stable 'del(.products.phux.artifacts["aarch64-apple-darwin"])' 'no phux digest for aarch64-apple-darwin'
 refuse_manifest stable '.products.phux.artifacts["aarch64-apple-darwin"].sha256 = ("F" * 64)' 'no phux digest'
 refuse_manifest stable '.products.phux.version = "09.8.7"' 'invalid phux version'
@@ -154,18 +153,6 @@ grep -Fq 'installed phux 9.8.7' "$TMP/err" || fail "stable install: $(cat "$TMP/
 grep -Fxq 'phux v9.8.7' "$TMP/stable/phux" && grep -Fxq stable "$TMP/stable/.phux-channel" || fail "stable files"
 if grep -Fq .sha256 "$CALLS"; then fail "a manifest install fetched a sidecar"; fi
 if grep -Eq '^1 ' "$METER_CALLS" || grep -Fq 'phux-update: verifying' "$TMP/err"; then fail "progress must be opt-in"; fi
-
-# Desktop staging opts into only the archive meter, not metadata downloads.
-# Exercise the shared fetch path with a pin so it also reads a checksum sidecar.
-: > "$METER_CALLS"
-PHUX_DESKTOP_PROGRESS=1 install_to "$TMP/progress" --version 9.8.7 >"$TMP/out" 2>"$TMP/err"
-grep -Fxq "1 $BASE/v9.8.7/phux-v9.8.7-$TARGET.tar.gz" "$METER_CALLS" || fail "archive has no meter"
-grep -Fxq "0 $BASE/v9.8.7/phux-v9.8.7-$TARGET.tar.gz.sha256" "$METER_CALLS" || fail "sidecar has a meter"
-grep -Fq '100.0%' "$TMP/err" || fail "archive progress not forwarded"
-grep -Fxq 'phux-update: verifying' "$TMP/err" || fail "missing verification phase"
-meter_log="$(tr '\r' '\n' < "$TMP/err")"
-[[ $(grep -n '100.0%' <<<"$meter_log" | cut -d: -f1) -lt $(grep -n 'phux-update: verifying' <<<"$meter_log" | cut -d: -f1) ]] \
-  || fail "verification preceded transfer completion"
 
 install_to "$TMP/next" --channel next >/dev/null 2>&1
 grep -Fxq "phux next.$sha_a" "$TMP/next/phux" && grep -Fxq next "$TMP/next/.phux-channel" || fail "next install"
@@ -315,10 +302,10 @@ PHUX_NO_MODIFY_PATH=1 install_to "$off" >/dev/null 2>&1
 install_to "$off" --no-modify-path >/dev/null 2>&1
 [[ ! -e $HOME/.zshrc ]] || fail "an opted-out install edited the profile"
 
-# The website's install-desktop shim runs the installer with --desktop.
+# The website's install-desktop shim runs the installer with --rune.
 printf '#!/bin/sh\necho "args: $*"\n' > "$SERVED/install"
 out="$(PATH="$TMP/bin:/usr/bin:/bin" "$SH" "$ROOT/scripts/install-desktop.sh" --channel next)"
-[[ $out == 'args: --desktop --channel next' ]] || fail "shim: $out"
+[[ $out == 'args: --rune --channel next' ]] || fail "shim: $out"
 rm "$SERVED/install"
 if PATH="$TMP/bin:/usr/bin:/bin" "$SH" "$ROOT/scripts/install-desktop.sh" 2>"$TMP/err"; then fail "shim ran without an installer"; fi
 grep -Fq 'could not download' "$TMP/err" || fail "shim failure message"

@@ -5,7 +5,7 @@
 //! `<asset>.sha256.minisig` beside it. Clients embed the public keys they
 //! accept, so a host that can rewrite release assets but does not hold the
 //! signing key cannot produce a checksum this verifier accepts. `phux update`
-//! and Desktop's updater both verify here; `scripts/install.sh` embeds the
+//! and Phux Rune's updater both verify here; `scripts/install.sh` embeds the
 //! same keys.
 
 use minisign_verify::{Error as MinisignError, PublicKey, Signature};

@@ -31,21 +31,23 @@ Run `phux` after installing. [First agent](./docs/getting-started.md#first-agent
 
 ### Desktop app
 
-**macOS:** [download the DMG](https://github.com/no-phux/phux/releases?q=desktop-v&expanded=true),
-drag **Phux.app** to **Applications**, eject the image, and open Phux.
-The app includes the CLI/server and is signed and notarized. Or install with
-`brew install --cask no-phux/tap/phux-desktop` ([Homebrew setup](./docs/install.md#macos-homebrew)).
-**Linux:** use the [desktop installer](./docs/install.md#desktop-app).
-**Windows x64:** use the [PowerShell desktop installer](./clients/desktop/README.md#windows)
-after setting up the WSL CLI/server.
+[Phux Rune](./clients/rune/README.md) is the desktop app (alpha), for Apple
+silicon macOS and x86_64 Linux:
+
+```sh
+curl -fsSL https://phux.sh/install | sh -s -- --rune
+```
+
+It installs the CLI too when none is found, and updates itself. Windows has no
+native desktop app; use the WSL CLI and terminal UI.
 
 ### Platform support
 
 | Platform | CLI / server / terminal UI | Desktop |
 | --- | --- | --- |
-| macOS, Apple silicon | macOS 11+ | macOS 26+ |
-| Linux, x86_64 or arm64 | Native, glibc | X11 or Wayland, Vulkan driver |
-| Windows | [WSL 2 and PowerShell launchers](./docs/install.md#windows-wsl) | [Native x64 app, WSL 2 server](./clients/desktop/README.md#windows) |
+| macOS, Apple silicon | macOS 11+ | macOS 14+ |
+| Linux | x86_64 or arm64, glibc | x86_64, glibc 2.39, Vulkan |
+| Windows | [WSL 2 and PowerShell launchers](./docs/install.md#windows-wsl) | None |
 
 [Other installation options](./docs/install.md). No Intel Mac or musl builds.
 
@@ -99,10 +101,8 @@ client leaves the shell running; attach to the printed session to take over.
 
 | Want to… | Start here |
 | --- | --- |
-| Find an agent across machines | [Desktop Go To](./clients/desktop/USAGE.md#command-palette), or [`phux agent list`](./docs/agents.md) |
+| Find an agent across machines | [`phux agent list`](./docs/agents.md), or the [Phux Rune command palette](./clients/rune/README.md#what-it-does) |
 | Run agents in isolated worktrees | [Missions](./docs/organization.md#work-and-missions) |
-| Review, annotate and merge a pull request | [Desktop Reviews](./docs/desktop-reviews.md) |
-| Inspect and stage local changes | [Changes panel](./docs/desktop-changes.md) |
 | Work on another machine | [Remote machines](./docs/remote.md) |
 | Script a terminal or expose agent tools | [Scripting](./docs/scripting.md) · [MCP](./docs/agents.md#mcp) |
 | See agent plan usage and limits | [Plan usage](./docs/agents.md#plan-usage) |
@@ -146,7 +146,7 @@ phux is picky about new surface area; ask before building a feature.
 
 ## Help
 
-- **Troubleshooting:** run `phux doctor`, then see [common fixes](./docs/troubleshooting.md) or [desktop recovery](./clients/desktop/README.md#first-launch-and-recovery).
+- **Troubleshooting:** run `phux doctor`, then see [common fixes](./docs/troubleshooting.md) or [Phux Rune diagnostics](./clients/rune/README.md#what-it-does).
 - **Questions:** [Discord](https://discord.gg/dUv5rzdHp).
 - **Bugs and proposals:** [GitHub issues](https://github.com/no-phux/phux/issues); [what to include](./docs/troubleshooting.md#reporting-a-bug).
 

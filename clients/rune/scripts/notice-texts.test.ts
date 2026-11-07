@@ -2,7 +2,7 @@ import { afterEach, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { canonicalLicenses, type Crate, renderNotices } from "../../desktop/scripts/notices.ts";
+import { canonicalLicenses, type Crate, renderNotices } from "./third-party.ts";
 import { runeNoticeReader } from "./notice-texts.ts";
 
 const dirs: string[] = [];

@@ -342,7 +342,7 @@ establish that the original mutation never ran. See the [public contract](./publ
 
 Native onboarding is additive inside `NATIVE_AGENT`, gated by its own
 `NATIVE_AGENT_LAUNCH` bit; see
-[ACP onboarding](./acp.md#from-the-desktop-app).
+[ACP sessions](./acp.md).
 
 - Allocate type bytes in `wire/frame/mod.rs`, sub-tags in
   `wire/frame/*tags.rs`; duplicates fail to compile.

@@ -3,7 +3,6 @@
 // Each area owns its commands; this file only lists them.
 import { invoke, type Command } from "./src/lib/command.ts";
 import { commands as cargo } from "./src/cargo/commands.ts";
-import { commands as desktop } from "./src/desktop/commands.ts";
 import { commands as font } from "./src/font/commands.ts";
 import { commands as integrations } from "./src/integrations/commands.ts";
 import { commands as mbx } from "./src/mbx/commands.ts";
@@ -15,7 +14,6 @@ import { commands as web } from "./src/web/commands.ts";
 
 const COMMANDS: Record<string, Command> = {
   ...cargo,
-  ...desktop,
   ...font,
   ...integrations,
   ...mbx,

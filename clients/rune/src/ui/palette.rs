@@ -135,7 +135,7 @@ pub fn view(desk: &Desk, ink: &Ink, top: f32) -> El {
         .on_layout(|d: &mut Desk, rect| d.pointer.window = [rect[2], rect[3]])
         .transition(Transition::opacity())
         .modal(true, |d: &mut Desk| d.close_palette());
-    // Paths open where they'll land, as the GPUI desktop's picker does.
+    // Paths open where they'll land.
     // A phone has no room beside the cursor: its paths take the sheet.
     let at_cursor = (mode == Mode::Paths && desk.phone.is_none())
         .then(|| desk.cursor_point())

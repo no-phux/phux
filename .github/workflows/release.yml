@@ -6,9 +6,8 @@
 # Rules this file keeps:
 # - Push as the release App, never GITHUB_TOKEN: its pushes trigger no ci, so
 #   a release PR would never become mergeable.
-# - Two trains, two config/manifest pairs: the root (CLI and integrations)
-#   and the desktop. They share no file, so merging one release PR never
-#   conflicts the other.
+# - One train: release-please-config.json releases the CLI and the
+#   integrations. Phux Rune tags its own releases (rune-client.yml).
 # - A release PR is complete the moment Release Please pushes it: the
 #   version bump rewrites Cargo.toml and every Cargo.lock in one commit
 #   (extra-files in release-please-config.json). Nothing patches the branch
@@ -69,16 +68,6 @@ jobs:
           token: ${{ steps.app-token.outputs.token }}
           config-file: release-please-config.json
           manifest-file: .release-please-manifest.json
-      # A root failure must not strand a merged desktop release. Release Please
-      # skips refreshing PRs while any merged release PR is untagged, so the
-      # run that merges one train's PR refreshes the other's PR one run later.
-      - name: Desktop train
-        if: ${{ !cancelled() && steps.app-token.outcome == 'success' }}
-        uses: googleapis/release-please-action@45996ed1f6d02564a971a2fa1b5860e934307cf7 # v5.0.0
-        with:
-          token: ${{ steps.app-token.outputs.token }}
-          config-file: release-please-config.desktop.json
-          manifest-file: .release-please-manifest.desktop.json
 
   plan:
     name: choose drafts
@@ -91,7 +80,6 @@ jobs:
       contents: write # lists and deletes drafts
     outputs:
       phux_tag: ${{ steps.plan.outputs.phux_tag }}
-      desktop_tag: ${{ steps.plan.outputs.desktop_tag }}
       integration_tags: ${{ steps.plan.outputs.integration_tags }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -160,23 +148,6 @@ jobs:
           gh release upload "$TAG" dist/phux-*.tar.gz dist/phux-*.tar.gz.sha256 dist/phux-*.tar.gz.sha256.minisig --clobber
           gh release edit "$TAG" --draft=false --latest
 
-  desktop:
-    name: publish ${{ needs.plan.outputs.desktop_tag }}
-    needs: plan
-    if: ${{ !cancelled() && needs.plan.result == 'success' && needs.plan.outputs.desktop_tag != '' }}
-    uses: ./.github/workflows/desktop-release.yml
-    permissions:
-      contents: write
-    secrets:
-      PHUX_MINISIGN_SECRET_KEY: ${{ secrets.PHUX_MINISIGN_SECRET_KEY }}
-      APPLE_DEVELOPER_ID_P12: ${{ secrets.APPLE_DEVELOPER_ID_P12 }}
-      APPLE_DEVELOPER_ID_PASSWORD: ${{ secrets.APPLE_DEVELOPER_ID_PASSWORD }}
-      APPLE_NOTARY_KEY_P8: ${{ secrets.APPLE_NOTARY_KEY_P8 }}
-      APPLE_NOTARY_KEY_ID: ${{ secrets.APPLE_NOTARY_KEY_ID }}
-      APPLE_NOTARY_ISSUER_ID: ${{ secrets.APPLE_NOTARY_ISSUER_ID }}
-    with:
-      tag: ${{ needs.plan.outputs.desktop_tag }}
-
   # npm trusted publishing trusts the entry workflow file, so the integration
   # release is dispatched, never called.
   integrations:
@@ -199,8 +170,8 @@ jobs:
 
   manifest:
     name: publish stable.json
-    needs: [plan, cli, desktop]
-    if: ${{ !cancelled() && needs.plan.result == 'success' && (needs.cli.result == 'success' || needs.desktop.result == 'success' || github.event_name != 'workflow_run') }}
+    needs: [plan, cli]
+    if: ${{ !cancelled() && needs.plan.result == 'success' && (needs.cli.result == 'success' || github.event_name != 'workflow_run') }}
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     permissions:
@@ -221,8 +192,8 @@ jobs:
   # GITHUB_TOKEN publish fires no release event, so tell the site here.
   announce:
     name: mobile FFI, phux.sh, and Linear
-    needs: [plan, cli, desktop, manifest]
-    if: ${{ !cancelled() && (needs.cli.result == 'success' || needs.desktop.result == 'success') }}
+    needs: [plan, cli, manifest]
+    if: ${{ !cancelled() && needs.cli.result == 'success' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     permissions:

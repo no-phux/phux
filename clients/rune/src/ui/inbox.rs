@@ -25,8 +25,8 @@ const APPROVE: &str = if cfg!(target_os = "macos") {
 } else {
     "Approve  Ctrl+Shift+↩"
 };
-/// An ACP agent answers over the protocol, which only the GPUI app speaks.
-const ACP_ELSEWHERE: &str = "ACP question: answer it in the Phux desktop app.";
+/// An ACP agent answers over the protocol, which this app does not speak yet.
+const ACP_ELSEWHERE: &str = "ACP question: Phux Rune can't answer these yet.";
 
 fn pick_hint(keys: &'static str, what: &'static str, ink: &Ink) -> El {
     row()

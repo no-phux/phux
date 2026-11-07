@@ -1,5 +1,4 @@
-//! Release checks for this app (`rune-v*` prereleases), the same contract
-//! as the GPUI desktop's: a check reads one unsigned manifest and runs
+//! Release checks for this app (`rune-v*` prereleases): a check reads one unsigned manifest and runs
 //! nothing it downloads. Asset names are derived here, never read from the
 //! network, and a digest counts only once a release key signed it.
 

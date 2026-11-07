@@ -1,5 +1,5 @@
 name: setup-bun
-description: Install the Bun that mise.toml pins, for `bun tools/main.ts` and the desktop tooling. The one place CI reads the Bun pin.
+description: Install the Bun that mise.toml pins, for `bun tools/main.ts` and the client tooling. The one place CI reads the Bun pin.
 inputs:
   source:
     description: Checkout whose mise.toml holds the pin
