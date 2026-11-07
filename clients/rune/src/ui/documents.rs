@@ -13,6 +13,7 @@ pub fn view(desk: &Desk, id: &ResourceId, ink: &Ink) -> El {
     let measured = id.clone();
     let document = &desk.resources.entries[id];
     let label = document.record.name.as_deref().unwrap_or("Document");
+    let detail = document.detail.as_deref().map(|d| format!("{d} · "));
     let content = body(
         &document.body,
         desk.pane_area(id).unwrap_or([0.0, 0.0]),
@@ -36,9 +37,13 @@ pub fn view(desk: &Desk, id: &ResourceId, ink: &Ink) -> El {
         .fill(ink.bg)
         .on_press(move |d: &mut Desk| d.focus_pane(&focused))
         .child(
-            text(format!("{label} · {id} · Read-only mirror"))
-                .font(CAPTION)
-                .color(ink.dim),
+            text(format!(
+                "{label} · {}{id} · Read-only mirror",
+                detail.unwrap_or_default()
+            ))
+            .wrap()
+            .font(CAPTION)
+            .color(ink.dim),
         )
         .child(
             el().grow(1.0)
@@ -51,10 +56,13 @@ pub fn view(desk: &Desk, id: &ResourceId, ink: &Ink) -> El {
 }
 
 fn message(words: impl Into<String>, ink: &Ink) -> El {
-    el().w_full()
-        .h_full()
-        .center()
-        .child(text(words.into()).font(LABEL).color(ink.dim))
+    el().w_full().h_full().center().child(
+        text(words.into())
+            .wrap()
+            .w_full()
+            .font(LABEL)
+            .color(ink.dim),
+    )
 }
 
 fn body(body: &Body, area: [f32; 2], ink: &Ink, id: &ResourceId) -> El {
@@ -75,7 +83,7 @@ fn body(body: &Body, area: [f32; 2], ink: &Ink, id: &ResourceId) -> El {
                     .key(crate::desk::resources::text_key(id))
                     .selectable(true)
                     .wrap_anywhere()
-                    .font(rune::TextStyle::new(12.0, 400.0))
+                    .font(rune::TextStyle::new(12.0, 400.0).mono())
                     .color(ink.text),
             ),
         Body::Surface(image) => surface(image, area, ink),
@@ -84,7 +92,7 @@ fn body(body: &Body, area: [f32; 2], ink: &Ink, id: &ResourceId) -> El {
 
 fn surface(image: &rune::Image, area: [f32; 2], ink: &Ink) -> El {
     if let Some(error) = image.error() {
-        return message(format!("Invalid PNG or JPEG: {error}"), ink);
+        return message(format!("Invalid image: {error}"), ink);
     }
     let Some(size) = image.size() else {
         return message("Decoding image…", ink);
