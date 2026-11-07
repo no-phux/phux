@@ -10,6 +10,7 @@ fn swimmer(n: u32, host: usize, mood: Mood) -> Swimmer {
         species: &CLAUDE,
         project: None,
         school: n as usize,
+        lane: lane(&format!("mini/project-{n}")),
     }
 }
 
@@ -80,7 +81,7 @@ fn zones_split_the_width_in_order_and_keep_their_coral() {
     assert_ne!(z[0].rocks[0].rx, z[1].rocks[0].rx);
     for zone in z {
         assert!((1..=2).contains(&zone.fans.len()) && (2..=3).contains(&zone.anemones.len()));
-        assert_eq!((zone.corals.len(), zone.nooks.len()), (4, 6));
+        assert_eq!(zone.corals.len(), 4);
     }
     assert_eq!(hash("a"), 0xe40c292c, "FNV-1a, as the prototype");
 }
@@ -97,19 +98,65 @@ fn each_mood_has_its_place_in_its_reef() {
         "just under the surface"
     );
     assert!(up[0] > z.l && up[0] < z.r);
+    // Done and idle fish keep above the coral, spread across the reef.
+    for mood in [Mood::Done, Mood::Idle] {
+        let at: Vec<Pt> = (0..4)
+            .map(|k| target(mood, z, [k, 4], 0.0, 0.0, s, sy))
+            .collect();
+        assert!(
+            at.iter().all(|p| p[1] < z.canopy),
+            "{mood:?} above the coral"
+        );
+        assert!(at.iter().all(|p| p[0] > z.l && p[0] < z.r));
+        assert!(at[3][0] - at[0][0] > z.w * 0.5, "{mood:?} spread across");
+    }
     let home = target(Mood::Done, z, [0, 1], 0.0, 0.0, s, sy);
-    assert!(
-        home[1] < z.home_y && home[1] > z.home_y - 45.0 * s,
-        "just above its reef"
-    );
-    let rest = target(Mood::Idle, z, [2, 3], 0.0, 0.0, s, sy);
-    assert!(
-        (rest[0] - z.nooks[2][0]).abs() <= 9.0 * s && (rest[1] - z.nooks[2][1]).abs() <= 2.0 * s
-    );
+    let rest = target(Mood::Idle, z, [0, 1], 0.0, 0.0, s, sy);
+    assert!(home[1] < rest[1], "done hovers higher than idle rests");
     // Two waiting fish in one reef spread apart.
     let a = target(Mood::Waiting, z, [0, 2], 0.0, 0.0, s, sy);
     let b = target(Mood::Waiting, z, [1, 2], 0.0, 0.0, s, sy);
     assert!(b[0] - a[0] > 30.0 * s);
+}
+
+#[test]
+fn the_canopy_tops_every_coral_and_working_water_is_above_it() {
+    let mut reef = Reef::default();
+    reef.layout(1200.0, 780.0, &hosts(&["mini", "macbook", "powerhouse-1"]));
+    let (s, sy) = (reef.s, reef.surface_y);
+    for z in &reef.zones {
+        let sand = |x| reef.sand_y(x);
+        let tops = z
+            .corals
+            .iter()
+            .map(|c| sand(c.x) + 3.0 * s - c.hmax)
+            .chain(z.fans.iter().map(|f| sand(f.x) + 2.0 * s - f.h))
+            .chain(
+                z.anemones
+                    .iter()
+                    .map(|a| sand(a.x) + 3.0 * s - a.r * 0.9 - a.len),
+            )
+            .chain(z.brains.iter().map(|b| sand(b.x) + 4.0 * s - b.r * 0.78));
+        for top in tops {
+            assert!(z.canopy <= top + 1e-3);
+        }
+        assert!(z.canopy < reef.floor_y && z.canopy > sy);
+        assert_eq!(z.home_y, z.canopy, "the buoy's rope ends at the canopy");
+        let [top, bot] = band(z, sy, s);
+        assert!(
+            top < bot && bot < z.canopy - 60.0 * s,
+            "the band is open water"
+        );
+    }
+    // Two schools prefer different depths.
+    assert!((lane("mini/phux") - lane("mini/website")).abs() > 0.05);
+    for (key, want) in [
+        ("mini/phux", 0.817),
+        ("mini/website", 0.877),
+        ("macbook/phux-mobile", 0.524),
+    ] {
+        assert!((lane(key) - want).abs() < 0.0005, "{key}: {}", lane(key));
+    }
 }
 
 #[test]
@@ -130,6 +177,9 @@ fn the_fleet_becomes_fish_that_settle_where_their_mood_says() {
         work.x > z0.l && work.x < z0.r + 40.0,
         "a working fish keeps to its reef"
     );
+    assert!(work.y < z0.canopy, "a working fish swims above the coral");
+    assert!(reef.fish[1].y < z0.canopy, "an idle fish rests on the reef");
+    assert!(reef.fish[2].y < reef.zones[1].canopy);
     // A fish turning to need you rises, with a burst of bubbles.
     let bubbles = reef.bubbles.len();
     reef.sync(vec![

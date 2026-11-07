@@ -88,14 +88,10 @@ pub(super) fn view(desk: &Desk, p: &Ink, cx: &mut Cx<Desk>) -> El {
     for z in &r.zones {
         scene::reef_back(&mut front, r, &pal, z);
     }
-    // Idle fish rest between the back and front of the reef, half hidden.
-    for f in r.fish.iter().filter(|f| f.who.mood == Mood::Idle) {
-        fish::fish(&mut front, r, &pal, f, &mut labels);
-    }
     for z in &r.zones {
         scene::reef_front(&mut front, r, &pal, z);
     }
-    for f in r.fish.iter().filter(|f| f.who.mood != Mood::Idle) {
+    for f in &r.fish {
         fish::fish(&mut front, r, &pal, f, &mut labels);
     }
     drift::bubbles(&mut front, r);

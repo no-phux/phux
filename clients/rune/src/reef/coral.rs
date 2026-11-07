@@ -73,13 +73,15 @@ pub struct Zone {
     pub l: f32,
     pub r: f32,
     pub w: f32,
+    /// The highest point of its coral: fish keep above it.
+    pub canopy: f32,
+    /// Where the buoy's rope ends: the canopy.
     pub home_y: f32,
     pub rocks: Vec<Rock>,
     pub fans: Vec<Fan>,
     pub corals: Vec<Coral>,
     pub brains: Vec<Brain>,
     pub anemones: Vec<Anemone>,
-    pub nooks: Vec<Pt>,
     pub vent_x: f32,
     pub vent_next: f32,
     /// Vent bubbles still to come, one every 0.14 s.
@@ -129,7 +131,7 @@ pub fn zone(host: &str, known: bool, i: usize, zw: f32, s: f32, floor_y: f32) ->
         })
         .collect();
     let fans_n = 1 + usize::from(r.next() < 0.6);
-    let fans = (0..fans_n)
+    let fans: Vec<Fan> = (0..fans_n)
         .map(|_| Fan {
             x: at(&mut r),
             h: (70.0 + r.next() * 40.0) * s,
@@ -137,7 +139,7 @@ pub fn zone(host: &str, known: bool, i: usize, zw: f32, s: f32, floor_y: f32) ->
             seed: r.next() * TAU,
         })
         .collect();
-    let corals = (0..4)
+    let corals: Vec<Coral> = (0..4)
         .map(|_| {
             let mut segs = Vec::new();
             let max = 4 + usize::from(r.next() < 0.5);
@@ -163,7 +165,7 @@ pub fn zone(host: &str, known: bool, i: usize, zw: f32, s: f32, floor_y: f32) ->
             }
         })
         .collect();
-    let brains = (0..2)
+    let brains: Vec<Brain> = (0..2)
         .map(|_| Brain {
             x: at(&mut r),
             r: (16.0 + r.next() * 14.0) * s,
@@ -171,7 +173,7 @@ pub fn zone(host: &str, known: bool, i: usize, zw: f32, s: f32, floor_y: f32) ->
         })
         .collect();
     let anemones_n = 2 + usize::from(r.next() < 0.5);
-    let anemones = (0..anemones_n)
+    let anemones: Vec<Anemone> = (0..anemones_n)
         .map(|_| Anemone {
             x: at(&mut r),
             r: (10.0 + r.next() * 6.0) * s,
@@ -180,14 +182,18 @@ pub fn zone(host: &str, known: bool, i: usize, zw: f32, s: f32, floor_y: f32) ->
             seed: r.next() * TAU,
         })
         .collect();
-    let nooks = (0..6)
-        .map(|_| {
-            [
-                at(&mut r) * 0.92 + cx * 0.08,
-                floor_y - (24.0 + r.next() * 34.0) * s,
-            ]
-        })
-        .collect();
+    let sand = |x: f32| sand_y(x, floor_y, s);
+    let canopy = corals
+        .iter()
+        .map(|c| sand(c.x) + 3.0 * s - c.hmax)
+        .chain(fans.iter().map(|f| sand(f.x) + 2.0 * s - f.h))
+        .chain(
+            anemones
+                .iter()
+                .map(|a| sand(a.x) + 3.0 * s - a.r * 0.9 - a.len),
+        )
+        .chain(brains.iter().map(|b| sand(b.x) + 4.0 * s - b.r * 0.78))
+        .fold(f32::MAX, f32::min);
     Zone {
         host: host.to_owned(),
         known,
@@ -195,18 +201,23 @@ pub fn zone(host: &str, known: bool, i: usize, zw: f32, s: f32, floor_y: f32) ->
         l: zw * i as f32,
         r: zw * (i as f32 + 1.0),
         w: zw,
-        home_y: floor_y - 95.0 * s,
+        canopy,
+        home_y: canopy,
         rocks,
         fans,
         corals,
         brains,
         anemones,
-        nooks,
         vent_x,
         vent_next,
         vent_left: 0,
         vent_gap: 0.0,
     }
+}
+
+/// The sand at `x` over a floor at `floor_y`, scene scale `s`.
+pub fn sand_y(x: f32, floor_y: f32, s: f32) -> f32 {
+    floor_y + (x * 0.007 + 1.3).sin() * 7.0 * s + (x * 0.019 + 0.4).sin() * 3.5 * s
 }
 
 /// The caustic tile's side, in texels.

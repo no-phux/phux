@@ -105,6 +105,15 @@ impl Desk {
             })
             .collect();
         let schools = schools(stars.len(), &galaxy::related(&kin));
+        // A school's lane is keyed like the prototype's, host/project, from
+        // its first agent (its session when it has no project).
+        let lanes: Vec<f32> = stars
+            .iter()
+            .map(|(at, s)| {
+                let what = s.project.as_deref().unwrap_or(&s.session);
+                reef::lane(&format!("{}/{what}", planets[*at].name))
+            })
+            .collect();
         let swimmers = stars
             .iter()
             .zip(schools)
@@ -117,6 +126,7 @@ impl Desk {
                 species: reef::species(self.activities.agent_kind(&s.terminal), &s.name),
                 project: s.project.clone(),
                 school,
+                lane: lanes[school],
             })
             .collect();
         let scene = &mut self.reef.scene;
