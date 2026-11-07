@@ -62,6 +62,13 @@
 - Reject raw terminal input and file drops for pending or retained ACP owners
   before filesystem access or remote upload, including during reconnects.
 
+## [0.62.0](https://github.com/no-phux/phux/compare/desktop-v0.61.0...desktop-v0.62.0) (2026-11-07)
+
+
+### Features
+
+* **policy:** watching a window or display needs its own grant ([#2085](https://github.com/no-phux/phux/issues/2085)) ([0db87f2](https://github.com/no-phux/phux/commit/0db87f26793838b022576d9868a85f81b593035e))
+
 ## [0.61.0](https://github.com/no-phux/phux/compare/desktop-v0.60.0...desktop-v0.61.0) (2026-11-07)
 
 
