@@ -383,6 +383,18 @@ mod tests {
 
     #[test]
     fn a_touch_pans_settings_without_changing_a_preference() {
+        fn overflow(runtime: &Runtime<Desk>) -> f32 {
+            let elements = runtime.elements();
+            let viewport = elements
+                .iter()
+                .position(|e| e.key.as_deref() == Some("settings-content"))
+                .unwrap();
+            let body = elements
+                .iter()
+                .find(|e| e.parent == Some(viewport))
+                .unwrap();
+            (body.rect[3] - elements[viewport].rect[3]).max(0.0)
+        }
         let mut desk = Desk::new(&Resolved::offline("touch"));
         desk.prefs = Prefs::memory();
         desk.settings_open = true;
@@ -392,27 +404,31 @@ mod tests {
         let mut runtime = runtime(desk);
         runtime.set_viewport((800.0, 360.0), 2.0);
         runtime.frame(0.0);
-        let elements = runtime.elements();
-        let viewport = elements
-            .iter()
-            .position(|e| e.key.as_deref() == Some("settings-content"))
-            .unwrap();
-        let body = elements
-            .iter()
-            .find(|e| e.parent == Some(viewport))
-            .unwrap();
-        // Linux omits Option as Meta, so the shorter page can reach its end
-        // before a 100-point finger movement. Assert the exact clamped pan.
-        let expected = 100.0_f32.min((body.rect[3] - elements[viewport].rect[3]).max(0.0));
+        // Exercise the edge return on every platform, including macOS's
+        // longer page with Option as Meta. Never shrink below the minimum.
+        let height = 360.0 + (overflow(&runtime) - 45.0).max(0.0);
+        runtime.set_viewport((800.0, height), 2.0);
+        runtime.frame(0.0);
+        let expected = 100.0_f32.min(overflow(&runtime));
         assert!(expected > 0.0, "the fixture must have scrollable content");
+        assert!(expected < 100.0, "the fixture must cross the scroll edge");
         let (x, y) = runtime.find("text-size").unwrap();
         runtime.touch(1, TouchPhase::Started, x, y, 0.0);
         runtime.frame(1.0 / 60.0);
         runtime.touch(1, TouchPhase::Moved, x, y - 100.0, 0.05);
         runtime.frame(1.0 / 60.0);
+        let (_, dragged) = runtime.find("text-size").unwrap();
+        assert!(
+            dragged <= y - expected + 1.0 && dragged >= y - 101.0,
+            "the held pan follows the finger, rubber-banding past the edge"
+        );
         // Hold before lifting, so this checks the pan without a fling.
         runtime.touch(1, TouchPhase::Ended, x, y - 100.0, 0.3);
-        runtime.frame(1.0 / 60.0);
+        // Rune rubber-bands while held and springs back after release.
+        // Measure the boundary at rest, not one frame into that rebound.
+        for _ in 0..120 {
+            runtime.frame(1.0 / 60.0);
+        }
         let (_, after) = runtime.find("text-size").unwrap();
         assert!(
             ((y - after) - expected).abs() < 1.0,
