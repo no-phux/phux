@@ -313,8 +313,12 @@ fn print_document(
             if !document.bytes.is_empty() {
                 let written = out.map_or_else(
                     || {
+                        // Flushed: stdout holds binary back until a newline byte.
                         use std::io::Write as _;
-                        std::io::stdout().write_all(&document.bytes)
+                        let mut stdout = std::io::stdout().lock();
+                        stdout
+                            .write_all(&document.bytes)
+                            .and_then(|()| stdout.flush())
                     },
                     |path| std::fs::write(path, &document.bytes),
                 );
