@@ -1,18 +1,30 @@
-**Phux Rune 0.1.0-alpha.14**: readable text-field carets and safer Find clipboard shortcuts.
+**Phux Rune 0.1.0-alpha.15**: the galaxy command center and the reef.
 
-- **Text fields follow the theme.** The caret and selection use the active
-  theme's foreground in both desktop and phone forms, including when you
-  switch between light and dark themes.
-- **Find keeps clipboard actions out of the shell.** Terminal Copy, Paste
-  and Select All shortcuts cannot act on the terminal behind a focused Find
-  field. A clipboard reply requested before Find took focus is refused too.
-  Native field editing uses ⌘C/V/A on macOS and plain Ctrl+C/V/A on Linux.
-- **Linux notifications.** With `notify-send` available, the app notifies
-  you when an unseen terminal needs attention; clicking switches to it.
-  Notifications withdraw through `gdbus` when answered or seen. On Hyprland,
-  clicking also raises the window; other desktops may leave it behind.
-- **Pane names arrive sooner.** With a current server, program titles appear
-  in pane lists before their terminal streams start. User-set titles still win.
-- **The latest Rune.** Updated to upstream dev `1ad9cf6`, including native
-  text-field editing and non-Latin shortcut corrections. The phone form
-  remains a phone-sized desktop window, not an iOS or Android build.
+- **Open Reef.** A second fleet view (palette) turns your agents into fish on
+  a reef per machine. Working agents school with others on the same project,
+  an agent that needs you rises to the surface under an amber ring and its
+  buoy blinks, done agents glide home and glow, idle ones rest in the coral.
+  Dark themes bring the night reef with glowing fish and plankton. Click a
+  fish, or press Return on it, to show its terminal.
+
+- **Open Galaxy.** A new view (palette or View menu) shows your fleet as a
+  command center: a core, each machine a planet on one orbit, and each agent
+  a glowing node on a ring round its machine. Working agents spin and orbit
+  slowly; an agent that needs you holds still under a breathing amber beacon.
+- **Related agents are linked.** Agents in the same session, or in sessions of
+  the same project, are joined by arcs with a light running along them.
+- **Made for a glance.** A ticked bezel, radar sweep, and a ping while anything
+  needs you. `[ N NEED YOU ]` flies to each waiting agent in turn and `[ FIT ]`
+  shows the whole galaxy; click an agent to show its terminal, click a planet
+  to fly to it. Drag pans, pinch or Cmd/Ctrl+wheel zooms, and labels thin out
+  as you zoom away. Reduced motion holds a still frame.
+- **Open Reef.** A second fleet view from the palette: each machine is a reef
+  and each agent a fish. Working fish school, a fish that needs you rises to
+  the surface under an amber ring, finished fish glide home and idle ones rest
+  in the coral. Click a fish to select it, again (or Return) to show its
+  terminal; `N need you` cycles the waiting ones. Dark themes bring night and
+  bioluminescence.
+- **JPEG mirror frames.** Page and window mirrors can send JPEG frames, which
+  Rune now decodes.
+- Machines other than the connected one show as planets with their session
+  counts, or as empty reefs; their agents are not listed yet.
