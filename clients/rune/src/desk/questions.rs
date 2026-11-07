@@ -202,6 +202,24 @@ impl Questions {
         true
     }
 
+    /// The open question `terminal`'s agent session publishes, as an ask.
+    /// The live ask event carries no text for a question raised before this
+    /// window connected; the session's view still has the whole question.
+    pub fn ask(&self, terminal: &ResourceId) -> Option<crate::activity::Ask> {
+        let question = self.views.get(terminal)?.1.questions.first()?;
+        let text = if question.title.is_empty() {
+            &question.message
+        } else {
+            &question.title
+        };
+        Some(crate::activity::Ask {
+            id: question.id.clone(),
+            text: text.clone(),
+            suggestions: Vec::new(),
+            since: None,
+        })
+    }
+
     /// The connection left before some receipts came back.
     pub fn disconnected(&mut self) -> bool {
         let unknown = response::receipt(

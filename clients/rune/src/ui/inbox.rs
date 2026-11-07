@@ -322,7 +322,7 @@ pub fn ask_card(desk: &Desk, id: &ResourceId, area: [f32; 2], ink: &Ink) -> Opti
         return None;
     }
     let pane = desk.topology.as_ref()?.pane(id)?;
-    let ask = inbox::question(pane, &desk.activities)?;
+    let ask = inbox::question(pane, &desk.activities).or_else(|| desk.inbox.questions.ask(id))?;
     let width = CARD_W.min(area[0] - 20.0);
     if width < 160.0 {
         return None;
