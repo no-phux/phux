@@ -42,6 +42,36 @@ fn busy_cache(rt: &mut Runtime<Desk>, base: &[u8]) -> (Release, mpsc::Receiver<(
     (release, wake)
 }
 
+#[test]
+fn decoded_after_scene_build_is_not_yet_render_eligible() {
+    let base = png(0);
+    let (client, mut rt, _, _) = live();
+    let (release, wake) = busy_cache(&mut rt, &base);
+    publish(&client, 1, ResourceKind::PixelSurface, &base);
+    step(&mut rt); // Builds the placeholder while every worker is blocked.
+    let image = rt.state.resources.entries[&id(1)]
+        .surface
+        .flight
+        .as_ref()
+        .unwrap()
+        .image
+        .clone();
+    assert!(ready(&rt).is_none());
+    drop(release);
+    wake.recv_timeout(Duration::from_secs(10)).unwrap();
+    assert!(
+        image.size().is_some(),
+        "the worker finished after the scene"
+    );
+    assert!(ready(&rt).is_none(), "decoding is not scene promotion");
+    rt.update(|d, _| {
+        d.finish_document_images();
+    });
+    rt.frame(1.0);
+    rt.frame(1.0);
+    assert_eq!(ready(&rt), Some(image.id()));
+}
+
 fn reattach(client: &Client, resource: ResourceRecord, bytes: &[u8]) {
     client.with_control(ControlPlane::connection_opened);
     outbound(client);

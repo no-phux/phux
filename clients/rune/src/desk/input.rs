@@ -38,7 +38,12 @@ impl Modal {
     /// hides what a command would touch.
     pub(super) const fn allows(self, action: Shortcut) -> bool {
         match self {
-            Self::FindField => true,
+            // Rune owns editing the field. Extended clipboard chords now
+            // reach the app too; they must never address the terminal behind it.
+            Self::FindField => !matches!(
+                action,
+                Shortcut::Copy | Shortcut::Paste | Shortcut::SelectAll
+            ),
             Self::Palette => matches!(action, Shortcut::Palette),
             Self::Inbox | Self::Settings => action.works_over_sheets(),
             Self::ContextMenu | Self::Machines | Self::Rename | Self::Confirm => false,
@@ -482,3 +487,6 @@ impl Desk {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod runtime;
