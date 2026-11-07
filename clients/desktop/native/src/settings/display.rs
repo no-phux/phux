@@ -278,7 +278,7 @@ pub fn sanitize_display(display: &DisplayPrefs) -> DisplayPrefs {
         },
         playground_map: if matches!(
             display.playground_map.as_str(),
-            "office" | "matrix" | "galaxy"
+            "office" | "matrix" | "galaxy" | "reef"
         ) {
             display.playground_map.clone()
         } else {

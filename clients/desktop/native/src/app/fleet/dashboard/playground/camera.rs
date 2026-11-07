@@ -8,11 +8,13 @@ pub(crate) enum Map {
     Office,
     Matrix,
     Galaxy,
+    Reef,
 }
 
 impl Map {
     pub fn from_id(id: &str) -> Map {
         match id {
+            "reef" => Map::Reef,
             "matrix" => Map::Matrix,
             "galaxy" => Map::Galaxy,
             _ => Map::Office,
@@ -24,6 +26,7 @@ impl Map {
             Map::Office => "office",
             Map::Matrix => "matrix",
             Map::Galaxy => "galaxy",
+            Map::Reef => "reef",
         }
     }
 
@@ -31,7 +34,8 @@ impl Map {
         match self {
             Map::Office => Map::Matrix,
             Map::Matrix => Map::Galaxy,
-            Map::Galaxy => Map::Office,
+            Map::Galaxy => Map::Reef,
+            Map::Reef => Map::Office,
         }
     }
 
@@ -40,6 +44,7 @@ impl Map {
             Map::Office => "Office map",
             Map::Matrix => "Matrix map",
             Map::Galaxy => "Galaxy map",
+            Map::Reef => "Reef map",
         }
     }
 }
@@ -109,6 +114,8 @@ pub(crate) struct View {
     pub camera: Camera,
     /// The last pointer position while the left button pans.
     pub drag: Option<Pt>,
+    /// The reef map's simulation, built the first time the reef shows.
+    pub reef: Option<Box<super::reef::Sim>>,
     /// The map the camera was placed for; another map places it afresh.
     pub map: Option<Map>,
     /// The waiting agent the galaxy's readout flew to last, so the next click moves on.

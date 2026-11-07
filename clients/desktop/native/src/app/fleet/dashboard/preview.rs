@@ -82,6 +82,88 @@ fn inventory() -> Vec<Agent> {
     .collect()
 }
 
+/// The reef's sample fleet (the prototype's): sixteen agents on three
+/// machines, every species and mood, two of them waiting.
+fn reef_inventory() -> Vec<Agent> {
+    use AgentState::{Blocked, Done, Idle, Working};
+    [
+        ("fd-leak-fix", "claude", None, "phux", Working),
+        ("galaxy-hud", "claude", None, "phux", Working),
+        ("rune-galaxy", "codex", None, "phux", Working),
+        ("release-0.124", "claude", None, "phux", Blocked),
+        ("docs-catalog", "opencode", None, "website", Done),
+        ("brand-sync", "gemini", None, "phux-brand", Idle),
+        (
+            "copy-paste",
+            "claude",
+            Some("macbook"),
+            "phux-mobile",
+            Working,
+        ),
+        ("duo-demo", "codex", Some("macbook"), "phux-mobile", Working),
+        (
+            "tuist-gen",
+            "claude",
+            Some("macbook"),
+            "phux-mobile",
+            Blocked,
+        ),
+        (
+            "android-cc",
+            "opencode",
+            Some("macbook"),
+            "phux-mobile",
+            Done,
+        ),
+        ("fox-model", "gemini", Some("macbook"), "website", Idle),
+        (
+            "oomd-scope",
+            "claude",
+            Some("powerhouse-1"),
+            "phux",
+            Working,
+        ),
+        (
+            "chaos-harness",
+            "codex",
+            Some("powerhouse-1"),
+            "phux",
+            Working,
+        ),
+        ("quic-bench", "opencode", Some("powerhouse-1"), "phux", Idle),
+        ("hud-live", "pi", Some("powerhouse-1"), "phux-hud", Done),
+        (
+            "pyte-attach",
+            "codex",
+            Some("powerhouse-1"),
+            "phux",
+            Working,
+        ),
+    ]
+    .into_iter()
+    .enumerate()
+    .map(|(index, (name, kind, host, project, state))| Agent {
+        destination: Destination {
+            host: host.map(str::to_owned),
+            authority: None,
+            key: None,
+            name: name.into(),
+        },
+        terminal: phux_protocol::ResourceId::local(index as u32 + 1),
+        boot: Some("fixture".into()),
+        info: AgentInfo {
+            name: name.into(),
+            kind: Some(kind.into()),
+            state,
+            attention: AgentAttention::None,
+            changed_at_ms: 1,
+        },
+        title: String::new(),
+        project: Some(project.into()),
+    })
+    .collect()
+}
+
 pub(crate) fn capture(
     root: gpui::WindowHandle<gpui_kit::component::Root>,
     directory: PathBuf,
@@ -140,6 +222,33 @@ pub(crate) fn capture(
                 "galaxy",
             ),
             (
+                "fleet-playground-reef",
+                1280.,
+                900.,
+                false,
+                false,
+                true,
+                "reef",
+            ),
+            (
+                "fleet-playground-reef-light",
+                1280.,
+                900.,
+                true,
+                false,
+                true,
+                "reef",
+            ),
+            (
+                "fleet-playground-reef-focus",
+                1280.,
+                900.,
+                false,
+                false,
+                true,
+                "reef",
+            ),
+            (
                 "fleet-playground-mint",
                 1280.,
                 900.,
@@ -176,8 +285,18 @@ pub(crate) fn capture(
                     );
                     desk.fleet_view.open();
                     desk.fleet_view.playground.on = playground;
-                    desk.fleet_view.fixture = Some(if empty { Vec::new() } else { inventory() });
+                    desk.fleet_view.fixture = Some(if empty {
+                        Vec::new()
+                    } else if map == "reef" {
+                        reef_inventory()
+                    } else {
+                        inventory()
+                    });
                     desk.modal = Modal::AgentFleet;
+                    // The reef's camera on its first waiting fish.
+                    desk.fleet_view.playground.last_waiting = name
+                        .ends_with("focus")
+                        .then(|| super::cards::tile_id(None, &phux_protocol::ResourceId::local(4)));
                     cx.notify();
                 });
                 window.refresh();

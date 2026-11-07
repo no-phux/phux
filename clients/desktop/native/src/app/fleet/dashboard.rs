@@ -24,6 +24,8 @@ const GAP: f32 = 12.;
 const INSET: f32 = 24.;
 /// The playground's frame interval.
 const TICK: Duration = Duration::from_millis(80);
+/// The reef's frame interval: sixty a second.
+const REEF_TICK: Duration = Duration::from_millis(16);
 
 #[derive(Default)]
 pub(crate) struct State {
@@ -140,10 +142,16 @@ pub(crate) fn panel(
     // and motion is allowed, nothing otherwise. ponytail: this re-renders the
     // desk's chrome each tick; move the scene into its own entity if that
     // ever shows in the HUD.
-    if playground && animate && !desk.fleet_view.tick_scheduled {
+    // The reef is a simulation, not a pose of the clock: it runs at full
+    // rate, and keeps swimming (slower, inside the scene) under reduced motion.
+    let reef =
+        playground && playground::Map::from_id(&desk.prefs.playground_map) == playground::Map::Reef;
+    let moving = animate || (reef && desk.prefs.animations);
+    if playground && moving && !desk.fleet_view.tick_scheduled {
         desk.fleet_view.tick_scheduled = true;
+        let tick = if reef { REEF_TICK } else { TICK };
         cx.spawn(async move |this, cx| {
-            cx.background_executor().timer(TICK).await;
+            cx.background_executor().timer(tick).await;
             let _ = this.update(cx, |desk, cx| {
                 desk.fleet_view.tick_scheduled = false;
                 if desk.fleet_view.playground.on
@@ -155,7 +163,7 @@ pub(crate) fn panel(
         })
         .detach();
     }
-    let time = if animate {
+    let time = if moving {
         desk.fleet_view
             .opened
             .map_or(0., |opened| now.duration_since(opened).as_secs_f32())
