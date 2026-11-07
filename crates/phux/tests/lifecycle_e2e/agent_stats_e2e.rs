@@ -72,10 +72,12 @@ fn until<T>(what: &str, mut ready: impl FnMut() -> Option<T>) -> T {
 fn plugin_hooks_count_work_and_prune_exited_panes() {
     let dir = TempDir::new().expect("tempdir");
     prepare_dirs(dir.path());
-    let manifest = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../plugins/agent-stats/phux-plugin.toml")
-        .canonicalize()
-        .unwrap();
+    let manifest = std::path::PathBuf::from(
+        std::env::var_os("CARGO_MANIFEST_DIR").expect("the test runner sets CARGO_MANIFEST_DIR"),
+    )
+    .join("../../plugins/agent-stats/phux-plugin.toml")
+    .canonicalize()
+    .unwrap();
     std::fs::write(
         dir.path().join("config/phux/config.toml"),
         format!(
