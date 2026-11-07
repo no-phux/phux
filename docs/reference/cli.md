@@ -607,16 +607,18 @@ Arguments:
   <PAGE>  A fragment of the page's title or URL, or `first`.
 
 Flags:
-      --port <PORT>    The browser's debugging port (default 9222).
-      --pane <PANE>    The pane the documents bind to; this process's own pane
-                       when absent.
-      --interval <MS>  Milliseconds between accessibility-tree reads (default
-                       1000).
+      --port <PORT>       The browser's debugging port (default 9222).
+      --pane <PANE>       The pane the documents bind to; this process's own
+                          pane when absent.
+      --interval <MS>     Milliseconds between accessibility-tree reads (default
+                          1000).
+      --parent-pid <PID>  Exit once this process is gone, as the app that
+                          launched the mirror passes its own.
       --json
-  -h, --help           Print help
+  -h, --help              Print help
 
 Global flags:
-      --socket <PATH>  Server socket to dial (default: `$PHUX_SOCKET`)
+      --socket <PATH>     Server socket to dial (default: `$PHUX_SOCKET`)
 ```
 
 ## `phux agent page navigate`
@@ -1020,15 +1022,17 @@ Arguments:
             display.
 
 Flags:
-      --window-id <ID>  The CoreGraphics window id, instead of a name.
-      --pane <PANE>     The pane the surface binds to; this process's own pane
-                        when absent.
-      --interval <MS>   Milliseconds between captures (default 1000).
+      --window-id <ID>    The CoreGraphics window id, instead of a name.
+      --pane <PANE>       The pane the surface binds to; this process's own pane
+                          when absent.
+      --interval <MS>     Milliseconds between captures (default 1000).
+      --parent-pid <PID>  Exit once this process is gone, as the app that
+                          launched the mirror passes its own.
       --json
-  -h, --help            Print help
+  -h, --help              Print help
 
 Global flags:
-      --socket <PATH>   Server socket to dial (default: `$PHUX_SOCKET`)
+      --socket <PATH>     Server socket to dial (default: `$PHUX_SOCKET`)
 ```
 
 ## `phux agent surface open`
@@ -1144,16 +1148,18 @@ Arguments:
   <APP>  The application's process name, e.g. `Safari`.
 
 Flags:
-      --pid <PID>      The application's process id, instead of its name.
-      --pane <PANE>    The pane the tree binds to; this process's own pane when
-                       absent.
-      --interval <MS>  Milliseconds between reads (default 500).
-      --depth <N>      Deepest nesting to read (default 24).
+      --pid <PID>         The application's process id, instead of its name.
+      --pane <PANE>       The pane the tree binds to; this process's own pane
+                          when absent.
+      --interval <MS>     Milliseconds between reads (default 500).
+      --depth <N>         Deepest nesting to read (default 24).
+      --parent-pid <PID>  Exit once this process is gone, as the app that
+                          launched the mirror passes its own.
       --json
-  -h, --help           Print help
+  -h, --help              Print help
 
 Global flags:
-      --socket <PATH>  Server socket to dial (default: `$PHUX_SOCKET`)
+      --socket <PATH>     Server socket to dial (default: `$PHUX_SOCKET`)
 ```
 
 ## `phux agent tree open`

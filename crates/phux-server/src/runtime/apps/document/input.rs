@@ -20,10 +20,7 @@ pub(super) fn relay<A: DocumentApi>(
     let found = state.with(|s| {
         let core = s.resource_from_wire(terminal_id)?;
         let handle = s.resource_handle(core)?.clone();
-        let producer = s
-            .resource_spawner(core)
-            .and_then(|client| s.client_mailbox(client))
-            .filter(|tx| !tx.is_closed());
+        let producer = s.resource_producer(core);
         Some((handle, producer))
     });
     let Some((handle, producer)) = found else {

@@ -24,6 +24,9 @@ pub(crate) enum PageAction {
         /// Milliseconds between accessibility-tree reads (default 1000).
         #[usage(long, value_name = "MS")]
         interval: Option<u64>,
+        /// Exit once this process is gone, as the app that launched the mirror passes its own.
+        #[usage(long, value_name = "PID")]
+        parent_pid: Option<u32>,
         #[usage(long)]
         json: bool,
     },
@@ -76,15 +79,19 @@ pub(crate) fn run_page(action: &PageAction, socket: Option<PathBuf>) -> ExitCode
             port,
             pane,
             interval,
+            parent_pid,
             json,
-        } => page_mirror::run_mirror(page_mirror::MirrorArgs {
-            page,
-            port: port.unwrap_or(9222),
-            pane: pane.as_deref(),
-            interval_ms: interval.unwrap_or(1000),
-            json: *json,
-            socket,
-        }),
+        } => {
+            super::parent_watch::exit_with(*parent_pid);
+            page_mirror::run_mirror(page_mirror::MirrorArgs {
+                page,
+                port: port.unwrap_or(9222),
+                pane: pane.as_deref(),
+                interval_ms: interval.unwrap_or(1000),
+                json: *json,
+                socket,
+            })
+        }
         PageAction::Navigate { target, url, json } => page_input::run_send(
             target,
             DocumentInput::Navigate { url: url.clone() },

@@ -49,6 +49,25 @@ lists them, `phux_tree_snapshot` and `phux_tree_wait` read a tree's JSON, and
 `phux_surface_snapshot` returns a surface's PNG as MCP image content
 ([parity](./reference/parity.md)).
 
+## Supervision
+
+The producer of a document is the connection that opened it. While that
+connection lives, the document reports `producer: "connected"` in
+`phux ls --json` resources, `phux resource show --json` and MCP
+`phux_documents`; once it disconnects the document stays with its last
+frame and reports `"gone"`. Other kinds omit the field (`null` in
+`resource show`). On the wire it is `RESOURCE_STATE` field `PRODUCER`
+(`u8`, `1` connected, `0` gone), absent from an older server. A restarted
+producer opens a fresh document; a gone one is not re-bound.
+
+The desktop runs window and app mirrors as its own children. A mirror that
+exits non-zero is restarted up to three times, after 1 s, 4 s and 16 s,
+and the count resets once a run lasts 60 s; a clean exit is not restarted.
+It reports a failure only when it gives up. Each local mirror gets
+`--parent-pid` with the desktop's pid: `phux agent tree|surface|page mirror
+--parent-pid PID` exits within a second of that process ending, so a
+desktop killed without dropping its children leaves no producer behind.
+
 ## Typed documents
 
 A `Document`'s content type is ASCII `type/subtype` with optional `;`

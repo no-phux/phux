@@ -249,10 +249,14 @@ impl ServerState {
         self.resources.unsubscribe(client, terminal);
     }
 
-    /// The connection that spawned `resource`; a document's producer.
+    /// The mailbox of the connection that spawned `resource`, a document's
+    /// producer, while it is connected; `None` once it is gone.
     #[must_use]
-    pub fn resource_spawner(&self, resource: ResourceId) -> Option<ClientId> {
-        self.resources.spawner(resource)
+    pub fn resource_producer(&self, resource: ResourceId) -> Option<mpsc::Sender<Outbound>> {
+        self.resources
+            .spawner(resource)
+            .and_then(|client| self.client_mailbox(client))
+            .filter(|tx| !tx.is_closed())
     }
 
     /// Record that `client` spawned `terminal` (ADR-0109), before anything
