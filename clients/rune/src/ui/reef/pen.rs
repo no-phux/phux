@@ -1,6 +1,12 @@
 //! What the reef paints with: Rune's shapes, which are flat fills and
 //! strokes, standing in for the prototype's canvas. A gradient is bands, a
 //! radial glow is rings of discs, and a clip is a polygon cut to shape.
+//!
+//! Rune draws each triangle of a fill as its bounding box, and ear-clipping
+//! fans a long polygon out from one corner, so a wide one costs the GPU many
+//! times its area. Big opaque areas go down as bands and columns that each
+//! overlap the next by a screen point (painted over, so no seam shows), and
+//! no area is painted twice for a gradient.
 
 use std::f32::consts::TAU;
 
@@ -94,15 +100,7 @@ impl Pen {
         let span = ((to - from).abs() / TAU).min(1.0);
         // Round at any size: a small circle still takes 16 sides.
         let n = ((rx.max(ry) * self.z * 0.7).max(16.0) * span) as usize;
-        let n = n.clamp(4, 64);
-        let (s, co) = rot.sin_cos();
-        (0..=n)
-            .map(|k| {
-                let a = from + (to - from) * k as f32 / n as f32;
-                let (x, y) = (rx * a.cos(), ry * a.sin());
-                [c[0] + x * co - y * s, c[1] + x * s + y * co]
-            })
-            .collect()
+        ellipse_n(c, rx, ry, rot, from, to, n.clamp(4, 64))
     }
 
     pub fn disc(&mut self, c: Pt, r: f32, col: Rgb, a: f32) {
@@ -128,9 +126,12 @@ impl Pen {
             return;
         }
         let n = ((r * self.z / 4.0) as usize).clamp(3, 16);
+        // Soft and faint, a ring needs few sides; each side is a fan
+        // triangle the GPU fills the box of.
+        let sides = ((r * self.z * 0.5) as usize).clamp(12, 64);
         for k in 0..n {
             let rk = r * (1.0 - k as f32 / n as f32);
-            let mut pts = self.ellipse(c, rk, rk, 0.0, 0.0, TAU);
+            let mut pts = ellipse_n(c, rk, rk, 0.0, 0.0, TAU, sides);
             pts.pop();
             if y_max < f32::MAX {
                 pts = clip_half(&pts, y_max);
@@ -140,9 +141,9 @@ impl Pen {
         }
     }
 
-    /// A vertical gradient over a rectangle: bands, each drawn over the
-    /// last so opaque ones leave no seams. `at(k)` is the colour `k` of the
-    /// way down.
+    /// A vertical gradient over a rectangle: `n` bands, each reaching a
+    /// screen point into the next, which paints over it. `at(k)` is the
+    /// colour `k` of the way down.
     pub fn vgrad(
         &mut self,
         x: f32,
@@ -153,21 +154,75 @@ impl Pen {
         at: impl Fn(f32) -> (Rgb, f32),
     ) {
         let band = (y1 - y0) / n as f32;
-        for k in (0..n).rev() {
+        let ov = 1.0 / self.z;
+        for k in 0..n {
             let (c, a) = at((k as f32 + 0.5) / n as f32);
-            self.rect(x, y0, w, band * (k + 1) as f32, c, a);
+            let h = if k + 1 == n { band } else { band + ov };
+            self.rect(x, y0 + band * k as f32, w, h, c, a);
         }
     }
 
-    /// `poly` with a vertical gradient from `y0` to `y1`, opaque bands over
-    /// each other as `vgrad`.
+    /// The opaque `poly` with a vertical gradient from `y0` to `y1` in `n`
+    /// bands, the first and last running on past them to its edge.
     pub fn vgrad_poly(&mut self, poly: &[Pt], y0: f32, y1: f32, n: usize, at: impl Fn(f32) -> Rgb) {
-        self.fill(poly, at(1.0 - 0.5 / n as f32), 1.0);
-        for k in (1..n).rev() {
-            let cut = clip_half(poly, y0 + (y1 - y0) * k as f32 / n as f32);
-            self.fill(&cut, at((k as f32 - 0.5) / n as f32), 1.0);
+        let ov = 1.0 / self.z;
+        let y = |k: usize| y0 + (y1 - y0) * k as f32 / n as f32;
+        for k in 0..n {
+            let mut band = poly.to_vec();
+            if k > 0 {
+                band = clip_plane(&band, |p| p[1] - y(k));
+            }
+            if k + 1 < n {
+                band = clip_plane(&band, |p| y(k + 1) + ov - p[1]);
+            }
+            self.fill_opaque(&band, at((k as f32 + 0.5) / n as f32));
         }
     }
+
+    /// An opaque fill, a long outline cut into overlapping columns so its
+    /// triangles stay narrow.
+    pub fn fill_opaque(&mut self, poly: &[Pt], c: Rgb) {
+        for column in columns(poly, 1.0 / self.z) {
+            self.fill(&column, c, 1.0);
+        }
+    }
+}
+
+/// `poly` in columns at most `WIDE` across, each reaching `ov` into the next;
+/// a short outline stays whole.
+fn columns(poly: &[Pt], ov: f32) -> Vec<Vec<Pt>> {
+    const WIDE: f32 = 48.0;
+    if poly.len() <= 8 {
+        return vec![poly.to_vec()];
+    }
+    let (lo, hi) = poly.iter().fold((f32::MAX, f32::MIN), |(lo, hi), p| {
+        (lo.min(p[0]), hi.max(p[0]))
+    });
+    let mut out = Vec::new();
+    let mut x = lo;
+    while x < hi {
+        let right = x + WIDE;
+        let left = clip_plane(poly, |p| p[0] - x);
+        out.push(if right >= hi {
+            left
+        } else {
+            clip_plane(&left, |p| right + ov - p[0])
+        });
+        x = right;
+    }
+    out
+}
+
+/// `n` steps round an ellipse at `c`, turned `rot`, from angle `from` to `to`.
+fn ellipse_n(c: Pt, rx: f32, ry: f32, rot: f32, from: f32, to: f32, n: usize) -> Vec<Pt> {
+    let (s, co) = rot.sin_cos();
+    (0..=n)
+        .map(|k| {
+            let a = from + (to - from) * k as f32 / n as f32;
+            let (x, y) = (rx * a.cos(), ry * a.sin());
+            [c[0] + x * co - y * s, c[1] + x * s + y * co]
+        })
+        .collect()
 }
 
 /// The part of `poly` above `y` (smaller y).
@@ -273,6 +328,38 @@ pub fn cubic(a: Pt, c1: Pt, c2: Pt, b: Pt, n: usize) -> impl Iterator<Item = Pt>
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn area(poly: &[Pt]) -> f32 {
+        (0..poly.len())
+            .map(|i| {
+                let (a, b) = (poly[i], poly[(i + 1) % poly.len()]);
+                a[0] * b[1] - b[0] * a[1]
+            })
+            .sum::<f32>()
+            .abs()
+            / 2.0
+    }
+
+    #[test]
+    fn a_long_outline_goes_down_in_narrow_overlapping_columns() {
+        let mut sand: Vec<Pt> = (0..=100)
+            .map(|k| [k as f32 * 8.0, 100.0 + (k as f32 * 0.4).sin() * 6.0])
+            .collect();
+        sand.extend([[800.0, 300.0], [0.0, 300.0]]);
+        let cols = columns(&sand, 1.0);
+        assert_eq!(cols.len(), 17);
+        for col in &cols {
+            let (lo, hi) = col.iter().fold((f32::MAX, f32::MIN), |(lo, hi), p| {
+                (lo.min(p[0]), hi.max(p[0]))
+            });
+            assert!(hi - lo <= 49.0 + 1e-3);
+        }
+        // Covered whole, with only the 16 one-point seams painted twice.
+        let painted: f32 = cols.iter().map(|c| area(c)).sum();
+        let extra = painted - area(&sand);
+        assert!(extra > 0.0 && extra < 16.0 * 200.0 + 1.0, "{extra}");
+        assert_eq!(columns(&sand[..5], 1.0).len(), 1);
+    }
 
     #[test]
     fn polygons_cut_to_a_line_and_to_a_convex_shape() {
