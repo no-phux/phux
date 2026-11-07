@@ -5,11 +5,14 @@ use std::f32::consts::TAU;
 
 use phux_protocol::ids::ResourceId;
 
-use super::{Bubble, Fish, Mood, Pt, Reef, Ripple, Rng, Species, band, hash, lerp};
+use super::{Bubble, Fish, Mood, Pt, Reef, Ripple, Rng, Spark, Species, band, hash, lerp};
+use crate::creature::{self, TIERS, Work};
 
 /// One fixed step of scene time: the same scene whatever the frame rate.
 pub const STEP: f32 = 1.0 / 60.0;
 const MAX_BUBBLES: usize = 320;
+/// The most trail motes the legendary creatures leave at once.
+const MAX_SPARKS: usize = 240;
 
 /// An agent as the reef needs it.
 #[derive(Debug, Clone, PartialEq)]
@@ -26,6 +29,8 @@ pub struct Swimmer {
     pub school: usize,
     /// Its school's preferred depth in the open water, 0 (top) to 1 ([`super::lane`]).
     pub lane: f32,
+    /// Its work from its machine's agent stats, when published.
+    pub work: Option<Work>,
 }
 
 fn ease(dt: f32, rate: f32) -> f32 {
@@ -43,9 +48,16 @@ impl Reef {
                     let mut f = old.swap_remove(at);
                     let mood = who.mood;
                     let burst = f.who.mood != mood && mood == Mood::Waiting;
+                    let grew = creature::levels_up(f.who.work.as_ref(), who.work.as_ref());
+                    f.tier = creature::tier(who.work.as_ref());
                     f.who = who;
                     if burst {
-                        self.burst(f.x, f.y);
+                        self.burst(f.x, f.y, 10, 20.0, 40.0);
+                    }
+                    if grew {
+                        // A gold ring, a glow and bubbles.
+                        f.level_up = 1.0;
+                        self.burst(f.x, f.y, 14, 30.0, 50.0);
                     }
                     self.fish.push(f);
                 }
@@ -68,16 +80,17 @@ impl Reef {
         }
     }
 
-    /// Ten bubbles as a fish turns to need you.
-    fn burst(&mut self, x: f32, y: f32) {
+    /// `n` bubbles across `wide` points, rising from `vy`: ten as a fish
+    /// turns to need you, fourteen as it levels up.
+    fn burst(&mut self, x: f32, y: f32, n: usize, wide: f32, vy: f32) {
         let s = self.s;
-        for _ in 0..10 {
+        for _ in 0..n {
             let (a, b, c) = (self.rng.next(), self.rng.next(), self.rng.next());
             self.bubble(
-                x + (a - 0.5) * 20.0 * s,
+                x + (a - 0.5) * wide * s,
                 y,
                 (1.5 + b * 3.0) * s,
-                (40.0 + c * 40.0) * s,
+                (vy + c * 40.0) * s,
             );
         }
     }
@@ -195,6 +208,7 @@ impl Reef {
                 ay += (dy / d * want - f.vy) * 2.6;
             }
             let f = &mut self.fish[i];
+            let max_sp = max_sp * TIERS[f.tier].speed;
             f.vx += ax * dt;
             f.vy += ay * dt;
             let sp = f.vx.hypot(f.vy);
@@ -212,6 +226,17 @@ impl Reef {
             let tilt = f.vy.atan2(f.vx.abs().max(10.0 * s)).clamp(-0.55, 0.55);
             f.tilt += (tilt - f.tilt) * ease(dt, 5.0);
             f.pulse = (f.pulse + dt * 0.75) % 1.0;
+            f.level_up = (f.level_up - dt * 0.45).max(0.0);
+            if f.tier == 4 {
+                f.mt -= dt;
+                if f.mt <= 0.0 && self.sparks.len() < MAX_SPARKS {
+                    f.mt = 0.07;
+                    let (x, y, c) = (f.x - f.face * l * 0.45, f.y, f.who.species.fin);
+                    let y = y + (self.rng.next() - 0.5) * l * 0.2;
+                    self.sparks.push(Spark { x, y, a: 1.0, c });
+                }
+            }
+            let f = &mut self.fish[i];
             f.bt -= dt;
             let (mood, fx, fy, face) = (f.who.mood, f.x, f.y, f.face);
             if f.bt <= 0.0 {
@@ -292,6 +317,11 @@ impl Reef {
         self.ripples.retain_mut(|r| {
             r.a += dt;
             r.a <= 1.8
+        });
+        self.sparks.retain_mut(|m| {
+            m.y -= 6.0 * s * dt;
+            m.a -= dt * 0.6;
+            m.a > 0.0
         });
         let (w, sy, fy, nt) = (self.w, self.surface_y, self.floor_y, self.nt);
         for p in &mut self.snow {
@@ -392,8 +422,9 @@ impl Reef {
     }
 }
 
-/// A new fish, its looks and rhythm seeded from who it is.
+/// A new fish, its looks and rhythm seeded from who it is, already at its tier.
 fn hatch(who: Swimmer) -> Fish {
+    let tier = creature::tier(who.work.as_ref());
     let mut r = Rng::new(hash(&format!("{}{:?}", who.name, who.id)));
     let vx = (r.next() - 0.5) * 40.0;
     let vy = (r.next() - 0.5) * 10.0;
@@ -421,5 +452,8 @@ fn hatch(who: Swimmer) -> Fish {
         slot: 0,
         slots: 1,
         k: 1.0,
+        tier,
+        level_up: 0.0,
+        mt: 0.0,
     }
 }

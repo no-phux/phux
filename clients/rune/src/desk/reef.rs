@@ -119,6 +119,7 @@ impl Desk {
                 project: s.project.clone(),
                 school,
                 lane: lanes[school],
+                work: s.work,
             })
             .collect();
         let scene = &mut self.reef.scene;

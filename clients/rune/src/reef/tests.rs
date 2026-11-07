@@ -11,6 +11,7 @@ fn swimmer(n: u32, host: usize, mood: Mood) -> Swimmer {
         project: None,
         school: n as usize,
         lane: lane(&format!("mini/project-{n}")),
+        work: None,
     }
 }
 
@@ -235,4 +236,69 @@ fn selecting_a_fish_zooms_to_it_inside_the_scene() {
     assert_eq!(cam.z, 1.85);
     let hh = 780.0 / 3.7;
     assert!(cam.y <= 780.0 - hh + 0.01 && cam.x >= 1200.0 / 3.7 - 0.01);
+}
+
+#[test]
+fn waiting_fish_spread_across_the_reef_and_stagger_when_crowded() {
+    let mut reef = Reef::default();
+    reef.layout(1200.0, 780.0, &hosts(&["mini", "macbook"]));
+    let (s, sy) = (reef.s, reef.surface_y);
+    let z = &reef.zones[0];
+    let at = |slot, n| target(Mood::Waiting, z, [slot, n], 0.0, 0.0, s, sy);
+    // A few: one row, evenly across the middle 84% of the reef.
+    let gap = z.w * 0.84 / 3.0;
+    assert!(gap >= 96.0 * s);
+    for k in 0..3 {
+        let p = at(k, 3);
+        assert!((p[0] - (z.l + z.w * 0.08 + gap * (k as f32 + 0.5))).abs() < 1e-3);
+        assert!((p[1] - (sy + 30.0 * s)).abs() < 1e-3);
+    }
+    // Many: tags closer than 96 pt alternate between two rows 50 pt apart.
+    assert!(z.w * 0.84 / 8.0 < 96.0 * s);
+    for k in 0..8 {
+        let p = at(k, 8);
+        let row = (k % 2) as f32;
+        assert!((p[1] - (sy + (30.0 + row * 50.0) * s)).abs() < 1e-3, "{k}");
+        assert!(p[0] > z.l + z.w * 0.08 && p[0] < z.r - z.w * 0.08);
+    }
+}
+
+#[test]
+fn a_fish_grows_with_its_work_and_bursts_only_on_a_rise() {
+    use crate::creature::Work;
+    let work = |turns| {
+        Some(Work {
+            turns,
+            working_s: 0.0,
+        })
+    };
+    let mut who = swimmer(1, 0, Mood::Working);
+    let mut reef = Reef::default();
+    reef.sync(vec![who.clone()]);
+    reef.layout(1200.0, 780.0, &hosts(&["mini"]));
+    assert_eq!(reef.fish[0].tier, 1, "no stats is the plain reef fish");
+    let plain = reef.fish[0].len(reef.s);
+    let mut grade = |w: Option<Work>, reef: &mut Reef| {
+        who.work = w;
+        let bubbles = reef.bubbles.len();
+        reef.sync(vec![who.clone()]);
+        let f = &reef.fish[0];
+        (f.tier, f.level_up, reef.bubbles.len() - bubbles)
+    };
+    assert_eq!(grade(work(40), &mut reef), (4, 0.0, 0), "the first tally");
+    assert!((reef.fish[0].len(reef.s) / plain - 1.8).abs() < 1e-4);
+    assert_eq!(grade(work(2), &mut reef), (1, 0.0, 0), "a restart regrades");
+    let (tier, up, bubbles) = grade(work(6), &mut reef);
+    assert_eq!((tier, up), (2, 1.0), "a rise levels up");
+    assert!(bubbles == 14 || reef.bubbles.len() == 320);
+    grade(work(30), &mut reef);
+    for _ in 0..60 {
+        reef.step(1.0 / 60.0);
+    }
+    let f = &reef.fish[0];
+    assert!(
+        (f.level_up - (1.0 - 0.45)).abs() < 0.02,
+        "fades over ~2.2 s"
+    );
+    assert!(!reef.sparks.is_empty(), "a legendary leaves a trail");
 }

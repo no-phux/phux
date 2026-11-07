@@ -10,10 +10,11 @@ mod sky;
 
 use rune::{Color, Cx, El, LineCap, Shape, TextStyle, canvas, col, el, row, text};
 
-use self::sky::{Sky, State};
+use self::sky::{Grown, Sky, State};
 use super::sidebar::mark_color;
 use super::{Ink, TITLEBAR_H, overlay, pressable};
 use crate::activity::Mark;
+use crate::creature;
 use crate::desk::Desk;
 use crate::galaxy::{self, Detail, Kin, Pt};
 
@@ -105,13 +106,17 @@ pub(super) fn view(desk: &Desk, p: &Ink, cx: &mut Cx<Desk>) -> El {
     }
     for &(at, i, point) in &placed {
         let star = &planets[at].stars[i];
-        sky = sky.node(
-            point,
-            State::of(star.mark),
-            mark_color(star.mark, p),
-            needs,
-            time,
-        );
+        let species = crate::reef::species(star.kind.as_deref(), &star.name);
+        let grown = Grown {
+            tier: creature::tier(star.work.as_ref()),
+            harness: super::reef::rgba(species.body, 1.0),
+            level_up: desk.level_up(&star.id),
+        };
+        if grown.tier == 4 {
+            sky = sky.trail(plan.systems[at].centre, point, grown.harness);
+        }
+        let state = (State::of(star.mark), mark_color(star.mark, p), needs);
+        sky = sky.node(point, state, time, &grown);
     }
     if let Some(point) = picked_at {
         sky = sky.reticle(plan.core, point, time, p.text);
@@ -163,13 +168,30 @@ pub(super) fn view(desk: &Desk, p: &Ink, cx: &mut Cx<Desk>) -> El {
             _ => true,
         };
         let worded = detail == Detail::Full || (named && detail == Detail::Urgent);
+        // Its form and work, when its machine publishes agent stats.
+        let card = star.work.map(|w| {
+            let species = crate::reef::species(star.kind.as_deref(), &star.name);
+            let tier = creature::tier(Some(&w));
+            (
+                creature::form_name(tier, species.form),
+                creature::work_line(&w),
+            )
+        });
+        // Names sit clear of a grown node's moons.
+        let tier = creature::tier(star.work.as_ref());
+        let r = 7.0 * creature::TIERS[tier].size;
+        let reach = r * [1.0, 1.0, 1.6, 2.5, 2.5][tier];
+        let below = (reach - 14.0).max(0.0) * camera.scale;
+        let said = card
+            .as_ref()
+            .map_or(String::new(), |(form, work)| format!(", {form}, {work}"));
         labels.push(
             pressable(format!("galaxy-star-{:?}", star.id), p)
                 .absolute(s[0] - 60.0, s[1] - 22.0)
                 .w(120.0)
                 .radius(8.0)
-                .pt(40.0)
-                .label(format!("{}, {word}", star.name))
+                .pt(40.0 + below)
+                .label(format!("{}, {word}{said}", star.name))
                 .on_press(move |desk: &mut Desk| desk.open_star(&id))
                 .children(named.then(|| {
                     col()
@@ -181,6 +203,10 @@ pub(super) fn view(desk: &Desk, p: &Ink, cx: &mut Cx<Desk>) -> El {
                                 .font(WORD)
                                 .color(mark_color(star.mark, p))
                         }))
+                        .children(
+                            card.filter(|_| detail == Detail::Full)
+                                .map(|(form, _)| text(form.to_uppercase()).font(META).color(p.dim)),
+                        )
                 })),
         );
     }

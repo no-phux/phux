@@ -8,18 +8,21 @@
 //! in one canvas, the caustics as a scrolling tile, the rest in another,
 //! then labels, the fish's press targets and the readout.
 
-use rune::{Cx, El, canvas, el, row, text};
+use rune::{Cx, El, canvas, col, el, row, text};
 
 use super::{CAPTION, Ink, LABEL_STRONG, TITLEBAR_H, overlay, pressable};
+use crate::creature;
 use crate::desk::Desk;
 use crate::reef::{Mood, Pt, Reef, TILE};
 
 mod drift;
 mod fish;
+mod forms;
 mod pen;
 mod scene;
 
-use pen::{Pen, rgba};
+use pen::Pen;
+pub(super) use pen::rgba;
 
 /// A pill over the scene, at a world point.
 pub(super) struct Label {
@@ -91,6 +94,7 @@ pub(super) fn view(desk: &Desk, p: &Ink, cx: &mut Cx<Desk>) -> El {
     for z in &r.zones {
         scene::reef_front(&mut front, r, &pal, z);
     }
+    drift::sparks(&mut front, r);
     for f in &r.fish {
         fish::fish(&mut front, r, &pal, f, &mut labels);
     }
@@ -232,6 +236,11 @@ fn readout(r: &Reef, waiting: usize, p: &Ink) -> El {
             f.who.mood.word(),
             r.zone_of(f).host
         );
+        // Its form and work, when its machine publishes agent stats.
+        let card = f.who.work.map(|w| {
+            let form = creature::form_name(f.tier, f.who.species.form);
+            format!("Form: {form} · Work: {}", creature::work_line(&w))
+        });
         pressable("reef-open", p)
             .px(12.0)
             .py(5.0)
@@ -239,7 +248,12 @@ fn readout(r: &Reef, waiting: usize, p: &Ink) -> El {
             .fill(p.raised.alpha(0.85))
             .label(format!("Open {}", f.who.name))
             .on_press(Desk::open_fish)
-            .child(text(line).font(LABEL_STRONG).color(p.text))
+            .child(
+                col()
+                    .gap(2.0)
+                    .child(text(line).font(LABEL_STRONG).color(p.text))
+                    .children(card.map(|c| text(c).font(CAPTION).color(p.dim))),
+            )
     });
     // Along the foot once laid out, clear of the buoys' labels on the surface.
     let y = if r.h > 0.0 {

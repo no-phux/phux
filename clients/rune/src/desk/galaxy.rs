@@ -3,6 +3,7 @@
 //! `crate::galaxy`.
 
 use std::cell::Cell;
+use std::collections::HashMap;
 use std::time::Duration;
 
 use phux_client_runtime::Client;
@@ -12,6 +13,7 @@ use rune::Tx;
 
 use super::Desk;
 use crate::activity::{Activities, Mark};
+use crate::creature::{self, Stats, Work};
 use crate::galaxy::{Camera, Plan};
 use crate::machines::LOCAL;
 
@@ -34,6 +36,8 @@ pub struct Galaxy {
     opened_at: f64,
     /// Reduced motion, as the last view build saw it: the clock stops.
     pub still: Cell<bool>,
+    /// Each agent's last work seen, and the app clock at its last level-up.
+    grades: HashMap<ResourceId, (Option<Work>, f64)>,
 }
 
 /// An agent on one machine.
@@ -55,6 +59,8 @@ pub struct Star {
     pub mark: Mark,
     /// The session's project (the desktop's rule), else the directory's.
     pub project: Option<String>,
+    /// Its work from its machine's agent stats ([`creature`]), when published.
+    pub work: Option<Work>,
 }
 
 /// A machine and its agents: the connected one's from this window, another's
@@ -81,6 +87,7 @@ impl Desk {
         self.galaxy.placed = false;
         self.galaxy.picked = None;
         self.galaxy.opened_at = self.clock;
+        self.galaxy.grades.clear();
     }
 
     pub fn close_galaxy(&mut self) {
@@ -97,13 +104,33 @@ impl Desk {
         }
     }
 
-    /// Keep drawing while the galaxy is open and moving.
-    pub(super) fn tick_galaxy(&self, tx: &mut Tx) -> bool {
+    /// Keep drawing while the galaxy is open and moving, and note which
+    /// agents just grew a tier.
+    pub(super) fn tick_galaxy(&mut self, tx: &mut Tx) -> bool {
         let moving = self.galaxy.open && !self.galaxy.still.get();
         if moving {
             tx.wake_after(FRAME);
+            let stars: Vec<Star> = self.planets().into_iter().flat_map(|p| p.stars).collect();
+            let grades = &mut self.galaxy.grades;
+            grades.retain(|id, _| stars.iter().any(|s| &s.id == id));
+            for star in stars {
+                let (work, up) = grades
+                    .entry(star.id)
+                    .or_insert((star.work, f64::NEG_INFINITY));
+                if creature::levels_up(work.as_ref(), star.work.as_ref()) {
+                    *up = self.clock;
+                }
+                *work = star.work;
+            }
         }
         moving
+    }
+
+    /// How much of agent `id`'s level-up burst is left, 1 to 0 over 2.2 s.
+    pub fn level_up(&self, id: &ResourceId) -> f32 {
+        self.galaxy.grades.get(id).map_or(0.0, |(_, up)| {
+            (1.0 - (self.clock - up) as f32 * 0.45).clamp(0.0, 1.0)
+        })
     }
 
     /// Every machine, those with something waiting first; the connected one
@@ -122,7 +149,7 @@ impl Desk {
             .filter(|host| *host != current)
             .map(|host| {
                 let watch = self.fleet.watches.get(&host);
-                let stars = watch.and_then(|w| w.stars(&host));
+                let stars = watch.and_then(|w| w.stars(&host, self.clock));
                 let glance = self.machines.glances.get(&host);
                 let note = match glance {
                     Some(Ok(sessions)) => {
@@ -152,7 +179,12 @@ impl Desk {
         let Some(topology) = &self.topology else {
             return Vec::new();
         };
-        let mut stars = stars_on(topology, &self.activities, self.client.as_deref());
+        let mut stars = stars_on(
+            topology,
+            &self.activities,
+            self.client.as_deref(),
+            (&self.fleet.here, self.clock),
+        );
         for star in &mut stars {
             star.here = true;
         }
@@ -259,11 +291,13 @@ impl Desk {
     }
 }
 
-/// A server's agents: each pane with a declared agent, or one that asks.
+/// A server's agents: each pane with a declared agent, or one that asks,
+/// with their work from its `stats` as of `now`.
 pub(super) fn stars_on(
     topology: &Topology,
     activities: &Activities,
     client: Option<&Client>,
+    (stats, now): (&Stats, f64),
 ) -> Vec<Star> {
     topology
         .panes
@@ -283,6 +317,11 @@ pub(super) fn stars_on(
                 .agent_name(&pane.terminal_id)
                 .map_or_else(|| crate::palette::pane_label(pane), str::to_owned),
             mark: activities.mark(&pane.terminal_id),
+            work: stats.work(
+                &pane.terminal_id,
+                activities.mark(&pane.terminal_id) == Mark::Working,
+                now,
+            ),
             project: session_project(topology, client, pane.session_id).or_else(|| {
                 pane.cwd
                     .as_deref()

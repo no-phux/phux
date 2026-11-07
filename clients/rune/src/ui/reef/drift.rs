@@ -6,6 +6,13 @@ use crate::reef::{Reef, Rgb};
 
 const WHITE: Rgb = [255.0, 255.0, 255.0];
 
+/// The motes legendary creatures leave behind, under the fish.
+pub fn sparks(pen: &mut Pen, r: &Reef) {
+    for m in &r.sparks {
+        pen.glow([m.x, m.y], 4.0 * r.s, m.c, m.a * 0.7);
+    }
+}
+
 pub fn bubbles(pen: &mut Pen, r: &Reef) {
     for b in &r.bubbles {
         pen.disc([b.x, b.y], b.r, WHITE, 0.12);

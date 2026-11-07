@@ -11,6 +11,7 @@ use std::f32::consts::TAU;
 use phux_protocol::ids::ResourceId;
 
 use crate::activity::Mark;
+use crate::creature::{Form, TIERS};
 
 mod colors;
 mod coral;
@@ -80,6 +81,8 @@ pub struct Species {
     pub pattern: Pattern,
     pub fat: f32,
     pub tall: f32,
+    /// What it becomes at tier 3.
+    pub form: Form,
 }
 
 pub const CLAUDE: Species = Species {
@@ -89,6 +92,7 @@ pub const CLAUDE: Species = Species {
     pattern: Pattern::Bands,
     fat: 1.0,
     tall: 0.9,
+    form: Form::Lionfish,
 };
 pub const CODEX: Species = Species {
     body: [44.0, 102.0, 232.0],
@@ -97,6 +101,7 @@ pub const CODEX: Species = Species {
     pattern: Pattern::Mask,
     fat: 1.05,
     tall: 0.8,
+    form: Form::Manta,
 };
 pub const OPENCODE: Species = Species {
     body: [242.0, 196.0, 50.0],
@@ -105,6 +110,7 @@ pub const OPENCODE: Species = Species {
     pattern: Pattern::Lines,
     fat: 1.3,
     tall: 1.7,
+    form: Form::Seahorse,
 };
 pub const GEMINI: Species = Species {
     body: [150.0, 98.0, 242.0],
@@ -113,6 +119,7 @@ pub const GEMINI: Species = Species {
     pattern: Pattern::Spots,
     fat: 0.88,
     tall: 0.7,
+    form: Form::Cuttlefish,
 };
 /// Every other harness, and an agent that never said which it is.
 pub const OTHER: Species = Species {
@@ -122,6 +129,7 @@ pub const OTHER: Species = Species {
     pattern: Pattern::Plain,
     fat: 0.95,
     tall: 0.8,
+    form: Form::Octopus,
 };
 
 /// The species for an agent's declared kind slug (`claude`, `claude-code`,
@@ -241,10 +249,12 @@ pub fn target(
     surface_y: f32,
 ) -> Pt {
     if mood == Mood::Waiting {
-        let off = slot as f32 - (slots as f32 - 1.0) / 2.0;
+        // Across the whole reef; tags closer than 96 pt stagger in two rows.
+        let gap = z.w * 0.84 / slots as f32;
+        let row = if gap < 96.0 * s { slot % 2 } else { 0 };
         return [
-            z.cx + 26.0 * s + off * (64.0 * s).min(z.w * 0.7 / slots as f32),
-            surface_y + 30.0 * s + (t * 1.6 + seed).sin() * 3.0 * s,
+            z.l + z.w * 0.08 + gap * (slot as f32 + 0.5),
+            surface_y + (30.0 + row as f32 * 50.0) * s + (t * 1.6 + seed).sin() * 3.0 * s,
         ];
     }
     // Done and idle spread evenly across the reef's width, above the coral.
@@ -293,13 +303,27 @@ pub struct Fish {
     pub slots: usize,
     /// The crowd scale of its reef ([`fish_scale`]).
     pub k: f32,
+    /// Its [`crate::creature`] tier, the burst left of its last level-up
+    /// (1 to 0), and the time to its next trail mote.
+    pub tier: usize,
+    pub level_up: f32,
+    pub mt: f32,
 }
 
 impl Fish {
     /// Its drawn length at scene scale `s`.
     pub fn len(&self, s: f32) -> f32 {
-        self.lb * s * self.k
+        self.lb * s * self.k * TIERS[self.tier].size
     }
+}
+
+/// A glowing mote a legendary creature leaves behind, rising as it fades.
+#[derive(Debug, Clone)]
+pub struct Spark {
+    pub x: f32,
+    pub y: f32,
+    pub a: f32,
+    pub c: Rgb,
 }
 
 #[derive(Debug, Clone)]
@@ -375,6 +399,7 @@ pub struct Reef {
     pub snow: Vec<Snow>,
     pub amb: Vec<Mote>,
     pub jellies: Vec<Jelly>,
+    pub sparks: Vec<Spark>,
     /// Scene seconds.
     pub t: f32,
     /// Night, 0 to 1, easing toward `nt_target`.
@@ -412,6 +437,7 @@ impl Default for Reef {
             snow: Vec::new(),
             amb: Vec::new(),
             jellies: Vec::new(),
+            sparks: Vec::new(),
             t: 0.0,
             nt: 0.0,
             nt_target: 0.0,

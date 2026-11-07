@@ -5,6 +5,7 @@
 
 mod activity;
 mod alerts;
+mod creature;
 mod desk;
 mod diag;
 mod dock;

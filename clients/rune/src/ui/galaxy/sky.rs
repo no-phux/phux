@@ -2,14 +2,32 @@
 //! the bezel with its ticks, arcs, radar sweep and ping, the wireframe core
 //! and planets, the agents' state nodes, beams with pulses flowing outward,
 //! the kin beams and the reticle on the picked agent. Every motion is a pure
-//! function of the clock, so a stopped clock is a clean still frame.
+//! function of the clock, so a stopped clock is a clean still frame. An
+//! agent's tier ([`crate::creature`]) sizes its node and adds a halo ring,
+//! moons, a corona and a trail as it grows.
 
 use std::f32::consts::{PI, TAU};
 
 use rune::{Color, LineCap, Path, Shape};
 
 use crate::activity::Mark;
+use crate::creature::TIERS;
 use crate::galaxy::{self, Camera, Plan, Pt, System};
+
+const GOLD: Color = Color {
+    r: 1.0,
+    g: 0.76,
+    b: 0.26,
+    a: 1.0,
+};
+
+/// What an agent has grown into: its tier, its harness's colour, and how
+/// much of its last level-up's burst is left (1 to 0).
+pub(super) struct Grown {
+    pub tier: usize,
+    pub harness: Color,
+    pub level_up: f32,
+}
 
 /// What a node shows for its mark.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -274,40 +292,92 @@ impl Sky {
         self
     }
 
-    /// An agent: halo, orb and the mark its state wears.
+    /// An agent: halo, orb and the mark its state wears, all sized by its
+    /// tier. A fry is faint without a halo; an elder wears a thin ring, an
+    /// exotic a moon and its harness's glow too, a legendary two moons and a
+    /// pulsing corona.
     pub(super) fn node(
         mut self,
         at: Pt,
-        state: State,
-        color: Color,
-        needs: Color,
+        (state, color, needs): (State, Color, Color),
         time: f32,
+        g: &Grown,
     ) -> Sky {
         let idle = state == State::Idle;
-        self = self.halo(at, 24.0, color, if idle { 0.1 } else { 0.22 });
+        let k = TIERS[g.tier].size;
+        let fade = if g.tier == 0 { 0.6 } else { 1.0 };
+        let r = 7.0 * k;
+        if g.tier >= 3 {
+            self = self.halo(at, 4.5 * r, g.harness, 0.3);
+        }
+        if g.tier > 0 {
+            self = self.halo(at, 24.0 * k, color, if idle { 0.1 } else { 0.22 });
+        }
+        let ink = color.alpha(fade);
         self = match state {
             State::Working => {
                 let a = time / 1.6 * TAU;
-                let spinner = self.arc(at, 12.0, a, a + 100f32.to_radians(), 12);
-                self.stroke(spinner, false, 2.0, color)
+                let spinner = self.arc(at, 12.0 * k, a, a + 100f32.to_radians(), 12);
+                self.stroke(spinner, false, 2.0, ink)
             }
             State::Needs => {
                 let breath = 0.75 + 0.25 * (time * TAU).sin();
                 let swell = (time % 1.5) / 1.5;
-                self.ring(at, 14.0, 2.0, needs.alpha(breath)).ring(
-                    at,
-                    30.0 + 26.0 * swell,
-                    2.0,
-                    needs.alpha(0.6 * (1.0 - swell)),
-                )
+                self.ring(at, 14.0 * k, 2.0, needs.alpha(breath * fade))
+                    .ring(
+                        at,
+                        (30.0 + 26.0 * swell) * k,
+                        2.0,
+                        needs.alpha(0.6 * (1.0 - swell) * fade),
+                    )
             }
-            State::Ok => self.ring(at, 12.0, 1.0, color),
-            State::Failed => self.dashed(at, 12.0, (8, 0.5), 1.5, color),
+            State::Ok => self.ring(at, 12.0 * k, 1.0, ink),
+            State::Failed => self.dashed(at, 12.0 * k, (8, 0.5), 1.5, ink),
             State::Idle => self,
         };
-        let orb = if idle { color.alpha(0.6) } else { color };
-        self.disc(at, 7.0, orb)
-            .ring(at, 7.0, 1.0, Color::WHITE.alpha(0.35))
+        if g.tier >= 2 {
+            self = self.ring(at, 1.6 * r, 1.0, color.alpha(0.5));
+        }
+        for m in 0..g.tier.saturating_sub(2) {
+            let a = time / 6.0 * TAU + m as f32 * PI;
+            let moon = [at[0] + 2.2 * r * a.cos(), at[1] + 2.2 * r * a.sin()];
+            self = self.disc(moon, 0.3 * r, g.harness);
+        }
+        if g.tier == 4 {
+            let reach = r * (0.35 + 0.25 * (time * 3.0).sin());
+            for i in 0..8 {
+                let a = i as f32 * TAU / 8.0 + time * 0.2;
+                let (c, s) = (a.cos(), a.sin());
+                let from = [at[0] + 1.25 * r * c, at[1] + 1.25 * r * s];
+                let to = [from[0] + reach * c, from[1] + reach * s];
+                self = self.line(from, to, 1.5, g.harness.alpha(0.7));
+            }
+        }
+        if g.level_up > 0.0 {
+            let lu = g.level_up;
+            self = self.halo(at, 5.6 * r, GOLD, 0.5 * lu).ring(
+                at,
+                4.0 * r * (0.5 + (1.0 - lu) * 1.8),
+                3.0,
+                GOLD.alpha(lu),
+            );
+        }
+        let orb = if idle { color.alpha(0.6 * fade) } else { ink };
+        self.disc(at, r, orb)
+            .ring(at, r, 1.0, Color::WHITE.alpha(0.35 * fade))
+    }
+
+    /// A legendary's trail: motes fading behind it along its own orbit
+    /// round `centre`.
+    pub(super) fn trail(mut self, centre: Pt, at: Pt, color: Color) -> Sky {
+        let (dx, dy) = (at[0] - centre[0], at[1] - centre[1]);
+        for i in 1..=12 {
+            let (s, c) = (-0.035 * i as f32).sin_cos();
+            let mote = [centre[0] + dx * c - dy * s, centre[1] + dx * s + dy * c];
+            let left = 1.0 - i as f32 / 13.0;
+            self = self.disc(mote, 1.0 + 2.5 * left, color.alpha(0.6 * left));
+        }
+        self
     }
 
     /// A beam from `a` out to `b`: a faint line with three bright dashes
