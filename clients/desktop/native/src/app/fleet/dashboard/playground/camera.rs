@@ -1,19 +1,21 @@
 //! Playground map selection and camera state.
 use super::plan::Pt;
 
-/// The maps: skins over one geometry, the same two mobile ships.
+/// The maps: the office and matrix skins over the campus, and the galaxy,
+/// the fleet as a command center (mobile's galaxy view).
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(crate) enum Map {
     Office,
     Matrix,
+    Galaxy,
 }
 
 impl Map {
     pub fn from_id(id: &str) -> Map {
-        if id == "matrix" {
-            Map::Matrix
-        } else {
-            Map::Office
+        match id {
+            "matrix" => Map::Matrix,
+            "galaxy" => Map::Galaxy,
+            _ => Map::Office,
         }
     }
 
@@ -21,13 +23,15 @@ impl Map {
         match self {
             Map::Office => "office",
             Map::Matrix => "matrix",
+            Map::Galaxy => "galaxy",
         }
     }
 
     pub fn next(self) -> Map {
         match self {
             Map::Office => Map::Matrix,
-            Map::Matrix => Map::Office,
+            Map::Matrix => Map::Galaxy,
+            Map::Galaxy => Map::Office,
         }
     }
 
@@ -35,10 +39,11 @@ impl Map {
         match self {
             Map::Office => "Office map",
             Map::Matrix => "Matrix map",
+            Map::Galaxy => "Galaxy map",
         }
     }
 }
-const SCALES: (f32, f32) = (0.45, 2.);
+pub(super) const SCALES: (f32, f32) = (0.3, 2.);
 
 /// Where the person is looking: an offset in scene points and a scale.
 #[derive(Clone, Copy, Debug)]
@@ -67,6 +72,12 @@ impl Camera {
             y: height / 2. - target.y * self.scale,
         };
         self.placed = true;
+    }
+
+    /// Centre `target` at `scale`.
+    pub(super) fn look_at(&mut self, target: Pt, scale: f32, width: f32, height: f32) {
+        self.scale = scale;
+        self.look(target, width, height);
     }
 
     /// Zoom by `delta` (0.1 is ten percent) about the scene's centre.
@@ -98,6 +109,10 @@ pub(crate) struct View {
     pub camera: Camera,
     /// The last pointer position while the left button pans.
     pub drag: Option<Pt>,
+    /// The map the camera was placed for; another map places it afresh.
+    pub map: Option<Map>,
+    /// The waiting agent the galaxy's readout flew to last, so the next click moves on.
+    pub last_waiting: Option<String>,
     /// Where the camera first landed, which a fixture film moves from.
     #[cfg(feature = "ui-fixtures")]
     pub film_base: Option<Camera>,

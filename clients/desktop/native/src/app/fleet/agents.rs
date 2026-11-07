@@ -1,10 +1,12 @@
 //! Agent inventory and exact, revalidated navigation. No terminal views while browsing.
 
+use std::collections::HashMap;
+
 use gpui::{Context, Window};
 use phux_client_runtime::control::{Event, Status};
 use phux_protocol::ResourceId;
 
-use super::{Destination, available};
+use super::{Destination, attr, available};
 use crate::app::desk::Desk;
 use crate::app::notifications::Kind;
 use crate::connection::{AgentInfo, Connection};
@@ -17,6 +19,8 @@ pub(crate) struct Agent {
     pub boot: Option<String>,
     pub info: AgentInfo,
     pub title: String,
+    /// The session's project name, which relates agents across sessions and machines.
+    pub project: Option<String>,
 }
 
 impl Agent {
@@ -47,6 +51,30 @@ impl Agent {
     }
 }
 
+/// The project a session belongs to: a project a person linked the session
+/// into wins over the repository it was created in, which wins over a
+/// recipe's label; groups go by name, so a link named for a repository joins
+/// that repository's sessions.
+pub(super) fn session_project(
+    connection: &Connection,
+    session: u32,
+    attrs: Option<&[(String, String)]>,
+) -> Option<(String, String)> {
+    let label = |labels: &HashMap<u32, String>| {
+        labels
+            .get(&session)
+            .map(|label| (format!("label:{label}"), label.clone()))
+    };
+    label(&connection.links)
+        .or_else(|| {
+            let attrs = attrs?;
+            let id = attr(attrs, "project.id")?;
+            let name = attr(attrs, "project.name").unwrap_or(id);
+            Some((id.to_owned(), name.to_owned()))
+        })
+        .or_else(|| label(&connection.projects))
+}
+
 fn agents_on(connection: &Connection, host: Option<String>) -> Vec<Agent> {
     if !available(connection) {
         return Vec::new();
@@ -64,6 +92,11 @@ fn agents_on(connection: &Connection, host: Option<String>) -> Vec<Agent> {
                 .sessions
                 .iter()
                 .find(|session| session.id == pane.session_id)?;
+            let attrs = session.key.and_then(|key| {
+                connection.with_organization(|replica| {
+                    replica.session(&key).map(|record| record.attrs.clone())
+                })
+            });
             Some(Agent {
                 destination: Destination {
                     host: host.clone(),
@@ -75,6 +108,8 @@ fn agents_on(connection: &Connection, host: Option<String>) -> Vec<Agent> {
                 boot: boot.clone(),
                 info: info.clone(),
                 title: pane.title.clone().unwrap_or_default(),
+                project: session_project(connection, session.id, attrs.as_deref())
+                    .map(|(_, name)| name),
             })
         })
         .collect()

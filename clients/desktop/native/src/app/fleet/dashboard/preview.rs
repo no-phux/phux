@@ -76,6 +76,8 @@ fn inventory() -> Vec<Agent> {
             changed_at_ms: 1,
         },
         title: title.into(),
+        // The session's group: "phux / Desktop" belongs to phux.
+        project: Some(session.split(" / ").next().unwrap_or(session).to_owned()),
     })
     .collect()
 }
@@ -118,6 +120,24 @@ pub(crate) fn capture(
                 false,
                 true,
                 "matrix",
+            ),
+            (
+                "fleet-playground-galaxy",
+                1280.,
+                900.,
+                false,
+                false,
+                true,
+                "galaxy",
+            ),
+            (
+                "fleet-playground-galaxy-light",
+                1280.,
+                900.,
+                true,
+                false,
+                true,
+                "galaxy",
             ),
             (
                 "fleet-playground-mint",
