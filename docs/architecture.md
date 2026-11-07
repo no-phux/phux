@@ -265,8 +265,8 @@ and must not replace committed history with an unsolicited full cut.
 A document-only or agent-only session needs no Terminal codec; a mixed
 session refuses a missing Terminal codec before changing subscriptions or
 geometry. Viewport votes, terminal roles, colors and grid resizing remain
-Terminal-specific. Desktop and Rune render read-only document panes without
-Terminal views; see [resource kinds beyond terminals](./resource-kinds.md).
+Terminal-specific. Desktop and Rune render document panes without Terminal
+views; see [resource kinds beyond terminals](./resource-kinds.md#authority).
 
 The runtime root exports the server interface. Its `server` module assembles
 startup using `startup`, `posture`, `services`, and `listeners`; configuration

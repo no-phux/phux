@@ -170,6 +170,7 @@ pub struct Connection {
     /// Whole read-only documents, fenced by their organization identity.
     pub(crate) documents: documents::Documents,
     document_subscriptions: std::cell::RefCell<HashMap<ResourceId, subscriptions::Subscription>>,
+    document_input: documents::Input,
     /// Project label from each session's typed organization attributes.
     pub projects: HashMap<u32, String>,
     /// The project a person linked each session into, which outranks its

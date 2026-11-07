@@ -131,7 +131,12 @@ impl Desk {
     fn apply_document_subscription(&mut self, client: &Client, event: Event) -> bool {
         match event {
             Event::CommandResult { request_id, result } => {
-                self.document_subscription_result(client, request_id, result)
+                self.document_input_result(request_id, &result)
+                    || self.document_subscription_result(client, request_id, result)
+            }
+            Event::TopologySnapshot { snapshot, .. } => {
+                self.resources.input.note_snapshot(&snapshot);
+                true
             }
             Event::TerminalDetached {
                 terminal_id,

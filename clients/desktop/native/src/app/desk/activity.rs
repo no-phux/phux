@@ -91,6 +91,7 @@ impl Desk {
         self.note_agents();
         self.note_approvals(cx);
         self.note_approval_outcomes();
+        self.note_document_refusals();
         self.flush_system(cx);
         for answer in answers {
             self.picker = paths::accept_path_answer(self.picker.take(), &answer);

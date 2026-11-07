@@ -311,6 +311,15 @@ judges the hub's link alone.
 Observing a document still follows its parent pane's grants; separate
 observe grants for windows and displays are `phux-waac5.9`.
 
+The desktop and Rune panes send it too. A surface whose document declares a
+class takes a click at the frame pixel under the pointer (contain-fit, so a
+press in the letterbox bars sends nothing), the wheel as `Scroll` in frame
+pixels (positive `dy` scrolls the page down), and, while focused, printable
+keys as `Type` and Enter, Tab, Backspace, Escape and the arrows as `Key`;
+Cmd and Ctrl chords stay the app's. A document with no class, or one whose
+send was refused for a missing grant or producer, is a view-only mirror: it
+captures neither pointer nor keys, and the refusal is said once.
+
 ## Order
 
 | Step | Beads |

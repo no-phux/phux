@@ -38,6 +38,7 @@
 
 pub mod agent_record;
 pub mod ask;
+pub mod document_input;
 pub mod engine;
 #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
 pub mod grid;

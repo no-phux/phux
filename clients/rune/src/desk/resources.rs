@@ -12,6 +12,7 @@ use phux_protocol::wire::frame::ResourceRecord;
 
 use super::Desk;
 
+mod input;
 mod selection;
 mod startup;
 mod subscriptions;
@@ -37,6 +38,8 @@ pub struct Resources {
     // RESOURCE_CLOSED can precede the organization journal. Fence that
     // execution until inventory removes or replaces it, never the stable key.
     closed: HashMap<ResourceId, ResourceRecord>,
+    /// Which documents take pane input, and the sends awaiting a reply.
+    pub(super) input: phux_client_core::document_input::DocumentInputs,
 }
 
 struct PendingDocument {
@@ -267,6 +270,7 @@ impl Desk {
         self.resources.entries.clear();
         self.resources.pending.clear();
         self.resources.closed.clear();
+        self.resources.input.clear();
         // starting holds command correlations, not live resource handles;
         // reconnect receipts must settle them (including producer failures).
         self.resources.producers.clear();

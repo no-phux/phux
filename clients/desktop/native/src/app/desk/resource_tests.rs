@@ -360,3 +360,109 @@ fn new_window_transfer_keeps_the_source_until_the_exact_document_is_ready(cx: &m
         assert!(desk.focused_view().is_none());
     });
 }
+
+/// Every `SEND_DOCUMENT_INPUT` the window queued since the last call.
+fn document_inputs(desk: &Desk) -> Vec<(u32, phux_protocol::wire::frame::DocumentInput)> {
+    use phux_protocol::wire::frame::{Command, FrameKind};
+    desk.client()
+        .unwrap()
+        .take_outbound()
+        .iter()
+        .filter_map(|bytes| match FrameKind::decode(bytes).unwrap().0 {
+            FrameKind::Command {
+                request_id,
+                command: Command::SendDocumentInput { intent, .. },
+            } => Some((request_id, intent)),
+            _ => None,
+        })
+        .collect()
+}
+
+#[gpui::test]
+fn a_click_and_keys_on_a_controlled_surface_reach_its_producer_until_refused(
+    cx: &mut TestAppContext,
+) {
+    use phux_protocol::wire::frame::{
+        CommandResult, ControlClass, DocumentInput, ErrorCode, FrameKind,
+    };
+    let _dial = crate::connection::DeterministicDial::arm();
+    let (handle, desk) = fixture(cx);
+    let cx = &mut VisualTestContext::from_window(handle, cx);
+    let surface = ResourceId::local(9);
+    desk.update(cx, |desk, cx| {
+        let link = desk.link.as_mut().unwrap();
+        documents::publish(
+            &mut link.connection,
+            9,
+            BootstrapStreamProfile::PixelSurfacePngV1,
+            &documents::png(),
+        );
+        assert!(
+            link.connection.document_input_frame(&surface).is_none(),
+            "no control class: view only"
+        );
+        documents::declare_control(&mut link.connection, 9, Some(ControlClass::Page));
+        assert_eq!(link.connection.document_input_frame(&surface), Some([3, 2]));
+        desk.reveal_terminal(&surface);
+        cx.notify();
+    });
+    cx.run_until_parked();
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    assert!(cx.debug_bounds("interactive-document").is_some());
+    let area = cx
+        .debug_bounds("document-input")
+        .expect("the image takes input");
+    // The 3x2 frame is drawn contain-fit; its centre is pixel (1, 1).
+    cx.simulate_click(area.center(), gpui::Modifiers::none());
+    cx.simulate_keystrokes("h i enter cmd-shift-p");
+    let sent = desk.read_with(cx, |desk, _| document_inputs(desk));
+    let intents: Vec<_> = sent.iter().map(|(_, intent)| intent.clone()).collect();
+    assert_eq!(
+        intents,
+        [
+            DocumentInput::Click { x: 1, y: 1 },
+            DocumentInput::Type { text: "h".into() },
+            DocumentInput::Type { text: "i".into() },
+            DocumentInput::Key {
+                key: phux_protocol::wire::frame::DocumentKey::Enter
+            },
+        ],
+        "a Cmd chord stays the app's"
+    );
+    desk.update(cx, |desk, cx| {
+        let link = desk.link.as_mut().unwrap();
+        for (request_id, _) in &sent {
+            let result = CommandResult::Error {
+                code: ErrorCode::PermissionDenied,
+                message: "input to this surface was not authorized".into(),
+            };
+            link.connection
+                .client
+                .feed(FrameKind::CommandResult {
+                    request_id: *request_id,
+                    result,
+                })
+                .unwrap();
+        }
+        link.connection.drain();
+        desk.note_document_refusals();
+        let peek = desk.feed.peek().expect("the refusal peeks");
+        assert_eq!(peek.title, "Input not sent");
+        assert!(peek.body.as_deref().unwrap().contains("no control grant"));
+        let link = desk.link.as_mut().unwrap();
+        assert!(
+            link.connection.take_document_refusals().is_empty(),
+            "four refused sends are said once"
+        );
+        cx.notify();
+    });
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    assert!(cx.debug_bounds("read-only-document").is_some());
+    assert!(cx.debug_bounds("document-input").is_none());
+    cx.simulate_click(area.center(), gpui::Modifiers::none());
+    cx.simulate_keystrokes("x");
+    assert!(
+        desk.read_with(cx, |desk, _| document_inputs(desk))
+            .is_empty()
+    );
+}

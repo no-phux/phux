@@ -14,12 +14,21 @@ pub fn view(desk: &Desk, id: &ResourceId, ink: &Ink) -> El {
     let document = &desk.resources.entries[id];
     let label = document.record.name.as_deref().unwrap_or("Document");
     let detail = document.detail.as_deref().map(|d| format!("{d} · "));
-    let content = body(
-        &document.body,
-        desk.pane_area(id).unwrap_or([0.0, 0.0]),
-        ink,
-        id,
-    );
+    let area = desk.pane_area(id).unwrap_or([0.0, 0.0]);
+    let content = body(&document.body, area, ink, id);
+    let interactive = desk.document_input_frame(id).is_some();
+    let state = match desk.document_input_refused(id) {
+        Some(reason) => format!("View only: {reason}"),
+        None if interactive => "Live mirror · click and type".to_owned(),
+        None => "Read-only mirror".to_owned(),
+    };
+    let surface = el()
+        .grow(1.0)
+        .w_full()
+        .min_h(0.0)
+        .min_w(0.0)
+        .on_layout(move |d: &mut Desk, rect| d.laid_out(measured.clone(), rect))
+        .child(content);
     col()
         .key(format!("document-{id}"))
         .w_full()
@@ -38,21 +47,35 @@ pub fn view(desk: &Desk, id: &ResourceId, ink: &Ink) -> El {
         .on_press(move |d: &mut Desk| d.focus_pane(&focused))
         .child(
             text(format!(
-                "{label} · {}{id} · Read-only mirror",
+                "{label} · {}{id} · {state}",
                 detail.unwrap_or_default()
             ))
             .wrap()
             .font(CAPTION)
             .color(ink.dim),
         )
-        .child(
-            el().grow(1.0)
-                .w_full()
-                .min_h(0.0)
-                .min_w(0.0)
-                .on_layout(move |d: &mut Desk, rect| d.laid_out(measured.clone(), rect))
-                .child(content),
-        )
+        .child(if interactive {
+            takes_input(surface, id, area)
+        } else {
+            surface
+        })
+}
+
+/// A surface whose producer takes input: a press clicks the frame pixel
+/// under it, and the wheel scrolls the page. Drag points and sizes are the
+/// element's own, where the frame is drawn contain-fit.
+fn takes_input(surface: El, id: &ResourceId, area: [f32; 2]) -> El {
+    let (pressed, wheeled) = (id.clone(), id.clone());
+    surface
+        .cursor(rune::Cursor::Pointer)
+        .on_drag(move |d: &mut Desk, drag, _| {
+            if drag.phase == rune::Phase::Down {
+                d.document_press(&pressed, [drag.x, drag.y, drag.w, drag.h]);
+            }
+        })
+        .on_wheel(move |d: &mut Desk, event, _| {
+            d.document_wheel(&wheeled, area, [event.dx, event.dy])
+        })
 }
 
 fn message(words: impl Into<String>, ink: &Ink) -> El {

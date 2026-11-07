@@ -1,7 +1,9 @@
 //! Native read-only document decoding. Content never confers terminal authority.
 use super::*;
+use phux_client_core::document_input::{DocumentInputs, Refusal};
 use phux_client_core::session::DocumentPublication;
 use phux_protocol::wire::frame::ResourceRecord;
+use phux_protocol::wire::frame::{CommandResult, DocumentInput};
 
 mod store;
 pub(crate) use store::Documents;
@@ -11,6 +13,14 @@ pub(crate) struct Document {
     /// A typed document's content type, which picks how it is drawn.
     content_type: Option<String>,
     pub content: Content,
+}
+
+/// Which documents take pane input, the sends awaiting a reply, and the
+/// refusals not yet said.
+#[derive(Default)]
+pub(crate) struct Input {
+    pub(super) inputs: DocumentInputs,
+    refusals: Vec<Refusal>,
 }
 
 pub(crate) enum Content {
@@ -92,6 +102,54 @@ impl Connection {
                     })
             })
         });
+    }
+
+    /// The frame size, in pixels, of a document pane that takes pointer and
+    /// keys: an image whose producer declared a control class and has not
+    /// refused this client. `None` keeps the pane view-only.
+    pub(crate) fn document_input_frame(&self, id: &ResourceId) -> Option<[u32; 2]> {
+        if !self.document_input.inputs.accepts(id) {
+            return None;
+        }
+        let Some(Content::Image(image)) = self.document_content(id) else {
+            return None;
+        };
+        let size = image.size(0);
+        Some([size.width.0, size.height.0].map(|side| u32::try_from(side).unwrap_or(0)))
+    }
+
+    /// Why a document will not take input from this window, once it said.
+    pub(crate) fn document_input_refused(&self, id: &ResourceId) -> Option<&'static str> {
+        self.document_input.inputs.refused(id)
+    }
+
+    /// Send `intent` to the producer of `id`, when its pane takes input
+    /// and the connection is up. The reply settles in [`Self::drain`].
+    pub(crate) fn send_document_input(&mut self, id: &ResourceId, intent: DocumentInput) -> bool {
+        if self.closed || self.status != Status::Attached || self.document_input_frame(id).is_none()
+        {
+            return false;
+        }
+        let command = DocumentInputs::command(id, intent);
+        let request = self
+            .client
+            .with_control(|control| control.send_command(command));
+        self.document_input.inputs.sent(request, id.clone());
+        self.client.wake();
+        true
+    }
+
+    pub(super) fn answer_document_input(&mut self, request_id: u32, result: &CommandResult) {
+        match self.document_input.inputs.answer(request_id, result) {
+            Ok(Some(refusal)) => self.document_input.refusals.push(refusal),
+            Ok(None) => {}
+            Err(error) => log::warn!("document input not delivered: {error}"),
+        }
+    }
+
+    /// Documents that refused input since the last call, each once.
+    pub(crate) fn take_document_refusals(&mut self) -> Vec<Refusal> {
+        std::mem::take(&mut self.document_input.refusals)
     }
 
     pub(crate) fn document_content(&self, id: &ResourceId) -> Option<&Content> {
