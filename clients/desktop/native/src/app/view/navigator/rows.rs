@@ -261,6 +261,7 @@ fn resource_kind_label(kind: ResourceKind) -> &'static str {
         ResourceKind::Terminal => "Terminal",
         ResourceKind::PixelSurface => "Surface",
         ResourceKind::AccessibilityTree => "Accessibility tree",
+        ResourceKind::Document => "Document",
         _ => "Item",
     }
 }

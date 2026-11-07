@@ -28,3 +28,4 @@ mod resource_frames;
 mod retain_on_exit;
 mod server_lifecycle;
 mod spawn_terminal;
+mod typed_document;

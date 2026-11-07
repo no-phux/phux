@@ -71,7 +71,8 @@ pub(super) fn agent_records(
     }
 }
 
-/// A whole document (an `AccessibilityTree` or `PixelSurface`) as published.
+/// A whole document (an `AccessibilityTree`, `PixelSurface` or typed
+/// `Document`) as published.
 pub(super) fn document(
     publication: &phux_client_runtime::control::DocumentPublication,
 ) -> WireEvent {
@@ -80,5 +81,6 @@ pub(super) fn document(
         kind: crate::projection::topology::kind_word(publication.kind),
         seq: publication.seq,
         bytes: publication.bytes.clone(),
+        content_type: publication.content_type.clone(),
     }
 }

@@ -265,16 +265,18 @@ pub(crate) const fn app_for(kind: ResourceKind) -> &'static dyn ResourceApp {
         ResourceKind::AgentSession => &agent_session::AgentSessionApp,
         ResourceKind::AccessibilityTree => &document::TREE_APP,
         ResourceKind::PixelSurface => &document::SURFACE_APP,
+        ResourceKind::Document => &document::DOCUMENT_APP,
     }
 }
 
 /// Every app this server hosts, for the questions the host asks all of
 /// them. `every_app_is_listed` holds it to [`app_for`].
-static APPS: [&dyn ResourceApp; 4] = [
+static APPS: [&dyn ResourceApp; 5] = [
     app_for(ResourceKind::Terminal),
     app_for(ResourceKind::AgentSession),
     app_for(ResourceKind::AccessibilityTree),
     app_for(ResourceKind::PixelSurface),
+    app_for(ResourceKind::Document),
 ];
 
 /// The build fails if the catalog lists a kind this server does not serve,

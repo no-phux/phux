@@ -40,11 +40,12 @@ impl Tx<'_> {
             ResourceKind::AgentSession
                 | ResourceKind::AccessibilityTree
                 | ResourceKind::PixelSurface
+                | ResourceKind::Document
         ) && parent_kind != Some(ResourceKind::Terminal)
         {
             return Err(Refusal::invalid(
                 "parent",
-                "an agent conversation, an accessibility tree or a pixel surface binds to a terminal",
+                "an agent conversation or a document resource binds to a terminal",
             ));
         }
         Ok(())

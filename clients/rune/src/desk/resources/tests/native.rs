@@ -12,6 +12,7 @@ fn bootstrap_before_identity_is_adopted_after_organization_seed() {
         kind: ResourceKind::AccessibilityTree,
         seq: 7,
         bytes: b"{\"early\":true}".to_vec(),
+        content_type: None,
     });
     assert!(!rt.state.publish_document(&publication));
     assert_eq!(rt.state.resources.pending.len(), 1);
@@ -23,6 +24,7 @@ fn bootstrap_before_identity_is_adopted_after_organization_seed() {
         kind: ResourceKind::AccessibilityTree,
         seq: 2,
         bytes: b"{}".to_vec(),
+        content_type: None,
     });
     rt.state.publish_document(&unknown);
     rt.state.refresh_resources(&client);
@@ -257,6 +259,7 @@ fn native_document_labels_distinguish_pending_empty_invalid_and_unavailable() {
                 kind: ResourceKind::AccessibilityTree,
                 seq,
                 bytes: bytes.to_vec(),
+                content_type: None,
             }));
         });
         rt.frame(1.0);

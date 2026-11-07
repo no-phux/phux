@@ -142,6 +142,11 @@ pub enum BootstrapCodec {
     /// every live message replaces it. Gated on
     /// `ServerFeatureExt::PixelSurface`.
     PixelSurfacePngV1,
+    /// A content-typed document v1: the `Document` codec. The bootstrap
+    /// payload is the resource's content type behind a one-byte length,
+    /// then the newest document; every live message is a whole document.
+    /// Gated on `ServerFeatureExt::TypedDocument`.
+    DocumentTypedV1,
 }
 
 impl BootstrapCodec {
@@ -157,6 +162,8 @@ impl BootstrapCodec {
     pub const ACCESSIBILITY_TREE_JSON_V1_TAG: u8 = 4;
     /// Wire tag for pixel-surface PNG v1.
     pub const PIXEL_SURFACE_PNG_V1_TAG: u8 = 5;
+    /// Wire tag for typed document v1.
+    pub const DOCUMENT_TYPED_V1_TAG: u8 = 6;
 }
 
 /// Additive set of exact native engine codecs.
@@ -452,6 +459,10 @@ pub enum BootstrapStreamProfile {
     /// The newest whole pixel surface as one PNG image, followed by raw
     /// live replacements, each a whole image.
     PixelSurfacePngV1,
+    /// The resource's content type and newest document in one bootstrap
+    /// ([`crate::wire::frame::typed_document`]), followed by raw live
+    /// replacements, each a whole document of that type.
+    DocumentTypedV1,
 }
 
 /// Select one explicit profile and the negotiated payload bounds.

@@ -394,6 +394,7 @@ fn png_uses_real_decoder_and_reports_truncated_png() {
         kind: ResourceKind::PixelSurface,
         seq: 0,
         bytes: PNG.to_vec(),
+        content_type: None,
     };
     assert!(d.publish(&publication, Some(&cache), &mut decodes));
     let Body::Surface(image) = &d.body else {

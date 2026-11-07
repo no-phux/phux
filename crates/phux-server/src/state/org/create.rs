@@ -157,9 +157,10 @@ impl ServerState {
         Ok(id)
     }
 
-    /// Create a document resource (an accessibility tree, a pixel surface)
-    /// under `parent` (a Terminal), in the parent's session, and record it
-    /// running. `launch` names the kind and what its producer observes.
+    /// Create a document resource (an accessibility tree, a pixel surface, a
+    /// typed document) under `parent` (a Terminal), in the parent's session,
+    /// and record it running. `launch` names the kind and what its producer
+    /// observes.
     ///
     /// # Errors
     ///
@@ -168,6 +169,21 @@ impl ServerState {
         &mut self,
         parent: ResourceId,
         launch: LaunchSpec,
+        actor: &Actor,
+    ) -> Result<ResourceId, Refusal> {
+        self.create_named_document(parent, launch, None, actor)
+    }
+
+    /// [`Self::create_document`], labelled `name`.
+    ///
+    /// # Errors
+    ///
+    /// The [`Refusal`]; nothing was created.
+    pub fn create_named_document(
+        &mut self,
+        parent: ResourceId,
+        launch: LaunchSpec,
+        name: Option<String>,
         actor: &Actor,
     ) -> Result<ResourceId, Refusal> {
         let parent_key = self
@@ -187,7 +203,7 @@ impl ServerState {
                 session: Some(session),
                 resource: NewResource {
                     kind: launch.kind(),
-                    name: None,
+                    name,
                     launch: Some(launch),
                     on_exit: ExitPolicy::Remove,
                     parent: Some(parent_key),

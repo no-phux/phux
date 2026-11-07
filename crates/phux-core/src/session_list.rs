@@ -114,7 +114,7 @@ pub struct ResourceJson {
     /// Canonical selector (`@N` / `host/@N`).
     pub id: String,
     /// Resource kind: `terminal`, `agent_session`, `accessibility_tree`,
-    /// `pixel_surface`, or `unknown`.
+    /// `pixel_surface`, `document`, or `unknown`.
     pub kind: String,
     /// Canonical selector of the parent, or `null` for a root (emitted, not
     /// omitted).

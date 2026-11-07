@@ -278,6 +278,7 @@ mod path;
 mod payload;
 mod role;
 mod status;
+pub mod typed_document;
 mod whoami;
 
 pub use command::{

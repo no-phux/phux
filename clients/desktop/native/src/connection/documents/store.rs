@@ -124,7 +124,11 @@ impl Documents {
 /// Decode a queued frame whose content still holds the raw PNG.
 fn decoded(mut document: Document) -> Document {
     if let Content::Pending(bytes) = &document.content {
-        document.content = decode(document.record.kind, bytes);
+        document.content = decode(
+            document.record.kind,
+            document.content_type.as_deref(),
+            bytes,
+        );
     }
     document
 }

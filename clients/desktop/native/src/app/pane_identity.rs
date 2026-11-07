@@ -234,6 +234,8 @@ pub enum PaneKind {
     Surface,
     /// Native plain-text inspection of an accessibility JSON document.
     AccessibilityTree,
+    /// A typed document, drawn by its content type.
+    Document,
 }
 
 /// A pane's kind and origin together.
@@ -292,6 +294,7 @@ impl Desk {
         let kind = match document {
             Some(phux_protocol::ResourceKind::PixelSurface) => PaneKind::Surface,
             Some(phux_protocol::ResourceKind::AccessibilityTree) => PaneKind::AccessibilityTree,
+            Some(phux_protocol::ResourceKind::Document) => PaneKind::Document,
             _ if self.conversation_visible(&placement.id) => PaneKind::Conversation,
             _ => PaneKind::Terminal,
         };

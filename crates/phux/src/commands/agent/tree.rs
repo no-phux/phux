@@ -22,6 +22,7 @@ use crate::exit_codes::{EXIT_FAILURE, EXIT_USAGE};
 
 const SCHEMA_VERSION: u8 = 1;
 
+mod doc;
 mod mirror;
 mod page;
 mod page_input;
@@ -29,6 +30,7 @@ mod page_mirror;
 mod surface;
 mod surface_mirror;
 
+pub(crate) use doc::{DocAction, run_doc};
 pub(crate) use page::{PageAction, run_page};
 pub(crate) use surface::SurfaceAction;
 pub(crate) use surface::run_surface;
@@ -194,7 +196,10 @@ pub(super) fn report(json: bool, err: &TreeError) -> ExitCode {
             json_err::codes::NO_SUCH_TARGET,
             "name a tree by its @N id; `open` names the pane the producer runs in",
         ),
-        TreeError::Invalid(_) => (json_err::codes::RECORD_INVALID, "publish one JSON document"),
+        TreeError::Invalid(_) => (
+            json_err::codes::RECORD_INVALID,
+            "publish one document of the resource's kind or content type",
+        ),
         TreeError::NotProducer(_) => (
             json_err::codes::WORKLOAD,
             "publish from the local owner connection",
@@ -251,7 +256,7 @@ fn print_document(
                 outln!("{}", String::from_utf8_lossy(&document.bytes));
             }
         }
-        Kind::Surface => {
+        Kind::Surface | Kind::Document => {
             if !document.bytes.is_empty() {
                 let written = out.map_or_else(
                     || {
@@ -265,7 +270,7 @@ fn print_document(
                         json,
                         &json_err::CliError::new(
                             json_err::codes::USAGE_ERROR,
-                            format!("could not write the image: {err}"),
+                            format!("could not write the document: {err}"),
                             "pass a writable `--out PATH`",
                         ),
                         EXIT_FAILURE,
@@ -282,6 +287,7 @@ fn print_document(
                         "bytes": document.bytes.len(),
                         "width": size.map(|s| s.0),
                         "height": size.map(|s| s.1),
+                        "content_type": document.content_type,
                         "out": out.map(|p| p.display().to_string()),
                     })
                 );
@@ -371,6 +377,8 @@ pub(super) fn run_publish(
         Kind::Surface => png_size(&bytes)
             .map(|_| ())
             .ok_or_else(|| "the document is not a PNG".to_owned()),
+        // The server checks a typed document against its content type.
+        Kind::Document => Ok(()),
     };
     if let Err(message) = shape {
         return json_err::emit(

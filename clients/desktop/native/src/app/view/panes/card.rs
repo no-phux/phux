@@ -160,7 +160,9 @@ pub(super) fn pane_view(
     let body = match identity.kind {
         PaneKind::Conversation => conversation::render(desk, &placement_id, colors, window, cx),
         PaneKind::Terminal => terminal_body(desk, placement, focused, &look, window, cx),
-        PaneKind::Surface | PaneKind::AccessibilityTree => document_body(desk, placement, &look),
+        PaneKind::Surface | PaneKind::AccessibilityTree | PaneKind::Document => {
+            document_body(desk, placement, &look)
+        }
     };
     let tab = desk.active_tab();
     let zoomed = tab.is_some_and(|tab| tab.zoomed_id.is_some());
@@ -321,7 +323,10 @@ fn file_drop_target(
     kind: PaneKind,
     cx: &Context<Desk>,
 ) -> gpui::Stateful<gpui::Div> {
-    if matches!(kind, PaneKind::Surface | PaneKind::AccessibilityTree) {
+    if matches!(
+        kind,
+        PaneKind::Surface | PaneKind::AccessibilityTree | PaneKind::Document
+    ) {
         return card;
     }
     let drag_id = id.to_owned();
