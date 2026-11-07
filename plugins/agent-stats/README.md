@@ -28,7 +28,10 @@ plugins = [
 
 Or install it: `phux plugin install no-phux/phux/plugins/agent-stats`. The
 server reads plugin hooks at start, so it takes effect at its next start or
-upgrade. Set `PHUX_BIN` to run a phux other than the one on `PATH`.
+upgrade. Set `PHUX_BIN` to run a phux other than the one on `PATH`; without
+it, a server whose `PATH` lacks phux (one started by launchd or systemd) falls
+back to `~/.local/bin`, `~/bin`, `/opt/homebrew/bin`, `/usr/local/bin` and
+`/opt/phux/bin`.
 
 ## Contract
 
