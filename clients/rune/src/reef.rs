@@ -1,7 +1,7 @@
 //! The reef: the fleet as an aquarium. Each machine is a reef across an even
 //! share of the width, each agent a fish of its harness's species that acts
 //! out its state: working fish school, one that needs you rises to the
-//! surface, a finished one glides home and an idle one rests in the coral.
+//! surface, a finished one glides home and an idle one rests on the reef.
 //! A port of the reference prototype (`phux-reef.html`): its constants, rng
 //! and draw order. Pure, in world points (the view's size), so the painter,
 //! the camera and the tests read one source.
@@ -16,7 +16,7 @@ mod colors;
 mod coral;
 mod sim;
 pub use colors::Pal;
-pub use coral::{TILE, Zone, caustic_tile, zone};
+pub use coral::{TILE, Zone, caustic_tile, sand_y, zone};
 pub use sim::Swimmer;
 
 pub type Rgb = [f32; 3];
@@ -176,6 +176,12 @@ pub fn hash(s: &str) -> u32 {
     })
 }
 
+/// A school's lane, 0 to 1, from its key: schools prefer their own depths.
+/// The rng's first draw, as raw FNV-1a clusters keys that end alike.
+pub fn lane(key: &str) -> f32 {
+    Rng::new(hash(key)).next()
+}
+
 pub fn lerp(a: f32, b: f32, k: f32) -> f32 {
     a + (b - a) * k
 }
@@ -234,24 +240,33 @@ pub fn target(
     s: f32,
     surface_y: f32,
 ) -> Pt {
-    let off = slot as f32 - (slots as f32 - 1.0) / 2.0;
-    match mood {
-        Mood::Waiting => [
+    if mood == Mood::Waiting {
+        let off = slot as f32 - (slots as f32 - 1.0) / 2.0;
+        return [
             z.cx + 26.0 * s + off * (64.0 * s).min(z.w * 0.7 / slots as f32),
             surface_y + 30.0 * s + (t * 1.6 + seed).sin() * 3.0 * s,
-        ],
-        Mood::Done => [
-            z.cx + off * 54.0 * s + (t * 0.35 + seed).sin() * 16.0 * s,
-            z.home_y - 34.0 * s + (t * 0.7 + seed).sin() * 5.0 * s,
-        ],
-        Mood::Idle | Mood::Working => {
-            let n = z.nooks[slot % z.nooks.len()];
-            [
-                n[0] + (t * 0.25 + seed).sin() * 9.0 * s,
-                n[1] + (t * 0.5 + seed).sin() * 2.0 * s,
-            ]
-        }
+        ];
     }
+    // Done and idle spread evenly across the reef's width, above the coral.
+    let x = z.l + z.w * (0.12 + 0.76 * (slot as f32 + 0.5) / slots as f32);
+    if mood == Mood::Done {
+        let open = z.canopy - surface_y;
+        return [
+            x + (t * 0.35 + seed).sin() * 10.0 * s,
+            z.canopy - (56.0 * s).max(open * 0.2) + (t * 0.7 + seed).sin() * 5.0 * s,
+        ];
+    }
+    [
+        x + (t * 0.25 + seed).sin() * 6.0 * s,
+        z.canopy - 16.0 * s + (t * 0.5 + seed).sin() * 2.0 * s,
+    ]
+}
+
+/// The open water working fish keep to in `z`, top and bottom: under the
+/// surface and well above the coral.
+pub fn band(z: &Zone, surface_y: f32, s: f32) -> [f32; 2] {
+    let open = z.canopy - surface_y;
+    [surface_y + 70.0 * s, z.canopy - (70.0 * s).max(open * 0.28)]
 }
 
 /// An agent as a fish: who it is, and how it moves.
@@ -426,8 +441,7 @@ impl Reef {
 
     /// The sand at `x`.
     pub fn sand_y(&self, x: f32) -> f32 {
-        let s = self.s;
-        self.floor_y + (x * 0.007 + 1.3).sin() * 7.0 * s + (x * 0.019 + 0.4).sin() * 3.5 * s
+        sand_y(x, self.floor_y, self.s)
     }
 
     pub fn pal(&self) -> Pal {
@@ -617,13 +631,13 @@ impl Reef {
             return;
         }
         let s = self.s;
-        let (l, r) = {
+        let (l, r, canopy) = {
             let z = self.zone_of(&self.fish[i]);
-            (z.l + 50.0 * s, z.r - 50.0 * s)
+            (z.l + 50.0 * s, z.r - 50.0 * s, z.canopy)
         };
         if self.fish[i].who.mood == Mood::Working {
             let (a, b) = (self.rng.next(), self.rng.next());
-            let (top, bot) = (self.surface_y + 100.0 * s, self.floor_y - 110.0 * s);
+            let (top, bot) = (self.surface_y + 100.0 * s, canopy - 120.0 * s);
             self.fish[i].x = lerp(l, r, a);
             self.fish[i].y = lerp(top, bot, b);
         } else {

@@ -5,7 +5,7 @@ use std::f32::consts::TAU;
 
 use phux_protocol::ids::ResourceId;
 
-use super::{Bubble, Fish, Mood, Pt, Reef, Ripple, Rng, Species, hash};
+use super::{Bubble, Fish, Mood, Pt, Reef, Ripple, Rng, Species, band, hash, lerp};
 
 /// One fixed step of scene time: the same scene whatever the frame rate.
 pub const STEP: f32 = 1.0 / 60.0;
@@ -24,6 +24,8 @@ pub struct Swimmer {
     pub project: Option<String>,
     /// Fish with one school swim together: the galaxy's related agents.
     pub school: usize,
+    /// Its school's preferred depth in the open water, 0 (top) to 1 ([`super::lane`]).
+    pub lane: f32,
 }
 
 fn ease(dt: f32, rate: f32) -> f32 {
@@ -115,13 +117,15 @@ impl Reef {
             let (mut ax, mut ay) = (0.0, 0.0);
             let f = &self.fish[i];
             let l = f.len(s);
-            let z = (self.zone_of(f).l, self.zone_of(f).r);
+            let zone = self.zone_of(f);
+            let z = (zone.l, zone.r);
+            let [top, bot] = band(zone, self.surface_y, s);
             for (j, g) in self.fish.iter().enumerate() {
                 if j == i {
                     continue;
                 }
                 let (dx, dy) = (f.x - g.x, f.y - g.y);
-                let (d2, rr) = (dx * dx + dy * dy, l * 1.25);
+                let (d2, rr) = (dx * dx + dy * dy, l * 1.6);
                 if d2 < rr * rr && d2 > 0.01 {
                     let d = d2.sqrt();
                     let k = (rr - d) / rr;
@@ -154,7 +158,10 @@ impl Reef {
                 f.wa += wander;
                 ax += f.wa.cos() * 42.0 * s;
                 ay += f.wa.sin() * 22.0 * s;
-                let (m, top, bot) = (34.0 * s, self.surface_y + 80.0 * s, self.floor_y - 92.0 * s);
+                // Open water only; each school prefers its own depth, so
+                // schools stack rather than clump.
+                let m = 34.0 * s;
+                ay += (lerp(top, bot, 0.15 + 0.7 * f.who.lane) - f.y) * 0.5;
                 if f.x < z.0 + m {
                     ax += (z.0 + m - f.x) * 4.0;
                 }
