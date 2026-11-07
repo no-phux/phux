@@ -5,8 +5,10 @@
 //! labels and the click targets, so they cannot drift apart.
 
 mod camera;
+mod galaxy;
 mod plan;
 mod scheme;
+mod sky;
 mod sprites;
 
 pub(crate) use self::camera::{Camera, Map, View};
@@ -17,8 +19,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use gpui::prelude::*;
 use gpui::{
     AnyElement, Bounds, ContentMask, Context, Corners, Hsla, MouseButton, MouseDownEvent,
-    MouseMoveEvent, MouseUpEvent, PathBuilder, PinchEvent, Pixels, Point, ScrollEvent, Window,
-    canvas, div, point, px, size,
+    MouseMoveEvent, MouseUpEvent, PathBuilder, PinchEvent, Pixels, Point, ScrollEvent, Stateful,
+    Window, canvas, div, point, px, size,
 };
 
 use self::plan::{Plan, Pt, Strip, WALL_H};
@@ -39,7 +41,8 @@ struct Ghost {
     depth: f32,
 }
 
-/// The campus under the camera, `width` by `height` in the panel.
+/// The playground under the camera, `width` by `height` in the panel: the
+/// campus for the office and matrix maps, the galaxy for its own.
 pub(crate) fn scene(
     desk: &mut Desk,
     agents: &[Agent],
@@ -49,28 +52,17 @@ pub(crate) fn scene(
     look: &Look,
     cx: &mut Context<Desk>,
 ) -> AnyElement {
-    // Local, the registered machines, then any machine an agent names that
-    // the registry does not (a fixture, or a host removed while attached).
-    let mut hosts: Vec<Option<String>> = std::iter::once(None)
-        .chain(desk.hosts.iter().map(|host| Some(host.name.clone())))
-        .collect();
-    for agent in agents {
-        if !hosts.contains(&agent.destination.host) {
-            hosts.push(agent.destination.host.clone());
-        }
+    let hosts = hosts(desk, agents);
+    let map = Map::from_id(&desk.prefs.playground_map);
+    let view = &mut desk.fleet_view.playground;
+    if view.map != Some(map) {
+        view.camera = Camera::default();
+        view.map = Some(map);
     }
-    // A staged inventory (fixture captures) stands in for live machines.
-    #[cfg(feature = "ui-fixtures")]
-    let staged = desk.fleet_view.fixture.is_some();
-    #[cfg(not(feature = "ui-fixtures"))]
-    let staged = false;
-    let hosts = hosts
-        .into_iter()
-        .map(|host| {
-            let online = staged || matches!(desk.machine_reach(host.as_deref()), Reach::Connected);
-            (host, online)
-        })
-        .collect();
+    let paint = Paint::new(map, Scheme::from_id(&desk.prefs.playground_scheme), look);
+    if map == Map::Galaxy {
+        return sky::scene(desk, hosts, agents, (width, height), time, paint, look, cx);
+    }
     let plan = Plan::new(hosts, agents);
     if !desk.fleet_view.playground.camera.placed {
         desk.fleet_view
@@ -79,10 +71,7 @@ pub(crate) fn scene(
             .look(plan.focus(), width, height);
     }
     let camera = desk.fleet_view.playground.camera;
-    let now_ms = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_millis() as u64)
-        .unwrap_or_default();
+    let now_ms = now_ms();
     let placed = &plan;
     let ghosts = plan
         .rooms
@@ -108,39 +97,6 @@ pub(crate) fn scene(
         })
         .collect::<Vec<_>>();
 
-    let map = Map::from_id(&desk.prefs.playground_map);
-    let scheme = Scheme::from_id(&desk.prefs.playground_scheme);
-    let hex =
-        |text: &str| u32::from_str_radix(text.trim_start_matches('#'), 16).unwrap_or(0xE7E2DA);
-    let ramp = scheme.ramp(scheme::theme_ramp([
-        hex(&look.chrome.muted),
-        hex(&look.chrome.subtext),
-        hex(&look.chrome.theme.foreground),
-    ]));
-    let accent = from_hex(&look.chrome.theme.accent);
-    let background = from_hex(&look.chrome.theme.background);
-    let paint = match map {
-        Map::Office => Paint {
-            map,
-            ramp,
-            floor: from_hex(&look.chrome.theme.surface),
-            wall: look.raised,
-            edge: look.border,
-            faint: look.divider,
-            shadow: background.opacity(0.5),
-            lamp: accent.opacity(0.05),
-        },
-        Map::Matrix => Paint {
-            map,
-            ramp,
-            floor: from_hex(&look.chrome.theme.surface),
-            wall: background,
-            edge: accent,
-            faint: look.divider,
-            shadow: background.opacity(0.6),
-            lamp: accent.opacity(0.18),
-        },
-    };
     let labels = ghosts
         .iter()
         .map(|ghost| label(ghost, &camera, look))
@@ -158,7 +114,64 @@ pub(crate) fn scene(
         .iter()
         .map(|ghost| (ghost.foot, ghost.strip, ghost.depth))
         .collect::<Vec<_>>();
+    let links = links(&ghosts);
 
+    stage(width, height, look, cx)
+        .child(
+            canvas(
+                |_, _, _| (),
+                move |bounds, _, window, _| {
+                    window.with_content_mask(Some(ContentMask { bounds }), |window| {
+                        paint.campus(&plan, &camera, bounds, time, window);
+                        if paint.map == Map::Matrix {
+                            paint.packets(&links, &camera, bounds, time, window);
+                        }
+                        paint.ghosts(&sprites, &camera, bounds, time, window);
+                    });
+                },
+            )
+            .absolute()
+            .size_full(),
+        )
+        .children(labels)
+        .children(targets)
+        .into_any_element()
+}
+
+/// Local, the registered machines, then any machine an agent names that the
+/// registry does not (a fixture, or a host removed while attached), each with
+/// whether it is online.
+fn hosts(desk: &Desk, agents: &[Agent]) -> Vec<(Option<String>, bool)> {
+    let mut hosts: Vec<Option<String>> = std::iter::once(None)
+        .chain(desk.hosts.iter().map(|host| Some(host.name.clone())))
+        .collect();
+    for agent in agents {
+        if !hosts.contains(&agent.destination.host) {
+            hosts.push(agent.destination.host.clone());
+        }
+    }
+    // A staged inventory (fixture captures) stands in for live machines.
+    #[cfg(feature = "ui-fixtures")]
+    let staged = desk.fleet_view.fixture.is_some();
+    #[cfg(not(feature = "ui-fixtures"))]
+    let staged = false;
+    hosts
+        .into_iter()
+        .map(|host| {
+            let online = staged || matches!(desk.machine_reach(host.as_deref()), Reach::Connected);
+            (host, online)
+        })
+        .collect()
+}
+
+fn now_ms() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or_default()
+}
+/// The scene's frame: drag pans, scroll pans, pinch zooms about the centre.
+fn stage(width: f32, height: f32, look: &Look, cx: &mut Context<Desk>) -> Stateful<gpui::Div> {
     div()
         .id("fleet-playground")
         .debug_selector(|| "fleet-playground".into())
@@ -217,22 +230,18 @@ pub(crate) fn scene(
                 .pinch(event.delta, width, height);
             cx.notify();
         }))
-        .child(
-            canvas(
-                |_, _, _| (),
-                move |bounds, _, window, _| {
-                    window.with_content_mask(Some(ContentMask { bounds }), |window| {
-                        paint.campus(&plan, &camera, bounds, time, window);
-                        paint.ghosts(&sprites, &camera, bounds, time, window);
-                    });
-                },
-            )
-            .absolute()
-            .size_full(),
-        )
-        .children(labels)
-        .children(targets)
-        .into_any_element()
+}
+
+/// Each related pair of ghosts once, as the two points their feet stand on.
+fn links(ghosts: &[Ghost]) -> Vec<(Pt, Pt)> {
+    let agents = ghosts
+        .iter()
+        .map(|ghost| ghost.agent.clone())
+        .collect::<Vec<_>>();
+    galaxy::relations(&agents)
+        .into_iter()
+        .map(|(a, b)| (ghosts[a].foot, ghosts[b].foot))
+        .collect()
 }
 
 fn pt(position: Point<Pixels>) -> Pt {
@@ -336,6 +345,51 @@ struct Paint {
 }
 
 impl Paint {
+    /// The theme's colours for `map`, with the pieces on `scheme`.
+    fn new(map: Map, scheme: Scheme, look: &Look) -> Paint {
+        let hex =
+            |text: &str| u32::from_str_radix(text.trim_start_matches('#'), 16).unwrap_or(0xE7E2DA);
+        let ramp = scheme.ramp(scheme::theme_ramp([
+            hex(&look.chrome.muted),
+            hex(&look.chrome.subtext),
+            hex(&look.chrome.theme.foreground),
+        ]));
+        let accent = from_hex(&look.chrome.theme.accent);
+        let background = from_hex(&look.chrome.theme.background);
+        match map {
+            Map::Office => Paint {
+                map,
+                ramp,
+                floor: from_hex(&look.chrome.theme.surface),
+                wall: look.raised,
+                edge: look.border,
+                faint: look.divider,
+                shadow: background.opacity(0.5),
+                lamp: accent.opacity(0.05),
+            },
+            Map::Matrix => Paint {
+                map,
+                ramp,
+                floor: from_hex(&look.chrome.theme.surface),
+                wall: background,
+                edge: accent,
+                faint: look.divider,
+                shadow: background.opacity(0.6),
+                lamp: accent.opacity(0.18),
+            },
+            Map::Galaxy => Paint {
+                map,
+                ramp,
+                floor: from_hex(&look.chrome.theme.surface),
+                wall: look.raised,
+                edge: accent,
+                faint: look.divider,
+                shadow: background.opacity(0.5),
+                lamp: accent.opacity(0.15),
+            },
+        }
+    }
+
     fn campus(
         &self,
         plan: &Plan,

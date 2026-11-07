@@ -154,7 +154,7 @@ pub struct DisplayPrefs {
     pub native_agents: bool,
     /// Experimental tiled agent overview, enabled from Layout settings.
     pub agent_fleet: bool,
-    /// The fleet playground's map: `office` or `matrix`.
+    /// The fleet playground's map: `office`, `matrix` or `galaxy`.
     pub playground_map: String,
     /// The playground piece's colour scheme, by id (`theme` unless known).
     pub playground_scheme: String,
@@ -276,7 +276,10 @@ pub fn sanitize_display(display: &DisplayPrefs) -> DisplayPrefs {
         } else {
             fallback.theme_id
         },
-        playground_map: if matches!(display.playground_map.as_str(), "office" | "matrix") {
+        playground_map: if matches!(
+            display.playground_map.as_str(),
+            "office" | "matrix" | "galaxy"
+        ) {
             display.playground_map.clone()
         } else {
             fallback.playground_map
