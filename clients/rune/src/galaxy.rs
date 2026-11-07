@@ -215,13 +215,19 @@ pub struct Kin<'a> {
 /// every other.
 // ponytail: a chain per group keeps a big session to n-1 lines; a hub or full
 // mesh if the shape of a group ever matters.
+/// The session phux puts work in when nobody names one.
+pub const DEFAULT_SESSION: &str = "default";
+
 pub fn related(agents: &[Kin<'_>]) -> Vec<(usize, usize)> {
     let mut groups: BTreeMap<(u8, &str, &str), Vec<usize>> = BTreeMap::new();
     for (i, kin) in agents.iter().enumerate() {
-        groups
-            .entry((0, kin.host, kin.session))
-            .or_default()
-            .push(i);
+        // `default` is where everything lands unasked: sharing it says nothing.
+        if kin.session != DEFAULT_SESSION {
+            groups
+                .entry((0, kin.host, kin.session))
+                .or_default()
+                .push(i);
+        }
         if let Some(project) = kin.project {
             groups.entry((1, "", project)).or_default().push(i);
         }

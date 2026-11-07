@@ -128,33 +128,41 @@ pub(super) fn view(desk: &Desk, p: &Ink, cx: &mut Cx<Desk>) -> El {
 
     let detail = Detail::at(camera.scale);
     let mut labels: Vec<El> = Vec::new();
+    // Labels stack by what matters: calm agents, then planet names on their
+    // own ground (a busy machine always has agents near its name), then the
+    // agents that need you, which nothing covers.
+    let mut names: Vec<El> = Vec::new();
+    let mut urgent: Vec<El> = Vec::new();
     for (planet, system) in planets.iter().zip(&plan.systems) {
         let centre = system.centre;
         let at = camera.screen(centre);
         // A machine whose agents aren't known (not watched yet, or not
         // dialable) says what its session listing says, or nothing.
-        let note = if !planet.stars.is_empty() {
+        let note = if planet.known {
             Some(format!("{} agents", planet.stars.len()))
         } else if !planet.online {
             Some("offline".to_owned())
         } else {
             planet.note.clone()
         };
-        labels.push(
+        names.push(
             pressable(format!("galaxy-planet-{}", planet.name), p)
-                .absolute(at[0] - 70.0, at[1] - 22.0)
+                .absolute(at[0] - 70.0, at[1] + 14.0)
                 .w(140.0)
                 .radius(8.0)
-                .pt(52.0)
-                .pb(4.0)
                 .label(planet.name.clone())
                 .on_press(move |desk: &mut Desk| desk.fly_to(centre))
                 .child(
-                    col()
-                        .w_full()
-                        .items_center()
-                        .child(text(planet.name.to_uppercase()).font(HOST).color(p.text))
-                        .children(note.map(|n| text(n.to_uppercase()).font(META).color(p.dim))),
+                    col().w_full().items_center().child(
+                        col()
+                            .items_center()
+                            .px(8.0)
+                            .py(3.0)
+                            .radius(6.0)
+                            .fill(p.bg.alpha(0.88))
+                            .child(text(planet.name.to_uppercase()).font(HOST).color(p.text))
+                            .children(note.map(|n| text(n.to_uppercase()).font(META).color(p.dim))),
+                    ),
                 ),
         );
     }
@@ -185,7 +193,12 @@ pub(super) fn view(desk: &Desk, p: &Ink, cx: &mut Cx<Desk>) -> El {
         let said = card
             .as_ref()
             .map_or(String::new(), |(form, work)| format!(", {form}, {work}"));
-        labels.push(
+        let layer = if star.mark.needs_you() {
+            &mut urgent
+        } else {
+            &mut labels
+        };
+        layer.push(
             pressable(format!("galaxy-star-{:?}", star.id), p)
                 .absolute(s[0] - 60.0, s[1] - 22.0)
                 .w(120.0)
@@ -296,6 +309,8 @@ pub(super) fn view(desk: &Desk, p: &Ink, cx: &mut Cx<Desk>) -> El {
                 }),
         )
         .children(labels)
+        .children(names)
+        .children(urgent)
         .child(block)
         .child(actions)
 }
