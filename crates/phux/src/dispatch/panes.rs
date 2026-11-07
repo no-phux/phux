@@ -21,14 +21,17 @@ pub(super) fn spawn(args: commands::SpawnArgs, socket: Option<PathBuf>) -> ExitC
         json,
         command,
     } = args;
-    let app = app.map(|name| phux_client::app::helper_argv(
-        &std::env::current_exe().map_or_else(|_| "phux".to_owned(), |exe| exe.display().to_string()),
-        phux_client::app::AppSpec {
-            name: &name,
-            browser: browser.as_deref(),
-            headless,
-        },
-    ));
+    let app = app.map(|name| {
+        phux_client::app::helper_argv(
+            &std::env::current_exe()
+                .map_or_else(|_| "phux".to_owned(), |exe| exe.display().to_string()),
+            phux_client::app::AppSpec {
+                name: &name,
+                browser: browser.as_deref(),
+                headless,
+            },
+        )
+    });
     if app.is_some() && !command.is_empty() {
         return commands::json_err::emit(
             json.json,

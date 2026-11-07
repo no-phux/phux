@@ -118,7 +118,11 @@ pub(crate) fn run_app(action: &AppAction, socket: Option<PathBuf>) -> ExitCode {
         if let Some(launched) = take() {
             launched.quit();
         }
-        return fail(&message, "the app started but could not be mirrored", EXIT_FAILURE);
+        return fail(
+            &message,
+            "the app started but could not be mirrored",
+            EXIT_FAILURE,
+        );
     }
     loop {
         std::thread::sleep(POLL);

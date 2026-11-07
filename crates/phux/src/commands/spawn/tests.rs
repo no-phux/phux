@@ -296,11 +296,24 @@ fn spawn_app_takes_a_name_an_optional_browser_url_and_headless() {
         (Some("TextEdit".into()), None, false)
     );
     assert_eq!(
-        app(&["phux", "spawn", "--app", "chrome", "--browser", "--headless"]),
+        app(&[
+            "phux",
+            "spawn",
+            "--app",
+            "chrome",
+            "--browser",
+            "--headless"
+        ]),
         (Some("chrome".into()), Some("about:blank".into()), true)
     );
     assert_eq!(
-        app(&["phux", "spawn", "--app", "chrome", "--browser=https://phux.sh"]),
+        app(&[
+            "phux",
+            "spawn",
+            "--app",
+            "chrome",
+            "--browser=https://phux.sh"
+        ]),
         (Some("chrome".into()), Some("https://phux.sh".into()), false)
     );
     assert!(crate::parse_cli(["phux", "spawn", "--browser"]).is_err());

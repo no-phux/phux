@@ -32,9 +32,9 @@ impl Plan {
     /// The argv the plan runs, for `--dry-run`.
     pub(super) fn argv(&self) -> Vec<String> {
         match self {
-            Self::Browser { program, args, .. } => {
-                std::iter::once(program.clone()).chain(args.clone()).collect()
-            }
+            Self::Browser { program, args, .. } => std::iter::once(program.clone())
+                .chain(args.clone())
+                .collect(),
             Self::MacApp { open, .. } => std::iter::once("open".to_owned())
                 .chain(open.clone())
                 .collect(),
@@ -56,7 +56,9 @@ pub(super) fn plan(
         let program = browser_candidates(name, cfg!(target_os = "macos"))
             .into_iter()
             .find_map(|candidate| resolve_program(&candidate))
-            .ok_or_else(|| format!("no browser {name:?} found; name `chrome`, `chromium`, or a path"))?;
+            .ok_or_else(|| {
+                format!("no browser {name:?} found; name `chrome`, `chromium`, or a path")
+            })?;
         let mut flags = browser_args(&profile, headless);
         flags.extend(args.iter().cloned());
         flags.push(url.to_owned());
@@ -110,11 +112,14 @@ pub(super) fn browser_candidates(name: &str, macos: bool) -> Vec<String> {
         ("chrome" | "google chrome", true) => vec![bundle("Google Chrome")],
         ("chromium", true) => vec![bundle("Chromium")],
         (_, true) => vec![bundle(name)],
-        ("chrome" | "google-chrome", false) => {
-            ["google-chrome", "google-chrome-stable", "chromium", "chromium-browser"]
-                .map(String::from)
-                .to_vec()
-        }
+        ("chrome" | "google-chrome", false) => [
+            "google-chrome",
+            "google-chrome-stable",
+            "chromium",
+            "chromium-browser",
+        ]
+        .map(String::from)
+        .to_vec(),
         ("chromium", false) => ["chromium", "chromium-browser"].map(String::from).to_vec(),
         (_, false) => vec![name.to_owned()],
     }
@@ -123,9 +128,7 @@ pub(super) fn browser_candidates(name: &str, macos: bool) -> Vec<String> {
 /// `candidate` when it is an existing file path, else its match on `PATH`.
 fn resolve_program(candidate: &str) -> Option<String> {
     if candidate.contains('/') {
-        return Path::new(candidate)
-            .is_file()
-            .then(|| candidate.to_owned());
+        return Path::new(candidate).is_file().then(|| candidate.to_owned());
     }
     std::env::split_paths(&std::env::var_os("PATH")?)
         .map(|dir| dir.join(candidate))
@@ -146,11 +149,13 @@ pub(super) fn mac_open_args(name: &str, args: &[String]) -> Vec<String> {
 
 /// The `Exec` of desktop entry `id`, from the XDG data directories.
 fn desktop_entry(id: &str) -> Result<Vec<String>, String> {
-    let home = std::env::var("XDG_DATA_HOME")
-        .ok()
-        .or_else(|| std::env::var("HOME").ok().map(|h| format!("{h}/.local/share")));
-    let dirs = std::env::var("XDG_DATA_DIRS")
-        .unwrap_or_else(|_| "/usr/local/share:/usr/share".to_owned());
+    let home = std::env::var("XDG_DATA_HOME").ok().or_else(|| {
+        std::env::var("HOME")
+            .ok()
+            .map(|h| format!("{h}/.local/share"))
+    });
+    let dirs =
+        std::env::var("XDG_DATA_DIRS").unwrap_or_else(|_| "/usr/local/share:/usr/share".to_owned());
     home.into_iter()
         .chain(dirs.split(':').map(str::to_owned))
         .map(|dir| Path::new(&dir).join("applications").join(id))
@@ -461,7 +466,10 @@ mod tests {
             ["/Applications/Brave Browser.app/Contents/MacOS/Brave Browser"]
         );
         assert_eq!(browser_candidates("chrome", false)[0], "google-chrome");
-        assert_eq!(browser_candidates("/opt/x/chrome", false), ["/opt/x/chrome"]);
+        assert_eq!(
+            browser_candidates("/opt/x/chrome", false),
+            ["/opt/x/chrome"]
+        );
     }
 
     #[test]
@@ -476,7 +484,8 @@ mod tests {
         let listing = r#"[{"id":5,"pid":9,"layer":25},{"id":7,"pid":9,"layer":0},{"id":8,"pid":3,"layer":0}]"#;
         assert_eq!(window_of_pid(9, listing), Some(7));
         assert_eq!(window_of_pid(4, listing), None);
-        let clients = r#"[{"pid":9,"class":"","mapped":true},{"pid":3,"class":"gedit","mapped":true}]"#;
+        let clients =
+            r#"[{"pid":9,"class":"","mapped":true},{"pid":3,"class":"gedit","mapped":true}]"#;
         assert_eq!(class_of_pid(3, clients).as_deref(), Some("gedit"));
         assert_eq!(class_of_pid(9, clients), None);
     }

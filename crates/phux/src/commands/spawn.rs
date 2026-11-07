@@ -446,7 +446,11 @@ fn print_app(socket_path: &Path, pane: &ResourceId, json: bool) -> ExitCode {
         .collect();
     outln!(
         "Created app pane {selector}; documents: {}. Next: `phux agent tree snapshot ID`.",
-        if ids.is_empty() { "none yet".to_owned() } else { ids.join(" ") }
+        if ids.is_empty() {
+            "none yet".to_owned()
+        } else {
+            ids.join(" ")
+        }
     );
     ExitCode::SUCCESS
 }
