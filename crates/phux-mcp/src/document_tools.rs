@@ -104,7 +104,9 @@ async fn documents(args: &Value) -> Result<Value, ToolError> {
         .filter(|info| {
             matches!(
                 info.kind,
-                ResourceKind::AccessibilityTree | ResourceKind::PixelSurface
+                ResourceKind::AccessibilityTree
+                    | ResourceKind::PixelSurface
+                    | ResourceKind::Document
             )
         })
         .map(|info| {
