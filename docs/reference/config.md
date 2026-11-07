@@ -22,7 +22,7 @@ The configuration surface of `~/.config/phux/config.toml`. The loader layers you
 | `[notifications]` | Agent notifications the TUI posts when an agent blocks or finishes: delivery mode (terminal OSC, system, bell, off), the OSC dialect, per-event toggles, focus suppression, and sound. |
 | `[[hooks.<event>]]` | Event hooks: per event name, an array of `when` predicates each paired with an action to run on match. |
 | `[[plugins]]` | Declarative plugin manifests composed into this config; each entry names a `phux-plugin.toml` path and an enabled flag. |
-| `[[satellites]]` | Federation satellites a hub routes to: name, endpoint, token-file path, and certificate pin. |
+| `[[satellites]]` | Federation satellites a hub routes to: name, endpoint, token-file path, certificate pin, and the client certificate a paired satellite requires. |
 | `[[connector]]` | Outbound relay links this server supervises: relay endpoint, token-file path, and certificate pin. |
 | `[[uplink]]` | Hubs this server dials out to as a satellite, written by `phux host join`: satellite name, hub endpoint, the hub's CA pin, and the enrolled identity's paths. |
 | `[[remote]]` | Remote phux servers this machine attaches to, written by `phux host add` and resolved by `phux attach <name>`. |
@@ -440,6 +440,10 @@ exclusive = true
 # enabled = true
 # token-file = "/home/me/.local/state/phux/satellites/devbox.token"
 # cert-fingerprint = "AB:CD:..."
+# # A satellite in `paired` mode also wants the hub's enrolled client
+# # certificate, the same pair a [[remote]] entry records:
+# client-cert = "/home/me/.local/state/phux/satellites/devbox.client.pem"
+# client-key = "/home/me/.local/state/phux/satellites/devbox.client.key"
 
 # Outbound connectors let this server reach consumers through a self-hosted
 # relay without accepting inbound traffic. Each link is supervised

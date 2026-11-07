@@ -19,6 +19,8 @@ pub enum DialSpec {
         trust: CertTrust,
         /// Pairing-token file, read per attempt.
         token_file: Option<PathBuf>,
+        /// Client certificate and key to present, for a `paired` satellite.
+        identity: Option<(PathBuf, PathBuf)>,
     },
     /// Dial a WebSocket listener (`ws://` loopback dev or `wss://`).
     Ws {
@@ -28,6 +30,8 @@ pub enum DialSpec {
         trust: CertTrust,
         /// Pairing-token file, read per attempt.
         token_file: Option<PathBuf>,
+        /// Client certificate and key to present (`wss://` only).
+        identity: Option<(PathBuf, PathBuf)>,
     },
     /// Spawn `ssh` bridging to the satellite's UDS via `phux stdio-bridge`.
     /// No auth material: SSH authenticates the channel.
@@ -141,6 +145,7 @@ pub fn plan_link(entry: &HubEntry) -> Result<DialSpec, LinkRefusal> {
                 port: *port,
                 trust,
                 token_file: entry.token_file.clone(),
+                identity: entry.client_identity.clone(),
             })
         }
         SatelliteTarget::Ws { url } => {
@@ -153,6 +158,7 @@ pub fn plan_link(entry: &HubEntry) -> Result<DialSpec, LinkRefusal> {
                 // No TLS handshake on ws://; the trust value is inert.
                 trust: CertTrust::SkipVerify,
                 token_file: entry.token_file.clone(),
+                identity: entry.client_identity.clone(),
             })
         }
         SatelliteTarget::Wss { url } => {
@@ -162,6 +168,7 @@ pub fn plan_link(entry: &HubEntry) -> Result<DialSpec, LinkRefusal> {
                 url: url.clone(),
                 trust,
                 token_file: entry.token_file.clone(),
+                identity: entry.client_identity.clone(),
             })
         }
     }
