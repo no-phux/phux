@@ -253,3 +253,27 @@ fn choosing_replaces_a_single_choice_toggles_many_and_holds_while_sending() {
     questions.choose(id, "b", "one", true);
     assert_eq!(questions.drafts[id].choices["b"], ["two"]);
 }
+
+#[test]
+fn a_question_raised_before_connecting_asks_from_the_sessions_view() {
+    let terminal = ResourceId::local(1);
+    let mut questions = Questions::default();
+    assert!(questions.ask(&terminal).is_none());
+    questions.views.insert(
+        terminal.clone(),
+        (
+            ResourceId::local(2),
+            view(vec![question("permission", Value::Null)], true),
+        ),
+    );
+    let ask = questions.ask(&terminal).unwrap();
+    assert_eq!(
+        (ask.id.as_str(), ask.text.as_str()),
+        ("acp-question:1", "Title")
+    );
+    assert!(!ask.typed(), "an ACP ask is answered over the protocol");
+    questions
+        .views
+        .insert(terminal.clone(), (ResourceId::local(2), view(vec![], true)));
+    assert!(questions.ask(&terminal).is_none());
+}

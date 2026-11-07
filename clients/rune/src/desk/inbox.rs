@@ -53,11 +53,19 @@ pub struct Inbox {
 
 impl Desk {
     pub fn inbox_items(&self) -> Vec<Item> {
-        inbox::items(
+        let mut items = inbox::items(
             self.topology.as_ref(),
             &self.activities,
             &self.inbox.approvals,
-        )
+        );
+        for item in &mut items {
+            if let Item::Terminal(waiting) = item
+                && waiting.ask.is_none()
+            {
+                waiting.ask = self.inbox.questions.ask(&waiting.terminal);
+            }
+        }
+        items
     }
 
     /// The picked row's place in `items`.
