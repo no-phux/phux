@@ -324,3 +324,12 @@ fn skin_and_plain_terminal_round_trip_and_unknown_skins_fall_back() {
     assert!(!parse_display(&json!({"nativeAgents": "yes"})).native_agents);
     assert!(parse_display(&json!({"animations": "no"})).animations);
 }
+
+#[test]
+fn the_reef_map_round_trips() {
+    let saved = DisplayPrefs {
+        playground_map: "reef".to_owned(),
+        ..default_display()
+    };
+    assert_eq!(parse_display(&display_value(&saved)), saved);
+}

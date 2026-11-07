@@ -8,6 +8,8 @@ mod camera;
 mod galaxy;
 mod nodes;
 mod plan;
+mod reef;
+mod reef_paint;
 mod scheme;
 mod sky;
 mod sprites;
@@ -59,6 +61,9 @@ pub(crate) fn scene(
     if view.map != Some(map) {
         view.camera = Camera::default();
         view.map = Some(map);
+    }
+    if map == Map::Reef {
+        return reef_paint::scene(desk, hosts, agents, (width, height), time, look, cx);
     }
     let paint = Paint::new(map, Scheme::from_id(&desk.prefs.playground_scheme), look);
     if map == Map::Galaxy {
@@ -378,7 +383,7 @@ impl Paint {
                 shadow: background.opacity(0.6),
                 lamp: accent.opacity(0.18),
             },
-            Map::Galaxy => Paint {
+            Map::Galaxy | Map::Reef => Paint {
                 map,
                 ramp,
                 floor: from_hex(&look.chrome.theme.surface),
