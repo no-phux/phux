@@ -139,3 +139,87 @@ fn another_automatic_document_fallback_does_not_cancel_a_waiting_key() {
         assert_eq!(focus(&rt), id(9));
     }
 }
+
+#[test]
+fn picking_a_retained_phone_pane_cancels_a_delayed_document_return() {
+    for target in [1, 3] {
+        let records = [
+            record(1, ResourceKind::Terminal),
+            record(2, ResourceKind::AccessibilityTree),
+            record(3, ResourceKind::Terminal),
+        ];
+        let (client, mut rt) = phone_fixture(&records, &doc(three()));
+        rt.update(|d, _| d.focus_pane(&id(2)));
+        let mut gap = records.to_vec();
+        gap[1].live = None;
+        replace_records(&client, gap);
+        step(&mut rt);
+        assert_eq!(rt.state.resources.returning, Some(key(2)));
+        rt.update(|d, _| d.phone_pick(&id(target)));
+        assert!(
+            rt.state.resources.returning.is_none(),
+            "explicit map/picker focus cancels the return"
+        );
+        let mut next = records.to_vec();
+        next[1] = replacement(9);
+        replace_records(&client, next);
+        step(&mut rt);
+        assert_eq!(focus(&rt), id(target));
+    }
+}
+
+#[test]
+fn reconnect_retirement_and_carry_preserve_the_original_waiting_document() {
+    let records = [
+        record(1, ResourceKind::PixelSurface),
+        record(2, ResourceKind::AccessibilityTree),
+        record(3, ResourceKind::Terminal),
+    ];
+    let (client, mut rt) = phone_fixture(&records, &doc(three()));
+    rt.update(|d, _| d.focus_pane(&id(2)));
+    let mut gap = records.to_vec();
+    gap[1].live = None;
+    replace_records(&client, gap);
+    step(&mut rt);
+    assert_eq!(focus(&rt), id(1));
+    let mut next = Desk::new(&crate::launch::Resolved::offline("reconnect"));
+    rt.state.carry_document_focus(&mut next);
+    assert_eq!(next.resources.returning, Some(key(2)));
+    rt.update(|d, _| d.retire_documents(&client));
+    assert_eq!(rt.state.resources.returning, Some(key(2)));
+}
+
+#[test]
+fn automatic_terminal_view_reopening_preserves_a_waiting_document() {
+    for reconnect in [false, true] {
+        let records = [
+            record(1, ResourceKind::Terminal),
+            record(2, ResourceKind::AccessibilityTree),
+            record(3, ResourceKind::Terminal),
+        ];
+        let (client, mut rt) = phone_fixture(&records, &doc(three()));
+        rt.update(|d, _| d.focus_pane(&id(2)));
+        let mut gap = records.to_vec();
+        gap[1].live = None;
+        replace_records(&client, gap);
+        step(&mut rt);
+        if reconnect {
+            rt.update(|d, _| {
+                d.reopen_after_reconnect(&client);
+            });
+        } else {
+            client
+                .destroy_view(rt.state.shown.as_ref().unwrap().view.unwrap())
+                .unwrap();
+            rt.update(|d, _| {
+                d.drop_dead_views(&client);
+            });
+        }
+        assert_eq!(rt.state.resources.returning, Some(key(2)));
+        let mut next = records.to_vec();
+        next[1] = replacement(9);
+        replace_records(&client, next);
+        step(&mut rt);
+        assert_eq!(focus(&rt), id(9));
+    }
+}

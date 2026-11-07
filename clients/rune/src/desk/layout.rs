@@ -159,11 +159,13 @@ impl Desk {
     /// Move the keyboard to a pane in the active layout, keeping its view.
     pub fn focus_pane(&mut self, id: &ResourceId) {
         if self.shown.as_ref().is_some_and(|s| &s.terminal == id) {
+            self.resources.returning = None;
             return;
         }
         let Some(view) = self.others.remove(id) else {
             return;
         };
+        self.resources.returning = None;
         if let Some(old) = self.shown.take() {
             self.others.insert(old.terminal, old.view);
         }

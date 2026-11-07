@@ -19,6 +19,13 @@ impl Desk {
         self.wanted = Some((terminal, Instant::now()));
     }
 
+    /// Recovery can show a fallback without replacing the person's last choice.
+    pub(super) fn want_automatic(&mut self, terminal: ResourceId) {
+        let returning = self.resources.returning;
+        self.want(terminal);
+        self.resources.returning = returning;
+    }
+
     pub(super) fn drop_shown(&mut self, client: &Client) -> Option<ResourceId> {
         if let Some(phone) = self.phone.as_mut() {
             phone.reset_navigation();
@@ -38,10 +45,7 @@ impl Desk {
         // Fall back to whatever the server now focuses.
         self.wanted = None;
         if let Some(next) = next {
-            // Automatic fallback does not cancel a waiting stable key.
-            let returning = self.resources.returning;
-            self.want(next);
-            self.resources.returning = returning;
+            self.want_automatic(next);
         }
     }
 
@@ -102,7 +106,7 @@ impl Desk {
             return false;
         };
         if self.wanted.is_none() {
-            self.want(terminal);
+            self.want_automatic(terminal);
         }
         true
     }
@@ -121,7 +125,7 @@ impl Desk {
             && let Some(terminal) = self.drop_shown(client)
         {
             if self.wanted.is_none() {
-                self.want(terminal);
+                self.want_automatic(terminal);
             }
             changed = true;
         }
@@ -198,7 +202,9 @@ impl Desk {
             return false;
         }
         if self.others.contains_key(&target) {
+            let returning = self.resources.returning;
             self.focus_pane(&target);
+            self.resources.returning = returning;
             self.wanted = None;
             return true;
         }
@@ -208,7 +214,7 @@ impl Desk {
             let Ok(view) = client.create_view(&target) else {
                 // Keep the first asking's clock, or the grace never runs out.
                 if self.wanted.is_none() {
-                    self.want(target.clone());
+                    self.want_automatic(target.clone());
                 }
                 if let Some(session) = self.foreign(client, &target) {
                     client.attach_session(AttachTarget::ByName(session));

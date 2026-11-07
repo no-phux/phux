@@ -194,7 +194,7 @@ impl Desk {
                 .and_then(|tree| layout::neighbour(tree, id));
             self.close_shown(client, std::slice::from_ref(id));
             if let Some(next) = next {
-                self.want(next);
+                self.want_automatic(next);
             }
             return true;
         }

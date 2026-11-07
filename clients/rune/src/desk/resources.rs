@@ -246,7 +246,7 @@ impl Desk {
             .and_then(|s| self.resources.entries.get(&s.terminal))
             .map(|d| d.record.key);
         if key.is_some() {
-            self.resources.returning = key;
+            self.resources.returning = self.resources.returning.or(key);
             self.drop_shown(client);
             self.wanted = None;
         }
@@ -259,12 +259,12 @@ impl Desk {
     }
 
     pub(super) fn carry_document_focus(&mut self, next: &mut Desk) {
-        next.resources.returning = self
-            .shown
-            .as_ref()
-            .and_then(|s| self.resources.entries.get(&s.terminal))
-            .map(|d| d.record.key)
-            .or(self.resources.returning);
+        next.resources.returning = self.resources.returning.or_else(|| {
+            self.shown
+                .as_ref()
+                .and_then(|s| self.resources.entries.get(&s.terminal))
+                .map(|d| d.record.key)
+        });
         next.resources.dismissed = self.resources.dismissed.clone();
     }
 
@@ -415,7 +415,7 @@ impl Desk {
             .and_then(|tree| super::layout::neighbour(tree, &gone));
         self.close_shown(client, &[]);
         if let Some(next) = next {
-            self.want(next);
+            self.want_automatic(next);
         }
         true
     }
@@ -449,7 +449,7 @@ impl Desk {
                 .find(|id| !ids.contains(id));
             self.close_shown(&client, ids);
             if let Some(next) = next {
-                self.want(next);
+                self.want_automatic(next);
             }
         }
         self.refresh_layout(&client);
