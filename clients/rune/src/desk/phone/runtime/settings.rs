@@ -5,8 +5,10 @@ use crate::keys::Shortcut;
 
 fn open(hidden: bool) -> (std::sync::Arc<Client>, Runtime<Desk>) {
     let (client, mut rt) = fixture();
-    rt.state.phone.as_mut().unwrap().keyboard = !hidden;
-    rt.state.settings_open = true;
+    rt.update(|d, _| {
+        d.phone.as_mut().unwrap().keyboard = !hidden;
+        d.settings_open = true;
+    });
     settle(&mut rt);
     (client, rt)
 }
@@ -102,6 +104,9 @@ fn accessory_commands_cannot_open_a_hidden_palette_behind_the_pane_picker() {
     assert!(rt.state.phone.as_ref().unwrap().picker);
     assert!(!rt.state.palette_open);
     tap(&mut rt, "phone-cap-116", 0.3);
+    tap(&mut rt, "phone-key-Tab", 0.5);
+    assert!(rt.state.phone.as_ref().unwrap().picker);
+    assert!(!rt.state.palette_open);
     assert!(rt.state.palette_query.text.is_empty());
     no_terminal_input(&client);
 }
@@ -151,6 +156,79 @@ fn phone_search_stays_above_its_keyboard_at_both_supported_sizes() {
         assert!(!rt.state.settings_search_focused());
         assert_eq!(rt.state.settings_ui.query.text, "font");
         assert!(rt.find("phone-keyboard").is_none());
+        no_terminal_input(&client);
+    }
+}
+
+#[test]
+fn native_enter_escape_and_close_reconcile_settings_focus() {
+    for phone in [false, true] {
+        let (client, mut rt) = open(true);
+        if !phone {
+            rt.state.phone = None;
+            rt.set_viewport((1100.0, 720.0), 2.0);
+        }
+        settle(&mut rt);
+        tap(&mut rt, "settings-query", 0.1);
+        rt.paste("clipboard");
+        rt.key(KeyEvent {
+            key: Key::Enter,
+            mods: Mods::default(),
+        });
+        settle(&mut rt);
+        assert!(!rt.state.settings_search_focused());
+        assert_eq!(rt.state.settings_ui.query.text, "clipboard");
+        assert!(
+            !rt.elements()
+                .iter()
+                .any(|e| e.key.as_deref() == Some("settings-query") && e.focused)
+        );
+        tap(&mut rt, "settings-query", 0.3);
+        rt.key(KeyEvent {
+            key: Key::Escape,
+            mods: Mods::default(),
+        });
+        settle(&mut rt);
+        assert!(rt.state.settings_open);
+        assert!(rt.state.settings_search_focused());
+        assert!(rt.state.settings_ui.query.text.is_empty());
+        rt.update(|d, tx| d.modal_command(Modal::Settings, Shortcut::Settings, tx));
+        settle(&mut rt);
+        assert!(!rt.state.settings_open);
+        assert!(!rt.state.settings_ui.query.focused);
+        assert!(rt.find("settings-query").is_none());
+        assert!(
+            !rt.elements()
+                .iter()
+                .any(|e| e.focused && e.key.as_deref().is_some_and(|k| k.starts_with("settings-")))
+        );
+        rt.update(|d, _| d.settings_open = true);
+        settle(&mut rt);
+        assert!(
+            rt.find("settings-terminal").is_some(),
+            "reopened phone={phone}, category={:?}, query={:?}, focused={}",
+            rt.state.settings_ui.category,
+            rt.state.settings_ui.query.text,
+            rt.state.settings_ui.query.focused
+        );
+        tap(&mut rt, "settings-terminal", 0.5);
+        rt.key(KeyEvent {
+            key: Key::Escape,
+            mods: Mods::default(),
+        });
+        settle(&mut rt);
+        assert_eq!(
+            rt.state.settings_open, phone,
+            "phone backs out before closing"
+        );
+        assert_eq!(
+            rt.state.settings_ui.category,
+            if phone {
+                None
+            } else {
+                Some(crate::desk::SettingsCategory::Terminal)
+            }
+        );
         no_terminal_input(&client);
     }
 }
