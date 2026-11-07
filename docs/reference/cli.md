@@ -131,6 +131,9 @@ Usage: phux agent <SUBCOMMAND>
 
 Commands:
   answer            Answer a pane's pending agent question by validated choice.
+  app               An application as resources: launched, mirrored from its own
+                    pane, and quit with it. `phux spawn --app` is the short
+                    form.
   clear             Clear a pane's declared agent identity.
   doc               A typed document is a pane's child resource that a producer
                     feeds with whole documents of the content type it was opened
@@ -227,6 +230,62 @@ Flags:
 
 Global flags:
       --socket <PATH>   Server socket to dial (default: `$PHUX_SOCKET`)
+```
+
+## `phux agent app`
+
+```text
+An application as resources: launched, mirrored from its own pane, and quit with
+it. `phux spawn --app` is the short form.
+
+Usage: phux agent app <SUBCOMMAND>
+
+Commands:
+  run   Launch an application and mirror it into this pane until it quits;
+        killing the pane quits the app. `phux spawn --app` runs this in a new
+        pane.
+  help  Print this message or the help of the given subcommand(s)
+
+Flags:
+  -h, --help           Print help
+
+Global flags:
+      --socket <PATH>  Server socket to dial (default: `$PHUX_SOCKET`)
+```
+
+## `phux agent app run`
+
+```text
+Launch an application and mirror it into this pane until it quits; killing the
+pane quits the app. `phux spawn --app` runs this in a new pane.
+
+Usage: phux agent app run [FLAGS] <NAME> [ARGS]…
+
+Arguments:
+  <NAME>   The application: its name on macOS (`TextEdit`), a command or a
+           `.desktop` id on Linux; with `--browser`, the browser (`chrome`,
+           `chromium`, or a path).
+  [ARGS]…  Arguments for the application; they follow `--`.
+
+Flags:
+      --browser [URL]    Launch the browser NAME with a fresh profile and a
+                         debugging port, open URL (default `about:blank`), and
+                         mirror the page.
+      --headless         Run the browser with no window on screen.
+      --interval <MS>    Milliseconds between captures and tree reads (each
+                         mirror's default when absent).
+      --format <FORMAT>  Frame encoding (default png). JPEG frames are several
+                         times smaller; viewers older than JPEG support show
+                         them as invalid.
+                         [possible values: png, jpeg]
+      --quality <Q>      JPEG quality, 1 to 100 (default 70).
+      --max-width <PX>   Scale frames down to at most this many pixels wide.
+      --dry-run          Print what would be launched and exit, launching
+                         nothing.
+  -h, --help             Print help
+
+Global flags:
+      --socket <PATH>    Server socket to dial (default: `$PHUX_SOCKET`)
 ```
 
 ## `phux agent clear`
@@ -6015,6 +6074,17 @@ Flags:
                                  answers the first pane instead of spawning
                                  another. Draw one key per spawn and reuse it on
                                  retry.
+      --app <NAME>               Run an application in the new pane instead of a
+                                 command: launched, mirrored into documents
+                                 under the pane, and quit when the pane is
+                                 killed (`phux agent app run NAME`). A macOS app
+                                 name, a Linux command or `.desktop` id, or with
+                                 `--browser` the browser.
+      --browser [URL]            With `--app`, launch that browser on URL
+                                 (default `about:blank`) with a fresh profile
+                                 and mirror the page.
+      --headless                 With `--browser`, run it with no window on
+                                 screen.
       --json                     Emit stable, versioned JSON on stdout instead
                                  of the human view. On failure, stdout stays
                                  empty and stderr carries one JSON error object.

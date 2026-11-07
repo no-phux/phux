@@ -231,6 +231,32 @@ and return once phux has seen it: `phux agent start NAME --kind KIND
 --target @N`. A kind with no detection manifest is refused. `phux launch
 --list` lists integrations from enabled plugins.
 
+## Drive an application
+
+`phux spawn --app NAME` launches an application in a new pane and
+mirrors it into documents under that pane; killing the pane quits it.
+A browser is the cheapest: its page is a tree and a surface.
+
+```sh
+doc=$(phux spawn --json --app chrome --browser https://example.com --headless)
+pane="@$(printf '%s\n' "$doc" | jq -r .terminal_id)"
+tree=$(printf '%s\n' "$doc" | jq -r '.documents[] | select(.kind == "accessibility_tree") | .id')
+surface=$(printf '%s\n' "$doc" | jq -r '.documents[] | select(.kind == "pixel_surface") | .id')
+phux agent surface snapshot "$surface" --out page.png
+phux agent page click "$surface" 120 80
+phux agent page type "$surface" 'hello'
+phux agent tree follow "$tree" --until 'hello' --timeout 10
+phux kill --yes "$pane"
+```
+
+`documents` lists what opened within 20 s; list later ones with
+`phux ls --json` (`resources` whose `parent` is the pane) or MCP
+`phux_documents`. Over MCP the same loop is `phux_app_open`,
+`phux_surface_snapshot`, `phux_document_click` and `phux_document_type`,
+`phux_tree_wait`, and `phux_app_close`.
+A macOS app name or a Linux command launches that app instead; see
+[applications](./resource-kinds.md#applications).
+
 ## Call phux from a program
 
 Pass `--json` on commands whose `--help` lists it. The document carries

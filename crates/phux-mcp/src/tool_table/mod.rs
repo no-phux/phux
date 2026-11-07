@@ -533,6 +533,22 @@ pub(crate) const TOOLS: &[Row] = &[
         Touches::Wire(&[RESOLVE, "SEND_DOCUMENT_INPUT"]),
     ),
     cli(
+        "phux_app_open",
+        "spawn",
+        Touches::Wire(&[
+            RESOLVE,
+            "SPAWN_RESOURCE",
+            METADATA_WRITE,
+            "GET_METADATA",
+            "KILL_RESOURCE",
+        ]),
+    ),
+    cli(
+        "phux_app_close",
+        "kill",
+        Touches::Wire(&[RESOLVE, "KILL_RESOURCES", "KILL_RESOURCE"]),
+    ),
+    cli(
         "phux_approvals",
         "approvals",
         Touches::Wire(&["LIST_METADATA", "GET_METADATA"]),

@@ -322,6 +322,12 @@ pub(crate) enum AgentAction {
         #[usage(subcommand)]
         action: super::tree::PageAction,
     },
+    /// An application as resources: launched, mirrored from its own pane,
+    /// and quit with it. `phux spawn --app` is the short form.
+    App {
+        #[usage(subcommand)]
+        action: super::tree::AppAction,
+    },
     /// Append one record to a pane's agent session.
     ///
     /// The record is one `AgentEventsJsonlV1` line: `--type` from the closed

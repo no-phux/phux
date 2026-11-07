@@ -139,7 +139,7 @@ pub(super) fn classify(text: &str, tree_request: u64) -> Incoming {
 /// `GET /json` from the browser's `DevTools` server, by hand: one request,
 /// one small body, no HTTP client to carry. Chrome answers HTTP/1.1 only
 /// and keeps the connection open, so the body is read by its length.
-async fn list_pages(port: u16) -> Result<String, String> {
+pub(super) async fn list_pages(port: u16) -> Result<String, String> {
     let mut tcp = TcpStream::connect(("127.0.0.1", port))
         .await
         .map_err(|err| format!("no DevTools server on port {port}: {err}"))?;

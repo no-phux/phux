@@ -183,6 +183,7 @@ pub(crate) fn run_agent(action: &AgentAction, socket: Option<PathBuf>) -> ExitCo
         AgentAction::Surface { action } => tree::run_surface(action, socket),
         AgentAction::Doc { action } => tree::run_doc(action, socket),
         AgentAction::Page { action } => tree::run_page(action, socket),
+        AgentAction::App { action } => tree::run_app(action, socket),
         AgentAction::Wait {
             target,
             any,

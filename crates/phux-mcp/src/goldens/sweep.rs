@@ -34,6 +34,8 @@ fn sweep_args(tool: &str) -> Value {
         "phux_document_click" => json!({ "target": "@1", "x": 1, "y": 1 }),
         "phux_document_key" => json!({ "target": "@1", "key": "Enter" }),
         "phux_document_scroll" => json!({ "target": "@1", "dx": 0, "dy": 1 }),
+        "phux_app_open" => json!({ "name": "chrome", "browser": true, "headless": true }),
+        "phux_app_close" => json!({ "pane": "@1", "confirm": true }),
         "phux_send_keys" => json!({ "target": "@1", "keys": ["x"] }),
         "phux_paste" | "phux_document_type" => json!({ "target": "@1", "text": "x" }),
         "phux_upload" => json!({ "target": "@1", "path": "local.bin" }),

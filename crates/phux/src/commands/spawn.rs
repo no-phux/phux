@@ -48,6 +48,18 @@ impl SpawnDurability {
     }
 }
 
+/// What the new pane runs: `argv` (the default shell when empty), and
+/// whether it is an application helper (`--app`), whose documents the
+/// spawn waits for and reports.
+#[derive(Debug, Default)]
+pub(crate) struct SpawnCommand {
+    pub(crate) app: bool,
+    pub(crate) argv: Vec<String>,
+}
+
+/// How long `phux spawn --app` waits for the app's documents.
+const APP_DOCUMENTS_WAIT: std::time::Duration = std::time::Duration::from_secs(20);
+
 /// Parse an `--idempotency-key` argument, reporting a malformed one as a
 /// usage error before any connection.
 pub(crate) fn parse_key_arg(
@@ -128,9 +140,10 @@ pub(crate) fn run_spawn(
     cwd: Option<String>,
     json: bool,
     socket: Option<PathBuf>,
-    command: Vec<String>,
+    command: SpawnCommand,
     durability: SpawnDurability,
 ) -> ExitCode {
+    let SpawnCommand { app, argv: command } = command;
     let socket_path = socket.unwrap_or_else(default_socket_path);
     let request_id = 1u32;
     let frame = FrameKind::SpawnResource {
@@ -173,6 +186,7 @@ pub(crate) fn run_spawn(
         None => dispatch_spawn(&socket_path, &frame, "spawn", None, json),
     };
     match result {
+        Ok(SpawnResult::Ok(terminal_id)) if app => print_app(&socket_path, &terminal_id, json),
         Ok(SpawnResult::Ok(terminal_id)) => print_spawned(&terminal_id, false, json),
         // A keyed retry inside the server's horizon: the first spawn's pane,
         // already placed by that spawn, so nothing is placed again.
@@ -389,6 +403,51 @@ fn print_spawned(terminal_id: &ResourceId, replayed: bool, json: bool) -> ExitCo
         "Created pane"
     };
     outln!("{verb} {selector}. Next: `phux snapshot {selector}`.");
+    ExitCode::SUCCESS
+}
+
+/// Report an app pane with the documents its helper opened, waiting up to
+/// [`APP_DOCUMENTS_WAIT`] for them; a pane that exits first failed to start.
+fn print_app(socket_path: &Path, pane: &ResourceId, json: bool) -> ExitCode {
+    let rt = match cli_runtime() {
+        Ok(rt) => rt,
+        Err(code) => return code,
+    };
+    let found = rt.block_on(phux_client::app::documents_under(
+        socket_path,
+        pane,
+        phux_client::app::APP_DOCUMENTS,
+        APP_DOCUMENTS_WAIT,
+    ));
+    let documents = match found {
+        Ok(Some(documents)) => documents,
+        Ok(None) => {
+            return json_err::emit(
+                json,
+                &CliError::new(
+                    codes::SPAWN_FAILED,
+                    "the app pane exited before it opened any document",
+                    "run `phux agent app run NAME` inside a pane to see why",
+                ),
+                1,
+            );
+        }
+        Err(err) => return json_err::report_no_server(json, &err, socket_path, "spawn"),
+    };
+    if json {
+        let mut payload = phux_client::spawn::spawned_document(pane, false);
+        payload["documents"] = serde_json::Value::Array(documents);
+        return crate::output::json(&payload);
+    }
+    let selector = phux_client::selector::format_terminal_id(pane);
+    let ids: Vec<&str> = documents
+        .iter()
+        .filter_map(|document| document["id"].as_str())
+        .collect();
+    outln!(
+        "Created app pane {selector}; documents: {}. Next: `phux agent tree snapshot ID`.",
+        if ids.is_empty() { "none yet".to_owned() } else { ids.join(" ") }
+    );
     ExitCode::SUCCESS
 }
 

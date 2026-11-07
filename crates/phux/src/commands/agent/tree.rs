@@ -22,6 +22,8 @@ use crate::exit_codes::{EXIT_FAILURE, EXIT_USAGE};
 
 const SCHEMA_VERSION: u8 = 1;
 
+mod app;
+mod app_launch;
 mod doc;
 mod mirror;
 #[cfg(any(target_os = "linux", test))]
@@ -38,6 +40,7 @@ mod surface_grim_input;
 mod surface_input;
 mod surface_mirror;
 
+pub(crate) use app::{AppAction, run_app};
 pub(crate) use doc::{DocAction, run_doc};
 pub(crate) use page::{PageAction, run_page};
 pub(crate) use surface::SurfaceAction;
