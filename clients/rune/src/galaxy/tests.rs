@@ -89,3 +89,19 @@ fn detail_drops_words_then_calm_names_as_the_camera_pulls_back() {
     assert_eq!(Detail::at(0.5), Detail::Names);
     assert_eq!(Detail::at(0.3), Detail::Urgent);
 }
+
+#[test]
+fn the_default_session_relates_no_one_but_a_project_still_does() {
+    let kin = |session, project| Kin {
+        host: "mini",
+        session,
+        project,
+    };
+    let agents = [
+        kin("default", None),
+        kin("default", None),
+        kin("default", Some("phux")),
+        kin("default", Some("phux")),
+    ];
+    assert_eq!(related(&agents), vec![(2, 3)]);
+}

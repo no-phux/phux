@@ -313,9 +313,11 @@ pub(super) fn stars_on(
             here: false,
             kind: activities.agent_kind(&pane.terminal_id).map(str::to_owned),
             session: pane.session_name.clone(),
-            name: activities
-                .agent_name(&pane.terminal_id)
-                .map_or_else(|| crate::palette::pane_label(pane), str::to_owned),
+            name: star_name(
+                activities.agent_name(&pane.terminal_id),
+                activities.agent_kind(&pane.terminal_id),
+                &crate::palette::pane_label(pane),
+            ),
             mark: activities.mark(&pane.terminal_id),
             work: stats.work(
                 &pane.terminal_id,
@@ -332,6 +334,21 @@ pub(super) fn stars_on(
         .collect()
 }
 
+/// What a star is called: its agent's own name, unless that only says which
+/// harness it is (`claude` from `claude`), when the pane's title says what it
+/// is doing; the title loses the status glyph a harness puts in front.
+fn star_name(agent: Option<&str>, kind: Option<&str>, label: &str) -> String {
+    let title = label
+        .trim_start_matches(|c: char| !c.is_alphanumeric())
+        .trim();
+    match agent {
+        Some(name) if !kind.is_some_and(|kind| name.eq_ignore_ascii_case(kind)) => name.to_owned(),
+        _ if !title.is_empty() => title.to_owned(),
+        Some(name) => name.to_owned(),
+        None => label.to_owned(),
+    }
+}
+
 /// The project its session record names, as the desktop groups sessions.
 fn session_project(topology: &Topology, client: Option<&Client>, session: u32) -> Option<String> {
     let key = topology.sessions.iter().find(|s| s.id == session)?.key?;
@@ -345,4 +362,28 @@ fn session_project(topology: &Topology, client: Option<&Client>, session: u32) -
             .map(|(_, v)| v.clone())
     };
     attr("project.name").or_else(|| attr("project.id"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::star_name;
+
+    #[test]
+    fn a_star_is_named_for_its_work_when_its_agent_only_names_the_harness() {
+        let title = "\u{2733} Clone the website";
+        assert_eq!(
+            star_name(Some("claude"), Some("claude"), title),
+            "Clone the website"
+        );
+        assert_eq!(
+            star_name(Some("Claude"), Some("claude"), title),
+            "Clone the website"
+        );
+        assert_eq!(
+            star_name(Some("build-box"), Some("claude"), title),
+            "build-box"
+        );
+        assert_eq!(star_name(Some("claude"), Some("claude"), "  "), "claude");
+        assert_eq!(star_name(None, None, "deploy"), "deploy");
+    }
 }

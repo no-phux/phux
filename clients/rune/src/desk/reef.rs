@@ -96,7 +96,13 @@ impl Desk {
                 project: s.project.as_deref(),
             })
             .collect();
-        let schools = schools(stars.len(), &galaxy::related(&kin));
+        // A school swims in one reef: related agents on two machines are
+        // linked in the galaxy, not herded into one machine's water.
+        let pairs: Vec<(usize, usize)> = galaxy::related(&kin)
+            .into_iter()
+            .filter(|&(a, b)| stars[a].0 == stars[b].0)
+            .collect();
+        let schools = schools(stars.len(), &pairs);
         // A school's lane is keyed like the prototype's, host/project, from
         // its first agent (its session when it has no project).
         let lanes: Vec<f32> = stars
