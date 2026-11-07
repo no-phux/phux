@@ -35,6 +35,7 @@ pub mod machines;
 pub mod mouse;
 mod palette;
 pub mod phone;
+pub mod questions;
 pub mod reef;
 pub mod resources;
 mod sessions;

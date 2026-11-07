@@ -16,6 +16,7 @@ mod palette;
 mod panes;
 pub(crate) use panes::DIVIDER;
 mod phone;
+mod questions;
 mod reef;
 mod settings;
 mod sidebar;

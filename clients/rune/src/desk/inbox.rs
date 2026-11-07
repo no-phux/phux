@@ -47,6 +47,8 @@ pub struct Inbox {
     pub relist: bool,
     /// The times the open cards show, to redraw when one moves.
     pub clocks: Vec<String>,
+    /// ACP agents' questions, answered over the protocol.
+    pub questions: super::questions::Questions,
 }
 
 impl Desk {
@@ -223,6 +225,24 @@ impl Desk {
     /// Answers and decisions coming back, and the held set changing.
     pub(super) fn inbox_event(&mut self, client: &Client, event: &Event) -> bool {
         match event {
+            Event::NativeAgentResult {
+                operation_id,
+                disposition,
+                detail,
+                ..
+            } => {
+                let questions = &mut self.inbox.questions;
+                questions.receipt(*operation_id, *disposition, detail.as_deref())
+            }
+            Event::AgentPublication { .. }
+            | Event::AgentSessionClosed { .. }
+            | Event::TopologyChanged
+            | Event::StatusChanged(_) => {
+                let lost = matches!(event, Event::StatusChanged(s) if *s != Status::Attached);
+                let unknown = lost && self.inbox.questions.disconnected();
+                self.inbox.questions.refresh(client, self.topology.as_ref());
+                unknown | !matches!(event, Event::TopologyChanged | Event::StatusChanged(_))
+            }
             Event::ApprovalsChanged => {
                 self.inbox.approvals = client.approvals();
                 true
