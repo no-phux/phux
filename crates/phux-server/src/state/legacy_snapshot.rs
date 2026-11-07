@@ -225,8 +225,14 @@ impl ServerState {
                     | ResourceKind::Document
             )
             .then(|| self.resource_producer(id).is_some());
+            let name = self
+                .sessions
+                .registry
+                .record(id)
+                .and_then(|r| r.name.clone());
             panes.push(
                 ResourceInfo::resource(wire, crate::id_bridge::wire_kind(descriptor.kind))
+                    .with_title(name)
                     .with_parent(parent)
                     .with_agent(agent)
                     .with_session(session)
