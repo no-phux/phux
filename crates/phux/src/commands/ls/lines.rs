@@ -94,14 +94,16 @@ pub(super) fn satellite_host_lines(
     lines
 }
 
-/// `  host/@N: satellite terminal` for each of one satellite's Terminals in
-/// the merged snapshot, in snapshot order.
+/// `  host/@N: satellite terminal` for each of one satellite's Terminals that
+/// no listed session claims (#2051), in snapshot order. A claimed pane is
+/// already counted on its session's line.
 pub(super) fn satellite_terminal_lines(
     snapshot: &SessionSnapshot,
     host: &phux_protocol::ids::SatelliteHost,
 ) -> Vec<String> {
     resource::terminals(snapshot)
         .filter(|pane| pane.id.host().is_some_and(|h| h == host))
+        .filter(|pane| snapshot.host_session_of(&pane.id).is_none())
         .map(|pane| {
             format!(
                 "  {}: satellite terminal",
@@ -136,7 +138,7 @@ pub(super) fn plural(n: u16, one: &str, many: &str) -> String {
 pub(super) fn flat_session_lines(snapshot: &SessionSnapshot, local: Vec<String>) -> Vec<String> {
     let mut lines = local;
     for pane in resource::terminals(snapshot) {
-        if pane.id.host().is_some() {
+        if pane.id.host().is_some() && snapshot.host_session_of(&pane.id).is_none() {
             lines.push(format!(
                 "{}: satellite terminal",
                 phux_client::selector::format_terminal_id(&pane.id)

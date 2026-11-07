@@ -74,7 +74,14 @@ pub(super) fn satellite_glance_lines(sources: Sources<'_>, host: &HostInventory)
     }
     let mut by_session: HashMap<SessionId, Vec<&ResourceInfo>> = HashMap::new();
     for pane in satellite_terminals(sources.snapshot, &host.host) {
-        if let Some(session) = pane.session {
+        // A hub before #2051 tags the pane with its satellite-local session
+        // instead of listing it among the session's members.
+        let session = sources
+            .snapshot
+            .host_session_of(&pane.id)
+            .map(|session| session.id)
+            .or(pane.session);
+        if let Some(session) = session {
             by_session.entry(session).or_default().push(pane);
         }
     }
