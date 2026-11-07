@@ -6,6 +6,7 @@
 
 mod camera;
 mod galaxy;
+mod nodes;
 mod plan;
 mod scheme;
 mod sky;
