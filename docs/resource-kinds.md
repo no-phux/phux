@@ -118,6 +118,13 @@ It reports a failure only when it gives up. Each local mirror gets
 --parent-pid PID` exits within a second of that process ending, so a
 desktop killed without dropping its children leaves no producer behind.
 
+## Applications
+
+`phux spawn --app NAME` (MCP `phux_app_open`) launches an application as a
+resource: a pane runs `phux agent app run NAME`, which starts the app, runs
+the mirrors against that pane, and ties their lifetime to the app. The
+launch, lifetime and platform rules are in [Applications](./applications.md).
+
 ## Typed documents
 
 A `Document`'s content type is ASCII `type/subtype` with optional `;`

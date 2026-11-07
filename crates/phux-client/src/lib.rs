@@ -28,6 +28,8 @@ pub mod agent_session_record;
 pub mod agent_prompt;
 // Edge-triggered lifecycle wait over `phux.agent/v1` (ADR-0076 point 5).
 pub mod agent_wait;
+// Applications as resources: the helper pane's argv and its documents.
+pub mod app;
 pub mod approvals;
 pub mod ask;
 pub mod attach;

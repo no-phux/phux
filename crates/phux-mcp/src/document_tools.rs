@@ -8,14 +8,14 @@
 
 mod input;
 
+pub(crate) mod apps;
+
 use std::time::Duration;
 
 use base64::Engine as _;
 use phux_client::attach::connection::Connection;
-use phux_client::resource::kind_name;
-use phux_client::selector::format_terminal_id;
 use phux_client::tree::{self, Document, FollowEnd, TreeError, image_size};
-use phux_protocol::ids::{ResourceId, ResourceKind};
+use phux_protocol::ids::ResourceId;
 use serde_json::{Value, json};
 
 use crate::cli_tools::{schema, string_schema};
@@ -109,24 +109,8 @@ async fn documents(args: &Value) -> Result<Value, ToolError> {
     let documents: Vec<Value> = snapshot
         .resources
         .iter()
-        .filter(|info| {
-            matches!(
-                info.kind,
-                ResourceKind::AccessibilityTree
-                    | ResourceKind::PixelSurface
-                    | ResourceKind::Document
-            )
-        })
-        .map(|info| {
-            json!({
-                "id": format_terminal_id(&info.id),
-                "kind": kind_name(info.kind),
-                "parent": info.parent.as_ref().map(format_terminal_id),
-                "name": info.title,
-                "producer": phux_client::resource::producer_name(info),
-                "control": info.control.map(phux_protocol::wire::frame::ControlClass::name),
-            })
-        })
+        .filter(|info| phux_client::app::is_document(info))
+        .map(phux_client::app::document_entry)
         .collect();
     Ok(json!({
         "schema_version": SCHEMA_VERSION,
@@ -289,8 +273,10 @@ mod tests {
             tree::publish(&mut producer, &surface_id, PNG.to_vec())
                 .await
                 .unwrap();
-            let tree_target = json!({ "target": format_terminal_id(&tree_id) });
-            let surface_target = json!({ "target": format_terminal_id(&surface_id) });
+            let tree_target =
+                json!({ "target": phux_client::selector::format_terminal_id(&tree_id) });
+            let surface_target =
+                json!({ "target": phux_client::selector::format_terminal_id(&surface_id) });
 
             let listed = invoke("phux_documents", &socket, json!({})).await;
             let kinds: Vec<&str> = listed["documents"]

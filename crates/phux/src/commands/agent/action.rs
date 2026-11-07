@@ -127,26 +127,8 @@ pub(crate) enum AgentAction {
         /// pane.
         #[usage(conflicts("--any"))]
         target: Option<String>,
-        /// Wait for the first matching transition from any local agent in
-        /// the fleet instead of resolving one pane.
-        #[usage(long)]
-        any: bool,
-        /// Lifecycle state to wait for; repeat to OR several. Defaults to
-        /// `idle`, `blocked`, `done` — the three ways a turn ends.
-        /// `unknown` is not spellable: it is departure, not a state.
-        #[usage(
-            long,
-            value_name = "STATE",
-            choices("idle", "working", "blocked", "done")
-        )]
-        until: Vec<String>,
-        /// Give up after this many seconds and exit 124. Unbounded when
-        /// omitted, matching `phux wait` — always pass one in a script.
-        #[usage(long, value_name = "SECS")]
-        timeout: Option<u64>,
-        /// Emit the machine-readable result document instead of a line.
-        #[usage(long)]
-        json: bool,
+        #[usage(flatten)]
+        flags: super::action_flags::WaitFlags,
     },
     /// Hand an agent a turn's worth of work, with a delivery receipt.
     ///
@@ -321,6 +303,12 @@ pub(crate) enum AgentAction {
     Page {
         #[usage(subcommand)]
         action: super::tree::PageAction,
+    },
+    /// An application as resources: launched, mirrored from its own pane,
+    /// and quit with it. `phux spawn --app` is the short form.
+    App {
+        #[usage(subcommand)]
+        action: super::tree::AppAction,
     },
     /// Append one record to a pane's agent session.
     ///

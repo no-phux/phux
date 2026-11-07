@@ -15,9 +15,34 @@ pub(super) fn spawn(args: commands::SpawnArgs, socket: Option<PathBuf>) -> ExitC
         cwd,
         retain,
         idempotency_key,
+        app,
+        browser,
+        headless,
         json,
         command,
     } = args;
+    let app = app.map(|name| {
+        phux_client::app::helper_argv(
+            &std::env::current_exe()
+                .map_or_else(|_| "phux".to_owned(), |exe| exe.display().to_string()),
+            phux_client::app::AppSpec {
+                name: &name,
+                browser: browser.as_deref(),
+                headless,
+            },
+        )
+    });
+    if app.is_some() && !command.is_empty() {
+        return commands::json_err::emit(
+            json.json,
+            &commands::json_err::CliError::new(
+                commands::json_err::codes::USAGE_ERROR,
+                "`--app` runs its own command; drop the command after `--`",
+                "pass app arguments with `phux spawn -- phux agent app run NAME -- ARGS`",
+            ),
+            crate::exit_codes::EXIT_USAGE,
+        );
+    }
     match commands::spawn::parse_key_arg(idempotency_key.as_deref(), json.json) {
         Ok(idempotency_key) => commands::spawn::run_spawn(
             satellite,
@@ -28,7 +53,10 @@ pub(super) fn spawn(args: commands::SpawnArgs, socket: Option<PathBuf>) -> ExitC
             cwd,
             json.json,
             socket,
-            command,
+            commands::spawn::SpawnCommand {
+                app: app.is_some(),
+                argv: app.unwrap_or(command),
+            },
             commands::spawn::SpawnDurability {
                 retain_secs: retain,
                 idempotency_key,
