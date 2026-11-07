@@ -8,6 +8,8 @@ use super::Desk;
 use super::input::Modal;
 use crate::keys::{self, Typed};
 
+pub mod spatial;
+
 /// Points the arrow pad travels per arrow key it sends.
 const PAD_STEP: f32 = 16.0;
 
@@ -28,6 +30,14 @@ pub enum Soft {
 
 #[derive(Debug, Clone)]
 pub struct Phone {
+    /// The pruned active group, not the phone's single visible leaf.
+    pub tree: Option<phux_client_core::layout::LayoutNode>,
+    context: Option<(phux_protocol::ids::SessionKey, [u8; 16])>,
+    pub stage: [f32; 2],
+    pub travel: [f32; 2],
+    pub picker: bool,
+    navigation: Option<(phux_protocol::ids::ResourceId, bool)>,
+    history: Option<(phux_protocol::ids::ResourceId, f32)>,
     pub ctrl: bool,
     pub alt: bool,
     pub shift: bool,
@@ -43,6 +53,13 @@ pub struct Phone {
 impl Default for Phone {
     fn default() -> Self {
         Self {
+            tree: None,
+            context: None,
+            stage: [0.0; 2],
+            travel: [0.0; 2],
+            picker: false,
+            navigation: None,
+            history: None,
             ctrl: false,
             alt: false,
             shift: false,
@@ -55,6 +72,29 @@ impl Default for Phone {
 }
 
 impl Phone {
+    pub fn navigating(&self) -> bool {
+        self.navigation.is_some()
+    }
+
+    pub(super) fn reconcile(
+        &mut self,
+        tree: Option<phux_client_core::layout::LayoutNode>,
+        context: Option<(phux_protocol::ids::SessionKey, [u8; 16])>,
+    ) {
+        if self.tree != tree || self.context != context {
+            self.reset_navigation();
+            self.picker = false;
+            self.tree = tree;
+            self.context = context;
+        }
+    }
+
+    pub(super) fn reset_navigation(&mut self) {
+        self.navigation = None;
+        self.travel = [0.0; 2];
+        self.history = None;
+    }
+
     pub const fn latched(&self, latch: Latch) -> bool {
         match latch {
             Latch::Ctrl => self.ctrl,
@@ -115,6 +155,7 @@ enum Field {
     Palette,
     Find,
     Confirm,
+    PanePicker,
 }
 
 /// How many whole steps `travel` has crossed, toward its sign.
@@ -138,6 +179,7 @@ impl Desk {
             Some(Modal::Palette) => Field::Palette,
             Some(Modal::FindField) => Field::Find,
             Some(Modal::Confirm) => Field::Confirm,
+            Some(Modal::PhonePicker) => Field::PanePicker,
             Some(_) => return,
         };
         let Some(phone) = self.phone.as_mut() else {
@@ -155,6 +197,10 @@ impl Desk {
     /// field may have closed and its key would reach the terminal instead.
     fn soft_to_field(&mut self, field: Field, event: &KeyEvent, tx: &mut Tx) {
         let taken = match field {
+            Field::PanePicker => {
+                self.phone_picker_key(event);
+                return;
+            }
             Field::Confirm => {
                 self.confirm_key(event);
                 return;

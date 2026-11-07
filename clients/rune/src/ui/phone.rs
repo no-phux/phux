@@ -34,7 +34,8 @@ const SYMBOLS: [&str; 3] = ["1234567890", "-/:;()$&@\"", ".,?!'`|~"];
 pub fn view(desk: &Desk, cx: &mut Cx<Desk>) -> El {
     let p = super::ink(cx.system_dark(), cx.accent(), desk.settings.theme);
     cx.foreground(p.text);
-    let phone = desk.phone.clone().unwrap_or_default();
+    let fallback = Phone::default();
+    let phone = desk.phone.as_ref().unwrap_or(&fallback);
     // The terminal's own ground runs under everything, as on a phone.
     let ground = desk
         .client
@@ -68,8 +69,8 @@ pub fn view(desk: &Desk, cx: &mut Cx<Desk>) -> El {
         .child(top_bar(desk, &p))
         .child(stage)
         .child(tab_pills(desk, &p))
-        .child(accessory(&phone, &p))
-        .child(keyboard(&phone, &p));
+        .child(accessory(phone, &p))
+        .child(keyboard(phone, &p));
     el().w_full()
         .h_full()
         .fill(ground)
@@ -254,8 +255,8 @@ fn tab_pills(desk: &Desk, p: &Ink) -> El {
         .center()
         .child(pills)
         .child(new);
-    // Under the palette the tabs would switch what it acts on.
-    if desk.palette_open {
+    // A modal owns the current group until it closes.
+    if desk.modal().is_some() {
         strip.inert()
     } else {
         strip

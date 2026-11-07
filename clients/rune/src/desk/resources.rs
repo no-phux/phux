@@ -343,8 +343,7 @@ impl Desk {
             return;
         }
         self.resources.returning = Some(old.record.key);
-        self.drop_shown(client);
-        self.wanted = None;
+        self.close_shown(client);
         self.mirror_unavailable();
     }
 

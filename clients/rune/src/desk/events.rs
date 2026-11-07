@@ -185,8 +185,7 @@ impl Desk {
         let document = self.forget_document(id);
         if self.shown.as_ref().is_some_and(|s| &s.terminal == id) {
             let next = self
-                .layout
-                .as_ref()
+                .navigation_tree()
                 .and_then(|tree| layout::neighbour(tree, id));
             self.close_shown(client);
             if let Some(next) = next {

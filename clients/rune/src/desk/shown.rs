@@ -20,6 +20,9 @@ impl Desk {
     }
 
     pub(super) fn drop_shown(&mut self, client: &Client) -> Option<ResourceId> {
+        if let Some(phone) = self.phone.as_mut() {
+            phone.reset_navigation();
+        }
         let shown = self.shown.take()?;
         if let Some(view) = shown.view {
             let _ = client.destroy_view(view);
@@ -30,14 +33,27 @@ impl Desk {
     }
 
     pub(super) fn close_shown(&mut self, client: &Client) {
+        // Document removal/hiding also comes through here. Its desktop
+        // callers know only the visible layout, so retain the phone's full
+        // group fallback before dropping the focused leaf.
+        let next = self.phone.as_ref().and_then(|phone| {
+            let shown = self.shown.as_ref()?;
+            super::layout::neighbour(phone.tree.as_ref()?, &shown.terminal)
+        });
         self.drop_shown(client);
         // Fall back to whatever the server now focuses.
         self.wanted = None;
+        if let Some(next) = next {
+            self.want(next);
+        }
     }
 
     /// A new connection may be a new server incarnation, whose engine forgot
     /// every view: open the shown terminal again on this connection.
     pub(super) fn reopen_after_reconnect(&mut self, client: &Client) -> bool {
+        if let Some(phone) = self.phone.as_mut() {
+            phone.reconcile(None, None);
+        }
         for view in self.others.drain().filter_map(|(_, v)| v) {
             let _ = client.destroy_view(view);
         }
@@ -172,6 +188,12 @@ impl Desk {
             terminal: target,
             view,
         });
+        if let Some(phone) = self.phone.as_mut() {
+            phone.reset_navigation();
+            self.layout = Some(phux_client_core::layout::LayoutNode::Leaf(
+                self.shown.as_ref().expect("just opened").terminal.clone(),
+            ));
+        }
         self.wanted = None;
         self.clear_passing_notice();
         self.say_link_moved();
