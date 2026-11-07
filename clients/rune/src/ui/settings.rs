@@ -27,6 +27,9 @@ fn search(desk: &Desk, ink: &Ink) -> El {
         .label("Search Settings")
         .single_line()
         .min_h(44.0)
+        // Native input lays out from its top inset, not the row's alignment.
+        // COPY has an 18-point line: equal 13-point insets center it in 44.
+        .py(13.0)
         .grow(1.0)
         .min_w(0.0)
         .color(ink.text)

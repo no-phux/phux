@@ -75,6 +75,45 @@ fn native_search_editing_and_tab_do_not_change_preferences() {
     assert_eq!(rt.state.settings_ui.query.text, "clipboard");
 }
 
+fn assert_search_caret_centered(rt: &Runtime<Desk>) {
+    let query = rt
+        .elements()
+        .into_iter()
+        .find(|el| el.key.as_deref() == Some("settings-query"))
+        .unwrap();
+    let [_, y, _, h] = query.rect;
+    let [_, caret_y, _, caret_h] = query.caret.expect("focused search has a native caret");
+    assert!(
+        h >= 44.0,
+        "the complete native field remains a 44-point target"
+    );
+    assert!(
+        (caret_y + caret_h / 2.0 - y - h / 2.0).abs() <= 1.0,
+        "caret {caret_y} + {caret_h}/2 must align with field {y} + {h}/2"
+    );
+}
+
+#[test]
+fn search_placeholder_and_typed_caret_are_centered_in_the_full_touch_field() {
+    for (phone, size) in [
+        (false, (1100.0, 720.0)),
+        (true, (393.0, 852.0)),
+        (true, (320.0, 568.0)),
+    ] {
+        let mut rt = runtime(size, phone);
+        assert!(rt.accessibility_action("settings-query", Action::Focus, None));
+        rt.frame(0.0);
+        assert_search_caret_centered(&rt);
+        rt.key(KeyEvent {
+            key: Key::Text("clipboard".into()),
+            mods: Mods::default(),
+        });
+        rt.frame(0.0);
+        assert_eq!(rt.state.settings_ui.query.text, "clipboard");
+        assert_search_caret_centered(&rt);
+    }
+}
+
 #[test]
 fn touching_clear_keeps_the_search_keyboard_and_draft_blur_preserves_text() {
     let mut rt = runtime((393.0, 852.0), true);
@@ -229,5 +268,18 @@ fn settings_native_render_frames() {
         });
         rt.frame(0.0);
         render(&gpu, &mut renderer, &mut rt, size, &format!("{name}-dark"));
+        assert!(rt.accessibility_action("settings-query", Action::Focus, None));
+        rt.key(KeyEvent {
+            key: Key::Text("clipboard".into()),
+            mods: Mods::default(),
+        });
+        rt.frame(0.0);
+        render(
+            &gpu,
+            &mut renderer,
+            &mut rt,
+            size,
+            &format!("{name}-typed-search"),
+        );
     }
 }
