@@ -7,6 +7,10 @@
 //! this process (the terminal, or the phux desktop app). Without it, macOS
 //! hands over an image with no window content rather than an error.
 //!
+//! Viewers' input intents (`phux agent page click|type|key`, or any `SEND_DOCUMENT_INPUT`) are
+//! posted as input events on macOS (`surface_input`); `--dry-run-input`
+//! logs them instead.
+//!
 //! On Linux, `grim` captures from a wlroots compositor (Hyprland, Sway); see
 //! `surface_grim`.
 
@@ -33,6 +37,8 @@ pub(super) struct MirrorArgs<'a> {
     pub(super) interval_ms: u64,
     /// How each capture is encoded.
     pub(super) frames: super::surface::Frames,
+    /// Log the input events viewers' intents would post instead of posting.
+    pub(super) dry_run_input: bool,
     pub(super) json: bool,
     pub(super) socket: Option<PathBuf>,
 }
@@ -77,6 +83,7 @@ pub(super) fn run_mirror(args: MirrorArgs<'_>) -> ExitCode {
         pane,
         interval_ms,
         frames,
+        dry_run_input,
         json,
         socket,
     } = args;
@@ -105,7 +112,32 @@ pub(super) fn run_mirror(args: MirrorArgs<'_>) -> ExitCode {
             Err(code) => return code,
         };
         let label = format!("{target:?}");
-        let mut capture = platform::capturer(target, frames);
+        #[cfg(target_os = "macos")]
+        let mut injector = super::surface_input::Injector::new(
+            match target {
+                macos::Target::Window(id) => Some(id),
+                macos::Target::MainDisplay => None,
+            },
+            dry_run_input,
+        );
+        #[cfg(target_os = "macos")]
+        let act = move |input: &tree::DocumentInput, frame| injector.act(input, frame);
+        #[cfg(target_os = "linux")]
+        let act = |input: &tree::DocumentInput, _: (u32, u32)| {
+            tracing::debug!(?input, "this mirror takes no input yet");
+        };
+        let mut platform_capture = platform::capturer(target, frames);
+        let mut faked = false;
+        // A dry run goes on without a capture grant, on a blank frame.
+        let mut capture = move || match platform_capture() {
+            Err(message) if dry_run_input => {
+                if !std::mem::replace(&mut faked, true) {
+                    eprintln!("dry-run: capture failed ({message}); publishing a blank frame");
+                }
+                Ok(super::surface_input::DRY_RUN_FRAME.to_vec())
+            }
+            other => other,
+        };
         // A refused capture must not leave an empty surface behind.
         let first = match capture() {
             Ok(bytes) => bytes,
@@ -129,12 +161,21 @@ pub(super) fn run_mirror(args: MirrorArgs<'_>) -> ExitCode {
             outln!("{resource}");
         }
         let interval = Duration::from_millis(interval_ms.max(100));
-        publish_until_gone(&mut conn, &opened.resource, capture, first, interval, json).await
+        publish_until_gone(
+            &mut conn,
+            &opened.resource,
+            (capture, act),
+            first,
+            interval,
+            json,
+        )
+        .await
     })
 }
 
 /// Publish every changed capture until Ctrl-C, or until three captures in a
-/// row fail.
+/// row fail, and `act` on every intent viewers send between captures with
+/// the newest frame's size.
 #[cfg(any(target_os = "macos", target_os = "linux"))]
 #[allow(
     clippy::future_not_send,
@@ -143,7 +184,10 @@ pub(super) fn run_mirror(args: MirrorArgs<'_>) -> ExitCode {
 async fn publish_until_gone(
     conn: &mut phux_client::attach::connection::Connection,
     resource: &phux_protocol::ids::ResourceId,
-    mut capture: impl FnMut() -> Result<Vec<u8>, String>,
+    (mut capture, mut act): (
+        impl FnMut() -> Result<Vec<u8>, String>,
+        impl FnMut(&phux_client::tree::DocumentInput, (u32, u32)),
+    ),
     first: Vec<u8>,
     interval: std::time::Duration,
     json: bool,
@@ -151,7 +195,10 @@ async fn publish_until_gone(
     use crate::commands::agent::tree::report;
     use phux_client::tree;
 
-    if let Err(err) = tree::publish(conn, resource, first.clone()).await {
+    let size = |image: &[u8]| tree::image_size(image).map_or((0, 0), |(_, w, h)| (w, h));
+    let mut intents = Vec::new();
+    let mut frame = size(&first);
+    if let Err(err) = tree::publish_collecting(conn, resource, first.clone(), &mut intents).await {
         return report(json, &err);
     }
     let mut last = Some(first);
@@ -160,8 +207,11 @@ async fn publish_until_gone(
         match capture() {
             Ok(bytes) => {
                 misses = 0;
+                frame = size(&bytes);
                 if last.as_deref() != Some(bytes.as_slice()) {
-                    if let Err(err) = tree::publish(conn, resource, bytes.clone()).await {
+                    if let Err(err) =
+                        tree::publish_collecting(conn, resource, bytes.clone(), &mut intents).await
+                    {
                         return report(json, &err);
                     }
                     last = Some(bytes);
@@ -174,9 +224,21 @@ async fn publish_until_gone(
                 }
             }
         }
-        tokio::select! {
-            _ = tokio::signal::ctrl_c() => return ExitCode::SUCCESS,
-            () = tokio::time::sleep(interval) => {}
+        let next = tokio::time::Instant::now() + interval;
+        loop {
+            for intent in std::mem::take(&mut intents) {
+                if intent.resource == *resource {
+                    act(&intent.input, frame);
+                }
+            }
+            tokio::select! {
+                _ = tokio::signal::ctrl_c() => return ExitCode::SUCCESS,
+                () = tokio::time::sleep_until(next) => break,
+                received = conn.recv() => match received {
+                    Ok(received) => intents.extend(tree::intent(&received)),
+                    Err(err) => return report(json, &err.into()),
+                },
+            }
         }
     }
 }
@@ -231,7 +293,7 @@ mod macos {
     /// automation bridge to CoreGraphics: no bindings, no `unsafe`.
     const WINDOW_LIST: &str = r#"ObjC.import("CoreGraphics");
 const list = $.CGWindowListCopyWindowInfo($.kCGWindowListOptionOnScreenOnly | $.kCGWindowListExcludeDesktopElements, 0);
-const windows = ObjC.deepUnwrap($.CFBridgingRelease(list)) || [];
+const windows = ObjC.deepUnwrap(ObjC.castRefToObject(list)) || [];
 JSON.stringify(windows.map(w => ({ id: w.kCGWindowNumber, owner: w.kCGWindowOwnerName, name: w.kCGWindowName || "", layer: w.kCGWindowLayer })));"#;
 
     /// The first normal-layer on-screen window of `App`, or of `App:title`

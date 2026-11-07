@@ -1042,6 +1042,9 @@ Flags:
                           [possible values: png, jpeg]
       --quality <Q>       JPEG quality, 1 to 100 (default 70).
       --max-width <PX>    Scale frames down to at most this many pixels wide.
+      --dry-run-input     Log the input events viewers' intents would post
+                          (macOS) instead of posting them; a refused capture
+                          publishes a blank frame.
       --json
   -h, --help              Print help
 

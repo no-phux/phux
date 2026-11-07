@@ -33,7 +33,11 @@ resizing and file uploads do not control their source. Input goes to the
 producer instead: `SEND_DOCUMENT_INPUT` relays one typed intent to the
 connection that opened the document ([protocol](./protocol.md#commands-events-resources)),
 and `phux agent page navigate|click|type|key` drive a mirrored browser page
-this way. Desktop and mobile do not send input yet. Desktop can transfer a
+this way. The same verbs drive a macOS `phux agent surface mirror`: it posts
+clicks, text, keys and scrolls as system input at the window's or display's
+screen points (raising a window's app first), which needs the Accessibility
+grant for the app that started it; `--dry-run-input` logs the events
+instead. Desktop and mobile do not send input yet. Desktop can transfer a
 view between windows once the destination accepts the exact subscription;
 closing a document placement leaves its producer and other viewers running.
 
