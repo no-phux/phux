@@ -152,6 +152,7 @@ impl Phone {
 /// What a drawn key types into while something else has the keyboard.
 #[derive(Debug, Clone, Copy)]
 enum Field {
+    Settings,
     Palette,
     Find,
     Confirm,
@@ -180,6 +181,7 @@ impl Desk {
             Some(Modal::FindField) => Field::Find,
             Some(Modal::Confirm) => Field::Confirm,
             Some(Modal::PhonePicker) => Field::PanePicker,
+            Some(Modal::Settings) => Field::Settings,
             Some(_) => return,
         };
         let Some(phone) = self.phone.as_mut() else {
@@ -197,6 +199,10 @@ impl Desk {
     /// field may have closed and its key would reach the terminal instead.
     fn soft_to_field(&mut self, field: Field, event: &KeyEvent, tx: &mut Tx) {
         let taken = match field {
+            Field::Settings => {
+                self.settings_soft(event, tx);
+                return;
+            }
             Field::PanePicker => {
                 self.phone_picker_key(event);
                 return;
@@ -266,9 +272,33 @@ impl Desk {
         }
     }
 
-    pub fn toggle_keyboard(&mut self) {
+    /// Settings owns its search keyboard without changing the terminal's choice.
+    pub fn phone_keyboard_visible(&self) -> bool {
+        if self.settings_open {
+            self.settings_search_focused()
+        } else {
+            self.phone.as_ref().is_some_and(|phone| phone.keyboard)
+        }
+    }
+
+    pub fn toggle_keyboard(&mut self, tx: &mut Tx) {
+        if self.settings_open {
+            self.blur_settings_search(tx);
+            return;
+        }
         if let Some(phone) = self.phone.as_mut() {
             phone.keyboard = !phone.keyboard;
+        }
+    }
+
+    /// Accessory commands follow the same modal policy as native key chords.
+    pub fn phone_commands(&mut self, tx: &mut Tx) {
+        if self.settings_open {
+            self.blur_settings_search(tx);
+        } else if let Some(modal) = self.modal() {
+            self.modal_command(modal, crate::keys::Shortcut::Palette, tx);
+        } else {
+            self.shortcut(crate::keys::Shortcut::Palette, tx);
         }
     }
 

@@ -37,6 +37,7 @@ pub fn view(desk: &Desk, cx: &mut Cx<Desk>) -> El {
     cx.foreground(p.text);
     let fallback = Phone::default();
     let phone = desk.phone.as_ref().unwrap_or(&fallback);
+    let keyboard_visible = desk.phone_keyboard_visible();
     // The terminal's own ground runs under everything, as on a phone.
     let ground = desk
         .client
@@ -50,35 +51,27 @@ pub fn view(desk: &Desk, cx: &mut Cx<Desk>) -> El {
     } else {
         STATUS_INSET
     };
-    let stage = col()
-        .key("phone-stage")
-        .grow(1.0)
-        .w_full()
-        .min_h(0.0)
-        .min_w(0.0)
-        .px(4.0)
-        .child(panes::view(desk, &p, cx))
-        .children(status::confirm_bar(desk, &p))
-        .children(overlay::toast(desk, &p))
-        // Over the terminal only: the keyboard below types into its field.
-        .children(desk.palette_open.then(|| palette::view(desk, &p, 8.0)));
+    let stage = phone_stage(desk, &p, cx);
     let screen = col()
         .key("phone")
         .w_full()
         .h_full()
         .pt(top)
-        .child(top_bar(desk, &p))
+        .children((!desk.settings_open).then(|| top_bar(desk, &p)))
         .child(stage)
-        .child(tab_pills(desk, &p))
-        .child(accessory(phone, &p))
-        .child(keyboard(phone, &p));
+        .children((!desk.settings_open).then(|| tab_pills(desk, &p)))
+        .children((!desk.settings_open || keyboard_visible).then(|| accessory(desk, phone, &p)))
+        .child(keyboard(phone, keyboard_visible, &p));
     el().w_full()
         .h_full()
-        .fill(ground)
+        .fill(if desk.settings_open {
+            p.sidebar
+        } else {
+            ground
+        })
         .child(screen)
         .children(status::banner(desk, &p))
         .children(desk.inbox.open.then(|| inbox::view(desk, &p)))
-        .children(desk.settings_open.then(|| settings::view(desk, &p)))
         .children(machines::sheet(desk, &p))
         .children(tabs::rename_sheet(desk, &p))
         .children(
@@ -86,6 +79,25 @@ pub fn view(desk: &Desk, cx: &mut Cx<Desk>) -> El {
                 .menu
                 .map(|at| palette::context_menu(desk, at, &p)),
         )
+}
+
+/// Modals precede the drawn keyboard so its keys belong to their fields.
+fn phone_stage(desk: &Desk, p: &Ink, cx: &mut Cx<Desk>) -> El {
+    col()
+        .key("phone-stage")
+        .grow(1.0)
+        .w_full()
+        .min_h(0.0)
+        .min_w(0.0)
+        .px(if desk.settings_open { 0.0 } else { 4.0 })
+        .child(if desk.settings_open {
+            settings::view(desk, p)
+        } else {
+            panes::view(desk, p, cx)
+        })
+        .children(status::confirm_bar(desk, p))
+        .children(overlay::toast(desk, p))
+        .children(desk.palette_open.then(|| palette::view(desk, p, 8.0)))
 }
 
 /// Liquid glass: what it floats over, blurred (`blur`) and tinted, under a
@@ -280,7 +292,7 @@ fn chip(key: String, name: &'static str, content: El, lit: bool, p: &Ink) -> El 
         .child(content)
 }
 
-fn accessory(phone: &Phone, p: &Ink) -> El {
+fn accessory(desk: &Desk, phone: &Phone, p: &Ink) -> El {
     let send = |label: &'static str, name: &'static str, key: Key| {
         chip(
             format!("phone-key-{name}"),
@@ -337,14 +349,14 @@ fn accessory(phone: &Phone, p: &Ink) -> El {
         .size(ROUND, ROUND)
         .radius(ROUND / 2.0)
         .center()
-        .fill(if phone.keyboard {
+        .fill(if desk.phone_keyboard_visible() {
             p.current
         } else {
             Color::TRANSPARENT
         })
         .press(p.hover)
         .cursor(Cursor::Pointer)
-        .label(if phone.keyboard {
+        .label(if desk.phone_keyboard_visible() {
             "Hide keyboard"
         } else {
             "Show keyboard"
@@ -360,12 +372,18 @@ fn accessory(phone: &Phone, p: &Ink) -> El {
     .child(toggle);
     let command = round(
         "phone-command",
-        "Commands",
-        text("⌘").font(CHIP).color(p.text),
+        if desk.settings_open {
+            "Done editing Settings"
+        } else {
+            "Commands"
+        },
+        text(if desk.settings_open { "✓" } else { "⌘" })
+            .font(CHIP)
+            .color(p.text),
         false,
         p,
     )
-    .on_press_tx(|d: &mut Desk, tx| d.shortcut(Shortcut::Palette, tx));
+    .on_press_tx(Desk::phone_commands);
     row()
         .key("phone-accessory")
         .preserve_focus_on_press(true)
@@ -394,8 +412,8 @@ fn cap(key: String, name: String, content: El, fill: Color, p: &Ink) -> El {
 }
 
 /// The drawn keyboard, until Rune brings up the system's on a phone.
-fn keyboard(phone: &Phone, p: &Ink) -> El {
-    if !phone.keyboard {
+fn keyboard(phone: &Phone, visible: bool, p: &Ink) -> El {
+    if !visible {
         return el().key("phone-home").h(HOME_INSET);
     }
     let letter = p.text.alpha(0.22);
@@ -422,19 +440,6 @@ fn keyboard(phone: &Phone, p: &Ink) -> El {
         }
         line
     };
-    let shift = if phone.symbols {
-        el().w(KEY_H)
-    } else {
-        cap(
-            "phone-cap-shift".to_owned(),
-            "Shift".to_owned(),
-            glyph(&icons::SHIFT, 18.0, if capital { p.bg } else { p.text }),
-            if capital { p.text } else { function },
-            p,
-        )
-        .w(KEY_H)
-        .on_press(Desk::toggle_capital)
-    };
     let backspace = cap(
         "phone-cap-backspace".to_owned(),
         "Delete".to_owned(),
@@ -447,7 +452,7 @@ fn keyboard(phone: &Phone, p: &Ink) -> El {
     let third = row()
         .w_full()
         .gap(6.0)
-        .child(shift)
+        .child(shift_cap(phone, capital, p))
         .child(line(rows[2], 8.0).grow(1.0).min_w(0.0))
         .child(backspace);
     let word = |label: &'static str, key: &'static str| {
@@ -504,4 +509,19 @@ fn keyboard(phone: &Phone, p: &Ink) -> El {
         .child(line(rows[1], if phone.symbols { 0.0 } else { 18.0 }))
         .child(third)
         .child(bottom)
+}
+
+fn shift_cap(phone: &Phone, capital: bool, p: &Ink) -> El {
+    if phone.symbols {
+        return el().w(KEY_H);
+    }
+    cap(
+        "phone-cap-shift".to_owned(),
+        "Shift".to_owned(),
+        glyph(&icons::SHIFT, 18.0, if capital { p.bg } else { p.text }),
+        if capital { p.text } else { p.text.alpha(0.1) },
+        p,
+    )
+    .w(KEY_H)
+    .on_press(Desk::toggle_capital)
 }

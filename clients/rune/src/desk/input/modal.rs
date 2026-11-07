@@ -32,7 +32,8 @@ impl Modal {
                 Shortcut::Copy | Shortcut::Paste | Shortcut::SelectAll
             ),
             Self::Palette => matches!(action, Shortcut::Palette),
-            Self::Inbox | Self::Galaxy | Self::Reef | Self::Settings => action.works_over_sheets(),
+            Self::Settings => matches!(action, Shortcut::Find) || action.works_over_sheets(),
+            Self::Inbox | Self::Galaxy | Self::Reef => action.works_over_sheets(),
             Self::ContextMenu
             | Self::Machines
             | Self::Rename

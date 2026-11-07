@@ -133,6 +133,10 @@ impl Desk {
         if !modal.allows(action) {
             return;
         }
+        if modal == Modal::Settings && action == Shortcut::Find {
+            self.focus_settings_search();
+            return;
+        }
         if modal == Modal::Palette {
             tx.blur();
         }
