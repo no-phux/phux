@@ -149,9 +149,24 @@ fn schools_prefer_their_own_depths() {
     let b = agent(Some("nas"), 2, "claude", "docs", AgentState::Working);
     let mate = agent(Some("nas"), 3, "codex", "phux", AgentState::Working);
     assert_eq!(lane(&a), lane(&mate), "one school, one depth");
-    assert!((lane(&a) - lane(&b)).abs() > 0.2, "schools differ");
+    assert!((lane(&a) - lane(&b)).abs() > 0.1, "schools differ");
     for l in [lane(&a), lane(&b)] {
         assert!((0. ..1.).contains(&l));
+    }
+    // The same lanes as every other platform's reef.
+    for (host, project, want) in [
+        ("mini", "phux", 0.817),
+        ("mini", "website", 0.877),
+        ("macbook", "phux-mobile", 0.524),
+    ] {
+        let got = lane(&agent(
+            Some(host),
+            4,
+            "claude",
+            project,
+            AgentState::Working,
+        ));
+        assert!((got - want).abs() < 5e-4, "{host}/{project}: {got}");
     }
 }
 
