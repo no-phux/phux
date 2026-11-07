@@ -134,10 +134,17 @@ session (or `--session NAME`). It never creates a session on its own.
   across rows count. Only `http`, `https` and `mailto` open.
 - **History.** Scrolled back, a pane shows where it is in its history and a
   pill back to the live tail that counts the lines that arrived meanwhile.
-- **Settings.** ⌘, picks a theme (the GPUI desktop's twenty-six, or the
-  OS; arrow keys preview it live on your terminals), text size,
-  notifications, Option as Meta, and copy on select. All of it is remembered
-  between launches. A program's own OSC colours beat the theme.
+- **Settings.** ⌘, opens grouped Appearance, Terminal, Notifications,
+  Remote Hosts, Developer, and About & Updates sections, with local navigation
+  on desktop and category drilldown on phone. Search Settings matches names,
+  descriptions, categories and current values across all sections, including
+  useful aliases such as **font**, **zoom**, and **colours**. **Theme**
+  opens the existing live-preview palette; Return keeps a choice and Escape
+  restores the old theme, both returning to Settings. Text size, notifications,
+  Option as Meta (macOS), copy on select, and close confirmation are remembered
+  immediately. Diagnostics stays available in development builds; update errors
+  and protocol warnings remain visible during search. A program's own OSC
+  colours beat the theme.
 - **Themes.** The palette switches themes by name (`nord`) and **Change
   Theme** lists them with each one shown live as the highlight moves:
   Return keeps it, Escape puts the old one back. A Ghostty config on this machine (`theme`,

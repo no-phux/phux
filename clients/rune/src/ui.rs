@@ -19,6 +19,7 @@ mod phone;
 mod reef;
 mod settings;
 mod sidebar;
+mod spatial;
 mod status;
 mod tabs;
 mod updates;

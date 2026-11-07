@@ -36,6 +36,9 @@ pub fn view(desk: &Desk, ink: &Ink, cx: &mut Cx<Desk>) -> El {
         }
         return area.child(card(waiting, ink.bg, Lit::Resting, ink));
     };
+    if let Some(phone) = &desk.phone {
+        return super::spatial::view(desk, phone, ink, area);
+    }
     let several = matches!(tree, LayoutNode::Split { .. });
     area.child(node(desk, &tree, &mut Vec::new(), several, ink))
         .children(perf::hud(ink.dim))
@@ -173,7 +176,7 @@ fn float(id: &ResourceId, card: El) -> El {
         .transition(Transition::scale(0.98).combined(Transition::opacity()))
 }
 
-fn pane(desk: &Desk, id: &ResourceId, several: bool, ink: &Ink) -> El {
+pub(super) fn pane(desk: &Desk, id: &ResourceId, several: bool, ink: &Ink) -> El {
     let focused = desk.shown.as_ref().is_some_and(|s| &s.terminal == id);
     if desk.is_document(id) {
         let lit = if focused && several {
@@ -287,6 +290,9 @@ fn terminal_layer(
 
 /// Only terminal cards install terminal mouse, drop, and history handlers.
 fn terminal_input(host: El, desk: &Desk, id: &ResourceId) -> El {
+    if desk.phone.is_some() && !desk.shown.as_ref().is_some_and(|s| &s.terminal == id) {
+        return host.inert();
+    }
     let (wheel, press, moved, left, dropped, menu) = (
         id.clone(),
         id.clone(),

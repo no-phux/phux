@@ -68,6 +68,9 @@ impl Desk {
 
     /// A pane's grid moved or resized: `[x, y, w, h]` in window points.
     pub fn laid_out(&mut self, terminal: ResourceId, [x, y, w, h]: [f32; 4]) {
+        if self.phone.is_some() && !self.shown.as_ref().is_some_and(|s| s.terminal == terminal) {
+            return;
+        }
         self.origins.insert(terminal.clone(), [x, y]);
         self.areas.insert(terminal, [w, h]);
         self.fit();
@@ -84,7 +87,11 @@ impl Desk {
         let Some(client) = self.client.clone() else {
             return;
         };
-        let mut on_screen: Vec<ResourceId> = self.others.keys().cloned().collect();
+        let mut on_screen: Vec<ResourceId> = if self.phone.is_some() {
+            Vec::new()
+        } else {
+            self.others.keys().cloned().collect()
+        };
         on_screen.extend(self.shown.as_ref().map(|s| s.terminal.clone()));
         let metrics = self.metrics();
         let cell = metrics.cell_px();

@@ -7,6 +7,8 @@ use rune::{Runtime, TouchPhase};
 
 use super::*;
 
+mod settings;
+
 fn fixture() -> (std::sync::Arc<Client>, Runtime<Desk>) {
     let (client, mut rt) = crate::grid::budget::input_fixture();
     rt.state.phone = Some(Phone::default());
@@ -122,11 +124,11 @@ fn confirmation_over_find_neither_edits_nor_types_into_the_terminal() {
 #[test]
 fn unsupported_sheets_never_send_soft_keys_to_the_terminal() {
     let (client, mut rt) = fixture();
-    rt.state.settings_open = true;
+    rt.state.inbox.open = true;
     rt.frame(0.0);
     rt.update(|desk, tx| desk.soft(Soft::Char('x'), tx));
     settle(&mut rt);
-    assert!(rt.state.settings_open);
+    assert!(rt.state.inbox.open);
     no_terminal_input(&client);
 }
 

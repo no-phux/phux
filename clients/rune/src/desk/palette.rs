@@ -166,9 +166,9 @@ impl Desk {
 
     /// The palette over everything else, listing `mode`.
     pub(super) fn open_palette(&mut self, mode: Mode) {
-        self.close_settings();
         self.close_inbox();
         self.close_palette();
+        self.close_settings();
         self.toggle_palette();
         self.palette_mode = mode;
     }
@@ -287,6 +287,9 @@ impl Desk {
         if let Some(before) = self.theme_before.take() {
             self.settings.theme = before;
             self.apply_theme();
+        }
+        if std::mem::take(&mut self.settings_ui.return_from_themes) {
+            self.settings_open = true;
         }
     }
 
