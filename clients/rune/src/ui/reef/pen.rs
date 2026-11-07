@@ -29,6 +29,8 @@ pub fn rgba(c: Rgb, a: f32) -> Color {
 /// Paints world points through the camera, as the prototype's `setT`.
 pub struct Pen {
     shape: Shape,
+    /// Times every alpha painted: a fry is drawn at 0.8.
+    pub fade: f32,
     /// Screen is `world * z + o`.
     z: f32,
     o: Pt,
@@ -38,6 +40,7 @@ impl Pen {
     pub fn new() -> Pen {
         Pen {
             shape: Shape::new(),
+            fade: 1.0,
             z: 1.0,
             o: [0.0, 0.0],
         }
@@ -69,6 +72,7 @@ impl Pen {
     }
 
     pub fn fill(&mut self, pts: &[Pt], c: Rgb, a: f32) {
+        let a = a * self.fade;
         if a < 0.004 || pts.len() < 3 {
             return;
         }
@@ -78,6 +82,7 @@ impl Pen {
 
     /// A polyline `w` world points wide.
     pub fn stroke(&mut self, pts: &[Pt], closed: bool, w: f32, c: Rgb, a: f32) {
+        let a = a * self.fade;
         if a < 0.004 || pts.len() < 2 {
             return;
         }

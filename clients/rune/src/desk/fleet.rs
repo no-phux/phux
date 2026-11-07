@@ -1,10 +1,11 @@
 //! The other machines, watched while the galaxy or the reef is open: one
 //! read-only connection each (no attach, no views), folding its topology and
 //! agent events the way this window folds its own, so their agents show as
-//! stars and fish. Nothing is watched while both views are closed.
+//! stars and fish, and each one's agent stats ([`crate::creature`]), as
+//! this window's own. Nothing is watched while both views are closed.
 
 use std::collections::{HashMap, HashSet};
-use std::sync::Arc;
+use std::sync::{Arc, Weak};
 
 use phux_client_runtime::control::{ControlOptions, Status, Topology};
 use phux_client_runtime::{Client, ClientOptions, Runtime, Target};
@@ -14,6 +15,7 @@ use phux_protocol::wire::frame::RolePolicy;
 use super::galaxy::Star;
 use super::{Desk, Wake};
 use crate::activity::Activities;
+use crate::creature::{self, Stats};
 
 /// One other machine's server, as a watch sees it.
 pub struct Watch {
@@ -21,14 +23,22 @@ pub struct Watch {
     topology: Option<Topology>,
     activities: Activities,
     status: Status,
+    stats: Stats,
+    /// Whether the stats key has been asked for on this connection.
+    asked: bool,
 }
 
 impl Watch {
     /// Its agents, ids tagged with the machine so they never meet this
     /// window's own; `None` until its topology has arrived.
-    pub fn stars(&self, machine: &Option<String>) -> Option<Vec<Star>> {
+    pub fn stars(&self, machine: &Option<String>, now: f64) -> Option<Vec<Star>> {
         let topology = self.topology.as_ref()?;
-        let stars = super::galaxy::stars_on(topology, &self.activities, Some(&self.client));
+        let stars = super::galaxy::stars_on(
+            topology,
+            &self.activities,
+            Some(&self.client),
+            (&self.stats, now),
+        );
         Some(tag(stars, machine))
     }
 
@@ -58,6 +68,25 @@ pub struct Fleet {
     pub watches: HashMap<Option<String>, Watch>,
     /// Machines that could not be dialed this time the views were open.
     refused: HashSet<Option<String>>,
+    /// This window's own machine's agent stats, and the client asked for them.
+    pub here: Stats,
+    here_client: Weak<Client>,
+}
+
+/// Ask `client` for the stats key, true once asked; take any value it sent.
+/// The runtime keeps the key subscribed across reattaches.
+fn take_stats(client: &Client, asked: &mut bool, stats: &mut Stats, now: f64) -> bool {
+    if !*asked {
+        *asked = client.watch_global_metadata(creature::KEY.to_owned()) != 0;
+    }
+    let mut changed = false;
+    for value in client.take_global_metadata() {
+        if value.key == creature::KEY {
+            *stats = Stats::parse(value.value.as_deref(), now);
+            changed = true;
+        }
+    }
+    changed
 }
 
 impl Desk {
@@ -82,11 +111,21 @@ impl Desk {
                 }
             }
         }
-        let mut changed = false;
+        let mut changed = self.take_own_stats();
         for watch in self.fleet.watches.values_mut() {
             let mut observation = watch.client.take_activity();
-            changed |= observation.status != watch.status;
+            if observation.status != watch.status {
+                // A new connection subscribes afresh.
+                watch.asked = false;
+                changed = true;
+            }
             watch.status = observation.status;
+            changed |= take_stats(
+                &watch.client,
+                &mut watch.asked,
+                &mut watch.stats,
+                self.clock,
+            );
             if let Some(topology) = observation.topology.take()
                 && watch.topology.as_ref() != Some(&topology)
             {
@@ -98,6 +137,21 @@ impl Desk {
             }
         }
         changed
+    }
+
+    /// This window's own connection's stats, asked for once per client.
+    fn take_own_stats(&mut self) -> bool {
+        let Some(client) = self.client.clone() else {
+            return false;
+        };
+        let fleet = &mut self.fleet;
+        if !Weak::ptr_eq(&fleet.here_client, &Arc::downgrade(&client)) {
+            fleet.here = Stats::default();
+            // Remembered by the runtime, and asked again on every attach.
+            let _ = client.watch_global_metadata(creature::KEY.to_owned());
+            fleet.here_client = Arc::downgrade(&client);
+        }
+        take_stats(&client, &mut true, &mut fleet.here, self.clock)
     }
 
     /// Every machine but this window's that a window can dial: this computer
@@ -145,6 +199,8 @@ impl Desk {
             topology: None,
             activities: Activities::default(),
             status: Status::Idle,
+            stats: Stats::default(),
+            asked: false,
         })
     }
 }
@@ -165,6 +221,7 @@ mod tests {
             name: "agent".into(),
             mark: Mark::Working,
             project: None,
+            work: None,
         }
     }
 
