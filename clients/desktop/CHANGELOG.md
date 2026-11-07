@@ -62,6 +62,17 @@
 - Reject raw terminal input and file drops for pending or retained ACP owners
   before filesystem access or remote upload, including during reconnects.
 
+## [0.58.0](https://github.com/no-phux/phux/compare/desktop-v0.57.0...desktop-v0.58.0) (2026-11-07)
+
+
+### Features
+
+* a typed document kind whose resources carry a content type ([#2023](https://github.com/no-phux/phux/issues/2023)) ([494881f](https://github.com/no-phux/phux/commit/494881f7512fd1e935c68cb991f0601f5e2259da))
+* **desktop:** galaxy command center in the hud's visual language ([#2030](https://github.com/no-phux/phux/issues/2030)) ([ac2e44f](https://github.com/no-phux/phux/commit/ac2e44f3c9802dbf079f2579a693b0d53b961bfb))
+* **desktop:** galaxy map and related-agent links in the fleet playground ([#2024](https://github.com/no-phux/phux/issues/2024)) ([b2ed0e4](https://github.com/no-phux/phux/commit/b2ed0e4fe454ae57f7479270f3382dd1052ab97d))
+* jpeg frames in a pixel surface, opt-in from both mirrors ([#2027](https://github.com/no-phux/phux/issues/2027)) ([d6a5038](https://github.com/no-phux/phux/commit/d6a5038a8122d9a52f68cc2ad48b834108ef2626))
+* supervise document producers ([#2026](https://github.com/no-phux/phux/issues/2026)) ([0037e88](https://github.com/no-phux/phux/commit/0037e88062d2d4612eb85fed81f6658ced5c955d))
+
 ## [0.57.0](https://github.com/no-phux/phux/compare/desktop-v0.56.1...desktop-v0.57.0) (2026-11-06)
 
 
