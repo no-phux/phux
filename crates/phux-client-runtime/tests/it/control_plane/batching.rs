@@ -310,6 +310,30 @@ fn input_is_not_admitted_after_the_server_ends_the_attach() {
     }
 }
 
+/// A killed session leaves the socket up: subscribing to a terminal on it
+/// takes input again, where the other endings wait for a new connection.
+#[test]
+fn input_resumes_on_the_same_connection_after_a_killed_session() {
+    let (mut plane, attach_id) = negotiated();
+    attach(&mut plane, attach_id, b"ready");
+    let _ = plane.take_outbound();
+    plane
+        .feed(FrameKind::Detached {
+            reason: Some(DetachReason::SessionKilled),
+            message: String::new(),
+        })
+        .expect("a non-fatal ending");
+    assert!(!plane.input_ready(&terminal()), "not before it subscribes");
+    let request_id = plane.attach_terminal(&terminal());
+    plane
+        .feed(FrameKind::CommandResult {
+            request_id,
+            result: CommandResult::Ok,
+        })
+        .unwrap();
+    assert!(plane.input_ready(&terminal()));
+}
+
 #[cfg(feature = "engine")]
 #[test]
 fn a_batch_cannot_hide_a_fatal_error_behind_an_earlier_stale_generation() {

@@ -50,6 +50,10 @@ impl ControlPlane {
                 engine.reset_connection();
             }
             self.damaged.clear();
+            // What the old incarnation listed proves nothing about this one:
+            // kept, its absence reads as a close that would hide the Terminal
+            // that later takes the recycled id.
+            self.listings = crate::control::topology::Listings::default();
             // The new incarnation reuses resource ids, a Terminal's as
             // readily as an agent session's.
             self.end_agent_incarnation();
@@ -440,9 +444,16 @@ impl ControlPlane {
         message: &str,
     ) -> Result<(), ControlError> {
         self.forget_roster_subscriptions();
-        // Revoked, expired, replaced or killed: the server ended this attach.
-        // Input sent before the socket closes would only reach a refusal.
+        // Revoked, expired or replaced: the server ended this attach. Input
+        // sent before the socket closes would only reach a refusal.
         self.attach_ended = true;
+        // A killed session keeps the socket open and frees this client's
+        // terminals, so input only stops until it subscribes to another.
+        if reason == Some(DetachReason::SessionKilled) {
+            self.attach_ended = false;
+            self.attach_terminals.clear();
+            self.terminal_attached.clear();
+        }
         self.push_event(Event::Detached {
             reason,
             message: message.to_owned(),
@@ -472,8 +483,8 @@ impl ControlPlane {
         if fatal && self.options.automatic_lifecycle {
             return Err(ControlError::Refused(detail));
         }
-        // Other endings: the server closes the socket itself, and the
-        // frames it sent ahead of the close still apply.
+        // Other endings but a killed session: the server closes the socket
+        // itself, and the frames it sent ahead of the close still apply.
         Ok(())
     }
 }
