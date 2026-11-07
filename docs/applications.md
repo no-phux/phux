@@ -35,3 +35,17 @@ On macOS a pane holds no capture grant, so `phux spawn --app` and
 `phux_app_open` refuse a non-browser app. The desktop's
 [Open App…](../clients/desktop/OPEN_APP.md) runs the helper as its own
 child instead, so Screen Recording and Accessibility apply.
+
+## Capture cadence and input
+
+A window or display mirror (`phux agent surface mirror`) captures every
+`--interval` (default 1000ms) while nobody sends it input. An input intent
+brings the next capture forward to 50ms after the event is posted, then
+the mirror captures every 150ms for two seconds after the last input
+before it falls back to the interval. The fast interval is measured from
+the end of the previous capture, so a slow capture still leaves 150ms of
+rest between two. A capture identical to the last one is not published,
+and on macOS an unchanged capture skips the `sips` re-encode.
+
+A page mirror needs none of this: Chrome's screencast sends a frame when
+the page repaints, so a click shows in the next frame.
