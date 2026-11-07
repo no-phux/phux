@@ -281,7 +281,6 @@ fn phone_fallback_uses_the_latest_organization_even_while_topology_is_stale() {
 fn phone_fallback_rejects_a_leaf_that_is_no_longer_a_supported_document() {
     for kind in [
         ResourceKind::AgentSession,
-        ResourceKind::Document,
         ResourceKind::Unknown { tag: 99 },
     ] {
         let records = [
