@@ -41,7 +41,8 @@ pub struct Star {
     pub session: String,
     pub name: String,
     pub mark: Mark,
-    pub cwd: Option<String>,
+    /// The session's project (the desktop's rule), else the directory's.
+    pub project: Option<String>,
 }
 
 /// A machine. Only the connected one lists its agents; another shows what
@@ -146,9 +147,35 @@ impl Desk {
                     .agent_name(&pane.terminal_id)
                     .map_or_else(|| crate::palette::pane_label(pane), str::to_owned),
                 mark: self.activities.mark(&pane.terminal_id),
-                cwd: pane.cwd.clone(),
+                project: self.session_project(pane.session_id).or_else(|| {
+                    pane.cwd
+                        .as_deref()
+                        .and_then(crate::galaxy::project)
+                        .map(str::to_owned)
+                }),
             })
             .collect()
+    }
+
+    /// The project its session record names, as the desktop groups sessions.
+    fn session_project(&self, session: u32) -> Option<String> {
+        let key = self
+            .topology
+            .as_ref()?
+            .sessions
+            .iter()
+            .find(|s| s.id == session)?
+            .key?;
+        let organization = self.client.as_ref()?.organization();
+        let record = organization.session(&key)?;
+        let attr = |name: &str| {
+            record
+                .attrs
+                .iter()
+                .find(|(k, v)| k == name && !v.is_empty())
+                .map(|(_, v)| v.clone())
+        };
+        attr("project.name").or_else(|| attr("project.id"))
     }
 
     pub fn galaxy_plan(planets: &[Planet]) -> Plan {

@@ -55,7 +55,7 @@ pub(super) fn view(desk: &Desk, p: &Ink, cx: &mut Cx<Desk>) -> El {
             Kin {
                 host: &planets[at].name,
                 session: &star.session,
-                project: star.cwd.as_deref().and_then(galaxy::project),
+                project: star.project.as_deref(),
             }
         })
         .collect();
