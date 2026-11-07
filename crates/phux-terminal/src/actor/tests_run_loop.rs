@@ -67,12 +67,7 @@ mod input_snapshot_fast_path_tests {
     async fn only_a_mode_change_publishes_the_snapshot() {
         let bundle = TerminalActor::new(80, 24).expect("actor");
         let mut actor = bundle.actor;
-        let mut snapshots = bundle
-            .handle
-            .facet::<crate::TerminalHandle>()
-            .expect("terminal facet")
-            .input_snapshot
-            .clone();
+        let mut snapshots = actor.input_snapshot_tx.subscribe();
         snapshots.borrow_and_update();
 
         feed(&mut actor, b"hello").await;

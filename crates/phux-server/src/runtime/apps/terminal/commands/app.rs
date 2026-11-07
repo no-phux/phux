@@ -6,20 +6,43 @@
 
 use futures_util::FutureExt as _;
 use futures_util::future::LocalBoxFuture;
-use phux_terminal::actor::TerminalResource as _;
+use phux_protocol::ids::{OperationId, ResourceKey, Revision};
+use phux_protocol::wire::frame::SpawnError;
+use phux_terminal_api::actor::TerminalResource as _;
 
 use super::*;
 use crate::resource::ResourceKind;
-use crate::runtime::apps::{ResourceApp, StreamBootstrap};
+use crate::runtime::apps::{
+    FrameAdmission, ResourceApp, ResourceFrame, ResourceLaunch, ResourceSpawn, StreamBootstrap,
+};
+use crate::runtime::connections::dispatch::FrameFlow;
 use crate::runtime::operation_dedupe::OperationClaim;
 
 /// Serves [`ResourceKind::Terminal`].
 #[derive(Debug)]
 pub(crate) struct TerminalApp;
 
+/// The refusal a Terminal stream gets on a connection whose `HELLO` offered
+/// no Terminal bootstrap profile. The connection stays.
+pub(crate) const NO_TERMINAL_PROFILE: &str = "this connection offered no Terminal bootstrap profile at HELLO, so it cannot consume a Terminal stream";
+
 impl ResourceApp for TerminalApp {
-    fn kind(&self) -> ResourceKind {
-        ResourceKind::Terminal
+    fn supports_organization_launch(&self) -> bool {
+        true
+    }
+
+    fn launch(&self, launch: ResourceLaunch<'_>) -> Result<(), String> {
+        super::super::launch::execute(launch)
+    }
+
+    fn stage_session<'a>(
+        &'a self,
+        capture: crate::runtime::session_attach::SessionCapture<'a>,
+        staging: &'a mut crate::runtime::session_attach::staging::SessionStaging,
+        pane: crate::state::AttachSnapshotPane,
+    ) -> LocalBoxFuture<'a, Result<(), crate::runtime::session_attach::staging::CaptureFailure>>
+    {
+        super::super::attach::stage_session(capture, staging, pane).boxed_local()
     }
 
     fn defers_stream_bootstrap(&self) -> bool {
@@ -35,7 +58,7 @@ impl ResourceApp for TerminalApp {
     }
 
     fn metrics(&self) -> &'static [phux_perf::Metric] {
-        phux_terminal::perf::TABLE
+        &[] // Engine metrics are supplied explicitly by the runtime composition.
     }
 
     fn release_consumer(&self, handle: &ResourceHandle, client: ClientId) {
@@ -65,22 +88,90 @@ impl ResourceApp for TerminalApp {
     ) -> LocalBoxFuture<'a, Result<(), AttachResourceFailure>> {
         bootstrap_stream(stream).boxed_local()
     }
+
+    fn frame_admission(&self, frame: &FrameKind) -> FrameAdmission {
+        match frame {
+            FrameKind::InputKey { .. }
+            | FrameKind::InputMouse { .. }
+            | FrameKind::InputFocus { .. }
+            | FrameKind::InputPaste { .. } => FrameAdmission::AttachedInput,
+            FrameKind::FrameAck { .. } => FrameAdmission::Subscription,
+            _ => FrameAdmission::Unrestricted,
+        }
+    }
+
+    fn frame<'a>(
+        &'a self,
+        ctx: ResourceFrame<'a>,
+        frame: FrameKind,
+    ) -> LocalBoxFuture<'a, FrameFlow> {
+        super::super::frames::serve_frame(ctx, frame).boxed_local()
+    }
+
+    fn spawn<'a>(&'a self, spawn: ResourceSpawn<'a>) -> LocalBoxFuture<'a, ()> {
+        // A Terminal spawn needs the whole `SpawnRequest` (argv, cwd, size,
+        // owner), so `handle_spawn_terminal` serves it before dispatching here; a
+        // spawn that reaches this arm is a host bug, refused rather than
+        // started without its launch.
+        error!(
+            request_id = spawn.request_id,
+            "a Terminal SPAWN_RESOURCE reached the app without its request"
+        );
+        Box::pin(crate::runtime::spawn_reply::refuse_spawn(
+            spawn.out_tx,
+            spawn.request_id,
+            SpawnError::UnsupportedKind,
+        ))
+    }
+
+    fn resumed(&self, _state: &SharedState) {
+        // Terminals come back whole from the blob: nothing waits on a resume.
+    }
+
+    fn resource_exited<'a>(
+        &'a self,
+        _state: &'a SharedState,
+        _resource: phux_core::ids::ResourceId,
+    ) -> LocalBoxFuture<'a, ()> {
+        // The host's pane-exit path retires a Terminal itself.
+        Box::pin(std::future::ready(()))
+    }
+
+    fn claim_relaunch(
+        &self,
+        _ctx: &CommandContext,
+        _operation: OperationId,
+        _resource: &ResourceKey,
+        _expected: Revision,
+    ) -> Option<CommandResult> {
+        // A Terminal relaunch is the organization path's.
+        None
+    }
+}
+
+/// The Terminal facet of a handle `app_for` routed here. A miss means the
+/// handle's kind and facet disagree, which leaks a consumer: say so.
+fn routed_terminal(handle: &ResourceHandle) -> Option<&phux_terminal_api::actor::TerminalHandle> {
+    handle
+        .terminal()
+        .inspect_err(|error| tracing::error!(%error, "consumer teardown skipped"))
+        .ok()
 }
 
 /// Free a client's native cut and consumer entry without blocking: a full
 /// mailbox is reaped by `tick_emit` when the client's mailbox closes.
 fn release_terminal_consumer(handle: &ResourceHandle, client_id: ClientId) {
-    let Ok(terminal) = handle.terminal() else {
+    let Some(terminal) = routed_terminal(handle) else {
         return;
     };
     #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
     let _ = terminal
         .native_release
-        .try_send(phux_terminal::actor::NativeReleaseRequest { owner: client_id.0 });
+        .try_send(phux_terminal_api::actor::NativeReleaseRequest { owner: client_id.0 });
     let (reply_tx, _reply_rx) = oneshot::channel();
     match terminal
         .consumer_detach
-        .try_send(phux_terminal::actor::ConsumerDetachRequest {
+        .try_send(phux_terminal_api::actor::ConsumerDetachRequest {
             client_id: crate::runtime::wire_client(client_id),
             reply: reply_tx,
         }) {
@@ -103,13 +194,13 @@ fn release_terminal_consumer(handle: &ResourceHandle, client_id: ClientId) {
 /// Drop a consumer and wait for the actor's reply, so nothing it emitted can
 /// follow what the caller queues next.
 async fn fence_terminal_consumer(handle: &ResourceHandle, client_id: ClientId) {
-    let Ok(terminal) = handle.terminal() else {
+    let Some(terminal) = routed_terminal(handle) else {
         return;
     };
     let (reply_tx, reply_rx) = oneshot::channel();
     let _ = terminal
         .consumer_detach
-        .send(phux_terminal::actor::ConsumerDetachRequest {
+        .send(phux_terminal_api::actor::ConsumerDetachRequest {
             client_id: crate::runtime::wire_client(client_id),
             reply: reply_tx,
         })
@@ -139,7 +230,7 @@ async fn serve(
             upload_id,
             terminal_id,
         } => {
-            crate::runtime::voice::handle_transcribe(
+            crate::runtime::apps::terminal::voice::handle_transcribe(
                 state,
                 client_id,
                 upload_id,
@@ -158,13 +249,20 @@ async fn serve(
             // A held `ROUTE_INPUT` waits for a pane input credit exactly as a
             // direct one does (ADR-0144).
             Some(lane) => {
-                match crate::runtime::input_lane::acquire_credit(state, &terminal_id).await {
+                match crate::runtime::apps::terminal::input_lane::acquire_credit(
+                    state,
+                    &terminal_id,
+                )
+                .await
+                {
                     Ok(credit) => {
                         lane.begin_route(state, client_id, terminal_id, event, credit)
                             .await
                     }
-                    Err(crate::runtime::input_lane::InputStalled) => {
-                        crate::runtime::input_lane::InputStalled::result(&terminal_id)
+                    Err(crate::runtime::apps::terminal::input_lane::InputStalled) => {
+                        crate::runtime::apps::terminal::input_lane::InputStalled::result(
+                            &terminal_id,
+                        )
                     }
                 }
             }
@@ -222,9 +320,9 @@ async fn serve(
             final_chunk,
             sha256,
         } => {
-            crate::runtime::upload::handle_put_file(
+            crate::runtime::apps::terminal::upload::handle_put_file(
                 state,
-                crate::runtime::upload::PutFileChunk {
+                crate::runtime::apps::terminal::upload::PutFileChunk {
                     upload_id,
                     terminal_id,
                     extension,
@@ -232,8 +330,9 @@ async fn serve(
                     data,
                     final_chunk,
                     sha256,
-                    principal: state
-                        .with(|s| crate::runtime::upload::upload_principal(s, client_id)),
+                    principal: state.with(|s| {
+                        crate::runtime::apps::terminal::upload::upload_principal(s, client_id)
+                    }),
                 },
             )
             .await
@@ -241,7 +340,7 @@ async fn serve(
         Command::Checkout {
             terminal_id,
             request,
-        } => crate::runtime::checkout::handle(state, &terminal_id, request).await,
+        } => crate::runtime::apps::terminal::checkout::handle(state, &terminal_id, request).await,
         Command::ReportAsked {
             terminal_id,
             id,
@@ -284,7 +383,14 @@ async fn bootstrap_stream(stream: StreamBootstrap<'_>) -> Result<(), AttachResou
         connection_token,
         ..
     } = stream;
-    let Some(stream_profile) = crate::runtime::attach::bootstrap_stream_profile(bootstrap_profile)
+    let Some(bootstrap_profile) = bootstrap_profile else {
+        return Err(AttachResourceFailure {
+            code: ErrorCode::CodecUnavailable,
+            message: NO_TERMINAL_PROFILE.to_owned(),
+        });
+    };
+    let Some(stream_profile) =
+        crate::runtime::apps::terminal::attach::bootstrap_stream_profile(bootstrap_profile)
     else {
         return Err(AttachResourceFailure {
             code: ErrorCode::CodecUnavailable,

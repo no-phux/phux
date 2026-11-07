@@ -6,6 +6,7 @@ use phux_client_core::engine::ClipboardText;
 use phux_client_core::history::HistoryStatus;
 use phux_client_core::org_ops::OrgOutcome;
 use phux_client_core::session::AgentStreamInfo;
+pub use phux_client_core::session::DocumentPublication;
 pub use phux_client_core::session::agent_stream::{AgentPublication, AgentRecordMode};
 use phux_client_core::session::{HistoryUnavailableReason, KernelSend};
 use phux_protocol::ClientId;
@@ -281,6 +282,16 @@ pub enum Event {
         /// The project tag, or `None` when it was removed.
         project: Option<String>,
     },
+    /// Whether something under the terminal runs outside its foreground
+    /// group (a backgrounded job, an agent's detached command), from the
+    /// server-owned `phux.pane-occupant/v1` record. A record without the
+    /// field, from an older server, reads `false`.
+    BackgroundWork {
+        /// The terminal.
+        terminal_id: ResourceId,
+        /// Whether background work is running.
+        running: bool,
+    },
     /// Whether a question is pending in the terminal now: the server-owned
     /// `phux.agent.asked/v1` flag (docs/protocol.md), from a fenced read or a live
     /// change, re-read after every gap and reconnect.
@@ -339,13 +350,23 @@ pub enum Event {
     /// drain (`take_events`) or, after [`take_events_leased`](super::ControlPlane::take_events_leased),
     /// [`ControlPlane::accept_agent_publication`](super::ControlPlane::accept_agent_publication).
     /// Acceptance is the consumer taking delivery, not the end of a view
-    /// borrow. The record vector is not copied. `stream` on the publication
+    /// borrow. A full retained cut supersedes prior same-resource unaccepted
+    /// publications; resume appends keep their prefix. The vector is not copied.
+    /// `stream` on the publication
     /// is the commit watermark, including an empty publication.
     AgentPublication {
         /// The committed batch and its watermark.
         publication: Arc<AgentPublication>,
         /// The resource's parent and provider identity.
         session: AgentSessionInfo,
+    },
+    /// A replicated document (`docs/resource-kinds.md`) arrived whole: the
+    /// bootstrap cut of an attached `AccessibilityTree` or `PixelSurface`,
+    /// or a newer publish of it. Live-only: nothing is journaled, and the
+    /// newest document for a resource is the one to show.
+    DocumentPublished {
+        /// The document, its kind, and its publish sequence.
+        publication: Arc<DocumentPublication>,
     },
     /// An `AgentSession` stream the runtime subscribed
     /// (`ControlOptions::subscribe_agent_sessions`) ended: the server

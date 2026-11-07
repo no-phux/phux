@@ -3,15 +3,19 @@
 //! Journal stamps do not version `GET_STATE` or `GET_METADATA` replies. Explicit
 //! gaps trigger recovery; a numeric jump in a filtered event stream does not.
 //!
-//! Two Terminal-scoped keys are recovered this way: the `phux.agent/v1`
-//! declaration ([`Event::AgentMetadata`]) and the server-owned
-//! `phux.agent.asked/v1` flag ([`Event::AgentAskedState`], docs/protocol.md).
+//! Three Terminal-scoped keys are recovered this way: the `phux.agent/v1`
+//! declaration ([`Event::AgentMetadata`]), the server-owned
+//! `phux.agent.asked/v1` flag ([`Event::AgentAskedState`], docs/protocol.md),
+//! and the server-owned `phux.pane-occupant/v1` record's background flag
+//! ([`Event::BackgroundWork`]).
 //! `AgentAsked` only announces a question; the flag is the level that says
 //! whether one is still pending, so it is what retracts a question after a
 //! gap or a reconnect instead of leaving it to resurrect.
 
 use phux_protocol::caps::Layer;
-use phux_protocol::wire::frame::{RESOURCE_AGENT_KEY, RESOURCE_ASKED_KEY, Scope};
+use phux_protocol::wire::frame::{
+    RESOURCE_AGENT_KEY, RESOURCE_ASKED_KEY, RESOURCE_PANE_OCCUPANT_KEY, Scope,
+};
 
 use super::{
     AgentEvent, CommandResult, CommandValue, ControlError, ControlPlane, ErrorCode, Event,
@@ -59,15 +63,18 @@ enum RosterKey {
     Agent,
     /// `phux.agent.asked/v1`.
     Asked,
+    /// `phux.pane-occupant/v1`, for its `background` flag.
+    Occupant,
 }
 
 impl RosterKey {
-    const ALL: [Self; 2] = [Self::Agent, Self::Asked];
+    const ALL: [Self; 3] = [Self::Agent, Self::Asked, Self::Occupant];
 
     const fn wire(self) -> &'static str {
         match self {
             Self::Agent => RESOURCE_AGENT_KEY,
             Self::Asked => RESOURCE_ASKED_KEY,
+            Self::Occupant => RESOURCE_PANE_OCCUPANT_KEY,
         }
     }
 
@@ -252,6 +259,13 @@ impl ControlPlane {
                 }
                 Event::AgentAskedState { terminal_id, asked }
             }
+            RosterKey::Occupant => Event::BackgroundWork {
+                terminal_id,
+                running: value
+                    .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok())
+                    .and_then(|record| record["background"].as_bool())
+                    .unwrap_or(false),
+            },
         };
         self.push_event(event);
     }

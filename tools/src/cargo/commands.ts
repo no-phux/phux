@@ -7,8 +7,14 @@ import { hint, status } from "../lib/output.ts";
 import { repoPath } from "../lib/repo.ts";
 import { readGraphs, violations } from "./build-features.ts";
 import { applyFixes, compare, requiredDependencies } from "./host-lock.ts";
-import { syncLocks } from "./lock.ts";
-import { configViolations, locksInStep, readConfig } from "./release-orchestration.ts";
+import {
+  configViolations,
+  DESKTOP_TRAIN,
+  lockFileViolations,
+  locksInStep,
+  readConfig,
+  writeLockFiles,
+} from "./release-orchestration.ts";
 
 function flagAndPaths(args: string[], flag: string) {
   const { values, positionals } = parseArgs({
@@ -51,28 +57,21 @@ function hostLock(args: string[]): number {
 }
 
 export const commands: Record<string, Command> = {
-  "sync-path-lock-versions": {
-    summary:
-      "Align standalone Cargo.locks' path crate versions with the root lock (--check: report).",
-    usage: "[--check] ROOT_LOCK TARGET_LOCK...",
-    run(args) {
-      const { set: check, paths } = flagAndPaths(args, "check");
-      const [rootLock, ...targets] = paths;
-      if (rootLock === undefined || targets.length === 0) {
-        throw new UsageError("a root lock and at least one target lock are required");
-      }
-      return syncLocks(rootLock, targets, check) ? 0 : 1;
-    },
-  },
   "desktop-host-lock": {
     summary: "Check (--fix: repair) that the desktop host lock satisfies a --locked build.",
     usage: "[--fix] [ROOT_LOCK [HOST_LOCK]]",
     run: hostLock,
   },
   "release-orchestration-check": {
-    summary: "Check the Release Please settings and the standalone locks' path crate versions.",
-    run() {
-      const failures = configViolations(readConfig());
+    summary: "Check the Release Please settings and lock bumps (--fix: regenerate the lock bumps).",
+    usage: "[--fix]",
+    run(args) {
+      if (flagAndPaths(args, "fix").set) writeLockFiles();
+      const config = readConfig();
+      const failures = [
+        ...configViolations(config, readConfig(undefined, DESKTOP_TRAIN.config)),
+        ...lockFileViolations(config),
+      ];
       if (!locksInStep()) failures.push("standalone Cargo.lock path crate versions drifted");
       return report(failures, "release orchestration passed");
     },
@@ -80,6 +79,6 @@ export const commands: Record<string, Command> = {
   "build-features-check": {
     summary: "Check production dependency feature boundaries from `cargo tree` (compile-free).",
     run: () =>
-      report(violations(readGraphs()), "production feature boundaries hold (full, lean, mcp)"),
+      report(violations(readGraphs()), "production feature and host/engine boundaries hold"),
   },
 };

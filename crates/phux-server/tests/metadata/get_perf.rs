@@ -89,7 +89,7 @@ fn get_perf_reports_hot_path_metrics_and_resets_on_request() {
     run_local(async {
         let tmp = TempDir::new().unwrap();
         let socket_path = tmp.path().join("phux.sock");
-        let mut cmd = portable_pty::CommandBuilder::new("/bin/sh");
+        let mut cmd = phux_server::LaunchCommand::new("/bin/sh");
         cmd.arg("-c");
         cmd.arg("printf 'perf probe\\n'; sleep 30");
         let (shutdown_tx, server_handle) =

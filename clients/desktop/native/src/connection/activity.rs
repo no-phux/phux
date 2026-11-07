@@ -54,6 +54,9 @@ impl Connection {
             self.error = None;
         }
         self.accept(&observation.events, observation.connection_epoch);
+        self.documents.collect();
+        self.retain_documents();
+        self.refresh_document_subscriptions();
         self.attach_pinned_home();
         // Inventory needs the same arrangement-group label fallback as an
         // attached window. These are metadata reads, never terminal attaches.
@@ -86,6 +89,7 @@ impl Connection {
                 self.conversation_heads.clear();
             }
             if self.identity.as_ref() != Some(&next) {
+                self.documents.clear();
                 self.forget_session_metadata();
             }
             self.identity = Some(next);
@@ -194,54 +198,10 @@ impl Connection {
             .is_some_and(|identity| identity.connection_epoch == epoch);
         for (index, event) in events.iter().enumerate() {
             let live = same_identity && boundary.is_none_or(|boundary| index > boundary);
-            match event {
-                _ if starts_connection(event) => {
-                    self.forget_session_metadata();
-                    // A new boundary can reuse ids; never trust an old admission.
-                    self.admitted.clear();
-                }
-                Event::ServerError { message, .. } => self.error = Some(message.clone()),
-                Event::ApprovalDecision {
-                    id,
-                    decision,
-                    outcome,
-                } => self.approval_outcomes.push(ApprovalOutcome {
-                    id: *id,
-                    decision: *decision,
-                    outcome: outcome.clone(),
-                }),
-                Event::AgentMetadata { terminal_id, value } if live => {
-                    self.agents_noted |=
-                        note_agent(&mut self.agents, terminal_id, value.as_deref(), now_ms());
-                }
-                Event::AgentPublication {
-                    publication,
-                    session,
-                } if live => self.publish(publication, session, epoch),
-                Event::AgentSessionClosed { terminal_id, .. } if live => {
-                    if let Some(conversation) = self.conversations.get_mut(terminal_id) {
-                        conversation.closed = true;
-                        conversation.revision = conversation.revision.saturating_add(1);
-                    }
-                }
-                Event::SessionProject { name, project } => {
-                    note_project(&mut self.project_tag, name, project.as_deref());
-                }
-                Event::TerminalClosed { terminal_id, .. } => {
-                    self.agents.remove(terminal_id);
-                    self.admitted.remove(terminal_id);
-                    self.conversation_heads.remove(terminal_id);
-                    self.conversations
-                        .retain(|_, conversation| &conversation.parent != terminal_id);
-                }
-                _ => {
-                    if let Some(id) = admitted_terminal(event) {
-                        // A successful spawn/attach admits this exact resource;
-                        // a topology refresh listing it is a later round trip.
-                        self.admitted.insert(id.clone());
-                    }
-                }
+            if live {
+                self.accept_publication(event, epoch);
             }
+            self.accept_lifecycle(event);
         }
         self.conversations.retain(|resource, conversation| {
             self.conversation_heads.get(&conversation.parent) == Some(resource)
@@ -256,6 +216,76 @@ impl Connection {
             event.changes_session_graph() || matches!(event, Event::SessionProject { .. })
         }) {
             self.rebuild_projects();
+        }
+    }
+
+    fn accept_publication(&mut self, event: &Event, epoch: u64) {
+        match event {
+            Event::TerminalAttached {
+                request_id,
+                terminal_id,
+                error,
+            } => self.note_document_subscription(terminal_id, *request_id, error.as_deref(), epoch),
+            Event::TerminalDetached {
+                request_id,
+                terminal_id,
+                error,
+            } => self.note_document_detach(terminal_id, *request_id, error.as_deref(), epoch),
+            Event::AgentMetadata { terminal_id, value } => {
+                self.agents_noted |=
+                    note_agent(&mut self.agents, terminal_id, value.as_deref(), now_ms());
+            }
+            Event::AgentPublication {
+                publication,
+                session,
+            } => self.publish(publication, session, epoch),
+            Event::DocumentPublished { publication } => self.publish_document(publication),
+            Event::AgentSessionClosed { terminal_id, .. } => {
+                if let Some(conversation) = self.conversations.get_mut(terminal_id) {
+                    conversation.closed = true;
+                    conversation.revision = conversation.revision.saturating_add(1);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn accept_lifecycle(&mut self, event: &Event) {
+        if starts_connection(event) {
+            self.forget_session_metadata();
+            self.documents.clear();
+            self.forget_old_document_subscriptions();
+            self.admitted.clear();
+            return;
+        }
+        match event {
+            Event::ServerError { message, .. } => self.error = Some(message.clone()),
+            Event::ApprovalDecision {
+                id,
+                decision,
+                outcome,
+            } => self.approval_outcomes.push(ApprovalOutcome {
+                id: *id,
+                decision: *decision,
+                outcome: outcome.clone(),
+            }),
+            Event::SessionProject { name, project } => {
+                note_project(&mut self.project_tag, name, project.as_deref())
+            }
+            Event::TerminalClosed { terminal_id, .. } => {
+                self.agents.remove(terminal_id);
+                self.admitted.remove(terminal_id);
+                self.documents.remove(terminal_id);
+                self.document_subscriptions.borrow_mut().remove(terminal_id);
+                self.conversation_heads.remove(terminal_id);
+                self.conversations
+                    .retain(|_, conversation| &conversation.parent != terminal_id);
+            }
+            _ => {
+                if let Some(id) = admitted_terminal(event) {
+                    self.admitted.insert(id.clone());
+                }
+            }
         }
     }
 

@@ -50,8 +50,9 @@ fn detach_uses_remaining_views_then_restores_usable_headless_geometry() {
 
     let mut s = ServerState::new();
     let (_sid, pid) = s.seed_session("default");
-    let bundle = phux_terminal::actor::TerminalActor::new(80, 24).unwrap();
-    s.register_resource_handle(pid, bundle.handle.clone(), bundle.token);
+    let bundle = crate::runtime::apps::terminal::test_support::blank_terminal(80, 24);
+    s.register_resource_handle(pid, bundle.handle.clone(), bundle.token)
+        .unwrap();
     let big = s.new_client_id();
     let tiny = s.new_client_id();
     s.attach_default_caps(big, "default", mk_tx()).unwrap();
@@ -106,8 +107,9 @@ fn latest_policy_uses_the_most_recent_remaining_view_after_detach() {
 
     let mut s = ServerState::new();
     let (_sid, pid) = s.seed_session("default");
-    let bundle = phux_terminal::actor::TerminalActor::new(80, 24).unwrap();
-    s.register_resource_handle(pid, bundle.handle.clone(), bundle.token);
+    let bundle = crate::runtime::apps::terminal::test_support::blank_terminal(80, 24);
+    s.register_resource_handle(pid, bundle.handle.clone(), bundle.token)
+        .unwrap();
     let recent = s.new_client_id();
     let departing = s.new_client_id();
     s.attach_default_caps(recent, "default", mk_tx()).unwrap();

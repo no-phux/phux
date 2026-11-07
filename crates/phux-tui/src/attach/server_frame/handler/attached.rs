@@ -5,6 +5,7 @@ use std::collections::HashSet;
 use phux_protocol::ids::{ClientId, ResourceId};
 use phux_protocol::wire::frame::SessionLifetime;
 
+use super::super::engine_route::{attach_agent_sessions, attach_participants};
 use super::windows::focused_session_name;
 use super::{FrameCtx, FrameOutcome, KernelRoute, is_terminal};
 use crate::attach::outcome::AttachError;
@@ -34,7 +35,7 @@ pub(super) fn handle_attached<W: crate::attach::RenderSink>(
     }
     // Capture the initial focused pane so subsequent INPUT_* frames
     // know where to route.
-    let bootstrap = snapshot.focused_resource.clone();
+    let bootstrap = terminal_focus(snapshot, ctx.members);
     tracing::debug!(
         terminal_id = ?bootstrap,
         "ATTACHED: seeding focused_resource from snapshot"
@@ -81,6 +82,10 @@ pub(super) fn handle_attached<W: crate::attach::RenderSink>(
     // The session graph for the session picker.
     let session_cache = (snapshot.sessions.clone(), snapshot.focused_session);
     Ok(FrameOutcome {
+        attach_panes: attach_agent_sessions(snapshot, &attach_participants(snapshot))
+            .into_iter()
+            .map(|agent| agent.id.clone())
+            .collect(),
         subscribe_layout: true,
         sessions: Some(session_cache),
         inventory: Some((snapshot.windows.clone(), snapshot.resources.clone())),
@@ -104,7 +109,7 @@ fn focused_session_is_empty(snapshot: &phux_protocol::wire::info::SessionSnapsho
     let focus_is_listed = snapshot
         .resources
         .iter()
-        .any(|r| r.id == snapshot.focused_resource);
+        .any(|r| is_terminal(r) && r.id == snapshot.focused_resource);
     let Some(focused) = snapshot
         .sessions
         .iter()
@@ -134,6 +139,25 @@ fn session_terminals(snapshot: &phux_protocol::wire::info::SessionSnapshot) -> H
         .collect()
 }
 
+/// The wire's default resource may be a document. This Terminal-only UI keeps
+/// its focus and keyboard routing on a Terminal in the attached session.
+fn terminal_focus(
+    snapshot: &phux_protocol::wire::info::SessionSnapshot,
+    members: &HashSet<ResourceId>,
+) -> ResourceId {
+    if members.contains(&snapshot.focused_resource) {
+        return snapshot.focused_resource.clone();
+    }
+    snapshot
+        .resources
+        .iter()
+        .find(|resource| members.contains(&resource.id))
+        .map_or_else(
+            || snapshot.focused_resource.clone(),
+            |resource| resource.id.clone(),
+        )
+}
+
 /// ADR-0105: ATTACHED to a session with no windows: start empty; the graph,
 /// client id, and layout subscription are recorded as usual.
 fn attach_empty_session<W: crate::attach::RenderSink>(
@@ -156,14 +180,14 @@ fn attach_empty_session<W: crate::attach::RenderSink>(
 }
 
 /// Size (or create) the pane's slot at the geometry `BOOTSTRAP_BEGIN`
-/// advertises; an `AgentSession` (0x0) seeds nothing.
+/// advertises; a known non-Terminal stream seeds no VT slot.
 pub(super) fn seed_bootstrap_geometry<W: crate::attach::RenderSink>(
     ctx: &mut FrameCtx<'_, W>,
     terminal_id: ResourceId,
     cols: u16,
     rows: u16,
 ) -> Result<FrameOutcome, AttachError> {
-    if ctx.is_agent_session(&terminal_id) {
+    if ctx.is_non_terminal(&terminal_id) {
         return Ok(FrameOutcome::default());
     }
     let slot = match ctx.panes.entry(terminal_id) {

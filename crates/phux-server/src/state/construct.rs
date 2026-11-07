@@ -13,6 +13,7 @@ impl ServerState {
             super::org::now_stamp(),
         );
         Self {
+            terminal_engine: None,
             sessions: SessionTable::new(phux_core::Registry::new(org)),
             org: super::org::OrgSide::memory(),
             clients: ClientTable::new(),

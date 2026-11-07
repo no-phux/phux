@@ -116,11 +116,7 @@ pub const UNKNOWN: &str = "unknown";
 /// The `snake_case` name of `kind`.
 #[must_use]
 pub const fn kind_name(kind: ResourceKind) -> &'static str {
-    match kind {
-        ResourceKind::Terminal => TERMINAL,
-        ResourceKind::AgentSession => AGENT_SESSION,
-        _ => UNKNOWN,
-    }
+    kind.as_str()
 }
 
 /// Whether `info` is a Terminal-kind resource — a pane.
@@ -319,6 +315,12 @@ mod tests {
         assert_eq!(children, [ResourceId::local(10), ResourceId::local(11)]);
         assert_eq!(kind_name(ResourceKind::Terminal), "terminal");
         assert_eq!(kind_name(ResourceKind::AgentSession), "agent_session");
+        assert_eq!(
+            kind_name(ResourceKind::AccessibilityTree),
+            "accessibility_tree"
+        );
+        assert_eq!(kind_name(ResourceKind::PixelSurface), "pixel_surface");
+        assert_eq!(kind_name(ResourceKind::Unknown { tag: 255 }), "unknown");
     }
 
     #[test]

@@ -6,7 +6,7 @@ use super::*;
 fn session_kill_ends_every_member_and_deletes_the_session() {
     use phux_protocol::wire::frame::LaunchMode;
     run(async {
-        let state = SharedState::new();
+        let state = crate::runtime::apps::terminal::test_support::terminal_state();
         let root = CancellationToken::new();
         let receipt = committed(handle(
             &state,
@@ -81,7 +81,7 @@ fn session_kill_store_failure_closes_nothing() {
     use crate::org_store::MemOrgStore;
 
     run(async {
-        let state = SharedState::new();
+        let state = crate::runtime::apps::terminal::test_support::terminal_state();
         let root = CancellationToken::new();
         let receipt = committed(handle(
             &state,
@@ -153,7 +153,7 @@ fn session_kill_store_failure_closes_nothing() {
 #[test]
 fn terminate_is_accepted_and_a_stale_target_refused() {
     run(async {
-        let state = SharedState::new();
+        let state = crate::runtime::apps::terminal::test_support::terminal_state();
         let root = CancellationToken::new();
         let (_, pane) = state.with_mut(|s| s.seed_session("work"));
         let target = |activation| LiveTarget {
@@ -186,7 +186,7 @@ fn terminate_is_accepted_and_a_stale_target_refused() {
 #[test]
 fn organization_events_are_journaled_with_their_actor() {
     run(async {
-        let state = SharedState::new();
+        let state = crate::runtime::apps::terminal::test_support::terminal_state();
         state.with_mut(|s| s.set_client_name(CLIENT, "agent".to_owned()));
         let before = state.with(ServerState::journal_head);
         let create = Command::SessionCreate {

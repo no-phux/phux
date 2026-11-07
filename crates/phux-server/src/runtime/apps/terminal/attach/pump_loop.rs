@@ -5,7 +5,7 @@
 )]
 
 use super::*;
-use phux_terminal::actor::TerminalResource as _;
+use phux_terminal_api::actor::TerminalResource as _;
 
 /// Why a pump gave up on its generation and asked for a resync.
 #[derive(Debug, Clone, Copy)]
@@ -177,7 +177,7 @@ pub(crate) fn release_after_pump_fault(
         PumpFault::OutboundClosed | PumpFault::ReplayAbandoned | PumpFault::PaneGone => {}
         PumpFault::TombstoneNotQueued | PumpFault::GenerationLost => {
             warn!(?client_id, ?fault, "attach pump failed; closing the client");
-            crate::runtime::client::detach_and_release_consumer_state(state, client_id);
+            crate::runtime::connections::detach_and_release_consumer_state(state, client_id);
             connection_token.cancel();
         }
         PumpFault::PublicationNotActivated => {
@@ -194,7 +194,7 @@ pub(crate) fn release_after_pump_fault(
     clippy::too_many_arguments,
     reason = "single rollback boundary deliberately receives every staged and committed resource so cancellation, producer detach, pump abortion, and the fatal sentinel remain strictly ordered"
 )]
-pub(super) async fn fail_aggregate_attach_prepublication(
+pub(crate) async fn fail_aggregate_attach_prepublication(
     state: &SharedState,
     client_id: ClientId,
     attach_id: u32,
@@ -207,7 +207,8 @@ pub(super) async fn fail_aggregate_attach_prepublication(
 ) {
     staged_pumps.abort_all();
     while staged_pumps.join_next().await.is_some() {}
-    crate::runtime::client::abort_output_pumps(committed_pumps, client_id, "failed ATTACH").await;
+    crate::runtime::connections::abort_output_pumps(committed_pumps, client_id, "failed ATTACH")
+        .await;
 
     let wire_client_id = crate::runtime::wire_client(client_id);
     let producer_deadline = std::time::Duration::from_secs(1);
@@ -219,7 +220,7 @@ pub(super) async fn fail_aggregate_attach_prepublication(
                 producer_deadline,
                 terminal
                     .native_release
-                    .send(phux_terminal::actor::NativeReleaseRequest { owner: client_id.0 }),
+                    .send(phux_terminal_api::actor::NativeReleaseRequest { owner: client_id.0 }),
             )
             .await;
         }
@@ -241,7 +242,7 @@ pub(super) async fn fail_aggregate_attach_prepublication(
             let _ = tokio::time::timeout(producer_deadline, done).await;
         }
     }
-    crate::runtime::client::detach_and_release_consumer_state(state, client_id);
+    crate::runtime::connections::detach_and_release_consumer_state(state, client_id);
 
     // The writer closes right after this terminal ERROR, discarding anything
     // a surviving producer races in behind it.

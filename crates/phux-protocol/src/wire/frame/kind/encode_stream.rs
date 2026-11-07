@@ -36,6 +36,12 @@ impl FrameKind {
             | BootstrapStreamProfile::AgentEventsJsonlResumeV1 { .. } => {
                 (BootstrapCodec::AgentEventsJsonlV1, OutputMode::Raw)
             }
+            BootstrapStreamProfile::AccessibilityTreeJsonV1 => {
+                (BootstrapCodec::AccessibilityTreeJsonV1, OutputMode::Raw)
+            }
+            BootstrapStreamProfile::PixelSurfacePngV1 => {
+                (BootstrapCodec::PixelSurfacePngV1, OutputMode::Raw)
+            }
         };
         enc.write_field_with(field::bootstrap_begin::CODEC, |e| {
             encode_bootstrap_codec(codec, e);

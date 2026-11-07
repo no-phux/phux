@@ -13,7 +13,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Condvar, Mutex};
 use std::time::{Duration, Instant};
 
-use phux_server::runtime::{ServerConfig, ServerRuntime};
+use phux_server::runtime::ServerConfig;
 use phux_server_testkit::{
     SERVER_JOIN_DEADLINE, SOCKET_CONNECT_DEADLINE, run_local, wait_for_socket,
 };
@@ -102,7 +102,7 @@ fn server_serves_clients_while_overlay_detection_is_still_running() {
         // without touching workload authority on disk.
         phux_server_testkit::embedder::embed_owner_engine(&mut cfg);
         let server = tokio::task::spawn_local(async move {
-            ServerRuntime::new(cfg)
+            phux_server_testkit::terminal_server(cfg)
                 .overlay_detect(blocking_detect)
                 .run_async(async move {
                     let _ = shutdown_rx.await;

@@ -91,8 +91,9 @@ session (or `--session NAME`). It never creates a session on its own.
   a reply can't land on whatever the agent moved on to. The focused pane
   shows its agent's question as a card you can answer with a click.
 - **Notifications.** When something needs you and you can't see it, the
-  installed app posts a macOS notification once; clicking it goes there, and
-  it is withdrawn when answered or seen. The Dock icon counts what's waiting.
+  installed app posts a notification once (macOS, or on Linux through
+  `notify-send`); clicking it goes there, and it is withdrawn when answered
+  or seen. The Dock icon counts what's waiting.
 - **Tabs.** The session's arrangement groups, shared with the terminal UI.
   ⌘T opens a terminal in a new tab, ⌘1–⌘9 switch, double-click renames. The
   strip appears from two tabs up; a dot marks a tab that needs you, and a
@@ -104,11 +105,19 @@ session (or `--session NAME`). It never creates a session on its own.
   and a bell. Session headers count what needs you; ⌘J jumps to the next.
   ⌘B folds the sidebar.
 - **Command palette.** ⌘K (or ⌘P) reaches every terminal, session and
-  action by fuzzy search.
+  action by fuzzy search. **Keyboard Shortcuts: Essentials** lists the keys
+  worth learning first, each row runnable, with every chord one row further;
+  the first time a window connects, a tip offers it. Hovering **+ Terminal**
+  or **+ Session** at the foot of the sidebar shows the keys that do the same.
+- **Insert Path.** ⌥; (or ⇧⌘I) opens a picker at the cursor that searches
+  the focused pane's folder on the machine it runs on, as the GPUI desktop's
+  does. Return types the path at the prompt as one shell word, relative to
+  that folder and quoted only when it must be.
 - **Splits.** The selected session's arrangement is the server-stored split
-  tree the terminal UI uses, so both show the same layout. Split, move
-  between panes, zoom one, drag dividers; new splits and ratios are written
-  back to the server.
+  tree the terminal UI uses, so both show the same layout. Each pane floats
+  as its own rounded glass card, the one with the keyboard lit in the accent.
+  Split, move between panes, zoom one, drag the gutters between cards; new
+  splits and ratios are written back to the server.
 - **Terminal.** The runtime's draw list: colours, bold and italic,
   underlines, box and block glyphs, wide characters, cursor (with blink) and
   selection, on device-pixel cells. Each pane follows its own size. Programs
@@ -125,12 +134,25 @@ session (or `--session NAME`). It never creates a session on its own.
   across rows count. Only `http`, `https` and `mailto` open.
 - **History.** Scrolled back, a pane shows where it is in its history and a
   pill back to the live tail that counts the lines that arrived meanwhile.
-- **Settings.** ⌘, picks a theme (eight built in, or the OS; arrow keys
-  preview it live on your terminals), text size, notifications, Option as
-  Meta, and copy on select. All of it is remembered between launches. A
-  program's own OSC colours beat the theme.
-- **Sessions.** Double-click a session to rename it; the palette also renames
+- **Settings.** ⌘, picks a theme (the GPUI desktop's twenty-six, or the
+  OS; arrow keys preview it live on your terminals), text size,
+  notifications, Option as Meta, and copy on select. All of it is remembered
+  between launches. A program's own OSC colours beat the theme.
+- **Themes.** The palette switches themes by name (`nord`) and **Change
+  Theme** lists them with each one shown live as the highlight moves:
+  Return keeps it, Escape puts the old one back. A Ghostty config on this machine (`theme`,
+  `config-file` includes, `palette`, `background`, `foreground`,
+  `cursor-color`) is read at launch and offered as the **Ghostty** theme,
+  the way the GPUI desktop reads it. On Omarchy, the **Omarchy** theme
+  takes the current Omarchy theme's colours and accent, repaints within
+  seconds when you switch Omarchy themes, and is the default until you pick
+  another. `just rune-demo` films the themes into
+  `clients/rune/demo/themes.mp4`.
+- **Sessions.** ⇧⌘S switches session by name, or creates one with the name
+  you typed. Double-click a session to rename it; the palette also renames
   tabs and ends sessions.
+- **Typing.** What you type shows as typed while the server confirms it,
+  never underlined.
 - Closing the window detaches; the server and its programs keep running. The
   window title follows the focused terminal.
 
@@ -161,6 +183,10 @@ Ctrl-click opens links);
 plain Ctrl chords go to the shell. Ctrl and Alt chords follow the key's
 position, so Ctrl-C is ^C on any layout.
 
+In a text field, use the native editing keys: ⌘C/V/A on macOS, plain
+Ctrl+C/V/A on Linux. Terminal clipboard chords never act on the terminal
+behind a focused Find field.
+
 A paste with line breaks into a program that has not turned on bracketed
 paste would run each line; the window asks first (Return pastes, Esc
 cancels).
@@ -169,7 +195,7 @@ cancels).
 
 - One window. Tabs can't be dragged to reorder yet, and the server has no
   call to rename a single terminal.
-- No Kitty images, custom themes or font choice. Find covers the history the
+- No Kitty images or font choice; the only custom themes are Ghostty's and Omarchy's. Find covers the history the
   window has loaded, not the server's whole scrollback.
 - A question raised through a hook before the window connected has no text
   to show (the server keeps only that one is pending); its card opens the
@@ -177,6 +203,8 @@ cancels).
 - A URL that fills a row is assumed to continue on the next one (frames
   carry no soft-wrap flag yet); the title bar shows the joined target
   before a ⌘-click.
+- Screen readers get Settings, the buttons and notices, but terminal text,
+  the palette's results, tabs and sidebar rows don't read well yet.
 - No DMG yet; the ZIP is the macOS download.
 - Wayland is not qualified; see [Install](#install).
 - The update check draws off-screen, so a build that only fails when opening a
@@ -185,10 +213,38 @@ cancels).
   and the download is dropped. **Restart & update server** moves both. Linux
   has already replaced the files by then.
 
+## Read-only mirrors
+
+The palette lists live AccessibilityTree and PixelSurface resources alongside
+terminals. Open one directly, switch its tab, or focus it beside a terminal in
+the session's arrangement. Trees use a selectable native JSON inspector; PNG
+surfaces use Rune's image decoder and fit without cropping. These are **Read-only
+mirrors**, not embedded browsers: keys, paste, file drops, and terminal resizing
+never reach a document pane. Closing its view does not stop the producer.
+
+To start a source, choose **Start page/tree/surface mirror…** in the palette,
+name the existing source, then confirm. Rune starts a dedicated producer
+terminal using the selected local CLI and socket, never the focused shell.
+Page capture needs Chrome debugging on localhost:9222 with a separate profile.
+Tree and surface capture require macOS Accessibility or Screen Recording
+permission respectively. The confirmation explains the prerequisite; producer
+exit produces an actionable notice. Ctrl-C in its terminal stops it.
+
+Starting a producer remotely is refused rather than guessing that host's
+platform, CLI, or permissions. Run the producer on the source host and reopen
+its published resource here. Opening or moving its view is not process or
+application migration.
+
 ## Develop
 
+`--phone` opens the phone form, where the phone app is growing ahead of
+Rune's phone support: [MOBILE.md](./MOBILE.md) lists what works and what
+waits on upstream.
+
 Rune is pinned to a `dev` revision in `Cargo.toml`; this crate has its own
-workspace and lock so Rune's graph stays out of the rest of phux.
+workspace and lock so Rune's graph stays out of the rest of phux. The
+[Rune upstream follower](../../scripts/rune-upstream/README.md) moves the pin
+twice a day.
 
 ```sh
 cd clients/rune
@@ -209,8 +265,29 @@ cargo run -- --socket /tmp/phux-test/s --snap out.png --at 3 --size 1100x720
 cargo run -- --socket /tmp/phux-test/s --script typing.json --snap out.png --at 5
 ```
 
-Notifications need the signed bundle (`rune_mac::notify::available`); `cargo
-run` can't post, and Settings says so.
+`--tree out.json` writes the element tree, with the accessibility tree that
+screen readers and automation tools see under `"accessibility"`. Every window
+exposes that tree to the OS through Rune's
+[accessibility](https://github.com/anomalyco/rune/tree/dev/crates/rune#accessibility)
+support, which is also how tools drive a real window now that Rune's strobe
+bridge is gone. Headless time does not synchronize phux's server workers;
+wait for the attached terminal before measuring an interaction.
+
+The resource smoke test also reads back a genuine Rune GPU frame containing
+PNG and JSON panes together. Export that frame and its native accessibility
+tree without starting any server or touching installed phux:
+
+```sh
+RUNE_RESOURCE_SNAP="$PWD/target/resource-native.png" \
+  cargo test --locked native_png_headless_renderer_smoke -- --nocapture
+```
+
+The test checks decoded PNG pixels, native image draw commands, JSON text,
+and the Read-only mirror label; `target/resource-native.json` is the tree.
+
+On macOS, notifications need the signed bundle (`rune_mac::notify::available`);
+`cargo run` can't post, and Settings says so. On Linux any build posts while
+`notify-send` is on `PATH`, and withdraws through `gdbus`.
 
 `scripts/package.sh VERSION OUT_DIR` builds the release archive for the
 host (ad-hoc signed; a local build may link the dev shell's libraries, so

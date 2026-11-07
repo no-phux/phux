@@ -41,13 +41,6 @@ use crate::agent_record::AgentRecordJson;
 pub enum EvidenceSource {
     /// Derived from the grid by the rules (ADR-0046): the weakest source.
     Screen,
-    /// The PTY's foreground process group: identity and departure, positive
-    /// evidence rather than inference.
-    #[allow(
-        dead_code,
-        reason = "no producer publishes process evidence; the ladder tests pin its rank"
-    )]
-    Process,
     /// `REPORT_AGENT_STATE` from an integration (ADR-0085): the agent
     /// speaking, but lossy and edge-triggered.
     Hook,
@@ -63,9 +56,8 @@ impl EvidenceSource {
     pub(crate) const fn priority(self) -> u8 {
         match self {
             Self::Screen => 0,
-            Self::Process => 1,
-            Self::Hook => 2,
-            Self::Stream => 3,
+            Self::Hook => 1,
+            Self::Stream => 2,
         }
     }
 

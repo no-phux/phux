@@ -5,10 +5,14 @@
 #
 # Rules this file keeps:
 # - Push as the release App, never GITHUB_TOKEN: its pushes trigger no ci, so
-#   a release PR or its lockfile commit would never become mergeable.
-# - Release Please force-pushes a release branch and drops the lockfile
-#   commit, and main's ruleset accepts the previous head's green ci. A ready
-#   PR is held as draft in the same job until its lockfile push lands.
+#   a release PR would never become mergeable.
+# - Two trains, two config/manifest pairs: the root (CLI and integrations)
+#   and the desktop. They share no file, so merging one release PR never
+#   conflicts the other.
+# - A release PR is complete the moment Release Please pushes it: the
+#   version bump rewrites Cargo.toml and every Cargo.lock in one commit
+#   (extra-files in release-please-config.json). Nothing patches the branch
+#   afterwards, so there is nothing for an early merge to race.
 # - Release PRs open as drafts and accumulate changes; nothing merges them.
 #   Marking one ready runs ci; squash-merging it cuts the stable release.
 # - A draft ships only on a green ci push run for its own commit
@@ -51,9 +55,6 @@ jobs:
       && github.event.workflow_run.conclusion == 'success'
     runs-on: ubuntu-24.04
     timeout-minutes: 10
-    outputs:
-      prs: ${{ steps.hold.outputs.prs }}
-      held: ${{ steps.hold.outputs.held }}
     steps:
       - uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
         id: app-token
@@ -62,105 +63,22 @@ jobs:
           private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
       # No last-release-sha (the changelog would grow from it forever) and no
       # root package-name (it aborts root-only releases with no tag).
-      - uses: googleapis/release-please-action@45996ed1f6d02564a971a2fa1b5860e934307cf7 # v5.0.0
-        id: rp
+      - name: Root train (CLI and integrations)
+        uses: googleapis/release-please-action@45996ed1f6d02564a971a2fa1b5860e934307cf7 # v5.0.0
         with:
           token: ${{ steps.app-token.outputs.token }}
           config-file: release-please-config.json
           manifest-file: .release-please-manifest.json
-      # PR number 0 is a change-less candidate with no branch. A ready PR this
-      # run rewrote goes back to draft until release-prs syncs its lockfiles.
-      - name: Hold rewritten ready release PRs
-        id: hold
-        env:
-          GH_TOKEN: ${{ steps.app-token.outputs.token }}
-          GH_REPO: ${{ github.repository }}
-          PRS: ${{ steps.rp.outputs.prs || '[]' }}
-        run: |
-          set -euo pipefail
-          prs="$(jq -c '[.[] | select(.number > 0)]' <<<"$PRS")"
-          held=()
-          for num in $(jq -r '.[].number' <<<"$prs"); do
-            if [ "$(gh pr view "$num" --json state,isDraft --jq '"\(.state) \(.isDraft)"')" = "OPEN false" ]; then
-              gh pr ready "$num" --undo
-              held+=("$num")
-            fi
-          done
-          echo "prs=$prs" >> "$GITHUB_OUTPUT"
-          echo "held=${held[*]}" >> "$GITHUB_OUTPUT"
-
-  # Release Please cannot select workspace members in Cargo.lock (its rust
-  # strategy rejects a virtual workspace), so cargo re-resolves the locks:
-  # metadata only, no build. Then a held PR is ready again.
-  release-prs:
-    name: sync ${{ matrix.pr.headBranchName }}
-    needs: release-please
-    # always(): a failed hold after Release Please's force-push still syncs.
-    if: always() && needs.release-please.outputs.prs != '' && needs.release-please.outputs.prs != '[]'
-    strategy:
-      fail-fast: false
-      matrix:
-        pr: ${{ fromJSON(needs.release-please.outputs.prs) }}
-    runs-on: ubuntu-24.04
-    timeout-minutes: 15
-    steps:
-      - uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
-        id: app-token
+      # A root failure must not strand a merged desktop release. Release Please
+      # skips refreshing PRs while any merged release PR is untagged, so the
+      # run that merges one train's PR refreshes the other's PR one run later.
+      - name: Desktop train
+        if: ${{ !cancelled() && steps.app-token.outcome == 'success' }}
+        uses: googleapis/release-please-action@45996ed1f6d02564a971a2fa1b5860e934307cf7 # v5.0.0
         with:
-          client-id: ${{ vars.RELEASE_APP_ID }}
-          private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          ref: ${{ matrix.pr.headBranchName }}
-          fetch-depth: 0
           token: ${{ steps.app-token.outputs.token }}
-          persist-credentials: true
-      - name: Detect a root workspace release
-        id: root
-        run: |
-          set -euo pipefail
-          git fetch --quiet origin main
-          if git diff --quiet "$(git merge-base HEAD origin/main)" HEAD -- Cargo.toml; then
-            echo "changed=false" >> "$GITHUB_OUTPUT"
-          else
-            echo "changed=true" >> "$GITHUB_OUTPUT"
-          fi
-      - name: Install the pinned Rust
-        if: steps.root.outputs.changed == 'true'
-        run: bash scripts/setup-rust.sh core
-      - uses: ./.github/actions/setup-bun
-        if: steps.root.outputs.changed == 'true'
-      # The browser lock records the root path crates' versions too. The
-      # desktop host lock does as well, but its parent-managed GPUI snapshot
-      # is absent here, so the tools package rewrites those entries.
-      - name: Re-resolve and push the lockfiles
-        if: steps.root.outputs.changed == 'true'
-        env:
-          BRANCH: ${{ matrix.pr.headBranchName }}
-        run: |
-          set -euo pipefail
-          cargo update --workspace
-          (cd clients/phux-web && cargo update --workspace)
-          bun tools/main.ts sync-path-lock-versions Cargo.lock clients/desktop/native/Cargo.lock clients/rune/Cargo.lock scripts/plugin-index/Cargo.lock
-          locks=(Cargo.lock clients/phux-web/Cargo.lock clients/desktop/native/Cargo.lock clients/rune/Cargo.lock scripts/plugin-index/Cargo.lock)
-          if git diff --quiet -- "${locks[@]}"; then echo "lockfiles already in sync"; exit 0; fi
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add "${locks[@]}"
-          git commit -m "chore: sync Cargo lockfiles with the release version"
-          git push origin "HEAD:${BRANCH}"
-      # Only after the lockfile push: an earlier ready lets a non-strict
-      # ruleset merge the unsynced head.
-      - name: Release the hold
-        if: contains(format(' {0} ', needs.release-please.outputs.held), format(' {0} ', matrix.pr.number))
-        env:
-          GH_TOKEN: ${{ steps.app-token.outputs.token }}
-          GH_REPO: ${{ github.repository }}
-          NUM: ${{ matrix.pr.number }}
-        run: |
-          set -euo pipefail
-          read -r state draft < <(gh pr view "$NUM" --json state,isDraft --jq '"\(.state) \(.isDraft)"')
-          if [ "$state" = OPEN ] && [ "$draft" = true ]; then gh pr ready "$NUM"; fi
+          config-file: release-please-config.desktop.json
+          manifest-file: .release-please-manifest.desktop.json
 
   plan:
     name: choose drafts
@@ -200,6 +118,12 @@ jobs:
       ref: ${{ needs.plan.outputs.phux_tag }}
       id: ${{ needs.plan.outputs.phux_tag }}
       channel: stable
+    secrets:
+      APPLE_DEVELOPER_ID_P12: ${{ secrets.APPLE_DEVELOPER_ID_P12 }}
+      APPLE_DEVELOPER_ID_PASSWORD: ${{ secrets.APPLE_DEVELOPER_ID_PASSWORD }}
+      APPLE_NOTARY_KEY_P8: ${{ secrets.APPLE_NOTARY_KEY_P8 }}
+      APPLE_NOTARY_KEY_ID: ${{ secrets.APPLE_NOTARY_KEY_ID }}
+      APPLE_NOTARY_ISSUER_ID: ${{ secrets.APPLE_NOTARY_ISSUER_ID }}
 
   cli:
     name: publish ${{ needs.plan.outputs.phux_tag }}

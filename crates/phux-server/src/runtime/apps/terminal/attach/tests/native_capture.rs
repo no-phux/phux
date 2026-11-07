@@ -38,7 +38,9 @@ async fn an_invalidated_native_capture_waits_for_the_resync_instead_of_failing()
             let invalidated = bootstrap_rx.recv().await.expect("exit capture request");
             invalidated
                 .reply
-                .send(Err(phux_terminal::native_state::NativeStateError::Resize))
+                .send(Err(
+                    phux_terminal_api::native_state::NativeStateError::Resize,
+                ))
                 .expect("pump awaits its capture");
             let request = resync_request_from(&mut resize_rx, &mut consumer).await;
             assert_eq!(
@@ -158,7 +160,8 @@ async fn fresh_native_capacity_failure_sends_error_then_closes_without_publicati
                 mut native_publication_rx,
             ) = native_attach_handle();
             state.with_mut(|s| {
-                let _ = s.register_resource_handle(terminal, handle, CancellationToken::new());
+                s.register_resource_handle(terminal, handle, CancellationToken::new())
+                    .unwrap();
             });
             let client_id = state.with_mut(crate::state::ServerState::new_client_id);
             let (out_tx, mut out_rx) =
@@ -220,7 +223,8 @@ async fn replacement_native_capacity_failure_closes_but_preserves_terminal_state
                 mut native_publication_rx,
             ) = native_attach_handle();
             state.with_mut(|s| {
-                let _ = s.register_resource_handle(terminal, handle, CancellationToken::new());
+                s.register_resource_handle(terminal, handle, CancellationToken::new())
+                    .unwrap();
             });
             let client_id = state.with_mut(crate::state::ServerState::new_client_id);
             let (out_tx, mut out_rx) =

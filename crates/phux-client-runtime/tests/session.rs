@@ -20,12 +20,15 @@ use phux_protocol::wire::RemoteListenerTransport;
 use phux_protocol::wire::frame::{
     Command, CommandResult, CommandValue, FrameKind, Scope, SpawnResult, StateScope, ViewportInfo,
 };
-use phux_server::{ServerConfig, ServerEnv, ServerRuntime};
+use phux_server::{ServerConfig, ServerEnv};
 use phux_server_testkit::{Spawn, bound_listener_addr, run_local, spawn_server, wait_for_socket};
 use tempfile::TempDir;
 use tokio::sync::oneshot;
 use tokio::task::JoinHandle;
 use tokio::time::{Instant, timeout};
+#[path = "session/server.rs"]
+mod server;
+use server::quic_server;
 
 /// Idle budget for any single wait on a real server.
 const STEP: Duration = Duration::from_secs(20);
@@ -259,48 +262,6 @@ fn a_corked_batch_of_requests_is_answered_in_order() {
     });
 }
 
-/// A server on `socket` that also listens on loopback QUIC; returns the
-/// address the listener bound. `tokens` names a bearer store the listener
-/// then requires, as an enrolled host's does.
-async fn quic_server(
-    tmp: &TempDir,
-    socket: &Path,
-    tokens: Option<&Path>,
-) -> (oneshot::Sender<()>, ServerTask, SocketAddr) {
-    let cert = tmp.path().join("cert.pem");
-    let key = tmp.path().join("key.pem");
-    phux_server::transport::tls::ensure_self_signed(&cert, &key).expect("self-signed cert");
-    let mut config = ServerConfig {
-        socket_path: socket.to_path_buf(),
-        pre_seeded_session: Some("main".to_owned()),
-        seed_with_pty: false,
-        seed_command: None,
-        // Only what this test sets: never the shell's `PHUX_*`.
-        env: ServerEnv {
-            tls_cert: Some(cert),
-            tls_key: Some(key),
-            ws_secure: tokens.is_some(),
-            ws_tokens: tokens.map(Path::to_path_buf),
-            ..ServerEnv::default()
-        },
-        ..ServerConfig::with_default_socket()
-    };
-    // A transport test: an embedder engine admits the loopback dial
-    // (ADR-0072); no `phux server` mode does (ADR-0179).
-    phux_server_testkit::embedder::embed_owner_engine(&mut config);
-    let (shutdown, stopped) = oneshot::channel::<()>();
-    let server = tokio::task::spawn_local(async move {
-        ServerRuntime::new(config)
-            .listen_quic(SocketAddr::from(([127, 0, 0, 1], 0)))
-            .run_async(async move {
-                let _ = stopped.await;
-            })
-            .await
-    });
-    let addr = bound_listener_addr(socket, RemoteListenerTransport::Quic).await;
-    (shutdown, server, addr)
-}
-
 /// QUIC multistream: a Terminal has no route until it is bound, its input
 /// rides its own stream once bound, its content comes back on it, and an
 /// unbind takes the route away again. The viewport barrier settles.
@@ -379,7 +340,7 @@ fn a_websocket_session_round_trips() {
         phux_server_testkit::embedder::embed_owner_engine(&mut config);
         let (shutdown, stopped) = oneshot::channel::<()>();
         let server = tokio::task::spawn_local(async move {
-            ServerRuntime::new(config)
+            phux_server_testkit::terminal_server(config)
                 .listen_ws(SocketAddr::from(([127, 0, 0, 1], 0)))
                 .run_async(async move {
                     let _ = stopped.await;

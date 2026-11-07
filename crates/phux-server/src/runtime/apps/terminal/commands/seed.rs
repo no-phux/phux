@@ -6,17 +6,36 @@
 
 use super::*;
 
+#[cfg(test)]
+mod composition_tests {
+    use super::*;
+
+    #[test]
+    fn the_host_never_supplies_a_hidden_default_terminal_engine() {
+        let state = SharedState::new();
+        let error = seed_session_with_actor(
+            &state,
+            "unconfigured",
+            phux_config::ScrollbackLimits::default(),
+            &CancellationToken::new(),
+        )
+        .expect_err("explicit composition is required");
+        assert_eq!(error.to_string(), "no Terminal engine supplied");
+        assert_eq!(state.with(|server| server.registry().terminal_count()), 0);
+    }
+}
+
 /// Seed a session named `name` with one pane in the same commit; the pane
 /// runs `cmd` in a PTY, or is a no-PTY actor when `cmd` is `None`.
 pub(in crate::runtime) fn seed_session(
     state: &SharedState,
     name: &str,
-    mut cmd: Option<phux_terminal::pty::CommandBuilder>,
+    mut cmd: Option<phux_terminal_api::launch::LaunchCommand>,
     scrollback: phux_config::ScrollbackLimits,
     root_token: &CancellationToken,
     default_colors: Option<phux_protocol::caps::TerminalDefaultColors>,
     origin: SeedOrigin,
-) -> Result<phux_core::ids::ResourceId, phux_terminal::actor::TerminalActorError> {
+) -> Result<phux_core::ids::ResourceId, phux_terminal_api::actor::TerminalActorError> {
     let terminal = state.with_mut(|s| {
         let on_exit = exit_policy_for(s, cmd.is_some(), origin.attribution);
         let actor = spawn_actor(s, origin.attribution);
@@ -31,14 +50,14 @@ pub(in crate::runtime) fn seed_session(
                 &actor,
             )
             .map_err(|refusal| {
-                phux_terminal::actor::TerminalActorError::Refused(refusal.to_string())
+                phux_terminal_api::actor::TerminalActorError::Refused(refusal.to_string())
             })?;
         let wire = match cmd.as_mut() {
             Some(cmd) => register_pty_command(s, terminal, cmd),
             None => s.intern_resource_wire(terminal),
         };
         set_agent_session(s, wire, origin.agent_session);
-        Ok::<_, phux_terminal::actor::TerminalActorError>(terminal)
+        Ok::<_, phux_terminal_api::actor::TerminalActorError>(terminal)
     })?;
     let wire_terminal_id = launch_pane_actor(
         state,
@@ -64,7 +83,7 @@ pub(crate) fn seed_session_with_actor(
     name: &str,
     scrollback: phux_config::ScrollbackLimits,
     root_token: &CancellationToken,
-) -> Result<phux_core::ids::ResourceId, phux_terminal::actor::TerminalActorError> {
+) -> Result<phux_core::ids::ResourceId, phux_terminal_api::actor::TerminalActorError> {
     seed_session_with_actor_as(
         state,
         name,
@@ -81,7 +100,7 @@ pub(crate) fn seed_session_with_actor_as(
     scrollback: phux_config::ScrollbackLimits,
     root_token: &CancellationToken,
     lifetime: phux_core::SessionLifetime,
-) -> Result<phux_core::ids::ResourceId, phux_terminal::actor::TerminalActorError> {
+) -> Result<phux_core::ids::ResourceId, phux_terminal_api::actor::TerminalActorError> {
     seed_session(
         state,
         name,
@@ -100,10 +119,10 @@ pub(crate) fn seed_session_with_actor_as(
 pub fn seed_session_with_pty(
     state: &SharedState,
     name: &str,
-    cmd: phux_terminal::pty::CommandBuilder,
+    cmd: phux_terminal_api::launch::LaunchCommand,
     scrollback: phux_config::ScrollbackLimits,
     root_token: &CancellationToken,
-) -> Result<phux_core::ids::ResourceId, phux_terminal::actor::TerminalActorError> {
+) -> Result<phux_core::ids::ResourceId, phux_terminal_api::actor::TerminalActorError> {
     seed_session_with_pty_and_colors(
         state,
         name,
@@ -120,12 +139,12 @@ pub fn seed_session_with_pty(
 pub fn seed_session_with_pty_and_colors(
     state: &SharedState,
     name: &str,
-    cmd: phux_terminal::pty::CommandBuilder,
+    cmd: phux_terminal_api::launch::LaunchCommand,
     scrollback: phux_config::ScrollbackLimits,
     root_token: &CancellationToken,
     default_colors: Option<phux_protocol::caps::TerminalDefaultColors>,
     lifetime: phux_core::SessionLifetime,
-) -> Result<phux_core::ids::ResourceId, phux_terminal::actor::TerminalActorError> {
+) -> Result<phux_core::ids::ResourceId, phux_terminal_api::actor::TerminalActorError> {
     seed_session(
         state,
         name,
@@ -160,14 +179,14 @@ pub(crate) enum SpawnOwnership {
 pub(crate) fn spawn_pane_with_pty_and_colors(
     state: &SharedState,
     ownership: &SpawnOwnership,
-    mut cmd: phux_terminal::pty::CommandBuilder,
+    mut cmd: phux_terminal_api::launch::LaunchCommand,
     scrollback: phux_config::ScrollbackLimits,
     root_token: &CancellationToken,
     default_colors: Option<phux_protocol::caps::TerminalDefaultColors>,
     agent_session: Option<Vec<u8>>,
     initial_size: Option<(u16, u16)>,
     attribution: SpawnAttribution,
-) -> Result<Option<phux_core::ids::ResourceId>, phux_terminal::actor::TerminalActorError> {
+) -> Result<Option<phux_core::ids::ResourceId>, phux_terminal_api::actor::TerminalActorError> {
     // libghostty has no zero-dimension grid.
     let dims = initial_size.map_or(DEFAULT_SPAWN_DIMS, |(cols, rows)| {
         (cols.max(1), rows.max(1))
@@ -223,7 +242,7 @@ pub(crate) fn spawn_pane_with_pty_and_colors(
 /// The directory a PTY child spawned from `cmd` starts in: the builder's cwd,
 /// else the server's own (which the child inherits).
 pub(in crate::runtime) fn spawn_cwd_of(
-    cmd: &phux_terminal::pty::CommandBuilder,
+    cmd: &phux_terminal_api::launch::LaunchCommand,
 ) -> Option<std::path::PathBuf> {
     cmd.get_cwd()
         .map(std::path::PathBuf::from)

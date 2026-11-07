@@ -15,12 +15,16 @@ AUTO_SPAWN_BACKSTOP := "PHUX_AUTO_SPAWN_EXIT_AFTER_IDLE=600"
 # PHUX_UNIT_TARGETS for narrow, and PHUX_NEXTEST_FILTERSET for rdeps.
 # PHUX_TEST_ARCHIVE names a `just test-archive` output to run without
 # compiling; its e2e binaries hold only #[ignore]d tests, so they select none.
+# PHUX_NEXTEST_PARTITION (nextest's `--partition`, e.g. count:1/3) runs one
+# shard of an archive run, so CI splits the pool across runners.
 [group('test')]
 [doc('Run the workspace unit test pool via nextest.')]
 test: worktree-claim && (worktree-verify "test")
     #!/usr/bin/env bash
     set -euo pipefail
     archive="${PHUX_TEST_ARCHIVE:-}"
+    shard=()
+    if [[ -n "$archive" && -n "${PHUX_NEXTEST_PARTITION:-}" ]]; then shard=(--partition "$PHUX_NEXTEST_PARTITION"); fi
     # Build selection stays --workspace for main and for library changes (see
     # the e2e note). A tests/-only PR sets PHUX_UNIT_MODE=narrow and builds
     # that integration test, not the other binaries. rdeps only filters
@@ -36,7 +40,8 @@ test: worktree-claim && (worktree-verify "test")
         done
         # Gated targets hold `#[ignore]`d tests only, so building them is the check.
         {{AUTO_SPAWN_BACKSTOP}} cargo nextest run --archive-file "$archive" \
-          --workspace-remap "{{justfile_directory()}}" --no-tests=warn -E "$filter"
+          --workspace-remap "{{justfile_directory()}}" --no-tests=warn -E "$filter" \
+          ${shard[@]+"${shard[@]}"}
         exit 0
       fi
       # A spec is `package:binary`, plus `:feature+feature` when the target
@@ -67,7 +72,8 @@ test: worktree-claim && (worktree-verify "test")
     extra=()
     if [[ -n "$filter" ]]; then extra+=(-E "$filter"); fi
     # An rdeps filterset can select nothing; that is a pass, not an error.
-    {{AUTO_SPAWN_BACKSTOP}} cargo nextest run "${source[@]}" --no-tests=warn ${extra[@]+"${extra[@]}"}
+    {{AUTO_SPAWN_BACKSTOP}} cargo nextest run "${source[@]}" --no-tests=warn \
+      ${extra[@]+"${extra[@]}"} ${shard[@]+"${shard[@]}"}
 
 # The whole unit pool to the end, with failures matched against
 # scripts/known-failing-tests.txt. `--base origin/main` reruns anything
@@ -140,6 +146,8 @@ e2e: worktree-claim && (worktree-verify "e2e")
     set -euo pipefail
     if [[ -n "${PHUX_TEST_ARCHIVE:-}" ]]; then
       source=(--archive-file "$PHUX_TEST_ARCHIVE" --workspace-remap "{{justfile_directory()}}")
+      # One CI shard (see `test`). Two shards split the perf pair one each.
+      if [[ -n "${PHUX_NEXTEST_PARTITION:-}" ]]; then source+=(--partition "$PHUX_NEXTEST_PARTITION"); fi
     else
       source=(--workspace {{TEST_FEATURES}} {{E2E_TARGETS}})
     fi
@@ -154,15 +162,15 @@ E2E_TARGETS := "--test automation_e2e --test terminal_e2e --test recording_e2e -
 
 
 # Heavy stress storms — off CI entirely: starvation-sensitive on 2-core
-# runners, so run them locally on a multi-core box before risky merges. Also hosts
-# perf_bursty_output (~110s, allocation count, not wall time). The `stress`
-# feature builds the target, which the default test build skips.
+# runners, so run them locally on a multi-core box before risky merges. Also runs
+# phux-terminal's perf_bursty_output (~110s, allocation count, not wall time).
+# The `stress` features build the targets, which the default test build skips.
 [group('test')]
 [doc('Heavy stress storms; local only, off CI.')]
 stress: worktree-claim
     cargo nextest run --workspace --run-ignored ignored-only \
-      {{TEST_FEATURES}} --features phux-server/stress --test-threads=1 --retries=2 \
-      -E 'binary_id(phux-server::stress)'
+      {{TEST_FEATURES}} --features phux-server/stress,phux-terminal/stress --test-threads=1 --retries=2 \
+      -E 'binary_id(phux-server::stress) + binary_id(phux-terminal::perf_bursty_output)'
 
 
 # Spins a real `phux` server + session, drives a scripted scenario (heavy

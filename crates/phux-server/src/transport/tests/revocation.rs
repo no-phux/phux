@@ -11,7 +11,7 @@ async fn bearer_revoke_now_terminates_live_sessions() {
     LocalSet::new()
         .run_until(async {
             let (listener, addr, token_hex, tokens) = token_listener().await;
-            let state = crate::state::SharedState::new();
+            let state = crate::runtime::apps::terminal::test_support::terminal_state();
             // A transport test: an embedder engine admits the peer (ADR-0072).
             state.with_mut(|s| {
                 s.set_policy_engine(std::sync::Arc::new(crate::policy::OwnerForAll));
@@ -28,8 +28,13 @@ async fn bearer_revoke_now_terminates_live_sessions() {
             let accept_state = state.clone();
             let accept_token = root_token.clone();
             let accept_task = tokio::task::spawn_local(async move {
-                crate::runtime::client::accept_loop(&listener, accept_state, accept_token, None)
-                    .await
+                crate::runtime::connections::accept_loop(
+                    &listener,
+                    accept_state,
+                    accept_token,
+                    None,
+                )
+                .await
             });
             crate::runtime::revocation::spawn_revocation_watcher(&state, &root_token);
 

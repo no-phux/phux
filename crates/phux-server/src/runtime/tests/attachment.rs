@@ -9,7 +9,7 @@ async fn handle_attach_bounds_snapshot_sources_sequentially() {
     let local = LocalSet::new();
     local
         .run_until(async {
-            let state = SharedState::new();
+            let state = crate::runtime::apps::terminal::test_support::terminal_state();
             let (wid, first) = state.with_mut(|s| s.seed_session("multi"));
             let mut panes = vec![first];
             state.with_mut(|s| {
@@ -48,12 +48,7 @@ async fn handle_attach_bounds_snapshot_sources_sequentially() {
                     .expect("snapshot channel closed");
                 assert!(req.max_bytes <= previous_max_bytes);
                 previous_max_bytes = req.max_bytes;
-                let payload = phux_terminal::grid::SnapshotBytes {
-                    cols: 80,
-                    rows: 24,
-                    bytes: format!("snap-{i}").into_bytes(),
-                    scrollback: Vec::new(),
-                };
+                let payload = snapshot_bytes(format!("snap-{i}").as_bytes());
                 req.reply
                     .send(Ok((payload, u64::try_from(i).unwrap())))
                     .expect("attach still waiting for snapshot");
@@ -85,7 +80,7 @@ async fn attach_registers_and_detach_unregisters_consumer_lifecycle() {
     let local = LocalSet::new();
     local
         .run_until(async {
-            let state = SharedState::new();
+            let state = crate::runtime::apps::terminal::test_support::terminal_state();
             let (_sid, pid) = state.with_mut(|s| s.seed_session("lifecycle"));
             let mut rx = register_stub(&state, pid);
             let (out_tx, mut out_rx) =
@@ -171,19 +166,21 @@ async fn native_resync_capture_failure_closes_connection_and_rolls_back_consumer
         BootstrapLimits, BootstrapProfile, BootstrapStreamProfile, EngineCodec, EngineFeatureSet,
     };
 
-    use phux_terminal::actor::{
-        ConsumerAttachOutcome, NativeBootstrapReply, ResourceOutput, ResyncReason,
+    use crate::runtime::apps::terminal::test_support::{
+        ConsumerAttachOutcome, NativeBootstrapReply, NativePublicationReply, NativeStateError,
+        ResourceOutput, ResyncReason,
     };
 
     let local = LocalSet::new();
     local
         .run_until(async {
-            let state = SharedState::new();
+            let state = crate::runtime::apps::terminal::test_support::terminal_state();
             let (_sid, terminal) = state.with_mut(|s| s.seed_session("native-fatal"));
             let (handle, mut rx) = stub_terminal();
             let output_tx = handle.output.clone();
             state.with_mut(|s| {
-                let _ = s.register_resource_handle(terminal, handle, CancellationToken::new());
+                s.register_resource_handle(terminal, handle, CancellationToken::new())
+                    .unwrap();
             });
 
             let client_id = state.with_mut(crate::state::ServerState::new_client_id);
@@ -281,7 +278,7 @@ async fn native_resync_capture_failure_closes_connection_and_rolls_back_consumer
             assert_eq!(publication.cursor, [9; 32]);
             publication
                 .reply
-                .send(Ok(phux_terminal::actor::NativePublicationReply {
+                .send(Ok(NativePublicationReply {
                     replay: Vec::new(),
                     live: output_tx.subscribe(),
                 }))
@@ -327,9 +324,7 @@ async fn native_resync_capture_failure_closes_connection_and_rolls_back_consumer
                 .expect("native request sender closed");
             failed
                 .reply
-                .send(Err(
-                    phux_terminal::native_state::NativeStateError::OutOfMemory,
-                ))
+                .send(Err(NativeStateError::OutOfMemory))
                 .expect("replacement failure reply");
 
             assert!(matches!(

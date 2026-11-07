@@ -3,6 +3,7 @@
 use phux_core::ids::ResourceId;
 use tokio_util::sync::CancellationToken;
 
+#[cfg(test)]
 use phux_terminal::{TerminalActor, TerminalActorBundle};
 
 use crate::state::SharedState;
@@ -11,6 +12,7 @@ use crate::upgrade::blob::PaneBlob;
 
 /// Build a pane actor around its inherited PTY, or a PTY-less actor that
 /// replays its snapshot. Only one of the two PTY ids is corruption.
+#[cfg(test)]
 fn pane_actor_bundle(
     p: &PaneBlob,
     scrollback: phux_config::ScrollbackLimits,
@@ -36,6 +38,7 @@ fn pane_actor_bundle(
 }
 
 /// Rebuild one pane, letting `wire` install its sinks before the actor runs.
+#[cfg(test)]
 pub(crate) fn rebuild_pane<W>(
     core: ResourceId,
     p: &PaneBlob,
@@ -69,9 +72,44 @@ pub(crate) fn wired(
     phux_config::ScrollbackLimits,
 ) -> Result<RebuiltPane<crate::runtime::PaneWiring>, RebuildError>
 + '_ {
+    let engine = state.terminal_engine();
     move |core, p, scrollback| {
-        rebuild_pane(core, p, scrollback, |pane, actor| {
-            crate::runtime::commands::wire_pane_actor(state, pane, actor)
+        let source = match (p.master_fd, p.child_pid) {
+            (Some(master_fd), Some(child_pid)) => phux_terminal_api::EngineSource::Adopt {
+                master_fd,
+                child_pid,
+                seed: pane_seed(p),
+            },
+            (None, None) => phux_terminal_api::EngineSource::Replay(pane_seed(p)),
+            _ => return Err(RebuildError::InvalidPtyPair { wire_id: p.wire_id }),
+        };
+        let reports = crate::runtime::apps::terminal::commands::spawn::engine_reports(state, core);
+        let engine = engine.as_ref().ok_or_else(|| {
+            RebuildError::Actor(Box::new(phux_terminal_api::TerminalActorError::Refused(
+                "no Terminal engine supplied".into(),
+            )))
+        })?;
+        let bundle = engine
+            .build(phux_terminal_api::EngineBuild {
+                cols: p.cols,
+                rows: p.rows,
+                source,
+                scrollback,
+                token: CancellationToken::new(),
+                default_colors: None,
+                reports,
+            })
+            .map_err(|error| RebuildError::Actor(Box::new(error)))?;
+        Ok(RebuiltPane {
+            handle: bundle.handle,
+            token: bundle.token,
+            engine: bundle.run,
+            exit_notify: bundle.exit_notify,
+            wired: crate::runtime::PaneWiring::new(
+                bundle.events,
+                bundle.agent_state,
+                bundle.program_status,
+            ),
         })
     }
 }

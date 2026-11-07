@@ -15,9 +15,12 @@ use crate::ids::ResourceId;
 use crate::keys::{OperationId, ResourceKey, Revision, SessionKey};
 use crate::terminal::TerminalFacet;
 
-/// What kind of thing a resource is. Open: a client that meets a kind it
-/// does not know must treat the resource as opaque, never as a Terminal.
-#[non_exhaustive]
+/// What kind of thing a resource is.
+///
+/// Closed on purpose: every match in the workspace is exhaustive, so a new
+/// kind does not compile until each one answers for it. The open form is the
+/// wire tag, whose `Unknown` a client must treat as opaque, never as a
+/// Terminal.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ResourceKind {
@@ -28,6 +31,13 @@ pub enum ResourceKind {
     /// bound to a Terminal parent. The spelling stays for wire
     /// compatibility.
     AgentSession,
+    /// A replicated accessibility tree of an application, produced by a
+    /// helper that runs in a Terminal; the newest snapshot wins.
+    AccessibilityTree,
+    /// A replicated pixel surface, a window or display mirrored as images by
+    /// a helper that runs in a Terminal; the newest image wins, and its size
+    /// is the surface's geometry.
+    PixelSurface,
 }
 
 impl ResourceKind {
@@ -37,6 +47,8 @@ impl ResourceKind {
         match self {
             Self::Terminal => "terminal",
             Self::AgentSession => "agent-session",
+            Self::AccessibilityTree => "accessibility-tree",
+            Self::PixelSurface => "pixel-surface",
         }
     }
 }
@@ -84,6 +96,10 @@ pub enum LaunchSpec {
     Terminal(TerminalLaunch),
     /// A [`ResourceKind::AgentSession`] binding.
     Agent(AgentLaunch),
+    /// A [`ResourceKind::AccessibilityTree`] binding.
+    Tree(TreeLaunch),
+    /// A [`ResourceKind::PixelSurface`] binding.
+    Surface(SurfaceLaunch),
 }
 
 impl LaunchSpec {
@@ -93,8 +109,26 @@ impl LaunchSpec {
         match self {
             Self::Terminal(_) => ResourceKind::Terminal,
             Self::Agent(_) => ResourceKind::AgentSession,
+            Self::Tree(_) => ResourceKind::AccessibilityTree,
+            Self::Surface(_) => ResourceKind::PixelSurface,
         }
     }
+}
+
+/// What an accessibility tree mirrors: the application its producer
+/// observes, as the producer names it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TreeLaunch {
+    /// The observed application, e.g. a bundle id or a window title.
+    pub target: String,
+}
+
+/// What a pixel surface mirrors: the window or display its producer
+/// captures, as the producer names it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SurfaceLaunch {
+    /// The captured window or display.
+    pub target: String,
 }
 
 /// Where a resource came from.

@@ -39,11 +39,16 @@ phux-core.workspace = true
 # raw bytes for stdout (D9); already in the dep graph, see the workspace
 # justification.
 base64.workspace = true
+# The browser producer (`phux agent page mirror`) speaks the DevTools
+# Protocol over a plain WebSocket; reconnect tests reuse the same client.
+futures-util = { version = "0.3", default-features = false, features = ["std", "sink"] }
+tokio-tungstenite = { version = "0.30", default-features = false, features = ["handshake"] }
 # Defaults are controlled by this executable's feature forwarding below.
 # Other workspace consumers can retain the server's own defaults.
 phux-server = { path = "../phux-server", default-features = false, features = ["native-engine"] }
 # The Terminal app: this binary composes the server with what a pane runs.
-phux-terminal.workspace = true
+phux-terminal = { workspace = true, features = ["native-engine"] }
+phux-terminal-api.workspace = true
 # `phux agent explain` evaluates detection manifests with no daemon in the
 # loop (phux-w7z2.24). The rules crate is the same evaluator the server
 # ticks; depending on it here keeps that path off `phux-server`.
@@ -136,6 +141,7 @@ uuid = { workspace = true, features = ["v7"] }
 rustix = { version = "1.1", default-features = false, features = ["std", "process", "termios", "fs"] }
 
 [dev-dependencies]
+phux-frozen.workspace = true
 # The one scripted server (`phux_client::testkit`), where the reference
 # server's frame ORDER is written down once with a handler citation per
 # entry. The verb tests for partial-fleet reporting need a server that pushes
@@ -152,10 +158,6 @@ phux-tui = { workspace = true, features = ["testkit"] }
 # Command-level wire mocks encode framed replies with the protocol's native
 # BytesMut API; bytes is already a workspace/runtime dependency.
 bytes.workspace = true
-# Reconnect tests inspect the real WebSocket HELLO and reuse the negotiated
-# connection, rather than substituting a transport-only readiness probe.
-futures-util = { version = "0.3", default-features = false, features = ["std", "sink"] }
-tokio-tungstenite = { version = "0.30", default-features = false, features = ["handshake"] }
 # Raw-PTY harnesses (the PTY e2e suites and examples/pty_screen.rs) that run
 # the real `phux attach` in a pseudoterminal and read what it paints through a
 # libghostty oracle, with no tmux reinterpreting the byte stream.
@@ -206,3 +208,8 @@ webtransport = ["phux-server/webtransport"]
 # Warning: the instrumented allocator is significantly slower than the
 # system allocator; do not use in production builds.
 dhat-heap = ["dep:dhat"]
+
+[target.'cfg(target_os = "macos")'.dependencies]
+accessibility = "0.2.0"
+accessibility-sys = "0.2.0"
+core-foundation = "0.10"

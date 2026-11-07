@@ -25,6 +25,9 @@ impl Desk {
             return;
         }
         self.dismiss_tab_peek(window, cx);
+        if self.open_resource_mirror(id, window, cx) {
+            return;
+        }
         if let Some(classified) = settings::classify_command(id) {
             self.run_bound_action(classified, cx);
             return;

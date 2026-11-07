@@ -100,7 +100,15 @@ impl Desk {
             .or(tab.terminals.first());
         terminal
             .and_then(|id| self.topology.as_ref()?.pane(id))
-            .map_or_else(|| tab.name.clone(), pane_label)
+            .map_or_else(
+                || {
+                    terminal
+                        .and_then(|id| self.resources.entries.get(id))
+                        .and_then(|doc| doc.record.name.clone())
+                        .unwrap_or_else(|| tab.name.clone())
+                },
+                pane_label,
+            )
     }
 
     pub fn select_tab(&mut self, index: usize) {
@@ -178,6 +186,14 @@ impl Desk {
             return;
         };
         let terminals = tab.terminals.clone();
+        let (documents, terminals): (Vec<_>, Vec<_>) =
+            terminals.into_iter().partition(|id| self.is_document(id));
+        if !documents.is_empty() {
+            self.hide_documents(&documents);
+        }
+        if terminals.is_empty() {
+            return;
+        }
         let idle = terminals.iter().all(|id| self.vouched_idle(id));
         if self.settings.confirm_close && !idle {
             self.pending = Some(Pending::CloseTab(terminals));

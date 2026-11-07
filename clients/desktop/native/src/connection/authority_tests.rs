@@ -47,7 +47,7 @@ fn authority_refusal_precedes_all_terminal_attach_frames_even_with_a_matching_na
                         ServerFeatureExt::Organization,
                     ])),
                 server_id: vec![0xAB; 16],
-                selected_profile: BootstrapProfile::SynthesizedVtRaw,
+                selected_profile: Some(BootstrapProfile::SynthesizedVtRaw),
                 bootstrap_limits: BootstrapLimits::default(),
             })
             .unwrap();

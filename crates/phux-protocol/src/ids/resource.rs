@@ -168,6 +168,10 @@ impl core::fmt::Display for ResourceId {
 pub const RESOURCE_KIND_TAG_TERMINAL: u8 = 0;
 /// Wire tag byte for [`ResourceKind::AgentSession`].
 pub const RESOURCE_KIND_TAG_AGENT_SESSION: u8 = 1;
+/// Wire tag of [`ResourceKind::AccessibilityTree`].
+pub const RESOURCE_KIND_TAG_ACCESSIBILITY_TREE: u8 = 2;
+/// Wire tag of [`ResourceKind::PixelSurface`].
+pub const RESOURCE_KIND_TAG_PIXEL_SURFACE: u8 = 3;
 
 /// What backs a served resource.
 ///
@@ -185,6 +189,13 @@ pub enum ResourceKind {
     Terminal,
     /// A producer-fed agent event stream bound to a Terminal (wire tag = 1).
     AgentSession,
+    /// A producer-fed accessibility tree of an application, bound to the
+    /// Terminal its producer runs in (wire tag = 2). Newest snapshot wins.
+    AccessibilityTree,
+    /// A producer-fed pixel surface, a window or display as PNG images,
+    /// bound to the Terminal its producer runs in (wire tag = 3). Newest
+    /// image wins; its size is the surface's geometry.
+    PixelSurface,
     /// A kind this build does not recognise, preserved for relays.
     Unknown {
         /// The unrecognised wire tag.
@@ -199,6 +210,8 @@ impl ResourceKind {
         match self {
             Self::Terminal => RESOURCE_KIND_TAG_TERMINAL,
             Self::AgentSession => RESOURCE_KIND_TAG_AGENT_SESSION,
+            Self::AccessibilityTree => RESOURCE_KIND_TAG_ACCESSIBILITY_TREE,
+            Self::PixelSurface => RESOURCE_KIND_TAG_PIXEL_SURFACE,
             Self::Unknown { tag } => tag,
         }
     }
@@ -209,6 +222,8 @@ impl ResourceKind {
         match tag {
             RESOURCE_KIND_TAG_TERMINAL => Self::Terminal,
             RESOURCE_KIND_TAG_AGENT_SESSION => Self::AgentSession,
+            RESOURCE_KIND_TAG_ACCESSIBILITY_TREE => Self::AccessibilityTree,
+            RESOURCE_KIND_TAG_PIXEL_SURFACE => Self::PixelSurface,
             other => Self::Unknown { tag: other },
         }
     }
@@ -225,6 +240,8 @@ impl ResourceKind {
         match self {
             Self::Terminal => "terminal",
             Self::AgentSession => "agent_session",
+            Self::AccessibilityTree => "accessibility_tree",
+            Self::PixelSurface => "pixel_surface",
             Self::Unknown { .. } => "unknown",
         }
     }

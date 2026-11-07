@@ -3,7 +3,7 @@ use crate::state::{ClientId, Outbound, SharedState};
 use phux_protocol::caps::BootstrapProfile;
 use phux_protocol::ids::ResourceId as WireResourceId;
 use phux_protocol::wire::frame::FrameKind;
-use phux_terminal::actor::TerminalResource as _;
+use phux_terminal_api::actor::TerminalResource as _;
 use tokio::sync::{mpsc, oneshot};
 use tracing::warn;
 
@@ -24,7 +24,7 @@ pub(in crate::runtime) struct HistoryPageRequest {
 fn history_terminal(
     state: &SharedState,
     terminal_id: &WireResourceId,
-) -> Option<phux_terminal::actor::TerminalHandle> {
+) -> Option<phux_terminal_api::actor::TerminalHandle> {
     let handle = state.with(|server| {
         server
             .resource_from_wire(terminal_id)
@@ -74,10 +74,10 @@ pub(in crate::runtime) async fn serve_history_request(
     };
     if !matches!(
         selection.profile,
-        BootstrapProfile::NativeState {
+        Some(BootstrapProfile::NativeState {
             codec: phux_protocol::caps::EngineCodec::LibghosttySnapshotV1,
             ..
-        }
+        })
     ) {
         warn!(
             ?terminal_id,
@@ -100,7 +100,7 @@ pub(in crate::runtime) async fn serve_history_request(
     let (reply_tx, reply_rx) = oneshot::channel();
     if terminal
         .native_history
-        .send(phux_terminal::actor::NativeHistoryRequest {
+        .send(phux_terminal_api::actor::NativeHistoryRequest {
             permit,
             owner: client_id.0,
             terminal_id: terminal_id.clone(),
@@ -127,9 +127,9 @@ pub(in crate::runtime) async fn serve_history_request(
         Err(error) => {
             // Mirrors the actor's own in-band mapping.
             let reason = match error {
-                phux_terminal::native_state::NativeStateError::OutOfMemory
-                | phux_terminal::native_state::NativeStateError::OutOfSpace { .. }
-                | phux_terminal::native_state::NativeStateError::LimitExceeded => {
+                phux_terminal_api::native_state::NativeStateError::OutOfMemory
+                | phux_terminal_api::native_state::NativeStateError::OutOfSpace { .. }
+                | phux_terminal_api::native_state::NativeStateError::LimitExceeded => {
                     HistoryTombstoneReason::Limit
                 }
                 _ => HistoryTombstoneReason::CodecFailure,

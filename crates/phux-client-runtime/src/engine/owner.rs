@@ -354,12 +354,21 @@ const fn apply_default_colors(
     colors.has_foreground = defaults.0.is_some();
     colors.has_background = defaults.1.is_some();
     colors.reversed = defaults.2;
-    if let Some(foreground) = defaults.0 {
-        colors.foreground = foreground;
-    }
-    if let Some(background) = defaults.1 {
-        colors.background = background;
-    }
+    // Ghostty's render state keeps the last colours it had when the defaults
+    // are unset, as after a cleared theme: unset reads as its built-in white
+    // on black, as it did before any theme.
+    colors.foreground = match defaults.0 {
+        Some(foreground) => foreground,
+        None => Rgb {
+            r: 0xff,
+            g: 0xff,
+            b: 0xff,
+        },
+    };
+    colors.background = match defaults.1 {
+        Some(background) => background,
+        None => Rgb { r: 0, g: 0, b: 0 },
+    };
 }
 
 #[cfg(feature = "engine")]

@@ -18,10 +18,15 @@ pub fn notice_line(notice: Option<&Notice>, p: &Ink) -> El {
         (notice.text.clone(), notice.kind)
     });
     let color = match kind {
-        NoticeKind::Info => p.text,
+        NoticeKind::Info | NoticeKind::Tip => p.text,
         NoticeKind::Error => p.danger,
     };
     text(line)
+        // A screen reader reads a notice when it comes: an error at once.
+        .role(match kind {
+            NoticeKind::Info | NoticeKind::Tip => "status",
+            NoticeKind::Error => "alert",
+        })
         .font(CAPTION)
         .color(color)
         .wrap()
@@ -32,6 +37,14 @@ pub fn notice_line(notice: Option<&Notice>, p: &Ink) -> El {
 /// What a held action would do, and the word for doing it.
 fn question(pending: &Pending) -> (String, &'static str) {
     match pending {
+        Pending::Mirror(source, target) => (
+            format!(
+                "Start {} mirror of {target:?} in a new producer terminal? {} Read-only; no browser/app input or process migration.",
+                source.verb(),
+                source.prerequisites()
+            ),
+            "Start",
+        ),
         Pending::Paste(_, held) => {
             let lines = held.lines().count().max(1);
             let plural = if lines == 1 { "" } else { "s" };
@@ -77,7 +90,10 @@ pub fn confirm_bar(desk: &Desk, p: &Ink) -> Option<El> {
             .py(8.0)
             .gap(8.0)
             .items_center()
-            .fill(p.raised)
+            .radius(super::CARD_RADIUS)
+            .continuous_corners()
+            .backdrop_blur(super::FROST)
+            .fill(p.raised.alpha(0.82))
             .border(1.0, p.edge)
             .shadow(6.0, 18.0, Color::BLACK.alpha(0.35))
             .transition(rune::Transition::opacity())
@@ -265,13 +281,15 @@ pub fn banner(desk: &Desk, p: &Ink) -> Option<El> {
         col()
             .absolute(0.0, top)
             .w_full()
+            .px(12.0)
             .items_center()
             .transition(rune::Transition::opacity())
             .child(
                 row()
                     .key("reconnect-banner")
                     .on_drag(keep_from_pane)
-                    .w(if update { 560.0 } else { 420.0 })
+                    .w_full()
+                    .max_w(if update { 560.0 } else { 420.0 })
                     .px(14.0)
                     .py(8.0)
                     .gap(12.0)
@@ -337,7 +355,7 @@ pub fn title_bar(desk: &Desk, p: &Ink, lights: f32) -> El {
         .client
         .as_ref()
         .zip(desk.shown.as_ref())
-        .and_then(|(client, shown)| client.acquire_view(shown.view))
+        .and_then(|(client, shown)| client.acquire_view(shown.view?))
         .map(|frame| format!("{}×{}", frame.cols, frame.rows))
         .unwrap_or_default();
     let folded = !desk.sidebar_open;
@@ -350,12 +368,16 @@ pub fn title_bar(desk: &Desk, p: &Ink, lights: f32) -> El {
         .gap(8.0)
         .items_center()
         .window_drag()
-        .child(icon_press(
-            &icons::SIDEBAR,
-            "sidebar-toggle",
-            p,
-            Desk::toggle_sidebar,
-        ))
+        .child(
+            icon_press(
+                &icons::SIDEBAR,
+                "Sidebar",
+                "sidebar-toggle",
+                p,
+                Desk::toggle_sidebar,
+            )
+            .expanded(desk.sidebar_open),
+        )
         .children(tabs::strip(desk, p).or_else(|| Some(place(desk, p))))
         .child(el().grow(1.0))
         // Where a ⌘-click goes, as a browser shows it.

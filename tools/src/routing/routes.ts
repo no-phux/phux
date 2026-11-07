@@ -93,6 +93,7 @@ const ROUTES: Record<string, Surface[]> = {
   // The Rune client has its own workspace, lock and lane (rune-build.yml).
   "clients/rune/**": ["rune"],
   ".github/workflows/rune-build.yml": ["rune"],
+  ".github/workflows/desktop-lane.yml": ["desktop"],
   "just/rune.just": ["rune"],
   // What that lane packages and qualifies with, outside its tree.
   "scripts/check-binary-portability.sh": ["rune"],
@@ -150,7 +151,8 @@ const ROUTES: Record<string, Surface[]> = {
   // The root justfile is imports and `default`.
   justfile: [],
   "just/{perf,release,mutation}.just": [],
-  "release-please-config.json": [],
+  "release-please-config{,.desktop}.json": [],
+  ".release-please-manifest.desktop.json": [],
   "scripts/check-*": [],
   // Lint lane only for a generator-only diff (classify skips the unit pool).
   // plugin-index.yml runs the generator tests. A phux-config change still

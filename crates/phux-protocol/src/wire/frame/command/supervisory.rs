@@ -291,6 +291,19 @@ macro_rules! supervisory_commands {
         /// One or more complete records under the resource's codec.
         bytes: Vec<u8>,
     },
+    /// Replace a state-replicated resource's whole state with one document
+    /// under its codec, e.g. an `AccessibilityTree` snapshot as JSON, at
+    /// most [`MAX_PUBLISH_BYTES`](super::MAX_PUBLISH_BYTES). Viewers get the
+    /// newest state; a slow viewer skips intermediate ones. Refused with
+    /// [`ErrorCode::WrongResourceKind`], [`ErrorCode::NotProducer`] or
+    /// [`ErrorCode::RecordInvalid`] (nothing published). Gated on
+    /// [`ServerFeatureExt::AccessibilityTree`](crate::caps::ServerFeatureExt::AccessibilityTree).
+    PublishResourceState {
+        /// The producer-fed resource whose state this replaces.
+        terminal_id: ResourceId,
+        /// One complete document under the resource's codec.
+        bytes: Vec<u8>,
+    },
     /// Kill one resource only if every precondition holds, checked and
     /// applied atomically (`docs/protocol.md`, ADR-0109); otherwise
     /// `PRECONDITION_FAILED`. Gated on

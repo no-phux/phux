@@ -177,6 +177,14 @@ pub(super) fn journal_drained_event(
     {
         desc.cwd = std::path::PathBuf::from(cwd);
     }
+    // Likewise the program's title: GET_STATE reports it so a list can name
+    // a pane before the client streams it (RESOURCE_PROGRAM_TITLE).
+    if let AgentEvent::TitleChanged { title } = &event
+        && let Some(pane) = s.resource_from_wire(wire_terminal_id)
+        && let Some(desc) = s.registry_mut().terminal_mut(pane)
+    {
+        desc.program_title = Some(title.clone()).filter(|t| !t.is_empty());
+    }
     let actor = control_actor(&event);
     let record = crate::state::EventRecord::new(Some(wire_terminal_id.clone()), event)
         .with_actor(actor)

@@ -8,7 +8,9 @@ import { ROOT } from "../lib/repo.ts";
 /** Package name to the features Cargo enables on it. */
 type FeatureGraph = ReadonlyMap<string, ReadonlySet<string>>;
 
-export type Graphs = Readonly<Record<"full" | "lean" | "mcp", FeatureGraph>>;
+export type Graphs = Readonly<
+  Record<"full" | "lean" | "mcp" | "server" | "terminalApi" | "config", FeatureGraph>
+>;
 
 /** Parse `cargo tree --prefix none --format {p}|{f}` output. */
 export function parseTree(output: string): FeatureGraph {
@@ -32,6 +34,9 @@ export function readGraphs(root = ROOT): Graphs {
     full: tree("-p", "phux"),
     lean: tree("-p", "phux", "-p", "phux-mcp", "--no-default-features"),
     mcp: tree("-p", "phux-mcp"),
+    server: tree("-p", "phux-server"),
+    terminalApi: tree("-p", "phux-terminal-api"),
+    config: tree("-p", "phux-config"),
   };
 }
 
@@ -42,7 +47,7 @@ function enables(graph: FeatureGraph, pkg: string, feature: string, label: strin
 }
 
 /** Every violated boundary, as a message; empty when all hold. */
-export function violations({ full, lean, mcp }: Graphs): string[] {
+export function violations({ full, lean, mcp, server, terminalApi, config }: Graphs): string[] {
   const expect = new Expectations();
   expect.that(full.has("wtransport-proto"), "the default executable must retain browser HTTP/3");
   expect.that(
@@ -62,6 +67,17 @@ export function violations({ full, lean, mcp }: Graphs): string[] {
     expect.that(!graph.has("ratatui-crossterm"), `${name}: unused terminal backend`);
     expect.that(!graph.has("ratatui-macros"), `${name}: unused TUI macros`);
     expect.that(!enables(graph, "rustls", "tls12", name), `${name}: TLS 1.2 re-enabled`);
+  }
+  for (const [name, graph] of Object.entries({ server, terminalApi, config })) {
+    for (const dependency of [
+      "phux-terminal",
+      "libghostty-vt",
+      "libghostty-vt-sys",
+      "portable-pty",
+      "portable-pty-adopt",
+    ]) {
+      expect.that(!graph.has(dependency), `${name}: production graph reaches ${dependency}`);
+    }
   }
   return expect.failures;
 }

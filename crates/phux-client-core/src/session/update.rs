@@ -3,9 +3,10 @@
 #[cfg(doc)]
 use super::KernelStatus;
 use super::{
-    AgentSessionDeclaration, AgentStream, BootstrapId, BootstrapStreamProfile, EffectBuffer,
-    EngineAdapter, GenerationId, HistoryPageInput, KernelEffect, KernelError, KernelInput,
-    ResourceId, ResourceKind, SessionKernel, StreamId, TombstoneRecord, is_agent_profile,
+    AgentSessionDeclaration, AgentStream, BootstrapId, BootstrapStreamProfile, DocumentPublication,
+    EffectBuffer, EngineAdapter, GenerationId, HistoryPageInput, KernelEffect, KernelError,
+    KernelInput, ResourceId, ResourceKind, SessionKernel, StreamId, TombstoneRecord, document_kind,
+    is_agent_profile,
 };
 
 impl<E: EngineAdapter> SessionKernel<E> {
@@ -36,6 +37,14 @@ impl<E: EngineAdapter> SessionKernel<E> {
                 geometry,
                 base_seq,
             } => {
+                if let Some(kind) = document_kind(profile) {
+                    self.expect_kind(terminal_id, kind)?;
+                    let staging = self.documents.entry(terminal_id.clone()).or_default();
+                    staging.kind = Some(kind);
+                    staging.base_seq = base_seq;
+                    staging.buffer.clear();
+                    return Ok(());
+                }
                 if is_agent_profile(profile) {
                     self.agent_bootstrap_begin(
                         terminal_id,
@@ -56,6 +65,54 @@ impl<E: EngineAdapter> SessionKernel<E> {
                         effects,
                     )
                 }
+            }
+            KernelInput::BootstrapChunk {
+                terminal_id,
+                payload,
+                ..
+            } if self.documents.contains_key(terminal_id) => {
+                if let Some(staging) = self.documents.get_mut(terminal_id) {
+                    staging.buffer.extend_from_slice(payload);
+                }
+                Ok(())
+            }
+            KernelInput::BootstrapReady { terminal_id, .. }
+                if self.documents.contains_key(terminal_id) =>
+            {
+                if let Some(staging) = self.documents.get_mut(terminal_id)
+                    && let Some(kind) = staging.kind
+                {
+                    effects.push(KernelEffect::Document(DocumentPublication {
+                        resource_id: terminal_id.clone(),
+                        kind,
+                        seq: staging.base_seq,
+                        bytes: std::mem::take(&mut staging.buffer),
+                    }));
+                }
+                Ok(())
+            }
+            KernelInput::ResourceOutput {
+                terminal_id,
+                seq,
+                payload,
+                ..
+            } if self.documents.contains_key(terminal_id) => {
+                if let Some(kind) = self.documents.get(terminal_id).and_then(|s| s.kind) {
+                    effects.push(KernelEffect::Document(DocumentPublication {
+                        resource_id: terminal_id.clone(),
+                        kind,
+                        seq,
+                        bytes: payload.to_vec(),
+                    }));
+                }
+                Ok(())
+            }
+            // A lapped viewer is fenced and recut; the recut's READY carries
+            // the newest document, so the tombstone itself changes nothing.
+            KernelInput::Tombstone { terminal_id, .. }
+                if self.documents.contains_key(terminal_id) =>
+            {
+                Ok(())
             }
             KernelInput::BootstrapChunk {
                 terminal_id,

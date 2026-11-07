@@ -15,6 +15,7 @@ mod launch;
 mod links;
 mod machines;
 mod palette;
+mod paths;
 mod perf;
 mod theme;
 mod ui;
@@ -23,6 +24,9 @@ mod updates;
 use desk::Desk;
 use rune::{AppSpec, Chrome};
 
+/// The desktop entry's name, and what `phux omarchy setup` tags as a terminal.
+const APP_ID: &str = "sh.phux.rune";
+
 fn main() {
     // The updater asks a new binary this before trusting it can run here.
     if rune::extra_args().iter().any(|arg| arg == "--version") {
@@ -30,6 +34,9 @@ fn main() {
         return;
     }
     diag::install();
+    // The window's Wayland app_id and X11 class: what matches the .desktop
+    // entry, the icon, and a compositor's rules (Omarchy's terminal tag).
+    rune::set_app_id(APP_ID);
     rune::prewarm_gpu();
     // Rune keeps its own flags (`--snap`, `--script`, ...); the rest are ours.
     let options = match launch::Options::parse(rune::extra_args().iter().cloned()) {
@@ -41,18 +48,24 @@ fn main() {
     };
     // The window opens first; `Desk::listen` finds the server on a worker.
     let resolved = launch::resolve(&options);
+    let phone = options.phone;
+    let (size, min_size) = if phone {
+        ((393.0, 852.0), (320.0, 568.0))
+    } else {
+        ((1100.0, 720.0), (640.0, 360.0))
+    };
     let spec = AppSpec {
-        min_size: Some((640.0, 360.0)),
+        min_size: Some(min_size),
         fonts: grid::FONTS,
         families: grid::FAMILIES,
         setup: Some(|desk: &mut Desk, waker| desk.listen(waker)),
         poll: Some(|desk: &mut Desk, clock, tx| desk.poll(clock, tx)),
         on_key: Some(|desk: &mut Desk, event, tx| desk.key(event, tx)),
-        ..AppSpec::new("phux", (1100.0, 720.0), placeholder_init, ui::view)
+        ..AppSpec::new("phux", size, placeholder_init, ui::view)
     };
     perf::report_to_file();
     let app = desk::with_menus(rune::App::new(spec))
-        .init(move || Desk::new(&resolved))
+        .init(move || Desk::new(&resolved).with_phone(phone))
         .chrome(Chrome {
             full_size_content: true,
             traffic_lights: Some((14.0, 14.0)),

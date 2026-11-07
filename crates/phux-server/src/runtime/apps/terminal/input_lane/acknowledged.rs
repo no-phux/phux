@@ -22,7 +22,7 @@ use tokio::sync::oneshot;
 use crate::runtime::operation_dedupe::{
     CachedOutcome, Claim, OperationDedupe, OperationDomain, OperationKey, Waiter,
 };
-use phux_terminal::actor::{WriteCompletion, WriteCompletionSink};
+use phux_terminal_api::actor::{WriteCompletion, WriteCompletionSink};
 
 pub(super) const ACKNOWLEDGED_COMPLETION_TIMEOUT: Duration = Duration::from_secs(5);
 
@@ -326,7 +326,7 @@ impl CompletionWaiter {
         let join = std::thread::Builder::new()
             .name("phux-input-ack".to_owned())
             .spawn(move || {
-                phux_terminal::perf::promote_helper_thread("phux-input-ack");
+                crate::perf::promote_helper_thread("phux-input-ack");
                 run_waiter(&rx, &cache);
             })?;
         Ok(Self {

@@ -80,7 +80,7 @@ fn flood_16mib_stays_under_counter_ceilings() {
     run_local(async {
         let tmp = TempDir::new().unwrap();
         let flood = write_flood(tmp.path());
-        let mut cmd = portable_pty::CommandBuilder::new("/bin/sh");
+        let mut cmd = phux_server::LaunchCommand::new("/bin/sh");
         // A login shell would source the host profile and paint a prompt
         // over the flood. This child only needs cat and sleep.
         cmd.env_clear();

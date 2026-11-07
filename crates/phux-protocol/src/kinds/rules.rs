@@ -318,6 +318,11 @@ static C_APPEND_RESOURCE_OUTPUT: Rule = Rule::verbs(
     &[Verb::Bind, Verb::Input],
     Subject::ParentOfNamed,
 );
+static C_PUBLISH_RESOURCE_STATE: Rule = Rule::verbs(
+    "`PUBLISH_RESOURCE_STATE`",
+    &[Verb::Bind, Verb::Input],
+    Subject::ParentOfNamed,
+);
 static C_NATIVE_SPAWN: Rule = Rule::verbs(
     "`NATIVE_AGENT { type: spawn }`",
     &[Verb::Create, Verb::Bind],
@@ -418,7 +423,7 @@ static C_UNCLASSIFIED: Rule = Rule::deny("Unknown, retired, or otherwise unclass
 /// The nested-command table of workload-auth §6, in spec row order.
 ///
 /// [`classify_command`] returns one of these rows for every decoded command.
-pub static COMMAND_RULES: [&Rule; 54] = [
+pub static COMMAND_RULES: [&Rule; 55] = [
     &C_SPAWN,
     &C_ATTACH_RESOURCE,
     &C_DETACH_RESOURCE,
@@ -450,6 +455,7 @@ pub static COMMAND_RULES: [&Rule; 54] = [
     &C_GET_PERF_RESET,
     &C_PERF_CONTROL,
     &C_APPEND_RESOURCE_OUTPUT,
+    &C_PUBLISH_RESOURCE_STATE,
     &C_NATIVE_SPAWN,
     &C_NATIVE_LIST,
     &C_NATIVE_LAUNCH,

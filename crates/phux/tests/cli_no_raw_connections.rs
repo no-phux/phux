@@ -66,6 +66,7 @@ const ALLOWLIST: &[(&str, usize, &str)] = &[
         "`phux agent session` internals",
     ),
     ("agent/start.rs", 8, "`phux agent start`"),
+    ("agent/tree.rs", 1, "`phux agent tree`'s connection"),
 ];
 
 /// Literal markers of a hand-rolled wire call, checked with `str::contains`
@@ -163,10 +164,11 @@ fn rust_files(dir: &Path) -> Vec<PathBuf> {
     out
 }
 
-/// A `mod tests` body split into its own `tests.rs` file: excluded like an
-/// inline `mod tests` block.
+/// A `mod tests` body split into its own `tests.rs` file, or a submodule
+/// under a `tests/` directory: excluded like an inline `mod tests` block.
 fn is_test_module(path: &Path) -> bool {
     path.file_name().is_some_and(|name| name == "tests.rs")
+        || path.components().any(|part| part.as_os_str() == "tests")
 }
 
 /// Blank out comments and string-literal contents character-for-character,

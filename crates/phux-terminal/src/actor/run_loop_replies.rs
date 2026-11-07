@@ -18,9 +18,10 @@ impl TerminalActor {
         if let Err(err) = &snap {
             warn!(error = %err, "bounded snapshot synthesis failed");
         }
-        let _ = req
-            .reply
-            .send(snap.map(|snapshot| (snapshot, self.core.seq())));
+        let _ = req.reply.send(
+            snap.map(|snapshot| (snapshot, self.core.seq()))
+                .map_err(Into::into),
+        );
     }
 
     /// Install a client's reported default palette, then acknowledge.
@@ -95,7 +96,15 @@ impl TerminalActor {
             // SAFETY: the master guard keeps `fd` open until `dup`
             // returns an independently owned descriptor.
             let borrowed = unsafe { std::os::fd::BorrowedFd::borrow_raw(fd) };
-            let duplicate = rustix::io::dup(borrowed).ok();
+            let duplicate = rustix::io::dup(borrowed)
+                .inspect_err(|err| {
+                    warn!(
+                        error = %err,
+                        "upgrade: could not duplicate the PTY master; the server may be out of \
+                         file descriptors"
+                    );
+                })
+                .ok();
             drop(master);
             duplicate
         });

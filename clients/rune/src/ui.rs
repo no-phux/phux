@@ -6,6 +6,7 @@ use rune::{Color, Cx, El, TextStyle, Transition, col, el, row, text};
 use crate::desk::Desk;
 use crate::theme::{Marks, SELECTED_WASH, Selection, Theme, on_fill};
 
+mod documents;
 mod icons;
 mod inbox;
 mod machines;
@@ -13,6 +14,7 @@ mod overlay;
 mod palette;
 mod panes;
 pub(crate) use panes::DIVIDER;
+mod phone;
 mod settings;
 mod sidebar;
 mod status;
@@ -30,9 +32,11 @@ const SIDEBAR_W: f32 = 236.0;
 const TITLEBAR_H: f32 = 38.0;
 /// Space between the terminal area's edge and its grid.
 pub(crate) const PAD: f32 = 10.0;
-/// The gap around the terminal card, and how round it is.
+/// The gap around and between the terminal cards, and how round they are.
 const CARD_GAP: f32 = 8.0;
-const CARD_RADIUS: f32 = 10.0;
+const CARD_RADIUS: f32 = 12.0;
+/// How far a frosted surface blurs what it floats over, in points.
+const FROST: f32 = 18.0;
 pub(crate) const LABEL: TextStyle = TextStyle::new(12.0, 400.0);
 pub(crate) const LABEL_STRONG: TextStyle = TextStyle::new(12.0, 600.0);
 pub(crate) const CAPTION: TextStyle = TextStyle::new(11.0, 500.0);
@@ -59,6 +63,14 @@ pub(crate) struct Ink {
     pub(crate) marks: Marks,
     /// The terminal's selection.
     pub(crate) selection: Selection,
+    /// The shadow a floating card casts on the window.
+    pub(crate) shade: Color,
+}
+
+/// A card's shadow: deep on a dark ground, soft on a light one.
+fn shade(ground: Color) -> Color {
+    let dark = on_fill(ground) == Color::WHITE;
+    Color::BLACK.alpha(if dark { 0.38 } else { 0.13 })
 }
 
 fn ink(dark: bool, accent: Color, theme: Option<&Theme>) -> Ink {
@@ -80,6 +92,7 @@ fn ink(dark: bool, accent: Color, theme: Option<&Theme>) -> Ink {
             edge: roles.edge,
             marks: roles.marks,
             selection: roles.selection,
+            shade: shade(crate::theme::color(theme.background)),
         };
     }
     let t = tok::theme(dark);
@@ -105,11 +118,17 @@ fn ink(dark: bool, accent: Color, theme: Option<&Theme>) -> Ink {
         edge: crate::theme::color(edge),
         marks: Theme::system_marks(dark),
         selection: Selection::system(),
+        shade: shade(t.bg),
     }
 }
 
 pub fn view(desk: &Desk, cx: &mut Cx<Desk>) -> El {
+    if desk.phone.is_some() {
+        return phone::view(desk, cx);
+    }
     let p = ink(cx.system_dark(), cx.accent(), desk.settings.theme);
+    // Native fields inherit a readable caret and selection in light themes too.
+    cx.foreground(p.text);
     // `titlebar_inset` is the traffic lights' width; zero when the system
     // draws its own titlebar.
     let lights = cx.titlebar_inset();
@@ -150,9 +169,6 @@ pub fn view(desk: &Desk, cx: &mut Cx<Desk>) -> El {
                                 .w_full()
                                 .min_w(0.0)
                                 .min_h(0.0)
-                                .radius(CARD_RADIUS)
-                                .clip_rounded(CARD_RADIUS)
-                                .border(1.0, p.edge)
                                 .child(panes::view(desk, &p, cx))
                                 .children(status::confirm_bar(desk, &p))
                                 .children(overlay::toast(desk, &p)),
@@ -172,7 +188,7 @@ pub fn view(desk: &Desk, cx: &mut Cx<Desk>) -> El {
         .children(desk.settings_open.then(|| settings::view(desk, &p)))
         .children(machines::sheet(desk, &p))
         .children(tabs::rename_sheet(desk, &p))
-        .children(desk.palette_open.then(|| palette::view(desk, &p)))
+        .children(desk.palette_open.then(|| palette::view(desk, &p, 96.0)))
         .children(desk.pointer.menu.map(|at| palette::context_menu(desk, at, &p)))
 }
 
@@ -207,13 +223,15 @@ impl Sheet {
             .children(aside)
             .child(overlay::icon_button(
                 "✕",
+                "Close",
                 format!("{}-close", self.key),
                 p,
                 self.close,
             ));
         let panel = col()
             .key(self.key)
-            .w(self.width)
+            // A narrow window (the phone form) takes what it has.
+            .w_full()
             .max_w(self.width)
             .max_h(MAX_H)
             .shrink()
@@ -244,18 +262,22 @@ impl Sheet {
             .w_full()
             .h_full()
             .py(MARGIN)
+            .px(MARGIN)
             .items_center()
             .fill(Color::BLACK.alpha(self.scrim))
             .transition(Transition::opacity())
             .modal(true, self.close)
+            .label(self.title)
             .child(el().grow(1.0).max_h(self.top - MARGIN))
             .child(panel)
     }
 }
 
-/// A quiet square button around an icon.
+/// A quiet square button around an icon; `name` is what a screen reader
+/// says for it.
 pub(crate) fn icon_press(
     glyph: &'static rune::Icon,
+    name: &'static str,
     key: impl Into<String>,
     p: &Ink,
     press: impl Fn(&mut Desk) + 'static,
@@ -264,6 +286,7 @@ pub(crate) fn icon_press(
         .size(24.0, 24.0)
         .radius(6.0)
         .center()
+        .label(name)
         .on_press(press)
         .child(rune::icon(glyph, 14.0).color(p.dim))
 }

@@ -480,6 +480,10 @@ fn samples(world: &World, agent: &WireResourceId) -> Vec<FrameKind> {
             terminal_id: t.clone(),
             bytes: b"{}\n".to_vec(),
         }),
+        command(Command::PublishResourceState {
+            terminal_id: t.clone(),
+            bytes: b"{}".to_vec(),
+        }),
     ]
     .into_iter()
     .chain(organization_samples(world, &t))

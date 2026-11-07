@@ -21,7 +21,7 @@ fn checkout_on_a_satellite_terminal_is_answered_by_the_satellite() {
         let repo = repo_dir.path().canonicalize().unwrap();
         git(&repo, &["init", "-q", "-b", "trunk"]);
         std::fs::write(repo.join("satellite.txt"), "hello\n").unwrap();
-        let mut seed = CommandBuilder::new("/bin/sh");
+        let mut seed = LaunchCommand::new("/bin/sh");
         seed.arg("-c");
         seed.arg("sleep 60");
         seed.cwd(&repo);

@@ -180,6 +180,7 @@ pub(in crate::runtime) fn open_org_store(
                 store.import(&org, None, crate::state::now_stamp())?;
             }
             s.install_org(store, org, true);
+            s.claim_unreadable_receipts(&stored.unreadable_receipts);
         } else {
             let org = crate::state::fresh_org(instance, crate::state::now_stamp());
             s.install_org(store, org, false);
@@ -208,8 +209,11 @@ pub(in crate::runtime) fn resume_session_tree(
     blob: &StateBlob,
     root_token: &CancellationToken,
 ) -> Result<(), ServerError> {
+    // Capture composition before taking the mutable registry lock. A rebuild
+    // invokes the engine factory while that same lock remains held.
+    let build_terminal = crate::runtime::apps::terminal::upgrade::wired(state);
     let rebuilt = state.with_mut(|s| {
-        s.rebuild_from_blob(blob, crate::runtime::apps::terminal::upgrade::wired(state))
+        s.rebuild_from_blob(blob, build_terminal, crate::runtime::apps::rebuild_session)
     })?;
     let mut pane_events: std::collections::HashMap<_, _> = rebuilt
         .wired_panes

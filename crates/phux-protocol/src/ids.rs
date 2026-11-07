@@ -59,8 +59,10 @@ pub use handles::{
     ApprovalId, BootstrapId, FileUploadId, IdempotencyKey, InputOperationId, StreamId,
 };
 pub use resource::{
-    FrameId, RESOURCE_ID_TAG_LOCAL, RESOURCE_ID_TAG_SATELLITE, RESOURCE_KIND_TAG_AGENT_SESSION,
-    RESOURCE_KIND_TAG_TERMINAL, ResourceId, ResourceKind, SatelliteHost, ServerInstance,
+    FrameId, RESOURCE_ID_TAG_LOCAL, RESOURCE_ID_TAG_SATELLITE,
+    RESOURCE_KIND_TAG_ACCESSIBILITY_TREE, RESOURCE_KIND_TAG_AGENT_SESSION,
+    RESOURCE_KIND_TAG_PIXEL_SURFACE, RESOURCE_KIND_TAG_TERMINAL, ResourceId, ResourceKind,
+    SatelliteHost, ServerInstance,
 };
 
 /// Lowercase RFC 4648 base32 alphabet, the text form of a 16-byte key.

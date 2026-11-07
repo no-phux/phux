@@ -7,6 +7,9 @@ use std::os::fd::AsRawFd;
 use super::super::handoff::*;
 use super::super::validate::*;
 use super::super::*;
+pub(super) use crate::runtime::apps::agent_session::upgrade::{
+    AgentSessionSeal, AgentSessionUpgrade, carried_sessions, collect_agent_session_cuts,
+};
 use phux_agent_session::session::AgentSessionBootstrap;
 use tokio::sync::oneshot;
 
@@ -136,8 +139,7 @@ pub(super) fn unexecutable_plan(
         _listener_fd: dup_listener(listener.as_raw_fd()).unwrap(),
         _delegated_listeners: Vec::new(),
         _handoffs: HashMap::new(),
-        agent_seal: seal,
-        _native_seal: None,
+        streams: AgentSessionUpgrade::holding(seal),
     };
     (plan, listener, original)
 }
@@ -168,7 +170,9 @@ pub(super) fn spawn_agent_session(
         4096,
     );
     let append = bundle.handle.agent_session().unwrap().append.clone();
-    let wire = s.spawn_resource_actor(core, bundle.handle, token, bundle.actor.run());
+    let wire = s
+        .spawn_resource_actor(core, bundle.handle, token, bundle.actor.run())
+        .unwrap();
     (wire, append)
 }
 
@@ -188,15 +192,18 @@ pub(super) fn old_image_with_agent_sessions(
     mpsc::Sender<phux_agent_session::session::AppendRequest>,
 ) {
     let (sid, live_pane) = s.seed_session("main");
-    let live = phux_terminal::actor::TerminalActor::new_with_seed(20, 5, b"live").unwrap();
+    let live = crate::runtime::apps::terminal::test_support::seeded_terminal(20, 5, b"live");
     let live_token = live.token.clone();
-    let pane_wire = s.spawn_resource_actor(live_pane, live.handle, live_token, live.actor.run());
+    let pane_wire = s
+        .spawn_resource_actor(live_pane, live.handle, live_token, live.actor.run())
+        .unwrap();
     let (agent_wire, append) = spawn_agent_session(s, live_pane, "claude", Some("native-1"));
 
     let exited = s.add_pane_to_session(sid).unwrap();
-    let dead = phux_terminal::actor::TerminalActor::new_with_seed(20, 5, b"").unwrap();
+    let dead = crate::runtime::apps::terminal::test_support::seeded_terminal(20, 5, b"");
     let dead_token = dead.token.clone();
-    let _ = s.spawn_resource_actor(exited, dead.handle, dead_token, dead.actor.run());
+    s.spawn_resource_actor(exited, dead.handle, dead_token, dead.actor.run())
+        .unwrap();
     let _ = spawn_agent_session(s, exited, "pi", None);
     s.note_retain_request(exited, 60);
     let _ = s
@@ -216,16 +223,12 @@ pub(super) fn old_image_with_agent_sessions(
 /// the seal it holds on the captured sessions.
 pub(super) async fn capture_blob(state: &SharedState) -> (StateBlob, AgentSessionSeal) {
     let context = capture_upgrade_context(state).unwrap();
-    assert_eq!(
-        context.agent_session_senders.len(),
-        1,
-        "only the live pane's session is cut"
-    );
+    let sessions = state.with(carried_sessions);
+    assert_eq!(sessions.len(), 1, "only the live pane's session is cut");
     let panes = collect_pane_handoffs(context.pane_senders, Duration::from_secs(2))
         .await
         .unwrap();
-    let (agent_sessions, seal) =
-        collect_agent_session_cuts(context.agent_session_senders, Duration::from_secs(2)).await;
+    let (agent_sessions, seal) = collect_agent_session_cuts(sessions, Duration::from_secs(2)).await;
     let blob = reassemble_unchanged_tree(
         state,
         context.listener_fd,

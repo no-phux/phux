@@ -5,7 +5,7 @@
 )]
 
 use super::*;
-use phux_terminal::actor::TerminalResource as _;
+use phux_terminal_api::actor::TerminalResource as _;
 
 /// The decoded `SPAWN_RESOURCE` payload, minus `request_id`.
 #[derive(Debug)]
@@ -56,55 +56,6 @@ fn satellite_spawn_owner(
     }
 }
 
-/// Relay one satellite-addressed spawn over the hub link (L1 §9.1); no route
-/// is the typed configuration refusal.
-async fn relay_spawn_to_satellite(
-    state: &SharedState,
-    host: &phux_protocol::ids::SatelliteHost,
-    spawn: SatelliteSpawn,
-) -> SpawnResult {
-    let Some(relay) = state.with(|s| s.hub_relay(host)) else {
-        debug!(
-            satellite = %host,
-            "SPAWN_RESOURCE: no route to satellite (non-hub server, or host not in the registry)",
-        );
-        return SpawnResult::Err(SpawnError::UnsupportedSatelliteRoute);
-    };
-    relay.spawn(spawn).await
-}
-
-/// ADR-0109: record which hub consumer spawned a satellite resource (the
-/// satellite sees one link identity), before any consumer can learn the id.
-fn record_satellite_spawn(state: &SharedState, client_id: ClientId, result: &SpawnResult) {
-    if let Some(phux_protocol::ids::ResourceId::Satellite { host, id }) = result.spawned_id() {
-        let instance = result.instance();
-        state.with_mut(|s| s.hub_record_satellite_spawn(host.clone(), *id, instance, client_id));
-    }
-}
-
-/// Relay a satellite-targeted spawn (or reply with its validation refusal)
-/// and reply with the re-tagged result.
-pub(crate) async fn dispatch_satellite_spawn(
-    state: &SharedState,
-    client_id: ClientId,
-    out_tx: &tokio::sync::mpsc::Sender<Outbound>,
-    request_id: u32,
-    host: &phux_protocol::ids::SatelliteHost,
-    spawn: Result<SatelliteSpawn, SpawnError>,
-) {
-    let result = match spawn {
-        Ok(spawn) => relay_spawn_to_satellite(state, host, spawn).await,
-        Err(error) => SpawnResult::Err(error),
-    };
-    record_satellite_spawn(state, client_id, &result);
-    let _ = out_tx
-        .send(Outbound::Frame(FrameKind::ResourceSpawned {
-            request_id,
-            result,
-        }))
-        .await;
-}
-
 /// Handle `SPAWN_RESOURCE` (SPEC §10.1): spawn a PTY-backed Terminal into
 /// the spawning client's current session (or the most recently active one
 /// for a detached spawner), auto-subscribe the spawner, and publish its first
@@ -122,19 +73,25 @@ pub(crate) async fn handle_spawn_terminal(
     request_id: u32,
     request: SpawnRequest,
     out_tx: &tokio::sync::mpsc::Sender<Outbound>,
-    bootstrap_profile: BootstrapProfile,
+    bootstrap_profile: Option<BootstrapProfile>,
     bootstrap_limits: BootstrapLimits,
     root_token: &CancellationToken,
     connection_token: &CancellationToken,
     output_pumps: &mut JoinSet<()>,
     defer_subscription: bool,
 ) {
-    let Some(profile) = bootstrap_stream_profile(bootstrap_profile) else {
+    // The spawner consumes the new Terminal's stream, so it needs a profile.
+    let Some(profile) = bootstrap_profile.and_then(bootstrap_stream_profile) else {
         let _ = out_tx
             .send(Outbound::Frame(FrameKind::Error {
                 request_id: Some(request_id),
                 code: ErrorCode::CodecUnavailable,
-                message: "SPAWN_RESOURCE selected an unsupported bootstrap profile".to_owned(),
+                message: match bootstrap_profile {
+                    None => super::super::commands::NO_TERMINAL_PROFILE.to_owned(),
+                    Some(_) => {
+                        "SPAWN_RESOURCE selected an unsupported bootstrap profile".to_owned()
+                    }
+                },
             }))
             .await;
         return;
@@ -169,23 +126,24 @@ pub(crate) async fn handle_spawn_terminal(
     };
     match crate::id_bridge::core_kind(kind) {
         Some(crate::resource::ResourceKind::Terminal) => {}
-        Some(crate::resource::ResourceKind::AgentSession) => {
+        Some(other) => {
             let resource = resource.unwrap_or_default();
-            crate::runtime::resource_commands::spawn_agent_session(
-                state,
-                client_id,
-                request_id,
-                &resource,
-                satellite.as_ref(),
-                out_tx,
-                root_token,
-                bootstrap_limits,
-                connection_token,
-            )
-            .await;
+            crate::runtime::apps::app_for(other)
+                .spawn(crate::runtime::apps::ResourceSpawn {
+                    state,
+                    client_id,
+                    request_id,
+                    resource: &resource,
+                    satellite: satellite.as_ref(),
+                    out_tx,
+                    root_token,
+                    limits: bootstrap_limits,
+                    connection_token,
+                })
+                .await;
             return;
         }
-        _ => {
+        None => {
             warn!(
                 ?client_id,
                 request_id,

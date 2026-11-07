@@ -288,7 +288,7 @@ async fn empty_create_receipt_keeps_original_identity_after_name_reuse() {
 async fn pending_session_create_token_cannot_be_reused_by_another_connection() {
     tokio::task::LocalSet::new()
         .run_until(async {
-            let state = SharedState::new();
+            let state = crate::runtime::apps::terminal::test_support::terminal_state();
             let root_token = CancellationToken::new();
             for (client_id, name) in [(ClientId(1), "first"), (ClientId(2), "collision")] {
                 let value = serde_json::to_vec(&serde_json::json!({

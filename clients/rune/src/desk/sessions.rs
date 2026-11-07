@@ -2,7 +2,7 @@
 //! terminal or session, step through them.
 
 use phux_client_runtime::control::{
-    ControlOptions, SessionRecovery, SpawnRequest, Status, Topology,
+    ControlOptions, PredictionStyle, SessionRecovery, SpawnRequest, Status, Topology,
 };
 use phux_client_runtime::{Client, ClientOptions, Runtime, Target};
 use phux_protocol::ids::ResourceId;
@@ -23,13 +23,7 @@ impl Desk {
         let Some(client) = self.client.clone() else {
             return;
         };
-        // A click on the shown terminal whose view died reopens it.
-        if let Some(shown) = &self.shown
-            && shown.terminal == terminal
-            && client.acquire_view(shown.view).is_none()
-        {
-            self.drop_shown(&client);
-        }
+        self.drop_dead_views(&client);
         self.pending_session = None;
         self.want(terminal);
         self.open_wanted(&client);
@@ -111,7 +105,10 @@ impl Desk {
     /// terminal can come ready without news, while a connection that is down
     /// wakes the window itself when it returns.
     pub(super) fn sync_focus(&mut self, client: &Client) -> bool {
-        let now = self.shown.as_ref().filter(|_| self.focused);
+        let now = self
+            .shown
+            .as_ref()
+            .filter(|s| self.focused && s.view.is_some());
         let now = now.map(|shown| shown.terminal.clone());
         if self.focus_told == now {
             return false;
@@ -215,6 +212,8 @@ pub(super) fn connect(target: Target) -> Result<Client, String> {
                 session_recovery: SessionRecovery::CallerValidated,
                 attach_role: Some(RolePolicy::PRIMARY),
                 scrollback_lines: SCROLLBACK_LINES,
+                // Typed text shows as typed, never underlined while unconfirmed.
+                prediction_style: PredictionStyle::Plain,
                 ..ControlOptions::default()
             },
             ..ClientOptions::default()

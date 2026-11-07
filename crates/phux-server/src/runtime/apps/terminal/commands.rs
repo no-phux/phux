@@ -18,33 +18,30 @@ use phux_protocol::wire::frame::{
     AgentEvent, Command, CommandResult, CommandValue, ControlAction, DetachReason, ErrorCode,
     FrameKind, InputMode, ResourceLifecycle, StateScope, TerminalSignal, ViewportInfo,
 };
-use std::collections::HashSet;
 use tokio::sync::oneshot;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, trace, warn};
 
 use crate::resource::{ResourceHandle, WrongResourceKind};
-use crate::runtime::client::PaneEvents;
+use crate::runtime::apps::terminal::input_lane::InputLaneHandle;
 #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
 use crate::runtime::commands::attach_terminal::native_checkpoint_profile;
-use crate::runtime::commands::satellite_lease::relay_satellite_frame;
 #[allow(
     clippy::wildcard_imports,
     reason = "shared with the host's command namespace"
 )]
 use crate::runtime::commands::*;
-use crate::runtime::input_lane::InputLaneHandle;
+use crate::runtime::connections::PaneEvents;
 use crate::runtime::pump;
-use crate::runtime::{AttachPrepared, spawn_agent_state_drain, spawn_resource_exit_watcher};
+use crate::runtime::{spawn_agent_state_drain, spawn_resource_exit_watcher};
 use crate::state::RoleEffects;
 use crate::state::{
     ClientId, Outbound, RelayRoute, Resolved, ResolvedOwned, ServerInterceptedKey, SharedState,
 };
 use phux_agent_session::asked::{AskedPayload, AskedSource};
-use phux_terminal::TerminalInput;
-use phux_terminal::actor::{
-    ConsumerAckRequest, ControlRequest, ResizeRequest, ScreenReply, ScreenRequest, TerminalActor,
-    TerminalHandle,
+use phux_terminal_api::TerminalInput;
+use phux_terminal_api::actor::{
+    ConsumerAckRequest, ControlRequest, ResizeRequest, ScreenReply, ScreenRequest, TerminalHandle,
 };
 
 mod app;
@@ -67,7 +64,7 @@ pub(crate) use signal::*;
 pub(crate) use spawn::*;
 pub(crate) use terminal_input::*;
 
-pub(crate) use app::TerminalApp;
+pub(crate) use app::{NO_TERMINAL_PROFILE, TerminalApp};
 pub(crate) use attach_resource::*;
 use attach_resource::{
     AttachResourceGeneration, AttachResourcePumpChannels, AttachResourceSession,

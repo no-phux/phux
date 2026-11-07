@@ -74,6 +74,10 @@ impl ResourceOps for AgentSessionHandle {
     fn retire(&self) -> Delivery {
         Box::pin(std::future::ready(()))
     }
+
+    fn is_live_stream(&self) -> bool {
+        !self.ended.load(Ordering::Relaxed)
+    }
 }
 
 /// The `AgentSession` facet of a [`ResourceHandle`].
@@ -255,7 +259,7 @@ impl AgentSessionActor {
     /// no JSON parsing or traversal of records preceding the cursor is needed.
     fn bootstrap(&self, after_seq: Option<u64>) -> AgentSessionBootstrap {
         let base_seq = self.core.seq();
-        let retained = self.ring.len();
+        let retained = self.ring.retained();
         let suffix_len = after_seq
             .and_then(|after_seq| base_seq.checked_sub(after_seq))
             .and_then(|count| usize::try_from(count).ok())

@@ -460,7 +460,7 @@ pub fn background(frame: &GridFrame) -> Color {
 }
 
 #[cfg(test)]
-mod budget;
+pub(crate) mod budget;
 
 #[cfg(test)]
 mod tests {

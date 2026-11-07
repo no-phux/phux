@@ -4,8 +4,8 @@
 //! producer bound to the opener would make the documented flow impossible.
 
 use phux_protocol::wire::frame::{Command, CommandResult, SpawnResource, SpawnResult};
+use phux_server::LaunchCommand as CommandBuilder;
 use phux_server_testkit::{Spawn, command, spawn_resource};
-use portable_pty::CommandBuilder;
 
 use crate::common::{Server, attach, sh, spawned};
 

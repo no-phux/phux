@@ -113,7 +113,9 @@ async fn invalidated_final_native_capture_is_a_failure_without_partial_publicati
     };
     request
         .reply
-        .send(Err(phux_terminal::native_state::NativeStateError::Resize))
+        .send(Err(
+            phux_terminal_api::native_state::NativeStateError::Resize,
+        ))
         .unwrap();
     assert!(matches!(
         final_capture.await,

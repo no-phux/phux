@@ -75,6 +75,7 @@ fn bootstrap_adaptation_peak_includes_sources_scratch_and_outputs() {
     assert!(!crate::downsample::caps_pass_through(caps));
 
     let adapted = adapt_bootstrap_snapshot(
+        &phux_terminal_api::TerminalEngineFactory::presentation(&phux_terminal::TerminalEngine),
         phux_terminal::grid::SnapshotBytes {
             cols: 80,
             rows: 24,
@@ -100,7 +101,7 @@ fn bootstrap_adaptation_peak_includes_sources_scratch_and_outputs() {
 
 #[test]
 fn bootstrap_adaptation_restores_images_only_for_kitty_consumers() {
-    let mut source = libghostty_vt::Terminal::new(10, 5).unwrap();
+    let mut source = phux_terminal::vt::Terminal::new(10, 5).unwrap();
     phux_protocol::kitty_replay::configure_terminal_for_kitty_graphics(&mut source).unwrap();
     source.resize(10, 5, 8, 16).unwrap();
     source.vt_write(b"\x1b_Ga=T,f=32,s=1,v=1,c=1,r=1,i=9,p=1,C=1,q=2;AAECAw==\x1b\\\x1b_Ga=p,i=9,p=2,U=1,c=2,r=2,q=2;\x1b\\");
@@ -113,12 +114,13 @@ fn bootstrap_adaptation_restores_images_only_for_kitty_consumers() {
     ] {
         let snapshot = phux_terminal::grid::synthesize(&source).unwrap();
         let adapted = adapt_bootstrap_snapshot(
+            &phux_terminal_api::TerminalEngineFactory::presentation(&phux_terminal::TerminalEngine),
             snapshot,
             ClientCapabilities::default().with_image_protocols(image_protocols),
             1024 * 1024,
         )
         .unwrap();
-        let mut replica = libghostty_vt::Terminal::new(10, 5).unwrap();
+        let mut replica = phux_terminal::vt::Terminal::new(10, 5).unwrap();
         // Enable storage even on the image-free receiver: this proves that
         // capability adaptation removed the payload, rather than relying on
         // its terminal to ignore it.
@@ -132,7 +134,7 @@ fn bootstrap_adaptation_restores_images_only_for_kitty_consumers() {
             image_protocols.contains(phux_protocol::caps::ImageProtocol::KittyGraphics);
         assert_eq!(graphics.image(9).is_some(), expects_images);
         assert_eq!(graphics.image(10).is_some(), expects_images);
-        let mut iter = libghostty_vt::kitty::graphics::PlacementIterator::new().unwrap();
+        let mut iter = phux_terminal::vt::kitty::graphics::PlacementIterator::new().unwrap();
         let mut placements = iter.update(&graphics).unwrap();
         let mut count = 0;
         while placements.next().is_some() {
@@ -155,7 +157,12 @@ fn native_live_bytes_ignore_restrictive_presentation_caps() {
         codec: phux_protocol::caps::EngineCodec::LibghosttySnapshotV1,
     };
 
-    let adapted = live_bytes_for_profile(&bytes, caps, profile);
+    let adapted = live_bytes_for_profile(
+        &phux_terminal_api::TerminalEngineFactory::presentation(&phux_terminal::TerminalEngine),
+        &bytes,
+        caps,
+        profile,
+    );
 
     assert_eq!(adapted, bytes);
     assert_eq!(
@@ -183,7 +190,13 @@ fn aggregate_staging_charges_tiny_rewrites_by_retained_capacity() {
     let caps = ClientCapabilities::default()
         .with_color_support(phux_protocol::caps::ColorSupport::Indexed256)
         .with_image_protocols(phux_protocol::caps::ImageProtocolSet::new());
-    let sample = adapt_bootstrap_snapshot(kitty_snapshot(), caps, 2 * 64 * 1024).expect("rewrite");
+    let sample = adapt_bootstrap_snapshot(
+        &phux_terminal_api::TerminalEngineFactory::presentation(&phux_terminal::TerminalEngine),
+        kitty_snapshot(),
+        caps,
+        2 * 64 * 1024,
+    )
+    .expect("rewrite");
     let retained_per_pane = sample.retained_bytes;
     let wire_per_pane = sample.payloads.iter().map(bytes::Bytes::len).sum::<usize>();
     assert!(
@@ -196,6 +209,7 @@ fn aggregate_staging_charges_tiny_rewrites_by_retained_capacity() {
     let mut staged = Vec::new();
     for pane in 0..4_u32 {
         let adapted = adapt_bootstrap_snapshot(
+            &phux_terminal_api::TerminalEngineFactory::presentation(&phux_terminal::TerminalEngine),
             kitty_snapshot(),
             caps,
             retained_per_pane.checked_mul(2).expect("peak budget"),

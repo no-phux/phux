@@ -7,8 +7,40 @@
 )]
 use super::*;
 
-pub(in crate::actor) struct ReadJob {
+/// A pane's master and how long to keep reading it once the actor is gone.
+#[derive(Debug)]
+pub(in crate::actor) struct PtyMaster {
     pub(in crate::actor) file: File,
+    pub(in crate::actor) drain_budget: Duration,
+}
+
+impl std::ops::Deref for PtyMaster {
+    type Target = File;
+
+    fn deref(&self) -> &File {
+        &self.file
+    }
+}
+
+impl std::ops::DerefMut for PtyMaster {
+    fn deref_mut(&mut self) -> &mut File {
+        &mut self.file
+    }
+}
+
+impl PtyMaster {
+    /// Drain until EOF or the budget. The master is nonblocking, so an empty
+    /// read waits in `poll(2)` the way a blocking `read(2)` would instead of
+    /// sleeping between reads: a child flushing a large write through a small
+    /// PTY buffer keeps its full throughput.
+    pub(in crate::actor) fn drain_to_eof(&mut self, buf: &mut [u8]) {
+        let budget = self.drain_budget;
+        drain_master_with_budget(&mut ReadyRead(&mut self.file), buf, budget);
+    }
+}
+
+pub(in crate::actor) struct ReadJob {
+    pub(in crate::actor) file: PtyMaster,
     pub(in crate::actor) tx: mpsc::Sender<PtyEvent>,
     pub(in crate::actor) cancel: std::sync::Arc<AtomicBool>,
 }
@@ -201,14 +233,6 @@ pub(in crate::actor) fn deliver_terminal(tx: &mpsc::Sender<PtyEvent>, event: Pty
     }
 }
 
-/// Drain `file` until EOF or the orphan budget. The master is nonblocking,
-/// so an empty read waits in `poll(2)` the way a blocking `read(2)` would
-/// instead of sleeping between reads: a child flushing a large write
-/// through a small PTY buffer keeps its full throughput.
-pub(in crate::actor) fn drain_file_to_eof(file: &mut File, buf: &mut [u8]) {
-    drain_master_to_eof(&mut ReadyRead(file), buf);
-}
-
 /// A read on the nonblocking master that waits for data, as a blocking read
 /// would. A hangup with nothing left to read is EOF.
 pub(in crate::actor) struct ReadyRead<'a>(&'a mut File);
@@ -228,13 +252,13 @@ impl Read for ReadyRead<'_> {
     }
 }
 
-pub(in crate::actor) fn detach_drain(mut file: File) {
+pub(in crate::actor) fn detach_drain(mut file: PtyMaster) {
     let spawned = std::thread::Builder::new()
         .name("phux-pty-drain".to_owned())
         .stack_size(READER_STACK)
         .spawn(move || {
             let mut buf = vec![0_u8; PTY_READ_CHUNK];
-            drain_file_to_eof(&mut file, &mut buf);
+            file.drain_to_eof(&mut buf);
         });
     if let Err(err) = spawned {
         tracing::warn!(?err, "pty orphan drain thread failed to start");

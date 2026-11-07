@@ -7,9 +7,12 @@
 mod activity;
 mod commands;
 mod connect;
+pub(crate) mod documents;
 pub mod home;
 pub mod org;
 pub mod path;
+mod ready;
+mod subscriptions;
 pub mod transcript;
 
 #[cfg(test)]
@@ -26,10 +29,10 @@ use phux_client_runtime::control::{
     SessionRecovery, SpawnRequest, Status, Topology, mint_operation,
 };
 use phux_client_runtime::{Client, ClientOptions, Listener, Runtime, Target};
-use phux_protocol::ResourceId;
 use phux_protocol::caps::{ServerFeature, ServerFeatureExt};
 use phux_protocol::ids::{ApprovalId, ArrangementKey, OperationId, SessionKey};
 use phux_protocol::wire::frame::{AttachTarget, Command, LaunchSpec, RolePolicy, SessionLifetime};
+use phux_protocol::{ResourceId, ResourceKind};
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -164,6 +167,9 @@ pub struct Connection {
     /// Committed native conversations keyed by their AgentSession resource.
     pub conversations: HashMap<ResourceId, transcript::Conversation>,
     conversation_heads: HashMap<ResourceId, ResourceId>,
+    /// Whole read-only documents, fenced by their organization identity.
+    pub(crate) documents: documents::Documents,
+    document_subscriptions: std::cell::RefCell<HashMap<ResourceId, subscriptions::Subscription>>,
     /// Project label from each session's typed organization attributes.
     pub projects: HashMap<u32, String>,
     /// The project a person linked each session into, which outranks its
@@ -288,14 +294,6 @@ impl Connection {
     #[must_use]
     pub fn decide_approval(&self, id: ApprovalId, decision: Decision) -> bool {
         !self.closed && self.client.decide_approval(id, decision)
-    }
-
-    /// The terminal is inventoried or explicitly admitted, and accepts input.
-    #[must_use]
-    pub fn ready(&self, id: &ResourceId) -> bool {
-        !self.closed
-            && (self.known.contains(id) || self.admitted.contains(id))
-            && self.client.input_ready(id)
     }
 
     /// Unknown delivery is outstanding for a known terminal.

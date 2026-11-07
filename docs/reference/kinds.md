@@ -107,6 +107,7 @@ Answered by every resource kind.
 | `DELETE_METADATA` | frame `0x52` | BIND | yes | none | shipped |
 | `LIST_METADATA` | frame `0x53` | INVENTORY | no | none | shipped |
 | `SUBSCRIBE_METADATA` | frame `0x54` | OBSERVE | no | none | shipped |
+| `PUBLISH_RESOURCE_STATE` | command `0x42` | BIND, INPUT | yes | none | shipped |
 
 ## Substrate events
 
@@ -190,6 +191,44 @@ The kind's facet.
 | Event | Tag |
 |---|---|
 | `native_agent_result` | `0x1c` |
+
+### Resource metadata keys
+
+None.
+
+## Kind `ACCESSIBILITY_TREE`
+
+Wire tag `2`; gate: `accessibility_tree` (features_ext).
+
+### Methods
+
+The kind's facet.
+
+| Method | Carrier | Requires | Mutating | Gate | Status |
+|---|---|---|---|---|---|
+
+### Events
+
+None.
+
+### Resource metadata keys
+
+None.
+
+## Kind `PIXEL_SURFACE`
+
+Wire tag `3`; gate: `pixel_surface` (features_ext).
+
+### Methods
+
+The kind's facet.
+
+| Method | Carrier | Requires | Mutating | Gate | Status |
+|---|---|---|---|---|---|
+
+### Events
+
+None.
 
 ### Resource metadata keys
 
@@ -279,6 +318,7 @@ Every command nested in `COMMAND` lands on exactly one row; the envelope alone g
 | `GET_PERF { reset: true }` | OBSERVE+BIND | `Global { owner_uds_only: false }` |
 | `PERF_CONTROL` | OBSERVE+BIND + owner-UDS transport | `Global { owner_uds_only: true }` |
 | `APPEND_RESOURCE_OUTPUT` | BIND+INPUT | `ParentOfNamed` |
+| `PUBLISH_RESOURCE_STATE` | BIND+INPUT | `ParentOfNamed` |
 | `NATIVE_AGENT { type: spawn }` | CREATE+BIND | `KeyedSession` |
 | `NATIVE_AGENT { type: list_integrations }` | INVENTORY | `OrganizationView` |
 | `NATIVE_AGENT { type: launch_integration }` | CREATE+BIND+INPUT | `KeyedSession` |

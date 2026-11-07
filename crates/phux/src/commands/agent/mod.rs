@@ -20,6 +20,7 @@ mod send_keys;
 mod session;
 pub(crate) mod shim;
 mod start;
+mod tree;
 mod wait;
 
 use std::path::{Path, PathBuf};
@@ -178,6 +179,9 @@ pub(crate) fn run_agent(action: &AgentAction, socket: Option<PathBuf>) -> ExitCo
             target,
             flags: action_flags::LogFlags { follow, tail, json },
         } => resource_session::run_log(target, *follow, *tail, *json, socket),
+        AgentAction::Tree { action } => tree::run_tree(action, socket),
+        AgentAction::Surface { action } => tree::run_surface(action, socket),
+        AgentAction::Page { action } => tree::run_page(action, socket),
         AgentAction::Wait {
             target,
             any,

@@ -16,6 +16,9 @@ for prefix in linux-arm64-mbx-phux-check- linux-arm64-mbx-phux-test- \
     v0-rust-phux-uniffi-Linux- linux-x64-mbx-phux-icount- v0-rust-ffi-android-Linux-x64- \
     v0-rust-release-deps-Linux-x64- v0-rust-release-deps-Linux-arm64- \
     v0-rust-release-deps-Darwin-arm64- v0-rust-mini-v1-desktop-release- \
-    mini-v1-ffi-xcframework-zig-; do
+    mini-v1-ffi-xcframework-zig- \
+    v0-rust-windows-desktop-wsl-server-Linux-x64- v0-rust-windows-desktop-msvc-Windows_NT-x64- \
+    v0-rust-desktop-macOS-Darwin- v0-rust-desktop-macOS-26-Darwin- v0-rust-desktop-Linux-Linux- \
+    v0-rust-rune-macos-arm64-Darwin- v0-rust-rune-linux-x86_64-Linux-; do
     keep_newest "$prefix"
 done

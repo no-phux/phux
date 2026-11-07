@@ -11,7 +11,7 @@
 //! child has its own deadline and output cap (`phux_git::checkout`), and
 //! the answer is bounded again before it is encoded.
 
-use phux_terminal::actor::TerminalResource as _;
+use phux_terminal_api::actor::TerminalResource as _;
 use std::path::PathBuf;
 use std::time::Duration;
 
@@ -54,10 +54,13 @@ pub(in crate::runtime) async fn handle(
     if let Err(error) = handle.terminal() {
         return crate::runtime::commands::wrong_resource_kind(error);
     }
-    let cwd = tokio::time::timeout(CWD_DEADLINE, crate::runtime::attach::query_pane_cwd(handle))
-        .await
-        .ok()
-        .flatten();
+    let cwd = tokio::time::timeout(
+        CWD_DEADLINE,
+        crate::runtime::apps::terminal::attach::query_pane_cwd(handle),
+    )
+    .await
+    .ok()
+    .flatten();
     let answer = match cwd {
         None => refused(
             CheckoutRefusalCode::CwdUnknown,

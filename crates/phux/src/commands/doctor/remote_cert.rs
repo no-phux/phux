@@ -1,18 +1,13 @@
 //! The server's TLS certificate: overlay coverage and its chain to the workload CA.
 
-use std::path::PathBuf;
-
 use super::Check;
 
 pub(super) fn check_remote_cert() -> Check {
-    let operator_cert = std::env::var_os("PHUX_WS_TLS_CERT").is_some()
-        || std::env::var_os("PHUX_WS_TLS_KEY").is_some();
-    let cert = std::env::var_os("PHUX_WS_TLS_CERT").map_or_else(
-        phux_server::transport::tls::default_cert_path,
-        PathBuf::from,
-    );
-    let key = std::env::var_os("PHUX_WS_TLS_KEY")
-        .map_or_else(phux_server::transport::tls::default_key_path, PathBuf::from);
+    let (env_cert, env_key) =
+        phux_server::transport::tls::operator_tls_paths(|var| std::env::var_os(var));
+    let operator_cert = env_cert.is_some() || env_key.is_some();
+    let cert = env_cert.unwrap_or_else(phux_server::transport::tls::default_cert_path);
+    let key = env_key.unwrap_or_else(phux_server::transport::tls::default_key_path);
     // Same overlay detection `phux pair` uses (ADR-0037).
     let advertised: Vec<String> = phux_config::overlay::detect()
         .into_iter()
@@ -39,7 +34,8 @@ pub(super) fn remote_cert_check(
         return Check::warn(
             "remote-cert",
             format!("no {source} certificate at {}", cert.display()),
-            "run `phux pair` — it provisions the certificate and mints a device token",
+            "a running server issues it on its first remote bind (`phux server --ensure`, or \
+             restart the service); then run `phux pair` to mint a device token",
         );
     }
     if advertised.is_empty() {

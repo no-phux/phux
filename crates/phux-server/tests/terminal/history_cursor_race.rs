@@ -21,7 +21,7 @@ use phux_protocol::wire::frame::{
     AttachTarget, Command, CommandResult, CommandValue, FrameKind, HistoryTombstoneReason,
     SpawnResult, StateScope, TombstoneReason, ViewportInfo,
 };
-use portable_pty::CommandBuilder;
+use phux_server::LaunchCommand as CommandBuilder;
 use tempfile::TempDir;
 use tokio::net::UnixStream;
 
@@ -57,7 +57,7 @@ async fn connect_native(path: &std::path::Path) -> UnixStream {
         matches!(
             reply,
             FrameKind::HelloOk {
-                selected_profile: BootstrapProfile::NativeState { .. },
+                selected_profile: Some(BootstrapProfile::NativeState { .. }),
                 ..
             }
         ),

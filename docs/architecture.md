@@ -81,13 +81,16 @@ Cargo manifests define the actual edges.
 | `phux-mission` | mission documents over the work store |
 | `phux-plugin` | plugin action runtime contracts |
 | `phux-usage` | plan-usage collector behind `phux agent usage`: vendor limit sources and the `phux.usage/v1` document; no wire |
+| `phux-frozen` | test support: frozen fixtures that hold persisted formats to what released images wrote |
 | `phux-relay` | quictun bound to phux's ALPNs and state directory |
 | `phux-client-runtime` | the one client orchestration layer: dial planning, reconnect, relay tunnel, control plane, engine owner thread, grid publication |
 | `phux-client` | headless client: the connection facade and the verbs behind the CLI and MCP |
 | `phux-client-ffi` | the one binding crate: a projection with a C ABI encoder and a UniFFI encoder |
-| `phux-resource` | the kind-neutral substrate: output stream, lifecycle, opaque facets and companions; names no kind's concepts (`tests/substrate_boundary.rs` enforces it) |
+| `phux-resource` | the kind-neutral substrate: output stream, lifecycle, opaque facets and companions, and per-consumer replicated-state delivery; names no kind's concepts (`tests/substrate_boundary.rs` enforces it) |
 | `phux-agent-session` | the `AgentSession` record-stream engine, the `phux.agent/v1` state, asked, and record authority, and the mailbox of a resource that hosts an agent |
+| `phux-tree` | the replicated-document engine behind `AccessibilityTree` (JSON) and `PixelSurface` (PNG): one document a producer replaces whole, and the newest for every viewer |
 | `phux-terminal` | the Terminal kind: PTY child, libghostty engine actor, grid and replay, input encoding, native checkpoints, agent detection; never depends on the host |
+| `phux-terminal-api` | engine-independent Terminal contracts: launch intent, factory, input and presentation ports, opaque captures and report types; no VT or PTY implementation |
 | `phux-server` | the daemon: hosts resources and serves them to clients; links no VT library and no PTY directly |
 | `phux-agent-host` | guardian process for native agent sessions over ACP |
 | `phux-tui` | the terminal UI: attach driver, ratatui chrome, overlays; the only crate that links ratatui |
@@ -233,16 +236,37 @@ A resource kind is an app. The host reaches one through `ResourceApp` in
 same catalog rows authorization uses, and `app_for` answers per-kind questions
 such as how a stream bootstraps. `state/` sits below the apps and never names
 them; what it asks of any resource is the required `ResourceOps` on its handle.
-A new kind is one `ResourceApp`, one `APPS` row, and its `ResourceOps`. A
-surface that is not every kind's, such as the `AgentParent` mailbox of a resource
-that hosts an agent, is a companion on the handle, typed by the crate that owns
-it, so the host can use it without naming an engine. Only
-`runtime/apps/terminal` may name the Terminal engine, and
-`seam_tests.rs` fails if any host module does. The host holds a launch command
-as an opaque `LaunchCommand`; deciding what a pane runs is the app's job.
-Stream and input frames, connection negotiation and client engines still
-assume a Terminal; [resource kinds beyond terminals](./resource-kinds.md)
-is the design that removes those assumptions.
+A new kind does not compile until `app_for` names its app, and neither
+`ResourceApp` nor `ResourceOps` has a default method to inherit; a new kind
+also takes one `APPS` row, which a test holds to `app_for`. A surface that is
+not every kind's, such as the `AgentParent` mailbox of a resource that hosts an
+agent, is a companion on the handle, typed by the crate that owns it, so the
+host can use it without naming an engine. The server's production dependency
+graph contains no Terminal engine, libghostty or PTY implementation. The
+executable explicitly injects a `TerminalEngineFactory`; no built-in engine is
+selected by the host. The private Terminal app uses `phux-terminal-api` ports;
+native encoding, ordered PTY writes and capability adaptation stay engine-owned.
+`seam_tests.rs` and the lint lane's `build-features-check` enforce this separation. The host
+holds a lossless OS-native `LaunchCommand`; deciding what a pane runs is the app's job.
+Organization launches also pass through the app: support is checked before
+commit, then the committed effect executes only through the recorded kind.
+Producer-bound projections refuse ordinary relaunch; no other kind inherits
+a default shell. Execution failure settles only the effect's exact activation.
+Engine registration rejects absent records and record/handle kind mismatches
+before allocating a wire identity, replacing a handle, or spawning the actor.
+Stream and input frames reach their resource's app through
+`ResourceApp::frame`, after host authorization, connection/subscription gates
+and satellite routing. `runtime/session_attach` owns aggregate capture,
+accounting and publication. Apps stage bounded bootstraps under the same
+generation, with live output and lifecycle closes held behind the aggregate
+barrier. The AgentSession app retains catalog membership but defers its stream
+to cursor-bearing `ATTACH_RESOURCE`: session `ATTACH` has no per-agent cursor
+and must not replace committed history with an unsolicited full cut.
+A document-only or agent-only session needs no Terminal codec; a mixed
+session refuses a missing Terminal codec before changing subscriptions or
+geometry. Viewport votes, terminal roles, colors and grid resizing remain
+Terminal-specific. Desktop and Rune render read-only document panes without
+Terminal views; see [resource kinds beyond terminals](./resource-kinds.md).
 
 The runtime root exports the server interface. Its `server` module assembles
 startup using `startup`, `posture`, `services`, and `listeners`; configuration
@@ -262,8 +286,7 @@ accept and teardown, `hello` authenticates and negotiates, `dispatch` and
 and `writer` owns output ordering and generation fencing. `pane_events`
 journals terminal events; `agent_state` folds detector reports into agent
 metadata. These are server responsibilities; client dialing and reconnect
-remain in `phux-client-runtime`. `runtime::client` is a compatibility alias
-for `runtime::connections`.
+remain in `phux-client-runtime`.
 
 ## Decisions
 

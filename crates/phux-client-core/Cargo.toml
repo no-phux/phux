@@ -50,6 +50,7 @@ sha2 = "0.11"
 libghostty-vt = { workspace = true, optional = true }
 
 [dev-dependencies]
+phux-frozen.workspace = true
 proptest.workspace = true
 insta.workspace = true
 

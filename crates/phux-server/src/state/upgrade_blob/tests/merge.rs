@@ -52,9 +52,11 @@ async fn pane_actor_failure_does_not_install_a_partial_tree() {
                 vec![no_pty_pane(3, 2), bad],
             );
             validate_upgrade_blob(&handoff).expect("topology is complete");
-            match state
-                .rebuild_from_blob(&handoff, crate::runtime::apps::terminal::upgrade::unwired)
-            {
+            match state.rebuild_from_blob(
+                &handoff,
+                crate::runtime::apps::terminal::upgrade::unwired,
+                crate::runtime::apps::rebuild_session,
+            ) {
                 Err(RebuildError::Actor(_)) => {}
                 other => panic!("expected actor rebuild failure, got {other:?}"),
             }
@@ -63,6 +65,73 @@ async fn pane_actor_failure_does_not_install_a_partial_tree() {
                 vec!["already-here".to_owned(), "intake".to_owned()],
                 "a mid-rebuild actor failure must not commit the partial tree"
             );
+        })
+        .await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn wrong_kind_rebuild_rolls_back_prior_panes_without_running_the_rejected_actor() {
+    use crate::org_store::{OrgStore as _, SqliteOrgStore};
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("org.sqlite3");
+    tokio::task::LocalSet::new()
+        .run_until(async {
+            let mut state = ServerState::new();
+            state.set_org_store(Box::new(SqliteOrgStore::open(&path).unwrap()));
+            let (_, original) = state.seed_session("already-here");
+            state.persist_first_start().unwrap();
+            let original_wire = state.intern_resource_wire(original);
+            let before = SqliteOrgStore::open(&path)
+                .unwrap()
+                .load()
+                .unwrap()
+                .unwrap();
+            let handoff = blob(
+                vec![session(1, vec![2])],
+                vec![window(2, 1, vec![3, 4])],
+                vec![no_pty_pane(3, 2), no_pty_pane(4, 2)],
+            );
+            let rejected_ran = std::rc::Rc::new(std::cell::Cell::new(false));
+            let ran = rejected_ran.clone();
+            let result = state.rebuild_from_blob(
+                &handoff,
+                |core, pane, scrollback| {
+                    let mut rebuilt =
+                        crate::runtime::apps::terminal::upgrade::unwired(core, pane, scrollback)?;
+                    if pane.wire_id == 4 {
+                        rebuilt.handle = phux_tree::TreeActor::build(
+                            core,
+                            "test-app",
+                            tokio_util::sync::CancellationToken::new(),
+                        )
+                        .handle;
+                        let ran = ran.clone();
+                        rebuilt.engine = Box::pin(async move {
+                            ran.set(true);
+                        });
+                    }
+                    Ok(rebuilt)
+                },
+                crate::runtime::apps::rebuild_session,
+            );
+            assert!(matches!(result, Err(RebuildError::Registration(_))));
+            tokio::task::yield_now().await;
+            assert!(!rejected_ran.get());
+            assert_eq!(state.resource_from_wire(&original_wire), Some(original));
+            assert_eq!(state.resource_wire_of(original), Some(original_wire));
+            assert_eq!(
+                session_names(&state),
+                vec!["already-here".to_owned(), "intake".to_owned()]
+            );
+            assert!(state.resource_ids().is_empty());
+            let after = SqliteOrgStore::open(&path)
+                .unwrap()
+                .load()
+                .unwrap()
+                .unwrap();
+            assert_eq!(after.resources, before.resources);
+            assert_eq!(after.sessions, before.sessions);
+            assert_eq!(after.arrangements, before.arrangements);
         })
         .await;
 }
@@ -97,7 +166,11 @@ async fn upgrade_carries_group_and_global_metadata() {
         let blob = StateBlob::from_bytes(&bytes).expect("deserialize");
         let mut fresh = ServerState::new();
         fresh
-            .rebuild_from_blob(&blob, crate::runtime::apps::terminal::upgrade::unwired)
+            .rebuild_from_blob(
+                &blob,
+                crate::runtime::apps::terminal::upgrade::unwired,
+                crate::runtime::apps::rebuild_session,
+            )
             .expect("rebuild");
 
         assert_eq!(fresh.metadata.get(&group, &layout), Some(b"tree".to_vec()));
@@ -133,7 +206,11 @@ async fn a_pre_record_import_is_written_to_sqlite_with_the_migration_receipt() {
                 vec![no_pty_pane(3, 2)],
             );
             state
-                .rebuild_from_blob(&handoff, crate::runtime::apps::terminal::upgrade::unwired)
+                .rebuild_from_blob(
+                    &handoff,
+                    crate::runtime::apps::terminal::upgrade::unwired,
+                    crate::runtime::apps::rebuild_session,
+                )
                 .expect("import");
             assert_eq!(
                 session_names(&state),
@@ -264,7 +341,11 @@ async fn a_populated_sqlite_store_wins_a_hot_upgrade_merge() {
             let mut resumed = ServerState::new();
             install_loaded_sqlite(&mut resumed, &path);
             resumed
-                .rebuild_from_blob(&blob, crate::runtime::apps::terminal::upgrade::unwired)
+                .rebuild_from_blob(
+                    &blob,
+                    crate::runtime::apps::terminal::upgrade::unwired,
+                    crate::runtime::apps::rebuild_session,
+                )
                 .expect("merge");
             let kept = resumed.session_by_name("kept").expect("store name");
             assert_eq!(kept.key, kept_key);

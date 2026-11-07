@@ -14,29 +14,13 @@
 use std::fmt::Write as _;
 
 use base64::Engine as _;
-use serde::Serialize;
 
 /// The specification's record cap; at it, the least recently updated
 /// record makes room.
 const MAX_RECORDS: usize = 256;
 const STATES: [&str; 5] = ["blocked", "error", "done", "working", "idle"];
 
-/// Consumer-visible record. The root id is always the empty string.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
-pub struct Record {
-    pub id: String,
-    pub state: &'static str,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub kind: Option<&'static str>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub progress: Option<u8>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub app: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub title: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub msg: Option<String>,
-}
+pub use phux_terminal_api::agent_detect::ProgramStatusRecord as Record;
 
 /// One validated report.
 #[derive(Clone, Debug, PartialEq, Eq)]

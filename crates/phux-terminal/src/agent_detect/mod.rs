@@ -43,6 +43,7 @@ pub use phux_agent_rules::rules;
 use std::rc::Rc;
 use std::time::{Duration, Instant};
 
+use identity::IdentitySource;
 use rules::RuleSet;
 
 /// Tick floor while no agent has been identified.
@@ -105,40 +106,7 @@ const IDLE_CONFIRMATIONS: u8 = 3;
 /// cannot pin a `working` badge indefinitely.
 const IDLE_HOLD_CAP: Duration = Duration::from_millis(700);
 
-/// What the detector concluded about a pane. The tuple that is edge-filtered.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct AgentReport {
-    /// Open-vocabulary kind slug, e.g. `"claude"`.
-    pub kind: String,
-    /// Human-facing name for the record.
-    pub name: String,
-    /// The derived lifecycle state.
-    pub state: DetectedState,
-}
-
-/// Something a pane's actor derived that only `ServerState` can act on,
-/// drained by `runtime::client::spawn_agent_state_drain`. Not a wire type.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum AgentDetectEvent {
-    /// Publish the privacy-bounded foreground-process observation.
-    Occupant(identify::PaneOccupant),
-    /// Write this record.
-    State(AgentReport),
-    /// The occupant changed (kind or pgid): correct the record in one write,
-    /// landing on `unknown`. Best-effort (`try_send`), so the `State` path
-    /// must reassert `kind` and `name` on every write anyway.
-    Reidentified {
-        /// The kind now occupying the pane.
-        kind: String,
-        /// The new occupant's manifest name.
-        name: String,
-    },
-    /// The `phux-ask` title sentinel appeared, changed (`Some`), or cleared
-    /// (`None`). Set and clear share this channel so they stay ordered.
-    AskSentinel(Option<phux_agent_session::asked::AskedPayload>),
-    /// The agent is gone; withdraw the record.
-    Retract,
-}
+pub use phux_terminal_api::agent_detect::{AgentDetectEvent, AgentReport};
 
 /// The result of one [`AgentDetector::tick`].
 #[derive(Debug, PartialEq, Eq)]
@@ -227,20 +195,8 @@ pub(crate) struct AgentDetector {
     /// (see [`Self::screen_may_publish`]).
     stream_state: Option<DetectedState>,
     cadence: Cadence,
-    /// Test seam: where [`Self::reidentify`] gets identity from.
-    #[cfg(test)]
-    identity_source: IdentitySource,
-}
-
-/// Where [`AgentDetector::reidentify`] reads identity from in tests (a unit
-/// test cannot create a real foreground process group).
-#[cfg(test)]
-#[derive(Debug, Clone)]
-enum IdentitySource {
-    /// Ask the kernel, as production does.
-    Kernel,
-    /// Report this, with no PTY in sight.
-    Forced(identify::Occupancy),
+    /// Who answers for the foreground group.
+    identity: Box<dyn IdentitySource>,
 }
 
 impl std::fmt::Debug for AgentDetector {

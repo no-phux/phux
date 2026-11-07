@@ -409,6 +409,10 @@ impl ResourceTable {
         terminal: ResourceId,
         bootstrap_id: BootstrapId,
     ) -> AttachResourcePumpReplacement {
+        // SESSION ATTACH supplies a shared generation rather than allocating
+        // one per resource. Its first lag recovery must still choose a fresh id.
+        let next = self.next_bootstrap.entry(client).or_insert(1);
+        *next = (*next).max(bootstrap_id.get().saturating_add(1));
         let cancel = CancellationToken::new();
         let done = CancellationToken::new();
         let last_valid_seq: LastValidAttachSequence = Arc::new(AtomicU64::new(0));
@@ -428,6 +432,29 @@ impl ResourceTable {
                 (prior.bootstrap_id, prior.done, prior.last_valid_seq)
             });
         (cancel, done, last_valid_seq, prior)
+    }
+
+    /// Move a still-current pump onto a fresh bootstrap id before it publishes
+    /// a replacement generation, so a later re-attach tombstones the right
+    /// one. `None` when the pump was displaced or ids are exhausted.
+    pub(super) fn advance_pump_generation(
+        &mut self,
+        client: ClientId,
+        terminal: ResourceId,
+        last_valid_seq: &LastValidAttachSequence,
+    ) -> Option<BootstrapId> {
+        let current = self
+            .pumps
+            .get(&(client, terminal))
+            .is_some_and(|generation| Arc::ptr_eq(&generation.last_valid_seq, last_valid_seq));
+        if !current {
+            return None;
+        }
+        let bootstrap_id = self.next_bootstrap_id(client)?;
+        if let Some(generation) = self.pumps.get_mut(&(client, terminal)) {
+            generation.bootstrap_id = bootstrap_id;
+        }
+        Some(bootstrap_id)
     }
 
     /// Next per-terminal bootstrap id for `client`; `None` on overflow (the

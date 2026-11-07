@@ -3,6 +3,14 @@ const ORGANIZATION: Option<FeatureGate> = Some(FeatureGate::FeaturesExt {
     mask: ServerFeatureExt::Organization.mask(),
     wire_name: ServerFeatureExt::Organization.wire_name(),
 });
+const ACCESSIBILITY_TREE: FeatureGate = FeatureGate::FeaturesExt {
+    mask: ServerFeatureExt::AccessibilityTree.mask(),
+    wire_name: ServerFeatureExt::AccessibilityTree.wire_name(),
+};
+const PIXEL_SURFACE: FeatureGate = FeatureGate::FeaturesExt {
+    mask: ServerFeatureExt::PixelSurface.mask(),
+    wire_name: ServerFeatureExt::PixelSurface.wire_name(),
+};
 
 /// The substrate every kind shares (L1 §1.1): spawn and close, the output
 /// subscription, kill, events, inventory, and the resource's L3 scope.
@@ -108,6 +116,13 @@ pub static SUBSTRATE_METHODS: &[MethodSpec] = &[
         Carrier::Frame(TYPE_SUBSCRIBE_METADATA),
         [F_SUBSCRIBE_METADATA, F_RESULT_NAMESPACE_SUBSCRIBE]
     ),
+    // Replaces a document kind's whole state (an accessibility tree, a pixel
+    // surface); the host routes it to the named resource's kind.
+    method!(
+        "PUBLISH_RESOURCE_STATE",
+        Carrier::Command(COMMAND_TAG_PUBLISH_RESOURCE_STATE),
+        [C_PUBLISH_RESOURCE_STATE]
+    ),
 ];
 
 /// Events about the server or one subscription rather than one resource.
@@ -203,7 +218,7 @@ pub static SUBSTRATE_EVENTS: &[EventSpec] = &[
 ];
 
 /// Every resource kind this build serves, in wire-tag order.
-pub static KINDS: [KindSpec; 2] = [
+pub static KINDS: [KindSpec; 4] = [
     KindSpec {
         kind: ResourceKind::Terminal,
         name: "TERMINAL",
@@ -391,6 +406,24 @@ pub static KINDS: [KindSpec; 2] = [
             name: "native_agent_result",
             tag: crate::wire::frame::EVENT_TAG_NATIVE_AGENT_RESULT,
         }],
+        metadata_keys: &[],
+    },
+    KindSpec {
+        kind: ResourceKind::AccessibilityTree,
+        name: "ACCESSIBILITY_TREE",
+        gate: Some(ACCESSIBILITY_TREE),
+        // Fed through the substrate's `PUBLISH_RESOURCE_STATE`.
+        methods: &[],
+        events: &[],
+        metadata_keys: &[],
+    },
+    KindSpec {
+        kind: ResourceKind::PixelSurface,
+        name: "PIXEL_SURFACE",
+        gate: Some(PIXEL_SURFACE),
+        // Fed through the substrate's `PUBLISH_RESOURCE_STATE`.
+        methods: &[],
+        events: &[],
         metadata_keys: &[],
     },
 ];

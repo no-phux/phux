@@ -14,7 +14,7 @@ use phux_protocol::input::paste::{PasteEvent, PasteTrust};
 use phux_protocol::wire::frame::{
     Command, CommandResult, CommandValue, ErrorCode, FrameKind, SpawnResult,
 };
-use portable_pty::CommandBuilder;
+use phux_server::LaunchCommand;
 use sha2::{Digest, Sha256};
 use tempfile::TempDir;
 use tokio::net::UnixStream;
@@ -134,7 +134,7 @@ fn cat_server(
     voice: impl FnOnce(&mut phux_server::ServerConfig),
 ) -> phux_server_testkit::ServerHandles {
     spawn_server_with(socket.to_owned(), Some(SESSION), |cfg| {
-        seed_pty(cfg, CommandBuilder::new("cat"));
+        seed_pty(cfg, LaunchCommand::new("cat"));
         voice(cfg);
     })
 }

@@ -429,3 +429,11 @@ mod tests {
         assert!(body.contains("agents"), "names the list:\n{body}");
     }
 }
+
+#[cfg(test)]
+mod frozen {
+    #[test]
+    fn onboarding_every_stage() {
+        phux_frozen::json::<Vec<super::State>>("onboarding").check();
+    }
+}

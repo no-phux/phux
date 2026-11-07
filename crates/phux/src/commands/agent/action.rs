@@ -292,6 +292,29 @@ pub(crate) enum AgentAction {
         #[usage(subcommand)]
         action: resource_session::SessionAction,
     },
+    /// An accessibility tree is a pane's child resource that a producer
+    /// feeds with whole documents of an application's accessibility tree;
+    /// `snapshot` reads the newest and `follow --until TEXT` waits on it.
+    /// Needs a server that advertises `ACCESSIBILITY_TREE`.
+    Tree {
+        #[usage(subcommand)]
+        action: super::tree::TreeAction,
+    },
+    /// A pixel surface is a pane's child resource that a producer feeds
+    /// with PNG images of a window or display; `snapshot` writes the newest
+    /// and `follow` every one. Needs a server that advertises
+    /// `PIXEL_SURFACE`.
+    Surface {
+        #[usage(subcommand)]
+        action: super::tree::SurfaceAction,
+    },
+    /// A browser page over the Chrome debugging protocol (CDP), as a tree (its
+    /// accessibility tree) and a surface (its screencast) under one pane.
+    /// Needs a browser started with `--remote-debugging-port`.
+    Page {
+        #[usage(subcommand)]
+        action: super::tree::PageAction,
+    },
     /// Append one record to a pane's agent session.
     ///
     /// The record is one `AgentEventsJsonlV1` line: `--type` from the closed
@@ -316,7 +339,9 @@ pub(crate) enum AgentAction {
     /// to a pane: the retained records arrive first and, with `--follow`,
     /// live records after them until Ctrl-C or the session closes. There is
     /// no `--timeout`; run a following log under a child-process deadline
-    /// exactly as you would `phux watch`.
+    /// exactly as you would `phux watch`. A follower that falls behind
+    /// records the session has already evicted exits 1 rather than skip
+    /// them.
     Log {
         /// The session: its resource id, the pane hosting it, or `%name`.
         target: String,

@@ -39,6 +39,14 @@ pub struct Peer {
     pub online: bool,
 }
 
+/// A session on another machine, as `phux ls --json` lists it.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct Glance {
+    pub name: String,
+    pub terminals: u64,
+    pub running: u64,
+}
+
 /// What `phux host add` is asked to do.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Add {
@@ -140,6 +148,27 @@ pub fn tailnet(phux: &Path) -> Vec<Peer> {
     json(phux, &["host", "discover", "--json"]).map_or_else(|_| Vec::new(), |doc| parse_peers(&doc))
 }
 
+fn parse_glances(value: &Value) -> Vec<Glance> {
+    let sessions = value["sessions"].as_array().into_iter().flatten();
+    sessions
+        .filter_map(|session| {
+            Some(Glance {
+                name: session["name"].as_str()?.to_owned(),
+                terminals: session["members"].as_u64().unwrap_or(0),
+                running: session["exec"]["running"].as_u64().unwrap_or(0),
+            })
+        })
+        .collect()
+}
+
+/// The sessions on `host`, or on this computer's server when `None`.
+// ponytail: the CLI's default socket; a window launched with --socket previews the default server.
+pub fn sessions(phux: &Path, host: Option<&str>) -> Result<Vec<Glance>, String> {
+    let mut args = vec!["ls", "--json"];
+    args.extend(host.map(|host| ["--remote", host]).into_iter().flatten());
+    Ok(parse_glances(&json(phux, &args)?))
+}
+
 /// Take `name` out of the registry. Its sessions keep running over there.
 pub fn remove(phux: &Path, name: &str) -> Result<(), String> {
     run_for(
@@ -210,6 +239,24 @@ pub fn add(phux: &Path, request: &Add, report: &dyn Fn(String)) -> Result<(), St
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn a_listing_glances_at_each_session() {
+        let doc = json!({ "schema_version": 4, "sessions": [
+            { "name": "work", "members": 3, "exec": { "running": 2 } },
+            { "name": "bare" },
+            { "members": 1 },
+        ]});
+        let glance = |name: &str, terminals, running| Glance {
+            name: name.to_owned(),
+            terminals,
+            running,
+        };
+        assert_eq!(
+            parse_glances(&doc),
+            vec![glance("work", 3, 2), glance("bare", 0, 0)]
+        );
+    }
 
     #[test]
     fn only_remotes_are_machines_to_attach() {

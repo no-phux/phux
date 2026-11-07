@@ -261,7 +261,7 @@ async fn scenario(source: Source, rounds: u32, caps: ClientCapabilities) {
     let (shutdown, task) = spawn_server_with_seed_cmd(
         path.clone(),
         "detach",
-        portable_pty::CommandBuilder::new("/bin/cat"),
+        phux_server::LaunchCommand::new("/bin/cat"),
     );
     let mut stream = connect_with(&path, caps).await;
     let mut control = wait_for_socket(&path, SOCKET_CONNECT_DEADLINE).await;
@@ -359,7 +359,7 @@ fn detach_terminal_answers_a_late_history_request_with_cursor_status() {
         let (shutdown, task) = spawn_server_with_seed_cmd(
             path.clone(),
             "detach",
-            portable_pty::CommandBuilder::new("/bin/cat"),
+            phux_server::LaunchCommand::new("/bin/cat"),
         );
         let mut stream = connect_with(&path, native_caps()).await;
         send_frame(&mut stream, &attach_by_name("detach")).await;

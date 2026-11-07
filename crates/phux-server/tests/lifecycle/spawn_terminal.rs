@@ -6,8 +6,8 @@ use phux_protocol::input::key::PhysicalKey;
 use phux_protocol::wire::frame::{
     FrameKind, RESOURCE_AGENT_SESSION_KEY, Scope, SpawnError, SpawnResult,
 };
+use phux_server::LaunchCommand;
 use phux_server_testkit::{Spawn, ascii_key, send_frame, spawn_resource};
-use portable_pty::CommandBuilder;
 use tempfile::TempDir;
 use tokio::net::UnixStream;
 
@@ -479,7 +479,7 @@ fn cwd_inheritance_modes_open_spawns_in_the_seed_panes_directory() {
         ] {
             let dir = TempDir::new().unwrap();
             let dir = dir.path().canonicalize().unwrap();
-            let mut seed = CommandBuilder::new("/bin/sh");
+            let mut seed = LaunchCommand::new("/bin/sh");
             seed.args(["-c", &format!("cd '{}' && read _", dir.display())]);
             let server = Server::start(Some("main"), |cfg| {
                 phux_server_testkit::seed_pty(cfg, seed);

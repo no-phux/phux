@@ -271,7 +271,9 @@ pub fn view(desk: &Desk, ink: &Ink) -> El {
     };
     let drawer = col()
         .key("inbox")
-        .w(WIDTH)
+        // The phone form is narrower than the drawer.
+        .w_full()
+        .max_w(WIDTH)
         .h_full()
         .fill(ink.raised)
         .border(1.0, ink.separator)
@@ -311,6 +313,7 @@ pub fn view(desk: &Desk, ink: &Ink) -> El {
         .fill(Color::BLACK.alpha(0.16))
         .transition(Transition::opacity())
         .modal(true, |d: &mut Desk| d.close_inbox())
+        .label("Inbox")
         .child(row().w_full().h_full().child(el().grow(1.0)).child(drawer))
 }
 

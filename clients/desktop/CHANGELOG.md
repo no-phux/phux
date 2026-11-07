@@ -4,6 +4,10 @@
 
 ### Features
 
+- Show a mirrored window as a pane: a session's pixel surfaces
+  (`phux agent surface mirror`) land as leaves of their own, drawing the
+  newest frame letterboxed in the card.
+
 - Make the Emblem Fox the app icon and the fleet playground's piece; the
   piece follows the window theme by default, and a palette button cycles
   fixed colour schemes and saves the choice.
@@ -54,6 +58,42 @@
   the session's home terminal, retaining the original editor and draft.
 - Reject raw terminal input and file drops for pending or retained ACP owners
   before filesystem access or remote upload, including during reconnects.
+
+## [0.57.0](https://github.com/no-phux/phux/compare/desktop-v0.56.1...desktop-v0.57.0) (2026-11-06)
+
+
+### Features
+
+* **desktop:** run window and app mirrors as the app's own children ([#1994](https://github.com/no-phux/phux/issues/1994)) ([f513a26](https://github.com/no-phux/phux/commit/f513a26383a9d8aad84759be0e8f727e03b34dfb))
+
+## [0.56.1](https://github.com/no-phux/phux/compare/desktop-v0.56.0...desktop-v0.56.1) (2026-11-05)
+
+
+### Bug Fixes
+
+* **desktop:** decode surface frames off the UI thread and free replaced ones ([#1990](https://github.com/no-phux/phux/issues/1990)) ([da0170d](https://github.com/no-phux/phux/commit/da0170db8c13fdbc83f72a64ed4ac9f8573733c7))
+
+## [0.56.0](https://github.com/no-phux/phux/compare/desktop-v0.55.0...desktop-v0.56.0) (2026-11-05)
+
+
+### Features
+
+* finish kind-neutral resource hosting and native panes ([#1987](https://github.com/no-phux/phux/issues/1987)) ([38b118a](https://github.com/no-phux/phux/commit/38b118aaa58b03b919632dd7c95a47effa327e3e))
+
+## [0.55.0](https://github.com/no-phux/phux/compare/desktop-v0.54.1...desktop-v0.55.0) (2026-11-05)
+
+
+### Features
+
+* **client,desktop:** document streams reach clients, and the desktop draws a surface pane ([#1973](https://github.com/no-phux/phux/issues/1973)) ([0496a28](https://github.com/no-phux/phux/commit/0496a280a7e971141d280b9fdbf6dd81ffc23462))
+* **protocol:** admit a client with no Terminal profile; refuse Terminal streams at bind ([#1950](https://github.com/no-phux/phux/issues/1950)) ([db78fc4](https://github.com/no-phux/phux/commit/db78fc43aa3b06dac0f67ee31fddf56863e54bc8))
+
+## [0.54.1](https://github.com/no-phux/phux/compare/desktop-v0.54.0...desktop-v0.54.1) (2026-11-03)
+
+
+### Bug Fixes
+
+* **install:** reach a first agent in under 60s without brew trust ([#1879](https://github.com/no-phux/phux/issues/1879)) ([1da1f2e](https://github.com/no-phux/phux/commit/1da1f2e3b05654086f46d2bcf2841dd1fd986d27))
 
 ## [0.54.0](https://github.com/no-phux/phux/compare/desktop-v0.53.0...desktop-v0.54.0) (2026-11-01)
 

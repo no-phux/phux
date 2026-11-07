@@ -766,47 +766,8 @@ fn attached_resume_client() -> *mut PhuxClient {
     client
 }
 
-fn agent_bootstrap_frames(
-    generation: u64,
-    profile: phux_protocol::BootstrapStreamProfile,
-    base_seq: u64,
-    payload: String,
-) -> Vec<FrameKind> {
-    let terminal_id = ResourceId::local(MIXED_AGENT);
-    let stream_id = phux_protocol::StreamId::new(AGENT_STREAM).unwrap();
-    let bootstrap_id = phux_protocol::BootstrapId::new(generation).unwrap();
-    let mut frames = vec![FrameKind::BootstrapBegin {
-        terminal_id: terminal_id.clone(),
-        stream_id,
-        bootstrap_id,
-        profile,
-        cols: 0,
-        rows: 0,
-        base_seq,
-    }];
-    if !payload.is_empty() {
-        frames.push(FrameKind::BootstrapChunk {
-            terminal_id: terminal_id.clone(),
-            stream_id,
-            bootstrap_id,
-            chunk_seq: 0,
-            payload: payload.into(),
-        });
-    }
-    frames.push(FrameKind::BootstrapReady {
-        terminal_id,
-        stream_id,
-        bootstrap_id,
-        history_cursor: None,
-    });
-    frames
-}
-
-fn feed_agent_bootstrap(client: *mut PhuxClient, frames: Vec<FrameKind>) {
-    for frame in frames {
-        assert_eq!(feed(client, &frame), PhuxClientResult::Ok);
-    }
-}
+mod resume;
+use resume::{agent_bootstrap_frames, feed_agent_bootstrap};
 
 /// Copy the observable ABI batches into the host's log before clearing borrows.
 fn drain_agent_log(

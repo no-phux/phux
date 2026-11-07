@@ -6,7 +6,6 @@ use phux_core::ids::ResourceId;
 use phux_protocol::caps::{
     BootstrapLimits, BootstrapProfile, ClientCapabilities, ColorSupport, LayerSet,
 };
-use phux_terminal::actor::TerminalHandle;
 
 use phux_protocol::wire::frame::{FrameKind, Scope};
 
@@ -28,18 +27,18 @@ fn mk_tx() -> mpsc::Sender<Outbound> {
     tx
 }
 pub(super) fn mk_handle() -> ResourceHandle {
-    let (core, channels) = crate::resource::ResourceCore::new(
-        crate::resource::ResourceKind::Terminal,
+    crate::runtime::apps::terminal::test_support::detached_terminal()
+}
+
+pub(super) fn mk_agent_handle(parent: ResourceId, token: CancellationToken) -> ResourceHandle {
+    phux_agent_session::session::AgentSessionActor::build(
+        parent,
+        "test-producer",
         None,
-        CancellationToken::new(),
-        8,
-    );
-    drop(core);
-    ResourceHandle::new(
-        None,
-        channels.output,
-        TerminalHandle::detached_for_test(80, 24),
+        token,
+        1024,
     )
+    .handle
 }
 
 #[test]
@@ -310,7 +309,7 @@ fn attach_stores_hello_selected_bootstrap_contract_unchanged() {
     )
     .unwrap();
     let attached = &s.attached()[&cid];
-    assert_eq!(attached.bootstrap_profile, profile);
+    assert_eq!(attached.bootstrap_profile, Some(profile));
     assert_eq!(attached.bootstrap_limits, limits);
 }
 
@@ -364,8 +363,10 @@ fn attach_snapshot_panes_collects_live_handles_for_session_tree() {
     let pid_b = s.add_pane_to_session(sid).expect("second pane");
     let pid_c = s.add_pane_to_session(sid).expect("third pane");
 
-    let _ = s.register_resource_handle(pid_a, mk_handle(), CancellationToken::new());
-    let _ = s.register_resource_handle(pid_c, mk_handle(), CancellationToken::new());
+    s.register_resource_handle(pid_a, mk_handle(), CancellationToken::new())
+        .unwrap();
+    s.register_resource_handle(pid_c, mk_handle(), CancellationToken::new())
+        .unwrap();
     // pid_b intentionally has no handle and must be excluded.
 
     let panes = s.attach_snapshot_panes(sid);

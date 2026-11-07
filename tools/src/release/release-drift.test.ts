@@ -14,9 +14,14 @@ const finished = (): Snapshot => ({
   repo: "example/repo",
   releases: [release("v1.0.0"), release("desktop-v0.5.0"), release("pi-v0.1.0")],
   pending: [],
-  manifest: { ".": "1.0.0", "clients/desktop": "0.5.0", pi: "0.1.0" },
-  packages: { "clients/desktop": { component: "desktop" }, pi: { component: "pi" } },
-  bumped: OLD,
+  trains: [
+    { manifest: { ".": "1.0.0", pi: "0.1.0" }, packages: { pi: { component: "pi" } }, bumped: OLD },
+    {
+      manifest: { "clients/desktop": "0.5.0" },
+      packages: { "clients/desktop": { component: "desktop" } },
+      bumped: OLD,
+    },
+  ],
   stable: { products: { phux: { version: "1.0.0" }, desktop: { version: "0.5.0" } } },
 });
 
@@ -46,6 +51,11 @@ test.each<[string, (state: Snapshot) => Snapshot, string]>([
     ". is at 1.0.0, but v1.0.0 has no release",
   ],
   [
+    "every train is checked",
+    (s) => ({ ...s, releases: s.releases.filter((r) => r.tag !== "desktop-v0.5.0") }),
+    "clients/desktop is at 0.5.0, but desktop-v0.5.0 has no release",
+  ],
+  [
     "the stable manifest names the newest release",
     (s) => ({ ...s, releases: [...s.releases, release("v9.0.0")] }),
     "but v9.0.0 is published",
@@ -62,7 +72,10 @@ test.each<[string, (state: Snapshot) => Snapshot, string]>([
 test("the grace window hides fresh drafts and fresh manifest bumps", () => {
   const state = finished();
   const releases = [...state.releases, release("v1.1.0", true)];
-  const fresh = { ...state, releases, manifest: { ...state.manifest, ".": "1.2.0" } };
+  const [root, desktop] = state.trains;
+  if (root === undefined || desktop === undefined) throw new Error("two trains");
+  const bumped = { ...root, manifest: { ...root.manifest, ".": "1.2.0" } };
+  const fresh = { ...state, releases, trains: [bumped, desktop] };
   expect(problems(fresh, 60_000, Date.parse(OLD) + 1000)).toEqual([]);
   expect(problems(fresh, 0, Date.parse(OLD) + 1000)).toHaveLength(2);
 });

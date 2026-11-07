@@ -1,6 +1,6 @@
 use std::path::{Path, PathBuf};
 
-use super::{HOOK, LAYER, layer_extends, layer_text};
+use super::{HOOK, LAYER, config_errors, layer_extends, layer_text, menu_block};
 
 #[test]
 fn the_layer_is_valid_config_and_binds_omarchy_keys() {
@@ -39,4 +39,39 @@ fn the_hook_quotes_the_binary_and_tolerates_a_missing_server() {
     assert!(hook.starts_with("#!/bin/bash\n"));
     assert!(hook.contains("\nphux='/home/me/.local/bin/phux'\n"));
     assert!(hook.ends_with("config reload >/dev/null 2>&1 || true\n"));
+}
+
+#[test]
+fn the_menu_rows_are_jsonc_entries_omarchy_can_parse() {
+    let block = menu_block("/home/me/.local/bin/phux");
+    // Omarchy strips trailing commas before parsing.
+    let doc: serde_json::Map<String, serde_json::Value> =
+        serde_json::from_str(&format!("{{{}}}", block.trim_end_matches(','))).expect("valid JSON");
+    let rune = &doc["install.ai.phux-rune"];
+    assert!(
+        rune["action"]
+            .as_str()
+            .is_some_and(|a| a.contains("phux.sh/install | sh -s -- --rune"))
+    );
+    assert!(
+        rune["when"]
+            .as_str()
+            .is_some_and(|w| w.contains("phux-rune"))
+    );
+    assert!(
+        doc["learn.phux-keybindings"]["action"]
+            .as_str()
+            .is_some_and(|a| a.starts_with("sh -c '/home/me/.local/bin/phux omarchy keys"))
+    );
+}
+
+#[test]
+fn hyprland_config_errors_ignore_the_blank_lines_of_a_clean_load() {
+    assert_eq!(config_errors("\n\n"), None);
+    assert_eq!(
+        config_errors("return hl.dispatch(hl.dsp.no_such):1: hl.dispatch: expected a dispatcher\n"),
+        None
+    );
+    let lua = "require(\"hypr.bindings\"): bindings.lua:32: attempt to call a nil value\n\n";
+    assert_eq!(config_errors(lua).as_deref(), Some(lua.trim()));
 }

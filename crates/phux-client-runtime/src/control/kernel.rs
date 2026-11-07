@@ -125,11 +125,11 @@ impl ControlPlane {
             KernelEffect::Status(status) => self.process_status(status),
             KernelEffect::Job(_) => {}
             KernelEffect::AgentPublication(publication) => {
-                let session = self.agent_session_info(&publication.resource_id);
-                if let Some(event) = self.agent_delivery.commit(publication, session) {
-                    self.push_event(event);
-                }
+                self.commit_agent_publication(publication);
             }
+            KernelEffect::Document(publication) => self.push_event(Event::DocumentPublished {
+                publication: std::sync::Arc::new(publication),
+            }),
         }
     }
 

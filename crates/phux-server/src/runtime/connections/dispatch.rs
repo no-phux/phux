@@ -2,8 +2,8 @@ use super::commands::{MAX_PENDING_INPUT_RECEIPTS, admit_frame};
 use super::hello::NegotiatedConnection;
 use super::hello::framing_violation_close;
 use super::plumbing::{ClientPlumbing, ConnectionClose};
+use crate::runtime::apps::terminal::input_lane::{InputCredits, InputLaneHandle};
 use crate::runtime::apps::terminal::terminal_streams::handle_stream_event;
-use crate::runtime::input_lane::{InputCredits, InputLaneHandle};
 use crate::state::{ClientId, SharedState};
 use crate::transport::quic::QuicStreamEvent;
 use crate::transport::{FrameReader, FrameWriter};
@@ -217,7 +217,7 @@ fn bulk_worker_stopped(client_id: ClientId) -> ConnectionEnding {
 }
 
 /// How one connection's frame loop ended.
-pub(in crate::runtime) enum ConnectionEnding {
+pub(crate) enum ConnectionEnding {
     /// EOF or a transport error: nobody is left to tell.
     TransportGone,
     /// The peer broke the protocol; it is owed `ERROR` then `DETACHED`.
@@ -250,7 +250,7 @@ pub(in crate::runtime) struct FrameDispatch<'a, R> {
     pub(super) service_http: &'a crate::runtime::service_http::Exchanges,
 }
 
-pub(in crate::runtime) type FrameFlow = std::ops::ControlFlow<ConnectionEnding>;
+pub(crate) type FrameFlow = std::ops::ControlFlow<ConnectionEnding>;
 
 async fn dispatch_stream_event(
     event: Option<QuicStreamEvent>,

@@ -194,7 +194,7 @@ fn ack_without_emit_instant_produces_no_sample() {
 }
 
 /// A never-acking consumer's `emit_instants` stays capped at
-/// [`MAX_EMIT_INSTANTS`], keeping the newest.
+/// `MAX_EMIT_INSTANTS`, keeping the newest.
 #[test]
 fn emit_instants_is_capped_for_never_acking_consumer() {
     let bundle = TerminalActor::new(20, 5).expect("new");
@@ -216,12 +216,17 @@ fn emit_instants_is_capped_for_never_acking_consumer() {
 
     let state = actor.consumer_state(client).expect("state present");
     assert!(
-        state.emit_instants.len() <= MAX_EMIT_INSTANTS,
+        state.sync.emit_instants.len() <= MAX_EMIT_INSTANTS,
         "emit_instants must stay capped at {} for a never-acking consumer; got {}",
         MAX_EMIT_INSTANTS,
-        state.emit_instants.len(),
+        state.sync.emit_instants.len(),
     );
-    let lowest = *state.emit_instants.keys().next().expect("non-empty map");
+    let lowest = *state
+        .sync
+        .emit_instants
+        .keys()
+        .next()
+        .expect("non-empty map");
     assert!(
         lowest > 1,
         "oldest emit instants should have been evicted; lowest retained seq = {lowest}",

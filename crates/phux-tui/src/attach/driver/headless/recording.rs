@@ -244,6 +244,9 @@ impl RecordingLink<'_> {
         if let Some(request) = outcome.history_request {
             request_history_page(self.conn, self.completion, request).await?;
         }
+        self.session
+            .request_agent_streams(self.conn, &outcome.attach_panes)
+            .await?;
         Ok(())
     }
 }

@@ -132,6 +132,16 @@ pub enum BootstrapCodec {
     /// codec. Live output carries whole records and is always raw
     /// (`FRAME_ACK` forbidden). Gated on `ServerFeature::ResourceKinds`.
     AgentEventsJsonlV1,
+    /// One JSON document per message, the whole accessibility tree v1: the
+    /// `AccessibilityTree` codec. The bootstrap carries the newest snapshot
+    /// and every live message replaces it. Gated on
+    /// `ServerFeatureExt::AccessibilityTree`.
+    AccessibilityTreeJsonV1,
+    /// One PNG image per message, the whole pixel surface v1: the
+    /// `PixelSurface` codec. The bootstrap carries the newest image and
+    /// every live message replaces it. Gated on
+    /// `ServerFeatureExt::PixelSurface`.
+    PixelSurfacePngV1,
 }
 
 impl BootstrapCodec {
@@ -143,6 +153,10 @@ impl BootstrapCodec {
     /// space never collides with the `EngineCodec` version byte that follows
     /// [`Self::NATIVE_TAG`] in a hex dump.
     pub const AGENT_EVENTS_JSONL_V1_TAG: u8 = 3;
+    /// Wire tag for accessibility-tree JSON v1.
+    pub const ACCESSIBILITY_TREE_JSON_V1_TAG: u8 = 4;
+    /// Wire tag for pixel-surface PNG v1.
+    pub const PIXEL_SURFACE_PNG_V1_TAG: u8 = 5;
 }
 
 /// Additive set of exact native engine codecs.
@@ -432,6 +446,12 @@ pub enum BootstrapStreamProfile {
         /// Last record already committed by the consumer.
         after_seq: u64,
     },
+    /// The newest whole accessibility tree as one JSON document, followed
+    /// by raw live replacements, each a whole document.
+    AccessibilityTreeJsonV1,
+    /// The newest whole pixel surface as one PNG image, followed by raw
+    /// live replacements, each a whole image.
+    PixelSurfacePngV1,
 }
 
 /// Select one explicit profile and the negotiated payload bounds.

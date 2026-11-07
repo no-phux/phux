@@ -158,15 +158,18 @@ pub(super) async fn negotiate_hello(
     state.with_mut(|s| {
         crate::runtime::whoami::admit_ssh_origin(s, client_id, client_caps.ssh_origin);
     });
-    let (selected_profile, bootstrap_limits) = select_hello_profile(&client_caps, client_id)?;
+    let (selected_profile, bootstrap_limits) =
+        select_hello_profile(state, &client_caps, client_id)?;
 
     let mut effective_client_caps = client_caps;
-    effective_client_caps.output_mode =
-        if matches!(selected_profile, BootstrapProfile::SynthesizedVtStateSync) {
-            phux_protocol::caps::OutputMode::StateSync
-        } else {
-            phux_protocol::caps::OutputMode::Raw
-        };
+    effective_client_caps.output_mode = if matches!(
+        selected_profile,
+        Some(BootstrapProfile::SynthesizedVtStateSync)
+    ) {
+        phux_protocol::caps::OutputMode::StateSync
+    } else {
+        phux_protocol::caps::OutputMode::Raw
+    };
     let mut server_features = runtime_server_features();
     // ADR-0115: advertised only where streams exist to back it.
     if matches!(transport, TransportType::Quic)
@@ -231,6 +234,8 @@ const fn runtime_server_features_ext() -> ServerFeatureExtSet {
         ServerFeatureExt::FileDownload,
         ServerFeatureExt::Checkout,
         ServerFeatureExt::HostServiceHttp,
+        ServerFeatureExt::AccessibilityTree,
+        ServerFeatureExt::PixelSurface,
     ])
 }
 
@@ -310,15 +315,31 @@ async fn authorize_hello(state: &SharedState, client_id: ClientId) -> Result<(),
     }
 }
 
-/// Select the protocol-0.7 bootstrap profile both peers can speak. `NativeState`
-/// requires an exact common codec and every required engine feature, so no
-/// common profile is a connection-ending `CodecUnavailable`.
+/// Select the protocol-0.7 bootstrap profile both peers can speak. A client
+/// that offers no Terminal profile at all is admitted without one: it can
+/// still consume every other kind, and a Terminal stream is refused when it
+/// binds. A client that offers Terminal profiles the server cannot serve is
+/// an incompatible Terminal peer, and that is a connection-ending
+/// `CodecUnavailable`: `NativeState` requires an exact common codec and every
+/// required engine feature.
 fn select_hello_profile(
+    state: &SharedState,
     client_caps: &ClientCapabilities,
     client_id: ClientId,
-) -> Result<(BootstrapProfile, BootstrapLimits), ConnectionClose> {
-    let server_bootstrap = crate::runtime::apps::bootstrap_capabilities();
-    let Ok(selection) = select_bootstrap_profile(client_caps, &server_bootstrap) else {
+) -> Result<(Option<BootstrapProfile>, BootstrapLimits), ConnectionClose> {
+    let server_bootstrap = crate::runtime::apps::bootstrap_capabilities(state);
+    if client_caps.bootstrap.profiles.as_wire() == 0 {
+        debug!(
+            ?client_id,
+            "HELLO offered no Terminal profile; admitted without one"
+        );
+        let limits = client_caps
+            .bootstrap
+            .limits
+            .intersect(server_bootstrap.limits);
+        return Ok((None, limits));
+    }
+    let Ok((profile, limits)) = select_bootstrap_profile(client_caps, &server_bootstrap) else {
         let message = format!(
             "no common protocol-0.7 bootstrap profile: client profiles=0x{:02x} native_codecs=0x{:016x} native_features=0x{:08x}; server profiles=0x{:02x} native_codecs=0x{:016x} native_features=0x{:08x}. NativeState requires an exact common codec and every required engine feature; advertise SynthesizedVtRaw/SynthesizedVtStateSync or update the incompatible peer",
             client_caps.bootstrap.profiles.as_wire(),
@@ -336,13 +357,15 @@ fn select_hello_profile(
             message,
         });
     };
-    Ok(selection)
+    Ok((Some(profile), limits))
 }
 
 #[derive(Debug, Clone, Copy)]
-pub(in crate::runtime) struct NegotiatedConnection {
+pub(crate) struct NegotiatedConnection {
     pub(in crate::runtime) client_caps: ClientCapabilities,
-    pub(in crate::runtime) profile: BootstrapProfile,
+    /// The Terminal bootstrap profile, or `None` for a client that offered
+    /// none: a Terminal stream on this connection is refused when it binds.
+    pub(in crate::runtime) profile: Option<BootstrapProfile>,
     pub(in crate::runtime) limits: BootstrapLimits,
     pub(super) server_features: ServerFeatureSet,
     /// The frame compression HELLO selected (`docs/protocol.md#framing`).
@@ -358,7 +381,7 @@ impl NegotiatedConnection {
         self.server_features.contains(ServerFeature::QuicStreams)
     }
 
-    pub(super) const fn accepts_terminal_reply(self) -> bool {
+    pub(in crate::runtime) const fn accepts_terminal_reply(self) -> bool {
         self.server_features.contains(ServerFeature::TerminalReply)
     }
 }

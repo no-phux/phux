@@ -64,11 +64,19 @@ more, and never for a frame that settles a request.
    patch is admitted; another major gets `ERROR` with
    `VERSION_INCOMPATIBLE` and a close.
 3. The server authorizes the connection ([owner, delegated, or scoped
-   remote authority](./remote.md#who-can-do-what)) and picks a bootstrap
-   profile the client offered.
+   remote authority](./remote.md#who-can-do-what)) and picks a Terminal
+   bootstrap profile the client offered. A client that offers no Terminal
+   profile is admitted without one; a client whose offered profiles the
+   server cannot serve gets `ERROR` with `CODEC_UNAVAILABLE` and a close.
 4. The server replies `HELLO_OK` (`0x80`): its version, `ServerCapabilities`
    (two words of feature bits, `features` and `features_ext`), a server
-   instance id, the selected profile, and size limits.
+   instance id, the selected profile (absent when none was offered), and
+   size limits.
+
+A connection with no Terminal profile consumes every other kind as usual.
+A Terminal stream it binds (`ATTACH`, `ATTACH_RESOURCE` on a Terminal,
+`STREAM_BIND`, or the stream a `SPAWN_RESOURCE` opens) is refused with
+`CODEC_UNAVAILABLE`, and the connection stays.
 
 Before `HELLO_OK`, only `HELLO` and `PING` are accepted. Clients accept a
 `HELLO_OK` on their own major with any minor or patch, older or newer, and
@@ -138,6 +146,10 @@ On gaps, overflow, resize or codec discontinuity, fence and recut; never
 silently skip bytes or replay them into an obsolete replica. Consumer
 mailboxes, stale-output recovery and resync attempts are bounded; failure
 ends in an explicit error rather than unbounded backlog or a frozen view.
+An `AgentSession` consumer that lags is replayed the skipped records from
+the session's ring in the same generation. If the ring has evicted any of
+them, the generation is tombstoned with `OUTBOUND_GAP` at the last delivered
+record and replaced by a full retained bootstrap.
 Only StateSync live output gets a cumulative, generation-bound `FRAME_ACK`,
 after application to the replica; raw output and bootstrap never do.
 Normal reliable StateSync advances its server reference on emit: an ACK is
@@ -240,11 +252,26 @@ enable it. Older servers do not advertise the bit; clients check before
 sending. Reports remain schema 1, with optional `rss_bytes` and `alloc`
 JSON fields that old readers ignore.
 
-Panes are **resources** with a **kind**: `Terminal` or `AgentSession` so
-far, each with its own methods and events. A client tolerates kinds it
-does not know. The kind catalog in `phux-protocol::kinds` lists every
-method with the authorization verb it needs; the generated
+Panes are **resources** with a **kind**: `Terminal`, `AgentSession`,
+`AccessibilityTree` or `PixelSurface` so far, each with its own methods and
+events. A client
+tolerates kinds it does not know. The kind catalog in `phux-protocol::kinds`
+lists every method with the authorization verb it needs; the generated
 [kinds reference](./reference/kinds.md) renders it.
+
+An `AccessibilityTree` (wire tag 2, gated on `features_ext.ACCESSIBILITY_TREE`)
+and a `PixelSurface` (wire tag 3, gated on `features_ext.PIXEL_SURFACE`)
+are replicated documents: a producer running in the parent Terminal
+replaces the whole document with the substrate's `PUBLISH_RESOURCE_STATE`
+(at most 4 MiB; one JSON document for a tree, one PNG image for a surface,
+whose size is the surface's geometry), and the engine keeps the newest. A
+viewer's `ATTACH_RESOURCE` bootstraps it under the kind's codec
+(`AccessibilityTreeJsonV1`, `PixelSurfacePngV1`), `0 x 0`, with the newest
+document in the chunks and its sequence as `base_seq`; each later document
+arrives as one `RESOURCE_OUTPUT`. A viewer the broadcast laps is tombstoned
+(`OUTBOUND_GAP`) and recut from the newest document, so the only thing a
+slow viewer skips is intermediate documents. The stream takes no input, no
+acknowledgement and no history request.
 
 `GET_METADATA` / `SET_METADATA` / `SUBSCRIBE_METADATA` (`0x50`-`0x54`)
 attach small keyed values to resources. Some keys are plain storage; some
@@ -253,7 +280,8 @@ are read by the server (`phux.agent/v1` is the agent record).
 `phux.tui.layout/v1` is a legacy layout adapter, not a competing source of
 membership or arrangement authority. See [organization](./organization.md).
 
-An `AgentSession` has an immutable, one-level Terminal parent. Purging the
+An `AgentSession` has an immutable, one-level parent that hosts agents;
+today that is a Terminal. Purging the
 parent closes its children atomically; closing a child never kills its
 parent. Process exit under Retain is not purge: see
 [activations and exit policy](./organization.md#activations-and-reconciliation).
@@ -288,7 +316,7 @@ path or environment payload. Older clients skip these fields; old stored
 activations without a diagnostic remain readable. Unknown exit evidence
 projects as `Unobserved`, never fabricated exit zero.
 
-`features_ext.DURABLE_RESOURCE_INSPECTION` (`0x8000`) gates filter discriminant
+`features_ext.DURABLE_RESOURCE_INSPECTION` (`0x20000`) gates filter discriminant
 `4` on the existing `GET_ORGANIZATION`: the discriminant is followed by the
 16-byte durable resource key. It returns at most that one resource row, no
 session rows and no continuation cursor. The existing per-resource inventory

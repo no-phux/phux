@@ -1,6 +1,5 @@
 use super::dispatch::handle_client;
 use super::writer_close_tests::Script;
-use crate::state::SharedState;
 use crate::transport::FrameWriter;
 use phux_protocol::PROTOCOL_VERSION;
 use std::io;
@@ -13,9 +12,10 @@ use phux_protocol::caps::{
 use phux_protocol::policy::{PeerIdentity, TransportType};
 use phux_protocol::wire::frame::{AttachTarget, DetachReason, ErrorCode, FrameKind, ViewportInfo};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::sync::{broadcast, mpsc};
 
-use phux_terminal::actor::{ConsumerAttachOutcome, ResourceOutput};
+use crate::runtime::apps::terminal::test_support::{
+    ConsumerAttachOutcome, NativeStateError, stub_terminal,
+};
 
 struct DuplexWriter(tokio::io::WriteHalf<tokio::io::DuplexStream>);
 
@@ -51,43 +51,21 @@ async fn next_frame(
     .expect("peer read timed out")
 }
 
-fn native_failure_handle() -> (
-    crate::resource::ResourceHandle,
-    mpsc::Receiver<phux_terminal::actor::ConsumerAttachRequest>,
-    mpsc::Receiver<phux_terminal::actor::NativeBootstrapRequest>,
-) {
-    let (output, _output_seed) = broadcast::channel::<ResourceOutput>(8);
-    let (consumer_attach, consumer_attach_rx) = mpsc::channel(8);
-    let (native_bootstrap, native_bootstrap_rx) = mpsc::channel(8);
-    (
-        crate::resource::ResourceHandle::new(
-            None,
-            output,
-            phux_terminal::actor::TerminalHandle {
-                consumer_attach,
-                consumer_detach: mpsc::channel(8).0,
-                consumer_ack: mpsc::channel(8).0,
-                upgrade: mpsc::channel(8).0,
-                native_bootstrap,
-                ..phux_terminal::actor::TerminalHandle::detached_for_test(80, 24)
-            },
-        ),
-        consumer_attach_rx,
-        native_bootstrap_rx,
-    )
-}
-
 /// A native bootstrap preflight failure is a terminal error: the peer
 /// reads `HELLO_OK`, ERROR, DETACHED, and only then EOF.
 #[tokio::test(flavor = "current_thread")]
 async fn native_preflight_failure_flushes_error_then_duplex_eof() {
     LocalSet::new()
         .run_until(async {
-            let state = SharedState::new();
+            let state = crate::runtime::apps::terminal::test_support::terminal_state();
             let (_session, terminal) = state.with_mut(|server| server.seed_session("fatal-duplex"));
-            let (handle, mut consumer_attach_rx, mut native_bootstrap_rx) = native_failure_handle();
+            let (handle, mut stub) = stub_terminal();
+            // Nothing answers a detach here, so teardown must not wait for one.
+            stub.consumer_detach.close();
             let client_id = state.with_mut(|server| {
-                let _ = server.register_resource_handle(terminal, handle, CancellationToken::new());
+                server
+                    .register_resource_handle(terminal, handle, CancellationToken::new())
+                    .unwrap();
                 let client_id = server.new_client_id();
                 server.set_peer_identity(
                     client_id,
@@ -139,7 +117,7 @@ async fn native_preflight_failure_flushes_error_then_duplex_eof() {
                 false,
             ));
             let actor = tokio::task::spawn_local(async move {
-                let registration = consumer_attach_rx.recv().await.expect("registration");
+                let registration = stub.consumer_attach.recv().await.expect("registration");
                 registration
                     .reply
                     .send(Ok(ConsumerAttachOutcome {
@@ -147,24 +125,22 @@ async fn native_preflight_failure_flushes_error_then_duplex_eof() {
                         state_sync_bootstrap: None,
                     }))
                     .expect("registration reply");
-                native_bootstrap_rx
+                stub.native_bootstrap
                     .recv()
                     .await
                     .expect("native preflight")
                     .reply
-                    .send(Err(
-                        phux_terminal::native_state::NativeStateError::OutOfMemory,
-                    ))
+                    .send(Err(NativeStateError::OutOfMemory))
                     .expect("native failure reply");
             });
 
             assert!(matches!(
                 next_frame(&mut client_read).await,
                 Some(FrameKind::HelloOk {
-                    selected_profile: phux_protocol::caps::BootstrapProfile::NativeState {
+                    selected_profile: Some(phux_protocol::caps::BootstrapProfile::NativeState {
                         codec: EngineCodec::LibghosttySnapshotV1,
                         ..
-                    },
+                    }),
                     ..
                 })
             ));

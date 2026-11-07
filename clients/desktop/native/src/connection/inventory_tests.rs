@@ -40,7 +40,7 @@ fn inventory_fetches_group_labels_without_attaching_or_spawning() {
             .with_layers(LayerSet::with(&[Layer::L3]))
             .with_features_ext(ServerFeatureExtSet::with(&[ServerFeatureExt::Organization])),
         server_id: vec![0xAB; 16],
-        selected_profile: BootstrapProfile::SynthesizedVtRaw,
+        selected_profile: Some(BootstrapProfile::SynthesizedVtRaw),
         bootstrap_limits: BootstrapLimits::default(),
     };
     client.feed(hello.clone()).unwrap();

@@ -499,7 +499,7 @@ fn retained_handle_recovers_arrangement_catalog_and_seed_terminal_after_restart(
             let (shutdown, server) = spawn_server_with_seed_cmd(
                 socket.clone(),
                 session,
-                portable_pty::CommandBuilder::new("/bin/sh"),
+                phux_server::LaunchCommand::new("/bin/sh"),
             );
             if generation == 1 {
                 let options = PhuxConnectOptions {

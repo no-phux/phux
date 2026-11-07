@@ -67,7 +67,7 @@ impl Server {
         let socket = config.socket_path.clone();
         let (shutdown, stopped) = oneshot::channel();
         let handle = tokio::task::spawn_local(async move {
-            ServerRuntime::new(config)
+            ServerRuntime::new(config, std::sync::Arc::new(phux_terminal::TerminalEngine))
                 .listen_quic(SocketAddr::from(([127, 0, 0, 1], 0)))
                 .run_async(async move {
                     let _ = stopped.await;

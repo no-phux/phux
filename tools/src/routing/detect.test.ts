@@ -2,6 +2,7 @@ import { afterAll, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
+import { WORKSPACE_LOCKS } from "../cargo/release-orchestration.ts";
 import { git } from "../lib/git.ts";
 import { detect, type Detection } from "./detect.ts";
 
@@ -85,10 +86,11 @@ test("a rename reports both sides", () => {
 });
 
 test("a release-please version bump requests no compile lane", () => {
+  const lock = 'version = 3\n\n[[package]]\nname = "phux"\nversion = "0.1.0"\n';
   const files: Record<string, string> = {
     "CHANGELOG.md": "# changelog\n",
     "Cargo.toml": '[workspace.package]\nversion = "0.1.0"\n',
-    "Cargo.lock": 'version = 3\n\n[[package]]\nname = "phux"\nversion = "0.1.0"\n',
+    ...Object.fromEntries(WORKSPACE_LOCKS.map((path) => [path, lock])),
     ".release-please-manifest.json": `${JSON.stringify({ ".": "0.1.0" })}\n`,
     ".agents/skills/using-phux/SKILL.md": '  version: "0.1.0" # x-release-please-version\n',
   };
@@ -99,4 +101,7 @@ test("a release-please version bump requests no compile lane", () => {
   expect(push(before, commitFiles(bumped, before))).toEqual({ kind: "release-metadata" });
   const touched = commitFiles({ ...bumped, "crates/phux/src/main.rs": "fn main() {}\n" }, before);
   expect(push(before, touched).kind).toBe("paths");
+  // A bump that leaves a lock behind fails --locked builds: run them.
+  const stale = commitFiles({ ...bumped, "clients/rune/Cargo.lock": lock }, before);
+  expect(push(before, stale).kind).toBe("paths");
 });

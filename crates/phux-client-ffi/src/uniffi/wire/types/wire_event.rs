@@ -157,6 +157,12 @@ pub enum WireEvent {
     /// latest `AgentAsked` describes it, but after a gap or reconnect that
     /// description may be older than the question.
     AgentAskedState { terminal_id: String, asked: bool },
+    /// Whether something under the pane runs outside the foreground: a
+    /// backgrounded job, or a command an idle agent left watching. The
+    /// server-owned `phux.pane-occupant/v1` record's `background` flag, read
+    /// on attach, followed live, and re-read after gaps; an older server
+    /// that omits it reads as `false`.
+    BackgroundWork { terminal_id: String, running: bool },
     /// An exact SDK intent's outcome. Queued is submission, not provider
     /// consumption; Unknown requires reconciliation and must not be replayed.
     NativeAgentResult {
@@ -221,6 +227,16 @@ pub enum WireEvent {
         seq: u64,
         jsonl: String,
     },
+    /// A whole document arrived for an attached `AccessibilityTree` or
+    /// `PixelSurface` (`kind` is `accessibility_tree` or `pixel_surface`):
+    /// the bootstrap cut, or a newer publish. `bytes` is JSON for a tree and
+    /// PNG for a surface; the newest `seq` per resource is the one to show.
+    DocumentPublished {
+        resource_id: String,
+        kind: String,
+        seq: u64,
+        bytes: Vec<u8>,
+    },
     /// The server reported an ERROR frame.
     ServerError { message: String },
     /// The transport dropped; the runtime is reconnecting. Delivered only by
@@ -247,6 +263,13 @@ impl core::fmt::Debug for WireEvent {
                         .debug_struct("ClipboardWrite")
                         .field("terminal_id", terminal_id)
                         .field("bytes", &text.len())
+                        .finish(),
+                    Self::DocumentPublished { resource_id, kind, seq, bytes } => f
+                        .debug_struct("DocumentPublished")
+                        .field("resource_id", resource_id)
+                        .field("kind", kind)
+                        .field("seq", seq)
+                        .field("bytes", &bytes.len())
                         .finish(),
                     $(Self::$variant $({ $($field),* })? => {
                         let mut value = f.debug_struct(stringify!($variant));
@@ -279,6 +302,7 @@ impl core::fmt::Debug for WireEvent {
             InputHolderChanged { terminal_id, holder, mine },
             AgentAsked { terminal_id, question_id, text, suggestions, waiting_seconds },
             AgentAskedState { terminal_id, asked },
+            BackgroundWork { terminal_id, running },
             NativeAgentResult { agent_session_id, operation_id, disposition, detail },
             AgentStateChanged {
                 terminal_id, name, kind, session, state, attention,

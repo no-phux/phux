@@ -33,15 +33,7 @@ const IDLE: u8 = 0;
 const BUSY: u8 = 1;
 
 /// What [`PtyFastPath::try_direct`] did with the bytes.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum DirectWrite {
-    /// `write(2)` and `flush` succeeded; the PTY reader owns the echo.
-    Wrote,
-    /// Refused or failed before a retry would help. The caller drops the key.
-    Handled,
-    /// The writer thread owns the next byte. The caller uses the lane.
-    Busy,
-}
+pub use phux_terminal_api::input::DirectWrite;
 
 struct WriterSlot {
     writer: Option<std::mem::ManuallyDrop<Box<dyn Write + Send>>>,

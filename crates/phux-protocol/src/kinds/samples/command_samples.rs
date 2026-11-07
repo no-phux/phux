@@ -56,10 +56,11 @@ const fn command_variant(command: &Command) -> usize {
         Command::ServiceHttpClose { .. } => 51,
         Command::DescribeApi => 52,
         Command::GetCreation { .. } => 53,
+        Command::PublishResourceState { .. } => 54,
     }
 }
 
-const COMMAND_VARIANTS: usize = 54;
+const COMMAND_VARIANTS: usize = 55;
 
 fn operation() -> IdempotencyKey {
     IdempotencyKey::new([3; 16]).unwrap()
@@ -537,6 +538,13 @@ fn command_samples() -> Vec<(Command, &'static Rule)> {
                 bytes: b"{}\n".to_vec(),
             },
             &C_APPEND_RESOURCE_OUTPUT,
+        ),
+        (
+            Command::PublishResourceState {
+                terminal_id: terminal(),
+                bytes: b"{}".to_vec(),
+            },
+            &C_PUBLISH_RESOURCE_STATE,
         ),
         (
             Command::KillResourceIf {

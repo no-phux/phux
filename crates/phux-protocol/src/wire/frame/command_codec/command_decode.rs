@@ -6,20 +6,20 @@ use super::{
     COMMAND_TAG_DETACH_RESOURCE, COMMAND_TAG_GET_FILE, COMMAND_TAG_GET_PERF,
     COMMAND_TAG_GET_SCREEN, COMMAND_TAG_GET_STATE, COMMAND_TAG_GET_TERMINAL_STATE,
     COMMAND_TAG_KILL_RESOURCE, COMMAND_TAG_KILL_RESOURCE_IF, COMMAND_TAG_KILL_RESOURCES,
-    COMMAND_TAG_OPEN_LISTENER, COMMAND_TAG_PERF_CONTROL, COMMAND_TAG_PUT_FILE,
-    COMMAND_TAG_RELEASE_INPUT, COMMAND_TAG_REPORT_AGENT_STATE, COMMAND_TAG_REPORT_ASKED,
-    COMMAND_TAG_ROUTE_INPUT, COMMAND_TAG_SHUTDOWN, COMMAND_TAG_SIGNAL_TERMINAL,
-    COMMAND_TAG_SUBSCRIBE_RESOURCE_EVENTS, COMMAND_TAG_TRANSCRIBE, COMMAND_TAG_UPGRADE, Command,
-    DecodeError, Decoder, INPUT_EVENT_TAG_FOCUS, INPUT_EVENT_TAG_KEY, INPUT_EVENT_TAG_MOUSE,
-    INPUT_EVENT_TAG_PASTE, IdempotencyKey, InputEvent, InputOperationId, KillConditions,
-    KillPrecondition, ListenerTransport, MAX_APPEND_BYTES, MAX_APPLY_INPUT_COMMAND_BODY,
-    MAX_APPLY_INPUT_EVENTS, PerfOp, decode_acquire_input_command, decode_checkout_command,
-    decode_detach_clients_command, decode_file_upload_id, decode_focus_event,
-    decode_get_file_command, decode_get_terminal_state_command, decode_key_event,
-    decode_mouse_event, decode_optional_u32, decode_paste_event, decode_put_file_command,
-    decode_report_agent_state_command, decode_report_asked_command, decode_resource_ids,
-    decode_signal_terminal_command, decode_state_scope, decode_subscribe_terminal_events_command,
-    decode_terminal_id,
+    COMMAND_TAG_OPEN_LISTENER, COMMAND_TAG_PERF_CONTROL, COMMAND_TAG_PUBLISH_RESOURCE_STATE,
+    COMMAND_TAG_PUT_FILE, COMMAND_TAG_RELEASE_INPUT, COMMAND_TAG_REPORT_AGENT_STATE,
+    COMMAND_TAG_REPORT_ASKED, COMMAND_TAG_ROUTE_INPUT, COMMAND_TAG_SHUTDOWN,
+    COMMAND_TAG_SIGNAL_TERMINAL, COMMAND_TAG_SUBSCRIBE_RESOURCE_EVENTS, COMMAND_TAG_TRANSCRIBE,
+    COMMAND_TAG_UPGRADE, Command, DecodeError, Decoder, INPUT_EVENT_TAG_FOCUS, INPUT_EVENT_TAG_KEY,
+    INPUT_EVENT_TAG_MOUSE, INPUT_EVENT_TAG_PASTE, IdempotencyKey, InputEvent, InputOperationId,
+    KillConditions, KillPrecondition, ListenerTransport, MAX_APPEND_BYTES,
+    MAX_APPLY_INPUT_COMMAND_BODY, MAX_APPLY_INPUT_EVENTS, PerfOp, decode_acquire_input_command,
+    decode_checkout_command, decode_detach_clients_command, decode_file_upload_id,
+    decode_focus_event, decode_get_file_command, decode_get_terminal_state_command,
+    decode_key_event, decode_mouse_event, decode_optional_u32, decode_paste_event,
+    decode_put_file_command, decode_report_agent_state_command, decode_report_asked_command,
+    decode_resource_ids, decode_signal_terminal_command, decode_state_scope,
+    decode_subscribe_terminal_events_command, decode_terminal_id,
 };
 
 pub(super) fn decode_input_event(dec: &mut Decoder<'_>) -> Result<InputEvent, DecodeError> {
@@ -89,16 +89,34 @@ pub(in crate::wire) fn decode_command(dec: &mut Decoder<'_>) -> Result<Command, 
     Err(DecodeError::unknown_enum("Command", tag))
 }
 
-/// Decode the producer verb `APPEND_RESOURCE_OUTPUT`.
+/// Decode the producer verbs `APPEND_RESOURCE_OUTPUT` and
+/// `PUBLISH_RESOURCE_STATE`.
 pub(super) fn decode_resource_command(
     tag: u8,
     dec: &mut Decoder<'_>,
 ) -> Result<Option<Command>, DecodeError> {
     let command = match tag {
         COMMAND_TAG_APPEND_RESOURCE_OUTPUT => decode_append_resource_output_command(dec)?,
+        COMMAND_TAG_PUBLISH_RESOURCE_STATE => decode_publish_resource_state_command(dec)?,
         _ => return Ok(None),
     };
     Ok(Some(command))
+}
+
+/// Decode `PUBLISH_RESOURCE_STATE`, refusing an empty or over-
+/// [`MAX_PUBLISH_BYTES`] payload before copying it.
+pub(super) fn decode_publish_resource_state_command(
+    dec: &mut Decoder<'_>,
+) -> Result<Command, DecodeError> {
+    let terminal_id = decode_terminal_id(dec)?;
+    let bytes = dec.read_bytes()?;
+    if bytes.is_empty() || bytes.len() > crate::wire::frame::MAX_PUBLISH_BYTES {
+        return Err(DecodeError::AppendResourceOutputLimitExceeded);
+    }
+    Ok(Command::PublishResourceState {
+        terminal_id,
+        bytes: bytes.to_vec(),
+    })
 }
 
 /// Decode `APPEND_RESOURCE_OUTPUT`, refusing an empty or over-

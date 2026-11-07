@@ -11,8 +11,13 @@ use super::*;
 /// sources in `park`'s tests prove the folding itself.
 #[tokio::test(flavor = "current_thread")]
 async fn coalesced_pty_output_keeps_order_and_respects_the_cap() {
-    let (pty_rx, input_tx, mut pty) =
-        spawn_pty(CommandBuilder::new("cat"), 80, 24).expect("spawn cat under a real pty");
+    let (pty_rx, input_tx, mut pty) = spawn_pty(
+        CommandBuilder::new("cat"),
+        80,
+        24,
+        super::ORPHAN_DRAIN_BUDGET,
+    )
+    .expect("spawn cat under a real pty");
     set_raw(&pty);
     let len = PTY_READ_BATCH + 4_096 + 17;
     let payload: Vec<u8> = (0..len)
@@ -65,8 +70,13 @@ async fn coalesced_pty_output_keeps_order_and_respects_the_cap() {
 /// block here, because nothing else is written.
 #[tokio::test(flavor = "current_thread")]
 async fn one_pty_byte_is_delivered_without_waiting_for_a_full_batch() {
-    let (mut pty_rx, input_tx, mut pty) =
-        spawn_pty(CommandBuilder::new("cat"), 80, 24).expect("spawn cat under a real pty");
+    let (mut pty_rx, input_tx, mut pty) = spawn_pty(
+        CommandBuilder::new("cat"),
+        80,
+        24,
+        super::ORPHAN_DRAIN_BUDGET,
+    )
+    .expect("spawn cat under a real pty");
     set_raw(&pty);
     assert_eq!(
         write_and_wait(&input_tx, b"Z".to_vec()).await,
@@ -131,7 +141,7 @@ fn idle_panes_share_one_poller() {
     for _ in 0..8 {
         let mut cmd = CommandBuilder::new("sleep");
         cmd.arg("60");
-        live.push(spawn_pty(cmd, 80, 24).expect("spawn sleep"));
+        live.push(spawn_pty(cmd, 80, 24, super::ORPHAN_DRAIN_BUDGET).expect("spawn sleep"));
     }
     let places: Vec<_> = live
         .iter()
@@ -168,7 +178,8 @@ fn pane_children_always_advertise_truecolor() {
             Some(value) => cmd.env("COLORTERM", value),
             None => cmd.env_remove("COLORTERM"),
         }
-        let (mut rx, _, mut pty) = spawn_pty(cmd, 80, 24).expect("spawn color probe");
+        let (mut rx, _, mut pty) =
+            spawn_pty(cmd, 80, 24, super::ORPHAN_DRAIN_BUDGET).expect("spawn color probe");
         let got = collect_until(&mut rx, |got| has_line_with(got, b"COLOR:"));
         let _ = pty.child.wait();
         let text = String::from_utf8_lossy(&got);
@@ -186,7 +197,8 @@ fn output_promotes_a_pane_off_the_poller() {
     let mut cmd = CommandBuilder::new("/bin/sh");
     cmd.arg("-c");
     cmd.arg("printf 'hello-from-pty\\n'; sleep 30");
-    let (mut rx, _, mut pty) = spawn_pty(cmd, 80, 24).expect("spawn a pane that prints once");
+    let (mut rx, _, mut pty) =
+        spawn_pty(cmd, 80, 24, super::ORPHAN_DRAIN_BUDGET).expect("spawn a pane that prints once");
     let got = collect_until(&mut rx, |got| has_line_with(got, b"hello-from-pty"));
     assert!(
         got.windows(14).any(|window| window == b"hello-from-pty"),
@@ -229,7 +241,8 @@ fn pane_child_does_not_inherit_the_servers_fd_table() {
     let mut cmd = CommandBuilder::new("/bin/sh");
     cmd.arg("-c");
     cmd.arg(probe);
-    let (mut rx, _, mut pty) = spawn_pty(cmd, 80, 24).expect("spawn probe");
+    let (mut rx, _, mut pty) =
+        spawn_pty(cmd, 80, 24, super::ORPHAN_DRAIN_BUDGET).expect("spawn probe");
     let got = collect_until(&mut rx, |got| has_line_with(got, b"FDSize:"));
     let text = String::from_utf8_lossy(&got);
     assert!(text.contains("CLEAN"), "child inherited fd {high}: {text}");
@@ -314,7 +327,8 @@ fn an_in_flight_lane_key_blocks_the_inline_pty_write() {
     let mut cmd = CommandBuilder::new("/bin/sh");
     cmd.arg("-c");
     cmd.arg("cat");
-    let (_pty_rx, _input_tx, mut pty) = spawn_pty(cmd, 80, 24).expect("spawn");
+    let (_pty_rx, _input_tx, mut pty) =
+        spawn_pty(cmd, 80, 24, super::ORPHAN_DRAIN_BUDGET).expect("spawn");
     let guard = crate::actor::fast_pty::LaneAhead::arm(&pty.fast);
     assert_eq!(
         pty.fast.try_direct(b"e"),

@@ -141,6 +141,10 @@ Commands:
   log               Read a pane's agent session stream.
   native-command    Send a typed SDK intent to the exact `AgentSession` and
                     activation.
+  page              A browser page over the Chrome debugging protocol (CDP), as
+                    a tree (its accessibility tree) and a surface (its
+                    screencast) under one pane. Needs a browser started with
+                    `--remote-debugging-port`.
   prompt            Hand an agent a turn's worth of work, with a delivery
                     receipt.
   report-state      Report hook-sourced lifecycle evidence to the pane's
@@ -153,6 +157,15 @@ Commands:
   show              Show inferred state for one pane.
   start             Start an agent INSIDE an existing shell pane, and return
                     when it is ready for input.
+  surface           A pixel surface is a pane's child resource that a producer
+                    feeds with PNG images of a window or display; `snapshot`
+                    writes the newest and `follow` every one. Needs a server
+                    that advertises `PIXEL_SURFACE`.
+  tree              An accessibility tree is a pane's child resource that a
+                    producer feeds with whole documents of an application's
+                    accessibility tree; `snapshot` reads the newest and `follow
+                    --until TEXT` waits on it. Needs a server that advertises
+                    `ACCESSIBILITY_TREE`.
   uninstall-claude  Remove the claude-in-phux shim and shell activation.
   usage             Show the AI plan limits this host can see.
   wait              Block until a pane's agent TRANSITIONS into a lifecycle
@@ -363,7 +376,9 @@ Read a pane's agent session stream.
 Attaches to the session as an observer, the way `phux rec` attaches to a pane:
 the retained records arrive first and, with `--follow`, live records after them
 until Ctrl-C or the session closes. There is no `--timeout`; run a following log
-under a child-process deadline exactly as you would `phux watch`.
+under a child-process deadline exactly as you would `phux watch`. A follower
+that falls behind records the session has already evicted exits 1 rather than
+skip them.
 
 Usage: phux agent log [FLAGS] <TARGET>
 
@@ -408,6 +423,49 @@ Flags:
 Global flags:
       --socket <PATH>             Server socket to dial (default:
                                   `$PHUX_SOCKET`)
+```
+
+## `phux agent page`
+
+```text
+A browser page over the Chrome debugging protocol (CDP), as a tree (its
+accessibility tree) and a surface (its screencast) under one pane. Needs a
+browser started with `--remote-debugging-port`.
+
+Usage: phux agent page <SUBCOMMAND>
+
+Commands:
+  mirror  Mirror a browser page into a tree and a surface until Ctrl-C.
+  help    Print this message or the help of the given subcommand(s)
+
+Flags:
+  -h, --help           Print help
+
+Global flags:
+      --socket <PATH>  Server socket to dial (default: `$PHUX_SOCKET`)
+```
+
+## `phux agent page mirror`
+
+```text
+Mirror a browser page into a tree and a surface until Ctrl-C.
+
+Usage: phux agent page mirror [FLAGS] <PAGE>
+
+Arguments:
+  <PAGE>  A fragment of the page's title or URL, or `first`.
+
+Flags:
+      --port <PORT>    The browser's debugging port (default 9222).
+      --pane <PANE>    The pane the documents bind to; this process's own pane
+                       when absent.
+      --interval <MS>  Milliseconds between accessibility-tree reads (default
+                       1000).
+      --json
+  -h, --help           Print help
+
+Global flags:
+      --socket <PATH>  Server socket to dial (default: `$PHUX_SOCKET`)
 ```
 
 ## `phux agent prompt`
@@ -714,6 +772,255 @@ Flags:
 
 Global flags:
       --socket <PATH>     Server socket to dial (default: `$PHUX_SOCKET`)
+```
+
+## `phux agent surface`
+
+```text
+A pixel surface is a pane's child resource that a producer feeds with PNG images
+of a window or display; `snapshot` writes the newest and `follow` every one.
+Needs a server that advertises `PIXEL_SURFACE`.
+
+Usage: phux agent surface <SUBCOMMAND>
+
+Commands:
+  follow    Write every image as it arrives, each replacing the file.
+  mirror    Mirror a macOS window, or the main display, into a surface until
+            Ctrl-C.
+  open      Open a surface under the pane its producer runs in.
+  publish   Replace the surface's image from a PNG file, or stdin.
+  snapshot  Write the surface's newest image to a file.
+  help      Print this message or the help of the given subcommand(s)
+
+Flags:
+  -h, --help           Print help
+
+Global flags:
+      --socket <PATH>  Server socket to dial (default: `$PHUX_SOCKET`)
+```
+
+## `phux agent surface follow`
+
+```text
+Write every image as it arrives, each replacing the file.
+
+Usage: phux agent surface follow [FLAGS] <TARGET>
+
+Arguments:
+  <TARGET>  The surface.
+
+Flags:
+      --out <PATH>      Where each PNG goes; stdout when absent.
+      --timeout <SECS>  Give up after this many seconds.
+      --json
+  -h, --help            Print help
+
+Global flags:
+      --socket <PATH>   Server socket to dial (default: `$PHUX_SOCKET`)
+```
+
+## `phux agent surface mirror`
+
+```text
+Mirror a macOS window, or the main display, into a surface until Ctrl-C.
+
+Usage: phux agent surface mirror [FLAGS] <WINDOW>
+
+Arguments:
+  <WINDOW>  The window as `App` or `App:title`, or `display` for the main
+            display.
+
+Flags:
+      --window-id <ID>  The CoreGraphics window id, instead of a name.
+      --pane <PANE>     The pane the surface binds to; this process's own pane
+                        when absent.
+      --interval <MS>   Milliseconds between captures (default 1000).
+      --json
+  -h, --help            Print help
+
+Global flags:
+      --socket <PATH>   Server socket to dial (default: `$PHUX_SOCKET`)
+```
+
+## `phux agent surface open`
+
+```text
+Open a surface under the pane its producer runs in.
+
+Usage: phux agent surface open <--window <WINDOW>> [--json] <TARGET>
+
+Arguments:
+  <TARGET>  The parent pane.
+
+Flags:
+      --window <WINDOW>  The window or display the surface mirrors.
+      --json
+  -h, --help             Print help
+
+Global flags:
+      --socket <PATH>    Server socket to dial (default: `$PHUX_SOCKET`)
+```
+
+## `phux agent surface publish`
+
+```text
+Replace the surface's image from a PNG file, or stdin.
+
+Usage: phux agent surface publish [--file <PATH>] [--json] <TARGET>
+
+Arguments:
+  <TARGET>  The surface.
+
+Flags:
+      --file <PATH>    The PNG; stdin when absent.
+      --json
+  -h, --help           Print help
+
+Global flags:
+      --socket <PATH>  Server socket to dial (default: `$PHUX_SOCKET`)
+```
+
+## `phux agent surface snapshot`
+
+```text
+Write the surface's newest image to a file.
+
+Usage: phux agent surface snapshot [--out <PATH>] [--json] <TARGET>
+
+Arguments:
+  <TARGET>  The surface.
+
+Flags:
+      --out <PATH>     Where the PNG goes; stdout when absent.
+      --json
+  -h, --help           Print help
+
+Global flags:
+      --socket <PATH>  Server socket to dial (default: `$PHUX_SOCKET`)
+```
+
+## `phux agent tree`
+
+```text
+An accessibility tree is a pane's child resource that a producer feeds with
+whole documents of an application's accessibility tree; `snapshot` reads the
+newest and `follow --until TEXT` waits on it. Needs a server that advertises
+`ACCESSIBILITY_TREE`.
+
+Usage: phux agent tree <SUBCOMMAND>
+
+Commands:
+  follow    Print every document as it arrives.
+  mirror    Mirror a running macOS application into a tree, until Ctrl-C.
+  open      Open a tree under the pane its producer runs in.
+  publish   Replace the tree's document from a file, or stdin.
+  snapshot  Print the tree's newest document.
+  help      Print this message or the help of the given subcommand(s)
+
+Flags:
+  -h, --help           Print help
+
+Global flags:
+      --socket <PATH>  Server socket to dial (default: `$PHUX_SOCKET`)
+```
+
+## `phux agent tree follow`
+
+```text
+Print every document as it arrives.
+
+Usage: phux agent tree follow [FLAGS] <TARGET>
+
+Arguments:
+  <TARGET>  The tree.
+
+Flags:
+      --until <TEXT>    Stop as soon as a document contains this text.
+      --timeout <SECS>  Give up after this many seconds.
+      --json
+  -h, --help            Print help
+
+Global flags:
+      --socket <PATH>   Server socket to dial (default: `$PHUX_SOCKET`)
+```
+
+## `phux agent tree mirror`
+
+```text
+Mirror a running macOS application into a tree, until Ctrl-C.
+
+Usage: phux agent tree mirror [FLAGS] <APP>
+
+Arguments:
+  <APP>  The application's process name, e.g. `Safari`.
+
+Flags:
+      --pid <PID>      The application's process id, instead of its name.
+      --pane <PANE>    The pane the tree binds to; this process's own pane when
+                       absent.
+      --interval <MS>  Milliseconds between reads (default 500).
+      --depth <N>      Deepest nesting to read (default 24).
+      --json
+  -h, --help           Print help
+
+Global flags:
+      --socket <PATH>  Server socket to dial (default: `$PHUX_SOCKET`)
+```
+
+## `phux agent tree open`
+
+```text
+Open a tree under the pane its producer runs in.
+
+Usage: phux agent tree open <--app <APP>> [--json] <TARGET>
+
+Arguments:
+  <TARGET>  The parent pane.
+
+Flags:
+      --app <APP>      The application the tree mirrors.
+      --json
+  -h, --help           Print help
+
+Global flags:
+      --socket <PATH>  Server socket to dial (default: `$PHUX_SOCKET`)
+```
+
+## `phux agent tree publish`
+
+```text
+Replace the tree's document from a file, or stdin.
+
+Usage: phux agent tree publish [--file <PATH>] [--json] <TARGET>
+
+Arguments:
+  <TARGET>  The tree.
+
+Flags:
+      --file <PATH>    The document; stdin when absent.
+      --json
+  -h, --help           Print help
+
+Global flags:
+      --socket <PATH>  Server socket to dial (default: `$PHUX_SOCKET`)
+```
+
+## `phux agent tree snapshot`
+
+```text
+Print the tree's newest document.
+
+Usage: phux agent tree snapshot [--json] <TARGET>
+
+Arguments:
+  <TARGET>  The tree.
+
+Flags:
+      --json
+  -h, --help           Print help
+
+Global flags:
+      --socket <PATH>  Server socket to dial (default: `$PHUX_SOCKET`)
 ```
 
 ## `phux agent uninstall-claude`
@@ -3205,9 +3512,9 @@ Fit phux into an Omarchy desktop
 `setup` makes phux at home on Omarchy (<https://omarchy.org>): its keys match
 Omarchy's tmux config (Ctrl+Space prefix, Alt+Enter splits, Alt+1..9 tabs), its
 colours follow the Omarchy theme and repaint when you switch, Super+Ctrl+Return
-opens it, Super+Ctrl+K lists its keys, and its server starts with the desktop
-session. `remove` undoes all of it; your own config.toml keeps winning
-throughout.
+opens it, Super+Ctrl+K lists its keys, its server starts with the desktop
+session, and Omarchy's menu offers Install > AI > Phux Rune. `remove` undoes all
+of it; your own config.toml keeps winning throughout.
 
 Usage: phux omarchy <SUBCOMMAND>
 

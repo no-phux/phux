@@ -46,6 +46,7 @@ mod effects;
 mod events;
 pub mod fast_pty;
 mod fd_shrink;
+mod hangup;
 mod io;
 mod native;
 mod park;
@@ -71,8 +72,9 @@ pub mod tick;
 use ask_marker::*;
 #[allow(clippy::wildcard_imports, reason = "shared across this module")]
 use canonical::*;
+use hangup::HangupPolicy;
 
-pub use fast_pty::{DirectWrite, LaneAhead};
+pub use phux_terminal_api::input::{DirectWrite, LaneAhead};
 pub use requests::*;
 pub use spawn::*;
 pub use sync::*;
@@ -131,72 +133,6 @@ const MAX_INPUT_COALESCE: usize = 16;
 const PANE_KILL_GRACE: std::time::Duration = std::time::Duration::from_millis(500);
 const PANE_KILL_POLL: std::time::Duration = std::time::Duration::from_millis(20);
 
-/// Effective hangup grace; production is always [`PANE_KILL_GRACE`]. A
-/// deadline, not a sleep: a child that dies at once returns on the first
-/// poll. Tests may stretch it.
-#[cfg(not(test))]
-const fn pane_kill_grace() -> std::time::Duration {
-    PANE_KILL_GRACE
-}
-
-#[cfg(test)]
-fn pane_kill_grace() -> std::time::Duration {
-    PANE_KILL_GRACE_OVERRIDE
-        .with(Cell::get)
-        .unwrap_or(PANE_KILL_GRACE)
-}
-
-#[cfg(test)]
-thread_local! {
-    static PANE_KILL_GRACE_OVERRIDE: Cell<Option<std::time::Duration>> =
-        const { Cell::new(None) };
-    static PANE_KILL_GRACE_GATE: RefCell<Option<std::path::PathBuf>> =
-        const { RefCell::new(None) };
-}
-
-/// How long a test may wait for a trap-started marker before the grace
-/// ceiling begins.
-#[cfg(test)]
-const PANE_KILL_GRACE_GATE_WAIT: std::time::Duration = std::time::Duration::from_secs(30);
-
-/// Stretch the pane-kill grace for this thread until the guard drops (tests).
-#[cfg(test)]
-fn stretch_pane_kill_grace(grace: std::time::Duration) -> PaneKillGraceOverride {
-    stretch_pane_kill_grace_after(grace, None)
-}
-
-/// Like [`stretch_pane_kill_grace`], but start the ceiling only once `gate`
-/// exists (tests).
-#[cfg(test)]
-fn stretch_pane_kill_grace_after(
-    grace: std::time::Duration,
-    gate: Option<&std::path::Path>,
-) -> PaneKillGraceOverride {
-    PANE_KILL_GRACE_OVERRIDE.with(|slot| slot.set(Some(grace)));
-    PANE_KILL_GRACE_GATE.with(|slot| {
-        *slot.borrow_mut() = gate.map(std::path::Path::to_path_buf);
-    });
-    PaneKillGraceOverride
-}
-
-#[cfg(test)]
-fn pane_kill_grace_gate() -> Option<std::path::PathBuf> {
-    PANE_KILL_GRACE_GATE.with(|slot| slot.borrow().clone())
-}
-
-#[cfg(test)]
-struct PaneKillGraceOverride;
-
-#[cfg(test)]
-impl Drop for PaneKillGraceOverride {
-    fn drop(&mut self) {
-        PANE_KILL_GRACE_OVERRIDE.with(|slot| slot.set(None));
-        PANE_KILL_GRACE_GATE.with(|slot| {
-            slot.borrow_mut().take();
-        });
-    }
-}
-
 /// Ceiling on reaping the child after `SIGHUP`/`SIGKILL` and on joining
 /// each bridge thread. Reached only when something already went wrong; the
 /// alternative (a blocking `waitpid` or `join`) would freeze every pane on
@@ -252,6 +188,9 @@ pub struct TerminalActor {
     reflow_tombstoned: Vec<phux_resource::ResyncTarget>,
     #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
     pending_native_bootstrap: Option<PendingNativeBootstrap>,
+    /// Where native captures take their host bytes.
+    #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
+    native_alloc: NativeAlloc,
     #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
     native_bootstrap_backlog: VecDeque<NativeBootstrapRequest>,
     #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
@@ -292,6 +231,8 @@ pub struct TerminalActor {
     pty_tx: Option<mpsc::Sender<EncodedInputRequest>>,
     /// PTY resources; dropped on shutdown to send EOF and stop the threads.
     pty: Option<PtyOwned>,
+    /// The grace the child gets on teardown.
+    hangup: HangupPolicy,
     /// Sink for agent events sourced from the PTY stream (SPEC §7.5), set by
     /// the runtime's spawn path and drained into the event journal.
     /// Non-blocking: a full sink drops and counts, for a `source_gap`
@@ -309,7 +250,7 @@ pub struct TerminalActor {
     /// Agent-state detector (ADR-0046), built in [`Self::run`] for PTY-backed
     /// actors with a sink and rules.
     agent_detect: Option<crate::agent_detect::AgentDetector>,
-    /// Detector output sink, drained by `runtime::client::spawn_agent_state_drain`.
+    /// Detector output sink, drained by `runtime::connections::spawn_agent_state_drain`.
     agent_state_sink: Option<mpsc::Sender<AgentDetectEvent>>,
     /// "Does this pane own a live `AgentSession` child?" (ADR-0103 §5),
     /// handed to the detector when [`Self::run`] builds it.
@@ -378,3 +319,6 @@ impl std::fmt::Debug for TerminalActor {
 
 mod actor_types;
 pub use actor_types::*;
+// Named so it outranks the api crate's same-named error that
+// `requests::*` glob-imports; this crate's actors fail with this one.
+pub use actor_types::TerminalActorError;

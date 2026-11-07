@@ -244,7 +244,7 @@ async fn native_bootstrap_capture_lifetime_retires_staged_state() {
     assert!(actor.pending_native_bootstrap.is_none());
     assert_eq!(
         replied.await.expect("capture reply").unwrap_err(),
-        crate::native_state::NativeStateError::LimitExceeded
+        phux_terminal_api::native_state::NativeStateError::LimitExceeded
     );
 }
 

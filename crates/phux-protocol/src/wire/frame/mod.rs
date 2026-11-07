@@ -36,6 +36,9 @@ pub const MAX_FILE_UPLOAD_SIZE: u64 = 64 * 1024 * 1024;
 /// Maximum payload bytes in one [`Command::AppendResourceOutput`] call: one
 /// or more complete records, never a bulk upload.
 pub const MAX_APPEND_BYTES: usize = 64 * 1024;
+/// Maximum payload bytes in one [`Command::PublishResourceState`] call: one
+/// whole state document, such as an application's accessibility tree.
+pub const MAX_PUBLISH_BYTES: usize = 4 * 1024 * 1024;
 /// Maximum bytes in a `SPAWN_RESOURCE.provider` string (field 13): the
 /// `integration_id` bound of the `phux.agent-session/v1` record
 /// (`docs/program-sequences.md#the-agent-record`).

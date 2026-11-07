@@ -1,12 +1,10 @@
 use super::dispatch::ConnectionEnding;
-use super::hello::NegotiatedConnection;
 use super::lifecycle::{
     WRITER_DRAIN_TIMEOUT, close_client_writer, detach_and_release_consumer_state,
 };
 use super::writer::{RevocationWatch, writer_task};
 use crate::policy::Goodbye;
 use crate::runtime::apps::terminal::terminal_streams::abort_output_pumps;
-use crate::runtime::handle_terminal_reply;
 use crate::state::{ClientId, DEFAULT_CLIENT_MAILBOX, Outbound, SharedState};
 use crate::transport::FrameWriter;
 use crate::transport::quic::QuicWriter;
@@ -91,30 +89,9 @@ pub(super) fn classify_attach_id(
     }
 }
 
-/// Hand one `INPUT_TERMINAL_REPLY` to the pane if the connection advertised
-/// it; otherwise report the type without ending the connection.
-pub(in crate::runtime) async fn dispatch_terminal_reply(
-    client_id: ClientId,
-    selection: NegotiatedConnection,
-    terminal_id: &WireResourceId,
-    bytes: bytes::Bytes,
-    out_tx: &mpsc::Sender<Outbound>,
-) {
-    if !selection.accepts_terminal_reply() {
-        crate::runtime::send_error(
-            out_tx,
-            ErrorCode::UnknownMessageType,
-            "INPUT_TERMINAL_REPLY was not advertised for this connection",
-        )
-        .await;
-        return;
-    }
-    handle_terminal_reply(client_id, terminal_id, &bytes);
-}
-
 /// Why one connection must end, and what the peer is owed on the way out
 /// (SPEC §9: `ERROR`, then `DETACHED`, then close).
-pub(in crate::runtime) struct ConnectionClose {
+pub(crate) struct ConnectionClose {
     /// `Some(reason)` when the connection may be attached, so its pumps and
     /// consumer state are torn down first; `None` in the handshake phase.
     pub(in crate::runtime) attached_reason: Option<&'static str>,
@@ -172,7 +149,7 @@ impl Drop for StreamBinding {
 /// One connection's outbound plumbing. The output pumps are separate from
 /// the writer so DETACH can abort them while the writer still emits
 /// DETACHED and serves a later ATTACH.
-pub(in crate::runtime) struct ClientPlumbing {
+pub(crate) struct ClientPlumbing {
     pub(in crate::runtime) out_tx: mpsc::Sender<Outbound>,
     writer_close: tokio::sync::watch::Sender<bool>,
     /// Sibling tasks (today: just the writer).
@@ -230,7 +207,10 @@ impl ClientPlumbing {
 
     /// The mailbox for Terminal-addressed outbound: the bound stream's sender
     /// when this connection bound the Terminal, else the control mailbox.
-    pub(super) fn sender_for(&self, terminal_id: &WireResourceId) -> mpsc::Sender<Outbound> {
+    pub(in crate::runtime) fn sender_for(
+        &self,
+        terminal_id: &WireResourceId,
+    ) -> mpsc::Sender<Outbound> {
         self.stream_bindings
             .get(terminal_id)
             .map_or_else(|| self.out_tx.clone(), |binding| binding.tx.clone())

@@ -8,12 +8,14 @@
 //! acceptance point (`phux_client_effect_clear` for C). Ending a pointer
 //! borrow is not acceptance. A transport replacement returns an unaccepted
 //! allocation to the replay queue. Non-agent events never enter here.
+//! A newer full retained cut supersedes pending publications for that resource;
+//! a resume suffix keeps them, since it cannot reconstruct their prefix.
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::Arc;
 
 use phux_client_core::session::AgentStreamInfo;
-use phux_client_core::session::agent_stream::AgentPublication;
+use phux_client_core::session::agent_stream::{AgentPublication, AgentRecordMode};
 use phux_protocol::ResourceId;
 
 use super::{AgentSessionInfo, ControlPlane, Event};
@@ -66,6 +68,10 @@ impl AgentDelivery {
     ) -> Option<Event> {
         if self.retired.contains(&publication.resource_id) {
             return None;
+        }
+        if publication.mode == AgentRecordMode::Replace {
+            self.journal
+                .retain(|entry| entry.publication.resource_id != publication.resource_id);
         }
         let publication = Arc::new(publication);
         self.stamps
@@ -195,6 +201,23 @@ pub(super) fn same_publication(event: &Event, publication: &Arc<AgentPublication
 }
 
 impl ControlPlane {
+    /// A full retained cut supersedes earlier unaccepted deliveries for this
+    /// resource. A resume suffix never does: its prefix still needs delivery.
+    pub(super) fn commit_agent_publication(&mut self, publication: AgentPublication) {
+        if publication.mode == AgentRecordMode::Replace {
+            self.events.retain(|event| {
+                !matches!(event,
+                    Event::AgentPublication { publication: queued, .. }
+                        if queued.resource_id == publication.resource_id
+                )
+            });
+        }
+        let session = self.agent_session_info(&publication.resource_id);
+        if let Some(event) = self.agent_delivery.commit(publication, session) {
+            self.push_event(event);
+        }
+    }
+
     pub(super) fn park_agent_delivery(&mut self) {
         self.agent_delivery.park();
         self.events.retain(|event| !is_agent_publication(event));
@@ -236,13 +259,16 @@ impl ControlPlane {
     ///
     /// This is consumer delivery acceptance, not the end of a pointer borrow.
     /// The C adapter invalidates effect pointers on the next mutable call,
-    /// but staged effects persist until `phux_client_effect_clear`, which
-    /// calls this. A generic leased drain retains the allocation until the
-    /// same call. Drops the journal hold and any not-yet-drained replay of
-    /// that allocation. Unknown or already-accepted pointers are ignored.
+    /// but unsuperseded staged effects persist until `phux_client_effect_clear`,
+    /// which calls this. Drops the journal hold and any not-yet-drained replay
+    /// of that allocation. Unknown, superseded or already-accepted pointers
+    /// are ignored.
     pub fn accept_agent_publication(&mut self, publication: &Arc<AgentPublication>) {
         self.agent_delivery.accept(publication);
         self.events
             .retain(|event| !same_publication(event, publication));
     }
 }
+
+#[cfg(test)]
+mod tests;

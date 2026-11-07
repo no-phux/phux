@@ -22,7 +22,7 @@ impl Desk {
             && self
                 .shown
                 .as_ref()
-                .and_then(|s| client.acquire_view(s.view))
+                .and_then(|s| client.acquire_view(s.view?))
                 .is_some_and(|f| f.cursor.blinking && f.cursor.visible);
         let on = if blinking {
             let elapsed = (self.clock - self.blink_since).max(0.0);
@@ -46,7 +46,7 @@ impl Desk {
     }
 
     /// Typing shows the cursor and restarts its blink.
-    pub(super) fn restart_blink(&mut self) {
+    pub(crate) fn restart_blink(&mut self) {
         self.blink_since = self.clock;
         self.blink_on = true;
     }
@@ -66,9 +66,10 @@ impl Desk {
         info.and_then(|i| i.history).map_or(0, |h| h.unread_rows)
     }
 
-    /// A pane's grid area moved or resized.
-    pub fn laid_out(&mut self, terminal: ResourceId, area: [f32; 2]) {
-        self.areas.insert(terminal, area);
+    /// A pane's grid moved or resized: `[x, y, w, h]` in window points.
+    pub fn laid_out(&mut self, terminal: ResourceId, [x, y, w, h]: [f32; 4]) {
+        self.origins.insert(terminal.clone(), [x, y]);
+        self.areas.insert(terminal, [w, h]);
         self.fit();
     }
 
@@ -88,6 +89,9 @@ impl Desk {
         let metrics = self.metrics();
         let cell = metrics.cell_px();
         for terminal in on_screen {
+            if self.view_of(&terminal).is_none() {
+                continue;
+            }
             let Some(area) = self.areas.get(&terminal).copied() else {
                 continue;
             };

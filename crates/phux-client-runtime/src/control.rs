@@ -76,8 +76,8 @@ mod topology;
 pub use checkout::{CheckoutFailure, CheckoutOutcome, CheckoutResponse, MAX_CHECKOUT_ANSWERS};
 pub use error::ControlError;
 pub use events::{
-    AgentPublication, AgentRecordMode, AgentSessionInfo, DeliveryOutcome, Event, Observation,
-    Status,
+    AgentPublication, AgentRecordMode, AgentSessionInfo, DeliveryOutcome, DocumentPublication,
+    Event, Observation, Status,
 };
 pub use extensions::{
     DirectoryChild, DirectoryFailure, DirectoryListing, FileUploadOutcome, FileUploadReceipt,

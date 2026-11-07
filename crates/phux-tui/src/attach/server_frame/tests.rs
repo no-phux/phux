@@ -887,25 +887,9 @@ fn reconcile_repairs_missing_local_focus_and_invalid_active_index() {
     assert_eq!(out.groups[1].state.focus, Some(tid(2)));
 }
 
-#[test]
-fn duplicate_hello_ok_is_fatal_in_attached_phase() {
-    let mut h = H::on(ArrangementDoc::single(tid(1)), &[&tid(1)]);
-    let error = h
-        .try_send(FrameKind::HelloOk {
-            protocol_major: phux_protocol::PROTOCOL_VERSION.major,
-            protocol_minor: phux_protocol::PROTOCOL_VERSION.minor,
-            protocol_patch: phux_protocol::PROTOCOL_VERSION.patch,
-            server_caps: phux_protocol::caps::ServerCapabilities::new(),
-            server_id: Vec::new(),
-            selected_profile: phux_protocol::caps::BootstrapProfile::SynthesizedVtRaw,
-            bootstrap_limits: phux_protocol::caps::BootstrapLimits::default(),
-        })
-        .expect_err("post-negotiation HELLO_OK must terminate the client");
-    assert!(matches!(
-        error,
-        AttachError::Protocol(message) if message.contains("not valid from a server")
-    ));
-}
+mod resource_kinds;
+use resource_kinds::mixed_kind_snapshot;
+mod hello_ok;
 
 /// A `DIRECTORY_LISTING` is handed to the driver, never rejected by the
 /// catch-all (that would tear down a healthy attach over a picker reply).
@@ -2908,24 +2892,6 @@ fn config_reload_doorbell_flags_reload_and_ignores_tombstones() {
 }
 
 // ---- resource kinds: AgentSession children ride the attach as streams ------
-
-/// One Terminal pane plus an `AgentSession` bound to it: no grid, no window,
-/// a parent, and an agent facet.
-fn mixed_kind_snapshot(pane: &ResourceId, agent: &ResourceId) -> SessionSnapshot {
-    let (window, session) = (WindowId::new(1), SessionId::new(1));
-    SessionSnapshot::new(session, window, pane.clone())
-        .with_sessions(vec![SessionInfo::new(session, "work".to_owned())])
-        .with_windows(vec![WindowInfo::new(window, session, "w0".to_owned())])
-        .with_resources(vec![
-            ResourceInfo::new(pane.clone(), window, 100, 30),
-            ResourceInfo::new(agent.clone(), WindowId::new(0), 0, 0)
-                .with_kind(ResourceKind::AgentSession)
-                .with_parent(Some(pane.clone()))
-                .with_agent(Some(
-                    AgentFacet::new("claude", "working").with_native_id(Some("s-1".to_owned())),
-                )),
-        ])
-}
 
 /// A client attached to [`mixed_kind_snapshot`] of panes 1 and 2.
 fn kind_attached() -> (H, FrameOutcome) {

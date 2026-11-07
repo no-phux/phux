@@ -154,9 +154,12 @@ pub struct SpawnResource {
     pub kind: ResourceKind,
     /// Parent resource (field 12); closing it closes the child.
     pub parent: Option<ResourceId>,
-    /// Agent provider name, e.g. `claude` (field 13; at most
+    /// The producer: an agent provider name, e.g. `claude`, or the
+    /// application an accessibility tree observes (field 13; at most
     /// [`MAX_RESOURCE_PROVIDER_BYTES`](super::MAX_RESOURCE_PROVIDER_BYTES)
-    /// bytes, non-empty). Required for `AgentSession`.
+    /// bytes, non-empty), or the window or display a pixel surface
+    /// captures. Required for `AgentSession`, `AccessibilityTree` and
+    /// `PixelSurface`.
     pub provider: Option<String>,
     /// Opaque provider-native session id (field 14; at most
     /// [`MAX_RESOURCE_NATIVE_ID_BYTES`](super::MAX_RESOURCE_NATIVE_ID_BYTES)
@@ -185,6 +188,30 @@ impl SpawnResource {
             kind: ResourceKind::AgentSession,
             parent: Some(parent),
             provider: Some(provider.into()),
+            ..Self::default()
+        }
+    }
+
+    /// An accessibility tree of `target` under `parent`, the Terminal its
+    /// producer runs in.
+    #[must_use]
+    pub fn accessibility_tree(parent: ResourceId, target: impl Into<String>) -> Self {
+        Self {
+            kind: ResourceKind::AccessibilityTree,
+            parent: Some(parent),
+            provider: Some(target.into()),
+            ..Self::default()
+        }
+    }
+
+    /// A pixel surface of `target` under `parent`, the Terminal its
+    /// producer runs in.
+    #[must_use]
+    pub fn pixel_surface(parent: ResourceId, target: impl Into<String>) -> Self {
+        Self {
+            kind: ResourceKind::PixelSurface,
+            parent: Some(parent),
+            provider: Some(target.into()),
             ..Self::default()
         }
     }

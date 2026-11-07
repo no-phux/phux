@@ -279,3 +279,4 @@ use resources::{
 };
 mod transaction;
 use transaction::Tx;
+mod validate;

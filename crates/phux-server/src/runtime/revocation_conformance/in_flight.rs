@@ -10,7 +10,7 @@ use tokio::sync::mpsc;
 use super::{Fixture, acquire, local, settle, subscribe_metadata};
 use crate::hub::relay::{HubRelays, RelayHandle, RelayRequest, Unsubscribe};
 use crate::policy::Revocation;
-use crate::runtime::input_lane::spawn_input_lane;
+use crate::runtime::apps::terminal::input_lane::spawn_input_lane;
 use crate::runtime::revocation::revoke_connection;
 use crate::runtime::test_support::{hello, workload_identity};
 use crate::state::EventRecord;

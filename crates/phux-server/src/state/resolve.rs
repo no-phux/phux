@@ -126,7 +126,9 @@ mod tests {
     fn resolve_resource_separates_local_relayed_and_unknown() {
         let mut server = ServerState::new();
         let (_session, pane) = server.seed_session("default");
-        let wire = server.register_resource_handle(pane, mk_handle(), CancellationToken::new());
+        let wire = server
+            .register_resource_handle(pane, mk_handle(), CancellationToken::new())
+            .unwrap();
 
         match server.resolve_resource(&wire) {
             Resolved::Local(local) => {

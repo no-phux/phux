@@ -72,8 +72,22 @@ impl Desktop {
         terminal: ResourceId,
         remote: Option<String>,
         cx: &mut Context<Self>,
-    ) {
-        self.open_fresh(session, Some(terminal), remote, cx);
+    ) -> anyhow::Result<Entity<Desk>> {
+        let request = OpenRequest {
+            role: WindowRole::Fresh,
+            session,
+            fresh: false,
+            initial_terminal: Some(terminal),
+            layout_path: self.layout.clone(),
+            remote,
+            ..OpenRequest::default()
+        };
+        let handle = self.open_window(request, true, false, cx)?;
+        self.windows
+            .iter()
+            .find(|opened| opened.handle == *handle)
+            .map(|opened| opened.desk.clone())
+            .ok_or_else(|| anyhow::anyhow!("The destination window did not open"))
     }
 
     /// The next open window after `source` that talks to the same server

@@ -299,6 +299,10 @@ pub struct ResourceInfo {
     pub rows: u16,
     /// User-set title, distinct from any shell-set title.
     pub title: Option<String>,
+    /// The title the program set (OSC 0/2), from the extension block's
+    /// `RESOURCE_PROGRAM_TITLE`; `None` when unset or from a server that does
+    /// not report it. What a list shows before the client streams the pane.
+    pub program_title: Option<String>,
     /// Working directory (lossy UTF-8, display only).
     pub cwd: Option<String>,
     /// What backs the resource; defaults to [`ResourceKind::Terminal`].
@@ -332,6 +336,7 @@ impl ResourceInfo {
             cols,
             rows,
             title: None,
+            program_title: None,
             cwd: None,
             kind: ResourceKind::Terminal,
             parent: None,
@@ -361,6 +366,7 @@ impl ResourceInfo {
             cols: 0,
             rows: 0,
             title: None,
+            program_title: None,
             cwd: None,
             kind,
             parent: None,
@@ -377,6 +383,13 @@ impl ResourceInfo {
     #[must_use]
     pub fn with_title(mut self, title: Option<String>) -> Self {
         self.title = title;
+        self
+    }
+
+    /// Builder setter for [`Self::program_title`].
+    #[must_use]
+    pub fn with_program_title(mut self, program_title: Option<String>) -> Self {
+        self.program_title = program_title;
         self
     }
 

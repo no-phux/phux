@@ -33,6 +33,8 @@ mod links;
 pub mod machines;
 pub mod mouse;
 mod palette;
+pub mod phone;
+pub mod resources;
 mod sessions;
 mod settings;
 mod shown;
@@ -80,6 +82,8 @@ type Fitted = ((u16, u16), (u16, u16));
 pub enum NoticeKind {
     Info,
     Error,
+    /// Something worth knowing, with a way to act on it; stays until read.
+    Tip,
 }
 
 impl NoticeKind {
@@ -88,15 +92,21 @@ impl NoticeKind {
         match self {
             Self::Info => 6.0,
             Self::Error => 12.0,
+            Self::Tip => 30.0,
         }
     }
 }
+
+/// A word to press on a tip, and what pressing it does.
+pub type Offer = (&'static str, fn(&mut Desk));
 
 /// Words for the user, in a toast and the inbox's footer.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Notice {
     pub kind: NoticeKind,
     pub text: String,
+    /// A word to press and what it does; the toast shows it as a button.
+    pub action: Option<Offer>,
     /// When it goes, on the app clock.
     expires: f64,
 }
@@ -104,6 +114,8 @@ pub struct Notice {
 /// What waits on the user's Return or Escape.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Pending {
+    /// Explicit consent to start a supervised read-only mirror producer.
+    Mirror(resources::Source, String),
     /// A line-breaking paste, and the terminal it was meant for.
     Paste(ResourceId, String),
     /// Closing a terminal that is running a command.
@@ -117,10 +129,10 @@ pub enum Pending {
 /// Where a spawned terminal goes in the arrangement.
 type Placement = Option<(ResourceId, SplitDir)>;
 
-/// The terminal on screen.
+/// Focused resource identity, with a view only for a terminal replica.
 pub struct Shown {
     pub terminal: ResourceId,
-    pub view: ViewId,
+    pub view: Option<ViewId>,
 }
 
 pub struct Desk {
@@ -131,6 +143,7 @@ pub struct Desk {
     pub topology: Option<Topology>,
     pub server: Option<String>,
     pub shown: Option<Shown>,
+    pub resources: resources::Resources,
     /// The terminal the user asked for, and since when, until its view opens.
     pub wanted: Option<(ResourceId, Instant)>,
     /// A session this window created: show its terminal once it is selected.
@@ -146,9 +159,18 @@ pub struct Desk {
     pub palette_open: bool,
     pub palette_query: rune::TextEdit,
     pub palette_picked: usize,
-    /// The palette shows the keyboard shortcuts instead of everything.
-    pub palette_shortcuts: bool,
+    /// What the palette lists.
+    pub palette_mode: crate::palette::Mode,
+    /// The theme a live preview stands in for, restored unless one is chosen.
+    theme_before: Option<Option<&'static crate::theme::Theme>>,
+    /// The path search the palette shows, while it lists paths.
+    pub paths: Option<palette::PathSearch>,
+    /// Each pane's grid origin in window points, from its last layout.
+    origins: HashMap<ResourceId, [f32; 2]>,
     pub sidebar_open: bool,
+    /// The sidebar's foot button under the pointer, by key, so it can show
+    /// its chord.
+    pub foot_hover: Option<&'static str>,
     /// Find in the focused pane's history, while open.
     pub find: Option<find::Find>,
     pub find_query: rune::TextEdit,
@@ -182,6 +204,7 @@ pub struct Desk {
     clock: f64,
     /// Spawns this window sent, to show the terminal when it lands.
     pending_spawns: Vec<u32>,
+    receipts: events::Receipts,
     /// Bumped by every frame change of the shown terminal, so the view runs.
     pub generation: u64,
     pub font_size: f32,
@@ -195,7 +218,7 @@ pub struct Desk {
     /// focused pane alone.
     pub layout: Option<LayoutNode>,
     /// Views of the panes on screen besides the focused one.
-    pub others: HashMap<ResourceId, ViewId>,
+    pub others: HashMap<ResourceId, Option<ViewId>>,
     /// The pane shown alone, by this window's choice.
     pub zoomed: Option<ResourceId>,
     /// A divider drag's split and ratio, previewed until release.
@@ -232,16 +255,52 @@ pub struct Desk {
     /// The arrangement write in flight for a split or tab. One at a time:
     /// each write's base is the document the last one made.
     split_write: Option<splits::SplitWrite>,
+    /// The phone form's state, when this window is one.
+    pub phone: Option<phone::Phone>,
 }
 
 impl Desk {
     /// Put a line in front of the user.
     pub fn say(&mut self, kind: NoticeKind, text: impl Into<String>) {
-        let text = text.into();
+        self.post(kind, text.into(), None);
+    }
+
+    /// A tip with a way to act on it: `label` is the button, `action` what
+    /// pressing it does. Pressing dismisses the tip.
+    pub fn offer(&mut self, text: impl Into<String>, label: &'static str, action: fn(&mut Desk)) {
+        self.post(NoticeKind::Tip, text.into(), Some((label, action)));
+    }
+
+    /// The pressed offer's action, then the toast goes.
+    pub fn take_offer(&mut self) {
+        let Some((_, action)) = self.notice.take().and_then(|notice| notice.action) else {
+            return;
+        };
+        action(self);
+    }
+
+    /// Once per install, on the first connection: point a newcomer at the
+    /// keys worth learning first. The palette lists them; `Keyboard
+    /// Shortcuts: Essentials` reopens the list any time.
+    pub(crate) fn offer_tour(&mut self) {
+        // The tour teaches chords; a phone has the accessory bar instead.
+        if self.phone.is_some() || self.prefs.get::<bool>("tour_offered").unwrap_or(false) {
+            return;
+        }
+        let _ = self.prefs.set("tour_offered", &true);
+        self.offer(
+            "New here? A few keys do most of the work.",
+            "Show me",
+            Self::show_essentials,
+        );
+    }
+
+    fn post(&mut self, kind: NoticeKind, text: String, action: Option<Offer>) {
         let expires = self.clock + kind.lasts();
         self.notice = Some(Notice {
             kind,
             text,
+            action,
             expires,
         });
         // This may come after the frame's `expire_notice`, in a handler or
@@ -300,6 +359,7 @@ impl Desk {
             topology: None,
             server: None,
             shown: None,
+            resources: resources::Resources::default(),
             wanted: None,
             pending_session: None,
             epoch: 0,
@@ -308,8 +368,12 @@ impl Desk {
             palette_open: false,
             palette_query: rune::TextEdit::new(""),
             palette_picked: 0,
-            palette_shortcuts: false,
+            palette_mode: crate::palette::Mode::All,
+            theme_before: None,
+            paths: None,
+            origins: HashMap::new(),
             sidebar_open,
+            foot_hover: None,
             find: None,
             find_query: rune::TextEdit::new(""),
             pointer: links::Pointer::default(),
@@ -331,6 +395,7 @@ impl Desk {
             blink_since: 0.0,
             clock: 0.0,
             pending_spawns: Vec::new(),
+            receipts: events::Receipts::default(),
             generation: 0,
             font_size,
             scale: Cell::new(2.0),
@@ -356,6 +421,7 @@ impl Desk {
             painted: RefCell::new(None),
             focus_told: None,
             split_write: None,
+            phone: None,
         }
     }
 
@@ -363,49 +429,24 @@ impl Desk {
         Metrics::new(self.font_size, self.scale.get())
     }
 
-    /// Rune's setup hook: the window is about to open, so everything slow
-    /// starts here, on workers. Even on a remote the local server is found,
-    /// because the updater manages it; a run that can't reach one starts
-    /// the updater without it.
-    pub fn listen(&mut self, waker: Waker) {
-        self.machines.listen(waker.clone());
-        self.watch(waker);
-        self.dial();
-        if !self.launch.can_ensure() {
-            self.start_updater();
-        } else if self.machines.current.is_some() {
-            self.find_server();
-        }
-    }
-
-    /// Route this connection's wakes and alerts into Rune's loop.
-    fn watch(&mut self, waker: Waker) {
-        self.waker = Some(waker.clone());
-        self.inbox.alerts.listen(waker.clone());
-        if let Some(client) = &self.client {
-            client.set_listener(Arc::new(Wake(waker)));
-            client.watch_approvals();
-        }
-    }
-
     /// Drain the runtime once. True when anything on screen may have changed.
     pub fn poll(&mut self, clock: f64, tx: &mut Tx) -> bool {
         self.clock = clock;
+        self.machines.tick_glances(clock, tx);
         let updated = self.pump_updates(tx)
+            | self.finish_document_images()
             | self.pump_machines()
             | self.pump_link()
             | self.pump_links()
+            | self.follow_omarchy()
             | self.expire_notice(tx);
         let Some(client) = self.client.clone() else {
             return updated | self.tend_link(tx);
         };
-        let mut observation = client.take_activity();
-        let mut changed = updated | self.follow_connection(&client, &mut observation);
-        // Output alone can't move anything: no layout pass per keystroke.
-        let rearrange = changed || observation.events.iter().any(events::moves_layout);
-        for event in std::mem::take(&mut observation.events) {
-            changed |= self.apply(&client, event, tx);
-        }
+        let (news, moved) = self.observe(&client, client.take_activity(), tx);
+        let mut changed = updated | news;
+        let rearrange = updated || moved;
+        changed |= self.drop_dead_views(&client);
         let opened = self.settle_home(&client) | self.open_wanted(&client);
         changed |= opened;
         let unfocused = self.sync_focus(&client);
@@ -418,6 +459,7 @@ impl Desk {
             tx.wake_after(Duration::from_millis(250));
         }
         changed |= self.finish_uploads(&client);
+        changed |= self.take_paths(&client);
         changed |= self.sync_alerts();
         changed |= self.tick_inbox(tx);
         self.settle_pointer();
@@ -433,6 +475,7 @@ impl Desk {
     fn follow_connection(&mut self, client: &Client, observation: &mut Observation) -> bool {
         let mut changed = observation.status != self.status;
         if observation.connection_epoch != self.epoch {
+            self.retire_documents(client);
             self.first_contact();
             self.epoch = observation.connection_epoch;
             self.focus_told = None;
@@ -454,6 +497,9 @@ impl Desk {
         if self.server.is_none() {
             self.server = client.server().map(|info| format!("{info:?}"));
         }
+        if changed || observation.events.iter().any(events::changes_resources) {
+            changed |= self.refresh_resources(client);
+        }
         changed
     }
 }
@@ -461,10 +507,10 @@ impl Desk {
 impl Drop for Desk {
     fn drop(&mut self) {
         let Some(client) = &self.client else { return };
-        if let Some(shown) = self.shown.take() {
-            let _ = client.destroy_view(shown.view);
+        if let Some(view) = self.shown.take().and_then(|s| s.view) {
+            let _ = client.destroy_view(view);
         }
-        for (_, view) in self.others.drain() {
+        for view in self.others.drain().filter_map(|(_, v)| v) {
             let _ = client.destroy_view(view);
         }
     }

@@ -32,7 +32,9 @@ fn prepare_attach_reports_snapshot_seed_without_an_actor_as_closed() {
         )
         .expect("test terminal actor");
         state.with_mut(|server| {
-            server.register_resource_handle(terminal, bundle.handle.clone(), token);
+            server
+                .register_resource_handle(terminal, bundle.handle.clone(), token)
+                .unwrap();
         });
         actors.push(bundle.actor);
     }
@@ -42,7 +44,7 @@ fn prepare_attach_reports_snapshot_seed_without_an_actor_as_closed() {
     let working = state
         .with(|s| s.find_session_by_name("working"))
         .expect("the seeded session");
-    let (snapshot, _initial_client_id, bootstrapped, closed) = prepare_attach(
+    let (snapshot, _initial_client_id, bootstrapped, closed, _publication) = prepare_attach(
         &state,
         client_id,
         working,

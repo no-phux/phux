@@ -17,6 +17,28 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 pub(crate) mod writer;
 
+/// Save the current tabs when the incarnation matches. Display-only updates
+/// stay with the caller.
+#[must_use]
+pub fn snapshot_layout(
+    workspace: &super::Workspace,
+    connection: &crate::connection::Connection,
+    display: &DisplayPrefs,
+) -> Option<SavedLayout> {
+    let server = workspace.server_id()?;
+    if connection.server_id().as_deref() != Some(server)
+        || connection.status != phux_client_runtime::control::Status::Attached
+    {
+        return None;
+    }
+    Some(save_layout(
+        server,
+        &workspace.tabs,
+        display,
+        Some(&workspace.active_id),
+    ))
+}
+
 #[cfg(unix)]
 use std::os::unix::fs::OpenOptionsExt;
 

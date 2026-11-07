@@ -1,10 +1,17 @@
-use super::{RebuildError, WireResourceId, validate_upgrade_blob};
+use super::{RebuildError, UpgradeHandoffs, WireResourceId, validate_upgrade_blob};
+use crate::runtime::apps::agent_session::upgrade::{
+    carried_sessions, request_agent_session_cut, stream_cut,
+};
+use crate::runtime::apps::terminal::test_support::{
+    ScreenReply, ScreenRequest, TerminalResource as _, seeded_terminal,
+};
 use crate::state::ServerState;
 use crate::upgrade::blob::{
     AgentSessionBlob, BLOB_VERSION, Counters, LayoutBlob, PaneBlob, SessionBlob, SplitDirBlob,
     StateBlob, WindowBlob,
 };
-use phux_terminal::actor::TerminalActor;
+use phux_core::ids::ResourceId;
+use std::os::fd::RawFd;
 use std::path::PathBuf;
 
 /// One pane's tree walks into a blob with resolved links and a snapshot.
@@ -21,12 +28,13 @@ async fn build_upgrade_blob_captures_tree_and_snapshot() {
             let window_wire = state.intern_window_wire(sid).get();
 
             // A real (no-PTY) actor answering the upgrade request.
-            let bundle = TerminalActor::new_with_seed(20, 5, b"hello").expect("new_with_seed");
+            let bundle = seeded_terminal(20, 5, b"hello");
             let handle = bundle.handle.clone();
             let token = bundle.token.clone();
             tokio::task::spawn_local(bundle.actor.run());
             let pane_wire = state
                 .register_resource_handle(tid, handle, token)
+                .unwrap()
                 .local_id()
                 .expect("local wire id");
 
@@ -85,9 +93,11 @@ async fn rebuild_from_blob_round_trips_the_tree() {
         let (sid, tid) = state.seed_session("main");
         state.idspace.intern_session(sid);
         state.intern_window_wire(sid);
-        let bundle = TerminalActor::new_with_seed(20, 5, b"hello").expect("new_with_seed");
+        let bundle = seeded_terminal(20, 5, b"hello");
         tokio::task::spawn_local(bundle.actor.run());
-        state.register_resource_handle(tid, bundle.handle, bundle.token);
+        state
+            .register_resource_handle(tid, bundle.handle, bundle.token)
+            .unwrap();
 
         // A persistent session with no members survives the round trip.
         let parked = state.seed_empty_session("parked").expect("parked");
@@ -100,14 +110,18 @@ async fn rebuild_from_blob_round_trips_the_tree() {
         // phux-1x9s.6: every pane's actor passes through the runtime's
         // wiring before it runs, as a fresh spawn's does.
         let rebuilt = fresh
-            .rebuild_from_blob(&blob, |core, pane, scrollback| {
-                crate::runtime::apps::terminal::upgrade::rebuild_pane(
-                    core,
-                    pane,
-                    scrollback,
-                    |pane, actor| (pane, actor.has_pty()),
-                )
-            })
+            .rebuild_from_blob(
+                &blob,
+                |core, pane, scrollback| {
+                    crate::runtime::apps::terminal::upgrade::rebuild_pane(
+                        core,
+                        pane,
+                        scrollback,
+                        |pane, actor| (pane, actor.has_pty()),
+                    )
+                },
+                crate::runtime::apps::rebuild_session,
+            )
             .expect("rebuild");
         assert_eq!(
             rebuilt.exit_watchers.len(),
@@ -175,7 +189,11 @@ async fn the_instance_token_survives_an_upgrade_and_only_an_upgrade() {
             "a cold start mints a new token"
         );
         upgraded
-            .rebuild_from_blob(&blob, crate::runtime::apps::terminal::upgrade::unwired)
+            .rebuild_from_blob(
+                &blob,
+                crate::runtime::apps::terminal::upgrade::unwired,
+                crate::runtime::apps::rebuild_session,
+            )
             .expect("rebuild");
         assert_eq!(upgraded.idspace.instance(), token, "an upgrade keeps it");
 
@@ -184,7 +202,11 @@ async fn the_instance_token_survives_an_upgrade_and_only_an_upgrade() {
         let mut from_legacy = ServerState::new();
         let fresh = from_legacy.idspace.instance();
         from_legacy
-            .rebuild_from_blob(&legacy, crate::runtime::apps::terminal::upgrade::unwired)
+            .rebuild_from_blob(
+                &legacy,
+                crate::runtime::apps::terminal::upgrade::unwired,
+                crate::runtime::apps::rebuild_session,
+            )
             .expect("rebuild");
         assert_eq!(
             from_legacy.idspace.instance(),
@@ -215,18 +237,28 @@ async fn upgrade_twice(user_title: Option<&str>, seed: &[u8]) -> ServerState {
         .title = user_title.map(ToOwned::to_owned);
     state.idspace.intern_session(sid);
     state.intern_window_wire(sid);
-    let bundle = TerminalActor::new_with_seed(20, 5, seed).expect("new_with_seed");
+    let bundle = seeded_terminal(20, 5, seed);
     tokio::task::spawn_local(bundle.actor.run());
-    state.register_resource_handle(tid, bundle.handle, bundle.token);
+    state
+        .register_resource_handle(tid, bundle.handle, bundle.token)
+        .unwrap();
 
     let blob = state.build_upgrade_blob(7).await;
     let mut once = ServerState::new();
-    once.rebuild_from_blob(&blob, crate::runtime::apps::terminal::upgrade::unwired)
-        .expect("first rebuild");
+    once.rebuild_from_blob(
+        &blob,
+        crate::runtime::apps::terminal::upgrade::unwired,
+        crate::runtime::apps::rebuild_session,
+    )
+    .expect("first rebuild");
     let blob = once.build_upgrade_blob(7).await;
     let mut twice = ServerState::new();
     twice
-        .rebuild_from_blob(&blob, crate::runtime::apps::terminal::upgrade::unwired)
+        .rebuild_from_blob(
+            &blob,
+            crate::runtime::apps::terminal::upgrade::unwired,
+            crate::runtime::apps::rebuild_session,
+        )
         .expect("second rebuild");
     twice
 }
@@ -250,7 +282,6 @@ fn get_state_title(state: &mut ServerState) -> Option<String> {
     reason = "test helper driving pane actors on the current-thread LocalSet"
 )]
 async fn get_screen_title(state: &ServerState) -> Option<String> {
-    use phux_terminal::actor::TerminalResource as _;
     let handles = state.upgrade_handles();
     assert_eq!(handles.len(), 1);
     let (reply, rx) = tokio::sync::oneshot::channel();
@@ -259,7 +290,7 @@ async fn get_screen_title(state: &ServerState) -> Option<String> {
         .terminal()
         .expect("terminal handle")
         .screen
-        .send(phux_terminal::actor::ScreenRequest {
+        .send(ScreenRequest {
             pane: 1,
             scrollback: None,
             cells: false,
@@ -269,8 +300,8 @@ async fn get_screen_title(state: &ServerState) -> Option<String> {
         .await
         .expect("send screen request");
     match rx.await.expect("screen reply") {
-        phux_terminal::actor::ScreenReply::Projection(screen) => screen.title,
-        other @ phux_terminal::actor::ScreenReply::TooLarge { .. } => {
+        ScreenReply::Projection(screen) => screen.title,
+        other @ ScreenReply::TooLarge { .. } => {
             panic!("unexpected screen reply: {other:?}")
         }
     }
@@ -331,3 +362,36 @@ fn the_replayed_title_drops_control_characters() {
 
 mod merge;
 mod validation;
+
+impl ServerState {
+    /// Assemble a [`StateBlob`] from the live tree for a graceful upgrade,
+    /// asking each pane actor for its PTY descriptors and replay snapshot.
+    /// Runs inside the actors' `LocalSet`; an unreachable pane is recorded
+    /// without a handoff.
+    #[allow(
+        clippy::future_not_send,
+        reason = "ADR-0014: the server runs on a LocalSet; pane actors are reached through !Send local futures"
+    )]
+    pub(crate) async fn build_upgrade_blob(&mut self, listener_fd: RawFd) -> StateBlob {
+        self.intern_upgrade_wires();
+        let mut handoffs = UpgradeHandoffs::default();
+        let tids: Vec<ResourceId> = self
+            .upgrade_handles()
+            .into_iter()
+            .map(|(tid, _)| tid)
+            .collect();
+        for tid in tids {
+            if let Some(handoff) = self.request_pane_handoff(tid).await {
+                handoffs.panes.insert(tid, handoff);
+            }
+        }
+        for (session, bootstrap) in carried_sessions(self) {
+            // Not sealed: this walk re-execs nothing, so the old image
+            // must keep accepting appends.
+            if let Some(cut) = request_agent_session_cut(&bootstrap, false).await {
+                handoffs.agent_sessions.insert(session, stream_cut(cut));
+            }
+        }
+        self.with_upgrade_metadata(self.assemble_upgrade_blob(listener_fd, &handoffs))
+    }
+}

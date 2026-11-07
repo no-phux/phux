@@ -15,7 +15,7 @@ pub(super) struct SpawnPublication<'a> {
     pub(super) core_terminal_id: ResourceId,
     pub(super) wire_terminal_id: phux_protocol::ids::ResourceId,
     pub(super) handle: ResourceHandle,
-    pub(super) terminal: phux_terminal::actor::TerminalHandle,
+    pub(super) terminal: phux_terminal_api::actor::TerminalHandle,
     pub(in crate::runtime) client_caps: ClientCapabilities,
     pub(super) stream_id: StreamId,
     pub(in crate::runtime) profile: BootstrapStreamProfile,
@@ -31,7 +31,8 @@ impl SpawnPublication<'_> {
     /// generation for it.
     fn reap(&self) {
         self.state.with_mut(|s| {
-            let _ = crate::runtime::client::reap_pane_journaling_close(s, self.core_terminal_id);
+            let _ =
+                crate::runtime::connections::reap_pane_journaling_close(s, self.core_terminal_id);
             crate::runtime::idempotent_create::unbind_spawned(
                 s,
                 self.idempotency_key,
@@ -60,9 +61,9 @@ impl SpawnPublication<'_> {
     #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
     pub(super) async fn capture_native_checkpoint(
         &self,
-    ) -> Option<phux_terminal::actor::NativeBootstrapReply> {
+    ) -> Option<phux_terminal_api::actor::NativeBootstrapReply> {
         let captured = request_native_checkpoint(&self.terminal, |reply| {
-            phux_terminal::actor::NativeBootstrapRequest::full_budget(
+            phux_terminal_api::actor::NativeBootstrapRequest::full_budget(
                 self.client_id.0,
                 self.wire_terminal_id.clone(),
                 self.stream_id,
@@ -113,7 +114,6 @@ impl SpawnPublication<'_> {
                 drain: Some(CancellationToken::new()),
                 snapshot: Some(self.terminal.snapshot.clone()),
                 last_seq: None,
-                #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
                 terminal: self.terminal.clone(),
             },
             output_rx,
@@ -127,7 +127,7 @@ impl SpawnPublication<'_> {
 
     /// Capture the pane's first synthesized snapshot and the actor cut it was
     /// taken at. `None` once the actor is gone or refuses.
-    async fn capture_snapshot(&self) -> Option<(phux_terminal::grid::SnapshotBytes, u64)> {
+    async fn capture_snapshot(&self) -> Option<(phux_terminal_api::grid::SnapshotBytes, u64)> {
         let (snapshot_tx, snapshot_rx) = oneshot::channel();
         self.terminal
             .snapshot
@@ -162,7 +162,11 @@ impl SpawnPublication<'_> {
             .capture_snapshot()
             .await
             .ok_or("snapshot preflight failed")?;
-        let replay = downsample_for_caps(&bytes::Bytes::from(snapshot.bytes), self.client_caps);
+        let replay = downsample_for_caps(
+            &self.terminal.presentation,
+            &bytes::Bytes::from(snapshot.bytes),
+            self.client_caps,
+        );
         let frames = synthesized_bootstrap_frames(
             self.wire_terminal_id.clone(),
             self.stream_id,
@@ -246,5 +250,5 @@ struct FirstGeneration {
     pub(super) cut: u64,
     /// The native publication to activate once the frames are queued.
     #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
-    pub(super) cursor: Option<phux_terminal::native_state::OpaqueHistoryCursor>,
+    pub(super) cursor: Option<phux_terminal_api::native_state::OpaqueHistoryCursor>,
 }

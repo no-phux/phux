@@ -5,9 +5,9 @@
 #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
 use super::{
     Bytes, CanonicalTerminal, FrameKind, HashSet, MAX_NATIVE_HISTORY_CLIENTS,
-    MAX_NATIVE_REPLAY_BYTES, NATIVE_CAPTURE_LIFETIME, NATIVE_HISTORY_TTL, NativeBootstrapReply,
-    NativeBootstrapRequest, NativeCursorKey, NativeCursorOwner, NativeHistoryReply,
-    NativeHistoryRequest, NativePublicationGeneration, NativePublicationReply,
+    MAX_NATIVE_REPLAY_BYTES, NATIVE_CAPTURE_LIFETIME, NATIVE_HISTORY_TTL, NativeAlloc,
+    NativeBootstrapReply, NativeBootstrapRequest, NativeCursorKey, NativeCursorOwner,
+    NativeHistoryReply, NativeHistoryRequest, NativePublicationGeneration, NativePublicationReply,
     NativePublicationRequest, PendingNativeBootstrap, PendingNativeHistory, ResourceOutput,
     VecDeque, native_step_bytes, reserve_native_bytes, warn,
 };
@@ -33,10 +33,11 @@ pub(super) const fn initial_native_scratch_bytes(ceiling: usize) -> usize {
 /// failure.
 #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
 fn grow_native_scratch(
+    alloc: &NativeAlloc,
     scratch: &mut Vec<u8>,
     required_bytes: usize,
 ) -> Result<(), crate::native_state::NativeStateError> {
-    let mut grown = reserve_native_bytes(required_bytes)?;
+    let mut grown = reserve_native_bytes(alloc, required_bytes)?;
     grown.resize(required_bytes, 0);
     *scratch = grown;
     Ok(())
@@ -85,9 +86,9 @@ impl TerminalActor {
         let chunk_bytes = match usize::try_from(limits.max_chunk_bytes()) {
             Ok(size) if size != 0 => size.min(req.max_bytes),
             _ => {
-                let _ = req
-                    .reply
-                    .send(Err(crate::native_state::NativeStateError::LimitExceeded));
+                let _ = req.reply.send(Err(
+                    crate::native_state::NativeStateError::LimitExceeded.into()
+                ));
                 return;
             }
         };
@@ -95,24 +96,24 @@ impl TerminalActor {
             .max_frames
             .checked_sub(crate::native_state::NATIVE_BOOTSTRAP_FRAMING_FRAMES)
         else {
-            let _ = req
-                .reply
-                .send(Err(crate::native_state::NativeStateError::LimitExceeded));
+            let _ = req.reply.send(Err(
+                crate::native_state::NativeStateError::LimitExceeded.into()
+            ));
             return;
         };
         let Some(capture_bytes) = req
             .max_bytes
             .checked_sub(phux_protocol::wire::frame::MAX_HISTORY_CURSOR_BYTES)
         else {
-            let _ = req
-                .reply
-                .send(Err(crate::native_state::NativeStateError::LimitExceeded));
+            let _ = req.reply.send(Err(
+                crate::native_state::NativeStateError::LimitExceeded.into()
+            ));
             return;
         };
         if max_chunks == 0 || capture_bytes == 0 {
-            let _ = req
-                .reply
-                .send(Err(crate::native_state::NativeStateError::LimitExceeded));
+            let _ = req.reply.send(Err(
+                crate::native_state::NativeStateError::LimitExceeded.into()
+            ));
             return;
         }
         let capture = {
@@ -122,7 +123,7 @@ impl TerminalActor {
             }) {
                 Ok(capture) => capture,
                 Err(error) => {
-                    let _ = req.reply.send(Err(error));
+                    let _ = req.reply.send(Err(error.into()));
                     return;
                 }
             }
@@ -136,18 +137,18 @@ impl TerminalActor {
                 if let CanonicalTerminal::Native(manager) = &mut *self.terminal.borrow_mut() {
                     manager.abort_generation_capture(capture);
                 }
-                let _ = req.reply.send(Err(error));
+                let _ = req.reply.send(Err(error.into()));
                 return;
             }
         };
         let scratch_bytes = initial_native_scratch_bytes(scratch_ceiling);
-        let mut scratch = match reserve_native_bytes(scratch_bytes) {
+        let mut scratch = match reserve_native_bytes(&self.native_alloc, scratch_bytes) {
             Ok(scratch) => scratch,
             Err(error) => {
                 if let CanonicalTerminal::Native(manager) = &mut *self.terminal.borrow_mut() {
                     manager.abort_generation_capture(capture);
                 }
-                let _ = req.reply.send(Err(error));
+                let _ = req.reply.send(Err(error.into()));
                 return;
             }
         };
@@ -222,7 +223,8 @@ impl TerminalActor {
                 required_bytes,
                 required_rows: 0,
             }) if required_bytes > scratch_len && required_bytes <= step_ceiling => {
-                match grow_native_scratch(&mut pending.scratch, required_bytes) {
+                match grow_native_scratch(&self.native_alloc, &mut pending.scratch, required_bytes)
+                {
                     Ok(()) => self.pending_native_bootstrap = Some(pending),
                     Err(error) => self.fail_native_bootstrap(pending, error),
                 }
@@ -248,7 +250,7 @@ impl TerminalActor {
             );
             return;
         }
-        let mut payload = match reserve_native_bytes(record_len) {
+        let mut payload = match reserve_native_bytes(&self.native_alloc, record_len) {
             Ok(payload) => payload,
             Err(error) => {
                 self.fail_native_bootstrap(pending, error);
@@ -296,7 +298,7 @@ impl TerminalActor {
             Err(error) => {
                 self.apply_native_replay(&pending.replay);
                 for waiter in pending.waiters {
-                    let _ = waiter.reply.send(Err(error));
+                    let _ = waiter.reply.send(Err(error.into()));
                 }
                 self.start_next_native_bootstrap();
                 return;

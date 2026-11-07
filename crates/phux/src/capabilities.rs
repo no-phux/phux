@@ -269,6 +269,18 @@ mod tests {
             .unwrap_or_else(|| panic!("no catalog method {name}"))
     }
 
+    /// Each kind's tag, and its gate when the gate is in `features`; a
+    /// gate in `features_ext` is not rendered here (see `gate_json`).
+    fn assert_kind_rows(kinds: &[Value]) {
+        assert_eq!(kinds[0]["tag"], 0);
+        assert!(kinds[0]["gate"].is_null());
+        assert_eq!(kinds[1]["gate"]["feature"], "resource_kinds");
+        assert_eq!(kinds[1]["gate"]["mask"], 0x4000);
+        assert_eq!(kinds[2]["tag"], 2);
+        assert!(kinds[2]["gate"].is_null());
+        assert_eq!(kinds[3]["tag"], 3);
+    }
+
     /// `kinds` is the compiled catalog: every kind with its facet, and every
     /// method with the verbs the workload-auth classifier requires.
     #[test]
@@ -280,11 +292,19 @@ mod tests {
             .iter()
             .map(|kind| kind["name"].as_str().unwrap())
             .collect();
-        assert_eq!(names, ["TERMINAL", "AGENT_SESSION"]);
-        assert_eq!(kinds[0]["tag"], 0);
-        assert!(kinds[0]["gate"].is_null());
-        assert_eq!(kinds[1]["gate"]["feature"], "resource_kinds");
-        assert_eq!(kinds[1]["gate"]["mask"], 0x4000);
+        assert_eq!(
+            names,
+            [
+                "TERMINAL",
+                "AGENT_SESSION",
+                "ACCESSIBILITY_TREE",
+                "PIXEL_SURFACE"
+            ]
+        );
+        assert_kind_rows(kinds);
+        // The document kinds are fed through one substrate method.
+        let publish = named(&catalog["substrate"]["methods"], "PUBLISH_RESOURCE_STATE");
+        assert_eq!(publish["verbs"], json!(["BIND", "INPUT"]));
 
         let get_screen = named(&kinds[0]["methods"], "GET_SCREEN");
         assert_eq!(get_screen["verbs"], json!(["OBSERVE"]));

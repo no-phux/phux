@@ -1,6 +1,6 @@
 //! Start server-owned background work and fold it into graceful shutdown.
 
-use crate::runtime::input_lane;
+use crate::runtime::apps::terminal::input_lane;
 use crate::runtime::listeners::remote::connector_inner_tls;
 use crate::state::SharedState;
 use std::future::Future;

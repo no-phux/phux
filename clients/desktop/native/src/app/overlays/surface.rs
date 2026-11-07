@@ -20,8 +20,6 @@ pub fn layer(desk: &mut Desk, window: &mut Window, cx: &mut Context<Desk>) -> An
     let colors = &look.chrome;
     let card = match desk.modal.clone() {
         Modal::None => return div().into_any_element(),
-        Modal::Capture => crate::app::capture::panel(desk, &look, window, cx),
-        Modal::AgentFleet => crate::app::fleet::dashboard::panel(desk, &look, window, cx),
         Modal::Sessions => {
             let panel = launcher::palette(desk, colors, window, cx);
             return match desk.anchors.get(crate::app::menus::MAIN) {
@@ -29,11 +27,6 @@ pub fn layer(desk: &mut Desk, window: &mut Window, cx: &mut Context<Desk>) -> An
                 None => backdrop(colors, window, cx, panel),
             };
         }
-        Modal::Commands
-        | Modal::Goto
-        | Modal::WindowSession
-        | Modal::Windows
-        | Modal::MoveResources => launcher::palette(desk, colors, window, cx),
         Modal::Path => {
             let cursor = desk.cursor_anchor(cx);
             let panel = path_panel(desk, colors, &look, cursor.is_some(), cx);
@@ -42,7 +35,6 @@ pub fn layer(desk: &mut Desk, window: &mut Window, cx: &mut Context<Desk>) -> An
                 None => backdrop(colors, window, cx, panel),
             };
         }
-        Modal::Themes => super::theme_panel::theme_panel(desk, &look, window, cx),
         Modal::Notifications => {
             let panel = notifications_panel(desk, colors, &look, window, cx);
             return match desk.anchors.get("notifications") {
@@ -50,28 +42,63 @@ pub fn layer(desk: &mut Desk, window: &mut Window, cx: &mut Context<Desk>) -> An
                 None => backdrop(colors, window, cx, panel),
             };
         }
-        Modal::NativeLaunch => crate::app::native_launch::panel(desk, &look, window, cx),
-        Modal::Rename { .. } => rename_dialog(desk, colors, &look, cx),
-        Modal::Session { create, .. } => session_dialog(desk, create, colors, &look, cx),
+        _ => modal_body(desk, &look, window, cx),
+    };
+    backdrop(colors, window, cx, card)
+}
+
+fn modal_body(
+    desk: &mut Desk,
+    look: &Look,
+    window: &mut Window,
+    cx: &mut Context<Desk>,
+) -> AnyElement {
+    match desk.modal.clone() {
+        Modal::Capture => crate::app::capture::panel(desk, look, window, cx),
+        Modal::AgentFleet => crate::app::fleet::dashboard::panel(desk, look, window, cx),
+        Modal::Commands
+        | Modal::Goto
+        | Modal::WindowSession
+        | Modal::Windows
+        | Modal::MoveResources => launcher::palette(desk, &look.chrome, window, cx),
+        Modal::Themes => super::theme_panel::theme_panel(desk, look, window, cx),
+        Modal::NativeLaunch => crate::app::native_launch::panel(desk, look, window, cx),
+        _ => form_body(desk, look, cx),
+    }
+}
+
+fn form_body(desk: &Desk, look: &Look, cx: &mut Context<Desk>) -> AnyElement {
+    let colors = &look.chrome;
+    match desk.modal.clone() {
+        Modal::Mirror { source } => super::dialogs::mirror_dialog(desk, source, colors, look, cx),
+        Modal::Rename { .. } => rename_dialog(desk, colors, look, cx),
+        Modal::Session { create, .. } => session_dialog(desk, create, colors, look, cx),
         Modal::Project { name, current, .. } => {
-            project_dialog(desk, &name, current.is_some(), colors, &look, cx)
+            project_dialog(desk, &name, current.is_some(), colors, look, cx)
         }
+        Modal::AddHost => add_host_dialog(desk, colors, look, cx),
+        _ => confirmation_body(desk, look, cx),
+    }
+}
+
+fn confirmation_body(desk: &Desk, look: &Look, cx: &mut Context<Desk>) -> AnyElement {
+    let colors = &look.chrome;
+    match desk.modal.clone() {
         Modal::KillSession { name, .. } => confirm(
             format!("Kill {name}?"),
             "This ends every process in the session, for every client, and deletes it. Closing a pane or tab ends its processes too; closing a window only detaches.",
             "Kill Session",
             colors,
-            &look,
+            look,
             cx,
             |desk, window, cx| desk.confirm_kill_session(window, cx),
         ),
-        Modal::AddHost => add_host_dialog(desk, colors, &look, cx),
         Modal::RemoveHost { name } => confirm(
             format!("Remove {name}?"),
             "This forgets the machine here. Its server and terminals keep running; `phux host add` registers it again.",
             "Remove Host",
             colors,
-            &look,
+            look,
             cx,
             |desk, window, cx| desk.confirm_remove_host(window, cx),
         ),
@@ -80,7 +107,7 @@ pub fn layer(desk: &mut Desk, window: &mut Window, cx: &mut Context<Desk>) -> An
             "This ends the process for every view and every client attached to it. Close Pane does the same without this confirmation.",
             "Terminate",
             colors,
-            &look,
+            look,
             cx,
             |desk, window, cx| desk.confirm_terminate(window, cx),
         ),
@@ -89,12 +116,12 @@ pub fn layer(desk: &mut Desk, window: &mut Window, cx: &mut Context<Desk>) -> An
             "Its program is not expecting a paste, so each line break arrives as Enter and runs the line before it.",
             "Paste",
             colors,
-            &look,
+            look,
             cx,
             |desk, window, cx| desk.confirm_paste(window, cx),
         ),
-    };
-    backdrop(colors, window, cx, card)
+        _ => div().into_any_element(),
+    }
 }
 
 /// The gap between a transient surface and the window's edges.

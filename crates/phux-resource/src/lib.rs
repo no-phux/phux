@@ -33,6 +33,7 @@ pub mod handoff;
 pub mod handoff_env;
 pub mod mailbox;
 pub mod proc_query;
+pub mod replication;
 
 pub use phux_core::ids::ResourceId;
 pub use phux_core::resource::ResourceKind;
@@ -223,6 +224,9 @@ pub trait ResourceOps: Send + Sync + std::fmt::Debug {
     /// The backing exited and the resource is retained (ADR-0124): report
     /// it, stop any background work, refuse input.
     fn retire(&self) -> Delivery;
+
+    /// Whether this resource is a record stream that has not ended.
+    fn is_live_stream(&self) -> bool;
 }
 
 /// `Send + Clone` handle to one resource's engine (ADR-0014). Every field

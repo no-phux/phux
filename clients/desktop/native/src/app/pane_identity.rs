@@ -2,10 +2,9 @@
 //! tabs and navigator rows style from, instead of each asking "is this an
 //! agent?" on its own.
 //!
-//! [`PaneKind`] is the pane's content. Today a placement shows a terminal or
-//! the native conversation face of the agent bound to it; a future kind (an
-//! embedded browser, a preview) is a new variant here plus a body renderer in
-//! `view/panes/card.rs`, and every surface that styles by identity follows.
+//! [`PaneKind`] is the pane's content: terminal, native agent conversation, or
+//! read-only document. New kinds add a variant and a body renderer in
+//! `view/panes/card.rs`; every surface that styles by identity follows.
 //!
 //! [`PaneOrigin`] is who drives it. The wire does not carry who created a
 //! Terminal to clients, and an agent's `phux spawn` and a person's share one
@@ -231,6 +230,10 @@ pub enum PaneKind {
     Terminal,
     /// The native conversation face of the agent bound to its terminal.
     Conversation,
+    /// A read-only pixel surface, including before its first frame.
+    Surface,
+    /// Native plain-text inspection of an accessibility JSON document.
+    AccessibilityTree,
 }
 
 /// A pane's kind and origin together.
@@ -282,10 +285,15 @@ impl Desk {
 
     /// What `placement` shows and who drives it.
     pub(crate) fn pane_identity(&self, placement: &Placement) -> PaneIdentity {
-        let kind = if self.conversation_visible(&placement.id) {
-            PaneKind::Conversation
-        } else {
-            PaneKind::Terminal
+        let document = placement
+            .terminal_id
+            .as_ref()
+            .and_then(|id| self.link.as_ref()?.connection.document_kind(id));
+        let kind = match document {
+            Some(phux_protocol::ResourceKind::PixelSurface) => PaneKind::Surface,
+            Some(phux_protocol::ResourceKind::AccessibilityTree) => PaneKind::AccessibilityTree,
+            _ if self.conversation_visible(&placement.id) => PaneKind::Conversation,
+            _ => PaneKind::Terminal,
         };
         PaneIdentity {
             kind,

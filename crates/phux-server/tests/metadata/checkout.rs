@@ -141,7 +141,7 @@ fn checkout_methods_read_and_stage_the_terminals_checkout() {
         let tmp = TempDir::new().unwrap();
         let socket = tmp.path().join("phux.sock");
         let repo = repo(tmp.path());
-        let mut cmd = portable_pty::CommandBuilder::new("/bin/sh");
+        let mut cmd = phux_server::LaunchCommand::new("/bin/sh");
         cmd.arg("-c");
         cmd.arg("sleep 30");
         cmd.cwd(repo.join("src"));
@@ -246,7 +246,7 @@ fn a_terminal_outside_any_checkout_is_a_typed_refusal() {
         let socket = tmp.path().join("phux.sock");
         let plain = tmp.path().join("plain");
         std::fs::create_dir_all(&plain).unwrap();
-        let mut cmd = portable_pty::CommandBuilder::new("/bin/sh");
+        let mut cmd = phux_server::LaunchCommand::new("/bin/sh");
         cmd.arg("-c");
         cmd.arg("sleep 30");
         cmd.cwd(&plain);

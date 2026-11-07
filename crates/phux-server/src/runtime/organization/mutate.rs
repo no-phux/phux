@@ -2,7 +2,7 @@
 
 use std::collections::HashSet;
 
-use phux_core::{Effect, Op, Refusal, ResourceKind};
+use phux_core::{Effect, Op, Refusal};
 use phux_protocol::wire::frame::{CommandResult, CommandValue};
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, info};
@@ -33,17 +33,7 @@ pub(super) fn mutate(
     op: Op,
     root_token: &CancellationToken,
 ) -> CommandResult {
-    let unsupported_kind = matches!(
-        &op,
-        Op::ResourceCreate { resource, .. } if resource.kind != ResourceKind::Terminal
-    );
-    if unsupported_kind {
-        return CommandResult::Refused(ow::refusal(&Refusal::Unsupported {
-            capability: "creating this kind through RESOURCE_CREATE".to_owned(),
-        }));
-    }
-    let relaunch_held = state.with(|s| relaunch_engine_held(s, &op));
-    if let Some(refusal) = relaunch_held {
+    if let Some(refusal) = state.with(|s| launch_refusal(s, operation, &op)) {
         return CommandResult::Refused(ow::refusal(&refusal));
     }
     let arrangement_save = arrangement_save_fields(&op);
@@ -59,18 +49,7 @@ pub(super) fn mutate(
     // R17: a replaced session arrangement is published under the TUI layout
     // key for older readers. A placed create publishes after its launch so
     // the receipt observes the activation the effect recorded.
-    let republish = match &op {
-        Op::ArrangementReplace {
-            owner: phux_core::ArrangementOwner::Session(key),
-            ..
-        } => Some(*key),
-        Op::ResourceCreate {
-            session,
-            placement: Some(_),
-            ..
-        } => *session,
-        _ => None,
-    };
+    let republish = layout_publication_owner(&op);
     let committed = state.with_mut(|s| {
         let actor = s.actor_for(client_id);
         let command = phux_core::Command { operation, op };
@@ -84,45 +63,125 @@ pub(super) fn mutate(
     });
     let (mut applied, detached) = match committed {
         Ok(committed) => {
-            if let Some((owner, expected, groups)) = arrangement_save {
-                debug!(
-                    ?owner,
-                    expected,
-                    groups,
-                    path = "arrangement",
-                    "arrangement save committed"
-                );
-            }
+            note_arrangement_result(arrangement_save, None);
             committed
         }
         Err(refusal) => {
-            if let Some((owner, expected, groups)) = arrangement_save {
-                info!(
-                    ?owner,
-                    expected,
-                    groups,
-                    reason = %refusal,
-                    path = "arrangement",
-                    "arrangement save refused"
-                );
-            } else {
+            note_arrangement_result(arrangement_save, Some(&refusal));
+            if arrangement_save.is_none() {
                 debug!(?client_id, %refusal, "organization command refused");
             }
             return CommandResult::Refused(ow::refusal(&refusal));
         }
     };
-    super::super::client::detach_clients_of_killed_session(state, detached);
+    crate::runtime::connections::detach_clients_of_killed_session(state, detached);
     for effect in std::mem::take(&mut applied.effects) {
         run_effect(state, effect, root_token);
     }
     state.with_mut(|s| {
-        if let Some(session) = republish.and_then(|key| s.registry().session_id(&key))
-            && !applied.replayed
-        {
-            s.publish_arrangement_as_layout(session);
-        }
+        publish_committed_layout(s, republish, applied.replayed);
         answer(s, &applied)
     })
+}
+
+const fn layout_publication_owner(op: &Op) -> Option<phux_core::SessionKey> {
+    match op {
+        Op::ArrangementReplace {
+            owner: phux_core::ArrangementOwner::Session(key),
+            ..
+        } => Some(*key),
+        Op::ResourceCreate {
+            session,
+            placement: Some(_),
+            ..
+        } => *session,
+        _ => None,
+    }
+}
+
+fn publish_committed_layout(
+    s: &mut ServerState,
+    owner: Option<phux_core::SessionKey>,
+    replayed: bool,
+) {
+    if replayed {
+        return;
+    }
+    if let Some(session) = owner.and_then(|key| s.registry().session_id(&key)) {
+        s.publish_arrangement_as_layout(session);
+    }
+}
+
+/// App support is checked only for a new operation. Receipts remain the
+/// authority for retries, even after an engine has started or been retained.
+fn launch_refusal(s: &ServerState, operation: phux_core::OperationId, op: &Op) -> Option<Refusal> {
+    if s.org().receipt(&operation).is_some() {
+        return None;
+    }
+    match op {
+        Op::ResourceCreate { resource, .. } => {
+            unsupported_launch(resource.kind, "creating this kind through RESOURCE_CREATE")
+        }
+        Op::SessionCreate {
+            resource: Some(resource),
+            ..
+        } => unsupported_launch(resource.kind, "creating this kind through SESSION_CREATE"),
+        Op::ResourceRelaunch {
+            resource, expected, ..
+        } => relaunch_engine_held(s, op)
+            .or_else(|| projection_relaunch_refusal(s, resource, *expected)),
+        _ => None,
+    }
+}
+
+fn projection_relaunch_refusal(
+    s: &ServerState,
+    resource: &phux_core::ResourceKey,
+    expected: phux_core::Revision,
+) -> Option<Refusal> {
+    let record = s.org().resource(resource)?;
+    // Core keeps its established revision, uncertainty, activity and
+    // missing-launch refusal order ahead of app support.
+    if record.revision != expected || record.launch.is_none() {
+        return None;
+    }
+    if record.activation.as_ref().is_some_and(|activation| {
+        activation.state.is_current() || activation.state == phux_core::ExecState::Lost
+    }) {
+        return None;
+    }
+    unsupported_launch(
+        record.kind,
+        "relaunching this producer-bound kind; open a fresh projection through its producer",
+    )
+}
+
+fn unsupported_launch(kind: phux_core::ResourceKind, capability: &str) -> Option<Refusal> {
+    (!crate::runtime::apps::app_for(kind).supports_organization_launch()).then(|| {
+        Refusal::Unsupported {
+            capability: capability.to_owned(),
+        }
+    })
+}
+
+fn note_arrangement_result(
+    save: Option<(phux_core::ArrangementOwner, u64, usize)>,
+    refusal: Option<&Refusal>,
+) {
+    let Some((owner, expected, groups)) = save else {
+        return;
+    };
+    if let Some(reason) = refusal {
+        info!(?owner, expected, groups, %reason, path = "arrangement", "arrangement save refused");
+    } else {
+        debug!(
+            ?owner,
+            expected,
+            groups,
+            path = "arrangement",
+            "arrangement save committed"
+        );
+    }
 }
 
 /// `SESSION_KILL`: the kill is written to the organization store first. Only

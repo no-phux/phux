@@ -1,8 +1,8 @@
 //! System notifications for what needs you while you are looking elsewhere,
 //! and the Dock's count.
 //!
-//! Only macOS posts: elsewhere `rune_mac::notify` is empty, and Settings says
-//! so. An alert is posted once, when its item first appears out of sight, and
+//! macOS posts through `rune_mac::notify`, Linux through `notify-send`;
+//! where neither can, Settings says so. An alert is posted once, when its item first appears out of sight, and
 //! taken back when it is answered or comes into view. Clicks arrive on a
 //! system thread, so they queue here for the next poll.
 
@@ -12,10 +12,30 @@ use std::time::{Duration, Instant};
 
 use phux_protocol::ids::ResourceId;
 use rune::Waker;
+#[cfg(not(target_os = "linux"))]
 use rune_mac::notify::{self, Notification};
 
 use crate::activity::Mark;
 use crate::inbox::{self, Item};
+
+#[cfg(target_os = "linux")]
+mod linux;
+
+/// Whether this build can post at all.
+pub fn available() -> bool {
+    #[cfg(target_os = "linux")]
+    return linux::available();
+    #[cfg(not(target_os = "linux"))]
+    notify::available()
+}
+
+/// Raise the window for a clicked alert, where the platform lets an app.
+pub fn bring_to_front() {
+    #[cfg(target_os = "linux")]
+    linux::bring_to_front();
+    #[cfg(not(target_os = "linux"))]
+    notify::bring_to_front();
+}
 
 /// How long after a connection opens items count as old news: the server
 /// replays what was already waiting.
@@ -91,7 +111,9 @@ pub const fn notifications_detail(available: bool, macos: bool) -> &'static str 
     match (available, macos) {
         (true, _) => "When an agent asks, finishes, or an action is held, and you're elsewhere.",
         (false, true) => "Needs the installed app; this build can't post.",
-        (false, false) => "macOS only so far. The sidebar and inbox show what needs you.",
+        (false, false) => {
+            "Needs notify-send (libnotify). The sidebar and inbox show what needs you."
+        }
     }
 }
 
@@ -177,13 +199,14 @@ impl Alerts {
     /// Hear clicks, waking the app's loop for each.
     pub fn listen(&self, waker: Waker) {
         let clicks = self.clicks.clone();
-        notify::on_click(move |click| {
-            clicks
-                .lock()
-                .unwrap_or_else(|e| e.into_inner())
-                .push(click.id);
+        let click = move |id: String| {
+            clicks.lock().unwrap_or_else(|e| e.into_inner()).push(id);
             waker();
-        });
+        };
+        #[cfg(target_os = "linux")]
+        linux::on_click(click);
+        #[cfg(not(target_os = "linux"))]
+        notify::on_click(move |c| click(c.id));
     }
 
     /// A connection opened: what it replays is not news.
@@ -196,9 +219,15 @@ impl Alerts {
         let quiet = !enabled || self.quiet_until.is_some_and(|t| Instant::now() < t);
         let changes = self.tracker.sync(alerts, visible, quiet);
         for alert in changes.post {
+            #[cfg(target_os = "linux")]
+            linux::post(&alert.id, &alert.title, &alert.body);
+            #[cfg(not(target_os = "linux"))]
             notify::post(&Notification::new(alert.id, alert.title).body(alert.body));
         }
         let gone: Vec<&str> = changes.remove.iter().map(String::as_str).collect();
+        #[cfg(target_os = "linux")]
+        linux::remove(&gone);
+        #[cfg(not(target_os = "linux"))]
         notify::remove(&gone);
         if items.len() != self.badge {
             self.badge = items.len();
@@ -247,7 +276,7 @@ mod tests {
 
     #[test]
     fn settings_never_promises_what_cannot_post() {
-        assert!(notifications_detail(false, false).contains("macOS only"));
+        assert!(notifications_detail(false, false).contains("notify-send"));
         assert!(notifications_detail(false, true).contains("installed app"));
         assert!(notifications_detail(true, true).contains("elsewhere"));
     }

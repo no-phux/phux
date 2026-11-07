@@ -3,20 +3,18 @@ mod metadata;
 use super::commands::{CommandDispatch, CommandDispatchOutcome};
 use super::dispatch::{ConnectionEnding, FrameDispatch, FrameFlow};
 use super::hello::{HelloRequest, negotiate_hello};
-use super::metadata_subscriptions::is_agent_session;
 use super::plumbing::{
     AttachIdVerdict, ConnectionClose, classify_attach_id, detach_on_request, reply_pong,
 };
-#[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
-use crate::runtime::apps::terminal::history::{HistoryPageRequest, serve_history_request};
+use crate::runtime::apps::ResourceFrame;
+use crate::runtime::apps::terminal::attach::{SpawnRequest, handle_move_terminal};
+use crate::runtime::apps::terminal::commands::handle_viewport_resize;
 use crate::runtime::apps::terminal::terminal_streams::{
     AttachFrame, direction_invalid, is_input_frame, is_metadata_frame, is_stream_frame,
 };
-use crate::runtime::{
-    SpawnRequest, handle_attach, handle_frame_ack, handle_move_terminal, handle_terminal_resize,
-    handle_viewport_resize,
-};
+use crate::runtime::session_attach::handle_attach;
 use crate::transport::FrameReader;
+use phux_protocol::ids::ResourceId as WireResourceId;
 use phux_protocol::wire::frame::{Command, DetachReason, ErrorCode, FrameKind};
 use tracing::debug;
 
@@ -66,8 +64,9 @@ impl<R: FrameReader> FrameDispatch<'_, R> {
                 request_id,
                 command,
             } => return self.command(request_id, command).await,
-            frame if is_input_frame(&frame) => return self.input(frame).await,
-            frame if is_stream_frame(&frame) => return self.stream_frame(frame).await,
+            frame if is_input_frame(&frame) || is_stream_frame(&frame) => {
+                return self.resource_frame(frame).await;
+            }
             frame if is_metadata_frame(&frame) => return self.metadata(frame).await,
             frame => return self.resource(frame).await,
         }
@@ -127,10 +126,13 @@ impl<R: FrameReader> FrameDispatch<'_, R> {
         let Some(selection) = self.negotiated.as_ref() else {
             return FrameFlow::Continue(());
         };
+        // SESSION ATTACH preflights actual membership: only a session with
+        // Terminals requires a Terminal profile.
+        let profile = selection.profile;
         debug!(
             client_id = ?self.client_id,
             attach_id,
-            profile = ?selection.profile,
+            ?profile,
             chunk_limit = selection.limits.max_chunk_bytes(),
             history_page_limit = selection.limits.max_history_page_bytes(),
             "ATTACH with immutable bootstrap selection",
@@ -138,7 +140,7 @@ impl<R: FrameReader> FrameDispatch<'_, R> {
         let attach_started = std::time::Instant::now();
         // QUIC multi-stream: content streams start at STREAM_BIND.
         let defer_subscription = selection.quic_streams();
-        handle_attach(
+        let published = handle_attach(
             self.state,
             self.client_id,
             attach_id,
@@ -149,7 +151,7 @@ impl<R: FrameReader> FrameDispatch<'_, R> {
             request.role_policy,
             &self.plumbing.out_tx,
             selection.client_caps,
-            selection.profile,
+            profile,
             selection.limits,
             self.root_token,
             &mut self.plumbing.output_pumps,
@@ -157,6 +159,12 @@ impl<R: FrameReader> FrameDispatch<'_, R> {
             defer_subscription,
         )
         .await;
+        if published && defer_subscription {
+            // A successful aggregate replacement fences its prior pumps. End
+            // their exact bindings too, so a fresh STREAM_BIND cannot race an
+            // old stream-end event into unsubscribing the new generation.
+            self.plumbing.drop_all_stream_bindings().await;
+        }
         crate::perf::ATTACH_HANDLE.record_elapsed(attach_started);
         FrameFlow::Continue(())
     }
@@ -209,104 +217,31 @@ impl<R: FrameReader> FrameDispatch<'_, R> {
         FrameFlow::Continue(())
     }
 
-    /// Frames about one attached Terminal's content stream (see
-    /// [`is_stream_frame`]).
-    async fn stream_frame(self, frame: FrameKind) -> FrameFlow {
-        match frame {
-            FrameKind::ViewportResize { viewport } => {
-                debug!(
-                    client_id = ?self.client_id,
-                    cols = viewport.cols,
-                    rows = viewport.rows,
-                    "VIEWPORT_RESIZE"
-                );
-                handle_viewport_resize(self.state, self.client_id, &viewport);
-            }
-            FrameKind::ResizeTerminal {
-                terminal_id,
-                cols,
-                rows,
-                cell_px,
-            } => {
-                handle_terminal_resize(
-                    self.state,
-                    self.client_id,
-                    &terminal_id,
-                    (cols, rows),
-                    cell_px,
-                );
-            }
-            // ADR-0103 §4: an agent-session stream is raw-profile with no
-            // history beyond its bootstrap. Both refusals keep the connection.
-            FrameKind::FrameAck {
-                ref terminal_id, ..
-            } if is_agent_session(self.state, terminal_id) => {
-                crate::runtime::send_error(
-                    &self.plumbing.out_tx,
-                    ErrorCode::MalformedMessage,
-                    "FRAME_ACK is not valid on an agent-session stream",
-                )
-                .await;
-            }
-            FrameKind::HistoryRequest {
-                ref terminal_id, ..
-            } if is_agent_session(self.state, terminal_id) => {
-                crate::runtime::send_error(
-                    &self.plumbing.out_tx,
-                    ErrorCode::WrongResourceKind,
-                    "an agent-session stream retains no history beyond its bootstrap",
-                )
-                .await;
-            }
-            FrameKind::FrameAck {
-                terminal_id,
-                stream_id,
-                bootstrap_id,
-                seq,
-            } => {
-                handle_frame_ack(
-                    self.state,
-                    self.client_id,
-                    &terminal_id,
-                    stream_id,
-                    bootstrap_id,
-                    seq,
-                );
-            }
-            #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
-            FrameKind::HistoryRequest {
-                terminal_id,
-                stream_id,
-                bootstrap_id,
-                cursor,
-                max_bytes,
-                max_rows,
-            } => {
-                let Some(selection) = self.negotiated.as_ref() else {
-                    return FrameFlow::Continue(());
-                };
-                // Terminal-content replies ride the bound stream when one
-                // exists (docs/protocol.md#quic-stream-routing); control otherwise.
-                let history_tx = self.plumbing.sender_for(&terminal_id);
-                serve_history_request(
-                    self.state,
-                    self.client_id,
-                    &history_tx,
-                    *selection,
-                    HistoryPageRequest {
-                        terminal_id,
-                        stream_id,
-                        bootstrap_id,
-                        cursor,
-                        max_bytes,
-                        max_rows,
-                    },
-                )
-                .await;
-            }
-            other => return direction_invalid(self.client_id, &other),
+    /// A frame about one resource's stream or input goes to the app serving
+    /// that resource's kind (see [`is_stream_frame`] and [`is_input_frame`]).
+    /// `VIEWPORT_RESIZE` names no resource: it is the connection's size vote
+    /// for every Terminal it is attached to.
+    async fn resource_frame(self, frame: FrameKind) -> FrameFlow {
+        if let FrameKind::ViewportResize { viewport } = frame {
+            debug!(
+                client_id = ?self.client_id,
+                cols = viewport.cols,
+                rows = viewport.rows,
+                "VIEWPORT_RESIZE"
+            );
+            handle_viewport_resize(self.state, self.client_id, &viewport);
+            return FrameFlow::Continue(());
         }
-        FrameFlow::Continue(())
+        let ctx = ResourceFrame {
+            state: self.state,
+            client_id: self.client_id,
+            token: self.token,
+            input_lane: self.input_lane,
+            plumbing: self.plumbing,
+            negotiated: *self.negotiated,
+            input_credits: self.input_credits,
+        };
+        super::resource_frames::serve(ctx, frame).await
     }
 
     /// Resource and filesystem frames; any other kind is not valid from a
@@ -413,3 +348,22 @@ impl<R: FrameReader> FrameDispatch<'_, R> {
         FrameFlow::Continue(())
     }
 }
+
+/// The resource a stream or input frame is about; `None` for one that
+/// names no resource.
+pub(super) const fn frame_resource(frame: &FrameKind) -> Option<&WireResourceId> {
+    match frame {
+        FrameKind::InputKey { terminal_id, .. }
+        | FrameKind::InputMouse { terminal_id, .. }
+        | FrameKind::InputFocus { terminal_id, .. }
+        | FrameKind::InputPaste { terminal_id, .. }
+        | FrameKind::InputTerminalReply { terminal_id, .. }
+        | FrameKind::ResizeTerminal { terminal_id, .. }
+        | FrameKind::FrameAck { terminal_id, .. }
+        | FrameKind::HistoryRequest { terminal_id, .. } => Some(terminal_id),
+        _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests;

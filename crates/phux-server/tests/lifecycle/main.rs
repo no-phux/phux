@@ -8,6 +8,7 @@
 )]
 #![allow(clippy::future_not_send, reason = "LocalSet-driven tests")]
 
+mod accessibility_tree;
 mod agent_session;
 mod agent_session_producer;
 mod attach_roles;
@@ -18,8 +19,11 @@ mod idempotency;
 mod keep_empty;
 mod kill_visibility;
 mod lease_ttl;
+mod no_terminal_profile;
 mod overlay_startup;
+mod pixel_surface;
 mod plugin_startup;
+mod resource_frames;
 mod retain_on_exit;
 mod server_lifecycle;
 mod spawn_terminal;

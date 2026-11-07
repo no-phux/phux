@@ -18,12 +18,12 @@
 
 use std::time::Duration;
 
+use phux_server::LaunchCommand as CommandBuilder;
 use phux_server_testkit::builder::{
     DEFAULT_IDLE_MS, E2eBuilder, colored_burst_bytes, colored_burst_command,
 };
 use phux_server_testkit::run_local;
 use phux_server_testkit::tracing_capture::TracingCapture;
-use portable_pty::CommandBuilder;
 
 /// Measured ~330-360 ms on an M-series laptop under the contended pool.
 const MULTI_CLIENT_CEILING: Duration = Duration::from_secs(8);

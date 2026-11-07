@@ -63,6 +63,13 @@ impl ServerState {
             &PaneBlob,
             phux_config::ScrollbackLimits,
         ) -> Result<RebuiltPane<W>, RebuildError>,
+        build_session: impl FnMut(
+            &AgentSessionBlob,
+            ResourceId,
+            Option<&ResourceHandle>,
+            u32,
+            CancellationToken,
+        ) -> RebuiltSession,
     ) -> Result<RebuiltTree<W>, RebuildError> {
         validate_upgrade_blob(blob)?;
         let mut fresh = Self::new();
@@ -79,7 +86,7 @@ impl ServerState {
             arranged_now,
         } = fresh.rebuild_records(self.org(), self.org.loaded, blob)?;
         let mut panes = fresh.rebuild_panes(blob, &keyed, build_pane)?;
-        fresh.rebuild_agent_sessions(blob, &keyed, &mut panes);
+        fresh.rebuild_agent_sessions(blob, &keyed, &mut panes, build_session)?;
         if imported {
             self.org.store.import(
                 fresh.org(),
@@ -205,6 +212,9 @@ impl ServerState {
                 desc.dims = (p.cols, p.rows);
                 desc.cwd.clone_from(&p.cwd);
                 desc.title.clone_from(&p.title);
+                // The engine is seeded with this title without emitting a
+                // change, so the registry takes it from the blob directly.
+                desc.program_title.clone_from(&p.osc_title);
             }
 
             let RebuiltPane {
@@ -218,7 +228,7 @@ impl ServerState {
             self.idspace
                 .bind_resource(core, WireResourceId::local(p.wire_id));
             panes.wired.push((core, wired));
-            self.spawn_resource_actor(core, handle, token, engine);
+            self.spawn_resource_actor(core, handle, token, engine)?;
             // ADR-0124: what the old image knew about this pane's retention.
             if let Some(secs) = p.retain_secs {
                 self.note_retain_request(core, secs);
@@ -245,7 +255,14 @@ impl ServerState {
         blob: &StateBlob,
         keyed: &Keyed,
         panes: &mut RebuiltPanes<W>,
-    ) {
+        mut build_session: impl FnMut(
+            &AgentSessionBlob,
+            ResourceId,
+            Option<&ResourceHandle>,
+            u32,
+            CancellationToken,
+        ) -> RebuiltSession,
+    ) -> Result<(), RebuildError> {
         let log_bytes = self.config.agent_log_bytes;
         for carried in &blob.agent_sessions {
             let Some(&parent) = panes.core_ids.get(&carried.parent_wire_id) else {
@@ -276,32 +293,20 @@ impl ServerState {
                 facet.state.clone_from(&carried.state);
             }
             let token = CancellationToken::new();
-            let bundle = AgentSessionActor::restore(
+            let rebuilt = build_session(
+                carried,
                 parent,
-                &carried.provider,
-                carried.native_id.as_deref(),
-                token.clone(),
+                self.resource_handle(parent),
                 log_bytes,
-                agent_session_cut(carried),
+                token.clone(),
             );
-            let agent_parent = self
-                .resource_handle(parent)
-                .and_then(|handle| handle.companion::<phux_agent_session::parent::AgentParent>());
-            if let (Some(agent_parent), Ok(session)) = (agent_parent, bundle.handle.agent_session())
-            {
-                // The parent's mailbox is fresh, so this cannot be full.
-                let _ = agent_parent.mailbox.try_send(
-                    phux_agent_session::parent::AgentParentRequest::BindSession {
-                        append: session.append.clone(),
-                    },
-                );
-            }
             // Pre-bind so the registration's intern returns the blob's id.
             self.idspace
                 .bind_resource(core, WireResourceId::local(carried.wire_id));
-            self.spawn_resource_actor(core, bundle.handle, token, bundle.actor.run());
-            panes.exit_watchers.push((core, bundle.exit_notify));
+            self.spawn_resource_actor(core, rebuilt.handle, token, rebuilt.engine)?;
+            panes.exit_watchers.push((core, rebuilt.exit_notify));
         }
+        Ok(())
     }
 
     /// Reinstate the carried Group- and Global-scope metadata. No client is

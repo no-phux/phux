@@ -5,7 +5,7 @@
 )]
 
 use super::*;
-use phux_terminal::actor::TerminalResource as _;
+use phux_terminal_api::actor::TerminalResource as _;
 
 impl PaneCaptureContext<'_> {
     /// Capture one pane's native checkpoint against the remaining aggregate
@@ -16,10 +16,10 @@ impl PaneCaptureContext<'_> {
         staging: &mut AttachStaging,
         terminal_id: ResourceId,
         wire_terminal_id: &phux_protocol::ids::ResourceId,
-        terminal: &phux_terminal::actor::TerminalHandle,
+        terminal: &phux_terminal_api::actor::TerminalHandle,
     ) -> Result<(), CaptureFailure> {
         let captured = request_native_checkpoint(terminal, |reply| {
-            phux_terminal::actor::NativeBootstrapRequest {
+            phux_terminal_api::actor::NativeBootstrapRequest {
                 owner: self.client_id.0,
                 terminal_id: wire_terminal_id.clone(),
                 stream_id: self.stream_id,
@@ -82,11 +82,11 @@ impl PaneCaptureContext<'_> {
     /// cut it was taken at.
     async fn request_pane_snapshot(
         &self,
-        terminal: &phux_terminal::actor::TerminalHandle,
+        terminal: &phux_terminal_api::actor::TerminalHandle,
         terminal_id: ResourceId,
         max_bytes: usize,
         max_frames: usize,
-    ) -> Result<(phux_terminal::grid::SnapshotBytes, u64), CaptureFailure> {
+    ) -> Result<(phux_terminal_api::grid::SnapshotBytes, u64), CaptureFailure> {
         let (reply_tx, reply_rx) = oneshot::channel();
         if terminal
             .snapshot
@@ -132,20 +132,22 @@ impl PaneCaptureContext<'_> {
     /// Capture one pane's bounded bootstrap, staging its pump and charging its
     /// retained result to the aggregate budget before the next actor is asked
     /// for its own source.
-    async fn capture_pane(
+    pub(super) async fn capture_pane(
         &self,
         staging: &mut AttachStaging,
         pane: AttachSnapshotPane,
     ) -> Result<(), CaptureFailure> {
-        let synthesized_source_max =
-            bootstrap_source_ceiling(staging.budget.remaining_bytes(), self.client_caps);
         let terminal_id = pane.terminal_id;
         let handle = pane.handle;
         let terminal = handle
             .terminal()
             .map_err(|error| error.to_string())?
             .clone();
-        staging.handles.push(handle.clone());
+        let synthesized_source_max = bootstrap_source_ceiling(
+            &terminal.presentation,
+            staging.budget.remaining_bytes(),
+            self.client_caps,
+        );
         let wire_terminal_id = pane.wire_terminal_id;
         let registration = self
             .register_consumer(
@@ -156,18 +158,7 @@ impl PaneCaptureContext<'_> {
                 staging.budget.remaining_frames(),
             )
             .await;
-        if self.wants_state_sync() && !registration.registered {
-            warn!(
-                ?terminal_id,
-                "state-sync registration failed before aggregate attach publication"
-            );
-            let reason = "state-sync consumer registration failed".to_owned();
-            return Err(if registration.actor_gone {
-                CaptureFailure::Closed(reason)
-            } else {
-                CaptureFailure::Failed(reason)
-            });
-        }
+        self.check_registration(terminal_id, &registration)?;
         // A tick-managed consumer's deltas come from the actor, in its own
         // sequence space: a broadcast pump beside it would double-emit.
         if !registration.tick_managed {
@@ -175,6 +166,7 @@ impl PaneCaptureContext<'_> {
         }
         if let Some(state_sync) = registration.state_sync_bootstrap {
             return Ok(self.stage_synthesized_frames(
+                &terminal.presentation,
                 staging,
                 wire_terminal_id,
                 state_sync.snapshot,
@@ -197,6 +189,7 @@ impl PaneCaptureContext<'_> {
             )
             .await?;
         self.stage_synthesized_frames(
+            &terminal.presentation,
             staging,
             wire_terminal_id,
             snapshot,
@@ -213,37 +206,23 @@ impl PaneCaptureContext<'_> {
         Ok(())
     }
 
-    /// Capture every bootstrap-capable pane in turn, then stage authoritative
-    /// closures for snapshot participants that had no actor handle. The first
-    /// failure is the rollback reason.
-    ///
-    /// A pane whose actor ends while the attach is capturing (its process
-    /// exited, or a kill or abandoned spawn reaped it after the snapshot was
-    /// taken) is not a failure: `ATTACH_READY` follows once every pane is
-    /// READY or closed (L1 §8), so it is staged as closed like a participant
-    /// that had no actor at all. Only a pane whose actor is still running can
-    /// fail the attach.
-    pub(super) async fn capture_panes(
+    fn check_registration(
         &self,
-        staging: &mut AttachStaging,
-        panes: Vec<AttachSnapshotPane>,
-        mut closed_before_ready: Vec<phux_protocol::ids::ResourceId>,
-    ) -> Result<(), String> {
-        for pane in panes {
-            let terminal_id = pane.terminal_id;
-            let wire_terminal_id = pane.wire_terminal_id.clone();
-            match self.capture_pane(staging, pane).await {
-                Ok(()) => continue,
-                Err(CaptureFailure::Failed(reason)) => return Err(reason),
-                Err(CaptureFailure::Closed(reason)) => {
-                    debug!(?terminal_id, %reason, "pane closed during ATTACH capture");
-                }
-            }
-            staging.forget_pane(terminal_id);
-            closed_before_ready.push(wire_terminal_id);
+        terminal_id: ResourceId,
+        registration: &ConsumerRegistration,
+    ) -> Result<(), CaptureFailure> {
+        if !self.wants_state_sync() || registration.registered {
+            return Ok(());
         }
-        staging
-            .append_closures(closed_before_ready)
-            .map_err(|()| "aggregate bootstrap staging budget exceeded".to_owned())
+        warn!(
+            ?terminal_id,
+            "state-sync registration failed before aggregate attach publication"
+        );
+        let reason = "state-sync consumer registration failed".to_owned();
+        Err(if registration.actor_gone {
+            CaptureFailure::Closed(reason)
+        } else {
+            CaptureFailure::Failed(reason)
+        })
     }
 }

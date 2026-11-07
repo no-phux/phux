@@ -112,7 +112,7 @@ fn copy_diagnostics_reads_identity_from_the_linked_connection(cx: &mut TestAppCo
             protocol_patch: protocol.patch,
             server_caps: ServerCapabilities::new(),
             server_id: vec![0xAB; 16],
-            selected_profile: BootstrapProfile::SynthesizedVtRaw,
+            selected_profile: Some(BootstrapProfile::SynthesizedVtRaw),
             bootstrap_limits: BootstrapLimits::default(),
         })
         .unwrap();

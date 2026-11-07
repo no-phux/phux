@@ -44,13 +44,16 @@ pub const fn exec_word(state: ExecState) -> &'static str {
     }
 }
 
-/// The stable word for a resource kind; an unknown wire kind reads
+/// The stable word for a resource kind (`terminal`, `agent_session`,
+/// `accessibility_tree`, `pixel_surface`); an unknown wire kind reads
 /// `kind-<tag>`.
 #[must_use]
 pub fn kind_word(kind: ResourceKind) -> String {
     match kind {
         ResourceKind::Terminal => "terminal".to_owned(),
         ResourceKind::AgentSession => "agent_session".to_owned(),
+        ResourceKind::AccessibilityTree => "accessibility_tree".to_owned(),
+        ResourceKind::PixelSurface => "pixel_surface".to_owned(),
         other => format!("kind-{}", other.as_wire()),
     }
 }

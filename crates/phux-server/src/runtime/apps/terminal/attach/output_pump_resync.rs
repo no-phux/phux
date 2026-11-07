@@ -10,6 +10,11 @@ use super::*;
 #[path = "tests_image_resync.rs"]
 mod tests;
 
+/// The tracing target of the stale-output line. Tools filter on it
+/// (`tools/src/web/browser.ts`), so it stays put when this module moves. It
+/// keeps the crate prefix so a `phux_server=debug` filter still shows it.
+const LOG_TARGET: &str = "phux_server::output_resync";
+
 impl OutputPumpContext {
     /// Tombstone the live generation, publish its native replacement, and
     /// adopt the post-cut receiver the actor fenced it behind. `false` means
@@ -47,7 +52,7 @@ impl OutputPumpContext {
         generation: &mut PumpGeneration,
         output_rx: &mut tokio::sync::broadcast::Receiver<ResourceOutput>,
         bootstrap_id: BootstrapId,
-        reply: phux_terminal::actor::NativeBootstrapReply,
+        reply: phux_terminal_api::actor::NativeBootstrapReply,
     ) -> Result<bool, PumpFault> {
         let (cut, cursor) = publish_native_bootstrap(&self.out_tx, reply)
             .await
@@ -99,7 +104,7 @@ impl OutputPumpContext {
         if publishes_native_checkpoints(self.profile) {
             let bootstrap_id = next_bootstrap_id(generation.bootstrap_id());
             let capture = request_native_checkpoint(&self.terminal, |reply| {
-                phux_terminal::actor::NativeBootstrapRequest::full_budget(
+                phux_terminal_api::actor::NativeBootstrapRequest::full_budget(
                     self.client_id.0,
                     self.wire_terminal_id.clone(),
                     self.stream_id,
@@ -142,6 +147,7 @@ impl OutputPumpContext {
                     scrollback: None,
                     image_protocols: self.client_caps.image_protocols,
                     max_bytes: bootstrap_source_ceiling(
+                        &self.terminal.presentation,
                         MAX_STAGED_BOOTSTRAP_BYTES,
                         self.client_caps,
                     ),
@@ -198,7 +204,8 @@ impl OutputPumpContext {
         generation: &mut PumpGeneration,
         resync: &PaneResync,
     ) -> ControlFlow<Option<PumpFault>> {
-        let payload = downsample_for_caps(&resync.bytes, self.client_caps);
+        let payload =
+            downsample_for_caps(&self.terminal.presentation, &resync.bytes, self.client_caps);
         let bootstrap_id = next_bootstrap_id(generation.bootstrap_id());
         let Ok(mut frames) = synthesized_bootstrap_frames(
             self.wire_terminal_id.clone(),
@@ -269,9 +276,10 @@ impl OutputPumpContext {
             let (reply, receive) = oneshot::channel();
             if snapshot
                 .send(SnapshotRequest {
-                    scrollback: Some(phux_terminal::actor::DEFAULT_REPLAY_SCROLLBACK_LINES),
+                    scrollback: Some(phux_terminal_api::actor::DEFAULT_REPLAY_SCROLLBACK_LINES),
                     image_protocols: self.client_caps.image_protocols,
                     max_bytes: bootstrap_source_ceiling(
+                        &self.terminal.presentation,
                         MAX_STAGED_BOOTSTRAP_BYTES,
                         self.client_caps,
                     )
@@ -348,6 +356,7 @@ impl OutputPumpContext {
             // A slow link goes stale every cycle by design; `pump.lagged`
             // counts it.
             debug!(
+                target: LOG_TARGET,
                 terminal_id = ?self.wire_terminal_id,
                 %cause,
                 "{} fell behind; skipping to a fresh checkpoint",

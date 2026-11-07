@@ -7,16 +7,18 @@
 )]
 
 pub(crate) mod agent_state;
-pub mod attach;
+pub(crate) mod attach;
 pub(crate) mod checkout;
 pub(crate) mod commands;
 mod frames;
 #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
 pub(crate) mod history;
-pub mod input_lane;
+pub(crate) mod input_lane;
 pub(crate) mod launch;
 pub(crate) mod program_status;
 pub(crate) mod terminal_streams;
+#[cfg(test)]
+pub(crate) mod test_support;
 pub(crate) mod upgrade;
 pub(crate) mod upload;
 pub(crate) mod voice;
@@ -24,10 +26,16 @@ pub(crate) mod voice;
 pub(crate) use commands::TerminalApp;
 
 /// The native bootstrap profiles this build can offer.
-pub(crate) fn bootstrap_capabilities() -> phux_protocol::caps::BootstrapCapabilities {
+pub(crate) fn bootstrap_capabilities(
+    state: &crate::state::SharedState,
+) -> phux_protocol::caps::BootstrapCapabilities {
     #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
     {
-        phux_terminal::native_state::native_bootstrap_capabilities()
+        state
+            .terminal_engine()
+            .map_or_else(phux_protocol::caps::BootstrapCapabilities::new, |engine| {
+                engine.bootstrap_capabilities()
+            })
     }
     #[cfg(not(all(feature = "native-engine", not(target_arch = "wasm32"))))]
     {

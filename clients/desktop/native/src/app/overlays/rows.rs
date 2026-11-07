@@ -421,6 +421,7 @@ pub(super) fn goto_sections(desk: &Desk) -> Vec<Section> {
         ("Work", work_rows(desk)),
         ("Agents", agents),
         ("Terminals", terminals),
+        ("Read-only mirrors", document_rows(desk)),
         ("Tabs", tabs),
     ]
     .into_iter()
@@ -430,6 +431,38 @@ pub(super) fn goto_sections(desk: &Desk) -> Vec<Section> {
         rows,
     })
     .collect()
+}
+
+fn document_rows(desk: &Desk) -> Vec<Row> {
+    let Some(link) = desk.link.as_ref() else {
+        return Vec::new();
+    };
+    let resources: Vec<_> = link.connection.with_organization(|replica| {
+        replica
+            .resources()
+            .iter()
+            .filter(|record| crate::connection::documents::is_document(record.kind))
+            .filter_map(|record| record.live.clone())
+            .collect()
+    });
+    resources
+        .into_iter()
+        .map(|id| {
+            let title = desk.pane_title(Some(&id));
+            let detail = "Read-only mirror";
+            Row {
+                title: title.into(),
+                keywords: format!("{detail} document accessibility tree pixel surface"),
+                detail: Some(detail.into()),
+                target: Target::Pane(id),
+                command: None,
+                category: "Read-only mirrors",
+                chord: None,
+                agent: None,
+                preview: None,
+            }
+        })
+        .collect()
 }
 
 /// The tab that shows `terminal`, by the same title the tab row uses.
@@ -451,6 +484,12 @@ pub(super) fn tab_pane(
 ) -> Option<goto_facts::Fact> {
     let id = placement.terminal_id.as_ref()?;
     let link = desk.link.as_ref()?;
+    if link.connection.document_kind(id).is_some() {
+        return Some(goto_facts::Fact::new(
+            desk.pane_title(Some(id)),
+            "Read-only mirror",
+        ));
+    }
     let pane = link.connection.pane(id)?;
     let agent = link.connection.agents.get(id);
     let name = agent

@@ -2,10 +2,10 @@
 //!
 //! The server's one current-thread runtime also runs every pane actor, so a
 //! large output broadcast and a keystroke compete for one core. This lane
-//! moves input routing and encoding onto its own OS thread: pane actors
-//! publish a `Send` [`InputEncoderSnapshot`] after each terminal mutation,
-//! the lane owns one encoder set per pane generation, and hands encoded
-//! bytes to the actor's bounded mailbox with `try_send`. Every handoff
+//! moves input routing and encoding onto its own OS thread: each pane supplies
+//! a `Send` input port, which creates its local [`LaneEncoder`] on that thread.
+//! The lane keeps one encoder per engine generation and submits prepared input
+//! through the engine's bounded ordered-write interface. Every handoff
 //! spends a pane input credit (ADR-0144, the `credit` submodule), so that
 //! `try_send` has room: senders wait for credits, the lane never does.
 //!
@@ -49,7 +49,7 @@ pub(crate) use self::credit::{InputCredits, InputStalled, acquire_credit};
 use self::encode::{
     LaneEncoderSet, encode_input, encoder_for, handoff_encoded, prune_closed_encoders,
 };
-pub use self::handle::InputLaneHandle;
+pub(crate) use self::handle::InputLaneHandle;
 pub(crate) use self::handle::arm_pane_lane;
 pub(crate) use self::lane::spawn_input_lane;
 use self::process::{
@@ -62,10 +62,10 @@ use crate::runtime::{
     terminal_input_from_event, with_attached_input_destination, with_route_input_destination,
 };
 use crate::state::{ClientId, SharedState};
-use phux_terminal::TerminalInput;
-use phux_terminal::actor::{InputCredit, LaneAhead};
+use phux_terminal_api::TerminalInput;
+use phux_terminal_api::actor::{InputCredit, LaneAhead};
 #[cfg(doc)]
-use phux_terminal::input::InputEncoderSnapshot;
+use phux_terminal_api::input::LaneEncoder;
 
 /// Bound on the lane's inbound queue. Attached input waits for room
 /// ([`InputLaneHandle::route`]); a command refuses with `RESOURCE_EXHAUSTED`.

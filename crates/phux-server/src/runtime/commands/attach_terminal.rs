@@ -41,7 +41,7 @@ pub(super) async fn handle_attach_terminal(
         ..
     } = subscription;
 
-    let stream_id = crate::runtime::attach::stream_id_from(client_id.0);
+    let stream_id = crate::runtime::stream_id_from(client_id.0);
     match bootstrap_attach_terminal(
         state,
         client_id,
@@ -119,7 +119,7 @@ pub(crate) async fn bootstrap_attach_terminal(
     content_tx: &tokio::sync::mpsc::Sender<Outbound>,
     stream_id: phux_protocol::ids::StreamId,
     client_caps: ClientCapabilities,
-    bootstrap_profile: BootstrapProfile,
+    bootstrap_profile: Option<BootstrapProfile>,
     bootstrap_limits: BootstrapLimits,
     connection_token: &CancellationToken,
     agent_after_seq: Option<u64>,
@@ -138,13 +138,9 @@ pub(crate) async fn bootstrap_attach_terminal(
         connection_token,
         after_seq: agent_after_seq,
     };
-    let Some(app) = crate::runtime::apps::app_for(handle.kind) else {
-        return Err(AttachResourceFailure {
-            code: ErrorCode::WrongResourceKind,
-            message: format!("this server does not serve {}", handle.kind),
-        });
-    };
-    app.bootstrap(stream).await
+    crate::runtime::apps::app_for(handle.kind)
+        .bootstrap(stream)
+        .await
 }
 
 /// Resolve the wire terminal id and register the caller as an output
@@ -168,8 +164,7 @@ pub(crate) fn subscribe_attach_terminal(
         // The lease is a Terminal-facet concept (L1 §1.1), so a takeover of
         // any other kind is refused the way `ACQUIRE_INPUT` refuses it.
         if role.is_some_and(RolePolicy::takes_over)
-            && let Some(Err(error)) = crate::runtime::apps::app_for(handle.kind)
-                .map(crate::runtime::apps::ResourceApp::check_takeover)
+            && let Err(error) = crate::runtime::apps::app_for(handle.kind).check_takeover()
         {
             return Err(wrong_resource_kind(error));
         }

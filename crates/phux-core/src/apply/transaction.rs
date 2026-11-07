@@ -2,8 +2,8 @@
 use super::{
     Activation, ActivationId, Actor, Arrangement, ArrangementKey, ArrangementOwner, BTreeMap,
     BTreeSet, Delta, Effect, Event, ExecState, FreshKeys, HashSet, LaunchMode, NewResource,
-    OperationId, Org, Provenance, RecordRef, Refusal, Resource, ResourceKey, ResourceKind,
-    Revision, RevisionPin, Session, SessionKey, SessionLifetime, Stamp, check_name, first_group,
+    OperationId, Org, Provenance, RecordRef, Refusal, Resource, ResourceKey, Revision, RevisionPin,
+    Session, SessionKey, SessionLifetime, Stamp, first_group,
 };
 
 // ---- the working transaction ---------------------------------------------
@@ -351,45 +351,6 @@ impl<'a> Tx<'a> {
             });
         }
         Ok(key)
-    }
-
-    pub(super) fn validate_new_resource(&self, spec: &NewResource) -> Result<(), Refusal> {
-        if let Some(name) = &spec.name {
-            check_name("name", name)?;
-        }
-        match &spec.launch {
-            Some(launch) if launch.kind() != spec.kind => {
-                return Err(Refusal::invalid(
-                    "launch",
-                    "launch spec is for another kind",
-                ));
-            }
-            None if spec.kind == ResourceKind::Terminal => {
-                return Err(Refusal::invalid("launch", "a terminal needs a launch spec"));
-            }
-            None if spec.launch_mode == LaunchMode::Deferred => {
-                return Err(Refusal::invalid(
-                    "launch_mode",
-                    "a deferred launch needs a launch spec",
-                ));
-            }
-            _ => {}
-        }
-        let parent_kind = match spec.parent {
-            Some(p) => Some(
-                self.resource(p)
-                    .ok_or_else(|| Refusal::invalid("parent", "unknown resource"))?
-                    .kind,
-            ),
-            None => None,
-        };
-        if spec.kind == ResourceKind::AgentSession && parent_kind != Some(ResourceKind::Terminal) {
-            return Err(Refusal::invalid(
-                "parent",
-                "an agent conversation binds to a terminal",
-            ));
-        }
-        Ok(())
     }
 
     /// Set the current activation's state and emit the change.

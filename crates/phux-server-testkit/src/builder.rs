@@ -24,7 +24,7 @@ use phux_protocol::wire::frame::{
     ViewportInfo,
 };
 use phux_protocol::{ResourceId, wire::frame::MAX_FRAME_LEN};
-use portable_pty::CommandBuilder;
+use phux_server::LaunchCommand;
 use tempfile::TempDir;
 use tokio::io::AsyncReadExt as _;
 use tokio::net::UnixStream;
@@ -58,7 +58,7 @@ pub const DEFAULT_IDLE_MS: u64 = 150;
 /// ```ignore
 /// E2eBuilder::new()
 ///     .session("default")
-///     .seed_cmd(CommandBuilder::new("/bin/cat"))
+///     .seed_cmd(LaunchCommand::new("/bin/cat"))
 ///     .clients(2)
 ///     .run(|mut clients| async move {
 ///         clients[0].send_text("hi\r").await;
@@ -67,7 +67,7 @@ pub const DEFAULT_IDLE_MS: u64 = 150;
 /// ```
 pub struct E2eBuilder {
     session: String,
-    seed_cmd: Option<CommandBuilder>,
+    seed_cmd: Option<LaunchCommand>,
     clients: usize,
     viewport: ViewportInfo,
 }
@@ -102,7 +102,7 @@ impl E2eBuilder {
     /// `/bin/cat` for a deterministic echo fixture or `/bin/sh -c '...'`
     /// for a scripted scenario.
     #[must_use]
-    pub fn seed_cmd(mut self, cmd: CommandBuilder) -> Self {
+    pub fn seed_cmd(mut self, cmd: LaunchCommand) -> Self {
         self.seed_cmd = Some(cmd);
         self
     }
@@ -143,7 +143,7 @@ impl E2eBuilder {
 
         let cmd = self
             .seed_cmd
-            .unwrap_or_else(|| CommandBuilder::new("/bin/sh"));
+            .unwrap_or_else(|| LaunchCommand::new("/bin/sh"));
         let (shutdown_tx, server_handle) =
             spawn_server_with_seed_cmd(socket_path.clone(), &self.session, cmd);
 
@@ -1008,13 +1008,13 @@ pub fn colored_burst_bytes(cols: u16, rows: u16, gens: u16) -> Vec<u8> {
 /// as the lagged-resync fixtures) starts the dump only after attach, so
 /// a fast `cat` cannot land in the opening snapshot.
 #[must_use]
-pub fn colored_burst_command(burst: &Path, gate: &Path) -> CommandBuilder {
+pub fn colored_burst_command(burst: &Path, gate: &Path) -> LaunchCommand {
     let script = format!(
         "while [ ! -e '{}' ]; do sleep 0.02; done; cat -- '{}'; sleep 30",
         gate.display(),
         burst.display(),
     );
-    let mut cmd = CommandBuilder::new("/bin/sh");
+    let mut cmd = LaunchCommand::new("/bin/sh");
     cmd.args(["-c", &script]);
     cmd
 }

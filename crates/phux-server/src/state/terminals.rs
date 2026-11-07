@@ -8,7 +8,30 @@ use tokio_util::sync::CancellationToken;
 use super::resource_table::AttachResourcePumpReplacement;
 use super::{ClientId, ServerState};
 use crate::mailbox::Outbound;
-use crate::resource::ResourceHandle;
+use crate::resource::{ResourceHandle, ResourceKind};
+
+#[cfg(test)]
+#[path = "tests/registration.rs"]
+mod tests;
+
+/// Why an engine cannot be published under a resource record. Refusal
+/// leaves registrations and wire identities unchanged.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum ResourceRegistrationError {
+    /// There is no resource record to own the engine.
+    #[error("resource {0:?} has no record for its engine")]
+    NotFound(ResourceId),
+    /// The proposed engine contradicts the persistent resource kind.
+    #[error("resource {resource:?} is {expected}, but its engine is {actual}")]
+    WrongKind {
+        /// Resource whose identity must be preserved.
+        resource: ResourceId,
+        /// Kind recorded in the organization.
+        expected: ResourceKind,
+        /// Kind served by the proposed engine.
+        actual: ResourceKind,
+    },
+}
 
 impl ServerState {
     /// Current subscribers of `pane`.
@@ -60,32 +83,53 @@ impl ServerState {
     /// Record a spawned engine's handle and token and allocate its wire id
     /// (idempotent on the id; overwrites the handle). Does not spawn; see
     /// [`Self::spawn_resource_actor`].
+    ///
+    /// # Errors
+    ///
+    /// No resource record exists, or its kind differs from the handle's.
     pub fn register_resource_handle(
         &mut self,
         terminal: ResourceId,
         handle: ResourceHandle,
         token: CancellationToken,
-    ) -> WireResourceId {
+    ) -> Result<WireResourceId, ResourceRegistrationError> {
+        let expected = self
+            .registry()
+            .record(terminal)
+            .ok_or(ResourceRegistrationError::NotFound(terminal))?
+            .kind;
+        if expected != handle.kind {
+            return Err(ResourceRegistrationError::WrongKind {
+                resource: terminal,
+                expected,
+                actual: handle.kind,
+            });
+        }
         let wire = self.intern_resource_wire(terminal);
         self.resources.register(terminal, handle, token);
-        wire
+        Ok(wire)
     }
 
     /// Register `handle`/`token` and spawn `actor_future` on the pane
     /// `JoinSet` (inside a `LocalSet`, ADR-0014). Returns the wire id.
+    ///
+    /// # Errors
+    ///
+    /// Registration is refused before the actor future can run; see
+    /// [`Self::register_resource_handle`].
     pub fn spawn_resource_actor<F>(
         &mut self,
         terminal: ResourceId,
         handle: ResourceHandle,
         token: CancellationToken,
         actor_future: F,
-    ) -> WireResourceId
+    ) -> Result<WireResourceId, ResourceRegistrationError>
     where
         F: Future<Output = ()> + 'static,
     {
-        let wire = self.register_resource_handle(terminal, handle, token);
+        let wire = self.register_resource_handle(terminal, handle, token)?;
         self.resources.spawn_actor(actor_future);
-        wire
+        Ok(wire)
     }
 
     /// Cancel every output pump of `terminal`: a killed Terminal's process
@@ -126,6 +170,19 @@ impl ServerState {
         bootstrap_id: BootstrapId,
     ) -> AttachResourcePumpReplacement {
         self.resources.replace_pump(client, terminal, bootstrap_id)
+    }
+
+    /// Relabel the current `ATTACH_RESOURCE` pump that owns `last_valid_seq`
+    /// for a replacement generation (see
+    /// `ResourceTable::advance_pump_generation`).
+    pub(crate) fn advance_attach_terminal_pump(
+        &mut self,
+        client: ClientId,
+        terminal: ResourceId,
+        last_valid_seq: &std::sync::Arc<std::sync::atomic::AtomicU64>,
+    ) -> Option<BootstrapId> {
+        self.resources
+            .advance_pump_generation(client, terminal, last_valid_seq)
     }
 
     /// The next per-terminal bootstrap id for `client`; `None` when

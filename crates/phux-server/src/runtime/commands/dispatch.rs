@@ -5,7 +5,6 @@
 )]
 
 use super::*;
-use crate::runtime::apps::ResourceApp;
 
 /// Run a routed command on this server and return its result.
 #[allow(
@@ -32,6 +31,17 @@ pub(super) async fn dispatch_local(
     if let Some(app) = crate::runtime::apps::app_owning(&command) {
         return app.command(ctx, command, claim).await;
     }
+    // A substrate command addressed to a resource's state goes to the app
+    // serving that resource's kind.
+    if let Command::PublishResourceState { terminal_id, .. } = &command {
+        return match crate::runtime::apps::app_serving(state, terminal_id) {
+            Some(app) => app.command(ctx, command, claim).await,
+            None => CommandResult::Error {
+                code: ErrorCode::InvalidCommand,
+                message: "command not supported by this server".to_owned(),
+            },
+        };
+    }
 
     match command {
         Command::AttachResource {
@@ -55,7 +65,7 @@ pub(super) async fn dispatch_local(
         }
         Command::GetPerf { reset } => handle_get_perf(state, reset),
         Command::DescribeApi => super::super::api::describe(state),
-        Command::PerfControl { op } => super::super::perf_control::handle(op).await,
+        Command::PerfControl { op } => super::super::perf_control::handle(state, op).await,
         Command::KillResources { ids, operation_id } => {
             handle_kill_terminals(state, client_id, &ids, operation_id).await
         }
@@ -140,8 +150,9 @@ async fn dispatch_attach_resource(
     let defers = ctx.state.with(|s| {
         s.resource_from_wire(terminal_id)
             .and_then(|core| s.resource_handle(core))
-            .and_then(|handle| crate::runtime::apps::app_for(handle.kind))
-            .is_some_and(ResourceApp::defers_stream_bootstrap)
+            .is_some_and(|handle| {
+                crate::runtime::apps::app_for(handle.kind).defers_stream_bootstrap()
+            })
     });
     if ctx.defer_subscription && defers {
         subscribe_deferred_attach(&ctx.state, ctx.client_id, terminal_id, &ctx.out_tx, role).await

@@ -232,7 +232,7 @@ pub(crate) fn revoke_connection(state: &SharedState, client: ClientId, revocatio
         }
         revoked_now = true;
         s.mark_connection_revoked(client, revocation);
-        let detached_from = super::client::release_revoked_consumer_state(s, client);
+        let detached_from = crate::runtime::connections::release_revoked_consumer_state(s, client);
         if let Some(token) = s.client_connection_cancellation(client) {
             token.cancel();
         }
@@ -242,7 +242,7 @@ pub(crate) fn revoke_connection(state: &SharedState, client: ClientId, revocatio
         return;
     }
     info!(target: POLICY_TARGET, ?client, ?revocation, "authority withdrawn; closing the connection");
-    super::client::fire_client_detached(state, client, detached_from);
+    crate::runtime::connections::fire_client_detached(state, client, detached_from);
 }
 
 /// Whether `connection`'s authority still stands at `now`, and until when.

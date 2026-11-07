@@ -1,5 +1,7 @@
 //! The sidebar: every session and terminal on the server, each terminal
-//! with what it is doing, and what needs you counted per session.
+//! with what it is doing, and what needs you counted per session. They sit
+//! under the machine this window is on; the other machines follow, folded,
+//! each opening to a glance at its sessions.
 
 use std::collections::HashMap;
 
@@ -7,9 +9,11 @@ use phux_client_runtime::control::Topology;
 use phux_protocol::ids::{ResourceId, SessionKey};
 use rune::{Color, El, col, el, memo, row, text};
 
-use super::{CAPTION, Ink, LABEL, NAME, SIDEBAR_W, icons, pressable};
+use super::{CAPTION, Ink, LABEL, LABEL_STRONG, NAME, SIDEBAR_W, icons, pressable};
 use crate::activity::Mark;
 use crate::desk::Desk;
+use crate::keys::{self, Shortcut};
+use crate::machines::{Glance, LOCAL};
 use crate::palette::pane_label;
 
 /// A mark's colour, from the theme's own palette.
@@ -20,6 +24,7 @@ pub(super) fn mark_color(mark: Mark, ink: &Ink) -> Color {
         Mark::Bell => ink.marks.bell,
         Mark::Working => ink.marks.working,
         Mark::Running => ink.accent,
+        Mark::Background => ink.accent.alpha(0.55),
         Mark::Succeeded | Mark::Idle => ink.marks.good,
         Mark::None => ink.separator,
     }
@@ -31,7 +36,7 @@ pub(super) fn mark_color(mark: Mark, ink: &Ink) -> Color {
 fn dot(mark: Mark, ink: &Ink) -> El {
     let dot = match mark {
         Mark::None => el().size(4.0, 4.0).radius(2.0).fill(ink.dim.alpha(0.45)),
-        _ if mark.live() => el()
+        _ if mark.live() || mark == Mark::Background => el()
             .size(8.0, 8.0)
             .radius(4.0)
             .border(1.5, mark_color(mark, ink)),
@@ -67,9 +72,15 @@ fn search(ink: &Ink) -> El {
 /// The way into the inbox, loud only when something waits.
 fn inbox_button(waiting: usize, ink: &Ink) -> El {
     if waiting == 0 {
-        return super::icon_press(&icons::INBOX, "inbox-button", ink, |d: &mut Desk| {
-            d.toggle_inbox();
-        });
+        return super::icon_press(
+            &icons::INBOX,
+            "Inbox",
+            "inbox-button",
+            ink,
+            |d: &mut Desk| {
+                d.toggle_inbox();
+            },
+        );
     }
     let tint = mark_color(Mark::Blocked, ink);
     pressable("inbox-button", ink)
@@ -79,8 +90,14 @@ fn inbox_button(waiting: usize, ink: &Ink) -> El {
         .radius(11.0)
         .items_center()
         .fill(tint.alpha(0.18))
+        .label(format!("Inbox, {waiting} waiting"))
         .on_press(|d: &mut Desk| d.toggle_inbox())
-        .child(text(format!("{waiting} waiting")).font(CAPTION).color(tint))
+        .child(
+            text(format!("{waiting} waiting"))
+                .font(CAPTION)
+                .color(tint)
+                .a11y_hidden(),
+        )
 }
 
 /// What a session header draws. Everything its handlers capture is here, so
@@ -281,8 +298,134 @@ fn session_list(desk: &Desk, topology: &Topology, waiting: &HashMap<u32, usize>,
     list
 }
 
-/// A word to press at the foot of the sidebar.
-fn foot(label: &'static str, key: &'static str, ink: &Ink, press: fn(&mut Desk)) -> El {
+/// A machine's line: open or folded, and how many sessions it holds once known.
+fn host_header(
+    label: &str,
+    open: bool,
+    count: Option<String>,
+    ink: &Ink,
+    press: impl Fn(&mut Desk) + 'static,
+) -> El {
+    let chevron = if open {
+        &icons::CHEVRON
+    } else {
+        &icons::CHEVRON_RIGHT
+    };
+    pressable(format!("host-{label}"), ink)
+        .w_full()
+        .h(26.0)
+        .px(6.0)
+        .gap(5.0)
+        .radius(6.0)
+        .items_center()
+        .on_press(press)
+        .child(rune::icon(chevron, 12.0).color(ink.dim))
+        .child(
+            text(label.to_owned())
+                .font(LABEL_STRONG)
+                .color(ink.text)
+                .truncate(),
+        )
+        .child(el().grow(1.0))
+        .children(count.map(|count| text(count).font(CAPTION).color(ink.dim)))
+}
+
+/// A session on another machine. Pressing it moves the window there, unless
+/// that machine's only route is ssh.
+fn glance_row(host: Option<String>, label: &str, glance: &Glance, dial: bool, ink: &Ink) -> El {
+    let terminals = match glance.terminals {
+        1 => "1 terminal".to_owned(),
+        n => format!("{n} terminals"),
+    };
+    let row = row()
+        .key(format!("glance-{label}-{}", glance.name))
+        .w_full()
+        .min_h(26.0)
+        .px(6.0)
+        .py(4.0)
+        .gap(6.0)
+        .radius(7.0)
+        .items_center()
+        .child(el().w(14.0))
+        .child(
+            text(glance.name.clone())
+                .font(NAME)
+                .color(ink.text.alpha(0.62))
+                .truncate(),
+        )
+        .child(el().grow(1.0))
+        .child(text(terminals).font(CAPTION).color(ink.dim));
+    if !dial {
+        return row;
+    }
+    let session = glance.name.clone();
+    row.hover(ink.hover)
+        .cursor(rune::Cursor::Pointer)
+        .on_press(move |d: &mut Desk| d.open_on(host.clone(), session.clone()))
+}
+
+/// Every machine but this window's, folded until pressed.
+fn other_machines(desk: &Desk, ink: &Ink) -> El {
+    let machines = &desk.machines;
+    let local = machines.current.is_some().then_some((None, LOCAL, true));
+    let remotes = machines
+        .hosts
+        .iter()
+        .filter(|host| machines.current.as_ref() != Some(&host.name))
+        .map(|host| {
+            (
+                Some(host.name.clone()),
+                host.name.as_str(),
+                !host.needs_direct,
+            )
+        });
+    let mut list = col().w_full().gap(1.0).px(8.0).pt(10.0);
+    for (host, label, dial) in local.into_iter().chain(remotes) {
+        let open = machines.expanded.contains(&host);
+        let listed = machines.glances.get(&host);
+        let count = match listed {
+            Some(Ok(sessions)) => Some(sessions.len().to_string()),
+            Some(Err(_)) => Some("offline".to_owned()),
+            None => None,
+        };
+        let held = host.clone();
+        list = list.child(host_header(label, open, count, ink, move |d: &mut Desk| {
+            d.toggle_host(held.clone());
+        }));
+        if !open {
+            continue;
+        }
+        let note = |words: String| {
+            el().w_full()
+                .px(26.0)
+                .py(3.0)
+                .child(text(words).font(CAPTION).color(ink.dim).truncate())
+        };
+        list = match listed {
+            Some(Ok(sessions)) if sessions.is_empty() => list.child(note("No sessions".to_owned())),
+            Some(Ok(sessions)) => sessions.iter().fold(list, |list, glance| {
+                list.child(glance_row(host.clone(), label, glance, dial, ink))
+            }),
+            Some(Err(error)) => list.child(note(error.clone())),
+            None => list.child(note("Listing…".to_owned())),
+        };
+    }
+    list
+}
+
+/// A word to press at the foot of the sidebar. Under the pointer it shows
+/// the chord that does the same, so the keys get learned where the mouse
+/// already is.
+fn foot(
+    desk: &Desk,
+    label: &'static str,
+    key: &'static str,
+    action: Shortcut,
+    ink: &Ink,
+    press: fn(&mut Desk),
+) -> El {
+    let hovered = desk.foot_hover == Some(key);
+    let chord = keys::command(action).map(keys::Command::hint);
     pressable(key, ink)
         .h(26.0)
         .px(6.0)
@@ -290,14 +433,36 @@ fn foot(label: &'static str, key: &'static str, ink: &Ink, press: fn(&mut Desk))
         .radius(6.0)
         .items_center()
         .on_press(press)
+        .on_hover_change(move |d: &mut Desk, inside, _| {
+            if inside {
+                d.foot_hover = Some(key);
+            } else if d.foot_hover == Some(key) {
+                d.foot_hover = None;
+            }
+        })
         .child(rune::icon(&icons::PLUS, 12.0).color(ink.dim))
         .child(text(label).font(LABEL).color(ink.dim))
+        .child(match chord.filter(|_| hovered) {
+            Some(chord) => text(chord).font(CAPTION).color(ink.dim),
+            None => text(""),
+        })
 }
 
 pub fn view(desk: &Desk, ink: &Ink, inset: f32) -> El {
     let topology = desk.topology.as_ref();
     let counts = topology.map_or_else(HashMap::new, |t| waiting_by_session(desk, t));
-    let list = topology.map_or_else(col, |t| session_list(desk, t, &counts, ink));
+    let folded = desk.machines.folded;
+    let list = topology
+        .filter(|_| !folded)
+        .map_or_else(col, |t| session_list(desk, t, &counts, ink));
+    let here = desk.machines.current.clone();
+    let this_machine = host_header(
+        desk.machines.label(),
+        !folded,
+        topology.map(|t| t.sessions.len().to_string()),
+        ink,
+        move |d: &mut Desk| d.toggle_host(here.clone()),
+    );
     let waiting = desk.inbox.approvals.len() + counts.values().sum::<usize>();
     col()
         .w(SIDEBAR_W)
@@ -324,7 +489,9 @@ pub fn view(desk: &Desk, ink: &Ink, inset: f32) -> El {
                 .scroll(rune::ScrollSpec {
                     stick_bottom: false,
                 })
-                .child(list),
+                .child(el().w_full().px(8.0).child(this_machine))
+                .child(list)
+                .child(other_machines(desk, ink)),
         )
         .child(
             row()
@@ -332,7 +499,21 @@ pub fn view(desk: &Desk, ink: &Ink, inset: f32) -> El {
                 .px(8.0)
                 .py(6.0)
                 .gap(2.0)
-                .child(foot("Terminal", "new-terminal", ink, Desk::new_terminal))
-                .child(foot("Session", "new-session", ink, Desk::new_session)),
+                .child(foot(
+                    desk,
+                    "Terminal",
+                    "new-terminal",
+                    Shortcut::NewTerminal,
+                    ink,
+                    Desk::new_terminal,
+                ))
+                .child(foot(
+                    desk,
+                    "Session",
+                    "new-session",
+                    Shortcut::NewSession,
+                    ink,
+                    Desk::new_session,
+                )),
         )
 }

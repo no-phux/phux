@@ -13,6 +13,17 @@ use crate::app::desk::{self, Desk, Modal};
 pub(crate) fn prepare(desk: &mut Desk, window: &mut Window, cx: &mut Context<Desk>) {
     match desk.modal.clone() {
         Modal::None => {}
+        Modal::Mirror { .. } => {
+            let input = modal_input(
+                desk,
+                InputSlot::MirrorTarget,
+                "",
+                "Source name or page title / URL fragment",
+                window,
+                cx,
+            );
+            input.update(cx, |input, cx| input.focus(window, cx));
+        }
         Modal::Capture => desk.prepare_capture(window, cx),
         Modal::AgentFleet => {
             desk.fleet_view.open();
@@ -53,28 +64,7 @@ pub(crate) fn prepare(desk: &mut Desk, window: &mut Window, cx: &mut Context<Des
         }
         Modal::Session {
             create, current, ..
-        } => {
-            let name = modal_input(
-                desk,
-                InputSlot::SessionName,
-                if create { "" } else { &current },
-                "Session name",
-                window,
-                cx,
-            );
-            if create {
-                let directory = desk.focused_cwd().unwrap_or_default();
-                modal_input(
-                    desk,
-                    InputSlot::SessionDir,
-                    &directory,
-                    "Directory",
-                    window,
-                    cx,
-                );
-            }
-            name.update(cx, |input, cx| input.focus(window, cx));
-        }
+        } => prepare_session_fields(desk, create, &current, window, cx),
         Modal::Project { current, .. } => {
             let input = modal_input(
                 desk,
@@ -113,6 +103,35 @@ pub(crate) fn prepare(desk: &mut Desk, window: &mut Window, cx: &mut Context<Des
         | Modal::Paste { .. }
         | Modal::Notifications => window.focus(&desk.focus, cx),
     }
+}
+
+fn prepare_session_fields(
+    desk: &mut Desk,
+    create: bool,
+    current: &str,
+    window: &mut Window,
+    cx: &mut Context<Desk>,
+) {
+    let name = modal_input(
+        desk,
+        InputSlot::SessionName,
+        if create { "" } else { current },
+        "Session name",
+        window,
+        cx,
+    );
+    if create {
+        let directory = desk.focused_cwd().unwrap_or_default();
+        modal_input(
+            desk,
+            InputSlot::SessionDir,
+            &directory,
+            "Directory",
+            window,
+            cx,
+        );
+    }
+    name.update(cx, |input, cx| input.focus(window, cx));
 }
 
 pub(super) fn palette_state(
@@ -224,6 +243,7 @@ impl Desk {
                 self.apply_session(name, directory, window, cx);
             }
             (InputSlot::Project, Some(_)) => self.link_project(Some(value), window, cx),
+            (InputSlot::MirrorTarget, Some(_)) => self.start_resource_mirror(value, window, cx),
             (InputSlot::HostTarget | InputSlot::HostName, Some(_)) => {
                 let target = self.input_value(InputSlot::HostTarget, cx);
                 let name = self.input_value(InputSlot::HostName, cx);

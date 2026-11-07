@@ -1,0 +1,326 @@
+//! Reproducible synthesized/native capture and fanout gates. The warm attach
+//! gate over a real socket is `phux-server`'s `warm_attach` bench.
+
+#![allow(
+    clippy::cast_precision_loss,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::print_stdout,
+    clippy::too_many_lines,
+    missing_docs,
+    reason = "assertion-bearing benchmark binary"
+)]
+
+pub(crate) mod measure;
+#[path = "../../../benchmarks/support.rs"]
+pub(crate) mod support;
+
+use std::hint::black_box;
+use std::time::Duration;
+
+use bytes::Bytes;
+use criterion::{BenchmarkId, Criterion, Throughput};
+use libghostty_vt::build_info::{self, OptimizeMode};
+use measure::{
+    build_terminal, build_unicode_ready_control, fanout_measurement,
+    native_progressive_measurement, retained_budget_holds, synthesized_measurement,
+};
+use support::{
+    Comparison, Corpus, HISTORY_PAGE_LIMIT, MEASURED_SAMPLES, Threshold, WARMUP_SAMPLES,
+    deterministic_page, percentile,
+};
+
+#[global_allocator]
+static ALLOC: dhat::Alloc = dhat::Alloc;
+
+fn criterion_capture(c: &mut Criterion) {
+    let mut group = c.benchmark_group("server-capture");
+    for corpus in Corpus::ALL {
+        let mut terminal = build_terminal(corpus);
+        for _ in 0..WARMUP_SAMPLES {
+            black_box(synthesized_measurement(&terminal));
+            black_box(native_progressive_measurement(&mut terminal));
+        }
+        group.throughput(Throughput::Elements(1));
+        group.bench_with_input(
+            BenchmarkId::new("synthesized-ready-and-full-history", corpus.label()),
+            &corpus,
+            |b, _| b.iter(|| black_box(synthesized_measurement(black_box(&terminal)))),
+        );
+        group.bench_with_input(
+            BenchmarkId::new("native-progressive-capture", corpus.label()),
+            &corpus,
+            |b, _| b.iter(|| black_box(native_progressive_measurement(black_box(&mut terminal)))),
+        );
+    }
+    group.finish();
+}
+
+fn criterion_fanout(c: &mut Criterion) {
+    let payload = Bytes::from(deterministic_page(0, 64 * 1024));
+    let mut group = c.benchmark_group("server-native-raw-fanout");
+    for clients in [1_usize, 2, 8] {
+        group.throughput(Throughput::Bytes(
+            u64::try_from(payload.len() * 256).expect("bounded throughput bytes"),
+        ));
+        group.bench_with_input(
+            BenchmarkId::from_parameter(clients),
+            &clients,
+            |b, &count| {
+                b.iter(|| black_box(fanout_measurement(count, 256, &payload)));
+            },
+        );
+    }
+    group.finish();
+}
+
+fn checked_capture_gates() {
+    let optimize_mode = build_info::optimize_mode().expect("libghostty build mode");
+    assert_eq!(
+        optimize_mode,
+        OptimizeMode::ReleaseFast,
+        "performance gates require a ReleaseFast libghostty build"
+    );
+    println!("metric=libghostty-optimize-mode mode={optimize_mode:?}");
+    let ready_only = std::env::var_os("PHUX_CAPTURE_READY_ONLY").is_some();
+    let mut history_ready_p95 = None;
+    for corpus in Corpus::ALL {
+        let mut terminal = build_terminal(corpus);
+        for _ in 0..WARMUP_SAMPLES {
+            black_box(native_progressive_measurement(&mut terminal));
+        }
+        let mut native_ready = Vec::with_capacity(MEASURED_SAMPLES);
+        let mut synthesized_ready = Vec::with_capacity(MEASURED_SAMPLES);
+        let mut synthesized_full = Vec::with_capacity(MEASURED_SAMPLES);
+        let mut engine_ready_bytes = 0_usize;
+        let mut protocol_ready_bytes = 0_usize;
+        let mut engine_history_bytes = 0_usize;
+        let mut native_chunks = 0_usize;
+        let mut native_payload_copies = 0_usize;
+        let mut synthesized_ready_bytes = 0_usize;
+        let mut synthesized_full_bytes = 0_usize;
+        for _ in 0..MEASURED_SAMPLES {
+            let native = native_progressive_measurement(&mut terminal);
+            let synthesized = synthesized_measurement(&terminal);
+            native_ready.push(native.protocol_ready);
+            synthesized_ready.push(synthesized.protocol_ready);
+            synthesized_full.push(synthesized.full_history);
+            engine_ready_bytes = native.engine_ready_bytes;
+            protocol_ready_bytes = native.protocol_ready_bytes;
+            engine_history_bytes = native.engine_history_bytes;
+            native_chunks = native.chunks;
+            native_payload_copies = native.payload_copies;
+            synthesized_ready_bytes = synthesized.protocol_ready_bytes;
+            synthesized_full_bytes = synthesized.full_history_bytes;
+            assert_eq!(native.protocol_ready_bytes, native.engine_ready_bytes);
+            assert!(native.full_history_bytes >= native.protocol_ready_bytes);
+        }
+        let native_p95 = percentile(&mut native_ready, 95);
+        let synth_p95 = percentile(&mut synthesized_ready, 95);
+        let synth_full_p95 = percentile(&mut synthesized_full, 95);
+        println!(
+            "metric=codec-ready-p95 corpus={} clients=1 native_progressive_us={} synthesized_us={} engine_ready_bytes={engine_ready_bytes} protocol_ready_bytes={protocol_ready_bytes} engine_history_bytes={engine_history_bytes} total_chunks={native_chunks} payload_copies={native_payload_copies} history_deferred=true synthesized_ready_bytes={} synthesized_full_history_p95_us={} synthesized_full_history_bytes={}",
+            corpus.label(),
+            native_p95.as_micros(),
+            synth_p95.as_micros(),
+            synthesized_ready_bytes,
+            synth_full_p95.as_micros(),
+            synthesized_full_bytes,
+        );
+        if corpus == Corpus::Tui200x60 {
+            Threshold {
+                metric: "codec-ready-p95",
+                corpus,
+                clients: 1,
+                comparison: Comparison::AtMost,
+                observed: native_p95.as_secs_f64() * 1_000.0,
+                limit: 25.0,
+                unit: "ms",
+            }
+            .check()
+            .unwrap_or_else(|error| panic!("{error}"));
+        }
+        if corpus == Corpus::Unicode50k {
+            history_ready_p95 = Some(native_p95);
+        }
+
+        if corpus == Corpus::Unicode50k && !ready_only {
+            let mut page_latencies = Vec::with_capacity(WARMUP_SAMPLES);
+            let mut full_bytes = 0_usize;
+            let mut ready_boundary_bytes = 0_usize;
+            let mut history_bytes = 0_usize;
+            let mut chunks = 0_usize;
+            let mut pages = 0_usize;
+            let mut max_page_bytes = 0_usize;
+            let mut payload_copies = 0_usize;
+            for _ in 0..WARMUP_SAMPLES {
+                let full = native_progressive_measurement(&mut terminal);
+                page_latencies.push(full.history_step_max);
+                full_bytes = full.full_history_bytes;
+                ready_boundary_bytes = full.engine_ready_bytes;
+                history_bytes = full.engine_history_bytes;
+                chunks = full.chunks;
+                pages = full.history_pages;
+                max_page_bytes = full.history_page_max_bytes;
+                payload_copies = full.payload_copies;
+            }
+            let page_p95 = percentile(&mut page_latencies, 95);
+            println!(
+                "metric=native-progressive-history corpus={} clients=1 page_step_p95_us={} full_bytes={} engine_ready_bytes={} engine_history_bytes={} total_chunks={} pages={} max_page_bytes={} payload_copies={} history_deferred=true",
+                corpus.label(),
+                page_p95.as_micros(),
+                full_bytes,
+                ready_boundary_bytes,
+                history_bytes,
+                chunks,
+                pages,
+                max_page_bytes,
+                payload_copies,
+            );
+            Threshold {
+                metric: "history-page-bytes",
+                corpus,
+                clients: 1,
+                comparison: Comparison::AtMost,
+                observed: max_page_bytes as f64,
+                limit: HISTORY_PAGE_LIMIT as f64,
+                unit: "bytes",
+            }
+            .check()
+            .unwrap_or_else(|error| panic!("{error}"));
+        }
+    }
+    if ready_only {
+        return;
+    }
+
+    let history = history_ready_p95.expect("50k history READY sample");
+    let mut control_terminal = build_unicode_ready_control();
+    for _ in 0..WARMUP_SAMPLES {
+        black_box(native_progressive_measurement(&mut control_terminal));
+    }
+    let mut control_samples = Vec::with_capacity(MEASURED_SAMPLES);
+    for _ in 0..MEASURED_SAMPLES {
+        control_samples.push(native_progressive_measurement(&mut control_terminal).protocol_ready);
+    }
+    let control = percentile(&mut control_samples, 95);
+    let history_ratio = history.as_secs_f64() / control.as_secs_f64().max(f64::EPSILON);
+    println!(
+        "metric=50k-ready-slowdown corpus={} clients=1 control_p95_us={} history_p95_us={} ratio={history_ratio:.3}",
+        Corpus::Unicode50k.label(),
+        control.as_micros(),
+        history.as_micros(),
+    );
+}
+
+fn checked_fanout_gates() {
+    let payload = Bytes::from(deterministic_page(1, 64 * 1024));
+    let mut throughput = Vec::new();
+    for clients in [1_usize, 2, 8] {
+        for _ in 0..WARMUP_SAMPLES {
+            black_box(fanout_measurement(clients, 256, &payload));
+        }
+        let mut elapsed = Vec::with_capacity(MEASURED_SAMPLES);
+        let mut copies = 0_usize;
+        let mut peak = 0_usize;
+        for _ in 0..MEASURED_SAMPLES {
+            let sample = fanout_measurement(clients, 256, &payload);
+            elapsed.push(sample.elapsed);
+            copies = copies.saturating_add(sample.payload_copies);
+            peak = peak.max(sample.peak_retained_bytes);
+            black_box(sample.delivered_bytes);
+        }
+        let p95 = percentile(&mut elapsed, 95);
+        let bytes_per_second = (payload.len() * 256) as f64 / p95.as_secs_f64();
+        println!(
+            "metric=raw-fanout-throughput corpus={} clients={} bytes_per_second={:.0} copies={} peak_retained_bytes={peak}",
+            Corpus::Tui200x60.label(),
+            clients,
+            bytes_per_second,
+            copies,
+        );
+        Threshold {
+            metric: "payload-copies-per-extra-native-subscriber",
+            corpus: Corpus::Tui200x60,
+            clients,
+            comparison: Comparison::AtMost,
+            observed: copies as f64,
+            limit: 0.0,
+            unit: "copies",
+        }
+        .check()
+        .unwrap_or_else(|error| panic!("{error}"));
+        assert!(
+            retained_budget_holds(payload.len(), 16 * 1024 * 1024, HISTORY_PAGE_LIMIT, peak,),
+            "retained-memory budget failed: metric=peak-retained-memory corpus={} clients={} observed={} active={} cache={} two_chunks={}",
+            Corpus::Tui200x60.label(),
+            clients,
+            peak,
+            payload.len(),
+            16 * 1024 * 1024,
+            HISTORY_PAGE_LIMIT * 2,
+        );
+        throughput.push((clients, bytes_per_second));
+    }
+    let baseline = throughput[0].1;
+    let eight = throughput[2].1;
+    Threshold {
+        metric: "eight-client-raw-throughput-ratio",
+        corpus: Corpus::Tui200x60,
+        clients: 8,
+        comparison: Comparison::AtLeast,
+        observed: eight / baseline,
+        limit: 0.90,
+        unit: "ratio",
+    }
+    .check()
+    .unwrap_or_else(|error| panic!("{error}"));
+}
+
+fn dhat_allocation_probe() {
+    let mut terminal = build_terminal(Corpus::Unicode50k);
+    let _profiler = dhat::Profiler::builder().testing().build();
+    let before = dhat::HeapStats::get();
+    let capture = native_progressive_measurement(&mut terminal);
+    let after = dhat::HeapStats::get();
+    println!(
+        "metric=native-progressive-rust-capture-allocations corpus={} clients=1 blocks={} bytes={} peak_bytes={} engine_ready_bytes={} protocol_ready_bytes={} engine_history_bytes={} total_chunks={} pages={} payload_copies={} history_deferred=true",
+        Corpus::Unicode50k.label(),
+        after.total_blocks.saturating_sub(before.total_blocks),
+        after.total_bytes.saturating_sub(before.total_bytes),
+        after.max_bytes.saturating_sub(before.curr_bytes),
+        capture.engine_ready_bytes,
+        capture.protocol_ready_bytes,
+        capture.engine_history_bytes,
+        capture.chunks,
+        capture.history_pages,
+        capture.payload_copies,
+    );
+}
+
+fn main() {
+    if std::env::var_os("PHUX_CAPTURE_DHAT").is_some() {
+        dhat_allocation_probe();
+        return;
+    }
+    if std::env::var_os("PHUX_CAPTURE_READY_ONLY").is_some() {
+        checked_capture_gates();
+        return;
+    }
+    if std::env::var_os("PHUX_CAPTURE_CHECK_ONLY").is_some() {
+        checked_capture_gates();
+        checked_fanout_gates();
+        return;
+    }
+    let mut criterion = Criterion::default()
+        .warm_up_time(Duration::from_secs(2))
+        .measurement_time(Duration::from_secs(5))
+        .sample_size(30)
+        .configure_from_args();
+    criterion_capture(&mut criterion);
+    criterion_fanout(&mut criterion);
+    criterion.final_summary();
+    drop(criterion);
+    checked_capture_gates();
+    checked_fanout_gates();
+}

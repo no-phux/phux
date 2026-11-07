@@ -42,7 +42,7 @@ test("all runner selectors are standard public capacity", () => {
 });
 
 test("desktop qualifies both Apple generations and releases from its supported floor", () => {
-  const desktop = job(workflow("ci.yml"), "desktop");
+  const desktop = job(workflow("desktop-lane.yml"), "desktop");
   const matrix = table(table(desktop["strategy"])["matrix"]);
   const runners = list(matrix["include"]).map((entry) => table(entry)["os"]);
   expect(runners).toContain("macos-26");
@@ -70,9 +70,15 @@ test("closing a pull request cancels its in-flight ci run", () => {
 test("pull request lanes never write to the shared cache budget", () => {
   // The 10 GB Actions cache is LRU across every ref, and a PR entry is
   // restorable only from that PR: any PR write evicts the warm main entries.
-  const pullRequest = workflowNames()
+  const triggered = workflowNames()
     .map(workflow)
     .filter((document) => "pull_request" in table(document["on"]));
+  // A called workflow runs under its caller's event, so it is a PR lane too.
+  const called = triggered
+    .flatMap((document) => Object.values(jobs(document)).map(uses))
+    .filter((ref) => ref.startsWith("./.github/workflows/"))
+    .map((ref) => workflow(ref.replace("./.github/workflows/", "")));
+  const pullRequest = [...triggered, ...called];
   const all: Table[] = [
     ...steps(action("setup-rust-lane")),
     ...pullRequest.flatMap((document) => Object.values(jobs(document)).flatMap(steps)),

@@ -66,7 +66,8 @@ fn command_terminal(command: &Command) -> Option<&WireResourceId> {
         | Command::PutFile { terminal_id, .. }
         | Command::Checkout { terminal_id, .. }
         | Command::Transcribe { terminal_id, .. }
-        | Command::AppendResourceOutput { terminal_id, .. } => Some(terminal_id),
+        | Command::AppendResourceOutput { terminal_id, .. }
+        | Command::PublishResourceState { terminal_id, .. } => Some(terminal_id),
         Command::ResourceTerminate { target, .. } => Some(&target.resource),
         _ => None,
     }

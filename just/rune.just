@@ -6,6 +6,11 @@ rune-check: worktree-claim
     bash clients/rune/scripts/check.sh
 
 [group('rune')]
+[doc('Film the themes demo headless into clients/rune/demo/themes.mp4 (needs ffmpeg)')]
+rune-demo: build
+    bash clients/rune/scripts/demo.sh target/debug/phux
+
+[group('rune')]
 [doc("Advisories, licenses and sources over Rune's own lockfile")]
 rune-deny:
     cargo-deny --manifest-path clients/rune/Cargo.toml --config clients/rune/deny.toml --locked check

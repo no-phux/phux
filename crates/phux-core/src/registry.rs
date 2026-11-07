@@ -367,10 +367,14 @@ fn facets(r: &Resource, cwd_default: PathBuf) -> (Option<TerminalFacet>, Option<
                     dims: DEFAULT_DIMS,
                     cwd,
                     title: None,
+                    program_title: None,
                 }),
                 None,
             )
         }
+        // A document kind has no facet of its own: its state lives in its
+        // engine, and a surface's geometry is its newest image's.
+        (ResourceKind::AccessibilityTree | ResourceKind::PixelSurface, _) => (None, None),
         (ResourceKind::AgentSession, launch) => {
             let (provider, native_id) = match launch {
                 Some(LaunchSpec::Agent(a)) => (a.provider.clone(), a.native_id.clone()),

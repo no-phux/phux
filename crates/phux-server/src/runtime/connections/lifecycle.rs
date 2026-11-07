@@ -1,7 +1,7 @@
 use super::dispatch::handle_client;
 use crate::hooks::HookEvent;
 use crate::runtime::ServerError;
-use crate::runtime::input_lane::InputLaneHandle;
+use crate::runtime::apps::terminal::input_lane::InputLaneHandle;
 use crate::state::{ClientId, Outbound, ServerState, SharedState};
 use crate::transport::{AcceptErrorDisposition, Incoming, WS_REJECTION_WARN_INTERVAL};
 use phux_protocol::PROTOCOL_VERSION;
@@ -83,9 +83,7 @@ fn attached_session_name(s: &ServerState, client_id: ClientId) -> Option<Detache
 /// best-effort, so this is safe under the state lock.
 fn release_actor_consumers(s: &ServerState, client_id: ClientId) {
     for handle in s.subscribed_resource_handles(client_id) {
-        if let Some(app) = crate::runtime::apps::app_for(handle.kind) {
-            app.release_consumer(&handle, client_id);
-        }
+        crate::runtime::apps::app_for(handle.kind).release_consumer(&handle, client_id);
     }
 }
 
