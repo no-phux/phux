@@ -49,7 +49,22 @@ keeps its `PixelSurfacePngV1` name. `phux agent surface mirror` and `phux
 agent page mirror` take `--format png|jpeg` (default png, which every viewer
 decodes), `--quality 1..100` (default 70) and `--max-width PX`. A page
 scales its screencast in the browser and maps clicks by each frame's size;
-the window mirror re-encodes its capture with macOS's `sips`.
+the window mirror re-encodes its capture with macOS's `sips`, and on Linux
+asks `grim` for the format and scale.
+
+On Linux both mirrors run with no grant. `phux agent tree mirror APP` reads
+AT-SPI over D-Bus: APP is the application's AT-SPI name (or `--pid` its
+process), the accessibility bus comes from the session bus, and the document
+has the macOS shape (`role`, `title`, `description`, `value`, `children`)
+with AT-SPI role names such as `push button`. `phux agent surface mirror`
+captures with `grim` on a wlroots compositor with screencopy (Hyprland,
+Sway): `display` is every output, `display:OUTPUT` one, and a window `App`
+or `App:title` is a Hyprland client's rectangle on a shown workspace, so
+window targets need Hyprland. A pane whose server started outside the
+graphical session finds `WAYLAND_DISPLAY` and `HYPRLAND_INSTANCE_SIGNATURE`
+under `$XDG_RUNTIME_DIR`. A compositor that withholds frames (display
+asleep, session locked) fails the capture after 10 s, before any surface is
+opened.
 
 Agents read documents over MCP the way they read panes: `phux_documents`
 lists them, `phux_tree_snapshot` and `phux_tree_wait` read a tree's JSON, and

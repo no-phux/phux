@@ -1,24 +1,29 @@
-//! `phux agent surface mirror WINDOW`: the macOS producer. It captures a
-//! window (or the main display) with the system's `screencapture` and
-//! publishes the image whenever it changes. `screencapture` writes a PNG;
-//! JPEG frames and `--max-width` re-encode it with the system's `sips`.
+//! `phux agent surface mirror WINDOW`: capture a window or a display and
+//! publish the image whenever it changes.
 //!
-//! The capture needs the Screen Recording grant, which macOS ties to the
-//! application that launched this process (the terminal, or the phux
-//! desktop app). Without it, macOS hands over an image with no window
-//! content rather than an error.
+//! On macOS the system's `screencapture` writes a PNG; JPEG frames and
+//! `--max-width` re-encode it with the system's `sips`. The capture needs the
+//! Screen Recording grant, which macOS ties to the application that launched
+//! this process (the terminal, or the phux desktop app). Without it, macOS
+//! hands over an image with no window content rather than an error.
+//!
+//! On Linux, `grim` captures from a wlroots compositor (Hyprland, Sway); see
+//! `surface_grim`.
 
 use std::path::PathBuf;
 use std::process::ExitCode;
 
 /// How the mirror was asked to run.
 #[cfg_attr(
-    not(target_os = "macos"),
-    expect(dead_code, reason = "only the macOS producer reads the arguments")
+    not(any(target_os = "macos", target_os = "linux")),
+    expect(
+        dead_code,
+        reason = "only the macOS and Linux producers read the arguments"
+    )
 )]
 pub(super) struct MirrorArgs<'a> {
     /// The window, as `App` or `App:title fragment`; `display` for the main
-    /// display.
+    /// display (on Linux every output, or `display:NAME` for one).
     pub(super) window: &'a str,
     /// The CoreGraphics window id, when known.
     pub(super) window_id: Option<u32>,
@@ -32,10 +37,10 @@ pub(super) struct MirrorArgs<'a> {
     pub(super) socket: Option<PathBuf>,
 }
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
 #[expect(
     clippy::needless_pass_by_value,
-    reason = "the stub keeps the macOS producer's signature"
+    reason = "the stub keeps the producers' signature"
 )]
 pub(super) fn run_mirror(args: MirrorArgs<'_>) -> ExitCode {
     use crate::commands::json_err;
@@ -44,188 +49,182 @@ pub(super) fn run_mirror(args: MirrorArgs<'_>) -> ExitCode {
         args.json,
         &json_err::CliError::new(
             json_err::codes::USAGE_ERROR,
-            "`phux agent surface mirror` captures with macOS's screencapture; this build is not macOS",
-            "run the mirror on the Mac that shows the window",
+            "`phux agent surface mirror` captures on macOS or a wlroots Wayland compositor; this build is neither",
+            "run the mirror on the machine that shows the window",
         ),
         EXIT_USAGE,
     )
 }
 
+#[cfg(target_os = "linux")]
+use super::surface_grim as platform;
 #[cfg(target_os = "macos")]
+use macos as platform;
+
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 pub(super) fn run_mirror(args: MirrorArgs<'_>) -> ExitCode {
-    macos::run(args)
+    use phux_client::tree::{self, Kind};
+    use phux_server::runtime::default_socket_path;
+    use std::time::Duration;
+
+    use crate::commands::agent::tree::{dial, mirror_pane, report};
+    use crate::commands::{cli_runtime, json_err};
+    use crate::exit_codes::EXIT_USAGE;
+
+    let MirrorArgs {
+        window,
+        window_id,
+        pane,
+        interval_ms,
+        frames,
+        json,
+        socket,
+    } = args;
+    let target = match platform::target(window, window_id) {
+        Ok(target) => target,
+        Err(message) => {
+            return json_err::emit(
+                json,
+                &json_err::CliError::new(
+                    json_err::codes::NO_SUCH_TARGET,
+                    message,
+                    platform::TARGET_HINT,
+                ),
+                EXIT_USAGE,
+            );
+        }
+    };
+    let rt = match cli_runtime() {
+        Ok(rt) => rt,
+        Err(code) => return code,
+    };
+    rt.block_on(async move {
+        let socket_path = socket.unwrap_or_else(default_socket_path);
+        let pane = match mirror_pane(&socket_path, pane, "agent surface mirror", json).await {
+            Ok(pane) => pane,
+            Err(code) => return code,
+        };
+        let label = format!("{target:?}");
+        let mut capture = platform::capturer(target, frames);
+        // A refused capture must not leave an empty surface behind.
+        let first = match capture() {
+            Ok(bytes) => bytes,
+            Err(message) => return refused(json, &message),
+        };
+        let mut conn = match dial(&socket_path, json).await {
+            Ok(conn) => conn,
+            Err(code) => return code,
+        };
+        let opened = match tree::open_kind(&mut conn, Kind::Surface, &pane, window).await {
+            Ok(opened) => opened,
+            Err(err) => return report(json, &err),
+        };
+        let resource = phux_client::selector::format_terminal_id(&opened.resource);
+        if json {
+            outln!(
+                "{}",
+                serde_json::json!({ "schema_version": 1, "resource": resource, "target": label })
+            );
+        } else {
+            outln!("{resource}");
+        }
+        let interval = Duration::from_millis(interval_ms.max(100));
+        publish_until_gone(&mut conn, &opened.resource, capture, first, interval, json).await
+    })
+}
+
+/// Publish every changed capture until Ctrl-C, or until three captures in a
+/// row fail.
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+#[allow(
+    clippy::future_not_send,
+    reason = "the CLI runtime is single-threaded; the connection is not shared"
+)]
+async fn publish_until_gone(
+    conn: &mut phux_client::attach::connection::Connection,
+    resource: &phux_protocol::ids::ResourceId,
+    mut capture: impl FnMut() -> Result<Vec<u8>, String>,
+    first: Vec<u8>,
+    interval: std::time::Duration,
+    json: bool,
+) -> ExitCode {
+    use crate::commands::agent::tree::report;
+    use phux_client::tree;
+
+    if let Err(err) = tree::publish(conn, resource, first.clone()).await {
+        return report(json, &err);
+    }
+    let mut last = Some(first);
+    let mut misses = 0;
+    loop {
+        match capture() {
+            Ok(bytes) => {
+                misses = 0;
+                if last.as_deref() != Some(bytes.as_slice()) {
+                    if let Err(err) = tree::publish(conn, resource, bytes.clone()).await {
+                        return report(json, &err);
+                    }
+                    last = Some(bytes);
+                }
+            }
+            Err(message) => {
+                misses += 1;
+                if misses >= 3 {
+                    return refused(json, &format!("capture failed three times: {message}"));
+                }
+            }
+        }
+        tokio::select! {
+            _ = tokio::signal::ctrl_c() => return ExitCode::SUCCESS,
+            () = tokio::time::sleep(interval) => {}
+        }
+    }
+}
+
+/// A capture the platform refused or that failed.
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+fn refused(json: bool, message: &str) -> ExitCode {
+    use crate::commands::json_err;
+    json_err::emit(
+        json,
+        &json_err::CliError::new(json_err::codes::WORKLOAD, message, platform::REFUSED_HINT),
+        crate::exit_codes::EXIT_FAILURE,
+    )
 }
 
 #[cfg(target_os = "macos")]
 mod macos {
-    use std::process::{Command, ExitCode};
-    use std::time::Duration;
+    use std::process::Command;
 
-    use phux_client::tree::{self, Kind};
-    use phux_protocol::ids::ResourceId;
-    use phux_server::runtime::default_socket_path;
-
-    use super::MirrorArgs;
     use crate::commands::agent::tree::surface::Frames;
-    use crate::commands::agent::tree::{dial, report, resolve};
-    use crate::commands::{cli_runtime, json_err};
-    use crate::exit_codes::{EXIT_FAILURE, EXIT_USAGE};
 
     /// What `screencapture` is pointed at.
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-    enum Target {
+    pub(super) enum Target {
         Window(u32),
         MainDisplay,
     }
 
-    pub(super) fn run(args: MirrorArgs<'_>) -> ExitCode {
-        let MirrorArgs {
-            window,
-            window_id,
-            pane,
-            interval_ms,
-            frames,
-            json,
-            socket,
-        } = args;
-        let target = match (window_id, window) {
+    pub(super) const TARGET_HINT: &str =
+        "name a visible window as `App` or `App:title`, pass `--window-id`, or `display`";
+
+    /// macOS grants Screen Recording to the app that owns the process, and a
+    /// phux pane's processes belong to the server, which no grant reaches.
+    pub(super) const REFUSED_HINT: &str = "start the mirror from the phux desktop app (Mirror surface) or from Terminal, and grant that app Screen Recording; a phux pane cannot hold the grant";
+
+    pub(super) fn target(window: &str, window_id: Option<u32>) -> Result<Target, String> {
+        match (window_id, window) {
             (Some(id), _) => Ok(Target::Window(id)),
             (None, "display") => Ok(Target::MainDisplay),
             (None, name) => window_by_name(name).map(Target::Window),
-        };
-        let target = match target {
-            Ok(target) => target,
-            Err(message) => {
-                return json_err::emit(
-                    json,
-                    &json_err::CliError::new(
-                        json_err::codes::NO_SUCH_TARGET,
-                        message,
-                        "name a visible window as `App` or `App:title`, pass `--window-id`, or `display`",
-                    ),
-                    EXIT_USAGE,
-                );
-            }
-        };
-        let rt = match cli_runtime() {
-            Ok(rt) => rt,
-            Err(code) => return code,
-        };
-        rt.block_on(async move {
-            let socket_path = socket.unwrap_or_else(default_socket_path);
-            let pane = match pane {
-                Some(selector) => {
-                    match resolve(&socket_path, selector, "agent surface mirror", json).await {
-                        Ok(pane) => pane,
-                        Err(code) => return code,
-                    }
-                }
-                None => match own_pane() {
-                    Some(pane) => pane,
-                    None => {
-                        return json_err::emit(
-                            json,
-                            &json_err::CliError::new(
-                                json_err::codes::USAGE_ERROR,
-                                "not running in a phux pane and no `--pane` given",
-                                "run the mirror inside a pane, or pass `--pane @N`",
-                            ),
-                            EXIT_USAGE,
-                        );
-                    }
-                },
-            };
-            // A refused capture must not leave an empty surface behind.
-            let first = match capture(target, frames) {
-                Ok(bytes) => bytes,
-                Err(message) => return refused(json, &message),
-            };
-            let mut conn = match dial(&socket_path, json).await {
-                Ok(conn) => conn,
-                Err(code) => return code,
-            };
-            let opened = match tree::open_kind(&mut conn, Kind::Surface, &pane, window).await {
-                Ok(opened) => opened,
-                Err(err) => return report(json, &err),
-            };
-            let resource = phux_client::selector::format_terminal_id(&opened.resource);
-            if json {
-                outln!(
-                    "{}",
-                    serde_json::json!({ "schema_version": 1, "resource": resource, "target": format!("{target:?}") })
-                );
-            } else {
-                outln!("{resource}");
-            }
-            let interval = Duration::from_millis(interval_ms.max(100));
-            let capture = move || capture(target, frames);
-            publish_until_gone(&mut conn, &opened.resource, capture, first, interval, json).await
-        })
-    }
-
-    /// Publish every changed capture until Ctrl-C, or until three captures
-    /// in a row fail.
-    #[allow(
-        clippy::future_not_send,
-        reason = "the CLI runtime is single-threaded; the connection is not shared"
-    )]
-    async fn publish_until_gone(
-        conn: &mut phux_client::attach::connection::Connection,
-        resource: &ResourceId,
-        capture: impl Fn() -> Result<Vec<u8>, String>,
-        first: Vec<u8>,
-        interval: Duration,
-        json: bool,
-    ) -> ExitCode {
-        if let Err(err) = tree::publish(conn, resource, first.clone()).await {
-            return report(json, &err);
-        }
-        let mut last = Some(first);
-        let mut misses = 0;
-        loop {
-            match capture() {
-                Ok(bytes) => {
-                    misses = 0;
-                    if last.as_deref() != Some(bytes.as_slice()) {
-                        if let Err(err) = tree::publish(conn, resource, bytes.clone()).await {
-                            return report(json, &err);
-                        }
-                        last = Some(bytes);
-                    }
-                }
-                Err(message) => {
-                    misses += 1;
-                    if misses >= 3 {
-                        return refused(json, &format!("capture failed three times: {message}"));
-                    }
-                }
-            }
-            tokio::select! {
-                _ = tokio::signal::ctrl_c() => return ExitCode::SUCCESS,
-                () = tokio::time::sleep(interval) => {}
-            }
         }
     }
 
-    /// A capture macOS refused or that failed. macOS grants Screen Recording
-    /// to the app that owns the process, and a phux pane's processes belong
-    /// to the server, which no grant reaches.
-    fn refused(json: bool, message: &str) -> ExitCode {
-        json_err::emit(
-            json,
-            &json_err::CliError::new(
-                json_err::codes::WORKLOAD,
-                message,
-                "start the mirror from the phux desktop app (Mirror surface) or from Terminal, and grant that app Screen Recording; a phux pane cannot hold the grant",
-            ),
-            EXIT_FAILURE,
-        )
-    }
-
-    /// The pane this process runs in, from the injected `PHUX_TERMINAL_ID`.
-    fn own_pane() -> Option<ResourceId> {
-        let raw = std::env::var("PHUX_TERMINAL_ID").ok()?;
-        raw.parse::<u32>().ok().map(ResourceId::local)
+    pub(super) fn capturer(
+        target: Target,
+        frames: Frames,
+    ) -> impl FnMut() -> Result<Vec<u8>, String> {
+        move || capture(target, frames)
     }
 
     /// The on-screen window list as JSON, through the system's JavaScript
