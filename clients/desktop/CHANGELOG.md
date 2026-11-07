@@ -62,6 +62,14 @@
 - Reject raw terminal input and file drops for pending or retained ACP owners
   before filesystem access or remote upload, including during reconnects.
 
+## [0.61.0](https://github.com/no-phux/phux/compare/desktop-v0.60.0...desktop-v0.61.0) (2026-11-07)
+
+
+### Features
+
+* **desktop:** creatures grow with work done in the reef and galaxy ([#2082](https://github.com/no-phux/phux/issues/2082)) ([6008f0e](https://github.com/no-phux/phux/commit/6008f0e291afe1207bb0b0782acb7227d115ccb2))
+* **desktop:** open macos apps as the desktop's own children ([#2076](https://github.com/no-phux/phux/issues/2076)) ([36a51c6](https://github.com/no-phux/phux/commit/36a51c6fb3866f9e2755668390f847682e7d385d))
+
 ## [0.60.0](https://github.com/no-phux/phux/compare/desktop-v0.59.1...desktop-v0.60.0) (2026-11-07)
 
 
