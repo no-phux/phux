@@ -307,26 +307,9 @@ establish that the original mutation never ran. See the [public contract](./publ
 
 ### Terminal execution evidence and durable inspection
 
-Organization activation records and creation receipts add optional TLVs:
-`LAUNCH_DIAGNOSTIC` (`47`, at most 128 bytes of JSON `{stage, errno}`) and
-`PERSISTENCE_PENDING` (`48`, boolean, absent means false). Diagnostic stages
-are `pty`, `spawn`, `cwd`, `exec`, `handshake`, `engine`; errno is an optional
-platform OS error, never the program's exit status. There is no command line,
-path or environment payload. Older clients skip these fields; old stored
-activations without a diagnostic remain readable. Unknown exit evidence
-projects as `Unobserved`, never fabricated exit zero.
-
-`features_ext.DURABLE_RESOURCE_INSPECTION` (`0x20000`) gates filter discriminant
-`4` on the existing `GET_ORGANIZATION`: the discriminant is followed by the
-16-byte durable resource key. It returns at most that one resource row, no
-session rows and no continuation cursor. The existing per-resource inventory
-filter uses current membership and authority even without an engine; hidden
-and missing records both yield an empty resource page. New clients check the
-bit before sending; older requests/filters are unchanged. CLI/MCP expose this
-through the existing resource inspection noun; its durable-key JSON document
-is schema 2, while live-engine inspection remains schema 1.
-
-[File transfer and checkout methods](./protocol-files.md) have their own page.
+The activation diagnostic and persistence TLVs, and the
+`DURABLE_RESOURCE_INSPECTION` filter, are in
+[organization](./organization.md#execution-evidence-and-durable-inspection).
 
 ## Minimal client
 

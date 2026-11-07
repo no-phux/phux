@@ -191,3 +191,36 @@ The [archive resolver](../crates/phux/src/commands/archive.rs) and
 [live-session bridge tests](../crates/phux/src/commands/archive/bridge.rs)
 own this trust seam; [CLI reference](./reference/cli.md#phux-restore) owns the
 current restore/import options.
+
+## Execution evidence and durable inspection
+
+Organization activation records and creation receipts add optional TLVs:
+`LAUNCH_DIAGNOSTIC` (`47`, at most 128 bytes of JSON `{stage, errno}`) and
+`PERSISTENCE_PENDING` (`48`, boolean, absent means false). Diagnostic stages
+are `pty`, `spawn`, `cwd`, `exec`, `handshake`, `engine`; errno is an optional
+platform OS error, never the program's exit status. There is no command line,
+path or environment payload. Older clients skip these fields; old stored
+activations without a diagnostic remain readable. Unknown exit evidence
+projects as `Unobserved`, never fabricated exit zero.
+
+`features_ext.DURABLE_RESOURCE_INSPECTION` (`0x20000`) gates filter discriminant
+`4` on the existing `GET_ORGANIZATION`: the discriminant is followed by the
+16-byte durable resource key. It returns at most that one resource row, no
+session rows and no continuation cursor. The existing per-resource inventory
+filter uses current membership and authority even without an engine; hidden
+and missing records both yield an empty resource page. New clients check the
+bit before sending; older requests/filters are unchanged. CLI/MCP expose this
+through the existing resource inspection noun; its durable-key JSON document
+is schema 2, while live-engine inspection remains schema 1.
+
+[File transfer and checkout methods](./protocol-files.md) have their own page.
+
+### Where the code lives
+
+Terminal workflow code is split at ownership seams: `runtime/commands/`
+separates dispatch, pane construction, attachment generations, inventory,
+input and satellite forwarding; `runtime/organization/` separates pure command
+translation, execution effects, receipt projection and filtered record reads.
+`state/org/lifecycle.rs` owns bounded retries of executor evidence, not effects.
+The core apply module separates transaction assembly, session edits, placement
+and execution transitions. Public entry points and wire identities are unchanged.
