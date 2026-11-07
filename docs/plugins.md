@@ -14,8 +14,8 @@ phux config reload
 `someone/phux-plugin` is shorthand for
 `https://github.com/someone/phux-plugin`. A plugin that lives in a
 subdirectory is `someone/dotfiles/plugins/usage`, or any git URL with
-`--subdir`. `phux config reload` makes the plugin's actions, keys, panes,
-widgets, and sidebar sections appear in attached clients.
+`--subdir`. `phux config reload` shows the plugin's actions, keys, panes,
+widgets, and sidebar sections in attached clients.
 
 **A plugin runs as you.** phux never loads plugin code into the server,
 and every plugin command runs as a separate process, but that is not a
@@ -334,15 +334,16 @@ index document is [plugin-index.schema.json](spec/plugin-index.schema.json).
 
 ## First-party plugins
 
-The optional [first-party plugins](../plugins/README.md) live under `plugins/`:
+The optional [first-party plugins](../plugins/README.md) are in `plugins/`:
 
-- `usage` publishes your AI plan limits to every client, from hooks on
-  `client-attached` and `agent-state-changed`.
+- `usage` publishes your AI plan limits to every client.
+- `agent-stats` publishes each agent's
+  [work done](../plugins/agent-stats/README.md#contract) to every client.
 - `continuum` saves and restores your workspace.
 - `agent-tools` launches and drives a bench of coding agents.
 
-`phux config init --distro starter` writes a config that turns on
-`continuum`, `agent-tools`, and `usage` from a phux source checkout.
+`phux config init --distro starter` turns on all but `agent-stats` from a
+source checkout.
 
 For a minimal plugin to copy, see the working
 [theme example](../examples/plugins/theme-pack/README.md).

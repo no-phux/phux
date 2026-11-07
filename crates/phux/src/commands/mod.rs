@@ -41,6 +41,7 @@ pub(crate) fn verb_remote(command: &Command) -> Option<&str> {
 }
 
 pub(crate) mod agent;
+pub(crate) mod agent_stats;
 pub(crate) mod approvals;
 pub(crate) mod archive;
 pub(crate) mod ask;

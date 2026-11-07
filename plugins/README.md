@@ -11,7 +11,9 @@ the server. The [starter distro](../distros/starter/README.md) enables this set:
 
 [nvim](./nvim/README.md) is first-party too, but the starter does not enable it:
 one Neovim behind many panes, with `:split` opening a real pane. Install it
-with `phux plugin install no-phux/phux/plugins/nvim`.
+with `phux plugin install no-phux/phux/plugins/nvim`. Nor does it enable
+[agent-stats](./agent-stats/README.md): tasks finished and time worked per
+agent, published for every client.
 
 Keep `plugins/` beside `distros/` when copying the bundle. Existing configs
 extending the starter layer pick up its manifest paths automatically. Plugin

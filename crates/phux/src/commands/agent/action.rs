@@ -388,6 +388,16 @@ pub(crate) enum AgentAction {
         #[usage(flatten)]
         flags: UsageFlags,
     },
+    /// Show each pane's agent work: tasks finished and time spent working.
+    ///
+    /// Prints the `phux.agent-stats/v1` document. `--publish` records the
+    /// hook event in the environment, then writes that Global key; the
+    /// agent-stats plugin runs it from its hooks.
+    Stats {
+        /// Record the hook event and write the key.
+        #[usage(long)]
+        publish: bool,
+    },
     /// Internal: read one Claude Code hook payload from stdin and print the
     /// fields the generated shim splices into its `phux` calls, as one line
     /// of shell-safe tokens. Hidden because it is the wrapper's JSON reader,
