@@ -47,17 +47,36 @@ fn pending_terminal(missing: bool, look: &Look) -> AnyElement {
 }
 
 /// A native document: plain JSON or letterboxed PNG, never a terminal entity.
-fn document_body(desk: &Desk, placement: &Placement, look: &Look) -> AnyElement {
+/// An image whose producer takes input gets the pointer and wheel; any
+/// other document is a read-only mirror and captures neither.
+fn document_body(
+    desk: &Desk,
+    placement: &Placement,
+    look: &Look,
+    cx: &mut Context<Desk>,
+) -> AnyElement {
     use crate::connection::documents::Content;
-    let content = placement
-        .terminal_id
-        .as_ref()
-        .and_then(|id| desk.link.as_ref()?.connection.document_content(id));
+    let connection = desk.link.as_ref().map(|link| &link.connection);
+    let id = placement.terminal_id.as_ref();
+    let content = id
+        .zip(connection)
+        .and_then(|(id, c)| c.document_content(id));
+    let interactive = id
+        .zip(connection)
+        .is_some_and(|(id, c)| c.document_input_frame(id).is_some());
+    let refused = id
+        .zip(connection)
+        .and_then(|(id, c)| c.document_input_refused(id));
     let body = match content {
-        Some(Content::Image(image)) => img(image.clone())
-            .size_full()
-            .object_fit(ObjectFit::Contain)
-            .into_any_element(),
+        Some(Content::Image(image)) => {
+            let image = img(image.clone())
+                .size_full()
+                .object_fit(ObjectFit::Contain);
+            match id.filter(|_| interactive) {
+                Some(id) => document_input(image, placement.id.clone(), id.clone(), cx),
+                None => image.into_any_element(),
+            }
+        }
         Some(Content::Text(text)) => div()
             .id(SharedString::from(format!(
                 "document-text-{}",
@@ -75,14 +94,62 @@ fn document_body(desk: &Desk, placement: &Placement, look: &Look) -> AnyElement 
             .child("Waiting for a document from the source…")
             .into_any_element(),
     };
+    let caption = match refused {
+        Some(reason) => format!("View only: {reason}"),
+        None if interactive => "Live mirror · click and type".to_owned(),
+        None => "Read-only mirror".to_owned(),
+    };
     div()
-        .debug_selector(|| "read-only-document".into())
+        .debug_selector(move || {
+            if interactive {
+                "interactive-document"
+            } else {
+                "read-only-document"
+            }
+            .into()
+        })
         .size_full()
         .flex()
         .flex_col()
         .text_color(from_hex(&look.chrome.muted))
-        .child(div().flex_shrink_0().pb(px(8.)).child("Read-only mirror"))
+        .child(div().flex_shrink_0().pb(px(8.)).child(caption))
         .child(div().flex_1().min_h(px(0.)).overflow_hidden().child(body))
+        .into_any_element()
+}
+
+/// A document image that takes input: a press focuses the pane and clicks
+/// the frame pixel under it, and the wheel scrolls the page. The image's
+/// painted bounds are read back for the contain-fit mapping.
+fn document_input(
+    image: gpui::Img,
+    placement: String,
+    id: phux_protocol::ResourceId,
+    cx: &mut Context<Desk>,
+) -> AnyElement {
+    let area = std::rc::Rc::new(std::cell::Cell::new(gpui::Bounds::default()));
+    let (painted, pressed, wheeled) = (area.clone(), area.clone(), area);
+    let wheel_id = id.clone();
+    div()
+        .debug_selector(|| "document-input".into())
+        .size_full()
+        .cursor_pointer()
+        .on_children_prepainted(move |bounds, _, _| {
+            if let Some(bounds) = bounds.first() {
+                painted.set(*bounds);
+            }
+        })
+        .on_mouse_down(
+            gpui::MouseButton::Left,
+            cx.listener(move |desk, event: &gpui::MouseDownEvent, window, cx| {
+                cx.stop_propagation();
+                desk.document_press(&placement, &id, pressed.get(), event.position, window, cx);
+            }),
+        )
+        .on_scroll(cx.listener(move |desk, event: &gpui::ScrollEvent, _, cx| {
+            cx.stop_propagation();
+            desk.document_wheel(&wheel_id, wheeled.get(), event);
+        }))
+        .child(image)
         .into_any_element()
 }
 
@@ -161,7 +228,7 @@ pub(super) fn pane_view(
         PaneKind::Conversation => conversation::render(desk, &placement_id, colors, window, cx),
         PaneKind::Terminal => terminal_body(desk, placement, focused, &look, window, cx),
         PaneKind::Surface | PaneKind::AccessibilityTree | PaneKind::Document => {
-            document_body(desk, placement, &look)
+            document_body(desk, placement, &look, cx)
         }
     };
     let tab = desk.active_tab();

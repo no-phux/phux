@@ -45,6 +45,7 @@ mod chrome;
 pub(crate) mod cli_path;
 mod clipboard;
 mod commands;
+mod document_input;
 mod input;
 mod labels;
 mod leader;
