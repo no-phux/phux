@@ -34,7 +34,14 @@ pub(super) async fn handle_satellite_command(
     } = ctx;
     let client_id = *client_id;
     note_satellite_use(state, host, client_id, &command);
-    let result = match state.with(|s| s.hub_relay(host)) {
+    let relay = state.with(|s| s.hub_relay(host));
+    if let Some(relay) = &relay
+        && let Some(refusal) = refuse_satellite_watch(state, client_id, host, relay, &command).await
+    {
+        reply_satellite_command(ctx, request_id, host, &command, refusal).await;
+        return;
+    }
+    let result = match relay {
         None => CommandResult::Error {
             code: ErrorCode::UnsupportedSatelliteRoute,
             message: format!(
@@ -111,6 +118,55 @@ pub(super) async fn handle_satellite_command(
         },
     };
     reply_satellite_command(ctx, request_id, host, &command, result).await;
+}
+
+/// Refuse a watch of a satellite window or display the caller's grant
+/// names no class grant for (`docs/authority.md`). The guard admitted the
+/// relay on the host grant; only the satellite's inventory says what the
+/// document shows, so the hub judges it here, per consumer, before the
+/// shared link carries anything.
+async fn refuse_satellite_watch(
+    state: &SharedState,
+    client_id: ClientId,
+    host: &phux_protocol::ids::SatelliteHost,
+    relay: &crate::hub::relay::RelayHandle,
+    command: &Command,
+) -> Option<CommandResult> {
+    use crate::policy::filter::admits_satellite_watch;
+    use phux_protocol::wire::frame::ControlClass;
+    let (Command::AttachResource { terminal_id, .. }
+    | Command::SubscribeResourceEvents { terminal_id, .. }
+    | Command::GetScreen { terminal_id, .. }) = command
+    else {
+        return None;
+    };
+    let id = terminal_id.local_id()?;
+    // Free for the owner and for a grant that watches every class there.
+    let watches_all = state.with(|s| {
+        ControlClass::ALL
+            .into_iter()
+            .all(|class| admits_satellite_watch(s, client_id, host.as_str(), Some(class)))
+    });
+    if watches_all {
+        return None;
+    }
+    let class = match relay.resource_control(id).await {
+        Ok(class) => class,
+        Err(refusal) => return Some(refusal),
+    };
+    state.with(|s| {
+        (!admits_satellite_watch(s, client_id, host.as_str(), class)).then(|| {
+            CommandResult::Error {
+                code: ErrorCode::PermissionDenied,
+                message: crate::policy::filter::watch_refusal(
+                    s,
+                    client_id,
+                    class.unwrap_or(ControlClass::Display),
+                    Some(host.as_str()),
+                ),
+            }
+        })
+    })
 }
 
 /// ADR-0109 (L1 §5.2.1): the resource `command` attaches, drives, or reads,

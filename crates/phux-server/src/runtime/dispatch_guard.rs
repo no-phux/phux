@@ -2,7 +2,9 @@
 //! `docs/remote.md#who-can-do-what` asks for: a correlated frame or
 //! command gets its correlated `PERMISSION_DENIED`; an uncorrelated one is
 //! dropped with at most one `ERROR` per second; the connection stays up. The
-//! reply names no subject and no rule.
+//! reply names no subject and no rule, except that a watch of a window or
+//! display the caller could otherwise see names the class grant it lacks
+//! (`docs/authority.md`).
 
 use phux_protocol::ids::ResourceId as WireResourceId;
 use phux_protocol::wire::frame::{
@@ -77,7 +79,14 @@ pub(super) async fn guard_command(
             } else {
                 CommandResult::Error {
                     code: ErrorCode::PermissionDenied,
-                    message: DENIED.to_owned(),
+                    message: watch_class(denial).map_or_else(
+                        || DENIED.to_owned(),
+                        |class| {
+                            state.with(|s| {
+                                crate::policy::filter::watch_refusal(s, client_id, class, None)
+                            })
+                        },
+                    ),
                 }
             };
             let _ = out_tx
@@ -89,6 +98,14 @@ pub(super) async fn guard_command(
         }
     }
     Guarded::Refused
+}
+
+/// The class a refused watch of a window or display names, if it was one.
+fn watch_class(denial: crate::policy::Denial) -> Option<phux_protocol::wire::frame::ControlClass> {
+    use phux_protocol::wire::frame::ControlClass;
+    ControlClass::ALL
+        .into_iter()
+        .find(|class| class.guards_observe() && class.name() == denial.subject)
 }
 
 /// Guard a QUIC Terminal-stream bind: `OBSERVE` on the bound Terminal.

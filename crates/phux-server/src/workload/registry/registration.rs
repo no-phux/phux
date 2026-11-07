@@ -62,6 +62,7 @@ impl WorkloadRegistry {
         if let Some(expires_at) = expires_at {
             validate_expiry(expires_at)?;
         }
+        let scopes = super::paired::enrolled_scopes(scopes, enrolled_for);
         let id = credential_id(public_key);
         store::with_lock(path, |held| {
             let mut registry = Self::load(path)?;

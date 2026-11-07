@@ -234,6 +234,56 @@ pub fn satellite_input_classes(
     )
 }
 
+/// Whether `client` may watch a document of `class` on satellite `host`.
+///
+/// A window or display needs `OBSERVE` on its class there
+/// (`window:<host>`, `display:<host>`), never the host grant that admitted
+/// the relay (`docs/authority.md`); a page, or a document with no class, is
+/// admitted as the relay was. The hub asks at relay, with the class the
+/// satellite reported in its inventory.
+#[must_use]
+pub fn admits_satellite_watch(
+    s: &ServerState,
+    client: ClientId,
+    host: &str,
+    class: Option<phux_protocol::wire::frame::ControlClass>,
+) -> bool {
+    let Some(class) = class.filter(|class| class.guards_observe()) else {
+        return true;
+    };
+    let document = ControlPoint {
+        class: Some(class),
+        host: Some(host.to_owned()),
+        key: None,
+    };
+    View::of(s.connection_grant(client)).admits(Verb::Observe, &Point::Control(document))
+}
+
+/// The refusal a watch of a window or display gets when only its class
+/// grant is missing: which grant, and the owner's remedy. `host` is the
+/// satellite the document lives on; `None` for a local one.
+#[must_use]
+pub fn watch_refusal(
+    s: &ServerState,
+    client: ClientId,
+    class: phux_protocol::wire::frame::ControlClass,
+    host: Option<&str>,
+) -> String {
+    let scope = host.map_or_else(
+        || format!("observe@{}", class.name()),
+        |host| format!("observe@{}:{host}", class.name()),
+    );
+    let credential = s
+        .connection_grant(client)
+        .and_then(|grant| grant.credential_id.clone())
+        .unwrap_or_else(|| "CREDENTIAL".to_owned());
+    format!(
+        "permission denied: watching a {} needs `{scope}`, which this device's grant lacks; \
+         the owner can add it on that host with `phux workload grant {credential} {scope}`",
+        class.name()
+    )
+}
+
 /// `snapshot` as `client` may see it with `verb`.
 ///
 /// `s` is the state the snapshot was cut from. Terminals are judged under

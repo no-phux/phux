@@ -6867,8 +6867,12 @@ Flags:
                                  are refused), or a control class: page, window,
                                  display, alone or as CLASS:HOST, the only
                                  selectors besides resource:KEY that let input
-                                 reach a mirrored page, window or display.
-                                 Repeatable; at least one is required.
+                                 reach a mirrored page, window or display, or
+                                 let observe watch a mirrored window or display.
+                                 A human device enrolled with the full-control
+                                 pairing ceiling also gets observe@display and
+                                 observe@window. Repeatable; at least one is
+                                 required.
       --expires-in <SECONDS>     Seconds until the credential expires (at most
                                  20 years).
                                  (default: 7776000)
@@ -6935,14 +6939,15 @@ Add one scope grant to an enrolled credential, without re-pairing.
 The scope is `<verb>[,<verb>...]@<selector>`, as `add-key --scope` takes it,
 plus the control selectors `page`, `window`, `display` and `page:HOST`,
 `window:HOST`, `display:HOST`: `input@display` lets the device type and click on
-this machine's mirrored screens, which no terminal grant does. Prints what the
-grant lets the device do. The device gets it at its next connection.
+this machine's mirrored screens, and `observe@display` lets it watch them, which
+no terminal grant does. Prints what the grant lets the device do. The device
+gets it at its next connection.
 
 Usage: phux workload grant <CREDENTIAL_ID> <VERBS@SELECTOR>
 
 Arguments:
   <CREDENTIAL_ID>   The credential's `sha256:...` id from `phux workload list`.
-  <VERBS@SELECTOR>  The grant, e.g. `input@display` or
+  <VERBS@SELECTOR>  The grant, e.g. `observe@display` or
                     `input@window:powerhouse-1`.
 
 Flags:

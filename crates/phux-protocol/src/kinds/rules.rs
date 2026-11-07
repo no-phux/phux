@@ -211,6 +211,9 @@ pub static FRAME_RULES: [&Rule; 40] = [
 // -----------------------------------------------------------------------------
 
 static C_SPAWN: Rule = Rule::deny("`SPAWN` (unallocated)");
+// `OBSERVE` on a named window or display document needs a grant naming its
+// class, never its parent; the server splits that verb off this row and the
+// other observe rows (`docs/authority.md#watching`).
 static C_ATTACH_RESOURCE: Rule = Rule::verbs(
     "`ATTACH_RESOURCE`",
     &[Verb::Bind, Verb::Observe],
