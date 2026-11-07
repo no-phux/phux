@@ -232,13 +232,25 @@ pub enum WireEvent {
     /// `pixel_surface` or `document`): the bootstrap cut, or a newer
     /// publish. `bytes` is JSON for a tree, PNG or JPEG for a surface and of
     /// `content_type` (set only for a typed document) otherwise; the newest
-    /// `seq` per resource is the one to show.
+    /// `seq` per resource is the one to show. `control` is the document's
+    /// control class (`page`, `window` or `display`) from the session
+    /// snapshot; a pane may offer input (`send_document_input`) only when
+    /// it is set.
     DocumentPublished {
         resource_id: String,
         kind: String,
         seq: u64,
         bytes: Vec<u8>,
         content_type: Option<String>,
+        control: Option<String>,
+    },
+    /// The reply to `send_document_input`'s `request_id`. Any outcome but
+    /// `Sent` and `Other` makes the document's pane view-only for this
+    /// connection; `Other` is transient.
+    DocumentInputResult {
+        request_id: u32,
+        resource_id: String,
+        outcome: WireDocumentInputOutcome,
     },
     /// The server reported an ERROR frame.
     ServerError { message: String },
@@ -267,13 +279,14 @@ impl core::fmt::Debug for WireEvent {
                         .field("terminal_id", terminal_id)
                         .field("bytes", &text.len())
                         .finish(),
-                    Self::DocumentPublished { resource_id, kind, seq, bytes, content_type } => f
+                    Self::DocumentPublished { resource_id, kind, seq, bytes, content_type, control } => f
                         .debug_struct("DocumentPublished")
                         .field("resource_id", resource_id)
                         .field("kind", kind)
                         .field("seq", seq)
                         .field("bytes", &bytes.len())
                         .field("content_type", content_type)
+                        .field("control", control)
                         .finish(),
                     $(Self::$variant $({ $($field),* })? => {
                         let mut value = f.debug_struct(stringify!($variant));
@@ -315,6 +328,7 @@ impl core::fmt::Debug for WireEvent {
             AgentRecords {
                 agent_session_id, parent_terminal_id, provider, native_id, kind, seq, jsonl
             },
+            DocumentInputResult { request_id, resource_id, outcome },
             ServerError { message },
             ConnectionLost { message },
             ConnectionOpened { connection_epoch },
