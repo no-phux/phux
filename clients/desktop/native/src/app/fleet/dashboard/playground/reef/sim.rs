@@ -32,6 +32,8 @@ pub(crate) struct Fish {
     pub(super) slot: usize,
     pub(super) slot_n: usize,
     pub(super) crowd: f32,
+    /// The school's preferred depth, 0 (high) to 1 (low) in the working band.
+    pub(super) lane: f32,
 }
 
 impl Fish {
@@ -70,6 +72,7 @@ impl Fish {
             slot: 0,
             slot_n: 1,
             crowd: 1.,
+            lane: 0.,
         }
     }
 
@@ -255,8 +258,7 @@ impl Sim {
     }
 
     pub fn sand_y(&self, x: f32) -> f32 {
-        let s = self.s;
-        self.floor_y + (x * 0.007 + 1.3).sin() * 7. * s + (x * 0.019 + 0.4).sin() * 3.5 * s
+        sand_y(self.floor_y, self.s, x)
     }
 
     pub(super) fn rand(&mut self) -> f32 {
@@ -462,7 +464,7 @@ impl Sim {
             let (x, y) = if self.fish[index].mood == Mood::Working {
                 let z = &self.zones[self.fish[index].zone];
                 let (l, r, s) = (z.l, z.r, self.s);
-                let (top, bottom) = (self.surface_y + 100. * s, self.floor_y - 110. * s);
+                let (top, bottom) = (self.surface_y + 100. * s, z.canopy - 120. * s);
                 let (a, b) = (self.rand(), self.rand());
                 (lerp(l + 50. * s, r - 50. * s, a), lerp(top, bottom, b))
             } else {
@@ -499,6 +501,7 @@ impl Sim {
                 .find(|(k, _)| *k == (f.zone, f.mood))
                 .map_or(1, |(_, n)| *n);
             f.crowd = crowd(counts[f.zone.min(last)]);
+            f.lane = lane(&f.agent);
             f.mates.clear();
         }
         let agents = self
@@ -513,27 +516,38 @@ impl Sim {
     }
 
     /// Where a fish that is not working heads: up under the surface when it
-    /// needs you, just above its reef when done, into a coral nook when idle.
+    /// needs you, well above its reef when done, resting on the reef when
+    /// idle. Done and idle fish spread across the reef's width.
     pub fn target(&self, f: &Fish) -> (f32, f32) {
         let (z, s, t) = (&self.zones[f.zone], self.s, self.t);
         let off = f.slot as f32 - (f.slot_n as f32 - 1.) / 2.;
+        let x = z.l + z.w * (0.12 + 0.76 * (f.slot as f32 + 0.5) / f.slot_n as f32);
+        let open = z.canopy - self.surface_y;
         match f.mood {
             Mood::Waiting => (
                 z.cx + 26. * s + off * (64. * s).min(z.w * 0.7 / f.slot_n as f32),
                 self.surface_y + 30. * s + (t * 1.6 + f.seed).sin() * 3. * s,
             ),
             Mood::Done => (
-                z.cx + off * 54. * s + (t * 0.35 + f.seed).sin() * 16. * s,
-                z.home_y - 34. * s + (t * 0.7 + f.seed).sin() * 5. * s,
+                x + (t * 0.35 + f.seed).sin() * 10. * s,
+                z.canopy - (56. * s).max(open * 0.2) + (t * 0.7 + f.seed).sin() * 5. * s,
             ),
-            Mood::Working | Mood::Idle => {
-                let (nx, ny) = z.nooks[f.slot % z.nooks.len()];
-                (
-                    nx + (t * 0.25 + f.seed).sin() * 9. * s,
-                    ny + (t * 0.5 + f.seed).sin() * 2. * s,
-                )
-            }
+            Mood::Working | Mood::Idle => (
+                x + (t * 0.25 + f.seed).sin() * 6. * s,
+                z.canopy - 16. * s + (t * 0.5 + f.seed).sin() * 2. * s,
+            ),
         }
+    }
+
+    /// The open water a working fish keeps to on `z`: below the surface,
+    /// well above the canopy.
+    pub(crate) fn band(&self, z: &Zone) -> (f32, f32) {
+        let s = self.s;
+        let open = z.canopy - self.surface_y;
+        (
+            self.surface_y + 70. * s,
+            z.canopy - (70. * s).max(open * 0.28),
+        )
     }
 
     pub(super) fn bubble(&mut self, x: f32, y: f32, r: f32, vy: f32) {
@@ -542,4 +556,12 @@ impl Sim {
             self.bubbles.push(Bubble { x, y, r, vy, s });
         }
     }
+}
+
+/// The school's lane: its key hashed to 0..1, so each school settles at its
+/// own depth. Fish school by project, else by session.
+pub(super) fn lane(agent: &Agent) -> f32 {
+    let host = agent.destination.host.as_deref().unwrap_or_default();
+    let key = agent.project.as_deref().unwrap_or(&agent.destination.name);
+    (f64::from(hash(&format!("{host}/{key}"))) / 4_294_967_296.) as f32
 }

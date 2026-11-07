@@ -41,18 +41,11 @@ pub(super) fn draw(sim: &Sim, focus: Option<usize>, bounds: Bounds<Pixels>, wind
     for zone in &sim.zones {
         reef_back(&mut pen, sim, &pal, zone);
     }
-    for (index, f) in sim.fish.iter().enumerate() {
-        if f.mood == Mood::Idle {
-            fish(&mut pen, sim, &pal, f, focus == Some(index));
-        }
-    }
     for zone in &sim.zones {
         reef_front(&mut pen, sim, &pal, zone);
     }
     for (index, f) in sim.fish.iter().enumerate() {
-        if f.mood != Mood::Idle {
-            fish(&mut pen, sim, &pal, f, focus == Some(index));
-        }
+        fish(&mut pen, sim, &pal, f, focus == Some(index));
     }
     bubbles(&mut pen, sim);
     snow(&mut pen, sim);

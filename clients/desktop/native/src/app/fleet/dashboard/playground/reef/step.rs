@@ -16,7 +16,7 @@ impl Sim {
             };
             let l = self.fish[i].len(s);
             let (mut ax, mut ay) = (0., 0.);
-            let reach = l * 1.25;
+            let reach = l * 1.6;
             for (j, g) in self.fish.iter().enumerate() {
                 if j == i {
                     continue;
@@ -58,9 +58,13 @@ impl Sim {
                 f.wa += turn;
                 ax += f.wa.cos() * 42. * s;
                 ay += f.wa.sin() * 22. * s;
-                let z = &self.zones[f.zone];
+                let (zi, lane) = (f.zone, f.lane);
+                let z = &self.zones[zi];
                 let m = 34. * s;
-                let (top, bottom) = (self.surface_y + 80. * s, self.floor_y - 92. * s);
+                // Open water only; each school prefers its own depth, so
+                // schools stack instead of clumping.
+                let (top, bottom) = self.band(z);
+                ay += (lerp(top, bottom, 0.15 + 0.7 * lane) - fy) * 0.5;
                 if fx < z.l + m {
                     ax += (z.l + m - fx) * 4.;
                 }
