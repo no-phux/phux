@@ -1,6 +1,7 @@
 //! `phux agent surface mirror WINDOW`: the macOS producer. It captures a
 //! window (or the main display) with the system's `screencapture` and
-//! publishes the PNG whenever it changes.
+//! publishes the image whenever it changes. `screencapture` writes a PNG;
+//! JPEG frames and `--max-width` re-encode it with the system's `sips`.
 //!
 //! The capture needs the Screen Recording grant, which macOS ties to the
 //! application that launched this process (the terminal, or the phux
@@ -25,6 +26,8 @@ pub(super) struct MirrorArgs<'a> {
     pub(super) pane: Option<&'a str>,
     /// Milliseconds between captures.
     pub(super) interval_ms: u64,
+    /// How each capture is encoded.
+    pub(super) frames: super::surface::Frames,
     pub(super) json: bool,
     pub(super) socket: Option<PathBuf>,
 }
@@ -63,6 +66,7 @@ mod macos {
     use phux_server::runtime::default_socket_path;
 
     use super::MirrorArgs;
+    use crate::commands::agent::tree::surface::Frames;
     use crate::commands::agent::tree::{dial, report, resolve};
     use crate::commands::{cli_runtime, json_err};
     use crate::exit_codes::{EXIT_FAILURE, EXIT_USAGE};
@@ -80,6 +84,7 @@ mod macos {
             window_id,
             pane,
             interval_ms,
+            frames,
             json,
             socket,
         } = args;
@@ -131,7 +136,7 @@ mod macos {
                 },
             };
             // A refused capture must not leave an empty surface behind.
-            let first = match capture(target) {
+            let first = match capture(target, frames) {
                 Ok(bytes) => bytes,
                 Err(message) => return refused(json, &message),
             };
@@ -153,7 +158,8 @@ mod macos {
                 outln!("{resource}");
             }
             let interval = Duration::from_millis(interval_ms.max(100));
-            publish_until_gone(&mut conn, &opened.resource, target, first, interval, json).await
+            let capture = move || capture(target, frames);
+            publish_until_gone(&mut conn, &opened.resource, capture, first, interval, json).await
         })
     }
 
@@ -166,7 +172,7 @@ mod macos {
     async fn publish_until_gone(
         conn: &mut phux_client::attach::connection::Connection,
         resource: &ResourceId,
-        target: Target,
+        capture: impl Fn() -> Result<Vec<u8>, String>,
         first: Vec<u8>,
         interval: Duration,
         json: bool,
@@ -177,7 +183,7 @@ mod macos {
         let mut last = Some(first);
         let mut misses = 0;
         loop {
-            match capture(target) {
+            match capture() {
                 Ok(bytes) => {
                     misses = 0;
                     if last.as_deref() != Some(bytes.as_slice()) {
@@ -257,8 +263,9 @@ JSON.stringify(windows.map(w => ({ id: w.kCGWindowNumber, owner: w.kCGWindowOwne
             .ok_or_else(|| format!("no on-screen window matches {spec:?}"))
     }
 
-    /// One PNG of `target`, through `screencapture`.
-    fn capture(target: Target) -> Result<Vec<u8>, String> {
+    /// One image of `target`, through `screencapture`, then `sips` when
+    /// `frames` asks for JPEG or a narrower image.
+    fn capture(target: Target, frames: Frames) -> Result<Vec<u8>, String> {
         let dir = std::env::temp_dir().join(format!("phux-surface-{}", std::process::id()));
         std::fs::create_dir_all(&dir)
             .map_err(|err| format!("could not make {}: {err}", dir.display()))?;
@@ -275,12 +282,59 @@ JSON.stringify(windows.map(w => ({ id: w.kCGWindowNumber, owner: w.kCGWindowOwne
         if !status.success() {
             return Err(format!("screencapture exited with {status}"));
         }
-        std::fs::read(&path).map_err(|err| format!("could not read the capture: {err}"))
+        let png =
+            std::fs::read(&path).map_err(|err| format!("could not read the capture: {err}"))?;
+        let width = phux_client::tree::image_size(&png).map_or(0, |size| size.1);
+        let Some(args) = sips_args(frames, width) else {
+            return Ok(png);
+        };
+        let out = dir.join("frame.out");
+        let status = Command::new("/usr/bin/sips")
+            .args(args)
+            .arg(&path)
+            .arg("--out")
+            .arg(&out)
+            .stdout(std::process::Stdio::null())
+            .status()
+            .map_err(|err| format!("could not run sips: {err}"))?;
+        if !status.success() {
+            return Err(format!("sips exited with {status}"));
+        }
+        std::fs::read(&out).map_err(|err| format!("could not read the re-encoded capture: {err}"))
+    }
+
+    /// The `sips` arguments that turn a `width`-pixel PNG into the frame
+    /// `frames` asks for, or `None` when the PNG already is that frame.
+    pub(super) fn sips_args(frames: Frames, width: u32) -> Option<Vec<String>> {
+        let mut args = Vec::new();
+        if let Some(quality) = frames.jpeg {
+            args.extend(["-s", "format", "jpeg", "-s", "formatOptions"].map(String::from));
+            args.push(quality.to_string());
+        }
+        if let Some(max) = frames.max_width.filter(|&max| max < width) {
+            args.extend(["--resampleWidth".to_owned(), max.to_string()]);
+        }
+        (!args.is_empty()).then_some(args)
     }
 
     #[cfg(test)]
     mod tests {
-        use super::pick_window;
+        use super::{Frames, pick_window, sips_args};
+
+        #[test]
+        fn sips_runs_only_for_jpeg_or_a_frame_wider_than_the_limit() {
+            let frames = |jpeg, max_width| Frames { jpeg, max_width };
+            assert_eq!(sips_args(frames(None, None), 1920), None);
+            assert_eq!(sips_args(frames(None, Some(1920)), 1920), None);
+            assert_eq!(
+                sips_args(frames(None, Some(800)), 1920).unwrap(),
+                ["--resampleWidth", "800"]
+            );
+            assert_eq!(
+                sips_args(frames(Some(70), Some(800)), 640).unwrap(),
+                ["-s", "format", "jpeg", "-s", "formatOptions", "70"]
+            );
+        }
 
         const LISTING: &str = r#"[{"id":7,"owner":"Finder","name":"Desktop","layer":0},{"id":9,"owner":"Safari","name":"Docs","layer":0},{"id":11,"owner":"Safari","name":"Menu","layer":25}]"#;
 

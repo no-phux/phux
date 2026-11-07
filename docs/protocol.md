@@ -263,7 +263,8 @@ An `AccessibilityTree` (wire tag 2, gated on `features_ext.ACCESSIBILITY_TREE`)
 and a `PixelSurface` (wire tag 3, gated on `features_ext.PIXEL_SURFACE`)
 are replicated documents: a producer running in the parent Terminal
 replaces the whole document with the substrate's `PUBLISH_RESOURCE_STATE`
-(at most 4 MiB; one JSON document for a tree, one PNG image for a surface,
+(at most 4 MiB; one JSON document for a tree, one PNG or JPEG image (told apart by
+signature) for a surface,
 whose size is the surface's geometry), and the engine keeps the newest. A
 viewer's `ATTACH_RESOURCE` bootstraps it under the kind's codec
 (`AccessibilityTreeJsonV1`, `PixelSurfacePngV1`), `0 x 0`, with the newest

@@ -420,6 +420,25 @@ fn png_uses_real_decoder_and_reports_truncated_png() {
 }
 
 #[test]
+fn a_jpeg_frame_uses_the_real_decoder() {
+    const JPEG: &[u8] = include_bytes!("../../../../../crates/phux-core/testdata/baseline-5x3.jpg");
+    let cache = rune::ImageCache::new(Arc::new(|| {}));
+    let mut d = Document::new(record(1, ResourceKind::PixelSurface));
+    let publication = DocumentPublication {
+        resource_id: id(1),
+        kind: ResourceKind::PixelSurface,
+        seq: 0,
+        bytes: JPEG.to_vec(),
+        content_type: None,
+    };
+    assert!(d.publish(&publication, Some(&cache), &mut surface::Decodes::default()));
+    let Body::Surface(image) = &d.body else {
+        panic!("image")
+    };
+    assert_eq!(image.wait(), Ok([5, 3]));
+}
+
+#[test]
 fn organization_removal_prunes_documents_and_hands_focus_to_live_neighbour() {
     let records = [
         record(1, ResourceKind::AccessibilityTree),

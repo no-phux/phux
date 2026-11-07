@@ -519,6 +519,17 @@
       "bytes": {
         "type": "integer"
       },
+      "format": {
+        "type": [
+          "string",
+          "null"
+        ],
+        "enum": [
+          "png",
+          "jpeg",
+          null
+        ]
+      },
       "width": {
         "type": [
           "integer",
@@ -536,6 +547,7 @@
       "schema_version",
       "seq",
       "bytes",
+      "format",
       "width",
       "height"
     ]

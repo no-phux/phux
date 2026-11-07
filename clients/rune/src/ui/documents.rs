@@ -60,7 +60,7 @@ fn message(words: impl Into<String>, ink: &Ink) -> El {
 fn body(body: &Body, area: [f32; 2], ink: &Ink, id: &ResourceId) -> El {
     match body {
         Body::Pending => message("Waiting for the producer’s first document…", ink),
-        Body::Decoding => message("Decoding PNG…", ink),
+        Body::Decoding => message("Decoding image…", ink),
         Body::Empty => message("Empty document · waiting for the next publication", ink),
         Body::Invalid(error) => message(error.clone(), ink),
         Body::Tree(json) => el()
@@ -84,10 +84,10 @@ fn body(body: &Body, area: [f32; 2], ink: &Ink, id: &ResourceId) -> El {
 
 fn surface(image: &rune::Image, area: [f32; 2], ink: &Ink) -> El {
     if let Some(error) = image.error() {
-        return message(format!("Invalid PNG: {error}"), ink);
+        return message(format!("Invalid PNG or JPEG: {error}"), ink);
     }
     let Some(size) = image.size() else {
-        return message("Decoding PNG…", ink);
+        return message("Decoding image…", ink);
     };
     let [w, h] = letterbox(size, area);
     el().w_full()

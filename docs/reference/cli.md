@@ -162,9 +162,9 @@ Commands:
   start             Start an agent INSIDE an existing shell pane, and return
                     when it is ready for input.
   surface           A pixel surface is a pane's child resource that a producer
-                    feeds with PNG images of a window or display; `snapshot`
-                    writes the newest and `follow` every one. Needs a server
-                    that advertises `PIXEL_SURFACE`.
+                    feeds with PNG or JPEG images of a window or display;
+                    `snapshot` writes the newest and `follow` every one. Needs a
+                    server that advertises `PIXEL_SURFACE`.
   tree              An accessibility tree is a pane's child resource that a
                     producer feeds with whole documents of an application's
                     accessibility tree; `snapshot` reads the newest and `follow
@@ -614,6 +614,12 @@ Flags:
                           1000).
       --parent-pid <PID>  Exit once this process is gone, as the app that
                           launched the mirror passes its own.
+      --format <FORMAT>   Frame encoding (default png). JPEG frames are several
+                          times smaller; viewers older than JPEG support show
+                          them as invalid.
+                          [possible values: png, jpeg]
+      --quality <Q>       JPEG quality, 1 to 100 (default 70).
+      --max-width <PX>    Scale frames down to at most this many pixels wide.
       --json
   -h, --help              Print help
 
@@ -968,9 +974,9 @@ Global flags:
 ## `phux agent surface`
 
 ```text
-A pixel surface is a pane's child resource that a producer feeds with PNG images
-of a window or display; `snapshot` writes the newest and `follow` every one.
-Needs a server that advertises `PIXEL_SURFACE`.
+A pixel surface is a pane's child resource that a producer feeds with PNG or
+JPEG images of a window or display; `snapshot` writes the newest and `follow`
+every one. Needs a server that advertises `PIXEL_SURFACE`.
 
 Usage: phux agent surface <SUBCOMMAND>
 
@@ -979,7 +985,7 @@ Commands:
   mirror    Mirror a macOS window, or the main display, into a surface until
             Ctrl-C.
   open      Open a surface under the pane its producer runs in.
-  publish   Replace the surface's image from a PNG file, or stdin.
+  publish   Replace the surface's image from a PNG or JPEG file, or stdin.
   snapshot  Write the surface's newest image to a file.
   help      Print this message or the help of the given subcommand(s)
 
@@ -1001,7 +1007,7 @@ Arguments:
   <TARGET>  The surface.
 
 Flags:
-      --out <PATH>      Where each PNG goes; stdout when absent.
+      --out <PATH>      Where each image goes; stdout when absent.
       --timeout <SECS>  Give up after this many seconds.
       --json
   -h, --help            Print help
@@ -1028,6 +1034,12 @@ Flags:
       --interval <MS>     Milliseconds between captures (default 1000).
       --parent-pid <PID>  Exit once this process is gone, as the app that
                           launched the mirror passes its own.
+      --format <FORMAT>   Frame encoding (default png). JPEG frames are several
+                          times smaller; viewers older than JPEG support show
+                          them as invalid.
+                          [possible values: png, jpeg]
+      --quality <Q>       JPEG quality, 1 to 100 (default 70).
+      --max-width <PX>    Scale frames down to at most this many pixels wide.
       --json
   -h, --help              Print help
 
@@ -1057,7 +1069,7 @@ Global flags:
 ## `phux agent surface publish`
 
 ```text
-Replace the surface's image from a PNG file, or stdin.
+Replace the surface's image from a PNG or JPEG file, or stdin.
 
 Usage: phux agent surface publish [--file <PATH>] [--json] <TARGET>
 
@@ -1065,7 +1077,7 @@ Arguments:
   <TARGET>  The surface.
 
 Flags:
-      --file <PATH>    The PNG; stdin when absent.
+      --file <PATH>    The PNG or JPEG; stdin when absent.
       --json
   -h, --help           Print help
 
@@ -1084,7 +1096,7 @@ Arguments:
   <TARGET>  The surface.
 
 Flags:
-      --out <PATH>     Where the PNG goes; stdout when absent.
+      --out <PATH>     Where the image goes; stdout when absent.
       --json
   -h, --help           Print help
 

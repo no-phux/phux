@@ -30,7 +30,8 @@ pub(crate) fn is_document(kind: ResourceKind) -> bool {
 }
 
 /// The image format a document of `kind` and `content_type` decodes as,
-/// if it is an image.
+/// if it is an image. A surface frame is a PNG or a JPEG, picked by its
+/// signature when it is decoded.
 fn image_format(kind: ResourceKind, content_type: Option<&str>) -> Option<image::ImageFormat> {
     if kind == ResourceKind::PixelSurface {
         return Some(image::ImageFormat::Png);
@@ -113,8 +114,14 @@ fn decode(kind: ResourceKind, content_type: Option<&str>, bytes: &[u8]) -> Conte
             Content::Invalid("Invalid accessibility JSON"),
             Content::Text,
         ),
-        ResourceKind::PixelSurface => surface_image(bytes, image::ImageFormat::Png)
-            .map_or(Content::Invalid("Invalid PNG frame"), Content::Image),
+        ResourceKind::PixelSurface => image::guess_format(bytes)
+            .ok()
+            .filter(|format| matches!(format, image::ImageFormat::Png | image::ImageFormat::Jpeg))
+            .and_then(|format| surface_image(bytes, format))
+            .map_or(
+                Content::Invalid("Invalid PNG or JPEG frame"),
+                Content::Image,
+            ),
         _ => Content::Invalid("Unsupported document kind"),
     }
 }
@@ -199,6 +206,29 @@ mod tests {
                 Content::Invalid(_)
             ));
         }
+    }
+
+    #[test]
+    fn a_surface_frame_decodes_as_a_png_or_a_jpeg() {
+        let mut jpeg = Vec::new();
+        image::RgbImage::from_pixel(5, 3, image::Rgb([255, 0, 0]))
+            .write_to(
+                &mut std::io::Cursor::new(&mut jpeg),
+                image::ImageFormat::Jpeg,
+            )
+            .unwrap();
+        let png = crate::workspace::view_tests::documents::png();
+        for frame in [&jpeg, &png] {
+            let Content::Image(image) = decode(ResourceKind::PixelSurface, None, frame) else {
+                panic!("a surface frame decodes");
+            };
+            assert!(image.size(0).width.0 > 0);
+        }
+        let gif = b"GIF89a\x05\x00\x03\x00\x00\x00\x00;";
+        assert!(matches!(
+            decode(ResourceKind::PixelSurface, None, gif),
+            Content::Invalid(_)
+        ));
     }
 
     #[test]

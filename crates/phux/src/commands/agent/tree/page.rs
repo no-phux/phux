@@ -6,6 +6,7 @@ use std::process::ExitCode;
 
 use phux_client::tree::DocumentInput;
 
+use super::surface::FrameOpts;
 use super::{page_input, page_mirror};
 
 /// `phux agent page mirror`: drive a browser page over the Chrome debugging protocol (CDP).
@@ -27,6 +28,8 @@ pub(crate) enum PageAction {
         /// Exit once this process is gone, as the app that launched the mirror passes its own.
         #[usage(long, value_name = "PID")]
         parent_pid: Option<u32>,
+        #[usage(flatten)]
+        frames: FrameOpts,
         #[usage(long)]
         json: bool,
     },
@@ -80,17 +83,22 @@ pub(crate) fn run_page(action: &PageAction, socket: Option<PathBuf>) -> ExitCode
             pane,
             interval,
             parent_pid,
+            frames,
             json,
         } => {
             super::parent_watch::exit_with(*parent_pid);
-            page_mirror::run_mirror(page_mirror::MirrorArgs {
-                page,
-                port: port.unwrap_or(9222),
-                pane: pane.as_deref(),
-                interval_ms: interval.unwrap_or(1000),
-                json: *json,
-                socket,
-            })
+            match frames.resolve(*json) {
+                Ok(frames) => page_mirror::run_mirror(page_mirror::MirrorArgs {
+                    page,
+                    port: port.unwrap_or(9222),
+                    pane: pane.as_deref(),
+                    interval_ms: interval.unwrap_or(1000),
+                    frames,
+                    json: *json,
+                    socket,
+                }),
+                Err(code) => code,
+            }
         }
         PageAction::Navigate { target, url, json } => page_input::run_send(
             target,

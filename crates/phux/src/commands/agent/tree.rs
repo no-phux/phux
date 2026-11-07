@@ -14,7 +14,7 @@ use std::process::ExitCode;
 use std::time::Duration;
 
 use phux_client::attach::connection::Connection;
-use phux_client::tree::{self, Document, FollowEnd, Kind, TreeError, png_size};
+use phux_client::tree::{self, Document, FollowEnd, Kind, TreeError, image_size};
 use phux_server::runtime::default_socket_path;
 
 use crate::commands::{cli_runtime, json_err, parse_selector, resolve_target};
@@ -286,15 +286,16 @@ fn print_document(
                 }
             }
             if json {
-                let size = png_size(&document.bytes);
+                let size = image_size(&document.bytes).ok();
                 outln!(
                     "{}",
                     serde_json::json!({
                         "schema_version": SCHEMA_VERSION,
                         "seq": document.seq,
                         "bytes": document.bytes.len(),
-                        "width": size.map(|s| s.0),
-                        "height": size.map(|s| s.1),
+                        "format": size.map(|s| s.0.name()),
+                        "width": size.map(|s| s.1),
+                        "height": size.map(|s| s.2),
                         "content_type": document.content_type,
                         "out": out.map(|p| p.display().to_string()),
                     })
@@ -382,9 +383,7 @@ pub(super) fn run_publish(
         Kind::Tree => serde_json::from_slice::<serde_json::Value>(&bytes)
             .map(|_| ())
             .map_err(|err| format!("the document is not JSON: {err}")),
-        Kind::Surface => png_size(&bytes)
-            .map(|_| ())
-            .ok_or_else(|| "the document is not a PNG".to_owned()),
+        Kind::Surface => image_size(&bytes).map(|_| ()),
         // The server checks a typed document against its content type.
         Kind::Document => Ok(()),
     };
@@ -394,7 +393,7 @@ pub(super) fn run_publish(
             &json_err::CliError::new(
                 json_err::codes::RECORD_INVALID,
                 message,
-                "publish one JSON document to a tree, one PNG image to a surface",
+                "publish one JSON document to a tree, one PNG or JPEG image to a surface",
             ),
             EXIT_USAGE,
         );

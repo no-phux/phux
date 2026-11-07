@@ -137,7 +137,8 @@ pub enum BootstrapCodec {
     /// and every live message replaces it. Gated on
     /// `ServerFeatureExt::AccessibilityTree`.
     AccessibilityTreeJsonV1,
-    /// One PNG image per message, the whole pixel surface v1: the
+    /// One PNG or JPEG image per message, told apart by its signature (the
+    /// name predates JPEG), the whole pixel surface v1: the
     /// `PixelSurface` codec. The bootstrap carries the newest image and
     /// every live message replaces it. Gated on
     /// `ServerFeatureExt::PixelSurface`.
@@ -456,7 +457,7 @@ pub enum BootstrapStreamProfile {
     /// The newest whole accessibility tree as one JSON document, followed
     /// by raw live replacements, each a whole document.
     AccessibilityTreeJsonV1,
-    /// The newest whole pixel surface as one PNG image, followed by raw
+    /// The newest whole pixel surface as one PNG or JPEG image, followed by raw
     /// live replacements, each a whole image.
     PixelSurfacePngV1,
     /// The resource's content type and newest document in one bootstrap

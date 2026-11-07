@@ -14,6 +14,7 @@ use std::sync::Arc;
 
 use bytes::Bytes;
 use phux_core::ids::ResourceId;
+pub use phux_core::image::{ImageFormat, image_size};
 use phux_core::resource::ResourceKind;
 use phux_resource::{
     Delivery, LeaseChange, ResourceCore, ResourceCoreChannels, ResourceFacet, ResourceHandle,
@@ -47,7 +48,8 @@ impl DocumentKind for TreeDocument {
     }
 }
 
-/// A pixel surface: one PNG image, whose size is the surface's geometry.
+/// A pixel surface: one PNG or JPEG image, told apart by its signature,
+/// whose size is the surface's geometry.
 #[derive(Debug)]
 pub struct SurfaceDocument;
 
@@ -55,7 +57,7 @@ impl DocumentKind for SurfaceDocument {
     const KIND: ResourceKind = ResourceKind::PixelSurface;
 
     fn validate(_target: &str, bytes: &[u8]) -> Result<(), String> {
-        png_size(bytes).map(|_| ())
+        image_size(bytes).map(|_| ())
     }
 }
 
@@ -85,7 +87,10 @@ impl DocumentKind for TypedDocument {
             .trim()
             .to_ascii_lowercase();
         if essence == "image/png" {
-            png_size(bytes).map(|_| ())
+            match image_size(bytes)? {
+                (ImageFormat::Png, ..) => Ok(()),
+                _ => Err("an image/png document is a PNG".to_owned()),
+            }
         } else if essence == "application/json" {
             json(bytes)
         } else if essence.starts_with("text/")
@@ -105,26 +110,6 @@ fn json(bytes: &[u8]) -> Result<(), String> {
     serde_json::from_slice::<serde_json::Value>(bytes)
         .map(|_| ())
         .map_err(|error| format!("the document is not JSON: {error}"))
-}
-
-/// The width and height of a PNG from its signature and `IHDR` chunk, or
-/// why `bytes` is not one.
-///
-/// # Errors
-///
-/// A message naming what is missing or zero.
-pub fn png_size(bytes: &[u8]) -> Result<(u32, u32), String> {
-    const SIGNATURE: &[u8; 8] = b"\x89PNG\r\n\x1a\n";
-    if bytes.len() < 24 || &bytes[..8] != SIGNATURE || &bytes[12..16] != b"IHDR" {
-        return Err("the document is not a PNG: no signature and IHDR chunk".to_owned());
-    }
-    let be =
-        |at: usize| u32::from_be_bytes([bytes[at], bytes[at + 1], bytes[at + 2], bytes[at + 3]]);
-    let (width, height) = (be(16), be(20));
-    if width == 0 || height == 0 {
-        return Err(format!("the PNG is {width} x {height}; a surface has area"));
-    }
-    Ok((width, height))
 }
 
 /// A producer's whole-document publish (`PUBLISH_RESOURCE_STATE`).
@@ -453,13 +438,16 @@ mod tests {
     }
 
     #[test]
-    fn a_surface_takes_only_a_png_with_area() {
+    fn a_surface_takes_a_png_or_a_jpeg_with_area() {
         let mut png = b"\x89PNG\r\n\x1a\n\x00\x00\x00\x0dIHDR".to_vec();
         png.extend_from_slice(&640u32.to_be_bytes());
         png.extend_from_slice(&480u32.to_be_bytes());
         png.extend_from_slice(&[8, 6, 0, 0, 0]);
-        assert_eq!(png_size(&png), Ok((640, 480)));
+        assert_eq!(image_size(&png), Ok((ImageFormat::Png, 640, 480)));
         assert!(SurfaceDocument::validate("", &png).is_ok());
+        let jpeg = [0xff, 0xd8, 0xff, 0xc2, 0, 11, 8, 0, 3, 0, 5, 1, 1, 0x11, 0];
+        assert!(SurfaceDocument::validate("", &jpeg).is_ok());
+        assert!(SurfaceDocument::validate("", b"GIF89a\x05\x00\x03\x00").is_err());
         assert!(SurfaceDocument::validate("", b"{\"not\":\"png\"}").is_err());
         let mut flat = png.clone();
         flat[20..24].copy_from_slice(&0u32.to_be_bytes());
@@ -473,6 +461,13 @@ mod tests {
         let check = |content_type: &str, bytes: &[u8]| TypedDocument::validate(content_type, bytes);
         assert!(check("image/png", &png).is_ok());
         assert!(check("image/png", b"not a png").is_err());
+        assert!(
+            check(
+                "image/png",
+                &[0xff, 0xd8, 0xff, 0xc0, 0, 11, 8, 0, 1, 0, 1, 1]
+            )
+            .is_err()
+        );
         assert!(check("application/json", b"{\"a\":[1]}").is_ok());
         assert!(check("Application/JSON; charset=utf-8", b"{oops").is_err());
         assert!(check("text/markdown", "# héllo".as_bytes()).is_ok());

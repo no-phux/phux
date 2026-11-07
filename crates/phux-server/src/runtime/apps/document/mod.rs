@@ -1,7 +1,7 @@
 //! The document apps: a producer-fed, replicated document whose newest
 //! version is what every viewer wants (`docs/resource-kinds.md`). One
 //! generic app serves every [`DocumentApi`]: the `AccessibilityTree` (JSON),
-//! the `PixelSurface` (PNG) and the `Document` (any content type).
+//! the `PixelSurface` (PNG or JPEG) and the `Document` (any content type).
 
 use bytes::Bytes;
 use futures_util::FutureExt as _;
@@ -89,7 +89,7 @@ impl DocumentApi for TreeDocument {
 
 impl DocumentApi for SurfaceDocument {
     fn validate_bootstrap(_target: &str, bytes: &[u8]) -> Result<(), String> {
-        phux_tree::png_size(bytes).map(|_| ())
+        phux_tree::image_size(bytes).map(|_| ())
     }
 
     const PROFILE: BootstrapStreamProfile = BootstrapStreamProfile::PixelSurfacePngV1;
