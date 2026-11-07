@@ -62,6 +62,13 @@
 - Reject raw terminal input and file drops for pending or retained ACP owners
   before filesystem access or remote upload, including during reconnects.
 
+## [0.59.0](https://github.com/no-phux/phux/compare/desktop-v0.58.0...desktop-v0.59.0) (2026-11-07)
+
+
+### Features
+
+* **desktop:** reef playground map ([#2039](https://github.com/no-phux/phux/issues/2039)) ([ae34faf](https://github.com/no-phux/phux/commit/ae34fafa4254fcf9a8442765ba03cdcfa88982c9))
+
 ## [0.58.0](https://github.com/no-phux/phux/compare/desktop-v0.57.0...desktop-v0.58.0) (2026-11-07)
 
 
