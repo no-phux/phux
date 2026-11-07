@@ -95,6 +95,8 @@ fn satellite_entry(name: &str, port: u16) -> SatelliteConfigEntry {
         enabled: true,
         token_file: None,
         cert_fingerprint: None,
+        client_cert: None,
+        client_key: None,
     }
 }
 
@@ -830,11 +832,8 @@ fn ssh_stub_link_relays_commands_end_to_end() {
         let (hub_shutdown, hub_task) = spawn_hub_with_env(
             tmp.path().join("hub.sock"),
             vec![SatelliteConfigEntry {
-                name: "sat".to_owned(),
                 endpoint: "ssh://sat-host".to_owned(),
-                enabled: true,
-                token_file: None,
-                cert_fingerprint: None,
+                ..satellite_entry("sat", 0)
             }],
             None,
             phux_server::ServerEnv {
