@@ -47,11 +47,14 @@ pub(crate) enum SurfaceAction {
         #[usage(long)]
         json: bool,
     },
-    /// Mirror a macOS window, or the main display, into a surface until Ctrl-C.
+    /// Mirror a window or a display into a surface until Ctrl-C: macOS, or
+    /// Linux on a wlroots compositor (Hyprland, Sway) through `grim`.
     Mirror {
-        /// The window as `App` or `App:title`, or `display` for the main display.
+        /// The window as `App` or `App:title` (on Linux, a Hyprland class), or
+        /// `display`: the main display on macOS, every output on Linux, where
+        /// `display:OUTPUT` names one.
         window: String,
-        /// The CoreGraphics window id, instead of a name.
+        /// The CoreGraphics window id, instead of a name (macOS).
         #[usage(long, value_name = "ID")]
         window_id: Option<u32>,
         /// The pane the surface binds to; this process's own pane when absent.

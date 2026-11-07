@@ -982,8 +982,8 @@ Usage: phux agent surface <SUBCOMMAND>
 
 Commands:
   follow    Write every image as it arrives, each replacing the file.
-  mirror    Mirror a macOS window, or the main display, into a surface until
-            Ctrl-C.
+  mirror    Mirror a window or a display into a surface until Ctrl-C: macOS, or
+            Linux on a wlroots compositor (Hyprland, Sway) through `grim`.
   open      Open a surface under the pane its producer runs in.
   publish   Replace the surface's image from a PNG or JPEG file, or stdin.
   snapshot  Write the surface's newest image to a file.
@@ -1019,16 +1019,18 @@ Global flags:
 ## `phux agent surface mirror`
 
 ```text
-Mirror a macOS window, or the main display, into a surface until Ctrl-C.
+Mirror a window or a display into a surface until Ctrl-C: macOS, or Linux on a
+wlroots compositor (Hyprland, Sway) through `grim`.
 
 Usage: phux agent surface mirror [FLAGS] <WINDOW>
 
 Arguments:
-  <WINDOW>  The window as `App` or `App:title`, or `display` for the main
-            display.
+  <WINDOW>  The window as `App` or `App:title` (on Linux, a Hyprland class), or
+            `display`: the main display on macOS, every output on Linux, where
+            `display:OUTPUT` names one.
 
 Flags:
-      --window-id <ID>    The CoreGraphics window id, instead of a name.
+      --window-id <ID>    The CoreGraphics window id, instead of a name (macOS).
       --pane <PANE>       The pane the surface binds to; this process's own pane
                           when absent.
       --interval <MS>     Milliseconds between captures (default 1000).
@@ -1116,7 +1118,8 @@ Usage: phux agent tree <SUBCOMMAND>
 
 Commands:
   follow    Print every document as it arrives.
-  mirror    Mirror a running macOS application into a tree, until Ctrl-C.
+  mirror    Mirror a running application into a tree, until Ctrl-C: macOS
+            Accessibility, or AT-SPI on Linux.
   open      Open a tree under the pane its producer runs in.
   publish   Replace the tree's document from a file, or stdin.
   snapshot  Print the tree's newest document.
@@ -1152,12 +1155,14 @@ Global flags:
 ## `phux agent tree mirror`
 
 ```text
-Mirror a running macOS application into a tree, until Ctrl-C.
+Mirror a running application into a tree, until Ctrl-C: macOS Accessibility, or
+AT-SPI on Linux.
 
 Usage: phux agent tree mirror [FLAGS] <APP>
 
 Arguments:
-  <APP>  The application's process name, e.g. `Safari`.
+  <APP>  The application: its process name on macOS (`Safari`), its AT-SPI name
+         on Linux.
 
 Flags:
       --pid <PID>         The application's process id, instead of its name.

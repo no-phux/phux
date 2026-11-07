@@ -24,11 +24,15 @@ const SCHEMA_VERSION: u8 = 1;
 
 mod doc;
 mod mirror;
+#[cfg(any(target_os = "linux", test))]
+mod mirror_atspi;
 mod page;
 mod page_input;
 mod page_mirror;
 mod parent_watch;
 mod surface;
+#[cfg(any(target_os = "linux", test))]
+mod surface_grim;
 mod surface_mirror;
 
 pub(crate) use doc::{DocAction, run_doc};
@@ -65,9 +69,11 @@ pub(crate) enum TreeAction {
         #[usage(long)]
         json: bool,
     },
-    /// Mirror a running macOS application into a tree, until Ctrl-C.
+    /// Mirror a running application into a tree, until Ctrl-C: macOS
+    /// Accessibility, or AT-SPI on Linux.
     Mirror {
-        /// The application's process name, e.g. `Safari`.
+        /// The application: its process name on macOS (`Safari`), its AT-SPI
+        /// name on Linux.
         app: String,
         /// The application's process id, instead of its name.
         #[usage(long, value_name = "PID")]
@@ -159,6 +165,35 @@ pub(super) async fn resolve(
 ) -> Result<phux_protocol::ids::ResourceId, ExitCode> {
     let selector = parse_selector(Some(target))?;
     resolve_target(socket_path, &selector, verb, json).await
+}
+
+/// The pane a mirror binds to: `pane` when given, else the pane this process
+/// runs in (the injected `PHUX_TERMINAL_ID`), or report why there is none.
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+pub(super) async fn mirror_pane(
+    socket_path: &std::path::Path,
+    pane: Option<&str>,
+    verb: &str,
+    json: bool,
+) -> Result<phux_protocol::ids::ResourceId, ExitCode> {
+    if let Some(target) = pane {
+        return resolve(socket_path, target, verb, json).await;
+    }
+    std::env::var("PHUX_TERMINAL_ID")
+        .ok()
+        .and_then(|raw| raw.parse::<u32>().ok())
+        .map(phux_protocol::ids::ResourceId::local)
+        .ok_or_else(|| {
+            json_err::emit(
+                json,
+                &json_err::CliError::new(
+                    json_err::codes::USAGE_ERROR,
+                    "not running in a phux pane and no `--pane` given",
+                    "run the mirror inside a pane, or pass `--pane @N`",
+                ),
+                EXIT_USAGE,
+            )
+        })
 }
 
 /// Connect, or report why not.
