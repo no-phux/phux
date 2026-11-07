@@ -1,6 +1,7 @@
 //! The reef as an element: steps the simulation, then the canvas, the
 //! name pills, the click targets and the readout.
 
+use super::super::Map;
 use super::*;
 
 pub(in super::super) fn scene(
@@ -100,7 +101,47 @@ pub(in super::super) fn scene(
         .children(labels)
         .children(targets)
         .child(readout)
+        // Open water lets the selected fish go; fish and pills stop the click.
+        .on_click(cx.listener(|desk, _, _, cx| {
+            desk.fleet_view.playground.last_waiting = None;
+            cx.notify();
+        }))
         .into_any_element()
+}
+
+/// Return opens the selected fish's agent and Escape lets the fish go, while
+/// the reef shows one selected; otherwise the key is not the reef's.
+pub(crate) fn reef_key(
+    desk: &mut Desk,
+    key: &str,
+    window: &mut Window,
+    cx: &mut Context<Desk>,
+) -> bool {
+    let view = &desk.fleet_view.playground;
+    if !view.on || Map::from_id(&desk.prefs.playground_map) != Map::Reef {
+        return false;
+    }
+    let Some(agent) = view
+        .reef
+        .as_ref()
+        .and_then(|sim| {
+            sim.fish
+                .iter()
+                .find(|f| view.last_waiting.as_ref() == Some(&f.id))
+        })
+        .map(|f| f.agent.clone())
+    else {
+        return false;
+    };
+    match key {
+        "enter" => desk.open_fleet_agent(agent, window, cx),
+        "escape" => {
+            desk.fleet_view.playground.last_waiting = None;
+            cx.notify();
+        }
+        _ => return false,
+    }
+    true
 }
 
 /// Relative luminance of a `#rrggbb` theme colour, 0 to 1.
@@ -178,13 +219,15 @@ pub(super) fn pill(at: P, text: String, amber: bool, badge: Option<String>) -> A
 }
 
 /// The fish's click target: the card's own selector, so tests and the
-/// keyboard path treat it as that agent's tile. Hover shows its name.
+/// keyboard path treat it as that agent's tile. Hover shows its name; the
+/// first click selects the fish, a click on the selected fish opens it.
 pub(super) fn target(f: &Fish, sim: &Sim, cx: &mut Context<Desk>) -> AnyElement {
     let at = screen(sim, f.x, f.y);
     let side = (f.len(sim.s) * 1.5 + 12.) * sim.cam.z;
     let selector = f.id.clone();
     let agent = f.agent.clone();
     let id = f.id.clone();
+    let picked = f.id.clone();
     div()
         .id(selector.clone())
         .debug_selector(move || selector.clone())
@@ -204,11 +247,16 @@ pub(super) fn target(f: &Fish, sim: &Sim, cx: &mut Context<Desk>) -> AnyElement 
                 cx.notify();
             }
         }))
-        .on_click(
-            cx.listener(move |desk, _, window, cx| {
-                desk.open_fleet_agent(agent.clone(), window, cx)
-            }),
-        )
+        .on_click(cx.listener(move |desk, _, window, cx| {
+            cx.stop_propagation();
+            let view = &mut desk.fleet_view.playground;
+            if view.last_waiting.as_ref() == Some(&picked) {
+                desk.open_fleet_agent(agent.clone(), window, cx);
+            } else {
+                view.last_waiting = Some(picked.clone());
+                cx.notify();
+            }
+        }))
         .into_any_element()
 }
 
@@ -265,6 +313,7 @@ pub(super) fn readout(sim: &Sim, focused: bool, look: &Look, cx: &mut Context<De
                     .bg(look.raised.opacity(0.85))
                     .text_color(look.ink)
                     .on_click(cx.listener(|desk, _, _, cx| {
+                        cx.stop_propagation();
                         desk.fleet_view.playground.last_waiting = None;
                         cx.notify();
                     })),
@@ -279,6 +328,7 @@ pub(super) fn readout(sim: &Sim, focused: bool, look: &Look, cx: &mut Context<De
                 .bg(rgba(AMBER, 1.))
                 .text_color(rgba([42., 22., 0.], 1.))
                 .on_click(cx.listener(move |desk, _, _, cx| {
+                    cx.stop_propagation();
                     let view = &mut desk.fleet_view.playground;
                     let next = waiting
                         .iter()

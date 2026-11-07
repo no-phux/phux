@@ -1,9 +1,10 @@
 //! The reef map: each machine a reef, each agent a fish (the reef prototype,
 //! ported). The simulation steps on the panel's clock; the painter draws it in
 //! the prototype's order under the reef's own camera; names, buoy labels, the
-//! readout and the click targets are elements on top. A click on a fish opens
-//! that agent, as a card does; "N need you" swims the camera to each waiting
-//! fish in turn.
+//! readout and the click targets are elements on top. A click on a fish
+//! selects it (the camera swims to it); a second click, or Return, opens that
+//! agent as a card does; open water or Escape lets it go. "N need you" selects
+//! each waiting fish in turn.
 
 use std::collections::HashMap;
 use std::f32::consts::{PI, TAU};
@@ -28,6 +29,7 @@ mod fish;
 mod floor;
 mod scene;
 
+pub(crate) use self::scene::reef_key;
 pub(super) use self::scene::scene;
 use self::scene::view;
 use self::{coral::*, draw::*, fish::*, floor::*};
