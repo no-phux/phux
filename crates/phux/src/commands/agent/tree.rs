@@ -113,7 +113,9 @@ pub(crate) enum TreeAction {
 
 pub(super) fn run_tree(action: &TreeAction, socket: Option<PathBuf>) -> ExitCode {
     match action {
-        TreeAction::Open { target, app, json } => run_open(Kind::Tree, target, app, *json, socket),
+        TreeAction::Open { target, app, json } => {
+            run_open(Kind::Tree, target, app, None, *json, socket)
+        }
         TreeAction::Publish { target, file, json } => {
             run_publish(Kind::Tree, target, file.as_deref(), *json, socket)
         }
@@ -348,6 +350,7 @@ pub(super) fn run_open(
     kind: Kind,
     target: &str,
     app: &str,
+    control: Option<phux_protocol::wire::frame::ControlClass>,
     json: bool,
     socket: Option<PathBuf>,
 ) -> ExitCode {
@@ -371,7 +374,7 @@ pub(super) fn run_open(
             Ok(pair) => pair,
             Err(code) => return code,
         };
-        match tree::open_kind(&mut conn, kind, &parent, app).await {
+        match tree::open_kind(&mut conn, kind, &parent, app, control).await {
             Ok(opened) => {
                 let resource = phux_client::selector::format_terminal_id(&opened.resource);
                 if json {
@@ -382,6 +385,7 @@ pub(super) fn run_open(
                             "resource": resource,
                             "parent": phux_client::selector::format_terminal_id(&opened.parent),
                             "app": app,
+                            "control": control.map(phux_protocol::wire::frame::ControlClass::name),
                         })
                     );
                 } else {

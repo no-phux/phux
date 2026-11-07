@@ -1,9 +1,13 @@
 //! The authority and registry verbs of `phux workload`: `authority
-//! [--init|--rotate]`, `list`, `repair-paired`, and `revoke`.
+//! [--init|--rotate]`, `list`, `repair-paired`, `grant`, `ungrant`, and
+//! `revoke`.
 
 use std::path::PathBuf;
 
 use chrono::Utc;
+use phux_protocol::kinds::Verb;
+use phux_protocol::scope::{ScopeGrant, Selector};
+use phux_protocol::wire::frame::ControlClass;
 use phux_server::workload::{self, WorkloadCredential, WorkloadPaths, WorkloadRegistry};
 use serde_json::json;
 
@@ -210,6 +214,118 @@ pub(super) fn repair_paired(
         ],
         payload: None,
     })
+}
+
+/// `phux workload grant|ungrant`: add or remove one scope, and say what the
+/// grant lets the device do.
+pub(super) fn change_scope(
+    paths: &WorkloadPaths,
+    credential_id: &str,
+    scope: &str,
+    add: bool,
+) -> Result<Report, CliError> {
+    let change = WorkloadRegistry::change_scope(&paths.registry, credential_id, scope, add)
+        .map_err(|error| cli_error(&error))?;
+    // `change_scope` refused a scope that does not parse.
+    let meaning = ScopeGrant::parse(scope)
+        .map(|grant| grant_meaning(&grant))
+        .unwrap_or_default();
+    let (done, unchanged) = if add {
+        ("Granted", "already holds")
+    } else {
+        ("Removed", "does not hold")
+    };
+    let mut prose = vec![if change.updated {
+        format!(
+            "{done} {scope} for {credential_id} (registry generation {}).",
+            change.generation
+        )
+    } else {
+        format!("{credential_id} {unchanged} {scope}; nothing changed.")
+    }];
+    prose.push(format!(
+        "  {}{meaning}",
+        if add { "" } else { "no longer " }
+    ));
+    prose.push(format!("  scopes now: {}", change.scopes.join(" ")));
+    if change.updated {
+        prose.push(if add {
+            "The device gets it at its next connection; no re-pair or server restart is needed."
+                .to_owned()
+        } else {
+            "A running server ends the device's connections that relied on it; it reconnects with what remains."
+                .to_owned()
+        });
+    }
+    Ok(Report {
+        document: json!({
+            "schema_version": 1,
+            "operation": if add { "grant" } else { "ungrant" },
+            "credential_id": credential_id,
+            "scope": scope,
+            "meaning": meaning,
+            "updated": change.updated,
+            "scopes": change.scopes,
+            "registry_generation": change.generation,
+        }),
+        prose,
+        payload: None,
+    })
+}
+
+/// One sentence saying what `grant` lets a device do.
+fn grant_meaning(grant: &ScopeGrant) -> String {
+    let verbs: Vec<&str> = grant
+        .verbs
+        .iter()
+        .map(phux_protocol::scope::verb_name)
+        .collect();
+    let control = grant.verbs.contains(Verb::Input);
+    let reach = match &grant.selector {
+        Selector::Control(class, host) => {
+            let place = host.as_ref().map_or_else(
+                || "this machine".to_owned(),
+                |h| format!("satellite {}", h.as_str()),
+            );
+            let what = match class {
+                ControlClass::Page => "every mirrored browser page",
+                ControlClass::Window => "every mirrored application window",
+                ControlClass::Display => {
+                    "every mirrored display (a display shows every application on that screen)"
+                }
+            };
+            let and = if control {
+                "; it can click, type, scroll and navigate there"
+            } else {
+                "; without input it controls nothing"
+            };
+            let relay = if host.is_some() {
+                " (the satellite must also grant this hub's credential the same class)"
+            } else {
+                ""
+            };
+            format!("{what} on {place}{and}{relay}")
+        }
+        Selector::Resource(key) => format!(
+            "the one resource {key}{}",
+            if control {
+                ", and control it if it is a mirrored page, window or display"
+            } else {
+                ""
+            }
+        ),
+        other => format!(
+            "{} ({other}); no page, window or display: those need a control grant",
+            match other {
+                Selector::Global => "every session, terminal and satellite",
+                Selector::HostLocal => "every session and terminal on this machine",
+                Selector::HostSatellite(_) => "every terminal on that satellite",
+                Selector::Session(_) => "that session and its terminals",
+                _ => "those terminals",
+            }
+        ),
+    };
+    format!("lets the device {} on {reach}", verbs.join("+"))
 }
 
 pub(super) fn revoke(paths: &WorkloadPaths, credential_id: &str) -> Result<Report, CliError> {

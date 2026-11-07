@@ -45,6 +45,7 @@ impl ServerState {
             operation_dedupe: crate::runtime::operation_dedupe::OperationDedupe::default(),
             approvals: super::approvals::ApprovalTable::default(),
             native_agents: super::native_agent::NativeAgents::default(),
+            document_controls: std::collections::HashMap::new(),
         }
     }
 }

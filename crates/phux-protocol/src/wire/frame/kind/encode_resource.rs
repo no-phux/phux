@@ -102,6 +102,9 @@ impl FrameKind {
         if let Some(key) = &resource.idempotency_key {
             enc.write_field(field::spawn_terminal::IDEMPOTENCY_KEY, key.as_bytes());
         }
+        if let Some(control) = resource.control {
+            enc.write_field(field::spawn_terminal::CONTROL, &[control.to_u8()]);
+        }
     }
 
     /// Write the `RESOURCE_SPAWNED` payload. A bound result adds field 3 and

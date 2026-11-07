@@ -24,6 +24,11 @@ pub(crate) enum SurfaceAction {
         /// The window or display the surface mirrors.
         #[usage(long, value_name = "WINDOW")]
         window: String,
+        /// What input to the surface controls: `page`, `window`, or
+        /// `display`. Only a device granted that control class can send it
+        /// input; without this flag only the owner socket can.
+        #[usage(long, value_enum, value_name = "CLASS")]
+        control: Option<Control>,
         #[usage(long)]
         json: bool,
     },
@@ -96,8 +101,12 @@ pub(crate) fn run_surface(action: &SurfaceAction, socket: Option<PathBuf>) -> Ex
         SurfaceAction::Open {
             target,
             window,
+            control,
             json,
-        } => run_open(Kind::Surface, target, window, *json, socket),
+        } => {
+            let control = control.map(Control::class);
+            run_open(Kind::Surface, target, window, control, *json, socket)
+        }
         SurfaceAction::Publish { target, file, json } => {
             run_publish(Kind::Surface, target, file.as_deref(), *json, socket)
         }
@@ -164,6 +173,28 @@ pub(crate) struct FrameOpts {
 }
 
 /// A surface frame's encoding.
+/// What input to a surface controls (`docs/resource-kinds.md#authority`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub(crate) enum Control {
+    /// One browser page.
+    Page,
+    /// One application window.
+    Window,
+    /// A whole screen: every application on it.
+    Display,
+}
+
+impl Control {
+    const fn class(self) -> phux_protocol::wire::frame::ControlClass {
+        use phux_protocol::wire::frame::ControlClass;
+        match self {
+            Self::Page => ControlClass::Page,
+            Self::Window => ControlClass::Window,
+            Self::Display => ControlClass::Display,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 pub(crate) enum FrameFormat {
     /// Lossless PNG.

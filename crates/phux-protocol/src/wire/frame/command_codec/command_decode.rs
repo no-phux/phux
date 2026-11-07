@@ -101,6 +101,14 @@ pub(super) fn decode_resource_command(
         crate::wire::frame::COMMAND_TAG_SEND_DOCUMENT_INPUT => Command::SendDocumentInput {
             terminal_id: decode_terminal_id(dec)?,
             intent: crate::wire::frame::DocumentInput::decode(dec)?,
+            // Trailing and optional: an older sender writes no byte.
+            control: if dec.at_body_end() {
+                None
+            } else {
+                Some(crate::wire::frame::ControlClasses::from_bits(
+                    dec.read_u8()?,
+                ))
+            },
         },
         _ => return Ok(None),
     };

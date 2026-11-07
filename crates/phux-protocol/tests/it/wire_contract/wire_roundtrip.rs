@@ -121,3 +121,41 @@ fn producer_liveness_round_trips() {
         )),
     });
 }
+
+/// A document's control class rides its spawn (field 18) and
+/// `RESOURCE_STATE`; none stays `None`.
+#[test]
+fn document_control_round_trips() {
+    use phux_protocol::wire::frame::ControlClass;
+    let doc = |id, control| {
+        ResourceInfo::resource(ResourceId::local(id), ResourceKind::PixelSurface)
+            .with_control(control)
+    };
+    assert_round_trip(&FrameKind::CommandResult {
+        request_id: 1,
+        result: CommandResult::OkWith(CommandValue::State(
+            SessionSnapshot::new(SessionId::new(1), WindowId::new(1), ResourceId::local(1))
+                .with_resources(vec![doc(1, Some(ControlClass::Display)), doc(2, None)]),
+        )),
+    });
+    for control in [None, Some(ControlClass::Page), Some(ControlClass::Window)] {
+        let resource = phux_protocol::wire::frame::SpawnResource::accessibility_tree(
+            ResourceId::local(1),
+            "page",
+        )
+        .with_control(control);
+        assert_round_trip(&FrameKind::SpawnResource {
+            request_id: 1,
+            group: phux_protocol::ids::GroupId::new(1),
+            command: None,
+            cwd: None,
+            env: None,
+            term: None,
+            satellite: None,
+            owner_terminal: None,
+            agent_session: None,
+            initial_size: None,
+            resource: Some(Box::new(resource)),
+        });
+    }
+}

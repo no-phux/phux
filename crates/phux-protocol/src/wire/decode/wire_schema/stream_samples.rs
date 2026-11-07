@@ -298,10 +298,13 @@ pub(super) fn spawn_samples() -> Vec<FrameKind> {
     let agent_session = SpawnResource::agent_session(terminal(), "claude")
         .with_native_id(Some("session-42".to_owned()));
     let instance = ServerInstance::new([0xA5; 16]);
+    let page_surface = SpawnResource::pixel_surface(terminal(), "page")
+        .with_control(Some(crate::wire::frame::ControlClass::Page));
     vec![
         spawn(None),
         full_terminal,
         spawn(Some(agent_session)),
+        spawn(Some(page_surface)),
         FrameKind::ResourceSpawned {
             request_id: 1,
             result: SpawnResult::Ok(terminal()),

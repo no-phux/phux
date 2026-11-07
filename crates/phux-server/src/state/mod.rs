@@ -233,6 +233,12 @@ pub struct ServerState {
     approvals: approvals::ApprovalTable,
     /// Dedicated controller state and exclusive SDK stream authority.
     native_agents: native_agent::NativeAgents,
+    /// Each live document's control class, as its producer declared it at
+    /// spawn (`docs/resource-kinds.md#authority`); absent is none.
+    document_controls: std::collections::HashMap<
+        phux_core::ids::ResourceId,
+        phux_protocol::wire::frame::ControlClass,
+    >,
 }
 
 impl Default for ServerState {

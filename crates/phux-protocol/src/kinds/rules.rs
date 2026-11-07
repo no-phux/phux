@@ -323,13 +323,13 @@ static C_PUBLISH_RESOURCE_STATE: Rule = Rule::verbs(
     &[Verb::Bind, Verb::Input],
     Subject::ParentOfNamed,
 );
-// Input to a window or page is control of the machine it shows, so no
-// terminal grant reaches it: owner socket only until display grants exist
-// (`docs/resource-kinds.md#authority`).
+// Input to a page, window or display is control of what it shows, so no
+// terminal grant reaches it: only a grant naming the document's control
+// class, or the document itself (`docs/resource-kinds.md#authority`).
 static C_SEND_DOCUMENT_INPUT: Rule = Rule::verbs(
     "`SEND_DOCUMENT_INPUT`",
     &[Verb::Input],
-    GLOBAL_OWNER_UDS,
+    Subject::ControlledDocument,
 );
 static C_NATIVE_SPAWN: Rule = Rule::verbs(
     "`NATIVE_AGENT { type: spawn }`",

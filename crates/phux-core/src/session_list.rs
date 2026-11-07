@@ -131,6 +131,11 @@ pub struct ResourceJson {
     /// kind or from an older server.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub producer: Option<String>,
+    /// What input to a document controls: `page`, `window`, or `display`;
+    /// omitted for a document that controls nothing, another kind, or an
+    /// older server.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub control: Option<String>,
     /// The resource record's full 26-character persistent key, the text a
     /// workload `resource:<key>` scope names; `null` when no organization
     /// record executes as this resource.
@@ -335,6 +340,7 @@ mod tests {
                     retained_until_ms: 20,
                 }),
                 producer: None,
+                control: None,
                 key: Some("0123456789ABCDEFGHJKMNPQRT".to_owned()),
             },
             ResourceJson {
@@ -344,6 +350,7 @@ mod tests {
                 lifecycle: "running".to_owned(),
                 exit: None,
                 producer: None,
+                control: None,
                 key: None,
             },
         ])

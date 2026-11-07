@@ -179,6 +179,10 @@ pub struct SpawnResource {
     /// [`SpawnResult::Replayed`]. Needs
     /// [`ServerFeature::SpawnIdempotency`](crate::caps::ServerFeature::SpawnIdempotency).
     pub idempotency_key: Option<IdempotencyKey>,
+    /// What input to a document controls (field 18,
+    /// `docs/resource-kinds.md#authority`); `None` takes input from the
+    /// owner socket only. An older server ignores it, which is `None`.
+    pub control: Option<super::ControlClass>,
 }
 
 impl SpawnResource {
@@ -256,6 +260,13 @@ impl SpawnResource {
         self
     }
 
+    /// Builder setter for [`Self::control`].
+    #[must_use]
+    pub const fn with_control(mut self, control: Option<super::ControlClass>) -> Self {
+        self.control = control;
+        self
+    }
+
     /// Builder setter for [`Self::bind_instance`].
     #[must_use]
     pub const fn with_bind_instance(mut self, bind_instance: bool) -> Self {
@@ -274,6 +285,7 @@ impl SpawnResource {
             && !self.bind_instance
             && self.retain_secs.is_none()
             && self.idempotency_key.is_none()
+            && self.control.is_none()
     }
 }
 

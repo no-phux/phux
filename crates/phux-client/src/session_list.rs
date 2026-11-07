@@ -195,10 +195,8 @@ async fn count_arrangement_groups(
 /// carries this host's group alone and says so (`"hosts_complete": false`).
 ///
 /// `organization` supplies each session's lifetime, member count, and
-/// execution counts; without it they are derived from the snapshot. It
-/// also supplies every session's and resource's full record `key`, the text
-/// a workload `session:<key>` or `resource:<key>` scope names; without it
-/// each `key` is `None`.
+/// execution counts (else derived from the snapshot), and every record's
+/// full `key`, which a `session:` or `resource:` scope names.
 #[must_use]
 pub fn document(
     snapshot: &SessionSnapshot,
@@ -227,6 +225,7 @@ pub fn document(
             lifecycle: resource::lifecycle_name(pane.lifecycle).to_owned(),
             exit: pane.exit.as_ref().map(resource_exit_json),
             producer: resource::producer_name(pane).map(str::to_owned),
+            control: pane.control.map(|class| class.name().to_owned()),
             key: organization
                 .and_then(|org| org.resource_by_live(&pane.id))
                 .map(|record| record.key.to_string()),

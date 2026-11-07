@@ -272,10 +272,14 @@ pub(in crate::wire) fn encode_command(command: &Command, enc: &mut Encoder<'_>) 
         Command::SendDocumentInput {
             terminal_id,
             intent,
+            control,
         } => {
             enc.write_u8(crate::wire::frame::COMMAND_TAG_SEND_DOCUMENT_INPUT);
             encode_terminal_id(terminal_id, enc);
             intent.encode(enc);
+            if let Some(control) = control {
+                enc.write_u8(control.bits());
+            }
         }
         org @ (Command::GetOrganization { .. }
         | Command::SessionCreate { .. }

@@ -1057,13 +1057,18 @@ Global flags:
 ```text
 Open a surface under the pane its producer runs in.
 
-Usage: phux agent surface open <--window <WINDOW>> [--json] <TARGET>
+Usage: phux agent surface open <FLAGS> <TARGET>
 
 Arguments:
   <TARGET>  The parent pane.
 
 Flags:
       --window <WINDOW>  The window or display the surface mirrors.
+      --control <CLASS>  What input to the surface controls: `page`, `window`,
+                         or `display`. Only a device granted that control class
+                         can send it input; without this flag only the owner
+                         socket can.
+                         [possible values: page, window, display]
       --json
   -h, --help             Print help
 
@@ -6692,11 +6697,14 @@ Usage: phux workload [--json] <SUBCOMMAND>
 Commands:
   add-key        Enroll a client certificate, or sign a CSR into one.
   authority      Print the workload CA fingerprint.
+  grant          Add one scope grant to an enrolled credential, without
+                 re-pairing.
   list           List enrolled credentials.
   repair-paired  Restore full control to a device enrolled with the old pairing
                  ceiling.
   revoke         Revoke a credential: new connections are refused and live ones
                  end.
+  ungrant        Remove one scope grant from an enrolled credential.
   help           Print this message or the help of the given subcommand(s)
 
 Flags:
@@ -6732,8 +6740,11 @@ Flags:
                                  26-character key, the `key` of a `phux ls
                                  --json` row; session and Terminal ids restart
                                  with the server, so group:ID and terminal:ID
-                                 are refused). Repeatable; at least one is
-                                 required.
+                                 are refused), or a control class: page, window,
+                                 display, alone or as CLASS:HOST, the only
+                                 selectors besides resource:KEY that let input
+                                 reach a mirrored page, window or display.
+                                 Repeatable; at least one is required.
       --expires-in <SECONDS>     Seconds until the credential expires (at most
                                  20 years).
                                  (default: 7776000)
@@ -6785,6 +6796,32 @@ Flags:
                        every workload credential re-enroll; the replaced files
                        are kept beside the new ones as `*.retired-<unix>`.
                        Restart the server to present it.
+  -h, --help           Print help
+
+Global flags:
+      --socket <PATH>  Server socket to dial (default: `$PHUX_SOCKET`)
+      --json           Emit the result as JSON on stdout.
+```
+
+## `phux workload grant`
+
+```text
+Add one scope grant to an enrolled credential, without re-pairing.
+
+The scope is `<verb>[,<verb>...]@<selector>`, as `add-key --scope` takes it,
+plus the control selectors `page`, `window`, `display` and `page:HOST`,
+`window:HOST`, `display:HOST`: `input@display` lets the device type and click on
+this machine's mirrored screens, which no terminal grant does. Prints what the
+grant lets the device do. The device gets it at its next connection.
+
+Usage: phux workload grant <CREDENTIAL_ID> <VERBS@SELECTOR>
+
+Arguments:
+  <CREDENTIAL_ID>   The credential's `sha256:...` id from `phux workload list`.
+  <VERBS@SELECTOR>  The grant, e.g. `input@display` or
+                    `input@window:powerhouse-1`.
+
+Flags:
   -h, --help           Print help
 
 Global flags:
@@ -6848,6 +6885,29 @@ Arguments:
   <CREDENTIAL_ID>  Credential id (`sha256:...`) printed by `add-key` or `list`,
                    or an unspent enrollment ticket (`t-...`) printed by `phux
                    pair --enroll` or `phux host ticket`.
+
+Flags:
+  -h, --help           Print help
+
+Global flags:
+      --socket <PATH>  Server socket to dial (default: `$PHUX_SOCKET`)
+      --json           Emit the result as JSON on stdout.
+```
+
+## `phux workload ungrant`
+
+```text
+Remove one scope grant from an enrolled credential.
+
+Removes every scope equal to the one given. A running server ends the device's
+live connections that relied on it; the device reconnects with what remains. The
+last scope cannot be removed: revoke the credential instead.
+
+Usage: phux workload ungrant <CREDENTIAL_ID> <VERBS@SELECTOR>
+
+Arguments:
+  <CREDENTIAL_ID>   The credential's `sha256:...` id from `phux workload list`.
+  <VERBS@SELECTOR>  The grant to remove, as `phux workload list` prints it.
 
 Flags:
   -h, --help           Print help

@@ -268,10 +268,42 @@ The kind catalog stays the one table for discovery and authorization, so a
 new kind starts denied. Observing a display shows every application on the
 machine, and input to it is control of the machine, so window and display
 grants are separate from terminal grants and from each other. A device paired
-to watch terminals does not inherit a desktop. Until such grants exist,
-`SEND_DOCUMENT_INPUT` has its own rule that only the owner socket meets: no
-scoped or remote grant, whatever its terminal verbs, can send input to a
-page or window.
+to watch terminals does not inherit a desktop.
+
+**Control is never inherited.** A producer declares a control class when it
+opens a document: `page` (a browser page, `phux agent page mirror`), `window`
+(one application window, `phux agent surface mirror App`), `display` (a whole
+screen, `phux agent surface mirror display[:OUTPUT]`), or none. Plain `phux
+agent tree open`, `doc open` and `surface open` declare none unless
+`surface open --control CLASS` says otherwise. `phux ls --json`, `phux
+resource show --json` and MCP `phux_documents` report it as `control`.
+
+`SEND_DOCUMENT_INPUT` is allowed for:
+
+| Caller | Reaches |
+| --- | --- |
+| The owner socket | Every document, whatever its class |
+| `input@page`, `input@window`, `input@display` | Documents of that class on this host |
+| `input@page:HOST`, `input@window:HOST`, `input@display:HOST` | Documents of that class on satellite `HOST` |
+| `input@resource:KEY` | That one document, if it has a class |
+| `global`, `host`, `host:NAME`, `group`, `session`, `terminal` grants, or a grant on the parent pane | Nothing |
+
+A document with no class takes input only from the owner socket. A hub
+authorizes input to a satellite's document with the `CLASS:HOST` forms and
+stamps the classes it allowed on the relayed command; the satellite, which
+knows the document's class, refuses one outside them, and checks the hub's
+own link credential as usual. Removing a control grant (`phux workload
+ungrant`) ends live connections that relied on it, even when a broader grant
+remains.
+
+On the wire the class is `SPAWN_RESOURCE` field 18 and `RESOURCE_STATE`
+field 6 (`page` 1, `window` 2, `display` 3; absent is none), and the hub's
+stamp is one trailing byte on `SEND_DOCUMENT_INPUT`, bit `1 << class` per
+class allowed. An older server ignores both, and an older satellite then
+judges the hub's link alone.
+
+Observing a document still follows its parent pane's grants; separate
+observe grants for windows and displays are `phux-waac5.9`.
 
 ## Order
 

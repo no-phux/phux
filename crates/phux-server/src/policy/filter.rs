@@ -21,7 +21,7 @@ use phux_protocol::scope::EffectiveScopeSet;
 use phux_protocol::wire::info::SessionSnapshot;
 
 use super::enforce::{
-    Located, Point, TerminalPoint, contains, group_of, local_point, resource_key_of,
+    ControlPoint, Located, Point, TerminalPoint, contains, group_of, local_point, resource_key_of,
 };
 use super::{Authority, ConnectionGrant, GroupPoint};
 use crate::state::{ClientId, ServerState};
@@ -199,6 +199,39 @@ pub fn admits_global(s: &ServerState, client: ClientId, verb: Verb) -> bool {
 #[must_use]
 pub fn admits_satellite(s: &ServerState, client: ClientId, verb: Verb, host: &str) -> bool {
     View::of(s.connection_grant(client)).admits(verb, &Point::SatelliteHost(host.to_owned()))
+}
+
+/// The control classes `client` may send document input to on satellite
+/// `host`; `None` for the owner, who may send to any.
+///
+/// A hub stamps them on
+/// the relayed `SEND_DOCUMENT_INPUT`, so the satellite, which knows the
+/// document's class, refuses one of any other.
+#[must_use]
+pub fn satellite_input_classes(
+    s: &ServerState,
+    client: ClientId,
+    host: &str,
+) -> Option<phux_protocol::wire::frame::ControlClasses> {
+    use phux_protocol::wire::frame::{ControlClass, ControlClasses};
+    let view = View::of(s.connection_grant(client));
+    if matches!(view, View::All) {
+        return None;
+    }
+    let admits = |class: &ControlClass| {
+        let document = ControlPoint {
+            class: Some(*class),
+            host: Some(host.to_owned()),
+            key: None,
+        };
+        view.admits(Verb::Input, &Point::Control(document))
+    };
+    Some(
+        ControlClass::ALL
+            .iter()
+            .filter(|class| admits(class))
+            .fold(ControlClasses::EMPTY, |set, class| set.with(*class)),
+    )
 }
 
 /// `snapshot` as `client` may see it with `verb`.

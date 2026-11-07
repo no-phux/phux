@@ -253,7 +253,8 @@ impl<A: DocumentApi> ResourceApp for DocumentApp<A> {
                 Command::SendDocumentInput {
                     terminal_id,
                     intent,
-                } => input::relay::<A>(&ctx.state, &terminal_id, intent),
+                    control,
+                } => input::relay::<A>(&ctx.state, &terminal_id, intent, control),
                 _ => CommandResult::Error {
                     code: ErrorCode::InvalidCommand,
                     message: "command not supported by this server".to_owned(),

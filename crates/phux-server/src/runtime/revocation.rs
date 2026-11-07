@@ -366,12 +366,24 @@ fn judge_record(
 /// minted un-held no longer contains it, so adding `?signal` to a live
 /// credential revokes its connections and the reconnect gets the hold.
 /// Removing a hold widens and never revokes.
+///
+/// Control is never inherited (`docs/resource-kinds.md#authority`): a
+/// `resource:` clause carrying `INPUT` controls its document, which no
+/// broader grant does, so only the same selector keeps it.
 fn contains_clause(ceiling: &TerminalScopeSet, clause: &EffectiveClause) -> bool {
+    let controls = clause.verbs.contains(phux_protocol::kinds::Verb::Input);
+    let keeps = |outer: &Selector, inner: &Selector| {
+        if controls && matches!(inner, Selector::Resource(_)) {
+            outer == inner
+        } else {
+            covers(outer, inner)
+        }
+    };
     ceiling.grants().iter().any(|grant| {
         verbs_cover(grant.verbs, clause.verbs)
             && holds_no_more(grant, clause)
-            && (covers(&grant.selector, &clause.ceiling)
-                || covers(&grant.selector, &clause.requested))
+            && (keeps(&grant.selector, &clause.ceiling)
+                || keeps(&grant.selector, &clause.requested))
     })
 }
 
@@ -390,6 +402,8 @@ const fn verbs_cover(have: Verbs, need: Verbs) -> bool {
 /// Group never statically covers a Terminal selector.
 fn covers(outer: &Selector, inner: &Selector) -> bool {
     match (outer, inner) {
+        // Control is never inherited: no broader selector carries it.
+        (_, Selector::Control(..)) => outer == inner,
         (Selector::Global, _)
         | (
             Selector::HostLocal,

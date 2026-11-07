@@ -230,7 +230,8 @@ impl ServerState {
                     .with_parent(parent)
                     .with_agent(agent)
                     .with_session(session)
-                    .with_producer_connected(producer),
+                    .with_producer_connected(producer)
+                    .with_control(self.document_control(id)),
             );
         }
         panes
