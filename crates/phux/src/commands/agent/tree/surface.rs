@@ -55,6 +55,9 @@ pub(crate) enum SurfaceAction {
         /// Milliseconds between captures (default 1000).
         #[usage(long, value_name = "MS")]
         interval: Option<u64>,
+        /// Exit once this process is gone, as the app that launched the mirror passes its own.
+        #[usage(long, value_name = "PID")]
+        parent_pid: Option<u32>,
         #[usage(long)]
         json: bool,
     },
@@ -91,15 +94,19 @@ pub(crate) fn run_surface(action: &SurfaceAction, socket: Option<PathBuf>) -> Ex
             window_id,
             pane,
             interval,
+            parent_pid,
             json,
-        } => surface_mirror::run_mirror(surface_mirror::MirrorArgs {
-            window,
-            window_id: *window_id,
-            pane: pane.as_deref(),
-            interval_ms: interval.unwrap_or(1000),
-            json: *json,
-            socket,
-        }),
+        } => {
+            super::parent_watch::exit_with(*parent_pid);
+            surface_mirror::run_mirror(surface_mirror::MirrorArgs {
+                window,
+                window_id: *window_id,
+                pane: pane.as_deref(),
+                interval_ms: interval.unwrap_or(1000),
+                json: *json,
+                socket,
+            })
+        }
         SurfaceAction::Follow {
             target,
             out,

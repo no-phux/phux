@@ -27,6 +27,7 @@ mod mirror;
 mod page;
 mod page_input;
 mod page_mirror;
+mod parent_watch;
 mod surface;
 mod surface_mirror;
 
@@ -80,6 +81,9 @@ pub(crate) enum TreeAction {
         /// Deepest nesting to read (default 24).
         #[usage(long, value_name = "N")]
         depth: Option<usize>,
+        /// Exit once this process is gone, as the app that launched the mirror passes its own.
+        #[usage(long, value_name = "PID")]
+        parent_pid: Option<u32>,
         #[usage(long)]
         json: bool,
     },
@@ -113,16 +117,20 @@ pub(super) fn run_tree(action: &TreeAction, socket: Option<PathBuf>) -> ExitCode
             pane,
             interval,
             depth,
+            parent_pid,
             json,
-        } => mirror::run_mirror(mirror::MirrorArgs {
-            app,
-            pid: *pid,
-            pane: pane.as_deref(),
-            interval_ms: interval.unwrap_or(500),
-            depth: depth.unwrap_or(24),
-            json: *json,
-            socket,
-        }),
+        } => {
+            parent_watch::exit_with(*parent_pid);
+            mirror::run_mirror(mirror::MirrorArgs {
+                app,
+                pid: *pid,
+                pane: pane.as_deref(),
+                interval_ms: interval.unwrap_or(500),
+                depth: depth.unwrap_or(24),
+                json: *json,
+                socket,
+            })
+        }
         TreeAction::Follow {
             target,
             until,
