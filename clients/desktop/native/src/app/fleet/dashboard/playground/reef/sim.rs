@@ -34,6 +34,12 @@ pub(crate) struct Fish {
     pub(super) crowd: f32,
     /// The school's preferred depth, 0 (high) to 1 (low) in the working band.
     pub(super) lane: f32,
+    /// Its tier (`tier::TIERS`), which sets its size, speed and form.
+    pub tier: usize,
+    /// A level-up's glow, 1 at the rise, fading to 0.
+    pub level_up: f32,
+    /// Seconds to a legendary fish's next trail mote.
+    pub(super) mt: f32,
 }
 
 impl Fish {
@@ -73,12 +79,15 @@ impl Fish {
             slot_n: 1,
             crowd: 1.,
             lane: 0.,
+            tier: REEF_FISH,
+            level_up: 0.,
+            mt: 0.,
         }
     }
 
     /// Body length in scene points at scale `s`.
     pub fn len(&self, s: f32) -> f32 {
-        self.lb * s * self.crowd
+        self.lb * s * self.crowd * TIERS[self.tier].size
     }
 }
 
@@ -190,6 +199,7 @@ pub(crate) struct Sim {
     pub stars: Vec<Star>,
     pub fish: Vec<Fish>,
     pub bubbles: Vec<Bubble>,
+    pub motes: Vec<Mote>,
     pub ripples: Vec<Ripple>,
     pub snow: Vec<Snow>,
     pub amb: Vec<Amb>,
@@ -229,6 +239,7 @@ impl Sim {
             stars: Vec::new(),
             fish: Vec::new(),
             bubbles: Vec::new(),
+            motes: Vec::new(),
             ripples: Vec::new(),
             snow: Vec::new(),
             amb: Vec::new(),
@@ -415,6 +426,7 @@ impl Sim {
         if (w - self.w).abs() > 0.5 || (h - self.h).abs() > 0.5 {
             self.layout(w, h);
         }
+        let now = crate::connection::now_ms();
         let mut old = std::mem::take(&mut self.fish);
         let mut fresh = Vec::new();
         for agent in agents {
@@ -429,6 +441,7 @@ impl Sim {
                     let mut fish = old.swap_remove(at);
                     fish.agent = agent.clone();
                     fish.zone = zone;
+                    self.regrade(&mut fish, now);
                     let mood = Mood::of(&agent.info);
                     if mood != fish.mood {
                         fish.mood = mood;
@@ -447,6 +460,7 @@ impl Sim {
                 None => {
                     let mut fish = Fish::new(id, agent.clone());
                     fish.zone = zone;
+                    fish.tier = tier(agent, now);
                     (fish, true)
                 }
             };
@@ -516,18 +530,21 @@ impl Sim {
     }
 
     /// Where a fish that is not working heads: up under the surface when it
-    /// needs you, well above its reef when done, resting on the reef when
+    /// needs you (spread across the reef, in two rows when their tags would
+    /// touch), well above its reef when done, resting on the reef when
     /// idle. Done and idle fish spread across the reef's width.
     pub fn target(&self, f: &Fish) -> (f32, f32) {
         let (z, s, t) = (&self.zones[f.zone], self.s, self.t);
-        let off = f.slot as f32 - (f.slot_n as f32 - 1.) / 2.;
         let x = z.l + z.w * (0.12 + 0.76 * (f.slot as f32 + 0.5) / f.slot_n as f32);
         let open = z.canopy - self.surface_y;
         match f.mood {
-            Mood::Waiting => (
-                z.cx + 26. * s + off * (64. * s).min(z.w * 0.7 / f.slot_n as f32),
-                self.surface_y + 30. * s + (t * 1.6 + f.seed).sin() * 3. * s,
-            ),
+            Mood::Waiting => {
+                let (gap, row) = waiting_slot(z.w, f.slot, f.slot_n, s);
+                (
+                    z.l + z.w * 0.08 + gap * (f.slot as f32 + 0.5),
+                    self.surface_y + (30. + row * 50.) * s + (t * 1.6 + f.seed).sin() * 3. * s,
+                )
+            }
             Mood::Done => (
                 x + (t * 0.35 + f.seed).sin() * 10. * s,
                 z.canopy - (56. * s).max(open * 0.2) + (t * 0.7 + f.seed).sin() * 5. * s,
@@ -565,4 +582,12 @@ pub(super) fn lane(agent: &Agent) -> f32 {
     let host = agent.destination.host.as_deref().unwrap_or_default();
     let key = agent.project.as_deref().unwrap_or(&agent.destination.name);
     Rng::new(hash(&format!("{host}/{key}"))).next()
+}
+
+/// The gap between waiting fish across a reef `w` wide, and slot's row: when
+/// the tags would come closer than 96 points, alternate fish drop a row.
+pub(crate) fn waiting_slot(w: f32, slot: usize, slot_n: usize, s: f32) -> (f32, f32) {
+    let gap = w * 0.84 / slot_n.max(1) as f32;
+    let row = if gap < 96. * s { (slot % 2) as f32 } else { 0. };
+    (gap, row)
 }

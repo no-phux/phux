@@ -78,89 +78,80 @@ fn inventory() -> Vec<Agent> {
         title: title.into(),
         // The session's group: "phux / Desktop" belongs to phux.
         project: Some(session.split(" / ").next().unwrap_or(session).to_owned()),
+        stats: None,
     })
     .collect()
 }
 
-/// The reef's sample fleet (the prototype's): sixteen agents on three
-/// machines, every species and mood, two of them waiting.
+/// The reef's sample fleet (the prototype's): seventeen agents on three
+/// machines, every species and mood, two of them waiting, and work done
+/// (tasks finished, working minutes) that grows every tier and exotic form.
 fn reef_inventory() -> Vec<Agent> {
     use AgentState::{Blocked, Done, Idle, Working};
+    let (mini, macbook, ph) = (None, Some("macbook"), Some("powerhouse-1"));
     [
-        ("fd-leak-fix", "claude", None, "phux", Working),
-        ("galaxy-hud", "claude", None, "phux", Working),
-        ("rune-galaxy", "codex", None, "phux", Working),
-        ("release-0.124", "claude", None, "phux", Blocked),
-        ("docs-catalog", "opencode", None, "website", Done),
-        ("brand-sync", "gemini", None, "phux-brand", Idle),
+        ("fd-leak-fix", "claude", mini, "phux", Working, 14, 95),
+        ("galaxy-hud", "claude", mini, "phux", Working, 3, 25),
+        ("rune-galaxy", "codex", mini, "phux", Working, 40, 260),
+        ("release-0.124", "claude", mini, "phux", Blocked, 6, 40),
+        ("docs-catalog", "opencode", mini, "website", Done, 30, 200),
+        ("brand-sync", "gemini", mini, "phux-brand", Idle, 0, 2),
         (
             "copy-paste",
             "claude",
-            Some("macbook"),
+            macbook,
             "phux-mobile",
             Working,
+            25,
+            300,
         ),
-        ("duo-demo", "codex", Some("macbook"), "phux-mobile", Working),
-        (
-            "tuist-gen",
-            "claude",
-            Some("macbook"),
-            "phux-mobile",
-            Blocked,
-        ),
+        ("duo-demo", "codex", macbook, "phux-mobile", Working, 2, 10),
+        ("tuist-gen", "claude", macbook, "phux-mobile", Blocked, 1, 5),
         (
             "android-cc",
             "opencode",
-            Some("macbook"),
+            macbook,
             "phux-mobile",
             Done,
+            9,
+            70,
         ),
-        ("fox-model", "gemini", Some("macbook"), "website", Idle),
-        (
-            "oomd-scope",
-            "claude",
-            Some("powerhouse-1"),
-            "phux",
-            Working,
-        ),
-        (
-            "chaos-harness",
-            "codex",
-            Some("powerhouse-1"),
-            "phux",
-            Working,
-        ),
-        ("quic-bench", "opencode", Some("powerhouse-1"), "phux", Idle),
-        ("hud-live", "pi", Some("powerhouse-1"), "phux-hud", Done),
-        (
-            "pyte-attach",
-            "codex",
-            Some("powerhouse-1"),
-            "phux",
-            Working,
-        ),
+        ("fox-model", "gemini", macbook, "website", Idle, 20, 150),
+        ("oomd-scope", "claude", ph, "phux", Working, 0, 3),
+        ("chaos-harness", "codex", ph, "phux", Working, 11, 80),
+        ("quic-bench", "opencode", ph, "phux", Idle, 1, 4),
+        ("hud-live", "pi", ph, "phux-hud", Done, 4, 30),
+        ("pyte-attach", "codex", ph, "phux", Working, 0, 1),
+        ("repo-map", "aider", macbook, "phux-mobile", Working, 10, 60),
     ]
     .into_iter()
     .enumerate()
-    .map(|(index, (name, kind, host, project, state))| Agent {
-        destination: Destination {
-            host: host.map(str::to_owned),
-            authority: None,
-            key: None,
-            name: name.into(),
+    .map(
+        |(index, (name, kind, host, project, state, turns, minutes))| Agent {
+            destination: Destination {
+                host: host.map(str::to_owned),
+                authority: None,
+                key: None,
+                name: name.into(),
+            },
+            terminal: phux_protocol::ResourceId::local(index as u32 + 1),
+            boot: Some("fixture".into()),
+            info: AgentInfo {
+                name: name.into(),
+                kind: Some(kind.into()),
+                state,
+                attention: AgentAttention::None,
+                changed_at_ms: 1,
+            },
+            title: String::new(),
+            project: Some(project.into()),
+            stats: Some(crate::connection::stats::AgentStats {
+                turns,
+                working_s: minutes * 60,
+                at_ms: 0,
+            }),
         },
-        terminal: phux_protocol::ResourceId::local(index as u32 + 1),
-        boot: Some("fixture".into()),
-        info: AgentInfo {
-            name: name.into(),
-            kind: Some(kind.into()),
-            state,
-            attention: AgentAttention::None,
-            changed_at_ms: 1,
-        },
-        title: String::new(),
-        project: Some(project.into()),
-    })
+    )
     .collect()
 }
 
@@ -287,7 +278,7 @@ pub(crate) fn capture(
                     desk.fleet_view.playground.on = playground;
                     desk.fleet_view.fixture = Some(if empty {
                         Vec::new()
-                    } else if map == "reef" {
+                    } else if map == "reef" || map == "galaxy" {
                         reef_inventory()
                     } else {
                         inventory()
@@ -297,6 +288,10 @@ pub(crate) fn capture(
                     desk.fleet_view.playground.last_waiting = name
                         .ends_with("focus")
                         .then(|| super::cards::tile_id(None, &phux_protocol::ResourceId::local(4)));
+                    // The galaxy selects a legendary lionfish, to show its detail rows.
+                    desk.fleet_view.selected = (map == "galaxy")
+                        .then(|| desk.fleet_view.fixture.as_ref()?.get(6).cloned())
+                        .flatten();
                     cx.notify();
                 });
                 window.refresh();

@@ -154,6 +154,7 @@ impl Connection {
             server: None,
             error: None,
             agents: HashMap::new(),
+            agent_stats: HashMap::new(),
             agents_noted: false,
             conversations: HashMap::new(),
             conversation_heads: HashMap::new(),

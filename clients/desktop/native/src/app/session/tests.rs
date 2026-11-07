@@ -358,11 +358,16 @@ fn the_inbox_shows_a_pending_approval_and_clears_it_after_a_decision(cx: &mut Te
                 .client,
         )
     });
+    // The agent-stats watch every connection makes is not this test's business.
     let sent = |client: &phux_client_runtime::Client| -> Vec<FrameKind> {
         client
             .take_outbound()
             .iter()
             .map(|bytes| FrameKind::decode(bytes).unwrap().0)
+            .filter(|frame| {
+                !matches!(frame, FrameKind::SubscribeMetadata { key, .. }
+                    | FrameKind::GetMetadata { key, .. } if key == crate::connection::stats::KEY)
+            })
             .collect()
     };
     let feed = |client: &phux_client_runtime::Client, frame: FrameKind| {

@@ -13,6 +13,7 @@ mod reef_paint;
 mod scheme;
 mod sky;
 mod sprites;
+mod tier;
 
 pub(crate) use self::camera::{Camera, Map, View};
 pub(super) use self::reef_paint::reef_key;

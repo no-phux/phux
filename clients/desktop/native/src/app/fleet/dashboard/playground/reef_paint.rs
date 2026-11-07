@@ -24,6 +24,7 @@ use crate::app::fleet::Agent;
 use crate::app::skin::Look;
 
 mod coral;
+mod creatures;
 mod draw;
 mod fish;
 mod floor;
@@ -32,7 +33,7 @@ mod scene;
 pub(crate) use self::scene::reef_key;
 pub(super) use self::scene::scene;
 use self::scene::view;
-use self::{coral::*, draw::*, fish::*, floor::*};
+use self::{coral::*, creatures::*, draw::*, fish::*, floor::*};
 
 type P = (f32, f32);
 

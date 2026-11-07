@@ -12,6 +12,7 @@ pub mod home;
 pub mod org;
 pub mod path;
 mod ready;
+pub(crate) mod stats;
 mod subscriptions;
 pub mod transcript;
 
@@ -162,6 +163,8 @@ pub struct Connection {
     pub error: Option<String>,
     /// Agent badges keyed by terminal.
     pub agents: HashMap<ResourceId, AgentInfo>,
+    /// This host's `phux.agent-stats/v1` tallies by terminal number.
+    pub(crate) agent_stats: HashMap<u32, stats::AgentStats>,
     /// The last drain's agent metadata changed a badge.
     agents_noted: bool,
     /// Committed native conversations keyed by their AgentSession resource.
@@ -194,10 +197,8 @@ pub struct Connection {
     closed: bool,
     known: HashSet<ResourceId>,
     /// Terminals this window spawned or attached, admitted before the topology
-    /// refresh lists them. The successful reply names the terminal and the server
-    /// pumps its replica at once, so a new pane can appear without waiting a
-    /// whole `GET_STATE` round trip (which is a full server snapshot on a
-    /// remote link). Cleared on any connection boundary or close.
+    /// lists them, so a new pane appears without a whole `GET_STATE` round
+    /// trip. Cleared on any connection boundary or close.
     admitted: HashSet<ResourceId>,
     identity: Option<ConnectionIdentity>,
     project_tag: Option<(String, String)>,

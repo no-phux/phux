@@ -21,6 +21,7 @@ fn agent(host: Option<&str>, terminal: u32, kind: &str, project: &str, state: Ag
         },
         title: String::new(),
         project: Some(project.into()),
+        stats: None,
     }
 }
 
@@ -217,4 +218,68 @@ fn a_long_swim_stays_in_the_water_and_follows_mood_changes() {
     }
     assert!(sim.fish[3].y < sim.surface_y + 60. * sim.s, "risen");
     assert!(sim.nt < 0.01, "the day came back");
+}
+
+#[test]
+fn waiting_fish_spread_across_the_reef_and_stagger_when_crowded() {
+    // Two on a wide reef: one row, spread over the middle 84 percent.
+    let (gap, row) = waiting_slot(600., 1, 2, 1.);
+    assert!((gap - 252.).abs() < 1e-3 && row == 0.);
+    // Seven on the same reef: tags would touch, so alternate fish drop a row.
+    let rows = (0..7)
+        .map(|i| waiting_slot(600., i, 7, 1.).1)
+        .collect::<Vec<_>>();
+    assert_eq!(rows, [0., 1., 0., 1., 0., 1., 0.]);
+    assert!(waiting_slot(600., 0, 7, 1.).0 < 96.);
+    // Settled: every one over its reef and none sharing a spot.
+    let hosts = [None];
+    let agents: Vec<_> = (0..7)
+        .map(|i| agent(None, i, "claude", "p", AgentState::Blocked))
+        .collect();
+    let sim = Sim::new(700., 780., &hosts, &agents, false);
+    let spots = sim.fish.iter().map(|f| sim.target(f)).collect::<Vec<_>>();
+    let zone = &sim.zones[0];
+    for (i, a) in spots.iter().enumerate() {
+        assert!(a.0 > zone.l + zone.w * 0.08 && a.0 < zone.r - zone.w * 0.08);
+        for b in &spots[i + 1..] {
+            assert!((a.0 - b.0).abs() > 40. || (a.1 - b.1).abs() > 40. * sim.s);
+        }
+    }
+}
+
+#[test]
+fn fish_grow_with_work_and_level_up_only_on_a_rise() {
+    use crate::connection::stats::AgentStats;
+    let tally = |turns| {
+        Some(AgentStats {
+            turns,
+            working_s: 0,
+            at_ms: 0,
+        })
+    };
+    let hosts = [None];
+    let mut agents = vec![agent(None, 1, "claude", "p", AgentState::Idle)];
+    let mut sim = Sim::new(1200., 780., &hosts, &agents, false);
+    assert_eq!(sim.fish[0].tier, 1, "no tally: a reef fish");
+    let plain = sim.fish[0].len(sim.s);
+    agents[0].stats = tally(40);
+    sim.sync(1200., 780., &hosts, &agents, false);
+    assert_eq!(sim.fish[0].tier, 4);
+    assert_eq!(sim.fish[0].level_up, 1., "rose while watching");
+    assert!((sim.fish[0].len(sim.s) - plain * 1.8).abs() < 1e-3);
+    assert!(sim.bubbles.len() >= 14, "a burst of bubbles");
+    for _ in 0..90 {
+        sim.step(1. / 30.);
+    }
+    assert!(sim.fish[0].level_up < 0.01, "faded in about 2.2 seconds");
+    assert!(!sim.motes.is_empty(), "a legend trails motes");
+    // A host restart resets the tally: a quiet regrade.
+    agents[0].stats = tally(0);
+    sim.sync(1200., 780., &hosts, &agents, false);
+    assert_eq!((sim.fish[0].tier, sim.fish[0].level_up), (0, 0.));
+    // A fish first seen already grown does not flash.
+    agents.push(agent(None, 2, "codex", "p", AgentState::Idle));
+    agents[1].stats = tally(12);
+    sim.sync(1200., 780., &hosts, &agents, false);
+    assert_eq!((sim.fish[1].tier, sim.fish[1].level_up), (3, 0.));
 }

@@ -122,6 +122,9 @@ pub(crate) struct View {
     pub last_waiting: Option<String>,
     /// The galaxy node under the pointer, by its tile id: the reticle's target.
     pub hovered: Option<String>,
+    /// Each galaxy node's tier when last drawn and the panel time it last
+    /// rose, by tile id, so a rise while watching flashes a level-up.
+    pub grades: std::collections::HashMap<String, (usize, f32)>,
     /// Where the camera first landed, which a fixture film moves from.
     #[cfg(feature = "ui-fixtures")]
     pub film_base: Option<Camera>,

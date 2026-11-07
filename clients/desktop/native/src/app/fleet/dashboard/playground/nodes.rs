@@ -13,6 +13,8 @@ use super::galaxy::{self, Mood, RING_GAP, SHELL};
 use super::plan::{self, Pt};
 use super::{Camera, Paint, ellipse, fill};
 
+mod node;
+
 /// One planet: where, how many rings, whether its machine answers.
 pub(super) struct Planet {
     pub centre: Pt,
@@ -20,12 +22,19 @@ pub(super) struct Planet {
     pub online: bool,
 }
 
-/// One agent: its planet, where it is, its state colour and mood.
+/// One agent: its planet, where it is, its state colour and mood, and the
+/// form its work has grown it (`node`).
 pub(super) struct Node {
     pub planet: Pt,
     pub at: Pt,
     pub color: Hsla,
     pub mood: Mood,
+    /// Its tier (`tier::TIERS`).
+    pub tier: usize,
+    /// A level-up's glow, 1 at the rise, fading to 0.
+    pub level_up: f32,
+    /// Its harness's colour, for an exotic's glow and a legend's trail.
+    pub hue: Hsla,
 }
 
 /// The galaxy at this moment, ready to paint.
@@ -136,7 +145,7 @@ impl Paint {
             );
         }
         for node in &sky.nodes {
-            self.node(at(node.at), node, glow, k, time, window);
+            self.node(at(node.at), at(node.planet), node, glow, k, time, window);
         }
         if let Some(focus) = sky.focus {
             reticle(window, at(focus), 22. * k.max(0.7), light, time);
@@ -296,57 +305,6 @@ impl Paint {
             point(at.x - iw, at.y),
         ];
         fill(window, &inner, edge.opacity(0.9));
-    }
-
-    fn node(
-        &self,
-        at: Point<Pixels>,
-        node: &Node,
-        glow: f32,
-        k: f32,
-        time: f32,
-        window: &mut gpui::Window,
-    ) {
-        let c = node.color;
-        let k = k.max(0.6);
-        let idle = node.mood == Mood::Idle;
-        halo(window, at, 24. * k, c, if idle { 0.1 } else { 0.22 } * glow);
-        fill(
-            window,
-            &ellipse(at, 7. * k, 7. * k),
-            c.opacity(if idle { 0.6 } else { 1. }),
-        );
-        ring(
-            window,
-            at,
-            7. * k,
-            Hsla {
-                l: (c.l + 0.2).min(0.95),
-                ..c
-            }
-            .opacity(0.8),
-            1.,
-        );
-        match node.mood {
-            Mood::Working => {
-                let spin = time / 1.6 * TAU;
-                arc_stroke(window, at, 12. * k, spin, 100f32.to_radians(), c, 1.5);
-            }
-            Mood::Waiting => {
-                let breathe = 0.75 + 0.25 * (time * TAU).sin();
-                ring(window, at, 14. * k, c.opacity(breathe), 1.5);
-                let swell = time.rem_euclid(1.5) / 1.5;
-                ring(
-                    window,
-                    at,
-                    (30. + 26. * swell) * k,
-                    c.opacity(0.6 * (1. - swell)),
-                    2.,
-                );
-            }
-            Mood::Done => ring(window, at, 12. * k, c, 1.),
-            Mood::Idle => {}
-        }
     }
 
     /// Links on the galaxy: arcs bowing away from the core, each with a pulse

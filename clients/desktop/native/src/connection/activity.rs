@@ -54,6 +54,7 @@ impl Connection {
             self.error = None;
         }
         self.accept(&observation.events, observation.connection_epoch);
+        self.take_agent_stats(was);
         self.documents.collect();
         self.retain_documents();
         self.refresh_document_subscriptions();
@@ -65,6 +66,22 @@ impl Connection {
         }
         self.revision = self.revision.saturating_add(1);
         observation.events
+    }
+
+    /// Watch the host's agent-stats tally on every new connection (a
+    /// browsing one never attaches, so the runtime would not), and fold in
+    /// what arrived. A new tally is a change the fleet shows.
+    fn take_agent_stats(&mut self, was: Status) {
+        let live = |status| matches!(status, Status::Negotiated | Status::Attached);
+        if live(self.status) && !live(was) {
+            let _ = self.client.watch_global_metadata(stats::KEY.to_owned());
+        }
+        for value in self.client.take_global_metadata() {
+            if value.key == stats::KEY {
+                self.agent_stats = stats::parse(value.value.as_deref(), now_ms());
+                self.agents_noted = true;
+            }
+        }
     }
 
     fn apply_snapshot(&mut self, topology: Option<Topology>, epoch: u64) {

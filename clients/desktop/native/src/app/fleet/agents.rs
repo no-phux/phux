@@ -9,6 +9,7 @@ use phux_protocol::ResourceId;
 use super::{Destination, attr, available};
 use crate::app::desk::Desk;
 use crate::app::notifications::Kind;
+use crate::connection::stats::{self, AgentStats};
 use crate::connection::{AgentInfo, Connection};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -21,6 +22,8 @@ pub(crate) struct Agent {
     pub title: String,
     /// The session's project name, which relates agents across sessions and machines.
     pub project: Option<String>,
+    /// Work done, from the host's agent-stats tally; none without the plugin.
+    pub stats: Option<AgentStats>,
 }
 
 impl Agent {
@@ -110,6 +113,7 @@ fn agents_on(connection: &Connection, host: Option<String>) -> Vec<Agent> {
                 title: pane.title.clone().unwrap_or_default(),
                 project: session_project(connection, session.id, attrs.as_deref())
                     .map(|(_, name)| name),
+                stats: stats::of(&connection.agent_stats, &pane.terminal_id),
             })
         })
         .collect()

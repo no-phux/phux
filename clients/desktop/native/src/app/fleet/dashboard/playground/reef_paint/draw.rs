@@ -44,6 +44,7 @@ pub(super) fn draw(sim: &Sim, focus: Option<usize>, bounds: Bounds<Pixels>, wind
     for zone in &sim.zones {
         reef_front(&mut pen, sim, &pal, zone);
     }
+    motes(&mut pen, sim);
     for (index, f) in sim.fish.iter().enumerate() {
         fish(&mut pen, sim, &pal, f, focus == Some(index));
     }

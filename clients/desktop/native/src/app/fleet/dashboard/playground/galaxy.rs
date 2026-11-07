@@ -254,6 +254,7 @@ mod tests {
             },
             title: String::new(),
             project: project.map(str::to_owned),
+            stats: None,
         }
     }
 
