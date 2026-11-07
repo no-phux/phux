@@ -207,8 +207,21 @@ fn stored_json<T: serde::Serialize + serde::de::DeserializeOwned>(
     value: &T,
 ) -> Result<String, StoreError> {
     let encoded = serde_json::to_string(value)?;
-    let _: T = serde_json::from_str(&encoded)?;
+    let _: T = decode_row(&encoded)?;
     Ok(encoded)
+}
+
+/// Decode a row's JSON with `serde_json`'s recursion limit off. Each split
+/// costs two levels, and a receipt nests the tree deeper still, so the
+/// default limit refused new panes in a window of about 60. The depth stays
+/// bounded: every stored arrangement first passes the wire validation in
+/// `state::org`, and this file is the server's own, never a peer's.
+fn decode_row<T: serde::de::DeserializeOwned>(text: &str) -> Result<T, serde_json::Error> {
+    let mut de = serde_json::Deserializer::from_str(text);
+    de.disable_recursion_limit();
+    let value = T::deserialize(&mut de)?;
+    de.end()?;
+    Ok(value)
 }
 
 fn put_resource(tx: &Transaction<'_>, r: &Resource) -> Result<(), StoreError> {
@@ -381,7 +394,7 @@ impl SqliteOrgStore {
         let rows = stmt.query_map([], |row| row.get::<_, String>(0))?;
         let mut out = Vec::new();
         for text in rows {
-            out.push(serde_json::from_str(&text?)?);
+            out.push(decode_row(&text?)?);
         }
         Ok(out)
     }
@@ -431,7 +444,7 @@ impl SqliteOrgStore {
 fn decode_receipt(row: &rusqlite::Row<'_>) -> Result<Receipt, String> {
     let column = row.get_ref(2).map_err(|error| error.to_string())?;
     let text = column.as_str().map_err(|error| error.to_string())?;
-    serde_json::from_str(text).map_err(|error| error.to_string())
+    decode_row(text).map_err(|error| error.to_string())
 }
 
 impl OrgStore for SqliteOrgStore {
@@ -533,4 +546,26 @@ fn key8(bytes: &[u8]) -> Result<u64, StoreError> {
         .try_into()
         .map_err(|_| StoreError::Corrupt("journal_seq is not 8 bytes".to_owned()))?;
     Ok(u64::from_be_bytes(array))
+}
+
+#[cfg(test)]
+mod depth_tests {
+    use phux_core::arrangement::{LayoutNode, SplitDir};
+
+    use super::{decode_row, stored_json};
+
+    #[test]
+    fn a_window_past_the_json_recursion_limit_saves_and_reads_back() {
+        let mut tree = LayoutNode::Leaf(0_u32);
+        for leaf in 1..200 {
+            tree = LayoutNode::Split {
+                dir: SplitDir::Horizontal,
+                ratio: 0.5,
+                left: Box::new(LayoutNode::Leaf(leaf)),
+                right: Box::new(tree),
+            };
+        }
+        let encoded = stored_json(&tree).expect("a deep window saves");
+        assert_eq!(decode_row::<LayoutNode<u32>>(&encoded).unwrap(), tree);
+    }
 }
