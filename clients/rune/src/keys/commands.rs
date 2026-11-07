@@ -285,6 +285,7 @@ pub const COMMANDS: &[Command] = &[
     ),
     row!(Shortcut::Inbox, "Open Inbox", [m('i')], [l('i')]),
     row!(Shortcut::Galaxy, "Open Galaxy", [], []),
+    row!(Shortcut::Reef, "Open Reef", [], []),
     row!(Shortcut::Settings, "Settings", [m(',')], [l(',')]),
     row!(Shortcut::ChangeTheme, "Change Theme", [], []),
     row!(
@@ -583,6 +584,7 @@ mod tests {
         FindSelection,
         Inbox,
         Galaxy,
+        Reef,
         Settings,
         ChangeTheme,
         SwitchSession,

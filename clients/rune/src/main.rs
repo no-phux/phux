@@ -18,6 +18,7 @@ mod machines;
 mod palette;
 mod paths;
 mod perf;
+mod reef;
 mod theme;
 mod ui;
 mod updates;

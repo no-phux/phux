@@ -55,6 +55,8 @@ pub enum Shortcut {
     Inbox,
     /// The fleet as a galaxy: machines, their agents, and how they relate.
     Galaxy,
+    /// The fleet as a reef: machines as reefs, agents as fish.
+    Reef,
     Settings,
     /// The themes, previewed live as the highlight moves.
     ChangeTheme,
@@ -89,6 +91,7 @@ impl Shortcut {
             self,
             Self::Inbox
                 | Self::Galaxy
+                | Self::Reef
                 | Self::Settings
                 | Self::ChangeTheme
                 | Self::ZoomIn
