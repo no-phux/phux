@@ -72,6 +72,10 @@ Every tool the MCP adapter (`phux mcp`) serves, the `phux` verb it mirrors, and 
 | `phux_resource_show` | `phux resource show` | in-process | yes | no |
 | `phux_resource_wait` | `phux resource wait` | in-process | yes | no |
 | `phux_resource_methods` | `phux resource methods` | in-process | yes | no |
+| `phux_documents` | none (automation only) | in-process | yes | no |
+| `phux_tree_snapshot` | `phux agent tree snapshot` | in-process | no | no |
+| `phux_tree_wait` | `phux agent tree follow` | in-process | no | no |
+| `phux_surface_snapshot` | `phux agent surface snapshot` | in-process | no | no |
 | `phux_approvals` | `phux approvals` | in-process | yes | no |
 | `phux_approve` | `phux approve` | in-process | no | yes |
 
@@ -106,6 +110,7 @@ These tools still run the `phux` binary as a subprocess, bounded in time and out
 
 - `phux_operation_status`: observe an adapter-scoped mutation without blocking on approval.
 - `phux_plugin_profile`: lists the profiles configured plugin manifests declare; `phux plugin list` and `phux config plugins` list the manifests, not their profiles.
+- `phux_documents`: the document-kind subset of `phux ls --json`'s `resources`, with each one's name.
 
 ## CLI verbs without a tool
 
