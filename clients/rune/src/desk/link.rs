@@ -372,6 +372,8 @@ impl Desk {
         next.theme_before = self.theme_before;
         next.settings.theme = self.settings.theme;
         next.settings_open = self.settings_open;
+        std::mem::swap(&mut next.settings_ui, &mut self.settings_ui);
+        next.phone = self.phone.take();
         next.sidebar_open = self.sidebar_open;
         next.wanted = self
             .shown
@@ -530,3 +532,6 @@ pub(super) fn seeded(client: &Client, unavailable: Option<u64>) -> bool {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod settings_reconnect;

@@ -47,6 +47,7 @@ pub mod updates;
 
 pub use layout::SplitPath;
 pub use palette::{CONTEXT_MENU, with_menus};
+pub use settings::Category as SettingsCategory;
 pub use tabs::{Renaming, Tab};
 
 /// Wakes Rune's loop from the runtime's driver thread. Only posts; never
@@ -189,6 +190,8 @@ pub struct Desk {
     pub(crate) fleet: fleet::Fleet,
     pub settings: settings::Settings,
     pub settings_open: bool,
+    /// Navigation and search belong to this window, never to stored preferences.
+    pub settings_ui: settings::SettingsUi,
     pub tabs: tabs::Tabs,
     pub updater: updates::Updater,
     pub machines: machines::Machines,
@@ -392,6 +395,7 @@ impl Desk {
             fleet: fleet::Fleet::default(),
             settings,
             settings_open: false,
+            settings_ui: settings::SettingsUi::default(),
             tabs: tabs::Tabs::default(),
             updater: updates::Updater::new(&prefs, resolved),
             machines: machines::Machines::new(machine, resolved.phux.clone()),

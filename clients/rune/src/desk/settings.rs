@@ -8,6 +8,58 @@ use super::Desk;
 use crate::grid;
 use crate::theme::{self, Theme};
 
+/// Settings destinations, separate from preferences and connection state.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Category {
+    Appearance,
+    Terminal,
+    Notifications,
+    RemoteHosts,
+    Developer,
+    About,
+}
+
+impl Category {
+    pub const ALL: [Self; 6] = [
+        Self::Appearance,
+        Self::Terminal,
+        Self::Notifications,
+        Self::RemoteHosts,
+        Self::Developer,
+        Self::About,
+    ];
+
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::Appearance => "Appearance",
+            Self::Terminal => "Terminal",
+            Self::Notifications => "Notifications",
+            Self::RemoteHosts => "Remote Hosts",
+            Self::Developer => "Developer",
+            Self::About => "About & Updates",
+        }
+    }
+
+    pub const fn key(self) -> &'static str {
+        match self {
+            Self::Appearance => "settings-appearance",
+            Self::Terminal => "settings-terminal",
+            Self::Notifications => "settings-notifications",
+            Self::RemoteHosts => "settings-hosts",
+            Self::Developer => "settings-developer",
+            Self::About => "settings-about",
+        }
+    }
+}
+
+#[derive(Default)]
+pub struct SettingsUi {
+    pub category: Option<Category>,
+    pub query: rune::TextEdit,
+    /// The existing theme palette returns here on both accept and cancel.
+    pub return_from_themes: bool,
+}
+
 /// What the person chose, as stored.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Settings {
@@ -53,11 +105,94 @@ impl Desk {
 
     pub fn toggle_settings(&mut self) {
         self.close_inbox();
-        self.settings_open = !self.settings_open;
+        if self.settings_open {
+            self.close_settings();
+        } else {
+            self.settings_open = true;
+        }
     }
 
     pub fn close_settings(&mut self) {
         self.settings_open = false;
+        self.settings_ui.query.focused = false;
+    }
+
+    pub fn settings_category(&mut self, category: Category) {
+        self.settings_ui.category = Some(category);
+        self.settings_ui.query.clear();
+        self.settings_ui.query.focused = false;
+    }
+
+    pub fn settings_back(&mut self) {
+        self.settings_ui.category = None;
+        self.settings_ui.query.clear();
+        self.settings_ui.query.focused = false;
+    }
+
+    pub fn clear_settings_search(&mut self) {
+        self.settings_ui.query.clear();
+        self.focus_settings_search();
+    }
+
+    pub fn focus_settings_search(&mut self) {
+        self.settings_ui.query.focused = true;
+    }
+
+    pub fn blur_settings_search(&mut self, tx: &mut Tx) {
+        self.settings_ui.query.focused = false;
+        tx.blur();
+    }
+
+    pub fn settings_themes(&mut self) {
+        self.open_themes();
+        self.settings_ui.return_from_themes = true;
+    }
+
+    pub fn settings_search_focused(&self) -> bool {
+        self.settings_open && self.settings_ui.query.focused
+    }
+
+    /// Native fields keep editing, selection, clipboard and Tab with Rune.
+    pub fn settings_field_key(&mut self, event: &KeyEvent, tx: &mut Tx) -> bool {
+        match event.key {
+            Key::Escape if !self.settings_ui.query.text.is_empty() => self.clear_settings_search(),
+            Key::Escape => self.settings_dismiss(),
+            Key::Enter => self.blur_settings_search(tx),
+            _ => return false,
+        }
+        if !self.settings_search_focused() {
+            tx.blur();
+        }
+        true
+    }
+
+    fn settings_dismiss(&mut self) {
+        if self.phone.is_some() && self.settings_ui.category.is_some() {
+            self.settings_back();
+        } else {
+            self.close_settings();
+        }
+    }
+
+    pub fn settings_escape(&mut self) {
+        if self.settings_ui.query.text.is_empty() {
+            self.settings_dismiss();
+        } else {
+            self.clear_settings_search();
+        }
+    }
+
+    /// Drawn keys edit this field now, never queued into a later frame where
+    /// the sheet may have closed and the terminal could have the keyboard.
+    pub fn settings_soft(&mut self, event: &KeyEvent, tx: &mut Tx) {
+        if !self.settings_search_focused() || self.settings_field_key(event, tx) {
+            return;
+        }
+        if event.key == Key::Tab {
+            self.blur_settings_search(tx);
+            return;
+        }
+        self.settings_ui.query.key(event, None);
     }
 
     /// Install the chosen palette on the runtime. Live panes repaint with it.
@@ -117,27 +252,14 @@ impl Desk {
             .set("confirm_close", &self.settings.confirm_close);
     }
 
-    /// Keys while settings is open and no control has them: arrows walk the
-    /// themes, previewing live, as a focused theme grid does.
-    pub(super) fn settings_key(&mut self, event: &KeyEvent, tx: &Tx) {
-        if tx.focused().is_some() {
-            return;
+    /// Unhandled arrows never mutate preferences. Escape backs out of the
+    /// phone category before closing the sheet.
+    pub(super) fn settings_key(&mut self, event: &KeyEvent, tx: &mut Tx) {
+        if self.settings_search_focused() && tx.focused().is_none() {
+            self.settings_soft(event, tx);
+        } else if event.key == Key::Escape {
+            self.settings_dismiss();
         }
-        let themes: Vec<_> = theme::all().collect();
-        let at = self
-            .settings
-            .theme
-            .and_then(|t| themes.iter().position(|x| *x == t))
-            .map_or(0, |i| i + 1);
-        let count = themes.len() + 1;
-        let step = match event.key {
-            Key::Escape => return self.close_settings(),
-            Key::Right | Key::Down => 1,
-            Key::Left | Key::Up => count - 1,
-            _ => return,
-        };
-        let next = (at + step) % count;
-        self.choose_theme(next.checked_sub(1).map(|i| themes[i]));
     }
 
     /// Selection finished: hand it to the clipboard when asked to.
@@ -155,6 +277,7 @@ mod tests {
     use rune::{Env, Runtime, TouchPhase};
     use serde_json::{Value, json};
 
+    use crate::desk::SettingsCategory as Category;
     use crate::desk::{Desk, Notice, NoticeKind};
     use crate::grid::{MAX_FONT_SIZE, MIN_FONT_SIZE};
     use crate::launch::Resolved;
@@ -180,6 +303,7 @@ mod tests {
 
     fn runtime(desk: Desk) -> Runtime<Desk> {
         let mut runtime = Runtime::new(desk, crate::ui::view, (1100.0, 720.0), Env::new(true, 2.0));
+        runtime.on_key = Some(Desk::key);
         runtime.frame(0.0);
         runtime
     }
@@ -188,11 +312,14 @@ mod tests {
         if on { "checked" } else { "unchecked" }
     }
 
+    mod navigation;
+
     #[test]
     fn a_touch_taps_a_setting_once_and_leaves_no_hover() {
         let mut desk = Desk::new(&Resolved::offline("touch"));
         desk.prefs = Prefs::memory();
         desk.settings_open = true;
+        desk.settings_category(Category::Terminal);
         let mut runtime = runtime(desk);
         runtime.update(|_, tx| {
             tx.instant();
@@ -216,6 +343,7 @@ mod tests {
         let mut desk = Desk::new(&Resolved::offline("touch"));
         desk.prefs = Prefs::memory();
         desk.settings_open = true;
+        desk.settings_category(Category::Terminal);
         let mut runtime = runtime(desk);
         runtime.update(|_, tx| {
             tx.instant();
@@ -238,14 +366,17 @@ mod tests {
     }
 
     #[test]
-    fn a_touch_pans_the_settings_sheet_without_choosing_a_theme() {
+    fn a_touch_pans_settings_without_changing_a_preference() {
         let mut desk = Desk::new(&Resolved::offline("touch"));
         desk.prefs = Prefs::memory();
         desk.settings_open = true;
+        desk.settings_category(Category::Terminal);
         desk.settings.theme = None;
         let before = desk.settings.theme;
         let mut runtime = runtime(desk);
-        let (x, y) = runtime.find("theme-Nord").unwrap();
+        runtime.viewport = (800.0, 360.0);
+        runtime.frame(0.0);
+        let (x, y) = runtime.find("text-size").unwrap();
         runtime.touch(1, TouchPhase::Started, x, y, 0.0);
         runtime.frame(1.0 / 60.0);
         runtime.touch(1, TouchPhase::Moved, x, y - 100.0, 0.05);
@@ -253,7 +384,7 @@ mod tests {
         // Hold before lifting, so this checks the pan without a fling.
         runtime.touch(1, TouchPhase::Ended, x, y - 100.0, 0.3);
         runtime.frame(1.0 / 60.0);
-        let (_, after) = runtime.find("theme-Nord").unwrap();
+        let (_, after) = runtime.find("text-size").unwrap();
         assert!(
             after < y - 90.0,
             "the sheet followed the finger: {y} → {after}"
@@ -268,6 +399,7 @@ mod tests {
         // What the actions change stays in the test.
         desk.prefs = Prefs::memory();
         desk.settings_open = true;
+        desk.settings_category(Category::Terminal);
         let mut runtime = runtime(desk);
         let tree = runtime.accessibility_json();
         assert_eq!(find(&tree, "settings-scrim")["name"], "Settings");

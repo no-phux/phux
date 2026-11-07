@@ -1,269 +1,374 @@
-//! The settings sheet: theme, text, and how the app behaves.
+//! Settings has its own quiet surface and navigation, not a second palette.
 
-//!
-//! Every control here takes the keyboard. Keep `focusable` to sheets: a modal
-//! traps focus, while one on the main window would take Tab from the terminal.
+use rune::{Color, El, TextStyle, col, el, row, text, text_input};
 
-use rune::{El, TextStyle, col, el, row, text};
+use super::{CAPTION, Ink, icons, pressable, updates};
+use crate::desk::{Desk, SettingsCategory as Category};
 
-use super::overlay::key_hint;
-use super::{CAPTION, Ink, LABEL, Sheet, pressable, updates};
-use crate::desk::Desk;
-use crate::grid::{MAX_FONT_SIZE, MIN_FONT_SIZE};
-use crate::theme::{self, Theme, color};
+mod controls;
+mod entries;
 
-const WIDTH: f32 = 560.0;
-const TILE_W: f32 = 120.0;
+pub(super) use controls::{section, toggle};
 
-pub(super) fn section(title: &'static str, ink: &Ink) -> El {
-    text(title.to_uppercase())
-        .font(TextStyle::new(10.5, 650.0).tracking(0.6))
-        .color(ink.dim)
-}
+const TITLE: TextStyle = TextStyle::new(21.0, 650.0);
+const COPY: TextStyle = TextStyle::new(13.0, 450.0).lh(18.0);
 
-fn tile(theme: Option<&'static Theme>, chosen: bool, ink: &Ink) -> El {
-    let name = theme.map_or("System", |t| t.name);
-    let (back, swatches) = theme.map_or((ink.bg, Vec::new()), |t| {
-        (
-            color(t.background),
-            t.ansi[1..7].iter().map(|c| color(*c)).collect(),
-        )
-    });
-    let mut strip = row().gap(3.0).items_center();
-    for swatch in swatches {
-        strip = strip.child(el().size(10.0, 10.0).radius(5.0).fill(swatch));
-    }
-    if theme.is_none() {
-        strip = strip.child(text("follows the OS").font(CAPTION).color(ink.dim));
-    }
-    let tile = col()
-        .key(format!("theme-{name}"))
-        .w(TILE_W)
-        .gap(6.0)
-        .focusable(true)
-        .role("radio")
-        .label(name)
-        .focus_selected(chosen)
-        .cursor(rune::Cursor::Pointer)
-        .on_press(move |d: &mut Desk| d.choose_theme(theme))
-        .child(
-            el().w_full()
-                .h(44.0)
-                .px(9.0)
-                .radius(8.0)
-                .fill(back)
-                .border(
-                    if chosen { 2.0 } else { 1.0 },
-                    if chosen { ink.accent } else { ink.separator },
-                )
-                .items_center()
-                .child(strip)
-                .a11y_hidden(),
-        )
-        .child(
-            text(name)
-                .font(CAPTION)
-                .color(ink.text)
-                .truncate()
-                .a11y_hidden(),
-        );
-    match theme {
-        None => tile.description("Follows the OS"),
-        Some(_) => tile,
+fn surface(ink: &Ink) -> Color {
+    if crate::theme::on_fill(ink.bg) == Color::WHITE {
+        ink.raised
+    } else {
+        ink.bg
     }
 }
 
-fn themes(desk: &Desk, ink: &Ink) -> El {
-    // One Tab stop: arrows rove it, choosing as they go.
-    let mut grid = row()
-        .key("theme-grid")
-        .w_full()
-        .gap(10.0)
-        .flex_wrap()
-        .role("radiogroup")
-        .label("Theme")
-        .focus_group();
-    grid = grid.child(tile(None, desk.settings.theme.is_none(), ink));
-    for theme in theme::all() {
-        grid = grid.child(tile(Some(theme), desk.settings.theme == Some(theme), ink));
-    }
-    grid
-}
-
-fn switch(on: bool, ink: &Ink) -> El {
-    let thumb = el()
-        .size(14.0, 14.0)
-        .radius(7.0)
-        .fill(if on { ink.on_accent } else { ink.dim });
+fn search(desk: &Desk, ink: &Ink) -> El {
+    let field = text_input(&desk.settings_ui.query, COPY)
+        .key("settings-query")
+        .label("Search Settings")
+        .single_line()
+        .min_h(44.0)
+        .grow(1.0)
+        .min_w(0.0)
+        .color(ink.text)
+        .placeholder("Search Settings", ink.dim)
+        .on_edit(|d: &mut Desk| &mut d.settings_ui.query)
+        .on_input_key(Desk::settings_field_key);
     row()
-        .w(30.0)
-        .h(18.0)
-        .px(2.0)
-        .radius(9.0)
-        .items_center()
-        .fill(if on { ink.accent } else { ink.separator })
-        .children((on).then(|| el().grow(1.0)))
-        .child(thumb)
-}
-
-pub(super) fn toggle(
-    key: &'static str,
-    title: &'static str,
-    detail: &'static str,
-    on: bool,
-    press: fn(&mut Desk),
-    ink: &Ink,
-) -> El {
-    row()
-        .key(key)
         .w_full()
-        .py(6.0)
-        .gap(12.0)
-        .items_center()
-        .focusable(true)
-        .role("switch")
-        .label(title)
-        .description(detail)
-        .checked(on)
-        .cursor(rune::Cursor::Pointer)
-        .on_press(press)
-        .child(
-            col()
-                .grow(1.0)
-                .min_w(0.0)
-                .gap(1.0)
-                .child(text(title).font(LABEL).color(ink.text))
-                .child(text(detail).font(CAPTION).color(ink.dim).truncate())
-                .a11y_hidden(),
-        )
-        .child(switch(on, ink).a11y_hidden())
-}
-
-fn stepper(desk: &Desk, ink: &Ink) -> El {
-    let step = |glyph: &'static str, name, key: &'static str, press: fn(&mut Desk)| {
-        pressable(key, ink)
-            .size(26.0, 24.0)
-            .radius(6.0)
-            .center()
-            .border(1.0, ink.separator)
-            .label(name)
-            .on_press(press)
-            .child(text(glyph).font(LABEL).color(ink.text).a11y_hidden())
-    };
-    let size = format!("{:.0} pt", desk.font_size);
-    row()
-        .key("text-size")
-        .w_full()
-        .py(6.0)
+        .min_h(44.0)
+        .pl(12.0)
         .gap(8.0)
         .items_center()
-        .label("Text size")
-        // A screen reader reads the size and can set it: a step is a point.
-        .range_value(
-            f64::from(desk.font_size),
-            f64::from(MIN_FONT_SIZE),
-            f64::from(MAX_FONT_SIZE),
-        )
-        .range_step(1.0)
-        .a11y_value(size.clone())
-        .on_step(|d: &mut Desk, steps, _| d.zoom(Some(d.font_size + steps as f32)))
-        .on_step_limit(|d: &mut Desk, max, _| {
-            d.zoom(Some(if max { MAX_FONT_SIZE } else { MIN_FONT_SIZE }))
-        })
+        .radius(12.0)
+        .fill(surface(ink))
+        .border(1.0, ink.separator)
         .child(
-            text("Text size")
-                .font(LABEL)
-                .color(ink.text)
+            rune::icon(&icons::SEARCH, 16.0)
+                .color(ink.dim)
                 .a11y_hidden(),
         )
-        .child(el().grow(1.0))
-        .child(step("−", "Smaller text", "text-smaller", |d| {
-            d.zoom(Some(d.font_size - 1.0))
-        }))
-        .child(
-            el().w(44.0)
+        .child(field)
+        .children((!desk.settings_ui.query.text.is_empty()).then(|| {
+            pressable("settings-clear", ink)
+                .size(44.0, 44.0)
+                .focusable(true)
+                .preserve_focus_on_press(true)
+                .label("Clear search")
                 .center()
-                .child(text(size).font(CAPTION).color(ink.text).a11y_hidden()),
-        )
-        .child(step("+", "Larger text", "text-bigger", |d| {
-            d.zoom(Some(d.font_size + 1.0))
+                .on_press(Desk::clear_settings_search)
+                .child(rune::icon(&icons::CLOSE, 16.0).color(ink.dim).a11y_hidden())
+        }))
+        .pr(4.0)
+}
+
+fn category_icon(category: Category, ink: &Ink) -> El {
+    let (glyph, hue) = match category {
+        Category::Appearance => (&icons::SIDEBAR, 275.0),
+        Category::Terminal => (&icons::PROMPT, 160.0),
+        Category::Notifications => (&icons::INBOX, 25.0),
+        Category::RemoteHosts => (&icons::PAD, 240.0),
+        Category::Developer => (&icons::KEYBOARD, 310.0),
+        Category::About => (&icons::MORE, 210.0),
+    };
+    // Only these small identifiers carry colour, never the cards or theme list.
+    let tint = rune::oklch(0.57, 0.13, hue);
+    el().size(28.0, 28.0)
+        .radius(8.0)
+        .fill(tint.alpha(0.13))
+        .center()
+        .child(rune::icon(glyph, 16.0).color(ink.text))
+        .a11y_hidden()
+}
+
+fn category_row(category: Category, desk: &Desk, ink: &Ink, phone: bool) -> El {
+    let selected = desk.settings_ui.category.unwrap_or(Category::Appearance) == category;
+    let mut item = pressable(category.key(), ink)
+        .w_full()
+        .min_h(48.0)
+        .px(12.0)
+        .gap(10.0)
+        .items_center()
+        .radius(10.0)
+        .focusable(true)
+        .role("button")
+        .label(category.name())
+        .on_press(move |d: &mut Desk| d.settings_category(category))
+        .child(category_icon(category, ink))
+        .child(
+            text(category.name())
+                .font(COPY)
+                .color(ink.text)
+                .grow(1.0)
+                .a11y_hidden(),
+        );
+    if phone {
+        item = item
+            .a11y_value(entries::category_value(category, desk))
+            .child(
+                text(entries::category_value(category, desk))
+                    .font(CAPTION)
+                    .color(ink.dim)
+                    .max_w(105.0)
+                    .truncate()
+                    .a11y_hidden(),
+            )
+            .child(
+                rune::icon(&icons::CHEVRON_RIGHT, 14.0)
+                    .color(ink.dim)
+                    .a11y_hidden(),
+            );
+    } else if selected {
+        item = item.fill(ink.current).focus_selected(true);
+    }
+    item
+}
+
+fn categories(desk: &Desk, ink: &Ink) -> El {
+    let groups: [&[Category]; 3] = [
+        &[
+            Category::Appearance,
+            Category::Terminal,
+            Category::Notifications,
+        ],
+        &[Category::RemoteHosts],
+        &[Category::Developer, Category::About],
+    ];
+    col()
+        .w_full()
+        .gap(24.0)
+        .children(groups.into_iter().map(|group| {
+            controls::card(
+                group
+                    .iter()
+                    .map(|c| category_row(*c, desk, ink, true))
+                    .collect(),
+                ink,
+            )
         }))
 }
 
-fn behaviour(desk: &Desk, ink: &Ink) -> El {
-    let notify_detail =
-        crate::alerts::notifications_detail(crate::alerts::available(), cfg!(target_os = "macos"));
-    let option_as_meta = cfg!(target_os = "macos").then(|| {
-        toggle(
-            "set-option-meta",
-            "Option as Meta",
-            "Option sends Esc-prefixed keys instead of typing å and ∑.",
-            desk.settings.option_as_meta,
-            Desk::toggle_option_as_meta,
-            ink,
+fn detail(desk: &Desk, ink: &Ink) -> El {
+    let query = desk.settings_ui.query.text.trim();
+    if query.is_empty() && desk.phone.is_some() && desk.settings_ui.category.is_none() {
+        return categories(desk, ink);
+    }
+    let groups = entries::matching(desk);
+    let mut body = col().w_full().gap(24.0);
+    if groups.is_empty() {
+        body = body.child(
+            col()
+                .key("settings-no-results")
+                .w_full()
+                .py(32.0)
+                .gap(8.0)
+                .child(text("No settings found").font(COPY).color(ink.text))
+                .child(
+                    text("Try a name, category or current value.")
+                        .font(CAPTION)
+                        .color(ink.dim)
+                        .wrap(),
+                ),
+        );
+    }
+    for (category, entries) in groups {
+        let rows = entries
+            .into_iter()
+            .map(|entry| entry.view(desk, ink))
+            .collect();
+        body = body.child(
+            col()
+                .w_full()
+                .gap(8.0)
+                .child(section(category.name(), ink).px(16.0))
+                .child(controls::card(rows, ink)),
+        );
+        if category == Category::Appearance && query.is_empty() {
+            body = body.child(controls::preview(desk, ink));
+        }
+    }
+    body
+}
+
+fn close(ink: &Ink) -> El {
+    pressable("settings-close", ink)
+        .size(44.0, 44.0)
+        .radius(22.0)
+        .fill(ink.current)
+        .center()
+        .focusable(true)
+        .label("Close")
+        .on_press(Desk::close_settings)
+        .child(
+            rune::icon(&icons::CLOSE, 18.0)
+                .color(ink.text)
+                .a11y_hidden(),
         )
-    });
-    col()
+}
+
+fn heading(desk: &Desk, ink: &Ink) -> El {
+    if desk.phone.is_some() {
+        return phone_heading(desk, ink);
+    }
+    row()
         .w_full()
-        .gap(12.0)
-        .child(section("Behaviour", ink))
-        .child(toggle(
-            "set-notifications",
-            "Notifications",
-            notify_detail,
-            desk.settings.notifications,
-            Desk::toggle_notifications,
-            ink,
-        ))
-        .children(option_as_meta)
-        .child(toggle(
-            "set-copy-select",
-            "Copy on select",
-            "Finishing a selection puts it on the clipboard.",
-            desk.settings.copy_on_select,
-            Desk::toggle_copy_on_select,
-            ink,
-        ))
-        .child(toggle(
-            "set-confirm-close",
-            "Confirm before closing",
-            "Ask before closing a terminal or tab that's still running something.",
-            desk.settings.confirm_close,
-            Desk::toggle_confirm_close,
-            ink,
-        ))
+        .h(52.0)
+        .px(16.0)
+        .gap(10.0)
+        .items_center()
+        .child(
+            text("Settings")
+                .font(TITLE)
+                .color(ink.text)
+                .role("heading")
+                .level(1),
+        )
+        .child(el().grow(1.0))
+        .child(close(ink))
+}
+
+fn phone_heading(desk: &Desk, ink: &Ink) -> El {
+    let back = desk.phone.is_some() && desk.settings_ui.category.is_some();
+    row()
+        .w_full()
+        .h(64.0)
+        .px(16.0)
+        .gap(10.0)
+        .items_center()
+        .child(if back {
+            pressable("settings-back", ink)
+                .size(44.0, 44.0)
+                .focusable(true)
+                .label("Back to Settings")
+                .center()
+                .on_press(Desk::settings_back)
+                .child(
+                    rune::icon(&icons::CHEVRON_LEFT, 20.0)
+                        .color(ink.text)
+                        .a11y_hidden(),
+                )
+        } else {
+            close(ink)
+        })
+        .child(
+            el().grow(1.0).center().child(
+                text("Settings")
+                    .font(TITLE)
+                    .color(ink.text)
+                    .role("heading")
+                    .level(1),
+            ),
+        )
+        .child(if back {
+            close(ink)
+        } else {
+            el().size(44.0, 44.0)
+        })
+}
+
+fn scroller(desk: &Desk, ink: &Ink) -> El {
+    col()
+        .key("settings-content")
+        .w_full()
+        .grow(1.0)
+        .min_h(0.0)
+        .min_w(0.0)
+        .scroll(rune::ScrollSpec {
+            stick_bottom: false,
+        })
+        .child(
+            col().w_full().padding(16.0).gap(16.0)
+            // A search must never conceal an update failure or protocol warning.
+            .children(updates::warnings(desk, ink))
+            .child(detail(desk, ink)),
+        )
+}
+
+fn phone(desk: &Desk, ink: &Ink) -> El {
+    col()
+        .key("settings-scrim")
+        .w_full()
+        .h_full()
+        .min_h(0.0)
+        .modal(true, Desk::settings_escape)
+        .label("Settings")
+        .fill(ink.sidebar)
+        .child(
+            col()
+                .key("settings")
+                .w_full()
+                .grow(1.0)
+                .min_h(0.0)
+                .radius(24.0)
+                .clip_rounded(24.0)
+                .fill(ink.sidebar)
+                .child(heading(desk, ink))
+                .child(scroller(desk, ink))
+                .child(el().w_full().padding(12.0).child(search(desk, ink))),
+        )
+}
+
+fn desktop(desk: &Desk, ink: &Ink) -> El {
+    let rail = col()
+        .key("settings-navigation")
+        .w(190.0)
+        .h_full()
+        .padding(10.0)
+        .gap(4.0)
+        .role("navigation")
+        .label("Settings categories")
+        .children(
+            Category::ALL
+                .into_iter()
+                .map(|c| category_row(c, desk, ink, false)),
+        );
+    let panel = col()
+        .key("settings")
+        .w_full()
+        .max_w(840.0)
+        .h_full()
+        .max_h(600.0)
+        .min_h(0.0)
+        .radius(16.0)
+        .clip_rounded(16.0)
+        .fill(ink.sidebar)
+        .border(1.0, ink.separator)
+        .shadow(18.0, 56.0, ink.shade)
+        .child(heading(desk, ink))
+        .child(
+            row()
+                .w_full()
+                .grow(1.0)
+                .min_h(0.0)
+                .child(rail)
+                .child(el().w(1.0).h_full().fill(ink.separator))
+                .child(
+                    col()
+                        .grow(1.0)
+                        .min_w(0.0)
+                        .h_full()
+                        .child(el().w_full().px(16.0).pb(8.0).child(search(desk, ink)))
+                        .child(scroller(desk, ink)),
+                ),
+        );
+    col()
+        .key("settings-scrim")
+        .absolute(0.0, 0.0)
+        .w_full()
+        .h_full()
+        .padding(32.0)
+        .center()
+        .fill(Color::BLACK.alpha(0.20))
+        .modal(true, Desk::settings_escape)
+        .label("Settings")
+        .child(panel)
 }
 
 pub fn view(desk: &Desk, ink: &Ink) -> El {
-    let body = col()
-        .w_full()
-        .padding(18.0)
-        .gap(12.0)
-        .child(section("Theme", ink))
-        .child(themes(desk, ink))
-        .child(section("Text", ink))
-        .child(stepper(desk, ink))
-        .child(behaviour(desk, ink))
-        .child(updates::settings(desk, ink));
-    let version = text(concat!("Phux Rune ", env!("CARGO_PKG_VERSION")))
-        .font(CAPTION)
-        .color(ink.dim);
-    let foot = row()
-        .w_full()
-        .gap(12.0)
-        .items_center()
-        .child(key_hint("tab", "next", ink))
-        .child(key_hint("←→", "change", ink))
-        .child(key_hint("space", "toggle", ink))
-        .child(key_hint("esc", "close", ink));
-    Sheet {
-        key: "settings",
-        title: "Settings",
-        width: WIDTH,
-        top: 72.0,
-        // Light enough to judge a theme against the terminals behind it.
-        scrim: 0.12,
-        close: Desk::close_settings,
+    match desk.phone {
+        Some(_) => phone(desk, ink),
+        None => desktop(desk, ink),
     }
-    .build(Some(version), body, foot, ink)
 }
+
+#[cfg(test)]
+mod tests;

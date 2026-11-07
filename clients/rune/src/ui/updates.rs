@@ -13,6 +13,7 @@ const CARD_W: f32 = 320.0;
 
 fn act_button(action: Action, key: &'static str, ink: &Ink) -> El {
     el().key(key)
+        .label(action.label())
         .px(12.0)
         .py(6.0)
         .radius(6.0)
@@ -24,6 +25,9 @@ fn act_button(action: Action, key: &'static str, ink: &Ink) -> El {
 
 fn quiet_button(label: &'static str, key: &'static str, press: fn(&mut Desk), ink: &Ink) -> El {
     pressable(key, ink)
+        .focusable(true)
+        .label(label)
+        .min_h(44.0)
         .px(12.0)
         .py(6.0)
         .radius(6.0)
@@ -33,13 +37,18 @@ fn quiet_button(label: &'static str, key: &'static str, press: fn(&mut Desk), in
 }
 
 /// Real transfer progress only; verifying has no percentage to show.
-fn progress(percent: u8, width: f32, ink: &Ink) -> El {
-    el().w(width).h(3.0).radius(1.5).fill(ink.separator).child(
-        el().w(width * f32::from(percent) / 100.0)
-            .h(3.0)
-            .radius(1.5)
-            .fill(ink.accent),
-    )
+fn progress(percent: u8, ink: &Ink) -> El {
+    el().key("update-progress")
+        .w_full()
+        .h(3.0)
+        .radius(1.5)
+        .fill(ink.separator)
+        .child(
+            el().w_frac(f32::from(percent) / 100.0)
+                .h(3.0)
+                .radius(1.5)
+                .fill(ink.accent),
+        )
 }
 
 fn headline(updater: &Updater) -> String {
@@ -105,7 +114,6 @@ pub fn card(desk: &Desk, ink: &Ink, top: f32) -> Option<El> {
     if !updater.card_open() {
         return None;
     }
-    let inner = CARD_W - 28.0;
     let percent = match updater.work {
         Work::Downloading(percent) => Some(percent),
         _ => None,
@@ -139,7 +147,7 @@ pub fn card(desk: &Desk, ink: &Ink, top: f32) -> Option<El> {
                 ),
         )
         .child(lines(desk, ink))
-        .children(percent.map(|percent| progress(percent, inner, ink)))
+        .children(percent.map(|percent| progress(percent, ink).key("update-card-progress")))
         .children(
             updater
                 .action()
@@ -170,9 +178,13 @@ pub fn pill(desk: &Desk, ink: &Ink) -> Option<El> {
 
 pub fn settings(desk: &Desk, ink: &Ink) -> El {
     let updater = &desk.updater;
-    let mut buttons = row().gap(8.0);
+    let mut buttons = row().w_full().gap(8.0).flex_wrap();
     if let Some(action) = updater.action() {
-        buttons = buttons.child(act_button(action, "update-act-settings", ink));
+        buttons = buttons.child(
+            act_button(action, "update-act-settings", ink)
+                .focusable(true)
+                .min_h(44.0),
+        );
     }
     if !updater.busy() {
         buttons = buttons.child(quiet_button(
@@ -182,18 +194,6 @@ pub fn settings(desk: &Desk, ink: &Ink) -> El {
             ink,
         ));
     }
-    let copy_label = if updater.copied {
-        "Copied"
-    } else {
-        "Copy diagnostics"
-    };
-    let diagnostics = pressable("copy-diagnostics", ink)
-        .px(12.0)
-        .py(6.0)
-        .radius(6.0)
-        .border(1.0, ink.separator)
-        .on_press_tx(|d: &mut Desk, tx| d.copy_diagnostics(tx))
-        .child(text(copy_label).font(CAPTION).color(ink.text));
     let installed = updater
         .cli
         .as_ref()
@@ -206,23 +206,22 @@ pub fn settings(desk: &Desk, ink: &Ink) -> El {
             col()
                 .w_full()
                 .gap(1.0)
-                .child(text(headline(updater)).font(LABEL).color(ink.text))
+                .child(text(headline(updater)).font(LABEL).color(ink.text).wrap())
                 .child(
                     text(format!("Phux Rune {VERSION}{installed}"))
                         .font(CAPTION)
-                        .color(ink.dim),
+                        .color(ink.dim)
+                        .wrap(),
                 ),
         )
         .child(lines(desk, ink));
     if let Work::Downloading(percent) = updater.work {
-        section = section.child(progress(percent, 524.0, ink));
+        section = section.child(progress(percent, ink));
     }
     if let Err(reason) = updater.install {
-        return section
-            .child(text(reason).font(CAPTION).color(ink.dim))
-            .child(row().child(diagnostics));
+        return section.child(text(reason).font(CAPTION).color(ink.dim).wrap());
     }
-    section = section.child(buttons.child(diagnostics)).child(toggle(
+    section = section.child(buttons).child(toggle(
         "set-update-auto",
         "Check automatically",
         "At launch and every six hours. Nothing installs without a click.",
@@ -241,6 +240,40 @@ pub fn settings(desk: &Desk, ink: &Ink) -> El {
         ));
     }
     section
+}
+
+/// Failures and compatibility warnings stay in view even when search hides
+/// the About & Updates category. Informational update details stay there.
+pub(super) fn warnings(desk: &Desk, ink: &Ink) -> Option<El> {
+    let updater = &desk.updater;
+    let mut messages: Vec<_> = updater.message.iter().cloned().collect();
+    if let Some((now, incoming)) = updater.protocol_warning() {
+        messages.push(format!(
+            "Protocol {now} → {incoming}. The server needs updating too."
+        ));
+    }
+    if messages.is_empty() {
+        return None;
+    }
+    Some(
+        col()
+            .key("settings-update-warning")
+            .w_full()
+            .padding(16.0)
+            .gap(6.0)
+            .radius(12.0)
+            .fill(ink.raised)
+            .border(1.0, ink.danger)
+            .role("alert")
+            .label(messages.join(" "))
+            .children(messages.into_iter().map(|message| {
+                text(message)
+                    .font(CAPTION)
+                    .color(ink.text)
+                    .wrap()
+                    .a11y_hidden()
+            })),
+    )
 }
 
 #[cfg(test)]
