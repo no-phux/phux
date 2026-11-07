@@ -62,6 +62,18 @@
 - Reject raw terminal input and file drops for pending or retained ACP owners
   before filesystem access or remote upload, including during reconnects.
 
+## [0.60.0](https://github.com/no-phux/phux/compare/desktop-v0.59.1...desktop-v0.60.0) (2026-11-07)
+
+
+### Features
+
+* **desktop,rune:** click and type into surface panes ([#2064](https://github.com/no-phux/phux/issues/2064)) ([c552508](https://github.com/no-phux/phux/commit/c552508191ab033a8ecb104d08e827dcb577350a))
+
+
+### Bug Fixes
+
+* **desktop:** select reef fish before opening them ([#2066](https://github.com/no-phux/phux/issues/2066)) ([2d1c86e](https://github.com/no-phux/phux/commit/2d1c86eb6f6309f658ef7fb623ecaf0a455e38f5))
+
 ## [0.59.1](https://github.com/no-phux/phux/compare/desktop-v0.59.0...desktop-v0.59.1) (2026-11-07)
 
 
