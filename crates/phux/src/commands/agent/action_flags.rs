@@ -211,3 +211,28 @@ pub(crate) struct UsageFlags {
     #[usage(long)]
     pub(crate) refresh: bool,
 }
+
+/// `phux agent wait`'s flags.
+#[derive(Debug, usage::Args)]
+pub(crate) struct WaitFlags {
+    /// Wait for the first matching transition from any local agent in
+    /// the fleet instead of resolving one pane.
+    #[usage(long)]
+    pub(crate) any: bool,
+    /// Lifecycle state to wait for; repeat to OR several. Defaults to
+    /// `idle`, `blocked`, `done` — the three ways a turn ends.
+    /// `unknown` is not spellable: it is departure, not a state.
+    #[usage(
+        long,
+        value_name = "STATE",
+        choices("idle", "working", "blocked", "done")
+    )]
+    pub(crate) until: Vec<String>,
+    /// Give up after this many seconds and exit 124. Unbounded when
+    /// omitted, matching `phux wait` — always pass one in a script.
+    #[usage(long, value_name = "SECS")]
+    pub(crate) timeout: Option<u64>,
+    /// Emit the machine-readable result document instead of a line.
+    #[usage(long)]
+    pub(crate) json: bool,
+}

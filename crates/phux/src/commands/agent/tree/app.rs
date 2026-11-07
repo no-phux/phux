@@ -74,7 +74,14 @@ pub(crate) fn run_app(action: &AppAction, socket: Option<PathBuf>) -> ExitCode {
         dry_run,
         args,
     } = action;
-    let frames = match frames.resolve(false) {
+    // Pages are the high-frame-rate case and default to JPEG; window
+    // mirrors stay PNG for clients that predate JPEG decoding.
+    let default = if browser.is_some() {
+        super::surface::FrameFormat::Jpeg
+    } else {
+        super::surface::FrameFormat::Png
+    };
+    let frames = match frames.resolve(false, default) {
         Ok(frames) => frames,
         Err(code) => return code,
     };

@@ -186,10 +186,13 @@ pub(crate) fn run_agent(action: &AgentAction, socket: Option<PathBuf>) -> ExitCo
         AgentAction::App { action } => tree::run_app(action, socket),
         AgentAction::Wait {
             target,
-            any,
-            until,
-            timeout,
-            json,
+            flags:
+                action_flags::WaitFlags {
+                    any,
+                    until,
+                    timeout,
+                    json,
+                },
         } => wait::run_agent_wait(target.as_deref(), *any, until, *timeout, *json, socket),
         AgentAction::Prompt {
             target,

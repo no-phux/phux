@@ -274,9 +274,11 @@ Flags:
       --headless         Run the browser with no window on screen.
       --interval <MS>    Milliseconds between captures and tree reads (each
                          mirror's default when absent).
-      --format <FORMAT>  Frame encoding (default png). JPEG frames are several
-                         times smaller; viewers older than JPEG support show
-                         them as invalid.
+      --format <FORMAT>  Frame encoding: jpeg by default for a page mirror, png
+                         for a window or display mirror. JPEG frames are several
+                         times smaller; viewers older than JPEG support (desktop
+                         before 0.57.0, Rune before 0.1.0-alpha.17) show them as
+                         invalid.
                          [possible values: png, jpeg]
       --quality <Q>      JPEG quality, 1 to 100 (default 70).
       --max-width <PX>   Scale frames down to at most this many pixels wide.
