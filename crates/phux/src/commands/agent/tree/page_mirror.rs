@@ -24,7 +24,8 @@ use tokio::net::TcpStream;
 use tokio_tungstenite::tungstenite::Message;
 
 use super::page_input::{Viewport, cdp_calls};
-use super::{dial, png_size, report, resolve};
+use super::surface::Frames;
+use super::{dial, report, resolve};
 use crate::commands::{cli_runtime, json_err};
 use crate::exit_codes::{EXIT_FAILURE, EXIT_USAGE};
 
@@ -38,6 +39,8 @@ pub(super) struct MirrorArgs<'a> {
     pub(super) pane: Option<&'a str>,
     /// Milliseconds between accessibility-tree reads.
     pub(super) interval_ms: u64,
+    /// How the screencast encodes its frames.
+    pub(super) frames: Frames,
     pub(super) json: bool,
     pub(super) socket: Option<PathBuf>,
 }
@@ -92,10 +95,10 @@ pub(super) fn pick_page(spec: &str, listing: &str) -> Result<Page, String> {
 /// What one `DevTools` message means to the mirror.
 #[derive(Debug, PartialEq)]
 pub(super) enum Incoming {
-    /// A screencast frame: its PNG, the session id to acknowledge, and the
-    /// viewport's CSS size from its metadata.
+    /// A screencast frame: its PNG or JPEG, the session id to acknowledge,
+    /// and the viewport's CSS size from its metadata.
     Frame {
-        png: Vec<u8>,
+        image: Vec<u8>,
         session: u64,
         css: Option<(f64, f64)>,
     },
@@ -111,7 +114,7 @@ pub(super) fn classify(text: &str, tree_request: u64) -> Incoming {
     };
     if message["method"].as_str() == Some("Page.screencastFrame") {
         let params = &message["params"];
-        let Some(png) = params["data"]
+        let Some(image) = params["data"]
             .as_str()
             .and_then(|data| base64::engine::general_purpose::STANDARD.decode(data).ok())
         else {
@@ -122,7 +125,7 @@ pub(super) fn classify(text: &str, tree_request: u64) -> Incoming {
             .as_f64()
             .zip(metadata["deviceHeight"].as_f64());
         return Incoming::Frame {
-            png,
+            image,
             session: params["sessionId"].as_u64().unwrap_or(0),
             css,
         };
@@ -185,6 +188,7 @@ pub(super) fn run_mirror(args: MirrorArgs<'_>) -> ExitCode {
         port,
         pane,
         interval_ms,
+        frames,
         json,
         socket,
     } = args;
@@ -223,7 +227,8 @@ pub(super) fn run_mirror(args: MirrorArgs<'_>) -> ExitCode {
             outln!("{tree_id} {surface_id}");
         }
         let interval = Duration::from_millis(interval_ms.max(100));
-        match mirror(&mut conn, &tree_res, &surface, &found.ws, interval).await {
+        let ends = (&tree_res, &surface, found.ws.as_str());
+        match mirror(&mut conn, ends, screencast(frames), interval).await {
             Ok(()) => ExitCode::SUCCESS,
             Err(Failure::Tree(err)) => report(json, &err),
             Err(Failure::Browser(message)) => json_err::emit(
@@ -335,20 +340,15 @@ impl Cdp {
 )]
 async fn mirror(
     conn: &mut Connection,
-    tree_res: &ResourceId,
-    surface: &ResourceId,
-    ws_url: &str,
+    (tree_res, surface, ws_url): (&ResourceId, &ResourceId, &str),
+    screencast: serde_json::Value,
     interval: Duration,
 ) -> Result<(), Failure> {
     let mut cdp = Cdp::connect(ws_url).await?;
     cdp.call("Page.enable", serde_json::json!({})).await?;
     cdp.call("Accessibility.enable", serde_json::json!({}))
         .await?;
-    cdp.call(
-        "Page.startScreencast",
-        serde_json::json!({ "format": "png", "everyNthFrame": 1 }),
-    )
-    .await?;
+    cdp.call("Page.startScreencast", screencast).await?;
     let mut tree_request = cdp.read_tree().await?;
     let mut last_tree: Option<Vec<u8>> = None;
     let mut tick = tokio::time::interval(interval);
@@ -384,11 +384,15 @@ async fn mirror(
             Some(Err(err)) => return Err(Failure::Browser(err.to_string())),
         };
         match classify(&text, tree_request) {
-            Incoming::Frame { png, session, css } => {
-                if let (Some(image), Some(css)) = (png_size(&png), css) {
-                    view = Viewport::of(image, css);
+            Incoming::Frame {
+                image,
+                session,
+                css,
+            } => {
+                if let (Ok((_, width, height)), Some(css)) = (tree::image_size(&image), css) {
+                    view = Viewport::of((width, height), css);
                 }
-                tree::publish_collecting(conn, surface, png, &mut intents).await?;
+                tree::publish_collecting(conn, surface, image, &mut intents).await?;
                 cdp.call(
                     "Page.screencastFrameAck",
                     serde_json::json!({ "sessionId": session }),
@@ -404,6 +408,19 @@ async fn mirror(
             Incoming::Other => {}
         }
     }
+}
+
+/// `Page.startScreencast`'s parameters for `frames`.
+fn screencast(frames: Frames) -> serde_json::Value {
+    let mut params = serde_json::json!({ "format": "png", "everyNthFrame": 1 });
+    if let Some(quality) = frames.jpeg {
+        params["format"] = "jpeg".into();
+        params["quality"] = quality.into();
+    }
+    if let Some(width) = frames.max_width {
+        params["maxWidth"] = width.into();
+    }
+    params
 }
 
 fn usage(json: bool, message: &str) -> ExitCode {
@@ -485,12 +502,32 @@ mod tests {
     }
 
     #[test]
+    fn the_screencast_asks_for_the_frames_the_mirror_was_given() {
+        let png = Frames {
+            jpeg: None,
+            max_width: None,
+        };
+        assert_eq!(
+            screencast(png),
+            serde_json::json!({ "format": "png", "everyNthFrame": 1 })
+        );
+        let jpeg = Frames {
+            jpeg: Some(70),
+            max_width: Some(800),
+        };
+        assert_eq!(
+            screencast(jpeg),
+            serde_json::json!({ "format": "jpeg", "quality": 70, "maxWidth": 800, "everyNthFrame": 1 })
+        );
+    }
+
+    #[test]
     fn a_screencast_frame_and_a_tree_answer_are_told_apart() {
         let frame = r#"{"method":"Page.screencastFrame","params":{"data":"iVBORw0=","sessionId":7,"metadata":{"deviceWidth":800,"deviceHeight":600}}}"#;
         assert_eq!(
             classify(frame, 4),
             Incoming::Frame {
-                png: vec![0x89, 0x50, 0x4e, 0x47, 0x0d],
+                image: vec![0x89, 0x50, 0x4e, 0x47, 0x0d],
                 session: 7,
                 css: Some((800.0, 600.0)),
             }

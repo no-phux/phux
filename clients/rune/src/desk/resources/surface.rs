@@ -1,4 +1,4 @@
-//! Latest-frame PNG decoding. Rune's cache owns queued jobs even when the UI
+//! Latest-frame PNG/JPEG decoding. Rune's cache owns queued jobs even when the UI
 //! drops an Image, so submitting every screencast frame makes an unbounded
 //! backlog. Each document retains only the latest bytes; cache-wide admission
 //! accounting survives document retirement and bounds outstanding work too.
@@ -80,12 +80,12 @@ impl Document {
             self.body = Body::Empty;
             return;
         }
-        // The cache accepts JPEG/SVG too; this resource contract accepts PNG
-        // only. Full validation, 8192-side / 256 MiB decode limits, and mip
-        // generation remain on Rune's real decoder workers.
-        if !bytes.starts_with(b"\x89PNG\r\n\x1a\n") {
+        // The cache accepts SVG too; this resource contract accepts PNG or
+        // JPEG only. Full validation, 8192-side / 256 MiB decode limits, and
+        // mip generation remain on Rune's real decoder workers.
+        if !bytes.starts_with(b"\x89PNG\r\n\x1a\n") && !bytes.starts_with(&[0xff, 0xd8, 0xff]) {
             self.invalidate_surface();
-            self.body = Body::Invalid("Invalid PNG signature".to_owned());
+            self.body = Body::Invalid("Invalid frame: not a PNG or JPEG".to_owned());
             return;
         }
         let Some(cache) = images else {
@@ -142,7 +142,7 @@ impl Document {
         let mut changed = job.is_some();
         if let Some(job) = job {
             self.body = match job.image.error() {
-                Some(error) => Body::Invalid(format!("Invalid PNG: {error}")),
+                Some(error) => Body::Invalid(format!("Invalid PNG or JPEG: {error}")),
                 None => Body::Surface(job.image),
             };
         }

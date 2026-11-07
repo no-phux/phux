@@ -230,7 +230,7 @@ pub enum WireEvent {
     /// A whole document arrived for an attached `AccessibilityTree`,
     /// `PixelSurface` or typed `Document` (`kind` is `accessibility_tree`,
     /// `pixel_surface` or `document`): the bootstrap cut, or a newer
-    /// publish. `bytes` is JSON for a tree, PNG for a surface and of
+    /// publish. `bytes` is JSON for a tree, PNG or JPEG for a surface and of
     /// `content_type` (set only for a typed document) otherwise; the newest
     /// `seq` per resource is the one to show.
     DocumentPublished {

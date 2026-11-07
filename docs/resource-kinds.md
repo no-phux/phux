@@ -24,7 +24,7 @@ The server links only the pure Terminal contract; the executable
 supplies the concrete engine ([architecture](./architecture.md#where-to-look)).
 
 Desktop and Rune discover tree/surface resources before the first frame,
-render plain JSON or letterboxed PNGs, and distinguish pending, empty and invalid
+render plain JSON or letterboxed PNG or JPEG frames, and distinguish pending, empty and invalid
 documents. Desktop draws a Document by its content type: PNG, JPEG, GIF and
 WebP as images, JSON pretty-printed, text and `+xml`/`+json` as source
 (Markdown and HTML are not rendered), anything else as its size and type. Documents can occupy mixed or document-only arrangements and survive
@@ -43,6 +43,13 @@ Browser mirroring needs an existing Chrome DevTools endpoint; macOS capture
 needs the relevant system permission. Local-only startup actions refuse remote
 or unsupported platforms. Moving or reopening a view keeps the source on its
 original host; it is not browser interactivity or cross-host process migration.
+
+A surface frame is a PNG or a JPEG, told apart by its signature; the codec
+keeps its `PixelSurfacePngV1` name. `phux agent surface mirror` and `phux
+agent page mirror` take `--format png|jpeg` (default png, which every viewer
+decodes), `--quality 1..100` (default 70) and `--max-width PX`. A page
+scales its screencast in the browser and maps clicks by each frame's size;
+the window mirror re-encodes its capture with macOS's `sips`.
 
 Agents read documents over MCP the way they read panes: `phux_documents`
 lists them, `phux_tree_snapshot` and `phux_tree_wait` read a tree's JSON, and
