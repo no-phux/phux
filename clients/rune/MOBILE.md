@@ -33,7 +33,7 @@ desktop one, so every CI build and release proves it draws a session.
 | One terminal at a time, live, sized to the space the keyboard leaves | `src/desk/layout.rs` |
 | Tab pills and a new tab | `src/ui/phone.rs` |
 | Accessory bar: ⌘ commands, esc, tab, one-shot ⌃ ⌥ ⇧ latches, a drag pad that sends arrows, the keyboard toggle | `src/ui/phone.rs`, `src/desk/phone.rs` |
-| Keyboard: letters, digits and symbols, shift, delete, space, return; types into the terminal, the palette's field, find's field, and answers the confirm bar | `src/ui/phone.rs`, `src/desk/phone.rs` |
+| Keyboard: letters, digits and symbols, shift, delete, space, return; types into the terminal, keeps focus while editing palette/find fields, and answers the confirm bar | `src/ui/phone.rs`, `src/desk/phone.rs` |
 | The command palette as a sheet over the terminal, above the keyboard; paths open there too | `src/ui/palette.rs` |
 | Settings, machines, the inbox and the reconnect banner, narrowed to a phone's width | `src/ui.rs` (`Sheet`), `src/ui/inbox.rs`, `src/ui/status.rs` |
 

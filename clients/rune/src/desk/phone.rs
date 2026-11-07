@@ -151,6 +151,8 @@ impl Desk {
     }
 
     /// `event` as the field's own keys take it first, then as typing.
+    /// Keep this synchronous: `Tx::send_key` routes next frame, when the
+    /// field may have closed and its key would reach the terminal instead.
     fn soft_to_field(&mut self, field: Field, event: &KeyEvent, tx: &mut Tx) {
         let taken = match field {
             Field::Confirm => {
@@ -249,6 +251,9 @@ impl Desk {
 }
 
 #[cfg(test)]
+mod runtime;
+
+#[cfg(test)]
 mod tests {
     use phux_protocol::input::key::{ModSet, PhysicalKey};
 
@@ -306,6 +311,8 @@ mod tests {
         runtime.frame(1.0 / 60.0);
         runtime.touch(1, TouchPhase::Ended, x, y, at + 0.05);
         runtime.frame(1.0 / 60.0);
+        // Flush the next frame too: no deferred input may outlive its field.
+        runtime.frame(1.0 / 60.0);
     }
 
     // The keyboard sits outside the palette's scrim; Rune counts what comes
@@ -317,6 +324,7 @@ mod tests {
         desk.prefs = Prefs::memory();
         desk.palette_open = true;
         let mut runtime = Runtime::new(desk, crate::ui::view, (393.0, 852.0), Env::new(true, 2.0));
+        runtime.on_key = Some(Desk::key);
         runtime.frame(0.0);
         tap(&mut runtime, "phone-latch-Shift", 0.1);
         tap(&mut runtime, "phone-cap-116", 0.3);

@@ -365,6 +365,7 @@ fn accessory(phone: &Phone, p: &Ink) -> El {
     .on_press_tx(|d: &mut Desk, tx| d.shortcut(Shortcut::Palette, tx));
     row()
         .key("phone-accessory")
+        .preserve_focus_on_press(true)
         .w_full()
         .px(10.0)
         .pb(8.0)
@@ -487,6 +488,7 @@ fn keyboard(phone: &Phone, p: &Ink) -> El {
         );
     let board = col()
         .key("phone-keyboard")
+        .preserve_focus_on_press(true)
         .w_full()
         .px(4.0)
         .pt(10.0)
