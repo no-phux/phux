@@ -18,6 +18,17 @@ on:
         description: "stable or next, baked into the binary."
         required: true
         type: string
+    secrets:
+      APPLE_DEVELOPER_ID_P12:
+        required: false
+      APPLE_DEVELOPER_ID_PASSWORD:
+        required: false
+      APPLE_NOTARY_KEY_P8:
+        required: false
+      APPLE_NOTARY_KEY_ID:
+        required: false
+      APPLE_NOTARY_ISSUER_ID:
+        required: false
 
 permissions:
   contents: read
@@ -113,6 +124,19 @@ jobs:
 
       - name: Check binary portability
         run: bash scripts/check-binary-portability.sh target/release/phux target/release/phux-mcp
+
+      # Stable only: a Developer ID signature is what the macOS firewall's
+      # signed-software allowance trusts (phux-9lj9). The script fails on
+      # missing secrets, so a stable macOS archive is never left ad hoc.
+      - name: Sign and notarize the macOS binaries
+        if: runner.os == 'macOS' && inputs.channel == 'stable'
+        env:
+          APPLE_DEVELOPER_ID_P12: ${{ secrets.APPLE_DEVELOPER_ID_P12 }}
+          APPLE_DEVELOPER_ID_PASSWORD: ${{ secrets.APPLE_DEVELOPER_ID_PASSWORD }}
+          APPLE_NOTARY_KEY_P8: ${{ secrets.APPLE_NOTARY_KEY_P8 }}
+          APPLE_NOTARY_KEY_ID: ${{ secrets.APPLE_NOTARY_KEY_ID }}
+          APPLE_NOTARY_ISSUER_ID: ${{ secrets.APPLE_NOTARY_ISSUER_ID }}
+        run: bash scripts/ci/sign-macos-desktop.sh --binaries target/release/phux target/release/phux-mcp
 
       - name: Package
         env:

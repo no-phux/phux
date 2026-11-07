@@ -150,6 +150,7 @@ pub(super) fn decode_terminal_info_body(
         parent: None,
         agent: None,
         // Not positional: these ride the snapshot extension block.
+        program_title: None,
         lifecycle: ResourceLifecycle::Running,
         exit: None,
         input_holder: None,

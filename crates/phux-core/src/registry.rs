@@ -367,6 +367,7 @@ fn facets(r: &Resource, cwd_default: PathBuf) -> (Option<TerminalFacet>, Option<
                     dims: DEFAULT_DIMS,
                     cwd,
                     title: None,
+                    program_title: None,
                 }),
                 None,
             )

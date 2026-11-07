@@ -400,3 +400,56 @@ fn unknown_session_facet_flag_bits_are_ignored() {
     };
     assert!(state.sessions[0].keep_empty);
 }
+
+/// A program-set title rides the extension block as `RESOURCE_PROGRAM_TITLE`
+/// (field 5) beside the user-set `title`: it round-trips, a snapshot without
+/// one keeps its earlier bytes, and an empty title is never written.
+#[test]
+fn snapshot_program_title_rides_the_extension_block_and_is_absent_by_default() {
+    let encode = |snapshot: &SessionSnapshot| {
+        let mut buf = BytesMut::new();
+        FrameKind::CommandResult {
+            request_id: 1,
+            result: CommandResult::OkWith(CommandValue::State(snapshot.clone())),
+        }
+        .encode(&mut buf);
+        buf
+    };
+    let pane = |title: Option<&str>| {
+        SessionSnapshot::new(SessionId::new(1), WindowId::new(1), ResourceId::local(1))
+            .with_resources(vec![
+                ResourceInfo::new(ResourceId::local(1), WindowId::new(1), 80, 24)
+                    .with_program_title(title.map(str::to_owned)),
+            ])
+    };
+    let plain = encode(&pane(None));
+    assert_eq!(
+        encode(&pane(Some(""))),
+        plain,
+        "an empty title is not written"
+    );
+
+    let titled = pane(Some("OC | Fix the flaky test"));
+    let frame = FrameKind::CommandResult {
+        request_id: 1,
+        result: CommandResult::OkWith(CommandValue::State(titled.clone())),
+    };
+    assert_round_trip(&frame);
+    assert!(encode(&titled).len() > plain.len());
+    let (decoded, _) = FrameKind::decode(&encode(&titled)).unwrap();
+    let FrameKind::CommandResult {
+        result: CommandResult::OkWith(CommandValue::State(snapshot)),
+        ..
+    } = decoded
+    else {
+        panic!("expected a state result");
+    };
+    assert_eq!(
+        snapshot.resources[0].program_title.as_deref(),
+        Some("OC | Fix the flaky test")
+    );
+    assert_eq!(
+        snapshot.resources[0].title, None,
+        "the user-set title stays unset"
+    );
+}

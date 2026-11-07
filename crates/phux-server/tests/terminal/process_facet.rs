@@ -314,3 +314,41 @@ fn cwd_changed_announces_the_start_dir_once_then_real_moves() {
         assert_eq!(listed, Some(canonical(&home)), "GET_STATE reports the move");
     });
 }
+
+/// A program's OSC title reaches `GET_STATE` as `program_title`, with no
+/// client streaming or subscribed to the pane, so a list can name it before
+/// anyone opens it. The user-set `title` stays unset.
+#[test]
+fn get_state_reports_the_program_title_without_streaming_the_pane() {
+    run_local(async move {
+        let tmp = TempDir::new().unwrap();
+        let (mut stream, _server) = server_and_client(&tmp).await;
+        let script = "printf '\\033]2;build the docs\\007'; read _";
+        let pane = spawn_pane(&mut stream, &["/bin/sh", "-c", script], None).await;
+
+        let deadline = tokio::time::Instant::now() + DEADLINE;
+        let mut request = 10;
+        loop {
+            request += 1;
+            let get_state = Command::GetState {
+                scope: StateScope::Server,
+            };
+            let CommandResult::OkWith(CommandValue::State(snapshot)) =
+                command(&mut stream, request, get_state).await
+            else {
+                panic!("GET_STATE failed");
+            };
+            let listed = snapshot.resources.iter().find(|p| p.id == pane).cloned();
+            let listed = listed.expect("the pane is listed");
+            if listed.program_title.as_deref() == Some("build the docs") {
+                assert_eq!(listed.title, None, "never promoted to the user-set title");
+                break;
+            }
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "GET_STATE never reported the program title: {listed:?}"
+            );
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+    });
+}

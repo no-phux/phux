@@ -127,6 +127,8 @@ pub fn view(desk: &Desk, cx: &mut Cx<Desk>) -> El {
         return phone::view(desk, cx);
     }
     let p = ink(cx.system_dark(), cx.accent(), desk.settings.theme);
+    // Native fields inherit a readable caret and selection in light themes too.
+    cx.foreground(p.text);
     // `titlebar_inset` is the traffic lights' width; zero when the system
     // draws its own titlebar.
     let lights = cx.titlebar_inset();

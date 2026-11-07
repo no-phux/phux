@@ -383,11 +383,8 @@ fn window_phase() {
 /// Set in the child that does the measuring.
 const ALONE: &str = "RUNE_BUDGET_ALONE";
 
-#[test]
-fn non_typing_keys_follow_runtime_input_and_stop_at_settings() {
-    use phux_protocol::input::key::{KeyAction, ModSet, PhysicalKey};
-    use rune::{Key, KeyEvent, Mods};
-
+/// A real connected terminal behind the native controls, without a server.
+pub(crate) fn input_fixture() -> (Arc<Client>, Runtime<Desk>) {
     let replica = Replica::new(120, 40, 1);
     let mut desk = Desk::new(&Resolved::offline("input"));
     desk.client = Some(Arc::clone(&replica.client));
@@ -395,11 +392,20 @@ fn non_typing_keys_follow_runtime_input_and_stop_at_settings() {
         replica.terminal.clone(),
     ));
     desk.shown = Some(Shown {
-        terminal: replica.terminal.clone(),
+        terminal: replica.terminal,
         view: Some(replica.views[0]),
     });
-    let mut runtime = Runtime::new(desk, crate::ui::view, SIZE, Env::new(true, SCALE));
-    runtime.on_key = Some(Desk::key);
+    let mut rt = Runtime::new(desk, crate::ui::view, SIZE, Env::new(true, SCALE));
+    rt.on_key = Some(Desk::key);
+    (replica.client, rt)
+}
+
+#[test]
+fn non_typing_keys_follow_runtime_input_and_stop_at_settings() {
+    use phux_protocol::input::key::{KeyAction, ModSet, PhysicalKey};
+    use rune::{Key, KeyEvent, Mods};
+
+    let (client, mut runtime) = input_fixture();
     runtime.frame(0.0);
     for (key, physical) in [
         (Key::Insert, PhysicalKey::Insert),
@@ -409,7 +415,7 @@ fn non_typing_keys_follow_runtime_input_and_stop_at_settings() {
     ] {
         for sheet_open in [false, true] {
             runtime.update(|desk, _| desk.settings_open = sheet_open);
-            let _ = replica.client.take_outbound();
+            let _ = client.take_outbound();
             runtime.key(KeyEvent {
                 key: key.clone(),
                 // Alt, not Shift: Shift+Insert is Paste, what Omarchy's
@@ -420,8 +426,7 @@ fn non_typing_keys_follow_runtime_input_and_stop_at_settings() {
                 },
             });
             runtime.frame(1.0 / 60.0);
-            let sent: Vec<_> = replica
-                .client
+            let sent: Vec<_> = client
                 .take_outbound()
                 .iter()
                 .filter_map(
@@ -436,7 +441,7 @@ fn non_typing_keys_follow_runtime_input_and_stop_at_settings() {
             } else {
                 assert_eq!(sent.len(), 1, "{key:?}");
                 let (terminal, event) = &sent[0];
-                assert_eq!(terminal, &replica.terminal);
+                assert_eq!(terminal, &ResourceId::local(1));
                 assert_eq!(event.key, physical);
                 assert_eq!(event.action, KeyAction::Press);
                 assert_eq!(event.mods, ModSet::ALT);

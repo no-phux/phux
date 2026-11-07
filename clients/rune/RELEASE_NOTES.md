@@ -1,21 +1,18 @@
-**Phux Rune 0.1.0-alpha.12**: read-only document mirrors beside your terminals, and the latest Rune.
+**Phux Rune 0.1.0-alpha.14**: readable text-field carets and safer Find clipboard shortcuts.
 
-- **Read-only mirrors.** Open live accessibility trees and PNG surfaces from
-  the palette, switch their tabs, or put them beside terminals in a split.
-  Trees are selectable JSON; images fit without cropping. These are native
-  views, not embedded browsers: typing, paste and file drops never reach a
-  document pane, and closing a view leaves its producer running.
-- **Start a source.** **Start page/tree/surface mirror…** in the palette
-  explains the prerequisite and starts a dedicated local producer terminal,
-  never a command in your focused shell. Page capture needs Chrome debugging
-  on localhost:9222 with a separate profile; tree and surface capture need
-  macOS Accessibility and Screen Recording permission, respectively. Remote
-  producer starts are refused rather than guessing the other machine's
-  platform or permissions.
-- **Live images stay live.** PNG decoding is bounded and coalesced so busy
-  sources and closed views do not bury a newer frame under old work.
-- **The latest Rune.** Updated text shaping and script-appropriate CJK font
-  fallbacks, plus upstream text-selection and rendering corrections. Terminal
-  cell geometry and instant output stay unchanged. Desktop and phone forms
-  are both qualified; this is still a phone-sized desktop window, not an iOS
-  or Android build.
+- **Text fields follow the theme.** The caret and selection use the active
+  theme's foreground in both desktop and phone forms, including when you
+  switch between light and dark themes.
+- **Find keeps clipboard actions out of the shell.** Terminal Copy, Paste
+  and Select All shortcuts cannot act on the terminal behind a focused Find
+  field. A clipboard reply requested before Find took focus is refused too.
+  Native field editing uses ⌘C/V/A on macOS and plain Ctrl+C/V/A on Linux.
+- **Linux notifications.** With `notify-send` available, the app notifies
+  you when an unseen terminal needs attention; clicking switches to it.
+  Notifications withdraw through `gdbus` when answered or seen. On Hyprland,
+  clicking also raises the window; other desktops may leave it behind.
+- **Pane names arrive sooner.** With a current server, program titles appear
+  in pane lists before their terminal streams start. User-set titles still win.
+- **The latest Rune.** Updated to upstream dev `1ad9cf6`, including native
+  text-field editing and non-Latin shortcut corrections. The phone form
+  remains a phone-sized desktop window, not an iOS or Android build.

@@ -490,7 +490,37 @@ fn finish(socket: Option<PathBuf>, hyprland: bool) {
             .is_ok_and(|status| status.success())
     {
         outln!("reloaded Hyprland");
+        if let Some(errors) = hyprland_errors() {
+            eprintln!("Hyprland reports errors in its config:\n{errors}");
+        }
     }
+}
+
+/// What `hyprctl configerrors` reports, or `None` when the config loads
+/// cleanly or Hyprland isn't running here. A Lua error stops the rest of
+/// the file that raised it, so a block that is present can still be dead.
+fn hyprland_errors() -> Option<String> {
+    std::env::var_os("HYPRLAND_INSTANCE_SIGNATURE")?;
+    let out = std::process::Command::new("hyprctl")
+        .arg("configerrors")
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    config_errors(&String::from_utf8_lossy(&out.stdout))
+}
+
+/// The lines of `hyprctl configerrors` that name a config file. It also
+/// keeps a failed `hyprctl dispatch` (`return hl.dispatch(...)`) until the
+/// next reload, which says nothing about the config, and prints blank lines
+/// when there is nothing at all.
+fn config_errors(stdout: &str) -> Option<String> {
+    let lines: Vec<_> = stdout
+        .lines()
+        .filter(|line| line.contains(".lua:") || line.contains(".conf"))
+        .collect();
+    (!lines.is_empty()).then(|| lines.join("\n"))
 }
 
 fn status(json: bool) -> Result<ExitCode, String> {
@@ -501,6 +531,7 @@ fn status(json: bool) -> Result<ExitCode, String> {
             read(pick(hypr)).is_ok_and(|text| blocks::contains(&text, hypr.comment()))
         })
     };
+    let errors = hyprland_errors();
     let checks = [
         ("omarchy", paths.omarchy_present()),
         ("distro", paths.layer_selected()?),
@@ -512,6 +543,7 @@ fn status(json: bool) -> Result<ExitCode, String> {
             "menu",
             read(&paths.menu).is_ok_and(|text| blocks::contains(&text, "//")),
         ),
+        ("hyprland_config", errors.is_none()),
     ];
     if json {
         let checks: serde_json::Map<_, _> = checks
@@ -525,7 +557,14 @@ fn status(json: bool) -> Result<ExitCode, String> {
     for (name, ok) in checks {
         outln!("{} {name}", if ok { "✓" } else { "✗" });
     }
-    if checks.iter().any(|(_, ok)| !ok) {
+    if let Some(errors) = &errors {
+        outln!("Hyprland reports errors in its config:\n{errors}");
+    }
+    // Setup can't fix someone else's config error, only report it.
+    if checks
+        .iter()
+        .any(|(name, ok)| !ok && *name != "hyprland_config")
+    {
         outln!("`phux omarchy setup` puts the missing pieces in place.");
     }
     Ok(ExitCode::SUCCESS)

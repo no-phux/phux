@@ -89,8 +89,9 @@ session (or `--session NAME`). It never creates a session on its own.
   a reply can't land on whatever the agent moved on to. The focused pane
   shows its agent's question as a card you can answer with a click.
 - **Notifications.** When something needs you and you can't see it, the
-  installed app posts a macOS notification once; clicking it goes there, and
-  it is withdrawn when answered or seen. The Dock icon counts what's waiting.
+  installed app posts a notification once (macOS, or on Linux through
+  `notify-send`); clicking it goes there, and it is withdrawn when answered
+  or seen. The Dock icon counts what's waiting.
 - **Tabs.** The session's arrangement groups, shared with the terminal UI.
   ⌘T opens a terminal in a new tab, ⌘1–⌘9 switch, double-click renames. The
   strip appears from two tabs up; a dot marks a tab that needs you, and a
@@ -178,6 +179,10 @@ On Linux the same chords use Ctrl-Shift (split down is Ctrl-Shift-E, and
 Ctrl-click opens links);
 plain Ctrl chords go to the shell. Ctrl and Alt chords follow the key's
 position, so Ctrl-C is ^C on any layout.
+
+In a text field, use the native editing keys: ⌘C/V/A on macOS, plain
+Ctrl+C/V/A on Linux. Terminal clipboard chords never act on the terminal
+behind a focused Find field.
 
 A paste with line breaks into a program that has not turned on bracketed
 paste would run each line; the window asks first (Return pastes, Esc
@@ -277,8 +282,9 @@ RUNE_RESOURCE_SNAP="$PWD/target/resource-native.png" \
 The test checks decoded PNG pixels, native image draw commands, JSON text,
 and the Read-only mirror label; `target/resource-native.json` is the tree.
 
-Notifications need the signed bundle (`rune_mac::notify::available`); `cargo
-run` can't post, and Settings says so.
+On macOS, notifications need the signed bundle (`rune_mac::notify::available`);
+`cargo run` can't post, and Settings says so. On Linux any build posts while
+`notify-send` is on `PATH`, and withdraws through `gdbus`.
 
 `scripts/package.sh VERSION OUT_DIR` builds the release archive for the
 host (ad-hoc signed; a local build may link the dev shell's libraries, so

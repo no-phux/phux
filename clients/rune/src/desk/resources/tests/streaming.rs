@@ -94,8 +94,20 @@ fn update(client: &Client, seq: u64, bytes: &[u8]) {
 }
 
 fn ready(rt: &Runtime<Desk>) -> Option<rune::ImageId> {
-    match &rt.state.resources.entries[&id(1)].body {
-        Body::Surface(image) if image.size().is_some() && image.error().is_none() => {
+    let document = &rt.state.resources.entries[&id(1)];
+    match &document.body {
+        // A first image is exposed while decoding. Its worker may finish
+        // after step() built the scene; wait for application promotion so
+        // the scene, not just the live handle, has its uploadable pixels.
+        Body::Surface(image)
+            if image.size().is_some()
+                && image.error().is_none()
+                && document
+                    .surface
+                    .flight
+                    .as_ref()
+                    .is_none_or(|job| job.image.id() != image.id()) =>
+        {
             Some(image.id())
         }
         _ => None,

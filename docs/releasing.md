@@ -181,8 +181,15 @@ with the hardened runtime, Apple-notarized and stapled. The ZIP gets a
 SHA-256 sidecar and a minisign signature like every other asset. Linux
 archives are not Apple-signed. Pull-request and local builds are ad-hoc signed.
 
+The standalone CLI's macOS archive carries `phux` and `phux-mcp` signed with
+the same Developer ID (hardened runtime) and notarized, so the macOS
+firewall's signed-software allowance covers them without a per-version
+allowlist entry. A bare executable cannot hold a stapled ticket; Gatekeeper
+checks it online. `next` builds stay ad hoc.
+
 The Apple credentials are separate from minisign. Configure these repository
-Actions secrets before pushing a `rune-v*` tag:
+Actions secrets before marking a release PR ready (the CLI) or pushing a
+`rune-v*` tag:
 
 | Secret | Value |
 | --- | --- |

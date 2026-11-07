@@ -178,6 +178,7 @@ impl ServerState {
             rows.push(
                 ResourceInfo::new(wire, window, terminal.dims.0, terminal.dims.1)
                     .with_title(terminal.title)
+                    .with_program_title(terminal.program_title)
                     .with_cwd(cwd)
                     .with_lifecycle(lifecycle)
                     .with_exit(exit)

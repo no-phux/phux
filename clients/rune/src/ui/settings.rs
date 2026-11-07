@@ -191,10 +191,8 @@ fn stepper(desk: &Desk, ink: &Ink) -> El {
 }
 
 fn behaviour(desk: &Desk, ink: &Ink) -> El {
-    let notify_detail = crate::alerts::notifications_detail(
-        rune_mac::notify::available(),
-        cfg!(target_os = "macos"),
-    );
+    let notify_detail =
+        crate::alerts::notifications_detail(crate::alerts::available(), cfg!(target_os = "macos"));
     let option_as_meta = cfg!(target_os = "macos").then(|| {
         toggle(
             "set-option-meta",

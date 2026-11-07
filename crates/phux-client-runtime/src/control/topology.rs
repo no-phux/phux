@@ -157,7 +157,10 @@ impl Topology {
                     session_name: session.map_or_else(String::new, |s| s.name.clone()),
                     cols: pane.cols,
                     rows: pane.rows,
-                    title: pane.title.clone(),
+                    // The user-set title, else the program's: a list names a
+                    // pane before the client streams it. Live retitles
+                    // overwrite this as they arrive.
+                    title: pane.title.clone().or_else(|| pane.program_title.clone()),
                     cwd: pane.cwd.clone(),
                     is_focused: pane.id == snapshot.focused_resource,
                     key: None,
@@ -381,4 +384,44 @@ pub(super) fn terminal_resources(
         .resources
         .iter()
         .filter(|resource| resource.kind == ResourceKind::Terminal)
+}
+
+#[cfg(test)]
+mod tests {
+    use phux_protocol::ids::{ResourceId, SessionId, WindowId};
+    use phux_protocol::wire::info::{ResourceInfo, SessionInfo, SessionSnapshot};
+
+    use super::Topology;
+
+    fn snapshot(user: Option<&str>, program: Option<&str>) -> SessionSnapshot {
+        SessionSnapshot::new(SessionId::new(1), WindowId::new(1), ResourceId::local(1))
+            .with_sessions(vec![
+                SessionInfo::new(SessionId::new(1), "work").with_window_count(1),
+            ])
+            .with_resources(vec![
+                ResourceInfo::new(ResourceId::local(1), WindowId::new(1), 80, 24)
+                    .with_title(user.map(str::to_owned))
+                    .with_program_title(program.map(str::to_owned)),
+            ])
+    }
+
+    /// Every pane in the snapshot is named before any stream opens: the
+    /// user-set title wins, the program's fills in, and neither leaves none.
+    #[test]
+    fn a_pane_is_titled_from_the_snapshot_before_it_streams() {
+        let title = |user, program| {
+            Topology::from_snapshot(&snapshot(user, program)).panes[0]
+                .title
+                .clone()
+        };
+        assert_eq!(
+            title(None, Some("OC | Fix the flaky test")).as_deref(),
+            Some("OC | Fix the flaky test")
+        );
+        assert_eq!(
+            title(Some("deploy"), Some("vim")).as_deref(),
+            Some("deploy")
+        );
+        assert_eq!(title(None, None), None);
+    }
 }

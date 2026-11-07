@@ -18,4 +18,7 @@ pub struct TerminalFacet {
     pub cwd: PathBuf,
     /// Optional human-set title, distinct from any title the shell may set.
     pub title: Option<String>,
+    /// The title the program last set (OSC 0/2), as the server last heard
+    /// it; `None` until one is set. Never promoted to [`Self::title`].
+    pub program_title: Option<String>,
 }

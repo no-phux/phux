@@ -171,6 +171,10 @@ pub mod snapshot_extension {
     /// One session's organization state: `SessionId` (`u32`), then
     /// [`session_state`](super::session_state) fields. Repeated.
     pub const SESSION_STATE: u32 = 4;
+    /// One Terminal's program-set title (OSC 0/2): positional `ResourceId`,
+    /// then `str`. Repeated; absent = no title reported. Distinct from the
+    /// user-set `ResourceInfo::title`.
+    pub const RESOURCE_PROGRAM_TITLE: u32 = 5;
 }
 
 /// Fields of one `SESSION_STATE` value, after its positional `SessionId`.

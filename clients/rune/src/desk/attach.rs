@@ -224,6 +224,19 @@ mod tests {
     }
 
     #[test]
+    fn a_paste_reply_stops_when_find_takes_the_keyboard() {
+        let mut desk = desk();
+        on_screen(&mut desk, 1);
+        let server = desk.link.server;
+        desk.find_query = rune::TextEdit::new("find sentinel");
+        desk.find_query.focused = true;
+        desk.paste_answered(&ResourceId::local(1), server, &lines());
+        assert_eq!(desk.pending, None, "no terminal paste confirmation");
+        assert_eq!(desk.find_query.text, "find sentinel");
+        assert!(desk.notice.is_some(), "the delayed paste was refused");
+    }
+
+    #[test]
     fn uploading_stays_until_the_last_upload_ends() {
         let mut desk = desk();
         desk.uploads.push((2, ResourceId::local(1)));
