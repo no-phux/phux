@@ -198,7 +198,12 @@ describe.skipIf(!macos26Arm64())("install.sh --desktop on macOS", () => {
     expect(existsSync(f.apps)).toBe(false);
   });
 
-  test("a missing CLI is installed first, and a failed one installs no app", () => {
+  // The installer counts a CLI at a fixed host path (install.sh has_cli), so a
+  // Mac with a Homebrew or system phux cannot stage "no CLI anywhere".
+  const hostCli = ["/opt/homebrew/bin/phux", "/usr/local/bin/phux", "/usr/bin/phux"].some((path) =>
+    existsSync(path),
+  );
+  test.skipIf(hostCli)("a missing CLI is installed first, and a failed one installs no app", () => {
     unlinkSync(join(f.launchers, "phux"));
     const document = f.manifest("stable");
     f.install(["--channel", "stable"], false);

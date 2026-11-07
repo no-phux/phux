@@ -204,9 +204,15 @@ if PATH="$TMP/bin:/usr/bin:/bin" "$SH" "$ROOT/scripts/install.sh" --os linux --a
 fi
 grep -Fq 'no Phux Rune build' "$TMP/err" || fail "arm64: $(cat "$TMP/err")"
 
-# With no CLI anywhere the plan installs one first.
+# With no CLI anywhere the plan installs one first. The installer also looks
+# at fixed host paths (has_cli), so a machine with a Homebrew or system phux
+# has a CLI here and this case cannot be staged on it.
 rm "$HOME/.local/bin/phux"
-if ! command -v phux >/dev/null 2>&1 || [[ "$(command -v phux)" != /usr/bin/* ]]; then
+host_cli=""
+for candidate in /opt/homebrew/bin/phux /usr/local/bin/phux /usr/bin/phux; do
+  [ ! -x "$candidate" ] || host_cli="$candidate"
+done
+if [ -z "$host_cli" ]; then
   cp "$ROOT/scripts/fixtures/release-manifest/stable.json" "$SERVED/stable.json"
   out="$(PATH="$TMP/bin:/usr/bin:/bin" "$SH" "$ROOT/scripts/install.sh" --dry-run --os linux --arch x86_64 --rune 2>/dev/null)"
   grep -Fxq 'product: phux' <<<"$out" || fail "no CLI plan: $out"

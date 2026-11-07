@@ -205,7 +205,11 @@ fn reap_kills_a_grandchild_after_the_leader_exits() {
     cmd.process_group(0);
     let mut leader = cmd.spawn().expect("spawn leader");
     let deadline = Instant::now() + Duration::from_secs(5);
-    while Instant::now() < deadline && !grand_path.is_file() {
+    // `>` creates the file before `echo` writes it: wait for the pid itself.
+    let written = |path: &std::path::Path| {
+        std::fs::read_to_string(path).is_ok_and(|text| !text.trim().is_empty())
+    };
+    while Instant::now() < deadline && !written(&grand_path) {
         std::thread::sleep(Duration::from_millis(20));
     }
     let leader_pid: i32 = std::fs::read_to_string(&leader_path)

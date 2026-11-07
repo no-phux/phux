@@ -13,6 +13,9 @@ GOLDEN="$ROOT/scripts/fixtures/release-manifest"
 BASE=https://github.com/no-phux/phux/releases/download
 TARGET=x86_64-unknown-linux-gnu
 export HOME="$TMP/home" SHELL=/bin/zsh
+# A fresh HOME has no mise trust records; tools on PATH that are mise shims
+# would refuse this checkout's config without this.
+export MISE_TRUSTED_CONFIG_PATHS="$ROOT"
 unset ZDOTDIR XDG_CONFIG_HOME PHUX_NO_MODIFY_PATH PHUX_CHANNEL PHUX_INSTALL_DIR
 unset PHUX_DESKTOP_PROGRESS
 mkdir -p "$HOME" "$TMP/bin" "$TMP/served"
