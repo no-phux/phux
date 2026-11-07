@@ -11,7 +11,6 @@ use rune::Tx;
 use super::Desk;
 use super::galaxy::Star;
 use crate::galaxy::{self, Kin};
-use crate::machines::LOCAL;
 use crate::reef::{self, Mood, Swimmer};
 
 /// How often the reef redraws while open: every frame.
@@ -78,19 +77,12 @@ impl Desk {
         self.refresh_reef();
     }
 
-    /// Machines as reefs in the galaxy's order, the connected one's agents as
+    /// Machines as reefs in the galaxy's order, every agent it knows of as a
     /// fish; schools are the galaxy's related agents.
     fn refresh_reef(&mut self) {
         let planets = self.planets();
-        let here = self
-            .machines
-            .current
-            .clone()
-            .unwrap_or_else(|| LOCAL.to_owned());
-        let hosts: Vec<(String, bool)> = planets
-            .iter()
-            .map(|p| (p.name.clone(), p.name == here))
-            .collect();
+        let hosts: Vec<(String, bool)> =
+            planets.iter().map(|p| (p.name.clone(), p.known)).collect();
         let stars: Vec<(usize, &Star)> = planets
             .iter()
             .enumerate()

@@ -1,6 +1,6 @@
 //! The reef: the fleet as an aquarium, each machine a reef with its buoy,
-//! the connected machine's agents as fish of their harness's species acting
-//! out their state. A press on a fish selects it and the camera follows it
+//! every machine's agents it can reach as fish of their harness's species
+//! acting out their state. A press on a fish selects it and the camera follows it
 //! in; a press on the selected one (or Return) shows its terminal, as the
 //! galaxy does. Escape lets go, then closes. Night follows a dark theme.
 //!
