@@ -65,7 +65,8 @@ pub(crate) enum SurfaceAction {
         /// The pane the surface binds to; this process's own pane when absent.
         #[usage(long, value_name = "PANE")]
         pane: Option<String>,
-        /// Milliseconds between captures (default 1000).
+        /// Milliseconds between captures while no input arrives (default
+        /// 1000). After input it captures 50ms later, then every 150ms for 2s.
         #[usage(long, value_name = "MS")]
         interval: Option<u64>,
         /// Exit once this process is gone, as the app that launched the mirror passes its own.

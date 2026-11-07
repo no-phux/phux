@@ -33,6 +33,8 @@ mod page_input;
 mod page_mirror;
 mod parent_watch;
 mod surface;
+#[cfg(any(target_os = "macos", target_os = "linux", test))]
+mod surface_cadence;
 #[cfg(any(target_os = "linux", test))]
 mod surface_grim;
 #[cfg(any(target_os = "linux", test))]

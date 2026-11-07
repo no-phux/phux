@@ -1142,7 +1142,9 @@ Flags:
       --window-id <ID>    The CoreGraphics window id, instead of a name (macOS).
       --pane <PANE>       The pane the surface binds to; this process's own pane
                           when absent.
-      --interval <MS>     Milliseconds between captures (default 1000).
+      --interval <MS>     Milliseconds between captures while no input arrives
+                          (default 1000). After input it captures 50ms later,
+                          then every 150ms for 2s.
       --parent-pid <PID>  Exit once this process is gone, as the app that
                           launched the mirror passes its own.
       --format <FORMAT>   Frame encoding: jpeg by default for a page mirror, png

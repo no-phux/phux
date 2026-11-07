@@ -188,7 +188,8 @@ pub(super) fn run_mirror(args: MirrorArgs<'_>) -> ExitCode {
 
 /// Publish every changed capture until Ctrl-C, or until three captures in a
 /// row fail, and `act` on every intent viewers send between captures with
-/// the newest frame's size.
+/// the newest frame's size. Input brings captures forward
+/// (`surface_cadence`).
 #[cfg(any(target_os = "macos", target_os = "linux"))]
 #[allow(
     clippy::future_not_send,
@@ -216,6 +217,7 @@ async fn publish_until_gone(
     }
     let mut last = Some(first);
     let mut misses = 0;
+    let mut input = None;
     loop {
         match capture() {
             Ok(bytes) => {
@@ -237,16 +239,18 @@ async fn publish_until_gone(
                 }
             }
         }
-        let next = tokio::time::Instant::now() + interval;
+        let captured = std::time::Instant::now();
         loop {
             for intent in std::mem::take(&mut intents) {
                 if intent.resource == *resource {
                     act(&intent.input, frame);
+                    input = Some(std::time::Instant::now());
                 }
             }
+            let next = super::surface_cadence::next_capture(captured, input, interval);
             tokio::select! {
                 _ = tokio::signal::ctrl_c() => return ExitCode::SUCCESS,
-                () = tokio::time::sleep_until(next) => break,
+                () = tokio::time::sleep_until(next.into()) => break,
                 received = conn.recv() => match received {
                     Ok(received) => intents.extend(tree::intent(&received)),
                     Err(err) => return report(json, &err.into()),
@@ -299,7 +303,9 @@ mod macos {
         target: Target,
         frames: Frames,
     ) -> impl FnMut() -> Result<Vec<u8>, String> {
-        move || capture(target, frames)
+        // The last capture and its re-encoding: an unchanged screen skips `sips`.
+        let mut last = None;
+        move || capture(target, frames, &mut last)
     }
 
     /// The on-screen window list as JSON, through the system's JavaScript
@@ -339,7 +345,11 @@ JSON.stringify(windows.map(w => ({ id: w.kCGWindowNumber, owner: w.kCGWindowOwne
 
     /// One image of `target`, through `screencapture`, then `sips` when
     /// `frames` asks for JPEG or a narrower image.
-    fn capture(target: Target, frames: Frames) -> Result<Vec<u8>, String> {
+    fn capture(
+        target: Target,
+        frames: Frames,
+        last: &mut Option<(Vec<u8>, Vec<u8>)>,
+    ) -> Result<Vec<u8>, String> {
         let dir = std::env::temp_dir().join(format!("phux-surface-{}", std::process::id()));
         std::fs::create_dir_all(&dir)
             .map_err(|err| format!("could not make {}: {err}", dir.display()))?;
@@ -362,6 +372,9 @@ JSON.stringify(windows.map(w => ({ id: w.kCGWindowNumber, owner: w.kCGWindowOwne
         let Some(args) = sips_args(frames, width) else {
             return Ok(png);
         };
+        if let Some((_, frame)) = last.as_ref().filter(|(raw, _)| *raw == png) {
+            return Ok(frame.clone());
+        }
         let out = dir.join("frame.out");
         let status = Command::new("/usr/bin/sips")
             .args(args)
@@ -374,7 +387,10 @@ JSON.stringify(windows.map(w => ({ id: w.kCGWindowNumber, owner: w.kCGWindowOwne
         if !status.success() {
             return Err(format!("sips exited with {status}"));
         }
-        std::fs::read(&out).map_err(|err| format!("could not read the re-encoded capture: {err}"))
+        let frame = std::fs::read(&out)
+            .map_err(|err| format!("could not read the re-encoded capture: {err}"))?;
+        *last = Some((png, frame.clone()));
+        Ok(frame)
     }
 
     /// The `sips` arguments that turn a `width`-pixel PNG into the frame
