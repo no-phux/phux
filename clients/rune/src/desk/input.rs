@@ -80,6 +80,9 @@ impl Desk {
             self.shortcut(action, tx);
             return true;
         }
+        if self.document_key(event) {
+            return true;
+        }
         self.type_key(event, tx)
     }
 

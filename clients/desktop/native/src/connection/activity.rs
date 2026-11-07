@@ -240,6 +240,12 @@ impl Connection {
                 session,
             } => self.publish(publication, session, epoch),
             Event::DocumentPublished { publication } => self.publish_document(publication),
+            Event::TopologySnapshot { snapshot, .. } => {
+                self.document_input.inputs.note_snapshot(snapshot)
+            }
+            Event::CommandResult { request_id, result } => {
+                self.answer_document_input(*request_id, result);
+            }
             Event::AgentSessionClosed { terminal_id, .. } => {
                 if let Some(conversation) = self.conversations.get_mut(terminal_id) {
                     conversation.closed = true;
@@ -254,6 +260,7 @@ impl Connection {
         if starts_connection(event) {
             self.forget_session_metadata();
             self.documents.clear();
+            self.document_input = documents::Input::default();
             self.forget_old_document_subscriptions();
             self.admitted.clear();
             return;

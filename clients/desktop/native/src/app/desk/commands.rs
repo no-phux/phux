@@ -287,6 +287,12 @@ impl Desk {
             cx.stop_propagation();
             return;
         }
+        // A focused document that takes input owns its plain keys, as a
+        // terminal does; Cmd and Ctrl chords stay the app's.
+        if self.modal == Modal::None && !self.text_field_has_keys() && self.document_key(event) {
+            cx.stop_propagation();
+            return;
+        }
         let modifiers = &event.keystroke.modifiers;
         let key = event.keystroke.key.as_str();
         let action: Option<fn(&mut Self, &mut Window, &mut Context<Self>)> = match key {
