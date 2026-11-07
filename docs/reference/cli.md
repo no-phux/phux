@@ -547,6 +547,7 @@ Commands:
             an arrow.
   mirror    Mirror a browser page into a tree and a surface until Ctrl-C.
   navigate  Load a URL in a mirrored page.
+  scroll    Scroll a mirrored page or screen by a delta in surface image pixels.
   type      Type text into a mirrored page's focused field.
   help      Print this message or the help of the given subcommand(s)
 
@@ -637,6 +638,26 @@ Usage: phux agent page navigate [--json] <TARGET> <URL>
 Arguments:
   <TARGET>  The page's surface or tree.
   <URL>     The URL to load.
+
+Flags:
+      --json
+  -h, --help           Print help
+
+Global flags:
+      --socket <PATH>  Server socket to dial (default: `$PHUX_SOCKET`)
+```
+
+## `phux agent page scroll`
+
+```text
+Scroll a mirrored page or screen by a delta in surface image pixels.
+
+Usage: phux agent page scroll [--json] <ARGS>…
+
+Arguments:
+  <TARGET>  The document's surface or tree.
+  <DX>      Horizontal pixels; positive scrolls right.
+  <DY>      Vertical pixels; positive scrolls down.
 
 Flags:
       --json

@@ -30,8 +30,12 @@ fn sweep_args(tool: &str) -> Value {
         }
         "phux_tree_wait" => json!({ "target": "@1", "until": "x", "timeout_secs": 1 }),
         "phux_documents" => json!({}),
+        "phux_document_navigate" => json!({ "target": "@1", "url": "about:blank" }),
+        "phux_document_click" => json!({ "target": "@1", "x": 1, "y": 1 }),
+        "phux_document_key" => json!({ "target": "@1", "key": "Enter" }),
+        "phux_document_scroll" => json!({ "target": "@1", "dx": 0, "dy": 1 }),
         "phux_send_keys" => json!({ "target": "@1", "keys": ["x"] }),
-        "phux_paste" => json!({ "target": "@1", "text": "x" }),
+        "phux_paste" | "phux_document_type" => json!({ "target": "@1", "text": "x" }),
         "phux_upload" => json!({ "target": "@1", "path": "local.bin" }),
         "phux_kill" | "phux_rm" => json!({ "target": "@1", "confirm": true }),
         "phux_detach" => json!({ "confirm": true }),
