@@ -33,6 +33,7 @@ mod parent_watch;
 mod surface;
 #[cfg(any(target_os = "linux", test))]
 mod surface_grim;
+mod surface_input;
 mod surface_mirror;
 
 pub(crate) use doc::{DocAction, run_doc};
@@ -229,9 +230,9 @@ pub(super) async fn connect(
 
 pub(super) fn report(json: bool, err: &TreeError) -> ExitCode {
     let (code, hint) = match err {
-        TreeError::Unsupported => (
+        TreeError::Unsupported(_) => (
             json_err::codes::SERVER_TOO_OLD,
-            "update the phux server; it does not serve accessibility trees",
+            "update the phux server to one that serves this resource kind",
         ),
         TreeError::WrongKind { .. }
         | TreeError::ParentNotFound { .. }

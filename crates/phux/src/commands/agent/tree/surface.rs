@@ -68,6 +68,10 @@ pub(crate) enum SurfaceAction {
         parent_pid: Option<u32>,
         #[usage(flatten)]
         frames: FrameOpts,
+        /// Log the input events viewers' intents would post (macOS) instead
+        /// of posting them; a refused capture publishes a blank frame.
+        #[usage(long)]
+        dry_run_input: bool,
         #[usage(long)]
         json: bool,
     },
@@ -106,6 +110,7 @@ pub(crate) fn run_surface(action: &SurfaceAction, socket: Option<PathBuf>) -> Ex
             interval,
             parent_pid,
             frames,
+            dry_run_input,
             json,
         } => {
             super::parent_watch::exit_with(*parent_pid);
@@ -116,6 +121,7 @@ pub(crate) fn run_surface(action: &SurfaceAction, socket: Option<PathBuf>) -> Ex
                     pane: pane.as_deref(),
                     interval_ms: interval.unwrap_or(1000),
                     frames,
+                    dry_run_input: *dry_run_input,
                     json: *json,
                     socket,
                 }),
