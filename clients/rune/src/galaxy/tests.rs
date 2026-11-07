@@ -66,3 +66,26 @@ fn relations_follow_the_session_or_the_project_and_each_pair_draws_once() {
     assert_eq!(project("/Users/you"), None);
     assert_eq!(project("/"), None);
 }
+
+#[test]
+fn a_lone_agent_sits_beside_its_planet_and_every_agent_is_inside_the_bezel() {
+    let plan = Plan::new(&[1, 7, 2]);
+    // Beside, not on the spoke: off the line from the core through the planet.
+    let system = &plan.systems[0];
+    let agent = system.point(0, 0.0, false);
+    assert!((agent[0] - system.centre[0]).abs() > 90.0, "{agent:?}");
+    for system in &plan.systems {
+        for index in 0..system.count {
+            let p = system.point(index, 12.0, true);
+            assert!(dist(p, plan.core) + 30.0 < plan.bezel());
+        }
+    }
+}
+
+#[test]
+fn detail_drops_words_then_calm_names_as_the_camera_pulls_back() {
+    assert_eq!(Detail::at(1.0), Detail::Full);
+    assert_eq!(Detail::at(0.6), Detail::Full);
+    assert_eq!(Detail::at(0.5), Detail::Names);
+    assert_eq!(Detail::at(0.3), Detail::Urgent);
+}

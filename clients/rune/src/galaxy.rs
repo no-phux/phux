@@ -45,8 +45,11 @@ impl System {
         let ring = index / PER_RING;
         let on_ring = PER_RING.min(self.count - ring * PER_RING);
         let step = TAU / on_ring as f32;
-        // Alternate rings sit half a step round, so agents never line up.
-        let mut angle = self.angle + step * ((index % PER_RING) as f32 + (ring % 2) as f32 / 2.0);
+        // A quarter turn off the planet's own spoke keeps the first agent
+        // beside the planet, clear of its name; alternate rings sit half a
+        // step round, so agents never line up.
+        let mut angle =
+            self.angle + PI / 2.0 + step * ((index % PER_RING) as f32 + (ring % 2) as f32 / 2.0);
         if roaming {
             angle += time * TAU / PERIOD;
         }
@@ -106,12 +109,41 @@ impl Plan {
         }
     }
 
+    /// The bezel's radius about the core: the outermost agent's reach.
+    pub fn bezel(&self) -> f32 {
+        self.side / 2.0 - PAD
+    }
+
     /// The scale that shows the whole galaxy in `w` by `h`.
     pub fn fit(&self, w: f32, h: f32) -> f32 {
         if w <= 0.0 || h <= 0.0 {
             return 1.0;
         }
         (w.min(h) / self.side).clamp(MIN_SCALE, 1.0)
+    }
+}
+
+/// How much an agent says at a camera scale: a phone-sized fit would pile
+/// names on names, so words go first, then every calm agent's name.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Detail {
+    /// Name and state word.
+    Full,
+    /// Name only.
+    Names,
+    /// Only agents that need you are named.
+    Urgent,
+}
+
+impl Detail {
+    pub fn at(scale: f32) -> Detail {
+        if scale >= 0.6 {
+            Detail::Full
+        } else if scale >= 0.45 {
+            Detail::Names
+        } else {
+            Detail::Urgent
+        }
     }
 }
 
