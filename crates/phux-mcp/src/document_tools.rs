@@ -116,6 +116,7 @@ async fn documents(args: &Value) -> Result<Value, ToolError> {
                 "parent": info.parent.as_ref().map(format_terminal_id),
                 "name": info.title,
                 "producer": phux_client::resource::producer_name(info),
+                "control": info.control.map(phux_protocol::wire::frame::ControlClass::name),
             })
         })
         .collect();
@@ -266,11 +267,11 @@ mod tests {
                 .id
                 .clone();
             let mut producer = Connection::connect(&socket).await.unwrap();
-            let tree_id = tree::open_kind(&mut producer, Kind::Tree, &pane, "smoke")
+            let tree_id = tree::open_kind(&mut producer, Kind::Tree, &pane, "smoke", None)
                 .await
                 .unwrap()
                 .resource;
-            let surface_id = tree::open_kind(&mut producer, Kind::Surface, &pane, "smoke")
+            let surface_id = tree::open_kind(&mut producer, Kind::Surface, &pane, "smoke", None)
                 .await
                 .unwrap()
                 .resource;

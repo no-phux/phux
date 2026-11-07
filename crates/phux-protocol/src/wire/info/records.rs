@@ -328,6 +328,10 @@ pub struct ResourceInfo {
     /// still connected; `None` for a non-document kind or from a server that
     /// does not report it. Rides `RESOURCE_STATE`.
     pub producer_connected: Option<bool>,
+    /// What input to a document controls; `None` for a document with no
+    /// control class, another kind, or a server that does not report it.
+    /// Rides `RESOURCE_STATE`.
+    pub control: Option<crate::wire::frame::ControlClass>,
 }
 
 impl ResourceInfo {
@@ -351,6 +355,7 @@ impl ResourceInfo {
             viewers: Vec::new(),
             session: None,
             producer_connected: None,
+            control: None,
         }
     }
 
@@ -382,6 +387,7 @@ impl ResourceInfo {
             viewers: Vec::new(),
             session: None,
             producer_connected: None,
+            control: None,
         }
     }
 
@@ -455,6 +461,13 @@ impl ResourceInfo {
         self
     }
 
+    /// Builder setter for [`Self::control`].
+    #[must_use]
+    pub const fn with_control(mut self, control: Option<crate::wire::frame::ControlClass>) -> Self {
+        self.control = control;
+        self
+    }
+
     /// Builder setter for [`Self::producer_connected`].
     #[must_use]
     pub const fn with_producer_connected(mut self, producer_connected: Option<bool>) -> Self {
@@ -474,5 +487,6 @@ impl ResourceInfo {
             || self.input_holder.is_some()
             || !self.viewers.is_empty()
             || self.producer_connected.is_some()
+            || self.control.is_some()
     }
 }

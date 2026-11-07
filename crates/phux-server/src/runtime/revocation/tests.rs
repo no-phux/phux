@@ -121,3 +121,22 @@ fn adding_a_hold_narrows_and_removing_one_does_not() {
     assert!(still_contained(&["?signal@global"], &["signal@global"]));
     assert!(still_contained(&["?signal@global"], &["?signal@global"]));
 }
+
+#[test]
+fn ungranting_control_revokes_even_under_a_broader_grant() {
+    let key = phux_protocol::ids::ResourceKey::new([7; 16]).unwrap();
+    let resource = format!("input@resource:{key}");
+    assert!(still_contained(
+        &["input@display"],
+        &["input@display", "*@global"]
+    ));
+    assert!(!still_contained(&["input@display"], &["*@global"]));
+    assert!(!still_contained(&["input@window:sat"], &["*@host:sat"]));
+    assert!(!still_contained(&[&resource], &["*@host"]));
+    assert!(still_contained(&[&resource], &[&resource, "*@host"]));
+    // Without INPUT a keyed clause is no control and a broader grant keeps it.
+    assert!(still_contained(
+        &[&format!("observe@resource:{key}")],
+        &["observe@host"]
+    ));
+}

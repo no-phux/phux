@@ -5,6 +5,8 @@ use std::sync::{Arc, Barrier};
 
 use super::*;
 
+#[path = "tests/grants.rs"]
+mod grants;
 #[path = "tests/paired.rs"]
 mod paired;
 

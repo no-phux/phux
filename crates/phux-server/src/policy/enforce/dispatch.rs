@@ -3,7 +3,7 @@
 pub struct Denial {
     /// The verbs the refused operation needed; empty for a default-deny row.
     pub verbs: Verbs,
-    /// `terminal`, `group`, `host`, `global`, `approval`, `unclassified`,
+    /// `terminal`, `group`, `host`, `global`, `control`, `approval`, `unclassified`,
     /// `ungranted`, `expired`, `revoked`, `viewer`, or `held`.
     pub subject: &'static str,
 }
@@ -278,6 +278,7 @@ pub(super) fn needs_for(
         Subject::MoveSessions => move_sessions(s, verbs, request),
         Subject::UndoneOperation => undone_operation(s, verbs, request),
         Subject::ArrangementOwner => arrangement_owner(s, request).map(one),
+        Subject::ControlledDocument => controlled_document(s, request).map(one),
         Subject::Global {
             owner_uds_only: false,
         } => Some(one(Point::Global)),
@@ -315,6 +316,7 @@ const fn subject_kind(subject: Subject) -> &'static str {
         Subject::SatelliteHost | Subject::SatelliteHostAndParent => "host",
         Subject::MetadataScope | Subject::Global { .. } => "global",
         Subject::HeldAction => "approval",
+        Subject::ControlledDocument => "control",
         Subject::None | Subject::CallingConnection => "unclassified",
     }
 }

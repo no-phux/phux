@@ -63,6 +63,19 @@ pub(super) fn run_mirror(args: MirrorArgs<'_>) -> ExitCode {
     )
 }
 
+/// What input to the mirror controls: `display` or `display:OUTPUT` is a
+/// whole screen, anything else one window
+/// (`docs/resource-kinds.md#authority`).
+fn control_class(window: &str, window_id: Option<u32>) -> phux_protocol::wire::frame::ControlClass {
+    use phux_protocol::wire::frame::ControlClass;
+    let display = window == "display" || window.starts_with("display:");
+    if window_id.is_none() && display {
+        ControlClass::Display
+    } else {
+        ControlClass::Window
+    }
+}
+
 #[cfg(target_os = "linux")]
 use super::surface_grim as platform;
 #[cfg(target_os = "macos")]
@@ -146,7 +159,8 @@ pub(super) fn run_mirror(args: MirrorArgs<'_>) -> ExitCode {
             Ok(conn) => conn,
             Err(code) => return code,
         };
-        let opened = match tree::open_kind(&mut conn, Kind::Surface, &pane, window).await {
+        let control = Some(control_class(window, window_id));
+        let opened = match tree::open_kind(&mut conn, Kind::Surface, &pane, window, control).await {
             Ok(opened) => opened,
             Err(err) => return report(json, &err),
         };
@@ -405,5 +419,19 @@ JSON.stringify(windows.map(w => ({ id: w.kCGWindowNumber, owner: w.kCGWindowOwne
             assert!(pick_window("Safari:Menu", LISTING).is_err());
             assert!(pick_window("Mail", LISTING).is_err());
         }
+    }
+}
+
+#[cfg(test)]
+mod control_tests {
+    use phux_protocol::wire::frame::ControlClass::{Display, Window};
+
+    #[test]
+    fn a_display_mirror_controls_the_display_and_anything_else_one_window() {
+        assert_eq!(super::control_class("display", None), Display);
+        assert_eq!(super::control_class("display:DP-1", None), Display);
+        assert_eq!(super::control_class("Safari", None), Window);
+        assert_eq!(super::control_class("displayport:x", None), Window);
+        assert_eq!(super::control_class("display", Some(7)), Window);
     }
 }

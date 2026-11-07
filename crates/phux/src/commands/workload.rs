@@ -1,8 +1,9 @@
 //! `phux workload` — the mTLS workload authority (ADR-0116,
 //! `docs/remote.md#who-can-connect`): `authority [--init|--rotate]`, `add-key` (enroll a
 //! certificate or sign a CSR, read from stdin or `--file`, never argv), `list`,
-//! `repair-paired`, and `revoke`. Like `phux pair` these write the state directory directly;
-//! a running server sees the new registry generation on its next connection.
+//! `repair-paired`, `grant`/`ungrant` (one scope, no re-pair), and `revoke`.
+//! Like `phux pair` these write the state directory directly; a running
+//! server sees the new registry generation on its next connection.
 //! Nothing here reads or prints a private key, the CA key's path, or any
 //! user-supplied path (a mis-pasted value could be key material).
 
@@ -19,7 +20,7 @@ mod add_key;
 mod registry;
 
 use self::add_key::{AddKey, IssuedTo, add_key};
-use self::registry::{authority, list, repair_paired, revoke, rotate};
+use self::registry::{authority, change_scope, list, repair_paired, revoke, rotate};
 
 /// Default credential lifetime: 90 days.
 const DEFAULT_EXPIRY_SECONDS: i64 = 90 * 24 * 60 * 60;
@@ -84,7 +85,10 @@ pub(crate) enum WorkloadAction {
         /// session:KEY, or resource:KEY (a record's full 26-character key,
         /// the `key` of a `phux ls --json` row; session and Terminal ids
         /// restart with the server, so group:ID and terminal:ID are
-        /// refused). Repeatable; at least one is required.
+        /// refused), or a control class: page, window, display, alone or as
+        /// CLASS:HOST, the only selectors besides resource:KEY that let
+        /// input reach a mirrored page, window or display. Repeatable; at
+        /// least one is required.
         #[usage(long, value_name = "VERBS@SELECTOR")]
         scope: Vec<String>,
 
@@ -142,6 +146,36 @@ pub(crate) enum WorkloadAction {
         #[usage(value_name = "CREDENTIAL_ID")]
         credential_id: String,
     },
+    /// Add one scope grant to an enrolled credential, without re-pairing.
+    ///
+    /// The scope is `<verb>[,<verb>...]@<selector>`, as `add-key --scope`
+    /// takes it, plus the control selectors `page`, `window`, `display`
+    /// and `page:HOST`, `window:HOST`, `display:HOST`: `input@display` lets
+    /// the device type and click on this machine's mirrored screens, which
+    /// no terminal grant does. Prints what the grant lets the device do.
+    /// The device gets it at its next connection.
+    Grant {
+        /// The credential's `sha256:...` id from `phux workload list`.
+        #[usage(value_name = "CREDENTIAL_ID")]
+        credential_id: String,
+        /// The grant, e.g. `input@display` or `input@window:powerhouse-1`.
+        #[usage(value_name = "VERBS@SELECTOR")]
+        scope: String,
+    },
+    /// Remove one scope grant from an enrolled credential.
+    ///
+    /// Removes every scope equal to the one given. A running server ends
+    /// the device's live connections that relied on it; the device
+    /// reconnects with what remains. The last scope cannot be removed:
+    /// revoke the credential instead.
+    Ungrant {
+        /// The credential's `sha256:...` id from `phux workload list`.
+        #[usage(value_name = "CREDENTIAL_ID")]
+        credential_id: String,
+        /// The grant to remove, as `phux workload list` prints it.
+        #[usage(value_name = "VERBS@SELECTOR")]
+        scope: String,
+    },
     /// Revoke a credential: new connections are refused and live ones end.
     ///
     /// A running server observes the registry write and closes every
@@ -195,6 +229,14 @@ pub(crate) fn run(action: WorkloadAction, json: bool) -> ExitCode {
         ),
         WorkloadAction::List { public_keys } => list(&paths, public_keys),
         WorkloadAction::RepairPaired { credential_id } => repair_paired(&paths, &credential_id),
+        WorkloadAction::Grant {
+            credential_id,
+            scope,
+        } => change_scope(&paths, &credential_id, &scope, true),
+        WorkloadAction::Ungrant {
+            credential_id,
+            scope,
+        } => change_scope(&paths, &credential_id, &scope, false),
         WorkloadAction::Revoke { credential_id } => revoke(&paths, &credential_id),
     };
     match outcome {

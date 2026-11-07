@@ -146,6 +146,7 @@ impl ServerState {
         // An unclaimed close reason must not outlive its id.
         self.forget_close_reason(pane);
         self.retained.forget(pane);
+        self.document_controls.remove(&pane);
         // Asked state is keyed by core id; the arbiter by wire id (below).
         self.agent.clear_asked(pane);
         // No lease change can follow a removed pane.

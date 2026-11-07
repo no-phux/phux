@@ -262,10 +262,11 @@ async fn open_page_resources(
     page: &Page,
 ) -> Result<(ResourceId, ResourceId), tree::TreeError> {
     let label = page_label(page);
-    let tree = tree::open_kind(conn, Kind::Tree, parent, label)
+    let page = Some(phux_protocol::wire::frame::ControlClass::Page);
+    let tree = tree::open_kind(conn, Kind::Tree, parent, label, page)
         .await?
         .resource;
-    let surface = tree::open_kind(conn, Kind::Surface, parent, label)
+    let surface = tree::open_kind(conn, Kind::Surface, parent, label, page)
         .await?
         .resource;
     Ok((tree, surface))

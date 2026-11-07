@@ -282,11 +282,11 @@ pub mod typed_document;
 mod whoami;
 
 pub use command::{
-    AgentEvent, ApprovalOutcome, Command, CommandResult, CommandValue, ControlAction,
-    DocumentInput, DocumentKey, FileChunk, FileUploadAck, GET_SCREEN_FORMAT_SELECTOR_MASK,
-    GET_SCREEN_FORMAT_UNWRAP, InputMode, KillConditions, KillPrecondition, ListenerTransport,
-    MAX_DOCUMENT_INPUT_TEXT, PerfOp, ReportedAgentState, ResourceEventType, ResourceLifecycle,
-    StateScope, TerminalSignal,
+    AgentEvent, ApprovalOutcome, Command, CommandResult, CommandValue, ControlAction, ControlClass,
+    ControlClasses, DocumentInput, DocumentKey, FileChunk, FileUploadAck,
+    GET_SCREEN_FORMAT_SELECTOR_MASK, GET_SCREEN_FORMAT_UNWRAP, InputMode, KillConditions,
+    KillPrecondition, ListenerTransport, MAX_DOCUMENT_INPUT_TEXT, PerfOp, ReportedAgentState,
+    ResourceEventType, ResourceLifecycle, StateScope, TerminalSignal,
 };
 pub use directory::{
     DirectoryEntry, DirectoryErrorCode, DirectoryListing, DirectoryListingError,

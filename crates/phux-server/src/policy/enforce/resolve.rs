@@ -90,6 +90,30 @@ fn resource_key_point(s: &ServerState, key: &phux_protocol::ids::ResourceKey) ->
     Some(Point::Terminal(local_point(s, id)))
 }
 
+/// The document a `SEND_DOCUMENT_INPUT` names. A local one must exist; a
+/// satellite one is matched by host alone (see [`ControlPoint::class`]).
+fn controlled_document(s: &ServerState, request: Request<'_>) -> Option<Point> {
+    let Request::Command(Command::SendDocumentInput { terminal_id, .. }) = request else {
+        return None;
+    };
+    let document = match terminal_id {
+        WireResourceId::Local { .. } => {
+            let core = s.resource_from_wire(terminal_id)?;
+            ControlPoint {
+                class: s.document_control(core),
+                host: None,
+                key: resource_key_of(s, core),
+            }
+        }
+        WireResourceId::Satellite { host, .. } => ControlPoint {
+            class: None,
+            host: Some(host.as_str().to_owned()),
+            key: None,
+        },
+    };
+    Some(Point::Control(document))
+}
+
 /// The session a keyed session command names.
 fn keyed_session(s: &ServerState, request: Request<'_>) -> Option<Point> {
     let Request::Command(command) = request else {

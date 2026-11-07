@@ -287,9 +287,9 @@ pixels, insert text, press a named key, or scroll). The server relays it,
 unread, as an unstamped `document_input` event (tag `0x20`) on the
 connection that spawned the document, and answers `OK` once queued;
 `NOT_PRODUCER` when that connection is gone, `OVERFLOW` when its mailbox is
-full. Nobody else sees the event and it is never journaled. Input to a page
-or window is control of the machine, so the rule is owner socket only: no
-terminal or remote grant reaches it ([resource kinds](./resource-kinds.md#authority)).
+full. Nobody else sees the event and it is never journaled. Only the owner
+socket or a control grant reaches it; the class fields and the hub's stamp
+are in [resource kinds](./resource-kinds.md#authority).
 
 `GET_METADATA` / `SET_METADATA` / `SUBSCRIBE_METADATA` (`0x50`-`0x54`)
 attach small keyed values to resources. Some keys are plain storage; some

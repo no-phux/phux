@@ -165,7 +165,8 @@
         {"id":14,"name":"NATIVE_ID","type":"str","presence":"optional"},
         {"id":15,"name":"BIND_INSTANCE","type":"bool","presence":"optional"},
         {"id":16,"name":"RETAIN_SECS","type":"u32","presence":"optional"},
-        {"id":17,"name":"IDEMPOTENCY_KEY","type":"bytes16","presence":"optional"}
+        {"id":17,"name":"IDEMPOTENCY_KEY","type":"bytes16","presence":"optional"},
+        {"id":18,"name":"CONTROL","type":"u8","presence":"optional"}
       ]
     },
     {

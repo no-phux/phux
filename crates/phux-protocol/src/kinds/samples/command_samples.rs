@@ -551,6 +551,7 @@ fn command_samples() -> Vec<(Command, &'static Rule)> {
             Command::SendDocumentInput {
                 terminal_id: terminal(),
                 intent: crate::wire::frame::DocumentInput::Click { x: 1, y: 2 },
+                control: None,
             },
             &C_SEND_DOCUMENT_INPUT,
         ),

@@ -157,6 +157,7 @@ pub(super) fn decode_terminal_info_body(
         viewers: Vec::new(),
         session: None,
         producer_connected: None,
+        control: None,
     })
 }
 

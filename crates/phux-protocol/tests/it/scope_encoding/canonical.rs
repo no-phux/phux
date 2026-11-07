@@ -106,7 +106,7 @@ fn scope_set_rejects_unsorted_duplicate_unknown_bit_nonminimal_and_trailing() {
         ),
         (
             "unknown selector tag",
-            vec![0x00, 0x01, 0x00, 0x01, 0x06, 0x02],
+            vec![0x00, 0x01, 0x00, 0x01, 0x07, 0x02],
             ScopeError::UnknownSelectorTag,
         ),
         (

@@ -10,8 +10,8 @@
 use phux_protocol::caps::{BootstrapStreamProfile, ServerFeatureExt};
 use phux_protocol::ids::{GroupId, ResourceId};
 use phux_protocol::wire::frame::{
-    AgentEvent, Command, CommandResult, CommandValue, ErrorCode, FrameKind, SpawnError,
-    SpawnResource, SpawnResult,
+    AgentEvent, Command, CommandResult, CommandValue, ControlClass, ErrorCode, FrameKind,
+    SpawnError, SpawnResource, SpawnResult,
 };
 
 use crate::attach::AttachError;
@@ -232,11 +232,15 @@ pub async fn open(
     parent: &ResourceId,
     target: &str,
 ) -> Result<Opened, TreeError> {
-    open_kind(conn, Kind::Tree, parent, target).await
+    open_kind(conn, Kind::Tree, parent, target, None).await
 }
 
 /// Open a document of `kind` observing `target` under `parent`; the caller
 /// becomes its producer.
+///
+/// `control` declares what input to it controls
+/// (`docs/resource-kinds.md#authority`); `None` takes input from the owner
+/// socket only.
 ///
 /// # Errors
 ///
@@ -246,15 +250,10 @@ pub async fn open_kind(
     kind: Kind,
     parent: &ResourceId,
     target: &str,
+    control: Option<ControlClass>,
 ) -> Result<Opened, TreeError> {
-    open_spawn(
-        conn,
-        kind,
-        parent,
-        target,
-        kind.spawn(parent.clone(), target),
-    )
-    .await
+    let spawn = kind.spawn(parent.clone(), target).with_control(control);
+    open_spawn(conn, kind, parent, target, spawn).await
 }
 
 /// Open a document of `content_type` (a MIME type, e.g. `text/markdown`)

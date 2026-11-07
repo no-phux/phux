@@ -245,7 +245,7 @@ proptest! {
                 parent,
                 provider: None,
                 native_id: None,
-                bind_instance: false, idempotency_key: None, retain_secs: None,
+                bind_instance: false, idempotency_key: None, retain_secs: None, control: None,
             })),
         });
     }

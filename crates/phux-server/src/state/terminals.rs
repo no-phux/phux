@@ -259,6 +259,27 @@ impl ServerState {
             .filter(|tx| !tx.is_closed())
     }
 
+    /// Record the control class a document's producer declared.
+    pub fn set_document_control(
+        &mut self,
+        document: ResourceId,
+        control: Option<phux_protocol::wire::frame::ControlClass>,
+    ) {
+        match control {
+            Some(class) => self.document_controls.insert(document, class),
+            None => self.document_controls.remove(&document),
+        };
+    }
+
+    /// What input to `document` controls; `None` when it controls nothing.
+    #[must_use]
+    pub fn document_control(
+        &self,
+        document: ResourceId,
+    ) -> Option<phux_protocol::wire::frame::ControlClass> {
+        self.document_controls.get(&document).copied()
+    }
+
     /// Record that `client` spawned `terminal` (ADR-0109), before anything
     /// subscribes to it.
     pub fn record_spawn(&mut self, terminal: ResourceId, client: ClientId) {
