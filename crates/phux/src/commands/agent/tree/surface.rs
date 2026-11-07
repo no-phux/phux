@@ -68,8 +68,9 @@ pub(crate) enum SurfaceAction {
         parent_pid: Option<u32>,
         #[usage(flatten)]
         frames: FrameOpts,
-        /// Log the input events viewers' intents would post (macOS) instead
-        /// of posting them; a refused capture publishes a blank frame.
+        /// Log the input events viewers' intents would post (macOS) or the
+        /// commands they would run (Linux) instead; a refused capture
+        /// publishes a blank frame.
         #[usage(long)]
         dry_run_input: bool,
         #[usage(long)]

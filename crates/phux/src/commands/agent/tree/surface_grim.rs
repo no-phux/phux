@@ -20,6 +20,9 @@ use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
 use super::surface::Frames;
+#[cfg(target_os = "linux")]
+pub(super) use super::surface_grim_input::injector;
+pub(super) use super::surface_input::Rect;
 
 /// How long grim or hyprctl may take before the capture counts as stalled.
 const TIMEOUT: Duration = Duration::from_secs(10);
@@ -91,12 +94,25 @@ fn width(image: &[u8]) -> u32 {
 }
 
 /// What one grim run captures.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub(super) enum Region {
     All,
     Output(String),
-    /// `x,y wxh` in the compositor's layout coordinates.
-    Rect(String),
+    Rect(Rect),
+}
+
+/// grim's `-g` geometry for a rectangle in the compositor's layout
+/// (logical) coordinates, `x,y wxh`.
+pub(super) fn geometry(rect: Rect) -> String {
+    let Rect { x, y, w, h } = rect;
+    format!("{x:.0},{y:.0} {w:.0}x{h:.0}")
+}
+
+/// A Hyprland window: its `address` (for `focuswindow`) and rectangle.
+#[derive(Debug, Clone, PartialEq)]
+pub(super) struct Window {
+    pub(super) address: String,
+    pub(super) rect: Rect,
 }
 
 fn region(target: &Target, env: &[(&str, String)]) -> Result<Region, String> {
@@ -106,12 +122,12 @@ fn region(target: &Target, env: &[(&str, String)]) -> Result<Region, String> {
         Target::Window(spec) => {
             let clients = hyprctl("clients", env)?;
             let monitors = hyprctl("monitors", env)?;
-            window_rect(spec, &clients, &monitors).map(Region::Rect)
+            find_window(spec, &clients, &monitors).map(|window| Region::Rect(window.rect))
         }
     }
 }
 
-fn hyprctl(what: &str, env: &[(&str, String)]) -> Result<String, String> {
+pub(super) fn hyprctl(what: &str, env: &[(&str, String)]) -> Result<String, String> {
     let mut command = Command::new("hyprctl");
     command.args(["-j", what]).envs(env.iter().cloned());
     let out = run(command, "hyprctl did not answer: is Hyprland running?")?;
@@ -148,7 +164,7 @@ pub(super) fn grim_args(region: &Region, frames: Frames, scale: Option<f64>) -> 
     match region {
         Region::All => {}
         Region::Output(name) => args.extend(["-o".into(), name.clone()]),
-        Region::Rect(rect) => args.extend(["-g".into(), rect.clone()]),
+        Region::Rect(rect) => args.extend(["-g".into(), geometry(*rect)]),
     }
     args.push("-".into());
     args
@@ -157,7 +173,7 @@ pub(super) fn grim_args(region: &Region, frames: Frames, scale: Option<f64>) -> 
 /// The rectangle of the first mapped window on a shown workspace whose
 /// class is `App` (any case) and, for `App:title`, whose title contains
 /// `title`, from `hyprctl -j clients` and `hyprctl -j monitors`.
-pub(super) fn window_rect(spec: &str, clients: &str, monitors: &str) -> Result<String, String> {
+pub(super) fn find_window(spec: &str, clients: &str, monitors: &str) -> Result<Window, String> {
     let (app, title) = spec.split_once(':').unwrap_or((spec, ""));
     let parse = |text: &str, what: &str| {
         serde_json::from_str::<Vec<serde_json::Value>>(text.trim())
@@ -189,21 +205,23 @@ pub(super) fn window_rect(spec: &str, clients: &str, monitors: &str) -> Result<S
                 .is_some_and(|id| shown.contains(&id))
         })
         .ok_or_else(|| format!("{spec:?} is on a workspace no monitor shows"))?;
-    let n = |key: &str, i: usize| client[key][i].as_i64().unwrap_or(0);
-    Ok(format!(
-        "{},{} {}x{}",
-        n("at", 0),
-        n("at", 1),
-        n("size", 0),
-        n("size", 1)
-    ))
+    let n = |key: &str, i: usize| client[key][i].as_f64().unwrap_or(0.0);
+    Ok(Window {
+        address: client["address"].as_str().unwrap_or_default().to_owned(),
+        rect: Rect {
+            x: n("at", 0),
+            y: n("at", 1),
+            w: n("size", 0),
+            h: n("size", 1),
+        },
+    })
 }
 
 /// The session variables this process lacks, found under the runtime
 /// directory: `XDG_RUNTIME_DIR` (else `/run/user/UID`), `WAYLAND_DISPLAY`
 /// (the first `wayland-N` socket) and `HYPRLAND_INSTANCE_SIGNATURE` (the
 /// newest instance under `hypr/`).
-fn session_env() -> Vec<(&'static str, String)> {
+pub(super) fn session_env() -> Vec<(&'static str, String)> {
     let uid = rustix::process::getuid().as_raw();
     session_env_from(|key| std::env::var(key).ok().filter(|v| !v.is_empty()), uid)
 }
@@ -253,7 +271,7 @@ fn newest_hypr(dir: &Path) -> Option<String> {
 /// Run `command` to completion and return its stdout, or `stalled` once
 /// [`TIMEOUT`] passes. Stdout goes through a file so a large image cannot
 /// fill a pipe while this waits.
-fn run(command: Command, stalled: &str) -> Result<Vec<u8>, String> {
+pub(super) fn run(command: Command, stalled: &str) -> Result<Vec<u8>, String> {
     run_within(command, TIMEOUT, stalled)
 }
 
@@ -309,25 +327,21 @@ mod tests {
         r#"[{"name":"DP-1","activeWorkspace":{"id":1},"specialWorkspace":{"id":0}}]"#;
     const CLIENTS: &str = r#"[
         {"class":"firefox","initialClass":"firefox","title":"Docs","mapped":true,"hidden":false,"workspace":{"id":2},"at":[0,0],"size":[10,10]},
-        {"class":"firefox","initialClass":"firefox","title":"Mail","mapped":true,"hidden":false,"workspace":{"id":1},"at":[12,34],"size":[800,600]},
+        {"address":"0xa1","class":"firefox","initialClass":"firefox","title":"Mail","mapped":true,"hidden":false,"workspace":{"id":1},"at":[12,34],"size":[800,600]},
         {"class":"kitty","initialClass":"kitty","title":"zsh","mapped":true,"hidden":false,"workspace":{"id":3},"at":[0,0],"size":[1,1]}
     ]"#;
 
     #[test]
     fn a_window_is_its_rectangle_on_a_shown_workspace() {
-        assert_eq!(
-            window_rect("Firefox", CLIENTS, MONITORS).unwrap(),
-            "12,34 800x600"
-        );
-        assert_eq!(
-            window_rect("firefox:Mail", CLIENTS, MONITORS).unwrap(),
-            "12,34 800x600"
-        );
-        let hidden = window_rect("firefox:Docs", CLIENTS, MONITORS).unwrap_err();
+        let mail = find_window("Firefox", CLIENTS, MONITORS).unwrap();
+        assert_eq!(mail.address, "0xa1");
+        assert_eq!(geometry(mail.rect), "12,34 800x600");
+        assert_eq!(find_window("firefox:Mail", CLIENTS, MONITORS), Ok(mail));
+        let hidden = find_window("firefox:Docs", CLIENTS, MONITORS).unwrap_err();
         assert!(hidden.contains("no monitor shows"), "{hidden}");
-        assert!(window_rect("kitty", CLIENTS, MONITORS).is_err());
+        assert!(find_window("kitty", CLIENTS, MONITORS).is_err());
         assert!(
-            window_rect("mpv", CLIENTS, MONITORS)
+            find_window("mpv", CLIENTS, MONITORS)
                 .unwrap_err()
                 .contains("no window")
         );
@@ -349,7 +363,16 @@ mod tests {
             ["-t", "jpeg", "-q", "70", "-s", "0.5000", "-o", "DP-1", "-"]
         );
         assert_eq!(
-            grim_args(&Region::Rect("1,2 3x4".into()), png, None),
+            grim_args(
+                &Region::Rect(Rect {
+                    x: 1.0,
+                    y: 2.0,
+                    w: 3.0,
+                    h: 4.0
+                }),
+                png,
+                None
+            ),
             ["-t", "png", "-g", "1,2 3x4", "-"]
         );
     }
