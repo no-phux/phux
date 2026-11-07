@@ -124,7 +124,7 @@ pub(crate) fn run_surface(action: &SurfaceAction, socket: Option<PathBuf>) -> Ex
             json,
         } => {
             super::parent_watch::exit_with(*parent_pid);
-            match frames.resolve(*json) {
+            match frames.resolve(*json, FrameFormat::Png) {
                 Ok(frames) => surface_mirror::run_mirror(surface_mirror::MirrorArgs {
                     window,
                     window_id: *window_id,
@@ -160,8 +160,10 @@ pub(crate) fn run_surface(action: &SurfaceAction, socket: Option<PathBuf>) -> Ex
 /// How a mirror encodes its frames: `--format`, `--quality`, `--max-width`.
 #[derive(Debug, usage::Args)]
 pub(crate) struct FrameOpts {
-    /// Frame encoding (default png). JPEG frames are several times smaller;
-    /// viewers older than JPEG support show them as invalid.
+    /// Frame encoding: jpeg by default for a page mirror, png for a window
+    /// or display mirror. JPEG frames are several times smaller; viewers
+    /// older than JPEG support (desktop before 0.57.0, Rune before
+    /// 0.1.0-alpha.17) show them as invalid.
     #[usage(long, value_enum, value_name = "FORMAT")]
     format: Option<FrameFormat>,
     /// JPEG quality, 1 to 100 (default 70).
@@ -212,7 +214,8 @@ pub(super) struct Frames {
 }
 
 impl FrameOpts {
-    pub(super) fn resolve(&self, json: bool) -> Result<Frames, ExitCode> {
+    /// `default` is the format when `--format` is not given.
+    pub(super) fn resolve(&self, json: bool, default: FrameFormat) -> Result<Frames, ExitCode> {
         let usage = |message: &str| {
             json_err::emit(
                 json,
@@ -231,7 +234,7 @@ impl FrameOpts {
         if self.max_width == Some(0) {
             return Err(usage("`--max-width` is at least 1"));
         }
-        let jpeg = self.format == Some(FrameFormat::Jpeg);
+        let jpeg = self.format.unwrap_or(default) == FrameFormat::Jpeg;
         if self.quality.is_some() && !jpeg {
             return Err(usage("`--quality` needs `--format jpeg`"));
         }
@@ -247,7 +250,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn frame_options_default_to_png_and_check_quality_and_width() {
+    fn frame_options_default_per_mirror_and_check_quality_and_width() {
         let opts = |format, quality, max_width| FrameOpts {
             format,
             quality,
@@ -257,8 +260,27 @@ mod tests {
             jpeg: None,
             max_width: None,
         };
-        assert_eq!(opts(None, None, None).resolve(true), Ok(png));
-        let jpeg = opts(Some(FrameFormat::Jpeg), None, Some(800)).resolve(true);
+        let png_default = |o: FrameOpts| o.resolve(true, FrameFormat::Png);
+        assert_eq!(png_default(opts(None, None, None)), Ok(png));
+        let page = opts(None, None, None).resolve(true, FrameFormat::Jpeg);
+        assert_eq!(
+            page,
+            Ok(Frames {
+                jpeg: Some(70),
+                max_width: None
+            })
+        );
+        let page_png = opts(Some(FrameFormat::Png), None, None).resolve(true, FrameFormat::Jpeg);
+        assert_eq!(page_png, Ok(png));
+        let page_q = opts(None, Some(50), None).resolve(true, FrameFormat::Jpeg);
+        assert_eq!(
+            page_q,
+            Ok(Frames {
+                jpeg: Some(50),
+                max_width: None
+            })
+        );
+        let jpeg = png_default(opts(Some(FrameFormat::Jpeg), None, Some(800)));
         assert_eq!(
             jpeg,
             Ok(Frames {
@@ -270,9 +292,10 @@ mod tests {
             opts(Some(FrameFormat::Jpeg), Some(0), None),
             opts(Some(FrameFormat::Jpeg), Some(101), None),
             opts(Some(FrameFormat::Png), Some(70), None),
+            opts(None, Some(70), None),
             opts(None, None, Some(0)),
         ] {
-            assert!(bad.resolve(true).is_err(), "{bad:?}");
+            assert!(png_default(bad).is_err());
         }
     }
 }

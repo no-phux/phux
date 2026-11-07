@@ -47,8 +47,8 @@ pub(crate) trait DocumentApi: DocumentKind {
     const WIRE_KIND: phux_protocol::ids::ResourceKind;
     /// How a message names the kind, e.g. "accessibility tree".
     const LABEL: &'static str;
-    /// Create the registry record under `parent`, running; only a typed
-    /// document keeps `name`.
+    /// Create the registry record under `parent`, running, named `name`;
+    /// a tree or surface is named for what it observes.
     fn create(
         state: &mut ServerState,
         parent: phux_core::ids::ResourceId,
@@ -56,6 +56,13 @@ pub(crate) trait DocumentApi: DocumentKind {
         name: Option<&str>,
         actor: &phux_core::actor::Actor,
     ) -> Result<phux_core::ids::ResourceId, phux_core::Refusal>;
+}
+
+/// What a tree or surface observes (`--app Safari`, a page title), as its
+/// record name, so every client's tab reads it. A target a name may not
+/// carry (a control character) leaves the resource unnamed.
+fn target_name(target: &str) -> Option<String> {
+    (!target.trim().is_empty() && !target.chars().any(char::is_control)).then(|| target.to_owned())
 }
 
 impl DocumentApi for TreeDocument {
@@ -77,11 +84,12 @@ impl DocumentApi for TreeDocument {
         _name: Option<&str>,
         actor: &phux_core::actor::Actor,
     ) -> Result<phux_core::ids::ResourceId, phux_core::Refusal> {
-        state.create_document(
+        state.create_named_document(
             parent,
             phux_core::LaunchSpec::Tree(phux_core::resource::TreeLaunch {
                 target: target.to_owned(),
             }),
+            target_name(target),
             actor,
         )
     }
@@ -104,11 +112,12 @@ impl DocumentApi for SurfaceDocument {
         _name: Option<&str>,
         actor: &phux_core::actor::Actor,
     ) -> Result<phux_core::ids::ResourceId, phux_core::Refusal> {
-        state.create_document(
+        state.create_named_document(
             parent,
             phux_core::LaunchSpec::Surface(phux_core::resource::SurfaceLaunch {
                 target: target.to_owned(),
             }),
+            target_name(target),
             actor,
         )
     }

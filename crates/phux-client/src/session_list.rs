@@ -187,8 +187,7 @@ async fn count_arrangement_groups(
 ///
 /// Sessions are name-sorted, so the document is stable across runs.
 /// `degradation` becomes the `unreachable` list: always present, empty when
-/// the listing is complete, so a consumer reads completeness positively
-/// instead of inferring it from a missing key.
+/// the listing is complete.
 ///
 /// `hosts_complete` is whether the server advertised `HOST_SESSIONS`: only
 /// then is the `hosts` grouping the whole fleet. Without it the document
@@ -221,6 +220,7 @@ pub fn document(
         .map(|pane| ResourceJson {
             id: format_terminal_id(&pane.id),
             kind: resource::kind_name(pane.kind).to_owned(),
+            name: pane.title.clone(),
             parent: pane.parent.as_ref().map(format_terminal_id),
             lifecycle: resource::lifecycle_name(pane.lifecycle).to_owned(),
             exit: pane.exit.as_ref().map(resource_exit_json),

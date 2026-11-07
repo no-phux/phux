@@ -16,6 +16,7 @@ mod common;
 mod conditional_kill;
 mod crash_restart;
 mod document_input;
+mod document_names;
 mod idempotency;
 mod keep_empty;
 mod kill_visibility;

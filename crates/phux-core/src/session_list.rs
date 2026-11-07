@@ -116,6 +116,10 @@ pub struct ResourceJson {
     /// Resource kind: `terminal`, `agent_session`, `accessibility_tree`,
     /// `pixel_surface`, `document`, or `unknown`.
     pub kind: String,
+    /// The resource's name: a document's label (`--app`, `--window`,
+    /// `--name`, a page title) or a pane's user-set title; omitted when unset.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
     /// Canonical selector of the parent, or `null` for a root (emitted, not
     /// omitted).
     #[serde(default)]
@@ -330,6 +334,7 @@ mod tests {
             ResourceJson {
                 id: "@7".to_owned(),
                 kind: "terminal".to_owned(),
+                name: None,
                 parent: None,
                 lifecycle: "exited".to_owned(),
                 exit: Some(ResourceExitJson {
@@ -346,6 +351,7 @@ mod tests {
             ResourceJson {
                 id: "@9".to_owned(),
                 kind: "agent_session".to_owned(),
+                name: None,
                 parent: Some("@7".to_owned()),
                 lifecycle: "running".to_owned(),
                 exit: None,

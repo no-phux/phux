@@ -100,7 +100,7 @@ pub(crate) fn run_page(action: &PageAction, socket: Option<PathBuf>) -> ExitCode
             json,
         } => {
             super::parent_watch::exit_with(*parent_pid);
-            match frames.resolve(*json) {
+            match frames.resolve(*json, super::surface::FrameFormat::Jpeg) {
                 Ok(frames) => page_mirror::run_mirror(page_mirror::MirrorArgs {
                     page,
                     port: port.unwrap_or(9222),
