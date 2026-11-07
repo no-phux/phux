@@ -161,6 +161,8 @@ Commands:
   show              Show inferred state for one pane.
   start             Start an agent INSIDE an existing shell pane, and return
                     when it is ready for input.
+  stats             Show each pane's agent work: tasks finished and time spent
+                    working.
   surface           A pixel surface is a pane's child resource that a producer
                     feeds with PNG or JPEG images of a window or display;
                     `snapshot` writes the newest and `follow` every one. Needs a
@@ -992,6 +994,25 @@ Flags:
 
 Global flags:
       --socket <PATH>     Server socket to dial (default: `$PHUX_SOCKET`)
+```
+
+## `phux agent stats`
+
+```text
+Show each pane's agent work: tasks finished and time spent working.
+
+Prints the `phux.agent-stats/v1` document. `--publish` records the hook event in
+the environment, then writes that Global key; the agent-stats plugin runs it
+from its hooks.
+
+Usage: phux agent stats [--publish]
+
+Flags:
+      --publish        Record the hook event and write the key.
+  -h, --help           Print help
+
+Global flags:
+      --socket <PATH>  Server socket to dial (default: `$PHUX_SOCKET`)
 ```
 
 ## `phux agent surface`

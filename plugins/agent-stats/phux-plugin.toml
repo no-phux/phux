@@ -1,0 +1,31 @@
+id = "com.phux.agent-stats"
+name = "phux Agent Stats"
+version = "0.1.0"
+min_phux_version = "0.125.1"
+description = "Publishes how much work each pane's agent has done (tasks finished, time spent working) as the phux.agent-stats/v1 Global metadata key every client can read."
+platforms = ["linux", "macos"]
+
+[[actions]]
+id = "show"
+title = "Show agent stats"
+description = "Prints this server's phux.agent-stats/v1 document."
+contexts = ["workspace"]
+command = ["sh", "scripts/show.sh"]
+
+[[events]]
+id = "record-agent-state"
+title = "Count agent work when an agent changes state"
+on = "agent-state-changed"
+command = ["sh", "scripts/publish.sh"]
+
+[[events]]
+id = "prune-on-exit"
+title = "Forget a pane's agent when the pane exits"
+on = "pane-exit"
+command = ["sh", "scripts/publish.sh"]
+
+[[events]]
+id = "publish-on-attach"
+title = "Publish agent stats when a client attaches"
+on = "client-attached"
+command = ["sh", "scripts/publish.sh"]
