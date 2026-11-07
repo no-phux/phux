@@ -92,6 +92,9 @@ impl Desk {
         if event.keystroke.modifiers.modified() {
             return false;
         }
+        if playground::reef_key(self, &event.keystroke.key, window, cx) {
+            return true;
+        }
         let agents = self.agent_catalog();
         let current = self.fleet_view.align(&agents);
         let step = columns((width(window) - INSET * 2.).max(0.)) as isize;

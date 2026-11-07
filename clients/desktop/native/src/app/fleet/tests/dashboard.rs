@@ -288,3 +288,63 @@ fn the_playground_shows_every_ghost_as_the_same_tile_a_card_is(cx: &mut TestAppC
         assert_eq!(desk.remote.as_deref(), Some("mini"));
     });
 }
+
+#[gpui::test]
+fn a_reef_fish_is_selected_before_it_opens(cx: &mut TestAppContext) {
+    let _dial = DeterministicDial::arm();
+    let (handle, desk, _) = launch(cx);
+    let cx = &mut gpui::VisualTestContext::from_window(handle.into(), cx);
+    cx.update(|_, cx| cx.set_reduce_motion(true));
+    desk.update_in(cx, |desk, window, cx| {
+        desk.prefs.agent_fleet = true;
+        desk.prefs.playground_map = "reef".into();
+        install(desk, connection(1, vec![session(7, "main")]));
+        let remote = with_agent(
+            connection(2, vec![session(8, "remote")]),
+            9,
+            AgentState::Working,
+        );
+        observe(&mut desk.fleet, Some("mini"), remote);
+        desk.execute("agent-fleet", window, cx);
+    });
+    draw(cx);
+    click_on(cx, "fleet-playground-toggle");
+    let fish = "fleet-agent-remote-mini-@9";
+    let selected = |cx: &mut gpui::VisualTestContext| {
+        desk.read_with(cx, |desk, _| {
+            desk.fleet_view.playground.last_waiting.clone()
+        })
+    };
+    click_on(cx, fish);
+    assert_eq!(
+        selected(cx).as_deref(),
+        Some(fish),
+        "the first click selects"
+    );
+    assert!(
+        shown(cx, "fleet-reef-fit"),
+        "and offers the whole reef back"
+    );
+    assert!(desk.read_with(cx, |desk, _| desk.fleet_view.pending.is_none()));
+    cx.simulate_keystrokes("escape");
+    draw(cx);
+    assert_eq!(selected(cx), None, "escape lets the fish go");
+    assert!(shown(cx, "agent-fleet-panel"), "and keeps the fleet open");
+    click_on(cx, fish);
+    let scene = cx.debug_bounds("fleet-playground").unwrap();
+    cx.simulate_click(
+        scene.origin + gpui::point(gpui::px(6.), gpui::px(6.)),
+        gpui::Modifiers::none(),
+    );
+    draw(cx);
+    assert_eq!(selected(cx), None, "open water lets the fish go");
+    click_on(cx, fish);
+    click_on(cx, fish);
+    desk.read_with(cx, |desk, _| {
+        assert_eq!(
+            desk.fleet_view.pending.as_ref().map(|a| a.terminal.clone()),
+            Some(ResourceId::local(9)),
+            "a click on the selected fish opens it"
+        );
+    });
+}

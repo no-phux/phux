@@ -15,6 +15,7 @@ mod sky;
 mod sprites;
 
 pub(crate) use self::camera::{Camera, Map, View};
+pub(super) use self::reef_paint::reef_key;
 pub(crate) use self::scheme::Scheme;
 
 use std::time::{SystemTime, UNIX_EPOCH};
