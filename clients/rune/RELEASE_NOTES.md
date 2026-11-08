@@ -1,6 +1,6 @@
-**Phux Rune 0.1.0** leaves the alpha train: releases now count 0.1.1, 0.1.2 and on.
+**Phux Rune 0.1.1** makes overflowing Settings easier to navigate on desktop and phone.
 
-- macOS gets a signed, notarized DMG: open it and drag **Phux Rune.app** to Applications. phux.sh's Download for Mac link points straight at it.
-- The ZIP stays for the updater and the install script; apps on 0.1.0-alpha.6 or later update themselves to this release.
+- Soft upper and lower edges show where more settings are hidden; an edge with nothing hidden stays opaque. Keyboard navigation reveals each control clear of the fades, including the category rail in a small desktop window.
+- Follows Rune's latest motion and rendering fixes, including a one-pixel text step as movement settles, stale hover targets after a view changes, and unnecessary animation of invisible content.
 
-Phone support remains a desktop-hosted form, not an iOS or Android app.
+The command palette is unchanged. Phone support remains a desktop-hosted form, not an iOS or Android app.
