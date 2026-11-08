@@ -91,15 +91,19 @@ u8_flag_set! {
 pub enum EngineCodec {
     /// libghostty terminal checkpoint format version 2.
     LibghosttyCheckpointV2 = 2,
-    /// Official `GHOSTSNPv1` feed snapshot with a progressive READY boundary
-    /// and empty READY/FINISH markers. Id `4` is the capability, not the
-    /// envelope's internal version.
+    /// Pre-1.0 `GHOSTSNPv1` snapshot with empty READY/FINISH markers.
+    /// Kept distinct because its decoder rejects the Kitty image records
+    /// introduced in libghostty-vt 1.0. Current engines do not advertise it.
+    LibghosttyPre1SnapshotV1 = 4,
+    /// libghostty-vt 1.0 `GHOSTSNPv1` feed snapshot, including Kitty images,
+    /// a progressive READY boundary, and empty READY/FINISH markers.
+    /// Id `5` is the capability, not the envelope's internal version.
     ///
     /// Id `3` is permanently retired: it named the earlier `GHOSTSNPv1`
     /// bytes whose READY/FINISH carried BLAKE3 digests. Neither engine
     /// decodes the other's bytes, so id `3` is never advertised and is
     /// ignored on receipt.
-    LibghosttySnapshotV1 = 4,
+    LibghosttySnapshotV1 = 5,
 }
 
 impl EngineCodec {
@@ -114,7 +118,8 @@ impl EngineCodec {
     pub const fn from_wire(value: u8) -> Option<Self> {
         match value {
             2 => Some(Self::LibghosttyCheckpointV2),
-            4 => Some(Self::LibghosttySnapshotV1),
+            4 => Some(Self::LibghosttyPre1SnapshotV1),
+            5 => Some(Self::LibghosttySnapshotV1),
             _ => None,
         }
     }
@@ -173,8 +178,9 @@ pub struct EngineCodecSet(u64);
 
 impl EngineCodecSet {
     const V2_BIT: u64 = 1 << 2;
-    const SNAPSHOT_V1_BIT: u64 = 1 << 4;
-    const KNOWN: u64 = Self::V2_BIT | Self::SNAPSHOT_V1_BIT;
+    const PRE1_SNAPSHOT_V1_BIT: u64 = 1 << 4;
+    const SNAPSHOT_V1_BIT: u64 = 1 << 5;
+    const KNOWN: u64 = Self::V2_BIT | Self::PRE1_SNAPSHOT_V1_BIT | Self::SNAPSHOT_V1_BIT;
 
     /// Empty codec set.
     #[must_use]
@@ -223,6 +229,8 @@ impl EngineCodecSet {
     pub const fn highest_common(self, other: Self) -> Option<EngineCodec> {
         if self.0 & other.0 & Self::SNAPSHOT_V1_BIT != 0 {
             Some(EngineCodec::LibghosttySnapshotV1)
+        } else if self.0 & other.0 & Self::PRE1_SNAPSHOT_V1_BIT != 0 {
+            Some(EngineCodec::LibghosttyPre1SnapshotV1)
         } else if self.0 & other.0 & Self::V2_BIT != 0 {
             Some(EngineCodec::LibghosttyCheckpointV2)
         } else {

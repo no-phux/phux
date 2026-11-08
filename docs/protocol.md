@@ -122,6 +122,9 @@ Which bootstrap you get depends on the profile the server selected:
 - **Synthesized VT, state sync**: the server keeps a per-client reference
   screen and sends deltas against it, acknowledged with `FRAME_ACK`.
 
+Native codecs are exact contracts, not version ranges; see
+[snapshot compatibility](./libghostty.md#snapshot-compatibility).
+
 A fresh successful `SPAWN_RESOURCE` subscribes its connection to the new
 Terminal, even without a session `ATTACH`: output and terminal-scoped
 fanout reach it, and `INPUT_*` passes the subscription gate. This does not

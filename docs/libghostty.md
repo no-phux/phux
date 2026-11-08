@@ -42,6 +42,15 @@ Builds download a prebuilt `libghostty-vt.a` for a pinned Ghostty
 commit, or compile it from source with Zig
 ([development](./development.md#libghostty-vt)).
 
+## Snapshot compatibility
+
+libghostty-vt 1.0 snapshots use native codec id `5`; pre-1.0 snapshots with
+empty READY/FINISH markers use id `4`. Both have a `GHOSTSNP` version-1
+envelope, but the older decoder cannot read the newer Kitty image records.
+Current engines advertise only id `5`. Mixed old/new peers negotiate
+synthesized VT instead; native-only peers refuse the incompatible contract.
+libghostty's stable 1.x C ABI does not guarantee stable snapshot bytes.
+
 ## What it does not do
 
 libghostty is not the multiplexer. Sessions, tabs, and the process in
