@@ -2,6 +2,29 @@ use super::*;
 use rune::accesskit::Action as Accessibility;
 
 #[test]
+fn native_terminal_candidate_geometry_follows_the_real_grid_cursor() {
+    let (_, mut rt) = crate::grid::budget::input_fixture();
+    let shown = rt.state.shown.as_ref().unwrap();
+    let terminal = shown.terminal.clone();
+    let frame = rt
+        .state
+        .client
+        .as_ref()
+        .unwrap()
+        .acquire_view(shown.view.unwrap())
+        .unwrap();
+    rt.state.origins.insert(terminal, [12.0, 34.0]);
+    let metrics = rt.state.metrics();
+    let expected = [
+        12.0 + f32::from(frame.cursor.col) * metrics.cell_w,
+        34.0 + f32::from(frame.cursor.row) * metrics.cell_h,
+        metrics.cell_w,
+        metrics.cell_h,
+    ];
+    assert_eq!(Bridge::default().snapshot(&rt).caret, Some(expected));
+}
+
+#[test]
 fn sanitized_paste_preserves_selection_and_undo_boundaries() {
     let (_, rt, _) = field("settings-query");
     let mut edit = rt.state.settings_ui.query.clone();

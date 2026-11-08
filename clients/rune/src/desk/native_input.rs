@@ -145,7 +145,11 @@ impl Bridge {
             multiline,
             option_as_meta: rt.state.settings.option_as_meta,
             wanted,
-            caret: rt.ime_area,
+            caret: if kind == "terminal" {
+                terminal_caret(&rt.state)
+            } else {
+                rt.ime_area
+            },
         };
         self.previous = Some(snapshot.clone());
         snapshot
@@ -268,6 +272,19 @@ impl Bridge {
         });
         Ok(true)
     }
+}
+
+fn terminal_caret(d: &Desk) -> Option<[f32; 4]> {
+    let shown = d.shown.as_ref()?;
+    let origin = d.origins.get(&shown.terminal)?;
+    let frame = d.client.as_ref()?.acquire_view(shown.view?)?;
+    let metrics = d.metrics();
+    Some([
+        origin[0] + f32::from(frame.cursor.col) * metrics.cell_w,
+        origin[1] + f32::from(frame.cursor.row) * metrics.cell_h,
+        metrics.cell_w,
+        metrics.cell_h,
+    ])
 }
 
 fn dismiss(rt: &mut Runtime<Desk>, target: &Target) {
