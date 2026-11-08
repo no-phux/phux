@@ -113,7 +113,7 @@ impl LinkTransport for NetLinkTransport {
 
         // HELLO/profile negotiation is mandatory on every transport,
         // including the SSH bridge.
-        let selection = negotiate_link(&mut conn).await?;
+        let selection = negotiate_link(&mut conn, self.bootstrap).await?;
         conn.install_negotiated(selection)?;
         Ok(conn)
     }

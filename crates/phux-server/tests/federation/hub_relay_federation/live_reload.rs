@@ -105,7 +105,7 @@ fn reload_dials_added_satellites_and_drops_removed_ones_without_restart() {
         let tmp = TempDir::new().unwrap();
         let registry: Registry = Arc::default();
         let (hub_shutdown, hub_task) = spawn_reloading_hub(tmp.path().join("hub.sock"), &registry);
-        let mut hub = wait_for_socket(&tmp.path().join("hub.sock"), STEP_DEADLINE).await;
+        let mut hub = hub_client(&tmp.path().join("hub.sock")).await;
         let pane = local_pane(&mut hub, 1).await;
 
         // Before enrollment the hub has no route to `sat`.
@@ -186,7 +186,7 @@ fn reload_with_a_broken_registry_keeps_the_running_links() {
         let tmp = TempDir::new().unwrap();
         let registry: Registry = Arc::default();
         let (hub_shutdown, hub_task) = spawn_reloading_hub(tmp.path().join("hub.sock"), &registry);
-        let mut hub = wait_for_socket(&tmp.path().join("hub.sock"), STEP_DEADLINE).await;
+        let mut hub = hub_client(&tmp.path().join("hub.sock")).await;
         let (ws_port, sat_shutdown, sat_task) = spawn_satellite(tmp.path().join("sat.sock")).await;
         let seed = discover_satellite_pane(ws_port).await;
 

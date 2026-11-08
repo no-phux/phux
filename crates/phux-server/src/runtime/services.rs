@@ -128,8 +128,14 @@ pub(in crate::runtime) fn spawn_hub_links(
     let relays = crate::hub::relay::HubRelays::default();
     let ssh_program = state.with(|s| s.server_env().ssh_program());
     let adopter = state.with(crate::state::ServerState::satellite_adopter);
-    let mut links =
-        crate::hub::link::HubLinks::new(relays.clone(), root_token, ssh_program, adopter);
+    let bootstrap = crate::runtime::apps::bootstrap_capabilities(state);
+    let mut links = crate::hub::link::HubLinks::new(
+        relays.clone(),
+        root_token,
+        ssh_program,
+        adopter,
+        bootstrap,
+    );
     for (host, entry) in table.iter() {
         links.start(host, entry, state);
     }

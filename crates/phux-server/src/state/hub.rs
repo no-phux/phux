@@ -70,8 +70,12 @@ impl ServerState {
 
     /// Install empty link supervisors when a doorbell is about to add the
     /// first satellites. `false` when reload was not armed with a token.
-    pub(crate) fn hub_ensure_links(&mut self, ssh_program: std::ffi::OsString) -> bool {
-        self.hub.ensure_links(ssh_program)
+    pub(crate) fn hub_ensure_links(
+        &mut self,
+        ssh_program: std::ffi::OsString,
+        bootstrap: phux_protocol::caps::BootstrapCapabilities,
+    ) -> bool {
+        self.hub.ensure_links(ssh_program, bootstrap)
     }
 
     /// Swap in a reloaded satellite table, starting, stopping, or redialing

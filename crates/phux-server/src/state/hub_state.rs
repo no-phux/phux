@@ -92,7 +92,11 @@ impl HubState {
 
     /// Install empty relays and supervisors so the next table swap can dial.
     /// `false` when no parent token was armed. Existing supervisors stay.
-    pub(super) fn ensure_links(&mut self, ssh_program: std::ffi::OsString) -> bool {
+    pub(super) fn ensure_links(
+        &mut self,
+        ssh_program: std::ffi::OsString,
+        bootstrap: phux_protocol::caps::BootstrapCapabilities,
+    ) -> bool {
         if self.links.is_some() {
             return true;
         }
@@ -108,6 +112,7 @@ impl HubState {
             &cancel,
             ssh_program,
             self.adopter.clone(),
+            bootstrap,
         );
         self.relays = Some(relays);
         if self.table.is_none() {
