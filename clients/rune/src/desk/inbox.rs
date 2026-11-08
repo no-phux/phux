@@ -127,7 +127,10 @@ impl Desk {
     pub fn inbox_key(&mut self, event: &KeyEvent, tx: &mut Tx) -> bool {
         let items = self.inbox_items();
         let (count, at) = (items.len(), self.picked_index(&items).unwrap_or(0));
-        let chord = decision_chord(&event.mods, cfg!(target_os = "macos")) && !tx.key_repeat();
+        let chord = decision_chord(
+            &event.mods,
+            cfg!(any(target_os = "macos", target_os = "ios")),
+        ) && !tx.key_repeat();
         match event.key {
             Key::Escape => {
                 self.close_inbox();

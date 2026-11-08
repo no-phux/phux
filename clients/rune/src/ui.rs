@@ -26,7 +26,7 @@ mod tabs;
 mod updates;
 
 /// The app chord's modifier as shown beside an action.
-pub(crate) const MOD: &str = if cfg!(target_os = "macos") {
+pub(crate) const MOD: &str = if cfg!(any(target_os = "macos", target_os = "ios")) {
     "⌘"
 } else {
     "Ctrl+Shift+"

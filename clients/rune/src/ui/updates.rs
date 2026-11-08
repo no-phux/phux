@@ -183,6 +183,13 @@ pub fn pill(desk: &Desk, ink: &Ink) -> Option<El> {
 }
 
 pub fn settings(desk: &Desk, ink: &Ink) -> El {
+    if desk.native.is_some() {
+        return col().w_full().gap(8.0)
+            .child(section("Updates", ink))
+            .child(text(format!("Phux Rune {VERSION}")).font(primary(desk, LABEL)).color(ink.text))
+            .child(text("Native iOS builds update through their distribution channel. This app never installs a desktop binary or starts a local server.")
+                .font(secondary(desk, CAPTION)).color(ink.dim).wrap());
+    }
     let updater = &desk.updater;
     // The containing phone card already supplies its row gutter.
     let toggle_inset = if desk.phone.is_some() { 0.0 } else { 16.0 };

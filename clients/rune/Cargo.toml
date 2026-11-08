@@ -12,6 +12,8 @@ path = "src/main.rs"
 
 # Rune's wgpu/winit graph stays out of the main phux workspace's lock.
 [workspace]
+members = ["ios/bridge"]
+default-members = ["."]
 
 [dependencies]
 phux-client-core = { path = "../../crates/phux-client-core" }
@@ -26,6 +28,8 @@ rune-perf = { git = "https://github.com/anomalyco/rune", rev = "a7f276c3630f85a0
 # features (unified with Rune's png/jpeg) let typed documents draw GIF/WebP.
 image = { version = "0.25", default-features = false, features = ["gif", "webp"] }
 serde_json = "1"
+serde = { version = "1", features = ["derive"] }
+url = "2"
 # The same digest the runtime uses, for a downloaded update.
 sha2 = "0.11"
 

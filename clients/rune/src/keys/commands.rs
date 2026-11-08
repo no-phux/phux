@@ -149,7 +149,7 @@ impl Chord {
 
     /// As this platform writes it.
     fn label(self) -> String {
-        if cfg!(target_os = "macos") {
+        if cfg!(any(target_os = "macos", target_os = "ios")) {
             self.mac_label()
         } else {
             self.linux_label()
@@ -203,7 +203,7 @@ pub struct Command {
 impl Command {
     /// This platform's chords.
     pub const fn chords(&self) -> &'static [Chord] {
-        if cfg!(target_os = "macos") {
+        if cfg!(any(target_os = "macos", target_os = "ios")) {
             self.mac
         } else {
             self.linux
@@ -253,7 +253,7 @@ macro_rules! row {
             title: $title,
             mac: &[$($mac),*],
             linux: &[],
-            listed: cfg!(target_os = "macos"),
+            listed: cfg!(any(target_os = "macos", target_os = "ios")),
         }
     };
     (hidden $action:expr, $title:expr, [$($mac:expr),*], [$($linux:expr),*]) => {

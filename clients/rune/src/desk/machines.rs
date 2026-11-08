@@ -223,6 +223,10 @@ impl Desk {
     }
 
     pub fn toggle_machines(&mut self) {
+        if let Some(native) = &mut self.native {
+            native.connection_requested = true;
+            return;
+        }
         self.machines.open = !self.machines.open;
         if self.machines.open {
             self.close_settings();

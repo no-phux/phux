@@ -35,6 +35,7 @@ pub mod link;
 mod links;
 pub mod machines;
 pub mod mouse;
+pub(crate) mod native_input;
 mod palette;
 pub mod phone;
 pub mod questions;
@@ -273,6 +274,7 @@ pub struct Desk {
     pub phone: Option<phone::Phone>,
     /// The bare window: one pane, the terminal UI in it, no chrome.
     pub bare: Option<bare::Bare>,
+    pub native: Option<crate::mobile::Platform>,
 }
 
 impl Desk {
@@ -443,6 +445,7 @@ impl Desk {
             split_write: None,
             phone: None,
             bare: None,
+            native: None,
         }
     }
 
@@ -525,17 +528,5 @@ impl Desk {
             changed |= self.refresh_resources(client);
         }
         changed
-    }
-}
-
-impl Drop for Desk {
-    fn drop(&mut self) {
-        let Some(client) = &self.client else { return };
-        if let Some(view) = self.shown.take().and_then(|s| s.view) {
-            let _ = client.destroy_view(view);
-        }
-        for view in self.others.drain().filter_map(|(_, v)| v) {
-            let _ = client.destroy_view(view);
-        }
     }
 }

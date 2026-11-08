@@ -65,6 +65,7 @@ pub struct Resolved {
     pinned: Option<PathBuf>,
     /// `--phux`, kept for searching again.
     named_phux: Option<PathBuf>,
+    embedded: bool,
 }
 
 impl Resolved {
@@ -78,13 +79,14 @@ impl Resolved {
             aimed: true,
             pinned: None,
             named_phux: None,
+            embedded: false,
         }
     }
 
     /// `--socket` alone means "that server, as it is": only a CLI named
     /// beside it may start one there.
     pub const fn can_ensure(&self) -> bool {
-        self.pinned.is_none() || self.named_phux.is_some()
+        !self.embedded && (self.pinned.is_none() || self.named_phux.is_some())
     }
 
     /// Whether the window has nothing to run `phux server --ensure` with.
@@ -94,6 +96,9 @@ impl Resolved {
 
     /// Search for the CLI again, then start or reuse the server. Blocks.
     pub fn ensured(mut self) -> Self {
+        if self.embedded {
+            return self;
+        }
         let phux = locate(self.named_phux.as_deref());
         self.phux = phux.as_ref().ok().cloned();
         if self.can_ensure() {
@@ -101,6 +106,20 @@ impl Resolved {
             self.socket = phux.and_then(|phux| ensure_server(&phux, pinned));
         }
         self
+    }
+
+    /// A platform embedder supplies its remote target directly, without a
+    /// local CLI, process spawning, registry discovery or self-update.
+    pub fn embedded(session: Option<String>) -> Self {
+        Self {
+            socket: Err("Native mobile connects directly to a remote host.".into()),
+            session,
+            phux: None,
+            aimed: true,
+            pinned: None,
+            named_phux: None,
+            embedded: true,
+        }
     }
 }
 
@@ -134,6 +153,7 @@ pub fn resolve(options: &Options) -> Resolved {
         aimed,
         pinned,
         named_phux: options.phux.clone(),
+        embedded: false,
     }
 }
 
@@ -302,6 +322,7 @@ mod tests {
             aimed: false,
             pinned: socket.map(PathBuf::from),
             named_phux: phux.filter(|_| socket.is_some()).map(PathBuf::from),
+            embedded: false,
         }
     }
 

@@ -255,6 +255,12 @@ application migration.
 Rune's phone support: [MOBILE.md](./MOBILE.md) lists what works and what
 waits on upstream.
 
+The [native iOS host](./ios/README.md) renders the same phone view inside
+UIKit using upstream's embedded Metal host, with system input and layout
+guides instead of drawn keys/insets. CI builds simulator and device bundles
+and exercises a live terminal in an isolated simulator. This is not yet a
+provisioned device/TestFlight release or full native accessibility coverage.
+
 Rune is pinned to a `dev` revision in `Cargo.toml`; this crate has its own
 workspace and lock so Rune's graph stays out of the rest of phux. The
 [Rune upstream follower](../../scripts/rune-upstream/README.md) moves the pin
@@ -315,6 +321,7 @@ do about a bad release.
 
 | Module | Owns |
 | --- | --- |
+| `mobile`, `desk/native_input`, `ios` | direct native transport, target-bound UIKit editing, embedded Metal host and simulator qualification; desktop `main` delegates to the shared library |
 | `launch` | command line, finding the CLI, `phux server --ensure` |
 | `updates` | the feed, staging and swapping a verified build, the phux CLI |
 | `diag` | local logs, the panic hook, and the report Copy diagnostics makes |

@@ -252,7 +252,7 @@ pub fn shortcut(key: &Key, mods: Mods, physical: Option<PhysicalKeyCode>) -> Opt
     commands::action_of(Chord {
         cap,
         // Rune's `cmd` is Ctrl off macOS, which the table names as Ctrl.
-        command: if cfg!(target_os = "macos") {
+        command: if cfg!(any(target_os = "macos", target_os = "ios")) {
             mods.cmd
         } else {
             mods.logo
@@ -334,7 +334,7 @@ pub fn typed(
         }
         // Off macOS a Ctrl chord arrives as `Command`; it is terminal input
         // unless `shortcut` claimed it.
-        Key::Command(c) if !cfg!(target_os = "macos") => {
+        Key::Command(c) if !cfg!(any(target_os = "macos", target_os = "ios")) => {
             let (key, ch) = chord(physical, Some(base.unwrap_or(*c)))?;
             Some(Typed::Key(atom(key, set, Some(ch))))
         }
@@ -345,7 +345,7 @@ pub fn typed(
 /// macOS Option types layout characters (å, ∑), as Ghostty's default does,
 /// unless the person turned on Option as Meta; elsewhere Alt is Meta.
 const fn alt_is_meta(mods: Mods, option_as_meta: bool) -> bool {
-    mods.alt && (option_as_meta || !cfg!(target_os = "macos"))
+    mods.alt && (option_as_meta || !cfg!(any(target_os = "macos", target_os = "ios")))
 }
 
 #[cfg(test)]

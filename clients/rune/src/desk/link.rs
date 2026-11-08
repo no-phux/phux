@@ -158,6 +158,11 @@ impl Desk {
     /// the updater without it.
     pub fn listen(&mut self, waker: rune::Waker) {
         self.resources.images = Some(rune::ImageCache::new(waker.clone()));
+        if self.native.is_some() {
+            self.watch(waker);
+            self.dial();
+            return;
+        }
         self.machines.listen(waker.clone());
         crate::theme::watch_omarchy(waker.clone());
         self.watch(waker);
@@ -183,6 +188,9 @@ impl Desk {
     /// this computer's server is found on a worker first.
     pub(super) fn dial(&mut self) {
         self.error = None;
+        if let Some(target) = self.native.as_ref().map(|n| n.target.clone()) {
+            return self.connect(target);
+        }
         let Some(machine) = self.machines.current.clone() else {
             return self.dial_local();
         };
@@ -255,6 +263,9 @@ impl Desk {
 
     /// Start the updater once it knows which CLI and server it manages.
     pub(super) fn start_updater(&mut self) {
+        if self.native.is_some() {
+            return;
+        }
         if std::mem::replace(&mut self.link.updater_started, true) {
             return;
         }
@@ -386,6 +397,7 @@ impl Desk {
 
     /// What survives any replacement of this window's connection.
     pub(super) fn carry_into(&mut self, next: &mut Desk) {
+        next.native = self.native.take();
         std::mem::swap(&mut next.updater, &mut self.updater);
         std::mem::swap(&mut next.machines, &mut self.machines);
         std::mem::swap(&mut next.link, &mut self.link);

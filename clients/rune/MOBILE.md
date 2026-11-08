@@ -1,6 +1,9 @@
 # Phux Rune on a phone
 
-The phone app is being built inside this client, ahead of the platform.
+The phone app shares this client's Desk, terminal runtime and Rune view.
+There are two hosts: the desktop-hosted `--phone` form and a native UIKit
+app using upstream Rune's `embed::LayerHost` and Metal layer. No Rune fork
+is required. See [Native iOS](./ios/README.md) for building and qualification.
 `--phone` runs the phone form: a 393×852 window over the same runtime as the
 desktop, with every piece of the phone UI working against a live server.
 Whatever Rune can't do on a phone yet is drawn by the app instead, and each
@@ -28,6 +31,10 @@ desktop one, so every CI build and release proves it draws a session.
 
 | Piece | Where |
 | --- | --- |
+| Native iOS simulator app: signed bundle, real terminal rendering and native `insertText` round trip; a linked device bundle is also built in CI (not provisioned/device-qualified) | `ios/build.py`, `ios/qualify.py`, `ios/Sources/`, `ios/bridge/` |
+| Native system input backed by UIKit `UITextInput`: terminal raw capture, staged composition, app-owned editor snapshots with UTF-16 validation and owner/revision rejection; the desktop-hosted phone retains its drawn keyboard | `ios/Sources/RuneInput.swift`, `src/desk/native_input/` |
+| Native safe-area and keyboard avoidance through UIKit layout guides; no fake status/home insets or drawn keys in the native host | `ios/Sources/App.swift`, `src/ui/phone.rs` |
+| Direct native QUIC/WSS connection: shared-runtime enrollment with an iOS-held P-256 key, pinned CA/leaf, issued client certificate and Keychain token. No CLI discovery, desktop updater or local-server bootstrap on device | `src/mobile.rs`, `ios/Sources/NativeIdentity.swift`, `ios/Sources/ConnectionForm.swift` |
 | The terminal on its own ground, framed by tinted glass controls without covering its text or last-row prompt | `src/ui/phone.rs` (`glass`), `src/ui/spatial.rs` |
 | Top bar: sessions (back), a capsule with the terminal and its session (tap to switch), and a compact split map or single-pane commands (⋯). Commands remain on the accessory bar in either case | `src/ui/phone.rs` |
 | Every pane of the active split tab, in its literal two-dimensional arrangement: a spring camera fills the stage with the focused pane without scaling glyphs; only that pane is resized or marked seen | `src/desk/layout.rs`, `src/ui/spatial.rs` |
@@ -44,14 +51,14 @@ desktop one, so every CI build and release proves it draws a session.
 
 | Stand-in | Waits for, upstream | Then |
 | --- | --- | --- |
-| The drawn keyboard | An iOS shell with system text input (`UITextInput`: the system keyboard, autocorrect, dictation, marked text) | Drop the drawn keys; keep the accessory bar as the keyboard's input accessory, and route its keys through `Desk::soft` as now |
+| The drawn keyboard in desktop `--phone` | Native UIKit host already replaces it on iOS | Keep it for desktop phone qualification; qualify real OS keyboard/CJK/dictation on devices before claiming them |
 | Glass drawn with `backdrop_blur`, four surfaces a frame | Native in-window glass on iOS (`SystemMaterial::Glass` only shows what is behind the window today) | Put the system's glass under the same surfaces |
-| `STATUS_INSET` and `HOME_INSET` | Safe-area insets reported to the view | Pad by the reported insets |
-| The keyboard's height is fixed | The system keyboard's frame and its show/hide animation curve | Size the stage by the keyboard frame on the same spring |
-| A phone-sized desktop window | An iOS app shell (`UIApplication`/`UIScene` around Rune's Metal backend) and an Android activity | A `phux-rune` iOS target built in CI (`cargo check --target aarch64-apple-ios-sim`), then a TestFlight lane |
+| Fixed status/home insets and keyboard height in desktop `--phone` | Already replaced by UIKit layout guides in the native iOS host | Keep desktop snapshots deterministic; qualify rotation, floating keyboards and physical-device safe areas |
+| No installed device/TestFlight distribution yet; Android remains a desktop preview | Apple provisioning/signing and device qualification; an Android activity/lifecycle host | Install and validate a provisioned iOS build before a TestFlight lane; Android is a separate host project |
 | First-finger presses and drags; extra fingers are ignored. Navigation and history have dedicated handles so they never steal a program's terminal mouse/selection drag | Multi-touch gesture arbitration, long press and edge gestures (a secondary click still opens the desktop context menu) | Replace dedicated handles only when navigation/history gestures can be distinguished safely from terminal input; long press for the context menu |
 | No haptics | A haptics API | A tick on latch, tab switch and pad step |
-| The CLI finds the server | Pairing without a CLI on the device | Pair with `phux pair --qr` from the app |
+| Manual endpoint/pins/token/ticket entry on native iOS; enrollment already uses a platform-held key | Pairing-link import and camera QR scanning | Reuse `phux-mobile` parsing/scanning patterns; never weaken certificate pinning to make setup easier |
+| No native Rune VoiceOver element bridge, link opener or file/image clipboard integration | App/platform adapters over upstream's runtime | Qualify the native accessibility tree and service these through UIKit; desktop accessibility is not iOS evidence |
 
 ## Next, no upstream needed
 
