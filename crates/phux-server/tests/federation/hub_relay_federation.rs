@@ -24,7 +24,6 @@ use phux_server::{ServerConfig, ServerError};
 use phux_server_testkit::{
     Spawn, ascii_key, bound_listener_addr, encode_frame, recv_typed, recv_until_deadline,
     send_frame, spawn_resource, terminal_server, wait_for_raw_socket, wait_for_socket,
-    wait_for_socket_with,
 };
 use tempfile::TempDir;
 use tokio::net::{TcpStream, UnixStream};
@@ -33,6 +32,8 @@ use tokio::task::JoinHandle;
 use tokio_tungstenite::tungstenite::Message;
 
 mod checkout;
+mod clients;
+use clients::hub_client;
 mod conditional_kill;
 mod consumer_filters;
 mod detach_fence;
@@ -183,20 +184,6 @@ fn spawn_hub(
     satellites: Vec<SatelliteConfigEntry>,
 ) -> (oneshot::Sender<()>, ServerTask) {
     spawn_hub_with_session(socket_path, satellites, None)
-}
-
-/// A hub client offering what real clients offer: the linked engine's
-/// native profile with the synthesized fallbacks. The hub link offers the
-/// hub's own profiles, so this client selects the profile the link carries.
-async fn hub_client(path: &std::path::Path) -> UnixStream {
-    wait_for_socket_with(path, STEP_DEADLINE, |caps| {
-        caps.with_bootstrap(
-            phux_client_core::engine::ghostty::native_bootstrap_capabilities(
-                phux_protocol::caps::BootstrapLimits::default(),
-            ),
-        )
-    })
-    .await
 }
 
 async fn stop(shutdown: oneshot::Sender<()>, task: ServerTask) {
