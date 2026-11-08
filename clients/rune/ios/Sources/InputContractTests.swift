@@ -21,17 +21,22 @@ enum InputContractTests {
         var reject = false
 
         init(kind: String = "field", text: String = "abc", anchor: Int = 3,
-             focus: Int = 3, multiline: Bool = false) {
+             focus: Int = 3, multiline: Bool = false) throws {
             snapshot = ["token":UInt64(7), "revision":UInt64(0), "kind":kind,
                 "text":text, "anchor":anchor, "focus":focus,
                 "multiline":multiline, "wanted":true]
             input.send = { [weak self] operation, context in
                 self?.reply(operation, context: context)
             }
-            synchronize()
+            try synchronize()
         }
 
-        func synchronize() { input.synchronize(InputContext(snapshot)!) }
+        func synchronize() throws {
+            guard let context = InputContext(snapshot) else {
+                throw Failure(description:"Input fixture produced an invalid snapshot.")
+            }
+            input.synchronize(context)
+        }
 
         private func reply(_ operation: [String: Any], context: InputContext) -> [String: Any] {
             operations.append(operation.merging(["revision":context.revision]) { _, new in new })
@@ -64,17 +69,17 @@ enum InputContractTests {
     }
 
     private static func fieldEditing() throws {
-        let f = Fixture()
+        let f = try Fixture()
         try require(!f.input.handleKey("\u{7F}", flags: []), "UIKit must own field Backspace")
         f.input.deleteBackward()
         f.input.insertText("x")
         try require(f.input.text == "abx", "Backspace must not resurrect text")
         try require(f.snapshot["text"] as? String == "abx", "Field reply must reconcile immediately")
-        let multiline = Fixture(multiline: true)
+        let multiline = try Fixture(multiline: true)
         try require(!multiline.input.handleKey("\r", flags: []), "UIKit must own multiline Return")
         multiline.input.insertText("\n")
         try require(multiline.input.text == "abc\n", "Multiline Return must insert newline")
-        let single = Fixture()
+        let single = try Fixture()
         try require(single.input.handleKey("\r", flags: []), "Single-line Return must submit")
         try require(single.operations.last?["name"] as? String == "Enter", "Single-line named submit missing")
         single.snapshot["text"] = "updated"
@@ -85,7 +90,7 @@ enum InputContractTests {
     }
 
     private static func rejectedEdit() throws {
-        let f = Fixture()
+        let f = try Fixture()
         f.reject = true
         f.input.insertText("lost")
         try require(f.input.text == "abc", "Rejected edit must restore authoritative text")
@@ -96,15 +101,15 @@ enum InputContractTests {
     }
 
     private static func compositionRevision() throws {
-        let f = Fixture()
+        let f = try Fixture()
         f.input.setMarkedText("に", selectedRange: NSRange(location: 1, length: 0))
         try require(f.input.markedTextRange != nil, "Probe failed to start UIKit composition")
-        f.synchronize()
+        try f.synchronize()
         try require(f.input.markedTextRange != nil, "Same revision must preserve marked text")
         f.snapshot["revision"] = UInt64(1)
         f.snapshot["text"] = "remote"
         f.snapshot["anchor"] = 6; f.snapshot["focus"] = 6
-        f.synchronize()
+        try f.synchronize()
         f.input.unmarkText()
         try require(f.input.text == "remote", "External revision must cancel stale composition")
         try require(f.operations.contains { $0["op"] as? String == "cancel" }, "External revision left a stale preedit overlay")
@@ -113,7 +118,7 @@ enum InputContractTests {
     }
 
     private static func rawComposition() throws {
-        let f = Fixture(kind: "terminal", text: "", anchor: 0, focus: 0)
+        let f = try Fixture(kind: "terminal", text: "", anchor: 0, focus: 0)
         f.input.setMarkedText("に", selectedRange: NSRange(location: 1, length: 0))
         f.input.setMarkedText("日本", selectedRange: NSRange(location: 2, length: 0))
         try require(!f.input.handleKey("c", flags: .command), "Composition must own hardware commands")
@@ -128,7 +133,7 @@ enum InputContractTests {
     }
 
     private static func rawReplacement() throws {
-        let f = Fixture(kind: "terminal", text: "", anchor: 0, focus: 0)
+        let f = try Fixture(kind: "terminal", text: "", anchor: 0, focus: 0)
         let range = f.input.textRange(from: f.input.beginningOfDocument, to: f.input.endOfDocument)!
         f.input.replace(range, withText: "你好")
         try require(f.operations.count == 1, "Sentinel replacement must not synthesize Backspace")
@@ -144,7 +149,7 @@ enum InputContractTests {
     }
 
     private static func hardwareRouting() throws {
-        let f = Fixture(kind: "terminal", text: "", anchor: 0, focus: 0)
+        let f = try Fixture(kind: "terminal", text: "", anchor: 0, focus: 0)
         try require(!f.input.handleKey("e", flags: .alternate), "Option-only text must stay with UIKit")
         try require(f.input.handleKey("c", flags: .command), "Command-C must use explicit copy")
         try require(f.operations.last?["op"] as? String == "copy", "Command-C routed to desktop clipboard")
@@ -155,7 +160,7 @@ enum InputContractTests {
     }
 
     private static func directionalSelection() throws {
-        let f = Fixture(anchor: 3, focus: 1)
+        let f = try Fixture(anchor: 3, focus: 1)
         f.input.textViewDidChangeSelection(f.input)
         try require(f.operations.last?["anchor"] as? Int == 3, "Reversed anchor was normalized")
         try require(f.operations.last?["focus"] as? Int == 1, "Reversed focus was normalized")
@@ -167,15 +172,15 @@ enum InputContractTests {
     }
 
     private static func dismissal() throws {
-        let f = Fixture()
+        let f = try Fixture()
         var dismissals = 0
         f.input.didDismiss = { _ in dismissals += 1 }
         f.input.textViewDidEndEditing(f.input)
-        f.synchronize()
+        try f.synchronize()
         try require(f.input.context == nil, "Stale frame reopened natively dismissed input")
         try require(dismissals == 1, "Native dismissal must be emitted once")
         f.snapshot["token"] = UInt64(8)
-        f.synchronize()
+        try f.synchronize()
         try require(f.input.context?.token == 8, "A new owner must be able to request input")
     }
 }

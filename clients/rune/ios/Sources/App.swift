@@ -25,7 +25,12 @@ final class SceneDelegate: UIResponder, UIWindowSceneDelegate {
         self.window = window
         window.makeKeyAndVisible()
     }
-    func sceneDidBecomeActive(_ scene: UIScene) { root?.surface?.setActive(true) }
+    func sceneDidBecomeActive(_ scene: UIScene) {
+        for error in NativeIdentity.retryPendingCleanup() + HostSettings.retryPendingCleanup() {
+            NSLog("Deferred credential cleanup: %@",error)
+        }
+        root?.surface?.setActive(true)
+    }
     func sceneWillResignActive(_ scene: UIScene) { root?.surface?.setActive(false) }
     func sceneDidDisconnect(_ scene: UIScene) { root?.surface?.close() }
 }

@@ -87,6 +87,10 @@ final class QualificationProbe {
         if active { resumed = backgroundFrames != nil }
         else if let report = try? bridge.report(marker:marker) {
             backgroundFrames = report["frames"] as? UInt64
+            if let backgroundFrames {
+                do { try write(["schema":1,"background_frames":backgroundFrames],name:"rune-background.json") }
+                catch { failure(error.localizedDescription) }
+            }
         }
     }
 

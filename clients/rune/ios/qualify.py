@@ -206,29 +206,38 @@ class Qualification:
             raise ValueError("native view tree does not show the qualification session")
         self.require_alive(pid)
         self.simctl("io", self.udid, "screenshot", self.out / "ios-system-keyboard.png")
-        # Drive the actual UIKit scene to background/foreground on our own
-        # simulator. An in-app state toggle is not OS lifecycle evidence.
-        self.simctl("launch", self.udid, "com.apple.Preferences")
-        time.sleep(2)
-        self.require_alive(pid)
-        self.simctl("launch", self.udid, BUNDLE_ID)
-        lifecycle = documents / "rune-lifecycle.json"
-        deadline = time.monotonic() + 30
-        while not lifecycle.is_file():
-            self.require_alive(pid)
-            if time.monotonic() >= deadline:
-                raise TimeoutError("no presented frame after native background/foreground")
-            time.sleep(0.5)
-        resumed = json.loads(lifecycle.read_text())
-        if not resumed.get("marker_seen") or resumed.get("resumed_frames", 0) <= resumed.get("background_frames", 0):
-            raise ValueError("native lifecycle did not resume the same live terminal")
-        shutil.copy2(lifecycle, self.out / lifecycle.name)
+        self.cycle_scene(documents, pid)
         time.sleep(3)
         self.require_alive(pid)
         self.simctl("io", self.udid, "screenshot", self.out / "ios-native.png")
         if not (self.out / "ios-native.png").stat().st_size:
             raise ValueError("empty simulator screenshot")
         return report
+
+    def await_scene_report(self, source, pid, message):
+        deadline = time.monotonic() + 30
+        while not source.is_file():
+            self.require_alive(pid)
+            if time.monotonic() >= deadline:
+                raise TimeoutError(message)
+            time.sleep(0.5)
+        return json.loads(source.read_text())
+
+    def cycle_scene(self, documents, pid):
+        # Drive the actual UIKit scene to background/foreground on our own
+        # simulator. An in-app state toggle is not OS lifecycle evidence.
+        background = documents / "rune-background.json"
+        background.unlink(missing_ok=True)
+        self.simctl("launch", self.udid, "com.apple.Preferences")
+        self.await_scene_report(background, pid, "native scene did not acknowledge OS backgrounding")
+        shutil.copy2(background, self.out / background.name)
+        self.require_alive(pid)
+        self.simctl("launch", self.udid, BUNDLE_ID)
+        lifecycle = documents / "rune-lifecycle.json"
+        resumed = self.await_scene_report(lifecycle, pid, "no presented frame after native background/foreground")
+        if not resumed.get("marker_seen") or resumed.get("resumed_frames", 0) <= resumed.get("background_frames", 0):
+            raise ValueError("native lifecycle did not resume the same live terminal")
+        shutil.copy2(lifecycle, self.out / lifecycle.name)
 
     def stop_server(self):
         if self.server is not None and self.server.poll() is None:

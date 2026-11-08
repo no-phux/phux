@@ -31,6 +31,7 @@ enum HostSettings {
         guard let endpoint = values["endpoint"] as? String else {
             throw NativeFailure.message("The host endpoint is missing.")
         }
+        let previous = UserDefaults.standard.dictionary(forKey:"remote-host")?["endpoint"] as? String
         let query: [String: Any] = [kSecClass as String:kSecClassGenericPassword,
             kSecAttrService as String:service, kSecAttrAccount as String:endpoint]
         let data = Data((values["token"] as? String ?? "").utf8)
@@ -48,6 +49,28 @@ enum HostSettings {
         let publicKeys = ["endpoint", "certificate_pin", "authority_ca", "chain_pem", "key_id", "session"]
         let publicValues = values.filter { publicKeys.contains($0.key) }
         UserDefaults.standard.set(publicValues,forKey:"remote-host")
+        // Commit the new working credential before retiring the previous one.
+        if let previous, previous != endpoint { try removeToken(previous) }
+    }
+
+    private static func removeToken(_ endpoint:String) throws {
+        let query:[String:Any] = [kSecClass as String:kSecClassGenericPassword,
+            kSecAttrService as String:service,kSecAttrAccount as String:endpoint]
+        let status = SecItemDelete(query as CFDictionary)
+        let removed = status == errSecSuccess || status == errSecItemNotFound
+        var pending = Set(UserDefaults.standard.stringArray(forKey:"pending-token-cleanup") ?? [])
+        if removed { pending.remove(endpoint) } else { pending.insert(endpoint) }
+        UserDefaults.standard.set(Array(pending),forKey:"pending-token-cleanup")
+        guard removed else {
+            throw NativeFailure.message("New host saved, but could not remove the previous pairing token (Keychain \(status)); cleanup will retry when the app becomes active.")
+        }
+    }
+
+    static func retryPendingCleanup() -> [String] {
+        (UserDefaults.standard.stringArray(forKey:"pending-token-cleanup") ?? []).compactMap { endpoint in
+            do { try removeToken(endpoint); return nil }
+            catch { return error.localizedDescription }
+        }
     }
 }
 
@@ -139,8 +162,9 @@ final class ConnectionForm: UIViewController {
         // Editing host ownership/trust invalidates the saved chain. Session
         // changes alone do not. Never spend a ticket using an old CA silently.
         let ownership = ["certificate_pin", "authority_ca", "token"]
-        let sameHost = URLComponents(string: values["endpoint"] as? String ?? "")?.host?.lowercased()
-            == URLComponents(string: enrolled["endpoint"] as? String ?? "")?.host?.lowercased()
+        let newHost = URLComponents(string: values["endpoint"] as? String ?? "")?.host?.lowercased()
+        let savedHost = URLComponents(string: enrolled["endpoint"] as? String ?? "")?.host?.lowercased()
+        let sameHost = newHost != nil && newHost == savedHost
         if sameHost && ownership.allSatisfy({ values[$0] as? String == enrolled[$0] as? String }) {
             values["chain_pem"] = enrolled["chain_pem"]
             values["key_id"] = enrolled["key_id"]

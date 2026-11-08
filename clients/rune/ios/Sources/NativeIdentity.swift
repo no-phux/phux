@@ -51,6 +51,8 @@ nonisolated private let releaseDeviceSigner: @convention(c) (UnsafeMutableRawPoi
 /// exported, including on the simulator (which uses a Keychain SecKey).
 final class NativeIdentity: @unchecked Sendable {
     let handle: UnsafeMutableRawPointer
+    private static let cleanupLock = NSLock()
+    private static let cleanupPreference = "pending-device-key-cleanup"
 
     init(configuration: [String: Any]) throws {
         guard let keyID = configuration["key_id"] as? String, UUID(uuidString: keyID) != nil,
@@ -102,7 +104,8 @@ final class NativeIdentity: @unchecked Sendable {
             try blockingEnroll(json: json, ticket: ticket)
         }.value
         if Task.isCancelled {
-            try deleteKey(issued.keyID)
+            do { try deleteKey(issued.keyID) }
+            catch { throw IdentityFailure(message:"Enrollment cancelled. \(error.localizedDescription)") }
             throw CancellationError()
         }
         var values = configuration
@@ -129,8 +132,12 @@ final class NativeIdentity: @unchecked Sendable {
             }
             return Issued(chain: chain, keyID: keyID)
         } catch {
-            try deleteKey(keyID)
-            throw error
+            let enrollmentError = error
+            do { try deleteKey(keyID) }
+            catch {
+                throw IdentityFailure(message:"\(enrollmentError.localizedDescription) \(error.localizedDescription)")
+            }
+            throw enrollmentError
         }
     }
 
@@ -192,8 +199,27 @@ final class NativeIdentity: @unchecked Sendable {
 
     private static func deleteKey(_ keyID: String) throws {
         let status = SecItemDelete(keyQuery(keyID) as CFDictionary)
-        guard status == errSecSuccess || status == errSecItemNotFound else {
-            throw IdentityFailure(message: "Could not remove the staged device key (Keychain \(status)).")
+        let removed = status == errSecSuccess || status == errSecItemNotFound
+        cleanupLock.withLock {
+            var pending = Set(UserDefaults.standard.stringArray(forKey:cleanupPreference) ?? [])
+            if removed { pending.remove(keyID) } else { pending.insert(keyID) }
+            UserDefaults.standard.set(Array(pending),forKey:cleanupPreference)
+        }
+        guard removed else {
+            throw IdentityFailure(message: "Could not remove the staged device key (Keychain \(status)); cleanup will retry when the app becomes active.")
+        }
+    }
+
+    /// Store only public UUID tags, never secret keys/tickets. A locked
+    /// Keychain must not turn a cancelled enrollment into an unreachable key.
+    static func retryPendingCleanup() -> [String] {
+        let pending = cleanupLock.withLock {
+            UserDefaults.standard.stringArray(forKey:cleanupPreference) ?? []
+        }
+        return pending.compactMap { keyID in
+            guard UUID(uuidString:keyID) != nil else { return "Invalid staged key cleanup tag." }
+            do { try deleteKey(keyID); return nil }
+            catch { return error.localizedDescription }
         }
     }
 

@@ -285,6 +285,8 @@ class QualificationTests(unittest.TestCase):
             def simctl(*args, **kwargs):
                 if args[0] == "get_app_container":
                     return str(container)
+                if args[0] == "launch" and args[-1] == "com.apple.Preferences":
+                    (documents / "rune-background.json").write_text('{"background_frames":4}')
                 if args[0] == "io":
                     Path(args[-1]).write_bytes(b"screenshot")
                 return ""
@@ -292,7 +294,7 @@ class QualificationTests(unittest.TestCase):
             lane.simctl = Mock(side_effect=simctl)
             with patch.object(qualify.time, "sleep") as sleep:
                 self.assertEqual(lane.collect_report(123), valid_report())
-            self.assertEqual(sleep.call_args_list, [unittest.mock.call(2),unittest.mock.call(3)])
+            sleep.assert_called_once_with(3)
             self.assertEqual(lane.require_alive.call_count, 3)
             self.assertTrue((root / "rune-lifecycle.json").is_file())
             self.assertTrue((root / "rune-tree.json").is_file())

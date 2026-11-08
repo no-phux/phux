@@ -40,5 +40,7 @@ void phux_rune_ios_active(void *host, bool active);
 void phux_rune_ios_traits(void *host, bool dark, bool reduced_motion);
 char *phux_rune_ios_report(void *host, const char *marker);
 char *phux_rune_ios_tree(void *host);
+// Read an error synchronously on the SAME OS THREAD as the failing call,
+// before another bridge call or Swift actor/task hop. The slot is thread-local.
 char *phux_rune_ios_error(void);
 void phux_rune_ios_free(char *text);

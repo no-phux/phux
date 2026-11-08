@@ -61,6 +61,10 @@ Tickets are never saved. On devices, the private key stays in the Secure
 Enclave; the simulator uses a Keychain-held `SecKey`. No private key enters
 Rust. Each enrollment uses a fresh key; failed/cancelled staged keys are
 removed and old working identities preserved.
+If a locked Keychain prevents removal, the public key tag is queued for
+cleanup on the next activation; the original enrollment error is retained.
+Replacing the saved endpoint retires its old token only after the new
+credential is saved. Deferred cleanup never stores a ticket or private key.
 
 After enrollment, the same identity can dial `wss://host/path`.
 Non-loopback targets require pin, token and an enrolled client identity.
@@ -76,6 +80,8 @@ No native path starts `phux server --ensure`, discovers a local CLI, or runs
 the desktop binary updater. Reconnect retains the native target and trust.
 The scene pauses all rendering before backgrounding; worker wakes dispatch
 onto the main queue, and display scheduling honors Rune's motion/deadlines.
+Qualification waits for explicit native background/resumed-frame reports,
+not a guessed delay after switching apps.
 
 ## Input ownership
 
