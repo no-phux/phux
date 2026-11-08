@@ -135,23 +135,28 @@ final class RuneInput: UITextView, UITextViewDelegate {
             return
         }
         if dictating { return }
+        let finishedComposition = composition != nil
         composition = nil
-        if raw { publishRaw(captured) } else {
+        if raw { publishRaw(captured, finishedComposition: finishedComposition) } else {
             selection.update(selectedRange)
             emit(["op":"replace", "expected":captured.text, "text":text ?? "",
                   "anchor":selection.anchor, "focus":selection.focus], captured)
         }
     }
 
-    private func publishRaw(_ captured: InputContext) {
+    private func publishRaw(_ captured: InputContext, finishedComposition: Bool) {
         let value = text ?? ""
-        if value == Self.sentinel { return }
+        if value == Self.sentinel, !finishedComposition { return }
         let hasSentinel = value.hasPrefix(Self.sentinel)
         let committed = hasSentinel ? String(value.dropFirst()) : value
         // Reset before the next key or a reentrant callback can arrive.
         programmatic { text = Self.sentinel; selectedRange = NSRange(location: 1, length: 0) }
+        if finishedComposition, committed.isEmpty {
+            emit(["op":"cancel"], captured)
+            return
+        }
         // An IME/dictation replacement can remove the sentinel itself. Only an
-        // empty document means the user actually backspaced over it.
+        // empty document outside a composition means an actual Backspace.
         if value.isEmpty { emit(["op":"key", "name":"Backspace"], captured) }
         if !committed.isEmpty { emit(["op":"text", "text":committed], captured) }
     }

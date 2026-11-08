@@ -130,6 +130,22 @@ enum InputContractTests {
         try require(committed.first?["text"] as? String == "日本", "CJK commit lost characters")
         try require(!f.operations.contains { $0["op"] as? String == "copy" }, "Copy escaped composition guard")
         try require(f.input.text == RuneInput.sentinel, "Raw buffer was not reset")
+        let canceled = try Fixture(kind: "terminal", text: "", anchor: 0, focus: 0)
+        canceled.input.setMarkedText("日", selectedRange: NSRange(location: 1, length: 0))
+        let range = canceled.input.textRange(from: canceled.input.beginningOfDocument,
+                                             to: canceled.input.endOfDocument)!
+        canceled.input.replace(range, withText: "")
+        canceled.input.unmarkText()
+        try require(!canceled.operations.contains { $0["op"] as? String == "key" },
+                    "Canceling composition must not synthesize terminal Backspace")
+        try require(canceled.operations.last?["op"] as? String == "cancel",
+                    "Canceling composition must clear Rune's preedit overlay")
+        let preserved = try Fixture(kind: "terminal", text: "", anchor: 0, focus: 0)
+        preserved.input.setMarkedText("日", selectedRange: NSRange(location: 1, length: 0))
+        preserved.input.setMarkedText("", selectedRange: NSRange(location: 0, length: 0))
+        preserved.input.unmarkText()
+        try require(preserved.operations.last?["op"] as? String == "cancel",
+                    "Canceling composition with the sentinel intact must clear preedit")
     }
 
     private static func rawReplacement() throws {
