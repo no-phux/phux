@@ -16,6 +16,16 @@ const MAP_W: f32 = 96.0;
 const MAP_H: f32 = 64.0;
 const TOUCH: f32 = 44.0;
 
+fn controls_ink(desk: &Desk, ink: &Ink) -> Ink {
+    let ground = desk
+        .client
+        .as_ref()
+        .zip(desk.shown.as_ref())
+        .and_then(|(client, shown)| client.acquire_view(shown.view?))
+        .map_or(ink.bg, |frame| crate::grid::background(&frame));
+    super::phone::ground_ink(ground, ink.accent, desk.settings.theme)
+}
+
 pub fn view(desk: &Desk, phone: &Phone, ink: &Ink, area: El) -> El {
     let Some(shown) = desk.shown.as_ref() else {
         return area;
@@ -49,7 +59,7 @@ pub fn view(desk: &Desk, phone: &Phone, ink: &Ink, area: El) -> El {
             .h_full()
             .min_h(0.0)
             .child(viewport)
-            .child(toolbar(desk, all.len() > 1, ink)),
+            .child(toolbar(desk, all.len() > 1, &controls_ink(desk, ink))),
     );
     if desk.phone_picker_visible() {
         stage = stage.child(picker(desk, &all, &shown.terminal, ink));

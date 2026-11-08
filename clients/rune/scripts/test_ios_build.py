@@ -1,6 +1,7 @@
 """Focused driver contracts; real Swift/Rust/simulator execution is a CI gate."""
 
 import importlib.util
+import fnmatch
 import json
 import os
 from pathlib import Path
@@ -26,10 +27,15 @@ qualify = load("qualify")
 def valid_report():
     return {"schema": 1, "session": qualify.SESSION, "frames": 3,
             "terminal_id": "123", "connected": True, "input_through_native": True,
-            "marker_seen": True}
+            "marker_seen": True, "transport":"paired-quic", "input_contracts":[str(n) for n in range(8)]}
 
 
 class BuildTests(unittest.TestCase):
+    def test_native_evidence_is_not_matched_by_desktop_release_artifact_glob(self):
+        workflow = (build.REPO / ".github/workflows/rune-build.yml").read_text()
+        self.assertIn("name: qualification-ios-native", workflow)
+        self.assertFalse(fnmatch.fnmatch("qualification-ios-native", "rune-*"))
+
     def test_native_flags_keep_order_quotes_and_duplicates(self):
         self.assertEqual(build.native_static_flags(
             'noise\nnote: native-static-libs: -framework Security -lSystem '
@@ -87,6 +93,12 @@ class BuildTests(unittest.TestCase):
             self.assertEqual(link[:8], ["-Xlinker", "-framework", "-Xlinker", "Security",
                                        "-Xlinker", "-lSystem", "-Xlinker", "-lSystem"])
             self.assertTrue(any("--verify" in c for c in commands))
+            self.assertIn("__entitlements", swift)
+            signed = next(c for c in commands if "--sign" in c)
+            self.assertNotIn("--entitlements", signed)
+            entitlements = plistlib.loads((out / "simulator-entitlements.plist").read_bytes())
+            self.assertEqual(entitlements["application-identifier"], "PHUXSIMDEV." + qualify.BUNDLE_ID)
+            self.assertEqual(entitlements["keychain-access-groups"], ["PHUXSIMDEV." + qualify.BUNDLE_ID])
             self.assertEqual(app, out / "Phux Rune.app")
 
     def test_command_runner_is_bounded_and_rooted(self):
@@ -218,11 +230,16 @@ class QualificationTests(unittest.TestCase):
             lane.udid = "NEW-UDID"
             lane.server = Mock()
             lane.server.poll.return_value = None
-            lane.simctl = Mock(side_effect=["", f"{qualify.BUNDLE_ID}: 123\n",
+            lane.configuration = {"token":"private-never-in-argv"}
+            lane.simctl = Mock(side_effect=["", temporary, f"{qualify.BUNDLE_ID}: 123\n",
                 f"123\t0\tUIKitApplication:{qualify.BUNDLE_ID}[test]\n", "-\t1\tother\n"])
             self.assertEqual(lane.launch(Path("/tmp/owned/s")), 123)
-            launch = lane.simctl.call_args_list[1].args
+            launch = lane.simctl.call_args_list[2].args
             self.assertIn("--qualification-input", launch)
+            self.assertNotIn("private-never-in-argv", str(launch))
+            self.assertIn("--qualification-configuration", launch)
+            secret = Path(temporary) / "Documents/qualification-connection.json"
+            self.assertEqual(secret.stat().st_mode & 0o777, 0o600)
             self.assertEqual(launch[launch.index("--qualification-session") + 1], qualify.SESSION)
             lane.require_alive(123)
             with self.assertRaises(ValueError):
@@ -235,6 +252,12 @@ class QualificationTests(unittest.TestCase):
             lane = self.lane(Path(temporary))
             self.assertFalse(any(k.startswith(("PHUX_", "SIMCTL_CHILD_")) for k in lane.env))
             self.assertNotIn("DEVELOPER_DIR", lane.env)
+
+    def test_fixture_requires_both_enrolled_identity_and_bearer_auth_even_on_loopback(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            env = qualify.server_environment(Path(temporary))
+            self.assertEqual(env["PHUX_WS_SECURE"], "1")
+            self.assertNotIn("PHUX_SOCKET", env)
 
     def test_external_commands_have_deadlines_and_do_not_use_shell(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -254,6 +277,8 @@ class QualificationTests(unittest.TestCase):
             documents.mkdir(parents=True)
             (documents / "rune-qualification.json").write_text(json.dumps(valid_report()))
             (documents / "rune-tree.json").write_text(json.dumps({"title": qualify.SESSION}))
+            (documents / "rune-lifecycle.json").write_text(json.dumps({"background_frames":4,
+                "resumed_frames":5,"marker_seen":True}))
             lane = self.lane(root)
             lane.require_alive = Mock()
 
@@ -267,8 +292,9 @@ class QualificationTests(unittest.TestCase):
             lane.simctl = Mock(side_effect=simctl)
             with patch.object(qualify.time, "sleep") as sleep:
                 self.assertEqual(lane.collect_report(123), valid_report())
-            sleep.assert_called_once_with(3)
-            self.assertEqual(lane.require_alive.call_count, 2)
+            self.assertEqual(sleep.call_args_list, [unittest.mock.call(2),unittest.mock.call(3)])
+            self.assertEqual(lane.require_alive.call_count, 3)
+            self.assertTrue((root / "rune-lifecycle.json").is_file())
             self.assertTrue((root / "rune-tree.json").is_file())
             self.assertTrue((root / "ios-native.png").is_file())
 

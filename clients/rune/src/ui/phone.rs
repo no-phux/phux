@@ -34,7 +34,6 @@ const SYMBOLS: [&str; 3] = ["1234567890", "-/:;()$&@\"", ".,?!'`|~"];
 
 pub fn view(desk: &Desk, cx: &mut Cx<Desk>) -> El {
     let p = super::ink(cx.system_dark(), cx.accent(), desk.settings.theme);
-    cx.foreground(p.text);
     let fallback = Phone::default();
     let phone = desk.phone.as_ref().unwrap_or(&fallback);
     let keyboard_visible = desk.phone_keyboard_visible();
@@ -45,8 +44,19 @@ pub fn view(desk: &Desk, cx: &mut Cx<Desk>) -> El {
         .zip(desk.shown.as_ref())
         .and_then(|(client, shown)| client.acquire_view(shown.view?))
         .map_or(p.bg, |frame| crate::grid::background(&frame));
+    // Glass floats over the terminal, which may stay dark while UIKit/the
+    // desktop prefers light chrome. Its ink must contrast with that ground,
+    // not disappear into it. Fields/sheets keep their own opaque theme ink.
+    let controls = if desk.settings_open {
+        super::ink(cx.system_dark(), cx.accent(), desk.settings.theme)
+    } else {
+        ground_ink(ground, cx.accent(), desk.settings.theme)
+    };
+    cx.foreground(p.text);
     // On a desktop the traffic lights sit where a status bar would.
-    let top = if cx.titlebar_inset() > 0.0 {
+    let top = if desk.native.is_some() {
+        0.0
+    } else if cx.titlebar_inset() > 0.0 {
         TITLEBAR_H
     } else {
         STATUS_INSET
@@ -57,11 +67,17 @@ pub fn view(desk: &Desk, cx: &mut Cx<Desk>) -> El {
         .w_full()
         .h_full()
         .pt(top)
-        .children((!desk.settings_open).then(|| top_bar(desk, &p)))
+        .children((!desk.settings_open).then(|| top_bar(desk, &controls)))
         .child(stage)
-        .children((!desk.settings_open).then(|| tab_pills(desk, &p)))
-        .children((!desk.settings_open || keyboard_visible).then(|| accessory(desk, phone, &p)))
-        .child(keyboard(phone, keyboard_visible, &p));
+        .children((!desk.settings_open).then(|| tab_pills(desk, &controls)))
+        .children(
+            (!desk.settings_open || keyboard_visible).then(|| accessory(desk, phone, &controls)),
+        )
+        .children(
+            desk.native
+                .is_none()
+                .then(|| keyboard(phone, keyboard_visible, &controls)),
+        );
     el().w_full()
         .h_full()
         .fill(if desk.settings_open {
@@ -79,6 +95,11 @@ pub fn view(desk: &Desk, cx: &mut Cx<Desk>) -> El {
                 .menu
                 .map(|at| palette::context_menu(desk, at, &p)),
         )
+}
+
+pub(super) fn ground_ink(ground: Color, accent: Color, theme: Option<&crate::theme::Theme>) -> Ink {
+    let dark = crate::theme::on_fill(ground) == Color::WHITE;
+    super::ink(dark, accent, theme.filter(|theme| theme.dark == dark))
 }
 
 /// Modals precede the drawn keyboard so its keys belong to their fields.
@@ -524,4 +545,21 @@ fn shift_cap(phone: &Phone, capital: bool, p: &Ink) -> El {
     )
     .w(KEY_H)
     .on_press(Desk::toggle_capital)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn glass_ink_tracks_its_terminal_ground_not_the_os_appearance() {
+        for (ground, expected) in [(Color::BLACK, Color::WHITE), (Color::WHITE, Color::BLACK)] {
+            let ink = ground_ink(ground, Color::WHITE, None);
+            assert_eq!(
+                crate::theme::on_fill(ink.text),
+                crate::theme::on_fill(expected)
+            );
+            assert!(crate::theme::contrast(ink.text, ground) >= 4.5);
+        }
+    }
 }

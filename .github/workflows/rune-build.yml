@@ -178,6 +178,11 @@ jobs:
           cache-on-failure: "true"
       - name: Test native build and qualification drivers
         run: python3 -B -m unittest discover -s clients/rune/scripts -p 'test_ios_build.py'
+      - name: Check the native Rust bridge
+        run: |
+          cargo fmt --manifest-path clients/rune/Cargo.toml --all --check
+          cargo clippy --locked --manifest-path clients/rune/Cargo.toml -p phux-rune-ios \
+            --target aarch64-apple-ios-sim -- -D warnings
       - name: Build native simulator app and device bundle
         run: |
           python3 clients/rune/ios/build.py --out "$RUNNER_TEMP/ios-simulator" --target simulator
@@ -190,7 +195,9 @@ jobs:
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: always()
         with:
-          name: rune-ios-native-evidence
+          # rune-client.yml publishes rune-* artifacts; evidence/debug apps
+          # must never enter the signed desktop release/feed asset set.
+          name: qualification-ios-native
           path: |
             ${{ runner.temp }}/ios-qualification
             ${{ runner.temp }}/ios-simulator/*.json

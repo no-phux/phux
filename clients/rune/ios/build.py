@@ -21,9 +21,9 @@ BUNDLE_ID = "sh.phux.rune.ios"
 
 def apple_environment(out):
     env = {k: v for k, v in os.environ.items() if not k.startswith("PHUX_")}
-    tmp = out / "toolchain-tmp"
-    tmp.mkdir(exist_ok=True)
-    env["TMPDIR"] = str(tmp)
+    # Compiler/cache helpers bind Unix sockets under TMPDIR. Evidence paths
+    # can exceed macOS's socket length limit; build outputs still stay in out.
+    env["TMPDIR"] = "/tmp"
     result = subprocess.run(
         ["/bin/bash", "-ec", 'source "$1"; env -0', "apple-env",
          str(REPO / "scripts/lib/apple-toolchain-env.sh")],
@@ -62,6 +62,13 @@ def bundle_plist(version, simulator, fonts):
         "CFBundleSupportedPlatforms": ["iPhoneSimulator" if simulator else "iPhoneOS"],
         "LSRequiresIPhoneOS": True, "UIDeviceFamily": [1, 2],
         "UILaunchScreen": {}, "UIAppFonts": fonts,
+        "UIApplicationSceneManifest": {
+            "UIApplicationSupportsMultipleScenes": False,
+            "UISceneConfigurations": {"UIWindowSceneSessionRoleApplication": [{
+                "UISceneConfigurationName": "Rune",
+                "UISceneDelegateClassName": "PhuxRuneSceneDelegate",
+            }]},
+        },
         "UISupportedInterfaceOrientations": ["UIInterfaceOrientationPortrait"],
     }
 
@@ -122,11 +129,28 @@ def build_swift(out, env, app, sources, library, flags, simulator, release):
     module_cache = out / "module-cache"
     module_cache.mkdir(exist_ok=True)
     linker_flags = [arg for flag in flags for arg in ("-Xlinker", flag)]
+    if simulator:
+        # Xcode embeds *simulated* entitlements in Mach-O, rather than
+        # asserting an unprovisioned team entitlement in the code signature.
+        entitlement = simulator_entitlements(out)
+        for flag in ["-sectcreate", "__TEXT", "__entitlements", str(entitlement)]:
+            linker_flags.extend(["-Xlinker", flag])
     run(["/usr/bin/xcrun", "--sdk", sdk, "swiftc", "-target", swift_target,
          "-sdk", sdk_path, "-module-cache-path", module_cache,
          "-import-objc-header", IOS / "Bridge.h", "-parse-as-library",
          "-O" if release else "-Onone", *sources, library, *linker_flags,
          "-o", app / "PhuxRune"], env, out, "swift", timeout=600)
+
+
+def simulator_entitlements(out):
+    entitlement = out / "simulator-entitlements.plist"
+    entitlement.write_bytes(plistlib.dumps({
+        "application-identifier": "PHUXSIMDEV." + BUNDLE_ID,
+        "keychain-access-groups": ["PHUXSIMDEV." + BUNDLE_ID],
+        "com.apple.developer.team-identifier": "PHUXSIMDEV",
+        "get-task-allow": True,
+    }))
+    return entitlement
 
 
 def build(out, target, release):

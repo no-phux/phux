@@ -64,12 +64,15 @@ def server_environment(scratch):
             "XDG_DATA_HOME": str(scratch / "data"), "XDG_STATE_HOME": str(scratch / "state"),
             "PATH": "/usr/bin:/bin", "SHELL": "/bin/sh", "TERM": "xterm-256color",
             "TMPDIR": str(scratch), "PHUX_PROFILE": "rune-ios-qualification",
+            "PHUX_WS_SECURE": "1",
             "RUNE_PREFS_DIR": str(prefs)}
 
 
 def validate_report(report):
+    if report.get("error"):
+        raise ValueError(f"native qualification error: {report['error']}")
     expected = {"schema": 1, "session": SESSION, "connected": True,
-                "input_through_native": True, "marker_seen": True}
+                "input_through_native": True, "marker_seen": True, "transport": "paired-quic"}
     for field, value in expected.items():
         if type(report.get(field)) is not type(value) or report[field] != value:
             raise ValueError(f"invalid qualification {field}: {report.get(field)!r}")
@@ -77,8 +80,12 @@ def validate_report(report):
         raise ValueError("qualification drew no frames")
     if not isinstance(report.get("terminal_id"), str) or not report["terminal_id"].strip():
         raise ValueError("qualification has no terminal identity")
-    if report.get("error"):
-        raise ValueError(f"native qualification error: {report['error']}")
+    validate_input_contracts(report.get("input_contracts"))
+
+
+def validate_input_contracts(contracts):
+    if not isinstance(contracts, list) or len(contracts) < 8:
+        raise ValueError("native UIKit input contract groups did not pass")
 
 
 class Qualification:
@@ -91,6 +98,7 @@ class Qualification:
         # xcrun must use the real selected Xcode, not a Nix SDK.
         self.env.pop("DEVELOPER_DIR", None)
         self.sequence = 0
+        self.configuration = None
 
     def run(self, command, timeout=30, env=None):
         self.sequence += 1
@@ -108,9 +116,16 @@ class Qualification:
     def start_server(self):
         socket = self.scratch / "s"
         env = server_environment(self.scratch)
+        policy = Path(env["XDG_CONFIG_HOME"]) / "phux/config.toml"
+        policy.parent.mkdir(parents=True, exist_ok=True)
+        policy.write_text('[policy]\nmode = "paired"\n')
+        # This is an offline authority operation. The CLI rejects --socket
+        # because it cannot dial; HOME/config/state are all our private lane.
+        self.run([self.phux, "workload", "authority", "--init"], env=env)
         with (self.out / "server.log").open("w") as log:
             self.server = subprocess.Popen(
-                [str(self.phux), "--socket", str(socket), "server", "--session", SESSION],
+                [str(self.phux), "--socket", str(socket), "server", "--session", SESSION,
+                 "--quic", "127.0.0.1:0", "--listen", "127.0.0.1:0"],
                 env=env, cwd=self.scratch, stdout=log, stderr=subprocess.STDOUT,
             )
         (self.out / "server-pid.txt").write_text(str(self.server.pid) + "\n")
@@ -121,6 +136,14 @@ class Qualification:
             if time.monotonic() >= deadline:
                 raise TimeoutError("isolated dev server never listened")
             time.sleep(0.1)
+        # Never send the pairing document to an evidence log/artifact. The
+        # freshly created simulator receives it via its private Documents.
+        paired = subprocess.run([str(self.phux), "--socket", str(socket), "pair", "--json", "--enroll"],
+                                env=env, capture_output=True, check=True, timeout=30)
+        pair = json.loads(paired.stdout)
+        self.configuration = {"endpoint": "quic://" + pair["quic_addr"],
+            "certificate_pin": pair["cert_fingerprint"], "authority_ca": pair["ca_fingerprint"],
+            "token": pair["token"], "session": SESSION, "enrollment_ticket": pair["enrollment_ticket"]}
         return socket
 
     def create_simulator(self):
@@ -138,9 +161,16 @@ class Qualification:
 
     def launch(self, socket):
         self.simctl("install", self.udid, self.app, timeout=120)
+        container = Path(self.simctl("get_app_container", self.udid, BUNDLE_ID, "data").strip())
+        documents = container / "Documents"
+        documents.mkdir(exist_ok=True)
+        secret = documents / "qualification-connection.json"
+        with open(secret, "x", opener=lambda path, flags: os.open(path, flags, 0o600)) as handle:
+            json.dump(self.configuration, handle)
+        self.configuration = None
         result = self.simctl(
             "launch", "--terminate-running-process", self.udid, BUNDLE_ID,
-            "--qualification-socket", socket, "--qualification-session", SESSION,
+            "--qualification-configuration", secret.name, "--qualification-session", SESSION,
             "--qualification-input", marker_command(), "--qualification-marker", MARKER,
             timeout=60,
         )
@@ -175,6 +205,24 @@ class Qualification:
         if SESSION not in json.dumps(json.loads(tree.read_text())):
             raise ValueError("native view tree does not show the qualification session")
         self.require_alive(pid)
+        self.simctl("io", self.udid, "screenshot", self.out / "ios-system-keyboard.png")
+        # Drive the actual UIKit scene to background/foreground on our own
+        # simulator. An in-app state toggle is not OS lifecycle evidence.
+        self.simctl("launch", self.udid, "com.apple.Preferences")
+        time.sleep(2)
+        self.require_alive(pid)
+        self.simctl("launch", self.udid, BUNDLE_ID)
+        lifecycle = documents / "rune-lifecycle.json"
+        deadline = time.monotonic() + 30
+        while not lifecycle.is_file():
+            self.require_alive(pid)
+            if time.monotonic() >= deadline:
+                raise TimeoutError("no presented frame after native background/foreground")
+            time.sleep(0.5)
+        resumed = json.loads(lifecycle.read_text())
+        if not resumed.get("marker_seen") or resumed.get("resumed_frames", 0) <= resumed.get("background_frames", 0):
+            raise ValueError("native lifecycle did not resume the same live terminal")
+        shutil.copy2(lifecycle, self.out / lifecycle.name)
         time.sleep(3)
         self.require_alive(pid)
         self.simctl("io", self.udid, "screenshot", self.out / "ios-native.png")
@@ -198,6 +246,11 @@ class Qualification:
             self.simctl("io", self.udid, "screenshot", self.out / "ios-native-failure.png")
         except (OSError, subprocess.SubprocessError):
             # Preserve the failing command and its log; a boot failure has no screen.
+            pass
+        try:
+            self.simctl("spawn", self.udid, "log", "show", "--last", "1m", "--style", "compact",
+                        "--predicate", 'eventMessage CONTAINS "sh.phux.rune.ios"', timeout=30)
+        except (OSError, subprocess.SubprocessError):
             pass
 
     def cleanup(self):
@@ -238,7 +291,7 @@ def qualify(app, phux, out):
             (out / "evidence.json").write_text(json.dumps({
                 "schema": 1, "report": report, "app_pid": pid,
                 "phux": str(phux), "phux_sha256": hashlib.sha256(phux.read_bytes()).hexdigest(),
-                "input_proof": "native insertText + Enter; not physical OS keyboard/IME proof",
+                "input_proof": "native insertText + Enter over paired QUIC with platform-held enrolled identity; not OS keyboard/IME proof",
             }, indent=2) + "\n")
         except Exception:
             lane.failure_screenshot()

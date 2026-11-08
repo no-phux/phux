@@ -9,6 +9,20 @@ use phux_protocol::wire::frame::AttachTarget;
 
 use super::{Desk, NoticeKind, Shown, WANTED_GRACE, input, sessions};
 
+// View leases end with their window, including an embedded native host.
+// Keep teardown beside view ownership (and Desk within its file budget).
+impl Drop for Desk {
+    fn drop(&mut self) {
+        let Some(client) = &self.client else { return };
+        if let Some(view) = self.shown.take().and_then(|s| s.view) {
+            let _ = client.destroy_view(view);
+        }
+        for view in self.others.drain().filter_map(|(_, v)| v) {
+            let _ = client.destroy_view(view);
+        }
+    }
+}
+
 impl Desk {
     pub(super) fn want(&mut self, terminal: ResourceId) {
         self.retry_document(&terminal);
