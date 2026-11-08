@@ -135,7 +135,7 @@ def build_swift(out, env, app, sources, library, flags, simulator, release):
         entitlement = simulator_entitlements(out)
         for flag in ["-sectcreate", "__TEXT", "__entitlements", str(entitlement)]:
             linker_flags.extend(["-Xlinker", flag])
-    run(["/usr/bin/xcrun", "--sdk", sdk, "swiftc", "-target", swift_target,
+    run(["/usr/bin/xcrun", "--sdk", sdk, "swiftc", "-swift-version", "6", "-strict-concurrency=complete", "-target", swift_target,
          "-sdk", sdk_path, "-module-cache-path", module_cache,
          "-import-objc-header", IOS / "Bridge.h", "-parse-as-library",
          "-O" if release else "-Onone", *sources, library, *linker_flags,

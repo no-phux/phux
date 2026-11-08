@@ -50,7 +50,10 @@ enum HostSettings {
         let publicValues = values.filter { publicKeys.contains($0.key) }
         UserDefaults.standard.set(publicValues,forKey:"remote-host")
         // Commit the new working credential before retiring the previous one.
-        if let previous, previous != endpoint { try removeToken(previous) }
+        if let previous, previous != endpoint {
+            do { try removeToken(previous) }
+            catch { NSLog("Previous token cleanup deferred: %@",error.localizedDescription) }
+        }
     }
 
     private static func removeToken(_ endpoint:String) throws {

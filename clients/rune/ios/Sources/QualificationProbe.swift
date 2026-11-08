@@ -6,6 +6,7 @@ import UIKit
 final class QualificationProbe {
     let configuration: [String: Any]
     let enrollmentTicket: String
+    let connectionEndpoint: String?
     private let session: String
     private let command: String
     private let marker: String
@@ -40,6 +41,7 @@ final class QualificationProbe {
             guard var configuration = try JSONSerialization.jsonObject(with:bytes) as? [String:Any],
                   let ticket = configuration.removeValue(forKey:"enrollment_ticket") as? String else { return nil }
             self.enrollmentTicket = ticket
+            self.connectionEndpoint = configuration.removeValue(forKey:"qualification_endpoint") as? String
             self.configuration = configuration
         } catch { return nil }
         self.session = session; self.command = command; self.marker = marker
@@ -75,7 +77,7 @@ final class QualificationProbe {
         }
         guard injected, report["marker_seen"] as? Bool == true else { return }
         report["input_through_native"] = true
-        report["transport"] = "paired-quic"
+        report["transport"] = connectionEndpoint?.hasPrefix("wss://") == true ? "paired-wss" : "paired-quic"
         report["input_contracts"] = inputContracts
         report["input_evidence"] = "UIKit insertText entry; not physical OS typing or IME automation"
         try write(report, name: "rune-qualification.json")

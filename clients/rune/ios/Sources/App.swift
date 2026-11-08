@@ -57,8 +57,9 @@ final class RuneController: UIViewController {
             qualificationTask = Task { [weak self] in
                 do {
                     try probe.testInputContracts()
-                    let configuration = try await NativeIdentity.enroll(configuration:probe.configuration,
+                    var configuration = try await NativeIdentity.enroll(configuration:probe.configuration,
                         ticket:probe.enrollmentTicket)
+                    if let endpoint = probe.connectionEndpoint { configuration["endpoint"] = endpoint }
                     guard !Task.isCancelled, let self else {
                         try NativeIdentity.discard(configuration:configuration); return
                     }

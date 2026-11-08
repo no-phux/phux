@@ -191,7 +191,9 @@ jobs:
         run: |
           cargo build --locked -p phux
           python3 clients/rune/ios/qualify.py --app "$RUNNER_TEMP/ios-simulator/Phux Rune.app" \
-            --phux "$PWD/target/debug/phux" --out "$RUNNER_TEMP/ios-qualification"
+            --phux "$PWD/target/debug/phux" --out "$RUNNER_TEMP/ios-qualification/quic"
+          python3 clients/rune/ios/qualify.py --app "$RUNNER_TEMP/ios-simulator/Phux Rune.app" \
+            --phux "$PWD/target/debug/phux" --transport wss --out "$RUNNER_TEMP/ios-qualification/wss"
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: always()
         with:

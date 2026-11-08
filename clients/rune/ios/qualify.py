@@ -68,11 +68,11 @@ def server_environment(scratch):
             "RUNE_PREFS_DIR": str(prefs)}
 
 
-def validate_report(report):
+def validate_report(report, transport="quic"):
     if report.get("error"):
         raise ValueError(f"native qualification error: {report['error']}")
     expected = {"schema": 1, "session": SESSION, "connected": True,
-                "input_through_native": True, "marker_seen": True, "transport": "paired-quic"}
+                "input_through_native": True, "marker_seen": True, "transport": f"paired-{transport}"}
     for field, value in expected.items():
         if type(report.get(field)) is not type(value) or report[field] != value:
             raise ValueError(f"invalid qualification {field}: {report.get(field)!r}")
@@ -89,7 +89,8 @@ def validate_input_contracts(contracts):
 
 
 class Qualification:
-    def __init__(self, app, phux, out, scratch):
+    def __init__(self, app, phux, out, scratch, transport="quic"):
+        self.transport = transport
         self.app, self.phux, self.out, self.scratch = app, phux, out, scratch
         self.udid = None
         self.server = None
@@ -144,6 +145,8 @@ class Qualification:
         self.configuration = {"endpoint": "quic://" + pair["quic_addr"],
             "certificate_pin": pair["cert_fingerprint"], "authority_ca": pair["ca_fingerprint"],
             "token": pair["token"], "session": SESSION, "enrollment_ticket": pair["enrollment_ticket"]}
+        if self.transport == "wss":
+            self.configuration["qualification_endpoint"] = "wss://" + pair["ws_addr"]
         return socket
 
     def create_simulator(self):
@@ -199,7 +202,7 @@ class Qualification:
             time.sleep(0.5)
         shutil.copy2(source, self.out / source.name)
         report = json.loads(source.read_text())
-        validate_report(report)
+        validate_report(report, self.transport)
         tree = documents / "rune-tree.json"
         shutil.copy2(tree, self.out / tree.name)
         if SESSION not in json.dumps(json.loads(tree.read_text())):
@@ -279,7 +282,7 @@ class Qualification:
             raise ValueError("owned simulator cleanup failed: " + "; ".join(errors))
 
 
-def qualify(app, phux, out):
+def qualify(app, phux, out, transport="quic"):
     with (app / "Info.plist").open("rb") as handle:
         info = plistlib.load(handle)
     if info.get("CFBundleIdentifier") != BUNDLE_ID:
@@ -291,7 +294,7 @@ def qualify(app, phux, out):
         raise ValueError("qualification output must be empty (no stale evidence)")
     # Explicitly short UDS: simulator clients share the host's Unix namespace.
     with tempfile.TemporaryDirectory(prefix="rune-ios-", dir="/tmp") as temporary:
-        lane = Qualification(app, phux, out, Path(temporary))
+        lane = Qualification(app, phux, out, Path(temporary), transport)
         try:
             socket = lane.start_server()
             lane.create_simulator()
@@ -300,7 +303,7 @@ def qualify(app, phux, out):
             (out / "evidence.json").write_text(json.dumps({
                 "schema": 1, "report": report, "app_pid": pid,
                 "phux": str(phux), "phux_sha256": hashlib.sha256(phux.read_bytes()).hexdigest(),
-                "input_proof": "native insertText + Enter over paired QUIC with platform-held enrolled identity; not OS keyboard/IME proof",
+                "input_proof": f"native insertText + Enter over paired {transport.upper()} with platform-held enrolled identity; not OS keyboard/IME proof",
             }, indent=2) + "\n")
         except Exception:
             lane.failure_screenshot()
@@ -321,8 +324,9 @@ def main():
     parser.add_argument("--app", type=absolute_path, required=True)
     parser.add_argument("--phux", type=absolute_path, required=True)
     parser.add_argument("--out", type=absolute_path, required=True)
+    parser.add_argument("--transport", choices=("quic", "wss"), default="quic")
     args = parser.parse_args()
-    qualify(args.app, args.phux, args.out)
+    qualify(args.app, args.phux, args.out, args.transport)
     print(f"native iOS qualification passed: {args.out}")
 
 

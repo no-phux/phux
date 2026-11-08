@@ -19,6 +19,8 @@ python3 clients/rune/ios/build.py --target device --out /absolute/scratch/ios-de
 env -u PHUX_SOCKET -u PHUX_TERMINAL_ID -u PHUX_PROFILE cargo build --locked -p phux
 python3 clients/rune/ios/qualify.py --app '/absolute/scratch/ios-sim/Phux Rune.app' \
   --phux "$PWD/target/debug/phux" --out /absolute/scratch/ios-proof
+python3 clients/rune/ios/qualify.py --app '/absolute/scratch/ios-sim/Phux Rune.app' \
+  --phux "$PWD/target/debug/phux" --transport wss --out /absolute/scratch/ios-wss-proof
 ```
 
 The direct Swift/static-library build needs no generated Xcode project or
@@ -47,7 +49,8 @@ are compiled out on devices.
 **Evidence boundary:** calling the UIKit input override is not physical
 keyboard, autocorrect, dictation or CJK IME automation. A simulator screenshot
 and device link are not real-device GPU, battery, accessibility or TestFlight
-proof. The reusable Rune CI lane requires the native simulator qualification
+proof. The reusable Rune CI lane requires native simulator qualification over
+both paired QUIC and WSS (enrolling over QUIC in either case),
 as well as the existing desktop and desktop-hosted phone checks.
 
 ## Connect

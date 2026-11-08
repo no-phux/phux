@@ -88,6 +88,8 @@ class BuildTests(unittest.TestCase):
             self.assertEqual(rust[-3:], ["--", "--print", "native-static-libs"])
             swift = next(c for c in commands if "swiftc" in c)
             self.assertIn("arm64-apple-ios26.0-simulator", swift)
+            self.assertIn("-strict-concurrency=complete", swift)
+            self.assertEqual(swift[swift.index("-swift-version") + 1], "6")
             self.assertIn(str(out / "module-cache"), swift)
             link = swift[swift.index("-Xlinker"):]
             self.assertEqual(link[:8], ["-Xlinker", "-framework", "-Xlinker", "Security",
@@ -145,6 +147,13 @@ class BuildTests(unittest.TestCase):
 
 
 class QualificationTests(unittest.TestCase):
+    def test_native_report_proves_the_requested_transport_not_just_any_connection(self):
+        report = valid_report()
+        with self.assertRaises(ValueError):
+            qualify.validate_report(report, "wss")
+        report["transport"] = "paired-wss"
+        qualify.validate_report(report, "wss")
+
     def test_selects_only_runtime_supported_device_not_newer_incompatible_phone(self):
         types = [{"identifier": "17", "name": "iPhone 17", "productFamily": "iPhone"},
                  {"identifier": "duo", "name": "iPhone Duo", "productFamily": "iPhone"}]
