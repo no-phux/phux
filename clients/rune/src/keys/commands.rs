@@ -448,6 +448,8 @@ pub const COMMANDS: &[Command] = &[
     row!(hidden Shortcut::Palette, "Command Palette", [m('p'), m('k'), m('p').shift()], [l('p'), l('k')]),
     row!(hidden Shortcut::FindNext, "Find Next", [m('g')], [l('g')]),
     row!(hidden Shortcut::FindPrevious, "Find Previous", [m('g').shift()], [l('g').alt()]),
+    // Unlisted anywhere: found, not taught.
+    row!(hidden Shortcut::Bare, "Just the Terminal UI", [m('t').shift().alt()], [l('t').alt()]),
     tab!(0, '1', "Tab 1"),
     tab!(1, '2', "Tab 2"),
     tab!(2, '3', "Tab 3"),
@@ -603,6 +605,7 @@ mod tests {
         SelectAll,
         PromptUp,
         PromptDown,
+        Bare,
     );
 
     /// An essential with no chord here would teach a key that does nothing.

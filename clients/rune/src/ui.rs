@@ -137,6 +137,9 @@ pub fn view(desk: &Desk, cx: &mut Cx<Desk>) -> El {
     // draws its own titlebar.
     let lights = cx.titlebar_inset();
     let band = if lights > 0.0 { TITLEBAR_H } else { 12.0 };
+    if desk.bare.is_some() {
+        return bare(desk, &p, lights, band, cx);
+    }
     let main = row()
         .key("main")
         .w_full()
@@ -179,23 +182,51 @@ pub fn view(desk: &Desk, cx: &mut Cx<Desk>) -> El {
                         ),
                 ),
         );
-    el().w_full()
-        .h_full()
-        .fill(p.sidebar)
-        // No root paste hook: it would read the clipboard before anything
-        // here saw the key. ⌘V and Edit ▸ Paste come to `Desk::key` instead,
-        // which answers to the modal and keeps the terminal asked for.
-        .child(main)
-        .children(status::banner(desk, &p))
-        .children(updates::card(desk, &p, band))
-        .children(desk.inbox.open.then(|| inbox::view(desk, &p)))
-        .children(desk.galaxy.open.then(|| galaxy::view(desk, &p, cx)))
-        .children(desk.reef.open.then(|| reef::view(desk, &p, cx)))
-        .children(desk.settings_open.then(|| settings::view(desk, &p)))
-        .children(machines::sheet(desk, &p))
-        .children(tabs::rename_sheet(desk, &p))
-        .children(desk.palette_open.then(|| palette::view(desk, &p, 96.0)))
-        .children(desk.pointer.menu.map(|at| palette::context_menu(desk, at, &p)))
+    // No root paste hook: it would read the clipboard before anything here
+    // saw the key. ⌘V and Edit ▸ Paste come to `Desk::key` instead, which
+    // answers to the modal and keeps the terminal asked for.
+    let root = el().w_full().h_full().fill(p.sidebar).child(main);
+    floating(root, desk, &p, band, cx)
+}
+
+/// What floats over the window: banners, cards, sheets and menus.
+fn floating(root: El, desk: &Desk, p: &Ink, band: f32, cx: &mut Cx<Desk>) -> El {
+    root.children(status::banner(desk, p))
+        .children(updates::card(desk, p, band))
+        .children(desk.inbox.open.then(|| inbox::view(desk, p)))
+        .children(desk.galaxy.open.then(|| galaxy::view(desk, p, cx)))
+        .children(desk.reef.open.then(|| reef::view(desk, p, cx)))
+        .children(desk.settings_open.then(|| settings::view(desk, p)))
+        .children(machines::sheet(desk, p))
+        .children(tabs::rename_sheet(desk, p))
+        .children(desk.palette_open.then(|| palette::view(desk, p, 96.0)))
+        .children(
+            desk.pointer
+                .menu
+                .map(|at| palette::context_menu(desk, at, p)),
+        )
+}
+
+/// The bare window: the pane edge to edge under a band the traffic lights
+/// and a drag can use, with the same sheets over it.
+fn bare(desk: &Desk, p: &Ink, lights: f32, band_h: f32, cx: &mut Cx<Desk>) -> El {
+    let band = el()
+        .key("titlebar")
+        .w_full()
+        .h(if lights > 0.0 { TITLEBAR_H } else { 0.0 })
+        .window_drag();
+    let stage = col()
+        .key("stage")
+        .grow(1.0)
+        .w_full()
+        .min_w(0.0)
+        .min_h(0.0)
+        .child(panes::view(desk, p, cx))
+        .children(status::confirm_bar(desk, p))
+        .children(overlay::toast(desk, p));
+    let main = col().key("main").w_full().h_full().child(band).child(stage);
+    let root = el().w_full().h_full().fill(p.bg).child(main);
+    floating(root, desk, p, band_h, cx)
 }
 
 /// A modal sheet: scrim, header with a close button, scrolling body, footer.
@@ -324,6 +355,31 @@ pub(crate) fn keep_from_pane(_: &mut Desk, _: &mut rune::Drag, _: &mut rune::Tx)
 mod tests {
     use super::*;
     use crate::theme::{DIM_BAR, TEXT_BAR, contrast};
+
+    #[test]
+    fn the_bare_window_drops_the_chrome_and_keeps_the_sheets() {
+        let mut desk = Desk::settings_test_fixture();
+        desk.settings_open = false;
+        let mut rt = rune::Runtime::new(desk, view, (900.0, 600.0), rune::Env::new(false, 1.0));
+        rt.frame(0.0);
+        assert!(rt.presented("sidebar-toggle").is_some());
+        rt.update(|d, _| d.bare = Some(crate::desk::bare::Bare::test("tui", "work")));
+        rt.frame(1.0);
+        assert!(rt.presented("sidebar-toggle").is_none(), "no title bar");
+        assert!(rt.presented("sidebar-host").is_none(), "no sidebar");
+        let stage = rt.presented("stage").expect("the pane").0;
+        assert!(stage[2] >= 900.0 - 0.5, "edge to edge: {stage:?}");
+        rt.update(|d, _| d.settings_open = true);
+        rt.frame(2.0);
+        assert!(
+            rt.presented("settings-close").is_some(),
+            "sheets still show"
+        );
+        // With nothing connected, the chord again simply leaves.
+        rt.update(|d, _| d.toggle_bare());
+        rt.frame(3.0);
+        assert!(rt.presented("sidebar-toggle").is_some());
+    }
 
     #[test]
     fn the_system_appearance_clears_the_bars_too() {

@@ -81,6 +81,8 @@ pub enum Shortcut {
     SelectAll,
     PromptUp,
     PromptDown,
+    /// One pane, the terminal UI in it, and none of the window's chrome.
+    Bare,
 }
 
 impl Shortcut {

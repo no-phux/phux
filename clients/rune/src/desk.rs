@@ -21,6 +21,7 @@ use crate::grid::{self, Metrics};
 use crate::launch::Resolved;
 
 mod attach;
+pub(crate) mod bare;
 mod events;
 mod find;
 mod fleet;
@@ -270,6 +271,8 @@ pub struct Desk {
     split_write: Option<splits::SplitWrite>,
     /// The phone form's state, when this window is one.
     pub phone: Option<phone::Phone>,
+    /// The bare window: one pane, the terminal UI in it, no chrome.
+    pub bare: Option<bare::Bare>,
 }
 
 impl Desk {
@@ -439,6 +442,7 @@ impl Desk {
             focus_told: None,
             split_write: None,
             phone: None,
+            bare: None,
         }
     }
 
