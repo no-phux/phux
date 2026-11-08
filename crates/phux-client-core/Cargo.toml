@@ -23,6 +23,7 @@ native-engine = ["dep:libghostty-vt", "phux-protocol/server"]
 history-bench = ["dep:criterion"]
 
 [dependencies]
+bytes.workspace = true
 criterion = { workspace = true, optional = true }
 # Stable IDs, ungated wire/input atoms, bootstrap profiles, and layout records.
 # Engine-specific conversions stay off by default for native/wasm portability.

@@ -32,9 +32,9 @@ use support::{
 };
 
 #[cfg(feature = "native-engine")]
-use libghostty_vt::snapshot::{CaptureEvent, CaptureOptions};
-#[cfg(feature = "native-engine")]
 use phux_client_core::engine::ghostty::GhosttyAdapter;
+#[cfg(feature = "native-engine")]
+use phux_client_core::engine::ghostty::snapshot::{EncodedSnapshot, SnapshotCaptureLimits};
 
 #[cfg(feature = "native-engine")]
 #[path = "history/native_source.rs"]
@@ -363,41 +363,29 @@ struct NativePageFixture {
 
 #[cfg(feature = "native-engine")]
 fn native_page_fixture() -> NativePageFixture {
-    let mut terminal = native_source::terminal();
-    let record_bytes = HISTORY_PAGE_LIMIT;
-    let mut capture = terminal
-        .capture_snapshot(CaptureOptions {
-            max_record_bytes: record_bytes,
-            max_pages: 1_000,
-        })
-        .expect("native capture");
-    let mut buffer = vec![0; record_bytes];
-    let mut ready = Vec::new();
-    loop {
-        let event = capture.next(&mut buffer).expect("READY record");
-        ready.extend_from_slice(&buffer[..event.written()]);
-        if matches!(event, CaptureEvent::Ready { .. }) {
-            break;
-        }
-    }
-    let mut capture = capture.detach().expect("detached history");
-    let mut page = Vec::new();
-    let rows = loop {
-        let event = capture
-            .next(&mut terminal, &mut buffer)
-            .expect("history record");
-        page.extend_from_slice(&buffer[..event.written()]);
-        match event {
-            CaptureEvent::HistoryPage {
-                rows, remaining, ..
-            } => {
-                assert!(remaining > 0, "fixture needs at least two history pages");
-                break u32::try_from(rows).expect("bounded page rows");
-            }
-            CaptureEvent::Scan | CaptureEvent::Record { .. } => {}
-            other => panic!("expected history page, got {other:?}"),
-        }
-    };
+    let terminal = native_source::terminal();
+    let capture = EncodedSnapshot::capture(
+        &terminal,
+        SnapshotCaptureLimits {
+            max_bytes: 64 * 1024 * 1024,
+            max_record_bytes: HISTORY_PAGE_LIMIT,
+            max_records: 10_000,
+            max_rows: 10_000,
+        },
+    )
+    .expect("native capture");
+    let ready = capture.bytes[..capture.prefix_records.last().expect("READY prefix").end].to_vec();
+    assert!(
+        capture.history.iter().filter(|unit| unit.rows > 0).count() >= 2,
+        "fixture needs at least two history pages"
+    );
+    let unit = capture
+        .history
+        .iter()
+        .find(|unit| unit.rows > 0)
+        .expect("history PAGE");
+    let page = capture.bytes[unit.range.clone()].to_vec();
+    let rows = u32::try_from(unit.rows).expect("bounded page rows");
     NativePageFixture { ready, page, rows }
 }
 

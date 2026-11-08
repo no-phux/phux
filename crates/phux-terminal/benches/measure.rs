@@ -14,10 +14,8 @@ use std::hint::black_box;
 use std::time::{Duration, Instant};
 
 use bytes::Bytes;
-use libghostty_vt::{
-    Terminal as GhosttyTerminal,
-    snapshot::{CaptureEvent, CaptureOptions},
-};
+use libghostty_vt::Terminal as GhosttyTerminal;
+use phux_client_core::engine::ghostty::snapshot::{EncodedSnapshot, SnapshotCaptureLimits};
 use phux_terminal::grid::{SCROLLBACK_ALL, SnapshotSynthesizer};
 
 use crate::support::{Corpus, deterministic_line};
@@ -135,7 +133,7 @@ pub(crate) fn synthesized_measurement(terminal: &GhosttyTerminal<'_, '_>) -> Cap
     }
 }
 
-/// Measure bounded native capture through protocol READY and lazy FINISH.
+/// Measure synchronous stock capture and zero-copy history unit publication.
 pub(crate) fn native_progressive_measurement(
     terminal: &mut GhosttyTerminal<'_, '_>,
 ) -> CaptureMeasurement {
@@ -144,54 +142,38 @@ pub(crate) fn native_progressive_measurement(
     let chunk_bytes =
         usize::try_from(phux_protocol::DEFAULT_BOOTSTRAP_CHUNK_BYTES).expect("default chunk bound");
     let started = Instant::now();
-    let mut capture = terminal
-        .capture_snapshot(CaptureOptions {
+    let capture = EncodedSnapshot::capture(
+        terminal,
+        SnapshotCaptureLimits {
+            max_bytes: 256 * 1024 * 1024,
             max_record_bytes: record_bytes,
-            max_pages: 4_096,
-        })
-        .expect("progressive capture");
-    let mut buffer = vec![0; record_bytes];
-    let mut protocol_ready_bytes = 0_usize;
-    let mut chunks = 0_usize;
-    let mut payload_copies = 0_usize;
-    loop {
-        let event = capture.next(&mut buffer).expect("prefix capture step");
-        protocol_ready_bytes = protocol_ready_bytes.saturating_add(event.written());
-        chunks = chunks.saturating_add(event.written().div_ceil(chunk_bytes));
-        payload_copies = payload_copies.saturating_add(usize::from(event.written() != 0));
-        if matches!(event, CaptureEvent::Ready { .. }) {
-            break;
-        }
-    }
+            max_records: 100_000,
+            max_rows: 100_000,
+        },
+    )
+    .expect("stock capture");
     let protocol_ready = started.elapsed();
-    let mut capture = capture.detach().expect("detached history capture");
-    let mut engine_history_bytes = 0_usize;
-    let mut history_pages = 0_usize;
-    let mut history_step_max = Duration::ZERO;
-    let mut history_page_max_bytes = 0_usize;
-    let mut pending_unit_bytes = 0_usize;
-    loop {
-        let step_started = Instant::now();
-        let event = capture
-            .next(terminal, &mut buffer)
-            .expect("history capture step");
-        history_step_max = history_step_max.max(step_started.elapsed());
-        engine_history_bytes = engine_history_bytes.saturating_add(event.written());
-        pending_unit_bytes = pending_unit_bytes.saturating_add(event.written());
-        chunks = chunks.saturating_add(event.written().div_ceil(chunk_bytes));
-        payload_copies = payload_copies.saturating_add(usize::from(event.written() != 0));
-        match event {
-            CaptureEvent::HistoryPage { .. } | CaptureEvent::Image { .. } => {
-                history_pages = history_pages.saturating_add(1);
-                history_page_max_bytes = history_page_max_bytes.max(pending_unit_bytes);
-                pending_unit_bytes = 0;
-            }
-            CaptureEvent::Finish { .. } => break,
-            CaptureEvent::Scan | CaptureEvent::Record { .. } => {}
-            CaptureEvent::Invalidated(reason) => panic!("capture invalidated: {reason:?}"),
-            CaptureEvent::Ready { .. } => unreachable!(),
-        }
-    }
+    let protocol_ready_bytes = capture.prefix_records.last().expect("READY prefix").end;
+    let engine_history_bytes = capture.bytes.len() - protocol_ready_bytes;
+    let history_pages = capture.history.iter().filter(|unit| !unit.finish).count();
+    let history_page_max_bytes = capture
+        .history
+        .iter()
+        .filter(|unit| !unit.finish)
+        .map(|unit| unit.range.len())
+        .max()
+        .unwrap_or(0);
+    let chunks = capture
+        .prefix_records
+        .iter()
+        .map(|range| range.len().div_ceil(chunk_bytes))
+        .chain(
+            capture
+                .history
+                .iter()
+                .map(|unit| unit.range.len().div_ceil(chunk_bytes)),
+        )
+        .sum();
     CaptureMeasurement {
         protocol_ready,
         full_history: started.elapsed(),
@@ -201,9 +183,11 @@ pub(crate) fn native_progressive_measurement(
         full_history_bytes: protocol_ready_bytes.saturating_add(engine_history_bytes),
         chunks,
         history_pages,
-        history_step_max,
+        // All source work now precedes READY; publication only slices Bytes.
+        history_step_max: protocol_ready,
         history_page_max_bytes,
-        payload_copies,
+        // One stock-to-Rust materialization; indexed units share those bytes.
+        payload_copies: 1,
     }
 }
 

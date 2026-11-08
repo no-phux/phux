@@ -3075,6 +3075,7 @@ dependencies = [
 name = "phux-client-core"
 version = "0.129.1"
 dependencies = [
+ "bytes",
  "ciborium",
  "criterion",
  "insta",

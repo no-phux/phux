@@ -27,7 +27,7 @@ use crate::history::HistoryLoadState;
 #[cfg(feature = "native-engine")]
 use crate::engine::ghostty::GhosttyAdapter;
 #[cfg(feature = "native-engine")]
-use libghostty_vt::snapshot::{CaptureEvent, CaptureOptions};
+use crate::engine::ghostty::snapshot::{EncodedSnapshot, SnapshotCaptureLimits};
 #[cfg(feature = "native-engine")]
 use phux_protocol::wire::frame::FrameKind;
 
@@ -904,46 +904,29 @@ fn apply_decoded_native_frame(
     reason = "the acceptance test keeps real capture, wire framing, publication, interleaving, and projection in one end-to-end proof"
 )]
 fn real_native_wire_kernel_path_publishes_then_imports_multiple_pages() {
-    let mut source = native_source::terminal();
-    let mut capture = source
-        .capture_snapshot(CaptureOptions {
+    let source = native_source::terminal();
+    let capture = EncodedSnapshot::capture(
+        &source,
+        SnapshotCaptureLimits {
+            max_bytes: 64 * 1024 * 1024,
             max_record_bytes: 64 * 1024,
-            max_pages: 1_000,
+            max_records: 10_000,
+            max_rows: 10_000,
+        },
+    )
+    .expect("native capture");
+    let ready = &capture.bytes[..capture.prefix_records.last().unwrap().end];
+    let units: Vec<_> = capture
+        .history
+        .iter()
+        .map(|unit| {
+            (
+                capture.bytes.slice(unit.range.clone()),
+                u32::try_from(unit.rows).expect("rows"),
+                unit.finish,
+            )
         })
-        .expect("native capture");
-    let mut scratch = vec![0; 64 * 1024];
-    let mut ready = Vec::new();
-    loop {
-        let event = capture.next(&mut scratch).expect("prefix record");
-        ready.extend_from_slice(&scratch[..event.written()]);
-        if matches!(event, CaptureEvent::Ready { .. }) {
-            break;
-        }
-    }
-    let mut capture = capture.detach().expect("detached history");
-    let mut pending = Vec::new();
-    let mut units = Vec::new();
-    loop {
-        let event = capture
-            .next(&mut source, &mut scratch)
-            .expect("history record");
-        pending.extend_from_slice(&scratch[..event.written()]);
-        match event {
-            CaptureEvent::HistoryPage { rows, .. } => units.push((
-                std::mem::take(&mut pending),
-                u32::try_from(rows).expect("rows"),
-                false,
-            )),
-            CaptureEvent::Finish { .. } => {
-                units.push((std::mem::take(&mut pending), 0, true));
-                break;
-            }
-            CaptureEvent::Image { .. } => units.push((std::mem::take(&mut pending), 0, false)),
-            CaptureEvent::Scan | CaptureEvent::Record { .. } => {}
-            CaptureEvent::Invalidated(reason) => panic!("capture invalidated: {reason:?}"),
-            CaptureEvent::Ready { .. } => unreachable!(),
-        }
-    }
+        .collect();
     assert!(units.len() >= 3, "two pages plus FINISH are required");
 
     let terminal_id = terminal(91);
@@ -1024,7 +1007,7 @@ fn real_native_wire_kernel_path_publishes_then_imports_multiple_pages() {
                 page_seq: u64::try_from(index + 1).expect("page sequence"),
                 cursor: cursor.clone().into(),
                 next_cursor: (!finish).then(|| cursor.clone().into()),
-                payload: payload.clone().into(),
+                payload: payload.clone(),
                 rows: *rows,
             },
             &mut effects,
