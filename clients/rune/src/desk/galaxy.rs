@@ -83,6 +83,7 @@ impl Desk {
         }
         self.close_inbox();
         self.close_pitch();
+        self.close_kitchen();
         self.settings_open = false;
         self.galaxy.open = true;
         self.galaxy.placed = false;

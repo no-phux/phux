@@ -10,6 +10,7 @@ mod documents;
 mod galaxy;
 mod icons;
 mod inbox;
+mod kitchen;
 mod machines;
 mod overlay;
 mod palette;
@@ -198,6 +199,7 @@ fn floating(root: El, desk: &Desk, p: &Ink, band: f32, cx: &mut Cx<Desk>) -> El 
         .children(desk.galaxy.open.then(|| galaxy::view(desk, p, cx)))
         .children(desk.reef.open.then(|| reef::view(desk, p, cx)))
         .children(desk.pitch.open.then(|| pitch::view(desk, p, cx)))
+        .children(desk.kitchen.open.then(|| kitchen::view(desk, p, cx)))
         .children(desk.settings_open.then(|| settings::view(desk, p)))
         .children(machines::sheet(desk, p))
         .children(tabs::rename_sheet(desk, p))

@@ -30,12 +30,14 @@ pub mod galaxy;
 mod home;
 mod inbox;
 mod input;
+pub mod kitchen;
 mod layout;
 pub mod link;
 mod links;
 pub mod machines;
 pub mod mouse;
 pub(crate) mod native_input;
+mod notice;
 mod palette;
 pub mod phone;
 pub mod pitch;
@@ -50,6 +52,7 @@ mod tabs;
 pub mod updates;
 
 pub use layout::SplitPath;
+pub use notice::{Notice, NoticeKind, Offer};
 pub use palette::{CONTEXT_MENU, with_menus};
 pub use settings::Category as SettingsCategory;
 pub use tabs::{Renaming, Tab};
@@ -84,40 +87,6 @@ pub struct Painted {
 /// A size this window asked for: a terminal's cells and the cell's device
 /// pixels.
 type Fitted = ((u16, u16), (u16, u16));
-
-/// What kind of thing a notice says.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum NoticeKind {
-    Info,
-    Error,
-    /// Something worth knowing, with a way to act on it; stays until read.
-    Tip,
-}
-
-impl NoticeKind {
-    /// Seconds on screen; a failure stays long enough to be read twice.
-    const fn lasts(self) -> f64 {
-        match self {
-            Self::Info => 6.0,
-            Self::Error => 12.0,
-            Self::Tip => 30.0,
-        }
-    }
-}
-
-/// A word to press on a tip, and what pressing it does.
-pub type Offer = (&'static str, fn(&mut Desk));
-
-/// Words for the user, in a toast and the inbox's footer.
-#[derive(Debug, Clone, PartialEq)]
-pub struct Notice {
-    pub kind: NoticeKind,
-    pub text: String,
-    /// A word to press and what it does; the toast shows it as a button.
-    pub action: Option<Offer>,
-    /// When it goes, on the app clock.
-    expires: f64,
-}
 
 /// What waits on the user's Return or Escape.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -192,6 +161,8 @@ pub struct Desk {
     pub reef: reef::Reef,
     /// The fleet as football training, while open.
     pub pitch: pitch::Pitch,
+    /// The fleet as a kitchen, while open.
+    pub kitchen: kitchen::Kitchen,
     /// The other machines, watched while the galaxy or the reef is open.
     pub(crate) fleet: fleet::Fleet,
     pub settings: settings::Settings,
@@ -402,6 +373,7 @@ impl Desk {
             galaxy: galaxy::Galaxy::default(),
             reef: reef::Reef::default(),
             pitch: pitch::Pitch::default(),
+            kitchen: kitchen::Kitchen::default(),
             fleet: fleet::Fleet::default(),
             settings,
             settings_open: false,
@@ -494,6 +466,7 @@ impl Desk {
         changed |= self.tick_galaxy(tx);
         changed |= self.tick_reef(tx);
         changed |= self.tick_pitch(tx);
+        changed |= self.tick_kitchen(tx);
         self.settle_pointer();
         changed |= self.autoscroll(tx);
         self.keep_find();

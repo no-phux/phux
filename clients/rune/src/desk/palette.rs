@@ -100,6 +100,7 @@ pub fn with_menus(app: App<Desk>) -> App<Desk> {
         item!(VIEW, Galaxy),
         item!(VIEW, Reef),
         item!(VIEW, Pitch),
+        item!(VIEW, Kitchen),
         item!(VIEW, Palette),
         item!(VIEW, KeyboardShortcuts),
         item!(VIEW, EssentialShortcuts),

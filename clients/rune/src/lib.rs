@@ -13,6 +13,7 @@ mod galaxy;
 mod grid;
 mod inbox;
 mod keys;
+mod kitchen;
 mod launch;
 mod links;
 mod machines;
