@@ -171,7 +171,10 @@ pub fn path_item(path: &str, directory: bool, origin: &str) -> Item {
 
 /// Every chord the app answers to, generated from the command table.
 pub fn shortcut_items() -> Vec<Item> {
-    let bound = COMMANDS.iter().filter(|c| !c.chords().is_empty());
+    // The bare window is an easter egg: its chord is found, not listed.
+    let bound = COMMANDS
+        .iter()
+        .filter(|c| !c.chords().is_empty() && c.action != Shortcut::Bare);
     bound
         .map(|command| Item {
             title: command.title.to_owned(),

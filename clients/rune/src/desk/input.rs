@@ -287,6 +287,7 @@ impl Desk {
             Shortcut::FindNext => self.step_find(-1),
             Shortcut::FindPrevious => self.step_find(1),
             Shortcut::FindSelection => self.find_selection(),
+            Shortcut::Bare => self.toggle_bare(),
         }
     }
 

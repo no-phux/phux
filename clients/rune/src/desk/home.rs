@@ -64,6 +64,9 @@ impl Desk {
         if self.status != Status::Attached {
             return false;
         }
+        if self.settle_bare(client) {
+            return true;
+        }
         let Some(topology) = &self.topology else {
             return false;
         };
