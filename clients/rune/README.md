@@ -145,7 +145,9 @@ session (or `--session NAME`). It never creates a session on its own.
   Option as Meta (macOS), copy on select, and close confirmation are remembered
   immediately. Diagnostics stays available in development builds; update errors
   and protocol warnings remain visible during search. A program's own OSC
-  colours beat the theme.
+  colours beat the theme. A soft upper edge and wider lower fade show where
+  more settings are hidden. Keyboard-revealed controls stay clear of the fades;
+  an edge with no hidden content stays opaque.
 - **Themes.** The palette switches themes by name (`nord`) and **Change
   Theme** lists them with each one shown live as the highlight moves:
   Return keeps it, Escape puts the old one back. A Ghostty config on this machine (`theme`,

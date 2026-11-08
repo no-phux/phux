@@ -6,6 +6,8 @@ use rune::{Cx, El, Env, Key, KeyEvent, Mods, Runtime};
 use super::*;
 use crate::desk::updates::Work;
 
+mod overflow;
+
 fn surface(desk: &Desk, cx: &mut Cx<Desk>) -> El {
     let ink = super::super::ink(cx.system_dark(), cx.accent(), desk.settings.theme);
     view(desk, &ink)
