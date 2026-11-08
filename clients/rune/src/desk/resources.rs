@@ -13,6 +13,7 @@ use phux_protocol::wire::frame::ResourceRecord;
 use super::Desk;
 
 mod input;
+mod satellite;
 mod selection;
 mod startup;
 mod subscriptions;
@@ -297,11 +298,13 @@ impl Desk {
         if !org.is_live() {
             return false;
         }
+        let satellites = self.topology.iter().flat_map(|t| &t.documents);
         let live: Vec<_> = org
             .resources()
             .iter()
             .filter(|r| document_kind(r.kind) && r.live.is_some())
             .cloned()
+            .chain(satellites.filter_map(satellite::record))
             .collect();
         self.resources
             .closed

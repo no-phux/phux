@@ -107,7 +107,11 @@ impl Desk {
             .entries
             .iter()
             .filter_map(|(id, doc)| {
-                let session = org.session(&doc.record.session)?.name.clone();
+                // A satellite's document has no session here: its host names it.
+                let session = match id.host() {
+                    Some(host) => host.as_str().to_owned(),
+                    None => org.session(&doc.record.session)?.name.clone(),
+                };
                 Some(Item {
                     title: doc
                         .record

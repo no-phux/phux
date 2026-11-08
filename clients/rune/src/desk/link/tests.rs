@@ -50,6 +50,7 @@ fn topology(panes: Vec<PaneDescriptor>) -> Topology {
         sessions: Vec::new(),
         panes,
         agent_sessions: Vec::new(),
+        documents: Vec::new(),
         focused_session: 0,
         focused_pane: ResourceId::local(0),
         authority: None,

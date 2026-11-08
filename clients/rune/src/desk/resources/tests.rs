@@ -582,5 +582,6 @@ mod lifecycle;
 mod native;
 mod receipts;
 mod review;
+mod satellite;
 mod streaming;
 mod typed;

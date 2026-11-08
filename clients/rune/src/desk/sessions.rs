@@ -15,7 +15,10 @@ use super::Desk;
 impl Desk {
     pub fn show(&mut self, terminal: ResourceId, session_name: &str) {
         let attached = self.selected_session_name();
-        if attached.as_deref() != Some(session_name)
+        // A hub's satellite resource is in none of its sessions: it is
+        // viewed from whichever one is attached.
+        if terminal.host().is_none()
+            && attached.as_deref() != Some(session_name)
             && let Some(client) = &self.client
         {
             client.attach_session(AttachTarget::ByName(session_name.to_owned()));
