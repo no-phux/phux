@@ -41,13 +41,12 @@ test("all runner selectors are standard public capacity", () => {
   }
 });
 
-test("desktop qualifies both Apple generations and releases from its supported floor", () => {
-  const desktop = job(workflow("desktop-lane.yml"), "desktop");
-  const matrix = table(table(desktop["strategy"])["matrix"]);
+test("Rune qualifies and releases on macOS and Linux", () => {
+  const rune = job(workflow("rune-build.yml"), "build");
+  const matrix = table(table(rune["strategy"])["matrix"]);
   const runners = list(matrix["include"]).map((entry) => table(entry)["os"]);
   expect(runners).toContain("macos-26");
-  expect(runners).toContain("xcode-27");
-  expect(job(workflow("desktop-release.yml"), "macos")["runs-on"]).toBe("macos-26");
+  expect(runners).toContain("ubuntu-24.04");
 });
 
 test("closing a pull request cancels its in-flight ci run", () => {

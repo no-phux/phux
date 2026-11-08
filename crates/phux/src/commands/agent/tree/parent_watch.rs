@@ -1,5 +1,5 @@
 //! `--parent-pid PID` for the mirrors: exit once the process that launched
-//! the mirror is gone, so a crashed desktop leaves no producer behind
+//! the mirror is gone, so a crashed parent leaves no producer behind
 //! (`docs/resource-kinds.md#supervision`).
 
 use std::time::Duration;

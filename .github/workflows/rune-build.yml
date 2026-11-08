@@ -99,9 +99,9 @@ jobs:
         run: |
           version="$(sed -n 's/^version = "\(.*\)"/\1/p' clients/rune/Cargo.toml | head -1)"
           bash clients/rune/scripts/package.sh "$version" "$RUNNER_TEMP/dist" "$RUNNER_TEMP/app"
-      # Releases ship the app the way the GPUI desktop does: Developer ID
-      # signed with the hardened runtime, notarized and stapled, so it opens
-      # from Finder without a Gatekeeper override.
+      # Releases ship the app Developer ID signed with the hardened runtime,
+      # notarized and stapled, so it opens from Finder without a Gatekeeper
+      # override.
       - name: Sign, notarize and staple the macOS app
         if: runner.os == 'macOS' && startsWith(github.ref, 'refs/tags/rune-v')
         env:

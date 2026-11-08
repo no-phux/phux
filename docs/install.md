@@ -18,42 +18,26 @@ Published CLI/server builds:
 | Linux | arm64                 | glibc; there is no musl build           |
 
 Windows: the CLI and server use the Linux builds in WSL 2, with optional
-PowerShell launchers. A separate native Windows x64 desktop is published
-from Desktop 0.50.0 onward; it still needs that WSL server. There is no native
-Windows CLI/server or Intel Mac build. See [Windows (WSL)](#windows-wsl)
-and the [Windows desktop installer](../clients/desktop/README.md#windows).
+PowerShell launchers. There is no native Windows CLI, server, or desktop app,
+and no Intel Mac build. See [Windows (WSL)](#windows-wsl).
 
 The install script needs `curl` or `wget`, `tar`, and `sha256sum` or `shasum`.
-Xcode is only needed for [source builds](./development.md#gpui-desktop).
 
 ## macOS permissions
 
-In the desktop, open **Phux Settings → Permissions** (or search for
-**Full Disk Access**). **Set up** opens macOS Full Disk Access and selects
-the running app in Finder. Drag it into the list and turn it on. Use the
-**Local shells & agents** row for the separate local `phux` executable when
-the background server also needs access to protected folders. If your
-service launches a different install, grant that executable access instead.
-macOS owns the approval; phux cannot grant access on your behalf.
-
-Reopen the desktop after granting access. A running server may also need
-a restart; save its work first, because quitting the desktop does not stop
-shells or agents. Grants on this Mac do not change permissions on a remote
-host.
-
-Full Disk Access is optional and only applies to file access. Phux's
-terminal and quick-terminal shortcuts do not need Accessibility, Input
-Monitoring or Screen Recording. Tools you run may request those separately.
-Background notification permissions have their own **Open Settings** button.
-See Apple's [file access controls](https://support.apple.com/guide/security/controlling-app-access-to-files-secddd1d86a6/web)
-for the operating system's permission boundaries.
+Full Disk Access is optional and only applies to file access. To let shells
+and agents reach protected folders, add the `phux` executable that runs the
+server (and **Phux Rune** if you use it) under **System Settings → Privacy &
+Security → Full Disk Access**, then restart the server; save its work first,
+because quitting the desktop does not stop shells or agents. macOS owns the
+approval; phux cannot grant access on your behalf. Grants on this Mac do not
+change permissions on a remote host. phux needs no Accessibility, Input
+Monitoring or Screen Recording; tools you run may request those separately.
+See Apple's [file access controls](https://support.apple.com/guide/security/controlling-app-access-to-files-secddd1d86a6/web).
 
 ## Windows (WSL)
 
-The CLI and server run in WSL 2, with optional PowerShell launchers. The
-[native Windows desktop](../clients/desktop/README.md#windows) uses the same
-server; install it only after initializing your non-root WSL user. Its native
-window does not require WSLg.
+The CLI and server run in WSL 2, with optional PowerShell launchers.
 
 Use Windows Terminal and WSL 2 with Ubuntu 22.04 or newer (x64 or arm64).
 The server, panes, configuration, credentials, and agent integrations live
@@ -163,8 +147,8 @@ curl -fsSL https://phux.sh/install | sh -s -- --dry-run
 | `--no-modify-path`              | leave your shell profile alone                                |
 | `--version <X.Y.Z>`             | install a specific release instead of the latest             |
 | `--channel <stable\|next>`      | follow tagged releases (the default), or every `main` build that passes CI |
-| `--desktop`                     | also install the desktop app                                  |
-| `--rune`                        | install [Phux Rune](./clients.md#phux-rune) instead of the CLI, adding the CLI if missing |
+| `--rune`                        | install the desktop app, [Phux Rune](./clients.md#desktop), adding the CLI if missing |
+| `--desktop`                     | the same as `--rune` (the GPUI desktop is retired)           |
 | `--dry-run`                     | print what would be downloaded and where, and install nothing |
 
 **Signature checks need `minisign`.** With `minisign` on your `PATH`, the script also verifies the release signature. Set `PHUX_REQUIRE_SIGNATURE=1` to refuse to install without that check.
@@ -190,56 +174,31 @@ brew install phux
 
 ## Desktop app
 
-### macOS Homebrew
+The desktop app is [Phux Rune](../clients/rune/README.md) (alpha):
 
 ```sh
-brew install --cask no-phux/tap/phux-desktop
+curl -fsSL https://phux.sh/install | sh -s -- --rune
 ```
 
-One command. On Homebrew 6 and later the fully qualified cask name trusts
-only `phux-desktop`, so there is no separate `brew trust` step. This
-installs the signed, notarized DMG on Apple silicon with macOS 26 or
-newer. The app
-bundles the CLI/server; no separate formula is required.
-Update with `brew upgrade --cask no-phux/tap/phux-desktop`. The tap follows
-stable desktop releases independently of CLI releases. The retired
-`phux-cockpit` cask migrates to `phux-desktop` on Homebrew upgrade.
+`https://phux.sh/install-desktop` and `install --desktop` run the same
+install. It checks the archive's SHA-256 (and the release signature with
+`minisign` on `PATH`), installs the CLI when none is found, and never
+replaces an existing CLI or stops its server. Releases are the `rune-v*`
+tags on [GitHub](https://github.com/no-phux/phux/releases?q=rune-v&expanded=true).
 
-### macOS drag-and-drop download
+| OS    | Needs                                              | Installs to                                          |
+| ----- | -------------------------------------------------- | ---------------------------------------------------- |
+| macOS | Apple silicon, macOS 14 or later                   | `/Applications`, or `~/Applications` if not writable |
+| Linux | x86_64, glibc 2.39, Vulkan, `libxkbcommon-x11`     | `~/.local/share/phux-rune`, with a menu entry        |
 
-Download **macos-arm64.dmg** from the latest
-[Desktop release](https://github.com/no-phux/phux/releases?q=desktop-v&expanded=true).
-Open it, drag **Phux.app** to **Applications**, eject the image, then open
-Phux from Applications—not from the mounted image.
+The app updates itself. It is rougher than the terminal UI;
+[Clients](./clients.md#desktop) says what it does today. There is no
+Windows desktop app.
 
-The app and DMG are Developer ID signed, Apple-notarized, and stapled.
-The bundled CLI/server needs no separate download and never replaces an
-existing CLI. See [first launch and recovery](../clients/desktop/README.md#first-launch-and-recovery).
-
-### Shell installer (macOS and Linux)
-
-```sh
-curl -fsSL https://phux.sh/install-desktop | sh
-```
-
-This is the same script as `install --desktop`.
-
-The Linux desktop archive does not include the CLI. On Linux, this script installs the CLI when none is found.
-
-| OS    | Needs                                       | Installs to                                         |
-| ----- | ------------------------------------------- | --------------------------------------------------- |
-| macOS | Apple silicon, macOS 26.0 or later          | `/Applications`, or `~/Applications` if not writable |
-| Linux | x86_64 or arm64, glibc, a working Vulkan driver | `~/.local/share/phux-desktop`, with a menu entry |
-
-The desktop app is rougher than the terminal UI; [Clients](./clients.md#desktop) says what it does today.
-
-### Windows desktop
-
-Desktop 0.50.0 and later publish a Windows x64 ZIP alongside the macOS and
-Linux artifacts. Use the [PowerShell installer](../clients/desktop/README.md#windows)
-after installing the WSL CLI/server above. It verifies signed checksums;
-this is not Windows Authenticode signing or a promise of SmartScreen
-reputation. Windows desktop updates are manual.
+The GPUI desktop (`Phux.app`, the `phux-desktop` Homebrew cask, the Windows
+desktop) was retired after Desktop 0.62.0 and gets no further updates.
+To remove it, delete `Phux.app`, or run
+`brew uninstall --cask no-phux/tap/phux-desktop`.
 
 ## Check it worked
 
@@ -322,11 +281,11 @@ rm ~/.local/bin/phux ~/.local/bin/phux-mcp
 rm -rf ~/.config/phux ~/.local/state/phux ~/.local/share/phux
 ```
 
-If you installed the desktop app, also remove `Phux.app` from `/Applications` or `~/Applications` on macOS, or `~/.local/share/phux-desktop` on Linux. With Homebrew, run `brew uninstall phux` instead of the first `rm`; remove the desktop cask with `brew uninstall --cask no-phux/tap/phux-desktop`. [File locations](./reference/files.md) lists every path phux writes, including where they move when `XDG_*` variables are set.
+If you installed the desktop app, also remove `Phux Rune.app` from `/Applications` or `~/Applications` on macOS, or `~/.local/share/phux-rune` and `~/.local/bin/phux-rune` on Linux. With Homebrew, run `brew uninstall phux` instead of the first `rm`. [File locations](./reference/files.md) lists every path phux writes, including where they move when `XDG_*` variables are set.
 
 ## Troubleshooting
 
 - **`no phux release for <os>/<arch>; build from source`**: your platform has no release build. See [Requirements](#requirements).
 - **`checksum mismatch for <file>`**: the download was corrupted or altered, and nothing was installed. Run the script again.
-- **`phux: command not found` after installing**: open a new shell so it reads the updated profile, or add `~/.local/bin` to your `PATH`. A DMG first launch installs the CLI there and leaves your shell profile unchanged until you choose **Add to PATH** in Phux (or **Phux Settings → Permissions**). The shell installer adds the directory itself when profile changes are allowed.
+- **`phux: command not found` after installing**: open a new shell so it reads the updated profile, or add `~/.local/bin` to your `PATH`. The shell installer adds the directory itself when profile changes are allowed.
 - Anything else: run `phux doctor`, then see [Troubleshooting](./troubleshooting.md).

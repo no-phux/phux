@@ -1,5 +1,5 @@
 //! The phux CLI and server on this computer, updated through the installed
-//! CLI's own checksum-verified updater, as the GPUI desktop does it. A
+//! CLI's own checksum-verified updater. A
 //! refused handoff closes nothing: the old server keeps running.
 
 use std::path::Path;

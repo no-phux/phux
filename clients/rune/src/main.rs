@@ -1,4 +1,4 @@
-//! phux on Rune: an alpha desktop client beside the GPUI one.
+//! phux on Rune: the desktop client.
 //!
 //! One window over the shared client runtime: a sidebar of every session
 //! and terminal the server lists, the selected terminal, and a status line.

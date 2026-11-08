@@ -56,7 +56,6 @@
       "release-type": "simple",
       "changelog-path": "CHANGELOG.md",
       "exclude-paths": [
-        "clients/desktop",
         "clients/rune",
         "integrations/runtime",
         "integrations/opencode-v2",
@@ -90,11 +89,6 @@
           "type": "toml",
           "path": "clients/phux-web/Cargo.lock",
           "jsonpath": "$.package[?(!@.source && (@.name.value=='phux-client-core' || @.name.value=='phux-perf' || @.name.value=='phux-protocol'))].version"
-        },
-        {
-          "type": "toml",
-          "path": "clients/desktop/native/Cargo.lock",
-          "jsonpath": "$.package[?(!@.source && (@.name.value=='phux-client-core' || @.name.value=='phux-client-ffi' || @.name.value=='phux-client-runtime' || @.name.value=='phux-config-core' || @.name.value=='phux-core' || @.name.value=='phux-dial' || @.name.value=='phux-git' || @.name.value=='phux-perf' || @.name.value=='phux-protocol' || @.name.value=='quictun'))].version"
         },
         {
           "type": "toml",

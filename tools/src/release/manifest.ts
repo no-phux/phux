@@ -9,28 +9,19 @@ import { isTable, type Table } from "../lib/value.ts";
 const DOWNLOAD = "https://github.com/no-phux/phux/releases/download";
 export const CHANNELS = ["stable", "next"] as const;
 export type Channel = (typeof CHANNELS)[number];
-export const PRODUCTS = ["phux", "desktop"] as const;
+// The CLI is the one product on the channels. The retired GPUI desktop
+// (last release desktop-v0.62.0) left them; an installed copy reads an absent
+// entry as "no update". Phux Rune publishes its own feed.
+export const PRODUCTS = ["phux"] as const;
 export type Product = (typeof PRODUCTS)[number];
-export const DESKTOP_ARCHIVES: Record<string, string> = {
-  "aarch64-apple-darwin": "macos-arm64.zip",
-  "x86_64-unknown-linux-gnu": "linux-x64.tar.gz",
-  "aarch64-unknown-linux-gnu": "linux-arm64.tar.gz",
-  "x86_64-pc-windows-msvc": "windows-x64.zip",
-};
 /** CLI releases remain Unix-only; Windows runs that CLI inside WSL. */
 export const TARGETS = [
   "aarch64-apple-darwin",
   "x86_64-unknown-linux-gnu",
   "aarch64-unknown-linux-gnu",
 ];
-export function targets(product: Product, channel: Channel = "next", version = ""): string[] {
-  if (product === "phux") return TARGETS;
-  if (channel === "next") return Object.keys(DESKTOP_ARCHIVES);
-  // Do not retroactively demand a Windows asset from an immutable historical
-  // release. Every new stable desktop (0.50.0 onward) must carry it.
-  valid(VERSION, version, "desktop version");
-  const [major = 0, minor = 0] = version.split(".").map(Number);
-  return major > 0 || minor >= 50 ? Object.keys(DESKTOP_ARCHIVES) : TARGETS;
+export function targets(_product: Product): string[] {
+  return TARGETS;
 }
 const FIXTURES = "scripts/fixtures/release-manifest";
 
@@ -55,18 +46,14 @@ export function valid(pattern: RegExp, value: unknown, what: string): string {
 }
 
 /** The naming rule every client derives on its own (ADR-0176 decision 1). */
-export function assetName(product: Product, channel: Channel, id: string, target: string): string {
-  const identity = channel === "next" ? `next.${id}` : product === "phux" ? `v${id}` : id;
-  if (product === "phux") return `phux-${identity}-${target}.tar.gz`;
-  const archive = DESKTOP_ARCHIVES[target];
-  if (archive === undefined) throw new Failure(`no desktop archive for ${target}`);
-  return `phux-desktop-${identity}-${archive}`;
+export function assetName(_product: Product, channel: Channel, id: string, target: string): string {
+  const identity = channel === "next" ? `next.${id}` : `v${id}`;
+  return `phux-${identity}-${target}.tar.gz`;
 }
 
 /**
- * One product's entry. `release`, `name`, `url` and `minimum_macos` are
- * derived, and current clients ignore them; v0.87.0 and Desktop 0.26.0 check
- * them (ADR-0176 decision 8).
+ * One product's entry. `release`, `name` and `url` are derived, and current
+ * clients ignore them; v0.87.0 checks them (ADR-0176 decision 8).
  */
 export function entry(
   product: Product,
@@ -77,12 +64,11 @@ export function entry(
   digests: Record<string, string>,
 ): Table {
   const given = Object.keys(digests);
-  const required = targets(product, channel, version);
+  const required = targets(product);
   if (given.length !== required.length || !required.every((target) => target in digests)) {
     throw new Failure(`${product} needs digests for exactly ${required.join(", ")}`);
   }
-  const release =
-    channel === "next" ? "next" : `${product === "phux" ? "" : "desktop-"}v${version}`;
+  const release = channel === "next" ? "next" : `v${version}`;
   const artifacts: Table = {};
   for (const target of required) {
     const name = assetName(product, channel, channel === "next" ? sha : version, target);
@@ -94,7 +80,6 @@ export function entry(
     release,
     sha: valid(SHA, sha, `${product} sha`),
     protocol: valid(PROTOCOL, protocol, `${product} protocol`),
-    ...(product === "desktop" ? { minimum_macos: "26.0" } : {}),
     artifacts,
   };
 }
@@ -129,21 +114,10 @@ export function now(): string {
 }
 
 /** The pre-manifest next pointer an older binary reads (ADR-0176 decision 8). */
-export function bridgeRecord(
-  product: Product,
-  sha: string,
-  version: string,
-  digests: Record<string, string>,
-): [string, string] {
+export function bridgeRecord(product: Product, sha: string, version: string): [string, string] {
   const record: Table = { schema_version: 1, channel: "next", product, sha, version };
-  if (product === "desktop") {
-    record["archive"] = assetName("desktop", "next", sha, "aarch64-apple-darwin");
-    record["sha256"] = digests["aarch64-apple-darwin"];
-    record["minimum_macos"] = "26.0";
-  }
   record["published_at"] = now();
-  const name = product === "phux" ? "channel.json" : "desktop-channel.json";
-  return [name, `${JSON.stringify(record, null, 2)}\n`];
+  return ["channel.json", `${JSON.stringify(record, null, 2)}\n`];
 }
 
 /** Placeholder single-hex-digit digests, wrapping after f. */
@@ -161,14 +135,6 @@ export function fixture(channel: Channel): Table {
     channel,
     {
       phux: entry("phux", channel, "9.8.7", "a".repeat(40), "0.9", fakeDigests(1, "phux")),
-      desktop: entry(
-        "desktop",
-        channel,
-        "1.2.3",
-        "b".repeat(40),
-        "0.9",
-        fakeDigests(13, "desktop"),
-      ),
     },
     "2026-01-01T00:00:00Z",
   );

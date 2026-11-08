@@ -1,8 +1,7 @@
 //! Command line, the installed CLI, and the server socket.
 //!
 //! The client starts or reuses the server through `phux server --ensure`,
-//! then asks the CLI which socket that server listens on, the same way the
-//! GPUI desktop does. Those calls can block for seconds, so [`resolve`] only
+//! then asks the CLI which socket that server listens on. Those calls can block for seconds, so [`resolve`] only
 //! reads flags and the disk; [`Resolved::ensured`] runs on a worker.
 
 use std::io::Read;

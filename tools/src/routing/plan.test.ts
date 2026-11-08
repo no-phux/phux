@@ -16,9 +16,8 @@ test.each<[string[], Trigger, Lane[]]>([
   [[".github/workflows/ci.yml"], "pull_request", [...LANES]],
   [[".github/workflows/release.yml"], "pull_request", ["guards"]],
   [[".github/ISSUE_TEMPLATE/bug.yml"], "pull_request", ["guards"]],
-  [["clients/desktop/native/src/main.rs"], "pull_request", ["guards", "desktop"]],
-  // Release qualification builds desktop on main; the push is guards only.
-  [["clients/desktop/native/src/main.rs"], "push", ["guards"]],
+  [["clients/rune/src/main.rs"], "pull_request", ["guards", "rune"]],
+  [["clients/rune/src/main.rs"], "push", ["guards", "rune"]],
   [["integrations/pi/src/index.ts"], "pull_request", ["guards", "integrations"]],
   [["crates/phux-mcp/src/lib.rs"], "pull_request", ["guards", "lint", "tests", "e2e"]],
   [["crates/phux-mcp/src/lib.rs"], "push", ["guards", "lint", "tests", "e2e", "ffi"]],
@@ -40,9 +39,9 @@ test("a push runs the full unit pool; a pull request keeps its filterset", () =>
 });
 
 test("coverage is the pull-request lane set on either event", () => {
-  const c = classifier.classify(["clients/desktop/native/src/main.rs"]);
-  expect(plan(c, "push").coverage).toBe("guards,desktop");
-  expect(plan(c, "pull_request").coverage).toBe("guards,desktop");
+  const c = classifier.classify(["crates/phux-mcp/src/lib.rs"]);
+  expect(plan(c, "push").coverage).toBe("guards,lint,tests,e2e");
+  expect(plan(c, "pull_request").coverage).toBe("guards,lint,tests,e2e");
 });
 
 test("outputs name every lane and the web engine only inside the web lane", () => {

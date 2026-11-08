@@ -4,7 +4,7 @@
 //!
 //! On macOS the tree comes from the Accessibility API. The process needs the
 //! Accessibility grant, which macOS ties to the application that launched it
-//! (the terminal, or the phux desktop app). On Linux it comes from AT-SPI
+//! (the terminal). On Linux it comes from AT-SPI
 //! over D-Bus (`mirror_atspi`), in the same JSON shape.
 
 use std::path::PathBuf;

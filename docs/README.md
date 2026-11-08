@@ -51,17 +51,13 @@ unshipped experiment, and phone apps are not available yet. See
 ## Machines and clients
 
 - [Remote machines](./remote.md): reach another machine's server with `phux host add`, and link machines together.
-- [Clients](./clients.md): the terminal UI, the desktop app, the browser client, and phones.
-- [Desktop Quick Capture](./desktop-capture.md): start an agent from a thought without leaving what you're doing.
-- [Desktop Changes panel](./desktop-changes.md): review, stage, and commit the focused checkout.
-- [Desktop Reviews](./desktop-reviews.md): review, comment on, and merge your open GitHub pull requests.
-- [Desktop agent panes](./desktop-panes.md): how the desktop app shows agent panes.
+- [Clients](./clients.md): the terminal UI, the desktop app (Phux Rune), the browser client, and phones.
 
 ## Help
 
 - [Troubleshooting](./troubleshooting.md): what to run first, and the failures people hit.
 - [Supported platforms](./install.md#requirements) and [desktop installation](./install.md#desktop-app): choose the right download.
-- [Desktop first launch and recovery](../clients/desktop/README.md#first-launch-and-recovery): bundled runtime, retry, and startup failures.
+- [Phux Rune diagnostics](../clients/rune/README.md#what-it-does): the desktop app's logs, crash entries, and **Copy diagnostics**.
 - [Report a bug](./troubleshooting.md#reporting-a-bug): gather diagnostics and remove private information before sharing.
 - [Discord](https://discord.gg/dUv5rzdHp): questions and setup help.
 - [GitHub issues](https://github.com/no-phux/phux/issues): reproducible bugs and feature proposals.
@@ -96,7 +92,7 @@ Generated from the `phux` binary, so they match the code these docs describe.
 - [File transfer and checkout](./protocol-files.md): the commands that move files and inspect a checkout.
 - [Host services](./host-services.md): HTTP to a host service (OpenCode) over the phux connection.
 - [Compatibility](./compatibility.md): what an older or newer peer sees.
-- [Embed phux](./embedding.md): put a phux terminal in your own app with `phux-gpui`, `phux-client-runtime`, or `phux-client-ffi`.
+- [Embed phux](./embedding.md): put a phux terminal in your own app with `phux-client-runtime` or `phux-client-ffi`.
 - [Development](./development.md): set up, build, and run the checks.
 - [Releasing](./releasing.md): what ships, and how.
 

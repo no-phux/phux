@@ -1,9 +1,8 @@
 // The Release Please settings the publish pipeline depends on, and the
 // lockfiles that pin root path crates at the workspace version.
 //
-// Two trains, two config/manifest pairs: the root train (CLI, integrations)
-// and the desktop train. They share no file, so merging one release PR
-// never conflicts the other.
+// One train: the root config/manifest pair releases the CLI and the
+// integrations. Phux Rune tags its own releases outside Release Please.
 import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { Expectations } from "../lib/expect.ts";
@@ -15,16 +14,11 @@ export const ROOT_TRAIN = {
   config: "release-please-config.json",
   manifest: ".release-please-manifest.json",
 } as const;
-export const DESKTOP_TRAIN = {
-  config: "release-please-config.desktop.json",
-  manifest: ".release-please-manifest.desktop.json",
-} as const;
-export const TRAINS = [ROOT_TRAIN, DESKTOP_TRAIN] as const;
+export const TRAINS = [ROOT_TRAIN] as const;
 
 /** Locks that record the root path crates outside the root workspace. */
 export const STANDALONE_LOCKS = [
   "clients/phux-web/Cargo.lock",
-  "clients/desktop/native/Cargo.lock",
   "clients/rune/Cargo.lock",
   "crates/phux-server/tests/fixtures/host-only-engine/Cargo.lock",
   "scripts/plugin-index/Cargo.lock",
@@ -51,17 +45,6 @@ const ROOT_SETTINGS: Setting[] = [
     undefined,
     "package-name aborts root-only releases with no tag",
   ],
-  [
-    ["packages", "clients/desktop"],
-    undefined,
-    `the desktop releases from ${DESKTOP_TRAIN.config}; a shared manifest conflicts its PR`,
-  ],
-];
-
-const DESKTOP_SETTINGS: Setting[] = [
-  ...SHARED,
-  [["separate-pull-requests"], true, "the desktop PR keeps its own components--desktop branch"],
-  [["packages", "clients/desktop", "component"], "desktop", "desktop tags are desktop-vX.Y.Z"],
 ];
 
 function check(config: unknown, settings: Setting[]): string[] {
@@ -76,16 +59,8 @@ function check(config: unknown, settings: Setting[]): string[] {
   return expect.failures;
 }
 
-export function configViolations(config: unknown, desktop?: unknown): string[] {
-  const failures = check(config, ROOT_SETTINGS);
-  if (desktop === undefined) return failures;
-  const packages = Object.keys(table(table(desktop)["packages"]));
-  if (packages.join() !== "clients/desktop") {
-    failures.push(
-      `${DESKTOP_TRAIN.config} must release clients/desktop alone (found ${packages.join(", ")})`,
-    );
-  }
-  return [...failures, ...check(desktop, DESKTOP_SETTINGS)];
+export function configViolations(config: unknown): string[] {
+  return check(config, ROOT_SETTINGS);
 }
 
 export function readConfig(root = ROOT, file: string = ROOT_TRAIN.config): unknown {

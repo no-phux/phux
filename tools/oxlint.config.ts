@@ -1,7 +1,6 @@
 import { defineConfig } from "oxlint";
 
-// The desktop tooling's type-aware rule set. Its anti-slop JS plugin resolves
-// against the desktop package's own dependencies, so it stays there.
+// The tools' type-aware rule set.
 export default defineConfig({
   plugins: ["typescript", "import", "unicorn", "oxc"],
   ignorePatterns: ["node_modules/**"],

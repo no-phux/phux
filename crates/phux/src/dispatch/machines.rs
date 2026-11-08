@@ -81,14 +81,12 @@ pub(super) fn perf(args: commands::PerfArgs, socket: Option<PathBuf>) -> ExitCod
     let commands::PerfArgs {
         action,
         json,
-        desktop,
         watch,
         reset,
     } = args;
     commands::perf::run_perf(
         commands::perf::PerfOptions {
             json: json.json,
-            desktop,
             watch,
             reset,
         },

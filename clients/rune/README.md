@@ -1,13 +1,13 @@
 # phux on Rune (alpha)
 
-An alpha desktop client built on [Rune](https://github.com/anomalyco/rune), a
-native GPU UI framework (wgpu, winit). It sits beside the
-[GPUI desktop](../desktop/README.md) as a candidate replacement and uses the
-same persistent server and shared client runtime. Nothing here replaces or
-changes the GPUI desktop.
+The phux desktop client, built on [Rune](https://github.com/anomalyco/rune), a
+native GPU UI framework (wgpu, winit), over the same persistent server and
+shared client runtime as the terminal UI. The same app runs a phone form
+([MOBILE.md](./MOBILE.md)).
 
-It is an alpha: expect rough edges, and keep using the GPUI desktop or the
-terminal UI for daily work.
+It replaced the GPUI desktop, which was retired after Desktop 0.62.0; its
+last source is the `desktop-v0.62.0` tag. It is still an alpha: expect
+rough edges, and keep the terminal UI at hand.
 
 ## Install
 
@@ -28,8 +28,7 @@ Or download the newest `rune-v*` release from
 
 - **macOS (Apple silicon)**: `phux-rune-VERSION-macos-arm64.zip`. Unzip and
   move **Phux Rune.app** to Applications, then open it. From 0.1.0-alpha.3
-  the app is Developer ID signed, Apple-notarized and stapled, like the GPUI
-  desktop; earlier alphas were ad-hoc signed and Gatekeeper refuses them.
+  the app is Developer ID signed, Apple-notarized and stapled; earlier alphas were ad-hoc signed and Gatekeeper refuses them.
 - **Linux (x86_64)**: `phux-rune-VERSION-linux-x86_64.tar.gz`, then run
   `phux-rune`.
 
@@ -61,8 +60,7 @@ session (or `--session NAME`). It never creates a session on its own.
   access you already have. A window shows one machine at a time. On a new
   computer the local server is empty, so sessions living elsewhere appear
   only once that machine is added.
-- **Updates.** Works like the GPUI desktop's
-  ([UPDATES.md](../desktop/UPDATES.md)). The app checks at launch and every six
+- **Updates.** The app checks at launch and every six
   hours, and a corner card that never takes the keyboard offers the update.
   **Download update** fetches the archive and refuses it unless a release key
   signed its checksum and the new build can draw a frame on this computer; the
@@ -110,8 +108,7 @@ session (or `--session NAME`). It never creates a session on its own.
   the first time a window connects, a tip offers it. Hovering **+ Terminal**
   or **+ Session** at the foot of the sidebar shows the keys that do the same.
 - **Insert Path.** ⌥; (or ⇧⌘I) opens a picker at the cursor that searches
-  the focused pane's folder on the machine it runs on, as the GPUI desktop's
-  does. Return types the path at the prompt as one shell word, relative to
+  the focused pane's folder on the machine it runs on. Return types the path at the prompt as one shell word, relative to
   that folder and quoted only when it must be.
 - **Splits.** The selected session's arrangement is the server-stored split
   tree the terminal UI uses, so both show the same layout. Each pane floats
@@ -149,8 +146,8 @@ session (or `--session NAME`). It never creates a session on its own.
   Theme** lists them with each one shown live as the highlight moves:
   Return keeps it, Escape puts the old one back. A Ghostty config on this machine (`theme`,
   `config-file` includes, `palette`, `background`, `foreground`,
-  `cursor-color`) is read at launch and offered as the **Ghostty** theme,
-  the way the GPUI desktop reads it. On Omarchy, the **Omarchy** theme
+  `cursor-color`) is read at launch and offered as the **Ghostty** theme.
+  On Omarchy, the **Omarchy** theme
   takes the current Omarchy theme's colours and accent, repaints within
   seconds when you switch Omarchy themes, and is the default until you pick
   another. `just rune-demo` films the themes into

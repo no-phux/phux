@@ -68,8 +68,6 @@ impl Channel {
 pub enum Product {
     /// `phux` and `phux-mcp`, one tarball per target.
     Phux,
-    /// The macOS app and Linux desktop, one archive per target.
-    Desktop,
 }
 
 impl Product {
@@ -78,7 +76,6 @@ impl Product {
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::Phux => "phux",
-            Self::Desktop => "desktop",
         }
     }
 }
@@ -179,11 +176,9 @@ impl Asset {
 }
 
 /// The asset `product` publishes for `build` on `target`: the one name
-/// derivation. Linux desktop archives use short architecture labels; macOS
-/// keeps its original Apple silicon name.
+/// derivation.
 #[must_use]
 pub fn asset(product: Product, build: &Build, target: &str) -> Asset {
-    let (desktop_platform, desktop_extension) = desktop_archive(target);
     let (release, stem, extension) = match (product, build) {
         (Product::Phux, Build::Stable(version)) => (
             format!("v{version}"),
@@ -195,29 +190,10 @@ pub fn asset(product: Product, build: &Build, target: &str) -> Asset {
             format!("phux-next.{sha}-{target}"),
             "tar.gz",
         ),
-        (Product::Desktop, Build::Stable(version)) => (
-            format!("desktop-v{version}"),
-            format!("phux-desktop-{version}-{desktop_platform}"),
-            desktop_extension,
-        ),
-        (Product::Desktop, Build::Next(sha)) => (
-            "next".to_owned(),
-            format!("phux-desktop-next.{sha}-{desktop_platform}"),
-            desktop_extension,
-        ),
     };
     let name = format!("{stem}.{extension}");
     let url = format!("{RELEASES}/{release}/{name}");
     Asset { stem, name, url }
-}
-
-fn desktop_archive(target: &str) -> (&'static str, &'static str) {
-    match target {
-        "x86_64-unknown-linux-gnu" => ("linux-x64", "tar.gz"),
-        "aarch64-unknown-linux-gnu" => ("linux-arm64", "tar.gz"),
-        "x86_64-pc-windows-msvc" => ("windows-x64", "zip"),
-        _ => ("macos-arm64", "zip"),
-    }
 }
 
 /// The URL of `channel`'s manifest.
@@ -393,16 +369,6 @@ mod tests {
                 &next,
                 format!("next/phux-next.{sha}-x86_64-unknown-linux-gnu.tar.gz"),
             ),
-            (
-                Product::Desktop,
-                &stable,
-                "desktop-v1.2.3/phux-desktop-1.2.3-linux-x64.tar.gz".to_owned(),
-            ),
-            (
-                Product::Desktop,
-                &next,
-                format!("next/phux-desktop-next.{sha}-linux-x64.tar.gz"),
-            ),
         ];
         for (product, build, path) in rows {
             let asset = asset(product, build, LINUX);
@@ -417,56 +383,6 @@ mod tests {
                 asset.signature_url(),
                 format!("{}.sha256.minisig", asset.url)
             );
-        }
-    }
-
-    #[test]
-    fn windows_desktop_assets_do_not_use_the_macos_fallback() {
-        let target = "x86_64-pc-windows-msvc";
-        let stable = asset(Product::Desktop, &Build::Stable(version("1.2.3")), target);
-        assert_eq!(stable.name, "phux-desktop-1.2.3-windows-x64.zip");
-        assert_eq!(
-            stable.signature_url(),
-            "https://github.com/no-phux/phux/releases/download/desktop-v1.2.3/phux-desktop-1.2.3-windows-x64.zip.sha256.minisig"
-        );
-        let sha = "b".repeat(40);
-        let next = asset(Product::Desktop, &Build::Next(sha.clone()), target);
-        assert_eq!(
-            next.name,
-            format!("phux-desktop-next.{sha}-windows-x64.zip")
-        );
-    }
-
-    #[test]
-    fn desktop_archives_cover_every_published_target() {
-        let stable = Build::Stable(version("1.2.3"));
-        let next = Build::Next("b".repeat(40));
-        for (target, suffix) in [
-            ("aarch64-apple-darwin", "macos-arm64.zip"),
-            (LINUX, "linux-x64.tar.gz"),
-            ("aarch64-unknown-linux-gnu", "linux-arm64.tar.gz"),
-        ] {
-            for (build, identity) in [
-                (&stable, "1.2.3".to_owned()),
-                (&next, format!("next.{}", "b".repeat(40))),
-            ] {
-                let archive = asset(Product::Desktop, build, target);
-                assert_eq!(archive.name, format!("phux-desktop-{identity}-{suffix}"));
-                let body = match build.channel() {
-                    Channel::Stable => STABLE,
-                    Channel::Next => NEXT,
-                };
-                let entry = parse(body, build.channel(), Product::Desktop, target)
-                    .unwrap()
-                    .unwrap();
-                let document: serde_json::Value = serde_json::from_str(body).unwrap();
-                let recorded = &document["products"]["desktop"]["artifacts"][target];
-                assert_eq!(
-                    recorded["name"],
-                    asset(Product::Desktop, &entry.build, target).name
-                );
-                assert_eq!(entry.sha256.len(), 64);
-            }
         }
     }
 
@@ -491,14 +407,7 @@ mod tests {
                 (version("9.8.7"), "0.9")
             );
             assert_eq!(phux.sha256, "2".repeat(64));
-            let desktop = parse(body, channel, Product::Desktop, "aarch64-apple-darwin")
-                .unwrap()
-                .unwrap();
-            assert_eq!(
-                (desktop.sha.as_str(), desktop.sha256.as_str()),
-                (&*"b".repeat(40), &*"d".repeat(64))
-            );
-            assert_eq!(desktop.build.channel(), channel);
+            assert_eq!(phux.build.channel(), channel);
         }
         let next = parse(NEXT, Channel::Next, Product::Phux, LINUX)
             .unwrap()
@@ -537,10 +446,7 @@ mod tests {
     #[test]
     fn an_absent_product_is_unpublished_and_extra_members_are_ignored() {
         let empty = r#"{"schema_version": 1, "channel": "next", "products": {}}"#;
-        assert_eq!(
-            parse(empty, Channel::Next, Product::Desktop, LINUX),
-            Ok(None)
-        );
+        assert_eq!(parse(empty, Channel::Next, Product::Phux, LINUX), Ok(None));
         let additive = STABLE.replacen("\"protocol\"", "\"future\": \"x\",\n      \"protocol\"", 1);
         assert!(
             parse(&additive, Channel::Stable, Product::Phux, LINUX)

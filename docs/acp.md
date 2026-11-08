@@ -4,7 +4,7 @@ An ACP session is a coding agent that phux runs for you through the Agent
 Client Protocol, instead of in a terminal you type into. phux starts the
 agent, keeps it supervised on the server, and talks to it in structured
 messages: prompts, interrupts, and answers to its permission questions. Use
-it when you want to drive an agent from a script or the desktop app without
+it when you want to drive an agent from a script without
 screen-scraping a terminal.
 
 ```sh
@@ -160,12 +160,3 @@ A conversation can be restored only when the agent supports loading a
 previous session. An archive keeps the command that launched the agent, so
 read and trust it before you restore it; see
 [restore](./organization.md#restore-and-executable-authority).
-
-## From the desktop app
-
-The desktop app lists the ACP agents available on the host you are connected
-to, local or remote, along with what each one is missing. It can launch one
-into an existing session and folder on that host. Installing and signing in
-stay with you: for OpenCode, the app can open a terminal on that host that
-runs the same `opencode` it would launch, so you can sign in. A launched
-agent still has to become ready before it accepts a prompt.

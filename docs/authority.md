@@ -43,8 +43,7 @@ kind, parent, name and `control`.
 A refused attach names the missing grant and the owner's remedy, for
 example `phux workload grant sha256:... observe@display`, when the caller
 could have watched it through its parent before; anyone else gets a plain
-`permission denied`. The desktop and Rune panes show that reason in place of
-the mirror.
+`permission denied`. Rune shows that reason in place of the mirror.
 
 A hub admits the attach to a satellite's document on the host grant, then
 learns the document's class from the satellite's inventory and refuses a
@@ -94,9 +93,9 @@ trailing byte on `SEND_DOCUMENT_INPUT`, bit `1 << class` per class allowed.
 An older server ignores both, and an older satellite then judges the hub's
 link alone. Watching adds nothing to the wire.
 
-## In the desktop and Rune
+## In Rune
 
-The desktop and Rune panes send input too. A surface whose document declares
+Rune's panes send input too. A surface whose document declares
 a class takes a click at the frame pixel under the pointer (contain-fit, so
 a press in the letterbox bars sends nothing), the wheel as `Scroll` in frame
 pixels (positive `dy` scrolls the page down), and, while focused, printable

@@ -1,5 +1,5 @@
 #!/bin/sh
-# Install phux, and with --desktop Phux Desktop, from a verified release
+# Install phux, and with --rune Phux Rune, from a verified release
 # (ADR-0176). Served verbatim at https://phux.sh/install. POSIX sh: Debian and
 # Ubuntu pipe it to dash, which rejects `set -o pipefail` and `printf %q`.
 set -eu
@@ -29,24 +29,22 @@ usage() {
   cat <<'EOF'
 Usage: curl -fsSL https://phux.sh/install | sh -s -- [options]
 
-Installs phux and phux-mcp. With --desktop, also installs Phux Desktop
-(Apple silicon macOS 26+, or x86_64/arm64 GNU/Linux), installing
-the CLI only when none is found. --rune does the same for Phux Rune.
+Installs phux and phux-mcp. With --rune, installs Phux Rune, the desktop
+app (Apple silicon macOS 14+, or x86_64 GNU/Linux), and the CLI only when
+none is found.
 
   --channel <stable|latest|next>  Release channel (default: stable, or $PHUX_CHANNEL).
   --version <X.Y.Z>               Pin a stable release (vX.Y.Z also accepted).
   --revision <sha>                Pin a next build by its 40-character commit.
   --sha256 <hex>                  Expected digest of a pinned artifact, instead of its sidecar.
-  --install-dir <dir>             Where phux, phux-mcp and the phux-desktop launcher go
+  --install-dir <dir>             Where phux, phux-mcp and the phux-rune launcher go
                                   (default: $PHUX_INSTALL_DIR, or ~/.local/bin).
   --no-modify-path                Leave the shell profile alone (also $PHUX_NO_MODIFY_PATH=1).
-  --desktop                       Install Phux Desktop.
-  --rune                          Install Phux Rune (Apple silicon macOS 14+, or x86_64
-                                  GNU/Linux), from its own feed; takes no channel or pin.
+  --rune                          Install Phux Rune from its own feed; takes no channel or pin.
+  --desktop                       The same as --rune (the GPUI desktop is retired).
   --applications-dir <dir>        Desktop destination (default: /Applications if writable,
                                   else ~/Applications on macOS; $XDG_DATA_HOME or
                                   ~/.local/share on Linux; also $PHUX_DESKTOP_APPLICATIONS_DIR).
-  --stage-dir <absolute dir>      Verify and stage Phux.app on macOS; install nothing.
   --os <darwin|linux>, --arch <arm64|x86_64>
                                   Override platform detection.
   --dry-run                       Print what would be downloaded and where it would go.
@@ -80,13 +78,7 @@ SEMVER='(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)'
 # A stalled transfer (under 1 KiB/s for a minute) aborts instead of hanging.
 download() {
   if command -v curl >/dev/null 2>&1; then
-    # Only Desktop's archive transfer opts into a meter. Sidecars and signatures
-    # stay silent; curl's unknown-length animation carries no percentage.
-    if [ "${3:-}" = archive ] && [ "${PHUX_DESKTOP_PROGRESS:-0}" = 1 ]; then
-      curl -fSL --progress-bar --proto =https --connect-timeout 10 --speed-limit 1024 --speed-time 60 "$1" -o "$2"
-    else
-      curl -fsSL --proto =https --connect-timeout 10 --speed-limit 1024 --speed-time 60 "$1" -o "$2"
-    fi
+    curl -fsSL --proto =https --connect-timeout 10 --speed-limit 1024 --speed-time 60 "$1" -o "$2"
   elif command -v wget >/dev/null 2>&1; then
     wget -q --timeout=60 --tries=2 -O "$2" "$1"
   else
@@ -194,22 +186,13 @@ resolve() {
 # The one naming rule (ADR-0176 decision 1). Sets asset_stem, asset_name,
 # asset_url and sidecar_url for PRODUCT's build_id on TARGET.
 name_asset() {
-  case "$2" in
-    aarch64-apple-darwin) desktop_platform=macos-arm64 desktop_ext=zip ;;
-    x86_64-unknown-linux-gnu) desktop_platform=linux-x64 desktop_ext=tar.gz ;;
-    aarch64-unknown-linux-gnu) desktop_platform=linux-arm64 desktop_ext=tar.gz ;;
-  esac
   case "$1/$channel" in
     phux/stable) release="v${build_id}" asset_stem="phux-v${build_id}-$2" ext=tar.gz ;;
     phux/next) release=next asset_stem="phux-next.${build_id}-$2" ext=tar.gz ;;
-    desktop/stable) release="desktop-v${build_id}" asset_stem="phux-desktop-${build_id}-${desktop_platform}" ext="$desktop_ext" ;;
-    desktop/next) release=next asset_stem="phux-desktop-next.${build_id}-${desktop_platform}" ext="$desktop_ext" ;;
   esac
   asset_name="${asset_stem}.${ext}"
   asset_url="${RELEASES}/${release}/${asset_name}"
   sidecar_url="${asset_url}.sha256"
-  # Stable desktop releases older than the sidecar carry only SHA256SUMS.
-  [ "$1/$channel" != desktop/stable ] || sidecar_url="${RELEASES}/${release}/SHA256SUMS"
 }
 
 # Whether a release key signed SIDECAR with SIGNATURE. -H accepts only the
@@ -252,11 +235,8 @@ verify_signature() {
 
 # Download PRODUCT's asset for TARGET into the work directory and verify it.
 fetch_verified() {
-  download "$asset_url" "${work}/${asset_name}" archive \
+  download "$asset_url" "${work}/${asset_name}" \
     || die "could not download ${asset_name}; nothing was installed"
-  if [ "${PHUX_DESKTOP_PROGRESS:-0}" = 1 ]; then
-    printf '\nphux-update: verifying\n' >&2
-  fi
   verify_signature
   if [ -z "$build_sha256" ]; then
     download "$sidecar_url" "${work}/sidecar" \

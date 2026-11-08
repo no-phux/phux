@@ -1,19 +1,18 @@
 // The channel manifest generator (ADR-0176).
 import { describe, expect, test } from "bun:test";
-import { mkdtempSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
+import { mkdtempSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Failure, UsageError } from "../lib/command.ts";
-import { ROOT } from "../lib/repo.ts";
 import { table } from "../lib/value.ts";
 import {
   assetName,
   bridgeRecord,
   CHANNELS,
-  DESKTOP_ARCHIVES,
   entry,
   fixture,
   fixtures,
+  PRODUCTS,
   render,
   targets,
   type Product,
@@ -27,29 +26,9 @@ const digests = (hex: string, product: Product = "phux"): Record<string, string>
   Object.fromEntries(targets(product).map((target) => [target, hex.repeat(64)]));
 
 describe("manifest", () => {
-  test("Windows is a native desktop target, never a native CLI target", () => {
-    expect(targets("desktop")).toContain("x86_64-pc-windows-msvc");
+  test("the CLI is the only product, and Windows is never a native CLI target", () => {
+    expect(PRODUCTS).toEqual(["phux"]);
     expect(targets("phux")).not.toContain("x86_64-pc-windows-msvc");
-  });
-  test("historical stable desktop releases retain Unix targets, while new releases and next require Windows", () => {
-    const legacy = digests("d");
-    expect(targets("desktop", "stable", "0.49.0")).toEqual(targets("phux"));
-    expect(targets("desktop", "stable", "0.49.99")).toEqual(targets("phux"));
-    expect(targets("desktop", "stable", "0.50.0")).toContain("x86_64-pc-windows-msvc");
-    expect(targets("desktop", "stable", "1.0.0")).toContain("x86_64-pc-windows-msvc");
-    expect(targets("desktop", "next", "0.49.0")).toContain("x86_64-pc-windows-msvc");
-    expect(
-      Object.keys(
-        table(entry("desktop", "stable", "0.49.0", "a".repeat(40), "0.9", legacy)["artifacts"]),
-      ),
-    ).toEqual(targets("phux"));
-    expect(() => entry("desktop", "stable", "0.50.0", "a".repeat(40), "0.9", legacy)).toThrow(
-      "needs digests",
-    );
-    expect(() => entry("desktop", "next", "0.49.0", "a".repeat(40), "0.9", legacy)).toThrow(
-      "needs digests",
-    );
-    expect(() => targets("desktop", "stable", "0.050.0")).toThrow("not valid");
   });
   test("fixtures are current and line-parseable", () => {
     expect(fixtures(true)).toBe(0);
@@ -61,14 +40,16 @@ describe("manifest", () => {
     );
   });
 
-  test("desktop names cover every target on both channels", () => {
+  test("names cover every target on both channels", () => {
     for (const channel of CHANNELS) {
-      const artifacts = table(table(table(fixture(channel)["products"])["desktop"])["artifacts"]);
-      const identity = channel === "stable" ? "1.2.3" : `next.${"b".repeat(40)}`;
-      expect(Object.keys(artifacts)).toEqual(targets("desktop"));
-      for (const [target, suffix] of Object.entries(DESKTOP_ARCHIVES)) {
+      const products = table(fixture(channel)["products"]);
+      expect(Object.keys(products)).toEqual(["phux"]);
+      const artifacts = table(table(products["phux"])["artifacts"]);
+      const identity = channel === "stable" ? "v9.8.7" : `next.${"a".repeat(40)}`;
+      expect(Object.keys(artifacts)).toEqual(targets("phux"));
+      for (const target of targets("phux")) {
         const artifact = table(artifacts[target]);
-        expect(artifact["name"]).toBe(`phux-desktop-${identity}-${suffix}`);
+        expect(artifact["name"]).toBe(`phux-${identity}-${target}.tar.gz`);
         expect(String(artifact["url"])).toEndWith(`/${String(artifact["name"])}`);
       }
     }
@@ -86,59 +67,39 @@ describe("manifest", () => {
   });
 
   test("entry refuses malformed facts", () => {
-    const [version, sha, protocol, all] = ["1.2.3", "a".repeat(40), "0.9", digests("e", "desktop")];
-    expect(entry("desktop", "stable", version, sha, protocol, all)).toBeDefined();
-    expect(entry("phux", "stable", version, sha, protocol, digests("e"))).toBeDefined();
-    expect(() => entry("phux", "stable", version, sha, protocol, all)).toThrow(Failure);
-    expect(() => entry("desktop", "stable", version, sha, protocol, digests("e"))).toThrow(Failure);
+    const [version, sha, protocol, all] = ["1.2.3", "a".repeat(40), "0.9", digests("e")];
+    expect(entry("phux", "stable", version, sha, protocol, all)).toBeDefined();
     const cases: [string, string, string, Record<string, string>][] = [
       ["1.02.3", sha, protocol, all],
       [version, "A".repeat(40), protocol, all],
       [version, sha, "0.09", all],
       [version, sha, protocol, { "aarch64-apple-darwin": "e".repeat(64) }],
-      [version, sha, protocol, digests("E", "desktop")],
+      [version, sha, protocol, digests("E")],
     ];
-    for (const bad of cases) expect(() => entry("desktop", "stable", ...bad)).toThrow(Failure);
+    for (const bad of cases) expect(() => entry("phux", "stable", ...bad)).toThrow(Failure);
   });
 });
 
 describe("stable", () => {
-  test("legacy published assets rebuild a stable entry without inventing Windows", () => {
-    const assets = targets("phux").map((target) => ({
-      name: assetName("desktop", "stable", "0.49.0", target),
-      digest: `sha256:${"d".repeat(64)}`,
-    }));
-    const found = assetDigests(assets, "desktop", "stable", "0.49.0");
-    expect(found).toEqual(digests("d"));
-    expect(() => assetDigests(assets, "desktop", "stable", "0.50.0")).toThrow("not published");
-  });
   test("digests come from GitHub and must exist for every asset", () => {
-    const names = targets("desktop").map((target) =>
-      assetName("desktop", "stable", "1.2.3", target),
-    );
+    const names = targets("phux").map((target) => assetName("phux", "stable", "1.2.3", target));
     const assets = names.map((name) => ({ name, digest: `sha256:${"d".repeat(64)}` }));
-    const found = (given: unknown[]) => assetDigests(given, "desktop", "stable", "1.2.3");
-    expect(found(assets)).toEqual(
-      Object.fromEntries(targets("desktop").map((target) => [target, "d".repeat(64)])),
-    );
+    const found = (given: unknown[]) => assetDigests(given, "phux", "stable", "1.2.3");
+    expect(found(assets)).toEqual(digests("d"));
     for (const broken of [assets.slice(0, -1), [...assets.slice(1), { name: names[0] }]]) {
       expect(() => found(broken)).toThrow(Failure);
     }
   });
 
-  test("the newest published release per product", () => {
+  test("the newest published release per product; retired desktop tags are ignored", () => {
     const tags = ["v0.9.0", "v0.10.0", "desktop-v0.3.0", "desktop-v0.20.0"];
     const newest = newestStable([
-      ...[...tags, "desktop-v0.1.0-alpha.17", "pi-extension-v9.0.0"].map((tag_name) => ({
-        tag_name,
-      })),
+      ...[...tags, "pi-extension-v9.0.0"].map((tag_name) => ({ tag_name })),
       { tag_name: "v0.11.0", draft: true },
       { tag_name: "next", prerelease: true },
     ]);
-    expect([newest.phux?.["tag_name"], newest.desktop?.["tag_name"]]).toEqual([
-      "v0.10.0",
-      "desktop-v0.20.0",
-    ]);
+    expect(Object.keys(newest)).toEqual(["phux"]);
+    expect(newest.phux?.["tag_name"]).toBe("v0.10.0");
   });
 });
 
@@ -147,34 +108,30 @@ describe("next", () => {
     const sha = "c".repeat(40);
     const dist = mkdtempSync(join(tmpdir(), "release-manifest-dist-"));
     const digest = new Bun.CryptoHasher("sha256").update("app").digest("hex");
-    for (const target of targets("desktop")) {
-      const name = assetName("desktop", "next", sha, target);
+    for (const target of targets("phux")) {
+      const name = assetName("phux", "next", sha, target);
       writeFileSync(join(dist, name), "app");
       writeFileSync(join(dist, `${name}.sha256`), `${digest}  ${name}\n`);
       writeFileSync(join(dist, `${name}.sha256.minisig`), "signature\n");
     }
-    expect(verifiedDist("desktop", sha, dist)).toEqual(
-      Object.fromEntries(targets("desktop").map((t) => [t, digest])),
+    expect(verifiedDist("phux", sha, dist)).toEqual(
+      Object.fromEntries(targets("phux").map((t) => [t, digest])),
     );
-    const asset = join(dist, assetName("desktop", "next", sha, "aarch64-unknown-linux-gnu"));
+    const asset = join(dist, assetName("phux", "next", sha, "aarch64-unknown-linux-gnu"));
     unlinkSync(`${asset}.sha256.minisig`);
-    expect(() => verifiedDist("desktop", sha, dist)).toThrow("not signed");
+    expect(() => verifiedDist("phux", sha, dist)).toThrow("not signed");
     writeFileSync(`${asset}.sha256.minisig`, "signature\n");
     writeFileSync(`${asset}.sha256`, `${"0".repeat(64)}  ${asset}\n`);
-    expect(() => verifiedDist("desktop", sha, dist)).toThrow("does not match");
+    expect(() => verifiedDist("phux", sha, dist)).toThrow("does not match");
     unlinkSync(asset);
-    expect(() => verifiedDist("desktop", sha, dist)).toThrow();
+    expect(() => verifiedDist("phux", sha, dist)).toThrow();
   });
 
   test("bridge records keep the pre-manifest shape", () => {
     const sha = "c".repeat(40);
-    const [name, text] = bridgeRecord("desktop", sha, "1.2.3", digests("d"));
-    expect(name).toBe("desktop-channel.json");
-    expect(JSON.parse(text)).toMatchObject({
-      archive: `phux-desktop-next.${sha}-macos-arm64.zip`,
-      sha256: "d".repeat(64),
-    });
-    expect(bridgeRecord("phux", sha, "1.2.3", {})[0]).toBe("channel.json");
+    const [name, text] = bridgeRecord("phux", sha, "1.2.3");
+    expect(name).toBe("channel.json");
+    expect(JSON.parse(text)).toMatchObject({ product: "phux", sha, version: "1.2.3" });
   });
 });
 
@@ -183,20 +140,4 @@ test("bad arguments are usage errors before any I/O", () => {
     expect(() => releaseManifest.run(bad)).toThrow(UsageError);
   }
   expect(releaseManifest.run(["fixtures", "--check"])).toBe(0);
-});
-
-// Every desktop platform stays behind the signing gate.
-test("the stable desktop signer waits for every platform and signs all sidecars", () => {
-  const release = readFileSync(join(ROOT, ".github/workflows/desktop-release.yml"), "utf8");
-  const signer = release.split("\n  sign:\n")[1] ?? "";
-  expect(signer).toContain("needs: [capabilities, macos, linux, windows]");
-  expect(signer).toContain("pattern: desktop-sidecar-*");
-  expect(signer).toContain("bash scripts/ci/publish-desktop-release.sh");
-  const publication = readFileSync(join(ROOT, "scripts/ci/publish-desktop-release.sh"), "utf8");
-  for (const needle of [
-    'test "${#sidecars[@]}" -eq "$EXPECTED_DESKTOP_SIDECARS"',
-    'bash scripts/ci/sign-release.sh "${sidecars[@]}"',
-  ]) {
-    expect(publication).toContain(needle);
-  }
 });

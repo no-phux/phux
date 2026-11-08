@@ -5,7 +5,7 @@ import {
   type Crate,
   licenseTexts,
   noticeTexts,
-} from "../../desktop/scripts/notices.ts";
+} from "./third-party.ts";
 
 export function runeNoticeReader(crates: Crate[], canonical: CanonicalLicenses) {
   const rune = crates.find((crate) => crate.name === "rune");

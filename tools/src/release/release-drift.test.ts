@@ -12,17 +12,17 @@ const release = (tag: string, draft = false, assets = 2): Release => ({
 });
 const finished = (): Snapshot => ({
   repo: "example/repo",
-  releases: [release("v1.0.0"), release("desktop-v0.5.0"), release("pi-v0.1.0")],
+  releases: [release("v1.0.0"), release("extra-v0.5.0"), release("pi-v0.1.0")],
   pending: [],
   trains: [
     { manifest: { ".": "1.0.0", pi: "0.1.0" }, packages: { pi: { component: "pi" } }, bumped: OLD },
     {
-      manifest: { "clients/desktop": "0.5.0" },
-      packages: { "clients/desktop": { component: "desktop" } },
+      manifest: { "clients/extra": "0.5.0" },
+      packages: { "clients/extra": { component: "extra" } },
       bumped: OLD,
     },
   ],
-  stable: { products: { phux: { version: "1.0.0" }, desktop: { version: "0.5.0" } } },
+  stable: { products: { phux: { version: "1.0.0" } } },
 });
 
 test("a finished pipeline passes", () => {
@@ -32,8 +32,8 @@ test("a finished pipeline passes", () => {
 test.each<[string, (state: Snapshot) => Snapshot, string]>([
   [
     "an old draft names its recovery",
-    (s) => ({ ...s, releases: [...s.releases, release("desktop-v9.0.0", true)] }),
-    "-f tag=desktop-v9.0.0",
+    (s) => ({ ...s, releases: [...s.releases, release("extra-v9.0.0", true)] }),
+    "-f tag=extra-v9.0.0",
   ],
   [
     "a public release needs assets",
@@ -52,8 +52,8 @@ test.each<[string, (state: Snapshot) => Snapshot, string]>([
   ],
   [
     "every train is checked",
-    (s) => ({ ...s, releases: s.releases.filter((r) => r.tag !== "desktop-v0.5.0") }),
-    "clients/desktop is at 0.5.0, but desktop-v0.5.0 has no release",
+    (s) => ({ ...s, releases: s.releases.filter((r) => r.tag !== "extra-v0.5.0") }),
+    "clients/extra is at 0.5.0, but extra-v0.5.0 has no release",
   ],
   [
     "the stable manifest names the newest release",
@@ -72,10 +72,10 @@ test.each<[string, (state: Snapshot) => Snapshot, string]>([
 test("the grace window hides fresh drafts and fresh manifest bumps", () => {
   const state = finished();
   const releases = [...state.releases, release("v1.1.0", true)];
-  const [root, desktop] = state.trains;
-  if (root === undefined || desktop === undefined) throw new Error("two trains");
+  const [root, extra] = state.trains;
+  if (root === undefined || extra === undefined) throw new Error("two trains");
   const bumped = { ...root, manifest: { ...root.manifest, ".": "1.2.0" } };
-  const fresh = { ...state, releases, trains: [bumped, desktop] };
+  const fresh = { ...state, releases, trains: [bumped, extra] };
   expect(problems(fresh, 60_000, Date.parse(OLD) + 1000)).toEqual([]);
   expect(problems(fresh, 0, Date.parse(OLD) + 1000)).toHaveLength(2);
 });

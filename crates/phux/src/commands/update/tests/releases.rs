@@ -380,24 +380,3 @@ fn a_stale_phux_earlier_on_path_is_named() {
     let path = std::env::join_paths([&stale, &ours]).unwrap();
     assert_eq!(super::super::shadowing_phux(&brew, &path), None);
 }
-
-/// The desktop links the protocol in-process. A server refuses only a
-/// client on another protocol major, but a minor bump carries feature bits
-/// the app should ship with. Its release train only cuts a release for
-/// commits under its own directory, so a protocol bump must edit the pin in
-/// the same commit to release the matching app.
-#[test]
-fn desktop_release_train_pins_the_protocol_it_links() {
-    let protocol = format!(
-        "{}.{}",
-        phux_protocol::PROTOCOL_VERSION.major,
-        phux_protocol::PROTOCOL_VERSION.minor
-    );
-    let pin = include_str!("../../../../../../clients/desktop/phux-protocol");
-    assert_eq!(
-        pin.trim(),
-        protocol,
-        "protocol is {protocol}: set clients/desktop/phux-protocol to {protocol} in this \
-         commit so the app that links it is released with it"
-    );
-}

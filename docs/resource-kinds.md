@@ -23,14 +23,14 @@ Document-only and agent-only sessions can attach without a Terminal codec.
 The server links only the pure Terminal contract; the executable
 supplies the concrete engine ([architecture](./architecture.md#where-to-look)).
 
-Desktop and Rune discover tree/surface resources before the first frame,
-render plain JSON or letterboxed PNG or JPEG frames, and distinguish pending, empty and invalid
-documents. Desktop and Rune draw a Document by its content type: PNG, JPEG, GIF and
+Phux Rune discovers tree/surface resources before the first frame,
+renders plain JSON or letterboxed PNG or JPEG frames, and distinguishes pending, empty and invalid
+documents. It draws a Document by its content type: PNG, JPEG, GIF and
 WebP as images, JSON pretty-printed, text and `+xml`/`+json` as source
 (Markdown and HTML are not rendered), anything else as its size and type.
 A tree or surface is named for what it observes (`--app Safari`, `--window
 display`, a mirrored page's title) and a typed document for its `--name`;
-that name is the tab title in both clients, `name` in `phux ls --json`
+that name is the tab title in Rune, `name` in `phux ls --json`
 resources and MCP `phux_documents`, and `title` in `phux resource show`. Documents can occupy mixed or document-only arrangements and survive
 restore/reconnect. Their streams are **read-only**: typing, paste, terminal grid
 resizing and file uploads do not control their source. Input goes to the
@@ -41,11 +41,11 @@ this way. The same verbs drive a macOS `phux agent surface mirror`: it posts
 clicks, text, keys and scrolls as system input at the window's or display's
 screen points (raising a window's app first), which needs the Accessibility
 grant for the app that started it; `--dry-run-input` logs the events
-instead. Desktop and mobile do not send input yet. Desktop can transfer a
-view between windows once the destination accepts the exact subscription;
-closing a document placement leaves its producer and other viewers running.
+instead. Rune sends input to a surface pane ([authority](./authority.md#in-rune));
+mobile does not yet. Closing a document placement leaves its producer and
+other viewers running.
 
-Both native clients offer mirror startup actions. These launch a dedicated
+Phux Rune offers mirror startup actions. These launch a dedicated
 supervised producer with argv, not commands typed into a person's shell.
 Browser mirroring needs an existing Chrome DevTools endpoint; macOS capture
 needs the relevant system permission. Local-only startup actions refuse remote
@@ -110,13 +110,11 @@ panes; it does not run `phux restore`). The old document records cannot
 be relaunched: `phux restore` lists them as refused, and `phux rm ^KEY`
 forgets one.
 
-The desktop runs window and app mirrors as its own children. A mirror that
-exits non-zero is restarted up to three times, after 1 s, 4 s and 16 s,
-and the count resets once a run lasts 60 s; a clean exit is not restarted.
-It reports a failure only when it gives up. Each local mirror gets
-`--parent-pid` with the desktop's pid: `phux agent tree|surface|page mirror
---parent-pid PID` exits within a second of that process ending, so a
-desktop killed without dropping its children leaves no producer behind.
+A mirror can also run as the child of the app that holds the macOS grants
+(the retired GPUI desktop did this). `phux agent tree|surface|page mirror
+--parent-pid PID` exits within a second of process `PID` ending, so a
+parent killed without dropping its children leaves no producer behind.
+Rune does not run mirrors as its own children yet.
 
 ## Applications
 
@@ -300,7 +298,7 @@ new kind starts denied. Observing a display shows every application on the
 machine, and input to it is control of the machine, so window and display
 grants are separate from terminal grants and from each other. A device paired
 to watch terminals does not inherit a desktop. Control classes, who may watch
-and control a page, window or display, and what the desktop and Rune panes
+and control a page, window or display, and what Rune's panes
 send are in [Authority over pages, windows, and displays](./authority.md).
 
 ## Order

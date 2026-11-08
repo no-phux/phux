@@ -52,13 +52,11 @@ pub fn helper_argv(program: &str, spec: AppSpec<'_>) -> Vec<String> {
 /// On macOS a pane's processes belong to the server's launchd job, which holds no Screen
 /// Recording or Accessibility grant, so a non-browser app's window and tree
 /// mirrors would fail. `None` for a browser, or off macOS.
-// ponytail: refuse rather than relay to a running desktop; the relay is the
-// follow-up in `clients/desktop/OPEN_APP.md`.
 #[must_use]
 pub fn pane_refusal(spec: &AppSpec<'_>) -> Option<String> {
     (cfg!(target_os = "macos") && spec.browser.is_none()).then(|| {
         format!(
-            "a phux pane cannot capture the macOS app {}: its processes hold no Screen Recording or Accessibility grant. Open it from the phux desktop app (command palette: Open App…), or run `phux agent app run {} --pane @N` in a terminal that has both grants",
+            "a phux pane cannot capture the macOS app {}: its processes hold no Screen Recording or Accessibility grant. Run `phux agent app run {} --pane @N` in a terminal that has both grants",
             spec.name, spec.name
         )
     })
@@ -131,7 +129,10 @@ mod tests {
         let refusal = pane_refusal(&app);
         assert_eq!(refusal.is_some(), cfg!(target_os = "macos"));
         if let Some(refusal) = refusal {
-            assert!(refusal.contains("Open App…"), "{refusal}");
+            assert!(
+                refusal.contains("phux agent app run TextEdit --pane @N"),
+                "{refusal}"
+            );
         }
         let browser = AppSpec {
             browser: Some("about:blank"),

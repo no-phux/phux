@@ -53,7 +53,7 @@ was in your panes. Read it, and remove anything private, before you share
 it. phux never logs what you type or paste, and its log files are readable
 only by you.
 
-Desktop's palette has **Copy Diagnostics**; [log locations](../clients/desktop/README.md#what-it-does).
+In Phux Rune, **Copy diagnostics** in Settings copies its logs and state; [log locations](../clients/rune/README.md#what-it-does).
 File [an issue](https://github.com/no-phux/phux/issues) with your OS/CPU,
 CLI and desktop versions, install method, reproduction steps, and actual error.
 
@@ -161,14 +161,10 @@ To see where the time goes, record a trace and open the file it prints in
 <https://ui.perfetto.dev>:
 
 ```sh
-phux perf trace --seconds 5     # the server
-phux perf trace --desktop       # the desktop app and the server, on one timeline
+phux perf trace --seconds 5
 ```
 
-Start either process with `PHUX_DEV=1` to add memory figures, or turn on
-**Settings > Developer > Developer mode** in the desktop app. A desktop app in
-Developer mode also shows a frame-rate overlay, and `phux perf --desktop`
-reads it. Agents get the same numbers from the `phux_perf` and
+Start the server with `PHUX_DEV=1` to add memory figures. Agents get the same numbers from the `phux_perf` and
 `phux_perf_trace` MCP tools.
 
 ## After a crash or reboot

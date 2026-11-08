@@ -4,7 +4,7 @@
 //! On macOS the system's `screencapture` writes a PNG; JPEG frames and
 //! `--max-width` re-encode it with the system's `sips`. The capture needs the
 //! Screen Recording grant, which macOS ties to the application that launched
-//! this process (the terminal, or the phux desktop app). Without it, macOS
+//! this process (the terminal). Without it, macOS
 //! hands over an image with no window content rather than an error.
 //!
 //! Viewers' input intents (`phux agent page click|type|key`, or any `SEND_DOCUMENT_INPUT`) are
@@ -289,7 +289,7 @@ mod macos {
 
     /// macOS grants Screen Recording to the app that owns the process, and a
     /// phux pane's processes belong to the server, which no grant reaches.
-    pub(super) const REFUSED_HINT: &str = "start the mirror from the phux desktop app (Mirror surface) or from Terminal, and grant that app Screen Recording; a phux pane cannot hold the grant";
+    pub(super) const REFUSED_HINT: &str = "start the mirror from a terminal app such as Terminal, and grant that app Screen Recording; a phux pane cannot hold the grant";
 
     pub(super) fn target(window: &str, window_id: Option<u32>) -> Result<Target, String> {
         match (window_id, window) {

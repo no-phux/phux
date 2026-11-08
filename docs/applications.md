@@ -29,12 +29,14 @@ the app's name. A producer that cannot start, such as a macOS capture
 without its grant, is logged in the pane; the app and the other
 producer go on. `--dry-run` prints what would be launched.
 
-## macOS apps and the desktop
+## macOS apps outside a pane
 
 On macOS a pane holds no capture grant, so `phux spawn --app` and
-`phux_app_open` refuse a non-browser app. The desktop's
-[Open App…](../clients/desktop/OPEN_APP.md) runs the helper as its own
-child instead, so Screen Recording and Accessibility apply.
+`phux_app_open` refuse a non-browser app. Run
+`phux agent app run NAME --pane @N` from a terminal that holds Screen
+Recording and Accessibility instead; the documents still bind to `@N`.
+`--parent-pid PID` ends the helper, and the app it launched, within a
+second of `PID` exiting.
 
 ## Capture cadence and input
 

@@ -2,7 +2,6 @@
 # Exercise fresh-PATH behavior and compiler download integrity without network.
 set -euo pipefail
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-bash "$root/scripts/test-macos-desktop.sh"
 scratch="$(mktemp -d "${TMPDIR:-/tmp}/phux-setup-test.XXXXXX")"
 scratch="$(cd "$scratch" && pwd)"
 trap 'rm -rf "$scratch"' EXIT
@@ -13,7 +12,6 @@ cp "$root"/scripts/{doctor,setup-rust,install-zig}.sh "$repo/scripts/"
 cp "$root/scripts/lib/dev-toolchain.sh" "$repo/scripts/lib/"
 cp "$root/scripts/lib/output.sh" "$repo/scripts/lib/"
 cp "$root/scripts/lib/apple-toolchain-env.sh" "$repo/scripts/lib/"
-cp "$root/scripts/lib/macos-desktop.sh" "$repo/scripts/lib/"
 cp "$root/rust-toolchain.toml" "$repo/"
 cp "$root/mise.toml" "$repo/"
 cp "$root/.config/zig-toolchain.json" "$repo/.config/"
@@ -90,16 +88,12 @@ chmod +x "$bin"/{uname,rustc,cargo,cc,mold,pkg-config,npm,node}
 expect_pass "$repo/scripts/doctor.sh" core
 
 # Check environment identity before Apple normalization can hide a mixed shell.
-mkdir -p "$repo/clients/desktop/scripts" "$scratch/custom-tools/command-wrappers/bin"
-cp "$root"/clients/desktop/scripts/build-{cli,host}.sh "$repo/clients/desktop/scripts/"
+mkdir -p "$scratch/custom-tools/command-wrappers/bin"
 cat >"$repo/scripts/check-desktop.sh" <<'SH'
 source "$(dirname "${BASH_SOURCE[0]}")/lib/dev-toolchain.sh"
 check_desktop_toolchain
 SH
 PHUX_ENV=mise IN_NIX_SHELL=1 expect_fail 'mixed Nix/Mise desktop toolchain' "$repo/scripts/doctor.sh" desktop
-for entry in cli host; do
-    PHUX_ENV=mise IN_NIX_SHELL=1 expect_fail 'mixed Nix/Mise desktop toolchain' "$repo/clients/desktop/scripts/build-$entry.sh"
-done
 PHUX_ENV=mise expect_pass "$repo/scripts/check-desktop.sh"
 PHUX_ENV=nix IN_NIX_SHELL=1 expect_pass "$repo/scripts/check-desktop.sh"
 # Shell hooks can shadow Nix tools without changing PHUX_ENV.
@@ -109,7 +103,7 @@ PATH="$scratch/custom-tools/command-wrappers/bin:$bin" IN_NIX_SHELL=1 PHUX_ENV=n
 grep -Fq 'mixed Nix/Mise desktop toolchain' "$scratch/output"
 cp "$bin/rustc" "$scratch/rustc-good"
 sed "s/rustc $RUST_CHANNEL /rustc 0.0.0 /" "$scratch/rustc-good" >"$bin/rustc"
-expect_fail "desktop requires Rust $RUST_CHANNEL (found: rustc 0.0.0" "$repo/clients/desktop/scripts/build-cli.sh"
+expect_fail "desktop requires Rust $RUST_CHANNEL (found: rustc 0.0.0" "$repo/scripts/check-desktop.sh"
 cp "$scratch/rustc-good" "$bin/rustc"
 
 # Tools present but the link broken (a linker older than the SDK) must fail.
@@ -130,7 +124,7 @@ expect_fail 'found: 0.0.0' "$repo/scripts/doctor.sh" native
 sed "s/0.0.0/$ZIG_VERSION/" "$bin/zig" >"$scratch/zig"
 cp "$scratch/zig" "$bin/zig"
 expect_pass "$repo/scripts/doctor.sh" native
-# Linux desktop checks libraries, not Apple's Metal tools. Missing a development
+# Linux desktop checks libraries. Missing a development
 # package is diagnosed even when the machine has no graphical login.
 cp "$bin/npm" "$bin/python3"
 bun_version="$(sed -n 's/^bun = "\([^"]*\)"/\1/p' "$root/mise.toml")"
@@ -141,7 +135,6 @@ SH
 chmod +x "$bin/bun"
 expect_pass "$repo/scripts/doctor.sh" desktop
 grep -Fq 'xkbcommon-x11' "$scratch/output"
-if grep -Fq 'Metal' "$scratch/output"; then exit 1; fi
 SETUP_TEST_ARCH=aarch64 expect_pass "$repo/scripts/doctor.sh" desktop
 SETUP_TEST_ARCH=ppc64le expect_fail 'unsupported desktop platform' "$repo/scripts/doctor.sh" desktop
 cat >"$bin/pkg-config" <<'SH'
@@ -151,18 +144,6 @@ SH
 expect_fail 'xkbcommon-x11 development libraries' "$repo/scripts/doctor.sh" desktop
 cp "$bin/npm" "$bin/pkg-config"
 
-# Linux builds must retain native/Nix compiler flags and runtime library paths;
-# sourcing the Apple normalizer would silently unset all three.
-cp "$bin/cargo" "$scratch/cargo-good"
-cat >"$bin/cargo" <<'SH'
-#!/bin/sh
-test "$CC" = linux-cc && test "$NIX_LDFLAGS" = linux-flags && test "$LD_LIBRARY_PATH" = linux-libs || exit 1
-mkdir -p "$CARGO_TARGET_DIR/debug"
-printf '#!/bin/sh\nexit 0\n' >"$CARGO_TARGET_DIR/debug/phux-desktop"
-chmod +x "$CARGO_TARGET_DIR/debug/phux-desktop"
-SH
-CC=linux-cc NIX_LDFLAGS=linux-flags LD_LIBRARY_PATH=linux-libs expect_pass "$repo/clients/desktop/scripts/build-host.sh"
-cp "$scratch/cargo-good" "$bin/cargo"
 # Browser-client work reuses its committed engine; Zig must not be required.
 export SETUP_TEST_SYSROOT="$scratch/sysroot"
 mkdir -p "$SETUP_TEST_SYSROOT/lib/rustlib/wasm32-unknown-unknown/lib" "$repo/clients/phux-web" "$repo/clients/phux-vt-web/vendor"
@@ -195,26 +176,8 @@ SH
 chmod +x "$bin/xcrun"
 expect_fail 'macOS SDK/nmedit' "$repo/scripts/doctor.sh" native
 
-# Xcode being present is insufficient for GPUI: execute the Metal compiler.
-mkdir -p "$scratch/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain"
-export SETUP_TEST_XCODE="$scratch/Xcode.app/Contents/Developer"
-cat >"$bin/xcode-select" <<'SH'
-#!/bin/sh
-echo "$SETUP_TEST_XCODE"
-SH
-cat >"$bin/xcodebuild" <<'SH'
-#!/bin/sh
-echo 'Xcode 26.0'
-SH
-cat >"$bin/sw_vers" <<'SH'
-#!/bin/sh
-echo 26.0
-SH
-chmod +x "$bin"/{xcode-select,xcodebuild,sw_vers}
-cat >"$bin/xcrun" <<'SH'
-#!/bin/sh
-test "$3" != metal
-SH
+# The macOS desktop needs no Apple tools beyond the SDK the native build uses.
+cp "$bin/npm" "$bin/xcrun"
 cp "$bin/npm" "$bin/python3"
 bun_version="$(sed -n 's/^bun = "\([^"]*\)"/\1/p' "$root/mise.toml")"
 cat >"$bin/bun" <<SH
@@ -222,8 +185,6 @@ cat >"$bin/bun" <<SH
 echo '$bun_version'
 SH
 chmod +x "$bin/bun"
-expect_fail 'Metal compiler unavailable' "$repo/scripts/doctor.sh" desktop
-cp "$bin/npm" "$bin/xcrun"
 expect_pass "$repo/scripts/doctor.sh" desktop
 cat >"$bin/bun" <<'SH'
 #!/bin/sh

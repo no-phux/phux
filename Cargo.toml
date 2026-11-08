@@ -6,7 +6,7 @@ default-members = ["crates/phux", "crates/phux-mcp"]
 # Browser and desktop clients have separate workspaces and toolchains.
 # `.claude` holds agent worktrees. Without it, Cargo's cached-root lookup
 # adopts this checkout as the workspace of a nested worktree's out-of-tree
-# path dependencies (the desktop host's GPUI checkout) and fails inheritance.
+# path dependencies and fails inheritance.
 exclude = ["clients", ".claude"]
 
 [workspace.package]

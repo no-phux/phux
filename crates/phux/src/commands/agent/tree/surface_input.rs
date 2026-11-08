@@ -199,7 +199,7 @@ mod macos {
 
     use super::{Event, Rect, WINDOW_INFO, events, window_info};
 
-    const NOT_TRUSTED: &str = "phux: input from viewers is ignored: posting it needs the Accessibility grant. Grant the app that started this mirror (the phux desktop app, or your terminal) Accessibility in System Settings, Privacy & Security, Accessibility";
+    const NOT_TRUSTED: &str = "phux: input from viewers is ignored: posting it needs the Accessibility grant. Grant the app that started this mirror (your terminal) Accessibility in System Settings, Privacy & Security, Accessibility";
 
     /// Carries out the intents a surface's viewers send to its window (by
     /// CoreGraphics id) or to the main display.
