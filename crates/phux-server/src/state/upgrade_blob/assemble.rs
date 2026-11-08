@@ -98,6 +98,7 @@ impl ServerState {
             .map(|pane| pane.wire_id)
             .collect();
         let agent_sessions = self.agent_session_blobs(&handoffs.agent_sessions, &live_panes);
+        let documents = self.document_blobs(&handoffs.documents, &live_panes);
         let org = self.org();
 
         StateBlob {
@@ -134,6 +135,7 @@ impl ServerState {
             // tree's identity.
             delegations: Vec::new(),
             native_agents: Vec::new(),
+            documents,
         }
     }
 

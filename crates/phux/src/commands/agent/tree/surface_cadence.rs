@@ -16,6 +16,18 @@ pub(super) const ACTIVE: Duration = Duration::from_millis(150);
 /// How long after the last input the mirror keeps the fast interval.
 pub(super) const ACTIVE_FOR: Duration = Duration::from_secs(2);
 
+/// The longest a mirror waits between captures that yield no frame.
+pub(super) const MAX_BACKOFF: Duration = Duration::from_secs(30);
+
+/// The idle interval after `misses` captures in a row gave no frame (the
+/// display asleep, the session locked): doubling from `idle` up to
+/// [`MAX_BACKOFF`], or `idle` itself once a capture works.
+pub(super) fn backoff(idle: Duration, misses: u32) -> Duration {
+    idle.saturating_mul(1 << misses.min(8))
+        .min(MAX_BACKOFF)
+        .max(idle)
+}
+
 /// When to capture next: `captured` is when the last capture ended, `input`
 /// when an intent was last acted on, `idle` the `--interval`.
 pub(super) fn next_capture(captured: Instant, input: Option<Instant>, idle: Duration) -> Instant {
@@ -58,6 +70,16 @@ mod tests {
         assert_eq!(next_capture(captured, Some(input), IDLE), captured + ACTIVE);
         let late = input + ACTIVE_FOR;
         assert_eq!(next_capture(late, Some(input), IDLE), late + IDLE);
+    }
+
+    #[test]
+    fn failed_captures_back_off_to_a_ceiling_and_recover_at_once() {
+        assert_eq!(backoff(IDLE, 0), IDLE);
+        assert_eq!(backoff(IDLE, 1), ms(2000));
+        assert_eq!(backoff(IDLE, 3), ms(8000));
+        assert_eq!(backoff(IDLE, 40), MAX_BACKOFF);
+        // An interval already past the ceiling is never shortened.
+        assert_eq!(backoff(ms(60_000), 2), ms(60_000));
     }
 
     #[test]

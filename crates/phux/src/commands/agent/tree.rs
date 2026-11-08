@@ -32,6 +32,8 @@ mod page;
 mod page_input;
 mod page_mirror;
 mod parent_watch;
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+mod redial;
 mod surface;
 #[cfg(any(target_os = "macos", target_os = "linux", test))]
 mod surface_cadence;
@@ -211,7 +213,7 @@ pub(super) async fn dial(
     socket_path: &std::path::Path,
     json: bool,
 ) -> Result<Connection, ExitCode> {
-    Connection::connect(socket_path).await.map_err(|err| {
+    connect_socket(socket_path).await.map_err(|err| {
         json_err::emit(
             json,
             &json_err::CliError::new(
@@ -222,6 +224,13 @@ pub(super) async fn dial(
             EXIT_FAILURE,
         )
     })
+}
+
+/// This lane's one wire connection; a mirror redials through it too.
+async fn connect_socket(
+    socket_path: &std::path::Path,
+) -> Result<Connection, phux_client::attach::AttachError> {
+    Connection::connect(socket_path).await
 }
 
 /// Resolve `target` and connect, or report why not.

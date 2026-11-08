@@ -88,6 +88,7 @@ async fn upgrade_capture_ignores_agent_sessions_and_orphan_handles() {
                 &UpgradeHandoffs {
                     panes,
                     agent_sessions: HashMap::new(),
+                    documents: HashMap::new(),
                 },
             )
             .expect("the tree did not change");

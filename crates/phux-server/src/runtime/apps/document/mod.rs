@@ -257,7 +257,7 @@ impl<A: DocumentApi> ResourceApp for DocumentApp<A> {
         async move {
             match command {
                 Command::PublishResourceState { terminal_id, bytes } => {
-                    publish::<A>(&ctx.state, ctx.client_id, &terminal_id, Bytes::from(bytes)).await
+                    publish::<A>(ctx, &terminal_id, Bytes::from(bytes)).await
                 }
                 Command::SendDocumentInput {
                     terminal_id,
@@ -339,22 +339,25 @@ impl<A: DocumentApi> ResourceApp for DocumentApp<A> {
 }
 
 /// `PUBLISH_RESOURCE_STATE`: a local owner connection replaces the
-/// document; the reply names the sequence the document carries.
+/// document; the reply names the sequence the document carries. A publish
+/// to a document whose producer is gone (it redialed after a server
+/// upgrade) makes this connection its producer again, so viewers' input
+/// reaches it.
 async fn publish<A: DocumentApi>(
-    state: &SharedState,
-    client_id: ClientId,
+    ctx: &CommandContext,
     terminal_id: &phux_protocol::ids::ResourceId,
     bytes: Bytes,
 ) -> CommandResult {
+    let (state, client_id) = (&ctx.state, ctx.client_id);
     if !state.with(|s| s.client_may_produce(client_id)) {
         return CommandResult::Error {
             code: ErrorCode::NotProducer,
             message: "publishing a resource's state requires a local owner connection".to_owned(),
         };
     }
-    let Some(handle) = state.with(|s| {
-        s.resource_from_wire(terminal_id)
-            .and_then(|core| s.resource_handle(core).cloned())
+    let Some((core, handle)) = state.with(|s| {
+        let core = s.resource_from_wire(terminal_id)?;
+        Some((core, s.resource_handle(core)?.clone()))
     }) else {
         return CommandResult::Error {
             code: ErrorCode::TerminalNotFound,
@@ -377,10 +380,18 @@ async fn publish<A: DocumentApi>(
         };
     }
     match rx.await {
-        Ok(Ok(published)) => CommandResult::OkWith(CommandValue::Json(format!(
-            "{{\"seq\":{},\"ts_ms\":{}}}",
-            published.seq, published.ts_ms
-        ))),
+        Ok(Ok(published)) => {
+            state.with_mut(|s| {
+                if s.resource_producer(core).is_none() {
+                    s.record_spawn(core, client_id);
+                    s.subscribe_resource(client_id, core, Some(ctx.out_tx.clone()));
+                }
+            });
+            CommandResult::OkWith(CommandValue::Json(format!(
+                "{{\"seq\":{},\"ts_ms\":{}}}",
+                published.seq, published.ts_ms
+            )))
+        }
         Ok(Err(PublishRejection::Invalid(error))) => CommandResult::Error {
             code: ErrorCode::RecordInvalid,
             message: error,

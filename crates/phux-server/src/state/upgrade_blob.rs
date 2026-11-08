@@ -51,6 +51,8 @@ pub(crate) struct UpgradeHandoffs {
     /// Record-stream cut per carried `AgentSession`. A session without one
     /// is not carried.
     pub(crate) agent_sessions: HashMap<ResourceId, AgentStreamCut>,
+    /// Newest document per carried document resource.
+    pub(crate) documents: documents::DocumentCuts,
 }
 
 /// One pane an app rebuilt around its inherited state, ready to register.
@@ -325,6 +327,7 @@ fn osc_title_sequence(title: &str) -> Vec<u8> {
 mod tests;
 
 mod assemble;
+mod documents;
 mod import;
 mod rebuild;
 mod validate;

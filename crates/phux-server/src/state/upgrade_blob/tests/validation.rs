@@ -80,6 +80,7 @@ pub(super) fn blob(
         org: None,
         delegations: Vec::new(),
         native_agents: Vec::new(),
+        documents: Vec::new(),
     }
 }
 

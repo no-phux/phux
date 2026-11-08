@@ -239,6 +239,7 @@ pub(super) async fn capture_blob(state: &SharedState) -> (StateBlob, AgentSessio
         &UpgradeHandoffs {
             panes,
             agent_sessions,
+            documents: HashMap::new(),
         },
     )
     .expect("a busy agent session does not make the tree look changed");

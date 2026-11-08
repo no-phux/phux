@@ -116,8 +116,8 @@ pub(super) fn run_mirror(args: MirrorArgs<'_>) -> ExitCode {
         }
         let interval = Duration::from_millis(interval_ms.max(50));
         let label = format!("{app} (pid {pid})");
-        match publish_until_gone(&source, depth, interval, &label, &mut conn, &opened.resource).await
-        {
+        let to = (&mut conn, socket_path.as_path(), &opened.resource);
+        match publish_until_gone(&source, depth, interval, &label, to).await {
             Ok(()) => ExitCode::SUCCESS,
             Err(err) => report(json, &err),
         }
@@ -136,8 +136,11 @@ async fn publish_until_gone(
     depth: usize,
     interval: std::time::Duration,
     label: &str,
-    conn: &mut phux_client::attach::connection::Connection,
-    resource: &phux_protocol::ids::ResourceId,
+    (conn, socket, resource): (
+        &mut phux_client::attach::connection::Connection,
+        &std::path::Path,
+        &phux_protocol::ids::ResourceId,
+    ),
 ) -> Result<(), phux_client::tree::TreeError> {
     let mut last: Option<Vec<u8>> = None;
     let mut misses = 0;
@@ -153,7 +156,8 @@ async fn publish_until_gone(
             misses = 0;
             let bytes = serde_json::to_vec(&document).unwrap_or_default();
             if last.as_deref() != Some(bytes.as_slice()) {
-                phux_client::tree::publish(conn, resource, bytes.clone()).await?;
+                // A lost connection (a server upgrade) is redialed.
+                super::redial::publish(conn, socket, resource, &bytes, &mut Vec::new()).await?;
                 last = Some(bytes);
             }
         }

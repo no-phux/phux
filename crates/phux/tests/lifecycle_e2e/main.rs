@@ -9,6 +9,7 @@
 mod runner;
 
 mod agent_stats_e2e;
+mod document_upgrade_e2e;
 mod empty_session_e2e;
 mod failure_ux_e2e;
 mod hermetic;

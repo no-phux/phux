@@ -311,6 +311,16 @@ impl<K: DocumentKind> DocumentActor<K> {
         }
     }
 
+    /// Start from `document` at sequence 1, as a document carried across a
+    /// server upgrade does; `None` starts empty.
+    #[must_use]
+    pub fn seeded(mut self, document: Option<Bytes>) -> Self {
+        if document.is_some() && self.core.next_seq().is_some() {
+            self.latest = document;
+        }
+        self
+    }
+
     /// Serve publishes and snapshots until cancelled or every handle is gone.
     pub async fn run(mut self) {
         let token = self.core.token.clone();

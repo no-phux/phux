@@ -1,7 +1,7 @@
 //! A document reports whether its producer is connected
 //! (`docs/resource-kinds.md#supervision`): connected while the opening
-//! connection lives, gone after it disconnects, and the document and its
-//! newest frame stay readable.
+//! connection lives, gone after it disconnects, back once a new connection
+//! publishes to it, and the document and its newest frame stay readable.
 
 use phux_protocol::ids::ResourceId;
 use phux_protocol::wire::frame::{Command, CommandResult, FrameKind, SpawnResource, SpawnResult};
@@ -58,6 +58,21 @@ fn a_document_reports_its_producer_connected_then_gone() {
             producer(s, &tree) == Some(false)
         })
         .await;
+
+        // A producer that redials (a server upgrade closed its connection)
+        // takes the same document back by publishing to it.
+        let mut redialed = server.connect().await;
+        let publish = Command::PublishResourceState {
+            terminal_id: tree.clone(),
+            bytes: DOC.to_vec(),
+        };
+        let taken = command(&mut redialed, 4, publish).await;
+        assert!(matches!(taken, CommandResult::OkWith(_)), "{taken:?}");
+        wait_for_state(&mut viewer, 200, "producer back", |s| {
+            producer(s, &tree) == Some(true)
+        })
+        .await;
+        drop(redialed);
 
         send_frame(
             &mut viewer,
