@@ -35,9 +35,11 @@ released; its source is the `desktop-v0.62.0` tag.
 
 1. Conventional commits land on `main`. Release Please keeps one draft
    release PR for the root (CLI and integrations). It is one commit carrying the version bump, changelog, and every
-   lockfile entry the bump moves. Nothing merges it automatically.
-2. A maintainer marks the release PR ready and squash-merges it once `ci`
-   is green. That creates the tag and a private draft release.
+   lockfile entry the bump moves.
+2. Every two hours `phux-auto-release.yml` marks the release PR ready, which
+   runs `ci`, and turns on squash auto-merge, so it merges once `ci` is green.
+   That creates the tag and a private draft release. A maintainer can still
+   merge it sooner by hand; `PHUX_AUTO_RELEASE=false` stops the automation.
 3. `release.yml` runs after a successful push `ci` on `main`, daily,
    or by dispatch. It picks every draft whose exact tagged commit has a successful push
    `ci` on `main` (not another commit's green status), builds the assets from the tag using the harness on `main`,
