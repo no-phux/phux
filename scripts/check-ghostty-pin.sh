@@ -58,6 +58,22 @@ cpu="$(const PREBUILT_CPU <<<"$download_rs")"
   fail "could not read the Ghostty commit and prebuilt flavor from ${fork}@${fork_rev:0:12}"
 tag="ghostty-vt-${commit:0:12}-$(tr '[:upper:]' '[:lower:]' <<<"$optimize")-${cpu}"
 
+# Whether the release at $base/$tag lists ARCHIVE, per the GitHub API; an
+# unreachable API is an outage, so the check skips.
+release_json=""
+listed() {
+  if [ -z "$release_json" ]; then
+    [[ "$base" =~ ^https://github\.com/([^/]+/[^/]+)/releases/download$ ]] ||
+      skip "$base is not a GitHub release download base"
+    local api="https://api.github.com/repos/${BASH_REMATCH[1]}/releases/tags/$tag"
+    local auth=()
+    [ -z "${GH_TOKEN:-}" ] || auth=(-H "Authorization: Bearer $GH_TOKEN")
+    release_json="$(curl -fsSL --max-time 30 "${auth[@]}" "$api" 2>/dev/null)" ||
+      skip "GitHub did not serve $base/$tag and its API is unreachable"
+  fi
+  tr ',' '\n' <<<"$release_json" | grep -Eq "\"name\": ?\"$1\""
+}
+
 # rustfmt may split a table entry over lines; match it on one.
 table="$(tr -s '[:space:]' ' ' <<<"$download_rs")"
 for target in "${TARGETS[@]}"; do
@@ -66,8 +82,16 @@ for target in "${TARGETS[@]}"; do
     phux_hint "Run the prebuilt workflow in $fork and land its PREBUILT_ARCHIVES table before bumping the pin."
     exit 1
   }
-  url="$base/$tag/libghostty-vt-$target.tar.gz"
-  curl -fsSIL --max-time 30 -o /dev/null "$url" 2>/dev/null || fail "$url is not served"
+  archive="libghostty-vt-$target.tar.gz"
+  url="$base/$tag/$archive"
+  status="$(curl -sIL --max-time 30 -o /dev/null -w '%{http_code}' "$url" 2>/dev/null)" || status=000
+  case "$status" in
+    2??) continue ;;
+    4??) fail "$url is not served" ;;
+  esac
+  # releases/download can answer one asset with a 5xx for hours; the API
+  # still says whether the release has it.
+  listed "$archive" || fail "$url is not served (HTTP $status, and the release does not list it)"
 done
 
 phux_ok "check-ghostty-pin: ${fork}@${fork_rev:0:12} publishes $tag for ${#TARGETS[@]} targets"
