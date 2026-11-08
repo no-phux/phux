@@ -92,9 +92,13 @@ impl Desk {
     }
 
     /// End the bare session; `settle_bare` takes the window home once it's
-    /// gone. Still being made, there is nothing to end yet.
+    /// gone. While it is still being made there is nothing to end yet, and
+    /// forgetting it would land the window in it with its chrome.
     fn leave_bare(&mut self) {
         let Some(bare) = &self.bare else { return };
+        if self.pending_session.as_ref() == Some(&bare.session) {
+            return;
+        }
         let key = self
             .topology
             .as_ref()
