@@ -89,6 +89,22 @@ pub struct AgentSessionDescriptor {
     pub state: Option<String>,
 }
 
+/// One document-kind resource: a tree, surface, or typed document.
+///
+/// A hub's satellite documents have no organization record on the hub, so
+/// the snapshot's listing is the only way a client finds them.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DocumentDescriptor {
+    /// The resource.
+    pub id: ResourceId,
+    /// Which document kind.
+    pub kind: ResourceKind,
+    /// The pane its producer runs in.
+    pub parent: Option<ResourceId>,
+    /// Its display name, if declared.
+    pub name: Option<String>,
+}
+
 /// The session/pane graph.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Topology {
@@ -98,6 +114,8 @@ pub struct Topology {
     pub panes: Vec<PaneDescriptor>,
     /// Every `AgentSession` resource.
     pub agent_sessions: Vec<AgentSessionDescriptor>,
+    /// Every document-kind resource, in the server's order.
+    pub documents: Vec<DocumentDescriptor>,
     /// The focused session.
     pub focused_session: u32,
     /// The focused terminal.
@@ -186,10 +204,29 @@ impl Topology {
                 state: resource.agent.as_ref().map(|facet| facet.state.clone()),
             })
             .collect();
+        let documents = snapshot
+            .resources
+            .iter()
+            .filter(|resource| {
+                matches!(
+                    resource.kind,
+                    ResourceKind::AccessibilityTree
+                        | ResourceKind::PixelSurface
+                        | ResourceKind::Document
+                )
+            })
+            .map(|resource| DocumentDescriptor {
+                id: resource.id.clone(),
+                kind: resource.kind,
+                parent: resource.parent.clone(),
+                name: resource.title.clone(),
+            })
+            .collect();
         Self {
             sessions,
             panes,
             agent_sessions,
+            documents,
             focused_session: snapshot.focused_session.get(),
             focused_pane: snapshot.focused_resource.clone(),
             authority: None,

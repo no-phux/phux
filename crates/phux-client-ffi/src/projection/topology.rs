@@ -460,6 +460,7 @@ mod tests {
                 native_id: None,
                 state: Some("working".to_owned()),
             }],
+            documents: Vec::new(),
             focused_session: 1,
             focused_pane: ResourceId::local(7),
             authority: None,

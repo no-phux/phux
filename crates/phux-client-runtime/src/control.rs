@@ -94,7 +94,9 @@ pub use options::{
 pub use org_plane::{ArrangementSubmitError, mint_operation};
 pub use organization::{InboxView, IntakeView, OrganizationReplica, ReplicaAction, ReplicaState};
 pub use service_http::{MAX_SERVICE_HTTP_IN_FLIGHT, ServiceHttpCall, ServiceHttpError};
-pub use topology::{AgentSessionDescriptor, PaneDescriptor, SessionDescriptor, Topology};
+pub use topology::{
+    AgentSessionDescriptor, DocumentDescriptor, PaneDescriptor, SessionDescriptor, Topology,
+};
 
 /// Upper bound on undrained events.
 ///
