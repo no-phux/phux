@@ -1,7 +1,8 @@
 name: Rune build
 
-# The Rune client (clients/rune) on both platforms: its own Cargo workspace,
-# tested, packaged and launched from the archive. ci.yml calls this as the
+# The Rune client (clients/rune): desktop archives on macOS/Linux, plus real
+# native iOS simulator/device builds and simulator input qualification.
+# Its own Cargo workspace is tested and packaged. ci.yml calls this as the
 # `rune` lane; rune-client.yml calls it for a tag, when the macOS app is also
 # signed and the archives go on to publication. It is separate because a
 # called workflow can't ask for more than ci.yml grants, and publishing needs
@@ -149,4 +150,53 @@ jobs:
           name: rune-${{ matrix.name }}
           path: ${{ runner.temp }}/dist/*
           if-no-files-found: error
+          retention-days: 14
+
+  ios-native:
+    name: ios-native-simulator
+    runs-on: macos-26
+    timeout-minutes: 60
+    env:
+      CARGO_INCREMENTAL: "0"
+      CARGO_PROFILE_DEV_DEBUG: "0"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Toolchains
+        run: |
+          bash scripts/setup-rust.sh core
+          bash scripts/install-zig.sh "$RUNNER_TEMP/phux-toolchains" >> "$GITHUB_PATH"
+          rustup target add aarch64-apple-ios-sim aarch64-apple-ios
+      - uses: ./.github/actions/setup-bun
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          workspaces: |
+            . -> target
+          shared-key: rune-ios-native
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+          cache-on-failure: "true"
+      - name: Test native build and qualification drivers
+        run: python3 -B -m unittest discover -s clients/rune/scripts -p 'test_ios_build.py'
+      - name: Build native simulator app and device bundle
+        run: |
+          python3 clients/rune/ios/build.py --out "$RUNNER_TEMP/ios-simulator" --target simulator
+          python3 clients/rune/ios/build.py --out "$RUNNER_TEMP/ios-device" --target device
+      - name: Qualify native rendering and input against the same-source dev server
+        run: |
+          cargo build --locked -p phux
+          python3 clients/rune/ios/qualify.py --app "$RUNNER_TEMP/ios-simulator/Phux Rune.app" \
+            --phux "$PWD/target/debug/phux" --out "$RUNNER_TEMP/ios-qualification"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: rune-ios-native-evidence
+          path: |
+            ${{ runner.temp }}/ios-qualification
+            ${{ runner.temp }}/ios-simulator/*.json
+            ${{ runner.temp }}/ios-simulator/*.log
+            ${{ runner.temp }}/ios-simulator/Phux Rune.app
+            ${{ runner.temp }}/ios-device/*.json
+            ${{ runner.temp }}/ios-device/*.log
+          if-no-files-found: warn
           retention-days: 14
