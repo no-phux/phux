@@ -1,4 +1,4 @@
-# phux on Rune (alpha)
+# phux on Rune
 
 The phux desktop client, built on [Rune](https://github.com/anomalyco/rune), a
 native GPU UI framework (wgpu, winit), over the same persistent server and
@@ -6,8 +6,8 @@ shared client runtime as the terminal UI. The same app runs a phone form
 ([MOBILE.md](./MOBILE.md)).
 
 It replaced the GPUI desktop, which was retired after Desktop 0.62.0; its
-last source is the `desktop-v0.62.0` tag. It is still an alpha: expect
-rough edges, and keep the terminal UI at hand.
+last source is the `desktop-v0.62.0` tag. It is young: expect rough edges,
+and keep the terminal UI at hand.
 
 ## Install
 
@@ -26,9 +26,13 @@ require the signature.
 Or download the newest `rune-v*` release from
 [Releases](https://github.com/no-phux/phux/releases?q=rune-v&expanded=true):
 
-- **macOS (Apple silicon)**: `phux-rune-VERSION-macos-arm64.zip`. Unzip and
-  move **Phux Rune.app** to Applications, then open it. From 0.1.0-alpha.3
-  the app is Developer ID signed, Apple-notarized and stapled; earlier alphas were ad-hoc signed and Gatekeeper refuses them.
+- **macOS (Apple silicon)**: `phux-rune-VERSION-macos-arm64.dmg` (from
+  0.1.0; [phux.sh](https://phux.sh)'s **Download for Mac** links it). Open it
+  and drag **Phux Rune.app** to Applications. The
+  `phux-rune-VERSION-macos-arm64.zip` beside it is the updater's archive:
+  unzip it and move the app to Applications. From 0.1.0-alpha.3 the app is
+  Developer ID signed, Apple-notarized and stapled; earlier alphas were ad-hoc
+  signed and Gatekeeper refuses them.
 - **Linux (x86_64)**: `phux-rune-VERSION-linux-x86_64.tar.gz`, then run
   `phux-rune`.
 

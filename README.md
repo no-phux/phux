@@ -31,7 +31,7 @@ Run `phux` after installing. [First agent](./docs/getting-started.md#first-agent
 
 ### Desktop app
 
-[Phux Rune](./clients/rune/README.md) is the desktop app (alpha), for Apple
+[Phux Rune](./clients/rune/README.md) is the desktop app, for Apple
 silicon macOS and x86_64 Linux:
 
 ```sh
