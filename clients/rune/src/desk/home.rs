@@ -141,6 +141,7 @@ mod tests {
             panes: Vec::new(),
             agent_sessions: Vec::new(),
             documents: Vec::new(),
+            satellite_sessions: Vec::new(),
             focused_session: 0,
             focused_pane: ResourceId::local(0),
             authority: None,

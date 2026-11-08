@@ -298,6 +298,60 @@ fn session_list(desk: &Desk, topology: &Topology, waiting: &HashMap<u32, usize>,
     list
 }
 
+/// A hub's satellite sessions, each under a `host · session` header: its
+/// terminals, then the mirrors their producers run (#2051 keeps them out of
+/// the hub's own sessions).
+fn satellite_list(desk: &Desk, topology: &Topology, ink: &Ink) -> El {
+    let mut list = col().w_full().gap(1.0).px(8.0);
+    let shown = desk.shown.as_ref().map(|s| &s.terminal);
+    let theme = desk.settings.theme.map(|t| t.id);
+    for (n, session) in topology.satellite_sessions.iter().enumerate() {
+        let name = format!("{} · {}", session.host, session.name);
+        let header = Header {
+            id: u32::MAX - u32::try_from(n).unwrap_or(0),
+            name: &name,
+            key: None,
+            current: session.members.iter().any(|id| shown == Some(id)),
+            waiting: 0,
+        };
+        list = list.child(memo(format!("satellite-{name}"), (&header, theme), || {
+            session_header(&header, ink)
+        }));
+        let terminals = session.members.iter().map(|id| {
+            let label = topology.pane(id).map_or_else(|| id.to_string(), pane_label);
+            (id, label, None)
+        });
+        let mirrors = topology
+            .documents
+            .iter()
+            .filter(|doc| {
+                doc.parent
+                    .as_ref()
+                    .is_some_and(|p| session.members.contains(p))
+            })
+            .map(|doc| {
+                let label = doc.name.clone().unwrap_or_else(|| "Mirror".to_owned());
+                (&doc.id, label, Some("Read-only mirror".to_owned()))
+            });
+        for (id, label, place) in terminals.chain(mirrors) {
+            let row = Row {
+                id,
+                session: "",
+                name: label,
+                place,
+                rename: None,
+                agent: desk.activities.agent_name(id),
+                mark: desk.activities.mark(id),
+                selected: shown == Some(id),
+            };
+            list = list.child(memo(format!("pane-{id}"), (&row, theme), || {
+                pane_row(&row, ink)
+            }));
+        }
+    }
+    list
+}
+
 /// A machine's line: open or folded, and how many sessions it holds once known.
 fn host_header(
     label: &str,
@@ -452,9 +506,12 @@ pub fn view(desk: &Desk, ink: &Ink, inset: f32) -> El {
     let topology = desk.topology.as_ref();
     let counts = topology.map_or_else(HashMap::new, |t| waiting_by_session(desk, t));
     let folded = desk.machines.folded;
-    let list = topology
-        .filter(|_| !folded)
-        .map_or_else(col, |t| session_list(desk, t, &counts, ink));
+    let list = topology.filter(|_| !folded).map_or_else(col, |t| {
+        col()
+            .w_full()
+            .child(session_list(desk, t, &counts, ink))
+            .child(satellite_list(desk, t, ink))
+    });
     let here = desk.machines.current.clone();
     let this_machine = host_header(
         desk.machines.label(),

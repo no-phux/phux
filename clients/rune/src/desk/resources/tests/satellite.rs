@@ -1,8 +1,10 @@
 //! A hub lists its satellites' documents only in its inventory: the hub's
 //! organization holds none of their records. Rune still finds, shows and
-//! streams them, without attaching a hub session for them.
+//! streams them, without attaching a hub session for them, and its sidebar
+//! files them under their satellite session.
 
 use super::*;
+use rune::accesskit::Action;
 
 fn satellite_frames(id: &ResourceId, bytes: &[u8]) -> [FrameKind; 3] {
     let stream_id = StreamId::new(70).unwrap();
@@ -49,6 +51,13 @@ fn a_satellite_surface_on_a_hub_is_listed_shown_and_streamed() {
         .with_sessions(vec![
             SessionInfo::new(SessionId::new(1), "work").with_key(Some(session())),
         ])
+        .with_hosts(vec![phux_protocol::wire::info::HostInventory::reachable(
+            "box".into(),
+            vec![
+                phux_protocol::wire::info::HostSessionInfo::new(SessionId::new(2), "lab")
+                    .with_members(vec![producer.clone()]),
+            ],
+        )])
         .with_resources(vec![
             ResourceInfo::new(id(1), WindowId::new(1), 80, 24)
                 .with_session(Some(SessionId::new(1))),
@@ -77,7 +86,12 @@ fn a_satellite_surface_on_a_hub_is_listed_shown_and_streamed() {
     assert!(hit.item.detail.starts_with("box · "), "{}", hit.item.detail);
 
     outbound(&client);
-    rt.update(|d, _| d.show(surface.clone(), "box"));
+    rt.frame(1.0);
+    let texts: Vec<_> = rt.elements().into_iter().filter_map(|el| el.text).collect();
+    assert!(texts.iter().any(|t| t == "box · lab"), "{texts:?}");
+    assert!(rt.find("pane-box/@69").is_some(), "its terminal");
+    assert!(rt.find("pane-box/@70").is_some(), "its mirror");
+    assert!(rt.accessibility_action("pane-box/@70", Action::Click, None));
     step(&mut rt);
     let sent = outbound(&client);
     assert!(
