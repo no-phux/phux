@@ -240,3 +240,62 @@ fn sink_rejects_before_growing_and_capture_preserves_error_kind() {
         Err(SnapshotCaptureError::Engine(_))
     ));
 }
+
+#[test]
+fn many_small_writes_grow_geometrically_without_exceeding_the_budget() {
+    for budget in [0, 1, 7, 4095, 4096, 4097, 32_769] {
+        let mut sink = BoundedWriter {
+            bytes: Vec::new(),
+            max_bytes: budget,
+            error: None,
+        };
+        let mut growths = 0;
+        for _ in 0..budget {
+            let capacity = sink.bytes.capacity();
+            sink.write_all(b"x").unwrap();
+            growths += usize::from(sink.bytes.capacity() != capacity);
+            assert!(sink.bytes.len() <= budget);
+            assert!(sink.bytes.capacity() <= budget);
+        }
+        assert!(growths <= 5, "budget {budget} required {growths} growths");
+        assert_eq!(sink.bytes.len(), budget);
+        assert!(sink.write_all(b"x").is_err());
+        assert!(matches!(
+            sink.error,
+            Some(SnapshotCaptureError::LimitExceeded)
+        ));
+        assert!(sink.bytes.capacity() <= budget);
+    }
+}
+
+#[test]
+fn a_large_write_reserves_required_bytes_relative_to_length() {
+    let mut sink = BoundedWriter {
+        bytes: Vec::new(),
+        max_bytes: 20_003,
+        error: None,
+    };
+    sink.write_all(b"x").unwrap();
+    assert_eq!(sink.bytes.capacity(), INITIAL_CAPACITY);
+    sink.write_all(&vec![1; 10_000]).unwrap();
+    assert_eq!(sink.bytes.len(), 10_001);
+    assert_eq!(sink.bytes.capacity(), 10_001);
+    sink.write_all(b"x").unwrap();
+    assert_eq!(sink.bytes.capacity(), 20_002);
+    sink.write_all(&vec![2; 10_001]).unwrap();
+    assert_eq!(sink.bytes.len(), 20_003);
+    assert_eq!(sink.bytes.capacity(), 20_003);
+}
+
+#[test]
+fn index_metadata_growth_is_amortized() {
+    let mut records = Vec::new();
+    let mut growths = 0;
+    for index in 0..10_000 {
+        let capacity = records.capacity();
+        push(&mut records, index).unwrap();
+        growths += usize::from(records.capacity() != capacity);
+    }
+    assert!(growths <= 16, "metadata required {growths} growths");
+    assert_eq!(records, (0..10_000).collect::<Vec<_>>());
+}

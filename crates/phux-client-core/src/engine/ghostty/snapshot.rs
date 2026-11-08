@@ -11,6 +11,7 @@ use thiserror::Error;
 
 const ENVELOPE: &[u8] = b"GHOSTSNP\x01\x00";
 const HEADER_BYTES: usize = 10;
+const INITIAL_CAPACITY: usize = 4096;
 const PAGE: u16 = 3;
 const HISTORY: u16 = 4;
 const READY: u16 = 5;
@@ -174,8 +175,9 @@ impl BoundedWriter {
                 .bytes
                 .capacity()
                 .saturating_mul(2)
-                .max(end)
-                .min(self.max_bytes);
+                .max(INITIAL_CAPACITY)
+                .min(self.max_bytes)
+                .max(end);
             self.bytes
                 .try_reserve_exact(capacity - self.bytes.len())
                 .map_err(|_| SnapshotCaptureError::OutOfMemory)?;
