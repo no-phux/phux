@@ -24,7 +24,7 @@ new Uint8Array(e.memory.buffer, inputPtr, input.length).set(input);
 e.ghostty_terminal_vt_write(terminal, inputPtr, input.length);
 e.ghostty_wasm_free(inputPtr, input.length);
 
-const out = e.ghostty_wasm_alloc(8);
+const out = e.ghostty_wasm_alloc(16);
 const get = (tag, what) => {
   view().setBigUint64(out, 0n, true);
   ok(e.ghostty_terminal_get(terminal, tag, out), what);
@@ -53,12 +53,16 @@ assert.notEqual(e.ghostty_render_state_row_iterator_next(rows), 0, 'first row');
 view().setUint32(out, cells, true);
 ok(e.ghostty_render_state_row_get(rows, 3, out), 'row CELLS');
 assert.notEqual(e.ghostty_render_state_row_cells_next(cells), 0, 'first cell');
+view().setUint32(out, out + 12, true); // GhosttyCodepointBuffer { ptr, cap, len }
+view().setUint32(out + 4, 1, true);
+view().setUint32(out + 8, 0, true);
 ok(e.ghostty_render_state_row_cells_get(cells, 4, out), 'cell GRAPHEMES_BUF');
-assert.equal(view().getUint32(out, true), 'R'.codePointAt(0), 'first cell grapheme');
+assert.equal(view().getUint32(out + 8, true), 1, 'one base codepoint');
+assert.equal(view().getUint32(out + 12, true), 'R'.codePointAt(0), 'first cell grapheme');
 ok(e.ghostty_render_state_row_cells_get(cells, 6, out), 'cell FG_COLOR');
 assert.deepEqual([0, 1, 2].map((i) => view().getUint8(out + i)), [255, 0, 0], 'truecolor fg');
 
-e.ghostty_wasm_free(out, 8);
+e.ghostty_wasm_free(out, 16);
 e.ghostty_render_state_row_cells_free(cells);
 e.ghostty_render_state_row_iterator_free(rows);
 e.ghostty_render_state_free(state);

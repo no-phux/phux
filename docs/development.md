@@ -43,16 +43,19 @@ Nix provides it.
 ## libghostty-vt
 
 The terminal engine is Ghostty's C library. What it does in a running phux,
-and what it does not, is [libghostty in phux](./libghostty.md). Its build script downloads a
-prebuilt, checksummed `libghostty-vt.a` for the pinned Ghostty commit on
-the three release targets and needs only `curl` and `tar`. Anything else
-(other targets, `LIBGHOSTTY_VT_SYS_FROM_SOURCE=1`, offline, a failed
-download) builds it from source with Zig, about 200 seconds once per set
-of inputs, cached outside any `target/` directory. `GHOSTTY_SOURCE_DIR`
-builds a local Ghostty checkout; `LIBGHOSTTY_VT_SYS_LIB_DIR` links one you
-built. `just ghostty-pin-check` confirms the pinned revision publishes an
-archive for every target. Ghostty requires Zig 0.16.0; 0.17.0's build API
-is incompatible.
+and what it does not, is [libghostty in phux](./libghostty.md). The 1.0
+migration pin builds from immutable source with Zig 0.17.0, cached outside
+any `target/` directory. Older compilers are incompatible with its build API.
+No prebuilt release is required to use this pin.
+
+When verified prebuilt archives exist for a pin and target, the build script
+can download a checksummed `libghostty-vt.a` instead. Other targets,
+`LIBGHOSTTY_VT_SYS_FROM_SOURCE=1`, offline operation, and failed downloads
+use the source path. `GHOSTTY_SOURCE_DIR` builds a local Ghostty checkout;
+`LIBGHOSTTY_VT_SYS_LIB_DIR` links one you built. `just ghostty-pin-check`
+validates the immutable engine source and matching Zig requirement, then
+reports prebuilt versus source-only target coverage. It does not replace
+native compilation tests or claim unpublished archives exist.
 
 ## Build cache (mbx)
 

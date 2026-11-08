@@ -40,8 +40,8 @@ for (const name of [
   'ghostty_wasm_alloc', 'ghostty_wasm_free', 'ghostty_free', 'ghostty_type_json',
   'ghostty_terminal_new', 'ghostty_terminal_free', 'ghostty_terminal_get', 'ghostty_terminal_set',
   'ghostty_terminal_vt_write', 'ghostty_terminal_resize', 'ghostty_terminal_scroll_viewport',
-  'ghostty_terminal_grid_ref', 'ghostty_grid_ref_hyperlink_uri', 'ghostty_terminal_selection_format_alloc',
-  'ghostty_formatter_terminal_new', 'ghostty_formatter_format_alloc', 'ghostty_formatter_free',
+  'ghostty_terminal_grid_ref', 'ghostty_grid_ref_hyperlink_uri',
+  'ghostty_formatter_terminal_new', 'ghostty_formatter_set', 'ghostty_formatter_format_alloc', 'ghostty_formatter_free',
   'ghostty_render_state_new', 'ghostty_render_state_free', 'ghostty_render_state_update',
   'ghostty_render_state_get', 'ghostty_render_state_row_iterator_new',
   'ghostty_render_state_row_iterator_free', 'ghostty_render_state_row_iterator_next',
@@ -50,8 +50,12 @@ for (const name of [
   'ghostty_render_state_row_cells_get', 'ghostty_unicode_codepoint_width',
   'ghostty_snapshot_encode_alloc', 'ghostty_snapshot_decoder_new', 'ghostty_snapshot_decoder_free',
   'ghostty_snapshot_decoder_set', 'ghostty_snapshot_decoder_get', 'ghostty_snapshot_decoder_ready',
-  'ghostty_snapshot_decoder_next',
+  'ghostty_snapshot_decoder_next', 'ghostty_snapshot_decoder_next_staged',
+  'ghostty_snapshot_validate_records',
 ]) assert.equal(typeof e[name], 'function', `export ${name}`);
+assert.equal(e.ghostty_formatter_terminal_new.length, 3, '1.0 formatter constructor');
+assert.equal(e.ghostty_snapshot_decoder_next_staged.length, 2, 'bounded staged decoder');
+assert.equal(e.ghostty_snapshot_validate_records.length, 2, 'preapply record CRC validation');
 const jsonPtr = e.ghostty_type_json();
 const jsonBytes = new Uint8Array(e.memory.buffer);
 const { abi, types } = JSON.parse(new TextDecoder().decode(jsonBytes.subarray(jsonPtr, jsonBytes.indexOf(0, jsonPtr))));
@@ -64,19 +68,17 @@ assert.equal(abi.endian, 'little', 'little-endian');
 // manifest, catches a self-consistent upstream ABI change.
 for (const [name, size, fields] of [
   ['GhosttyString', 8, { ptr: 0, len: 4 }],
+  ['GhosttyCodepointBuffer', 12, { ptr: 0, cap: 4, len: 8 }],
   ['GhosttyColorRgb', 3, { r: 0, g: 1, b: 2 }],
-  ['GhosttyStyle', 72, { size: 0, inverse: 60 }],
+  ['GhosttyStyleColor', 4, { tag: 0, value: 1 }],
+  ['GhosttyStyle', 16, { fg_color: 0, bg_color: 4, underline_color: 8, flags: 12, reserved: 14 }],
   ['GhosttyTerminalModeConfig', 4, { mode: 0, value: 2 }],
   ['GhosttyTerminalScrollbar', 24, { total: 0, offset: 8, len: 16 }],
   ['GhosttyTerminalScrollViewport', 24, { tag: 0, value: 8 }],
   ['GhosttyPoint', 24, { tag: 0, value: 8 }],
   ['GhosttyPointCoordinate', 8, { x: 0, y: 4 }],
-  ['GhosttyGridRef', 12, { size: 0, node: 4, x: 8, y: 10 }],
-  ['GhosttySelection', 32, { size: 0, start: 4, end: 16, rectangle: 28 }],
-  ['GhosttyTerminalSelectionFormatOptions', 16, { size: 0, emit: 4, unwrap: 8, trim: 9, selection: 12 }],
-  ['GhosttyFormatterTerminalOptions', 40, { size: 0, emit: 4, unwrap: 8, trim: 9, extra: 12, selection: 36 }],
-  ['GhosttyFormatterTerminalExtra', 24, { size: 0, screen: 12 }],
-  ['GhosttyFormatterScreenExtra', 12, { size: 0 }],
+  ['GhosttyGridRef', 8, { node: 0, x: 4, y: 6 }],
+  ['GhosttySelection', 20, { start: 0, end: 8, rectangle: 16 }],
   ['GhosttyReader', 8, { read: 0, userdata: 4 }],
 ]) {
   const layout = types[name];
@@ -87,9 +89,10 @@ for (const [name, size, fields] of [
 }
 for (const [name, values] of [
   ['GhosttyResult', { SUCCESS: 0, OUT_OF_SPACE: -3, NO_VALUE: -4 }],
-  ['GhosttySnapshotDecoderOption', { MAX_CONTINUATION_BYTES: 0 }],
-  ['GhosttySnapshotDecoderData', { PROGRESS_ROWS: 6, PROGRESS_REMAINING: 7 }],
-  ['GhosttyTerminalOption', { BELL: 2, SCROLLBACK_MAX_BYTES: 27, SCROLLBACK_MAX_LINES: 28 }],
+  ['GhosttySnapshotDecoderOption', { MAX_CONTINUATION_BYTES: 1 }],
+  ['GhosttySnapshotDecoderData', { PROGRESS_ROWS: 6, PROGRESS_REMAINING: 7, PROGRESS_KIND: 11 }],
+  ['GhosttySnapshotDecoderProgressKind', { PAGE: 0, IMAGE: 1 }],
+  ['GhosttyTerminalOption', { BELL: 3, SCROLLBACK_MAX_BYTES: 28, SCROLLBACK_MAX_LINES: 29 }],
   ['GhosttyTerminalData', {
     CURSOR_X: 3, CURSOR_Y: 4, CURSOR_VISIBLE: 7, SCROLLBAR: 9, MOUSE_TRACKING: 11, TITLE: 12,
     VIEWPORT_ACTIVE: 32, SCROLLBACK_MAX_BYTES: 34, SCROLLBACK_MAX_LINES: 35, MODE: 37,
@@ -100,10 +103,13 @@ for (const [name, values] of [
   ['GhosttyPointTag', { VIEWPORT: 1 }],
   ['GhosttyTerminalScrollViewportTag', { TOP: 0, BOTTOM: 1, DELTA: 2 }],
   ['GhosttyFormatterFormat', { PLAIN: 0 }],
+  ['GhosttyFormatterOption', { UNWRAP: 2, SELECTION: 4 }],
 ]) {
   for (const [key, value] of Object.entries(values)) {
     assert.equal(types[name]?.values?.[key], value, `${name}.${key}`);
   }
 }
+assert.equal(types.GhosttyStyleFlags?.bits?.inverse?.lsb, 4, 'inverse flag bit');
+assert.equal(types.GhosttyStyleFlags?.bits?.inverse?.width, 1, 'inverse flag width');
 writeFileSync(path, stripped);
 console.log(`frozen consumer ABI verified; stripped ${bytes.length - stripped.length} metadata bytes`);

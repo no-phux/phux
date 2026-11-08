@@ -167,7 +167,7 @@ expect_fail 'mold' "$repo/scripts/doctor.sh" core
 # macOS must diagnose an SDK with no nmedit before starting the VT build.
 cat >"$bin/uname" <<'SH'
 #!/bin/sh
-case "$1" in -s) echo Darwin ;; -m) echo arm64 ;; esac
+case "$1" in -s) echo Darwin ;; -m) echo "${SETUP_TEST_ARCH:-arm64}" ;; esac
 SH
 cat >"$bin/xcrun" <<'SH'
 #!/bin/sh
@@ -223,6 +223,8 @@ chmod +x "$bin/curl"
 printf 'corrupt archive' >"$SETUP_TEST_ARCHIVE"
 expect_fail 'checksum' "$repo/scripts/install-zig.sh" "$scratch/toolchains"
 [[ ! -e "$scratch/toolchains/zig-aarch64-macos-$ZIG_VERSION" ]]
+SETUP_TEST_ARCH=x86_64 expect_fail 'checksum' "$repo/scripts/install-zig.sh" "$scratch/toolchains"
+[[ ! -e "$scratch/toolchains/zig-x86_64-macos-$ZIG_VERSION" ]]
 mkdir -p "$scratch/payload/zig-aarch64-macos-$ZIG_VERSION"
 cp "$bin/zig" "$scratch/payload/zig-aarch64-macos-$ZIG_VERSION/zig"
 tar -cf "$SETUP_TEST_ARCHIVE" -C "$scratch/payload" "zig-aarch64-macos-$ZIG_VERSION"
@@ -274,6 +276,10 @@ export SETUP_TEST_BUILDS="$scratch/builds"
 cat >"$PHUX_TOOLCHAIN_DIR/zig-aarch64-macos-$ZIG_VERSION/zig" <<SH
 #!/bin/sh
 if [ "\$1" = version ]; then echo '$ZIG_VERSION'; exit; fi
+test -n "\$ZIG_GLOBAL_CACHE_DIR" || exit 1
+case " \$* " in *' -Doptimize=safe '*) ;; *) exit 1 ;; esac
+case " \$* " in *' --seed=0 '*) ;; *) exit 1 ;; esac
+case " \$* " in *' --global-cache-dir '*|*' --seed '*) exit 1 ;; esac
 bytes=rebuilt
 if [ -s "\$SETUP_TEST_BUILDS" ]; then
   bytes="\$(head -n 1 "\$SETUP_TEST_BUILDS")"
@@ -313,4 +319,5 @@ printf 'variant\nrebuilt\n' >"$SETUP_TEST_BUILDS"
 expect_fail 'two rebuilds differ' "$repo/scripts/build-vt-wasm.sh"
 [[ "$(cat "$engine")" = rebuilt ]]
 unset GHOSTTY_SRC SETUP_TEST_BUILDS PHUX_TOOLCHAIN_DIR
+bash "$root/scripts/check-ghostty-pin_test.sh"
 echo 'dev setup tests passed (scoped PATH, version/SDK errors, opt-in components, checksum rejection, idempotence)'

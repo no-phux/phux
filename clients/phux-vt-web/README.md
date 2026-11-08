@@ -52,10 +52,16 @@ row-major snapshot a renderer paints.
 A native bootstrap arrives as the server's official GHOSTSNP snapshot.
 `Vt::native_snapshot_available()` reports whether the engine decoded a
 snapshot through the browser's reader at load; only then does phux-web offer
-`LibghosttySnapshotV1`. `Vt::native_decoder` stages one unit at a time: feed
+`LibghosttySnapshotV1` (codec 5, distinct from pre-1.0 codec 4).
+`Vt::native_decoder` stages one unit at a time: feed
 the READY prefix and call `ready()` for a renderable `Terminal`, then feed each
-history page (or FINISH) and call `next_checked(rows)`. A truncated, corrupt,
+history page with its optional Kitty placements, image payload, or FINISH and
+call `next_checked(rows)`. Image payloads carry zero rows but return image
+progress, not FINISH. A truncated, corrupt,
 or mismatched unit fails closed and leaves the READY terminal intact.
+The freestanding WASM engine does not render Kitty images. It authenticates
+and discards their pixel records while keeping snapshot progress aligned;
+this is snapshot compatibility, not browser graphics-rendering parity.
 `tests/fixtures/server-snapshot-v1.bin` is a server capture, regenerated with
 `PHUX_BLESS_WEB_FIXTURE=1 cargo nextest run -p phux-server browser_snapshot_fixture`.
 GHOSTSNP bytes and page splits follow the encoding host's page layout, so that
@@ -79,6 +85,10 @@ bash scripts/build-vt-wasm.sh --check  # byte-for-byte regeneration check
 source pin maintenance, and local engine development overrides.
 `bash scripts/doctor.sh web` checks tools and artifact presence from the root;
 the tests verify engine ABI compatibility.
+The driver uses 1.0's frozen style/grid-reference/selection layouts and
+option-based formatter. `scripts/prepare-vt-wasm.mjs` checks those layouts,
+buffer descriptors, enum values and required exports before an artifact can
+replace the committed engine.
 
 ## Tests
 

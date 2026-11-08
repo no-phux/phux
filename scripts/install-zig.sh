@@ -10,6 +10,7 @@ if [[ $# -ne 1 || "$1" == --help ]]; then
 fi
 case "$(uname -s)/$(uname -m)" in
     Darwin/arm64) target=aarch64-macos ;;
+    Darwin/x86_64) target=x86_64-macos ;;
     Linux/x86_64) target=x86_64-linux ;;
     Linux/aarch64|Linux/arm64) target=aarch64-linux ;;
     *) phux_error "No release-pinned Zig archive for this host. Install Zig $ZIG_VERSION manually; see docs/development.md."; exit 1 ;;

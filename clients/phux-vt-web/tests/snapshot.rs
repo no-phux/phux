@@ -6,7 +6,7 @@
 //! the committed transcript no longer decodes to the terminal the server
 //! captures now; its bytes and page splits vary with the encoding host).
 
-use phux_vt_web::{NativeCodecError, NativeDecoder, Terminal, Vt};
+use phux_vt_web::{HistoryProgressKind, NativeCodecError, NativeDecoder, Terminal, Vt};
 use wasm_bindgen_test::wasm_bindgen_test;
 
 const FIXTURE: &[u8] = include_bytes!("fixtures/server-snapshot-v1.bin");
@@ -66,6 +66,25 @@ fn feed(decoder: &mut NativeDecoder, bytes: &[u8], cut: usize) {
     }
 }
 
+fn record(tag: u16, payload: &[u8]) -> Vec<u8> {
+    let mut prefix = tag.to_le_bytes().to_vec();
+    prefix.extend_from_slice(&(payload.len() as u32).to_le_bytes());
+    let mut crc = u32::MAX;
+    for byte in prefix.iter().chain(payload) {
+        crc ^= u32::from(*byte);
+        for _ in 0..8 {
+            crc = if crc & 1 == 0 {
+                crc >> 1
+            } else {
+                (crc >> 1) ^ 0x82f6_3b78
+            };
+        }
+    }
+    prefix.extend_from_slice(&(!crc).to_le_bytes());
+    prefix.extend_from_slice(payload);
+    prefix
+}
+
 fn last_row(terminal: &Terminal) -> String {
     terminal
         .rows_text()
@@ -112,6 +131,7 @@ async fn server_snapshot_decodes_across_arbitrary_fragment_cuts() {
                 .expect("a page, not FINISH");
             assert_eq!(progress.authenticated_rows, *rows);
             assert_eq!(progress.rows, *rows, "page {index} kept");
+            assert_eq!(progress.kind, HistoryProgressKind::Page);
             total += rows;
             assert_eq!(decoder.staged_capacity(), 0, "page storage released");
         }
@@ -123,6 +143,80 @@ async fn server_snapshot_decodes_across_arbitrary_fragment_cuts() {
         assert_eq!(screen.first().map(String::as_str), Some("fixture-0000"));
         assert!(screen.len() > total, "history restored: {}", screen.len());
         assert_eq!(decoder.feed(b"x"), Err(NativeCodecError::InvalidState));
+    }
+}
+
+#[wasm_bindgen_test]
+async fn resized_history_pages_are_authenticated_but_not_mistaken_for_finish() {
+    let fixture = fixture();
+    let mut decoder = ready_decoder(&fixture).await;
+    let terminal = decoder.terminal().expect("READY terminal");
+    terminal.resize(fixture.cols + 1, fixture.rows, 8, 16);
+    terminal.write(b"1mnew output");
+    for (unit, rows) in &fixture.pages {
+        feed(&mut decoder, unit, 7);
+        let progress = decoder
+            .next_checked(*rows)
+            .expect("page remains authenticated after resize")
+            .expect("a dropped page is not FINISH");
+        assert_eq!(progress.kind, HistoryProgressKind::Page);
+        assert_eq!(progress.authenticated_rows, *rows);
+        assert_eq!(progress.rows, 0, "old-width page is discarded");
+    }
+    feed(&mut decoder, &fixture.finish, 1);
+    assert_eq!(decoder.next_checked(0), Ok(None));
+    assert_eq!(
+        decoder.terminal().expect("terminal survives").grid().cols,
+        fixture.cols + 1
+    );
+}
+
+#[wasm_bindgen_test]
+async fn unknown_records_between_page_and_placements_are_authenticated() {
+    let fixture = fixture();
+    let (page, rows) = &fixture.pages[0];
+    for corrupt in 0..3 {
+        let mut decoder = ready_decoder(&fixture).await;
+        let before = decoder.terminal().expect("READY").screen_rows();
+        let mut unknown = record(4242, b"optional extension");
+        if corrupt == 1 {
+            *unknown.last_mut().expect("extension payload") ^= 0x40;
+        }
+        let mut unit = page.clone();
+        unit.extend_from_slice(&unknown);
+        // Empty placements for the fixture's primary screen.
+        let mut placements = record(10, &[0; 6]);
+        if corrupt == 2 {
+            *placements.last_mut().expect("placements payload") ^= 0x40;
+        }
+        unit.extend_from_slice(&placements);
+        feed(&mut decoder, &unit, 1);
+        let progress = decoder.next_checked(*rows);
+        if corrupt != 0 {
+            assert!(
+                matches!(progress, Err(NativeCodecError::Status { .. })),
+                "suffix CRC case {corrupt}"
+            );
+            assert_eq!(
+                last_row(decoder.terminal().expect("terminal survives")),
+                "live-tail"
+            );
+            assert_eq!(
+                decoder.terminal().expect("terminal survives").screen_rows(),
+                before,
+                "corrupt suffix must not apply its otherwise-valid PAGE"
+            );
+            continue;
+        }
+        let progress = progress.expect("extension + placements").expect("PAGE");
+        assert_eq!(progress.kind, HistoryProgressKind::Page);
+        assert_eq!(progress.rows, *rows);
+        for (page, rows) in &fixture.pages[1..] {
+            feed(&mut decoder, page, 7);
+            assert!(decoder.next_checked(*rows).expect("next page").is_some());
+        }
+        feed(&mut decoder, &fixture.finish, 1);
+        assert_eq!(decoder.next_checked(0), Ok(None));
     }
 }
 

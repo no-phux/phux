@@ -1,0 +1,92 @@
+# Official libghostty-vt 1.0 snapshot/testdata/kitty-animation-v1.hex.
+# Unchanged snapshot bytes: one image, three animation-frame payloads, no history.
+# Source: ghostty-org/ghostty vt-1.0.0 (0fa3d577a5614150ff8e2c152de5fb9d5c6d2dec).
+47 48 4f 53 54 53 4e 50 01 00
+01 00 90 03 00 00 32 1c 82 74 04 00 02 00 28 00
+00 00 28 00 00 00 00 00 01 00 00 00 03 00 00 00
+00 01 00 ff ff ff ff 01 01 01 00 00 00 00 00 08
+00 04 22 00 64 00 00 00 00 04 22 00 64 00 00 00
+00 04 22 00 64 00 00 00 00 00 00 00 00 00 00 00
+00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+00 ff ff ff ff ff ff ff ff ff ff ff ff ff ff ff
+ff 00 1d 1f 21 cc 66 66 b5 bd 68 f0 c6 74 81 a2
+be b2 94 bb 8a be b7 c5 c8 c6 66 66 66 d5 4e 53
+b9 ca 4a e7 c5 47 7a a6 da c3 97 d8 70 c0 b1 ea
+ea ea 00 00 00 00 00 5f 00 00 87 00 00 af 00 00
+d7 00 00 ff 00 5f 00 00 5f 5f 00 5f 87 00 5f af
+00 5f d7 00 5f ff 00 87 00 00 87 5f 00 87 87 00
+87 af 00 87 d7 00 87 ff 00 af 00 00 af 5f 00 af
+87 00 af af 00 af d7 00 af ff 00 d7 00 00 d7 5f
+00 d7 87 00 d7 af 00 d7 d7 00 d7 ff 00 ff 00 00
+ff 5f 00 ff 87 00 ff af 00 ff d7 00 ff ff 5f 00
+00 5f 00 5f 5f 00 87 5f 00 af 5f 00 d7 5f 00 ff
+5f 5f 00 5f 5f 5f 5f 5f 87 5f 5f af 5f 5f d7 5f
+5f ff 5f 87 00 5f 87 5f 5f 87 87 5f 87 af 5f 87
+d7 5f 87 ff 5f af 00 5f af 5f 5f af 87 5f af af
+5f af d7 5f af ff 5f d7 00 5f d7 5f 5f d7 87 5f
+d7 af 5f d7 d7 5f d7 ff 5f ff 00 5f ff 5f 5f ff
+87 5f ff af 5f ff d7 5f ff ff 87 00 00 87 00 5f
+87 00 87 87 00 af 87 00 d7 87 00 ff 87 5f 00 87
+5f 5f 87 5f 87 87 5f af 87 5f d7 87 5f ff 87 87
+00 87 87 5f 87 87 87 87 87 af 87 87 d7 87 87 ff
+87 af 00 87 af 5f 87 af 87 87 af af 87 af d7 87
+af ff 87 d7 00 87 d7 5f 87 d7 87 87 d7 af 87 d7
+d7 87 d7 ff 87 ff 00 87 ff 5f 87 ff 87 87 ff af
+87 ff d7 87 ff ff af 00 00 af 00 5f af 00 87 af
+00 af af 00 d7 af 00 ff af 5f 00 af 5f 5f af 5f
+87 af 5f af af 5f d7 af 5f ff af 87 00 af 87 5f
+af 87 87 af 87 af af 87 d7 af 87 ff af af 00 af
+af 5f af af 87 af af af af af d7 af af ff af d7
+00 af d7 5f af d7 87 af d7 af af d7 d7 af d7 ff
+af ff 00 af ff 5f af ff 87 af ff af af ff d7 af
+ff ff d7 00 00 d7 00 5f d7 00 87 d7 00 af d7 00
+d7 d7 00 ff d7 5f 00 d7 5f 5f d7 5f 87 d7 5f af
+d7 5f d7 d7 5f ff d7 87 00 d7 87 5f d7 87 87 d7
+87 af d7 87 d7 d7 87 ff d7 af 00 d7 af 5f d7 af
+87 d7 af af d7 af d7 d7 af ff d7 d7 00 d7 d7 5f
+d7 d7 87 d7 d7 af d7 d7 d7 d7 d7 ff d7 ff 00 d7
+ff 5f d7 ff 87 d7 ff af d7 ff d7 d7 ff ff ff 00
+00 ff 00 5f ff 00 87 ff 00 af ff 00 d7 ff 00 ff
+ff 5f 00 ff 5f 5f ff 5f 87 ff 5f af ff 5f d7 ff
+5f ff ff 87 00 ff 87 5f ff 87 87 ff 87 af ff 87
+d7 ff 87 ff ff af 00 ff af 5f ff af 87 ff af af
+ff af d7 ff af ff ff d7 00 ff d7 5f ff d7 87 ff
+d7 af ff d7 d7 ff d7 ff ff ff 00 ff ff 5f ff ff
+87 ff ff af ff ff d7 ff ff ff 08 08 08 12 12 12
+1c 1c 1c 26 26 26 30 30 30 3a 3a 3a 44 44 44 4e
+4e 4e 58 58 58 62 62 62 6c 6c 6c 76 76 76 80 80
+80 8a 8a 8a 94 94 94 9e 9e 9e a8 a8 a8 b2 b2 b2
+bc bc bc c6 c6 c6 d0 d0 d0 da da da e4 e4 e4 ee
+ee ee 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+00 00 00 00 00 00 00 00 00 00
+02 00 36 00 00 00 50 73 c9 4f 00 00 01 00 00 00
+00 00 00 00 00 00 00 00 00 00 01 00 00 00 00 00
+00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+00 08 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+03 00 1e 00 00 00 ff 98 bc 3e 04 00 02 00 00 00
+00 00 80 00 c0 00 00 02 00 00 00 08 00 00 00 00
+00 00 00 00 00 00 00 00
+08 00 8f 00 00 00 7e 16 c5 8d 00 00 ff ff ff 7f
+01 00 00 00 01 00 00 00 01 00 00 00 00 05 00 00
+00 00 00 00 00 02 00 00 00 01 00 00 00 01 00 08
+00 00 00 00 00 00 00 01 02 02 00 00 00 00 00 00
+00 01 00 00 00 1e 00 00 00 02 00 00 00 32 00 00
+00 08 00 00 00 00 00 00 00 46 00 00 00 08 00 00
+00 00 00 00 00 05 00 00 00 00 00 00 00 00 00 00
+00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+00 00 00 00 00 00 00 00 00
+07 00 00 00 00 00 27 80 63 d1
+05 00 00 00 00 00 e4 20 ef 0a
+09 00 1a 00 00 00 ef 34 d2 d9 00 00 05 00 00 00
+02 00 00 00 08 00 00 00 00 00 00 00 00 ff 00 ff
+00 ff 00 ff
+09 00 1a 00 00 00 28 e2 14 5b 00 00 05 00 00 00
+01 00 00 00 08 00 00 00 00 00 00 00 ff 00 00 ff
+ff 00 00 ff
+09 00 1a 00 00 00 d8 a8 43 1e 00 00 05 00 00 00
+03 00 00 00 08 00 00 00 00 00 00 00 00 00 ff ff
+00 00 00 00
+04 00 06 00 00 00 a1 11 8a 5e 00 00 00 00 00 00
+06 00 00 00 00 00 3e eb 53 3e
