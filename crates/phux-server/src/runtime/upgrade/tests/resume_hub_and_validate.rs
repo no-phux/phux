@@ -72,7 +72,10 @@ async fn a_promoted_hub_resumes_with_hub() {
                 args_as_strings(capture_upgrade_context(state).unwrap().flags)
             };
             assert!(!served(&state).contains(&"--hub".to_owned()));
-            assert!(state.with_mut(|s| s.hub_ensure_links(std::ffi::OsString::from("ssh"))));
+            assert!(state.with_mut(|s| s.hub_ensure_links(
+                std::ffi::OsString::from("ssh"),
+                phux_protocol::caps::BootstrapCapabilities::new(),
+            )));
             assert!(served(&state).contains(&"--hub".to_owned()));
 
             let empty = crate::hub::HubTable::from_registry(&[]).unwrap();

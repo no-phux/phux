@@ -98,7 +98,7 @@ fn unknown_unreachable_and_non_hub_hosts_are_refused_naming_the_host() {
             tmp.path().join("hub.sock"),
             vec![satellite_entry("sat", dead.port())],
         );
-        let mut hub = wait_for_socket(&tmp.path().join("hub.sock"), STEP_DEADLINE).await;
+        let mut hub = hub_client(&tmp.path().join("hub.sock")).await;
 
         let unknown = refusal(list_on(&mut hub, 1, "/", Some("ghost")).await);
         assert_eq!(unknown.path, "/");
