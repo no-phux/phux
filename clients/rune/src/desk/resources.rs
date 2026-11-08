@@ -12,10 +12,12 @@ use phux_protocol::wire::frame::ResourceRecord;
 
 use super::Desk;
 
+mod input;
 mod selection;
 mod startup;
 mod subscriptions;
 mod surface;
+mod typed;
 pub use startup::Source;
 use subscriptions::Subscription;
 
@@ -33,6 +35,11 @@ pub struct Resources {
     pub(super) producers: HashMap<ResourceId, Source>,
     server: Option<Vec<u8>>,
     pending: HashMap<ResourceId, PendingDocument>,
+    // RESOURCE_CLOSED can precede the organization journal. Fence that
+    // execution until inventory removes or replaces it, never the stable key.
+    closed: HashMap<ResourceId, ResourceRecord>,
+    /// Which documents take pane input, and the sends awaiting a reply.
+    pub(super) input: phux_client_core::document_input::DocumentInputs,
 }
 
 struct PendingDocument {
@@ -44,6 +51,8 @@ pub struct Document {
     pub record: ResourceRecord,
     pub seq: Option<u64>,
     pub body: Body,
+    /// A typed document's content type, and what is shown of it.
+    pub detail: Option<String>,
     surface: surface::Surface,
     subscription: Subscription,
 }
@@ -53,6 +62,7 @@ pub enum Body {
     Decoding,
     Empty,
     Invalid(String),
+    /// Source text: accessibility JSON or a typed text document.
     Tree(String),
     Surface(rune::Image),
 }
@@ -60,8 +70,18 @@ pub enum Body {
 pub const fn document_kind(kind: ResourceKind) -> bool {
     matches!(
         kind,
-        ResourceKind::AccessibilityTree | ResourceKind::PixelSurface
+        ResourceKind::AccessibilityTree | ResourceKind::PixelSurface | ResourceKind::Document
     )
+}
+
+impl Resources {
+    pub(super) fn execution_closed(&self, record: &ResourceRecord) -> bool {
+        record
+            .live
+            .as_ref()
+            .and_then(|id| self.closed.get(id))
+            .is_some_and(|closed| same_execution(closed, record))
+    }
 }
 
 pub fn text_key(id: &ResourceId) -> String {
@@ -74,6 +94,7 @@ impl Document {
             record,
             seq: None,
             body: Body::Pending,
+            detail: None,
             surface: surface::Surface::default(),
             subscription: Subscription::Unrequested,
         }
@@ -90,8 +111,17 @@ impl Document {
         {
             return false;
         }
+        let content_type = publication.content_type.as_deref().unwrap_or_default();
+        self.detail = publication.content_type.clone();
         if publication.kind == ResourceKind::PixelSurface {
             self.publish_surface(&publication.bytes, images, decodes);
+        } else if publication.kind == ResourceKind::Document && typed::image(content_type) {
+            self.publish_image(&publication.bytes, images, decodes);
+        } else if publication.kind == ResourceKind::Document && !publication.bytes.is_empty() {
+            self.invalidate_surface();
+            let (body, detail) = typed::decode(content_type, &publication.bytes);
+            self.body = body;
+            self.detail = Some(detail);
         } else {
             self.body = decode(publication);
         }
@@ -180,6 +210,7 @@ impl Desk {
         let listed: Vec<_> = org
             .members(&key)
             .filter(|r| document_kind(r.kind) && !self.resources.dismissed.contains(&r.key))
+            .filter(|r| !self.resources.execution_closed(r))
             .filter_map(|r| r.live.clone())
             .collect();
         org.arrangement_document(&key)
@@ -232,24 +263,26 @@ impl Desk {
             .and_then(|s| self.resources.entries.get(&s.terminal))
             .map(|d| d.record.key);
         if key.is_some() {
-            self.resources.returning = key;
+            self.resources.returning = self.resources.returning.or(key);
             self.drop_shown(client);
             self.wanted = None;
         }
         self.resources.entries.clear();
         self.resources.pending.clear();
+        self.resources.closed.clear();
+        self.resources.input.clear();
         // starting holds command correlations, not live resource handles;
         // reconnect receipts must settle them (including producer failures).
         self.resources.producers.clear();
     }
 
     pub(super) fn carry_document_focus(&mut self, next: &mut Desk) {
-        next.resources.returning = self
-            .shown
-            .as_ref()
-            .and_then(|s| self.resources.entries.get(&s.terminal))
-            .map(|d| d.record.key)
-            .or(self.resources.returning);
+        next.resources.returning = self.resources.returning.or_else(|| {
+            self.shown
+                .as_ref()
+                .and_then(|s| self.resources.entries.get(&s.terminal))
+                .map(|d| d.record.key)
+        });
         next.resources.dismissed = self.resources.dismissed.clone();
     }
 
@@ -269,6 +302,13 @@ impl Desk {
             .iter()
             .filter(|r| document_kind(r.kind) && r.live.is_some())
             .cloned()
+            .collect();
+        self.resources
+            .closed
+            .retain(|_, closed| live.iter().any(|record| same_execution(record, closed)));
+        let live: Vec<_> = live
+            .into_iter()
+            .filter(|record| !self.resources.execution_closed(record))
             .collect();
         self.retire_replaced_document(client, &live);
         let before = self.resources.entries.len();
@@ -321,13 +361,27 @@ impl Desk {
         changed
     }
 
-    pub(super) fn forget_document(&mut self, id: &ResourceId) -> bool {
+    pub(super) fn forget_document(&mut self, client: &Client, id: &ResourceId) -> bool {
         self.resources.pending.remove(id);
-        let removed = self.resources.entries.remove(id).is_some();
-        if removed {
-            self.mirror_unavailable();
+        let record = self
+            .resources
+            .entries
+            .remove(id)
+            .map(|d| d.record)
+            .or_else(|| {
+                client
+                    .organization()
+                    .resource_by_live(id)
+                    .filter(|record| document_kind(record.kind))
+                    .cloned()
+            });
+        let Some(record) = record else { return false };
+        if self.resources.execution_closed(&record) {
+            return false;
         }
-        removed
+        self.resources.closed.insert(id.clone(), record);
+        self.mirror_unavailable();
+        true
     }
 
     fn mirror_unavailable(&mut self) {
@@ -342,14 +396,19 @@ impl Desk {
         if live.iter().any(|r| same_execution(r, &old.record)) {
             return;
         }
-        self.resources.returning = Some(old.record.key);
-        self.drop_shown(client);
-        self.wanted = None;
-        self.mirror_unavailable();
+        let key = old.record.key;
+        let returning = self.resources.returning.unwrap_or(key);
+        self.close_shown(client, &[]);
+        // A temporary phone fallback is not an explicit focus change: the
+        // replacement execution of this key still takes priority.
+        self.resources.returning = Some(returning);
+        if !live.iter().any(|record| record.key == key) {
+            self.mirror_unavailable();
+        }
     }
 
     fn restore_document(&mut self, client: &Client) -> bool {
-        if let Some(key) = self.resources.returning.take()
+        if let Some(key) = self.resources.returning
             && let Some(id) = self
                 .resources
                 .entries
@@ -370,10 +429,11 @@ impl Desk {
         let next = self
             .layout
             .as_ref()
+            .filter(|_| self.phone.is_none())
             .and_then(|tree| super::layout::neighbour(tree, &gone));
-        self.close_shown(client);
+        self.close_shown(client, &[]);
         if let Some(next) = next {
-            self.want(next);
+            self.want_automatic(next);
         }
         true
     }
@@ -400,13 +460,14 @@ impl Desk {
             let next = self
                 .layout
                 .as_ref()
+                .filter(|_| self.phone.is_none())
                 .map(phux_client_core::layout::leaves)
                 .unwrap_or_default()
                 .into_iter()
                 .find(|id| !ids.contains(id));
-            self.close_shown(&client);
+            self.close_shown(&client, ids);
             if let Some(next) = next {
-                self.want(next);
+                self.want_automatic(next);
             }
         }
         self.refresh_layout(&client);

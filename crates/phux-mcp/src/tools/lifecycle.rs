@@ -42,7 +42,7 @@ async fn phux_new(args: &Value) -> Result<Value, ToolError> {
 
 /// `phux_kill` — tear down the Terminal(s) a selector resolves to, through
 /// [`phux_client::kill::selected`], the path `phux kill` calls.
-async fn phux_kill(args: &Value) -> Result<Value, ToolError> {
+pub(crate) async fn phux_kill(args: &Value) -> Result<Value, ToolError> {
     strict_object(
         args,
         &["target", "confirm", "idempotency_key", "socket"],

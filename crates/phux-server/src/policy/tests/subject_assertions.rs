@@ -29,8 +29,13 @@ fn every_row_admits_its_verbs_on_its_subject_and_nothing_nearby() {
                 assert!(admit.is_empty(), "`{case}` is default-deny");
             }
             // The owner-socket predicate: no scoped grant rides that socket.
-            Requirement::Verbs(_) if rule.subject.requires_owner_uds() => {
-                assert!(admit.is_empty(), "`{case}` is owner-socket only");
+            // Document input on this table's Terminal sample has no control
+            // class either (`control_input.rs` admits a real document).
+            Requirement::Verbs(_)
+                if rule.subject.requires_owner_uds()
+                    || rule.subject == phux_protocol::kinds::Subject::ControlledDocument =>
+            {
+                assert!(admit.is_empty(), "`{case}` is owner-socket only here");
             }
             Requirement::Exempt(_) => {}
             Requirement::Verbs(_) | Requirement::Nested => assert!(

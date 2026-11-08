@@ -40,6 +40,7 @@ async fn net_link_preserves_satellite_extended_features_from_hello_ok() {
         url: format!("ws://127.0.0.1:{port}"),
         trust: CertTrust::SkipVerify,
         token_file: None,
+        identity: None,
     };
     let conn = NetLinkTransport::new("ssh".into(), crate::hub::adopt::SatelliteAdopter::default())
         .connect(&SatelliteHost::new("sat"), &spec, None)

@@ -25,8 +25,6 @@ const APPROVE: &str = if cfg!(target_os = "macos") {
 } else {
     "Approve  Ctrl+Shift+↩"
 };
-/// An ACP agent answers over the protocol, which this app does not speak yet.
-const ACP_ELSEWHERE: &str = "ACP question: Phux Rune can't answer these yet.";
 
 fn pick_hint(keys: &'static str, what: &'static str, ink: &Ink) -> El {
     row()
@@ -139,7 +137,7 @@ fn waiting_card(desk: &Desk, waiting: &Waiting, picked: bool, ink: &Ink) -> El {
     };
     card = card.child(text(ask.text.clone()).font(LABEL).color(ink.text).wrap());
     if !ask.typed() {
-        return card.child(text(ACP_ELSEWHERE).font(CAPTION).color(ink.dim).wrap());
+        return card.child(super::questions::panel(desk, &waiting.terminal, ask, ink));
     }
     if !ask.suggestions.is_empty() {
         card = card.child(chips(&waiting.terminal, ask, picked, busy, ink));
@@ -324,7 +322,7 @@ pub fn ask_card(desk: &Desk, id: &ResourceId, area: [f32; 2], ink: &Ink) -> Opti
         return None;
     }
     let pane = desk.topology.as_ref()?.pane(id)?;
-    let ask = inbox::question(pane, &desk.activities)?;
+    let ask = inbox::question(pane, &desk.activities).or_else(|| desk.inbox.questions.ask(id))?;
     let width = CARD_W.min(area[0] - 20.0);
     if width < 160.0 {
         return None;
@@ -354,7 +352,7 @@ pub fn ask_card(desk: &Desk, id: &ResourceId, area: [f32; 2], ink: &Ink) -> Opti
         ))
         .child(text(ask.text.clone()).font(LABEL).color(ink.text).wrap());
     if !ask.typed() {
-        return Some(card.child(text(ACP_ELSEWHERE).font(CAPTION).color(ink.dim).wrap()));
+        return Some(card.child(super::questions::panel(desk, id, &ask, ink)));
     }
     if !ask.suggestions.is_empty() {
         card = card.child(chips(id, &ask, false, busy, ink));

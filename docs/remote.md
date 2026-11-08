@@ -147,6 +147,10 @@ a credential or marking it `human` never silently adds permissions.
 
 **A machine you add with `phux host add` can do everything you can do on the
 remote server**, including typing into panes. Only add machines you control.
+The exceptions are mirrored pages, windows, and displays: no terminal grant
+lets a device type into one, or watch a window or display, so those need
+their own grants (below). `phux host add` gives a person's device the watch
+grants.
 
 A CI runner, or a person who should list sessions but not type, gets a
 separate certificate with a narrower scope from `phux workload add-key`. The
@@ -156,6 +160,72 @@ steps, expiry, rotation, and revocation are in
 Programs on the server's own machine are different. **The local socket gives
 full access to any program running as the same user.** phux can't tell those
 programs apart.
+
+### Control of pages, windows, and displays
+
+Typing into a mirrored browser page, application window, or whole display is
+control of what it shows, so it is never inherited from a terminal grant,
+not even `*@global`. A device needs a grant that names the control class:
+`input@page`, `input@window`, or `input@display` for this machine,
+`input@display:HOST` for a satellite, or `input@resource:KEY` for one
+document. A mirror that declares no class takes input only from the local
+socket. The rules are in [Authority](./authority.md).
+
+Add or remove one grant on an enrolled device without re-pairing:
+
+```sh
+phux workload grant sha256:... input@display    # prints what it allows
+phux workload ungrant sha256:... input@display  # ends connections that used it
+```
+
+The device gets a new grant at its next connection; removing one ends its
+live connections that relied on it.
+
+To give a phone control of powerhouse-1's displays through a hub:
+
+```sh
+# on powerhouse-1: mirror the screen; it declares itself a display
+phux agent surface mirror display
+# on the hub: find the phone, then grant it displays on that satellite
+phux workload list
+phux workload grant sha256:PHONE input@display:powerhouse-1
+# on powerhouse-1: the credential `phux host add` enrolled for the hub needs it too
+phux workload list
+phux workload grant sha256:HUB input@display
+```
+
+The hub checks the phone's grant and tells powerhouse-1 which classes it
+allowed; powerhouse-1 refuses a window or page and checks the hub's
+credential like any other.
+
+### Watching windows and displays
+
+Watching a mirrored window or display shows what is on that machine's
+screen, so it is never inherited either: it needs `observe@window` or
+`observe@display` (`:HOST` for a satellite, or `observe@resource:KEY` for one
+document). A browser page, or a mirror with no class, is watched through its
+pane's grants as before, and every mirror still shows in `phux ls`.
+
+| Credential | Watches windows and displays |
+| --- | --- |
+| A person's device from `phux host add` or a `phux pair --enroll` ticket | Yes: enrolled with `observe@display` and `observe@window` |
+| A device paired before this rule | Yes: given both once, below |
+| A key from `phux workload add-key` (CI, automation) | Only with an explicit grant |
+
+**Devices paired before this rule keep their view.** The first time a
+server with this rule starts in `paired` mode, it gives every active human
+device whose ceiling is exactly the full-control pairing ceiling (or the
+older six-verb one) `observe@display` and `observe@window`, saves them in
+the registry, and logs which credentials it changed. Automation keys and
+narrower ceilings are left alone. It runs once per registry (a
+`workload-keys.watch-grants` marker beside the file records it), so a grant
+you remove later stays removed. To stop a device watching displays:
+
+```sh
+phux workload ungrant sha256:... observe@display
+```
+
+A refused attach says which grant is missing and the command that adds it.
 
 ## Attaching over SSH
 

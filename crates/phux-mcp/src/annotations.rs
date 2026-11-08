@@ -43,6 +43,10 @@ const TEARDOWN: &[(&str, &str)] = &[
         "a spawn that cannot place its pane rolls back the pane it just spawned",
     ),
     (
+        "phux_app_open",
+        "an app open that cannot place its pane rolls back the pane it just spawned",
+    ),
+    (
         "phux_agent_session_close",
         "closing the named agent session is the tool's whole act",
     ),
@@ -261,6 +265,12 @@ mod tests {
             "phux_agent_prompt",
             "phux_agent_send_keys",
             "phux_plugin_action",
+            // Input to a page or desktop can do anything it allows.
+            "phux_document_navigate",
+            "phux_document_click",
+            "phux_document_type",
+            "phux_document_key",
+            "phux_document_scroll",
         ] {
             let hints = annotation(tool);
             assert!(
@@ -384,6 +394,7 @@ mod tests {
                 "phux_rm",
                 "phux_detach",
                 "phux_signal",
+                "phux_app_close",
                 "phux_approve"
             ],
             "the tools that confirm are derived from their rows"

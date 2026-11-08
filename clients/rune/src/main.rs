@@ -5,6 +5,7 @@
 
 mod activity;
 mod alerts;
+mod creature;
 mod desk;
 mod diag;
 mod dock;
@@ -18,6 +19,7 @@ mod machines;
 mod palette;
 mod paths;
 mod perf;
+mod reef;
 mod theme;
 mod ui;
 mod updates;
@@ -74,6 +76,7 @@ fn main() {
         })
         .standard_menus()
         // ⌘ alone shows the link under a still pointer.
+        // Rune 5bcb541's native host drops on_modifiers; keep logical events.
         .modifier_keys()
         .on_ime(|desk: &mut Desk, event, _| desk.ime(event))
         .on_focus(|desk: &mut Desk, focused, _| desk.focus_changed(focused))

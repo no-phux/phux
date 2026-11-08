@@ -24,15 +24,26 @@ The server links only the pure Terminal contract; the executable
 supplies the concrete engine ([architecture](./architecture.md#where-to-look)).
 
 Phux Rune discovers tree/surface resources before the first frame,
-render plain JSON or letterboxed PNGs, and distinguish pending, empty and invalid
-documents. Documents can occupy mixed or document-only arrangements and survive
+renders plain JSON or letterboxed PNG or JPEG frames, and distinguishes pending, empty and invalid
+documents. It draws a Document by its content type: PNG, JPEG, GIF and
+WebP as images, JSON pretty-printed, text and `+xml`/`+json` as source
+(Markdown and HTML are not rendered), anything else as its size and type.
+A tree or surface is named for what it observes (`--app Safari`, `--window
+display`, a mirrored page's title) and a typed document for its `--name`;
+that name is the tab title in Rune, `name` in `phux ls --json`
+resources and MCP `phux_documents`, and `title` in `phux resource show`. Documents can occupy mixed or document-only arrangements and survive
 restore/reconnect. Their streams are **read-only**: typing, paste, terminal grid
 resizing and file uploads do not control their source. Input goes to the
 producer instead: `SEND_DOCUMENT_INPUT` relays one typed intent to the
 connection that opened the document ([protocol](./protocol.md#commands-events-resources)),
-and `phux agent page navigate|click|type|key` drive a mirrored browser page
-this way. Rune and mobile do not send input yet. Closing a document placement
-leaves its producer and other viewers running.
+and `phux agent page navigate|click|type|key|scroll` drive a mirrored browser page
+this way. The same verbs drive a macOS `phux agent surface mirror`: it posts
+clicks, text, keys and scrolls as system input at the window's or display's
+screen points (raising a window's app first), which needs the Accessibility
+grant for the app that started it; `--dry-run-input` logs the events
+instead. Rune sends input to a surface pane ([authority](./authority.md#in-rune));
+mobile does not yet. Closing a document placement leaves its producer and
+other viewers running.
 
 Phux Rune offers mirror startup actions. These launch a dedicated
 supervised producer with argv, not commands typed into a person's shell.
@@ -41,10 +52,76 @@ needs the relevant system permission. Local-only startup actions refuse remote
 or unsupported platforms. Moving or reopening a view keeps the source on its
 original host; it is not browser interactivity or cross-host process migration.
 
+A surface frame is a PNG or a JPEG, told apart by its signature; the codec
+keeps its `PixelSurfacePngV1` name. `phux agent surface mirror` and `phux
+agent page mirror` take `--format png|jpeg`, `--quality 1..100` (default
+70) and `--max-width PX`. A page mirror defaults to JPEG: pages are the
+high-frame-rate case and JPEG frames are several times smaller. A window
+or display mirror defaults to PNG, because desktop before 0.57.0 and Rune
+before 0.1.0-alpha.17 cannot decode JPEG (they show the frame as invalid);
+mobile decodes either. Pass `--format png` to a page mirror for an older
+viewer. A page
+scales its screencast in the browser and maps clicks by each frame's size;
+the window mirror re-encodes its capture with macOS's `sips`, and on Linux
+asks `grim` for the format and scale.
+
+On Linux both mirrors run with no grant. `phux agent tree mirror APP` reads
+AT-SPI over D-Bus: APP is the application's AT-SPI name (or `--pid` its
+process), the accessibility bus comes from the session bus, and the document
+has the macOS shape (`role`, `title`, `description`, `value`, `children`)
+with AT-SPI role names such as `push button`. `phux agent surface mirror`
+captures with `grim` on a wlroots compositor with screencopy (Hyprland,
+Sway): `display` is every output, `display:OUTPUT` one, and a window `App`
+or `App:title` is a Hyprland client's rectangle on a shown workspace, so
+window targets need Hyprland. A pane whose server started outside the
+graphical session finds `WAYLAND_DISPLAY` and `HYPRLAND_INSTANCE_SIGNATURE`
+under `$XDG_RUNTIME_DIR`. A compositor that withholds frames (display
+asleep, session locked) fails the capture after 10 s, before any surface is
+opened.
+
 Agents read documents over MCP the way they read panes: `phux_documents`
 lists them, `phux_tree_snapshot` and `phux_tree_wait` read a tree's JSON, and
 `phux_surface_snapshot` returns a surface's PNG as MCP image content
-([parity](./reference/parity.md)).
+([parity](./reference/parity.md)). They drive one with `phux_document_navigate`,
+`phux_document_click`, `phux_document_type`, `phux_document_key` and
+`phux_document_scroll`, one tool per intent. The loop: find a surface and its
+`control` in `phux_documents`, look at it with `phux_surface_snapshot`, click
+at pixel coordinates read off that image, and snapshot again to confirm. A
+document with no `control` refuses input, and a connection other than the
+owner socket needs an `input@CLASS` grant ([authority](#authority)).
+
+## Supervision
+
+The producer of a document is the connection that opened it. While that
+connection lives, the document reports `producer: "connected"` in
+`phux ls --json` resources, `phux resource show --json` and MCP
+`phux_documents`; once it disconnects the document stays with its last
+frame and reports `"gone"`. Other kinds omit the field (`null` in
+`resource show`). On the wire it is `RESOURCE_STATE` field `PRODUCER`
+(`u8`, `1` connected, `0` gone), absent from an older server. A restarted
+producer opens a fresh document; a gone one is not re-bound.
+
+A server restart (not `phux upgrade`, which keeps every pane running)
+ends producers with every other program. A mirror run as a pane
+(`phux new -- phux agent page mirror ...`, or a Rune startup action) is an
+ordinary pane with a recorded command, so `phux restore` relaunches it
+and it opens fresh documents (`phux service install --restore` keeps the
+panes; it does not run `phux restore`). The old document records cannot
+be relaunched: `phux restore` lists them as refused, and `phux rm ^KEY`
+forgets one.
+
+A mirror can also run as the child of the app that holds the macOS grants
+(the retired GPUI desktop did this). `phux agent tree|surface|page mirror
+--parent-pid PID` exits within a second of process `PID` ending, so a
+parent killed without dropping its children leaves no producer behind.
+Rune does not run mirrors as its own children yet.
+
+## Applications
+
+`phux spawn --app NAME` (MCP `phux_app_open`) launches an application as a
+resource: a pane runs `phux agent app run NAME`, which starts the app, runs
+the mirrors against that pane, and ties their lifetime to the app. The
+launch, lifetime and platform rules are in [Applications](./applications.md).
 
 ## Typed documents
 
@@ -220,10 +297,9 @@ The kind catalog stays the one table for discovery and authorization, so a
 new kind starts denied. Observing a display shows every application on the
 machine, and input to it is control of the machine, so window and display
 grants are separate from terminal grants and from each other. A device paired
-to watch terminals does not inherit a desktop. Until such grants exist,
-`SEND_DOCUMENT_INPUT` has its own rule that only the owner socket meets: no
-scoped or remote grant, whatever its terminal verbs, can send input to a
-page or window.
+to watch terminals does not inherit a desktop. Control classes, who may watch
+and control a page, window or display, and what Rune's panes
+send are in [Authority over pages, windows, and displays](./authority.md).
 
 ## Order
 

@@ -649,6 +649,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "color_quant"
+version = "1.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3d7b894f5411737b7867f4827955924d7c254fc9f4d91a6aad6b097804b1018b"
+
+[[package]]
 name = "combine"
 version = "4.6.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1058,9 +1064,17 @@ dependencies = [
  "hashbrown 0.17.1",
  "linebender_resource_handle",
  "memmap2",
+ "objc2 0.6.5",
+ "objc2-core-foundation",
+ "objc2-core-text",
+ "objc2-foundation 0.3.2",
  "parlance",
  "read-fonts",
+ "roxmltree 0.21.2",
  "smallvec",
+ "windows",
+ "windows-core",
+ "yeslogic-fontconfig-sys",
 ]
 
 [[package]]
@@ -1199,6 +1213,16 @@ dependencies = [
  "r-efi 6.0.0",
  "rand_core",
  "wasm-bindgen",
+]
+
+[[package]]
+name = "gif"
+version = "0.14.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ee8cfcc411d9adbbaba82fb72661cc1bcca13e8bba98b364e62b2dba8f960159"
+dependencies = [
+ "color_quant",
+ "weezl",
 ]
 
 [[package]]
@@ -1442,12 +1466,25 @@ checksum = "85ab80394333c02fe689eaf900ab500fbd0c2213da414687ebf995a65d5a6104"
 dependencies = [
  "bytemuck",
  "byteorder-lite",
+ "color_quant",
+ "gif",
+ "image-webp",
  "moxcms",
  "num-traits",
  "png 0.18.1",
  "tiff",
  "zune-core",
  "zune-jpeg",
+]
+
+[[package]]
+name = "image-webp"
+version = "0.2.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "525e9ff3e1a4be2fbea1fdf0e98686a6d98b4d8f937e1bf7402245af1909e8c3"
+dependencies = [
+ "byteorder-lite",
+ "quick-error",
 ]
 
 [[package]]
@@ -2112,6 +2149,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "objc2-core-text"
+version = "0.3.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0cde0dfb48d25d2b4862161a4d5fcc0e3c24367869ad306b0c9ec0073bfed92d"
+dependencies = [
+ "bitflags 2.13.2",
+ "objc2-core-foundation",
+]
+
+[[package]]
 name = "objc2-core-video"
 version = "0.3.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2508,7 +2555,7 @@ dependencies = [
 
 [[package]]
 name = "phux-client-core"
-version = "0.123.0"
+version = "0.127.1"
 dependencies = [
  "ciborium",
  "libghostty-vt",
@@ -2524,7 +2571,7 @@ dependencies = [
 
 [[package]]
 name = "phux-client-runtime"
-version = "0.123.0"
+version = "0.127.1"
 dependencies = [
  "bytes",
  "futures-util",
@@ -2552,7 +2599,7 @@ dependencies = [
 
 [[package]]
 name = "phux-config-core"
-version = "0.123.0"
+version = "0.127.1"
 dependencies = [
  "nix",
  "serde",
@@ -2563,7 +2610,7 @@ dependencies = [
 
 [[package]]
 name = "phux-core"
-version = "0.123.0"
+version = "0.127.1"
 dependencies = [
  "serde",
  "sha2",
@@ -2573,7 +2620,7 @@ dependencies = [
 
 [[package]]
 name = "phux-dial"
-version = "0.123.0"
+version = "0.127.1"
 dependencies = [
  "futures-util",
  "hex",
@@ -2590,7 +2637,7 @@ dependencies = [
 
 [[package]]
 name = "phux-perf"
-version = "0.123.0"
+version = "0.127.1"
 dependencies = [
  "libc",
  "nix",
@@ -2600,7 +2647,7 @@ dependencies = [
 
 [[package]]
 name = "phux-protocol"
-version = "0.123.0"
+version = "0.127.1"
 dependencies = [
  "bitflags 2.13.2",
  "bytes",
@@ -2616,8 +2663,9 @@ dependencies = [
 
 [[package]]
 name = "phux-rune"
-version = "0.1.0-alpha.14"
+version = "0.1.0-alpha.23"
 dependencies = [
+ "image",
  "objc2 0.6.5",
  "objc2-foundation 0.3.2",
  "phux-client-core",
@@ -2625,7 +2673,7 @@ dependencies = [
  "phux-perf",
  "phux-protocol",
  "rune",
- "rune-mac",
+ "rune-notify",
  "rune-perf",
  "serde_json",
  "sha2",
@@ -2802,7 +2850,7 @@ dependencies = [
 [[package]]
 name = "procwatch"
 version = "0.1.0"
-source = "git+https://github.com/anomalyco/rune?rev=58eeef5f8974299aa5e471de0010123323e3127e#58eeef5f8974299aa5e471de0010123323e3127e"
+source = "git+https://github.com/anomalyco/rune?rev=5bcb541357e7da77e3357e0b8724f43fcb2ca8d0#5bcb541357e7da77e3357e0b8724f43fcb2ca8d0"
 dependencies = [
  "libc",
 ]
@@ -2836,7 +2884,7 @@ dependencies = [
 
 [[package]]
 name = "quictun"
-version = "0.123.0"
+version = "0.127.1"
 dependencies = [
  "quinn",
  "rustls",
@@ -3095,9 +3143,18 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6c20b6793b5c2fa6553b250154b78d6d0db37e72700ae35fad9387a46f487c97"
 
 [[package]]
+name = "roxmltree"
+version = "0.21.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9da7f59328b09405b181fee1018925fad50f157afb43c0c0f5c522c256dd5907"
+dependencies = [
+ "memchr",
+]
+
+[[package]]
 name = "rune"
 version = "0.0.1"
-source = "git+https://github.com/anomalyco/rune?rev=58eeef5f8974299aa5e471de0010123323e3127e#58eeef5f8974299aa5e471de0010123323e3127e"
+source = "git+https://github.com/anomalyco/rune?rev=5bcb541357e7da77e3357e0b8724f43fcb2ca8d0#5bcb541357e7da77e3357e0b8724f43fcb2ca8d0"
 dependencies = [
  "accesskit",
  "accesskit_macos",
@@ -3109,6 +3166,7 @@ dependencies = [
  "block2 0.6.2",
  "bytemuck",
  "console_error_panic_hook",
+ "fontique",
  "futures-util",
  "half",
  "image",
@@ -3171,23 +3229,25 @@ dependencies = [
 ]
 
 [[package]]
-name = "rune-mac"
+name = "rune-motion"
+version = "0.1.0"
+source = "git+https://github.com/anomalyco/rune?rev=5bcb541357e7da77e3357e0b8724f43fcb2ca8d0#5bcb541357e7da77e3357e0b8724f43fcb2ca8d0"
+
+[[package]]
+name = "rune-notify"
 version = "0.0.1"
-source = "git+https://github.com/anomalyco/rune?rev=58eeef5f8974299aa5e471de0010123323e3127e#58eeef5f8974299aa5e471de0010123323e3127e"
+source = "git+https://github.com/anomalyco/rune?rev=5bcb541357e7da77e3357e0b8724f43fcb2ca8d0#5bcb541357e7da77e3357e0b8724f43fcb2ca8d0"
 dependencies = [
  "block2 0.5.1",
  "objc2 0.5.3",
+ "windows",
+ "windows-registry",
 ]
-
-[[package]]
-name = "rune-motion"
-version = "0.1.0"
-source = "git+https://github.com/anomalyco/rune?rev=58eeef5f8974299aa5e471de0010123323e3127e#58eeef5f8974299aa5e471de0010123323e3127e"
 
 [[package]]
 name = "rune-perf"
 version = "0.1.0"
-source = "git+https://github.com/anomalyco/rune?rev=58eeef5f8974299aa5e471de0010123323e3127e#58eeef5f8974299aa5e471de0010123323e3127e"
+source = "git+https://github.com/anomalyco/rune?rev=5bcb541357e7da77e3357e0b8724f43fcb2ca8d0#5bcb541357e7da77e3357e0b8724f43fcb2ca8d0"
 dependencies = [
  "procwatch",
  "serde_json",
@@ -3196,7 +3256,7 @@ dependencies = [
 [[package]]
 name = "rune-staging"
 version = "0.0.1"
-source = "git+https://github.com/anomalyco/rune?rev=58eeef5f8974299aa5e471de0010123323e3127e#58eeef5f8974299aa5e471de0010123323e3127e"
+source = "git+https://github.com/anomalyco/rune?rev=5bcb541357e7da77e3357e0b8724f43fcb2ca8d0#5bcb541357e7da77e3357e0b8724f43fcb2ca8d0"
 dependencies = [
  "wgpu",
 ]
@@ -3204,7 +3264,7 @@ dependencies = [
 [[package]]
 name = "rune-taffy"
 version = "0.0.1"
-source = "git+https://github.com/anomalyco/rune?rev=58eeef5f8974299aa5e471de0010123323e3127e#58eeef5f8974299aa5e471de0010123323e3127e"
+source = "git+https://github.com/anomalyco/rune?rev=5bcb541357e7da77e3357e0b8724f43fcb2ca8d0#5bcb541357e7da77e3357e0b8724f43fcb2ca8d0"
 dependencies = [
  "taffy",
 ]
@@ -4158,7 +4218,7 @@ dependencies = [
  "kurbo",
  "log",
  "pico-args",
- "roxmltree",
+ "roxmltree 0.20.0",
  "simplecss",
  "siphasher",
  "strict-num",
@@ -4662,6 +4722,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "windows-registry"
+version = "0.6.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "02752bf7fbdcce7f2a27a742f798510f3e5ad88dbe84871e5168e2120c3d5720"
+dependencies = [
+ "windows-link",
+ "windows-result",
+ "windows-strings",
+]
+
+[[package]]
 name = "windows-result"
 version = "0.4.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4977,6 +5048,17 @@ name = "yazi"
 version = "0.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e01738255b5a16e78bbb83e7fbba0a1e7dd506905cfc53f4622d89015a03fbb5"
+
+[[package]]
+name = "yeslogic-fontconfig-sys"
+version = "6.0.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1d8b8abf912b9a29ff112e1671c97c33636903d13a69712037190e6805af4f76"
+dependencies = [
+ "dlib",
+ "once_cell",
+ "pkg-config",
+]
 
 [[package]]
 name = "yoke"

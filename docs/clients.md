@@ -56,8 +56,8 @@ releases, Developer ID signed and notarized on macOS, and does not draw Kitty
 images yet. The same app has a phone form ([MOBILE.md](../clients/rune/MOBILE.md)).
 Expect rough edges: the terminal UI is ahead of the desktop.
 
-The previous GPUI desktop was retired after Desktop 0.57.0; its source is the
-`gpui-desktop-final` tag (`git checkout gpui-desktop-final -- clients/desktop`).
+The previous GPUI desktop was retired after Desktop 0.62.0; its source is the
+`desktop-v0.62.0` tag (`git checkout desktop-v0.62.0 -- clients/desktop`).
 
 ## Browser
 

@@ -22,6 +22,7 @@ fn set(texts: &[&str]) -> TerminalScopeSet {
 }
 
 mod canonical;
+mod control;
 mod effective;
 mod grammar;
 mod keyed;

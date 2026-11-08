@@ -121,3 +121,37 @@ fn adding_a_hold_narrows_and_removing_one_does_not() {
     assert!(still_contained(&["?signal@global"], &["signal@global"]));
     assert!(still_contained(&["?signal@global"], &["?signal@global"]));
 }
+
+#[test]
+fn ungranting_control_revokes_even_under_a_broader_grant() {
+    let key = phux_protocol::ids::ResourceKey::new([7; 16]).unwrap();
+    let resource = format!("input@resource:{key}");
+    assert!(still_contained(
+        &["input@display"],
+        &["input@display", "*@global"]
+    ));
+    assert!(!still_contained(&["input@display"], &["*@global"]));
+    assert!(!still_contained(&["input@window:sat"], &["*@host:sat"]));
+    assert!(!still_contained(&[&resource], &["*@host"]));
+    assert!(still_contained(&[&resource], &[&resource, "*@host"]));
+    // A keyed clause with neither INPUT nor OBSERVE reaches nothing a
+    // broader grant does not, so the broader grant keeps it.
+    assert!(still_contained(
+        &[&format!("signal@resource:{key}")],
+        &["signal@host"]
+    ));
+}
+
+#[test]
+fn ungranting_a_watch_revokes_even_under_a_broader_grant() {
+    let key = phux_protocol::ids::ResourceKey::new([7; 16]).unwrap();
+    let watch = format!("observe@resource:{key}");
+    assert!(!still_contained(&["observe@display"], &["*@global"]));
+    assert!(!still_contained(&["observe@window:sat"], &["*@host:sat"]));
+    assert!(still_contained(
+        &["observe@window"],
+        &["observe@window", "observe@global"]
+    ));
+    assert!(!still_contained(&[&watch], &["observe@host"]));
+    assert!(still_contained(&[&watch], &[&watch, "observe@host"]));
+}

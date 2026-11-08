@@ -55,6 +55,7 @@ pub async fn send_input(
             Command::SendDocumentInput {
                 terminal_id: resource.clone(),
                 intent: input,
+                control: None,
             },
         )
         .await?

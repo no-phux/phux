@@ -186,8 +186,8 @@ The doctor refuses a Nix shell whose compiler is shadowed by Mise. Run the
 app against a disposable dev server on a temp socket, never the installed
 one ([Develop](../clients/rune/README.md#develop)).
 
-The GPUI desktop it replaced was retired after Desktop 0.57.0; its source is
-the `gpui-desktop-final` tag (`git checkout gpui-desktop-final -- clients/desktop`).
+The GPUI desktop it replaced was retired after Desktop 0.62.0; its source is
+the `desktop-v0.62.0` tag (`git checkout desktop-v0.62.0 -- clients/desktop`).
 
 ## Archived Zig Cockpit
 

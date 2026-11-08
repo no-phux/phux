@@ -1,21 +1,26 @@
-//! `phux agent tree mirror APP`: the macOS producer. It reads an
-//! application's accessibility tree through the Accessibility API and
-//! publishes the whole tree as one JSON document whenever it changes.
+//! `phux agent tree mirror APP`: read an application's accessibility tree
+//! and publish the whole tree as one JSON document whenever it changes.
+//! Pixels are never read.
 //!
-//! The process needs the Accessibility grant, which macOS ties to the
-//! application that launched it (the terminal, or the phux desktop app).
-//! Pixels are never read: no Screen Recording grant is involved.
+//! On macOS the tree comes from the Accessibility API. The process needs the
+//! Accessibility grant, which macOS ties to the application that launched it
+//! (the terminal). On Linux it comes from AT-SPI
+//! over D-Bus (`mirror_atspi`), in the same JSON shape.
 
 use std::path::PathBuf;
 use std::process::ExitCode;
 
 /// How the mirror was asked to run.
 #[cfg_attr(
-    not(target_os = "macos"),
-    expect(dead_code, reason = "only the macOS producer reads the arguments")
+    not(any(target_os = "macos", target_os = "linux")),
+    expect(
+        dead_code,
+        reason = "only the macOS and Linux producers read the arguments"
+    )
 )]
 pub(super) struct MirrorArgs<'a> {
-    /// The application, by process name (`pgrep -x`), unless `pid` is given.
+    /// The application: its process name (`pgrep -x`) on macOS, its AT-SPI
+    /// name on Linux; unless `pid` is given.
     pub(super) app: &'a str,
     /// The application's process id, when known.
     pub(super) pid: Option<u32>,
@@ -31,13 +36,13 @@ pub(super) struct MirrorArgs<'a> {
 
 /// The ceiling on nodes one document carries; a larger tree is cut off at
 /// the deepest levels first, by the walk's budget.
-#[cfg(target_os = "macos")]
-const MAX_NODES: usize = 20_000;
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+pub(super) const MAX_NODES: usize = 20_000;
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
 #[expect(
     clippy::needless_pass_by_value,
-    reason = "one signature for both platforms; the macOS producer consumes the arguments"
+    reason = "one signature for every platform; the producers consume the arguments"
 )]
 pub(super) fn run_mirror(args: MirrorArgs<'_>) -> ExitCode {
     use crate::commands::json_err;
@@ -46,51 +51,153 @@ pub(super) fn run_mirror(args: MirrorArgs<'_>) -> ExitCode {
         args.json,
         &json_err::CliError::new(
             json_err::codes::USAGE_ERROR,
-            "`phux agent tree mirror` reads the macOS Accessibility API; this build is not macOS",
-            "run the mirror on the Mac that runs the application",
+            "`phux agent tree mirror` reads the macOS Accessibility API or Linux AT-SPI; this build is neither",
+            "run the mirror on the machine that runs the application",
         ),
         EXIT_USAGE,
     )
 }
 
+#[cfg(target_os = "linux")]
+use super::mirror_atspi::App;
 #[cfg(target_os = "macos")]
+use macos::App;
+
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 pub(super) fn run_mirror(args: MirrorArgs<'_>) -> ExitCode {
-    macos::run(args)
+    use phux_client::tree;
+    use phux_server::runtime::default_socket_path;
+    use std::time::Duration;
+
+    use crate::commands::agent::tree::{dial, mirror_pane, report};
+    use crate::commands::cli_runtime;
+
+    let MirrorArgs {
+        app,
+        pid,
+        pane,
+        interval_ms,
+        depth,
+        json,
+        socket,
+    } = args;
+    let rt = match cli_runtime() {
+        Ok(rt) => rt,
+        Err(code) => return code,
+    };
+    rt.block_on(async move {
+        let socket_path = socket.unwrap_or_else(default_socket_path);
+        let pane = match mirror_pane(&socket_path, pane, "agent tree mirror", json).await {
+            Ok(pane) => pane,
+            Err(code) => return code,
+        };
+        // An application that cannot be read must not leave an empty tree.
+        let source = match App::find(app, pid, json).await {
+            Ok(source) => source,
+            Err(code) => return code,
+        };
+        let mut conn = match dial(&socket_path, json).await {
+            Ok(conn) => conn,
+            Err(code) => return code,
+        };
+        let opened = match tree::open(&mut conn, &pane, app).await {
+            Ok(opened) => opened,
+            Err(err) => return report(json, &err),
+        };
+        let resource = phux_client::selector::format_terminal_id(&opened.resource);
+        let pid = source.pid();
+        if json {
+            outln!(
+                "{}",
+                serde_json::json!({ "schema_version": 1, "resource": resource, "pid": pid, "app": app })
+            );
+        } else {
+            outln!("{resource}");
+        }
+        let interval = Duration::from_millis(interval_ms.max(50));
+        let label = format!("{app} (pid {pid})");
+        match publish_until_gone(&source, depth, interval, &label, &mut conn, &opened.resource).await
+        {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(err) => report(json, &err),
+        }
+    })
+}
+
+/// Publish every change of the tree until Ctrl-C, or until the application
+/// stops answering for three reads in a row.
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+#[allow(
+    clippy::future_not_send,
+    reason = "an AXUIElement belongs to the thread that made it; the CLI runtime is single-threaded"
+)]
+async fn publish_until_gone(
+    source: &App,
+    depth: usize,
+    interval: std::time::Duration,
+    label: &str,
+    conn: &mut phux_client::attach::connection::Connection,
+    resource: &phux_protocol::ids::ResourceId,
+) -> Result<(), phux_client::tree::TreeError> {
+    let mut last: Option<Vec<u8>> = None;
+    let mut misses = 0;
+    loop {
+        let document = source.read(depth).await;
+        if document.is_null() {
+            misses += 1;
+            if misses >= 3 {
+                outln!("{label} is gone; the tree keeps its last document");
+                return Ok(());
+            }
+        } else {
+            misses = 0;
+            let bytes = serde_json::to_vec(&document).unwrap_or_default();
+            if last.as_deref() != Some(bytes.as_slice()) {
+                phux_client::tree::publish(conn, resource, bytes.clone()).await?;
+                last = Some(bytes);
+            }
+        }
+        tokio::select! {
+            _ = tokio::signal::ctrl_c() => return Ok(()),
+            () = tokio::time::sleep(interval) => {}
+        }
+    }
 }
 
 #[cfg(target_os = "macos")]
 mod macos {
     use std::process::ExitCode;
-    use std::time::Duration;
 
     use accessibility::{AXUIElement, AXUIElementAttributes as _};
     use core_foundation::base::CFType;
     use core_foundation::boolean::CFBoolean;
     use core_foundation::number::CFNumber;
     use core_foundation::string::CFString;
-    use phux_client::tree;
-    use phux_protocol::ids::ResourceId;
-    use phux_server::runtime::default_socket_path;
 
-    use super::{MAX_NODES, MirrorArgs};
-    use crate::commands::agent::tree::{dial, report, resolve};
-    use crate::commands::{cli_runtime, json_err};
+    use super::MAX_NODES;
+    use crate::commands::json_err;
     use crate::exit_codes::{EXIT_FAILURE, EXIT_USAGE};
 
-    pub(super) fn run(args: MirrorArgs<'_>) -> ExitCode {
-        let MirrorArgs {
-            app,
-            pid,
-            pane,
-            interval_ms,
-            depth,
-            json,
-            socket,
-        } = args;
-        let pid = match pid.map_or_else(|| pid_of(app), Ok) {
-            Ok(pid) => pid,
-            Err(message) => {
-                return json_err::emit(
+    /// A running application, read through the Accessibility API.
+    pub(super) struct App {
+        root: AXUIElement,
+        pid: u32,
+    }
+
+    impl App {
+        /// The application `app` (or `pid`), once the API answers for it.
+        /// Ready at once; the Linux reader awaits D-Bus, so callers await both.
+        pub(super) fn find(
+            app: &str,
+            pid: Option<u32>,
+            json: bool,
+        ) -> std::future::Ready<Result<Self, ExitCode>> {
+            std::future::ready(Self::find_now(app, pid, json))
+        }
+
+        fn find_now(app: &str, pid: Option<u32>, json: bool) -> Result<Self, ExitCode> {
+            let pid = pid.map_or_else(|| pid_of(app), Ok).map_err(|message| {
+                json_err::emit(
                     json,
                     &json_err::CliError::new(
                         json_err::codes::NO_SUCH_TARGET,
@@ -98,58 +205,13 @@ mod macos {
                         "name a running application's process, or pass `--pid`",
                     ),
                     EXIT_USAGE,
-                );
-            }
-        };
-        let rt = match cli_runtime() {
-            Ok(rt) => rt,
-            Err(code) => return code,
-        };
-        rt.block_on(async move {
-            let socket_path = socket.unwrap_or_else(default_socket_path);
-            let pane = match pane {
-                Some(target) => match resolve(&socket_path, target, "agent tree mirror", json).await {
-                    Ok(pane) => pane,
-                    Err(code) => return code,
-                },
-                None => match own_pane() {
-                    Some(pane) => pane,
-                    None => {
-                        return json_err::emit(
-                            json,
-                            &json_err::CliError::new(
-                                json_err::codes::USAGE_ERROR,
-                                "not running in a phux pane and no `--pane` given",
-                                "run the mirror inside a pane, or pass `--pane @N`",
-                            ),
-                            EXIT_USAGE,
-                        );
-                    }
-                },
-            };
-            let mut conn = match dial(&socket_path, json).await {
-                Ok(conn) => conn,
-                Err(code) => return code,
-            };
-            let opened = match tree::open(&mut conn, &pane, app).await {
-                Ok(opened) => opened,
-                Err(err) => return report(json, &err),
-            };
-            let resource = phux_client::selector::format_terminal_id(&opened.resource);
-            if json {
-                outln!(
-                    "{}",
-                    serde_json::json!({ "schema_version": 1, "resource": resource, "pid": pid, "app": app })
-                );
-            } else {
-                outln!("{resource}");
-            }
-
+                )
+            })?;
             let root = AXUIElement::application(pid.cast_signed());
             // Trust is learned from the first read: an untrusted process gets
             // `kAXErrorAPIDisabled` for every element.
             if let Err(error) = root.role() {
-                return json_err::emit(
+                return Err(json_err::emit(
                     json,
                     &json_err::CliError::new(
                         json_err::codes::WORKLOAD,
@@ -157,71 +219,20 @@ mod macos {
                         "grant the terminal (or phux) Accessibility in System Settings, Privacy & Security, then run again",
                     ),
                     EXIT_FAILURE,
-                );
+                ));
             }
-            let mirror = Mirror {
-                root,
-                depth,
-                interval: Duration::from_millis(interval_ms.max(50)),
-                label: format!("{app} (pid {pid})"),
-            };
-            match mirror.publish_until_gone(&mut conn, &opened.resource).await {
-                Ok(()) => ExitCode::SUCCESS,
-                Err(err) => report(json, &err),
-            }
-        })
-    }
-
-    struct Mirror {
-        root: AXUIElement,
-        depth: usize,
-        interval: Duration,
-        label: String,
-    }
-
-    impl Mirror {
-        /// Publish every change of the tree until Ctrl-C, or until the
-        /// application stops answering for three reads in a row.
-        #[allow(
-            clippy::future_not_send,
-            reason = "an AXUIElement belongs to the thread that made it; the CLI runtime is single-threaded"
-        )]
-        async fn publish_until_gone(
-            &self,
-            conn: &mut phux_client::attach::connection::Connection,
-            resource: &ResourceId,
-        ) -> Result<(), tree::TreeError> {
-            let mut last: Option<Vec<u8>> = None;
-            let mut misses = 0;
-            loop {
-                let mut budget = MAX_NODES;
-                let document = node(&self.root, self.depth, &mut budget);
-                if document.is_null() {
-                    misses += 1;
-                    if misses >= 3 {
-                        outln!("{} is gone; the tree keeps its last document", self.label);
-                        return Ok(());
-                    }
-                } else {
-                    misses = 0;
-                    let bytes = serde_json::to_vec(&document).unwrap_or_default();
-                    if last.as_deref() != Some(bytes.as_slice()) {
-                        tree::publish(conn, resource, bytes.clone()).await?;
-                        last = Some(bytes);
-                    }
-                }
-                tokio::select! {
-                    _ = tokio::signal::ctrl_c() => return Ok(()),
-                    () = tokio::time::sleep(self.interval) => {}
-                }
-            }
+            Ok(Self { root, pid })
         }
-    }
 
-    /// The pane this process runs in, from the injected `PHUX_TERMINAL_ID`.
-    fn own_pane() -> Option<ResourceId> {
-        let raw = std::env::var("PHUX_TERMINAL_ID").ok()?;
-        raw.parse::<u32>().ok().map(ResourceId::local)
+        pub(super) const fn pid(&self) -> u32 {
+            self.pid
+        }
+
+        /// The whole tree, or `Null` once the application stops answering.
+        pub(super) fn read(&self, depth: usize) -> std::future::Ready<serde_json::Value> {
+            let mut budget = MAX_NODES;
+            std::future::ready(node(&self.root, depth, &mut budget))
+        }
     }
 
     /// The first process named exactly `app`, via `pgrep -x`.

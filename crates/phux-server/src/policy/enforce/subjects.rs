@@ -18,6 +18,22 @@ pub(super) enum Point {
     SatelliteHost(String),
     /// A Terminal, or a child resource admitted through its parent.
     Terminal(TerminalPoint),
+    /// A document as `SEND_DOCUMENT_INPUT` names it: never through its
+    /// parent or a broader selector.
+    Control(ControlPoint),
+}
+
+/// A document by what its input controls and where it lives.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct ControlPoint {
+    /// Its control class. A local document with `None` controls nothing; a
+    /// satellite document with `None` is one the hub cannot see into, whose
+    /// class the satellite checks against the classes the hub stamps.
+    pub(super) class: Option<phux_protocol::wire::frame::ControlClass>,
+    /// The satellite it lives on; `None` for a local document.
+    pub(super) host: Option<String>,
+    /// Its resource record's persistent key, for a local document.
+    pub(super) key: Option<phux_protocol::ids::ResourceKey>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -151,6 +167,7 @@ fn scope_subject(s: &ServerState, scope: &Scope) -> Point {
 /// either it or its parent is.
 pub(super) fn contains(selector: &Selector, point: &Point) -> bool {
     match point {
+        Point::Control(document) => control_in(selector, document),
         Point::Terminal(terminal) => {
             terminal_in(selector, terminal)
                 || terminal
@@ -186,6 +203,20 @@ fn terminal_in(selector: &Selector, terminal: &TerminalPoint) -> bool {
         }
         (Selector::TerminalSatellite(host, id), Located::Satellite(name, at)) => {
             host.as_str() == name && id == at
+        }
+        _ => false,
+    }
+}
+
+/// Control is never inherited: only a control selector of the document's
+/// class and host, or a local document's own `resource:` key, contains it.
+/// A local document with no class is contained by nothing.
+fn control_in(selector: &Selector, document: &ControlPoint) -> bool {
+    match (selector, document.host.as_deref()) {
+        (Selector::Control(class, None), None) => document.class == Some(*class),
+        (Selector::Resource(key), None) => document.class.is_some() && document.key == Some(*key),
+        (Selector::Control(class, Some(host)), Some(name)) => {
+            host.as_str() == name && document.class.is_none_or(|known| known == *class)
         }
         _ => false,
     }

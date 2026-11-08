@@ -1,5 +1,5 @@
 //! Input for a mirrored browser page: the viewer verbs (`phux agent page
-//! navigate|click|type|key`) send a typed intent to the page's surface or
+//! navigate|click|type|key|scroll`) send a typed intent to the page's surface or
 //! tree, and the page mirror, its producer, maps each intent it receives to
 //! `DevTools` calls.
 
@@ -182,6 +182,13 @@ mod tests {
         assert_eq!(
             cdp_calls(&DocumentInput::Click { x: 3, y: 4 }, Viewport::IDENTITY)[0].1["x"],
             3.0
+        );
+        // `--max-width 800` on a 1600x900 viewport: half-size frames.
+        let scaled = Viewport::of((800, 450), (1600.0, 900.0));
+        let calls = cdp_calls(&DocumentInput::Click { x: 100, y: 50 }, scaled);
+        assert_eq!(
+            (calls[0].1["x"].as_f64(), calls[0].1["y"].as_f64()),
+            (Some(200.0), Some(100.0))
         );
     }
 

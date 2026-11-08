@@ -254,6 +254,12 @@ pub enum Subject {
     UndoneOperation,
     /// The session that owns the arrangement.
     ArrangementOwner,
+    /// The document a `SEND_DOCUMENT_INPUT` names, by its control class and
+    /// host: only a control selector (`page`, `window:<host>`, ...) or its
+    /// own `resource:<key>` contains it, never a broader selector or its
+    /// parent Terminal. A document with no control class has no such
+    /// selector, so only the owner socket reaches it.
+    ControlledDocument,
     /// The Global selector.
     Global {
         /// The transport predicate: the authenticated transport must also be
@@ -384,6 +390,9 @@ fn verbs_label(verbs: Verbs, subject: Subject) -> String {
     let mut label = verbs.iter().map(Verb::name).collect::<Vec<_>>().join("+");
     if subject.requires_owner_uds() {
         label.push_str(" + owner-UDS transport");
+    }
+    if matches!(subject, Subject::ControlledDocument) {
+        label.push_str(" on a control selector");
     }
     label
 }

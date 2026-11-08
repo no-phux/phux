@@ -131,6 +131,9 @@ Usage: phux agent <SUBCOMMAND>
 
 Commands:
   answer            Answer a pane's pending agent question by validated choice.
+  app               An application as resources: launched, mirrored from its own
+                    pane, and quit with it. `phux spawn --app` is the short
+                    form.
   clear             Clear a pane's declared agent identity.
   doc               A typed document is a pane's child resource that a producer
                     feeds with whole documents of the content type it was opened
@@ -161,10 +164,12 @@ Commands:
   show              Show inferred state for one pane.
   start             Start an agent INSIDE an existing shell pane, and return
                     when it is ready for input.
+  stats             Show each pane's agent work: tasks finished and time spent
+                    working.
   surface           A pixel surface is a pane's child resource that a producer
-                    feeds with PNG images of a window or display; `snapshot`
-                    writes the newest and `follow` every one. Needs a server
-                    that advertises `PIXEL_SURFACE`.
+                    feeds with PNG or JPEG images of a window or display;
+                    `snapshot` writes the newest and `follow` every one. Needs a
+                    server that advertises `PIXEL_SURFACE`.
   tree              An accessibility tree is a pane's child resource that a
                     producer feeds with whole documents of an application's
                     accessibility tree; `snapshot` reads the newest and `follow
@@ -225,6 +230,68 @@ Flags:
 
 Global flags:
       --socket <PATH>   Server socket to dial (default: `$PHUX_SOCKET`)
+```
+
+## `phux agent app`
+
+```text
+An application as resources: launched, mirrored from its own pane, and quit with
+it. `phux spawn --app` is the short form.
+
+Usage: phux agent app <SUBCOMMAND>
+
+Commands:
+  run   Launch an application and mirror it into this pane until it quits;
+        killing the pane quits the app. `phux spawn --app` runs this in a new
+        pane.
+  help  Print this message or the help of the given subcommand(s)
+
+Flags:
+  -h, --help           Print help
+
+Global flags:
+      --socket <PATH>  Server socket to dial (default: `$PHUX_SOCKET`)
+```
+
+## `phux agent app run`
+
+```text
+Launch an application and mirror it into this pane until it quits; killing the
+pane quits the app. `phux spawn --app` runs this in a new pane.
+
+Usage: phux agent app run [FLAGS] <NAME> [ARGS]…
+
+Arguments:
+  <NAME>   The application: its name on macOS (`TextEdit`), a command or a
+           `.desktop` id on Linux; with `--browser`, the browser (`chrome`,
+           `chromium`, or a path).
+  [ARGS]…  Arguments for the application; they follow `--`.
+
+Flags:
+      --browser [URL]     Launch the browser NAME with a fresh profile and a
+                          debugging port, open URL (default `about:blank`), and
+                          mirror the page.
+      --headless          Run the browser with no window on screen.
+      --interval <MS>     Milliseconds between captures and tree reads (each
+                          mirror's default when absent).
+      --format <FORMAT>   Frame encoding: jpeg by default for a page mirror, png
+                          for a window or display mirror. JPEG frames are
+                          several times smaller; viewers older than JPEG support
+                          (desktop before 0.57.0, Rune before 0.1.0-alpha.17)
+                          show them as invalid.
+                          [possible values: png, jpeg]
+      --quality <Q>       JPEG quality, 1 to 100 (default 70).
+      --max-width <PX>    Scale frames down to at most this many pixels wide.
+      --dry-run           Print what would be launched and exit, launching
+                          nothing.
+      --pane <PANE>       The pane the documents bind to; this process's own
+                          pane when absent.
+      --parent-pid <PID>  Quit the app and exit once this process is gone, as
+                          the app that launched the helper passes its own.
+  -h, --help              Print help
+
+Global flags:
+      --socket <PATH>     Server socket to dial (default: `$PHUX_SOCKET`)
 ```
 
 ## `phux agent clear`
@@ -547,6 +614,7 @@ Commands:
             an arrow.
   mirror    Mirror a browser page into a tree and a surface until Ctrl-C.
   navigate  Load a URL in a mirrored page.
+  scroll    Scroll a mirrored page or screen by a delta in surface image pixels.
   type      Type text into a mirrored page's focused field.
   help      Print this message or the help of the given subcommand(s)
 
@@ -607,16 +675,26 @@ Arguments:
   <PAGE>  A fragment of the page's title or URL, or `first`.
 
 Flags:
-      --port <PORT>    The browser's debugging port (default 9222).
-      --pane <PANE>    The pane the documents bind to; this process's own pane
-                       when absent.
-      --interval <MS>  Milliseconds between accessibility-tree reads (default
-                       1000).
+      --port <PORT>       The browser's debugging port (default 9222).
+      --pane <PANE>       The pane the documents bind to; this process's own
+                          pane when absent.
+      --interval <MS>     Milliseconds between accessibility-tree reads (default
+                          1000).
+      --parent-pid <PID>  Exit once this process is gone, as the app that
+                          launched the mirror passes its own.
+      --format <FORMAT>   Frame encoding: jpeg by default for a page mirror, png
+                          for a window or display mirror. JPEG frames are
+                          several times smaller; viewers older than JPEG support
+                          (desktop before 0.57.0, Rune before 0.1.0-alpha.17)
+                          show them as invalid.
+                          [possible values: png, jpeg]
+      --quality <Q>       JPEG quality, 1 to 100 (default 70).
+      --max-width <PX>    Scale frames down to at most this many pixels wide.
       --json
-  -h, --help           Print help
+  -h, --help              Print help
 
 Global flags:
-      --socket <PATH>  Server socket to dial (default: `$PHUX_SOCKET`)
+      --socket <PATH>     Server socket to dial (default: `$PHUX_SOCKET`)
 ```
 
 ## `phux agent page navigate`
@@ -629,6 +707,26 @@ Usage: phux agent page navigate [--json] <TARGET> <URL>
 Arguments:
   <TARGET>  The page's surface or tree.
   <URL>     The URL to load.
+
+Flags:
+      --json
+  -h, --help           Print help
+
+Global flags:
+      --socket <PATH>  Server socket to dial (default: `$PHUX_SOCKET`)
+```
+
+## `phux agent page scroll`
+
+```text
+Scroll a mirrored page or screen by a delta in surface image pixels.
+
+Usage: phux agent page scroll [--json] <ARGS>…
+
+Arguments:
+  <TARGET>  The document's surface or tree.
+  <DX>      Horizontal pixels; positive scrolls right.
+  <DY>      Vertical pixels; positive scrolls down.
 
 Flags:
       --json
@@ -963,21 +1061,40 @@ Global flags:
       --socket <PATH>     Server socket to dial (default: `$PHUX_SOCKET`)
 ```
 
+## `phux agent stats`
+
+```text
+Show each pane's agent work: tasks finished and time spent working.
+
+Prints the `phux.agent-stats/v1` document. `--publish` records the hook event in
+the environment, then writes that Global key; the agent-stats plugin runs it
+from its hooks.
+
+Usage: phux agent stats [--publish]
+
+Flags:
+      --publish        Record the hook event and write the key.
+  -h, --help           Print help
+
+Global flags:
+      --socket <PATH>  Server socket to dial (default: `$PHUX_SOCKET`)
+```
+
 ## `phux agent surface`
 
 ```text
-A pixel surface is a pane's child resource that a producer feeds with PNG images
-of a window or display; `snapshot` writes the newest and `follow` every one.
-Needs a server that advertises `PIXEL_SURFACE`.
+A pixel surface is a pane's child resource that a producer feeds with PNG or
+JPEG images of a window or display; `snapshot` writes the newest and `follow`
+every one. Needs a server that advertises `PIXEL_SURFACE`.
 
 Usage: phux agent surface <SUBCOMMAND>
 
 Commands:
   follow    Write every image as it arrives, each replacing the file.
-  mirror    Mirror a macOS window, or the main display, into a surface until
-            Ctrl-C.
+  mirror    Mirror a window or a display into a surface until Ctrl-C: macOS, or
+            Linux on a wlroots compositor (Hyprland, Sway) through `grim`.
   open      Open a surface under the pane its producer runs in.
-  publish   Replace the surface's image from a PNG file, or stdin.
+  publish   Replace the surface's image from a PNG or JPEG file, or stdin.
   snapshot  Write the surface's newest image to a file.
   help      Print this message or the help of the given subcommand(s)
 
@@ -999,7 +1116,7 @@ Arguments:
   <TARGET>  The surface.
 
 Flags:
-      --out <PATH>      Where each PNG goes; stdout when absent.
+      --out <PATH>      Where each image goes; stdout when absent.
       --timeout <SECS>  Give up after this many seconds.
       --json
   -h, --help            Print help
@@ -1011,24 +1128,41 @@ Global flags:
 ## `phux agent surface mirror`
 
 ```text
-Mirror a macOS window, or the main display, into a surface until Ctrl-C.
+Mirror a window or a display into a surface until Ctrl-C: macOS, or Linux on a
+wlroots compositor (Hyprland, Sway) through `grim`.
 
 Usage: phux agent surface mirror [FLAGS] <WINDOW>
 
 Arguments:
-  <WINDOW>  The window as `App` or `App:title`, or `display` for the main
-            display.
+  <WINDOW>  The window as `App` or `App:title` (on Linux, a Hyprland class), or
+            `display`: the main display on macOS, every output on Linux, where
+            `display:OUTPUT` names one.
 
 Flags:
-      --window-id <ID>  The CoreGraphics window id, instead of a name.
-      --pane <PANE>     The pane the surface binds to; this process's own pane
-                        when absent.
-      --interval <MS>   Milliseconds between captures (default 1000).
+      --window-id <ID>    The CoreGraphics window id, instead of a name (macOS).
+      --pane <PANE>       The pane the surface binds to; this process's own pane
+                          when absent.
+      --interval <MS>     Milliseconds between captures while no input arrives
+                          (default 1000). After input it captures 50ms later,
+                          then every 150ms for 2s.
+      --parent-pid <PID>  Exit once this process is gone, as the app that
+                          launched the mirror passes its own.
+      --format <FORMAT>   Frame encoding: jpeg by default for a page mirror, png
+                          for a window or display mirror. JPEG frames are
+                          several times smaller; viewers older than JPEG support
+                          (desktop before 0.57.0, Rune before 0.1.0-alpha.17)
+                          show them as invalid.
+                          [possible values: png, jpeg]
+      --quality <Q>       JPEG quality, 1 to 100 (default 70).
+      --max-width <PX>    Scale frames down to at most this many pixels wide.
+      --dry-run-input     Log the input events viewers' intents would post
+                          (macOS) or the commands they would run (Linux)
+                          instead; a refused capture publishes a blank frame.
       --json
-  -h, --help            Print help
+  -h, --help              Print help
 
 Global flags:
-      --socket <PATH>   Server socket to dial (default: `$PHUX_SOCKET`)
+      --socket <PATH>     Server socket to dial (default: `$PHUX_SOCKET`)
 ```
 
 ## `phux agent surface open`
@@ -1036,13 +1170,18 @@ Global flags:
 ```text
 Open a surface under the pane its producer runs in.
 
-Usage: phux agent surface open <--window <WINDOW>> [--json] <TARGET>
+Usage: phux agent surface open <FLAGS> <TARGET>
 
 Arguments:
   <TARGET>  The parent pane.
 
 Flags:
       --window <WINDOW>  The window or display the surface mirrors.
+      --control <CLASS>  What input to the surface controls: `page`, `window`,
+                         or `display`. Only a device granted that control class
+                         can send it input; without this flag only the owner
+                         socket can.
+                         [possible values: page, window, display]
       --json
   -h, --help             Print help
 
@@ -1053,7 +1192,7 @@ Global flags:
 ## `phux agent surface publish`
 
 ```text
-Replace the surface's image from a PNG file, or stdin.
+Replace the surface's image from a PNG or JPEG file, or stdin.
 
 Usage: phux agent surface publish [--file <PATH>] [--json] <TARGET>
 
@@ -1061,7 +1200,7 @@ Arguments:
   <TARGET>  The surface.
 
 Flags:
-      --file <PATH>    The PNG; stdin when absent.
+      --file <PATH>    The PNG or JPEG; stdin when absent.
       --json
   -h, --help           Print help
 
@@ -1080,7 +1219,7 @@ Arguments:
   <TARGET>  The surface.
 
 Flags:
-      --out <PATH>     Where the PNG goes; stdout when absent.
+      --out <PATH>     Where the image goes; stdout when absent.
       --json
   -h, --help           Print help
 
@@ -1100,7 +1239,8 @@ Usage: phux agent tree <SUBCOMMAND>
 
 Commands:
   follow    Print every document as it arrives.
-  mirror    Mirror a running macOS application into a tree, until Ctrl-C.
+  mirror    Mirror a running application into a tree, until Ctrl-C: macOS
+            Accessibility, or AT-SPI on Linux.
   open      Open a tree under the pane its producer runs in.
   publish   Replace the tree's document from a file, or stdin.
   snapshot  Print the tree's newest document.
@@ -1136,24 +1276,28 @@ Global flags:
 ## `phux agent tree mirror`
 
 ```text
-Mirror a running macOS application into a tree, until Ctrl-C.
+Mirror a running application into a tree, until Ctrl-C: macOS Accessibility, or
+AT-SPI on Linux.
 
 Usage: phux agent tree mirror [FLAGS] <APP>
 
 Arguments:
-  <APP>  The application's process name, e.g. `Safari`.
+  <APP>  The application: its process name on macOS (`Safari`), its AT-SPI name
+         on Linux.
 
 Flags:
-      --pid <PID>      The application's process id, instead of its name.
-      --pane <PANE>    The pane the tree binds to; this process's own pane when
-                       absent.
-      --interval <MS>  Milliseconds between reads (default 500).
-      --depth <N>      Deepest nesting to read (default 24).
+      --pid <PID>         The application's process id, instead of its name.
+      --pane <PANE>       The pane the tree binds to; this process's own pane
+                          when absent.
+      --interval <MS>     Milliseconds between reads (default 500).
+      --depth <N>         Deepest nesting to read (default 24).
+      --parent-pid <PID>  Exit once this process is gone, as the app that
+                          launched the mirror passes its own.
       --json
-  -h, --help           Print help
+  -h, --help              Print help
 
 Global flags:
-      --socket <PATH>  Server socket to dial (default: `$PHUX_SOCKET`)
+      --socket <PATH>     Server socket to dial (default: `$PHUX_SOCKET`)
 ```
 
 ## `phux agent tree open`
@@ -5902,6 +6046,17 @@ Flags:
                                  answers the first pane instead of spawning
                                  another. Draw one key per spawn and reuse it on
                                  retry.
+      --app <NAME>               Run an application in the new pane instead of a
+                                 command: launched, mirrored into documents
+                                 under the pane, and quit when the pane is
+                                 killed (`phux agent app run NAME`). A macOS app
+                                 name, a Linux command or `.desktop` id, or with
+                                 `--browser` the browser.
+      --browser [URL]            With `--app`, launch that browser on URL
+                                 (default `about:blank`) with a fresh profile
+                                 and mirror the page.
+      --headless                 With `--browser`, run it with no window on
+                                 screen.
       --json                     Emit stable, versioned JSON on stdout instead
                                  of the human view. On failure, stdout stays
                                  empty and stderr carries one JSON error object.
@@ -6630,11 +6785,14 @@ Usage: phux workload [--json] <SUBCOMMAND>
 Commands:
   add-key        Enroll a client certificate, or sign a CSR into one.
   authority      Print the workload CA fingerprint.
+  grant          Add one scope grant to an enrolled credential, without
+                 re-pairing.
   list           List enrolled credentials.
   repair-paired  Restore full control to a device enrolled with the old pairing
                  ceiling.
   revoke         Revoke a credential: new connections are refused and live ones
                  end.
+  ungrant        Remove one scope grant from an enrolled credential.
   help           Print this message or the help of the given subcommand(s)
 
 Flags:
@@ -6670,7 +6828,14 @@ Flags:
                                  26-character key, the `key` of a `phux ls
                                  --json` row; session and Terminal ids restart
                                  with the server, so group:ID and terminal:ID
-                                 are refused). Repeatable; at least one is
+                                 are refused), or a control class: page, window,
+                                 display, alone or as CLASS:HOST, the only
+                                 selectors besides resource:KEY that let input
+                                 reach a mirrored page, window or display, or
+                                 let observe watch a mirrored window or display.
+                                 A human device enrolled with the full-control
+                                 pairing ceiling also gets observe@display and
+                                 observe@window. Repeatable; at least one is
                                  required.
       --expires-in <SECONDS>     Seconds until the credential expires (at most
                                  20 years).
@@ -6723,6 +6888,33 @@ Flags:
                        every workload credential re-enroll; the replaced files
                        are kept beside the new ones as `*.retired-<unix>`.
                        Restart the server to present it.
+  -h, --help           Print help
+
+Global flags:
+      --socket <PATH>  Server socket to dial (default: `$PHUX_SOCKET`)
+      --json           Emit the result as JSON on stdout.
+```
+
+## `phux workload grant`
+
+```text
+Add one scope grant to an enrolled credential, without re-pairing.
+
+The scope is `<verb>[,<verb>...]@<selector>`, as `add-key --scope` takes it,
+plus the control selectors `page`, `window`, `display` and `page:HOST`,
+`window:HOST`, `display:HOST`: `input@display` lets the device type and click on
+this machine's mirrored screens, and `observe@display` lets it watch them, which
+no terminal grant does. Prints what the grant lets the device do. The device
+gets it at its next connection.
+
+Usage: phux workload grant <CREDENTIAL_ID> <VERBS@SELECTOR>
+
+Arguments:
+  <CREDENTIAL_ID>   The credential's `sha256:...` id from `phux workload list`.
+  <VERBS@SELECTOR>  The grant, e.g. `observe@display` or
+                    `input@window:powerhouse-1`.
+
+Flags:
   -h, --help           Print help
 
 Global flags:
@@ -6786,6 +6978,29 @@ Arguments:
   <CREDENTIAL_ID>  Credential id (`sha256:...`) printed by `add-key` or `list`,
                    or an unspent enrollment ticket (`t-...`) printed by `phux
                    pair --enroll` or `phux host ticket`.
+
+Flags:
+  -h, --help           Print help
+
+Global flags:
+      --socket <PATH>  Server socket to dial (default: `$PHUX_SOCKET`)
+      --json           Emit the result as JSON on stdout.
+```
+
+## `phux workload ungrant`
+
+```text
+Remove one scope grant from an enrolled credential.
+
+Removes every scope equal to the one given. A running server ends the device's
+live connections that relied on it; the device reconnects with what remains. The
+last scope cannot be removed: revoke the credential instead.
+
+Usage: phux workload ungrant <CREDENTIAL_ID> <VERBS@SELECTOR>
+
+Arguments:
+  <CREDENTIAL_ID>   The credential's `sha256:...` id from `phux workload list`.
+  <VERBS@SELECTOR>  The grant to remove, as `phux workload list` prints it.
 
 Flags:
   -h, --help           Print help

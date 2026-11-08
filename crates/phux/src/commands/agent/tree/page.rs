@@ -1,4 +1,4 @@
-//! `phux agent page mirror|navigate|click|type|key`: a browser page as a
+//! `phux agent page mirror|navigate|click|type|key|scroll`: a browser page as a
 //! tree and a surface, and input for it.
 
 use std::path::PathBuf;
@@ -6,6 +6,7 @@ use std::process::ExitCode;
 
 use phux_client::tree::DocumentInput;
 
+use super::surface::FrameOpts;
 use super::{page_input, page_mirror};
 
 /// `phux agent page mirror`: drive a browser page over the Chrome debugging protocol (CDP).
@@ -24,6 +25,11 @@ pub(crate) enum PageAction {
         /// Milliseconds between accessibility-tree reads (default 1000).
         #[usage(long, value_name = "MS")]
         interval: Option<u64>,
+        /// Exit once this process is gone, as the app that launched the mirror passes its own.
+        #[usage(long, value_name = "PID")]
+        parent_pid: Option<u32>,
+        #[usage(flatten)]
+        frames: FrameOpts,
         #[usage(long)]
         json: bool,
     },
@@ -67,6 +73,19 @@ pub(crate) enum PageAction {
         #[usage(long)]
         json: bool,
     },
+    /// Scroll a mirrored page or screen by a delta in surface image pixels.
+    Scroll {
+        /// The document's surface or tree.
+        target: String,
+        /// Horizontal pixels; positive scrolls right.
+        #[usage(value_name = "DX", allow_negative_numbers)]
+        dx: i32,
+        /// Vertical pixels; positive scrolls down.
+        #[usage(value_name = "DY", allow_negative_numbers)]
+        dy: i32,
+        #[usage(long)]
+        json: bool,
+    },
 }
 
 pub(crate) fn run_page(action: &PageAction, socket: Option<PathBuf>) -> ExitCode {
@@ -76,15 +95,24 @@ pub(crate) fn run_page(action: &PageAction, socket: Option<PathBuf>) -> ExitCode
             port,
             pane,
             interval,
+            parent_pid,
+            frames,
             json,
-        } => page_mirror::run_mirror(page_mirror::MirrorArgs {
-            page,
-            port: port.unwrap_or(9222),
-            pane: pane.as_deref(),
-            interval_ms: interval.unwrap_or(1000),
-            json: *json,
-            socket,
-        }),
+        } => {
+            super::parent_watch::exit_with(*parent_pid);
+            match frames.resolve(*json, super::surface::FrameFormat::Jpeg) {
+                Ok(frames) => page_mirror::run_mirror(page_mirror::MirrorArgs {
+                    page,
+                    port: port.unwrap_or(9222),
+                    pane: pane.as_deref(),
+                    interval_ms: interval.unwrap_or(1000),
+                    frames,
+                    json: *json,
+                    socket,
+                }),
+                Err(code) => code,
+            }
+        }
         PageAction::Navigate { target, url, json } => page_input::run_send(
             target,
             DocumentInput::Navigate { url: url.clone() },
@@ -104,5 +132,16 @@ pub(crate) fn run_page(action: &PageAction, socket: Option<PathBuf>) -> ExitCode
             Ok(key) => page_input::run_send(target, DocumentInput::Key { key }, *json, socket),
             Err(code) => code,
         },
+        PageAction::Scroll {
+            target,
+            dx,
+            dy,
+            json,
+        } => page_input::run_send(
+            target,
+            DocumentInput::Scroll { dx: *dx, dy: *dy },
+            *json,
+            socket,
+        ),
     }
 }

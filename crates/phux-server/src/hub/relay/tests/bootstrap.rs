@@ -309,3 +309,47 @@ fn relay_rejects_identity_change_after_ready_without_fanout_or_mutation() {
     assert!(out_rx.try_recv().is_err(), "invalid frame reached consumer");
     assert_eq!(session.bootstrap_flows[&7], before);
 }
+
+#[test]
+fn relay_passes_a_document_stream_the_satellite_advertises() {
+    let begin = || {
+        encode(&FrameKind::BootstrapBegin {
+            terminal_id: ResourceId::local(7),
+            stream_id: StreamId::new(1).expect("stream"),
+            bootstrap_id: BootstrapId::new(1).expect("bootstrap"),
+            profile: BootstrapStreamProfile::AccessibilityTreeJsonV1,
+            cols: 0,
+            rows: 0,
+            base_seq: 1,
+        })
+    };
+    let session_with = |ext: &[ServerFeatureExt]| {
+        let mut session = RelaySession::new_negotiated(
+            host(),
+            BootstrapLimits::default(),
+            native_profile(),
+            ServerFeatureSet::with(&[ServerFeature::ListDirectory]),
+        );
+        session.set_satellite_features_ext(ServerFeatureExtSet::with(ext));
+        session
+    };
+
+    let mut trees = session_with(&[ServerFeatureExt::AccessibilityTree]);
+    let (out_tx, mut out_rx) = mpsc::channel(8);
+    attach(&mut trees, 7, ClientId(1), out_tx);
+    trees
+        .handle_inbound(&begin())
+        .expect("an advertised document stream relays under any terminal profile");
+    assert!(
+        out_rx.try_recv().is_ok(),
+        "the tree's BEGIN reached the viewer"
+    );
+
+    let mut silent = session_with(&[]);
+    let (out_tx, _out_rx) = mpsc::channel(8);
+    attach(&mut silent, 7, ClientId(1), out_tx);
+    assert!(
+        silent.handle_inbound(&begin()).is_err(),
+        "a kind the satellite never advertised is still refused"
+    );
+}

@@ -70,6 +70,10 @@
 # enabled = true
 # token-file = "/home/me/.local/state/phux/satellites/devbox.token"
 # cert-fingerprint = "AB:CD:..."
+# # A satellite in `paired` mode also wants the hub's enrolled client
+# # certificate, the same pair a [[remote]] entry records:
+# client-cert = "/home/me/.local/state/phux/satellites/devbox.client.pem"
+# client-key = "/home/me/.local/state/phux/satellites/devbox.client.key"
 
 # Outbound connectors let this server reach consumers through a self-hosted
 # relay without accepting inbound traffic. Each link is supervised

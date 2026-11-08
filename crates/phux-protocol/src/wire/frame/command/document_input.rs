@@ -71,6 +71,105 @@ impl DocumentKey {
     }
 }
 
+wire_enum! { to_u8 / from_u8;
+/// What input to a document controls (`docs/resource-kinds.md#authority`):
+/// its producer declares it when it opens the document. A document with
+/// none takes input only from the owner socket.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub enum ControlClass {
+    /// One browser page, driven through its `DevTools` protocol.
+    Page = 1,
+    /// One application window.
+    Window = 2,
+    /// A whole screen or output: every application on it.
+    Display = 3,
+}
+}
+
+impl ControlClass {
+    /// Every class, in wire order.
+    pub const ALL: [Self; 3] = [Self::Page, Self::Window, Self::Display];
+
+    /// The class's name: `page`, `window` or `display`.
+    #[must_use]
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::Page => "page",
+            Self::Window => "window",
+            Self::Display => "display",
+        }
+    }
+
+    /// The class named exactly `name`.
+    #[must_use]
+    pub fn parse(name: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|class| class.name() == name)
+    }
+
+    /// Whether watching such a document needs a grant naming its class
+    /// (`docs/authority.md`): a window or display shows the machine, so no
+    /// terminal grant reaches it; a page shows one site and is watched
+    /// through its parent Terminal.
+    #[must_use]
+    pub const fn guards_observe(self) -> bool {
+        !matches!(self, Self::Page)
+    }
+
+    const fn bit(self) -> u8 {
+        1 << (self as u8)
+    }
+}
+
+/// A set of [`ControlClass`]es: the classes a relaying hub authorized a
+/// `SEND_DOCUMENT_INPUT` for, on the wire as one bit per class.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub struct ControlClasses(u8);
+
+impl ControlClasses {
+    /// No class.
+    pub const EMPTY: Self = Self(0);
+
+    /// This set with `class` added.
+    #[must_use]
+    pub const fn with(self, class: ControlClass) -> Self {
+        Self(self.0 | class.bit())
+    }
+
+    /// Whether `class` is in the set.
+    #[must_use]
+    pub const fn contains(self, class: ControlClass) -> bool {
+        self.0 & class.bit() != 0
+    }
+
+    /// Whether the set holds no class.
+    #[must_use]
+    pub const fn is_empty(self) -> bool {
+        self.0 == 0
+    }
+
+    /// Classes in both sets.
+    #[must_use]
+    pub const fn intersect(self, other: Self) -> Self {
+        Self(self.0 & other.0)
+    }
+
+    /// The wire byte.
+    #[must_use]
+    pub const fn bits(self) -> u8 {
+        self.0
+    }
+
+    /// The set a wire byte names; unknown bits are dropped, which only
+    /// narrows it.
+    #[must_use]
+    pub fn from_bits(bits: u8) -> Self {
+        ControlClass::ALL
+            .into_iter()
+            .filter(|class| bits & class.bit() != 0)
+            .fold(Self::EMPTY, Self::with)
+    }
+}
+
 /// One input intent for the producer of a document resource. The server
 /// relays it without reading it; the producer maps it to its source (a
 /// browser page's `DevTools` input, for example).
@@ -219,14 +318,19 @@ mod tests {
         let intent = DocumentInput::Key {
             key: DocumentKey::Tab,
         };
-        for frame in [
-            FrameKind::Command {
-                request_id: 7,
-                command: Command::SendDocumentInput {
-                    terminal_id: ResourceId::local(3),
-                    intent: intent.clone(),
-                },
+        let window = ControlClasses::EMPTY.with(ControlClass::Window);
+        let send = |control| FrameKind::Command {
+            request_id: 7,
+            command: Command::SendDocumentInput {
+                terminal_id: ResourceId::local(3),
+                intent: intent.clone(),
+                control,
             },
+        };
+        for frame in [
+            send(None),
+            send(Some(window)),
+            send(Some(ControlClasses::EMPTY)),
             FrameKind::Event {
                 terminal: Some(ResourceId::local(3)),
                 event: AgentEvent::DocumentInput { intent },
@@ -237,5 +341,25 @@ mod tests {
             frame.encode(&mut buf);
             assert_eq!(FrameKind::decode(&buf).unwrap().0, frame);
         }
+    }
+
+    #[test]
+    fn control_classes_are_one_bit_each_and_unknown_bits_only_narrow() {
+        let all = ControlClass::ALL
+            .into_iter()
+            .fold(ControlClasses::EMPTY, ControlClasses::with);
+        assert_eq!(all.bits(), 0b1110);
+        assert_eq!(ControlClasses::from_bits(0xff), all);
+        let window = ControlClasses::from_bits(0b0100);
+        assert!(window.contains(ControlClass::Window));
+        assert!(!window.contains(ControlClass::Display));
+        assert!(
+            all.intersect(window) == window && window.intersect(ControlClasses::EMPTY).is_empty()
+        );
+        for class in ControlClass::ALL {
+            assert_eq!(ControlClass::parse(class.name()), Some(class));
+            assert_eq!(ControlClass::from_u8(class.to_u8()), Some(class));
+        }
+        assert_eq!(ControlClass::parse("Display"), None);
     }
 }

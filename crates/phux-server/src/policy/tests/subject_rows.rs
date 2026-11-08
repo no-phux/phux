@@ -454,6 +454,7 @@ fn rows(world: &mut World) -> Vec<Row> {
         denied(command(Command::SendDocumentInput {
             terminal_id: t.clone(),
             intent: phux_protocol::wire::frame::DocumentInput::Click { x: 1, y: 1 },
+            control: None,
         })),
         on_global(command(Command::GetPerf { reset: false }), "observe"),
         on_global(command(Command::GetPerf { reset: true }), "observe,bind"),

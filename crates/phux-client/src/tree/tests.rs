@@ -125,3 +125,20 @@ fn a_typed_bootstrap_names_the_content_type_of_every_later_document() {
         (3, Some("text/markdown"))
     );
 }
+
+#[test]
+fn an_old_server_is_told_apart_by_the_kind_it_lacks() {
+    assert_eq!(
+        TreeError::Unsupported(Some(Kind::Surface)).to_string(),
+        "this server does not serve pixel surfaces (needs PIXEL_SURFACE)"
+    );
+    assert_eq!(
+        TreeError::Unsupported(Some(Kind::Tree)).to_string(),
+        "this server does not serve accessibility trees (needs ACCESSIBILITY_TREE)"
+    );
+    assert!(
+        TreeError::Unsupported(None)
+            .to_string()
+            .contains("PIXEL_SURFACE")
+    );
+}

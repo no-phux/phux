@@ -35,6 +35,7 @@ mod checkout;
 mod conditional_kill;
 mod consumer_filters;
 mod detach_fence;
+mod documents;
 mod event_restamp;
 mod kill_visibility;
 mod link_gap;
@@ -95,6 +96,8 @@ fn satellite_entry(name: &str, port: u16) -> SatelliteConfigEntry {
         enabled: true,
         token_file: None,
         cert_fingerprint: None,
+        client_cert: None,
+        client_key: None,
     }
 }
 
@@ -293,7 +296,7 @@ impl Fed {
         wait_for_socket(&self.hub_path(), STEP_DEADLINE).await
     }
 
-    /// A hub client, returned once the hub's link to the satellite answers.
+    /// A hub client once its link to the satellite answers.
     async fn linked_hub(&self) -> UnixStream {
         let mut hub = self.hub().await;
         assert!(matches!(
@@ -830,11 +833,8 @@ fn ssh_stub_link_relays_commands_end_to_end() {
         let (hub_shutdown, hub_task) = spawn_hub_with_env(
             tmp.path().join("hub.sock"),
             vec![SatelliteConfigEntry {
-                name: "sat".to_owned(),
                 endpoint: "ssh://sat-host".to_owned(),
-                enabled: true,
-                token_file: None,
-                cert_fingerprint: None,
+                ..satellite_entry("sat", 0)
             }],
             None,
             phux_server::ServerEnv {

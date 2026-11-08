@@ -28,8 +28,8 @@ required. The CLI formula body comes from
 script and re-renders. The formula license is Apache-2.0, matching `LICENSE`
 and the workspace `Cargo.toml`. `release.yml` does not push the tap.
 
-The GPUI desktop (`desktop-vX.Y.Z`, last 0.57.0) is retired and no longer
-released; its source is the `gpui-desktop-final` tag.
+The GPUI desktop (`desktop-vX.Y.Z`, last 0.62.0) is retired and no longer
+released; its source is the `desktop-v0.62.0` tag.
 
 ## Stable
 
@@ -58,9 +58,17 @@ Each product rebuilds only when its inputs changed since the commit
 
 ## Phux Rune
 
-Rune releases are cut by hand and never go through Release Please. Versions
-run `alpha.N`, then `0.1.0`. There is no beta tag: clients read only those two
+Rune releases never go through Release Please. `rune-auto-release.yml` cuts
+them on its own: every two hours it opens and auto-merges the next alpha's bump
+when feat/fix/perf commits touched `clients/rune` since the last tag, with notes
+generated from those subjects, and tags the merged bump after its push `ci`
+goes green (`clients/rune/scripts/release.py`). Set the repository variable
+`RUNE_AUTO_RELEASE=false` to stop it. To ship hand-written notes, merge your
+own bump first: the train then only tags it. Versions run `alpha.N`, then
+`0.1.0`. There is no beta tag: clients read only those two
 forms, so a beta in the feed would strand every one of them on a failed check.
+
+By hand:
 
 1. On a branch, set `version` in `clients/rune/Cargo.toml`, run
    `cargo update --workspace` in `clients/rune` so `Cargo.lock` records it

@@ -28,6 +28,10 @@ pub(super) fn absorb_spawn_resource_field(
         f::BIND_INSTANCE => resource.bind_instance = sub!(value, decode_bind_instance),
         f::RETAIN_SECS => resource.retain_secs = Some(sub!(value, Decoder::read_u32_be)),
         f::IDEMPOTENCY_KEY => resource.idempotency_key = Some(decode_idempotency_key(value)?),
+        f::CONTROL => {
+            resource.control =
+                crate::wire::frame::ControlClass::from_u8(sub!(value, Decoder::read_u8));
+        }
         _ => {}
     }
     Ok(())
@@ -92,6 +96,7 @@ pub(super) fn validate_spawn_for_kind(frame: &FrameKind) -> Result<(), DecodeErr
         provider,
         native_id,
         retain_secs,
+        control,
         ..
     } = resource;
     let rule = |field: u32, required: bool| DecodeError::InvalidSpawnForKind {
@@ -112,6 +117,7 @@ pub(super) fn validate_spawn_for_kind(frame: &FrameKind) -> Result<(), DecodeErr
                 (field::spawn_terminal::PARENT, parent.is_some()),
                 (field::spawn_terminal::PROVIDER, provider.is_some()),
                 (field::spawn_terminal::NATIVE_ID, native_id.is_some()),
+                (field::spawn_terminal::CONTROL, control.is_some()),
             ] {
                 if present {
                     return Err(rule(field, false));
@@ -147,6 +153,10 @@ pub(super) fn validate_spawn_for_kind(frame: &FrameKind) -> Result<(), DecodeErr
                 if present {
                     return Err(rule(field, false));
                 }
+            }
+            // Only a document controls something.
+            if matches!(kind, ResourceKind::AgentSession) && control.is_some() {
+                return Err(rule(field::spawn_terminal::CONTROL, false));
             }
             // A document's content type is a MIME type.
             if matches!(kind, ResourceKind::Document)

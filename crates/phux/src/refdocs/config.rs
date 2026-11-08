@@ -84,7 +84,8 @@ const SECTIONS: &[Section] = &[
         key: "satellites",
         header: "[[satellites]]",
         summary: "Federation satellites a hub routes to: name, endpoint, \
-                  token-file path, and certificate pin.",
+                  token-file path, certificate pin, and the client \
+                  certificate a paired satellite requires.",
     },
     Section {
         key: "connector",
@@ -351,6 +352,8 @@ mod tests {
             enabled: true,
             token_file: Some(PathBuf::from("/tokens/devbox.token")),
             cert_fingerprint: Some("AB:CD".to_owned()),
+            client_cert: None,
+            client_key: None,
         }];
         config.connector = vec![ConnectorConfigEntry {
             relay: "relay.example:4433".to_owned(),

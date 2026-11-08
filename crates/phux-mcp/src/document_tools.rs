@@ -4,16 +4,18 @@
 //! surface snapshot carries the PNG as MCP image content beside the facts
 //! `phux agent surface snapshot --json` prints; a tree wait is
 //! `phux agent tree follow --until` with a timeout that is a result, not an
-//! error.
+//! error. The input tools (`input`) drive a document as the snapshot shows it.
+
+mod input;
+
+pub(crate) mod apps;
 
 use std::time::Duration;
 
 use base64::Engine as _;
 use phux_client::attach::connection::Connection;
-use phux_client::resource::kind_name;
-use phux_client::selector::format_terminal_id;
-use phux_client::tree::{self, Document, FollowEnd, TreeError, png_size};
-use phux_protocol::ids::{ResourceId, ResourceKind};
+use phux_client::tree::{self, Document, FollowEnd, TreeError, image_size};
+use phux_protocol::ids::ResourceId;
 use serde_json::{Value, json};
 
 use crate::cli_tools::{schema, string_schema};
@@ -28,11 +30,17 @@ const WAIT_DEFAULT_SECS: u64 = 60;
 const WAIT_MAX_SECS: u64 = 3600;
 
 pub(crate) fn schemas() -> Vec<Value> {
+    let mut schemas = schemas_read();
+    schemas.extend(input::schemas());
+    schemas
+}
+
+fn schemas_read() -> Vec<Value> {
     let target = || json!({ "type": "string", "minLength": 1, "maxLength": 4096, "description": "The document resource, by the `@N` id phux_documents lists." });
     vec![
         schema(
             "phux_documents",
-            "List the live document resources: accessibility trees (JSON) and pixel surfaces (PNG), each with its id, kind, parent pane, and name. Read them with phux_tree_snapshot, phux_tree_wait, or phux_surface_snapshot. Read-only.",
+            "List the live document resources: accessibility trees (JSON) and pixel surfaces (PNG), each with its id, kind, parent pane, name, and `producer` (`connected`, or `gone` once the process feeding it disconnected; the last frame stays readable). Read them with phux_tree_snapshot, phux_tree_wait, or phux_surface_snapshot. Read-only.",
             json!({ "socket": string_schema() }),
             &[],
         ),
@@ -66,7 +74,7 @@ pub(crate) fn owns(name: &str) -> bool {
     matches!(
         name,
         "phux_documents" | "phux_tree_snapshot" | "phux_tree_wait" | "phux_surface_snapshot"
-    )
+    ) || input::owns(name)
 }
 
 pub(crate) async fn call(name: &str, args: &Value) -> Result<Value, ToolError> {
@@ -89,7 +97,7 @@ pub(crate) async fn call(name: &str, args: &Value) -> Result<Value, ToolError> {
                 .map_err(|err| tree_error(&err))?;
             Ok(surface_json(&document))
         }
-        other => Err(ToolError::new(format!("unknown document tool: {other}"))),
+        other => input::call(other, args).await,
     }
 }
 
@@ -101,20 +109,8 @@ async fn documents(args: &Value) -> Result<Value, ToolError> {
     let documents: Vec<Value> = snapshot
         .resources
         .iter()
-        .filter(|info| {
-            matches!(
-                info.kind,
-                ResourceKind::AccessibilityTree | ResourceKind::PixelSurface
-            )
-        })
-        .map(|info| {
-            json!({
-                "id": format_terminal_id(&info.id),
-                "kind": kind_name(info.kind),
-                "parent": info.parent.as_ref().map(format_terminal_id),
-                "name": info.title,
-            })
-        })
+        .filter(|info| phux_client::app::is_document(info))
+        .map(phux_client::app::document_entry)
         .collect();
     Ok(json!({
         "schema_version": SCHEMA_VERSION,
@@ -174,21 +170,23 @@ fn tree_json(document: &Document) -> Value {
     json!({ "schema_version": SCHEMA_VERSION, "seq": document.seq, "document": value })
 }
 
-/// The surface facts, plus the PNG as an MCP image block when there is one.
+/// The surface facts, plus the frame (PNG or JPEG) as an MCP image block
+/// when there is one.
 fn surface_json(document: &Document) -> Value {
-    let size = png_size(&document.bytes);
+    let image = image_size(&document.bytes).ok();
     let mut doc = json!({
         "schema_version": SCHEMA_VERSION,
         "seq": document.seq,
         "bytes": document.bytes.len(),
-        "width": size.map(|s| s.0),
-        "height": size.map(|s| s.1),
+        "format": image.map(|(format, _, _)| format.name()),
+        "width": image.map(|(_, w, _)| w),
+        "height": image.map(|(_, _, h)| h),
     });
-    if size.is_some() {
+    if let Some((format, _, _)) = image {
         doc[IMAGE_CONTENT_KEY] = json!({
             "type": "image",
             "data": base64::engine::general_purpose::STANDARD.encode(&document.bytes),
-            "mimeType": "image/png",
+            "mimeType": format.mime(),
         });
     }
     doc
@@ -212,6 +210,21 @@ mod tests {
     };
 
     use super::*;
+
+    #[test]
+    fn a_jpeg_frame_is_labelled_jpeg() {
+        let bytes = include_bytes!("../../phux-core/testdata/baseline-5x3.jpg").to_vec();
+        let doc = surface_json(&Document {
+            seq: 2,
+            bytes,
+            content_type: None,
+        });
+        assert_eq!(
+            (doc["format"].as_str(), doc["width"].as_u64()),
+            (Some("jpeg"), Some(5))
+        );
+        assert_eq!(doc[IMAGE_CONTENT_KEY]["mimeType"], "image/jpeg");
+    }
 
     /// A 1x1 PNG.
     const PNG: &[u8] = &[
@@ -246,11 +259,11 @@ mod tests {
                 .id
                 .clone();
             let mut producer = Connection::connect(&socket).await.unwrap();
-            let tree_id = tree::open_kind(&mut producer, Kind::Tree, &pane, "smoke")
+            let tree_id = tree::open_kind(&mut producer, Kind::Tree, &pane, "smoke", None)
                 .await
                 .unwrap()
                 .resource;
-            let surface_id = tree::open_kind(&mut producer, Kind::Surface, &pane, "smoke")
+            let surface_id = tree::open_kind(&mut producer, Kind::Surface, &pane, "smoke", None)
                 .await
                 .unwrap()
                 .resource;
@@ -260,8 +273,10 @@ mod tests {
             tree::publish(&mut producer, &surface_id, PNG.to_vec())
                 .await
                 .unwrap();
-            let tree_target = json!({ "target": format_terminal_id(&tree_id) });
-            let surface_target = json!({ "target": format_terminal_id(&surface_id) });
+            let tree_target =
+                json!({ "target": phux_client::selector::format_terminal_id(&tree_id) });
+            let surface_target =
+                json!({ "target": phux_client::selector::format_terminal_id(&surface_id) });
 
             let listed = invoke("phux_documents", &socket, json!({})).await;
             let kinds: Vec<&str> = listed["documents"]
@@ -271,6 +286,7 @@ mod tests {
                 .map(|doc| doc["kind"].as_str().unwrap())
                 .collect();
             assert_eq!(kinds, ["accessibility_tree", "pixel_surface"], "{listed}");
+            assert_eq!(listed["documents"][0]["producer"], "connected", "{listed}");
 
             let snap = invoke("phux_tree_snapshot", &socket, tree_target.clone()).await;
             assert_eq!(snap["document"], json!({ "title": "hello" }));

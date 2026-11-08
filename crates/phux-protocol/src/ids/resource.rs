@@ -194,7 +194,7 @@ pub enum ResourceKind {
     /// A producer-fed accessibility tree of an application, bound to the
     /// Terminal its producer runs in (wire tag = 2). Newest snapshot wins.
     AccessibilityTree,
-    /// A producer-fed pixel surface, a window or display as PNG images,
+    /// A producer-fed pixel surface, a window or display as PNG or JPEG images,
     /// bound to the Terminal its producer runs in (wire tag = 3). Newest
     /// image wins; its size is the surface's geometry.
     PixelSurface,

@@ -4,14 +4,14 @@
 //! Open one under the Terminal its producer runs in, publish whole
 //! documents to it, read its newest document, or follow every document as
 //! it arrives (`docs/resource-kinds.md`). A tree's documents are JSON; a
-//! surface's are PNG images; a typed document's are of the content type it
+//! surface's are PNG or JPEG images; a typed document's are of the content type it
 //! was opened with.
 
 use phux_protocol::caps::{BootstrapStreamProfile, ServerFeatureExt};
 use phux_protocol::ids::{GroupId, ResourceId};
 use phux_protocol::wire::frame::{
-    AgentEvent, Command, CommandResult, CommandValue, ErrorCode, FrameKind, SpawnError,
-    SpawnResource, SpawnResult,
+    AgentEvent, Command, CommandResult, CommandValue, ControlClass, ErrorCode, FrameKind,
+    SpawnError, SpawnResource, SpawnResult,
 };
 
 use crate::attach::AttachError;
@@ -25,7 +25,7 @@ pub use input::{DocumentInput, DocumentKey, Intent, intent, send_input};
 pub enum Kind {
     /// An application's accessibility tree, as JSON.
     Tree,
-    /// A window or display's pixels, as PNG images.
+    /// A window or display's pixels, as PNG or JPEG images.
     Surface,
     /// A document of the content type it was opened with; the `target` of
     /// a call that opens one is that content type.
@@ -62,15 +62,15 @@ impl Kind {
     }
 }
 
-/// The width and height a PNG's `IHDR` names, when `bytes` starts like one.
+pub use phux_core::image::{ImageFormat, image_size};
+
+/// The width and height a PNG's `IHDR` names, when `bytes` is one.
 #[must_use]
 pub fn png_size(bytes: &[u8]) -> Option<(u32, u32)> {
-    if bytes.len() < 24 || !bytes.starts_with(b"\x89PNG\r\n\x1a\n") || &bytes[12..16] != b"IHDR" {
-        return None;
+    match image_size(bytes) {
+        Ok((ImageFormat::Png, width, height)) => Some((width, height)),
+        _ => None,
     }
-    let be =
-        |at: usize| u32::from_be_bytes([bytes[at], bytes[at + 1], bytes[at + 2], bytes[at + 3]]);
-    Some((be(16), be(20)))
 }
 
 const REQUEST_SPAWN: u32 = 1;
@@ -84,7 +84,7 @@ const REQUEST_DETACH: u32 = 5;
 pub struct Document {
     /// The stream sequence of this document.
     pub seq: u64,
-    /// The document: JSON for a tree, PNG for a surface.
+    /// The document: JSON for a tree, PNG or JPEG for a surface.
     pub bytes: Vec<u8>,
     /// A typed document's content type; `None` for a tree or surface.
     pub content_type: Option<String>,
@@ -122,9 +122,10 @@ pub enum FollowEnd {
 /// What can go wrong with a tree.
 #[derive(Debug, thiserror::Error)]
 pub enum TreeError {
-    /// The server does not serve accessibility trees.
-    #[error("this server does not serve accessibility trees (needs ACCESSIBILITY_TREE)")]
-    Unsupported,
+    /// The server does not serve the kind named, or no document kind when
+    /// `None`.
+    #[error("{}", unsupported(*.0))]
+    Unsupported(Option<Kind>),
     /// The named resource is not an accessibility tree.
     #[error("{resource} is not an accessibility tree")]
     WrongKind {
@@ -160,6 +161,19 @@ pub enum TreeError {
     Protocol(#[from] AttachError),
 }
 
+fn unsupported(kind: Option<Kind>) -> String {
+    kind.map_or_else(
+        || "this server does not serve documents (needs ACCESSIBILITY_TREE, PIXEL_SURFACE or TYPED_DOCUMENT)".to_owned(),
+        |kind| {
+            format!(
+                "this server does not serve {}s (needs {})",
+                kind.label(),
+                kind.feature().wire_name()
+            )
+        },
+    )
+}
+
 /// Whether the server advertises `kind`.
 ///
 /// # Errors
@@ -169,7 +183,7 @@ pub fn require_kind(conn: &Connection, kind: Kind) -> Result<(), TreeError> {
     if conn.server_features_ext().contains(kind.feature()) {
         Ok(())
     } else {
-        Err(TreeError::Unsupported)
+        Err(TreeError::Unsupported(Some(kind)))
     }
 }
 
@@ -186,7 +200,7 @@ pub fn require_support(conn: &Connection) -> Result<(), TreeError> {
     {
         Ok(())
     } else {
-        Err(TreeError::Unsupported)
+        Err(TreeError::Unsupported(None))
     }
 }
 
@@ -218,11 +232,15 @@ pub async fn open(
     parent: &ResourceId,
     target: &str,
 ) -> Result<Opened, TreeError> {
-    open_kind(conn, Kind::Tree, parent, target).await
+    open_kind(conn, Kind::Tree, parent, target, None).await
 }
 
 /// Open a document of `kind` observing `target` under `parent`; the caller
 /// becomes its producer.
+///
+/// `control` declares what input to it controls
+/// (`docs/resource-kinds.md#authority`); `None` takes input from the owner
+/// socket only.
 ///
 /// # Errors
 ///
@@ -232,15 +250,10 @@ pub async fn open_kind(
     kind: Kind,
     parent: &ResourceId,
     target: &str,
+    control: Option<ControlClass>,
 ) -> Result<Opened, TreeError> {
-    open_spawn(
-        conn,
-        kind,
-        parent,
-        target,
-        kind.spawn(parent.clone(), target),
-    )
-    .await
+    let spawn = kind.spawn(parent.clone(), target).with_control(control);
+    open_spawn(conn, kind, parent, target, spawn).await
 }
 
 /// Open a document of `content_type` (a MIME type, e.g. `text/markdown`)
@@ -298,7 +311,7 @@ async fn open_spawn(
         SpawnResult::Err(SpawnError::ParentKindMismatch) => {
             Err(TreeError::ParentKindMismatch { parent: id(parent) })
         }
-        SpawnResult::Err(SpawnError::UnsupportedKind) => Err(TreeError::Unsupported),
+        SpawnResult::Err(SpawnError::UnsupportedKind) => Err(TreeError::Unsupported(Some(kind))),
         SpawnResult::Err(other) => Err(TreeError::Refused(format!("{other:?}"))),
         other => Err(AttachError::Protocol(format!(
             "SPAWN_RESOURCE answered with an unrecognised spawn result: {other:?}"

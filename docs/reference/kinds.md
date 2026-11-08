@@ -108,7 +108,7 @@ Answered by every resource kind.
 | `LIST_METADATA` | frame `0x53` | INVENTORY | no | none | shipped |
 | `SUBSCRIBE_METADATA` | frame `0x54` | OBSERVE | no | none | shipped |
 | `PUBLISH_RESOURCE_STATE` | command `0x42` | BIND, INPUT | yes | none | shipped |
-| `SEND_DOCUMENT_INPUT` | command `0x48` | INPUT (owner socket only) | yes | none | shipped |
+| `SEND_DOCUMENT_INPUT` | command `0x48` | INPUT (control grant or owner socket) | yes | none | shipped |
 
 ## Substrate events
 
@@ -340,7 +340,7 @@ Every command nested in `COMMAND` lands on exactly one row; the envelope alone g
 | `PERF_CONTROL` | OBSERVE+BIND + owner-UDS transport | `Global { owner_uds_only: true }` |
 | `APPEND_RESOURCE_OUTPUT` | BIND+INPUT | `ParentOfNamed` |
 | `PUBLISH_RESOURCE_STATE` | BIND+INPUT | `ParentOfNamed` |
-| `SEND_DOCUMENT_INPUT` | INPUT + owner-UDS transport | `Global { owner_uds_only: true }` |
+| `SEND_DOCUMENT_INPUT` | INPUT on a control selector | `ControlledDocument` |
 | `NATIVE_AGENT { type: spawn }` | CREATE+BIND | `KeyedSession` |
 | `NATIVE_AGENT { type: list_integrations }` | INVENTORY | `OrganizationView` |
 | `NATIVE_AGENT { type: launch_integration }` | CREATE+BIND+INPUT | `KeyedSession` |

@@ -213,3 +213,11 @@ dhat-heap = ["dep:dhat"]
 accessibility = "0.2.0"
 accessibility-sys = "0.2.0"
 core-foundation = "0.10"
+# The safe CGEvent API posts a surface mirror's input; `highsierra` adds scroll events.
+core-graphics = { version = "0.24", features = ["highsierra"] }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+# `phux agent tree mirror` on Linux reads AT-SPI over D-Bus. zbus is pure
+# Rust (MIT) and runs on the tokio already here; the `atspi` crate is a layer
+# of generated proxies over it that a handful of method calls do not need.
+zbus = { version = "6.2", default-features = false, features = ["tokio"] }

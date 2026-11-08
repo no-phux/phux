@@ -96,6 +96,9 @@ pub(crate) fn path_refusal(root: &str, message: impl Into<String>) -> PathQueryE
 #[derive(Debug, Default)]
 pub(crate) struct RelayCatalog {
     kinds: HashMap<u32, phux_protocol::ids::ResourceKind>,
+    /// Each enumerated resource's control class, which the hub judges a
+    /// watch by (`docs/authority.md`); learned only from inventory.
+    controls: HashMap<u32, Option<phux_protocol::wire::frame::ControlClass>>,
     terminal_profile: Option<BootstrapProfile>,
 }
 

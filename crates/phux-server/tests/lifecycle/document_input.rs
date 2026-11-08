@@ -1,11 +1,12 @@
 //! `SEND_DOCUMENT_INPUT` over the production dispatch loop
 //! (`docs/resource-kinds.md#producers`): a viewer's intent reaches the
-//! connection producing the document as an unjournaled event, and is
-//! refused once that producer is gone.
+//! connection producing the document as an unjournaled event, is refused
+//! when a hub's stamped classes leave out the document's control class, and
+//! is refused once that producer is gone.
 
 use phux_protocol::wire::frame::{
-    AgentEvent, Command, CommandResult, DocumentInput, DocumentKey, ErrorCode, FrameKind,
-    SpawnResource, SpawnResult,
+    AgentEvent, Command, CommandResult, ControlClass, ControlClasses, DocumentInput, DocumentKey,
+    ErrorCode, FrameKind, SpawnResource, SpawnResult,
 };
 use phux_server::LaunchCommand as CommandBuilder;
 use phux_server_testkit::{Spawn, command, spawn_resource};
@@ -26,10 +27,10 @@ fn a_viewer_intent_reaches_the_producer_and_is_refused_once_it_is_gone() {
         attach(&mut producer, "demo").await;
         let parent = spawned(&mut producer, 1, sh(FOREVER)).await;
         let spawn = Spawn {
-            resource: Some(Box::new(SpawnResource::pixel_surface(
-                parent.clone(),
-                "page:test",
-            ))),
+            resource: Some(Box::new(
+                SpawnResource::pixel_surface(parent.clone(), "page:test")
+                    .with_control(Some(ControlClass::Window)),
+            )),
             ..Spawn::default()
         };
         let SpawnResult::Ok(surface) = spawn_resource(&mut producer, 2, spawn).await else {
@@ -40,6 +41,7 @@ fn a_viewer_intent_reaches_the_producer_and_is_refused_once_it_is_gone() {
         let send = |intent| Command::SendDocumentInput {
             terminal_id: surface.clone(),
             intent,
+            control: None,
         };
         for (request_id, intent) in [
             (10, DocumentInput::Click { x: 40, y: 12 }),
@@ -74,6 +76,7 @@ fn a_viewer_intent_reaches_the_producer_and_is_refused_once_it_is_gone() {
             Command::SendDocumentInput {
                 terminal_id: parent,
                 intent: DocumentInput::Type { text: "x".into() },
+                control: None,
             },
         )
         .await;
@@ -108,6 +111,76 @@ fn a_viewer_intent_reaches_the_producer_and_is_refused_once_it_is_gone() {
         );
 
         drop(viewer);
+        server.stop().await;
+    });
+}
+
+#[test]
+fn a_stamped_class_set_without_the_documents_class_is_refused() {
+    phux_server_testkit::run_local(async {
+        let server = Server::start(Some("demo"), |cfg| {
+            let mut seed = CommandBuilder::new("/bin/sh");
+            seed.args(["-c", FOREVER]);
+            phux_server_testkit::seed_pty(cfg, seed);
+        });
+        let mut producer = server.connect().await;
+        attach(&mut producer, "demo").await;
+        let parent = spawned(&mut producer, 1, sh(FOREVER)).await;
+        let spawn = Spawn {
+            resource: Some(Box::new(
+                SpawnResource::pixel_surface(parent.clone(), "page:test")
+                    .with_control(Some(ControlClass::Window)),
+            )),
+            ..Spawn::default()
+        };
+        let SpawnResult::Ok(surface) = spawn_resource(&mut producer, 2, spawn).await else {
+            panic!("spawn surface failed");
+        };
+
+        let mut viewer = server.connect().await;
+        // A hub stamps the classes it authorized: one without the
+        // document's class is refused before the producer hears of it.
+        let stamped = |classes: &[ControlClass]| Command::SendDocumentInput {
+            terminal_id: surface.clone(),
+            intent: DocumentInput::Click { x: 1, y: 1 },
+            control: Some(
+                classes
+                    .iter()
+                    .fold(ControlClasses::EMPTY, |set, class| set.with(*class)),
+            ),
+        };
+        let refused = command(&mut viewer, 9, stamped(&[ControlClass::Display])).await;
+        assert!(
+            matches!(
+                refused,
+                CommandResult::Error {
+                    code: ErrorCode::PermissionDenied,
+                    ..
+                }
+            ),
+            "{refused:?}"
+        );
+        let taken = command(
+            &mut viewer,
+            8,
+            stamped(&[ControlClass::Page, ControlClass::Window]),
+        )
+        .await;
+        assert!(matches!(taken, CommandResult::Ok), "{taken:?}");
+        wait_frame(
+            &mut producer,
+            "stamped document_input",
+            |frame| match frame {
+                FrameKind::Event {
+                    event: AgentEvent::DocumentInput { .. },
+                    ..
+                } => Some(()),
+                _ => None,
+            },
+        )
+        .await;
+        drop(viewer);
+        drop(producer);
         server.stop().await;
     });
 }

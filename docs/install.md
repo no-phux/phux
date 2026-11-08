@@ -196,7 +196,7 @@ The app updates itself. It is rougher than the terminal UI;
 Windows desktop app.
 
 The GPUI desktop (`Phux.app`, the `phux-desktop` Homebrew cask, the Windows
-desktop) was retired after Desktop 0.57.0 and gets no further updates.
+desktop) was retired after Desktop 0.62.0 and gets no further updates.
 To remove it, delete `Phux.app`, or run
 `brew uninstall --cask no-phux/tap/phux-desktop`.
 

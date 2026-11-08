@@ -21,7 +21,7 @@ use phux_protocol::scope::EffectiveScopeSet;
 use phux_protocol::wire::info::SessionSnapshot;
 
 use super::enforce::{
-    Located, Point, TerminalPoint, contains, group_of, local_point, resource_key_of,
+    ControlPoint, Located, Point, TerminalPoint, contains, group_of, local_point, resource_key_of,
 };
 use super::{Authority, ConnectionGrant, GroupPoint};
 use crate::state::{ClientId, ServerState};
@@ -199,6 +199,89 @@ pub fn admits_global(s: &ServerState, client: ClientId, verb: Verb) -> bool {
 #[must_use]
 pub fn admits_satellite(s: &ServerState, client: ClientId, verb: Verb, host: &str) -> bool {
     View::of(s.connection_grant(client)).admits(verb, &Point::SatelliteHost(host.to_owned()))
+}
+
+/// The control classes `client` may send document input to on satellite
+/// `host`; `None` for the owner, who may send to any.
+///
+/// A hub stamps them on
+/// the relayed `SEND_DOCUMENT_INPUT`, so the satellite, which knows the
+/// document's class, refuses one of any other.
+#[must_use]
+pub fn satellite_input_classes(
+    s: &ServerState,
+    client: ClientId,
+    host: &str,
+) -> Option<phux_protocol::wire::frame::ControlClasses> {
+    use phux_protocol::wire::frame::{ControlClass, ControlClasses};
+    let view = View::of(s.connection_grant(client));
+    if matches!(view, View::All) {
+        return None;
+    }
+    let admits = |class: &ControlClass| {
+        let document = ControlPoint {
+            class: Some(*class),
+            host: Some(host.to_owned()),
+            key: None,
+        };
+        view.admits(Verb::Input, &Point::Control(document))
+    };
+    Some(
+        ControlClass::ALL
+            .iter()
+            .filter(|class| admits(class))
+            .fold(ControlClasses::EMPTY, |set, class| set.with(*class)),
+    )
+}
+
+/// Whether `client` may watch a document of `class` on satellite `host`.
+///
+/// A window or display needs `OBSERVE` on its class there
+/// (`window:<host>`, `display:<host>`), never the host grant that admitted
+/// the relay (`docs/authority.md`); a page, or a document with no class, is
+/// admitted as the relay was. The hub asks at relay, with the class the
+/// satellite reported in its inventory.
+#[must_use]
+pub fn admits_satellite_watch(
+    s: &ServerState,
+    client: ClientId,
+    host: &str,
+    class: Option<phux_protocol::wire::frame::ControlClass>,
+) -> bool {
+    let Some(class) = class.filter(|class| class.guards_observe()) else {
+        return true;
+    };
+    let document = ControlPoint {
+        class: Some(class),
+        host: Some(host.to_owned()),
+        key: None,
+    };
+    View::of(s.connection_grant(client)).admits(Verb::Observe, &Point::Control(document))
+}
+
+/// The refusal a watch of a window or display gets when only its class
+/// grant is missing: which grant, and the owner's remedy. `host` is the
+/// satellite the document lives on; `None` for a local one.
+#[must_use]
+pub fn watch_refusal(
+    s: &ServerState,
+    client: ClientId,
+    class: phux_protocol::wire::frame::ControlClass,
+    host: Option<&str>,
+) -> String {
+    let scope = host.map_or_else(
+        || format!("observe@{}", class.name()),
+        |host| format!("observe@{}:{host}", class.name()),
+    );
+    let credential = s
+        .connection_grant(client)
+        .and_then(|grant| grant.credential_id.clone())
+        .unwrap_or_else(|| "CREDENTIAL".to_owned());
+    format!(
+        "permission denied: watching a {} needs `{scope}`, which this device's grant lacks; \
+         the owner can add it on that host with `phux workload grant {credential} {scope}`",
+        class.name()
+    )
 }
 
 /// `snapshot` as `client` may see it with `verb`.

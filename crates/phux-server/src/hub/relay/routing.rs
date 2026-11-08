@@ -140,7 +140,8 @@ macro_rules! single_target {
             | Command::ReportAgentState { terminal_id, .. }
             | Command::KillResource { terminal_id, .. }
             | Command::KillResourceIf { terminal_id, .. }
-            | Command::ApplyInput { terminal_id, .. } => Some(terminal_id),
+            | Command::ApplyInput { terminal_id, .. }
+            | Command::SendDocumentInput { terminal_id, .. } => Some(terminal_id),
             _ => None,
         }
     };

@@ -5,8 +5,8 @@ native GPU UI framework (wgpu, winit), over the same persistent server and
 shared client runtime as the terminal UI. The same app runs a phone form
 ([MOBILE.md](./MOBILE.md)).
 
-It replaced the GPUI desktop, which was retired after Desktop 0.57.0; its
-last source is the `gpui-desktop-final` tag. It is still an alpha: expect
+It replaced the GPUI desktop, which was retired after Desktop 0.62.0; its
+last source is the `desktop-v0.62.0` tag. It is still an alpha: expect
 rough edges, and keep the terminal UI at hand.
 
 ## Install
@@ -131,10 +131,17 @@ session (or `--session NAME`). It never creates a session on its own.
   across rows count. Only `http`, `https` and `mailto` open.
 - **History.** Scrolled back, a pane shows where it is in its history and a
   pill back to the live tail that counts the lines that arrived meanwhile.
-- **Settings.** ⌘, picks a theme (twenty-six built in, or the
-  OS; arrow keys preview it live on your terminals), text size,
-  notifications, Option as Meta, and copy on select. All of it is remembered
-  between launches. A program's own OSC colours beat the theme.
+- **Settings.** ⌘, opens grouped Appearance, Terminal, Notifications,
+  Remote Hosts, Developer, and About & Updates sections, with local navigation
+  on desktop and category drilldown on phone. Search Settings matches names,
+  descriptions, categories and current values across all sections, including
+  useful aliases such as **font**, **zoom**, and **colours**. **Theme**
+  opens the existing live-preview palette; Return keeps a choice and Escape
+  restores the old theme, both returning to Settings. Text size, notifications,
+  Option as Meta (macOS), copy on select, and close confirmation are remembered
+  immediately. Diagnostics stays available in development builds; update errors
+  and protocol warnings remain visible during search. A program's own OSC
+  colours beat the theme.
 - **Themes.** The palette switches themes by name (`nord`) and **Change
   Theme** lists them with each one shown live as the highlight moves:
   Return keeps it, Escape puts the old one back. A Ghostty config on this machine (`theme`,
@@ -215,9 +222,13 @@ cancels).
 The palette lists live AccessibilityTree and PixelSurface resources alongside
 terminals. Open one directly, switch its tab, or focus it beside a terminal in
 the session's arrangement. Trees use a selectable native JSON inspector; PNG
-surfaces use Rune's image decoder and fit without cropping. These are **Read-only
-mirrors**, not embedded browsers: keys, paste, file drops, and terminal resizing
-never reach a document pane. Closing its view does not stop the producer.
+surfaces use Rune's image decoder and fit without cropping. These are mirrors,
+not embedded browsers: paste, file drops, and terminal resizing never reach a
+document pane. A surface whose producer declared a control class (a page or
+surface mirror) reads **Live mirror**: a click, the wheel, and plain keys reach
+its producer as document input. Any other document is a **Read-only mirror**,
+and a refused send turns a live one **View only**. Closing its view does not
+stop the producer.
 
 To start a source, choose **Start page/tree/surface mirror…** in the palette,
 name the existing source, then confirm. Rune starts a dedicated producer
@@ -282,7 +293,7 @@ RUNE_RESOURCE_SNAP="$PWD/target/resource-native.png" \
 The test checks decoded PNG pixels, native image draw commands, JSON text,
 and the Read-only mirror label; `target/resource-native.json` is the tree.
 
-On macOS, notifications need the signed bundle (`rune_mac::notify::available`);
+On macOS, notifications need the signed bundle (`rune_notify::available`);
 `cargo run` can't post, and Settings says so. On Linux any build posts while
 `notify-send` is on `PATH`, and withdraws through `gdbus`.
 

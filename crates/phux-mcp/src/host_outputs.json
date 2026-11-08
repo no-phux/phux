@@ -502,6 +502,17 @@
       "bytes": {
         "type": "integer"
       },
+      "format": {
+        "type": [
+          "string",
+          "null"
+        ],
+        "enum": [
+          "png",
+          "jpeg",
+          null
+        ]
+      },
       "width": {
         "type": [
           "integer",
@@ -519,8 +530,180 @@
       "schema_version",
       "seq",
       "bytes",
+      "format",
       "width",
       "height"
     ]
+  },
+  "phux_document_navigate": {
+    "type": "object",
+    "properties": {
+      "schema_version": {
+        "type": "integer"
+      },
+      "sent": {
+        "type": "string",
+        "description": "The document the intent was sent to."
+      }
+    },
+    "required": [
+      "schema_version",
+      "sent"
+    ]
+  },
+  "phux_document_click": {
+    "type": "object",
+    "properties": {
+      "schema_version": {
+        "type": "integer"
+      },
+      "sent": {
+        "type": "string",
+        "description": "The document the intent was sent to."
+      }
+    },
+    "required": [
+      "schema_version",
+      "sent"
+    ]
+  },
+  "phux_document_type": {
+    "type": "object",
+    "properties": {
+      "schema_version": {
+        "type": "integer"
+      },
+      "sent": {
+        "type": "string",
+        "description": "The document the intent was sent to."
+      }
+    },
+    "required": [
+      "schema_version",
+      "sent"
+    ]
+  },
+  "phux_document_key": {
+    "type": "object",
+    "properties": {
+      "schema_version": {
+        "type": "integer"
+      },
+      "sent": {
+        "type": "string",
+        "description": "The document the intent was sent to."
+      }
+    },
+    "required": [
+      "schema_version",
+      "sent"
+    ]
+  },
+  "phux_document_scroll": {
+    "type": "object",
+    "properties": {
+      "schema_version": {
+        "type": "integer"
+      },
+      "sent": {
+        "type": "string",
+        "description": "The document the intent was sent to."
+      }
+    },
+    "required": [
+      "schema_version",
+      "sent"
+    ]
+  },
+  "phux_app_open": {
+    "type": "object",
+    "properties": {
+      "schema_version": {
+        "type": "integer"
+      },
+      "terminal_id": {
+        "type": [
+          "integer",
+          "string"
+        ]
+      },
+      "satellite": {
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "replayed": {
+        "type": "boolean"
+      },
+      "pane": {
+        "type": "string",
+        "description": "The app's pane, `@N`; close it with phux_app_close."
+      },
+      "documents": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "properties": {
+            "id": {
+              "type": "string"
+            },
+            "kind": {
+              "type": "string",
+              "enum": [
+                "accessibility_tree",
+                "pixel_surface"
+              ]
+            },
+            "parent": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "name": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "id",
+            "kind",
+            "parent",
+            "name"
+          ]
+        },
+        "description": "The documents the app's helper opened under the pane within the wait; fewer than two when a producer failed or was slow, so list again with phux_documents."
+      }
+    },
+    "required": [
+      "schema_version",
+      "terminal_id",
+      "pane",
+      "documents"
+    ]
+  },
+  "phux_app_close": {
+    "type": "object",
+    "properties": {
+      "schema_version": {
+        "type": "integer"
+      },
+      "killed": {
+        "type": "boolean"
+      },
+      "target": {
+        "type": "string"
+      },
+      "report": {
+        "type": "object"
+      },
+      "resource_id": {
+        "type": "string",
+        "description": "Exact reusable resource ID, when this result identifies one resource."
+      }
+    }
   }
 }

@@ -10,7 +10,7 @@ const DOWNLOAD = "https://github.com/no-phux/phux/releases/download";
 export const CHANNELS = ["stable", "next"] as const;
 export type Channel = (typeof CHANNELS)[number];
 // The CLI is the one product on the channels. The retired GPUI desktop
-// (tag gpui-desktop-final) left them; an installed copy reads an absent
+// (last release desktop-v0.62.0) left them; an installed copy reads an absent
 // entry as "no update". Phux Rune publishes its own feed.
 export const PRODUCTS = ["phux"] as const;
 export type Product = (typeof PRODUCTS)[number];

@@ -16,8 +16,11 @@ mod palette;
 mod panes;
 pub(crate) use panes::DIVIDER;
 mod phone;
+mod questions;
+mod reef;
 mod settings;
 mod sidebar;
+mod spatial;
 mod status;
 mod tabs;
 mod updates;
@@ -187,6 +190,7 @@ pub fn view(desk: &Desk, cx: &mut Cx<Desk>) -> El {
         .children(updates::card(desk, &p, band))
         .children(desk.inbox.open.then(|| inbox::view(desk, &p)))
         .children(desk.galaxy.open.then(|| galaxy::view(desk, &p, cx)))
+        .children(desk.reef.open.then(|| reef::view(desk, &p, cx)))
         .children(desk.settings_open.then(|| settings::view(desk, &p)))
         .children(machines::sheet(desk, &p))
         .children(tabs::rename_sheet(desk, &p))

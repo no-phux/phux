@@ -128,7 +128,11 @@ fn assert_first_enrollment(
         .to_owned();
     assert_eq!(
         enrolled[0]["scopes"],
-        serde_json::json!([phux_server::workload::PAIRED_DEVICE_SCOPE])
+        serde_json::json!([
+            phux_server::workload::PAIRED_DEVICE_SCOPE,
+            "observe@display",
+            "observe@window"
+        ])
     );
     assert_eq!(enrolled[0]["principal"], "human");
     (entry, first)

@@ -13,8 +13,12 @@ use super::{
     subject_public_key_info, validate_satellite_name, validate_scopes,
 };
 
+mod grants;
 mod paired;
 mod registration;
+
+pub use grants::ScopeChange;
+pub use paired::enrolled_scopes;
 
 /// Result of an explicit legacy paired-device permission repair.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

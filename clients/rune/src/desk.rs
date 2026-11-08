@@ -23,6 +23,7 @@ use crate::launch::Resolved;
 mod attach;
 mod events;
 mod find;
+mod fleet;
 mod frame;
 pub mod galaxy;
 mod home;
@@ -35,6 +36,8 @@ pub mod machines;
 pub mod mouse;
 mod palette;
 pub mod phone;
+pub mod questions;
+pub mod reef;
 pub mod resources;
 mod sessions;
 mod settings;
@@ -45,6 +48,7 @@ pub mod updates;
 
 pub use layout::SplitPath;
 pub use palette::{CONTEXT_MENU, with_menus};
+pub use settings::Category as SettingsCategory;
 pub use tabs::{Renaming, Tab};
 
 /// Wakes Rune's loop from the runtime's driver thread. Only posts; never
@@ -181,8 +185,14 @@ pub struct Desk {
     pub inbox: inbox::Inbox,
     /// The fleet as a galaxy, while open.
     pub galaxy: galaxy::Galaxy,
+    /// The fleet as a reef, while open.
+    pub reef: reef::Reef,
+    /// The other machines, watched while the galaxy or the reef is open.
+    pub(crate) fleet: fleet::Fleet,
     pub settings: settings::Settings,
     pub settings_open: bool,
+    /// Navigation and search belong to this window, never to stored preferences.
+    pub settings_ui: settings::SettingsUi,
     pub tabs: tabs::Tabs,
     pub updater: updates::Updater,
     pub machines: machines::Machines,
@@ -382,8 +392,11 @@ impl Desk {
             pointer: links::Pointer::default(),
             inbox: inbox::Inbox::default(),
             galaxy: galaxy::Galaxy::default(),
+            reef: reef::Reef::default(),
+            fleet: fleet::Fleet::default(),
             settings,
             settings_open: false,
+            settings_ui: settings::SettingsUi::default(),
             tabs: tabs::Tabs::default(),
             updater: updates::Updater::new(&prefs, resolved),
             machines: machines::Machines::new(machine, resolved.phux.clone()),
@@ -440,6 +453,7 @@ impl Desk {
         let updated = self.pump_updates(tx)
             | self.finish_document_images()
             | self.pump_machines()
+            | self.tick_fleet()
             | self.pump_link()
             | self.pump_links()
             | self.follow_omarchy()
@@ -467,6 +481,7 @@ impl Desk {
         changed |= self.sync_alerts();
         changed |= self.tick_inbox(tx);
         changed |= self.tick_galaxy(tx);
+        changed |= self.tick_reef(tx);
         self.settle_pointer();
         changed |= self.autoscroll(tx);
         self.keep_find();

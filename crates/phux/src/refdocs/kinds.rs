@@ -173,6 +173,13 @@ fn requires(method: &MethodSpec) -> String {
     if method.owner_uds_only() {
         label.push_str(" (owner socket only)");
     }
+    if method
+        .rules
+        .iter()
+        .any(|rule| rule.subject == phux_protocol::kinds::Subject::ControlledDocument)
+    {
+        label.push_str(" (control grant or owner socket)");
+    }
     label
 }
 

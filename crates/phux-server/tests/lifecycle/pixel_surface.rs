@@ -1,6 +1,6 @@
 //! The `PixelSurface` resource kind over the production dispatch loop
 //! (`docs/resource-kinds.md`, `phux-phiio.7`): spawn under a Terminal,
-//! publish whole PNG images, and bootstrap a late viewer onto the newest.
+//! publish whole PNG or JPEG images, and bootstrap a late viewer onto the newest.
 
 use phux_protocol::caps::BootstrapStreamProfile;
 use phux_protocol::ids::ResourceId;
@@ -80,7 +80,7 @@ async fn bootstrap(
 }
 
 #[test]
-fn a_surface_takes_only_pngs_and_a_late_viewer_sees_the_newest() {
+fn a_surface_takes_only_images_and_a_late_viewer_sees_the_newest() {
     phux_server_testkit::run_local(async {
         let server = Server::start(Some("demo"), |cfg| {
             let mut seed = CommandBuilder::new("/bin/sh");
@@ -134,9 +134,16 @@ fn a_surface_takes_only_pngs_and_a_late_viewer_sees_the_newest() {
         assert_eq!(profile, BootstrapStreamProfile::PixelSurfacePngV1);
         assert_eq!(base_seq, 2);
         assert_eq!(image, png(640, 480, 2));
-        assert_eq!(phux_tree::png_size(&image), Ok((640, 480)));
+        assert_eq!(
+            phux_tree::image_size(&image).map(|s| (s.1, s.2)),
+            Ok((640, 480))
+        );
 
-        let taken = publish(&mut owner, 13, &surface, png(800, 600, 3)).await;
+        // A JPEG frame header for 800 x 600: the surface's newer image.
+        let jpeg = vec![
+            0xff, 0xd8, 0xff, 0xc0, 0, 11, 8, 0x02, 0x58, 0x03, 0x20, 1, 1, 0x11, 0,
+        ];
+        let taken = publish(&mut owner, 13, &surface, jpeg).await;
         assert!(matches!(taken, CommandResult::OkWith(_)), "{taken:?}");
         let (seq, bytes) = wait_frame(&mut viewer, "live image", |frame| match frame {
             FrameKind::ResourceOutput {
@@ -149,7 +156,10 @@ fn a_surface_takes_only_pngs_and_a_late_viewer_sees_the_newest() {
         })
         .await;
         assert_eq!(seq, 3);
-        assert_eq!(phux_tree::png_size(&bytes), Ok((800, 600)));
+        assert_eq!(
+            phux_tree::image_size(&bytes),
+            Ok((phux_tree::ImageFormat::Jpeg, 800, 600))
+        );
 
         drop((owner, viewer));
         server.stop().await;

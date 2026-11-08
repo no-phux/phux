@@ -276,6 +276,50 @@ fn retain_and_key_flags_parse_before_the_command() {
     assert_eq!(retain, Some(0), "bare --retain asks for the server default");
 }
 
+#[test]
+fn spawn_app_takes_a_name_an_optional_browser_url_and_headless() {
+    let app = |argv: &[&str]| {
+        let cli = crate::parse_cli(argv.iter().copied()).expect("parses");
+        let Some(crate::commands::Command::Spawn(crate::commands::SpawnArgs {
+            app,
+            browser,
+            headless,
+            ..
+        })) = cli.command
+        else {
+            panic!("expected Spawn");
+        };
+        (app, browser, headless)
+    };
+    assert_eq!(
+        app(&["phux", "spawn", "--app", "TextEdit"]),
+        (Some("TextEdit".into()), None, false)
+    );
+    assert_eq!(
+        app(&[
+            "phux",
+            "spawn",
+            "--app",
+            "chrome",
+            "--browser",
+            "--headless"
+        ]),
+        (Some("chrome".into()), Some("about:blank".into()), true)
+    );
+    assert_eq!(
+        app(&[
+            "phux",
+            "spawn",
+            "--app",
+            "chrome",
+            "--browser=https://phux.sh"
+        ]),
+        (Some("chrome".into()), Some("https://phux.sh".into()), false)
+    );
+    assert!(crate::parse_cli(["phux", "spawn", "--browser"]).is_err());
+    assert!(crate::parse_cli(["phux", "spawn", "--app", "x", "--satellite", "h"]).is_err());
+}
+
 fn spawn_frame() -> FrameKind {
     FrameKind::SpawnResource {
         request_id: 1,

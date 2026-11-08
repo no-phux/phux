@@ -211,6 +211,9 @@ pub static FRAME_RULES: [&Rule; 40] = [
 // -----------------------------------------------------------------------------
 
 static C_SPAWN: Rule = Rule::deny("`SPAWN` (unallocated)");
+// `OBSERVE` on a named window or display document needs a grant naming its
+// class, never its parent; the server splits that verb off this row and the
+// other observe rows (`docs/authority.md#watching`).
 static C_ATTACH_RESOURCE: Rule = Rule::verbs(
     "`ATTACH_RESOURCE`",
     &[Verb::Bind, Verb::Observe],
@@ -323,13 +326,13 @@ static C_PUBLISH_RESOURCE_STATE: Rule = Rule::verbs(
     &[Verb::Bind, Verb::Input],
     Subject::ParentOfNamed,
 );
-// Input to a window or page is control of the machine it shows, so no
-// terminal grant reaches it: owner socket only until display grants exist
-// (`docs/resource-kinds.md#authority`).
+// Input to a page, window or display is control of what it shows, so no
+// terminal grant reaches it: only a grant naming the document's control
+// class, or the document itself (`docs/resource-kinds.md#authority`).
 static C_SEND_DOCUMENT_INPUT: Rule = Rule::verbs(
     "`SEND_DOCUMENT_INPUT`",
     &[Verb::Input],
-    GLOBAL_OWNER_UDS,
+    Subject::ControlledDocument,
 );
 static C_NATIVE_SPAWN: Rule = Rule::verbs(
     "`NATIVE_AGENT { type: spawn }`",

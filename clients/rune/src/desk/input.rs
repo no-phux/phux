@@ -13,50 +13,13 @@ use rune::Tx;
 use super::{Desk, NoticeKind, Pending};
 use crate::keys::{self, Shortcut, Typed};
 
+mod modal;
 pub(super) mod selection;
+pub use modal::Modal;
 
 /// What the window says while keys can't reach the terminal; the next key
 /// that does takes it back.
 pub(super) const INPUT_PAUSED: &str = "Not connected; input isn't reaching the terminal.";
-
-/// What has the keyboard instead of the terminal, in the order they claim it.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Modal {
-    ContextMenu,
-    Inbox,
-    Galaxy,
-    Machines,
-    Settings,
-    Rename,
-    Palette,
-    FindField,
-    Confirm,
-}
-
-impl Modal {
-    /// Whether a command, by chord or menu pick, may run while this has the
-    /// keyboard. The find field leaves the shown terminal in view; a sheet
-    /// hides what a command would touch.
-    pub(super) const fn allows(self, action: Shortcut) -> bool {
-        match self {
-            // Rune owns editing the field. Extended clipboard chords now
-            // reach the app too; they must never address the terminal behind it.
-            Self::FindField => !matches!(
-                action,
-                Shortcut::Copy | Shortcut::Paste | Shortcut::SelectAll
-            ),
-            Self::Palette => matches!(action, Shortcut::Palette),
-            Self::Inbox | Self::Galaxy | Self::Settings => action.works_over_sheets(),
-            Self::ContextMenu | Self::Machines | Self::Rename | Self::Confirm => false,
-        }
-    }
-
-    /// Whether this covers the panes as a Rune modal, which drops any held
-    /// press without its release.
-    pub(in crate::desk) const fn takes_pointer(self) -> bool {
-        !matches!(self, Self::FindField | Self::Confirm)
-    }
-}
 
 /// Whether a view's frame shows a highlight.
 fn has_selection(frame: &GridFrame) -> bool {
@@ -82,12 +45,17 @@ impl Desk {
             (self.pointer.menu.is_some(), Modal::ContextMenu),
             (self.inbox.open, Modal::Inbox),
             (self.galaxy.open, Modal::Galaxy),
+            (self.reef.open, Modal::Reef),
             (self.machines.open, Modal::Machines),
             (self.settings_open, Modal::Settings),
             (self.tabs.renaming.is_some(), Modal::Rename),
             (self.palette_open, Modal::Palette),
             // A question outranks the field: the bar says what its keys do.
             (self.pending.is_some(), Modal::Confirm),
+            (
+                self.phone.as_ref().is_some_and(|phone| phone.picker),
+                Modal::PhonePicker,
+            ),
             (self.find_query.focused, Modal::FindField),
         ]
         .into_iter()
@@ -112,6 +80,9 @@ impl Desk {
             self.shortcut(action, tx);
             return true;
         }
+        if self.document_key(event) {
+            return true;
+        }
         self.type_key(event, tx)
     }
 
@@ -128,14 +99,16 @@ impl Desk {
             Modal::ContextMenu if escape => self.close_menu(),
             Modal::Rename if escape => self.cancel_rename(),
             Modal::Inbox if self.inbox_key(event, tx) => {}
-            Modal::Galaxy if escape => self.close_galaxy(),
-            Modal::Galaxy if event.key == rune::Key::Enter => self.open_picked(),
+            _ if self.navigation_sheet_key(modal, event) => {}
             Modal::Machines => {
                 self.machines_key(event, tx);
             }
             Modal::Settings if action.is_none() => self.settings_key(event, tx),
             Modal::Confirm => {
                 self.confirm_key(event);
+            }
+            Modal::PhonePicker => {
+                self.phone_picker_key(event);
             }
             _ => {
                 if let Some(action) = action {
@@ -145,11 +118,26 @@ impl Desk {
         }
     }
 
+    fn navigation_sheet_key(&mut self, modal: Modal, event: &rune::KeyEvent) -> bool {
+        match (modal, &event.key) {
+            (Modal::Galaxy, rune::Key::Escape) => self.close_galaxy(),
+            (Modal::Galaxy, rune::Key::Enter) => self.open_picked(),
+            (Modal::Reef, rune::Key::Escape) => self.reef_escape(),
+            (Modal::Reef, rune::Key::Enter) => self.open_fish(),
+            _ => return false,
+        }
+        true
+    }
+
     /// A command while `modal` has the keyboard, from a chord or a menu pick.
     /// Whatever the field or sheet doesn't take is a command or nothing, never
     /// terminal input (Ctrl-C must not reach the job from the find field).
     pub(super) fn modal_command(&mut self, modal: Modal, action: Shortcut, tx: &mut Tx) {
         if !modal.allows(action) {
+            return;
+        }
+        if modal == Modal::Settings && action == Shortcut::Find {
+            self.focus_settings_search();
             return;
         }
         if modal == Modal::Palette {
@@ -267,6 +255,7 @@ impl Desk {
             Shortcut::ToggleSidebar => self.toggle_sidebar(),
             Shortcut::Inbox => self.toggle_inbox(),
             Shortcut::Galaxy => self.toggle_galaxy(),
+            Shortcut::Reef => self.toggle_reef(),
             Shortcut::Settings => self.toggle_settings(),
             Shortcut::ChangeTheme => self.open_themes(),
             Shortcut::SwitchSession => self.open_palette(crate::palette::Mode::Sessions),
@@ -279,7 +268,7 @@ impl Desk {
                 self.copy_diagnostics(tx);
                 self.say(NoticeKind::Info, "Diagnostics copied.");
             }
-            Shortcut::ToggleFullScreen => rune_mac::toggle_full_screen(),
+            Shortcut::ToggleFullScreen => tx.toggle_full_screen(),
             Shortcut::KeyboardShortcuts => self.show_shortcuts(),
             Shortcut::EssentialShortcuts => self.show_essentials(),
             Shortcut::JumpToAttention => self.jump_to_attention(),

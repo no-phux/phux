@@ -18,6 +18,12 @@
 //! `TERMINATE` and `CREATE` implying `ORGANIZE`, so no stored grant loses
 //! the authority it had and none gains a legacy operation.
 //!
+//! The control selectors (`page`, `window`, `display`, each optionally
+//! `:<host>`) name documents by what their input controls. Only they and
+//! `resource:<key>` reach `SEND_DOCUMENT_INPUT`: control is never inherited
+//! from a broader selector. They need no schema bump: the schema versions
+//! the verb bits, and an older build refuses an unknown selector tag.
+//!
 //! Nothing here consults server state: the server passes a containment
 //! predicate to [`EffectiveScopeSet::admits`].
 
@@ -89,6 +95,7 @@ const TAG_GROUP: u8 = 0x02;
 const TAG_TERMINAL: u8 = 0x03;
 const TAG_SESSION: u8 = 0x04;
 const TAG_RESOURCE: u8 = 0x05;
+const TAG_CONTROL: u8 = 0x06;
 const SUB_LOCAL: u8 = 0x00;
 const SUB_SATELLITE: u8 = 0x01;
 
@@ -130,10 +137,11 @@ pub enum ScopeError {
     /// A selector's declared length exceeds its canonical encoding.
     #[error("scope selector length is not minimal")]
     NonMinimalSelector,
-    /// A selector tag outside `0x00..=0x05`.
+    /// A selector tag outside `0x00..=0x06`.
     #[error("scope selector tag is unknown")]
     UnknownSelectorTag,
-    /// A Host or Terminal subtype outside `LOCAL` / `SATELLITE`.
+    /// A Host, Terminal, or control subtype outside `LOCAL` / `SATELLITE`,
+    /// or a control class this build does not know.
     #[error("scope selector subtype is unknown")]
     UnknownSubtype,
     /// A satellite host that is empty, too long, not UTF-8, or carries a
@@ -188,7 +196,7 @@ pub enum ScopeGrammarError {
     RedundantVerb,
     /// A selector outside the closed set.
     #[error(
-        "a scope names a selector outside global|host|host:<name>|group:<id>|terminal:<id>|terminal:<host>/<id>|session:<key>|resource:<key>"
+        "a scope names a selector outside global|host|host:<name>|group:<id>|terminal:<id>|terminal:<host>/<id>|session:<key>|resource:<key>|page|window|display|page:<host>|window:<host>|display:<host>"
     )]
     UnknownSelector,
     /// A host that is empty, too long, or carries a control character.

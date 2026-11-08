@@ -260,7 +260,10 @@ fn expected(frame: &FrameKind, verb: Verb) -> bool {
     let rule = frame_rule(frame);
     match rule.requirement {
         Requirement::Verbs(verbs) => {
-            verbs == Verbs::of(&[verb]) && !rule.subject.requires_owner_uds()
+            verbs == Verbs::of(&[verb])
+                && !rule.subject.requires_owner_uds()
+                // Only a control selector reaches document input.
+                && rule.subject != phux_protocol::kinds::Subject::ControlledDocument
         }
         Requirement::Exempt(Exemption::Liveness | Exemption::Cleanup | Exemption::SelfRead) => true,
         Requirement::Exempt(Exemption::Handshake) | Requirement::Nested | Requirement::Deny => {

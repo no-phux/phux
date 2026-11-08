@@ -218,6 +218,21 @@ async fn route_command(
     // spawned counts as attaching it; noted before the verb runs.
     note_local_use(state, client_id, &command);
 
+    // Only the satellite knows a document's control class: stamp the
+    // classes this hub's guard lets the caller control there, so it refuses
+    // a document of any other (`docs/resource-kinds.md#authority`).
+    if let Command::SendDocumentInput {
+        terminal_id,
+        control,
+        ..
+    } = &mut command
+        && let Some((host, _)) = crate::hub::relay::satellite_route(terminal_id)
+        && let Some(allowed) = state
+            .with(|s| crate::policy::filter::satellite_input_classes(s, client_id, host.as_str()))
+    {
+        *control = Some(control.map_or(allowed, |asked| asked.intersect(allowed)));
+    }
+
     // ADR-0007 §4: a satellite-owned target never touches local dispatch.
     if let Some((sat_host, local_command)) = crate::hub::relay::route_to_satellite(&command) {
         handle_satellite_command(ctx, request_id, &sat_host, local_command).await;

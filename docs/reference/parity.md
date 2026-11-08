@@ -76,6 +76,13 @@ Every tool the MCP adapter (`phux mcp`) serves, the `phux` verb it mirrors, and 
 | `phux_tree_snapshot` | `phux agent tree snapshot` | in-process | no | no |
 | `phux_tree_wait` | `phux agent tree follow` | in-process | no | no |
 | `phux_surface_snapshot` | `phux agent surface snapshot` | in-process | no | no |
+| `phux_document_navigate` | `phux agent page navigate` | in-process | no | yes |
+| `phux_document_click` | `phux agent page click` | in-process | no | yes |
+| `phux_document_type` | `phux agent page type` | in-process | no | yes |
+| `phux_document_key` | `phux agent page key` | in-process | no | yes |
+| `phux_document_scroll` | `phux agent page scroll` | in-process | no | yes |
+| `phux_app_open` | `phux spawn` | in-process | no | yes |
+| `phux_app_close` | `phux kill` | in-process | no | yes |
 | `phux_approvals` | `phux approvals` | in-process | yes | no |
 | `phux_approve` | `phux approve` | in-process | no | yes |
 

@@ -13,12 +13,22 @@ pub fn view(desk: &Desk, id: &ResourceId, ink: &Ink) -> El {
     let measured = id.clone();
     let document = &desk.resources.entries[id];
     let label = document.record.name.as_deref().unwrap_or("Document");
-    let content = body(
-        &document.body,
-        desk.pane_area(id).unwrap_or([0.0, 0.0]),
-        ink,
-        id,
-    );
+    let detail = document.detail.as_deref().map(|d| format!("{d} · "));
+    let area = desk.pane_area(id).unwrap_or([0.0, 0.0]);
+    let content = body(&document.body, area, ink, id);
+    let interactive = desk.document_input_frame(id).is_some();
+    let state = match desk.document_input_refused(id) {
+        Some(reason) => format!("View only: {reason}"),
+        None if interactive => "Live mirror · click and type".to_owned(),
+        None => "Read-only mirror".to_owned(),
+    };
+    let surface = el()
+        .grow(1.0)
+        .w_full()
+        .min_h(0.0)
+        .min_w(0.0)
+        .on_layout(move |d: &mut Desk, rect| d.laid_out(measured.clone(), rect))
+        .child(content);
     col()
         .key(format!("document-{id}"))
         .w_full()
@@ -36,31 +46,52 @@ pub fn view(desk: &Desk, id: &ResourceId, ink: &Ink) -> El {
         .fill(ink.bg)
         .on_press(move |d: &mut Desk| d.focus_pane(&focused))
         .child(
-            text(format!("{label} · {id} · Read-only mirror"))
-                .font(CAPTION)
-                .color(ink.dim),
+            text(format!(
+                "{label} · {}{id} · {state}",
+                detail.unwrap_or_default()
+            ))
+            .wrap()
+            .font(CAPTION)
+            .color(ink.dim),
         )
-        .child(
-            el().grow(1.0)
-                .w_full()
-                .min_h(0.0)
-                .min_w(0.0)
-                .on_layout(move |d: &mut Desk, rect| d.laid_out(measured.clone(), rect))
-                .child(content),
-        )
+        .child(if interactive {
+            takes_input(surface, id, area)
+        } else {
+            surface
+        })
+}
+
+/// A surface whose producer takes input: a press clicks the frame pixel
+/// under it, and the wheel scrolls the page. Drag points and sizes are the
+/// element's own, where the frame is drawn contain-fit.
+fn takes_input(surface: El, id: &ResourceId, area: [f32; 2]) -> El {
+    let (pressed, wheeled) = (id.clone(), id.clone());
+    surface
+        .cursor(rune::Cursor::Pointer)
+        .on_drag(move |d: &mut Desk, drag, _| {
+            if drag.phase == rune::Phase::Down {
+                d.document_press(&pressed, [drag.x, drag.y, drag.w, drag.h]);
+            }
+        })
+        .on_wheel(move |d: &mut Desk, event, _| {
+            d.document_wheel(&wheeled, area, [event.dx, event.dy])
+        })
 }
 
 fn message(words: impl Into<String>, ink: &Ink) -> El {
-    el().w_full()
-        .h_full()
-        .center()
-        .child(text(words.into()).font(LABEL).color(ink.dim))
+    el().w_full().h_full().center().child(
+        text(words.into())
+            .wrap()
+            .w_full()
+            .font(LABEL)
+            .color(ink.dim),
+    )
 }
 
 fn body(body: &Body, area: [f32; 2], ink: &Ink, id: &ResourceId) -> El {
     match body {
         Body::Pending => message("Waiting for the producer’s first document…", ink),
-        Body::Decoding => message("Decoding PNG…", ink),
+        Body::Decoding => message("Decoding image…", ink),
         Body::Empty => message("Empty document · waiting for the next publication", ink),
         Body::Invalid(error) => message(error.clone(), ink),
         Body::Tree(json) => el()
@@ -75,7 +106,7 @@ fn body(body: &Body, area: [f32; 2], ink: &Ink, id: &ResourceId) -> El {
                     .key(crate::desk::resources::text_key(id))
                     .selectable(true)
                     .wrap_anywhere()
-                    .font(rune::TextStyle::new(12.0, 400.0))
+                    .font(rune::TextStyle::new(12.0, 400.0).mono())
                     .color(ink.text),
             ),
         Body::Surface(image) => surface(image, area, ink),
@@ -84,10 +115,10 @@ fn body(body: &Body, area: [f32; 2], ink: &Ink, id: &ResourceId) -> El {
 
 fn surface(image: &rune::Image, area: [f32; 2], ink: &Ink) -> El {
     if let Some(error) = image.error() {
-        return message(format!("Invalid PNG: {error}"), ink);
+        return message(format!("Invalid image: {error}"), ink);
     }
     let Some(size) = image.size() else {
-        return message("Decoding PNG…", ink);
+        return message("Decoding image…", ink);
     };
     let [w, h] = letterbox(size, area);
     el().w_full()

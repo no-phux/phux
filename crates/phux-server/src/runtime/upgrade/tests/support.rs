@@ -53,6 +53,8 @@ pub(super) fn satellite(name: &str, endpoint: &str) -> phux_config::SatelliteCon
         enabled: true,
         token_file: None,
         cert_fingerprint: None,
+        client_cert: None,
+        client_key: None,
     }
 }
 

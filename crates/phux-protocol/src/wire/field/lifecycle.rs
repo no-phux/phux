@@ -41,6 +41,9 @@ pub mod spawn_terminal {
     pub const RETAIN_SECS: u32 = 16;
     /// Optional 16-byte non-zero idempotency key (ADR-0126).
     pub const IDEMPOTENCY_KEY: u32 = 17;
+    /// Optional `ControlClass` (`u8`) of a document; absent = none. An
+    /// unknown class reads as none.
+    pub const CONTROL: u32 = 18;
 }
 
 /// `RESOURCE_SPAWNED` body fields (`docs/protocol.md#commands-events-resources`).
@@ -200,4 +203,9 @@ pub mod resource_state {
     pub const INPUT_HOLDER: u32 = 3;
     /// `ClientId` (`u32`) of one `VIEWER` (ADR-0127); repeated.
     pub const VIEWER: u32 = 4;
+    /// A document's producer connection: `1` connected, `0` gone; absent =
+    /// not a document or not reported.
+    pub const PRODUCER: u32 = 5;
+    /// A document's `ControlClass` (`u8`); absent = none or not reported.
+    pub const CONTROL: u32 = 6;
 }

@@ -193,7 +193,7 @@ pub struct DocumentPublication {
     /// The document resource.
     pub resource_id: ResourceId,
     /// Which kind of document, so the consumer knows the codec: JSON for a
-    /// tree, PNG for a surface, [`Self::content_type`] for a typed document.
+    /// tree, PNG or JPEG for a surface, [`Self::content_type`] for a typed document.
     pub kind: ResourceKind,
     /// The publish sequence this document is, within the resource.
     pub seq: u64,

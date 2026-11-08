@@ -71,12 +71,14 @@ pub(super) fn add_key(paths: &WorkloadPaths, args: &AddKey) -> Result<Report, Cl
             }
             cli_error(&error)
         })?;
+    // What was enrolled: pairing a person adds the watch grants.
+    let scopes = workload::enrolled_scopes(args.scopes.clone(), args.principal);
     let enrolled_for = args
         .principal
         .unwrap_or_else(|| workload::EnrolledFor::by_ceiling(&args.scopes));
     let mut prose = vec![
         format!("Enrolled {}", registered.id),
-        format!("  scopes:      {}", args.scopes.join(" ")),
+        format!("  scopes:      {}", scopes.join(" ")),
         format!("  principal:   {}", enrolled_for.as_str()),
         format!("  expires:     {}", timestamp(expires_at)),
         format!("  generation:  {}", registered.generation),
@@ -97,7 +99,7 @@ pub(super) fn add_key(paths: &WorkloadPaths, args: &AddKey) -> Result<Report, Cl
         "operation": "add-key",
         "credential_id": registered.id,
         "material": material.kind(),
-        "scopes": args.scopes,
+        "scopes": scopes,
         "principal": enrolled_for.as_str(),
         "expires_at": expires_at,
         "registry_generation": registered.generation,

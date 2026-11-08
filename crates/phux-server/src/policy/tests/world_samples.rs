@@ -487,6 +487,7 @@ fn samples(world: &World, agent: &WireResourceId) -> Vec<FrameKind> {
         command(Command::SendDocumentInput {
             terminal_id: t.clone(),
             intent: phux_protocol::wire::frame::DocumentInput::Click { x: 1, y: 1 },
+            control: None,
         }),
     ]
     .into_iter()

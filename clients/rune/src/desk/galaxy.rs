@@ -3,13 +3,17 @@
 //! `crate::galaxy`.
 
 use std::cell::Cell;
+use std::collections::HashMap;
 use std::time::Duration;
 
+use phux_client_runtime::Client;
+use phux_client_runtime::control::Topology;
 use phux_protocol::ids::ResourceId;
 use rune::Tx;
 
 use super::Desk;
-use crate::activity::Mark;
+use crate::activity::{Activities, Mark};
+use crate::creature::{self, Stats, Work};
 use crate::galaxy::{Camera, Plan};
 use crate::machines::LOCAL;
 
@@ -32,25 +36,42 @@ pub struct Galaxy {
     opened_at: f64,
     /// Reduced motion, as the last view build saw it: the clock stops.
     pub still: Cell<bool>,
+    /// Each agent's last work seen, and the app clock at its last level-up.
+    grades: HashMap<ResourceId, (Option<Work>, f64)>,
 }
 
-/// An agent on the machine this window is connected to.
+/// An agent on one machine.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Star {
+    /// Unique across machines: this window's terminal id, or another
+    /// machine's tagged with its name (`ResourceId::Satellite`).
+    pub id: ResourceId,
+    /// The terminal on its own server.
     pub terminal: ResourceId,
+    /// Its machine when that is not this window's; `None` for this window's
+    /// own and for this computer seen from a remote alike, told apart by `here`.
+    pub machine: Option<String>,
+    /// Whether it is on the machine this window is connected to.
+    pub here: bool,
+    pub kind: Option<String>,
     pub session: String,
     pub name: String,
     pub mark: Mark,
-    pub cwd: Option<String>,
+    /// The session's project (the desktop's rule), else the directory's.
+    pub project: Option<String>,
+    /// Its work from its machine's agent stats ([`creature`]), when published.
+    pub work: Option<Work>,
 }
 
-/// A machine. Only the connected one lists its agents; another shows what
-/// its session listing says, when the sidebar has looked.
+/// A machine and its agents: the connected one's from this window, another's
+/// from its watch (`desk::fleet`), else what its session listing says.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Planet {
     pub name: String,
     pub online: bool,
     pub stars: Vec<Star>,
+    /// Whether `stars` is its agents: the connected machine's, or a watched one's.
+    pub known: bool,
     pub note: Option<String>,
 }
 
@@ -66,6 +87,7 @@ impl Desk {
         self.galaxy.placed = false;
         self.galaxy.picked = None;
         self.galaxy.opened_at = self.clock;
+        self.galaxy.grades.clear();
     }
 
     pub fn close_galaxy(&mut self) {
@@ -82,13 +104,33 @@ impl Desk {
         }
     }
 
-    /// Keep drawing while the galaxy is open and moving.
-    pub(super) fn tick_galaxy(&self, tx: &mut Tx) -> bool {
+    /// Keep drawing while the galaxy is open and moving, and note which
+    /// agents just grew a tier.
+    pub(super) fn tick_galaxy(&mut self, tx: &mut Tx) -> bool {
         let moving = self.galaxy.open && !self.galaxy.still.get();
         if moving {
             tx.wake_after(FRAME);
+            let stars: Vec<Star> = self.planets().into_iter().flat_map(|p| p.stars).collect();
+            let grades = &mut self.galaxy.grades;
+            grades.retain(|id, _| stars.iter().any(|s| &s.id == id));
+            for star in stars {
+                let (work, up) = grades
+                    .entry(star.id)
+                    .or_insert((star.work, f64::NEG_INFINITY));
+                if creature::levels_up(work.as_ref(), star.work.as_ref()) {
+                    *up = self.clock;
+                }
+                *work = star.work;
+            }
         }
         moving
+    }
+
+    /// How much of agent `id`'s level-up burst is left, 1 to 0 over 2.2 s.
+    pub fn level_up(&self, id: &ResourceId) -> f32 {
+        self.galaxy.grades.get(id).map_or(0.0, |(_, up)| {
+            (1.0 - (self.clock - up) as f32 * 0.45).clamp(0.0, 1.0)
+        })
     }
 
     /// Every machine, those with something waiting first; the connected one
@@ -99,12 +141,15 @@ impl Desk {
             name: current.clone().unwrap_or_else(|| LOCAL.to_owned()),
             online: self.client.is_some(),
             stars: self.stars(),
+            known: true,
             note: None,
         };
         let others = std::iter::once(None)
             .chain(self.machines.hosts.iter().map(|h| Some(h.name.clone())))
             .filter(|host| *host != current)
             .map(|host| {
+                let watch = self.fleet.watches.get(&host);
+                let stars = watch.and_then(|w| w.stars(&host, self.clock));
                 let glance = self.machines.glances.get(&host);
                 let note = match glance {
                     Some(Ok(sessions)) => {
@@ -113,11 +158,15 @@ impl Desk {
                     }
                     _ => None,
                 };
+                let online = watch.map_or(!matches!(glance, Some(Err(_))), |w| {
+                    w.online() || matches!(glance, Some(Ok(_)))
+                });
                 Planet {
                     name: host.unwrap_or_else(|| LOCAL.to_owned()),
-                    online: !matches!(glance, Some(Err(_))),
-                    stars: Vec::new(),
-                    note,
+                    online,
+                    known: stars.is_some(),
+                    note: if stars.is_some() { None } else { note },
+                    stars: stars.unwrap_or_default(),
                 }
             });
         let mut planets: Vec<Planet> = std::iter::once(here).chain(others).collect();
@@ -125,30 +174,21 @@ impl Desk {
         planets
     }
 
-    /// The connected machine's agents: a pane with a declared agent, or one
-    /// that asks.
-    fn stars(&self) -> Vec<Star> {
+    /// The connected machine's agents.
+    pub(super) fn stars(&self) -> Vec<Star> {
         let Some(topology) = &self.topology else {
             return Vec::new();
         };
-        topology
-            .panes
-            .iter()
-            .filter(|pane| {
-                self.activities.agent_name(&pane.terminal_id).is_some()
-                    || crate::inbox::question(pane, &self.activities).is_some()
-            })
-            .map(|pane| Star {
-                terminal: pane.terminal_id.clone(),
-                session: pane.session_name.clone(),
-                name: self
-                    .activities
-                    .agent_name(&pane.terminal_id)
-                    .map_or_else(|| crate::palette::pane_label(pane), str::to_owned),
-                mark: self.activities.mark(&pane.terminal_id),
-                cwd: pane.cwd.clone(),
-            })
-            .collect()
+        let mut stars = stars_on(
+            topology,
+            &self.activities,
+            self.client.as_deref(),
+            (&self.fleet.here, self.clock),
+        );
+        for star in &mut stars {
+            star.here = true;
+        }
+        stars
     }
 
     pub fn galaxy_plan(planets: &[Planet]) -> Plan {
@@ -202,7 +242,7 @@ impl Desk {
                     .iter()
                     .enumerate()
                     .filter(|(_, star)| star.mark.needs_you())
-                    .map(move |(i, star)| (star.terminal.clone(), system.point(i, 0.0, false)))
+                    .map(move |(i, star)| (star.id.clone(), system.point(i, 0.0, false)))
             })
             .collect();
         if waiting.is_empty() {
@@ -217,10 +257,29 @@ impl Desk {
         self.fly_to(at);
     }
 
-    /// Close the galaxy on `terminal`, shown the way the inbox shows one.
-    pub fn open_star(&mut self, terminal: ResourceId, session: &str) {
+    /// Close the galaxy on agent `id`: this machine's shown the way the inbox
+    /// shows one, another machine's by moving the window there first.
+    pub fn open_star(&mut self, id: &ResourceId) {
         self.close_galaxy();
-        self.show(terminal, session);
+        self.go_to_star(id);
+    }
+
+    /// Show agent `id` wherever it lives.
+    pub(super) fn go_to_star(&mut self, id: &ResourceId) {
+        let Some(star) = self
+            .planets()
+            .into_iter()
+            .flat_map(|p| p.stars)
+            .find(|s| &s.id == id)
+        else {
+            return;
+        };
+        if star.here {
+            self.show(star.terminal, &star.session);
+        } else {
+            self.open_on(star.machine, star.session);
+            self.want(star.terminal);
+        }
     }
 
     /// Return opens the agent the readout flew to.
@@ -228,8 +287,103 @@ impl Desk {
         let Some(id) = self.galaxy.picked.clone() else {
             return;
         };
-        if let Some(star) = self.stars().into_iter().find(|s| s.terminal == id) {
-            self.open_star(star.terminal, &star.session);
-        }
+        self.open_star(&id);
+    }
+}
+
+/// A server's agents: each pane with a declared agent, or one that asks,
+/// with their work from its `stats` as of `now`.
+pub(super) fn stars_on(
+    topology: &Topology,
+    activities: &Activities,
+    client: Option<&Client>,
+    (stats, now): (&Stats, f64),
+) -> Vec<Star> {
+    topology
+        .panes
+        .iter()
+        .filter(|pane| {
+            activities.agent_name(&pane.terminal_id).is_some()
+                || crate::inbox::question(pane, activities).is_some()
+        })
+        .map(|pane| Star {
+            id: pane.terminal_id.clone(),
+            terminal: pane.terminal_id.clone(),
+            machine: None,
+            here: false,
+            kind: activities.agent_kind(&pane.terminal_id).map(str::to_owned),
+            session: pane.session_name.clone(),
+            name: star_name(
+                activities.agent_name(&pane.terminal_id),
+                activities.agent_kind(&pane.terminal_id),
+                &crate::palette::pane_label(pane),
+            ),
+            mark: activities.mark(&pane.terminal_id),
+            work: stats.work(
+                &pane.terminal_id,
+                activities.mark(&pane.terminal_id) == Mark::Working,
+                now,
+            ),
+            project: session_project(topology, client, pane.session_id).or_else(|| {
+                pane.cwd
+                    .as_deref()
+                    .and_then(crate::galaxy::project)
+                    .map(str::to_owned)
+            }),
+        })
+        .collect()
+}
+
+/// What a star is called: its agent's own name, unless that only says which
+/// harness it is (`claude` from `claude`), when the pane's title says what it
+/// is doing; the title loses the status glyph a harness puts in front.
+fn star_name(agent: Option<&str>, kind: Option<&str>, label: &str) -> String {
+    let title = label
+        .trim_start_matches(|c: char| !c.is_alphanumeric())
+        .trim();
+    match agent {
+        Some(name) if !kind.is_some_and(|kind| name.eq_ignore_ascii_case(kind)) => name.to_owned(),
+        _ if !title.is_empty() => title.to_owned(),
+        Some(name) => name.to_owned(),
+        None => label.to_owned(),
+    }
+}
+
+/// The project its session record names, as the desktop groups sessions.
+fn session_project(topology: &Topology, client: Option<&Client>, session: u32) -> Option<String> {
+    let key = topology.sessions.iter().find(|s| s.id == session)?.key?;
+    let organization = client?.organization();
+    let record = organization.session(&key)?;
+    let attr = |name: &str| {
+        record
+            .attrs
+            .iter()
+            .find(|(k, v)| k == name && !v.is_empty())
+            .map(|(_, v)| v.clone())
+    };
+    attr("project.name").or_else(|| attr("project.id"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::star_name;
+
+    #[test]
+    fn a_star_is_named_for_its_work_when_its_agent_only_names_the_harness() {
+        let title = "\u{2733} Clone the website";
+        assert_eq!(
+            star_name(Some("claude"), Some("claude"), title),
+            "Clone the website"
+        );
+        assert_eq!(
+            star_name(Some("Claude"), Some("claude"), title),
+            "Clone the website"
+        );
+        assert_eq!(
+            star_name(Some("build-box"), Some("claude"), title),
+            "build-box"
+        );
+        assert_eq!(star_name(Some("claude"), Some("claude"), "  "), "claude");
+        assert_eq!(star_name(None, None, "deploy"), "deploy");
     }
 }

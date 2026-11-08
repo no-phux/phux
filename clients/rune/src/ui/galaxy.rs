@@ -1,23 +1,30 @@
-//! The galaxy: the fleet as a core, each machine a planet round it, and the
-//! connected machine's agents on rings round it, coloured by their marks.
-//! Related agents (one session, or one project) are joined by a bowed beam
-//! with a light running along it. Drag pans, the wheel pans (zooms with ⌘ or
-//! Ctrl), a pinch zooms, a double click fits it all again. A press on an
-//! agent shows its terminal; one on a planet flies to it.
+//! The galaxy command center: the fleet as a core inside a ticked bezel with
+//! a radar sweep, each machine a wireframe planet on one orbit, and the
+//! connected machine's agents as state nodes on rings round it. Beams carry
+//! pulses outward; related agents (one session, or one project) are joined by
+//! a bowed beam. Drag pans, the wheel pans (zooms with ⌘ or Ctrl), a pinch
+//! zooms, a double click or [ FIT ] fits it all again. A press on an agent
+//! shows its terminal; one on a planet flies to it.
 
-use std::f32::consts::TAU;
+mod sky;
 
-use rune::{Color, Cx, El, LineCap, Path, Shape, canvas, col, el, row, text};
+use rune::{Color, Cx, El, LineCap, Shape, TextStyle, canvas, col, el, row, text};
 
+use self::sky::{Grown, Sky, State};
 use super::sidebar::mark_color;
-use super::{CAPTION, Ink, LABEL, LABEL_STRONG, TITLEBAR_H, overlay, pressable};
+use super::{Ink, TITLEBAR_H, overlay, pressable};
 use crate::activity::Mark;
+use crate::creature;
 use crate::desk::Desk;
-use crate::galaxy::{self, Camera, Kin, Pt, System};
+use crate::galaxy::{self, Detail, Kin, Pt};
 
-/// Below this scale the agents' names would pile up, so only planets are named.
-const NAMES_FROM: f32 = 0.6;
-const STARS: usize = 140;
+const NAME: TextStyle = TextStyle::new(11.0, 500.0).mono();
+const WORD: TextStyle = TextStyle::new(9.5, 600.0).mono().tracking(1.5);
+const HOST: TextStyle = TextStyle::new(11.0, 650.0).mono().tracking(1.5);
+const META: TextStyle = TextStyle::new(9.0, 500.0).mono().tracking(1.2);
+const EYEBROW: TextStyle = TextStyle::new(10.0, 650.0).mono().tracking(2.0);
+const STATS: TextStyle = TextStyle::new(11.0, 500.0).mono().tracking(1.0);
+const BUTTON: TextStyle = TextStyle::new(11.0, 650.0).mono().tracking(1.5);
 
 pub(super) fn view(desk: &Desk, p: &Ink, cx: &mut Cx<Desk>) -> El {
     desk.galaxy.still.set(cx.is_reduced_motion());
@@ -30,11 +37,9 @@ pub(super) fn view(desk: &Desk, p: &Ink, cx: &mut Cx<Desk>) -> El {
         .flat_map(|planet| &planet.stars)
         .filter(|star| star.mark.needs_you())
         .count();
-    let light = if waiting > 0 { p.marks.alert } else { p.accent };
-    let sky = Sky {
-        camera,
-        shape: Shape::new(),
-    };
+    let needs = p.marks.alert;
+    let light = if waiting > 0 { needs } else { p.accent };
+    let ground_light = crate::theme::on_fill(p.bg) != Color::WHITE;
 
     // Where every agent is this frame, with its kin for the beams.
     let placed: Vec<(usize, usize, Pt)> =
@@ -55,109 +60,166 @@ pub(super) fn view(desk: &Desk, p: &Ink, cx: &mut Cx<Desk>) -> El {
             Kin {
                 host: &planets[at].name,
                 session: &star.session,
-                project: star.cwd.as_deref().and_then(galaxy::project),
+                project: star.project.as_deref(),
             }
         })
         .collect();
 
-    let mut sky = sky.backdrop(plan.side, time, p);
-    if !plan.systems.is_empty() {
-        sky = sky.dashed(plan.core, plan.orbit, 96, 0.0, 1.0, p.separator);
-    }
+    let mut sky = Sky {
+        camera,
+        shape: Shape::new(),
+        light: ground_light,
+    };
+    let rim = plan.bezel();
+    sky = sky.dust(plan.core, rim, time, p.dim).bezel(
+        plan.core,
+        rim,
+        time,
+        light,
+        (waiting > 0).then_some(needs),
+    );
+    sky = sky.orbits(&plan, p.separator);
     for (planet, system) in planets.iter().zip(&plan.systems) {
-        let beam = light.alpha(if planet.online { 0.35 } else { 0.12 });
-        sky = sky.line(plan.core, system.centre, 1.5, beam);
-        for ring in 0..system.rings().min(system.count) {
-            let r = System::ring_radius(ring);
-            sky = sky.dashed(system.centre, r, 48, 0.0, 1.0, p.separator.alpha(0.6));
-        }
+        sky = sky.beam(plan.core, system.centre, time, light, planet.online);
     }
     for (a, b) in galaxy::related(&kin) {
         sky = sky.kin(placed[a].2, placed[b].2, plan.core, time, p.accent);
     }
+    let mut picked_at = None;
     for &(at, i, point) in &placed {
         let star = &planets[at].stars[i];
         let color = mark_color(star.mark, p);
-        let centre = plan.systems[at].centre;
-        sky = sky.line(centre, point, 1.0, color.alpha(0.45));
-        if star.mark.needs_you() {
-            // A beacon: a ring that swells and fades, once a second and a half.
-            let swell = (time % 1.5) / 1.5;
-            sky = sky.ring(
-                point,
-                18.0 + 22.0 * swell,
-                2.0,
-                color.alpha(0.6 * (1.0 - swell)),
-            );
+        sky = sky.beam(
+            plan.systems[at].centre,
+            point,
+            time,
+            color,
+            planets[at].online,
+        );
+        if desk.galaxy.picked.as_ref() == Some(&star.id) {
+            picked_at = Some(point);
         }
-        let picked = desk.galaxy.picked.as_ref() == Some(&star.terminal);
-        if picked {
-            sky = sky.ring(point, 16.0, 2.0, p.text);
-        }
-        sky = sky
-            .disc(point, 12.0, color.alpha(0.25))
-            .disc(point, 6.0, color);
     }
     for (planet, system) in planets.iter().zip(&plan.systems) {
-        let edge = if planet.online { light } else { p.dim };
-        sky = sky
-            .disc(system.centre, 20.0, p.raised)
-            .ring(system.centre, 20.0, 2.0, edge)
-            .disc(system.centre, 6.0, edge);
+        let color = if planet.online { light } else { p.dim };
+        sky = sky.planet(system.centre, time, color, planet.online);
     }
-    let pulse = 0.5 + 0.5 * (time * 2.0).sin();
-    sky = sky
-        .disc(plan.core, 30.0 + 4.0 * pulse, light.alpha(0.15))
-        .disc(plan.core, 14.0, light)
-        .dashed(plan.core, 46.0, 18, time * 0.25, 0.6, light.alpha(0.7))
-        .dashed(plan.core, 60.0, 48, -time * 0.12, 0.2, light.alpha(0.4));
+    for &(at, i, point) in &placed {
+        let star = &planets[at].stars[i];
+        let species = crate::reef::species(star.kind.as_deref(), &star.name);
+        let grown = Grown {
+            tier: creature::tier(star.work.as_ref()),
+            harness: super::reef::rgba(species.body, 1.0),
+            level_up: desk.level_up(&star.id),
+        };
+        if grown.tier == 4 {
+            sky = sky.trail(plan.systems[at].centre, point, grown.harness);
+        }
+        let state = (State::of(star.mark), mark_color(star.mark, p), needs);
+        sky = sky.node(point, state, time, &grown);
+    }
+    if let Some(point) = picked_at {
+        sky = sky.reticle(plan.core, point, time, p.text);
+    }
+    sky = sky.core(plan.core, time, light);
+    let mut shape = sky.shape;
+    let [w, h] = desk.galaxy.viewport;
+    shape = corners(shape, w, h, light.alpha(0.5));
 
+    let detail = Detail::at(camera.scale);
     let mut labels: Vec<El> = Vec::new();
+    // Labels stack by what matters: calm agents, then planet names on their
+    // own ground (a busy machine always has agents near its name), then the
+    // agents that need you, which nothing covers.
+    let mut names: Vec<El> = Vec::new();
+    let mut urgent: Vec<El> = Vec::new();
     for (planet, system) in planets.iter().zip(&plan.systems) {
         let centre = system.centre;
         let at = camera.screen(centre);
-        let note = planet
-            .note
-            .clone()
-            .or((!planet.online).then(|| "offline".to_owned()));
-        labels.push(
+        // A machine whose agents aren't known (not watched yet, or not
+        // dialable) says what its session listing says, or nothing.
+        let note = if planet.known {
+            Some(format!("{} agents", planet.stars.len()))
+        } else if !planet.online {
+            Some("offline".to_owned())
+        } else {
+            planet.note.clone()
+        };
+        names.push(
             pressable(format!("galaxy-planet-{}", planet.name), p)
-                .absolute(at[0] - 70.0, at[1] - 22.0)
+                .absolute(at[0] - 70.0, at[1] + 14.0)
                 .w(140.0)
                 .radius(8.0)
-                .pt(46.0)
-                .pb(4.0)
                 .label(planet.name.clone())
                 .on_press(move |desk: &mut Desk| desk.fly_to(centre))
                 .child(
-                    col()
-                        .w_full()
-                        .items_center()
-                        .child(text(planet.name.clone()).font(LABEL_STRONG).color(p.text))
-                        .children(note.map(|n| text(n).font(CAPTION).color(p.dim))),
+                    col().w_full().items_center().child(
+                        col()
+                            .items_center()
+                            .px(8.0)
+                            .py(3.0)
+                            .radius(6.0)
+                            .fill(p.bg.alpha(0.88))
+                            .child(text(planet.name.to_uppercase()).font(HOST).color(p.text))
+                            .children(note.map(|n| text(n.to_uppercase()).font(META).color(p.dim))),
+                    ),
                 ),
         );
     }
     for &(at, i, point) in &placed {
         let star = &planets[at].stars[i];
         let s = camera.screen(point);
-        let (terminal, session) = (star.terminal.clone(), star.session.clone());
-        let named = camera.scale >= NAMES_FROM;
+        let id = star.id.clone();
         let word = word(star.mark);
-        labels.push(
-            pressable(format!("galaxy-star-{:?}", star.terminal), p)
-                .absolute(s[0] - 60.0, s[1] - 14.0)
+        let named = match detail {
+            Detail::Urgent => star.mark.needs_you(),
+            _ => true,
+        };
+        let worded = detail == Detail::Full || (named && detail == Detail::Urgent);
+        // Its form and work, when its machine publishes agent stats.
+        let card = star.work.map(|w| {
+            let species = crate::reef::species(star.kind.as_deref(), &star.name);
+            let tier = creature::tier(Some(&w));
+            (
+                creature::form_name(tier, species.form),
+                creature::work_line(&w),
+            )
+        });
+        // Names sit clear of a grown node's moons.
+        let tier = creature::tier(star.work.as_ref());
+        let r = 7.0 * creature::TIERS[tier].size;
+        let reach = r * [1.0, 1.0, 1.6, 2.5, 2.5][tier];
+        let below = (reach - 14.0).max(0.0) * camera.scale;
+        let said = card
+            .as_ref()
+            .map_or(String::new(), |(form, work)| format!(", {form}, {work}"));
+        let layer = if star.mark.needs_you() {
+            &mut urgent
+        } else {
+            &mut labels
+        };
+        layer.push(
+            pressable(format!("galaxy-star-{:?}", star.id), p)
+                .absolute(s[0] - 60.0, s[1] - 22.0)
                 .w(120.0)
                 .radius(8.0)
-                .pt(if named { 24.0 } else { 28.0 })
-                .label(format!("{}, {word}", star.name))
-                .on_press(move |desk: &mut Desk| desk.open_star(terminal.clone(), &session))
+                .pt(40.0 + below)
+                .label(format!("{}, {word}{said}", star.name))
+                .on_press(move |desk: &mut Desk| desk.open_star(&id))
                 .children(named.then(|| {
                     col()
                         .w_full()
                         .items_center()
-                        .child(text(star.name.clone()).font(LABEL).color(p.text))
-                        .child(text(word).font(CAPTION).color(mark_color(star.mark, p)))
+                        .child(text(truncate(&star.name, 14)).font(NAME).color(p.text))
+                        .children(worded.then(|| {
+                            text(word.to_uppercase())
+                                .font(WORD)
+                                .color(mark_color(star.mark, p))
+                        }))
+                        .children(
+                            card.filter(|_| detail == Detail::Full)
+                                .map(|(form, _)| text(form.to_uppercase()).font(META).color(p.dim)),
+                        )
                 })),
         );
     }
@@ -169,35 +231,43 @@ pub(super) fn view(desk: &Desk, p: &Ink, cx: &mut Cx<Desk>) -> El {
         .flat_map(|planet| &planet.stars)
         .filter(|star| star.mark == Mark::Working)
         .count();
-    let readout = row()
-        .absolute(16.0, TITLEBAR_H + 4.0)
-        .gap(10.0)
-        .items_center()
+    let block = col()
+        .absolute(30.0, TITLEBAR_H + 16.0)
+        .gap(4.0)
+        .child(text("PHUX // FLEET").font(EYEBROW).color(light))
         .child(
-            el().px(10.0)
-                .py(4.0)
-                .radius(10.0)
-                .fill(p.raised.alpha(0.85))
-                .child(
-                    text(format!(
-                        "{hosts} hosts · {agents} agents · {working} working"
-                    ))
-                    .font(CAPTION)
-                    .color(p.dim),
-                ),
+            text(format!(
+                "{hosts} MACHINES  ·  {agents} AGENTS  ·  {working} WORKING"
+            ))
+            .font(STATS)
+            .color(p.dim),
+        );
+    let actions = row()
+        .absolute((w - 336.0).max(0.0), TITLEBAR_H + 12.0)
+        .w(306.0)
+        .gap(6.0)
+        .items_center()
+        .justify_end()
+        .child(
+            pressable("galaxy-fit", p)
+                .px(8.0)
+                .py(5.0)
+                .radius(6.0)
+                .label("Fit the whole galaxy")
+                .on_press(Desk::fit_galaxy)
+                .child(text("[ FIT ]").font(BUTTON).color(p.text)),
         )
         .children((waiting > 0).then(|| {
             pressable("galaxy-next-waiting", p)
-                .px(12.0)
+                .px(8.0)
                 .py(5.0)
-                .radius(12.0)
-                .fill(p.marks.alert)
+                .radius(6.0)
                 .label("Show the next agent that needs you")
                 .on_press(Desk::next_waiting)
                 .child(
-                    text(format!("{waiting} need you"))
-                        .font(LABEL_STRONG)
-                        .color(crate::theme::on_fill(p.marks.alert)),
+                    text(format!("[ {waiting} NEED YOU ]"))
+                        .font(BUTTON)
+                        .color(needs),
                 )
         }))
         .child(overlay::icon_button(
@@ -217,7 +287,7 @@ pub(super) fn view(desk: &Desk, p: &Ink, cx: &mut Cx<Desk>) -> El {
         .label("Galaxy")
         .on_layout(|desk: &mut Desk, r| desk.galaxy_laid_out(r[2], r[3]))
         .child(
-            canvas(sky.shape)
+            canvas(shape)
                 .key("galaxy-sky")
                 .absolute(0.0, 0.0)
                 .w_full()
@@ -239,7 +309,35 @@ pub(super) fn view(desk: &Desk, p: &Ink, cx: &mut Cx<Desk>) -> El {
                 }),
         )
         .children(labels)
-        .child(readout)
+        .children(names)
+        .children(urgent)
+        .child(block)
+        .child(actions)
+}
+
+/// Brackets in the view's four corners, in screen points.
+fn corners(mut shape: Shape, w: f32, h: f32, color: Color) -> Shape {
+    let (inset, leg) = (10.0, 18.0);
+    let top = TITLEBAR_H.min(h);
+    for (x, y, dx, dy) in [
+        (inset, top + inset, 1.0, 1.0),
+        (w - inset, top + inset, -1.0, 1.0),
+        (inset, h - inset, 1.0, -1.0),
+        (w - inset, h - inset, -1.0, -1.0),
+    ] {
+        let points = vec![[x, y + dy * leg], [x, y], [x + dx * leg, y]];
+        shape = shape.stroke_with(points, false, 1.5, LineCap::Butt, color);
+    }
+    shape
+}
+
+fn truncate(name: &str, max: usize) -> String {
+    if name.chars().count() <= max {
+        return name.to_owned();
+    }
+    let mut cut: String = name.chars().take(max - 1).collect();
+    cut.push('…');
+    cut
 }
 
 /// What a person reads for the mark.
@@ -254,97 +352,5 @@ fn word(mark: Mark) -> &'static str {
         Mark::Background => "background",
         Mark::Succeeded => "succeeded",
         Mark::Idle | Mark::None => "idle",
-    }
-}
-
-/// The drawing, in world points carried to the screen by the camera.
-struct Sky {
-    camera: Camera,
-    shape: Shape,
-}
-
-impl Sky {
-    fn at(&self, world: Pt) -> [f32; 2] {
-        self.camera.screen(world)
-    }
-
-    fn circle(&self, centre: Pt, r: f32, from: f32, to: f32, n: usize) -> Vec<[f32; 2]> {
-        let c = self.at(centre);
-        let r = r * self.camera.scale;
-        (0..=n)
-            .map(|k| {
-                let a = from + (to - from) * k as f32 / n as f32;
-                [c[0] + r * a.cos(), c[1] + r * a.sin()]
-            })
-            .collect()
-    }
-
-    /// Stars that twinkle, each at its own place in the world.
-    fn backdrop(mut self, side: f32, time: f32, p: &Ink) -> Sky {
-        for i in 0..STARS {
-            // The R2 low-discrepancy sequence: spread out, the same every frame.
-            let x = (0.5 + i as f32 * 0.754_877_7).fract();
-            let y = (0.5 + i as f32 * 0.569_840_3).fract();
-            let twinkle = 0.25 + 0.35 * (1.0 + (time * (0.6 + y) + x * 40.0).sin()) / 2.0;
-            let dot = self.circle([x * side, y * side], 0.8 + y, 0.0, TAU, 6);
-            self.shape = self.shape.fill(dot, p.dim.alpha(twinkle));
-        }
-        self
-    }
-
-    fn line(mut self, a: Pt, b: Pt, width: f32, color: Color) -> Sky {
-        let (a, b) = (self.at(a), self.at(b));
-        self.shape = self.shape.line(a, b, width, LineCap::Round, color);
-        self
-    }
-
-    fn ring(mut self, centre: Pt, r: f32, width: f32, color: Color) -> Sky {
-        let points = self.circle(centre, r, 0.0, TAU, 40);
-        self.shape = self
-            .shape
-            .stroke_with(points, true, width, LineCap::Round, color);
-        self
-    }
-
-    fn disc(mut self, centre: Pt, r: f32, color: Color) -> Sky {
-        let mut points = self.circle(centre, r, 0.0, TAU, 32);
-        points.pop();
-        self.shape = self.shape.fill(points, color);
-        self
-    }
-
-    /// `dashes` dashes round a circle, each `share` of its step long, turned by `phase` turns.
-    fn dashed(
-        mut self,
-        centre: Pt,
-        r: f32,
-        dashes: usize,
-        phase: f32,
-        share: f32,
-        color: Color,
-    ) -> Sky {
-        let step = TAU / dashes as f32;
-        for k in 0..dashes {
-            let from = phase * TAU + k as f32 * step;
-            let points = self.circle(centre, r, from, from + step * share * 0.5, 3);
-            self.shape = self.shape.stroke(points, 1.0, color);
-        }
-        self
-    }
-
-    /// Two related agents: a beam bowed away from the core, and a light
-    /// running along it once every three seconds.
-    fn kin(mut self, a: Pt, b: Pt, core: Pt, time: f32, color: Color) -> Sky {
-        let c = galaxy::bow(a, b, core);
-        let path = Path::new()
-            .move_to(self.at(a))
-            .quad_to(self.at(c), self.at(b));
-        self.shape = self
-            .shape
-            .stroke_path(&path, 1.5, LineCap::Round, color.alpha(0.45));
-        let t = (time / 3.0).fract();
-        let glow = galaxy::along(a, c, b, t);
-        self.disc(glow, 7.0, color.alpha(0.3))
-            .disc(glow, 3.0, color)
     }
 }

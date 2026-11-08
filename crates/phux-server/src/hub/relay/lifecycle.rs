@@ -14,6 +14,7 @@ impl RelaySession {
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
             catalog.kinds.clear();
+            catalog.controls.clear();
             catalog.terminal_profile = None;
         }
         for (_, pending) in self.pending.drain() {

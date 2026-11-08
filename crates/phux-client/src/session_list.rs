@@ -187,18 +187,15 @@ async fn count_arrangement_groups(
 ///
 /// Sessions are name-sorted, so the document is stable across runs.
 /// `degradation` becomes the `unreachable` list: always present, empty when
-/// the listing is complete, so a consumer reads completeness positively
-/// instead of inferring it from a missing key.
+/// the listing is complete.
 ///
 /// `hosts_complete` is whether the server advertised `HOST_SESSIONS`: only
 /// then is the `hosts` grouping the whole fleet. Without it the document
 /// carries this host's group alone and says so (`"hosts_complete": false`).
 ///
 /// `organization` supplies each session's lifetime, member count, and
-/// execution counts; without it they are derived from the snapshot. It
-/// also supplies every session's and resource's full record `key`, the text
-/// a workload `session:<key>` or `resource:<key>` scope names; without it
-/// each `key` is `None`.
+/// execution counts (else derived from the snapshot), and every record's
+/// full `key`, which a `session:` or `resource:` scope names.
 #[must_use]
 pub fn document(
     snapshot: &SessionSnapshot,
@@ -212,10 +209,8 @@ pub fn document(
         .into_iter()
         .map(|s| session_json(snapshot, organization, s))
         .collect();
-    // `terminals` stays the Terminal-kind inventory — the ids a Terminal-facet
-    // verb accepts — so a consumer that iterates it and calls `snapshot` on
-    // each keeps working; every resource, with its kind and parent, is the
-    // additive `resources` array.
+    // `terminals` stays the Terminal-kind inventory (the ids a Terminal-facet
+    // verb accepts); every resource is the additive `resources` array.
     let terminals = resource::terminals(snapshot)
         .map(|pane| format_terminal_id(&pane.id))
         .collect();
@@ -225,9 +220,12 @@ pub fn document(
         .map(|pane| ResourceJson {
             id: format_terminal_id(&pane.id),
             kind: resource::kind_name(pane.kind).to_owned(),
+            name: pane.title.clone(),
             parent: pane.parent.as_ref().map(format_terminal_id),
             lifecycle: resource::lifecycle_name(pane.lifecycle).to_owned(),
             exit: pane.exit.as_ref().map(resource_exit_json),
+            producer: resource::producer_name(pane).map(str::to_owned),
+            control: pane.control.map(|class| class.name().to_owned()),
             key: organization
                 .and_then(|org| org.resource_by_live(&pane.id))
                 .map(|record| record.key.to_string()),
