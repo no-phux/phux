@@ -20,9 +20,9 @@ phux-client-runtime = { path = "../../crates/phux-client-runtime" }
 phux-perf = { path = "../../crates/phux-perf" }
 phux-protocol = { path = "../../crates/phux-protocol" }
 # Rune has no releases; apps pin a `dev` revision (dev is fast-forward only).
-rune = { git = "https://github.com/anomalyco/rune", rev = "a9da7e3ebf5a8ab9bf19c3015032674b6e042df2" }
-rune-mac = { git = "https://github.com/anomalyco/rune", rev = "a9da7e3ebf5a8ab9bf19c3015032674b6e042df2" }
-rune-perf = { git = "https://github.com/anomalyco/rune", rev = "a9da7e3ebf5a8ab9bf19c3015032674b6e042df2" }
+rune = { git = "https://github.com/anomalyco/rune", rev = "5bcb541357e7da77e3357e0b8724f43fcb2ca8d0" }
+rune-notify = { git = "https://github.com/anomalyco/rune", rev = "5bcb541357e7da77e3357e0b8724f43fcb2ca8d0" }
+rune-perf = { git = "https://github.com/anomalyco/rune", rev = "5bcb541357e7da77e3357e0b8724f43fcb2ca8d0" }
 # Never called directly: Rune's decoder guesses the format, so these
 # features (unified with Rune's png/jpeg) let typed documents draw GIF/WebP.
 image = { version = "0.25", default-features = false, features = ["gif", "webp"] }

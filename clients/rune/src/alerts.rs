@@ -1,7 +1,7 @@
 //! System notifications for what needs you while you are looking elsewhere,
 //! and the Dock's count.
 //!
-//! macOS posts through `rune_mac::notify`, Linux through `notify-send`;
+//! macOS posts through `rune_notify`, Linux through `notify-send`;
 //! where neither can, Settings says so. An alert is posted once, when its item first appears out of sight, and
 //! taken back when it is answered or comes into view. Clicks arrive on a
 //! system thread, so they queue here for the next poll.
@@ -13,7 +13,7 @@ use std::time::{Duration, Instant};
 use phux_protocol::ids::ResourceId;
 use rune::Waker;
 #[cfg(not(target_os = "linux"))]
-use rune_mac::notify::{self, Notification};
+use rune_notify::{self as notify, Notification};
 
 use crate::activity::Mark;
 use crate::inbox::{self, Item};
