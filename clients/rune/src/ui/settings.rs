@@ -312,6 +312,12 @@ fn phone_heading(desk: &Desk, ink: &Ink) -> El {
         })
 }
 
+/// A quieter top edge below the heading, and a stronger cue toward more
+/// content below. Keyboard-revealed controls stop clear of either fade.
+fn overflow_fade() -> rune::ScrollFade {
+    rune::ScrollFade::strength(16.0).with_end(rune::ScrollFade::strength(24.0).linear())
+}
+
 fn scroller(desk: &Desk, ink: &Ink) -> El {
     col()
         .key("settings-content")
@@ -322,6 +328,8 @@ fn scroller(desk: &Desk, ink: &Ink) -> El {
         .scroll(rune::ScrollSpec {
             stick_bottom: false,
         })
+        .scroll_fade(overflow_fade())
+        .scroll_margin(24.0)
         .child(
             col().w_full().padding(16.0).gap(16.0)
             // A search must never conceal an update failure or protocol warning.
@@ -363,6 +371,8 @@ fn desktop(desk: &Desk, ink: &Ink) -> El {
         .scroll(rune::ScrollSpec {
             stick_bottom: false,
         })
+        .scroll_fade(overflow_fade())
+        .scroll_margin(24.0)
         .padding(10.0)
         .gap(4.0)
         .role("navigation")
