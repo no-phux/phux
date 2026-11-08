@@ -53,48 +53,68 @@ pub fn view(desk: &Desk, cx: &mut Cx<Desk>) -> El {
         ground_ink(ground, cx.accent(), desk.settings.theme)
     };
     cx.foreground(p.text);
-    // On a desktop the traffic lights sit where a status bar would.
-    let top = if desk.native.is_some() {
+    let stage = phone_stage(desk, &p, cx);
+    let screen = col()
+        .key("phone-screen")
+        .w_full()
+        .h_full()
+        .pt(top_inset(desk, cx))
+        .children((!desk.settings_open).then(|| top_bar(desk, &controls)))
+        .child(stage)
+        .children((!desk.settings_open).then(|| tab_pills(desk, &controls)));
+    let bar = (!desk.settings_open || keyboard_visible).then(|| accessory(desk, phone, &controls));
+    let fill = if desk.settings_open {
+        p.sidebar
+    } else {
+        ground
+    };
+    if desk.native.is_some() {
+        // An accessory inside `screen` precedes root sheets and is inert
+        // behind their modal scrims. Reserve it below the modal content and
+        // append it AFTER every sheet, just as an OS input accessory behaves.
+        let content = overlays(
+            el().h(0.0).grow(1.0).w_full().min_h(0.0).child(screen),
+            desk,
+            &p,
+        );
+        return col()
+            .key("phone")
+            .w_full()
+            .h_full()
+            .fill(fill)
+            .child(content)
+            .children(bar);
+    }
+    let screen =
+        screen
+            .key("phone")
+            .children(bar)
+            .child(keyboard(phone, keyboard_visible, &controls));
+    overlays(el().w_full().h_full().fill(fill).child(screen), desk, &p)
+}
+
+fn overlays(root: El, desk: &Desk, p: &Ink) -> El {
+    root.children(status::banner(desk, p))
+        .children(desk.inbox.open.then(|| inbox::view(desk, p)))
+        .children(machines::sheet(desk, p))
+        .children(tabs::rename_sheet(desk, p))
+        .children(
+            desk.pointer
+                .menu
+                .map(|at| palette::context_menu(desk, at, p)),
+        )
+}
+
+fn top_inset(desk: &Desk, cx: &Cx<Desk>) -> f32 {
+    // Native UIKit already constrains the surface to its safe area. On a
+    // desktop, traffic lights occupy the simulated status bar's place.
+    if desk.native.is_some() {
         0.0
     } else if cx.titlebar_inset() > 0.0 {
         TITLEBAR_H
     } else {
         STATUS_INSET
-    };
-    let stage = phone_stage(desk, &p, cx);
-    let screen = col()
-        .key("phone")
-        .w_full()
-        .h_full()
-        .pt(top)
-        .children((!desk.settings_open).then(|| top_bar(desk, &controls)))
-        .child(stage)
-        .children((!desk.settings_open).then(|| tab_pills(desk, &controls)))
-        .children(
-            (!desk.settings_open || keyboard_visible).then(|| accessory(desk, phone, &controls)),
-        )
-        .children(
-            desk.native
-                .is_none()
-                .then(|| keyboard(phone, keyboard_visible, &controls)),
-        );
-    el().w_full()
-        .h_full()
-        .fill(if desk.settings_open {
-            p.sidebar
-        } else {
-            ground
-        })
-        .child(screen)
-        .children(status::banner(desk, &p))
-        .children(desk.inbox.open.then(|| inbox::view(desk, &p)))
-        .children(machines::sheet(desk, &p))
-        .children(tabs::rename_sheet(desk, &p))
-        .children(
-            desk.pointer
-                .menu
-                .map(|at| palette::context_menu(desk, at, &p)),
-        )
+    }
 }
 
 pub(super) fn ground_ink(ground: Color, accent: Color, theme: Option<&crate::theme::Theme>) -> Ink {
@@ -314,6 +334,7 @@ fn chip(key: String, name: &'static str, content: El, lit: bool, p: &Ink) -> El 
 }
 
 fn accessory(desk: &Desk, phone: &Phone, p: &Ink) -> El {
+    let native_field = desk.native.is_some() && crate::desk::native_input::editing(desk);
     let send = |label: &'static str, name: &'static str, key: Key| {
         chip(
             format!("phone-key-{name}"),
@@ -352,9 +373,9 @@ fn accessory(desk: &Desk, phone: &Phone, p: &Ink) -> El {
     )
     .child(send("esc", "Escape", Key::Escape))
     .child(send("⇥", "Tab", Key::Tab))
-    .child(latch(Latch::Ctrl, "⌃", "Control"))
-    .child(latch(Latch::Alt, "⌥", "Option"))
-    .child(latch(Latch::Shift, "⇧", "Shift"));
+    .children((!native_field).then(|| latch(Latch::Ctrl, "⌃", "Control")))
+    .children((!native_field).then(|| latch(Latch::Alt, "⌥", "Option")))
+    .children((!native_field).then(|| latch(Latch::Shift, "⇧", "Shift")));
     let pad = el()
         .key("phone-pad")
         .size(ROUND, ROUND)
@@ -365,32 +386,13 @@ fn accessory(desk: &Desk, phone: &Phone, p: &Ink) -> El {
         .label("Arrow keys: drag")
         .on_drag(|d: &mut Desk, drag, tx| d.pad_drag(drag.phase, drag.dx, drag.dy, tx))
         .child(glyph(&icons::PAD, 20.0, p.text));
-    let toggle = el()
-        .key("phone-keyboard-toggle")
-        .size(ROUND, ROUND)
-        .radius(ROUND / 2.0)
-        .center()
-        .fill(if desk.phone_keyboard_visible() {
-            p.current
-        } else {
-            Color::TRANSPARENT
-        })
-        .press(p.hover)
-        .cursor(Cursor::Pointer)
-        .label(if desk.phone_keyboard_visible() {
-            "Hide keyboard"
-        } else {
-            "Show keyboard"
-        })
-        .on_press_tx(Desk::toggle_keyboard)
-        .child(glyph(&icons::KEYBOARD, 20.0, p.text));
     let pair = glass(
         row().key("phone-pair").radius(ROUND / 2.0).items_center(),
         false,
         p,
     )
     .child(pad)
-    .child(toggle);
+    .child(keyboard_control(desk, native_field, p));
     let command = round(
         "phone-command",
         if desk.settings_open {
@@ -416,6 +418,38 @@ fn accessory(desk: &Desk, phone: &Phone, p: &Ink) -> El {
         .child(command)
         .child(strip)
         .child(pair)
+}
+
+fn keyboard_control(desk: &Desk, native_field: bool, p: &Ink) -> El {
+    if native_field {
+        return el()
+            .key("phone-native-done")
+            .focusable(true)
+            .size(ROUND, ROUND)
+            .center()
+            .label("Done editing")
+            .cursor(Cursor::Pointer)
+            .on_press_tx(crate::desk::native_input::done)
+            .child(text("Done").font(CAP_WORD).color(p.text));
+    }
+    el().key("phone-keyboard-toggle")
+        .size(ROUND, ROUND)
+        .radius(ROUND / 2.0)
+        .center()
+        .fill(if desk.phone_keyboard_visible() {
+            p.current
+        } else {
+            Color::TRANSPARENT
+        })
+        .press(p.hover)
+        .cursor(Cursor::Pointer)
+        .label(if desk.phone_keyboard_visible() {
+            "Hide keyboard"
+        } else {
+            "Show keyboard"
+        })
+        .on_press_tx(Desk::toggle_keyboard)
+        .child(glyph(&icons::KEYBOARD, 20.0, p.text))
 }
 
 /// A keyboard key; `fill` sets letters apart from the keys around them.

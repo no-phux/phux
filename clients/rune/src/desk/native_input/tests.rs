@@ -1,6 +1,164 @@
 use super::*;
 use rune::accesskit::Action as Accessibility;
 
+mod retirement;
+
+fn native(d: &mut Desk) {
+    d.phone = Some(super::super::phone::Phone::default());
+    d.native = Some(crate::mobile::Platform {
+        target: phux_client_runtime::Target::uds("/tmp/not-used"),
+        active: true,
+        connection_requested: false,
+    });
+}
+
+fn tap(rt: &mut Runtime<Desk>, key: &str, at: f64) {
+    let (x, y) = rt.find(key).unwrap_or_else(|| {
+        panic!(
+            "no {key}: {:?}",
+            rt.elements()
+                .iter()
+                .filter(|e| e.key.as_deref().is_some_and(|key| key.starts_with("phone")))
+                .map(|e| (&e.key, e.rect, e.inert))
+                .collect::<Vec<_>>()
+        )
+    });
+    assert!(
+        (0.0..393.0).contains(&x) && (0.0..852.0).contains(&y),
+        "off-screen accessory {key}: {x},{y}"
+    );
+    rt.touch(12, rune::TouchPhase::Started, x, y, at);
+    rt.frame(0.0);
+    rt.touch(12, rune::TouchPhase::Ended, x, y, at + 0.05);
+    rt.frame(0.0);
+}
+
+#[test]
+fn system_keyboard_consumes_the_drawn_accessory_latches_once() {
+    use phux_protocol::input::key::{ModSet, PhysicalKey};
+    use phux_protocol::wire::frame::FrameKind;
+    let (client, mut rt) = crate::grid::budget::input_fixture();
+    native(&mut rt.state);
+    rt.set_viewport((393.0, 852.0), 2.0);
+    rt.frame(0.0);
+    let mut bridge = Bridge::default();
+    let _ = bridge.snapshot(&rt);
+    let _ = client.take_outbound();
+    for (index, (latch, button, action, key, mods)) in [
+        (
+            super::super::phone::Latch::Ctrl,
+            "phone-latch-Control",
+            Action::Text { text: "c".into() },
+            PhysicalKey::C,
+            ModSet::CTRL,
+        ),
+        (
+            super::super::phone::Latch::Alt,
+            "phone-latch-Option",
+            Action::Text { text: "b".into() },
+            PhysicalKey::B,
+            ModSet::ALT,
+        ),
+        (
+            super::super::phone::Latch::Shift,
+            "phone-latch-Shift",
+            Action::Key {
+                name: "Tab".into(),
+                ctrl: false,
+                alt: false,
+                shift: false,
+                command: false,
+            },
+            PhysicalKey::Tab,
+            ModSet::SHIFT,
+        ),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let (x, y) = rt.find(button).unwrap();
+        assert!((0.0..393.0).contains(&x) && (0.0..852.0).contains(&y));
+        let at = 1.0 + index as f64;
+        for (phase, seconds) in [
+            (rune::TouchPhase::Started, at),
+            (rune::TouchPhase::Ended, at + 0.05),
+        ] {
+            rt.touch(7, phase, x, y, seconds);
+            rt.frame(0.0);
+            bridge.reconcile(&mut rt);
+            bridge.snapshot(&rt);
+        }
+        assert!(rt.state.phone.as_ref().unwrap().latched(latch));
+        let _ = client.take_outbound();
+        let snapshot = bridge.snapshot(&rt);
+        assert!(
+            bridge
+                .apply(
+                    &mut rt,
+                    Operation {
+                        token: snapshot.token,
+                        revision: snapshot.revision,
+                        action
+                    }
+                )
+                .unwrap()
+        );
+        assert!(!rt.state.phone.as_ref().unwrap().latched(latch));
+        let sent: Vec<_> = client
+            .take_outbound()
+            .iter()
+            .filter_map(|bytes| match FrameKind::decode(bytes).unwrap().0 {
+                FrameKind::InputKey { event, .. } => Some(event),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(sent.len(), 1);
+        assert_eq!((sent[0].key, sent[0].mods), (key, mods));
+    }
+}
+
+#[test]
+fn native_accessory_escape_cancels_rename_without_typing_behind_it() {
+    let (client, mut rt, _) = field("rename-field");
+    native(&mut rt.state);
+    rt.update(|_, tx| tx.instant());
+    rt.set_viewport((393.0, 852.0), 2.0);
+    rt.frame(0.0);
+    tap(&mut rt, "phone-key-Escape", 1.0);
+    assert!(rt.state.tabs.renaming.is_none());
+    no_terminal_input(&client);
+    rt.update(|d, tx| {
+        d.tabs.renaming = Some(super::super::Renaming::Tab([1; 16]));
+        d.tabs.rename_field.focused = true;
+        tx.instant();
+    });
+    rt.frame(0.0);
+    assert!(rt.find("phone-latch-Control").is_none());
+    assert!(rt.find("phone-latch-Shift").is_none());
+    assert!(rt.find("phone-native-done").is_some());
+    tap(&mut rt, "phone-native-done", 2.0);
+    assert!(
+        rt.state.tabs.renaming.is_some(),
+        "Done must edit focus, not hit the rename scrim"
+    );
+    assert!(!rt.state.tabs.rename_field.focused);
+    assert!(!rt.state.phone.as_ref().unwrap().keyboard);
+    no_terminal_input(&client);
+}
+
+fn no_terminal_input(client: &phux_client_runtime::Client) {
+    use phux_protocol::wire::frame::FrameKind;
+    for bytes in client.take_outbound() {
+        assert!(
+            !matches!(
+                FrameKind::decode(&bytes).unwrap().0,
+                FrameKind::InputKey { .. } | FrameKind::InputPaste { .. }
+            ),
+            "accessory typed behind a sheet"
+        );
+    }
+}
+
 #[test]
 fn native_terminal_candidate_geometry_follows_the_real_grid_cursor() {
     let (_, mut rt) = crate::grid::budget::input_fixture();
@@ -88,7 +246,8 @@ fn a_confirm_bar_has_priority_over_a_still_focused_find_field() {
 fn identical_acp_questions_in_new_activations_retire_the_owner() {
     use phux_protocol::ids::ResourceId;
     use phux_protocol::native_agent::{NativeCapabilities, NativeQuestion, NativeView};
-    let (_, mut rt) = crate::grid::budget::input_fixture();
+    let (client, mut rt) = crate::grid::budget::input_fixture();
+    native(&mut rt.state);
     let question = NativeQuestion {
         id: "q".into(),
         kind: "editor".into(),
@@ -134,6 +293,10 @@ fn identical_acp_questions_in_new_activations_retire_the_owner() {
     assert_ne!(before, after);
     rt.update(|d, tx| field.key(d, &event("Enter", false, false, false, false).unwrap(), tx));
     assert_eq!(field.edit(&rt.state).unwrap().text, "\n");
+    field.edit_mut(&mut rt.state).unwrap().focused = true;
+    let _ = client.take_outbound();
+    rt.update(|d, tx| d.soft(super::super::phone::Soft::Key(Key::Enter), tx));
+    assert_eq!(field.edit(&rt.state).unwrap().text, "\n\n");
     let duplicate = rt
         .state
         .inbox
@@ -148,6 +311,9 @@ fn identical_acp_questions_in_new_activations_retire_the_owner() {
         .views
         .insert(ResourceId::local(77), duplicate);
     assert!(target::Field::question(&rt.state, "acp-q-field-text").is_none());
+    rt.update(|d, tx| d.soft(super::super::phone::Soft::Key(Key::Backspace), tx));
+    assert_eq!(field.edit(&rt.state).unwrap().text, "\n\n");
+    assert!(client.take_outbound().is_empty());
 }
 
 fn field(

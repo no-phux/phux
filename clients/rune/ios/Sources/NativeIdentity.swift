@@ -122,12 +122,12 @@ final class NativeIdentity: @unchecked Sendable {
         let keyID = UUID().uuidString
         do {
             let identity = try NativeIdentity(newKeyID: keyID)
-            let object = try json.withCString { configuration in
+            let response: [String:Any] = try json.withCString { configuration in
                 try ticket.withCString { ticket in
-                    try object(phux_rune_ios_enroll(configuration, ticket, identity.handle))
+                    try Self.object(phux_rune_ios_enroll(configuration, ticket, identity.handle))
                 }
             }
-            guard let chain = object["chain_pem"] as? String, !chain.isEmpty else {
+            guard let chain = response["chain_pem"] as? String, !chain.isEmpty else {
                 throw IdentityFailure(message: "Enrollment returned no certificate chain.")
             }
             return Issued(chain: chain, keyID: keyID)

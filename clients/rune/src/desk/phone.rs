@@ -104,7 +104,7 @@ impl Phone {
     }
 
     /// Let go of every latch: each holds for one key, as a phone's shift does.
-    fn release(&mut self) {
+    pub(super) fn release(&mut self) {
         self.ctrl = false;
         self.alt = false;
         self.shift = false;
@@ -112,7 +112,7 @@ impl Phone {
     }
 
     /// `soft` as a field types it: a letter takes either shift.
-    fn for_field(&mut self, soft: Soft) -> Key {
+    pub(super) fn for_field(&mut self, soft: Soft) -> Key {
         let key = match soft {
             Soft::Char(c) if self.capital || self.shift => {
                 Key::Text(c.to_ascii_uppercase().to_string())
@@ -175,6 +175,9 @@ impl Desk {
     /// the terminal. A sheet the drawn keyboard can't type into yet gets
     /// nothing, never the terminal behind it.
     pub fn soft(&mut self, soft: Soft, tx: &mut Tx) {
+        if self.native.is_some() && super::native_input::accessory(self, &soft, tx) {
+            return;
+        }
         let field = match self.modal() {
             None => return self.soft_to_terminal(&soft),
             Some(Modal::Palette) => Field::Palette,

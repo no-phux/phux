@@ -188,7 +188,7 @@ pub unsafe extern "C" fn phux_rune_ios_frame(pointer: *mut c_void) -> *mut c_cha
             host.frames += 1;
             host.layer.runtime().state.drawn();
         }
-        host.input.reconcile(host.layer.runtime_mut());
+        let reconciled = host.input.reconcile(host.layer.runtime_mut());
         let input = host.input.snapshot(host.layer.runtime());
         let native = host
             .layer
@@ -198,8 +198,10 @@ pub unsafe extern "C" fn phux_rune_ios_frame(pointer: *mut c_void) -> *mut c_cha
             .as_mut()
             .ok_or("Missing native state.")?;
         let connection_requested = std::mem::take(&mut native.connection_requested);
-        string(json!({"drew":frame.drew,"animating":frame.animating,
-            "wake_after_secs":frame.wake_after_secs,"input":input,"connection_requested":connection_requested}))
+        string(
+            json!({"drew":frame.drew,"animating":frame.animating || reconciled,
+            "wake_after_secs":frame.wake_after_secs,"input":input,"connection_requested":connection_requested}),
+        )
     })
 }
 
@@ -251,6 +253,9 @@ fn input_response(
     copied: Option<String>,
     error: Option<String>,
 ) -> Result<*mut c_char, String> {
+    // Malformed/oversized input skips `apply`; retire its previous owner
+    // before an authoritative snapshot can adopt a different document.
+    host.input.reconcile(host.layer.runtime_mut());
     string(
         json!({"accepted":accepted,"input":host.input.snapshot(host.layer.runtime()),
         "copied_text":copied,"error":error}),

@@ -6,7 +6,10 @@ use serde::{Deserialize, Serialize};
 use super::Desk;
 use target::Target;
 
+mod accessory;
 mod target;
+pub(in crate::desk) use accessory::soft as accessory;
+pub(crate) use accessory::{done, editing};
 #[cfg(test)]
 mod tests;
 mod unicode;
@@ -85,10 +88,13 @@ pub struct Bridge {
 impl Bridge {
     /// Retire only transient composition when the responder's owner changes.
     /// Direct app-model preedit is not tracked by Rune's queued IME hook.
-    pub fn reconcile(&mut self, rt: &mut Runtime<Desk>) {
-        if self.target != target::resolve(rt) {
+    pub fn reconcile(&mut self, rt: &mut Runtime<Desk>) -> bool {
+        let retired = accessory::retire_unmounted(rt);
+        let changed = self.target != target::resolve(rt);
+        if changed {
             self.cancel_preedit(rt);
         }
+        retired || changed
     }
 
     pub fn cancel_preedit(&self, rt: &mut Runtime<Desk>) {
@@ -99,6 +105,9 @@ impl Bridge {
                 edit.preedit = None;
             }
             d.preedit = None;
+            if let Some(phone) = &mut d.phone {
+                phone.release();
+            }
             tx.instant();
         });
     }
@@ -223,8 +232,8 @@ impl Bridge {
             Action::Copy => rt.update(|d, tx| d.copy(tx)),
             Action::SelectAll => rt.update(|d, tx| d.select_all(tx)),
             Action::Text { text } => {
-                rt.update(|d, _| {
-                    d.ime(&rune::Ime::Commit(text));
+                rt.update(|d, tx| {
+                    accessory::text(d, text, tx);
                 });
             }
             Action::Preedit { text, .. } => {
@@ -247,7 +256,7 @@ impl Bridge {
             } => {
                 let event = event(&name, ctrl, alt, shift, command)?;
                 rt.update(|d, tx| {
-                    d.key(&event, tx);
+                    accessory::key(d, event, tx);
                 });
             }
             _ => return Ok(false),

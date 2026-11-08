@@ -169,6 +169,10 @@ impl Field {
             if outcome.submit && self.multiline() {
                 edit.insert("\n");
             }
+            if outcome.blur {
+                edit.focused = false;
+                tx.blur();
+            }
             if edit.text != before {
                 self.changed(d);
             }
@@ -211,14 +215,19 @@ pub(super) fn resolve(rt: &Runtime<Desk>) -> Option<Target> {
     }
     match d.modal() {
         Some(_) => None,
-        None => {
-            let shown = d.shown.as_ref()?;
-            Some(Target::Terminal(format!(
-                "{connection}:{}:{:?}",
-                shown.terminal, shown.view?
-            )))
-        }
+        None => terminal(d, &connection),
     }
+}
+
+fn terminal(d: &Desk, connection: &str) -> Option<Target> {
+    if d.native.is_some() && super::accessory::editing(d) {
+        return None;
+    }
+    let shown = d.shown.as_ref()?;
+    Some(Target::Terminal(format!(
+        "{connection}:{}:{:?}",
+        shown.terminal, shown.view?
+    )))
 }
 
 fn focused_field(d: &Desk, element: rune::ElementInfo, connection: &str) -> Option<Target> {
