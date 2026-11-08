@@ -296,7 +296,7 @@ RUNE_RESOURCE_SNAP="$PWD/target/resource-native.png" \
 The test checks decoded PNG pixels, native image draw commands, JSON text,
 and the Read-only mirror label; `target/resource-native.json` is the tree.
 
-On macOS, notifications need the signed bundle (`rune_mac::notify::available`);
+On macOS, notifications need the signed bundle (`rune_notify::available`);
 `cargo run` can't post, and Settings says so. On Linux any build posts while
 `notify-send` is on `PATH`, and withdraws through `gdbus`.
 
