@@ -1,0 +1,52 @@
+# Ships the phux release with no human, beside rune-auto-release.yml and
+# phux-mobile's auto-release: every two hours, if Release Please has a release
+# PR pending, mark it ready (which runs ci) and turn on squash auto-merge.
+# Merging cuts the stable release and release.yml publishes it as before.
+# Repository variable PHUX_AUTO_RELEASE=false stops it; merging the release
+# PR by hand still works.
+#
+# Act as the release App, never GITHUB_TOKEN: events it causes trigger no
+# workflows, so ready_for_review would run no ci and auto-merge would wait
+# forever.
+name: phux-auto-release
+
+on:
+  schedule:
+    # Every two hours, off the hour and off rune-auto-release's minute.
+    - cron: "37 */2 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: phux-auto-release
+  cancel-in-progress: false
+
+jobs:
+  press:
+    if: vars.PHUX_AUTO_RELEASE != 'false'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        id: app-token
+        with:
+          client-id: ${{ vars.RELEASE_APP_ID }}
+          private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
+      - name: Ready and auto-merge the pending release PR
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          pr=$(gh pr list --state open --head release-please--branches--main \
+            --label "autorelease: pending" --json number --jq '.[0].number // empty')
+          if [ -z "$pr" ]; then
+            echo "no release PR pending"
+            exit 0
+          fi
+          if [ "$(gh pr view "$pr" --json isDraft --jq .isDraft)" = true ]; then
+            gh pr ready "$pr"
+          fi
+          gh pr merge "$pr" --auto --squash
+          echo "release PR #$pr is ready and merges when ci is green"

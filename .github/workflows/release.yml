@@ -12,8 +12,9 @@
 #   version bump rewrites Cargo.toml and every Cargo.lock in one commit
 #   (extra-files in release-please-config.json). Nothing patches the branch
 #   afterwards, so there is nothing for an early merge to race.
-# - Release PRs open as drafts and accumulate changes; nothing merges them.
-#   Marking one ready runs ci; squash-merging it cuts the stable release.
+# - Release PRs open as drafts and accumulate changes. phux-auto-release.yml
+#   marks one ready every two hours (which runs ci) and auto-merges it;
+#   squash-merging it cuts the stable release.
 # - A draft ships only on a green ci push run for its own commit
 #   (tools/src/release/publish-plan.ts). Every run reconciles every draft, so
 #   a run superseded while pending loses nothing.
