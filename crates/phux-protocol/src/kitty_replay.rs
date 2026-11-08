@@ -32,12 +32,12 @@ pub enum KittyReplayError {
 
 /// Install phux's PNG decoder and enable Kitty image storage on `terminal`.
 ///
-/// The decoder registration is thread-local in libghostty; calling this from
-/// each pane constructor is intentional and keeps tests/actors independent.
+/// The binding installs the process-global decoder through the engine's
+/// synchronized hook. Registration is safe alongside other terminal threads.
 pub fn configure_terminal_for_kitty_graphics(
     terminal: &mut GhosttyTerminal<'_, '_>,
 ) -> Result<(), libghostty_vt::Error> {
-    graphics::set_png_decoder(Some(Box::new(graphics::RustPngDecoder::new())))?;
+    graphics::install_rust_png_decoder()?;
     terminal.set_kitty_image_storage_limit(KITTY_IMAGE_STORAGE_LIMIT_BYTES)?;
     Ok(())
 }
@@ -70,7 +70,9 @@ pub fn emit_kitty_graphics_replay(
     origin: (u16, u16),
     clip: (u16, u16),
 ) -> Result<bool, KittyReplayError> {
-    let graphics = terminal.kitty_graphics()?;
+    let Some(graphics) = terminal.kitty_graphics()? else {
+        return Ok(false);
+    };
     let replay = sorted_placements(terminal, &graphics, placement_iter, Some(clip))?;
     residency.replay(&graphics, &replay, origin, out)
 }
@@ -89,7 +91,9 @@ pub fn emit_kitty_graphics_snapshot(
     placement_iter: &mut PlacementIterator<'_>,
     out: &mut impl Write,
 ) -> Result<bool, KittyReplayError> {
-    let graphics = terminal.kitty_graphics()?;
+    let Some(graphics) = terminal.kitty_graphics()? else {
+        return Ok(false);
+    };
     let mut image_ids = Vec::new();
     graphics.image_ids_into(&mut image_ids)?;
     let mut replay = sorted_placements(terminal, &graphics, placement_iter, None)?;

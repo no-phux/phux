@@ -17,8 +17,9 @@ use std::{
 
 use libghostty_vt::{
     Error as SnapshotError, Terminal as GhosttyTerminal,
+    fmt::Formatter,
     screen::{CellContentTag, CellWide, TrackedGridRef},
-    selection::{FormatOptions, Selection},
+    selection::Selection,
     snapshot::{CaptureEvent, CaptureOptions, FeedDecoder, FeedIncrementalDecoder},
     style::{Palette, PaletteIndex, RgbColor},
     terminal::{ClipboardWrite, Point, PointCoordinate, PointSpace, ScrollViewport},

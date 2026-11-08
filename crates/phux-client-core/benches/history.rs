@@ -32,12 +32,13 @@ use support::{
 };
 
 #[cfg(feature = "native-engine")]
-use libghostty_vt::{
-    Terminal as GhosttyTerminal,
-    snapshot::{CaptureEvent, CaptureOptions},
-};
+use libghostty_vt::snapshot::{CaptureEvent, CaptureOptions};
 #[cfg(feature = "native-engine")]
 use phux_client_core::engine::ghostty::GhosttyAdapter;
+
+#[cfg(feature = "native-engine")]
+#[path = "history/native_source.rs"]
+pub mod native_source;
 
 #[derive(Debug, Default)]
 struct BenchReplica {
@@ -362,16 +363,7 @@ struct NativePageFixture {
 
 #[cfg(feature = "native-engine")]
 fn native_page_fixture() -> NativePageFixture {
-    let mut terminal = GhosttyTerminal::new(200, 3).expect("native benchmark terminal");
-    terminal
-        .set_scrollback_max_lines(Some(5_000))
-        .expect("scrollback rows");
-    terminal
-        .set_scrollback_max_bytes(None)
-        .expect("scrollback bytes");
-    for row in 0..3_000 {
-        terminal.vt_write(format!("native-history-{row:04}\r\n").as_bytes());
-    }
+    let mut terminal = native_source::terminal();
     let record_bytes = HISTORY_PAGE_LIMIT;
     let mut capture = terminal
         .capture_snapshot(CaptureOptions {

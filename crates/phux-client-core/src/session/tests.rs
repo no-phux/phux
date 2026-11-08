@@ -27,12 +27,12 @@ use crate::history::HistoryLoadState;
 #[cfg(feature = "native-engine")]
 use crate::engine::ghostty::GhosttyAdapter;
 #[cfg(feature = "native-engine")]
-use libghostty_vt::{
-    Terminal as GhosttyTerminal,
-    snapshot::{CaptureEvent, CaptureOptions},
-};
+use libghostty_vt::snapshot::{CaptureEvent, CaptureOptions};
 #[cfg(feature = "native-engine")]
 use phux_protocol::wire::frame::FrameKind;
+
+#[cfg(feature = "native-engine")]
+mod native_source;
 
 const READY_MARKER: &[u8] = b"<SYNTHESIZED_VT_V1_READY>";
 
@@ -904,16 +904,7 @@ fn apply_decoded_native_frame(
     reason = "the acceptance test keeps real capture, wire framing, publication, interleaving, and projection in one end-to-end proof"
 )]
 fn real_native_wire_kernel_path_publishes_then_imports_multiple_pages() {
-    let mut source = GhosttyTerminal::new(200, 3).expect("source terminal");
-    source
-        .set_scrollback_max_lines(Some(5_000))
-        .expect("history rows");
-    source
-        .set_scrollback_max_bytes(None)
-        .expect("history bytes");
-    for row in 0..3_000 {
-        source.vt_write(format!("wire-history-{row:04}\r\n").as_bytes());
-    }
+    let mut source = native_source::terminal();
     let mut capture = source
         .capture_snapshot(CaptureOptions {
             max_record_bytes: 64 * 1024,
@@ -947,6 +938,7 @@ fn real_native_wire_kernel_path_publishes_then_imports_multiple_pages() {
                 units.push((std::mem::take(&mut pending), 0, true));
                 break;
             }
+            CaptureEvent::Image { .. } => units.push((std::mem::take(&mut pending), 0, false)),
             CaptureEvent::Scan | CaptureEvent::Record { .. } => {}
             CaptureEvent::Invalidated(reason) => panic!("capture invalidated: {reason:?}"),
             CaptureEvent::Ready { .. } => unreachable!(),

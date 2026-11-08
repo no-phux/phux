@@ -170,7 +170,7 @@ fn pane_title(terminal: &GhosttyTerminal<'_, '_>) -> Option<String> {
         .title()
         .ok()
         .filter(|t| !t.is_empty())
-        .map(ToOwned::to_owned)
+        .map(|title| String::from_utf8_lossy(title).into_owned())
 }
 
 /// Project one viewport row to its right-trimmed plain text, recording each

@@ -83,7 +83,7 @@ pub(super) fn install_effect_hooks(
 fn clipboard_text(write: &ClipboardWrite<'_>) -> Option<String> {
     let content = write
         .contents()
-        .find(|content| content.mime.starts_with("text/plain"))?;
+        .find(|content| content.mime.starts_with(b"text/plain"))?;
     if content.data.len() > MAX_CLIPBOARD_BYTES {
         return None;
     }

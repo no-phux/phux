@@ -43,9 +43,9 @@ unknown-registry = "deny"
 unknown-git = "deny"
 # libghostty-vt / libghostty-vt-sys are intentionally consumed from git
 # per ADR-0008 (use libghostty types directly). Track upstream until
-# crates.io releases catch up. The phall1 fork vendors phall1/ghostty's
-# resize-overflow fix (phux-y06, "fix: resize overflow") until it lands
-# on ghostty-org/ghostty.
+# crates.io releases catch up. The phall1 fork tracks upstream bindings and
+# libghostty-vt 1.0, retaining only required capture, staged-feed, input,
+# image replay, and safe integration extensions (docs/libghostty.md).
 allow-git = [
     "https://github.com/Uzaaft/libghostty-rs",
     "https://github.com/uzaaft/libghostty-rs",

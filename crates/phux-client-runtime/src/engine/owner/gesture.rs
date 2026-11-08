@@ -1,7 +1,7 @@
 //! Pointer selection gestures and whole-document text operations.
 
 use super::{
-    EngineDocumentPoint, EngineError, FormatOptions, Gesture, Owner, Point, PointCoordinate,
+    EngineDocumentPoint, EngineError, Formatter, Gesture, Owner, Point, PointCoordinate,
     PointerGesture, ResourceId, Selection, SelectionGestureEvent, SelectionGestureResult,
     TextRegion, apply_gesture_event, engine_error, gesture_document_points, validate_gesture,
 };
@@ -166,40 +166,43 @@ impl Owner {
     ) -> Result<super::BoundedSelectionText, EngineError> {
         let terminal = self.terminal(id)?;
         let error = |error: libghostty_vt::Error| engine_error(error.to_string());
-        let cols = terminal.cols().map_err(error)?;
-        let rows = match region {
-            TextRegion::Screen => terminal.total_rows(),
-            TextRegion::History => terminal.scrollback_rows(),
-        }
-        .map_err(error)?;
-        let Some(last) = rows.checked_sub(1) else {
+        let Some(selection) = region_selection(terminal, region)? else {
             return Ok(super::BoundedSelectionText::Text(Vec::new()));
         };
-        let last = u32::try_from(last).map_err(|_| engine_error("region exceeds u32 rows"))?;
-        let corner = |x, y| terminal.grid_ref(Point::History(PointCoordinate { x, y }));
-        let selection = Selection::new(
-            corner(0, 0).map_err(error)?,
-            corner(cols.saturating_sub(1), last).map_err(error)?,
-            false,
-        );
         // The span is the loaded document itself, already bounded by the
         // history budget, so the formatter's work is too; only the output
         // size is refused here.
-        let formatted = terminal
-            .format_selection_alloc(
-                None,
-                FormatOptions::new()
-                    .with_selection(&selection)
-                    .with_unwrap(true)
-                    .with_trim(true),
-            )
-            .map_err(error)?;
-        Ok(match formatted {
-            Some(bytes) if bytes.len() > max_bytes => {
-                super::BoundedSelectionText::ByteLimitExceeded
-            }
-            Some(bytes) => super::BoundedSelectionText::Text(bytes.to_vec()),
-            None => super::BoundedSelectionText::Text(Vec::new()),
-        })
+        let mut formatter = Formatter::new_with_selection(terminal, &selection).map_err(error)?;
+        formatter.set_unwrap(true).map_err(error)?;
+        let required = formatter.format_len().map_err(error)?;
+        if required > max_bytes {
+            return Ok(super::BoundedSelectionText::ByteLimitExceeded);
+        }
+        let bytes = formatter.format_alloc(None).map_err(error)?;
+        Ok(super::BoundedSelectionText::Text(bytes.to_vec()))
     }
+}
+
+#[cfg(feature = "engine")]
+fn region_selection<'t>(
+    terminal: &'t libghostty_vt::Terminal<'_, '_>,
+    region: TextRegion,
+) -> Result<Option<Selection<'t>>, EngineError> {
+    let error = |error: libghostty_vt::Error| engine_error(error.to_string());
+    let cols = terminal.cols().map_err(error)?;
+    let rows = match region {
+        TextRegion::Screen => terminal.total_rows(),
+        TextRegion::History => terminal.scrollback_rows(),
+    }
+    .map_err(error)?;
+    let Some(last) = rows.checked_sub(1) else {
+        return Ok(None);
+    };
+    let last = u32::try_from(last).map_err(|_| engine_error("region exceeds u32 rows"))?;
+    let corner = |x, y| terminal.grid_ref(Point::History(PointCoordinate { x, y }));
+    Ok(Some(Selection::new(
+        corner(0, 0).map_err(error)?,
+        corner(cols.saturating_sub(1), last).map_err(error)?,
+        false,
+    )))
 }

@@ -21,7 +21,7 @@ fn browser_fixture_transcript() -> Vec<u8> {
         .set_scrollback_max_lines(Some(100_000))
         .expect("history rows");
     terminal
-        .set_scrollback_max_bytes(None)
+        .set_scrollback_max_bytes(Some(usize::MAX))
         .expect("unlimited history bytes");
     let limits = BootstrapLimits::default();
     let mut manager = NativeTerminalManager::new(terminal, 1).expect("native manager");
@@ -104,7 +104,7 @@ struct DecodedFixture {
 /// Decode a transcript the way the browser does: READY through the feed
 /// decoder, then each history page and FINISH checked against its rows.
 fn decode_browser_fixture(transcript: &[u8]) -> DecodedFixture {
-    use libghostty_vt::fmt::{Format, Formatter, FormatterOptions};
+    use libghostty_vt::fmt::{Format, Formatter};
     use libghostty_vt::snapshot::{FeedDecoder, FeedIncrementalDecoder};
 
     assert_eq!(&transcript[..8], b"PHUXSNP1", "fixture magic");
@@ -147,15 +147,10 @@ fn decode_browser_fixture(transcript: &[u8]) -> DecodedFixture {
     }
     let mut terminal = terminal.expect("transcript ends with FINISH");
     terminal.vt_write(b"1mprobe\x1b[0m");
-    let title = terminal.title().expect("title").to_owned();
+    let title = String::from_utf8_lossy(terminal.title().expect("title")).into_owned();
     let scrollback_rows = terminal.scrollback_rows().expect("scrollback rows");
-    let mut formatter = Formatter::new(
-        &terminal,
-        FormatterOptions::new()
-            .with_format(Format::Vt)
-            .with_trim(true),
-    )
-    .expect("formatter");
+    let mut formatter = Formatter::new(&terminal).expect("formatter");
+    formatter.set_format(Format::Vt).expect("VT format");
     let vt = formatter.format_alloc(None).expect("format terminal");
     let vt = String::from_utf8(vt.to_vec()).expect("utf-8 terminal text");
     DecodedFixture {

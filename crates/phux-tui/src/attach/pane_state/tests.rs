@@ -76,7 +76,11 @@ fn first_live_kitty_render_restores_a_visible_image() {
         .expect("render");
     let mut receiver = PaneSlot::new_with_size(10, 5).expect("receiver");
     receiver.terminal.vt_write(&out);
-    let graphics = receiver.terminal.kitty_graphics().unwrap();
+    let graphics = receiver
+        .terminal
+        .kitty_graphics()
+        .unwrap()
+        .expect("Kitty graphics enabled");
     let image = graphics.image(77).expect("replayed image");
     assert_eq!(image.data().unwrap().unwrap(), &[255, 0, 0, 255]);
     let mut iter = libghostty_vt::kitty::graphics::PlacementIterator::new().unwrap();
@@ -199,6 +203,7 @@ fn a_deleted_kitty_image_is_deleted_from_the_outer_terminal() {
             .terminal
             .kitty_graphics()
             .unwrap()
+            .expect("Kitty graphics enabled")
             .image(77)
             .is_some()
     );
@@ -212,6 +217,7 @@ fn a_deleted_kitty_image_is_deleted_from_the_outer_terminal() {
             .terminal
             .kitty_graphics()
             .unwrap()
+            .expect("Kitty graphics enabled")
             .image(77)
             .is_none()
     );

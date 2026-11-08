@@ -39,7 +39,7 @@ fn paged_history_terminal() -> GhosttyTerminal<'static, 'static> {
         .set_scrollback_max_lines(Some(100_000))
         .expect("history rows");
     terminal
-        .set_scrollback_max_bytes(None)
+        .set_scrollback_max_bytes(Some(usize::MAX))
         .expect("unlimited scrollback bytes");
     terminal
         .set_continuation_max_bytes(CONTINUATION_LIMIT)

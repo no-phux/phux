@@ -52,7 +52,10 @@ type ObservedPlacement = (u32, u32, bool, [u32; 8], i32, Option<(i32, i32)>);
 
 // Read the receiver's parsed placements, not the spelling of generated APCs.
 fn placements(terminal: &GhosttyTerminal<'_, '_>) -> Vec<ObservedPlacement> {
-    let graphics = terminal.kitty_graphics().expect("graphics");
+    let graphics = terminal
+        .kitty_graphics()
+        .expect("graphics")
+        .expect("Kitty graphics enabled");
     let mut iter = PlacementIterator::new().expect("iterator");
     let mut items = iter.update(&graphics).expect("placements");
     let mut result = Vec::new();
@@ -108,7 +111,10 @@ fn replay_preserves_classic_geometry_identity_and_pixels() {
     let mut expected = placements(&source);
     expected[0].5 = Some((3, 2));
     assert_eq!(placements(&target), expected);
-    let graphics = target.kitty_graphics().unwrap();
+    let graphics = target
+        .kitty_graphics()
+        .unwrap()
+        .expect("Kitty graphics enabled");
     assert_eq!(
         graphics.image(7).unwrap().data().unwrap().unwrap(),
         &[127; 256]
@@ -134,7 +140,10 @@ fn replay_preserves_every_virtual_placement_and_natural_size() {
 #[test]
 fn replay_keeps_anonymous_and_external_namespaces_and_default_selection() {
     fn default_columns(terminal: &GhosttyTerminal<'_, '_>) -> u32 {
-        let graphics = terminal.kitty_graphics().unwrap();
+        let graphics = terminal
+            .kitty_graphics()
+            .unwrap()
+            .expect("Kitty graphics enabled");
         let mut iter = PlacementIterator::new().unwrap();
         let mut items = iter.update(&graphics).unwrap();
         while let Some(p) = items.next() {
@@ -179,6 +188,7 @@ fn snapshot_preserves_unplaced_payload_for_later_live_placement() {
         target
             .kitty_graphics()
             .unwrap()
+            .expect("Kitty graphics enabled")
             .image(7)
             .unwrap()
             .data()
@@ -215,7 +225,10 @@ fn viewport_replay_omits_unplaced_and_fully_clipped_payloads() {
     assert!(emit(&source, &mut out));
     let mut target = terminal();
     target.vt_write(&out);
-    let graphics = target.kitty_graphics().unwrap();
+    let graphics = target
+        .kitty_graphics()
+        .unwrap()
+        .expect("Kitty graphics enabled");
     assert!(graphics.image(7).is_none());
     assert!(graphics.image(3).is_some());
     let items = placements(&target);
@@ -258,7 +271,10 @@ fn replay_keeps_clipped_native_images_at_native_pixel_size() {
     replay(&source, &mut target, (0, 0));
     let items = placements(&target);
     assert_eq!(items[0].3, [0, 0, 0, 0, 0, 32, 0, 0]);
-    let graphics = target.kitty_graphics().unwrap();
+    let graphics = target
+        .kitty_graphics()
+        .unwrap()
+        .expect("Kitty graphics enabled");
     let image = graphics.image(7).unwrap();
     let mut iter = PlacementIterator::new().unwrap();
     let mut placements = iter.update(&graphics).unwrap();
@@ -276,8 +292,14 @@ fn replay_keeps_clipped_native_images_at_native_pixel_size() {
 #[test]
 fn enabling_graphics_does_not_enable_external_image_media() {
     let terminal = terminal();
-    assert!(!terminal.is_kitty_image_from_file_allowed().unwrap());
-    assert!(!terminal.is_kitty_image_from_shared_mem_allowed().unwrap());
+    assert_eq!(
+        terminal.is_kitty_image_from_file_allowed().unwrap(),
+        Some(false)
+    );
+    assert_eq!(
+        terminal.is_kitty_image_from_shared_mem_allowed().unwrap(),
+        Some(false)
+    );
     assert!(terminal.kitty_image_temp_file_dir().unwrap().is_none());
 }
 
@@ -322,7 +344,10 @@ fn png_formats_decode_to_rgba_and_roundtrip() {
         source.vt_write(&command);
         let mut target = terminal();
         replay(&source, &mut target, (0, 0));
-        let graphics = target.kitty_graphics().unwrap();
+        let graphics = target
+            .kitty_graphics()
+            .unwrap()
+            .expect("Kitty graphics enabled");
         let image = graphics.image(7).expect("decoded PNG");
         assert_eq!(image.format().unwrap(), ImageFormat::Rgba);
         assert_eq!(image.data().unwrap().unwrap(), expected);
@@ -360,7 +385,14 @@ fn png_decoder_rejects_oversized_header_before_decoding() {
     command.extend_from_slice(b"\x1b\\");
     let mut source = terminal();
     source.vt_write(&command);
-    assert!(source.kitty_graphics().unwrap().image(7).is_none());
+    assert!(
+        source
+            .kitty_graphics()
+            .unwrap()
+            .expect("Kitty graphics enabled")
+            .image(7)
+            .is_none()
+    );
 }
 
 fn gradient(len: usize) -> Vec<u8> {
@@ -383,6 +415,9 @@ fn contains(hay: &[u8], needle: &[u8]) -> usize {
 }
 
 fn pixels(terminal: &GhosttyTerminal<'_, '_>, id: u32) -> Option<Vec<u8>> {
-    let graphics = terminal.kitty_graphics().unwrap();
+    let graphics = terminal
+        .kitty_graphics()
+        .unwrap()
+        .expect("Kitty graphics enabled");
     Some(graphics.image(id)?.data().unwrap()?.to_vec())
 }

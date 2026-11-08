@@ -1,5 +1,29 @@
 use super::*;
 
+#[test]
+fn image_payload_is_a_zero_row_history_unit_not_finish() {
+    let mut terminal = GhosttyTerminal::new(20, 4).unwrap();
+    terminal
+        .set_continuation_max_bytes(CONTINUATION_LIMIT)
+        .unwrap();
+    phux_protocol::kitty_replay::configure_terminal_for_kitty_graphics(&mut terminal).unwrap();
+    terminal.resize(20, 4, 8, 16).unwrap();
+    terminal.vt_write(b"\x1b_Ga=T,f=32,s=1,v=1,i=42,c=2,r=2,C=1;/wAA/w==\x1b\\");
+    let mut manager = NativeTerminalManager::new(terminal, 2).unwrap();
+    let (cursor, max_bytes, max_rows) =
+        install_leased_generation(&mut manager, BootstrapLimits::default());
+    let image = history_at(&mut manager, &cursor, 0, max_bytes, max_rows).unwrap();
+    assert_eq!(image.rows, 0);
+    assert!(
+        !image.finish,
+        "zero image rows must not terminate history delivery"
+    );
+    assert!(!image.bytes.is_empty());
+    let finish = history_at(&mut manager, &cursor, 1, max_bytes, max_rows).unwrap();
+    assert!(finish.finish);
+    assert_eq!(finish.rows, 0);
+}
+
 /// An engine failure at the frontier reaches every owner with its cause.
 #[test]
 fn a_failed_frontier_gives_every_owner_the_engine_reason() {

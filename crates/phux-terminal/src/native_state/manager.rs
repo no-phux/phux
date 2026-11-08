@@ -404,6 +404,7 @@ impl NativeTerminalManager {
             CaptureEvent::HistoryPage { rows, .. } => {
                 Self::store_history_record(generation, rows, false)
             }
+            CaptureEvent::Image { .. } => Self::store_history_record(generation, 0, false),
             CaptureEvent::Finish { .. } => {
                 Self::store_history_record(generation, 0, true)?;
                 generation.capture = None;

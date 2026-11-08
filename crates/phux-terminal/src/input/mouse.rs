@@ -90,7 +90,7 @@ impl PerTerminalMouseEncoder {
             padding_bottom: 0,
             padding_right: 0,
             padding_left: 0,
-        });
+        })?;
         self.buf.clear();
         self.encoder.encode_to_vec(&lg_event, &mut self.buf)?;
         Ok(&self.buf)

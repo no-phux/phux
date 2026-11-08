@@ -14,7 +14,7 @@ use std::rc::Rc;
 
 use libghostty_vt::Terminal as GhosttyTerminal;
 use libghostty_vt::terminal::{
-    ProgramStatusKind, ProgramStatusReport, ProgramStatusState, ProgressReport, ProgressState,
+    ProgramStatus, ProgramStatusKind, ProgramStatusState, ProgressReport, ProgressState,
     SemanticPrompt, SemanticPromptKind,
 };
 
@@ -108,17 +108,17 @@ fn progress(report: ProgressReport<'_>) -> Option<Effect> {
     Some(Effect::Progress(format!("4;{state};{percent}")))
 }
 
-fn program_status(report: ProgramStatusReport<'_>) -> Option<Update> {
-    let id = report.id().to_owned();
+fn program_status(report: ProgramStatus<'_>) -> Option<Update> {
+    let id = std::str::from_utf8(report.id()).ok()?.to_owned();
     let state = report.state().ok()?;
     if state == ProgramStatusState::Clear {
         return Some(Update::Clear(id));
     }
-    let text = |text: &str| (!text.is_empty()).then(|| text.to_owned());
+    let text = |text: &[u8]| (!text.is_empty()).then(|| String::from_utf8_lossy(text).into_owned());
     Some(Update::Put(Record {
         id,
         state: record_state(state)?,
-        kind: report.kind().and_then(record_kind),
+        kind: report.kind().ok().and_then(record_kind),
         progress: report.progress(),
         app: text(report.app()),
         title: text(report.title()),

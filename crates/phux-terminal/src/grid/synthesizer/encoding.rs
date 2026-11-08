@@ -14,7 +14,7 @@ pub(super) fn emit_cell_bounded(
     if matches!(cell.raw_cell()?.wide()?, CellWide::SpacerTail) {
         return Ok(());
     }
-    let len = cell.graphemes_len()?;
+    let len = usize::try_from(cell.graphemes_len()?).map_err(|_| SynthesisError::LimitExceeded)?;
     apply_pen_bounded(cell, out, prev)?;
     if len == 0 {
         out.write_all(b" ")
@@ -94,7 +94,7 @@ pub(super) fn emit_cell(
         return Ok(());
     }
 
-    let len = cell.graphemes_len()?;
+    let len = usize::try_from(cell.graphemes_len()?).map_err(|_| SynthesisError::LimitExceeded)?;
 
     // Pen before glyph, blank cells included: a colored blank cell must keep
     // its background.

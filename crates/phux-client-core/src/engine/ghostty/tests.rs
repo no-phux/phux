@@ -31,7 +31,7 @@ fn capture_snapshot() -> CapturedSnapshot {
         .set_scrollback_max_lines(Some(5_000))
         .expect("scrollback");
     source
-        .set_scrollback_max_bytes(None)
+        .set_scrollback_max_bytes(Some(usize::MAX))
         .expect("unlimited scrollback bytes");
     source
         .set_continuation_max_bytes(CONTINUATION_LIMIT)
@@ -69,6 +69,7 @@ fn capture_snapshot() -> CapturedSnapshot {
                 u32::try_from(rows).expect("page rows"),
             )),
             CaptureEvent::Finish { .. } => break std::mem::take(&mut pending),
+            CaptureEvent::Image { .. } => history.push((std::mem::take(&mut pending), 0)),
             CaptureEvent::Scan | CaptureEvent::Record { .. } => {}
             CaptureEvent::Invalidated(reason) => panic!("capture invalidated: {reason:?}"),
             CaptureEvent::Ready { .. } => unreachable!(),
@@ -115,9 +116,9 @@ fn native_adapter() -> GhosttyAdapter {
     GhosttyAdapter::new(BootstrapLimits::default())
 }
 
-/// The pinned native codec cannot be offered by an image-painting consumer.
+/// Upstream 1.0 restores image metadata at READY and pixels in later units.
 #[test]
-fn native_snapshot_ready_does_not_restore_kitty_image_storage() {
+fn native_snapshot_restores_kitty_metadata_then_deferred_pixels() {
     let mut source = GhosttyTerminal::new(8, 3).unwrap();
     source
         .set_continuation_max_bytes(CONTINUATION_LIMIT)
@@ -125,7 +126,7 @@ fn native_snapshot_ready_does_not_restore_kitty_image_storage() {
     phux_protocol::kitty_replay::configure_terminal_for_kitty_graphics(&mut source).unwrap();
     source.resize(8, 3, 8, 16).unwrap();
     source.vt_write(b"\x1b_Ga=T,f=32,s=1,v=1,i=42,c=2,r=2,C=1;/wAA/w==\x1b\\");
-    assert!(source.kitty_graphics().unwrap().image(42).is_some());
+    assert_eq!(kitty_pixels(&source, 42), Some(vec![255, 0, 0, 255]));
     let mut capture = source
         .capture_snapshot(CaptureOptions {
             max_record_bytes: 64 * 1024,
@@ -152,16 +153,47 @@ fn native_snapshot_ready_does_not_restore_kitty_image_storage() {
     adapter
         .finish_bootstrap(&mut replica, &mut effects)
         .unwrap();
-    assert!(
-        replica
-            .terminal()
-            .unwrap()
-            .kitty_graphics()
-            .unwrap()
-            .image(42)
-            .is_none()
+    assert_eq!(
+        kitty_pixels(replica.terminal().unwrap(), 42),
+        None,
+        "pixels are deferred past READY"
     );
-    // Import still enables storage and the shared decoder for subsequent output.
+    let mut capture = capture.detach().unwrap();
+    let mut pending = Vec::new();
+    let mut pixel_units = 0;
+    loop {
+        let event = capture.next(&mut source, &mut bytes).unwrap();
+        pending.extend_from_slice(&bytes[..event.written()]);
+        let declared_rows = match event {
+            CaptureEvent::Image { .. } => {
+                pixel_units += 1;
+                0
+            }
+            CaptureEvent::HistoryPage { rows, .. } => u32::try_from(rows).unwrap(),
+            CaptureEvent::Finish { .. } => 0,
+            CaptureEvent::Scan | CaptureEvent::Record { .. } => continue,
+            other => panic!("unexpected capture event: {other:?}"),
+        };
+        let outcome = adapter
+            .apply_history_page(&mut replica, &pending, declared_rows, &mut effects)
+            .unwrap();
+        pending.clear();
+        if matches!(event, CaptureEvent::Finish { .. }) {
+            assert_eq!(outcome.progress, BootstrapProgress::Finished);
+            break;
+        }
+        assert_eq!(
+            outcome.progress,
+            BootstrapProgress::Ready,
+            "zero-row image is not FINISH"
+        );
+    }
+    assert!(pixel_units > 0);
+    assert_eq!(
+        kitty_pixels(replica.terminal().unwrap(), 42),
+        Some(vec![255, 0, 0, 255])
+    );
+    // Import also enables the shared decoder for subsequent live output.
     adapter
         .apply_output(
             &mut replica,
@@ -169,13 +201,20 @@ fn native_snapshot_ready_does_not_restore_kitty_image_storage() {
             &mut effects,
         )
         .unwrap();
-    assert!(
-        replica
-            .terminal()
-            .unwrap()
-            .kitty_graphics()
-            .unwrap()
-            .image(43)
-            .is_some()
+    assert_eq!(
+        kitty_pixels(replica.terminal().unwrap(), 43),
+        Some(vec![255, 0, 0, 255])
     );
+}
+
+fn kitty_pixels(terminal: &GhosttyTerminal<'_, '_>, id: u32) -> Option<Vec<u8>> {
+    terminal
+        .kitty_graphics()
+        .unwrap()
+        .expect("Kitty graphics enabled")
+        .image(id)
+        .expect("image metadata")
+        .data()
+        .unwrap()
+        .map(<[u8]>::to_vec)
 }

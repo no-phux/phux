@@ -3,10 +3,9 @@
 use super::{
     CellWide, DocumentAnchorId, DocumentPoint, DocumentSpace, EngineDocumentAdapter,
     EngineDocumentSelection, EngineHistoryProjection, EngineProjectionOrigin, EngineSearchMatch,
-    FormatOptions, GhosttyAdapter, GhosttyEngineError, GhosttyReplica, GhosttyTerminal, Point,
-    PointCoordinate, Selection, VecDeque, empty_projection, engine_history_rows,
-    grid_ref_graphemes, history_window, rewrap_history_rows, to_ghostty_point, to_ghostty_space,
-    trim_projection_rows,
+    Formatter, GhosttyAdapter, GhosttyEngineError, GhosttyReplica, GhosttyTerminal, Point,
+    PointCoordinate, VecDeque, empty_projection, engine_history_rows, grid_ref_graphemes,
+    history_window, rewrap_history_rows, to_ghostty_point, to_ghostty_space, trim_projection_rows,
 };
 
 impl EngineDocumentAdapter for GhosttyAdapter {
@@ -104,27 +103,14 @@ impl EngineDocumentAdapter for GhosttyAdapter {
         let terminal = replica
             .terminal()
             .ok_or(GhosttyEngineError::LiveOutputBeforeReady)?;
-        let Some(start) = replica.anchors.get(&selection.start) else {
+        let Some((selection, _, _)) = super::selection::active_selection(replica, selection)?
+        else {
             return Ok(None);
         };
-        let Some(end) = replica.anchors.get(&selection.end) else {
-            return Ok(None);
-        };
-        let Some(start) = start.snapshot(terminal)? else {
-            return Ok(None);
-        };
-        let Some(end) = end.snapshot(terminal)? else {
-            return Ok(None);
-        };
-        let selection = Selection::new(start, end, selection.rectangle);
-        let formatted = terminal.format_selection_alloc(
-            None,
-            FormatOptions::new()
-                .with_selection(&selection)
-                .with_unwrap(true)
-                .with_trim(true),
-        )?;
-        Ok(formatted.map(|bytes| String::from_utf8_lossy(&bytes).into_owned()))
+        let mut formatter = Formatter::new_with_selection(terminal, &selection)?;
+        formatter.set_unwrap(true)?;
+        let bytes = formatter.format_alloc(None)?;
+        Ok(Some(String::from_utf8_lossy(&bytes).into_owned()))
     }
 
     fn format_selection_bounded(

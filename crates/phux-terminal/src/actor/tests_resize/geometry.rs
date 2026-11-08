@@ -16,7 +16,10 @@ fn kitty_snapshot_keeps_natural_extent_after_pixel_metrics_change() {
     replica.vt_write(&snapshot.bytes);
     // More pixels fit without changing the text grid or requesting a new snapshot.
     replica.resize(10, 5, 11, 19).unwrap();
-    let graphics = replica.kitty_graphics().unwrap();
+    let graphics = replica
+        .kitty_graphics()
+        .unwrap()
+        .expect("Kitty graphics enabled");
     let image = graphics.image(7).unwrap();
     let mut iter = libghostty_vt::kitty::graphics::PlacementIterator::new().unwrap();
     let mut placements = iter.update(&graphics).unwrap();
@@ -51,7 +54,10 @@ fn kitty_bootstrap_uses_initial_and_pixel_only_geometry() {
             .resize(10, 5, u32::from(cell.0), u32::from(cell.1))
             .unwrap();
         replica.vt_write(&snapshot.bytes);
-        let graphics = replica.kitty_graphics().unwrap();
+        let graphics = replica
+            .kitty_graphics()
+            .unwrap()
+            .expect("Kitty graphics enabled");
         let image = graphics.image(7).expect("resident image");
         assert_eq!(image.data().unwrap().unwrap(), &[255, 0, 0]);
         let mut iter = libghostty_vt::kitty::graphics::PlacementIterator::new().unwrap();

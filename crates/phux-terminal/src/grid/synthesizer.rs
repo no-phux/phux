@@ -20,7 +20,7 @@ use phux_protocol::{
 
 use libghostty_vt::{
     RenderState, Terminal as GhosttyTerminal,
-    fmt::{Format, Formatter, FormatterOptions},
+    fmt::{Format, Formatter},
     render::{
         CellIteration, CellIterator, CursorVisualStyle, Dirty, RowIteration, RowIterator, Snapshot,
     },

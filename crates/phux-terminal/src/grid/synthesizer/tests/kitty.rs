@@ -14,7 +14,10 @@ fn snapshot_replays_kitty_graphics_placements() {
         .expect("replica kitty config");
     replica.resize(10, 5, 8, 16).expect("replica cell geometry");
     replica.vt_write(&snap.bytes);
-    let graphics = replica.kitty_graphics().expect("graphics");
+    let graphics = replica
+        .kitty_graphics()
+        .expect("graphics")
+        .expect("Kitty graphics enabled");
     let image = graphics.image(9).expect("snapshot image");
     assert_eq!(image.data().unwrap().unwrap(), &[0, 1, 2, 3]);
     let mut iter = libghostty_vt::kitty::graphics::PlacementIterator::new().unwrap();
@@ -35,13 +38,30 @@ fn repeated_snapshots_remove_deleted_classic_and_virtual_images() {
     source.vt_write(b"\x1b_Ga=T,f=32,s=1,v=1,c=1,r=1,i=9,p=1,C=1,q=2;AAECAw==\x1b\\\x1b_Ga=p,i=9,p=2,U=1,c=2,r=2,q=2;\x1b\\");
     let first = synthesize(&source).expect("first snapshot");
     replica.vt_write(&first.bytes);
-    assert!(replica.kitty_graphics().unwrap().image(9).is_some());
+    assert!(
+        replica
+            .kitty_graphics()
+            .unwrap()
+            .expect("Kitty graphics enabled")
+            .image(9)
+            .is_some()
+    );
     source.vt_write(b"\x1b_Ga=d,d=I,i=9,q=2;\x1b\\");
     let second = synthesize(&source).expect("second snapshot");
     replica.vt_write(&second.bytes);
-    assert!(replica.kitty_graphics().unwrap().image(9).is_none());
+    assert!(
+        replica
+            .kitty_graphics()
+            .unwrap()
+            .expect("Kitty graphics enabled")
+            .image(9)
+            .is_none()
+    );
     let mut iter = libghostty_vt::kitty::graphics::PlacementIterator::new().unwrap();
-    let graphics = replica.kitty_graphics().unwrap();
+    let graphics = replica
+        .kitty_graphics()
+        .unwrap()
+        .expect("Kitty graphics enabled");
     assert!(iter.update(&graphics).unwrap().next().is_none());
 }
 
@@ -102,7 +122,10 @@ fn text_only_snapshot_omits_unplaced_images_before_charging_budget() {
         })
         .collect();
     source.vt_write(format!("\x1b_Ga=t,f=32,s=16,v=12,i=9,q=2;{payload}\x1b\\").as_bytes());
-    let graphics = source.kitty_graphics().unwrap();
+    let graphics = source
+        .kitty_graphics()
+        .unwrap()
+        .expect("Kitty graphics enabled");
     assert_eq!(
         graphics.image(9).unwrap().data().unwrap().unwrap().len(),
         768
@@ -126,6 +149,7 @@ fn text_only_snapshot_omits_unplaced_images_before_charging_budget() {
         image_receiver
             .kitty_graphics()
             .unwrap()
+            .expect("Kitty graphics enabled")
             .image(9)
             .unwrap()
             .data()
@@ -134,6 +158,7 @@ fn text_only_snapshot_omits_unplaced_images_before_charging_budget() {
         source
             .kitty_graphics()
             .unwrap()
+            .expect("Kitty graphics enabled")
             .image(9)
             .unwrap()
             .data()

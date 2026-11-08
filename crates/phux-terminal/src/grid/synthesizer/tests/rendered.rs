@@ -37,7 +37,7 @@ fn render_screen_clamps_all_retained_history_to_row_window_max() {
     t.set_scrollback_max_lines(Some(over + 10))
         .expect("set_scrollback_max_lines");
     // Lift the byte cap so the clamp under test, not retention, bounds it.
-    t.set_scrollback_max_bytes(None)
+    t.set_scrollback_max_bytes(Some(usize::MAX))
         .expect("set_scrollback_max_bytes");
     let mut input = Vec::with_capacity(over * 4);
     for i in 0..over {

@@ -3,6 +3,29 @@
 use super::*;
 
 #[test]
+fn pre1_native_codec_is_rejected_before_accepting_payload() {
+    let profile = BootstrapStreamProfile::NativeState {
+        codec: EngineCodec::LibghosttyPre1SnapshotV1,
+    };
+    let mut adapter = native_adapter();
+    assert!(matches!(
+        adapter.start_replica(profile, geometry()),
+        Err(GhosttyEngineError::UnsupportedProfile(rejected)) if rejected == profile
+    ));
+    let advertised = native_bootstrap_capabilities(BootstrapLimits::default());
+    assert!(
+        advertised
+            .native_codecs
+            .contains(EngineCodec::LibghosttySnapshotV1)
+    );
+    assert!(
+        !advertised
+            .native_codecs
+            .contains(EngineCodec::LibghosttyPre1SnapshotV1)
+    );
+}
+
+#[test]
 fn native_decoder_accepts_arbitrary_fragment_cuts_and_multiple_records() {
     let captured = capture_snapshot();
     for width in [1, 2, 3, 7, 31, captured.ready.len()] {
@@ -31,7 +54,7 @@ fn native_decoder_accepts_arbitrary_fragment_cuts_and_multiple_records() {
                 .expect("finished terminal")
                 .title()
                 .unwrap(),
-            "checkpoint-title"
+            b"checkpoint-title"
         );
     }
 }
@@ -74,7 +97,7 @@ fn publication_requires_authenticated_ready_and_one_shot_continuation_replay() {
         .expect("published live output");
     assert_eq!(
         replica.terminal().unwrap().title().unwrap(),
-        "published-live"
+        b"published-live"
     );
     effects.clear();
     adapter
@@ -121,7 +144,7 @@ fn live_output_is_applied_between_later_history_pages() {
             .expect("finished terminal")
             .title()
             .unwrap(),
-        "live-during-history"
+        b"live-during-history"
     );
 }
 

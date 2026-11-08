@@ -18,7 +18,7 @@
 
 use libghostty_vt::{
     RenderState, Terminal as GhosttyTerminal,
-    render::{CellIterator, RowIterator, Snapshot},
+    render::{CellIterator, Overscan, RowIterator, Snapshot},
 };
 
 /// Opaque caller-chosen identity of the walked `Terminal`.
@@ -89,7 +89,19 @@ impl<'alloc> RenderPool<'alloc> {
         terminal: &GhosttyTerminal<'alloc, 'cb>,
         generation: TerminalGeneration,
     ) -> Result<RenderWalk<'alloc, 's>, libghostty_vt::Error> {
+        self.begin_with_overscan(terminal, generation, Overscan::default())
+    }
+
+    /// Start a walk including the requested rows outside the viewport.
+    /// Apply the request after any rebuild so replacement never drops it.
+    pub fn begin_with_overscan<'s, 'cb>(
+        &'s mut self,
+        terminal: &GhosttyTerminal<'alloc, 'cb>,
+        generation: TerminalGeneration,
+        overscan: Overscan,
+    ) -> Result<RenderWalk<'alloc, 's>, libghostty_vt::Error> {
         self.rebuild_if_stale(terminal, generation)?;
+        self.state.set_overscan(overscan)?;
         // Disjoint borrows: the snapshot borrows `state` only.
         let Self {
             state, rows, cells, ..

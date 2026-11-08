@@ -92,9 +92,10 @@ the original source crop so fractional sizes do not bleed neighbouring pixels.
 Report actual cell pixels through `Client::resize_terminal_with_cell` so native
 image sizes and offsets match the renderer.
 
-Kitty consumers negotiate synthesized Raw/StateSync bootstrap: native GHOSTSNP
-does not include the engine's image/placement registry. Synthesized replay
-includes unplaced payloads and virtual prototypes for later live placements.
+Kitty consumers negotiate synthesized Raw/StateSync bootstrap to paint initial
+images eagerly. Native 1.0 snapshots restore the image registry at READY, but
+pixels arrive in later history units, which this viewer requests on demand.
+Synthesized replay includes unplaced payloads and virtual prototypes.
 External file/shared-memory media stay disabled. The C/Swift draw-list ABI
 is still text-only; no image fields were added to it.
 

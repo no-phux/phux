@@ -48,7 +48,7 @@ fn ready_prefix_bytes_do_not_grow_with_scrollback() {
             .set_scrollback_max_lines(Some(100_000))
             .expect("history rows");
         terminal
-            .set_scrollback_max_bytes(None)
+            .set_scrollback_max_bytes(Some(usize::MAX))
             .expect("history bytes");
         terminal
             .set_continuation_max_bytes(CONTINUATION_LIMIT)
@@ -124,7 +124,7 @@ fn managed_capture_defers_multiple_pages_and_finish_past_ready() {
         .set_scrollback_max_lines(Some(5_000))
         .expect("history rows");
     source
-        .set_scrollback_max_bytes(None)
+        .set_scrollback_max_bytes(Some(usize::MAX))
         .expect("history bytes");
     for row in 0..3_000 {
         source.vt_write(format!("history-{row:04}\r\n").as_bytes());

@@ -263,7 +263,7 @@ async fn a_cursor_invalidated_by_resize_is_tombstoned_never_faulted() {
 #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
 #[tokio::test(flavor = "current_thread")]
 async fn ready_native_publication_survives_eof_before_activation() {
-    use libghostty_vt::fmt::{Format, Formatter, FormatterOptions};
+    use libghostty_vt::fmt::Formatter;
     use phux_client_core::engine::ghostty::GhosttyAdapter;
     use phux_client_core::session::{EffectBuffer, SessionKernel};
     use phux_protocol::caps::{BootstrapProfile, EngineCodec, EngineFeatureSet};
@@ -301,13 +301,8 @@ async fn ready_native_publication_survives_eof_before_activation() {
     let replica = kernel
         .published_engine(&phux_protocol::ids::ResourceId::local(1))
         .expect("consumer committed the final viewport");
-    let mut formatter = Formatter::new(
-        replica.terminal().expect("native terminal"),
-        FormatterOptions::new()
-            .with_format(Format::Plain)
-            .with_trim(true),
-    )
-    .expect("viewport formatter");
+    let mut formatter =
+        Formatter::new(replica.terminal().expect("native terminal")).expect("viewport formatter");
     let mut text = [0; 512];
     let len = formatter.format_buf(&mut text).expect("bounded viewport");
     assert_eq!(
@@ -321,7 +316,7 @@ async fn ready_native_publication_survives_eof_before_activation() {
 #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
 #[tokio::test(flavor = "current_thread")]
 async fn eof_returns_a_loan_before_final_output_and_resumes_queued_capture() {
-    use libghostty_vt::fmt::{Format, Formatter, FormatterOptions};
+    use libghostty_vt::fmt::Formatter;
 
     tokio::task::LocalSet::new()
         .run_until(async {
@@ -389,13 +384,7 @@ async fn eof_returns_a_loan_before_final_output_and_resumes_queued_capture() {
             }
             let mut mirror = libghostty_vt::Terminal::new(40, 8).expect("consumer mirror");
             mirror.vt_write(&final_snapshot.expect("EOF publishes the final grid"));
-            let mut formatter = Formatter::new(
-                &mirror,
-                FormatterOptions::new()
-                    .with_format(Format::Plain)
-                    .with_trim(true),
-            )
-            .expect("viewport formatter");
+            let mut formatter = Formatter::new(&mirror).expect("viewport formatter");
             let mut text = [0; 512];
             let len = formatter.format_buf(&mut text).expect("bounded viewport");
             assert_eq!(

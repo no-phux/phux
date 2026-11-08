@@ -120,11 +120,12 @@ impl TerminalActor {
     /// seeded or freshly resumed pane has an engine title before any chunk);
     /// falls back to `last_title` while the terminal is on loan.
     pub(super) fn live_osc_title(&self) -> Option<String> {
-        let engine = self
-            .terminal
-            .borrow()
-            .try_terminal()
-            .and_then(|terminal| terminal.title().ok().map(ToOwned::to_owned));
+        let engine = self.terminal.borrow().try_terminal().and_then(|terminal| {
+            terminal
+                .title()
+                .ok()
+                .map(|title| String::from_utf8_lossy(title).into_owned())
+        });
         Some(engine.unwrap_or_else(|| self.last_title.clone())).filter(|t| !t.is_empty())
     }
 
@@ -136,8 +137,9 @@ impl TerminalActor {
             let current = canonical
                 .try_terminal()
                 .and_then(|terminal| terminal.title().ok())
-                .unwrap_or("");
-            (current != self.last_title).then(|| current.to_owned())
+                .unwrap_or(b"");
+            let current = String::from_utf8_lossy(current);
+            (current != self.last_title).then(|| current.into_owned())
         }; // borrow released here — required
         match next {
             Some(title) => {

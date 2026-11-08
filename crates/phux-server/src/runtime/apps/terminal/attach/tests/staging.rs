@@ -129,7 +129,10 @@ fn bootstrap_adaptation_restores_images_only_for_kitty_consumers() {
         for payload in adapted.payloads {
             replica.vt_write(&payload);
         }
-        let graphics = replica.kitty_graphics().unwrap();
+        let graphics = replica
+            .kitty_graphics()
+            .unwrap()
+            .expect("Kitty graphics enabled");
         let expects_images =
             image_protocols.contains(phux_protocol::caps::ImageProtocol::KittyGraphics);
         assert_eq!(graphics.image(9).is_some(), expects_images);

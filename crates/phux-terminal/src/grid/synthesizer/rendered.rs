@@ -1,7 +1,7 @@
 use super::{
-    Format, Formatter, FormatterOptions, GhosttyTerminal, GridRef, Point, PointCoordinate,
-    RENDER_BUDGET_BYTES, RENDERED_FORMAT_HTML, RENDERED_FORMAT_VT, ROW_WINDOW_MAX, RenderedScreen,
-    SCROLLBACK_ALL, Selection, SnapshotSynthesizer, SynthesisError, history_window_start,
+    Format, Formatter, GhosttyTerminal, GridRef, Point, PointCoordinate, RENDER_BUDGET_BYTES,
+    RENDERED_FORMAT_HTML, RENDERED_FORMAT_VT, ROW_WINDOW_MAX, RenderedScreen, SCROLLBACK_ALL,
+    Selection, SnapshotSynthesizer, SynthesisError, history_window_start,
 };
 use base64::Engine as _;
 
@@ -46,14 +46,11 @@ impl<'alloc> SnapshotSynthesizer<'alloc> {
             _ => return Ok(None),
         };
         let selection = Self::render_selection(terminal, scrollback)?;
-        let mut formatter = Formatter::new(
-            terminal,
-            FormatterOptions::new()
-                .with_format(target)
-                .with_trim(true)
-                .with_unwrap(unwrap)
-                .with_selection(&selection),
-        )?;
+        let mut formatter = Formatter::new_with_selection(terminal, &selection)?;
+        formatter
+            .set_format(target)?
+            .set_trim(true)?
+            .set_unwrap(unwrap)?;
         let required = formatter.format_len()?;
         if required > budget {
             return Err(SynthesisError::RenderBudgetExceeded { required, budget });

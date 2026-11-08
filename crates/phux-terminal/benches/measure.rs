@@ -54,7 +54,7 @@ pub(crate) fn build_terminal(corpus: Corpus) -> GhosttyTerminal<'static, 'static
             .set_scrollback_max_lines(Some(max_scrollback))
             .expect("benchmark terminal");
         terminal
-            .set_scrollback_max_bytes(None)
+            .set_scrollback_max_bytes(Some(usize::MAX))
             .expect("benchmark scrollback byte budget");
         terminal
     };
@@ -96,7 +96,7 @@ pub(crate) fn build_unicode_ready_control() -> GhosttyTerminal<'static, 'static>
             .set_scrollback_max_lines(Some(50_000))
             .expect("Unicode READY control terminal");
         terminal
-            .set_scrollback_max_bytes(None)
+            .set_scrollback_max_bytes(Some(usize::MAX))
             .expect("Unicode READY control bytes");
         terminal
     };
@@ -181,7 +181,7 @@ pub(crate) fn native_progressive_measurement(
         chunks = chunks.saturating_add(event.written().div_ceil(chunk_bytes));
         payload_copies = payload_copies.saturating_add(usize::from(event.written() != 0));
         match event {
-            CaptureEvent::HistoryPage { .. } => {
+            CaptureEvent::HistoryPage { .. } | CaptureEvent::Image { .. } => {
                 history_pages = history_pages.saturating_add(1);
                 history_page_max_bytes = history_page_max_bytes.max(pending_unit_bytes);
                 pending_unit_bytes = 0;

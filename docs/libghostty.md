@@ -38,9 +38,15 @@ writes VT bytes, and reads the styled grid.
 Embedding runs this replica in the app's process
 ([embed phux](./embedding.md)).
 
-Builds download a prebuilt `libghostty-vt.a` for a pinned Ghostty
-commit, or compile it from source with Zig
-([development](./development.md#libghostty-vt)).
+The engine is based on [libghostty-vt 1.0](https://lib.ghostty.org/vt/1.0.0/).
+The Rust bindings track upstream, with narrow phux extensions for bounded
+snapshot capture and staged decoding, input-option snapshots, parser-safe
+display clearing, image replay metadata, and safe formatter/PNG integration.
+Upstream terminal semantics and image placement resolution remain authoritative.
+
+The new pin builds from source with Zig 0.17 and shares the resulting native
+build across worktrees. No matching native prebuilt archives have been published;
+see [development](./development.md#libghostty-vt).
 
 ## Snapshot compatibility
 
@@ -50,6 +56,12 @@ envelope, but the older decoder cannot read the newer Kitty image records.
 Current engines advertise only id `5`. Mixed old/new peers negotiate
 synthesized VT instead; native-only peers refuse the incompatible contract.
 libghostty's stable 1.x C ABI does not guarantee stable snapshot bytes.
+
+Capture steps and history units are byte-bounded. Detaching at READY does
+not copy history, and text-only history is scanned incrementally. For an
+image-bearing terminal, the upstream Kitty planner enumerates images,
+placements, and page locations before READY. Its memory and work therefore
+scale with that state; a generation fence rejects later image mutations.
 
 ## What it does not do
 

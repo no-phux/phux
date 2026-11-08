@@ -75,6 +75,7 @@ async fn image_resync_recaptures_resident_payload_and_its_own_geometry_and_cut()
                 receiver
                     .kitty_graphics()
                     .unwrap()
+                    .expect("Kitty graphics enabled")
                     .image(9)
                     .unwrap()
                     .data()
