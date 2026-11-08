@@ -18,10 +18,14 @@ for installer in scripts/install.sh scripts/install-desktop.sh; do
 done
 
 # Clients discover releases from the channel manifest only (ADR-0176); the
-# GitHub API's unauthenticated budget is 60 requests an hour.
+# GitHub API's unauthenticated budget is 60 requests an hour. The one API use
+# is API_RELEASES: re-fetching an already-named asset that releases/download
+# failed to serve.
 for client in scripts/install.sh scripts/install-windows.ps1 crates/phux-client-runtime/src/release.rs \
   crates/phux/src/commands/update clients/rune/src/updates.rs; do
-  if grep -rEq 'api\.github\.com|releases/latest' "$client"; then
+  if grep -rhE 'api\.github\.com|releases/latest' "$client" \
+    | grep -vE '^(pub const API_RELEASES: &str = "|API_RELEASES=)https://api\.github\.com/repos/no-phux/phux/releases("|$)' \
+    | grep -q .; then
     fail "$client must read the channel manifest, not the GitHub release list"
   fi
 done

@@ -19,8 +19,9 @@ use serde_json::Value;
 pub const RELEASES: &str = "https://github.com/no-phux/phux/releases/download";
 
 /// `curl` arguments for fetching a manifest, before its URL: HTTPS only,
-/// bounded in time, and capped far above a manifest's few kilobytes.
-pub const MANIFEST_CURL_ARGS: [&str; 9] = [
+/// bounded in time, retried through a transient 5xx, and capped far above a
+/// manifest's few kilobytes.
+pub const MANIFEST_CURL_ARGS: [&str; 11] = [
     "-fsSL",
     "--proto",
     "=https",
@@ -30,7 +31,56 @@ pub const MANIFEST_CURL_ARGS: [&str; 9] = [
     "30",
     "--max-filesize",
     "1048576",
+    "--retry",
+    "2",
 ];
+
+/// GitHub's API for the same releases.
+///
+/// `releases/download` sometimes answers one asset with a 5xx for hours while the API still serves its bytes, so a
+/// client that fails there asks the API for the same asset
+/// ([`api_release_lookup`], then [`api_asset_url`] with [`API_ASSET_ACCEPT`]).
+/// The digest and signature checks are unchanged, so the second source adds
+/// no trust.
+pub const API_RELEASES: &str = "https://api.github.com/repos/no-phux/phux/releases";
+
+/// The `Accept` header that makes an API asset URL return the file itself.
+pub const API_ASSET_ACCEPT: &str = "Accept: application/octet-stream";
+
+/// The `Accept` header for an API release lookup.
+pub const API_JSON_ACCEPT: &str = "Accept: application/vnd.github+json";
+
+/// For an asset URL under [`RELEASES`], the API URL describing its release
+/// and the asset's name; `None` for anything else.
+#[must_use]
+pub fn api_release_lookup(url: &str) -> Option<(String, String)> {
+    let (tag, name) = url
+        .strip_prefix(RELEASES)?
+        .strip_prefix('/')?
+        .split_once('/')?;
+    let plain = |part: &str| {
+        !part.is_empty()
+            && !part.starts_with('.')
+            && part.bytes().all(|byte| {
+                byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'-' | b'_' | b'+')
+            })
+    };
+    (plain(tag) && plain(name)).then(|| (format!("{API_RELEASES}/tags/{tag}"), name.to_owned()))
+}
+
+/// In an API release lookup's body, the API URL that downloads asset `name`.
+/// Only a numeric asset of this repository's releases qualifies.
+#[must_use]
+pub fn api_asset_url(release: &str, name: &str) -> Option<String> {
+    let release: Value = serde_json::from_str(release).ok()?;
+    let url = release["assets"]
+        .as_array()?
+        .iter()
+        .find(|asset| asset["name"] == name)?["url"]
+        .as_str()?;
+    let id = url.strip_prefix(API_RELEASES)?.strip_prefix("/assets/")?;
+    (!id.is_empty() && id.bytes().all(|byte| byte.is_ascii_digit())).then(|| url.to_owned())
+}
 
 /// A release channel.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
@@ -313,7 +363,10 @@ fn canonical_number(field: &str) -> Option<u64> {
 #[cfg(test)]
 #[allow(clippy::unwrap_used, reason = "tests")]
 mod tests {
-    use super::{Build, Channel, Product, Version, asset, is_newer, manifest_url, parse};
+    use super::{
+        API_RELEASES, Build, Channel, Product, Version, api_asset_url, api_release_lookup, asset,
+        is_newer, manifest_url, parse,
+    };
 
     const STABLE: &str = include_str!("../../../scripts/fixtures/release-manifest/stable.json");
     const NEXT: &str = include_str!("../../../scripts/fixtures/release-manifest/next.json");
@@ -384,6 +437,48 @@ mod tests {
                 format!("{}.sha256.minisig", asset.url)
             );
         }
+    }
+
+    #[test]
+    fn a_release_asset_maps_to_its_api_lookup() {
+        let asset = asset(Product::Phux, &Build::Next("a".repeat(40)), LINUX);
+        let (lookup, name) = api_release_lookup(&asset.url).unwrap();
+        assert_eq!(lookup, format!("{API_RELEASES}/tags/next"));
+        assert_eq!(name, asset.name);
+        assert_eq!(
+            api_release_lookup(&manifest_url(Channel::Stable)),
+            Some((
+                format!("{API_RELEASES}/tags/channels"),
+                "stable.json".to_owned()
+            ))
+        );
+        for url in [
+            "https://evil.example/no-phux/phux/releases/download/next/x.tar.gz",
+            "https://github.com/no-phux/phux/releases/download/next",
+            "https://github.com/no-phux/phux/releases/download/next/",
+            "https://github.com/no-phux/phux/releases/download/../x/y",
+            "https://github.com/no-phux/phux/releases/download/next/a/b",
+            "https://github.com/no-phux/phux/releases/download/next/x?y=1",
+        ] {
+            assert_eq!(api_release_lookup(url), None, "{url}");
+        }
+    }
+
+    #[test]
+    fn only_this_repositorys_numeric_asset_is_downloaded_from_the_api() {
+        let api = format!("{API_RELEASES}/assets");
+        let body = format!(
+            r#"{{"assets":[
+                {{"name":"a.json","url":"{api}/11"}},
+                {{"name":"b.json","url":"https://evil.example/assets/12"}},
+                {{"name":"c.json","url":"{api}/13/../14"}}
+            ]}}"#
+        );
+        assert_eq!(api_asset_url(&body, "a.json"), Some(format!("{api}/11")));
+        for name in ["b.json", "c.json", "missing.json"] {
+            assert_eq!(api_asset_url(&body, name), None, "{name}");
+        }
+        assert_eq!(api_asset_url("not json", "a.json"), None);
     }
 
     #[test]

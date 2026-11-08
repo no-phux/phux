@@ -76,15 +76,67 @@ SEMVER='(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)'
 
 # --- downloads and digests ---------------------------------------------------
 
-# A stalled transfer (under 1 KiB/s for a minute) aborts instead of hanging.
-download() {
+# GitHub's releases/download sometimes answers one asset with a 5xx for hours
+# while its API still serves the same bytes, so a release file that fails is
+# fetched once more through the API. Digests and signatures are checked as
+# before, so the second source adds no trust.
+API_RELEASES=https://api.github.com/repos/no-phux/phux/releases
+
+# Fetch URL into FILE, sending the header ACCEPT when given. A stalled
+# transfer (under 1 KiB/s for a minute) aborts instead of hanging.
+fetch_to() {
   if command -v curl >/dev/null 2>&1; then
-    curl -fsSL --proto =https --connect-timeout 10 --speed-limit 1024 --speed-time 60 "$1" -o "$2"
+    if [ -n "${3:-}" ]; then
+      curl -fsSL --proto =https --connect-timeout 10 --speed-limit 1024 --speed-time 60 --retry 2 \
+        -H "$3" "$1" -o "$2"
+    else
+      curl -fsSL --proto =https --connect-timeout 10 --speed-limit 1024 --speed-time 60 --retry 2 \
+        "$1" -o "$2"
+    fi
   elif command -v wget >/dev/null 2>&1; then
-    wget -q --timeout=60 --tries=2 -O "$2" "$1"
+    if [ -n "${3:-}" ]; then
+      wget -q --timeout=60 --tries=2 --header="$3" -O "$2" "$1"
+    else
+      wget -q --timeout=60 --tries=2 -O "$2" "$1"
+    fi
   else
     die "curl or wget is required to download a release"
   fi
+}
+
+download() {
+  fetch_to "$1" "$2" || download_from_api "$1" "$2"
+}
+
+# The API's copy of the release asset at URL, into FILE.
+download_from_api() {
+  phux_message info "GitHub did not serve ${1##*/}; fetching it through the GitHub API"
+  api_url="$(api_asset_url "$1" "${2}.release")" || return 1
+  fetch_to "$api_url" "$2" 'Accept: application/octet-stream'
+}
+
+# Print the API URL that downloads the release asset at URL, looking its
+# release up into the scratch file LOOKUP. Only a numeric asset of this
+# repository's releases qualifies.
+api_asset_url() {
+  api_path="${1#"${RELEASES}/"}"
+  [ "$api_path" != "$1" ] || return 1
+  api_tag="${api_path%%/*}"
+  api_name="${api_path#*/}"
+  matches "$api_tag" '[A-Za-z0-9][A-Za-z0-9._+-]*' || return 1
+  matches "$api_name" '[A-Za-z0-9][A-Za-z0-9._+-]*' || return 1
+  fetch_to "${API_RELEASES}/tags/${api_tag}" "$2" 'Accept: application/vnd.github+json' || return 1
+  tr ',{}[]' '\n\n\n\n\n' < "$2" | LC_ALL=C awk -v name="$api_name" -v prefix="${API_RELEASES}/assets/" '
+    { sub(/^[ \t]+/, ""); sub(/[ \t]+$/, "") }
+    index($0, "\"url\":") == 1 { url = $0; sub(/^"url": *"/, "", url); sub(/"$/, "", url); next }
+    index($0, "\"name\":") == 1 {
+      asset = $0; sub(/^"name": *"/, "", asset); sub(/"$/, "", asset)
+      if (asset == name && index(url, prefix) == 1 && substr(url, length(prefix) + 1) ~ /^[0-9]+$/) {
+        print url; found = 1; exit
+      }
+    }
+    END { exit !found }
+  '
 }
 
 sha256_of() {
@@ -145,7 +197,8 @@ fetch_manifest() {
   url="${RELEASES}/channels/$1.json"
   raw="${2}.json"
   if command -v curl >/dev/null 2>&1; then
-    curl -fsSL --proto =https --connect-timeout 10 --max-time 30 --max-filesize 1048576 "$url" -o "$raw" \
+    { curl -fsSL --proto =https --connect-timeout 10 --max-time 30 --max-filesize 1048576 --retry 2 \
+      "$url" -o "$raw" || download_from_api "$url" "$raw"; } \
       || die "could not download the $1 release manifest ($url); retry, or pin a release"
   else
     download "$url" "$raw" || die "could not download the $1 release manifest ($url)"
