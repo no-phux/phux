@@ -31,6 +31,7 @@ done
 printf '%s\n' "$url" >> "$CALLS"
 printf '%s %s\n' "$meter" "$url" >> "$METER_CALLS"
 [ "${FAIL_NETWORK:-0}" = 0 ] || exit 22
+case "${FAIL_DIRECT:-0}:$url" in 1:https://github.com/*) exit 22 ;; esac
 [ -f "$SERVED/${url##*/}" ] || exit 22
 if [ -n "$out" ] && [ "$out" != - ]; then cp "$SERVED/${url##*/}" "$out"; else cat "$SERVED/${url##*/}"; fi
 if [ "$meter" = 1 ]; then printf '\r#### 50.0%%\r######## 100.0%%\r' >&2; fi
@@ -172,6 +173,26 @@ refused "could not download $archive; nothing was installed" \
   --os linux --arch x86_64 --install-dir "$TMP/assetless"
 mv "$TMP/held.tar.gz" "$SERVED/$archive"
 [[ ! -e $TMP/sidecarless/phux && ! -e $TMP/assetless/phux ]] || fail "a failed download installed"
+
+# When releases/download fails, the same manifest and asset come from the
+# GitHub API instead: only this repository's numeric assets, pretty or compact.
+api=https://api.github.com/repos/no-phux/phux/releases/assets
+jq -n --arg api "$api" '{url: "https://api.github.com/repos/no-phux/phux/releases/1", name: "channels",
+  assets: [{url: "\($api)/102", name: "stable.json", uploader: {url: "https://api.github.com/users/x"}}]}' \
+  > "$SERVED/channels"
+jq -nc --arg api "$api" --arg archive "$archive" \
+  '{assets: [{url: "https://evil.example/assets/100", name: $archive}, {url: "\($api)/101", name: $archive}]}' \
+  > "$SERVED/v9.8.7"
+cp "$SERVED/stable.json" "$SERVED/102"
+cp "$SERVED/$archive" "$SERVED/101"
+: > "$CALLS"
+FAIL_DIRECT=1 install_to "$TMP/api" >/dev/null 2>"$TMP/err" || fail "api fallback install: $(cat "$TMP/err")"
+grep -Fxq 'phux v9.8.7' "$TMP/api/phux" || fail "api fallback files"
+grep -Fxq "$api/101" "$CALLS" && grep -Fxq "$api/102" "$CALLS" || fail "api fallback calls: $(cat "$CALLS")"
+rm "$SERVED/101"
+FAIL_DIRECT=1 refused "could not download $archive; nothing was installed" \
+  --os linux --arch x86_64 --install-dir "$TMP/api-missing"
+rm "$SERVED/channels" "$SERVED/v9.8.7" "$SERVED/102"
 
 # A digest the archive does not match installs nothing.
 mutate stable ".products.phux.artifacts[\"$TARGET\"].sha256 = (\"0\" * 64)"

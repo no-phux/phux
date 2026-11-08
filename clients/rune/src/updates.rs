@@ -8,7 +8,10 @@ pub mod phux;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use phux_client_runtime::release::{MANIFEST_CURL_ARGS, RELEASES, is_lower_hex};
+use phux_client_runtime::release::{
+    API_ASSET_ACCEPT, API_JSON_ACCEPT, MANIFEST_CURL_ARGS, RELEASES, api_asset_url,
+    api_release_lookup, is_lower_hex,
+};
 use serde_json::Value;
 
 /// This build's version.
@@ -113,10 +116,33 @@ pub fn parse(body: &str, target: &str) -> Result<Release, String> {
     })
 }
 
-/// One small release file over HTTPS.
+/// One small release file over HTTPS, through GitHub's API when
+/// `releases/download` will not serve it.
 fn fetch(url: &str) -> Result<Vec<u8>, String> {
-    let output = Command::new(CURL)
-        .args(MANIFEST_CURL_ARGS)
+    let first = match curl(url, None) {
+        Ok(body) => return Ok(body),
+        Err(error) => error,
+    };
+    api_url(url)
+        .and_then(|api| curl(&api, Some(API_ASSET_ACCEPT)).ok())
+        .ok_or(first)
+}
+
+/// The GitHub API URL serving the release asset at `url`, if it lists one.
+fn api_url(url: &str) -> Option<String> {
+    let (lookup, name) = api_release_lookup(url)?;
+    let release = curl(&lookup, Some(API_JSON_ACCEPT)).ok()?;
+    api_asset_url(&String::from_utf8_lossy(&release), &name)
+}
+
+/// One small file, sending `accept` when given.
+fn curl(url: &str, accept: Option<&str>) -> Result<Vec<u8>, String> {
+    let mut command = Command::new(CURL);
+    command.args(MANIFEST_CURL_ARGS);
+    if let Some(accept) = accept {
+        command.args(["-H", accept]);
+    }
+    let output = command
         .arg(url)
         .output()
         .map_err(|error| format!("Could not start curl: {error}"))?;
