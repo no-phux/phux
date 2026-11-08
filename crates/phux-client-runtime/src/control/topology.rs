@@ -105,6 +105,17 @@ pub struct DocumentDescriptor {
     pub name: Option<String>,
 }
 
+/// One session on a hub's reachable satellite, with its terminals.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SatelliteSession {
+    /// The satellite's name on the hub.
+    pub host: String,
+    /// The session's name on the satellite.
+    pub name: String,
+    /// Its terminals, satellite-tagged, in window order.
+    pub members: Vec<ResourceId>,
+}
+
 /// The session/pane graph.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Topology {
@@ -116,6 +127,8 @@ pub struct Topology {
     pub agent_sessions: Vec<AgentSessionDescriptor>,
     /// Every document-kind resource, in the server's order.
     pub documents: Vec<DocumentDescriptor>,
+    /// A hub's satellite sessions, from its inventory; none elsewhere.
+    pub satellite_sessions: Vec<SatelliteSession>,
     /// The focused session.
     pub focused_session: u32,
     /// The focused terminal.
@@ -204,29 +217,14 @@ impl Topology {
                 state: resource.agent.as_ref().map(|facet| facet.state.clone()),
             })
             .collect();
-        let documents = snapshot
-            .resources
-            .iter()
-            .filter(|resource| {
-                matches!(
-                    resource.kind,
-                    ResourceKind::AccessibilityTree
-                        | ResourceKind::PixelSurface
-                        | ResourceKind::Document
-                )
-            })
-            .map(|resource| DocumentDescriptor {
-                id: resource.id.clone(),
-                kind: resource.kind,
-                parent: resource.parent.clone(),
-                name: resource.title.clone(),
-            })
-            .collect();
+        let documents = documents(snapshot);
+        let satellite_sessions = satellite_sessions(snapshot);
         Self {
             sessions,
             panes,
             agent_sessions,
             documents,
+            satellite_sessions,
             focused_session: snapshot.focused_session.get(),
             focused_pane: snapshot.focused_resource.clone(),
             authority: None,
@@ -316,6 +314,43 @@ impl Topology {
             .find(|pane| pane.session_id == session_id)
             .map(|pane| &pane.terminal_id)
     }
+}
+
+/// The snapshot's document-kind resources.
+fn documents(snapshot: &SessionSnapshot) -> Vec<DocumentDescriptor> {
+    snapshot
+        .resources
+        .iter()
+        .filter(|resource| {
+            matches!(
+                resource.kind,
+                ResourceKind::AccessibilityTree
+                    | ResourceKind::PixelSurface
+                    | ResourceKind::Document
+            )
+        })
+        .map(|resource| DocumentDescriptor {
+            id: resource.id.clone(),
+            kind: resource.kind,
+            parent: resource.parent.clone(),
+            name: resource.title.clone(),
+        })
+        .collect()
+}
+
+/// A hub's satellite sessions, from its inventory rows.
+fn satellite_sessions(snapshot: &SessionSnapshot) -> Vec<SatelliteSession> {
+    snapshot
+        .hosts()
+        .iter()
+        .flat_map(|host| {
+            host.sessions.iter().map(|session| SatelliteSession {
+                host: host.host.as_str().to_owned(),
+                name: session.name.clone(),
+                members: session.members.clone(),
+            })
+        })
+        .collect()
 }
 
 /// The session a snapshot resource belongs to: its `session` facet, or from
