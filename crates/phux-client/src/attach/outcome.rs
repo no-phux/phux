@@ -103,6 +103,16 @@ pub const fn is_incompatible_protocol(err: &AttachError) -> bool {
 }
 
 impl AttachError {
+    /// Whether the connection was lost (or never made) rather than refused,
+    /// so redialing may succeed: a server upgrade closes every connection.
+    #[must_use]
+    pub const fn is_transport_loss(&self) -> bool {
+        matches!(
+            self,
+            Self::Io(_) | Self::Connect(_) | Self::Unreachable(_) | Self::Disconnected
+        )
+    }
+
     /// Whether this is a transport refusal no retry with the same credentials
     /// can change (a refused pairing token, ADR-0031). Applies the
     /// `phux-client-runtime::reconnect` rule to the flattened detail.

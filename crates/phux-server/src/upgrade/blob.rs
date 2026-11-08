@@ -98,6 +98,29 @@ pub struct StateBlob {
     /// Exclusive native controllers, operation ledger and publication receipts.
     #[serde(default)]
     pub native_agents: Vec<crate::state::native_agent::NativeBinding>,
+    /// Every document resource (tree, surface, typed document) whose parent
+    /// pane crosses live, so a producer that redials re-adopts the same id.
+    /// Additive: an older blob carries none.
+    #[serde(default)]
+    pub documents: Vec<DocumentBlob>,
+}
+
+/// A document resource in the blob; its kind and target are its record's
+/// launch spec. It crosses with no producer until one publishes to it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DocumentBlob {
+    /// Stable wire id, in the pane wire-id space.
+    pub wire_id: u32,
+    /// Wire id of the parent pane, which must be in [`StateBlob::panes`].
+    pub parent_wire_id: u32,
+    /// The resource record's key in [`StateBlob::org`].
+    pub key: phux_core::ResourceKey,
+    /// The control class its producer declared, as its wire byte.
+    #[serde(default)]
+    pub control: Option<u8>,
+    /// The newest document, base64, when one was published.
+    #[serde(default)]
+    pub document: Option<String>,
 }
 
 /// One carried delegated agent credential.

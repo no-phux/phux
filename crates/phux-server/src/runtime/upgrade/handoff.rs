@@ -69,3 +69,34 @@ pub(super) async fn collect_pane_handoffs(
     .await
     .map_err(|_| UpgradeError::HandoffDeadline)?
 }
+
+/// Cut each document's newest document within `deadline`. A document that
+/// does not answer in time is not carried: its producer opens a new one, as
+/// before documents crossed, and the upgrade goes on.
+pub(super) async fn collect_document_cuts(
+    documents: Vec<(
+        phux_core::ids::ResourceId,
+        mpsc::Sender<phux_tree::SnapshotRequest>,
+    )>,
+    deadline: Duration,
+) -> HashMap<phux_core::ids::ResourceId, Option<bytes::Bytes>> {
+    let mut pending = documents
+        .into_iter()
+        .map(|(id, snapshot)| async move {
+            let (reply, rx) = oneshot::channel();
+            snapshot
+                .send(phux_tree::SnapshotRequest { reply })
+                .await
+                .ok()?;
+            Some((id, rx.await.ok()?.document))
+        })
+        .collect::<FuturesUnordered<_>>();
+    let mut cuts = HashMap::new();
+    let _ = tokio::time::timeout(deadline, async {
+        while let Some(cut) = pending.next().await {
+            cuts.extend(cut);
+        }
+    })
+    .await;
+    cuts
+}

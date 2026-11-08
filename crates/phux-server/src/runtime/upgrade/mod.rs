@@ -172,6 +172,10 @@ struct UpgradeContext {
         phux_core::ids::ResourceId,
         mpsc::Sender<UpgradeHandleRequest>,
     )>,
+    document_senders: Vec<(
+        phux_core::ids::ResourceId,
+        mpsc::Sender<phux_tree::SnapshotRequest>,
+    )>,
 }
 
 /// Do everything reversible: snapshot the tree into a handoff blob, stage it in
@@ -201,20 +205,23 @@ async fn prepare_upgrade_inner(state: &SharedState) -> Result<UpgradePlan, Upgra
         flags,
         tree_identity,
         pane_senders,
+        document_senders,
     } = capture_upgrade_context(state)?;
     // No await since the capture: the streams are chosen from the same tree.
     let cuts = streams.cut(state, PANE_HANDOFF_TIMEOUT);
     refuse_invalid_hub_registry(state, &flags)?;
 
     let listener = dup_listener(listener_fd)?;
-    let (panes, agent_sessions) = tokio::join!(
+    let (panes, agent_sessions, documents) = tokio::join!(
         collect_pane_handoffs(pane_senders, PANE_HANDOFF_TIMEOUT),
         cuts,
+        handoff::collect_document_cuts(document_senders, PANE_HANDOFF_TIMEOUT),
     );
     let staged: Result<_, UpgradeError> = async {
         let handoffs = UpgradeHandoffs {
             panes: panes?,
             agent_sessions,
+            documents,
         };
         if let Some(agent) = state.with(|s| streams.uncarried(s, &handoffs.agent_sessions)) {
             return Err(UpgradeError::NativeAgentHandoff { agent });
@@ -289,6 +296,7 @@ fn capture_upgrade_context(state: &SharedState) -> Result<UpgradeContext, Upgrad
                         .into_iter()
                         .filter_map(|(pane, handle)| Some((pane, handle.ops().upgrade_sender()?)))
                         .collect(),
+                    document_senders: s.upgrade_documents(),
                 })
         })
         .ok_or(UpgradeError::NoContext)

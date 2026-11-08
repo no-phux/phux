@@ -3,6 +3,7 @@
 //! coverage) to keep each file under the repo's per-file size budget.
 
 mod agent_seal_rollback;
+mod documents;
 mod exec_failures_and_capture;
 mod resume_hub_and_validate;
 mod support;

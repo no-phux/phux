@@ -99,7 +99,19 @@ connection lives, the document reports `producer: "connected"` in
 frame and reports `"gone"`. Other kinds omit the field (`null` in
 `resource show`). On the wire it is `RESOURCE_STATE` field `PRODUCER`
 (`u8`, `1` connected, `0` gone), absent from an older server. A restarted
-producer opens a fresh document; a gone one is not re-bound.
+producer opens a fresh document. A gone document is re-bound only by a
+publish to it: the publishing local connection becomes its producer and
+receives its input.
+
+`phux upgrade` carries every document whose parent pane crosses: same id,
+same record, its newest document and `control`, with `producer: "gone"`.
+A running `phux agent surface mirror` or `phux agent tree mirror` redials
+when its connection closes (backing off, for up to a minute) and publishes
+again, which re-binds it, so viewers keep the same resource. A surface
+capture that yields no frame (the display asleep, the session locked, a
+refused grant) keeps the surface and its last frame and retries, backing
+off to 30 s; only the first capture, before the surface exists, ends the
+mirror when it fails.
 
 A server restart (not `phux upgrade`, which keeps every pane running)
 ends producers with every other program. A mirror run as a pane

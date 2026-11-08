@@ -176,6 +176,7 @@ pub(super) fn run_mirror(args: MirrorArgs<'_>) -> ExitCode {
         let interval = Duration::from_millis(interval_ms.max(100));
         publish_until_gone(
             &mut conn,
+            &socket_path,
             &opened.resource,
             (capture, act),
             first,
@@ -186,10 +187,12 @@ pub(super) fn run_mirror(args: MirrorArgs<'_>) -> ExitCode {
     })
 }
 
-/// Publish every changed capture until Ctrl-C, or until three captures in a
-/// row fail, and `act` on every intent viewers send between captures with
-/// the newest frame's size. Input brings captures forward
-/// (`surface_cadence`).
+/// Publish every changed capture until Ctrl-C, and `act` on every intent
+/// viewers send between captures with the newest frame's size. Input brings
+/// captures forward (`surface_cadence`). A capture that gives no frame (the
+/// display asleep, the session locked) keeps the surface and its last frame
+/// and backs off; a lost connection (a server upgrade) is redialed and the
+/// last frame published again, which re-adopts the same surface.
 #[cfg(any(target_os = "macos", target_os = "linux"))]
 #[allow(
     clippy::future_not_send,
@@ -197,6 +200,7 @@ pub(super) fn run_mirror(args: MirrorArgs<'_>) -> ExitCode {
 )]
 async fn publish_until_gone(
     conn: &mut phux_client::attach::connection::Connection,
+    socket: &std::path::Path,
     resource: &phux_protocol::ids::ResourceId,
     (mut capture, mut act): (
         impl FnMut() -> Result<Vec<u8>, String>,
@@ -206,40 +210,45 @@ async fn publish_until_gone(
     interval: std::time::Duration,
     json: bool,
 ) -> ExitCode {
+    use super::redial;
     use crate::commands::agent::tree::report;
     use phux_client::tree;
 
     let size = |image: &[u8]| tree::image_size(image).map_or((0, 0), |(_, w, h)| (w, h));
     let mut intents = Vec::new();
     let mut frame = size(&first);
-    if let Err(err) = tree::publish_collecting(conn, resource, first.clone(), &mut intents).await {
+    if let Err(err) = redial::publish(conn, socket, resource, &first, &mut intents).await {
         return report(json, &err);
     }
-    let mut last = Some(first);
-    let mut misses = 0;
+    let mut last = first;
+    let mut misses: u32 = 0;
     let mut input = None;
     loop {
         match capture() {
             Ok(bytes) => {
+                if misses > 0 {
+                    eprintln!("capturing again after {misses} empty captures");
+                }
                 misses = 0;
                 frame = size(&bytes);
-                if last.as_deref() != Some(bytes.as_slice()) {
+                if last != bytes {
                     if let Err(err) =
-                        tree::publish_collecting(conn, resource, bytes.clone(), &mut intents).await
+                        redial::publish(conn, socket, resource, &bytes, &mut intents).await
                     {
                         return report(json, &err);
                     }
-                    last = Some(bytes);
+                    last = bytes;
                 }
             }
             Err(message) => {
-                misses += 1;
-                if misses >= 3 {
-                    return refused(json, &format!("capture failed three times: {message}"));
+                if misses == 0 {
+                    eprintln!("{message}; keeping the last frame and retrying");
                 }
+                misses = misses.saturating_add(1);
             }
         }
         let captured = std::time::Instant::now();
+        let idle = super::surface_cadence::backoff(interval, misses);
         loop {
             for intent in std::mem::take(&mut intents) {
                 if intent.resource == *resource {
@@ -247,12 +256,23 @@ async fn publish_until_gone(
                     input = Some(std::time::Instant::now());
                 }
             }
-            let next = super::surface_cadence::next_capture(captured, input, interval);
+            let next = super::surface_cadence::next_capture(captured, input, idle);
             tokio::select! {
                 _ = tokio::signal::ctrl_c() => return ExitCode::SUCCESS,
                 () = tokio::time::sleep_until(next.into()) => break,
                 received = conn.recv() => match received {
                     Ok(received) => intents.extend(tree::intent(&received)),
+                    Err(err) if err.is_transport_loss() => {
+                        let Some(redialed) = redial::redial(socket).await else {
+                            return report(json, &err.into());
+                        };
+                        *conn = redialed;
+                        if let Err(err) =
+                            redial::publish(conn, socket, resource, &last, &mut intents).await
+                        {
+                            return report(json, &err);
+                        }
+                    }
                     Err(err) => return report(json, &err.into()),
                 },
             }

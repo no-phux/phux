@@ -87,6 +87,7 @@ impl ServerState {
         } = fresh.rebuild_records(self.org(), self.org.loaded, blob)?;
         let mut panes = fresh.rebuild_panes(blob, &keyed, build_pane)?;
         fresh.rebuild_agent_sessions(blob, &keyed, &mut panes, build_session)?;
+        fresh.rebuild_documents(blob, &mut panes)?;
         if imported {
             self.org.store.import(
                 fresh.org(),
@@ -101,6 +102,7 @@ impl ServerState {
         self.commit_rebuilt_tree(fresh);
         self.restore_upgrade_metadata(blob);
         self.restore_native_agents(blob);
+        self.restore_document_controls(blob);
         Ok(RebuiltTree {
             exit_watchers: panes.exit_watchers,
             wired_panes: panes.wired,

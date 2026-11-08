@@ -195,7 +195,7 @@ impl ScreenPollConnection {
                 .await;
             match result {
                 Ok(reply) => return decode_screen_reply(reply.into_result_ignoring_interleaved()),
-                Err(error) if !recovered && is_transport_loss(&error) => {
+                Err(error) if !recovered && error.is_transport_loss() => {
                     self.conn = None;
                     recovered = true;
                 }
@@ -209,16 +209,6 @@ impl ScreenPollConnection {
         self.next_request_id = self.next_request_id.wrapping_add(1).max(1);
         request_id
     }
-}
-
-const fn is_transport_loss(error: &AttachError) -> bool {
-    matches!(
-        error,
-        AttachError::Io(_)
-            | AttachError::Connect(_)
-            | AttachError::Unreachable(_)
-            | AttachError::Disconnected
-    )
 }
 
 fn decode_screen_reply(result: CommandResult) -> Result<ScreenState, AttachError> {
