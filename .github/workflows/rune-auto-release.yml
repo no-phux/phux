@@ -1,6 +1,6 @@
-# Ships Phux Rune alphas with no human, the way phux-mobile's auto-release
+# Ships Phux Rune releases with no human, the way phux-mobile's auto-release
 # ships TestFlight: every two hours, if feat/fix/perf commits touched
-# clients/rune since the last rune-v tag, open the next alpha's bump PR with
+# clients/rune since the last rune-v tag, open the next patch bump PR with
 # generated notes and auto-merge it. After a green push ci on main, tag a
 # merged bump; rune-client.yml then builds, qualifies and publishes it.
 # Repository variable RUNE_AUTO_RELEASE=false stops it; docs/releasing.md's

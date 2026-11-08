@@ -59,14 +59,16 @@ Each product rebuilds only when its inputs changed since the commit
 ## Phux Rune
 
 Rune releases never go through Release Please. `rune-auto-release.yml` cuts
-them on its own: every two hours it opens and auto-merges the next alpha's bump
+them on its own: every two hours it opens and auto-merges the next patch bump
 when feat/fix/perf commits touched `clients/rune` since the last tag, with notes
 generated from those subjects, and tags the merged bump after its push `ci`
 goes green (`clients/rune/scripts/release.py`). Set the repository variable
 `RUNE_AUTO_RELEASE=false` to stop it. To ship hand-written notes, merge your
-own bump first: the train then only tags it. Versions run `alpha.N`, then
-`0.1.0`. There is no beta tag: clients read only those two
-forms, so a beta in the feed would strand every one of them on a failed check.
+own bump first: the train then only tags it. Versions ran `0.1.0-alpha.N` to
+alpha.23, then `0.1.0`; the train now bumps the patch (`0.1.1`, `0.1.2`, ...).
+Clients read only `X.Y.Z` and `X.Y.Z-alpha.N`, so a beta in the feed would
+strand every one of them on a failed check, and a prerelease after `0.1.0`
+would sort below it.
 
 By hand:
 
@@ -113,7 +115,7 @@ a crash there still ships.
    taken the bad version stop being offered it. Do this first.
 
    ```sh
-   good=0.1.0-alpha.N
+   good=0.1.N
    dir="$(mktemp -d)"
    gh release download "rune-v$good" --repo no-phux/phux --dir "$dir" \
      --pattern '*.zip' --pattern '*.tar.gz' --pattern '*.sha256'

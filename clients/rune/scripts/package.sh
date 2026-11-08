@@ -5,8 +5,8 @@
 #
 # macOS: `Phux Rune.app`, ad-hoc signed, zipped as
 # phux-rune-VERSION-macos-arm64.zip. With APP_DIR the app is also left there
-# for scripts/ci/sign-macos-desktop.sh --zip-only, which releases replace the
-# ad-hoc zip with (Developer ID, notarized, stapled). Linux: phux-rune-VERSION-linux-ARCH.tar.gz
+# for scripts/ci/sign-macos-desktop.sh, which releases replace the ad-hoc zip
+# with (Developer ID, notarized, stapled) and add the download DMG beside. Linux: phux-rune-VERSION-linux-ARCH.tar.gz
 # with the binary, README, licenses, and the menu entry and icon the installer
 # registers. Each archive gets a `.sha256` beside it.
 set -euo pipefail

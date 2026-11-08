@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 # Stable macOS distribution of Phux Rune: Developer ID sign, notarize and
-# staple the app into OUTPUT.zip. Signs only with the temporary identity.
+# staple the app into OUTPUT.zip (the updater's archive) and, when named,
+# OUTPUT.dmg (the drag-to-Applications download). Signs only with the
+# temporary identity.
 set -euo pipefail
 
 for name in APPLE_DEVELOPER_ID_P12 APPLE_DEVELOPER_ID_PASSWORD APPLE_NOTARY_KEY_P8 APPLE_NOTARY_KEY_ID APPLE_NOTARY_ISSUER_ID; do
@@ -24,8 +26,8 @@ if [[ "${1:-}" == --binaries ]]; then
     [[ $# -gt 0 ]] || { echo 'Usage: sign-macos-desktop.sh --binaries FILE...' >&2; exit 2; }
     for file in "$@"; do test -x "$file"; done
     binaries=("$@")
-elif [[ $# != 2 || "$2" != *.zip ]]; then
-    echo 'Usage: sign-macos-desktop.sh [--zip-only] APP OUTPUT.zip | --binaries FILE...' >&2
+elif [[ ($# != 2 && $# != 3) || "$2" != *.zip || ($# == 3 && "$3" != *.dmg) ]]; then
+    echo 'Usage: sign-macos-desktop.sh [--zip-only] APP OUTPUT.zip [OUTPUT.dmg] | --binaries FILE...' >&2
     exit 2
 else
     app="$(cd "$(dirname "$1")" && pwd)/$(basename "$1")"
@@ -33,6 +35,12 @@ else
     archive="$(cd "$(dirname "$2")" && pwd)/$(basename "$2")"
     test -f "$app/Contents/Info.plist"
     test ! -e "$archive"
+    dmg=""
+    if [[ $# == 3 ]]; then
+        mkdir -p "$(dirname "$3")"
+        dmg="$(cd "$(dirname "$3")" && pwd)/$(basename "$3")"
+        test ! -e "$dmg"
+    fi
 fi
 work="$(mktemp -d "${TMPDIR:-/tmp}/phux-apple-sign.XXXXXX")"
 keychain="$work/release.keychain-db"
@@ -117,3 +125,19 @@ xcrun stapler staple "$app"
 xcrun stapler validate "$app"
 spctl --assess --type execute --verbose=2 "$app"
 ditto -c -k --norsrc --keepParent "$app" "$archive"
+[[ -n "$dmg" ]] || exit 0
+
+# The download: the stapled app beside an Applications link, in a signed,
+# notarized and stapled read-only image.
+mkdir "$work/stage"
+ditto "$app" "$work/stage/$(basename "$app")"
+ln -s /Applications "$work/stage/Applications"
+hdiutil create -volname "$(basename "$app" .app)" -srcfolder "$work/stage" \
+    -fs HFS+ -format UDZO -ov "$work/download.dmg"
+hdiutil verify "$work/download.dmg"
+codesign --keychain "$keychain" --sign "$identities" --timestamp "$work/download.dmg"
+notarize "$work/download.dmg" "${archive%.zip}-dmg-notary.json"
+xcrun stapler staple "$work/download.dmg"
+xcrun stapler validate "$work/download.dmg"
+spctl --assess --type open --context context:primary-signature --verbose=2 "$work/download.dmg"
+mv "$work/download.dmg" "$dmg"

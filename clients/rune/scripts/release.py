@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Cut the next Rune alpha with no human: rune-auto-release.yml runs this.
+"""Cut the next Rune release with no human: rune-auto-release.yml runs this.
 
     release.py          one step of the train, from a main checkout
     RUNE_RELEASE_TAG_ONLY=1 release.py   only ever the tag step
@@ -7,7 +7,7 @@
 Each run does at most one step. If Cargo.toml names a version with no tag
 yet, it tags the commit that set it once that commit's push ci is green, and
 rune-client.yml takes it from there. Otherwise, if feat/fix/perf commits
-touched clients/rune since the last tag, it opens the next alpha's bump PR
+touched clients/rune since the last tag, it opens the next patch bump PR
 with generated notes and turns on auto-merge. Anything else is a no-op.
 """
 
