@@ -26,6 +26,8 @@ XCRUN = "/usr/bin/xcrun"
 # The data-container lookup: tries, and seconds each.
 CONTAINER_ATTEMPTS = 3
 CONTAINER_TIMEOUT = 60
+# Other read-only simulator queries: tries of the default 30s each.
+QUERY_ATTEMPTS = 3
 
 
 def version_tuple(value):
@@ -125,21 +127,23 @@ class Qualification:
             }) + "\n")
         return prefix.with_suffix(".log").read_text()
 
-    def simctl(self, *args, timeout=30):
-        return self.run([XCRUN, "simctl", *args], timeout=timeout)
+    def simctl(self, *args, timeout=30, attempts=1):
+        """A loaded runner's simulator can stall one call well past its
+        deadline; a read-only query (attempts > 1) abandons a stuck call
+        for a fresh one. Never retry a call that changes state."""
+        for attempt in range(1, attempts + 1):
+            try:
+                return self.run([XCRUN, "simctl", *args], timeout=timeout)
+            except subprocess.TimeoutExpired:
+                if attempt == attempts:
+                    raise
 
     def app_container(self):
         """The app's data container. On a just-booted iOS 26 simulator this
-        lookup has outlasted 30s right after a successful install, so each
-        try gets longer and a stuck call is abandoned for a fresh one."""
-        for attempt in range(1, CONTAINER_ATTEMPTS + 1):
-            try:
-                found = self.simctl("get_app_container", self.udid, BUNDLE_ID, "data",
-                                    timeout=CONTAINER_TIMEOUT)
-                return Path(found.strip())
-            except subprocess.TimeoutExpired:
-                if attempt == CONTAINER_ATTEMPTS:
-                    raise
+        lookup has outlasted 30s right after a successful install."""
+        found = self.simctl("get_app_container", self.udid, BUNDLE_ID, "data",
+                            timeout=CONTAINER_TIMEOUT, attempts=CONTAINER_ATTEMPTS)
+        return Path(found.strip())
 
     def start_server(self):
         socket = self.scratch / "s"
@@ -213,7 +217,8 @@ class Qualification:
             "launch", self.udid, BUNDLE_ID,
             "--qualification-configuration", secret.name, "--qualification-session", SESSION,
             "--qualification-input", marker_command(), "--qualification-marker", MARKER,
-            timeout=60,
+            # Cold launch on a loaded runner has outlasted 60s, as install does.
+            timeout=120,
         )
         match = re.search(rf"^{re.escape(BUNDLE_ID)}: ([0-9]+)$", result, re.MULTILINE)
         if not match:
@@ -221,7 +226,7 @@ class Qualification:
         return int(match[1])
 
     def require_alive(self, pid):
-        listing = self.simctl("spawn", self.udid, "launchctl", "list")
+        listing = self.simctl("spawn", self.udid, "launchctl", "list", attempts=QUERY_ATTEMPTS)
         pattern = rf"^\s*{pid}\s+-?\d+\s+.*{re.escape(BUNDLE_ID)}"
         if not re.search(pattern, listing, re.MULTILINE):
             raise ValueError(f"native app PID {pid} exited")
