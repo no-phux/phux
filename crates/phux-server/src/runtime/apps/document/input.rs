@@ -15,8 +15,11 @@ use crate::state::SharedState;
 /// `document_input` event. The producer is the connection that spawned the
 /// document; once it is gone the intent is refused, never held. `control`,
 /// stamped by a relaying hub, refuses a document of any other class.
+/// An `input_activity` naming `sender` goes first, so the producer can show
+/// who is in control.
 pub(super) fn relay<A: DocumentApi>(
     state: &SharedState,
+    sender: crate::state::ClientId,
     terminal_id: &phux_protocol::ids::ResourceId,
     intent: DocumentInput,
     control: Option<ControlClasses>,
@@ -25,9 +28,14 @@ pub(super) fn relay<A: DocumentApi>(
         let core = s.resource_from_wire(terminal_id)?;
         let handle = s.resource_handle(core)?.clone();
         let producer = s.resource_producer(core);
-        Some((handle, producer, s.document_control(core)))
+        Some((
+            handle,
+            producer,
+            s.document_control(core),
+            s.input_origin(sender),
+        ))
     });
-    let Some((handle, producer, class)) = found else {
+    let Some((handle, producer, class, origin)) = found else {
         return CommandResult::Error {
             code: ErrorCode::TerminalNotFound,
             message: format!("no such resource: {terminal_id}"),
@@ -51,6 +59,12 @@ pub(super) fn relay<A: DocumentApi>(
     let Some(producer) = producer else {
         return not_connected();
     };
+    // Best effort: a full mailbox refuses the intent below anyway.
+    let _ = producer.try_send(Outbound::Frame(FrameKind::Event {
+        terminal: Some(terminal_id.clone()),
+        event: AgentEvent::InputActivity { origin },
+        stamp: None,
+    }));
     let event = FrameKind::Event {
         terminal: Some(terminal_id.clone()),
         event: AgentEvent::DocumentInput { intent },

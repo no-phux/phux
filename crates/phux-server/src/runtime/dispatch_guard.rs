@@ -201,6 +201,22 @@ pub(super) async fn guard_command(
                     ),
                 }
             };
+            if let Command::SendDocumentInput {
+                terminal_id,
+                intent,
+                ..
+            } = command
+            {
+                state.with(|s| {
+                    crate::runtime::apps::document::audit::record(
+                        s,
+                        client_id,
+                        terminal_id,
+                        intent,
+                        &result,
+                    );
+                });
+            }
             let _ = out_tx
                 .send(Outbound::Frame(FrameKind::CommandResult {
                     request_id,

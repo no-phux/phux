@@ -25,6 +25,7 @@ use crate::runtime::operation_dedupe::OperationClaim;
 use crate::state::{ClientId, ServerState, SharedState};
 
 mod attach;
+pub(crate) mod audit;
 mod input;
 mod spawn;
 
@@ -263,7 +264,15 @@ impl<A: DocumentApi> ResourceApp for DocumentApp<A> {
                     terminal_id,
                     intent,
                     control,
-                } => input::relay::<A>(&ctx.state, &terminal_id, intent, control),
+                } => {
+                    let audited = intent.clone();
+                    let result =
+                        input::relay::<A>(&ctx.state, ctx.client_id, &terminal_id, intent, control);
+                    ctx.state.with(|s| {
+                        audit::record(s, ctx.client_id, &terminal_id, &audited, &result);
+                    });
+                    result
+                }
                 _ => CommandResult::Error {
                     code: ErrorCode::InvalidCommand,
                     message: "command not supported by this server".to_owned(),
