@@ -245,7 +245,8 @@ class QualificationTests(unittest.TestCase):
             self.assertEqual(lane.launch(Path("/tmp/owned/s")), 123)
             lookup = lane.simctl.call_args_list[1]
             self.assertEqual(lookup.args, ("get_app_container", "NEW-UDID", qualify.BUNDLE_ID, "data"))
-            self.assertEqual(lookup.kwargs, {"timeout": qualify.CONTAINER_TIMEOUT})
+            self.assertEqual(lookup.kwargs, {"timeout": qualify.CONTAINER_TIMEOUT,
+                                             "attempts": qualify.CONTAINER_ATTEMPTS})
             launch = lane.simctl.call_args_list[2].args
             self.assertIn("--qualification-input", launch)
             self.assertNotIn("--terminate-running-process", launch)
@@ -286,13 +287,13 @@ class QualificationTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             lane = self.lane(Path(temporary))
             stuck = subprocess.TimeoutExpired(["simctl"], qualify.CONTAINER_TIMEOUT)
-            lane.simctl = Mock(side_effect=[stuck, "/data/container\n"])
+            lane.run = Mock(side_effect=[stuck, "/data/container\n"])
             self.assertEqual(lane.app_container(), Path("/data/container"))
-            self.assertEqual(lane.simctl.call_args.kwargs["timeout"], qualify.CONTAINER_TIMEOUT)
-            lane.simctl = Mock(side_effect=stuck)
+            self.assertEqual(lane.run.call_args.kwargs["timeout"], qualify.CONTAINER_TIMEOUT)
+            lane.run = Mock(side_effect=stuck)
             with self.assertRaises(subprocess.TimeoutExpired):
                 lane.app_container()
-            self.assertEqual(lane.simctl.call_count, qualify.CONTAINER_ATTEMPTS)
+            self.assertEqual(lane.run.call_count, qualify.CONTAINER_ATTEMPTS)
 
     def test_report_collection_copies_evidence_and_checks_process_after_dwell(self):
         with tempfile.TemporaryDirectory() as temporary:

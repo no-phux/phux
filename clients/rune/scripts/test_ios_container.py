@@ -61,6 +61,17 @@ class ContainerTests(unittest.TestCase):
             self.assertEqual(json.loads((root / "command-002.timing.json").read_text()), {
                 "elapsed_seconds": 120, "deadline_seconds": 120, "succeeded": False})
 
+    def test_only_a_retried_query_survives_a_stuck_simctl_call(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            lane = self.lane(Path(temporary))
+            stuck = subprocess.TimeoutExpired("simctl", 30)
+            lane.run = Mock(side_effect=[stuck, "listing"])
+            self.assertEqual(lane.simctl("spawn", "NEW", "launchctl", "list", attempts=3), "listing")
+            lane.run = Mock(side_effect=[stuck, "pid"])
+            with self.assertRaises(subprocess.TimeoutExpired):
+                lane.simctl("launch", "NEW", qualify.BUNDLE_ID)
+            lane.run.assert_called_once()
+
 
 if __name__ == "__main__":
     unittest.main()

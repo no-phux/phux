@@ -14,6 +14,11 @@ use rustls::pki_types::{CertificateDer, UnixTime};
 use crate::DialError;
 use crate::tls::{CertTrust, TlsClientIdentity};
 
+/// How long a finished exchange waits to see its close sent. The reply is
+/// already in hand; a full drain is 3 PTO, which on a loaded host (an RTT
+/// estimate of seconds) has outlasted the caller's whole dial budget.
+const CLOSE_DRAIN: std::time::Duration = std::time::Duration::from_secs(1);
+
 /// Where an enrollment goes: the server's QUIC listener and how to trust it.
 #[derive(Debug, Clone)]
 pub struct EnrollDial {
@@ -77,7 +82,7 @@ pub async fn enroll(d: &EnrollDial, request: &Request) -> Result<String, DialErr
         }
     };
     conn.close(0_u32.into(), b"done");
-    endpoint.wait_idle().await;
+    let _ = tokio::time::timeout(CLOSE_DRAIN, endpoint.wait_idle()).await;
     decoded(&reply)
 }
 
@@ -118,7 +123,7 @@ async fn enroll_relayed(
     }
     .await;
     conn.close(0_u32.into(), b"done");
-    endpoint.wait_idle().await;
+    let _ = tokio::time::timeout(CLOSE_DRAIN, endpoint.wait_idle()).await;
     let reply = exchanged.map_err(io_lost)?;
     decoded(&reply)
 }
