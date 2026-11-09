@@ -100,15 +100,26 @@ class Qualification:
         self.env.pop("DEVELOPER_DIR", None)
         self.sequence = 0
         self.configuration = None
+        self.documents = None
 
     def run(self, command, timeout=30, env=None):
         self.sequence += 1
         command = [str(arg) for arg in command]
         prefix = self.out / f"command-{self.sequence:03}"
         prefix.with_suffix(".json").write_text(json.dumps(command) + "\n")
-        with prefix.with_suffix(".log").open("w") as log:
-            subprocess.run(command, env=self.env if env is None else env, check=True,
-                           stdout=log, stderr=subprocess.STDOUT, timeout=timeout)
+        started = time.monotonic()
+        succeeded = False
+        try:
+            with prefix.with_suffix(".log").open("w") as log, \
+                    prefix.with_suffix(".stderr.log").open("w") as diagnostics:
+                subprocess.run(command, env=self.env if env is None else env, check=True,
+                               stdout=log, stderr=diagnostics, timeout=timeout)
+            succeeded = True
+        finally:
+            prefix.with_suffix(".timing.json").write_text(json.dumps({
+                "elapsed_seconds": time.monotonic() - started,
+                "deadline_seconds": timeout, "succeeded": succeeded,
+            }) + "\n")
         return prefix.with_suffix(".log").read_text()
 
     def simctl(self, *args, timeout=30):
@@ -162,12 +173,22 @@ class Qualification:
         self.simctl("boot", self.udid)
         self.simctl("bootstatus", self.udid, "-b", timeout=240)
 
-    def launch(self, socket):
-        self.simctl("install", self.udid, self.app, timeout=120)
-        container = Path(self.simctl("get_app_container", self.udid, BUNDLE_ID, "data").strip())
+    def app_documents(self):
+        # Install can return while cold CoreSimulator/LaunchServices registration
+        # still catches up. Resolve once with the same bounded setup budget as
+        # install, not the 30s budget for lightweight commands. Never retry an
+        # application assertion or re-resolve this stable container after launch.
+        container = Path(self.simctl("get_app_container", self.udid, BUNDLE_ID, "data", timeout=120).strip())
+        if not container.is_absolute() or not container.is_dir():
+            raise ValueError("simctl returned no existing absolute app data container")
         documents = container / "Documents"
         documents.mkdir(exist_ok=True)
-        secret = documents / "qualification-connection.json"
+        return documents
+
+    def launch(self, socket):
+        self.simctl("install", self.udid, self.app, timeout=120)
+        self.documents = self.app_documents()
+        secret = self.documents / "qualification-connection.json"
         with open(secret, "x", opener=lambda path, flags: os.open(path, flags, 0o600)) as handle:
             json.dump(self.configuration, handle)
         self.configuration = None
@@ -194,8 +215,9 @@ class Qualification:
             raise ValueError("isolated server exited during qualification")
 
     def collect_report(self, pid):
-        container = Path(self.simctl("get_app_container", self.udid, BUNDLE_ID, "data").strip())
-        documents = container / "Documents"
+        if self.documents is None:
+            raise ValueError("app data container was not resolved before launch")
+        documents = self.documents
         source = documents / "rune-qualification.json"
         deadline = time.monotonic() + 90
         while not source.is_file():
@@ -204,11 +226,11 @@ class Qualification:
                 raise TimeoutError("native qualification report not written within 90s")
             time.sleep(0.5)
         shutil.copy2(source, self.out / source.name)
-        report = json.loads(source.read_text())
+        report = json.loads((self.out / source.name).read_text())
         validate_report(report, self.transport)
         tree = documents / "rune-tree.json"
         shutil.copy2(tree, self.out / tree.name)
-        if SESSION not in json.dumps(json.loads(tree.read_text())):
+        if SESSION not in json.dumps(json.loads((self.out / tree.name).read_text())):
             raise ValueError("native view tree does not show the qualification session")
         self.require_alive(pid)
         self.simctl("io", self.udid, "screenshot", self.out / "ios-system-keyboard.png")

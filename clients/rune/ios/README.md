@@ -87,6 +87,15 @@ exist. This avoids a redundant SpringBoard termination/registration round
 trip on cold CI images. All launch deadlines and the real paired input and
 lifecycle requirements remain unchanged.
 
+Cold CoreSimulator registration can outlast installation. Container acquisition
+has one explicit 120-second setup deadline, like installation itself, and must
+return an existing absolute directory. The fixture retains that Documents path
+instead of asking LaunchServices again after launch. Each command records its
+duration, deadline and success without credential contents. Application launch,
+report and lifecycle deadlines are unchanged; no failed app assertion is retried.
+Command stdout and diagnostic stderr are stored separately so service warnings
+cannot be mistaken for an app-container path or JSON response.
+
 **Evidence boundary:** calling the UIKit input override is not physical
 keyboard, autocorrect, dictation or CJK IME automation. A simulator screenshot
 and device link are not real-device GPU, battery, accessibility or TestFlight
