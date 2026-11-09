@@ -394,12 +394,42 @@ pub fn title_bar(desk: &Desk, p: &Ink, lights: f32) -> El {
                 .font(CAPTION.family(Family::SystemMono))
                 .color(p.dim),
         )
+        .child(icon_press(
+            &icons::SETTINGS,
+            "Settings",
+            "settings-button",
+            p,
+            Desk::toggle_settings,
+        ))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use phux_protocol::ids::ResourceId;
+
+    #[test]
+    fn settings_open_from_the_titlebar_with_or_without_the_sidebar() {
+        use rune::accesskit::Action;
+
+        for sidebar_open in [true, false] {
+            let mut desk = Desk::settings_test_fixture();
+            desk.settings_open = false;
+            desk.sidebar_open = sidebar_open;
+            let mut rt = rune::Runtime::new(
+                desk,
+                crate::ui::view,
+                (1100.0, 720.0),
+                rune::Env::new(false, 1.0),
+            );
+            rt.frame(0.0);
+            assert!(rt.find("settings-button").is_some());
+            assert!(rt.accessibility_action("settings-button", Action::Click, None));
+            rt.frame(0.0);
+            assert!(rt.state.settings_open);
+            assert!(rt.find("settings-about").is_some());
+        }
+    }
 
     #[test]
     fn a_remote_servers_update_happens_on_that_machine() {

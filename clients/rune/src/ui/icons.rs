@@ -16,6 +16,11 @@ macro_rules! icon {
     };
 }
 
+icon!(
+    SETTINGS,
+    "phux-settings",
+    "M2 4h12M2 8h12M2 12h12M5 2.5v3M11 6.5v3M6 10.5v3"
+);
 icon!(CLOSE, "phux-close", "M4.5 4.5l7 7M11.5 4.5l-7 7");
 icon!(PLUS, "phux-plus", "M8 3.5v9M3.5 8h9");
 icon!(CHEVRON, "phux-chevron", "M4.5 6.5L8 10l3.5-3.5");

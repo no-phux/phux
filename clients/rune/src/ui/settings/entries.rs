@@ -79,7 +79,7 @@ impl Entry {
             }
             Self::Diagnostics => "Copy local logs and app state. Nothing is sent anywhere.",
             Self::Updates => {
-                "Phux Rune version, Check now, Check automatically, Update phux with Phux Rune, server and protocol compatibility."
+                "Phux Rune version, Check now, Check automatically, Update phux with Phux Rune, phux release channel: Follow installed, Stable or Next, local installation, package manager, server and protocol compatibility."
             }
         }
     }
@@ -96,10 +96,13 @@ impl Entry {
             Self::Hosts => desk.machines.label().to_owned(),
             Self::Diagnostics => "Local only".to_owned(),
             Self::Updates => format!(
-                "{} automatic {} manage phux {}",
+                "{} automatic {} manage phux {} channel {}",
                 crate::updates::VERSION,
                 on(desk.updater.automatic),
-                on(desk.updater.manage_phux)
+                on(desk.updater.manage_phux),
+                desk.updater
+                    .phux_channel
+                    .map_or("installed", |c| c.as_str())
             ),
         }
     }
@@ -127,7 +130,9 @@ impl Entry {
             Self::Notifications => "alerts bell",
             Self::Hosts => "remote ssh connection",
             Self::Diagnostics => "logs debug troubleshooting",
-            Self::Updates => "upgrade version automatic",
+            Self::Updates => {
+                "upgrade version automatic release channel stable next preview install"
+            }
         }
     }
 

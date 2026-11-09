@@ -1,6 +1,8 @@
 //! Updates on screen: a corner card that never takes the keyboard, the
 //! status-line pill that reopens it, and the section in settings.
 
+mod phux;
+
 use rune::{Color, El, TextStyle, Transition, col, el, row, text};
 
 use super::settings::{primary, secondary, section, toggle};
@@ -261,21 +263,7 @@ pub fn settings(desk: &Desk, ink: &Ink) -> El {
         )
         .px(toggle_inset),
     );
-    if updater.can_manage_phux() {
-        section = section.child(
-            toggle(
-                desk,
-                "set-update-phux",
-                "Update phux with Phux Rune",
-                "Installs the CLI and hands the live server off; sessions keep running.",
-                updater.manage_phux,
-                Desk::toggle_update_phux,
-                ink,
-            )
-            .px(toggle_inset),
-        );
-    }
-    section
+    section.child(phux::settings(desk, ink, toggle_inset))
 }
 
 /// Failures and compatibility warnings stay in view even when search hides
