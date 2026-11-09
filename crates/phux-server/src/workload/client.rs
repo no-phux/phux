@@ -227,10 +227,21 @@ pub fn stored_credential_id(cert_path: &Path) -> Option<String> {
 /// enrollment is due for renewal.
 #[must_use]
 pub fn stored_certificate_expiry(cert_path: &Path) -> Option<i64> {
+    stored_certificate_validity(cert_path).map(|(_, not_after)| not_after)
+}
+
+/// The leaf's `(notBefore, notAfter)` as Unix seconds, read as
+/// [`stored_certificate_expiry`] reads it.
+#[must_use]
+pub fn stored_certificate_validity(cert_path: &Path) -> Option<(i64, i64)> {
     let bytes = std::fs::read(cert_path).ok()?;
     let leaf = CertificateDer::pem_slice_iter(&bytes).next()?.ok()?;
     let (_, parsed) = x509_parser::parse_x509_certificate(leaf.as_ref()).ok()?;
-    Some(parsed.validity().not_after.timestamp())
+    let validity = parsed.validity();
+    Some((
+        validity.not_before.timestamp(),
+        validity.not_after.timestamp(),
+    ))
 }
 
 /// The `sha256:` fingerprint of the CA certificate stored after the leaf in
