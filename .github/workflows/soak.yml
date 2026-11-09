@@ -3,7 +3,7 @@
 # round (the fd leak across graceful upgrades, #1956, and the per-pane
 # systemd scope that keeps oomd off the server, #2006), then the stress
 # storms. Success sets the `soak` commit status on the candidate's commit;
-# lts.yml refuses to promote a tag without it (docs/releasing.md#lts).
+# lts.yml refuses to promote a tag without it (docs/runbooks/lts.md).
 #
 # Nightly it soaks the newest stable release. Dispatch it with a tag first to
 # promote another one. The result is a status, not an artifact, so a newer

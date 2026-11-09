@@ -91,7 +91,7 @@ pub enum Channel {
     /// The moving prerelease of green `main`.
     Next,
     /// A numbered release a maintainer promoted for long-term support. Its
-    /// manifest must carry a valid signature (docs/releasing.md#lts).
+    /// manifest must carry a valid signature (docs/runbooks/lts.md).
     Lts,
 }
 

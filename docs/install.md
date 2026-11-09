@@ -146,7 +146,7 @@ curl -fsSL https://phux.sh/install | sh -s -- --dry-run
 | `--install-dir <dir>`           | install somewhere other than `~/.local/bin`                   |
 | `--no-modify-path`              | leave your shell profile alone                                |
 | `--version <X.Y.Z>`             | install a specific release instead of the latest             |
-| `--channel <stable\|next\|lts>`  | follow tagged releases (the default), every `main` build that passes CI, or the [long-term-support](./releasing.md#lts) release |
+| `--channel <stable\|next\|lts>`  | follow tagged releases (the default), every `main` build that passes CI, or the [long-term-support](./runbooks/lts.md) release |
 | `--rune`                        | install the desktop app, [Phux Rune](./clients.md#desktop), adding the CLI if missing |
 | `--desktop`                     | the same as `--rune` (the GPUI desktop is retired)           |
 | `--dry-run`                     | print what would be downloaded and where, and install nothing |
@@ -241,7 +241,7 @@ phux channel stable    # go back to tagged releases
 phux channel lts       # follow the long-term-support release
 ```
 
-`stable` is the tagged releases and the default. `next` is rebuilt from every commit on `main` that passes CI. `lts` is one release promoted about monthly that receives security fixes for 12 months ([LTS](./releasing.md#lts)); its manifest must carry a valid signature.
+`stable` is the tagged releases and the default. `next` is rebuilt from every commit on `main` that passes CI. `lts` is one release promoted about monthly that receives security fixes for 12 months ([LTS](./runbooks/lts.md)); its manifest must carry a valid signature.
 
 ## Shell completion
 

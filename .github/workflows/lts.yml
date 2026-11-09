@@ -1,4 +1,4 @@
-# Promote one stable release to the lts channel (docs/releasing.md#lts).
+# Promote one stable release to the lts channel (docs/runbooks/lts.md).
 # Manual only: lts.json moves when a maintainer runs this with a tag, never
 # on a release. `release-manifest lts` refuses a tag that is not a published
 # CLI release with every target's tarball, checksum and signature, or whose

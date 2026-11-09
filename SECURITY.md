@@ -10,7 +10,7 @@
 | Anything older | no; update with `phux update` |
 
 How the LTS line is promoted and patched is in
-[docs/releasing.md](./docs/releasing.md#lts).
+[docs/runbooks/lts.md](./docs/runbooks/lts.md).
 
 ## Reporting a vulnerability
 
