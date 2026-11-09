@@ -9,8 +9,7 @@ use std::io::{Read as _, Write as _};
 use std::process::{Command, Stdio};
 
 use phux_client::attach::connection::Connection;
-use phux_client::tree::{self, Intent};
-use phux_protocol::ids::ResourceId;
+use phux_client::tree::{self, DocumentInput, Intent};
 use phux_protocol::wire::frame::MAX_CLIPBOARD_TEXT;
 
 /// The commands that set and read the host clipboard.
@@ -126,26 +125,54 @@ impl Clipboard {
         String::from_utf8(bytes).map_err(|_| "the host clipboard holds no text".to_owned())
     }
 
-    /// Answer copy `reply` on `resource` with the clipboard's text. A
-    /// failure is logged; the mirror goes on.
+    /// Answer `intent` when it is a copy, with the clipboard's text; false
+    /// for any other intent. A failure is logged; the mirror goes on.
     #[allow(
         clippy::future_not_send,
         reason = "the CLI runtime is single-threaded; the connection is not shared"
     )]
-    pub(super) async fn answer(
+    pub(super) async fn answered(
         &self,
         conn: &mut Connection,
-        resource: &ResourceId,
-        reply: u32,
+        intent: &Intent,
         intents: &mut Vec<Intent>,
-    ) {
+    ) -> bool {
+        let DocumentInput::CopyClipboard { reply } = intent.input else {
+            return false;
+        };
         let text = self.get();
         if let Err(message) = &text {
             eprintln!("phux: copy from the host clipboard failed: {message}");
         }
-        if let Err(err) = tree::answer_copy(conn, resource, reply, text, intents).await {
+        if let Err(err) = tree::answer_copy(conn, &intent.resource, reply, text, intents).await {
             eprintln!("phux: copy not answered: {err}");
         }
+        true
+    }
+
+    /// Carry out `intent` on a window or display: a copy is answered, a
+    /// paste sets the clipboard before `act` presses the chord, and
+    /// anything else goes straight to `act`.
+    #[allow(
+        clippy::future_not_send,
+        reason = "the CLI runtime is single-threaded; the connection is not shared"
+    )]
+    pub(super) async fn carry_out(
+        &self,
+        conn: &mut Connection,
+        intent: &Intent,
+        intents: &mut Vec<Intent>,
+        act: impl FnOnce(&DocumentInput),
+    ) {
+        if self.answered(conn, intent, intents).await {
+            return;
+        }
+        if let DocumentInput::Paste { text, .. } = &intent.input
+            && let Err(message) = self.set(text)
+        {
+            return eprintln!("phux: paste skipped: {message}");
+        }
+        act(&intent.input);
     }
 }
 

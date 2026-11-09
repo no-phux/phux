@@ -321,6 +321,23 @@ impl Cdp {
             .await
     }
 
+    /// Carry out every intent waiting; a copy is answered from the host
+    /// clipboard, not the page.
+    async fn act_all(
+        &mut self,
+        conn: &mut Connection,
+        clipboard: &super::clipboard::Clipboard,
+        intents: &mut Vec<tree::Intent>,
+        view: Viewport,
+    ) -> Result<(), Failure> {
+        for intent in std::mem::take(intents) {
+            if !clipboard.answered(conn, &intent, intents).await {
+                self.act(&intent, view).await?;
+            }
+        }
+        Ok(())
+    }
+
     /// Carry out one viewer intent.
     async fn act(&mut self, intent: &tree::Intent, view: Viewport) -> Result<(), Failure> {
         for (method, params) in cdp_calls(&intent.input, view) {
@@ -361,15 +378,7 @@ async fn mirror(
     let clipboard = super::clipboard::Clipboard::host(false);
     loop {
         if !intents.is_empty() {
-            for intent in std::mem::take(&mut intents) {
-                if let tree::DocumentInput::CopyClipboard { reply } = intent.input {
-                    clipboard
-                        .answer(conn, &intent.resource, reply, &mut intents)
-                        .await;
-                    continue;
-                }
-                cdp.act(&intent, view).await?;
-            }
+            cdp.act_all(conn, &clipboard, &mut intents, view).await?;
             tree_request = cdp.read_tree().await?;
         }
         let message = tokio::select! {

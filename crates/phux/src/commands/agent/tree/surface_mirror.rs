@@ -174,7 +174,6 @@ pub(super) fn run_mirror(args: MirrorArgs<'_>) -> ExitCode {
         } else {
             outln!("{resource}");
         }
-        let interval = Duration::from_millis(interval_ms.max(100));
         let display = control == Some(phux_protocol::wire::frame::ControlClass::Display);
         let indicator = super::surface_indicator::Indicator::new(display, dry_run_input);
         let clipboard = super::clipboard::Clipboard::host(dry_run_input);
@@ -184,7 +183,7 @@ pub(super) fn run_mirror(args: MirrorArgs<'_>) -> ExitCode {
             &opened.resource,
             (capture, act, indicator, &clipboard),
             first,
-            interval,
+            Duration::from_millis(interval_ms.max(100)),
             json,
         )
         .await
@@ -261,17 +260,9 @@ async fn publish_until_gone(
                 if intent.resource != *resource {
                     continue;
                 }
-                match &intent.input {
-                    tree::DocumentInput::CopyClipboard { reply } => {
-                        clipboard.answer(conn, resource, *reply, &mut intents).await;
-                    }
-                    // The chord only once the clipboard holds the text.
-                    tree::DocumentInput::Paste { text, .. } => match clipboard.set(text) {
-                        Ok(()) => act(&intent.input, frame),
-                        Err(message) => eprintln!("phux: paste skipped: {message}"),
-                    },
-                    other => act(other, frame),
-                }
+                clipboard
+                    .carry_out(conn, &intent, &mut intents, |input| act(input, frame))
+                    .await;
                 input = Some(std::time::Instant::now());
                 indicator.input(&origin).await;
             }
