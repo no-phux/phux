@@ -114,7 +114,7 @@ records explain history; [look them up deliberately](./architecture.md#historica
   wire verb or server code: last-writer-wins host facts belong in metadata,
   and clients watch it with the generic `SUBSCRIBE_METADATA`. Declared
   producers and feeds (ADR-0177) remain the upgrade path if a fact outgrows
-  one key ([agents](./agents.md#plan-usage)).
+  one key ([plan usage](./troubleshooting.md#plan-usage)).
 
 **Substrate**
 

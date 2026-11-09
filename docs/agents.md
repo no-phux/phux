@@ -17,6 +17,36 @@ In the terminal UI, the sidebar lists agents with their state, <kbd>C-a</kbd>
 the next pane whose agent is waiting for you (<kbd>C-a</kbd> <kbd>Q</kbd>
 jumps back).
 
+## Running many agents at once
+
+Run each agent in its own pane: one session per project, or several panes
+in one session. phux tracks every agent's state, so one command, or the
+sidebar, shows which agents are waiting on you.
+
+```sh
+phux new --json -s api -c ~/src/api -- claude
+phux new --json -s web -c ~/src/web -- codex
+phux agent list --state blocked
+```
+
+`--json` creates each session without attaching, so the script keeps
+going. `phux attach NAME` opens one when you're ready.
+
+To keep track of them:
+
+- `phux agent list --state blocked` lists the agents waiting on you.
+  In `phux ls`, sessions that need you come first.
+- `phux agent wait --any --until blocked --timeout 600` returns when any
+  local agent transitions into `blocked`.
+- In the TUI, the sidebar shows every agent's state. <kbd>C-a</kbd>
+  <kbd>a</kbd> filters it to `all`, `this` session, or `need`.
+  <kbd>C-a</kbd> <kbd>q</kbd> jumps to the next pane waiting for an
+  answer, and <kbd>C-a</kbd> <kbd>Q</kbd> jumps back.
+
+More: [starting agents](#starting-agents), [agent states](#agent-states),
+[the sidebar](./status-bar.md#the-sidebar),
+[when an agent is waiting](https://docs.phux.sh/agent-waiting).
+
 ## Agent states
 
 Every pane has an agent record: the agent's kind (`claude`, `codex`, `pi`,
@@ -170,6 +200,10 @@ phux launch --list                        # integrations you can launch
 phux launch claude-code -- --model opus   # extra arguments follow --
 ```
 
+`phux spawn --target PANE` (or `phux launch --target PANE`) places the new
+pane beside an existing one. `--split horizontal` puts it to the right;
+`--split vertical` puts it below.
+
 Launch commands come from plugins. The starter distribution includes them for
 the agents above; `phux config init --distro starter` turns it on.
 
@@ -308,31 +342,7 @@ Claims compare paths as each side writes them. A box usually sees the
 project at a different path from the hub, so its claims show up on the hub
 but don't conflict with the hub's own.
 
-## Plan usage
-
-`phux agent usage` prints the AI plan limits this machine can see: Claude
-Code's 5-hour and weekly windows, Codex's limits, and Grok Build's
-allowance, with how much is used and when each resets.
-
-It reads each vendor's own sign-in on this machine and sends it only to that
-vendor:
-
-| Vendor | Reads | Sends, and only to |
-| --- | --- | --- |
-| Claude Code | Keychain item `Claude Code-credentials`, else `~/.claude/.credentials.json`; `~/.claude.json` | The access token, to `api.anthropic.com` |
-| Codex | `~/.codex/sessions/**/rollout-*.jsonl` and `~/.codex/auth.json` | When those logs are over 10 minutes old: the access token and account id, to `chatgpt.com` |
-| Grok Build | `~/.grok/auth.json` | The session token and user id, to `cli-chat-proxy.grok.com` |
-
-Tokens are never refreshed, written, or logged, and travel only over HTTPS.
-An expired sign-in shows as `unavailable` until you use that agent again.
-Requests to one vendor are at least two minutes apart, with longer waits
-after a rate limit.
-
-The usage plugin, part of the starter distribution, runs
-`phux agent usage --publish` when a client attaches or an agent changes
-state. That shares the numbers with every client allowed to see the whole
-server, including paired devices such as a phone. It shares an anonymous
-account fingerprint, never an email or a token.
+Plan usage: see [troubleshooting](./troubleshooting.md#plan-usage).
 
 ## Agents without an integration
 
@@ -438,13 +448,4 @@ says why it is command-line only.
 `whoami`, `mail send`, `mail read`, `mail ack`, `claim take`, `claim renew`,
 `claim release`, `claim list`.
 
-## Debugging
-
-- `phux agent explain @7` shows which evidence decided the state, and what
-  each rule saw.
-- `phux agent explain --file screen.txt --kind claude` tests rules against a
-  saved screen without a server.
-- `phux watch --json @7` shows the events, such as `agent_state` and
-  `asked`, as they arrive.
-- `phux agent log @7` prints an agent session's events.
-- `phux doctor` checks the Claude Code wrapper.
+Debugging agent state: see [troubleshooting](./troubleshooting.md#debugging).
