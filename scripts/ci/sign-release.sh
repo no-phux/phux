@@ -1,10 +1,11 @@
 #!/usr/bin/env bash
-# Sign release checksums with the phux release key (ADR-0178).
+# Sign release checksums and channel manifests with the phux release key
+# (ADR-0178).
 #
 #   PHUX_MINISIGN_SECRET_KEY=<minisign secret key file contents> \
-#     bash scripts/ci/sign-release.sh dist/<asset>.sha256...
+#     bash scripts/ci/sign-release.sh dist/<asset>.sha256... <channel>.json...
 #
-# Writes <asset>.sha256.minisig beside each sidecar, then verifies it against
+# Writes <file>.minisig beside each file, then verifies it against
 # the keys scripts/install.sh embeds, so a secret no shipped binary trusts
 # fails here instead of on every user's machine. The key is unencrypted and
 # never touches the workspace.
@@ -17,7 +18,7 @@ die() {
 }
 
 [[ -n ${PHUX_MINISIGN_SECRET_KEY:-} ]] || die "PHUX_MINISIGN_SECRET_KEY is not set; release checksums must be signed"
-[[ $# -gt 0 ]] || die "usage: sign-release.sh <asset>.sha256..."
+[[ $# -gt 0 ]] || die "usage: sign-release.sh <asset>.sha256|<channel>.json..."
 
 if ! command -v minisign >/dev/null 2>&1; then
   sudo apt-get update -qq
@@ -32,9 +33,14 @@ trap 'rm -f "$secret"' EXIT
 printf '%s\n' "$PHUX_MINISIGN_SECRET_KEY" > "$secret"
 
 for sidecar in "$@"; do
-  [[ $sidecar == *.sha256 && -f $sidecar ]] || die "$sidecar is not a .sha256 sidecar"
+  case "$sidecar" in
+    *.sha256) what="release checksum" ;;
+    *.json) what="channel manifest" ;;
+    *) die "$sidecar is not a .sha256 sidecar or a .json channel manifest" ;;
+  esac
+  [[ -f $sidecar ]] || die "$sidecar does not exist"
   minisign -S -s "$secret" -m "$sidecar" -x "$sidecar.minisig" \
-    -t "phux release checksum: $(basename "$sidecar")" </dev/null >/dev/null
+    -t "phux $what: $(basename "$sidecar")" </dev/null >/dev/null
   verified=0
   for key in $keys; do
     # -H: prehashed only, the rule phux update and install.sh enforce.

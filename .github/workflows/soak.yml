@@ -1,0 +1,86 @@
+# The soak gate for a release candidate (`just soak`): the e2e lane, then
+# the guards for the two incidents a long-lived server hit, round after
+# round (the fd leak across graceful upgrades, #1956, and the per-pane
+# systemd scope that keeps oomd off the server, #2006), then the stress
+# storms. Success sets the `soak` commit status on the candidate's commit;
+# lts.yml refuses to promote a tag without it (docs/releasing.md#lts).
+#
+# Nightly it soaks the newest stable release. Dispatch it with a tag first to
+# promote another one. The result is a status, not an artifact, so a newer
+# failing run on the same commit withdraws an older pass.
+name: soak
+
+on:
+  schedule:
+    - cron: "17 6 * * *"
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: Tag or commit to soak. Empty soaks the newest stable release.
+        required: false
+        type: string
+        default: ""
+
+permissions:
+  contents: read
+
+concurrency:
+  group: soak-${{ inputs.ref || 'latest' }}
+  cancel-in-progress: false
+
+jobs:
+  soak:
+    name: soak ${{ inputs.ref || 'latest stable' }}
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 150
+    permissions:
+      contents: read
+      statuses: write
+    env:
+      CARGO_INCREMENTAL: "0"
+      CARGO_PROFILE_DEV_DEBUG: "0"
+    steps:
+      - name: Choose the candidate
+        id: candidate
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          REF: ${{ inputs.ref }}
+        run: |
+          set -euo pipefail
+          if [[ -z $REF ]]; then REF="$(gh release view --json tagName --jq .tagName)"; fi
+          echo "ref=$REF" >> "$GITHUB_OUTPUT"
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        id: checkout
+        with:
+          ref: ${{ steps.candidate.outputs.ref }}
+          persist-credentials: false
+      - uses: ./.github/actions/setup-rust-lane
+        with:
+          cachix-auth-token: ${{ secrets.CACHIX_AUTH_TOKEN }}
+          cache-lane: test
+      # A user manager and bus, so the pane-scope guard runs for real instead
+      # of passing vacuously.
+      - name: Start a user systemd manager
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq --no-install-recommends dbus-user-session >/dev/null
+          sudo loginctl enable-linger "$USER"
+          dir="/run/user/$(id -u)"
+          for _ in $(seq 30); do [[ -S $dir/bus ]] && break; sleep 1; done
+          [[ -S $dir/bus ]] || { echo "::error::no user bus at $dir/bus"; exit 1; }
+          { echo "XDG_RUNTIME_DIR=$dir"; echo "PHUX_TEST_REQUIRE_PANE_SCOPE=1"; } >> "$GITHUB_ENV"
+      - name: just soak
+        run: nix develop -c just soak
+      - name: Record the result on the candidate commit
+        if: ${{ !cancelled() && steps.checkout.outcome == 'success' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REF: ${{ steps.candidate.outputs.ref }}
+          STATE: ${{ job.status == 'success' && 'success' || 'failure' }}
+        run: |
+          set -euo pipefail
+          gh api "repos/${GITHUB_REPOSITORY}/statuses/$(git rev-parse HEAD)" \
+            -f state="$STATE" -f context=soak -f description="soak of $REF: $STATE" \
+            -f target_url="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"

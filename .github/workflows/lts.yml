@@ -1,0 +1,43 @@
+# Promote one stable release to the lts channel (docs/releasing.md#lts).
+# Manual only: lts.json moves when a maintainer runs this with a tag, never
+# on a release. `release-manifest lts` refuses a tag that is not a published
+# CLI release with every target's tarball, checksum and signature, or whose
+# commit has no passing `soak` status (soak.yml); then it publishes lts.json
+# and lts.json.minisig to the `channels` release.
+name: lts
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Stable release to promote, vX.Y.Z. It must have passed soak.yml.
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: lts
+  cancel-in-progress: false
+
+jobs:
+  promote:
+    name: promote ${{ inputs.tag }} to lts
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write # uploads lts.json to the channels release
+      statuses: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+          persist-credentials: false
+      - uses: ./.github/actions/setup-bun
+      - env:
+          GH_TOKEN: ${{ github.token }}
+          PHUX_MINISIGN_SECRET_KEY: ${{ secrets.PHUX_MINISIGN_SECRET_KEY }}
+          TAG: ${{ inputs.tag }}
+        run: bun tools/main.ts release-manifest lts --tag "$TAG" --out "$RUNNER_TEMP/lts.json" --publish

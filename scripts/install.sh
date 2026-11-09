@@ -34,7 +34,9 @@ Installs phux and phux-mcp. With --rune, installs Phux Rune, the desktop
 app (Apple silicon macOS 14+, or x86_64 or arm64 GNU/Linux), and the CLI
 only when none is found.
 
-  --channel <stable|latest|next>  Release channel (default: stable, or $PHUX_CHANNEL).
+  --channel <stable|latest|next|lts>
+                                  Release channel (default: stable, or $PHUX_CHANNEL).
+                                  lts is the promoted long-term-support release.
   --version <X.Y.Z>               Pin a stable release (vX.Y.Z also accepted).
   --revision <sha>                Pin a next build by its 40-character commit.
   --sha256 <hex>                  Expected digest of a pinned artifact, instead of its sidecar.
@@ -51,8 +53,8 @@ only when none is found.
   --dry-run                       Print what would be downloaded and where it would go.
   --help                          Show this help.
 
-With minisign on PATH, the release checksum's signature is verified against
-the phux release keys. Set PHUX_REQUIRE_SIGNATURE=1 to refuse to install
+With minisign on PATH, the release checksum's signature, and the channel
+manifest's (required on lts), are verified against the phux release keys. Set PHUX_REQUIRE_SIGNATURE=1 to refuse to install
 without that check (0, the default, falls back to the SHA-256 alone).
 EOF
 }
@@ -214,6 +216,21 @@ load_manifest() {
   [ "$(manifest_value "$2" schema_version)" = 1 ] \
     || die "the $1 release manifest has an unsupported schema; update this installer"
   [ "$(manifest_value "$2" channel)" = "$1" ] || die "the $1 release manifest names another channel"
+  verify_manifest_signature "$1" "${2}.json"
+}
+
+# With minisign on PATH, CHANNEL's manifest RAW must carry a release-key
+# signature (channels/CHANNEL.json.minisig). lts refuses without one; stable
+# and next only warn, since their older manifests were published unsigned.
+# Without minisign, verify_signature applies PHUX_REQUIRE_SIGNATURE later.
+verify_manifest_signature() {
+  command -v minisign >/dev/null 2>&1 || return 0
+  if download "${RELEASES}/channels/$1.json.minisig" "${2}.minisig" 2>/dev/null \
+    && signed_by_release_key "$2" "${2}.minisig"; then
+    return 0
+  fi
+  [ "$1" != lts ] || die "the lts release manifest is not signed by a phux release key; nothing was installed"
+  phux_message warn "the $1 release manifest is not signed by a phux release key; relying on the signed checksum"
 }
 
 # Set build_id (version on stable, commit on next) and build_sha256 for
@@ -241,7 +258,7 @@ resolve() {
 # asset_url and sidecar_url for PRODUCT's build_id on TARGET.
 name_asset() {
   case "$1/$channel" in
-    phux/stable) release="v${build_id}" asset_stem="phux-v${build_id}-$2" ext=tar.gz ;;
+    phux/stable | phux/lts) release="v${build_id}" asset_stem="phux-v${build_id}-$2" ext=tar.gz ;;
     phux/next) release=next asset_stem="phux-next.${build_id}-$2" ext=tar.gz ;;
   esac
   asset_name="${asset_stem}.${ext}"
@@ -741,8 +758,8 @@ if [ "$rune" -eq 1 ]; then
 fi
 case "$channel" in
   latest) channel=stable ;;
-  stable | next) ;;
-  *) die "--channel must be stable, latest, or next" ;;
+  stable | next | lts) ;;
+  *) die "--channel must be stable, latest, next, or lts" ;;
 esac
 if [ -n "$pin" ]; then
   if [ "$channel" = next ]; then
@@ -750,7 +767,7 @@ if [ -n "$pin" ]; then
       || die "on the next channel, pin a build with --revision <40-character commit>"
   else
     [ "$pinned_flag" = --version ] && matches "$pin" "$SEMVER" \
-      || die "on the stable channel, pin a release with --version X.Y.Z"
+      || die "on the $channel channel, pin a release with --version X.Y.Z"
   fi
 fi
 [ -z "$pin_sha256" ] || { [ -n "$pin" ] && matches "$pin_sha256" '[0-9a-f]{64}'; } \

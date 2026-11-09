@@ -85,5 +85,8 @@ jobs:
         env:
           PHUX_MINISIGN_SECRET_KEY: ${{ secrets.PHUX_MINISIGN_SECRET_KEY }}
         run: bash scripts/ci/sign-release.sh dist/*.sha256
+      # next.json is signed with the same key.
       - name: Publish phux
+        env:
+          PHUX_MINISIGN_SECRET_KEY: ${{ secrets.PHUX_MINISIGN_SECRET_KEY }}
         run: bun tools/main.ts release-manifest next --product phux --sha "$SHA" --dist dist

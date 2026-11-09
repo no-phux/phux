@@ -17,7 +17,14 @@ import {
   targets,
   type Product,
 } from "./manifest.ts";
-import { assetDigests, newestStable, releaseManifest, verifiedDist } from "./release-manifest.ts";
+import {
+  assetDigests,
+  ltsRefusal,
+  newestStable,
+  releaseManifest,
+  soakPassed,
+  verifiedDist,
+} from "./release-manifest.ts";
 
 // Every line shape the POSIX installers' awk parser accepts.
 const LINE =
@@ -36,16 +43,16 @@ describe("manifest", () => {
       for (const line of render(fixture(channel)).trimEnd().split("\n")) expect(line).toMatch(LINE);
     }
     expect(() => fixtures(true, mkdtempSync(join(tmpdir(), "manifest-")))).toThrow(
-      "stale: scripts/fixtures/release-manifest/stable.json, scripts/fixtures/release-manifest/next.json; run bun tools/main.ts release-manifest fixtures",
+      "stale: scripts/fixtures/release-manifest/stable.json, scripts/fixtures/release-manifest/next.json, scripts/fixtures/release-manifest/lts.json; run bun tools/main.ts release-manifest fixtures",
     );
   });
 
-  test("names cover every target on both channels", () => {
+  test("names cover every target on every channel", () => {
     for (const channel of CHANNELS) {
       const products = table(fixture(channel)["products"]);
       expect(Object.keys(products)).toEqual(["phux"]);
       const artifacts = table(table(products["phux"])["artifacts"]);
-      const identity = channel === "stable" ? "v9.8.7" : `next.${"a".repeat(40)}`;
+      const identity = channel === "next" ? `next.${"a".repeat(40)}` : "v9.8.7";
       expect(Object.keys(artifacts)).toEqual(targets("phux"));
       for (const target of targets("phux")) {
         const artifact = table(artifacts[target]);
@@ -103,6 +110,40 @@ describe("stable", () => {
   });
 });
 
+describe("lts", () => {
+  const files = targets("phux").flatMap((target) => {
+    const name = assetName("phux", "lts", "1.2.3", target);
+    return [name, `${name}.sha256`, `${name}.sha256.minisig`];
+  });
+  const row = (names: string[], extra: Record<string, unknown> = {}) => ({
+    tag_name: "v1.2.3",
+    assets: names.map((name) => ({ name })),
+    ...extra,
+  });
+
+  test("promotes only a published CLI release with every signed asset", () => {
+    expect(ltsRefusal("v1.2.3", row(files))).toBeUndefined();
+    expect(ltsRefusal("v1.2.3", undefined)).toContain("has no release");
+    expect(ltsRefusal("pi-extension-v1.2.3", row(files))).toContain("not a CLI release tag");
+    expect(ltsRefusal("next", row(files))).toContain("not a CLI release tag");
+    expect(ltsRefusal("v1.2.3", row(files, { draft: true }))).toContain("not a published");
+    expect(ltsRefusal("v1.2.3", row(files, { prerelease: true }))).toContain("not a published");
+    for (const missing of files) {
+      const refusal = ltsRefusal("v1.2.3", row(files.filter((name) => name !== missing)));
+      expect(refusal).toBe(`v1.2.3 is missing ${missing}`);
+    }
+  });
+
+  test("the newest soak status decides", () => {
+    const status = (context: string, state: string) => ({ context, state });
+    expect(soakPassed([status("ci", "success"), status("soak", "success")])).toBe(true);
+    expect(soakPassed([status("soak", "failure"), status("soak", "success")])).toBe(false);
+    expect(soakPassed([status("soak", "pending")])).toBe(false);
+    expect(soakPassed([status("ci", "success")])).toBe(false);
+    expect(soakPassed([])).toBe(false);
+  });
+});
+
 describe("next", () => {
   test("built assets must be present, match their sidecars and be signed", () => {
     const sha = "c".repeat(40);
@@ -136,7 +177,16 @@ describe("next", () => {
 });
 
 test("bad arguments are usage errors before any I/O", () => {
-  for (const bad of [[], ["next-sha", "web"], ["stable"], ["next", "--product", "phux"], ["x"]]) {
+  const cases = [
+    [],
+    ["next-sha", "web"],
+    ["stable"],
+    ["next", "--product", "phux"],
+    ["lts", "--out", "x"],
+    ["lts", "--tag", "v1.2.3"],
+    ["x"],
+  ];
+  for (const bad of cases) {
     expect(() => releaseManifest.run(bad)).toThrow(UsageError);
   }
   expect(releaseManifest.run(["fixtures", "--check"])).toBe(0);
