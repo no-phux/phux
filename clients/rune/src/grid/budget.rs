@@ -385,7 +385,15 @@ const ALONE: &str = "RUNE_BUDGET_ALONE";
 
 /// A real connected terminal behind the native controls, without a server.
 pub(crate) fn input_fixture() -> (Arc<Client>, Runtime<Desk>) {
-    let replica = Replica::new(120, 40, 1);
+    input_fixture_showing("")
+}
+
+/// [`input_fixture`] with `output` already printed in the terminal.
+pub(crate) fn input_fixture_showing(output: &str) -> (Arc<Client>, Runtime<Desk>) {
+    let mut replica = Replica::new(120, 40, 1);
+    if !output.is_empty() {
+        replica.feed(output.to_owned());
+    }
     let mut desk = Desk::new(&Resolved::offline("input"));
     desk.client = Some(Arc::clone(&replica.client));
     desk.layout = Some(phux_client_core::layout::LayoutNode::Leaf(

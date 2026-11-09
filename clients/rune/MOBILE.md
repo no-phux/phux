@@ -42,6 +42,7 @@ desktop one, so every CI build and release proves it draws a session.
 | A small top-right pane map, inline in the header: tap its exact split regions, or swipe the map / dedicated Move handle to one spatial neighbor. Move, Panes and Scroll have a reserved 44-point toolbar outside the measured terminal viewport. Boundary and cancelled drags spring back. Panes opens a named, keyboard-accessible picker for tiny regions | `src/desk/phone/spatial.rs`, `src/ui/spatial.rs` |
 | A dedicated Scroll handle: drag for terminal history; alternate-screen programs receive arrows and mouse-tracking programs receive wheel events through the existing application-aware policy | `src/desk/phone/spatial.rs`, `src/desk/mouse.rs` |
 | Tab pills and a new tab | `src/ui/phone.rs` |
+| A tap on a URL or OSC 8 link opens it; a finger that travels past a few points is a selection instead | `src/desk/links.rs` |
 | Accessory bar: ⌘ commands (Done in Settings search), esc, tab, one-shot ⌃ ⌥ ⇧ latches, a drag pad that sends arrows, the keyboard toggle; commands respect the active modal | `src/ui/phone.rs`, `src/desk/phone.rs` |
 | Keyboard: letters, digits and symbols, shift, delete, space, return; types into the terminal, keeps focus while editing palette/find/Settings search fields, and answers the confirm bar | `src/ui/phone.rs`, `src/desk/phone.rs` |
 | The command palette as a sheet over the terminal, above the keyboard; paths open there too | `src/ui/palette.rs` |

@@ -23,6 +23,9 @@ BUNDLE_ID = "sh.phux.rune.ios"
 SESSION = "rune-ios-native"
 MARKER = "RUNE_IOS_INPUT_OK"
 XCRUN = "/usr/bin/xcrun"
+# The data-container lookup: tries, and seconds each.
+CONTAINER_ATTEMPTS = 3
+CONTAINER_TIMEOUT = 60
 
 
 def version_tuple(value):
@@ -125,6 +128,19 @@ class Qualification:
     def simctl(self, *args, timeout=30):
         return self.run([XCRUN, "simctl", *args], timeout=timeout)
 
+    def app_container(self):
+        """The app's data container. On a just-booted iOS 26 simulator this
+        lookup has outlasted 30s right after a successful install, so each
+        try gets longer and a stuck call is abandoned for a fresh one."""
+        for attempt in range(1, CONTAINER_ATTEMPTS + 1):
+            try:
+                found = self.simctl("get_app_container", self.udid, BUNDLE_ID, "data",
+                                    timeout=CONTAINER_TIMEOUT)
+                return Path(found.strip())
+            except subprocess.TimeoutExpired:
+                if attempt == CONTAINER_ATTEMPTS:
+                    raise
+
     def start_server(self):
         socket = self.scratch / "s"
         env = server_environment(self.scratch)
@@ -174,11 +190,9 @@ class Qualification:
         self.simctl("bootstatus", self.udid, "-b", timeout=240)
 
     def app_documents(self):
-        # Install can return while cold CoreSimulator/LaunchServices registration
-        # still catches up. Resolve once with the same bounded setup budget as
-        # install, not the 30s budget for lightweight commands. Never retry an
-        # application assertion or re-resolve this stable container after launch.
-        container = Path(self.simctl("get_app_container", self.udid, BUNDLE_ID, "data", timeout=120).strip())
+        # Retain the existing bounded container-readiness policy from main,
+        # but resolve only before launch, never again during report collection.
+        container = self.app_container()
         if not container.is_absolute() or not container.is_dir():
             raise ValueError("simctl returned no existing absolute app data container")
         documents = container / "Documents"

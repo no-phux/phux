@@ -131,7 +131,8 @@ session (or `--session NAME`). It never creates a session on its own.
   its path, for agents that read images. Files pasted or dropped on a pane
   type as quoted paths.
 - **Links.** Hold ⌘ over a URL (or an OSC 8 hyperlink) to underline it and
-  see where it goes in the title bar; ⌘-click opens it. URLs wrapped
+  see where it goes in the title bar; ⌘-click opens it. On the phone form a
+  tap on a link opens it, and a drag across one still selects. URLs wrapped
   across rows count. Only `http`, `https` and `mailto` open.
 - **History.** Scrolled back, a pane shows where it is in its history and a
   pill back to the live tail that counts the lines that arrived meanwhile.
