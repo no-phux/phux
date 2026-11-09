@@ -1,21 +1,9 @@
 # Coding agents
 
-phux tracks the coding agents running in its panes, so you can see which one
-needs you and answer it without hunting for its tab. Agents can also use
+phux tracks the coding agents running in its panes. Agents can also use
 phux themselves: to run commands in other panes, read their output, and wait
-for things to happen.
-
-```sh
-phux agent list                                   # every pane's agent and state
-phux agent list --state blocked --state done       # agents needing a look
-phux agent list --query 'mini backend'             # words across inventory fields
-phux agent wait --any --until blocked --timeout 600  # until any agent needs you
-```
-
-In the terminal UI, the sidebar lists agents with their state, <kbd>C-a</kbd>
-<kbd>A</kbd> opens the agents view, and <kbd>C-a</kbd> <kbd>q</kbd> jumps to
-the next pane whose agent is waiting for you (<kbd>C-a</kbd> <kbd>Q</kbd>
-jumps back).
+for things to happen. In the terminal UI, <kbd>C-a</kbd> <kbd>A</kbd> opens
+the agents view.
 
 ## Running many agents at once
 
@@ -447,12 +435,10 @@ Nothing on this machine's own socket is ever held. See
 
 ## Complete terminal creation
 
-Use `phux terminal describe` / `phux_api_describe` for the connected server's
-[terminal workflow](./public-api.md), nested schemas and retry rules.
-`terminal create` / `phux_terminal_create` execute argv in a new process and
-commit its placement; they do not type a shell command or submit an agent turn.
-After a lost reply, `terminal operation` / `phux_terminal_operation` read the
-retained server receipt without repeating effects. Support is not authorization.
+`phux terminal create` executes argv and commits its placement. It does not
+type a shell command or submit an agent turn. `phux terminal operation`
+reads a lost reply and does not repeat it. See the
+[terminal workflow](./public-api.md). Support is not authorization.
 
 ## Commands agents use
 
@@ -470,14 +456,3 @@ says why it is command-line only.
 `terminal describe`, `terminal operation`, `update`, `wait`, `watch`,
 `whoami`, `mail send`, `mail read`, `mail ack`, `claim take`, `claim renew`,
 `claim release`, `claim list`.
-
-## Debugging
-
-- `phux agent explain @7` shows which evidence decided the state, and what
-  each rule saw.
-- `phux agent explain --file screen.txt --kind claude` tests rules against a
-  saved screen without a server.
-- `phux watch --json @7` shows the events, such as `agent_state` and
-  `asked`, as they arrive.
-- `phux agent log @7` prints an agent session's events.
-- `phux doctor` checks the Claude Code wrapper.
