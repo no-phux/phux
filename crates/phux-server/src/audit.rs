@@ -179,9 +179,9 @@ pub fn audit_actor(identity: &ConnectionIdentity) -> AuditActor {
     AuditActor {
         credential: credential.map(|credential| credential.id.clone()),
         principal: credential.map(|credential| credential.principal.clone()),
-        // Filled from the credential once it carries a subject (C1) and a
-        // delegating credential (C3).
-        subject: None,
+        subject: credential.and_then(|credential| credential.subject.clone()),
+        // The connection's grant names its delegator, not its identity:
+        // `ServerState::audit_actor` fills it.
         on_behalf_of: None,
         transport,
     }

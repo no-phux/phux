@@ -222,12 +222,13 @@ fn the_actor_comes_from_the_connection_identity() {
         expires_at: None,
         generation: 1,
         registry_instance: None,
-        subject: None,
-        managed: None,
+        subject: Some("jamesponwith@gmail.com".to_owned()),
+        managed: Some("no-phux".to_owned()),
     });
     let actor = audit_actor(&quic);
     assert_eq!(actor.credential.as_deref(), Some("sha256:ab"));
     assert_eq!(actor.principal.as_deref(), Some("human"));
+    assert_eq!(actor.subject.as_deref(), Some("jamesponwith@gmail.com"));
     assert_eq!(actor.transport, Transport::Quic);
 }
 
@@ -285,4 +286,43 @@ fn canonical_hash_and_signature_match_the_pinned_vector() {
     );
     // hash and sig never feed the hash.
     assert_eq!(record.digest(), digest);
+}
+
+/// A delegated key's actor names who delegated it; any other connection
+/// names nobody.
+#[test]
+fn a_delegated_connection_audits_on_behalf_of() {
+    use crate::policy::ConnectionGrant;
+    use crate::state::{ClientId, ServerState};
+    use phux_core::PrincipalId;
+    use phux_protocol::policy::{PeerIdentity, TransportType};
+    use phux_protocol::scope::TerminalScopeSet;
+
+    let mut state = ServerState::new();
+    let client = ClientId(7);
+    state.set_peer_identity(
+        client,
+        PeerIdentity {
+            uid: 501,
+            pid: Some(7),
+            exe_path: None,
+            mcp_host_key: None,
+            transport: TransportType::UnixSocket,
+            source_addr: None,
+        },
+    );
+    state.set_connection_grant(client, ConnectionGrant::owner());
+    assert_eq!(state.audit_actor(client).on_behalf_of, None);
+    let delegated = ConnectionGrant::delegated(
+        TerminalScopeSet::parse_all(&["observe@group:1"]).expect("scope"),
+        PrincipalId::Credential("delegated:00".to_owned()),
+        PrincipalId::Owner,
+        chrono::Utc::now() + chrono::Duration::hours(1),
+    )
+    .expect("grant");
+    state.set_connection_grant(client, delegated);
+    assert_eq!(
+        state.audit_actor(client).on_behalf_of.as_deref(),
+        Some("owner")
+    );
 }
