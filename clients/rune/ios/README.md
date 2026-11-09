@@ -46,6 +46,12 @@ OS before checking continued rendering. It never adopts a user's simulator
 or production socket. Qualification-only socket/command launch arguments
 are compiled out on devices.
 
+The initial launch never requests termination: the fixture owns a newly
+created simulator with a freshly installed app, so no previous process can
+exist. This avoids a redundant SpringBoard termination/registration round
+trip on cold CI images. All launch deadlines and the real paired input and
+lifecycle requirements remain unchanged.
+
 **Evidence boundary:** calling the UIKit input override is not physical
 keyboard, autocorrect, dictation or CJK IME automation. A simulator screenshot
 and device link are not real-device GPU, battery, accessibility or TestFlight

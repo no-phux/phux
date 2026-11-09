@@ -245,6 +245,7 @@ class QualificationTests(unittest.TestCase):
             self.assertEqual(lane.launch(Path("/tmp/owned/s")), 123)
             launch = lane.simctl.call_args_list[2].args
             self.assertIn("--qualification-input", launch)
+            self.assertNotIn("--terminate-running-process", launch)
             self.assertNotIn("private-never-in-argv", str(launch))
             self.assertIn("--qualification-configuration", launch)
             secret = Path(temporary) / "Documents/qualification-connection.json"
