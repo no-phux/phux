@@ -226,11 +226,11 @@ pub(super) fn cdp_calls(
         DocumentInput::Type { text } | DocumentInput::Paste { text, .. } => {
             vec![("Input.insertText", json!({ "text": text }))]
         }
-        // The page mirror answers a copy from the host clipboard itself.
-        DocumentInput::CopyClipboard { .. } | DocumentInput::ClipboardText { .. } => Vec::new(),
-        // The mirror carries out an activation itself: it needs the box.
-        DocumentInput::Activate { .. } => Vec::new(),
-        DocumentInput::Type { text } => vec![("Input.insertText", json!({ "text": text }))],
+        // The page mirror answers a copy from the host clipboard itself, and
+        // carries out an activation itself: it needs the element's box.
+        DocumentInput::CopyClipboard { .. }
+        | DocumentInput::ClipboardText { .. }
+        | DocumentInput::Activate { .. } => Vec::new(),
         DocumentInput::Click { x, y } => {
             mouse_click(f64::from(*x) * view.scale_x, f64::from(*y) * view.scale_y)
         }

@@ -93,9 +93,9 @@ pub(super) fn events(input: &DocumentInput, frame: (u32, u32), rect: Rect) -> Ve
         DocumentInput::Navigate { .. }
         | DocumentInput::CopyClipboard { .. }
         | DocumentInput::ClipboardText { .. }
+        | DocumentInput::Activate { .. }
         | DocumentInput::Paste { chord: false, .. } => Vec::new(),
         DocumentInput::Paste { chord: true, .. } => vec![Event::PasteChord],
-        DocumentInput::Navigate { .. } | DocumentInput::Activate { .. } => Vec::new(),
         DocumentInput::Click { x, y } => to_screen(frame, rect, *x, *y)
             .map(|(x, y)| {
                 vec![

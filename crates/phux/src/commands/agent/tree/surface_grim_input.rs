@@ -300,6 +300,7 @@ pub(super) fn plan(
         DocumentInput::Navigate { .. }
         | DocumentInput::CopyClipboard { .. }
         | DocumentInput::ClipboardText { .. }
+        | DocumentInput::Activate { .. }
         | DocumentInput::Paste { chord: false, .. } => return Ok(Vec::new()),
         // ponytail: Ctrl+V; a terminal window wants Ctrl+Shift+V.
         DocumentInput::Paste { chord: true, .. } => out.push(if tools.wtype {
@@ -309,7 +310,6 @@ pub(super) fn plan(
         } else {
             return Err("nothing here can press Ctrl+V: install wtype, or ydotool with ydotoold running".into());
         }),
-        DocumentInput::Navigate { .. } | DocumentInput::Activate { .. } => return Ok(Vec::new()),
         DocumentInput::Click { x, y } => {
             let place =
                 place.ok_or("a click needs Hyprland (hyprctl) to place the pointer; run under Hyprland")?;
