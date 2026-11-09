@@ -30,8 +30,8 @@ usage() {
 Usage: curl -fsSL https://phux.sh/install | sh -s -- [options]
 
 Installs phux and phux-mcp. With --rune, installs Phux Rune, the desktop
-app (Apple silicon macOS 14+, or x86_64 GNU/Linux), and the CLI only when
-none is found.
+app (Apple silicon macOS 14+, or x86_64 or arm64 GNU/Linux), and the CLI
+only when none is found.
 
   --channel <stable|latest|next>  Release channel (default: stable, or $PHUX_CHANNEL).
   --version <X.Y.Z>               Pin a stable release (vX.Y.Z also accepted).

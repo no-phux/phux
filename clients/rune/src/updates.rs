@@ -27,8 +27,18 @@ const TARGET: &str = if cfg!(target_os = "macos") {
     "aarch64-apple-darwin"
 } else if cfg!(target_arch = "x86_64") {
     "x86_64-unknown-linux-gnu"
+} else if cfg!(target_arch = "aarch64") {
+    "aarch64-unknown-linux-gnu"
 } else {
     "unsupported"
+};
+/// The tail of this build's release archive name (scripts/package.sh).
+const PLATFORM: &str = if cfg!(target_os = "macos") {
+    "macos-arm64.zip"
+} else if cfg!(target_arch = "aarch64") {
+    "linux-aarch64.tar.gz"
+} else {
+    "linux-x86_64.tar.gz"
 };
 
 /// `X.Y.Z` or `X.Y.Z-alpha.N`; a release sorts after its alphas, and nothing
@@ -75,12 +85,7 @@ impl Release {
     }
 
     fn archive(&self) -> String {
-        let platform = if cfg!(target_os = "macos") {
-            "macos-arm64.zip"
-        } else {
-            "linux-x86_64.tar.gz"
-        };
-        format!("phux-rune-{}-{platform}", self.version)
+        format!("phux-rune-{}-{PLATFORM}", self.version)
     }
 
     fn url(&self) -> String {
@@ -245,6 +250,14 @@ mod tests {
         assert!(release.url().starts_with(
             "https://github.com/no-phux/phux/releases/download/rune-v0.1.0-alpha.9/phux-rune-0.1.0-alpha.9-"
         ));
+    }
+
+    /// The feed the release writes names this build's archive as we do.
+    #[test]
+    fn the_release_feed_publishes_this_target() {
+        let feed = include_str!("../scripts/feed.py");
+        let line = format!(r#""{TARGET}": "{PLATFORM}","#);
+        assert!(feed.contains(&line), "feed.py ARCHIVES lacks {line}");
     }
 
     #[test]

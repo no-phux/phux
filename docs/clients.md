@@ -35,7 +35,8 @@ new pane and never overwrites an existing one.
 
 The desktop app is [Phux Rune](../clients/rune/README.md), an alpha client
 built on the [Rune](https://github.com/anomalyco/rune) UI framework, for macOS
-14 or later on Apple silicon and x86_64 Linux with Vulkan and glibc 2.39:
+14 or later on Apple silicon and x86_64 or arm64 Linux with Vulkan and glibc
+2.39:
 
 ```sh
 curl -fsSL https://phux.sh/install | sh -s -- --rune

@@ -26,6 +26,7 @@ import sys
 ARCHIVES = {
     "aarch64-apple-darwin": "macos-arm64.zip",
     "x86_64-unknown-linux-gnu": "linux-x86_64.tar.gz",
+    "aarch64-unknown-linux-gnu": "linux-aarch64.tar.gz",
 }
 NUMBER = r"(0|[1-9][0-9]*)"
 VERSION = re.compile(rf"{NUMBER}\.{NUMBER}\.{NUMBER}(?:-alpha\.{NUMBER})?")

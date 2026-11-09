@@ -186,10 +186,10 @@ install. It checks the archive's SHA-256 (and the release signature with
 replaces an existing CLI or stops its server. Releases are the `rune-v*`
 tags on [GitHub](https://github.com/no-phux/phux/releases?q=rune-v&expanded=true).
 
-| OS    | Needs                                              | Installs to                                          |
-| ----- | -------------------------------------------------- | ---------------------------------------------------- |
-| macOS | Apple silicon, macOS 14 or later                   | `/Applications`, or `~/Applications` if not writable |
-| Linux | x86_64, glibc 2.39, Vulkan, `libxkbcommon-x11`     | `~/.local/share/phux-rune`, with a menu entry        |
+| OS    | Needs                                                   | Installs to                                          |
+| ----- | ------------------------------------------------------- | ---------------------------------------------------- |
+| macOS | Apple silicon, macOS 14 or later                        | `/Applications`, or `~/Applications` if not writable |
+| Linux | x86_64 or arm64, glibc 2.39, Vulkan, `libxkbcommon-x11` | `~/.local/share/phux-rune`, with a menu entry        |
 
 The app updates itself. It is rougher than the terminal UI;
 [Clients](./clients.md#desktop) says what it does today. There is no
