@@ -28,7 +28,8 @@ pub use validate::*;
 
 pub use client::{
     ClientRequest, IssuedIdentity, remove_identity_files, remove_owned_file,
-    stored_certificate_expiry, stored_chain_authority, stored_credential_id,
+    stored_certificate_expiry, stored_certificate_validity, stored_chain_authority,
+    stored_credential_id,
 };
 
 pub use material::{ClientMaterial, MAX_MATERIAL_BYTES, MaterialError};

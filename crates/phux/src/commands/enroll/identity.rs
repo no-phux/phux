@@ -130,13 +130,32 @@ pub(super) const SECONDS_PER_DAY: i64 = 24 * 60 * 60;
 
 /// When the far host stops admitting the client certificate at `cert`, as
 /// Unix seconds. The registry expiry is authoritative (workload-auth §7)
-/// and issuance rounds the certificate's `notAfter` up to the next midnight
-/// after it, so admission ends within the day before `notAfter`; this
-/// answers the start of that day. `None` when the file does not read as a
-/// certificate.
+/// and a server's own issuance rounds the certificate's `notAfter` up to the
+/// next midnight after it, so admission ends within the day before
+/// `notAfter`; this answers the start of that day. A `notAfter` that is not
+/// a midnight was not rounded (an organization's certificate, whose registry
+/// expiry is its `notAfter`), so it is the answer itself. `None` when the
+/// file does not read as a certificate.
 pub(crate) fn admission_ends(cert: &Path) -> Option<i64> {
-    phux_server::workload::stored_certificate_expiry(cert)
-        .map(|not_after| not_after.saturating_sub(SECONDS_PER_DAY))
+    phux_server::workload::stored_certificate_expiry(cert).map(|not_after| {
+        if not_after % SECONDS_PER_DAY == 0 {
+            not_after.saturating_sub(SECONDS_PER_DAY)
+        } else {
+            not_after
+        }
+    })
+}
+
+/// Whether the certificate at `cert` was issued elsewhere (its `notAfter`
+/// is not a server's midnight rounding) for less than the renewal window:
+/// its issuer renews it on its own schedule (an organization's short-lived
+/// certificate), so only its expiry is worth a warning.
+fn short_lived(cert: &Path) -> bool {
+    phux_server::workload::stored_certificate_validity(cert).is_some_and(
+        |(not_before, not_after)| {
+            not_after % SECONDS_PER_DAY != 0 && not_after - not_before < RENEW_WITHIN_SECONDS
+        },
+    )
 }
 
 /// Why the client certificate at `cert` should be renewed at `now`
@@ -147,7 +166,7 @@ pub(crate) fn renewal_due(cert: &Path, now: i64) -> Option<String> {
         return Some(format!("at {} cannot be read", cert.display()));
     };
     let remaining = ends.saturating_sub(now);
-    if remaining > RENEW_WITHIN_SECONDS {
+    if remaining > RENEW_WITHIN_SECONDS || (remaining > 0 && short_lived(cert)) {
         return None;
     }
     let date = calendar_date(ends);
