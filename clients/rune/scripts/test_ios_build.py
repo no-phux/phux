@@ -279,6 +279,18 @@ class QualificationTests(unittest.TestCase):
             self.assertEqual(run.call_args.kwargs["timeout"], 240)
             self.assertNotIn("shell", run.call_args.kwargs)
 
+    def test_a_stuck_container_lookup_is_retried_then_gives_up(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            lane = self.lane(Path(temporary))
+            stuck = subprocess.TimeoutExpired(["simctl"], qualify.CONTAINER_TIMEOUT)
+            lane.simctl = Mock(side_effect=[stuck, "/data/container\n"])
+            self.assertEqual(lane.app_container(), Path("/data/container"))
+            self.assertEqual(lane.simctl.call_args.kwargs["timeout"], qualify.CONTAINER_TIMEOUT)
+            lane.simctl = Mock(side_effect=stuck)
+            with self.assertRaises(subprocess.TimeoutExpired):
+                lane.app_container()
+            self.assertEqual(lane.simctl.call_count, qualify.CONTAINER_ATTEMPTS)
+
     def test_report_collection_copies_evidence_and_checks_process_after_dwell(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
