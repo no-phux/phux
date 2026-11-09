@@ -51,6 +51,7 @@ impl Desk {
         self.close_galaxy();
         self.close_reef();
         self.close_kitchen();
+        self.close_pitlane();
         self.settings_open = false;
         self.pitch.open = true;
         self.pitch.last = None;

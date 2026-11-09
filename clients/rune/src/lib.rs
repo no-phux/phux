@@ -22,6 +22,7 @@ mod palette;
 mod paths;
 mod perf;
 mod pitch;
+mod pitlane;
 mod reef;
 mod theme;
 mod ui;
