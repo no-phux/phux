@@ -5,6 +5,7 @@ use std::path::PathBuf;
 use std::sync::mpsc::{Receiver, Sender, channel};
 use std::time::Duration;
 
+use phux_client_runtime::release::Channel;
 use rune::prefs::Prefs;
 use rune::{Tx, Waker};
 
@@ -71,6 +72,8 @@ enum Done {
 pub struct Updater {
     pub automatic: bool,
     pub manage_phux: bool,
+    /// None follows the installed CLI's channel, preserving existing installs.
+    pub phux_channel: Option<Channel>,
     /// The installed app, or why this copy can't replace itself.
     pub install: Result<PathBuf, &'static str>,
     /// The CLI and socket this window may update; absent when aimed by hand.
@@ -103,6 +106,10 @@ impl Updater {
         Self {
             automatic: prefs.get("update_automatic").unwrap_or(true),
             manage_phux: prefs.get("update_phux").unwrap_or(true),
+            phux_channel: prefs
+                .get::<String>("update_phux_channel")
+                .as_deref()
+                .and_then(Channel::parse),
             target: resolved
                 .phux
                 .clone()
@@ -184,9 +191,10 @@ impl Updater {
         self.work = Work::Checking;
         self.message = None;
         let cli = self.managed().map(|(phux, _)| phux);
+        let channel = self.phux_channel;
         self.worker(move |send| {
             let release = updates::latest();
-            let cli = cli.map(|phux| phux::check(&phux));
+            let cli = cli.map(|phux| phux::check(&phux, channel));
             send(Done::Checked(release, cli));
         });
     }
@@ -198,6 +206,34 @@ impl Updater {
     /// Whether this window updates phux at all, whatever the switch says.
     pub fn can_manage_phux(&self) -> bool {
         self.target.is_some()
+    }
+
+    pub fn phux_path(&self) -> Option<&std::path::Path> {
+        self.target.as_ref().map(|(path, _)| path.as_path())
+    }
+
+    /// Keep the plan and its retry intact until the current update finishes.
+    pub fn can_toggle_phux_management(&self) -> bool {
+        self.can_manage_phux() && !self.busy() && self.staged.is_none() && !self.pending_handoff
+    }
+
+    /// Package-managed CLIs keep their own channel policy.
+    pub fn can_choose_phux_channel(&self) -> bool {
+        self.can_toggle_phux_management()
+            && self.manage_phux
+            && self.cli.as_ref().is_none_or(|cli| cli.mutable)
+    }
+
+    fn choose_phux_channel(&mut self, channel: Option<Channel>) -> bool {
+        if !self.can_choose_phux_channel() || self.phux_channel == channel {
+            return false;
+        }
+        self.phux_channel = channel;
+        // Never offer a target checked on the previous channel, even offline.
+        self.cli = None;
+        self.message = None;
+        self.dismissed = None;
+        true
     }
 
     pub fn app_due(&self) -> bool {
@@ -265,13 +301,14 @@ impl Updater {
             return;
         };
         let retry = self.pending_handoff;
+        let channel = self.phux_channel;
         self.work = Work::Server;
         self.message = None;
         self.worker(move |send| {
             let result = if retry {
                 phux::retry(&phux, &socket)
             } else {
-                phux::install(&phux, &socket)
+                phux::install(&phux, &socket, channel)
             };
             send(Done::Server(result, restart_after));
         });
@@ -455,6 +492,13 @@ impl Desk {
             ("install", install),
             ("protocol", updates::own_protocol()),
             ("phux", phux.unwrap_or_default()),
+            (
+                "phux channel",
+                updater
+                    .phux_channel
+                    .map_or("installed", Channel::as_str)
+                    .to_owned(),
+            ),
             ("update work", format!("{:?}", updater.work)),
             (
                 "update message",
@@ -473,14 +517,25 @@ impl Desk {
         }
     }
 
+    pub fn set_phux_channel(&mut self, channel: Option<Channel>) {
+        if !self.updater.choose_phux_channel(channel) {
+            return;
+        }
+        let value = channel.map_or("installed", Channel::as_str);
+        let _ = self.prefs.set("update_phux_channel", &value);
+        self.updater.check();
+    }
+
     pub fn toggle_update_phux(&mut self) {
+        if !self.updater.can_toggle_phux_management() {
+            return;
+        }
         self.updater.manage_phux = !self.updater.manage_phux;
         let _ = self.prefs.set("update_phux", &self.updater.manage_phux);
         if self.updater.manage_phux {
             self.updater.check();
         } else {
             self.updater.cli = None;
-            self.updater.pending_handoff = false;
             self.updater.sync_hold();
         }
     }

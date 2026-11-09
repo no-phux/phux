@@ -64,21 +64,12 @@ session (or `--session NAME`). It never creates a session on its own.
   access you already have. A window shows one machine at a time. On a new
   computer the local server is empty, so sessions living elsewhere appear
   only once that machine is added.
-- **Updates.** The app checks at launch and every six
-  hours, and a corner card that never takes the keyboard offers the update.
-  **Download update** fetches the archive and refuses it unless a release key
-  signed its checksum and the new build can draw a frame on this computer; the
-  app then installs when you quit, or now with **Restart now**, which reopens
-  your session. On Linux the files are replaced as soon as the download is
-  verified, so the next launch is the new version however you quit, even if a
-  server update is still due. **Update server** updates the
-  phux CLI through its own updater and hands the live server off without
-  closing sessions; a refused handoff offers a retry, and package-managed
-  installs show their own command. Settings has **Check automatically** and
-  **Update phux with Phux Rune**. Updates need a copy in a writable place such
-  as Applications; development builds, and windows started with `--socket`,
-  `--phux`, `PHUX_BIN` or `PHUX_PROFILE`, never touch phux. Update outcomes
-  go to `rune-update.log` (see **Diagnostics**).
+- **Updates.** Settings → **About & Updates** controls automatic checks,
+  local phux management, and the phux release channel (**Follow installed**,
+  **Stable**, or **Next**). Rune uses the existing CLI's updater, not a private
+  install; package managers keep ownership. Downloads and server handoffs
+  still need a click. [Updates and release channels](./UPDATES.md) covers
+  verification, restart behavior, and the app's independent feed.
 - **Diagnostics.** Panics, startup and update outcomes are logged on this
   computer, with credentials and your home directory removed: `rune-panic.log`,
   `rune.log` and `rune-update.log` in `~/Library/Logs/Phux`, or
@@ -136,7 +127,10 @@ session (or `--session NAME`). It never creates a session on its own.
   across rows count. Only `http`, `https` and `mailto` open.
 - **History.** Scrolled back, a pane shows where it is in its history and a
   pill back to the live tail that counts the lines that arrived meanwhile.
-- **Settings.** ⌘, opens grouped Appearance, Terminal, Notifications,
+- **Settings.** The sliders button at the right of the desktop title bar
+  opens Settings, even with the sidebar folded. ⌘, (Ctrl-Shift-, on Linux)
+  and **Settings** in the command palette open it too. It has grouped
+  Appearance, Terminal, Notifications,
   Remote Hosts, Developer, and About & Updates sections, with local navigation
   on desktop and category drilldown on phone. Search Settings matches names,
   descriptions, categories and current values across all sections, including
