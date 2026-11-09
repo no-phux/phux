@@ -17,6 +17,49 @@ In the terminal UI, the sidebar lists agents with their state, <kbd>C-a</kbd>
 the next pane whose agent is waiting for you (<kbd>C-a</kbd> <kbd>Q</kbd>
 jumps back).
 
+## Running many agents at once
+
+Each coding agent runs in its own pane. Several panes can share a session,
+or each agent can have one.
+
+`phux new -s NAME` creates a session and attaches. `--json` does not
+attach, prints the seed pane's `terminal_id`, and starts a server if
+needed. `phux launch INTEGRATION` starts an enabled integration in a
+new pane and prints its id (`phux launch --list`). The server must have
+a session. With no `--target`, the pane joins the most recently active
+session. `--target PANE --split horizontal` places it to the right;
+`--split vertical` places it below. `phux agent start NAME --kind KIND
+--target PANE` starts an agent in an existing shell pane.
+
+```sh
+phux new --json -s api -c ~/src/api -- claude
+phux new --json -s web -c ~/src/web -- codex
+phux agent list --state blocked
+```
+
+`phux agent list` is one line per pane. `--state blocked` keeps agents
+waiting on you. `phux ls` leads with sessions that need you. `phux ls
+NAME` marks a blocked agent in a running pane `waiting`. `phux attach
+NAME` opens the session.
+
+`phux agent wait --any --until blocked --timeout 600` returns when any
+local agent moves into `blocked`. `--any` takes no pane. An agent already
+`blocked` times out (exit 124). Pass one pane, with no `--any`, to wait
+on it.
+
+The sidebar lists every agent's state. <kbd>C-a</kbd> <kbd>a</kbd> steps
+`all`, `this` (this session), and `need` (blocked, asking, or
+finished and not yet looked at). Click a row to jump there, across
+sessions. <kbd>C-a</kbd> <kbd>A</kbd> opens the agents view. <kbd>C-a</kbd>
+<kbd>q</kbd> jumps to the next pane in this session waiting for an
+answer; <kbd>C-a</kbd> <kbd>Q</kbd> returns to where that jump started.
+
+[Agent states](#agent-states), [starting agents](#starting-agents),
+[the sidebar](./status-bar.md#the-sidebar), [keys](./reference/keys.md),
+[panes and sessions](./scripting.md#creating-panes-and-sessions),
+[when an agent is waiting](https://docs.phux.sh/agent-waiting), and
+[a command in a pane](https://docs.phux.sh/pane-command).
+
 ## Agent states
 
 Every pane has an agent record: the agent's kind (`claude`, `codex`, `pi`,
