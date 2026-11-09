@@ -70,7 +70,11 @@ async fn wss_with_a_configured_ca_looks_up_the_client_certificate_like_quic() {
     let acceptor = crate::transport::tls::acceptor_from_pem_with_client_ca(
         &leaf,
         &leaf_key,
-        Some(&crate::workload::authority_certificate(&paths.ca_cert).unwrap()),
+        Some(
+            &crate::workload::authority_certificate(&paths.ca_cert)
+                .unwrap()
+                .into(),
+        ),
     )
     .unwrap();
     let listener = WsListener::bind_secure(

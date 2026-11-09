@@ -318,7 +318,7 @@ async fn an_ephemeral_listener_in_workload_mode_requires_an_enrolled_certificate
             &cert,
             &key,
             QuicAdmission::Listener(Arc::clone(&token)),
-            Some((&ca_certificate, registry)),
+            Some((&ca_certificate.clone().into(), registry)),
         )
         .unwrap()
     };

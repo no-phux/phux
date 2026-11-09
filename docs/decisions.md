@@ -104,6 +104,10 @@ records explain history; [look them up deliberately](./architecture.md#historica
 - Clients pin the server's certificate authority at pairing and never learn
   one from a connection. Devices and satellites enroll with single-use
   tickets.
+- An organization-managed workload credential skips the pairing bearer: the
+  organization's CA and the host's registry entry are the authority. A root
+  only lets a certificate verify; the registry stays the only admission
+  authority, and `sync-managed` replaces only that organization's records.
 - Humans outrank agents on input leases. Scoped grants can be held for
   approval; the owner never is.
 - Plan usage is a plugin publishing a Global L3 key (`phux.usage/v1`), not a

@@ -404,6 +404,8 @@ mod tests {
             expires_at: None,
             generation: 1,
             registry_instance: None,
+            subject: None,
+            managed: None,
         }
     }
 

@@ -89,7 +89,7 @@ impl InnerTls {
         cert: &std::path::Path,
         key: &std::path::Path,
         workload: Option<(
-            &rustls::pki_types::CertificateDer<'static>,
+            &crate::workload::ClientRoots,
             Arc<ReloadingWorkloadRegistry>,
         )>,
         enrollment: WorkloadPaths,

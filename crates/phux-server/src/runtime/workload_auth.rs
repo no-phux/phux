@@ -11,15 +11,14 @@
 use std::path::Path;
 use std::sync::Arc;
 
-use rustls::pki_types::CertificateDer;
-
-use crate::workload::{ReloadingWorkloadRegistry, WorkloadError};
+use crate::workload::{ClientRoots, ReloadingWorkloadRegistry, WorkloadError};
 
 pub(super) struct WorkloadAuth {
     /// The workload CA certificate, read once through the workload store's
-    /// owner, mode, and no-follow checks. The TLS verifiers are built from
-    /// these bytes; the path is never re-read.
-    pub ca: CertificateDer<'static>,
+    /// owner, mode, and no-follow checks, and the organization roots beside
+    /// the registry. The TLS verifiers are built from the CA's bytes; its
+    /// path is never re-read.
+    pub roots: ClientRoots,
     pub registry: Arc<ReloadingWorkloadRegistry>,
 }
 
@@ -50,7 +49,7 @@ impl WorkloadAuth {
         crate::workload::ensure_ca(cert, key)?;
         migrate_paired_watch(registry);
         Ok(Self {
-            ca: crate::workload::authority_certificate(cert)?,
+            roots: ClientRoots::new(crate::workload::authority_certificate(cert)?, registry),
             registry: Arc::new(ReloadingWorkloadRegistry::load(registry.to_owned())?),
         })
     }
@@ -130,8 +129,8 @@ mod tests {
         )
         .unwrap();
         assert_eq!(
-            auth.ca,
-            crate::workload::authority_certificate(&cert).unwrap()
+            *auth.roots.current(),
+            [crate::workload::authority_certificate(&cert).unwrap()]
         );
         assert!(auth.registry.current().is_empty());
     }

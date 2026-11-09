@@ -30,6 +30,45 @@ pub fn validate_satellite_name(name: &str) -> Result<(), WorkloadError> {
     }
 }
 
+/// An organization name, as a managed record carries it and
+/// `workload-org-roots/<org>.pem` names its roots: 1 to 63 of `a-z`, `0-9`,
+/// and `-`.
+///
+/// # Errors
+///
+/// [`WorkloadError::Malformed`].
+pub fn validate_org_name(org: &str) -> Result<(), WorkloadError> {
+    let valid = (1..=63).contains(&org.len())
+        && org
+            .bytes()
+            .all(|byte| matches!(byte, b'a'..=b'z' | b'0'..=b'9' | b'-'));
+    if valid {
+        Ok(())
+    } else {
+        Err(WorkloadError::Malformed(
+            "an organization name is 1 to 63 of a-z, 0-9, and '-'".to_owned(),
+        ))
+    }
+}
+
+/// A credential's subject, the person or agent its key belongs to: 1 to
+/// 256 characters, none of them a control character.
+///
+/// # Errors
+///
+/// [`WorkloadError::Malformed`].
+pub fn validate_subject(subject: &str) -> Result<(), WorkloadError> {
+    let valid =
+        (1..=256).contains(&subject.chars().count()) && !subject.chars().any(char::is_control);
+    if valid {
+        Ok(())
+    } else {
+        Err(WorkloadError::Malformed(
+            "a subject is 1 to 256 characters with no control character".to_owned(),
+        ))
+    }
+}
+
 /// Every scope must parse, there must be at least one, and together they
 /// must fit one canonical set. One bad string refuses the whole record:
 /// there is no partial grant.

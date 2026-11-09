@@ -136,7 +136,7 @@ pub(super) fn handle_open_listener(
             QuicAdmission::Listener(Arc::clone(&token)),
             workload
                 .as_ref()
-                .map(|auth| (&auth.ca, Arc::clone(&auth.registry))),
+                .map(|auth| (&auth.roots, Arc::clone(&auth.registry))),
         )
     }) {
         Ok(listener) => listener,
