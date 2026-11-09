@@ -387,6 +387,9 @@ pub enum ServerFeatureExt {
     /// The server serves the `Document` resource kind: a producer-fed,
     /// replicated document whose content type is fixed when it is opened.
     TypedDocument = 0x0002_0000,
+    /// The server answers `MIRROR`: it lists the displays and windows it
+    /// can mirror and starts or stops a mirror of one on demand.
+    Mirrors = 0x0004_0000,
 }
 
 impl ServerFeatureExt {
@@ -410,6 +413,7 @@ impl ServerFeatureExt {
         Self::AccessibilityTree,
         Self::PixelSurface,
         Self::TypedDocument,
+        Self::Mirrors,
     ];
 
     /// The `docs/protocol.md#handshake` constant, e.g. `"PATH_QUERY"`.
@@ -434,6 +438,7 @@ impl ServerFeatureExt {
             Self::AccessibilityTree => "ACCESSIBILITY_TREE",
             Self::PixelSurface => "PIXEL_SURFACE",
             Self::TypedDocument => "TYPED_DOCUMENT",
+            Self::Mirrors => "MIRRORS",
         }
     }
 

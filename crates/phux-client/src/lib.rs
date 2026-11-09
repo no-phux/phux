@@ -52,6 +52,7 @@ pub mod layout_ops;
 pub mod native_agent;
 // Organization commands behind `ORGANIZATION` (`rm`, `relaunch`, `restore`,
 // `mv`, bulk move, undo, Intake resolve).
+pub mod mirror;
 pub mod org;
 pub mod organize;
 pub mod pane_move;

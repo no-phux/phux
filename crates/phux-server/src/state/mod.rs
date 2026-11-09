@@ -45,6 +45,7 @@ mod legacy_snapshot;
 mod lifecycle;
 mod lifecycle_state;
 mod metadata;
+pub(crate) mod mirror_demand;
 pub(crate) mod native_agent;
 mod org;
 mod plugin_startup;
@@ -201,6 +202,8 @@ pub struct ServerState {
     /// Rung on a config reload to re-read `[[mirrors]]`; `None` until the
     /// standing-mirror supervisor is installed.
     standing_mirrors: Option<std::sync::Arc<tokio::sync::Notify>>,
+    /// The mirrors wanted beside `[[mirrors]]`, and Rune's macOS runner.
+    mirror_demand: crate::state::mirror_demand::Demand,
     /// Who wrote each `phux.push/v1/<device>` grant, and what was last
     /// pushed to it (ADR-0155).
     push_grants: crate::push::PushGrants,

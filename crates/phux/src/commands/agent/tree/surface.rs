@@ -91,6 +91,11 @@ pub(crate) enum SurfaceAction {
         #[usage(long, value_name = "PID")]
         parent_pid: Option<u32>,
     },
+    /// List the displays and windows `mirror` can name on this host.
+    Targets {
+        #[usage(long)]
+        json: bool,
+    },
     /// Write every image as it arrives, each replacing the file.
     Follow {
         /// The surface.
@@ -152,6 +157,7 @@ pub(crate) fn run_surface(action: &SurfaceAction, socket: Option<PathBuf>) -> Ex
             super::parent_watch::exit_with(*parent_pid);
             super::surface_standing::run_standing(socket)
         }
+        SurfaceAction::Targets { json } => super::surface_targets::run_targets(*json),
         SurfaceAction::Follow {
             target,
             out,

@@ -72,3 +72,28 @@ centre is clicked on the window surface beside the tree instead. The point
 is mapped from the window's frame into frame pixels, which accounts for
 Retina scale and `--max-width`. `--wait-until TEXT [--timeout SECS]` then
 follows the tree until a document contains TEXT.
+
+## Picking a screen or window
+
+`MIRROR` lists what a host can mirror and starts one on demand, in the
+same `mirror-<target>` session a `[[mirrors]]` entry gets
+([standing mirrors](./resource-kinds.md#standing-mirrors)). Rune's palette
+("Mirror a screen or window…") and the phone apps list every host's
+targets, start the pick and open its surface.
+
+- `Targets` answers `{"targets": [{target, kind, label}]}`: `display`,
+  each output and each mapped window from Hyprland (`hyprctl monitors`,
+  `clients`; another compositor offers `display`), or the main display and
+  on-screen windows on macOS. `phux agent surface targets --json` prints
+  the same list.
+- `Start` answers `{"session", "surface"}`, waiting up to 20 s for the
+  first frame (`surface` is null if none came). Starting a running or
+  configured target returns it. The mirror restarts like a standing one
+  and lasts until `Stop`, or until the server restarts or upgrades.
+- A satellite named as the host answers for its own screens.
+- Listing needs `observe@window[:HOST]`; starting or stopping needs
+  `observe@display` for a `display` target, else `observe@window` (with
+  `:HOST` for a satellite). No broader grant reaches either.
+- On macOS the server cannot see window titles or capture, so Rune's
+  runner (`phux agent surface standing`) reports the targets and runs the
+  mirrors. Without Rune open there, both are refused `UNAVAILABLE`.

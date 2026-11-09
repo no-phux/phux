@@ -59,6 +59,7 @@ impl RelaySession {
             Command::ServiceHttpOpen { .. } => Some("SERVICE_HTTP_OPEN"),
             Command::ServiceHttpRead { .. } => Some("SERVICE_HTTP_READ"),
             Command::ServiceHttpClose { .. } => Some("SERVICE_HTTP_CLOSE"),
+            Command::Mirror { .. } => Some("MIRROR"),
             _ => None,
         };
         if let Some(name) = name

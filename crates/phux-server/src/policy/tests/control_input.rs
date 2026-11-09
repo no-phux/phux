@@ -139,3 +139,58 @@ fn a_hub_stamps_exactly_the_satellite_classes_the_grant_names() {
     world.state.set_connection_grant(CLIENT, ConnectionGrant::owner());
     assert_eq!(super::filter::satellite_input_classes(&world.state, CLIENT, "powerhouse-1"), None);
 }
+
+fn mirror(host: Option<&str>, op: phux_protocol::wire::frame::MirrorOp) -> Command {
+    Command::Mirror {
+        host: host.map(str::to_owned),
+        op,
+    }
+}
+
+#[test]
+fn mirrors_need_an_observe_grant_of_the_target_class() {
+    use phux_protocol::wire::frame::MirrorOp::{Start, Stop, Targets};
+    let world = world();
+    let admits = |scopes: &[&str], command: Command| admits_command(&world, &scoped(scopes), command);
+    let start = |target: &str| Start {
+        target: target.to_owned(),
+        jpeg: false,
+    };
+    // Listing shows window titles; a display target needs `display`.
+    assert!(admits(&["observe@window"], mirror(None, Targets)));
+    assert!(admits(&["observe@window"], mirror(None, start("firefox:Docs"))));
+    assert!(!admits(&["observe@window"], mirror(None, start("display:HDMI-A-1"))));
+    assert!(admits(&["observe@display"], mirror(None, start("display"))));
+    assert!(!admits(&["observe@display"], mirror(None, Targets)));
+    assert!(admits(
+        &["observe@display"],
+        mirror(None, Stop {
+            target: "display".to_owned()
+        })
+    ));
+    // A satellite's screens need a grant naming that host.
+    let sat = Some("powerhouse-1");
+    assert!(admits(&["observe@window:powerhouse-1"], mirror(sat, Targets)));
+    assert!(!admits(&["observe@window:powerhouse-1"], mirror(None, Targets)));
+    assert!(!admits(&["observe@window"], mirror(sat, Targets)));
+    // No broader grant reaches a screen, and only the owner reports targets.
+    for grant in [&["*@host"][..], &["*@host:powerhouse-1"], &[crate::workload::PAIRED_DEVICE_SCOPE]] {
+        assert!(!admits(grant, mirror(None, Targets)));
+        assert!(!admits(grant, mirror(sat, start("display"))));
+    }
+    let provide = Command::MirrorProvide {
+        targets: "[]".to_owned(),
+    };
+    assert!(!admits(&["observe@window", "observe@display"], provide));
+}
+
+/// The `MIRROR` rows: only a control grant (`mirrors_need_...` above)
+/// reaches them, so the §6 table sees them refused.
+fn mirror_rows() -> Vec<Row> {
+    let provide = Command::MirrorProvide {
+        targets: "[]".to_owned(),
+    };
+    [mirror(None, phux_protocol::wire::frame::MirrorOp::Targets), provide]
+        .map(|op| row(command(op), &[], &[&["*@global"]]))
+        .into()
+}

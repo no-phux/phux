@@ -32,7 +32,18 @@ pub(crate) const fn command_kind(command: &Command) -> &'static str {
         Command::PerfControl { .. } => "perf_control",
         Command::Transcribe { .. } => "transcribe",
         Command::AppendResourceOutput { .. } => "append_resource_output",
+        Command::Mirror { .. } => "mirror",
+        Command::MirrorProvide { .. } => "mirror_provide",
         _ => "other",
+    }
+}
+
+/// The satellite a host-named command (`GET_FILE`, `MIRROR`) is for, taken
+/// out so the satellite reads it as its own.
+pub(crate) const fn take_named_host(command: &mut Command) -> Option<String> {
+    match command {
+        Command::GetFile { host, .. } | Command::Mirror { host, .. } => host.take(),
+        _ => None,
     }
 }
 
@@ -169,13 +180,11 @@ async fn route_command(
         return None;
     }
 
-    // GET_FILE names its host by name, not through a Terminal id: a named
-    // satellite reads its own filesystem, and the link refuses one that
-    // does not advertise FILE_DOWNLOAD.
+    // GET_FILE and MIRROR name their host by name, not through a Terminal
+    // id: a named satellite reads its own filesystem or screens, and the
+    // link refuses one that does not advertise the method.
     let mut command = command;
-    if let Command::GetFile { host, .. } = &mut command
-        && let Some(host) = host.take()
-    {
+    if let Some(host) = take_named_host(&mut command) {
         let host = phux_protocol::ids::SatelliteHost::new(host);
         handle_satellite_command(ctx, request_id, &host, command).await;
         return None;

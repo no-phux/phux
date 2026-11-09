@@ -320,6 +320,26 @@ macro_rules! supervisory_commands {
         /// Only ever narrows what the receiver's own policy admits.
         control: Option<super::ControlClasses>,
     },
+    /// A host's screen mirrors: list what it can mirror, start or stop one
+    /// in its `mirror-<target>` session, on this server or the named
+    /// satellite (`docs/resource-kinds.md#standing-mirrors`). Gated on
+    /// [`ServerFeatureExt::Mirrors`](crate::caps::ServerFeatureExt::Mirrors).
+    Mirror {
+        /// A satellite of the serving hub whose screens are meant; `None`
+        /// for the serving server's own.
+        host: Option<String>,
+        /// What to do.
+        op: super::MirrorOp,
+    },
+    /// From the runner Rune keeps on macOS (`phux agent surface
+    /// standing`), owner socket only: this host's capture targets as the
+    /// JSON array `MIRROR` `Targets` answers with. Answered
+    /// `OkWith(Json {"mirrors": [{"session", "args"}]})`, the mirrors to
+    /// run. Gated on `MIRRORS`.
+    MirrorProvide {
+        /// The targets, a JSON array.
+        targets: String,
+    },
     /// Kill one resource only if every precondition holds, checked and
     /// applied atomically (`docs/protocol.md`, ADR-0109); otherwise
     /// `PRECONDITION_FAILED`. Gated on

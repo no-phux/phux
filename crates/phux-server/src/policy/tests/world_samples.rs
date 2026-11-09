@@ -489,6 +489,13 @@ fn samples(world: &World, agent: &WireResourceId) -> Vec<FrameKind> {
             intent: phux_protocol::wire::frame::DocumentInput::Click { x: 1, y: 1 },
             control: None,
         }),
+        command(Command::Mirror {
+            host: None,
+            op: phux_protocol::wire::frame::MirrorOp::Targets,
+        }),
+        command(Command::MirrorProvide {
+            targets: "[]".to_owned(),
+        }),
     ]
     .into_iter()
     .chain(organization_samples(world, &t))

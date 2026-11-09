@@ -1,18 +1,19 @@
-//! `phux agent surface standing`: run the `[[mirrors]]` entries as this
-//! process's children, each into its `mirror-<target>` session's pane.
+//! `phux agent surface standing`: run the server's wanted mirrors
+//! (`[[mirrors]]` and on-demand ones) as this process's children, each into
+//! its `mirror-<target>` session's pane.
 //!
 //! A macOS server's children cannot hold Screen Recording access (TCC), so
 //! there the server only keeps each session with a holding pane and Rune
 //! runs this command; the mirrors it starts are Rune's descendants and the
 //! grant prompts name Rune (`docs/resource-kinds.md#standing-mirrors`).
+//! Every tick it reports this host's capture targets (`MIRROR_PROVIDE`)
+//! and is answered with the mirrors to run.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, ExitCode, Stdio};
 use std::time::{Duration, Instant};
 
-use phux_config::MirrorConfigEntry;
-use phux_config::loader as config_loader;
 use phux_server::runtime::{MirrorSlot, default_socket_path};
 
 /// How often the config is re-read and exited mirrors restarted.
@@ -53,30 +54,60 @@ pub(super) fn run_standing(socket: Option<PathBuf>) -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
-    let mut entries = Vec::new();
+    let rt = match crate::commands::cli_runtime() {
+        Ok(rt) => rt,
+        Err(code) => return code,
+    };
+    let mut wanted = Vec::new();
     let mut runs: BTreeMap<String, Run> = BTreeMap::new();
     loop {
-        // ponytail: re-reads the config every tick; follow the server's
-        // reload doorbell instead if that ever costs.
-        match config_loader::load() {
-            Ok(config) => entries = config.mirrors,
-            Err(err) => eprintln!("[[mirrors]] unreadable, keeping the running mirrors: {err}"),
+        match rt.block_on(provide(&socket)) {
+            Ok(mirrors) => wanted = mirrors,
+            Err(err) => {
+                eprintln!("the server's mirrors are unknown, keeping the running ones: {err}");
+            }
         }
-        tick(&exe, &socket, &entries, &mut runs, Instant::now());
+        tick(&exe, &socket, &wanted, &mut runs, Instant::now());
         std::thread::sleep(TICK);
     }
+}
+
+/// Report this host's targets; the server answers with `(session, mirror
+/// arguments)` for every mirror to run.
+async fn provide(socket: &Path) -> Result<Vec<(String, Vec<String>)>, String> {
+    let targets = super::surface_targets::list().unwrap_or_default();
+    let targets = serde_json::to_string(&targets).map_err(|err| err.to_string())?;
+    let reply = phux_client::mirror::provide(socket, targets)
+        .await
+        .map_err(|err| err.to_string())?;
+    Ok(parse_mirrors(&reply))
+}
+
+fn parse_mirrors(reply: &serde_json::Value) -> Vec<(String, Vec<String>)> {
+    let strings = |v: &serde_json::Value| -> Option<Vec<String>> {
+        v.as_array()?
+            .iter()
+            .map(|a| a.as_str().map(str::to_owned))
+            .collect()
+    };
+    reply["mirrors"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|m| Some((m["session"].as_str()?.to_owned(), strings(&m["args"])?)))
+        .collect()
 }
 
 fn tick(
     exe: &Path,
     socket: &Path,
-    entries: &[MirrorConfigEntry],
+    mirrors: &[(String, Vec<String>)],
     runs: &mut BTreeMap<String, Run>,
     now: Instant,
 ) {
-    let wanted: BTreeMap<String, Vec<String>> = entries
+    let wanted: BTreeMap<String, Vec<String>> = mirrors
         .iter()
-        .map(|entry| (entry.session_name(), argv(entry, socket)))
+        .map(|(name, args)| (name.clone(), argv(name, args, socket)))
         .collect();
     runs.retain(|name, run| {
         let keep = wanted.contains_key(name);
@@ -109,19 +140,19 @@ fn tick(
     }
 }
 
-/// `entry`'s mirror bound to its session's pane, exiting with this process.
-fn argv(entry: &MirrorConfigEntry, socket: &Path) -> Vec<String> {
+/// A mirror's arguments (`agent surface mirror ... -- TARGET`) bound to
+/// its session's pane, exiting with this process.
+fn argv(session: &str, mirror: &[String], socket: &Path) -> Vec<String> {
     let mut args = vec!["--socket".to_owned(), socket.to_string_lossy().into_owned()];
-    let mut mirror = entry.args();
-    let flags = mirror.split_off(3);
-    args.extend(mirror);
+    let (verb, flags) = mirror.split_at(mirror.len().min(3));
+    args.extend(verb.iter().cloned());
     args.extend([
         "--pane".to_owned(),
-        entry.session_name(),
+        session.to_owned(),
         "--parent-pid".to_owned(),
         std::process::id().to_string(),
     ]);
-    args.extend(flags);
+    args.extend(flags.iter().cloned());
     args
 }
 
@@ -143,19 +174,28 @@ fn lock(socket: &Path) -> Option<std::fs::File> {
 mod tests {
     use super::*;
 
-    fn entry(target: &str) -> MirrorConfigEntry {
-        MirrorConfigEntry {
-            target: target.to_owned(),
-            format: None,
-            quality: None,
-            max_width: Some(800),
-            interval_ms: None,
-        }
+    fn display() -> Vec<(String, Vec<String>)> {
+        let args = [
+            "agent",
+            "surface",
+            "mirror",
+            "--max-width",
+            "800",
+            "--",
+            "display",
+        ];
+        vec![("mirror-display".to_owned(), args.map(str::to_owned).into())]
     }
 
     #[test]
     fn a_mirror_binds_to_its_session_and_exits_with_the_runner() {
-        let args = argv(&entry("display"), Path::new("/s"));
+        let reply = serde_json::json!({ "mirrors": [
+            { "session": "mirror-display", "args": display()[0].1 },
+            { "session": "bad" },
+        ]});
+        let mirrors = parse_mirrors(&reply);
+        assert_eq!(mirrors, display());
+        let args = argv(&mirrors[0].0, &mirrors[0].1, Path::new("/s"));
         let pid = std::process::id().to_string();
         assert_eq!(
             args,
@@ -185,7 +225,7 @@ mod tests {
         let mut runs = BTreeMap::new();
         let exe = Path::new("/bin/sleep");
         let now = Instant::now();
-        tick(exe, &socket, &[entry("display")], &mut runs, now);
+        tick(exe, &socket, &display(), &mut runs, now);
         // `sleep` refuses these arguments and exits; it restarts after a
         // backoff, not at once.
         let pid =
@@ -195,9 +235,9 @@ mod tests {
             .get_mut("mirror-display")
             .and_then(|r| r.child.as_mut())
             .map(Child::wait);
-        tick(exe, &socket, &[entry("display")], &mut runs, now + TICK);
+        tick(exe, &socket, &display(), &mut runs, now + TICK);
         assert_eq!(pid(&runs), Some(first), "backing off");
-        tick(exe, &socket, &[entry("display")], &mut runs, now + TICK * 2);
+        tick(exe, &socket, &display(), &mut runs, now + TICK * 2);
         assert_ne!(pid(&runs), Some(first), "restarted");
         tick(exe, &socket, &[], &mut runs, now + TICK * 3);
         assert!(runs.is_empty());
