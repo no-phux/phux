@@ -179,7 +179,7 @@ jobs:
           save-if: ${{ github.ref == 'refs/heads/main' }}
           cache-on-failure: "true"
       - name: Test native build and qualification drivers
-        run: python3 -B -m unittest discover -s clients/rune/scripts -p 'test_ios_build.py'
+        run: python3 -B -m unittest discover -s clients/rune/scripts -p 'test_ios*.py'
       - name: Check the native Rust bridge
         run: |
           cargo fmt --manifest-path clients/rune/Cargo.toml --all --check

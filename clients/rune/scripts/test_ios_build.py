@@ -243,6 +243,9 @@ class QualificationTests(unittest.TestCase):
             lane.simctl = Mock(side_effect=["", temporary, f"{qualify.BUNDLE_ID}: 123\n",
                 f"123\t0\tUIKitApplication:{qualify.BUNDLE_ID}[test]\n", "-\t1\tother\n"])
             self.assertEqual(lane.launch(Path("/tmp/owned/s")), 123)
+            lookup = lane.simctl.call_args_list[1]
+            self.assertEqual(lookup.args, ("get_app_container", "NEW-UDID", qualify.BUNDLE_ID, "data"))
+            self.assertEqual(lookup.kwargs, {"timeout": qualify.CONTAINER_TIMEOUT})
             launch = lane.simctl.call_args_list[2].args
             self.assertIn("--qualification-input", launch)
             self.assertNotIn("--terminate-running-process", launch)
@@ -299,16 +302,16 @@ class QualificationTests(unittest.TestCase):
             documents.mkdir(parents=True)
             (documents / "rune-qualification.json").write_text(json.dumps(valid_report()))
             (documents / "rune-tree.json").write_text(json.dumps({"title": qualify.SESSION}))
-            (documents / "rune-lifecycle.json").write_text(json.dumps({"background_frames":4,
-                "resumed_frames":5,"marker_seen":True}))
             lane = self.lane(root)
+            lane.documents = documents
             lane.require_alive = Mock()
 
             def simctl(*args, **kwargs):
-                if args[0] == "get_app_container":
-                    return str(container)
                 if args[0] == "launch" and args[-1] == "com.apple.Preferences":
                     (documents / "rune-background.json").write_text('{"background_frames":4}')
+                if args[0] == "launch" and args[-1] == qualify.BUNDLE_ID:
+                    (documents / "rune-lifecycle.json").write_text(json.dumps({"background_frames":4,
+                        "resumed_frames":5,"marker_seen":True}))
                 if args[0] == "io":
                     Path(args[-1]).write_bytes(b"screenshot")
                 return ""
@@ -321,6 +324,7 @@ class QualificationTests(unittest.TestCase):
             self.assertTrue((root / "rune-lifecycle.json").is_file())
             self.assertTrue((root / "rune-tree.json").is_file())
             self.assertTrue((root / "ios-native.png").is_file())
+            self.assertFalse(any(call.args[0] == "get_app_container" for call in lane.simctl.call_args_list))
 
     def test_failed_qualification_still_captures_failure_and_cleans_owned_resources(self):
         with tempfile.TemporaryDirectory() as temporary:

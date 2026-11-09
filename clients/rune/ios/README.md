@@ -30,6 +30,41 @@ is linked **without provisioning or distribution signing**, not installable
 device qualification. Do not install it over another app or use production
 Phux to run a test.
 
+### Direct installation without TestFlight
+
+`build.py --target device` still produces an unsigned bundle. To make an
+installable preview, obtain an **ad-hoc distribution** profile for the exact
+`sh.phux.rune.ios` App ID, the existing Apple Distribution certificate and
+each intended phone's registered UDID. An old phone's profile does not
+authorize a newer phone merely because Xcode knows its name.
+
+```sh
+python3 clients/rune/ios/package_ota.py \
+  --app '/absolute/scratch/ios-device/Phux Rune.app' \
+  --profile /absolute/private/Rune.mobileprovision \
+  --identity APPLE_DISTRIBUTION_CERTIFICATE_SHA1 \
+  --device-udid REGISTERED_PHONE_UDID \
+  --base-url https://private.example/rune-preview/ \
+  --out /absolute/scratch/rune-ota
+```
+
+Host **only the generated `site/` directory** at that HTTPS URL. It contains
+the IPA, manifest and Safari installation page; the rest of the output is
+not web content. Private Tailscale HTTPS hosting is one option; verify the
+page, manifest and complete IPA download before sharing the link. The phone
+must be able to reach it. Serve `.plist` as `text/xml` and `.ipa` as
+`application/octet-stream`. Do not expose server credentials or pairing tickets
+in the page, manifest or IPA.
+
+Packaging rejects expired/development/store/enterprise profiles, missing
+device coverage, wrong bundle/certificate, simulator binaries and unsupported
+nested executables/symlinks. It signs using the local keychain without exporting
+the private key, verifies the signature and exact authorized entitlements,
+and never installs an app, changes provisioning or uploads to TestFlight.
+The user must approve installation on the phone. A signed IPA and reachable
+install page are **not** proof that the app installed, launched or passed
+physical-device qualification.
+
 `qualify.py` creates and deletes its own exact simulator UDID, selects a
 compatible available runtime/model pair, and owns a same-source server on a
 short temporary socket with clean configuration. All commands are bounded.
@@ -51,6 +86,17 @@ created simulator with a freshly installed app, so no previous process can
 exist. This avoids a redundant SpringBoard termination/registration round
 trip on cold CI images. All launch deadlines and the real paired input and
 lifecycle requirements remain unchanged.
+
+Cold CoreSimulator registration can outlast installation. Container acquisition
+uses bounded timeout-only retries (at most three 60-second attempts) and must
+return an existing absolute directory. The fixture retains that Documents path
+instead of asking LaunchServices again after launch. Each command records its
+duration, deadline and success without credential contents. Application launch,
+report and lifecycle deadlines are unchanged; no failed app assertion is retried.
+Command stdout and diagnostic stderr are stored separately so service warnings
+cannot be mistaken for an app-container path or JSON response.
+Report and tree validation reads the retained evidence copies, so the files
+uploaded by CI are the exact documents that passed qualification.
 
 **Evidence boundary:** calling the UIKit input override is not physical
 keyboard, autocorrect, dictation or CJK IME automation. A simulator screenshot
