@@ -40,7 +40,7 @@ chmod 755 "$TMP/bin/curl"
 
 fail() { echo "FAIL: $*" >&2; exit 1; }
 installer() { PATH="$TMP/bin:${TEST_PATH:-/usr/bin:/bin}" "$SH" "$ROOT/scripts/install.sh" "$@"; }
-serve_golden() { cp "$GOLDEN/stable.json" "$GOLDEN/next.json" "$SERVED/"; }
+serve_golden() { cp "$GOLDEN/stable.json" "$GOLDEN/next.json" "$GOLDEN/lts.json" "$SERVED/"; }
 # Rewrite a served manifest with a jq filter.
 mutate() {
   jq --indent 2 "$2" "$SERVED/$1.json" >"$SERVED/$1.json.new"
@@ -67,6 +67,12 @@ grep -Fxq "sha256: $(printf '2%.0s' {1..64})" <<<"$(installer --dry-run --os lin
 sha_a="$(printf 'a%.0s' {1..40})"
 grep -Fxq "url: $BASE/next/phux-next.$sha_a-aarch64-apple-darwin.tar.gz" <<<"$(plan --channel next)" || fail "next url"
 grep -Fxq 'channel: next' <<<"$(PHUX_CHANNEL=next plan)" || fail "PHUX_CHANNEL"
+# lts names a stable release through its own manifest.
+grep -Fxq "url: $BASE/v9.8.7/phux-v9.8.7-aarch64-apple-darwin.tar.gz" <<<"$(plan --channel lts)" || fail "lts url"
+grep -Fxq 'channel: lts' <<<"$(PHUX_CHANNEL=lts plan)" || fail "PHUX_CHANNEL=lts"
+grep -Fxq "sidecar: $BASE/v1.2.3/phux-v1.2.3-aarch64-apple-darwin.tar.gz.sha256" \
+  <<<"$(FAIL_NETWORK=1 plan --channel lts --version 1.2.3)" || fail "lts pin"
+refused 'must be stable, latest, next, or lts' --dry-run --channel nightly
 
 # A pin reads no manifest and is verified against its sidecar.
 for pin in 1.2.3 v1.2.3; do
@@ -219,6 +225,15 @@ printf 'signature\n' > "$SERVED/$archive.sha256.minisig"
 TEST_PATH="$SIG_PATH" install_to "$TMP/signed" >/dev/null 2>"$TMP/err" || fail "signed install: $(cat "$TMP/err")"
 grep -Fq "$archive.sha256.minisig" "$CALLS" || fail "a signed install must fetch the signature"
 grep -Fq "minisign -V -H -q -P RWTJVmT0UFkQn2Zw" "$CALLS" || fail "the signature is checked, prehashed only, against the release key"
+# The manifest's own signature: stable only warns without one, lts refuses.
+grep -Fq 'the stable release manifest is not signed' "$TMP/err" || fail "an unsigned stable manifest warns"
+lts_plan() { TEST_PATH="$SIG_PATH" refused "$1" --dry-run --os darwin --arch arm64 --channel lts; }
+lts_plan 'the lts release manifest is not signed by a phux release key'
+printf 'signature\n' > "$SERVED/lts.json.minisig"
+TEST_PATH="$SIG_PATH" plan --channel lts >/dev/null 2>"$TMP/err" || fail "a signed lts manifest: $(cat "$TMP/err")"
+grep -Fq 'lts.json.minisig' "$CALLS" || fail "the lts manifest signature is fetched"
+MINISIGN_STATUS=1 lts_plan 'the lts release manifest is not signed by a phux release key'
+rm "$SERVED/lts.json.minisig"
 MINISIGN_STATUS=1 TEST_PATH="$SIG_PATH" refused 'is not signed by a phux release key' \
   --os linux --arch x86_64 --install-dir "$TMP/badsig"
 mutate stable ".products.phux.artifacts[\"$TARGET\"].sha256 = (\"0\" * 64)"
@@ -261,6 +276,17 @@ if [[ -n $real ]]; then
   fi
   printf '%s  %s\n' "$digest_stable" "$archive" > "$SERVED/$archive.sha256"
   rm "$SERVED/$archive.sha256.minisig"
+  # A real manifest signature vouches for exactly those bytes.
+  minisign -S -s "$TMP/keys/test.key" -m "$SERVED/lts.json" -x "$SERVED/lts.json.minisig" </dev/null >/dev/null
+  PATH="$TMP/bin:$TMP/real-sig-bin:/usr/bin:/bin" "$SH" "$TMP/install-testkey.sh" \
+    --dry-run --os darwin --arch arm64 --channel lts >/dev/null 2>"$TMP/err" \
+    || fail "a real manifest signature: $(cat "$TMP/err")"
+  mutate lts '.generated_at = "2027-01-01T00:00:00Z"'
+  if PATH="$TMP/bin:$TMP/real-sig-bin:/usr/bin:/bin" "$SH" "$TMP/install-testkey.sh" \
+    --dry-run --os darwin --arch arm64 --channel lts >/dev/null 2>&1; then
+    fail "a tampered lts manifest passed a real signature check"
+  fi
+  rm "$SERVED/lts.json.minisig"
 fi
 
 no_leftovers() {

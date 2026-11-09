@@ -1,6 +1,6 @@
 # Releasing
 
-`release.yml` and `next.yml` do the releasing. This page says what the pieces are and which
+`release.yml` and `next.yml` do the releasing; `lts.yml` promotes. This page says what the pieces are and which
 buttons exist. The workflows under
 [`.github/workflows`](../.github/workflows) are the reference; each one
 explains itself at the top.
@@ -16,7 +16,8 @@ explains itself at the top.
 | `phux-protocol` on crates.io                                 | `vX.Y.Z`                                     | `just publish-protocol`, by hand         |
 | Phux Rune (macOS arm64, Linux x86_64, Linux arm64) and its feed `rune.json` in `channels` | `rune-vX.Y.Z-alpha.N`, `rune-vX.Y.Z` | `rune-client.yml` → `rune-build.yml` |
 | `next` prerelease                                            | moving `next` tag                            | `next.yml`                               |
-| channel manifests `stable.json`, `next.json`                 | the `channels` release                       | `bun tools/main.ts release-manifest`     |
+| CycloneDX SBOMs `phux-vX.Y.Z.cdx.json`, `phux-mcp-vX.Y.Z.cdx.json` | attached to `vX.Y.Z`                    | `release.yml` (`sbom` job)               |
+| channel manifests `stable.json`, `next.json`, `lts.json`, each with a `.minisig` | the `channels` release   | `bun tools/main.ts release-manifest`     |
 
 Linux CLI builds link against glibc 2.35 (built in an `ubuntu:22.04`
 container). Phux Rune does not inherit that promise ([Floors](#phux-rune)).
@@ -45,12 +46,25 @@ released; its source is the `desktop-v0.62.0` tag.
    `ci` on `main` (not another commit's green status), builds the assets from the tag using the harness on `main`,
    attaches them, signs the checksums, and flips the draft public. A CLI
    release needs all three targets or it stays a draft.
-4. It then rebuilds `stable.json`, dispatches the mobile FFI builds, and
+4. It then rebuilds and signs `stable.json`, dispatches the mobile FFI builds, and
    dispatches the website repository to rebuild phux.sh, and reports the
    CLI release to Linear from the `announce` job.
 
 Because the harness comes from `main`, a release-infrastructure fix applies
 to an older tag on the next `release` run.
+
+Each CLI release also carries a CycloneDX 1.5 SBOM for `phux` and one for
+`phux-mcp`, generated from the tagged workspace for every target
+(`--target all`) by `cargo-cyclonedx` 0.5.10, pinned in `release.yml`. A
+release without both stays a draft. They are not minisign-signed; GitHub
+records each asset's SHA-256.
+
+## LTS
+
+`lts` is a channel for installs that want fewer, vetted updates:
+`channels/lts.json` names one stable release that passed the soak gate and a
+maintainer promoted with `lts.yml`. Policy, the soak gate, promotion and
+backports are in [the LTS runbook](./runbooks/lts.md).
 
 ## Next
 
@@ -145,6 +159,8 @@ Restart now, quit-install and the server handoff, before calling it good.
 | You want to                     | Run                                                                          |
 | ------------------------------- | ---------------------------------------------------------------------------- |
 | finish or rebuild a stuck draft | `gh workflow run release.yml -f tag=<tag>` (empty tag: every ready draft)    |
+| soak a release candidate        | `gh workflow run soak.yml -f ref=<tag>`                                      |
+| promote a release to lts        | `gh workflow run lts.yml -f tag=<tag>` (needs a passing soak)                |
 | rebuild next                    | `gh workflow run next.yml`                                                   |
 | see what is stuck               | `just release-drift`                                                         |
 | publish `phux-protocol`         | `just publish-protocol-dry`, then `just publish-protocol` from the tag       |
@@ -173,11 +189,18 @@ regenerates them, and the tools tests fail until it has.
 
 ## Signing and verification
 
-Every CLI and Phux Rune checksum is signed with minisign by
+Every CLI and Phux Rune checksum, and each channel manifest
+(`<channel>.json.minisig`), is signed with minisign by
 `scripts/ci/sign-release.sh`, using the `PHUX_MINISIGN_SECRET_KEY` secret,
 and the signature is checked against the public keys compiled into
 `scripts/install.sh` and `phux update` before anything is attached. A
 missing secret fails the release rather than shipping unsigned.
+
+`phux update` and the installer (with `minisign` on `PATH`) check the
+manifest signature when they read a channel. On `lts` a missing or invalid
+signature refuses. On `stable` and `next` it only warns, because their
+manifests were published unsigned before signing began; the signed artifact
+checksum stays the gate there.
 
 Release binaries use rustup and the pinned Zig tarballs, never Nix, so no
 `/nix/store` path leaks into them. `scripts/build-release-binaries.sh`
@@ -252,9 +275,10 @@ For an authorized rotation:
    next leaks, replace next through a release signed by the safe current.
 
 Clients too old to trust either remaining key need an externally trusted
-reinstall after missed rotations. Signed checksum sidecars authenticate
-artifacts, not freshness: the channel manifest is unsigned, and a next-channel
-rollback to an older validly signed build remains possible. These are trust
+reinstall after missed rotations. Signatures authenticate artifacts and
+manifests, not freshness: an old, validly signed manifest can be replayed,
+and a next-channel rollback to an older validly signed build remains
+possible (stable and lts refuse an unpinned downgrade). These are trust
 limitations, not permission to skip signature verification.
 
 ## npm and crates.io
@@ -272,6 +296,6 @@ other crate is `publish = false`.
 | Secret                                                    | Used by                                                                                                |
 | --------------------------------------------------------- | ------------------------------------------------------------------------------------------------------ |
 | Release App (`RELEASE_APP_ID`, `RELEASE_APP_PRIVATE_KEY`) | `release.yml`: release PRs and website dispatch; App pushes trigger `ci`, unlike `GITHUB_TOKEN` pushes |
-| `PHUX_MINISIGN_SECRET_KEY`                                | signing in the release workflows                                                                       |
+| `PHUX_MINISIGN_SECRET_KEY`                                | signing artifacts and channel manifests in `release.yml`, `next.yml`, `lts.yml`, and `rune-client.yml` |
 | `CARGO_REGISTRY_TOKEN`                                    | manual operator Cargo publication, not a workflow                                                      |
 | `LINEAR_RELEASE_ACCESS_KEY`                               | `release.yml` announce job                                                                             |

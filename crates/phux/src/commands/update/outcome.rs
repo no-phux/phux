@@ -254,7 +254,7 @@ impl Outcome {
 
     pub(super) fn latest_label(&self) -> String {
         match self.plan.channel {
-            Channel::Stable => self.plan.latest_tag(),
+            Channel::Stable | Channel::Lts => self.plan.latest_tag(),
             Channel::Next => channel::display(
                 &self.plan.current.to_string(),
                 Channel::Next,

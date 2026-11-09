@@ -95,6 +95,14 @@ impl ReleaseSource for FakeReleases {
             .ok_or_else(|| UpdateError::Fetch(format!("no {} manifest", channel.as_str())))
     }
 
+    fn manifest_signature(&self, channel: Channel) -> Result<String, UpdateError> {
+        let url = shared::manifest_signature_url(channel);
+        self.files
+            .get(&url)
+            .map(|bytes| String::from_utf8_lossy(bytes).into_owned())
+            .ok_or_else(|| UpdateError::Fetch(format!("404 for {url}")))
+    }
+
     fn download(&self, url: &str, dest: &Path) -> Result<(), UpdateError> {
         self.downloads.borrow_mut().push(url.to_owned());
         let bytes = self
@@ -480,7 +488,9 @@ fn fetch_build_downloads_that_build_not_the_channel_latest() {
 fn own_build_is_this_binary() {
     let build = super::own_build().unwrap();
     match channel::of_build() {
-        Channel::Stable => assert_eq!(build, Build::Stable(current_version().unwrap())),
+        Channel::Stable | Channel::Lts => {
+            assert_eq!(build, Build::Stable(current_version().unwrap()));
+        }
         Channel::Next => {
             let sha = channel::build_sha().unwrap();
             assert_eq!(build.tag(), format!("next.{sha}"));

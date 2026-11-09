@@ -90,6 +90,9 @@ pub enum Channel {
     Stable,
     /// The moving prerelease of green `main`.
     Next,
+    /// A numbered release a maintainer promoted for long-term support. Its
+    /// manifest must carry a valid signature (docs/runbooks/lts.md).
+    Lts,
 }
 
 impl Channel {
@@ -99,6 +102,7 @@ impl Channel {
         match self {
             Self::Stable => "stable",
             Self::Next => "next",
+            Self::Lts => "lts",
         }
     }
 
@@ -108,6 +112,7 @@ impl Channel {
         match text {
             "stable" | "latest" => Some(Self::Stable),
             "next" => Some(Self::Next),
+            "lts" => Some(Self::Lts),
             _ => None,
         }
     }
@@ -159,7 +164,8 @@ impl fmt::Display for Version {
     }
 }
 
-/// One build on a channel: a stable version, or a commit on next.
+/// One build on a channel: a numbered release (stable or lts), or a commit on
+/// next.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Build {
     /// A stable release.
@@ -169,7 +175,8 @@ pub enum Build {
 }
 
 impl Build {
-    /// The channel this build is published on.
+    /// The channel whose assets this build is published as: an lts build is a
+    /// stable release.
     #[must_use]
     pub const fn channel(&self) -> Channel {
         match self {
@@ -252,6 +259,12 @@ pub fn manifest_url(channel: Channel) -> String {
     format!("{RELEASES}/channels/{}.json", channel.as_str())
 }
 
+/// The URL of the minisign signature over `channel`'s manifest.
+#[must_use]
+pub fn manifest_signature_url(channel: Channel) -> String {
+    format!("{}.minisig", manifest_url(channel))
+}
+
 /// What a manifest publishes for one product on one target, validated.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Entry {
@@ -326,7 +339,7 @@ pub fn parse(
             ))
         })?;
     let build = match channel {
-        Channel::Stable => Build::Stable(version),
+        Channel::Stable | Channel::Lts => Build::Stable(version),
         Channel::Next => Build::Next(sha.to_owned()),
     };
     Ok(Some(Entry {
@@ -370,6 +383,7 @@ mod tests {
 
     const STABLE: &str = include_str!("../../../scripts/fixtures/release-manifest/stable.json");
     const NEXT: &str = include_str!("../../../scripts/fixtures/release-manifest/next.json");
+    const LTS: &str = include_str!("../../../scripts/fixtures/release-manifest/lts.json");
     const LINUX: &str = "x86_64-unknown-linux-gnu";
 
     fn version(text: &str) -> Version {
@@ -398,6 +412,8 @@ mod tests {
     fn channels_and_manifest_urls() {
         assert_eq!(Channel::parse("latest"), Some(Channel::Stable));
         assert_eq!(Channel::parse("next"), Some(Channel::Next));
+        assert_eq!(Channel::parse("lts"), Some(Channel::Lts));
+        assert_eq!(Channel::Lts.as_str(), "lts");
         assert_eq!(Channel::parse("nightly"), None);
         assert_eq!(
             manifest_url(Channel::Next),
@@ -495,15 +511,22 @@ mod tests {
 
     #[test]
     fn the_golden_manifests_parse() {
-        for (body, channel) in [(STABLE, Channel::Stable), (NEXT, Channel::Next)] {
+        for (body, channel, assets) in [
+            (STABLE, Channel::Stable, Channel::Stable),
+            (NEXT, Channel::Next, Channel::Next),
+            (LTS, Channel::Lts, Channel::Stable),
+        ] {
             let phux = parse(body, channel, Product::Phux, LINUX).unwrap().unwrap();
             assert_eq!(
                 (phux.version, phux.protocol.as_str()),
                 (version("9.8.7"), "0.9")
             );
             assert_eq!(phux.sha256, "2".repeat(64));
-            assert_eq!(phux.build.channel(), channel);
+            assert_eq!(phux.build.channel(), assets);
         }
+        // An lts manifest is not a stable one, nor the reverse.
+        assert!(parse(LTS, Channel::Stable, Product::Phux, LINUX).is_err());
+        assert!(parse(STABLE, Channel::Lts, Product::Phux, LINUX).is_err());
         let next = parse(NEXT, Channel::Next, Product::Phux, LINUX)
             .unwrap()
             .unwrap();

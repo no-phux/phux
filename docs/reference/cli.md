@@ -1922,7 +1922,7 @@ Usage: phux channel [--json] [CHANNEL]
 Arguments:
   [CHANNEL]  Channel to follow. Omit to report the current rail without changing
              it.
-             [possible values: stable, next]
+             [possible values: stable, next, lts]
 
 Flags:
       --json           Emit stable, versioned JSON on stdout instead of the
@@ -6712,8 +6712,9 @@ Flags:
                               omit this when following `--channel next`.
       --channel <CHANNEL>     Release channel to follow. `stable` (also
                               `latest`) is the default (`vX.Y.Z`). `next` tracks
-                              green `main` via the moving prerelease.
-                              [possible values: stable, next]
+                              green `main` via the moving prerelease. `lts`
+                              follows the promoted long-term-support release.
+                              [possible values: stable, next, lts]
       --rollback              Restore the binaries saved by the previous `phux
                               update`.
       --no-restart            Replace the binaries but do not ask a running

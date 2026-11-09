@@ -7,7 +7,8 @@ import { ROOT } from "../lib/repo.ts";
 import { isTable, type Table } from "../lib/value.ts";
 
 const DOWNLOAD = "https://github.com/no-phux/phux/releases/download";
-export const CHANNELS = ["stable", "next"] as const;
+// `lts` names an explicitly promoted stable release (release-manifest lts).
+export const CHANNELS = ["stable", "next", "lts"] as const;
 export type Channel = (typeof CHANNELS)[number];
 // The CLI is the one product on the channels. The retired GPUI desktop
 // (last release desktop-v0.62.0) left them; an installed copy reads an absent
