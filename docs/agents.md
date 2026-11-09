@@ -200,8 +200,9 @@ phux launch --list                        # integrations you can launch
 phux launch claude-code -- --model opus   # extra arguments follow --
 ```
 
-`--target PANE` places the new pane beside an existing one.
-`--split horizontal` puts it to the right; `--split vertical` puts it below.
+`phux spawn --target PANE` (or `phux launch --target PANE`) places the new
+pane beside an existing one. `--split horizontal` puts it to the right;
+`--split vertical` puts it below.
 
 Launch commands come from plugins. The starter distribution includes them for
 the agents above; `phux config init --distro starter` turns it on.
