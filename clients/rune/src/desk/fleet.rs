@@ -92,7 +92,7 @@ fn take_stats(client: &Client, asked: &mut bool, stats: &mut Stats, now: f64) ->
 impl Desk {
     /// Open, drain and close watches. True when any machine's agents changed.
     pub(super) fn tick_fleet(&mut self) -> bool {
-        if !self.galaxy.open && !self.reef.open && !self.pitch.open {
+        if !self.galaxy.open && !self.reef.open && !self.pitch.open && !self.kitchen.open {
             self.fleet.watches.clear();
             self.fleet.refused.clear();
             return false;

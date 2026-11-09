@@ -182,7 +182,7 @@ fn caustics(desk: &Desk, r: &Reef) -> Vec<El> {
 }
 
 /// A label pill centred on `at`, kept inside the view.
-fn pill(l: &Label, at: Pt, w: f32) -> El {
+pub(super) fn pill(l: &Label, at: Pt, w: f32) -> El {
     // ponytail: an estimated width keeps a pill inside the view; measure the
     // text if pills ever clip at the edges.
     let est =
