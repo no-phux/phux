@@ -172,7 +172,10 @@ class Qualification:
             json.dump(self.configuration, handle)
         self.configuration = None
         result = self.simctl(
-            "launch", "--terminate-running-process", self.udid, BUNDLE_ID,
+            # This is a new simulator and freshly installed app: there cannot
+            # be an old process to terminate. Asking SpringBoard to terminate
+            # it first can stall cold launch registration before any app runs.
+            "launch", self.udid, BUNDLE_ID,
             "--qualification-configuration", secret.name, "--qualification-session", SESSION,
             "--qualification-input", marker_command(), "--qualification-marker", MARKER,
             timeout=60,
