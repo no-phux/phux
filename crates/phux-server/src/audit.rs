@@ -282,7 +282,10 @@ fn write_sorted(value: &Value, out: &mut String) {
 pub(crate) fn command_name(command: &phux_protocol::wire::frame::Command) -> &'static str {
     use phux_protocol::kinds::{self, Carrier};
     // `SESSION_KILL` shares `SESSION_DELETE`'s row, so the row cannot tell them apart.
-    if matches!(command, phux_protocol::wire::frame::Command::SessionKill { .. }) {
+    if matches!(
+        command,
+        phux_protocol::wire::frame::Command::SessionKill { .. }
+    ) {
         return "SESSION_KILL";
     }
     let rule = kinds::command_rule(command);
