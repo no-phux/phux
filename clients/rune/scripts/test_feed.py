@@ -101,6 +101,7 @@ class Build(unittest.TestCase):
         self.assertEqual(document["protocol"], "3.4")
         self.assertEqual(document["targets"]["aarch64-apple-darwin"]["size"], 4)
         self.assertEqual(document["targets"]["x86_64-unknown-linux-gnu"]["sha256"], "a" * 64)
+        self.assertEqual(document["targets"]["aarch64-unknown-linux-gnu"]["size"], 4)
 
 
 class CommandLine(unittest.TestCase):

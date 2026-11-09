@@ -33,13 +33,13 @@ Or download the newest `rune-v*` release from
   unzip it and move the app to Applications. From 0.1.0-alpha.3 the app is
   Developer ID signed, Apple-notarized and stapled; earlier alphas were ad-hoc
   signed and Gatekeeper refuses them.
-- **Linux (x86_64)**: `phux-rune-VERSION-linux-x86_64.tar.gz`, then run
-  `phux-rune`.
+- **Linux**: `phux-rune-VERSION-linux-x86_64.tar.gz`, or
+  `phux-rune-VERSION-linux-aarch64.tar.gz` on arm64, then run `phux-rune`.
 
 Check an archive against its `.sha256` before opening it.
 
-It needs macOS 14 on Apple silicon, or x86_64 Linux with glibc 2.39 (Ubuntu
-24.04 or newer), Vulkan and `libxkbcommon-x11`.
+It needs macOS 14 on Apple silicon, or x86_64 or arm64 Linux with glibc 2.39
+(Ubuntu 24.04 or newer), Vulkan and `libxkbcommon-x11`.
 
 **Wayland is not qualified.** The binary includes Wayland support and uses it
 when a compositor offers it, but every automated check runs headless or on X11

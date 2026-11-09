@@ -35,6 +35,8 @@ jobs:
             name: macos-arm64
           - os: ubuntu-24.04
             name: linux-x86_64
+          - os: ubuntu-24.04-arm
+            name: linux-aarch64
     runs-on: ${{ matrix.os }}
     timeout-minutes: 60
     # Debug builds only (clippy, tests, the qualification CLI): fewer bytes to
@@ -77,7 +79,7 @@ jobs:
       - run: bash clients/rune/scripts/check.sh
       # `just rune-deny`, on one leg: the verdict doesn't depend on the host.
       - name: Check Rune's lockfile
-        if: runner.os == 'Linux'
+        if: matrix.name == 'linux-x86_64'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |

@@ -14,12 +14,25 @@ const LINUX_ARCHIVE: &str = "phux-rune-0.1.0-alpha.9-linux-x86_64.tar.gz";
 const LINUX_SIDECAR: &[u8] = include_bytes!("../testdata/archive-linux.sha256");
 const LINUX_MINISIG: &[u8] = include_bytes!("../testdata/archive-linux.sha256.minisig");
 
-#[cfg(not(target_os = "macos"))]
+/// The arm64 Linux fixture, under its own throwaway key.
+const ARM_KEY: &str = "RWRAoL4yx773gfGmDaNbyXlUgxyW4PMbo1+MbV+DcUtbrNsW+k5lBoNj";
+const ARM_ARCHIVE: &str = "phux-rune-0.1.0-alpha.9-linux-aarch64.tar.gz";
+const ARM_SIDECAR: &[u8] = include_bytes!("../testdata/archive-linux-aarch64.sha256");
+const ARM_MINISIG: &[u8] = include_bytes!("../testdata/archive-linux-aarch64.sha256.minisig");
+
+#[cfg(all(not(target_os = "macos"), not(target_arch = "aarch64")))]
 const KEY: &str = LINUX_KEY;
-#[cfg(not(target_os = "macos"))]
+#[cfg(all(not(target_os = "macos"), not(target_arch = "aarch64")))]
 const SIDECAR: &[u8] = LINUX_SIDECAR;
-#[cfg(not(target_os = "macos"))]
+#[cfg(all(not(target_os = "macos"), not(target_arch = "aarch64")))]
 const MINISIG: &[u8] = LINUX_MINISIG;
+
+#[cfg(all(not(target_os = "macos"), target_arch = "aarch64"))]
+const KEY: &str = ARM_KEY;
+#[cfg(all(not(target_os = "macos"), target_arch = "aarch64"))]
+const SIDECAR: &[u8] = ARM_SIDECAR;
+#[cfg(all(not(target_os = "macos"), target_arch = "aarch64"))]
+const MINISIG: &[u8] = ARM_MINISIG;
 
 fn release(archive_sha: &str) -> Release {
     Release {
@@ -49,12 +62,15 @@ fn a_signed_digest_that_matches_passes() {
     check_signed(&release(&published()), &[KEY], signed_files).unwrap();
 }
 
-/// Holds on every host, so a macOS run can't break the Linux fixture unseen.
+/// Holds on every host, so one host can't break another's fixture unseen.
 #[test]
-fn the_linux_fixture_is_signed_for_the_linux_archive() {
+fn the_linux_fixtures_are_signed_for_their_archives() {
     let signed = signed_digest(LINUX_SIDECAR, LINUX_MINISIG, LINUX_ARCHIVE, &[LINUX_KEY]).unwrap();
     assert_eq!(signed.len(), 64);
     assert!(signed_digest(LINUX_SIDECAR, LINUX_MINISIG, "other.tar.gz", &[LINUX_KEY]).is_err());
+    let signed = signed_digest(ARM_SIDECAR, ARM_MINISIG, ARM_ARCHIVE, &[ARM_KEY]).unwrap();
+    assert_eq!(signed.len(), 64);
+    assert!(signed_digest(ARM_SIDECAR, ARM_MINISIG, LINUX_ARCHIVE, &[ARM_KEY]).is_err());
 }
 
 #[test]
