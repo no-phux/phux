@@ -103,3 +103,15 @@ keys as `Type` and Enter, Tab, Backspace, Escape and the arrows as `Key`;
 Cmd and Ctrl chords stay the app's. A document with no class, or one whose
 send was refused for a missing grant or producer, is a view-only mirror: it
 captures neither pointer nor keys, and the refusal is said once.
+
+## The clipboard
+
+A paste and a copy are input too, under the same grant. `Paste` puts text
+(up to 1 MiB) on the host clipboard (`pbcopy`, or `wl-copy` from
+wl-clipboard on Wayland; a missing tool is an error, never typing) and
+presses Cmd+V or Ctrl+V; a page inserts the text instead. `CopyClipboard`
+returns the host clipboard's text, at most 1 MiB, to the viewer that asked
+and no one else: the server holds the command open until the producer
+answers. From the CLI, `phux agent page paste|copy`; in Rune, Cmd+V and
+Cmd+C (Ctrl+Shift+V and Ctrl+Shift+C on Linux) over a surface pane; on a
+phone, the paste and copy buttons beside the keyboard.
