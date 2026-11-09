@@ -27,12 +27,12 @@ pub(crate) fn done(d: &mut Desk, tx: &mut Tx) {
         &mut d.machines.field,
     ] {
         edit.focused = false;
-        edit.preedit = None;
+        edit.cancel_composition();
     }
     for draft in d.inbox.questions.drafts.values_mut() {
         for edit in draft.texts.values_mut() {
             edit.focused = false;
-            edit.preedit = None;
+            edit.cancel_composition();
         }
     }
     if let Some(phone) = &mut d.phone {
@@ -130,7 +130,7 @@ pub(super) fn retire_unmounted(rt: &mut Runtime<Desk>) -> bool {
                 .and_then(|draft| draft.texts.get_mut(&field))
             {
                 edit.focused = false;
-                edit.preedit = None;
+                edit.cancel_composition();
             }
         }
         tx.instant();
@@ -142,7 +142,7 @@ fn unmounted_fields(d: &Desk, mounted: &HashSet<String>) -> Vec<(String, String)
     let mut hidden = Vec::new();
     for (question, draft) in &d.inbox.questions.drafts {
         for (field, edit) in &draft.texts {
-            if (edit.focused || edit.preedit.is_some())
+            if (edit.focused || edit.is_composing())
                 && !mounted.contains(&format!("acp-{question}-field-{field}"))
             {
                 hidden.push((question.clone(), field.clone()));

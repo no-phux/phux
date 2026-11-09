@@ -417,11 +417,11 @@ fn composition_is_staged_and_committed_once_with_native_selection() {
     );
     assert!(rt.state.settings_ui.query.text.is_empty());
     assert_eq!(
-        rt.state.settings_ui.query.preedit.as_ref().unwrap().1,
+        rt.state.settings_ui.query.preedit().unwrap().1,
         Some((6, 10))
     );
     assert!(replace(&mut bridge, &mut rt, "日本🦀", 4, 4).unwrap());
-    assert!(rt.state.settings_ui.query.preedit.is_none());
+    assert!(!rt.state.settings_ui.query.is_composing());
     assert_eq!(rt.state.settings_ui.query.text, "日本🦀");
     let snap = bridge.snapshot(&rt);
     let stale = Operation {
@@ -438,7 +438,10 @@ fn composition_is_staged_and_committed_once_with_native_selection() {
 fn a_rename_retarget_and_closed_field_reject_held_callbacks() {
     let (client, mut rt, mut bridge) = field("rename-field");
     let snap = bridge.snapshot(&rt);
-    rt.state.tabs.rename_field.preedit = Some(("held".into(), None));
+    rt.state
+        .tabs
+        .rename_field
+        .ime(&rune::Ime::Preedit("held".into(), None));
     rt.state.tabs.renaming = Some(super::super::Renaming::Tab([2; 16]));
     assert!(
         !bridge
@@ -458,7 +461,7 @@ fn a_rename_retarget_and_closed_field_reject_held_callbacks() {
             .unwrap()
     );
     assert!(rt.state.tabs.rename_field.text.is_empty());
-    assert!(rt.state.tabs.rename_field.preedit.is_none());
+    assert!(!rt.state.tabs.rename_field.is_composing());
     let snap = bridge.snapshot(&rt);
     rt.state.cancel_rename();
     assert!(
