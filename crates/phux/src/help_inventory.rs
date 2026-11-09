@@ -157,6 +157,8 @@ fn long_help_has_one_complete_grouped_inventory() {
 /// root page for their desktop's name, and `setup` is the whole onboarding.
 /// It rose to 103 with `terminal`: one discoverable row for complete creation
 /// and receipt lookup, rather than another command choreography.
+/// It rose to 104 with `native`: one-terminal emulator windows are a distinct
+/// client mode, discoverable beside the TUI attach command.
 #[test]
 fn root_long_help_fits_eighty_columns_and_stays_short() {
     let long = root_long_help();
@@ -168,7 +170,7 @@ fn root_long_help_fits_eighty_columns_and_stays_short() {
     }
     let lines = long.lines().count();
     assert!(
-        lines <= 103,
+        lines <= 104,
         "root help grew to {lines} lines; the page is meant to be one screen"
     );
     assert!(

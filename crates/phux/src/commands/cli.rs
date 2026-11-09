@@ -43,6 +43,9 @@ pub(crate) enum Command {
     #[usage(help_heading = "Sessions", display_order = 10)]
     Attach(AttachArgs),
 
+    #[usage(help_heading = "Sessions", display_order = 15)]
+    Native(super::native_terminal::NativeArgs),
+
     #[usage(help_heading = "Machines", display_order = 41)]
     Server(ServerArgs),
 

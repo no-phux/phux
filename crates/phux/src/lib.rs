@@ -146,6 +146,7 @@ const fn is_interactive_client(cli: &Cli) -> bool {
     match &cli.command {
         Some(
             Command::Attach(..)
+            | Command::Native(..)
             | Command::Host(commands::HostArgs {
                 action: commands::host::HostAction::Attach { .. },
             })

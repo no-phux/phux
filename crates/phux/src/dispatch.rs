@@ -30,6 +30,7 @@ pub(crate) fn dispatch(
 ) -> ExitCode {
     match command {
         Some(Command::Attach(args)) => attach::attach(args, socket),
+        Some(Command::Native(args)) => commands::native_terminal::run(args, socket),
         Some(Command::Server(args)) => machines::server(args, socket),
         Some(Command::Ls(args)) => sessions::ls(args, socket),
         Some(Command::Whoami(commands::WhoamiArgs { json, remote })) => {
