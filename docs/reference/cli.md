@@ -612,10 +612,14 @@ Usage: phux agent page <SUBCOMMAND>
 Commands:
   click     Click a mirrored page at a point of its surface image, in image
             pixels.
+  copy      Print the host clipboard's text, read by a mirrored page's or
+            screen's producer.
   key       Press one key in a mirrored page: Enter, Tab, Backspace, Escape, or
             an arrow.
   mirror    Mirror a browser page into a tree and a surface until Ctrl-C.
   navigate  Load a URL in a mirrored page.
+  paste     Paste text into a mirrored page or screen: a window or display puts
+            it on the host clipboard and presses the paste chord.
   scroll    Scroll a mirrored page or screen by a delta in surface image pixels.
   type      Type text into a mirrored page's focused field.
   help      Print this message or the help of the given subcommand(s)
@@ -638,6 +642,24 @@ Arguments:
   <TARGET>  The page's surface or tree.
   <X>       Pixels from the image's left edge.
   <Y>       Pixels from the image's top edge.
+
+Flags:
+      --json
+  -h, --help           Print help
+
+Global flags:
+      --socket <PATH>  Server socket to dial (default: `$PHUX_SOCKET`)
+```
+
+## `phux agent page copy`
+
+```text
+Print the host clipboard's text, read by a mirrored page's or screen's producer.
+
+Usage: phux agent page copy [--json] <TARGET>
+
+Arguments:
+  <TARGET>  The document's surface or tree.
 
 Flags:
       --json
@@ -709,6 +731,26 @@ Usage: phux agent page navigate [--json] <TARGET> <URL>
 Arguments:
   <TARGET>  The page's surface or tree.
   <URL>     The URL to load.
+
+Flags:
+      --json
+  -h, --help           Print help
+
+Global flags:
+      --socket <PATH>  Server socket to dial (default: `$PHUX_SOCKET`)
+```
+
+## `phux agent page paste`
+
+```text
+Paste text into a mirrored page or screen: a window or display puts it on the
+host clipboard and presses the paste chord.
+
+Usage: phux agent page paste [--json] <TARGET> <TEXT>
+
+Arguments:
+  <TARGET>  The document's surface or tree.
+  <TEXT>    The text to paste.
 
 Flags:
       --json

@@ -31,6 +31,9 @@ impl Desk {
     /// Read the clipboard for the terminal on screen now: the reply comes
     /// back later, and the keyboard may have moved on by then.
     pub(super) fn paste_clipboard(&mut self, tx: &mut Tx) {
+        if self.paste_into_document(tx) {
+            return;
+        }
         if self.shown.as_ref().is_some_and(|s| s.view.is_none()) {
             return;
         }

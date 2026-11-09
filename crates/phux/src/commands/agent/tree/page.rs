@@ -1,5 +1,5 @@
-//! `phux agent page mirror|navigate|click|type|key|scroll`: a browser page as a
-//! tree and a surface, and input for it.
+//! `phux agent page mirror|navigate|click|type|key|scroll|paste|copy`: a
+//! browser page as a tree and a surface, and input for it.
 
 use std::path::PathBuf;
 use std::process::ExitCode;
@@ -86,6 +86,22 @@ pub(crate) enum PageAction {
         #[usage(long)]
         json: bool,
     },
+    /// Paste text into a mirrored page or screen: a window or display puts it on the host clipboard and presses the paste chord.
+    Paste {
+        /// The document's surface or tree.
+        target: String,
+        /// The text to paste.
+        text: String,
+        #[usage(long)]
+        json: bool,
+    },
+    /// Print the host clipboard's text, read by a mirrored page's or screen's producer.
+    Copy {
+        /// The document's surface or tree.
+        target: String,
+        #[usage(long)]
+        json: bool,
+    },
 }
 
 pub(crate) fn run_page(action: &PageAction, socket: Option<PathBuf>) -> ExitCode {
@@ -143,5 +159,15 @@ pub(crate) fn run_page(action: &PageAction, socket: Option<PathBuf>) -> ExitCode
             *json,
             socket,
         ),
+        PageAction::Paste { target, text, json } => page_input::run_send(
+            target,
+            DocumentInput::Paste {
+                text: text.clone(),
+                chord: true,
+            },
+            *json,
+            socket,
+        ),
+        PageAction::Copy { target, json } => page_input::run_copy(target, *json, socket),
     }
 }

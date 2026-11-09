@@ -24,6 +24,7 @@ const SCHEMA_VERSION: u8 = 1;
 
 mod app;
 mod app_launch;
+mod clipboard;
 mod doc;
 mod mirror;
 #[cfg(any(target_os = "linux", test))]

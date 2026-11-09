@@ -93,6 +93,32 @@ fn document_input_needs_a_control_grant_never_a_terminal_one() {
 }
 
 #[test]
+fn the_clipboard_needs_the_same_control_grant_as_any_input() {
+    use phux_protocol::wire::frame::ControlClass::Display;
+    use phux_protocol::wire::frame::DocumentInput;
+    let mut world = world();
+    let display = document(&mut world, Some(Display));
+    let clipboard = [
+        DocumentInput::CopyClipboard { reply: 0 },
+        DocumentInput::Paste { text: "x".into(), chord: true },
+        DocumentInput::ClipboardText { reply: 1, text: Ok("x".into()) },
+    ];
+    for intent in clipboard {
+        let command = || Command::SendDocumentInput {
+            terminal_id: display.clone(),
+            intent: intent.clone(),
+            control: None,
+        };
+        let terminal_scope = format!("*@terminal:{}", local_id(&world.alpha));
+        for grant in [&[][..], &["observe@display"], &["*@host"], &[&terminal_scope]] {
+            assert!(!admits_command(&world, &scoped(grant), command()), "{grant:?} reached {intent:?}");
+        }
+        assert!(!admits_command(&world, &scoped(&["input@window"]), command()), "a display is not a window");
+        assert!(admits_command(&world, &scoped(&["input@display"]), command()));
+    }
+}
+
+#[test]
 fn a_hub_stamps_exactly_the_satellite_classes_the_grant_names() {
     use phux_protocol::wire::frame::{ControlClass, ControlClasses};
     let mut world = world();

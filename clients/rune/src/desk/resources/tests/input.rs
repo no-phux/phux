@@ -1,4 +1,5 @@
-//! A surface whose producer declared a control class takes pane input.
+//! A surface whose producer declared a control class takes pane input,
+//! and trades clipboards with its host (Cmd+V, Cmd+C).
 
 use super::*;
 
@@ -42,6 +43,9 @@ fn a_controlled_surface_takes_a_click_and_keys_until_refused() {
     step(&mut rt);
     assert_eq!(rt.state.document_input_frame(&id(1)), Some([4, 2]));
     outbound(&client);
+    let board = rune::clipboard::memory();
+    board.set_text("from this machine");
+    rt.use_clipboard(&board);
     // 4x2 contain-fit in 400x100 is 200x100 from x = 100.
     rt.update(|d, _| {
         d.document_press(&id(1), [250.0, 75.0, 400.0, 100.0]);
@@ -52,6 +56,13 @@ fn a_controlled_surface_takes_a_click_and_keys_until_refused() {
         (Key::Enter, Mods::default()),
         (
             Key::Command('c'),
+            Mods {
+                cmd: true,
+                ..Mods::default()
+            },
+        ),
+        (
+            Key::Command('v'),
             Mods {
                 cmd: true,
                 ..Mods::default()
@@ -80,10 +91,28 @@ fn a_controlled_surface_takes_a_click_and_keys_until_refused() {
             DocumentInput::Key {
                 key: DocumentKey::Enter
             },
+            DocumentInput::CopyClipboard { reply: 0 },
+            DocumentInput::Paste {
+                text: "from this machine".into(),
+                chord: true,
+            },
         ],
-        "the letterbox press and the Cmd chord send nothing"
+        "the letterbox press sends nothing; Cmd+C and Cmd+V trade clipboards"
     );
-    for (request_id, _) in sent {
+    // The host's clipboard lands on this machine's.
+    let (copy, _) = sent[3].clone();
+    client
+        .feed(FrameKind::CommandResult {
+            request_id: copy,
+            result: CommandResult::OkWith(CommandValue::Bytes(b"from the host".to_vec())),
+        })
+        .unwrap();
+    step(&mut rt);
+    assert_eq!(
+        board.text().as_deref().map(String::as_str),
+        Some("from the host")
+    );
+    for (request_id, _) in sent.into_iter().filter(|(id, _)| *id != copy) {
         client
             .feed(FrameKind::CommandResult {
                 request_id,

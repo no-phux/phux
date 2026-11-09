@@ -30,7 +30,8 @@ pub use args::{
     ResourceEventType, StateScope, TerminalSignal,
 };
 pub use document_input::{
-    ControlClass, ControlClasses, DocumentInput, DocumentKey, MAX_DOCUMENT_INPUT_TEXT,
+    ControlClass, ControlClasses, DocumentInput, DocumentKey, MAX_CLIPBOARD_TEXT,
+    MAX_DOCUMENT_INPUT_TEXT,
 };
 pub use event::{AgentEvent, ApprovalOutcome, ControlAction, ResourceLifecycle};
 

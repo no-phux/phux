@@ -157,4 +157,17 @@ fn keys_text_and_scroll_pick_the_first_tool_present() {
         cmds(&nav, Some(&window), ALL).unwrap(),
         Vec::<String>::new()
     );
+    let paste = DocumentInput::Paste {
+        text: "x".into(),
+        chord: true,
+    };
+    assert_eq!(
+        cmds(&paste, None, ALL).unwrap(),
+        ["wtype -M ctrl v -m ctrl"]
+    );
+    assert_eq!(
+        cmds(&paste, None, YDOTOOL).unwrap(),
+        ["ydotool key 29:1 47:1 47:0 29:0"]
+    );
+    assert!(cmds(&paste, None, wlrctl_only).is_err());
 }

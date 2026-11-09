@@ -357,10 +357,17 @@ async fn mirror(
     let mut last_frame: Option<Vec<u8>> = None;
     let mut tick = tokio::time::interval(interval);
     let mut view = Viewport::IDENTITY;
-    let mut intents = Vec::new();
+    let mut intents: Vec<tree::Intent> = Vec::new();
+    let clipboard = super::clipboard::Clipboard::host(false);
     loop {
         if !intents.is_empty() {
             for intent in std::mem::take(&mut intents) {
+                if let tree::DocumentInput::CopyClipboard { reply } = intent.input {
+                    clipboard
+                        .answer(conn, &intent.resource, reply, &mut intents)
+                        .await;
+                    continue;
+                }
                 cdp.act(&intent, view).await?;
             }
             tree_request = cdp.read_tree().await?;

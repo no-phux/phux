@@ -56,7 +56,12 @@ pub(super) fn ops(
     let need =
         || place.ok_or("the pointer needs Hyprland (hyprctl) to place it; run under Hyprland");
     Ok(match input {
-        DocumentInput::Navigate { .. } => Vec::new(),
+        // A paste's chord goes through the tools (`surface_grim_input`);
+        // the clipboard itself is the mirror's (`clipboard`).
+        DocumentInput::Navigate { .. }
+        | DocumentInput::Paste { .. }
+        | DocumentInput::CopyClipboard { .. }
+        | DocumentInput::ClipboardText { .. } => Vec::new(),
         DocumentInput::Click { x, y } => vec![at((*x, *y), image, need()?)?, Op::Click],
         DocumentInput::Scroll { dx, dy } => {
             let place = need()?;

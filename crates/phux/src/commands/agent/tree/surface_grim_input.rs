@@ -147,7 +147,11 @@ impl Injector {
                 super::surface_grim::geometry(place.frame)
             );
         }
-        let native = if pointer { native.0 } else { native.1 };
+        // ponytail: the native keyboard sends no modifiers yet, so the paste
+        // chord takes the tools; add `zwp_virtual_keyboard_v1.modifiers`
+        // to drop wtype/ydotool for it.
+        let chord = matches!(input, DocumentInput::Paste { .. });
+        let native = !chord && if pointer { native.0 } else { native.1 };
         let (argvs, ops) = if native {
             let focus = place.as_ref().and_then(|p| p.window.as_deref()).map(focus);
             (
@@ -291,7 +295,20 @@ pub(super) fn plan(
         ])
     };
     match input {
-        DocumentInput::Navigate { .. } => return Ok(Vec::new()),
+        // The clipboard itself is the mirror's (`clipboard`): only the
+        // paste chord is input.
+        DocumentInput::Navigate { .. }
+        | DocumentInput::CopyClipboard { .. }
+        | DocumentInput::ClipboardText { .. }
+        | DocumentInput::Paste { chord: false, .. } => return Ok(Vec::new()),
+        // ponytail: Ctrl+V; a terminal window wants Ctrl+Shift+V.
+        DocumentInput::Paste { chord: true, .. } => out.push(if tools.wtype {
+            argv(&["wtype", "-M", "ctrl", "v", "-m", "ctrl"])
+        } else if tools.ydotool {
+            argv(&["ydotool", "key", "29:1", "47:1", "47:0", "29:0"])
+        } else {
+            return Err("nothing here can press Ctrl+V: install wtype, or ydotool with ydotoold running".into());
+        }),
         DocumentInput::Click { x, y } => {
             let place =
                 place.ok_or("a click needs Hyprland (hyprctl) to place the pointer; run under Hyprland")?;

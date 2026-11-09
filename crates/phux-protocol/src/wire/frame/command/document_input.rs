@@ -11,6 +11,10 @@ use crate::wire::error::DecodeError;
 /// [`DocumentInput::Type`] text.
 pub const MAX_DOCUMENT_INPUT_TEXT: usize = 8 * 1024;
 
+/// Maximum UTF-8 bytes of clipboard text a [`DocumentInput::Paste`] or a
+/// [`DocumentInput::ClipboardText`] carries.
+pub const MAX_CLIPBOARD_TEXT: usize = 1024 * 1024;
+
 wire_enum! { to_u8 / from_u8;
 /// A named key for [`DocumentInput::Key`]: a small closed set, not a keyboard.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -204,6 +208,32 @@ pub enum DocumentInput {
         /// Vertical delta; positive scrolls down.
         dy: i32,
     },
+    /// Put `text` on the host clipboard, then, with `chord`, press the
+    /// host's paste chord (Cmd+V, Ctrl+V) so the focus takes it. A page
+    /// inserts the text instead.
+    Paste {
+        /// The text, at most [`MAX_CLIPBOARD_TEXT`] bytes.
+        text: String,
+        /// Press the paste chord after setting the clipboard.
+        chord: bool,
+    },
+    /// Ask for the host clipboard's text. The server relaying it stamps
+    /// `reply` (a viewer sends 0) and holds the command open until the
+    /// producer answers with [`Self::ClipboardText`]; the viewer's reply is
+    /// `OkWith(Bytes)`, the text as UTF-8.
+    CopyClipboard {
+        /// The server's correlation token for the producer's answer.
+        reply: u32,
+    },
+    /// The producer's answer to [`Self::CopyClipboard`], sent to its own
+    /// document. Only the producer the copy was relayed to may send it.
+    ClipboardText {
+        /// The `reply` the copy carried.
+        reply: u32,
+        /// The text (at most [`MAX_CLIPBOARD_TEXT`] bytes), or why the host
+        /// clipboard could not be read.
+        text: Result<String, String>,
+    },
 }
 
 const NAVIGATE: u8 = 0;
@@ -211,6 +241,9 @@ const CLICK: u8 = 1;
 const TYPE: u8 = 2;
 const KEY: u8 = 3;
 const SCROLL: u8 = 4;
+const PASTE: u8 = 5;
+const COPY_CLIPBOARD: u8 = 6;
+const CLIPBOARD_TEXT: u8 = 7;
 
 impl DocumentInput {
     pub(crate) fn encode(&self, enc: &mut Encoder<'_>) {
@@ -237,19 +270,35 @@ impl DocumentInput {
                 enc.write_i64_be(i64::from(*dx));
                 enc.write_i64_be(i64::from(*dy));
             }
+            Self::Paste { text, chord } => {
+                enc.write_u8(PASTE);
+                enc.write_str(text);
+                enc.write_u8(u8::from(*chord));
+            }
+            Self::CopyClipboard { reply } => {
+                enc.write_u8(COPY_CLIPBOARD);
+                enc.write_u32_be(*reply);
+            }
+            Self::ClipboardText { reply, text } => {
+                enc.write_u8(CLIPBOARD_TEXT);
+                enc.write_u32_be(*reply);
+                enc.write_u8(u8::from(text.is_ok()));
+                enc.write_str(text.as_ref().unwrap_or_else(|error| error));
+            }
         }
     }
 
     /// Decode one intent; an unknown tag or key, an over-long text or an
     /// out-of-range delta is an error.
     pub(crate) fn decode(dec: &mut Decoder<'_>) -> Result<Self, DecodeError> {
-        let text = |dec: &mut Decoder<'_>| -> Result<String, DecodeError> {
+        let capped = |dec: &mut Decoder<'_>, cap: usize| -> Result<String, DecodeError> {
             let text = dec.read_str()?;
-            if text.len() > MAX_DOCUMENT_INPUT_TEXT {
+            if text.len() > cap {
                 return Err(DecodeError::AppendResourceOutputLimitExceeded);
             }
             Ok(text.to_owned())
         };
+        let text = |dec: &mut Decoder<'_>| capped(dec, MAX_DOCUMENT_INPUT_TEXT);
         let delta = |dec: &mut Decoder<'_>| -> Result<i32, DecodeError> {
             let value = dec.read_i64_be()?;
             i32::try_from(value).map_err(|_| DecodeError::LengthOverflow)
@@ -271,6 +320,22 @@ impl DocumentInput {
                 dx: delta(dec)?,
                 dy: delta(dec)?,
             },
+            PASTE => Self::Paste {
+                text: capped(dec, MAX_CLIPBOARD_TEXT)?,
+                chord: dec.read_bool("DocumentInput.Paste.chord")?,
+            },
+            COPY_CLIPBOARD => Self::CopyClipboard {
+                reply: dec.read_u32_be()?,
+            },
+            CLIPBOARD_TEXT => {
+                let reply = dec.read_u32_be()?;
+                let ok = dec.read_bool("DocumentInput.ClipboardText.ok")?;
+                let text = capped(dec, MAX_CLIPBOARD_TEXT)?;
+                Self::ClipboardText {
+                    reply,
+                    text: if ok { Ok(text) } else { Err(text) },
+                }
+            }
             other => return Err(DecodeError::unknown_enum("DocumentInput", other)),
         })
     }
@@ -292,6 +357,19 @@ mod tests {
                 key: DocumentKey::Enter,
             },
             DocumentInput::Scroll { dx: -3, dy: 400 },
+            DocumentInput::Paste {
+                text: "x".repeat(MAX_DOCUMENT_INPUT_TEXT + 1),
+                chord: true,
+            },
+            DocumentInput::CopyClipboard { reply: 9 },
+            DocumentInput::ClipboardText {
+                reply: 9,
+                text: Ok("copied".into()),
+            },
+            DocumentInput::ClipboardText {
+                reply: 9,
+                text: Err("no wl-paste".into()),
+            },
         ];
         let encode = |intent: &DocumentInput| {
             let mut buf = bytes::BytesMut::new();
@@ -306,6 +384,11 @@ mod tests {
             text: "x".repeat(MAX_DOCUMENT_INPUT_TEXT + 1),
         });
         assert!(DocumentInput::decode(&mut Decoder::new(&long)).is_err());
+        let huge = encode(&DocumentInput::Paste {
+            text: "x".repeat(MAX_CLIPBOARD_TEXT + 1),
+            chord: false,
+        });
+        assert!(DocumentInput::decode(&mut Decoder::new(&huge)).is_err());
         assert!(DocumentInput::decode(&mut Decoder::new(&[9])).is_err());
         assert_eq!(DocumentKey::parse("escape"), Some(DocumentKey::Escape));
         assert_eq!(DocumentKey::parse("F1"), None);

@@ -41,8 +41,14 @@ this way. The same verbs drive a macOS `phux agent surface mirror`: it posts
 clicks, text, keys and scrolls as system input at the window's or display's
 screen points (raising a window's app first), which needs the Accessibility
 grant for the app that started it; `--dry-run-input` logs the events
-instead. Rune sends input to a surface pane ([authority](./authority.md#in-rune));
-mobile does not yet. Closing a document placement leaves its producer and
+instead. `phux agent page paste|copy` trade clipboards with the host: a
+paste puts text (up to 1 MiB) on the host clipboard (`pbcopy`, or
+`wl-copy` from wl-clipboard on Wayland; a missing tool is an error, never
+typing) and presses Cmd+V or Ctrl+V, a page inserts it; a copy returns the
+host clipboard's text to the viewer that asked only. Both need the same
+control grant as any input. Rune sends input to a surface pane
+([authority](./authority.md#in-rune)), with Cmd+V and Cmd+C as paste and
+copy-from-host; mobile has paste and copy buttons. Closing a document placement leaves its producer and
 other viewers running.
 
 Phux Rune offers mirror startup actions. These launch a dedicated
