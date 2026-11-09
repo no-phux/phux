@@ -129,6 +129,91 @@ impl Viewport {
     }
 }
 
+/// What one `DevTools` message means to the mirror.
+#[derive(Debug, PartialEq)]
+pub(super) enum Incoming {
+    /// A screencast frame: its PNG or JPEG, the session id to acknowledge,
+    /// and the viewport's CSS size from its metadata.
+    Frame {
+        image: Vec<u8>,
+        session: u64,
+        css: Option<(f64, f64)>,
+    },
+    /// The answer to `Accessibility.getFullAXTree`: the tree document.
+    Tree(Vec<u8>),
+    /// The answer to an activation's `DOM.getBoxModel`: the element's
+    /// centre in CSS pixels, or `None` when it has no box.
+    BoxCentre(Option<(f64, f64)>),
+    Other,
+}
+
+/// Classify one message; `tree_request` is the id of the last tree read,
+/// `box_request` that of a pending activation's box model.
+pub(super) fn classify(text: &str, tree_request: u64, box_request: Option<u64>) -> Incoming {
+    use base64::Engine as _;
+    let Ok(message) = serde_json::from_str::<serde_json::Value>(text) else {
+        return Incoming::Other;
+    };
+    if message["method"].as_str() == Some("Page.screencastFrame") {
+        let params = &message["params"];
+        let Some(image) = params["data"]
+            .as_str()
+            .and_then(|data| base64::engine::general_purpose::STANDARD.decode(data).ok())
+        else {
+            return Incoming::Other;
+        };
+        let metadata = &params["metadata"];
+        let css = metadata["deviceWidth"]
+            .as_f64()
+            .zip(metadata["deviceHeight"].as_f64());
+        return Incoming::Frame {
+            image,
+            session: params["sessionId"].as_u64().unwrap_or(0),
+            css,
+        };
+    }
+    if message["id"].as_u64() == Some(tree_request) && message["result"]["nodes"].is_array() {
+        return Incoming::Tree(serde_json::to_vec(&message["result"]).unwrap_or_default());
+    }
+    if box_request.is_some() && message["id"].as_u64() == box_request {
+        // `content` is a quad: four x,y corners.
+        let quad: Option<Vec<f64>> = message["result"]["model"]["content"]
+            .as_array()
+            .map(|q| q.iter().filter_map(serde_json::Value::as_f64).collect());
+        return Incoming::BoxCentre(quad.filter(|q| q.len() == 8).map(|q| {
+            (
+                (q[0] + q[2] + q[4] + q[6]) / 4.0,
+                (q[1] + q[3] + q[5] + q[7]) / 4.0,
+            )
+        }));
+    }
+    Incoming::Other
+}
+
+/// The `backendDOMNodeId` of the node `node` names in a `DevTools` tree
+/// document.
+pub(super) fn backend_node(tree: &[u8], node: &str) -> Option<i64> {
+    let tree: serde_json::Value = serde_json::from_slice(tree).ok()?;
+    tree["nodes"]
+        .as_array()?
+        .iter()
+        .find(|n| n["nodeId"].as_str() == Some(node))?["backendDOMNodeId"]
+        .as_i64()
+}
+
+/// A left click at `x, y` in CSS pixels.
+pub(super) fn mouse_click(x: f64, y: f64) -> Vec<(&'static str, serde_json::Value)> {
+    ["mousePressed", "mouseReleased"]
+        .into_iter()
+        .map(|kind| {
+            (
+                "Input.dispatchMouseEvent",
+                serde_json::json!({ "type": kind, "x": x, "y": y, "button": "left", "clickCount": 1 }),
+            )
+        })
+        .collect()
+}
+
 /// The `DevTools` calls that carry out `input`, in order.
 pub(super) fn cdp_calls(
     input: &DocumentInput,
@@ -143,17 +228,11 @@ pub(super) fn cdp_calls(
         }
         // The page mirror answers a copy from the host clipboard itself.
         DocumentInput::CopyClipboard { .. } | DocumentInput::ClipboardText { .. } => Vec::new(),
+        // The mirror carries out an activation itself: it needs the box.
+        DocumentInput::Activate { .. } => Vec::new(),
+        DocumentInput::Type { text } => vec![("Input.insertText", json!({ "text": text }))],
         DocumentInput::Click { x, y } => {
-            let (x, y) = (f64::from(*x) * view.scale_x, f64::from(*y) * view.scale_y);
-            ["mousePressed", "mouseReleased"]
-                .into_iter()
-                .map(|kind| {
-                    (
-                        "Input.dispatchMouseEvent",
-                        json!({ "type": kind, "x": x, "y": y, "button": "left", "clickCount": 1 }),
-                    )
-                })
-                .collect()
+            mouse_click(f64::from(*x) * view.scale_x, f64::from(*y) * view.scale_y)
         }
         DocumentInput::Scroll { dx, dy } => vec![(
             "Input.dispatchMouseEvent",
@@ -261,5 +340,46 @@ mod tests {
         );
         assert_eq!(wheel[0].1["deltaY"], 20.0);
         assert_eq!(wheel[0].1["x"], 400.0);
+    }
+
+    #[test]
+    fn a_screencast_frame_and_a_tree_answer_are_told_apart() {
+        let frame = r#"{"method":"Page.screencastFrame","params":{"data":"iVBORw0=","sessionId":7,"metadata":{"deviceWidth":800,"deviceHeight":600}}}"#;
+        assert_eq!(
+            classify(frame, 4, None),
+            Incoming::Frame {
+                image: vec![0x89, 0x50, 0x4e, 0x47, 0x0d],
+                session: 7,
+                css: Some((800.0, 600.0)),
+            }
+        );
+        let tree = r#"{"id":4,"result":{"nodes":[{"nodeId":"1","role":{"value":"RootWebArea"}}]}}"#;
+        assert!(
+            matches!(classify(tree, 4, None), Incoming::Tree(bytes) if bytes.starts_with(b"{\"nodes\""))
+        );
+        assert_eq!(classify(tree, 5, None), Incoming::Other);
+        assert_eq!(
+            classify(r#"{"id":2,"result":{}}"#, 4, None),
+            Incoming::Other
+        );
+    }
+
+    #[test]
+    fn an_activation_finds_the_dom_node_and_clicks_its_box_centre() {
+        let tree = br#"{"nodes":[{"nodeId":"1"},{"nodeId":"9","backendDOMNodeId":42}]}"#;
+        assert_eq!(backend_node(tree, "9"), Some(42));
+        assert_eq!(backend_node(tree, "1"), None);
+        assert_eq!(backend_node(b"not json", "9"), None);
+        let model = r#"{"id":8,"result":{"model":{"content":[10,20,30,20,30,40,10,40]}}}"#;
+        assert_eq!(
+            classify(model, 4, Some(8)),
+            Incoming::BoxCentre(Some((20.0, 30.0)))
+        );
+        assert_eq!(classify(model, 4, None), Incoming::Other);
+        let gone = r#"{"id":8,"error":{"message":"Could not compute box model."}}"#;
+        assert_eq!(classify(gone, 4, Some(8)), Incoming::BoxCentre(None));
+        assert_eq!(mouse_click(20.0, 30.0)[0].1["x"], 20.0);
+        let activate = DocumentInput::Activate { node: "9".into() };
+        assert!(cdp_calls(&activate, Viewport::IDENTITY).is_empty());
     }
 }

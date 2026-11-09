@@ -283,7 +283,8 @@ carries the content type ahead of the document
 Input for a document goes to its producer, not into the stream:
 `SEND_DOCUMENT_INPUT` (command tag `0x48`) names a document resource and one
 typed intent (navigate to a URL, click at a point in the surface image's
-pixels, insert text, press a named key, or scroll). The server relays it,
+pixels, insert text, press a named key, scroll, or activate an accessibility
+node by its id). The server relays it,
 unread, as an unstamped `document_input` event (tag `0x20`) on the
 connection that spawned the document, and answers `OK` once queued;
 `NOT_PRODUCER` when that connection is gone, `OVERFLOW` when its mailbox is

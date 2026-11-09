@@ -615,6 +615,50 @@
       "sent"
     ]
   },
+  "phux_click_element": {
+    "type": "object",
+    "properties": {
+      "schema_version": {
+        "type": "integer"
+      },
+      "node": {
+        "type": "string",
+        "description": "The id of the node clicked."
+      },
+      "role": {
+        "type": "string"
+      },
+      "name": {
+        "type": "string"
+      },
+      "path": {
+        "type": "string",
+        "enum": [
+          "semantic",
+          "pixel"
+        ],
+        "description": "semantic when the tree's producer was asked to press the node; pixel when its centre was clicked on the window surface."
+      },
+      "surface": {
+        "type": "string",
+        "description": "On the pixel path, the surface clicked."
+      },
+      "pixel": {
+        "type": "array",
+        "items": {
+          "type": "integer"
+        },
+        "description": "On the pixel path, the frame pixel x, y."
+      }
+    },
+    "required": [
+      "schema_version",
+      "node",
+      "role",
+      "name",
+      "path"
+    ]
+  },
   "phux_app_open": {
     "type": "object",
     "properties": {

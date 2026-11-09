@@ -309,6 +309,7 @@ pub(super) fn plan(
         } else {
             return Err("nothing here can press Ctrl+V: install wtype, or ydotool with ydotoold running".into());
         }),
+        DocumentInput::Navigate { .. } | DocumentInput::Activate { .. } => return Ok(Vec::new()),
         DocumentInput::Click { x, y } => {
             let place =
                 place.ok_or("a click needs Hyprland (hyprctl) to place the pointer; run under Hyprland")?;

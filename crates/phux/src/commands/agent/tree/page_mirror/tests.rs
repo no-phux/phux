@@ -75,20 +75,3 @@ fn the_screencast_asks_for_the_frames_the_mirror_was_given() {
         serde_json::json!({ "format": "jpeg", "quality": 70, "maxWidth": 800, "everyNthFrame": 1 })
     );
 }
-
-#[test]
-fn a_screencast_frame_and_a_tree_answer_are_told_apart() {
-    let frame = r#"{"method":"Page.screencastFrame","params":{"data":"iVBORw0=","sessionId":7,"metadata":{"deviceWidth":800,"deviceHeight":600}}}"#;
-    assert_eq!(
-        classify(frame, 4),
-        Incoming::Frame {
-            image: vec![0x89, 0x50, 0x4e, 0x47, 0x0d],
-            session: 7,
-            css: Some((800.0, 600.0)),
-        }
-    );
-    let tree = r#"{"id":4,"result":{"nodes":[{"nodeId":"1","role":{"value":"RootWebArea"}}]}}"#;
-    assert!(matches!(classify(tree, 4), Incoming::Tree(bytes) if bytes.starts_with(b"{\"nodes\"")));
-    assert_eq!(classify(tree, 5), Incoming::Other);
-    assert_eq!(classify(r#"{"id":2,"result":{}}"#, 4), Incoming::Other);
-}
