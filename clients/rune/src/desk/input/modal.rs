@@ -13,6 +13,7 @@ pub enum Modal {
     Pitch,
     Kitchen,
     PitLane,
+    Hive,
     Machines,
     Settings,
     Rename,
@@ -41,7 +42,8 @@ impl Modal {
             | Self::Reef
             | Self::Pitch
             | Self::Kitchen
-            | Self::PitLane => action.works_over_sheets(),
+            | Self::PitLane
+            | Self::Hive => action.works_over_sheets(),
             Self::ContextMenu
             | Self::Machines
             | Self::Rename

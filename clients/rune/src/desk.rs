@@ -27,6 +27,7 @@ mod find;
 mod fleet;
 mod frame;
 pub mod galaxy;
+pub mod hive;
 mod home;
 mod inbox;
 mod input;
@@ -166,6 +167,8 @@ pub struct Desk {
     pub kitchen: kitchen::Kitchen,
     /// The fleet as a pit lane, while open.
     pub pitlane: pitlane::PitLane,
+    /// The fleet as beehives, while open.
+    pub hive: hive::Hive,
     /// The other machines, watched while the galaxy or the reef is open.
     pub(crate) fleet: fleet::Fleet,
     pub settings: settings::Settings,
@@ -378,6 +381,7 @@ impl Desk {
             pitch: pitch::Pitch::default(),
             kitchen: kitchen::Kitchen::default(),
             pitlane: pitlane::PitLane::default(),
+            hive: hive::Hive::default(),
             fleet: fleet::Fleet::default(),
             settings,
             settings_open: false,
@@ -472,6 +476,7 @@ impl Desk {
         changed |= self.tick_pitch(tx);
         changed |= self.tick_kitchen(tx);
         changed |= self.tick_pitlane(tx);
+        changed |= self.tick_hive(tx);
         self.settle_pointer();
         changed |= self.autoscroll(tx);
         self.keep_find();

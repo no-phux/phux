@@ -97,6 +97,7 @@ impl Desk {
             && !self.pitch.open
             && !self.kitchen.open
             && !self.pitlane.open
+            && !self.hive.open
         {
             self.fleet.watches.clear();
             self.fleet.refused.clear();
