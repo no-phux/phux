@@ -57,6 +57,8 @@ pub enum Shortcut {
     Galaxy,
     /// The fleet as a reef: machines as reefs, agents as fish.
     Reef,
+    /// The fleet as football training: machines as squads, agents as players.
+    Pitch,
     Settings,
     /// The themes, previewed live as the highlight moves.
     ChangeTheme,
@@ -94,6 +96,7 @@ impl Shortcut {
             Self::Inbox
                 | Self::Galaxy
                 | Self::Reef
+                | Self::Pitch
                 | Self::Settings
                 | Self::ChangeTheme
                 | Self::ZoomIn

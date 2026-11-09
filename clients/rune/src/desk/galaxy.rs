@@ -82,6 +82,7 @@ impl Desk {
             return;
         }
         self.close_inbox();
+        self.close_pitch();
         self.settings_open = false;
         self.galaxy.open = true;
         self.galaxy.placed = false;

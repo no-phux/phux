@@ -46,6 +46,7 @@ impl Desk {
             (self.inbox.open, Modal::Inbox),
             (self.galaxy.open, Modal::Galaxy),
             (self.reef.open, Modal::Reef),
+            (self.pitch.open, Modal::Pitch),
             (self.machines.open, Modal::Machines),
             (self.settings_open, Modal::Settings),
             (self.tabs.renaming.is_some(), Modal::Rename),
@@ -124,6 +125,8 @@ impl Desk {
             (Modal::Galaxy, rune::Key::Enter) => self.open_picked(),
             (Modal::Reef, rune::Key::Escape) => self.reef_escape(),
             (Modal::Reef, rune::Key::Enter) => self.open_fish(),
+            (Modal::Pitch, rune::Key::Escape) => self.pitch_escape(),
+            (Modal::Pitch, rune::Key::Enter) => self.open_player(),
             _ => return false,
         }
         true
@@ -256,6 +259,7 @@ impl Desk {
             Shortcut::Inbox => self.toggle_inbox(),
             Shortcut::Galaxy => self.toggle_galaxy(),
             Shortcut::Reef => self.toggle_reef(),
+            Shortcut::Pitch => self.toggle_pitch(),
             Shortcut::Settings => self.toggle_settings(),
             Shortcut::ChangeTheme => self.open_themes(),
             Shortcut::SwitchSession => self.open_palette(crate::palette::Mode::Sessions),
