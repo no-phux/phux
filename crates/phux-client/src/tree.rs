@@ -17,6 +17,7 @@ use phux_protocol::wire::frame::{
 use crate::attach::AttachError;
 use crate::attach::connection::{Answer, Connection};
 
+pub mod element;
 mod input;
 pub use input::{
     DocumentInput, DocumentKey, Intent, activity, answer_copy, copy_clipboard, intent, send_input,

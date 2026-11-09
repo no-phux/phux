@@ -93,6 +93,7 @@ pub(super) fn events(input: &DocumentInput, frame: (u32, u32), rect: Rect) -> Ve
         DocumentInput::Navigate { .. }
         | DocumentInput::CopyClipboard { .. }
         | DocumentInput::ClipboardText { .. }
+        | DocumentInput::Activate { .. }
         | DocumentInput::Paste { chord: false, .. } => Vec::new(),
         DocumentInput::Paste { chord: true, .. } => vec![Event::PasteChord],
         DocumentInput::Click { x, y } => to_screen(frame, rect, *x, *y)
@@ -192,7 +193,7 @@ return JSON.stringify({ x: b.X, y: b.Y, w: b.Width, h: b.Height, pid: w.kCGWindo
 }"#;
 
 #[cfg(target_os = "macos")]
-pub(super) use macos::Injector;
+pub(super) use macos::{Injector, post};
 
 #[cfg(target_os = "macos")]
 mod macos {
@@ -335,7 +336,7 @@ mod macos {
     }
 
     /// Post `events` to the HID event stream, as if typed and clicked.
-    fn post(events: &[Event]) -> Result<(), String> {
+    pub(in crate::commands::agent::tree) fn post(events: &[Event]) -> Result<(), String> {
         let source = CGEventSource::new(CGEventSourceStateID::HIDSystemState)
             .map_err(|()| "CoreGraphics gave no event source".to_owned())?;
         let made = |event: Result<CGEvent, ()>| {

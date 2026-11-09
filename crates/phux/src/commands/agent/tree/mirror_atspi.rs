@@ -1,7 +1,8 @@
 //! The Linux side of `phux agent tree mirror`: an application's
 //! accessibility tree over AT-SPI (D-Bus), in the macOS mirror's JSON shape:
-//! `role`, then `title` (the AT-SPI name), `description` and `value` when not
-//! empty, then `children`. Roles are AT-SPI role names (`push button`), not
+//! `id` (the path of child indices), `role`, `frame` (`Component` extents in
+//! screen coordinates), then `title` (the AT-SPI name), `description` and
+//! `value` when not empty, then `children`. Roles are AT-SPI role names (`push button`), not
 //! macOS's `AXButton`.
 //!
 //! The accessibility bus is found through the session bus
@@ -26,6 +27,8 @@ pub(super) struct Node<R> {
     pub(super) name: String,
     pub(super) description: String,
     pub(super) value: Option<String>,
+    /// `[x, y, w, h]` in screen coordinates.
+    pub(super) frame: Option<[i32; 4]>,
     pub(super) children: Vec<R>,
 }
 
@@ -41,6 +44,7 @@ pub(super) trait Source {
 pub(super) fn walk<'a, S: Source>(
     source: &'a S,
     at: &'a S::Ref,
+    id: String,
     depth: usize,
     budget: &'a mut usize,
 ) -> Pin<Box<dyn Future<Output = Value> + 'a>> {
@@ -51,6 +55,9 @@ pub(super) fn walk<'a, S: Source>(
         *budget = budget.saturating_sub(1);
         let mut object = serde_json::Map::new();
         object.insert("role".into(), node.role.into());
+        if let Some(frame) = node.frame {
+            object.insert("frame".into(), frame.to_vec().into());
+        }
         for (key, text) in [
             ("title", Some(node.name)),
             ("description", Some(node.description)),
@@ -62,11 +69,11 @@ pub(super) fn walk<'a, S: Source>(
         }
         if depth > 0 && *budget > 0 {
             let mut nested = Vec::new();
-            for child in &node.children {
+            for (index, child) in node.children.iter().enumerate() {
                 if *budget == 0 {
                     break;
                 }
-                let child = walk(source, child, depth - 1, budget).await;
+                let child = walk(source, child, format!("{id}.{index}"), depth - 1, budget).await;
                 if !child.is_null() {
                     nested.push(child);
                 }
@@ -75,8 +82,20 @@ pub(super) fn walk<'a, S: Source>(
                 object.insert("children".into(), nested.into());
             }
         }
+        object.insert("id".into(), id.into());
         Value::Object(object)
     })
+}
+
+/// The object the node `id` names, found by walking its path from `root`
+/// through the same children the walk numbers.
+#[allow(clippy::future_not_send, reason = "the CLI runtime is single-threaded")]
+pub(super) async fn resolve<S: Source>(source: &S, root: S::Ref, id: &str) -> Option<S::Ref> {
+    let mut at = root;
+    for index in super::mirror::node_path(id)? {
+        at = source.node(&at).await?.children.into_iter().nth(index)?;
+    }
+    Some(at)
 }
 
 #[cfg(target_os = "linux")]
@@ -184,7 +203,33 @@ mod bus {
         )]
         pub(in crate::commands::agent::tree) async fn read(&self, depth: usize) -> Value {
             let mut budget = MAX_NODES;
-            walk(self, &self.root, depth, &mut budget).await
+            walk(self, &self.root, "0".to_owned(), depth, &mut budget).await
+        }
+
+        /// Run the first action (AT-SPI `DoAction(0)`: press, click,
+        /// activate) of the node `id` names. A failure is reported and
+        /// skipped.
+        // ponytail: no pixel fallback here; Linux input lives in the window
+        // surface's mirror (`phux agent tree click --pixel`).
+        #[allow(clippy::future_not_send, reason = "the CLI runtime is single-threaded")]
+        pub(in crate::commands::agent::tree) async fn activate(&self, id: &str) {
+            let Some(at) = super::resolve(self, self.root.clone(), id).await else {
+                eprintln!("phux: activate {id} skipped: no such node");
+                return;
+            };
+            let done: zbus::Result<bool> = call(
+                &self.conn,
+                &at,
+                "org.a11y.atspi.Action",
+                "DoAction",
+                &(0_i32,),
+            )
+            .await;
+            match done {
+                Ok(true) => {}
+                Ok(false) => eprintln!("phux: activate {id}: the action did not run"),
+                Err(err) => eprintln!("phux: activate {id} skipped: no action: {err}"),
+            }
         }
     }
 
@@ -222,6 +267,20 @@ mod bus {
             } else {
                 None
             };
+            let frame = if has("org.a11y.atspi.Component") {
+                call::<_, (i32, i32, i32, i32)>(
+                    conn,
+                    at,
+                    "org.a11y.atspi.Component",
+                    "GetExtents",
+                    &(0_u32,),
+                )
+                .await
+                .ok()
+                .map(<[i32; 4]>::from)
+            } else {
+                None
+            };
             let children = children
                 .unwrap_or_default()
                 .into_iter()
@@ -233,6 +292,7 @@ mod bus {
                 name: name.unwrap_or_default(),
                 description: description.unwrap_or_default(),
                 value,
+                frame,
                 children,
             })
         }
@@ -327,6 +387,7 @@ mod tests {
                 name: (*name).into(),
                 description: String::new(),
                 value: value.map(Into::into),
+                frame: (*at == 3).then_some([10, 20, 30, 40]),
                 children: children.clone(),
             })
         }
@@ -347,17 +408,17 @@ mod tests {
         tokio::runtime::Builder::new_current_thread()
             .build()
             .unwrap()
-            .block_on(walk(&source, &1, depth, &mut budget))
+            .block_on(walk(&source, &1, "0".into(), depth, &mut budget))
     }
 
     #[test]
     fn nodes_map_to_the_macos_shape_and_gone_children_drop() {
         assert_eq!(
             read(24, 100),
-            serde_json::json!({"role": "application", "title": "Files", "children": [
-                {"role": "frame", "title": "Home", "children": [
-                    {"role": "push button", "title": "Back"},
-                    {"role": "text", "value": "~/notes"}
+            serde_json::json!({"id": "0", "role": "application", "title": "Files", "children": [
+                {"id": "0.0", "role": "frame", "title": "Home", "children": [
+                    {"id": "0.0.0", "role": "push button", "title": "Back", "frame": [10, 20, 30, 40]},
+                    {"id": "0.0.1", "role": "text", "value": "~/notes"}
                 ]}
             ]})
         );
@@ -367,7 +428,7 @@ mod tests {
     fn depth_and_budget_bound_the_walk() {
         assert_eq!(
             read(0, 100),
-            serde_json::json!({"role": "application", "title": "Files"})
+            serde_json::json!({"id": "0", "role": "application", "title": "Files"})
         );
         let cut = read(24, 3);
         assert_eq!(cut["children"][0]["children"].as_array().unwrap().len(), 1);
@@ -376,7 +437,22 @@ mod tests {
         let gone = tokio::runtime::Builder::new_current_thread()
             .build()
             .unwrap()
-            .block_on(walk(&source, &42, 24, &mut budget));
+            .block_on(walk(&source, &42, "0".into(), 24, &mut budget));
         assert!(gone.is_null());
+    }
+
+    #[test]
+    fn an_id_resolves_through_the_children_the_walk_numbers() {
+        let source = table();
+        let resolve = |id: &str| {
+            tokio::runtime::Builder::new_current_thread()
+                .build()
+                .unwrap()
+                .block_on(super::resolve(&source, 1, id))
+        };
+        assert_eq!(resolve("0"), Some(1));
+        assert_eq!(resolve("0.0.1"), Some(4));
+        assert_eq!(resolve("0.0.0.0"), None);
+        assert_eq!(resolve("5"), None);
     }
 }

@@ -300,6 +300,7 @@ pub(super) fn plan(
         DocumentInput::Navigate { .. }
         | DocumentInput::CopyClipboard { .. }
         | DocumentInput::ClipboardText { .. }
+        | DocumentInput::Activate { .. }
         | DocumentInput::Paste { chord: false, .. } => return Ok(Vec::new()),
         // ponytail: Ctrl+V; a terminal window wants Ctrl+Shift+V.
         DocumentInput::Paste { chord: true, .. } => out.push(if tools.wtype {

@@ -13,7 +13,6 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 use std::time::Duration;
 
-use base64::Engine as _;
 use futures_util::{SinkExt as _, StreamExt as _};
 use phux_client::attach::connection::Connection;
 use phux_client::tree::{self, Kind};
@@ -23,7 +22,7 @@ use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
 use tokio::net::TcpStream;
 use tokio_tungstenite::tungstenite::Message;
 
-use super::page_input::{Viewport, cdp_calls};
+use super::page_input::{Incoming, Viewport, backend_node, cdp_calls, classify, mouse_click};
 use super::surface::Frames;
 use super::{dial, report, resolve};
 use crate::commands::{cli_runtime, json_err};
@@ -90,50 +89,6 @@ pub(super) fn pick_page(spec: &str, listing: &str) -> Result<Page, String> {
         })
         .find(|page| spec == "first" || page.title.contains(spec) || page.url.contains(spec))
         .ok_or_else(|| format!("no page matches {spec:?}"))
-}
-
-/// What one `DevTools` message means to the mirror.
-#[derive(Debug, PartialEq)]
-pub(super) enum Incoming {
-    /// A screencast frame: its PNG or JPEG, the session id to acknowledge,
-    /// and the viewport's CSS size from its metadata.
-    Frame {
-        image: Vec<u8>,
-        session: u64,
-        css: Option<(f64, f64)>,
-    },
-    /// The answer to `Accessibility.getFullAXTree`: the tree document.
-    Tree(Vec<u8>),
-    Other,
-}
-
-/// Classify one message; `tree_request` is the id of the last tree read.
-pub(super) fn classify(text: &str, tree_request: u64) -> Incoming {
-    let Ok(message) = serde_json::from_str::<serde_json::Value>(text) else {
-        return Incoming::Other;
-    };
-    if message["method"].as_str() == Some("Page.screencastFrame") {
-        let params = &message["params"];
-        let Some(image) = params["data"]
-            .as_str()
-            .and_then(|data| base64::engine::general_purpose::STANDARD.decode(data).ok())
-        else {
-            return Incoming::Other;
-        };
-        let metadata = &params["metadata"];
-        let css = metadata["deviceWidth"]
-            .as_f64()
-            .zip(metadata["deviceHeight"].as_f64());
-        return Incoming::Frame {
-            image,
-            session: params["sessionId"].as_u64().unwrap_or(0),
-            css,
-        };
-    }
-    if message["id"].as_u64() == Some(tree_request) && message["result"]["nodes"].is_array() {
-        return Incoming::Tree(serde_json::to_vec(&message["result"]).unwrap_or_default());
-    }
-    Incoming::Other
 }
 
 /// `GET /json` from the browser's `DevTools` server, by hand: one request,
@@ -322,25 +277,55 @@ impl Cdp {
     }
 
     /// Carry out every intent waiting; a copy is answered from the host
-    /// clipboard, not the page.
+    /// clipboard, not the page. Returns the last activation's box request.
     async fn act_all(
         &mut self,
         conn: &mut Connection,
         clipboard: &super::clipboard::Clipboard,
         intents: &mut Vec<tree::Intent>,
-        view: Viewport,
-    ) -> Result<(), Failure> {
+        (view, last_tree): (Viewport, Option<&[u8]>),
+    ) -> Result<Option<u64>, Failure> {
+        let mut box_request = None;
         for intent in std::mem::take(intents) {
             if !clipboard.answered(conn, &intent, intents).await {
-                self.act(&intent, view).await?;
+                box_request = self.act(&intent, view, last_tree).await?.or(box_request);
             }
         }
-        Ok(())
+        Ok(box_request)
     }
 
-    /// Carry out one viewer intent.
-    async fn act(&mut self, intent: &tree::Intent, view: Viewport) -> Result<(), Failure> {
+    /// Carry out one viewer intent. An activation scrolls the node's
+    /// element into view and asks for its box, whose answer (the returned
+    /// id) the mirror clicks; a node the last tree lacks is skipped.
+    async fn act(
+        &mut self,
+        intent: &tree::Intent,
+        view: Viewport,
+        last_tree: Option<&[u8]>,
+    ) -> Result<Option<u64>, Failure> {
+        if let tree::DocumentInput::Activate { node } = &intent.input {
+            let Some(backend) = last_tree.and_then(|tree| backend_node(tree, node)) else {
+                eprintln!("phux: activate skipped: node {node:?} has no DOM element");
+                return Ok(None);
+            };
+            let params = serde_json::json!({ "backendNodeId": backend });
+            self.call("DOM.scrollIntoViewIfNeeded", params.clone())
+                .await?;
+            return self.call("DOM.getBoxModel", params).await.map(Some);
+        }
         for (method, params) in cdp_calls(&intent.input, view) {
+            self.call(method, params).await?;
+        }
+        Ok(None)
+    }
+
+    /// Click an activated element's box centre, the answer `act` awaited.
+    async fn click_box(&mut self, centre: Option<(f64, f64)>) -> Result<(), Failure> {
+        let Some((x, y)) = centre else {
+            eprintln!("phux: activate skipped: the element has no box");
+            return Ok(());
+        };
+        for (method, params) in mouse_click(x, y) {
             self.call(method, params).await?;
         }
         Ok(())
@@ -376,9 +361,14 @@ async fn mirror(
     let mut view = Viewport::IDENTITY;
     let mut intents: Vec<tree::Intent> = Vec::new();
     let clipboard = super::clipboard::Clipboard::host(false);
+    let mut box_request = None;
     loop {
         if !intents.is_empty() {
-            cdp.act_all(conn, &clipboard, &mut intents, view).await?;
+            let at = (view, last_tree.as_deref());
+            box_request = cdp
+                .act_all(conn, &clipboard, &mut intents, at)
+                .await?
+                .or(box_request);
             tree_request = cdp.read_tree().await?;
         }
         let message = tokio::select! {
@@ -406,7 +396,7 @@ async fn mirror(
             Some(Ok(_)) => continue,
             Some(Err(err)) => return Err(Failure::Browser(err.to_string())),
         };
-        match classify(&text, tree_request) {
+        match classify(&text, tree_request, box_request) {
             Incoming::Frame {
                 image,
                 session,
@@ -428,6 +418,10 @@ async fn mirror(
                     super::redial::publish(conn, socket, tree_res, &bytes, &mut intents).await?;
                     last_tree = Some(bytes);
                 }
+            }
+            Incoming::BoxCentre(centre) => {
+                box_request = None;
+                cdp.click_box(centre).await?;
             }
             Incoming::Other => {}
         }

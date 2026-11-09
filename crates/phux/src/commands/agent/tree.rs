@@ -7,6 +7,7 @@
 //! - `snapshot` prints the newest document and exits.
 //! - `follow` prints every document as it arrives; `--until TEXT` exits as
 //!   soon as a document contains `TEXT`, which is `phux wait` for an app.
+//! - `click` activates one node (`click`).
 
 use std::io::Read as _;
 use std::path::PathBuf;
@@ -24,6 +25,7 @@ const SCHEMA_VERSION: u8 = 1;
 
 mod app;
 mod app_launch;
+mod click;
 mod clipboard;
 mod doc;
 mod mirror;
@@ -108,6 +110,11 @@ pub(crate) enum TreeAction {
         #[usage(long)]
         json: bool,
     },
+    /// Activate one element by node, not pixel: `--node ID` or `--name TEXT`.
+    Click {
+        #[usage(flatten)]
+        args: click::ClickArgs,
+    },
     /// Print every document as it arrives.
     Follow {
         /// The tree.
@@ -154,6 +161,7 @@ pub(super) fn run_tree(action: &TreeAction, socket: Option<PathBuf>) -> ExitCode
                 socket,
             })
         }
+        TreeAction::Click { args } => click::run_click(args, socket),
         TreeAction::Follow {
             target,
             until,

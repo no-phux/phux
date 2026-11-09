@@ -1306,6 +1306,8 @@ newest and `follow --until TEXT` waits on it. Needs a server that advertises
 Usage: phux agent tree <SUBCOMMAND>
 
 Commands:
+  click     Activate one element by node, not pixel: `--node ID` or `--name
+            TEXT`.
   follow    Print every document as it arrives.
   mirror    Mirror a running application into a tree, until Ctrl-C: macOS
             Accessibility, or AT-SPI on Linux.
@@ -1319,6 +1321,34 @@ Flags:
 
 Global flags:
       --socket <PATH>  Server socket to dial (default: `$PHUX_SOCKET`)
+```
+
+## `phux agent tree click`
+
+```text
+Activate one element by node, not pixel: `--node ID` or `--name TEXT`.
+
+Usage: phux agent tree click [FLAGS] <TARGET>
+
+Arguments:
+  <TARGET>  The tree.
+
+Flags:
+      --node <ID>          The node's `id`, as the tree document gives it.
+      --name <TEXT>        The node whose name (title or description) is TEXT,
+                           ignoring case; an exact name beats a substring.
+      --role <ROLE>        With `--name`, only nodes of this role (`AXButton`,
+                           `push button`).
+      --pixel              Click the node's centre on the window surface beside
+                           the tree, skipping the producer's semantic action.
+      --wait-until <TEXT>  After the click, wait until a tree document contains
+                           this text.
+      --timeout <SECS>     Give up waiting after this many seconds.
+      --json
+  -h, --help               Print help
+
+Global flags:
+      --socket <PATH>      Server socket to dial (default: `$PHUX_SOCKET`)
 ```
 
 ## `phux agent tree follow`

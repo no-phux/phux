@@ -51,3 +51,24 @@ and on macOS an unchanged capture skips the `sips` re-encode.
 
 A page mirror needs none of this: Chrome's screencast sends a frame when
 the page repaints, so a click shows in the next frame.
+
+## Agents clicking elements
+
+An agent can act on an element by its node instead of by a pixel.
+The macOS and Linux tree mirrors give every node an `id` (the path of
+child indices from the root, `0.3.1`) and a `frame` in screen points.
+A page's `DevTools` tree uses each node's `nodeId` as its id.
+
+`phux agent tree click TREE --node ID`, or `--name TEXT [--role ROLE]`
+(MCP `phux_click_element`), finds one node. An exact name match beats a
+substring match. When several nodes tie, the error lists their ids. The
+click sends an `Activate` intent to the tree. Its producer presses the
+node with `AXPress` on macOS (or clicks its centre when the node has no
+press action), `DoAction(0)` over AT-SPI, or a `DevTools` click at the
+element's box. App trees take input of class `window`, so the intent
+needs the same `input@window` grant (or the owner socket) as a click on
+the surface. If the tree refuses the intent, or with `--pixel`, the node's
+centre is clicked on the window surface beside the tree instead. The point
+is mapped from the window's frame into frame pixels, which accounts for
+Retina scale and `--max-width`. `--wait-until TEXT [--timeout SECS]` then
+follows the tree until a document contains TEXT.

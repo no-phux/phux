@@ -61,7 +61,8 @@ pub(super) fn ops(
         DocumentInput::Navigate { .. }
         | DocumentInput::Paste { .. }
         | DocumentInput::CopyClipboard { .. }
-        | DocumentInput::ClipboardText { .. } => Vec::new(),
+        | DocumentInput::ClipboardText { .. }
+        | DocumentInput::Activate { .. } => Vec::new(),
         DocumentInput::Click { x, y } => vec![at((*x, *y), image, need()?)?, Op::Click],
         DocumentInput::Scroll { dx, dy } => {
             let place = need()?;

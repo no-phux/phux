@@ -7,8 +7,8 @@ use crate::wire::decode::Decoder;
 use crate::wire::encode::Encoder;
 use crate::wire::error::DecodeError;
 
-/// Maximum UTF-8 bytes in a [`DocumentInput::Navigate`] URL or a
-/// [`DocumentInput::Type`] text.
+/// Maximum UTF-8 bytes in a [`DocumentInput::Navigate`] URL, a
+/// [`DocumentInput::Type`] text or a [`DocumentInput::Activate`] node id.
 pub const MAX_DOCUMENT_INPUT_TEXT: usize = 8 * 1024;
 
 /// Maximum UTF-8 bytes of clipboard text a [`DocumentInput::Paste`] or a
@@ -234,6 +234,13 @@ pub enum DocumentInput {
         /// clipboard could not be read.
         text: Result<String, String>,
     },
+    /// Carry out the default action (press, click) of one accessibility
+    /// node, by the `id` the tree document gives it. Sent to the tree; a
+    /// producer that cannot act on the node semantically clicks its bounds.
+    Activate {
+        /// The node's id, at most [`MAX_DOCUMENT_INPUT_TEXT`] bytes.
+        node: String,
+    },
 }
 
 const NAVIGATE: u8 = 0;
@@ -244,6 +251,7 @@ const SCROLL: u8 = 4;
 const PASTE: u8 = 5;
 const COPY_CLIPBOARD: u8 = 6;
 const CLIPBOARD_TEXT: u8 = 7;
+const ACTIVATE: u8 = 8;
 
 impl DocumentInput {
     pub(crate) fn encode(&self, enc: &mut Encoder<'_>) {
@@ -284,6 +292,10 @@ impl DocumentInput {
                 enc.write_u32_be(*reply);
                 enc.write_u8(u8::from(text.is_ok()));
                 enc.write_str(text.as_ref().unwrap_or_else(|error| error));
+            }
+            Self::Activate { node } => {
+                enc.write_u8(ACTIVATE);
+                enc.write_str(node);
             }
         }
     }
@@ -336,6 +348,7 @@ impl DocumentInput {
                     text: if ok { Ok(text) } else { Err(text) },
                 }
             }
+            ACTIVATE => Self::Activate { node: text(dec)? },
             other => return Err(DecodeError::unknown_enum("DocumentInput", other)),
         })
     }
@@ -369,6 +382,9 @@ mod tests {
             DocumentInput::ClipboardText {
                 reply: 9,
                 text: Err("no wl-paste".into()),
+            },
+            DocumentInput::Activate {
+                node: "0.2.1".into(),
             },
         ];
         let encode = |intent: &DocumentInput| {
