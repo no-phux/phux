@@ -383,6 +383,7 @@ pub(crate) fn run_server(
     };
 
     log_startup(&socket_path);
+    let _audit = phux_server::audit::Recording::start();
 
     // Printed once the sockets are bound, so a failed start never claims
     // to be listening.

@@ -221,6 +221,7 @@ pub(crate) fn dispatch(
             lines,
             json,
         })) => commands::logs::run_logs(server, client, pid, follow, lines, json),
+        Some(Command::Audit(commands::AuditArgs { action })) => commands::audit::run(action),
         Some(Command::Report(commands::ReportArgs { action, json })) => {
             commands::report::run_report(action, json.json)
         }

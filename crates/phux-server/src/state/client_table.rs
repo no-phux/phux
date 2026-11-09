@@ -332,6 +332,15 @@ impl ClientTable {
             .map(|identity| &identity.peer)
     }
 
+    /// The whole identity captured for this connection.
+    #[must_use]
+    pub(super) fn connection_identity(
+        &self,
+        client: ClientId,
+    ) -> Option<&crate::auth::ConnectionIdentity> {
+        self.peer_identities.get(&client)
+    }
+
     /// Look up the credential captured for this connection.
     #[must_use]
     pub(super) fn authenticated_credential(

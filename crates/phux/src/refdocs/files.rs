@@ -76,6 +76,7 @@ pub(crate) fn page() -> Page {
          ├── server.log          # the ONE server log, both spawn paths\n\
          ├── server.log.1..4     # older generations, rotated while live\n\
          ├── server-starts.log   # one line per server start (crash-loop check)\n\
+         ├── audit/              # signed audit log, its rotations, and its key (0700)\n\
          ├── client-<pid>.log    # per-pid interactive-client log\n\
          ├── onboarding.json     # versioned first-use journey progress\n\
          ├── onboarding.lock     # serializes first-use moment delivery\n\
@@ -173,6 +174,12 @@ pub(crate) fn page() -> Page {
            idea that does not yet have a 2xx). The file keeps the \
            idempotency key. A network failure leaves it; the next \
            `phux idea` sends those same bytes. A 2xx removes it.\n\
+         - `audit/` holds the `phux.audit/v1` log (`audit.jsonl`, rotated \
+           at 64 MiB to `audit.jsonl.1`..`.4`), its ed25519 signing key \
+           `audit-key` (owner-only, `0600`) and the public half \
+           `audit-key.pub`. The server appends one hash-chained, signed \
+           record per decision; `phux audit tail` and `phux audit verify` \
+           read it with no server. See [Audit log](../audit.md).\n\
          - `reports/` holds local bug-report bundles written by the TUI \
            `report-bug` action (`C-a B`) and by `phux report new`. Each \
            subdirectory is one report (session, pane, version, log tails, \
@@ -305,6 +312,7 @@ mod tests {
             "remote-tokens",
             "reports/",
             "ideas/",
+            "audit/",
             "service-wrapper.sh",
             "workspace.json",
             "server.pid",

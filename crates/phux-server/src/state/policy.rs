@@ -50,6 +50,39 @@ impl ServerState {
         self.clients.authenticated_credential(client_id)
     }
 
+    /// The audit actor for `client_id`; the server itself when unknown.
+    #[must_use]
+    pub fn audit_actor(&self, client_id: ClientId) -> crate::audit::AuditActor {
+        self.clients
+            .connection_identity(client_id)
+            .map_or_else(crate::audit::AuditActor::server, crate::audit::audit_actor)
+    }
+
+    /// Audit `client_id`'s connection opening or closing.
+    pub fn audit_connection(&self, client_id: ClientId, kind: crate::audit::Kind) {
+        if !crate::audit::enabled() {
+            return;
+        }
+        let peer = self.peer_identity(client_id);
+        crate::audit::emit(
+            kind,
+            self.audit_actor(client_id),
+            if kind == crate::audit::Kind::ConnectionOpen {
+                "open"
+            } else {
+                "close"
+            },
+            None,
+            crate::audit::Outcome::Allowed,
+            serde_json::json!({
+                "client": client_id.0,
+                "uid": peer.map(|peer| peer.uid),
+                "pid": peer.and_then(|peer| peer.pid),
+                "source": peer.and_then(|peer| peer.source_addr).map(|addr| addr.to_string()),
+            }),
+        );
+    }
+
     /// Record the ssh origin a same-uid bridge announced (already checked).
     pub fn set_ssh_origin(
         &mut self,

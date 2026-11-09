@@ -84,6 +84,7 @@ Maintain:
   update        Update phux, keeping sessions alive
   upgrade       Hot-swap the running server to the installed binary
   channel       Show or switch the release channel
+  audit         Read and verify this host's signed audit log
   theme         Install, list, and select colour themes
   omarchy       Fit phux into an Omarchy desktop
 
@@ -1739,6 +1740,70 @@ Recording:
 Global flags:
       --socket <PATH>             Server socket to dial (default:
                                   `$PHUX_SOCKET`)
+```
+
+## `phux audit`
+
+```text
+Read and verify this host's signed audit log
+
+The server appends one signed, hash-chained `phux.audit/v1` record per
+connection, authorization decision, approval, credential change, file transfer
+and input lease to `audit/audit.jsonl` in the state directory. `tail` prints the
+newest records (`-f` follows); `verify` checks the chain and every signature and
+names the first bad record. Both read the files directly, so they work with no
+server running.
+
+Usage: phux audit <SUBCOMMAND>
+
+Commands:
+  tail    Print the newest records, oldest first.
+  verify  Check the hash chain and every signature; exits 1 at the first bad
+          record and names its seq.
+  help    Print this message or the help of the given subcommand(s)
+
+Flags:
+  -h, --help           Print help
+
+Global flags:
+      --socket <PATH>  Server socket to dial (default: `$PHUX_SOCKET`)
+```
+
+## `phux audit tail`
+
+```text
+Print the newest records, oldest first.
+
+Usage: phux audit tail [FLAGS]
+
+Flags:
+  -n, --lines <NUM>      How many records to print; 20 when omitted.
+  -f, --follow           Keep printing records as the server appends them.
+      --since-seq <SEQ>  Only records with this seq or later.
+      --json             Print each record as its stored JSON line instead of a
+                         summary.
+  -h, --help             Print help
+
+Global flags:
+      --socket <PATH>    Server socket to dial (default: `$PHUX_SOCKET`)
+```
+
+## `phux audit verify`
+
+```text
+Check the hash chain and every signature; exits 1 at the first bad record and
+names its seq.
+
+Usage: phux audit verify [--json]
+
+Flags:
+      --json           Emit stable, versioned JSON on stdout instead of the
+                       human view. On failure, stdout stays empty and stderr
+                       carries one JSON error object.
+  -h, --help           Print help
+
+Global flags:
+      --socket <PATH>  Server socket to dial (default: `$PHUX_SOCKET`)
 ```
 
 ## `phux channel`

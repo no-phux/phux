@@ -39,6 +39,7 @@ pub(super) async fn admit_connection(
         Some(registry) => {
             let Some(credential) = workload_credential(&conn, registry) else {
                 debug!(%remote, "quic mTLS client identity refused");
+                crate::audit::refused(crate::audit::Transport::Quic, remote.ip(), "certificate");
                 conn.close(AUTH_FAILED_CODE.into(), b"unauthorized");
                 return None;
             };
@@ -69,6 +70,7 @@ pub(super) async fn admit_connection(
             )
             .await;
             let Ok(Some(credential)) = preamble else {
+                crate::audit::refused(crate::audit::Transport::Quic, remote.ip(), "token");
                 if preamble.is_err() {
                     debug!(%remote, "quic auth preamble timed out");
                 } else if let Some(suppressed) = refusals.due() {

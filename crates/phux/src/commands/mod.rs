@@ -46,6 +46,7 @@ pub(crate) mod approvals;
 pub(crate) mod archive;
 pub(crate) mod ask;
 pub(crate) mod attach;
+pub(crate) mod audit;
 pub(crate) mod bootstrap;
 pub(crate) mod channel;
 pub(crate) mod completion;
@@ -224,6 +225,7 @@ pub(crate) const fn socketless_verb(command: &Command) -> Option<&'static str> {
         Command::Mcp(..) => Some("mcp"),
         Command::Skill(..) => Some("skill"),
         Command::Logs(..) => Some("logs"),
+        Command::Audit(..) => Some("audit"),
         Command::RuntimeInfo(..) => Some("runtime-info"),
         Command::Report(..) => Some("report"),
         Command::GenReferenceDocs(..) => Some("gen-reference-docs"),
