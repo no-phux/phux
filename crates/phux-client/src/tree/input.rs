@@ -37,6 +37,20 @@ pub fn intent(frame: &FrameKind) -> Option<Intent> {
     }
 }
 
+/// Who is driving `resource`, when `frame` is the `input_activity` the
+/// server sends a producer ahead of each intent: the viewer's HELLO name.
+#[must_use]
+pub fn activity<'a>(frame: &'a FrameKind, resource: &ResourceId) -> Option<&'a str> {
+    match frame {
+        FrameKind::Event {
+            terminal: Some(at),
+            event: AgentEvent::InputActivity { origin },
+            ..
+        } if at == resource => Some(origin),
+        _ => None,
+    }
+}
+
 /// Send `input` to the producer of `resource`.
 ///
 /// # Errors

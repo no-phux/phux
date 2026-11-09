@@ -41,8 +41,12 @@ mod surface_cadence;
 mod surface_grim;
 #[cfg(any(target_os = "linux", test))]
 mod surface_grim_input;
+#[cfg(any(target_os = "macos", target_os = "linux", test))]
+mod surface_indicator;
 mod surface_input;
 mod surface_mirror;
+#[cfg(any(target_os = "linux", test))]
+mod surface_wayland;
 
 pub(crate) use app::{AppAction, run_app};
 pub(crate) use doc::{DocAction, run_doc};

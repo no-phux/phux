@@ -18,7 +18,7 @@ use crate::attach::AttachError;
 use crate::attach::connection::{Answer, Connection};
 
 mod input;
-pub use input::{DocumentInput, DocumentKey, Intent, intent, send_input};
+pub use input::{DocumentInput, DocumentKey, Intent, activity, intent, send_input};
 
 /// Which document kind a call is about.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

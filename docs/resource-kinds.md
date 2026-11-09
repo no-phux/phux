@@ -79,6 +79,18 @@ under `$XDG_RUNTIME_DIR`. A compositor that withholds frames (display
 asleep, session locked) fails the capture after 10 s, before any surface is
 opened.
 
+Input to a Linux surface needs no extra tools on a compositor with the
+wlroots virtual-pointer and virtual-keyboard protocols (Hyprland, Sway): the
+mirror speaks them itself, typing through a keymap made for the text. A
+click or scroll also needs Hyprland, whose `hyprctl` places the frame in the
+layout. Without those protocols it falls back to `wtype` for keys and text,
+and `wlrctl` or `ydotool` (with `ydotoold`) for the pointer. While input
+arrives the host shows who is in control: a desktop notification on Linux,
+closed 10 s after the last input; a Notification Center banner on macOS.
+The server logs each intent at info with the sender's credential id (or
+`owner`), the resource, its kind, the length of any text (never the text)
+and its outcome, one line per burst plus a summary.
+
 Agents read documents over MCP the way they read panes: `phux_documents`
 lists them, `phux_tree_snapshot` and `phux_tree_wait` read a tree's JSON, and
 `phux_surface_snapshot` returns a surface's PNG as MCP image content
