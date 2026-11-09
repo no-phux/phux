@@ -12,6 +12,7 @@ pub enum Modal {
     Reef,
     Pitch,
     Kitchen,
+    PitLane,
     Machines,
     Settings,
     Rename,
@@ -35,9 +36,12 @@ impl Modal {
             ),
             Self::Palette => matches!(action, Shortcut::Palette),
             Self::Settings => matches!(action, Shortcut::Find) || action.works_over_sheets(),
-            Self::Inbox | Self::Galaxy | Self::Reef | Self::Pitch | Self::Kitchen => {
-                action.works_over_sheets()
-            }
+            Self::Inbox
+            | Self::Galaxy
+            | Self::Reef
+            | Self::Pitch
+            | Self::Kitchen
+            | Self::PitLane => action.works_over_sheets(),
             Self::ContextMenu
             | Self::Machines
             | Self::Rename

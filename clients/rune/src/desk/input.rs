@@ -48,6 +48,7 @@ impl Desk {
             (self.reef.open, Modal::Reef),
             (self.pitch.open, Modal::Pitch),
             (self.kitchen.open, Modal::Kitchen),
+            (self.pitlane.open, Modal::PitLane),
             (self.machines.open, Modal::Machines),
             (self.settings_open, Modal::Settings),
             (self.tabs.renaming.is_some(), Modal::Rename),
@@ -130,6 +131,8 @@ impl Desk {
             (Modal::Pitch, rune::Key::Enter) => self.open_player(),
             (Modal::Kitchen, rune::Key::Escape) => self.kitchen_escape(),
             (Modal::Kitchen, rune::Key::Enter) => self.open_chef(),
+            (Modal::PitLane, rune::Key::Escape) => self.pitlane_escape(),
+            (Modal::PitLane, rune::Key::Enter) => self.open_car(),
             _ => return false,
         }
         true
@@ -264,6 +267,7 @@ impl Desk {
             Shortcut::Reef => self.toggle_reef(),
             Shortcut::Pitch => self.toggle_pitch(),
             Shortcut::Kitchen => self.toggle_kitchen(),
+            Shortcut::PitLane => self.toggle_pitlane(),
             Shortcut::Settings => self.toggle_settings(),
             Shortcut::ChangeTheme => self.open_themes(),
             Shortcut::SwitchSession => self.open_palette(crate::palette::Mode::Sessions),

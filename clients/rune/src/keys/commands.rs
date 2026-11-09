@@ -288,6 +288,7 @@ pub const COMMANDS: &[Command] = &[
     row!(Shortcut::Reef, "Open Reef", [], []),
     row!(Shortcut::Pitch, "Open Pitch", [], []),
     row!(Shortcut::Kitchen, "Open Kitchen", [], []),
+    row!(Shortcut::PitLane, "Open Pit Lane", [], []),
     row!(Shortcut::Settings, "Settings", [m(',')], [l(',')]),
     row!(Shortcut::ChangeTheme, "Change Theme", [], []),
     row!(
@@ -591,6 +592,7 @@ mod tests {
         Reef,
         Pitch,
         Kitchen,
+        PitLane,
         Settings,
         ChangeTheme,
         SwitchSession,

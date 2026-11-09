@@ -41,6 +41,7 @@ mod notice;
 mod palette;
 pub mod phone;
 pub mod pitch;
+pub mod pitlane;
 pub mod questions;
 pub mod reef;
 pub mod resources;
@@ -163,6 +164,8 @@ pub struct Desk {
     pub pitch: pitch::Pitch,
     /// The fleet as a kitchen, while open.
     pub kitchen: kitchen::Kitchen,
+    /// The fleet as a pit lane, while open.
+    pub pitlane: pitlane::PitLane,
     /// The other machines, watched while the galaxy or the reef is open.
     pub(crate) fleet: fleet::Fleet,
     pub settings: settings::Settings,
@@ -374,6 +377,7 @@ impl Desk {
             reef: reef::Reef::default(),
             pitch: pitch::Pitch::default(),
             kitchen: kitchen::Kitchen::default(),
+            pitlane: pitlane::PitLane::default(),
             fleet: fleet::Fleet::default(),
             settings,
             settings_open: false,
@@ -467,6 +471,7 @@ impl Desk {
         changed |= self.tick_reef(tx);
         changed |= self.tick_pitch(tx);
         changed |= self.tick_kitchen(tx);
+        changed |= self.tick_pitlane(tx);
         self.settle_pointer();
         changed |= self.autoscroll(tx);
         self.keep_find();
