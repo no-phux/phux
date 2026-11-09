@@ -16,7 +16,7 @@ workspace = true
 [features]
 default = ["native-engine"]
 # Incremental native checkpoint capture/advertisement.
-native-engine = ["phux-terminal-api/native-engine"]
+native-engine = ["phux-terminal-api/native-engine", "phux-client-core/native-engine"]
 # Fixtures for the host's own tests. A dependency's `cfg(test)` is invisible
 # to its dependents, so these are opt-in and enabled only as a dev-dependency.
 test-support = ["phux-terminal-api/test-support"]

@@ -229,7 +229,7 @@ fn native_capture(pending: &[u8]) -> (Vec<u8>, CapturedHistory, u32) {
     let rows = u32::try_from(source.scrollback_rows().unwrap()).unwrap();
     source.vt_write(pending);
     let capture = EncodedSnapshot::capture(
-        &source,
+        &mut source,
         SnapshotCaptureLimits {
             max_bytes: 64 * 1024 * 1024,
             max_record_bytes: 64 * 1024,

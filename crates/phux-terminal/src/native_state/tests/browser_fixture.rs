@@ -73,7 +73,7 @@ fn browser_fixture_transcript() -> Vec<u8> {
         .expect("install");
     let mut index = 0;
     loop {
-        let record = next_record(&mut manager, &cursor, index, limits);
+        let record = next_record(&manager, &cursor, index, limits);
         if record.finish {
             unit(2, record.rows, &record.bytes);
             break;

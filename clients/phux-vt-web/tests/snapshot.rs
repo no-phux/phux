@@ -1,7 +1,7 @@
 //! The official GHOSTSNP decoder against a server-produced transcript.
 //!
 //! `fixtures/server-snapshot-v1.bin` is captured by phux-server's production
-//! prefix and leased-history paths (`native_state` test
+//! prefix and immutable-history paths (`native_state` test
 //! `browser_snapshot_fixture_is_the_current_server_capture`, which fails when
 //! the committed transcript no longer decodes to the terminal the server
 //! captures now; its bytes and page splits vary with the encoding host).
@@ -105,6 +105,36 @@ async fn ready_decoder(fixture: &Fixture) -> NativeDecoder {
 async fn engine_advertises_the_official_snapshot_decoder() {
     let vt = Vt::load().await.expect("load engine");
     assert!(vt.native_snapshot_available());
+}
+
+#[wasm_bindgen_test]
+async fn live_clear_discards_deferred_pre_clear_history() {
+    let fixture = fixture();
+    for clear in [b"\x1b[3J".as_slice(), b"\x1bc".as_slice()] {
+        let mut decoder = ready_decoder(&fixture).await;
+        decoder.terminal().unwrap().write(clear);
+        let cleared_rows = decoder.terminal().unwrap().rows_text().len();
+        for (unit, rows) in &fixture.pages {
+            feed(&mut decoder, unit, unit.len());
+            let progress = decoder
+                .next_checked(*rows)
+                .expect("authenticate discarded page")
+                .expect("discarded page is not FINISH");
+            assert_eq!(progress.kind, HistoryProgressKind::Page);
+            assert_eq!(progress.authenticated_rows, *rows);
+            assert_eq!(
+                progress.rows, 0,
+                "cleared history must be authenticated, not retained"
+            );
+        }
+        feed(&mut decoder, &fixture.finish, fixture.finish.len());
+        assert_eq!(decoder.next_checked(0), Ok(None), "authenticated FINISH");
+        assert_eq!(
+            decoder.terminal().unwrap().rows_text().len(),
+            cleared_rows,
+            "pre-clear history must not reappear after {clear:?}"
+        );
+    }
 }
 
 #[wasm_bindgen_test]

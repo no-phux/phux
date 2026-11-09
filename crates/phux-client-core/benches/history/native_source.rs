@@ -1,13 +1,14 @@
 //! Deep native source used by the bounded history-page benchmark.
 
 use libghostty_vt::Terminal;
+use phux_client_core::engine::ghostty::snapshot::{EncodedSnapshot, SnapshotCaptureLimits};
 
-/// Build a source with multiple pages of deterministic history.
+/// Capture multiple pages of deterministic history with the stock encoder.
 ///
 /// # Panics
-/// Panics if terminal allocation or scrollback configuration fails.
+/// Panics if terminal allocation, configuration, or bounded capture fails.
 #[must_use]
-pub fn terminal() -> Terminal<'static, 'static> {
+pub fn capture(limits: SnapshotCaptureLimits) -> EncodedSnapshot {
     let mut terminal = Terminal::new(200, 3).expect("native benchmark terminal");
     terminal
         .set_scrollback_max_lines(Some(5_000))
@@ -18,5 +19,5 @@ pub fn terminal() -> Terminal<'static, 'static> {
     for row in 0..3_000 {
         terminal.vt_write(format!("native-history-{row:04}\r\n").as_bytes());
     }
-    terminal
+    EncodedSnapshot::capture(&mut terminal, limits).expect("native capture")
 }

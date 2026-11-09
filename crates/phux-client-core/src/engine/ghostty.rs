@@ -87,7 +87,7 @@ fn official_snapshot_available() -> bool {
     }
     terminal.vt_write(b"ok");
     snapshot::EncodedSnapshot::capture(
-        &terminal,
+        &mut terminal,
         snapshot::SnapshotCaptureLimits {
             max_bytes: 64 * 1024,
             max_record_bytes: 4096,

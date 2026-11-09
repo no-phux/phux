@@ -316,6 +316,35 @@ fn native_history_row_mismatch_is_rejected_before_terminal_mutation() {
 }
 
 #[test]
+fn live_history_clear_does_not_resurrect_deferred_snapshot_rows() {
+    for clear in [Some(b"\x1b[3J".as_slice()), Some(b"\x1bc".as_slice()), None] {
+        let captured = capture_snapshot();
+        let mut adapter = native_adapter();
+        let mut replica = adapter.start_replica(native_profile(), geometry()).unwrap();
+        let mut effects = EngineEffectBuffer::new();
+        adapter
+            .apply_bootstrap_chunk(&mut replica, &captured.ready, &mut effects)
+            .unwrap();
+        adapter
+            .finish_bootstrap(&mut replica, &mut effects)
+            .unwrap();
+        match clear {
+            Some(bytes) => adapter
+                .apply_output(&mut replica, bytes, &mut effects)
+                .unwrap(),
+            None => adapter.clear_presentation(&mut replica).unwrap(),
+        }
+        let cleared = replica.terminal().unwrap().scrollback_rows().unwrap();
+        apply_history(&mut adapter, &mut replica, &captured, &mut effects);
+        assert_eq!(
+            replica.terminal().unwrap().scrollback_rows().unwrap(),
+            cleared,
+            "live clear {clear:?} must also discard deferred pre-clear history"
+        );
+    }
+}
+
+#[test]
 fn native_profile_is_rejected_when_the_runtime_contract_is_unavailable() {
     let mut adapter = native_adapter();
     adapter.native_available = false;

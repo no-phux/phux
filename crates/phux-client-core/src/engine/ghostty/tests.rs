@@ -40,7 +40,7 @@ fn capture_snapshot() -> CapturedSnapshot {
         source.vt_write(format!("line {line}\r\n").as_bytes());
     }
     source.vt_write(b"\x1b]2;checkpoint-title\x07");
-    let capture = EncodedSnapshot::capture(&source, capture_limits()).expect("capture");
+    let capture = EncodedSnapshot::capture(&mut source, capture_limits()).expect("capture");
     let ready_end = capture.prefix_records.last().unwrap().end;
     let ready = capture.bytes[..ready_end].to_vec();
     let mut history = Vec::new();
@@ -114,7 +114,7 @@ fn native_snapshot_restores_kitty_metadata_then_deferred_pixels() {
     source.resize(8, 3, 8, 16).unwrap();
     source.vt_write(b"\x1b_Ga=T,f=32,s=1,v=1,i=42,c=2,r=2,C=1;/wAA/w==\x1b\\");
     assert_eq!(kitty_pixels(&source, 42), Some(vec![255, 0, 0, 255]));
-    let capture = EncodedSnapshot::capture(&source, capture_limits()).unwrap();
+    let capture = EncodedSnapshot::capture(&mut source, capture_limits()).unwrap();
     let ready = &capture.bytes[..capture.prefix_records.last().unwrap().end];
     let mut adapter = native_adapter();
     let mut replica = adapter

@@ -28,8 +28,8 @@ set -euo pipefail
 
 repo="$(cd "$(dirname "$0")/.." && pwd)"
 source "$repo/scripts/lib/dev-toolchain.sh"
-revision=511a1fabb48ab00715cdb22ce13a7191217e8086
-archive_sha256=79973482e81cd2a65b4729dfc3fbc60c7271ea9ed234aa1a988ee7eea0daefd8
+revision=a444c2d318dcc954ebf78ab6aab30c7dea05392e
+archive_sha256=d0f1b5f515fdd446bde5251c9bc92d00e303289e87d67d834fa65a0cb8ea3d29
 mode="${1:-build}"
 [[ $# -le 1 && ( "$mode" = build || "$mode" = --check ) ]] || {
   echo 'usage: bash scripts/build-vt-wasm.sh [--check]' >&2; exit 2;

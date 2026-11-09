@@ -34,7 +34,7 @@ use support::{
 #[cfg(feature = "native-engine")]
 use phux_client_core::engine::ghostty::GhosttyAdapter;
 #[cfg(feature = "native-engine")]
-use phux_client_core::engine::ghostty::snapshot::{EncodedSnapshot, SnapshotCaptureLimits};
+use phux_client_core::engine::ghostty::snapshot::SnapshotCaptureLimits;
 
 #[cfg(feature = "native-engine")]
 #[path = "history/native_source.rs"]
@@ -363,17 +363,12 @@ struct NativePageFixture {
 
 #[cfg(feature = "native-engine")]
 fn native_page_fixture() -> NativePageFixture {
-    let terminal = native_source::terminal();
-    let capture = EncodedSnapshot::capture(
-        &terminal,
-        SnapshotCaptureLimits {
-            max_bytes: 64 * 1024 * 1024,
-            max_record_bytes: HISTORY_PAGE_LIMIT,
-            max_records: 10_000,
-            max_rows: 10_000,
-        },
-    )
-    .expect("native capture");
+    let capture = native_source::capture(SnapshotCaptureLimits {
+        max_bytes: 64 * 1024 * 1024,
+        max_record_bytes: HISTORY_PAGE_LIMIT,
+        max_records: 10_000,
+        max_rows: 10_000,
+    });
     let ready = capture.bytes[..capture.prefix_records.last().expect("READY prefix").end].to_vec();
     assert!(
         capture.history.iter().filter(|unit| unit.rows > 0).count() >= 2,

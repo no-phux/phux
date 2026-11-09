@@ -789,8 +789,8 @@ pub struct HistoryProgress {
     pub kind: HistoryProgressKind,
     /// Rows the authenticated PAGE carried (zero for image pixels).
     pub authenticated_rows: usize,
-    /// Rows kept in the terminal; zero when the local history budget
-    /// discarded the authenticated page.
+    /// Rows retained; zero after budget drops, resize, live reset, or
+    /// explicit history clear.
     pub rows: usize,
     /// Pages left in this screen's HISTORY sequence; zero for image progress.
     pub remaining: u32,

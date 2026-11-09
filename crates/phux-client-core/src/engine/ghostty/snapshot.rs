@@ -82,7 +82,7 @@ impl EncodedSnapshot {
     ///
     /// # Errors
     /// Returns an engine, allocation, framing, or budget error before publication.
-    pub fn capture(terminal: &Terminal<'_, '_>, limits: SnapshotCaptureLimits) -> Result<Self> {
+    pub fn capture(terminal: &mut Terminal<'_, '_>, limits: SnapshotCaptureLimits) -> Result<Self> {
         let mut sink = BoundedWriter {
             bytes: Vec::new(),
             max_bytes: limits.max_bytes,
@@ -93,7 +93,9 @@ impl EncodedSnapshot {
             return Err(error);
         }
         encoded?;
-        Self::index(Bytes::from(sink.bytes), limits)
+        // Discard geometric-growth spare capacity before exposing slices. The
+        // server charges this allocation by its exact retained byte length.
+        Self::index(Bytes::from_owner(sink.bytes.into_boxed_slice()), limits)
     }
 
     fn index(bytes: Bytes, limits: SnapshotCaptureLimits) -> Result<Self> {

@@ -65,7 +65,7 @@ fn stock_bytes_are_unchanged_with_images_both_screens_and_continuation() {
     terminal.vt_write(b"\x1b]2;unfinished");
     let mut stock = Vec::new();
     terminal.encode_snapshot(&mut stock).unwrap();
-    let snapshot = EncodedSnapshot::capture(&terminal, limits()).unwrap();
+    let snapshot = EncodedSnapshot::capture(&mut terminal, limits()).unwrap();
     assert_exact_units(&snapshot, &stock);
     // Capturing retains neither a terminal borrow nor live history references.
     terminal.vt_write(b" title\x07\x1b[?1049l\x1b[3Jnew output");
@@ -222,10 +222,10 @@ fn sink_rejects_before_growing_and_capture_preserves_error_kind() {
         sink.error,
         Some(SnapshotCaptureError::LimitExceeded)
     ));
-    let terminal = Terminal::new(2, 2).unwrap();
+    let mut terminal = Terminal::new(2, 2).unwrap();
     assert!(matches!(
         EncodedSnapshot::capture(
-            &terminal,
+            &mut terminal,
             SnapshotCaptureLimits {
                 max_bytes: 4,
                 ..limits()
@@ -236,7 +236,7 @@ fn sink_rejects_before_growing_and_capture_preserves_error_kind() {
     let mut terminal = Terminal::new(2, 2).unwrap();
     terminal.vt_write(b"\x1b[3");
     assert!(matches!(
-        EncodedSnapshot::capture(&terminal, limits()),
+        EncodedSnapshot::capture(&mut terminal, limits()),
         Err(SnapshotCaptureError::Engine(_))
     ));
 }

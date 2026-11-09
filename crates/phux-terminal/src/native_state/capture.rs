@@ -1,10 +1,10 @@
 use super::{
-    CaptureEvent, Digest, GhosttyTerminal, NativeCheckpointChunk, NativeCheckpointChunkKind,
+    Digest, GhosttyTerminal, NativeCheckpointChunk, NativeCheckpointChunkKind,
     NativeGenerationSeed, NativeManagedCapture, NativeManagedCaptureFailure, NativeStateError,
     OpaqueHistoryCursor, PROGRESSIVE_CHECKPOINT_VERSION,
 };
 
-impl NativeManagedCapture<'_> {
+impl NativeManagedCapture {
     pub(crate) const fn max_record_bytes(&self) -> usize {
         self.max_record_bytes
     }
@@ -13,23 +13,30 @@ impl NativeManagedCapture<'_> {
         &mut self,
         buffer: &'buffer mut [u8],
     ) -> Result<NativeCheckpointChunk<'buffer>, NativeStateError> {
-        if self.ready {
-            return Err(NativeStateError::InvalidState);
+        let range = self
+            .snapshot
+            .prefix_records
+            .get(self.next_prefix_record)
+            .ok_or(NativeStateError::InvalidState)?;
+        let bytes = &self.snapshot.bytes[range.clone()];
+        if buffer.len() < bytes.len() {
+            return Err(NativeStateError::OutOfSpace {
+                required_bytes: bytes.len(),
+                required_rows: 0,
+            });
         }
-        let event = self.capture.next(buffer)?;
-        self.digest.update(&buffer[..event.written()]);
-        let kind = match event {
-            CaptureEvent::Ready { .. } => {
-                self.ready = true;
-                NativeCheckpointChunkKind::Ready
-            }
-            CaptureEvent::Record { .. } => NativeCheckpointChunkKind::Record,
-            _ => return Err(NativeStateError::InvalidState),
-        };
+        buffer[..bytes.len()].copy_from_slice(bytes);
+        self.digest.update(bytes);
+        self.next_prefix_record += 1;
+        self.ready = self.next_prefix_record == self.snapshot.prefix_records.len();
         Ok(NativeCheckpointChunk {
-            kind,
+            kind: if self.ready {
+                NativeCheckpointChunkKind::Ready
+            } else {
+                NativeCheckpointChunkKind::Record
+            },
             codec_version: PROGRESSIVE_CHECKPOINT_VERSION,
-            bytes: &buffer[..event.written()],
+            bytes: &buffer[..bytes.len()],
         })
     }
 
@@ -46,32 +53,24 @@ impl NativeManagedCapture<'_> {
         if !self.ready {
             return Err(NativeManagedCaptureFailure {
                 error: NativeStateError::InvalidState,
-                terminal: self.capture.into_terminal(),
+                terminal: self.terminal,
             });
         }
         let mut digest = self.digest;
         digest.update(self.generation.to_le_bytes());
         let cursor = digest.finalize().into();
-        // O(1): the engine registers a history lease and encodes nothing.
-        // Each HISTORY_REQUEST later encodes one page from the live cut.
-        let (terminal, capture) =
-            self.capture
-                .detach()
-                .map_err(|failure| NativeManagedCaptureFailure {
-                    error: failure.error.into(),
-                    terminal: failure.terminal,
-                })?;
         Ok((
-            terminal,
+            self.terminal,
             cursor,
             NativeGenerationSeed {
-                capture,
+                bytes: self.snapshot.bytes,
+                records: self.snapshot.history,
                 bounds: self.bounds,
             },
         ))
     }
 
     pub(crate) fn into_terminal(self) -> GhosttyTerminal<'static, 'static> {
-        self.capture.into_terminal()
+        self.terminal
     }
 }

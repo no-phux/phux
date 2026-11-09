@@ -158,15 +158,16 @@ after application to the replica; raw output and bootstrap never do.
 Normal reliable StateSync advances its server reference on emit: an ACK is
 not proof of a paint or application consumption, nor a lossy-delivery promise.
 
-Native history is a bounded, pull-based lease on retained engine history,
-not durable scrollback and not part of the attach's eager work. Follow the
+Native history is a bounded, pull-based lease on immutable encoded snapshot
+storage, not durable scrollback. Encoding is eager; delivery is not. Follow the
 engine cursor and authenticate each page before requesting its successor.
 The final page must authenticate the engine's `FINISH`; no row-count guess
 or protocol cursor alone substitutes for it, and trailing bytes after
 `FINISH` are rejected.
 A rejected page/request and an invalidated cursor are distinct outcomes;
 a history tombstone invalidates that history, not the live replica or input.
-Pruning or history decode failure must not retire a healthy live generation.
+Source pruning cannot invalidate the stored bytes. History decode failure
+must not retire a healthy live generation.
 The [kernel](../crates/phux-client-core/src/session.rs), its
 [generation/ACK/history tests](../crates/phux-client-core/src/session/tests.rs)
 and the server [pump](../crates/phux-server/src/runtime/pump.rs) own these transitions.

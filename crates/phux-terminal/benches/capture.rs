@@ -48,7 +48,7 @@ fn criterion_capture(c: &mut Criterion) {
             |b, _| b.iter(|| black_box(synthesized_measurement(black_box(&terminal)))),
         );
         group.bench_with_input(
-            BenchmarkId::new("native-progressive-capture", corpus.label()),
+            BenchmarkId::new("native-stock-capture", corpus.label()),
             &corpus,
             |b, _| b.iter(|| black_box(native_progressive_measurement(black_box(&mut terminal)))),
         );
@@ -119,7 +119,7 @@ fn checked_capture_gates() {
         let synth_p95 = percentile(&mut synthesized_ready, 95);
         let synth_full_p95 = percentile(&mut synthesized_full, 95);
         println!(
-            "metric=codec-ready-p95 corpus={} clients=1 native_progressive_us={} synthesized_us={} engine_ready_bytes={engine_ready_bytes} protocol_ready_bytes={protocol_ready_bytes} engine_history_bytes={engine_history_bytes} total_chunks={native_chunks} payload_copies={native_payload_copies} history_deferred=true synthesized_ready_bytes={} synthesized_full_history_p95_us={} synthesized_full_history_bytes={}",
+            "metric=codec-ready-p95 corpus={} clients=1 native_stock_us={} synthesized_us={} engine_ready_bytes={engine_ready_bytes} protocol_ready_bytes={protocol_ready_bytes} engine_history_bytes={engine_history_bytes} total_chunks={native_chunks} payload_copies={native_payload_copies} history_delivery_deferred=true synthesized_ready_bytes={} synthesized_full_history_p95_us={} synthesized_full_history_bytes={}",
             corpus.label(),
             native_p95.as_micros(),
             synth_p95.as_micros(),
@@ -166,7 +166,7 @@ fn checked_capture_gates() {
             }
             let page_p95 = percentile(&mut page_latencies, 95);
             println!(
-                "metric=native-progressive-history corpus={} clients=1 page_step_p95_us={} full_bytes={} engine_ready_bytes={} engine_history_bytes={} total_chunks={} pages={} max_page_bytes={} payload_copies={} history_deferred=true",
+                "metric=native-stock-history corpus={} clients=1 publication_step_p95_us={} full_bytes={} engine_ready_bytes={} engine_history_bytes={} total_chunks={} pages={} max_page_bytes={} payload_copies={} history_delivery_deferred=true",
                 corpus.label(),
                 page_p95.as_micros(),
                 full_bytes,
@@ -284,7 +284,7 @@ fn dhat_allocation_probe() {
     let capture = native_progressive_measurement(&mut terminal);
     let after = dhat::HeapStats::get();
     println!(
-        "metric=native-progressive-rust-capture-allocations corpus={} clients=1 blocks={} bytes={} peak_bytes={} engine_ready_bytes={} protocol_ready_bytes={} engine_history_bytes={} total_chunks={} pages={} payload_copies={} history_deferred=true",
+        "metric=native-stock-rust-capture-allocations corpus={} clients=1 blocks={} bytes={} peak_bytes={} engine_ready_bytes={} protocol_ready_bytes={} engine_history_bytes={} total_chunks={} pages={} payload_copies={} history_delivery_deferred=true",
         Corpus::Unicode50k.label(),
         after.total_blocks.saturating_sub(before.total_blocks),
         after.total_bytes.saturating_sub(before.total_bytes),

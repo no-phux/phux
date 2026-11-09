@@ -32,6 +32,7 @@ pub(crate) struct CaptureMeasurement {
     pub(crate) history_pages: usize,
     pub(crate) history_step_max: Duration,
     pub(crate) history_page_max_bytes: usize,
+    /// Logical payload materializations, excluding allocator reallocations.
     pub(crate) payload_copies: usize,
 }
 
@@ -145,7 +146,7 @@ pub(crate) fn native_progressive_measurement(
     let capture = EncodedSnapshot::capture(
         terminal,
         SnapshotCaptureLimits {
-            max_bytes: 256 * 1024 * 1024,
+            max_bytes: phux_terminal_api::native_state::MAX_NATIVE_PREFIX_BYTES,
             max_record_bytes: record_bytes,
             max_records: 100_000,
             max_rows: 100_000,
@@ -153,6 +154,7 @@ pub(crate) fn native_progressive_measurement(
     )
     .expect("stock capture");
     let protocol_ready = started.elapsed();
+    let history_step_max = history_publication_max(&capture);
     let protocol_ready_bytes = capture.prefix_records.last().expect("READY prefix").end;
     let engine_history_bytes = capture.bytes.len() - protocol_ready_bytes;
     let history_pages = capture.history.iter().filter(|unit| !unit.finish).count();
@@ -183,12 +185,23 @@ pub(crate) fn native_progressive_measurement(
         full_history_bytes: protocol_ready_bytes.saturating_add(engine_history_bytes),
         chunks,
         history_pages,
-        // All source work now precedes READY; publication only slices Bytes.
-        history_step_max: protocol_ready,
+        // All encoding/indexing precedes READY. This measures only the later
+        // publication of a shared byte slice, not a fictitious encoding step.
+        history_step_max,
         history_page_max_bytes,
         // One stock-to-Rust materialization; indexed units share those bytes.
         payload_copies: 1,
     }
+}
+
+fn history_publication_max(capture: &EncodedSnapshot) -> Duration {
+    let mut slowest = Duration::ZERO;
+    for unit in &capture.history {
+        let started = Instant::now();
+        drop(black_box(capture.bytes.slice(unit.range.clone())));
+        slowest = slowest.max(started.elapsed());
+    }
+    slowest
 }
 
 pub(crate) fn fanout_measurement(

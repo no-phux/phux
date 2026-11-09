@@ -50,7 +50,7 @@ fn paged_history_terminal() -> GhosttyTerminal<'static, 'static> {
     terminal
 }
 
-fn drain_ready(capture: &mut NativeManagedCapture<'_>) {
+fn drain_ready(capture: &mut NativeManagedCapture) {
     loop {
         let required = match capture.step(&mut []) {
             Err(NativeStateError::OutOfSpace { required_bytes, .. }) => required_bytes,
@@ -67,23 +67,17 @@ fn drain_ready(capture: &mut NativeManagedCapture<'_>) {
 }
 
 fn history_at(
-    manager: &mut NativeTerminalManager,
+    manager: &NativeTerminalManager,
     cursor: &OpaqueHistoryCursor,
     index: usize,
     max_bytes: u32,
     max_rows: u32,
 ) -> Result<CachedNativeHistoryRecord, NativeStateError> {
-    loop {
-        match manager.history_record_at(cursor, index, max_bytes, max_rows) {
-            Ok(record) => return Ok(record),
-            Err(NativeStateError::ImportBusy) => {}
-            Err(error) => return Err(error),
-        }
-    }
+    manager.history_record_at(cursor, index, max_bytes, max_rows)
 }
 
 fn next_record(
-    manager: &mut NativeTerminalManager,
+    manager: &NativeTerminalManager,
     cursor: &OpaqueHistoryCursor,
     index: usize,
     limits: BootstrapLimits,
@@ -175,7 +169,7 @@ fn install_leased_generation(
 }
 
 fn drain_generation(
-    manager: &mut NativeTerminalManager,
+    manager: &NativeTerminalManager,
     cursor: &OpaqueHistoryCursor,
     start: usize,
     max_bytes: u32,
@@ -214,17 +208,6 @@ fn lease_through(
         .release_generation(&cursor)
         .expect("release leased generation");
     outcome
-}
-
-const fn is_lease_tombstone(error: NativeStateError) -> bool {
-    matches!(
-        error,
-        NativeStateError::Pruned
-            | NativeStateError::Stale
-            | NativeStateError::Reset
-            | NativeStateError::Resize
-            | NativeStateError::WrongGeneration
-    )
 }
 
 mod bootstrap;

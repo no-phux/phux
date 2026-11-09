@@ -27,7 +27,7 @@ use crate::history::HistoryLoadState;
 #[cfg(feature = "native-engine")]
 use crate::engine::ghostty::GhosttyAdapter;
 #[cfg(feature = "native-engine")]
-use crate::engine::ghostty::snapshot::{EncodedSnapshot, SnapshotCaptureLimits};
+use crate::engine::ghostty::snapshot::SnapshotCaptureLimits;
 #[cfg(feature = "native-engine")]
 use phux_protocol::wire::frame::FrameKind;
 
@@ -904,17 +904,12 @@ fn apply_decoded_native_frame(
     reason = "the acceptance test keeps real capture, wire framing, publication, interleaving, and projection in one end-to-end proof"
 )]
 fn real_native_wire_kernel_path_publishes_then_imports_multiple_pages() {
-    let source = native_source::terminal();
-    let capture = EncodedSnapshot::capture(
-        &source,
-        SnapshotCaptureLimits {
-            max_bytes: 64 * 1024 * 1024,
-            max_record_bytes: 64 * 1024,
-            max_records: 10_000,
-            max_rows: 10_000,
-        },
-    )
-    .expect("native capture");
+    let capture = native_source::capture(SnapshotCaptureLimits {
+        max_bytes: 64 * 1024 * 1024,
+        max_record_bytes: 64 * 1024,
+        max_records: 10_000,
+        max_rows: 10_000,
+    });
     let ready = &capture.bytes[..capture.prefix_records.last().unwrap().end];
     let units: Vec<_> = capture
         .history
