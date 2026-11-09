@@ -95,6 +95,8 @@ duration, deadline and success without credential contents. Application launch,
 report and lifecycle deadlines are unchanged; no failed app assertion is retried.
 Command stdout and diagnostic stderr are stored separately so service warnings
 cannot be mistaken for an app-container path or JSON response.
+Report and tree validation reads the retained evidence copies, so the files
+uploaded by CI are the exact documents that passed qualification.
 
 **Evidence boundary:** calling the UIKit input override is not physical
 keyboard, autocorrect, dictation or CJK IME automation. A simulator screenshot
