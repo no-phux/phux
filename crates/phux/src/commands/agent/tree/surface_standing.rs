@@ -188,9 +188,13 @@ mod tests {
         tick(exe, &socket, &[entry("display")], &mut runs, now);
         // `sleep` refuses these arguments and exits; it restarts after a
         // backoff, not at once.
-        let pid = |runs: &BTreeMap<String, Run>| runs["mirror-display"].child.as_ref().map(Child::id);
+        let pid =
+            |runs: &BTreeMap<String, Run>| runs["mirror-display"].child.as_ref().map(Child::id);
         let first = pid(&runs).expect("started");
-        let _ = runs.get_mut("mirror-display").and_then(|r| r.child.as_mut()).map(Child::wait);
+        let _ = runs
+            .get_mut("mirror-display")
+            .and_then(|r| r.child.as_mut())
+            .map(Child::wait);
         tick(exe, &socket, &[entry("display")], &mut runs, now + TICK);
         assert_eq!(pid(&runs), Some(first), "backing off");
         tick(exe, &socket, &[entry("display")], &mut runs, now + TICK * 2);
