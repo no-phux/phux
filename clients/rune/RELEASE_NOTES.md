@@ -1,19 +1,21 @@
-**Phux Rune 0.1.6**: direct iOS preview packaging and steadier qualification.
+**Phux Rune 0.1.7**: the Kitchen view and the newest Rune.
 
-- Native iOS developers can package a device build into a signed ad-hoc IPA
-  and HTTPS install page without TestFlight. Packaging checks the exact
-  bundle, distribution certificate, expiry and every requested device before
-  signing. The private signing key stays in the local keychain.
-- Native simulator qualification now records setup timings, keeps diagnostic
-  output separate, validates its retained evidence and reuses the verified
-  app container instead of looking it up again after launch. Cold container
-  acquisition remains bounded; input, authentication and lifecycle checks
-  are still required.
-- In the desktop-hosted phone form, tap a terminal link to open it; dragging
-  still selects text. Native iOS URL-opening qualification remains separate.
+- **Open Kitchen** from the palette shows every agent as a chef on its
+  machine's line: working chefs cook, one that needs you rings the bell at
+  the pass, finished ones plate up and idle ones take a break. Lines keep a
+  fixed order, so they never swap when an agent starts needing you. Press a
+  chef to select it; press it again or Return to show its terminal.
+- Text fields (the palette, find, rename, Settings search and the inbox
+  reply) undo the way a browser's do: a run of typing, line breaks and
+  deletions is one step, and moving the caret or changing the selection
+  starts the next.
+- Tab with nothing focused continues from the control you last used rather
+  than the start of the window.
+- Built on Rune `a8a5351`. Desktop and desktop-hosted phone layouts draw as
+  they did in 0.1.6.
 
 The downloadable release is still the desktop client (macOS arm64 and Linux
-x86_64/arm64). iOS installation requires an Apple profile covering the actual
-phone and the user's approval. Packaging is not physical-device, keyboard/IME,
-VoiceOver or TestFlight qualification. The embedded late-frame presentation
-limitation documented in 0.1.5 is unchanged.
+x86_64/arm64). Native iOS remains a simulator-qualified build with signed
+ad-hoc packaging; it is not physical-device, keyboard/IME, VoiceOver or
+TestFlight qualification. The embedded late-frame presentation limitation
+documented in 0.1.5 is unchanged.
