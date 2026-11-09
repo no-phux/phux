@@ -146,12 +146,16 @@ pub(crate) fn admission_ends(cert: &Path) -> Option<i64> {
     })
 }
 
-/// Whether the certificate at `cert` lives for less than the renewal
-/// window: its issuer renews it on its own schedule (an organization's
-/// short-lived certificate), so only its expiry is worth a warning.
+/// Whether the certificate at `cert` was issued elsewhere (its `notAfter`
+/// is not a server's midnight rounding) for less than the renewal window:
+/// its issuer renews it on its own schedule (an organization's short-lived
+/// certificate), so only its expiry is worth a warning.
 fn short_lived(cert: &Path) -> bool {
-    phux_server::workload::stored_certificate_validity(cert)
-        .is_some_and(|(not_before, not_after)| not_after - not_before < RENEW_WITHIN_SECONDS)
+    phux_server::workload::stored_certificate_validity(cert).is_some_and(
+        |(not_before, not_after)| {
+            not_after % SECONDS_PER_DAY != 0 && not_after - not_before < RENEW_WITHIN_SECONDS
+        },
+    )
 }
 
 /// Why the client certificate at `cert` should be renewed at `now`
