@@ -58,6 +58,7 @@ mod scope_matrix;
 mod test_support;
 mod workload_auth;
 
+pub use apps::terminal::standing::MirrorSource;
 pub use commands::*;
 pub(crate) use connections::*;
 pub use process_env::ServerEnv;

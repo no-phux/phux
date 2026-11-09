@@ -14,6 +14,7 @@ pub mod distro;
 pub mod integration;
 pub mod keybind;
 pub mod loader;
+pub mod mirror;
 pub mod overlay;
 pub mod plugin;
 pub mod production;
@@ -34,6 +35,7 @@ pub mod widget;
 
 pub use check::{CheckReport, Fault, Finding};
 pub use connector::ConnectorConfigEntry;
+pub use mirror::MirrorConfigEntry;
 use phux_config_core::layer;
 pub use phux_config_core::{
     ConfigError, ConfigProvenance, KeyOrigin, LayerSource, MAX_EXTENDS_DEPTH, OrganizeCfg,

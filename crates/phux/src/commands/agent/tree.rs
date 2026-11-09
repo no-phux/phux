@@ -32,7 +32,6 @@ mod page;
 mod page_input;
 mod page_mirror;
 mod parent_watch;
-#[cfg(any(target_os = "macos", target_os = "linux"))]
 mod redial;
 mod surface;
 #[cfg(any(target_os = "macos", target_os = "linux", test))]

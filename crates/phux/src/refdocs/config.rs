@@ -101,6 +101,13 @@ const SECTIONS: &[Section] = &[
                   CA pin, and the enrolled identity's paths.",
     },
     Section {
+        key: "mirrors",
+        header: "[[mirrors]]",
+        summary: "Displays and windows the server keeps mirrored, each in \
+                  its own `mirror-*` session, restarted with backoff and \
+                  live-reloaded (Linux; macOS skips them).",
+    },
+    Section {
         key: "remote",
         header: "[[remote]]",
         summary: "Remote phux servers this machine attaches to, written by \
