@@ -36,7 +36,7 @@ pub(super) fn edit(edit: &mut TextEdit, action: Action) -> Result<(), String> {
             let a = sanitize(edit, &text[..a]).len();
             let f = sanitize(edit, &text[..f]).len();
             edit.undo_group(|edit| {
-                edit.preedit = None;
+                edit.cancel_composition();
                 if edit.text != normalized {
                     edit.set_selection(0, edit.text.len());
                     edit.paste(&normalized);
@@ -69,7 +69,7 @@ pub(super) fn edit(edit: &mut TextEdit, action: Action) -> Result<(), String> {
 
 fn sanitize(template: &TextEdit, text: &str) -> String {
     let mut probe = template.clone();
-    probe.preedit = None;
+    probe.cancel_composition();
     probe.set_selection(0, probe.text.len());
     probe.paste(text);
     std::mem::take(&mut probe.text)

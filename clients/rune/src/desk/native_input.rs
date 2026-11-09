@@ -102,7 +102,7 @@ impl Bridge {
             if let Some(Target::Field(field, _)) = &self.target
                 && let Some(edit) = field.edit_mut(d)
             {
-                edit.preedit = None;
+                edit.cancel_composition();
             }
             d.preedit = None;
             if let Some(phone) = &mut d.phone {
@@ -303,7 +303,7 @@ fn dismiss(rt: &mut Runtime<Desk>, target: &Target) {
             && let Some(edit) = field.edit_mut(d)
         {
             edit.focused = false;
-            edit.preedit = None;
+            edit.cancel_composition();
         }
         if let Some(phone) = &mut d.phone {
             phone.keyboard = false;
