@@ -26,6 +26,7 @@ Sessions:
   ls            List sessions [aliases: list]
   kill          Kill a session, group, pane, or the server
   detach        Detach clients from a session
+  native        Run one terminal in a native emulator window
   rename        Rename a session or a pane
   project       Open a project session from a trusted recipe [aliases: p]
   rm            Remove a stopped pane, or delete an empty session
@@ -3762,6 +3763,67 @@ Flags:
 
 Global flags:
       --socket <PATH>     Server socket to dial (default: `$PHUX_SOCKET`)
+```
+
+## `phux native`
+
+```text
+Run one terminal in a native emulator window
+
+Ctrl-] detaches; the server-owned process survives.
+
+Usage: phux native <SUBCOMMAND>
+
+Commands:
+  attach  Reattach an exact local terminal; never selects a focused pane.
+  create  Create a distinct terminal in a shared persistent session and display
+          it.
+  help    Print this message or the help of the given subcommand(s)
+
+Flags:
+  -h, --help           Print help
+
+Global flags:
+      --socket <PATH>  Server socket to dial (default: `$PHUX_SOCKET`)
+```
+
+## `phux native attach`
+
+```text
+Reattach an exact local terminal; never selects a focused pane.
+
+Usage: phux native attach <TARGET>
+
+Arguments:
+  <TARGET>  Exact terminal address, as printed by `phux ls omarchy` (for example
+            @3).
+
+Flags:
+  -h, --help           Print help
+
+Global flags:
+      --socket <PATH>  Server socket to dial (default: `$PHUX_SOCKET`)
+```
+
+## `phux native create`
+
+```text
+Create a distinct terminal in a shared persistent session and display it.
+
+Usage: phux native create [-s --session <SESSION>] [-c --cwd <CWD>] [COMMAND]…
+
+Arguments:
+  [COMMAND]…  Program and arguments; omitted selects the server's shell.
+
+Flags:
+  -s, --session <SESSION>  Shared session, created persistently if missing.
+                           (default: omarchy)
+  -c, --cwd <CWD>          Working directory (defaults to this client's current
+                           directory).
+  -h, --help               Print help
+
+Global flags:
+      --socket <PATH>      Server socket to dial (default: `$PHUX_SOCKET`)
 ```
 
 ## `phux new`

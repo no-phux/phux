@@ -31,6 +31,14 @@ explains when you see it.
 output; it is not a backup of the process. `phux play` plays one back in a
 new pane and never overwrites an existing one.
 
+## Native terminal windows
+
+`phux native create` displays a distinct terminal in a native emulator window,
+without the TUI sidebar, tabs, status bar, or pane layout. The default shared
+session is `omarchy`; the window manager tiles the windows.
+[Native terminal windows](./native-terminal.md) covers creation, reattachment,
+detach, and the client's current limits.
+
 ## Desktop
 
 The desktop app is [Phux Rune](../clients/rune/README.md), an alpha client

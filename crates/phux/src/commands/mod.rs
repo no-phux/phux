@@ -70,6 +70,7 @@ pub(crate) mod mcp;
 pub(crate) mod mission;
 pub(crate) mod mission_project;
 pub(crate) mod mission_start;
+pub(crate) mod native_terminal;
 pub(crate) mod new;
 pub(crate) mod omarchy;
 pub(crate) mod org;

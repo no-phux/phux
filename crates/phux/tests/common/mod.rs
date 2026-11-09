@@ -401,11 +401,20 @@ fn isolated_attach_command(
     config: &Path,
     configure: impl FnOnce(&Path, &mut portable_pty::CommandBuilder),
 ) -> portable_pty::CommandBuilder {
+    isolated_client_command("attach", args, config, configure)
+}
+
+fn isolated_client_command(
+    verb: &str,
+    args: &[&str],
+    config: &Path,
+    configure: impl FnOnce(&Path, &mut portable_pty::CommandBuilder),
+) -> portable_pty::CommandBuilder {
     let mut command = portable_pty::CommandBuilder::new(crate::runner::phux_bin());
     for key in ambient::ambient_phux_keys() {
         command.env_remove(key);
     }
-    command.arg("attach");
+    command.arg(verb);
     command.args(args);
     command.env("SHELL", "/bin/sh");
     command.env("TERM", "xterm-256color");
@@ -435,6 +444,7 @@ pub struct PtyAttach {
     writer: Box<dyn std::io::Write + Send>,
     transcript: Arc<Mutex<Vec<u8>>>,
     pub config: tempfile::TempDir,
+    master: Box<dyn portable_pty::MasterPty + Send>,
 }
 
 impl PtyAttach {
@@ -473,6 +483,16 @@ impl PtyAttach {
         (cols, rows): (u16, u16),
         configure: impl FnOnce(&Path, &mut portable_pty::CommandBuilder),
     ) -> Self {
+        Self::start_client("attach", args, (cols, rows), configure)
+    }
+
+    /// Run a different interactive client mode with the same PTY isolation.
+    pub fn start_client(
+        verb: &str,
+        args: &[&str],
+        (cols, rows): (u16, u16),
+        configure: impl FnOnce(&Path, &mut portable_pty::CommandBuilder),
+    ) -> Self {
         use std::io::Read as _;
 
         let pair = portable_pty::native_pty_system()
@@ -484,7 +504,7 @@ impl PtyAttach {
             })
             .expect("open attach PTY");
         let config = tempfile::tempdir().expect("isolated config dir");
-        let command = isolated_attach_command(args, config.path(), configure);
+        let command = isolated_client_command(verb, args, config.path(), configure);
         let child = pair
             .slave
             .spawn_command(command)
@@ -510,7 +530,33 @@ impl PtyAttach {
             writer,
             transcript,
             config,
+            master: pair.master,
         }
+    }
+
+    pub fn terminal_is_cooked(&self) -> bool {
+        use std::os::fd::BorrowedFd;
+        let raw = self.master.as_raw_fd().expect("master descriptor");
+        // SAFETY: the master remains owned by self for this borrow.
+        let fd = unsafe { BorrowedFd::borrow_raw(raw) };
+        let mode = rustix::termios::tcgetattr(fd).expect("client terminal modes");
+        mode.local_modes
+            .contains(rustix::termios::LocalModes::ECHO | rustix::termios::LocalModes::ICANON)
+    }
+
+    pub fn resize(&self, cols: u16, rows: u16) {
+        self.master
+            .resize(portable_pty::PtySize {
+                rows,
+                cols,
+                pixel_width: 0,
+                pixel_height: 0,
+            })
+            .expect("resize client PTY");
+    }
+
+    pub fn signal(&self, signal: i32) {
+        self::signal(self.child.process_id().expect("client pid"), signal).expect("signal client");
     }
 
     pub fn send(&mut self, bytes: &[u8]) {
@@ -537,54 +583,4 @@ impl Drop for PtyAttach {
 }
 
 #[cfg(test)]
-mod tests {
-    use std::path::PathBuf;
-
-    use super::AutoSpawnedServer;
-
-    /// The backstop must be the variable the server actually reads.
-    #[test]
-    fn the_idle_backstop_names_the_variable_the_server_reads() {
-        let (key, value) = AutoSpawnedServer::IDLE_BACKSTOP;
-        assert_eq!(key, phux::AUTO_SPAWN_IDLE_ENV);
-        // The justfile's `AUTO_SPAWN_BACKSTOP` and docs/reference spell it
-        // out, so a rename is a documentation change too, not a silent one.
-        assert_eq!(key, "PHUX_AUTO_SPAWN_EXIT_AFTER_IDLE");
-        assert!(
-            value
-                .parse::<u64>()
-                .is_ok_and(|secs| (1..=86_400).contains(&secs)),
-            "the backstop must be in the range the server accepts: {value}"
-        );
-    }
-
-    /// An unused guard must not hang or spawn `phux` looking for a daemon
-    /// that was never started. Cleanup is a no-op only when there is no pid
-    /// *and* no socket file — not whenever the pid is unknown.
-    #[test]
-    fn unused_guard_drop_does_not_require_a_pid() {
-        let server = AutoSpawnedServer::new(
-            "/nonexistent/phux-e4qx",
-            PathBuf::from("/nonexistent/phux-e4qx-absent.sock"),
-        );
-        drop(server);
-    }
-
-    /// A caller that clears the environment must not reopen the release check.
-    /// The opt-out is sealed after `configure`, which is what
-    /// [`super::PtyAttach::start_dialing`] spawns.
-    #[test]
-    fn attach_command_keeps_the_release_check_off_after_env_clear() {
-        let config = tempfile::tempdir().expect("config");
-        let command =
-            super::isolated_attach_command(&["work"], config.path(), |_config, command| {
-                command.env_clear();
-                command.env("PATH", "/usr/bin:/bin");
-            });
-        assert_eq!(
-            command.get_env(super::ambient::NO_UPDATE_CHECK_ENV),
-            Some(std::ffi::OsStr::new(super::ambient::NO_UPDATE_CHECK_VALUE)),
-            "env_clear in configure must not drop the release-check opt-out"
-        );
-    }
-}
+mod tests;

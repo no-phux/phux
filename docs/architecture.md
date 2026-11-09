@@ -46,9 +46,11 @@ release.
 
 The wire is asymmetric. Server to client, terminal content is the raw VT
 byte stream from the PTY, forwarded as `RESOURCE_OUTPUT`, with a bootstrap
-sequence to bring a fresh replica up to date. Each rendering client runs
-its own libghostty replica and feeds it those bytes. Client to server, input
-is structured: key, mouse, focus, and paste events with libghostty's atoms,
+sequence to bring a fresh replica up to date. The TUI and Rune run
+their own libghostty replicas and feed them those bytes. The
+[native terminal client](./native-terminal.md) negotiates synthesized VT/raw
+and prints one resource stream directly to its host terminal emulator.
+Client to server, input is structured: key, mouse, focus, and paste events with libghostty's atoms,
 encoded to bytes by the server against the terminal's current modes. Both
 ends therefore agree on what a terminal is without either trusting the
 other's rendering.
@@ -93,7 +95,7 @@ Cargo manifests define the actual edges.
 | `phux-terminal-api` | engine-independent Terminal contracts: launch intent, factory, input and presentation ports, opaque captures and report types; no VT or PTY implementation |
 | `phux-server` | the daemon: hosts resources and serves them to clients; links no VT library and no PTY directly |
 | `phux-agent-host` | guardian process for native agent sessions over ACP |
-| `phux-tui` | the terminal UI: attach driver, ratatui chrome, overlays; the only crate that links ratatui |
+| `phux-tui` | the terminal UI: attach driver, ratatui chrome, overlays; also the native VT driver sharing terminal restoration; the only crate that links ratatui |
 | `phux-mcp` | the `phux-mcp` binary: MCP over stdio |
 | `phux-server-testkit` | fixtures for server wire tests; dev-only |
 | `phux` | the `phux` binary: argument parsing and dispatch |

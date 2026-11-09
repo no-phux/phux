@@ -13,6 +13,9 @@ a coding agent and whether it is waiting on you. Another machine is one
 [Docs](./docs/README.md) · [Help](#help) · [Releases](https://github.com/no-phux/phux/releases) ·
 [![CI](https://github.com/no-phux/phux/actions/workflows/ci.yml/badge.svg)](https://github.com/no-phux/phux/actions/workflows/ci.yml)
 
+For one server-owned shell per native terminal window, without TUI chrome,
+see [native terminal windows](docs/native-terminal.md).
+
 ## Install
 
 ### CLI and terminal UI
