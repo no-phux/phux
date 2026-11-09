@@ -118,6 +118,7 @@ fn kind(intent: &DocumentInput) -> (&'static str, usize) {
             "clipboard_text",
             text.as_ref().map_or(0, |text| text.chars().count()),
         ),
+        DocumentInput::Activate { .. } => ("activate", 0),
     }
 }
 
