@@ -105,9 +105,9 @@
 # surface mirror` by hand. Each entry runs that mirror in its own session
 # (`mirror-display`, `mirror-display-hdmi-a-1`), restarted with backoff
 # when it exits and recreated after a restart; `phux config reload` adds
-# and removes them. Linux (Hyprland, Sway) only: on macOS the server cannot
-# hold Screen Recording access and skips them with a warning. An older
-# server refuses a config with this table, so upgrade the server first.
+# and removes them. On macOS the server cannot hold Screen Recording
+# access, so Rune runs the mirrors into those sessions while it is open.
+# An older server refuses a config with this table, so upgrade it first.
 #
 # [[mirrors]]
 # target = "display"          # or "display:OUTPUT", "App", "App:title"

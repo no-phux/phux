@@ -82,6 +82,15 @@ pub(crate) enum SurfaceAction {
         #[usage(long)]
         json: bool,
     },
+    /// Run the `[[mirrors]]` entries as this process's children, each into
+    /// its `mirror-<target>` session, restarting any that exit. Rune runs
+    /// this on macOS, where the server's own children cannot hold Screen
+    /// Recording access; one runs per server.
+    Standing {
+        /// Exit once this process is gone, as the app that launched it passes its own.
+        #[usage(long, value_name = "PID")]
+        parent_pid: Option<u32>,
+    },
     /// Write every image as it arrives, each replacing the file.
     Follow {
         /// The surface.
@@ -138,6 +147,10 @@ pub(crate) fn run_surface(action: &SurfaceAction, socket: Option<PathBuf>) -> Ex
                 }),
                 Err(code) => code,
             }
+        }
+        SurfaceAction::Standing { parent_pid } => {
+            super::parent_watch::exit_with(*parent_pid);
+            super::surface_standing::run_standing(socket)
         }
         SurfaceAction::Follow {
             target,

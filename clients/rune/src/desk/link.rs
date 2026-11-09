@@ -293,6 +293,7 @@ impl Desk {
         // A failed search says nothing about where the server is.
         if let Ok(socket) = &found.socket {
             self.updater.target = found.phux.clone().zip(Some(socket.clone()));
+            crate::standing::follow(found.phux.as_ref(), socket);
             self.launch.socket = found.socket.clone();
         }
         self.updater
