@@ -1,10 +1,11 @@
 //! The guard's third outcome, Hold (ADR-0128, `docs/agents.md#safety`): for
-//! a request [`super::enforce`] admitted, whether a `SIGNAL` it needs is
-//! reachable only through a holding clause. A held command waits for a
-//! decision; a held `SIGNAL` on any other frame is refused.
+//! a request [`super::enforce`] admitted, whether a verb it needs is
+//! reachable only through a holding clause (`?signal`, `?terminate`, or
+//! `?input` on a control selector). A held command waits for a decision; a
+//! held verb on any other frame is refused.
 
 use phux_protocol::ids::{ApprovalId, ResourceId as WireResourceId};
-use phux_protocol::kinds::{Classification, Verb, Verbs};
+use phux_protocol::kinds::{Classification, Subject, Verb, Verbs};
 use phux_protocol::wire::frame::FrameKind;
 
 use super::enforce::{Denial, Need, Request, classify, covers_all, needs_for, unwrap_command};
@@ -12,12 +13,6 @@ use super::{Authority, ConnectionGrant};
 use crate::state::{ClientId, PendingApproval, ServerState};
 
 const SIGNAL: Verbs = Verbs::of(&[Verb::Signal]);
-
-/// A held `SIGNAL` on a request with no result to defer.
-const HELD: Denial = Denial {
-    verbs: SIGNAL,
-    subject: "held",
-};
 
 /// A decision by a connection that subscribed a held subject as a `VIEWER`.
 const VIEWER_DECISION: Denial = Denial {
@@ -38,7 +33,7 @@ pub enum Admission {
 ///
 /// # Errors
 ///
-/// A held `SIGNAL` on anything but a nested command.
+/// A held verb on anything but a nested command.
 pub(super) fn admission(
     s: &ServerState,
     client: ClientId,
@@ -48,7 +43,11 @@ pub(super) fn admission(
     let Authority::Scoped { effective, .. } = &grant.authority else {
         return Ok(Admission::Run);
     };
-    if !effective.holds_any() {
+    let held = effective
+        .clauses()
+        .iter()
+        .fold(Verbs::EMPTY, |held, clause| held.union(clause.held));
+    if held.is_empty() {
         return Ok(Admission::Run);
     }
     let holdable = matches!(request, Request::Command(_));
@@ -56,7 +55,9 @@ pub(super) fn admission(
     let Classification::Allow { verbs, subject } = classify(request) else {
         return Ok(Admission::Run);
     };
-    if !verbs.contains(Verb::Signal) {
+    // A decision needs the held command's own verbs, whatever its row says.
+    let decides = matches!(subject, Subject::HeldAction);
+    if !decides && verbs.iter().all(|verb| !held.contains(verb)) {
         return Ok(Admission::Run);
     }
     let needs = needs_for(s, client, subject, verbs, request).unwrap_or_default();
@@ -66,19 +67,23 @@ pub(super) fn admission(
     if holdable {
         Ok(Admission::Hold)
     } else {
-        Err(HELD)
+        Err(Denial {
+            verbs: if decides { SIGNAL } else { verbs },
+            subject: "held",
+        })
     }
 }
 
-/// `SIGNAL` on every subject of the held command; `None` if no approval
-/// matches.
+/// The held command's own verbs on every subject it names; `None` if no
+/// approval matches. A decider needs them un-held: only someone who could
+/// run the action may release it.
 pub(super) fn held_action_needs(s: &ServerState, request: Request<'_>) -> Option<Vec<Need>> {
     let pending = decided_approval(s, request)?;
     let command = Request::Command(&pending.command);
-    let Classification::Allow { subject, .. } = classify(command) else {
+    let Classification::Allow { verbs, subject } = classify(command) else {
         return None;
     };
-    needs_for(s, pending.requester, subject, SIGNAL, command)
+    needs_for(s, pending.requester, subject, verbs, command)
 }
 
 /// A `VIEWER` on a held subject cannot decide the action (ADR-0127).

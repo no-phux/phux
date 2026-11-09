@@ -51,19 +51,30 @@ pub(super) fn record_for(s: &ServerState, client_id: ClientId) -> Option<Vec<u8>
         s.ssh_origin(client_id),
         serving_host(),
     );
-    let grant = s
-        .connection_grant(client_id)
-        .map_or_else(Vec::new, |grant| grant_entries(&grant.authority));
-    serde_json::to_vec(&RecordWithGrant { record, grant }).ok()
+    let connection = s.connection_grant(client_id);
+    let grant = connection.map_or_else(Vec::new, |grant| grant_entries(&grant.authority));
+    let on_behalf_of = connection
+        .and_then(crate::policy::ConnectionGrant::on_behalf_of)
+        .map(|principal| crate::policy::principal_name(principal).to_owned());
+    // C1 hook: add `on_behalf_of_subject` from that credential's registry `subject` here.
+    serde_json::to_vec(&RecordWithGrant {
+        record,
+        grant,
+        on_behalf_of,
+    })
+    .ok()
 }
 
-/// The record plus `grant`, the additive field `docs/remote.md#who-can-do-what` adds
-/// in schema 1: what this connection may do, in the registry grammar.
+/// The record plus two additive schema-1 fields: `grant`, what this
+/// connection may do in the registry grammar (`docs/remote.md#who-can-do-what`),
+/// and `on_behalf_of`, who delegated a delegated key (`owner` or the
+/// minting credential id), `null` otherwise.
 #[derive(serde::Serialize)]
 struct RecordWithGrant {
     #[serde(flatten)]
     record: WhoamiRecord,
     grant: Vec<GrantEntry>,
+    on_behalf_of: Option<String>,
 }
 
 /// One grant: its verbs (lowercase, in bit order), its selector, and the
@@ -294,6 +305,41 @@ mod tests {
 
     fn serving_uid() -> u32 {
         nix::unistd::geteuid().as_raw()
+    }
+
+    /// A delegated key reports who delegated it; any other connection
+    /// reports `null`.
+    #[test]
+    fn a_delegated_key_reports_on_behalf_of() {
+        use crate::policy::ConnectionGrant;
+        use phux_core::PrincipalId;
+        use phux_protocol::scope::TerminalScopeSet;
+
+        let mut state = ServerState::new();
+        let client = ClientId(7);
+        state.set_peer_identity(client, peer(TransportType::UnixSocket, serving_uid()));
+        state.set_connection_grant(client, ConnectionGrant::owner());
+        let read = |state: &ServerState| -> serde_json::Value {
+            serde_json::from_slice(&record_for(state, client).expect("a record")).expect("json")
+        };
+        assert_eq!(read(&state)["on_behalf_of"], serde_json::Value::Null);
+
+        let delegated = |by: PrincipalId| {
+            ConnectionGrant::delegated(
+                TerminalScopeSet::parse_all(&["observe@group:1"]).expect("scope"),
+                PrincipalId::Credential("delegated:00".to_owned()),
+                by,
+                Utc::now() + chrono::Duration::hours(1),
+            )
+            .expect("grant")
+        };
+        state.set_connection_grant(client, delegated(PrincipalId::Owner));
+        assert_eq!(read(&state)["on_behalf_of"], "owner");
+        state.set_connection_grant(
+            client,
+            delegated(PrincipalId::Credential("sha256:abc".to_owned())),
+        );
+        assert_eq!(read(&state)["on_behalf_of"], "sha256:abc");
     }
 
     /// The bridge, a same-uid Unix-socket peer, relabels its route.

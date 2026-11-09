@@ -116,4 +116,5 @@ include!("tests/snapshots_events.rs");
 mod delegation;
 include!("tests/keyed_selectors.rs");
 include!("tests/control_input.rs");
+include!("tests/holds.rs");
 include!("tests/watch_documents.rs");

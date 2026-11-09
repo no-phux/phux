@@ -68,7 +68,9 @@ relied on it, even when a broader grant remains.
 | `input@resource:KEY` | That one document, if it has a class |
 | `global`, `host`, `host:NAME`, `group`, `session`, `terminal` grants, or a grant on the parent pane | Nothing |
 
-A document with no class takes input only from the owner socket. A hub
+`?input@CLASS` (or `?input@CLASS:HOST`) holds each such input for approval
+instead ([Safety](./agents.md#safety)). A document with no class takes input
+only from the owner socket. A hub
 authorizes input to a satellite's document with the `CLASS:HOST` forms and
 stamps the classes it allowed on the relayed command; the satellite, which
 knows the document's class, refuses one outside them, and checks the hub's

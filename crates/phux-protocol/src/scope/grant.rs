@@ -6,7 +6,7 @@ use super::verbs::{
     all_verbs, checked_verbs, merged_held, parse_schema_verbs, upgraded, write_verbs,
 };
 use super::{MAX_GRANTS, ScopeError, ScopeGrammarError, ScopeSchema};
-use crate::kinds::Verbs;
+use crate::kinds::{Verb, Verbs};
 use std::fmt;
 
 // -----------------------------------------------------------------------------
@@ -21,8 +21,8 @@ pub struct ScopeGrant {
     /// Whose resources it covers.
     pub selector: Selector,
     /// The verbs of [`Self::verbs`] held for approval (`?signal`,
-    /// ADR-0128). Only `SIGNAL` may be held. Not part of the canonical
-    /// image: a decoded grant holds nothing.
+    /// `?terminate`, `?input` on a control selector; ADR-0128). Not part of
+    /// the canonical image: a decoded grant holds nothing.
     pub held: Verbs,
 }
 
@@ -47,9 +47,13 @@ impl ScopeGrant {
     pub fn parse_versioned(text: &str, schema: ScopeSchema) -> Result<Self, ScopeGrammarError> {
         let (verbs, selector) = text.split_once('@').ok_or(ScopeGrammarError::Shape)?;
         let (verbs, held) = parse_schema_verbs(verbs, schema)?;
+        let selector = Selector::parse(selector)?;
+        if held.contains(Verb::Input) && !matches!(selector, Selector::Control(..)) {
+            return Err(ScopeGrammarError::UnholdableVerb);
+        }
         Ok(Self {
             verbs: upgraded(verbs, held, schema),
-            selector: Selector::parse(selector)?,
+            selector,
             held,
         })
     }
