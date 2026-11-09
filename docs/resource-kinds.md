@@ -117,7 +117,7 @@ receives its input.
 
 `phux upgrade` carries every document whose parent pane crosses: same id,
 same record, its newest document and `control`, with `producer: "gone"`.
-A running `phux agent surface mirror` or `phux agent tree mirror` redials
+A running `phux agent surface|tree|page mirror` redials
 when its connection closes (backing off, for up to a minute) and publishes
 again, which re-binds it, so viewers keep the same resource. A surface
 capture that yields no frame (the display asleep, the session locked, a
@@ -139,6 +139,27 @@ A mirror can also run as the child of the app that holds the macOS grants
 --parent-pid PID` exits within a second of process `PID` ending, so a
 parent killed without dropping its children leaves no producer behind.
 Rune does not run mirrors as its own children yet.
+
+## Standing mirrors
+
+A host can keep displays and windows mirrored without anyone running a
+mirror by hand. Each `[[mirrors]]` entry in `config.toml` names a
+`phux agent surface mirror` target (`display`, `display:OUTPUT`, `App`,
+`App:title`), with optional `format`, `quality`, `max-width` and
+`interval-ms`. The server runs each in a pane of its own ephemeral
+session, `mirror-` plus the target (`mirror-display`,
+`mirror-display-hdmi-a-1`). The pane is the surface's parent, so clients
+list the surface under that session and a `display` or `window` grant
+applies as usual. A mirror that exits is restarted after a backoff (1 s,
+doubling to 60 s; a run over a minute resets it). `phux upgrade` keeps the
+pane and the mirror re-adopts its surface. A cold start recreates it.
+`phux config reload` starts new entries, restarts changed ones and closes
+the `mirror-*` sessions no entry names. Do not name sessions of your own
+`mirror-*`.
+
+Linux only (Hyprland, Sway). On macOS a server's children cannot hold
+Screen Recording, so the server logs a warning and skips the table. An
+older server refuses a config that has it, so upgrade first.
 
 ## Applications
 

@@ -11,9 +11,9 @@ use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    OrganizeCfg, connector::ConnectorConfigEntry, plugin::PluginConfigEntry,
-    project::ProjectConfigEntry, remote::RemoteConfigEntry, satellite::SatelliteConfigEntry,
-    uplink::UplinkConfigEntry,
+    OrganizeCfg, connector::ConnectorConfigEntry, mirror::MirrorConfigEntry,
+    plugin::PluginConfigEntry, project::ProjectConfigEntry, remote::RemoteConfigEntry,
+    satellite::SatelliteConfigEntry, uplink::UplinkConfigEntry,
 };
 
 /// Top-level config (`docs/config.md`).
@@ -43,6 +43,8 @@ pub struct Config {
     /// Hubs this server dials out to as a satellite (ADR-0182), written by
     /// `phux host join`.
     pub uplink: Vec<UplinkConfigEntry>,
+    /// Displays and windows the server keeps mirrored (`[[mirrors]]`).
+    pub mirrors: Vec<MirrorConfigEntry>,
     /// Remote servers this machine attaches to (ADR-0055), written by
     /// `phux host add`.
     pub remote: Vec<RemoteConfigEntry>,

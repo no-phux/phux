@@ -25,6 +25,7 @@ The configuration surface of `~/.config/phux/config.toml`. The loader layers you
 | `[[satellites]]` | Federation satellites a hub routes to: name, endpoint, token-file path, certificate pin, and the client certificate a paired satellite requires. |
 | `[[connector]]` | Outbound relay links this server supervises: relay endpoint, token-file path, and certificate pin. |
 | `[[uplink]]` | Hubs this server dials out to as a satellite, written by `phux host join`: satellite name, hub endpoint, the hub's CA pin, and the enrolled identity's paths. |
+| `[[mirrors]]` | Displays and windows the server keeps mirrored, each in its own `mirror-*` session, restarted with backoff and live-reloaded (Linux; macOS skips them). |
 | `[[remote]]` | Remote phux servers this machine attaches to, written by `phux host add` and resolved by `phux attach <name>`. |
 | `[[projects]]` | Named projects `phux project open <name>` resolves: a checkout path and an optional out-of-repo recipe. |
 | `[theme]` | Free-form color slots (`slot = "color"`) consumed by the renderer. |
@@ -469,6 +470,22 @@ exclusive = true
 # ca-fingerprint = "sha256:..."
 # client-cert = "/home/me/.local/state/phux/uplinks/uplink.sandbox.0123456789abcdef.pem"
 # client-key = "/home/me/.local/state/phux/uplinks/uplink.sandbox.0123456789abcdef.key"
+
+# Standing mirrors: displays and windows this server keeps mirrored, so
+# every client finds the host's screens without anyone running `phux agent
+# surface mirror` by hand. Each entry runs that mirror in its own session
+# (`mirror-display`, `mirror-display-hdmi-a-1`), restarted with backoff
+# when it exits and recreated after a restart; `phux config reload` adds
+# and removes them. Linux (Hyprland, Sway) only: on macOS the server cannot
+# hold Screen Recording access and skips them with a warning. An older
+# server refuses a config with this table, so upgrade the server first.
+#
+# [[mirrors]]
+# target = "display"          # or "display:OUTPUT", "App", "App:title"
+# format = "jpeg"             # png (default) or jpeg
+# quality = 70                # 1-100, jpeg only
+# max-width = 1920
+# interval-ms = 1000
 
 # Remote phux servers this machine attaches TO: `phux attach
 # mini` resolves the endpoint, certificate pin, and token recorded here, so

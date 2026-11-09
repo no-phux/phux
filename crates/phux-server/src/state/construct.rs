@@ -33,6 +33,7 @@ impl ServerState {
             uplinks: crate::uplink::Uplinks::default(),
             hook_dispatcher: None,
             plugin_startup: None,
+            standing_mirrors: None,
             push_grants: crate::push::PushGrants::default(),
             // Mints this process's incarnation and starts the idle clock —
             // see `Lifecycle::new`.

@@ -198,6 +198,9 @@ pub struct ServerState {
     /// `[[startup]]` supervisor. `None` until the accept loop's neighbor
     /// task is installed, and on servers that were not given a catalog.
     plugin_startup: Option<crate::plugin_startup::StartupHandle>,
+    /// Rung on a config reload to re-read `[[mirrors]]`; `None` until the
+    /// standing-mirror supervisor is installed.
+    standing_mirrors: Option<std::sync::Arc<tokio::sync::Notify>>,
     /// Who wrote each `phux.push/v1/<device>` grant, and what was last
     /// pushed to it (ADR-0155).
     push_grants: crate::push::PushGrants,
