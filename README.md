@@ -105,7 +105,7 @@ client leaves the shell running; attach to the printed session to take over.
 | Run agents in isolated worktrees | [Missions](./docs/organization.md#work-and-missions) |
 | Work on another machine | [Remote machines](./docs/remote.md) |
 | Script a terminal or expose agent tools | [Scripting](./docs/scripting.md) · [MCP](./docs/agents.md#mcp) |
-| See agent plan usage and limits | [Plan usage](./docs/agents.md#plan-usage) |
+| See agent plan usage and limits | [Plan usage](./docs/troubleshooting.md#plan-usage) |
 
 ## For agents
 
