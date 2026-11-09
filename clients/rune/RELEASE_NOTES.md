@@ -1,16 +1,16 @@
-**Phux Rune 0.1.3**: a native iOS foundation, plus the bare terminal window.
+**Phux Rune 0.1.4**: current with Rune dev `3ff3cc6`, plus Pitch.
 
-- The phone view now runs in a native UIKit/Metal host with system text input,
-  safe-area and keyboard layout, and authenticated QUIC/WSS connections.
-  Enrollment uses a device-held signing key and Keychain credentials. CI
-  builds and qualifies the simulator app against a paired test server.
-- Native keyboard accessories target the active editor, including agent
-  questions; terminal Ctrl/Alt/Shift latches work with system input. Glass
-  controls keep their contrast over dark terminal backgrounds.
-- The desktop's hidden bare-window chord drops into the terminal UI without
-  the surrounding chrome.
+- Open **Pitch** from the palette to see agents as a football squad:
+  working players drill and pass, waiting players raise a hand, and finished
+  players celebrate. Select a player, then press again or Return to open
+  its terminal.
+- Upstream's desktop host now bounds overdue timer frames when a covered
+  Wayland surface never receives its redraw callback, avoiding a busy loop.
+- Motion started by a slow desktop/overlay frame no longer jumps ahead on
+  the next frame. Existing running motion retains real elapsed time.
+- Rune's consecutive fold rows now open and close as one block.
 
-The desktop packages remain the downloadable release. The native iOS work
-is a simulator-qualified foundation, not a provisioned device app or
-TestFlight distribution. Physical keyboard/IME, device and VoiceOver
-qualification remain in progress; see `clients/rune/ios/README.md`.
+The native UIKit host still passes paired-connection, input and lifecycle
+checks. The new private late-frame presentation hook is not yet called by
+upstream's embedded host, so this release does not claim that timing fix
+for native iOS. Device/TestFlight distribution remains separate work.
