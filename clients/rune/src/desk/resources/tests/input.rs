@@ -54,23 +54,15 @@ fn a_controlled_surface_takes_a_click_and_keys_until_refused() {
     for (key, mods) in [
         (Key::Text("h".into()), Mods::default()),
         (Key::Enter, Mods::default()),
-        (
-            Key::Command('c'),
-            Mods {
-                cmd: true,
-                ..Mods::default()
-            },
-        ),
-        (
-            Key::Command('v'),
-            Mods {
-                cmd: true,
-                ..Mods::default()
-            },
-        ),
     ] {
         rt.key(KeyEvent { key, mods });
     }
+    step(&mut rt);
+    // Copy and paste as the platform binds them (Cmd+C/V, Ctrl+Shift+C/V).
+    rt.update(|d, tx| {
+        d.shortcut(crate::keys::Shortcut::Copy, tx);
+        d.shortcut(crate::keys::Shortcut::Paste, tx);
+    });
     step(&mut rt);
     let sent: Vec<_> = outbound(&client)
         .into_iter()
@@ -97,7 +89,7 @@ fn a_controlled_surface_takes_a_click_and_keys_until_refused() {
                 chord: true,
             },
         ],
-        "the letterbox press sends nothing; Cmd+C and Cmd+V trade clipboards"
+        "the letterbox press sends nothing; copy and paste trade clipboards"
     );
     // The host's clipboard lands on this machine's.
     let (copy, _) = sent[3].clone();
