@@ -8,6 +8,8 @@ use phux_protocol::input::key::{KeyAction, KeyEvent, ModSet, PhysicalKey};
 use rune::{Key, Mods, PhysicalKeyCode};
 
 mod commands;
+#[cfg(all(test, not(target_os = "macos")))]
+mod linux_tests;
 pub use commands::{COMMANDS, Command, ESSENTIALS, command};
 use commands::{Cap, Chord};
 
