@@ -1,19 +1,19 @@
-**Phux Rune 0.1.5**: current with Rune dev `3ff3cc6`, plus Pitch.
+**Phux Rune 0.1.6**: direct iOS preview packaging and steadier qualification.
 
-- Open **Pitch** from the palette to see agents as a football squad:
-  working players drill and pass, waiting players raise a hand, and finished
-  players celebrate. Select a player, then press again or Return to open
-  its terminal.
-- Upstream's desktop host now bounds overdue timer frames when a covered
-  Wayland surface never receives its redraw callback, avoiding a busy loop.
-- Motion started by a slow desktop/overlay frame no longer jumps ahead on
-  the next frame. Existing running motion retains real elapsed time.
-- Rune's consecutive fold rows now open and close as one block.
-- Native simulator qualification avoids an unnecessary terminate-before-
-  launch request on freshly created devices. The 0.1.4 tag was not published
-  because this startup gate failed; the update feed stayed at 0.1.3.
+- Native iOS developers can package a device build into a signed ad-hoc IPA
+  and HTTPS install page without TestFlight. Packaging checks the exact
+  bundle, distribution certificate, expiry and every requested device before
+  signing. The private signing key stays in the local keychain.
+- Native simulator qualification now records setup timings, keeps diagnostic
+  output separate, validates its retained evidence and reuses the verified
+  app container instead of looking it up again after launch. Cold container
+  acquisition remains bounded; input, authentication and lifecycle checks
+  are still required.
+- In the desktop-hosted phone form, tap a terminal link to open it; dragging
+  still selects text. Native iOS URL-opening qualification remains separate.
 
-The native UIKit host still passes paired-connection, input and lifecycle
-checks. The new private late-frame presentation hook is not yet called by
-upstream's embedded host, so this release does not claim that timing fix
-for native iOS. Device/TestFlight distribution remains separate work.
+The downloadable release is still the desktop client (macOS arm64 and Linux
+x86_64/arm64). iOS installation requires an Apple profile covering the actual
+phone and the user's approval. Packaging is not physical-device, keyboard/IME,
+VoiceOver or TestFlight qualification. The embedded late-frame presentation
+limitation documented in 0.1.5 is unchanged.
