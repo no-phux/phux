@@ -9,9 +9,9 @@
 //! exits is replaced after a backoff; a cold start recreates every one. A
 //! config reload re-reads the entries: a removed entry's session is closed,
 //! a changed one restarted. On macOS the server's children cannot hold
-//! Screen Recording access (TCC), so the server skips them with a warning;
-//! Rune starts a mirror only as a server pane too, so nothing supervises
-//! them there yet.
+//! Screen Recording access (TCC), so the pane only holds the session and
+//! Rune runs the mirror into it (`phux agent surface standing`), which
+//! makes the TCC prompts Rune's.
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -58,6 +58,9 @@ const HEALTHY_AFTER: Duration = Duration::from_secs(60);
 const BACKOFF_BASE: Duration = Duration::from_secs(1);
 const BACKOFF_CAP: Duration = Duration::from_secs(60);
 
+/// What a macOS mirror session's pane runs while Rune mirrors into it.
+const MACOS_HOLDER: &str = "echo 'Rune keeps this mirror: macOS gives Screen Recording to the app that captures. Keep Rune open.'; exec tail -f /dev/null";
+
 /// Ring the supervisor's reload doorbell (`phux config reload`).
 pub(crate) fn request_reload(state: &SharedState) {
     if let Some(reload) = state.with(|s| s.standing_mirrors().cloned()) {
@@ -88,9 +91,7 @@ async fn supervise(
     let mut entries = read(&source, Vec::new());
     let mut slots = BTreeMap::new();
     loop {
-        if !cfg!(target_os = "macos") {
-            tick(&state, &entries, &mut slots, Instant::now(), &root_token);
-        }
+        tick(&state, &entries, &mut slots, Instant::now(), &root_token);
         tokio::select! {
             () = root_token.cancelled() => return,
             () = tokio::time::sleep(TICK) => {}
@@ -103,8 +104,8 @@ async fn supervise(
 fn read(source: &MirrorSource, previous: Vec<MirrorConfigEntry>) -> Vec<MirrorConfigEntry> {
     match (source.0)() {
         Ok(entries) if cfg!(target_os = "macos") && !entries.is_empty() => {
-            warn!(
-                "[[mirrors]] skipped: a macOS server cannot hold Screen Recording access; run `phux agent surface mirror` from a terminal app that has it"
+            info!(
+                "[[mirrors]]: a macOS server cannot hold Screen Recording access; Rune runs the mirrors into their sessions while it is open"
             );
             entries
         }
@@ -116,9 +117,10 @@ fn read(source: &MirrorSource, previous: Vec<MirrorConfigEntry>) -> Vec<MirrorCo
     }
 }
 
-/// One entry's restart bookkeeping.
+/// One entry's restart bookkeeping; Rune's `phux agent surface standing`
+/// keeps the same for the mirrors it runs on macOS.
 #[derive(Debug)]
-struct Slot {
+pub struct Slot {
     backoff: Backoff,
     /// When this supervisor last started the mirror; `None` for one it
     /// found running (a hot upgrade) or has not started.
@@ -142,8 +144,21 @@ impl Default for Slot {
 }
 
 impl Slot {
+    /// Record a start at `now` with `args`.
+    pub fn started(&mut self, now: Instant, args: Vec<String>) {
+        self.started = Some(now);
+        self.args = Some(args);
+    }
+
+    /// Whether a running mirror was started with other arguments than
+    /// `args`, so a reload changed it.
+    #[must_use]
+    pub fn changed(&self, args: &[String]) -> bool {
+        self.args.as_deref().is_some_and(|old| old != args)
+    }
+
     /// Whether to start the mirror now, given whether it runs.
-    fn due(&mut self, alive: bool, now: Instant) -> bool {
+    pub fn due(&mut self, alive: bool, now: Instant) -> bool {
         if alive {
             return false;
         }
@@ -187,15 +202,14 @@ fn tick(
         let slot = slots.entry(name.clone()).or_default();
         let args = entry.args();
         let mut alive = live(state, &name);
-        if alive && slot.args.as_ref().is_some_and(|old| *old != args) {
+        if alive && slot.changed(&args) {
             info!(session = %name, "standing mirror changed; restarting it");
             stop(state, &name);
             *slot = Slot::default();
             alive = false;
         }
         if slot.due(alive, now) {
-            slot.started = Some(now);
-            slot.args = Some(args.clone());
+            slot.started(now, args.clone());
             if let Err(error) = start(state, &name, args, root_token) {
                 warn!(session = %name, %error, "standing mirror failed to start");
             }
@@ -244,11 +258,18 @@ fn start(
     args: Vec<String>,
     root_token: &CancellationToken,
 ) -> Result<(), String> {
-    let exe = state
-        .with(crate::state::ServerState::native_host_executable)
-        .map_err(|err| err.to_string())?;
-    let mut command = vec![exe.to_string_lossy().into_owned()];
-    command.extend(args);
+    let command = if cfg!(target_os = "macos") {
+        // `phux agent surface standing` (Rune's child) mirrors into this pane.
+        drop(args);
+        ["/bin/sh", "-c", MACOS_HOLDER].map(str::to_owned).into()
+    } else {
+        let exe = state
+            .with(crate::state::ServerState::native_host_executable)
+            .map_err(|err| err.to_string())?;
+        let mut command = vec![exe.to_string_lossy().into_owned()];
+        command.extend(args);
+        command
+    };
     let cmd = crate::runtime::apps::terminal::launch::named_session_command(
         state,
         name,

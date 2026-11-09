@@ -1098,6 +1098,10 @@ Commands:
   open      Open a surface under the pane its producer runs in.
   publish   Replace the surface's image from a PNG or JPEG file, or stdin.
   snapshot  Write the surface's newest image to a file.
+  standing  Run the `[[mirrors]]` entries as this process's children, each into
+            its `mirror-<target>` session, restarting any that exit. Rune runs
+            this on macOS, where the server's own children cannot hold Screen
+            Recording access; one runs per server.
   help      Print this message or the help of the given subcommand(s)
 
 Flags:
@@ -1228,6 +1232,25 @@ Flags:
 
 Global flags:
       --socket <PATH>  Server socket to dial (default: `$PHUX_SOCKET`)
+```
+
+## `phux agent surface standing`
+
+```text
+Run the `[[mirrors]]` entries as this process's children, each into its
+`mirror-<target>` session, restarting any that exit. Rune runs this on macOS,
+where the server's own children cannot hold Screen Recording access; one runs
+per server.
+
+Usage: phux agent surface standing [--parent-pid <PID>]
+
+Flags:
+      --parent-pid <PID>  Exit once this process is gone, as the app that
+                          launched it passes its own.
+  -h, --help              Print help
+
+Global flags:
+      --socket <PATH>     Server socket to dial (default: `$PHUX_SOCKET`)
 ```
 
 ## `phux agent tree`

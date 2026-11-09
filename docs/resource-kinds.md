@@ -135,10 +135,9 @@ be relaunched: `phux restore` lists them as refused, and `phux rm ^KEY`
 forgets one.
 
 A mirror can also run as the child of the app that holds the macOS grants
-(the retired GPUI desktop did this). `phux agent tree|surface|page mirror
+(Rune, for standing mirrors). `phux agent tree|surface|page mirror
 --parent-pid PID` exits within a second of process `PID` ending, so a
 parent killed without dropping its children leaves no producer behind.
-Rune does not run mirrors as its own children yet.
 
 ## Standing mirrors
 
@@ -153,13 +152,14 @@ list the surface under that session and a `display` or `window` grant
 applies as usual. A mirror that exits is restarted after a backoff (1 s,
 doubling to 60 s; a run over a minute resets it). `phux upgrade` keeps the
 pane and the mirror re-adopts its surface. A cold start recreates it.
-`phux config reload` starts new entries, restarts changed ones and closes
-the `mirror-*` sessions no entry names. Do not name sessions of your own
+`phux config reload` starts new entries, restarts changed ones, closes
+`mirror-*` sessions no entry names. Do not name sessions of your own
 `mirror-*`.
 
-Linux only (Hyprland, Sway). On macOS a server's children cannot hold
-Screen Recording, so the server logs a warning and skips the table. An
-older server refuses a config that has it, so upgrade first.
+On macOS a server's children cannot hold Screen Recording, so the pane
+only waits and Rune, while open, runs the mirrors into it as children
+(`phux agent surface standing`); the grant prompts name Rune. An older
+server refuses a config with the table; upgrade first.
 
 ## Applications
 

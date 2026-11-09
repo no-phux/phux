@@ -24,6 +24,7 @@ mod perf;
 mod pitch;
 mod pitlane;
 mod reef;
+mod standing;
 mod theme;
 mod ui;
 mod updates;
