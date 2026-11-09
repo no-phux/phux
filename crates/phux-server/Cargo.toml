@@ -105,6 +105,9 @@ subtle = "2"
 getrandom = "0.4"
 sha2 = "0.11"
 hex = "0.4"
+# Ed25519 signatures on audit records (`docs/audit.md`); already locked
+# through rustls and rcgen, so nothing new enters Cargo.lock.
+ring = "0.17"
 # `TlsError::Rcgen` and the workload CA's CSR signing (same version and
 # `ring` backend as phux-dial, so one type).
 rcgen = { version = "0.14", default-features = false, features = ["ring", "pem", "x509-parser"] }

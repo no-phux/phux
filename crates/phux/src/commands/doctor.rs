@@ -12,11 +12,13 @@ use phux_server::runtime::default_socket_path;
 
 use crate::commands::{cli_runtime, plugin::valid_manifest_count};
 
+mod audit;
 mod credentials;
 mod remote;
 mod remote_cert;
 mod server_health;
 
+use audit::check_audit;
 use credentials::{check_client_certs, check_token_store, check_workload_authority};
 use remote::{check_remote_listeners, check_remote_reachable};
 use remote_cert::{check_remote_cert, check_remote_cert_chain};
@@ -115,6 +117,7 @@ pub(crate) fn run_doctor(json: bool, socket: Option<PathBuf>) -> ExitCode {
         check_remote_listeners(&socket_path),
         check_remote_reachable(&socket_path),
         check_logs(),
+        check_audit(&socket_path),
     ]);
     checks.extend(check_remote_cert_chain());
 

@@ -358,6 +358,7 @@ fn held_signal_world() -> World {
     })
 }
 
+mod audit;
 mod holds;
 mod refusals;
 mod routing;

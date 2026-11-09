@@ -373,6 +373,9 @@ pub(crate) enum Command {
     #[usage(help_heading = "Maintain", display_order = 52)]
     Logs(LogsArgs),
 
+    #[usage(help_heading = "Maintain", display_order = 59)]
+    Audit(AuditArgs),
+
     #[usage(alias = "bug")]
     #[usage(help_heading = "Maintain", display_order = 53)]
     Report(ReportArgs),

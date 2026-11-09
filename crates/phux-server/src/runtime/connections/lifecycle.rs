@@ -235,6 +235,7 @@ pub(crate) async fn accept_loop<L: Incoming>(
                         state.with_mut(ServerState::note_connection_opened);
                         let client_id = state.with_mut(ServerState::new_client_id);
                         state.with_mut(|s| s.set_connection_identity(client_id, connection_identity));
+                        state.with(|s| s.audit_connection(client_id, crate::audit::Kind::ConnectionOpen));
                         let task_state = state.clone();
                         let client_token = root_token.child_token();
                         let task_root_token = root_token.clone();
@@ -246,6 +247,7 @@ pub(crate) async fn accept_loop<L: Incoming>(
                             if let Err(err) = handle_client(reader, writer, task_state.clone(), client_id, client_token, task_root_token.clone(), task_input_lane, task_transport, task_supports_quic_streams).await {
                                 warn!(error = %err, "client task ended with error");
                             }
+                            task_state.with(|s| s.audit_connection(client_id, crate::audit::Kind::ConnectionClose));
                             // The one site that forgets connection state.
                             release_connection_state(&task_state, client_id);
                             // R13: the last connection closing on a server
@@ -274,6 +276,13 @@ pub(crate) async fn accept_loop<L: Incoming>(
                                 source_ip,
                                 warn_suppressed,
                             } => {
+                                if stage == "pairing_authentication" {
+                                    crate::audit::refused(
+                                        crate::audit::Transport::of(listener.transport_type()),
+                                        source_ip,
+                                        stage,
+                                    );
+                                }
                                 // WARN is rate-limited so a peer cannot flood logs.
                                 debug!(
                                     transport = listener.kind(),
