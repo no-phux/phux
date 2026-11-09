@@ -1,6 +1,6 @@
 # @phux/opencode
 
-OpenCode V2 plugin, tested against the public `@opencode/plugin@2.2.0` contract.
+OpenCode V2 plugin, tested against the public `@opencode/plugin@2.2.6` contract.
 OpenCode keeps its own shell, sessions, and permissions; phux supplies
 terminals only where a terminal is the point.
 
@@ -65,11 +65,15 @@ bun run compile
 OpenCode loads bundled `index.js` for server tools, `tui.js` for the terminal
 companion, and `dist/gui-experimental.cjs` for the desktop UI, not TypeScript
 sources. The bundles include phux's shared runtime; the TUI entrypoint is
-universal-compiled against OpenTUI 0.7.0 and Solid 1.9.12, and the desktop
+universal-compiled against OpenTUI 0.8.1 and Solid 1.9.17, and the desktop
 bundle is built with the SDK's Vite preset (`vite build --watch` reloads it in
 open windows while you work).
 Install the declared peers before loading a checkout; merely having `tui.js`
-on disk does not mean its runtime dependencies are available.
+on disk does not mean its runtime dependencies are available. OpenCode supplies
+the TUI's shared OpenTUI and Solid runtime. Keep the declared peers compatible
+with the host: a private older OpenTUI can fail during import with a duplicate
+`OPENTUI_FORCE_UNICODE` registration. The package test loads the host runtime
+before the installed TUI to cover this failure mode.
 Artifacts are checked in and Git installs require no build lifecycle hooks;
 the compiled OpenCode installer cannot run npm Git preparation.
 Configure OpenCode V2 with an absolute package directory:
