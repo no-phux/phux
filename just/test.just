@@ -161,6 +161,26 @@ e2e: worktree-claim && (worktree-verify "e2e")
 E2E_TARGETS := "--test automation_e2e --test terminal_e2e --test recording_e2e --test lifecycle_e2e --test first_five_minutes_e2e --test upload_e2e --test download_e2e --test perf --test discovery"
 
 
+# The release soak gate (soak.yml; lts.yml requires its pass). The e2e lane,
+# then PHUX_SOAK_ROUNDS rounds of the incident guards: every graceful-upgrade
+# test, including the descriptor-leak check (#1956), and the per-pane systemd
+# scope that keeps oomd off the server (#2006; PHUX_TEST_REQUIRE_PANE_SCOPE=1 makes
+# a missing user bus fail it). Then the stress storms.
+[group('test')]
+[doc('Release soak: e2e, repeated upgrade and pane-scope guards, stress storms.')]
+soak: worktree-claim
+    #!/usr/bin/env bash
+    set -euo pipefail
+    just e2e
+    for round in $(seq "${PHUX_SOAK_ROUNDS:-10}"); do
+      echo "soak round $round"
+      {{AUTO_SPAWN_BACKSTOP}} cargo nextest run --workspace {{TEST_FEATURES}} --test lifecycle_e2e \
+        --run-ignored ignored-only --test-threads=1 --retries=2 \
+        -E 'binary_id(phux::lifecycle_e2e) & (test(/upgrade/) | test(/own_systemd_scope/))'
+    done
+    just stress
+
+
 # Heavy stress storms — off CI entirely: starvation-sensitive on 2-core
 # runners, so run them locally on a multi-core box before risky merges. Also runs
 # phux-terminal's perf_bursty_output (~110s, allocation count, not wall time).
