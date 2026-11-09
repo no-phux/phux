@@ -21,12 +21,9 @@ phux-client-runtime = { path = "../../crates/phux-client-runtime" }
 phux-perf = { path = "../../crates/phux-perf" }
 phux-protocol = { path = "../../crates/phux-protocol" }
 # Rune has no releases; apps pin a `dev` revision (dev is fast-forward only).
-rune = { git = "https://github.com/anomalyco/rune", rev = "a8a535174de04eaefb9b3290f3b1b9922069e8d4" }
-rune-notify = { git = "https://github.com/anomalyco/rune", rev = "a8a535174de04eaefb9b3290f3b1b9922069e8d4" }
-rune-perf = { git = "https://github.com/anomalyco/rune", rev = "a8a535174de04eaefb9b3290f3b1b9922069e8d4" }
-# Never called directly: Rune's decoder guesses the format, so these
-# features (unified with Rune's png/jpeg) let typed documents draw GIF/WebP.
-image = { version = "0.25", default-features = false, features = ["gif", "webp"] }
+rune = { git = "https://github.com/anomalyco/rune", rev = "2bc3179d08355a8bb08fa54b9025780fe848b8f6" }
+rune-notify = { git = "https://github.com/anomalyco/rune", rev = "2bc3179d08355a8bb08fa54b9025780fe848b8f6" }
+rune-perf = { git = "https://github.com/anomalyco/rune", rev = "2bc3179d08355a8bb08fa54b9025780fe848b8f6" }
 # Already in Rune's graph (resvg): paints the pitch's still background once per size.
 tiny-skia = { version = "0.11", default-features = false, features = ["std", "simd"] }
 serde_json = "1"
@@ -39,6 +36,10 @@ sha2 = "0.11"
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = "0.6.5"
 objc2-foundation = { version = "0.3.2", features = ["NSString"] }
+
+[dev-dependencies]
+# Encoders for real document fixtures; Rune owns the shipped decoders.
+image = { version = "0.25", default-features = false, features = ["png", "gif", "webp"] }
 
 [profile.release]
 lto = "thin"

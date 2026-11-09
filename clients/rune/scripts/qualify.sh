@@ -93,7 +93,7 @@ done
 snap="$scratch/launch.png"
 tree="$scratch/launch.json"
 "${clean[@]}" "$binary" --socket "$socket" --session "$marker" \
-    --snap "$snap" --tree "$tree" --at 3 --size 1100x720
+    --snap "$snap" --tree "$tree" --realtime --at 3 --size 1100x720
 [[ -s "$snap" ]] || fail "no frame was drawn"
 grep -q "$marker" "$tree" || fail "the window never showed session $marker"
 
@@ -101,7 +101,7 @@ grep -q "$marker" "$tree" || fail "the window never showed session $marker"
 phone_snap="$scratch/phone.png"
 phone_tree="$scratch/phone.json"
 "${clean[@]}" "$binary" --phone --socket "$socket" --session "$marker" \
-    --snap "$phone_snap" --tree "$phone_tree" --at 3 --size 393x852
+    --snap "$phone_snap" --tree "$phone_tree" --realtime --at 3 --size 393x852
 [[ -s "$phone_snap" ]] || fail "the phone form drew no frame"
 grep -q "$marker" "$phone_tree" || fail "the phone form never showed session $marker"
 
