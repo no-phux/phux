@@ -3,7 +3,7 @@
 use phux_client_runtime::control::{ControlOptions, DocumentPublication};
 use phux_protocol::ResourceKind;
 use phux_protocol::ids::{SessionId, WindowId};
-use phux_protocol::wire::frame::{Command, DocumentKey, FrameKind};
+use phux_protocol::wire::frame::{Command, CommandValue, DocumentKey, FrameKind};
 use phux_protocol::wire::info::{ResourceInfo, SessionSnapshot};
 
 use super::*;
@@ -82,14 +82,22 @@ fn send_document_input_queues_one_send_document_input_command() {
     let long = "x".repeat(MAX_DOCUMENT_INPUT_TEXT + 1);
     let typed = WireDocumentIntent::Type { text: long };
     assert_eq!(remote.send_document_input("local:9".into(), typed), 0);
+    let huge = "x".repeat(MAX_CLIPBOARD_TEXT + 1);
+    let paste = WireDocumentIntent::Paste { text: huge };
+    assert_eq!(remote.send_document_input("local:9".into(), paste), 0);
     assert!(client.take_outbound().is_empty(), "refused locally");
 
     let key = WireDocumentIntent::Key {
         key: WireDocumentKey::ArrowLeft,
     };
+    let paste = WireDocumentIntent::Paste {
+        text: "y".repeat(MAX_DOCUMENT_INPUT_TEXT + 1),
+    };
     let sent = [
         remote.send_document_input("local:9".into(), click),
         remote.send_document_input("local:9".into(), key),
+        remote.send_document_input("local:9".into(), paste),
+        remote.send_document_input("local:9".into(), WireDocumentIntent::CopyClipboard),
     ];
     let frames: Vec<_> = client
         .take_outbound()
@@ -114,6 +122,14 @@ fn send_document_input_queues_one_send_document_input_command() {
                     key: DocumentKey::ArrowLeft
                 }
             ),
+            expected(
+                sent[2],
+                DocumentInput::Paste {
+                    text: "y".repeat(MAX_DOCUMENT_INPUT_TEXT + 1),
+                    chord: true,
+                }
+            ),
+            expected(sent[3], DocumentInput::CopyClipboard { reply: 0 }),
         ]
     );
 }
@@ -142,6 +158,13 @@ fn replies_settle_as_outcomes_and_others_pass_through() {
             PAGE,
             error(ErrorCode::NotProducer),
             WireDocumentInputOutcome::NoProducer,
+        ),
+        (
+            PAGE,
+            CommandResult::OkWith(CommandValue::Bytes(b"host text".to_vec())),
+            WireDocumentInputOutcome::Copied {
+                text: "host text".into(),
+            },
         ),
         (
             PAGE,

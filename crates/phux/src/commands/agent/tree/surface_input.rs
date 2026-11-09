@@ -49,6 +49,8 @@ pub(super) enum Event {
     Text(String),
     /// Key down and up of a macOS virtual key code.
     Key(u16),
+    /// Cmd+V: paste what a viewer's paste put on the clipboard.
+    PasteChord,
     /// One scroll-wheel event in pixels; positive is up and left.
     Scroll {
         dy: i32,
@@ -64,6 +66,7 @@ impl std::fmt::Display for Event {
             Self::LeftUp(x, y) => write!(f, "left-up at {x:.1},{y:.1}"),
             Self::Text(text) => write!(f, "key down+up with text {text:?}"),
             Self::Key(code) => write!(f, "key down+up of virtual key 0x{code:02x}"),
+            Self::PasteChord => write!(f, "Cmd+V"),
             Self::Scroll { dy, dx } => write!(f, "scroll-wheel {dy} up, {dx} left (pixels)"),
         }
     }
@@ -85,7 +88,13 @@ pub(super) const TEXT_CHUNK: usize = 20;
 /// A navigation has none: a window or display has no address.
 pub(super) fn events(input: &DocumentInput, frame: (u32, u32), rect: Rect) -> Vec<Event> {
     match input {
-        DocumentInput::Navigate { .. } => Vec::new(),
+        // The clipboard itself is the mirror's (`clipboard`): only the
+        // paste chord is an event.
+        DocumentInput::Navigate { .. }
+        | DocumentInput::CopyClipboard { .. }
+        | DocumentInput::ClipboardText { .. }
+        | DocumentInput::Paste { chord: false, .. } => Vec::new(),
+        DocumentInput::Paste { chord: true, .. } => vec![Event::PasteChord],
         DocumentInput::Click { x, y } => to_screen(frame, rect, *x, *y)
             .map(|(x, y)| {
                 vec![
@@ -191,7 +200,7 @@ mod macos {
     use std::time::Duration;
 
     use core_graphics::event::{
-        CGEvent, CGEventTapLocation, CGEventType, CGMouseButton, ScrollEventUnit,
+        CGEvent, CGEventFlags, CGEventTapLocation, CGEventType, CGMouseButton, ScrollEventUnit,
     };
     use core_graphics::event_source::{CGEventSource, CGEventSourceStateID};
     use core_graphics::geometry::CGPoint;
@@ -359,6 +368,14 @@ mod macos {
                 Event::LeftUp(x, y) => vec![mouse(CGEventType::LeftMouseUp, *x, *y)?],
                 Event::Text(text) => key(0, Some(text))?,
                 Event::Key(code) => key(*code, None)?,
+                Event::PasteChord => {
+                    // kVK_ANSI_V with Command held.
+                    let chord = key(0x09, None)?;
+                    for event in &chord {
+                        event.set_flags(CGEventFlags::CGEventFlagCommand);
+                    }
+                    chord
+                }
                 Event::Scroll { dy, dx } => vec![made(CGEvent::new_scroll_event(
                     source.clone(),
                     ScrollEventUnit::PIXEL,
@@ -448,6 +465,14 @@ mod tests {
             url: "https://phux.sh/".into(),
         };
         assert!(events(&nav, (1, 1), DISPLAY).is_empty());
+        let paste = |chord| DocumentInput::Paste {
+            text: "x".into(),
+            chord,
+        };
+        assert_eq!(events(&paste(true), (1, 1), DISPLAY), [Event::PasteChord]);
+        assert!(events(&paste(false), (1, 1), DISPLAY).is_empty());
+        let copy = DocumentInput::CopyClipboard { reply: 1 };
+        assert!(events(&copy, (1, 1), DISPLAY).is_empty());
     }
 
     #[test]

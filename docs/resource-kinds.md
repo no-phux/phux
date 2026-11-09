@@ -41,8 +41,8 @@ this way. The same verbs drive a macOS `phux agent surface mirror`: it posts
 clicks, text, keys and scrolls as system input at the window's or display's
 screen points (raising a window's app first), which needs the Accessibility
 grant for the app that started it; `--dry-run-input` logs the events
-instead. Rune sends input to a surface pane ([authority](./authority.md#in-rune));
-mobile does not yet. Closing a document placement leaves its producer and
+instead. Rune and mobile send input to a surface pane
+([authority](./authority.md#in-rune)). Closing a document placement leaves its producer and
 other viewers running.
 
 Phux Rune offers mirror startup actions. These launch a dedicated

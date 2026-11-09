@@ -90,7 +90,7 @@ impl Desk {
     }
 
     pub(in crate::desk) fn copy(&mut self, tx: &mut Tx) {
-        if self.copy_document(tx) {
+        if self.copy_document(tx) || self.copy_from_document() {
             return;
         }
         match self.selected() {

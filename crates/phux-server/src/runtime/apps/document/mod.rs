@@ -266,8 +266,7 @@ impl<A: DocumentApi> ResourceApp for DocumentApp<A> {
                     control,
                 } => {
                     let audited = intent.clone();
-                    let result =
-                        input::relay::<A>(&ctx.state, ctx.client_id, &terminal_id, intent, control);
+                    let result = input::relay::<A>(ctx, &terminal_id, intent, control).await;
                     ctx.state.with(|s| {
                         audit::record(s, ctx.client_id, &terminal_id, &audited, &result);
                     });

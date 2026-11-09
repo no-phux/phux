@@ -174,16 +174,16 @@ pub(super) fn run_mirror(args: MirrorArgs<'_>) -> ExitCode {
         } else {
             outln!("{resource}");
         }
-        let interval = Duration::from_millis(interval_ms.max(100));
         let display = control == Some(phux_protocol::wire::frame::ControlClass::Display);
         let indicator = super::surface_indicator::Indicator::new(display, dry_run_input);
+        let clipboard = super::clipboard::Clipboard::host(dry_run_input);
         publish_until_gone(
             &mut conn,
             &socket_path,
             &opened.resource,
-            (capture, act, indicator),
+            (capture, act, indicator, &clipboard),
             first,
-            interval,
+            Duration::from_millis(interval_ms.max(100)),
             json,
         )
         .await
@@ -205,10 +205,11 @@ async fn publish_until_gone(
     conn: &mut phux_client::attach::connection::Connection,
     socket: &std::path::Path,
     resource: &phux_protocol::ids::ResourceId,
-    (mut capture, mut act, mut indicator): (
+    (mut capture, mut act, mut indicator, clipboard): (
         impl FnMut() -> Result<Vec<u8>, String>,
         impl FnMut(&phux_client::tree::DocumentInput, (u32, u32)),
         super::surface_indicator::Indicator,
+        &super::clipboard::Clipboard,
     ),
     first: Vec<u8>,
     interval: std::time::Duration,
@@ -256,11 +257,14 @@ async fn publish_until_gone(
         let idle = super::surface_cadence::backoff(interval, misses);
         loop {
             for intent in std::mem::take(&mut intents) {
-                if intent.resource == *resource {
-                    act(&intent.input, frame);
-                    input = Some(std::time::Instant::now());
-                    indicator.input(&origin).await;
+                if intent.resource != *resource {
+                    continue;
                 }
+                clipboard
+                    .carry_out(conn, &intent, &mut intents, |input| act(input, frame))
+                    .await;
+                input = Some(std::time::Instant::now());
+                indicator.input(&origin).await;
             }
             indicator.tick().await;
             let next = super::surface_cadence::next_capture(captured, input, idle);

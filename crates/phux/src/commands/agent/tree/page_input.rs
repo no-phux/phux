@@ -62,6 +62,35 @@ pub(super) fn run_send(
     })
 }
 
+/// Print the host clipboard's text from the producer of the page `target`
+/// names.
+pub(super) fn run_copy(target: &str, json: bool, socket: Option<PathBuf>) -> ExitCode {
+    let rt = match cli_runtime() {
+        Ok(rt) => rt,
+        Err(code) => return code,
+    };
+    rt.block_on(async move {
+        let (mut conn, resource) = match connect(target, "agent page copy", json, socket).await {
+            Ok(pair) => pair,
+            Err(code) => return code,
+        };
+        match tree::copy_clipboard(&mut conn, &resource).await {
+            Ok(text) if json => {
+                outln!(
+                    "{}",
+                    serde_json::json!({ "schema_version": SCHEMA_VERSION, "text": text })
+                );
+                ExitCode::SUCCESS
+            }
+            Ok(text) => {
+                outln!("{text}");
+                ExitCode::SUCCESS
+            }
+            Err(err) => report(json, &err),
+        }
+    })
+}
+
 /// How the newest screencast frame maps to the page: CSS pixels per image
 /// pixel on each axis, and the viewport's CSS size.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -108,7 +137,12 @@ pub(super) fn cdp_calls(
     use serde_json::json;
     match input {
         DocumentInput::Navigate { url } => vec![("Page.navigate", json!({ "url": url }))],
-        DocumentInput::Type { text } => vec![("Input.insertText", json!({ "text": text }))],
+        // A page takes a paste as inserted text; its clipboard is not ours.
+        DocumentInput::Type { text } | DocumentInput::Paste { text, .. } => {
+            vec![("Input.insertText", json!({ "text": text }))]
+        }
+        // The page mirror answers a copy from the host clipboard itself.
+        DocumentInput::CopyClipboard { .. } | DocumentInput::ClipboardText { .. } => Vec::new(),
         DocumentInput::Click { x, y } => {
             let (x, y) = (f64::from(*x) * view.scale_x, f64::from(*y) * view.scale_y);
             ["mousePressed", "mouseReleased"]

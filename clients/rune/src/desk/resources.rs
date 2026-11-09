@@ -41,6 +41,8 @@ pub struct Resources {
     closed: HashMap<ResourceId, ResourceRecord>,
     /// Which documents take pane input, and the sends awaiting a reply.
     pub(super) input: phux_client_core::document_input::DocumentInputs,
+    /// The copy from a host clipboard awaiting its reply.
+    pub(super) copying: Option<u32>,
 }
 
 struct PendingDocument {

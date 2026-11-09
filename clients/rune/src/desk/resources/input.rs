@@ -1,12 +1,14 @@
 //! Pointer, wheel and keys into a surface whose producer takes input
 //! (`SEND_DOCUMENT_INPUT`). A document with no control class, or one that
 //! refused this window, stays a read-only mirror and captures nothing.
+//! Cmd+V pastes this machine's clipboard into it, and Cmd+C brings the
+//! host's clipboard back.
 
 use phux_client_core::document_input::{DocumentInputs, frame_point, scroll};
 use phux_client_runtime::control::Status;
 use phux_protocol::ResourceId;
-use phux_protocol::wire::frame::{CommandResult, DocumentInput, DocumentKey};
-use rune::{Key, Mods};
+use phux_protocol::wire::frame::{CommandResult, DocumentInput, DocumentKey, MAX_CLIPBOARD_TEXT};
+use rune::{Key, Mods, Tx};
 
 use super::{Body, Desk};
 use crate::desk::NoticeKind;
@@ -55,16 +57,83 @@ impl Desk {
     }
 
     fn send_document_input(&mut self, id: &ResourceId, intent: DocumentInput) -> bool {
-        let Some(client) = self.client.clone() else {
-            return false;
-        };
+        self.send_document_request(id, intent).is_some()
+    }
+
+    fn send_document_request(&mut self, id: &ResourceId, intent: DocumentInput) -> Option<u32> {
+        let client = self.client.clone()?;
         if client.status() != Status::Attached || self.document_input_frame(id).is_none() {
-            return false;
+            return None;
         }
         let command = DocumentInputs::command(id, intent);
         let request = client.with_control(|control| control.send_command(command));
         self.resources.input.sent(request, id.clone());
         client.wake();
+        Some(request)
+    }
+
+    /// The surface on screen, when it takes input now.
+    fn shown_input_document(&self) -> Option<ResourceId> {
+        let id = self.shown.as_ref()?.terminal.clone();
+        self.document_input_frame(&id).is_some().then_some(id)
+    }
+
+    /// Cmd+V over a surface that takes input: this machine's clipboard
+    /// goes to the host's and the host presses its paste chord. False when
+    /// no such surface is on screen.
+    pub(in crate::desk) fn paste_into_document(&mut self, tx: &mut Tx) -> bool {
+        let Some(id) = self.shown_input_document() else {
+            return false;
+        };
+        tx.read_clipboard(move |desk: &mut Self, content, _| {
+            let text = content.text();
+            if text.is_empty() {
+                desk.say(NoticeKind::Error, "Nothing here can be pasted.");
+            } else if text.len() > MAX_CLIPBOARD_TEXT {
+                desk.say(
+                    NoticeKind::Error,
+                    "Clipboard too large to paste (over 1 MiB).",
+                );
+            } else {
+                let paste = DocumentInput::Paste {
+                    text: text.to_owned(),
+                    chord: true,
+                };
+                desk.send_document_input(&id, paste);
+            }
+        });
+        true
+    }
+
+    /// Cmd+C over a surface that takes input: ask its host for its
+    /// clipboard; the reply lands on this machine's. False when no such
+    /// surface is on screen.
+    pub(in crate::desk) fn copy_from_document(&mut self) -> bool {
+        let Some(id) = self.shown_input_document() else {
+            return false;
+        };
+        let copy = DocumentInput::CopyClipboard { reply: 0 };
+        if let Some(request) = self.send_document_request(&id, copy) {
+            self.resources.copying = Some(request);
+        }
+        true
+    }
+
+    /// A copy from a host answered with its text: onto this machine's
+    /// clipboard. True when `result` was one.
+    pub(in crate::desk) fn host_copied(
+        &mut self,
+        request: u32,
+        result: &CommandResult,
+        tx: &mut Tx,
+    ) -> bool {
+        let Some(text) = self.resources.input.copied(request, result) else {
+            return false;
+        };
+        let _ = self.resources.input.answer(request, result);
+        self.resources.copying = None;
+        tx.copy(text);
+        self.say(NoticeKind::Info, "Copied the host's clipboard.");
         true
     }
 
@@ -118,6 +187,14 @@ impl Desk {
                 let text = format!("{} is view only: {}.", refusal.resource, refusal.reason);
                 self.say(NoticeKind::Error, text);
                 self.generation += 1;
+                true
+            }
+            Err(error) if self.resources.copying == Some(request) => {
+                self.resources.copying = None;
+                self.say(
+                    NoticeKind::Error,
+                    format!("Could not copy from the host: {error}"),
+                );
                 true
             }
             Err(error) => {

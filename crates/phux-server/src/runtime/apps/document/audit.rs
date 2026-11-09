@@ -112,6 +112,12 @@ fn kind(intent: &DocumentInput) -> (&'static str, usize) {
         DocumentInput::Type { text } => ("type", text.chars().count()),
         DocumentInput::Key { .. } => ("key", 0),
         DocumentInput::Scroll { .. } => ("scroll", 0),
+        DocumentInput::Paste { text, .. } => ("paste", text.chars().count()),
+        DocumentInput::CopyClipboard { .. } => ("copy_clipboard", 0),
+        DocumentInput::ClipboardText { text, .. } => (
+            "clipboard_text",
+            text.as_ref().map_or(0, |text| text.chars().count()),
+        ),
     }
 }
 

@@ -8,7 +8,8 @@
 
 use phux_client_core::document_input::{self as core_input, DocumentInputs};
 use phux_protocol::wire::frame::{
-    CommandResult, ControlClass, DocumentInput, ErrorCode, MAX_DOCUMENT_INPUT_TEXT,
+    CommandResult, ControlClass, DocumentInput, ErrorCode, MAX_CLIPBOARD_TEXT,
+    MAX_DOCUMENT_INPUT_TEXT,
 };
 
 use super::*;
@@ -69,14 +70,18 @@ pub fn document_scroll(
 impl RemoteClient {
     /// Send `intent` to the producer of the document `resource_id`. Returns
     /// the request id its [`WireEvent::DocumentInputResult`] carries, or 0
-    /// when nothing was sent: offline, an unknown id, or a URL or text over
-    /// the wire's 8 KiB.
+    /// when nothing was sent: offline, an unknown id, a URL or text over
+    /// the wire's 8 KiB, or a paste over 1 MiB.
     pub fn send_document_input(&self, resource_id: String, intent: WireDocumentIntent) -> u32 {
         let intent = DocumentInput::from(intent);
-        let too_long = |text: &str| text.len() > MAX_DOCUMENT_INPUT_TEXT;
-        if let DocumentInput::Navigate { url: text } | DocumentInput::Type { text } = &intent
-            && too_long(text)
-        {
+        let too_long = match &intent {
+            DocumentInput::Navigate { url: text } | DocumentInput::Type { text } => {
+                text.len() > MAX_DOCUMENT_INPUT_TEXT
+            }
+            DocumentInput::Paste { text, .. } => text.len() > MAX_CLIPBOARD_TEXT,
+            _ => false,
+        };
+        if too_long {
             return 0;
         }
         let (Some(id), Some(client)) = (id::parse(&resource_id), self.runtime_client()) else {
@@ -131,6 +136,9 @@ impl RemoteClient {
 /// A reply as an outcome. A refused document with no control class was
 /// never controllable; with one, the refusal is a missing grant.
 fn outcome(result: &CommandResult, control: Option<ControlClass>) -> WireDocumentInputOutcome {
+    if let Some(text) = phux_client_core::document_input::copied_text(result) {
+        return WireDocumentInputOutcome::Copied { text };
+    }
     let CommandResult::Error { code, message } = result else {
         return WireDocumentInputOutcome::Sent;
     };

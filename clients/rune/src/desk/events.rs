@@ -79,6 +79,10 @@ impl Desk {
                 tx.copy(text.0);
                 false
             }
+            Event::CommandResult {
+                request_id,
+                ref result,
+            } if self.host_copied(request_id, result, tx) => true,
             other => self.apply_connection(client, other),
         }
     }
