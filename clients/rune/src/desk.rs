@@ -38,6 +38,7 @@ pub mod mouse;
 pub(crate) mod native_input;
 mod palette;
 pub mod phone;
+pub mod pitch;
 pub mod questions;
 pub mod reef;
 pub mod resources;
@@ -189,6 +190,8 @@ pub struct Desk {
     pub galaxy: galaxy::Galaxy,
     /// The fleet as a reef, while open.
     pub reef: reef::Reef,
+    /// The fleet as football training, while open.
+    pub pitch: pitch::Pitch,
     /// The other machines, watched while the galaxy or the reef is open.
     pub(crate) fleet: fleet::Fleet,
     pub settings: settings::Settings,
@@ -398,6 +401,7 @@ impl Desk {
             inbox: inbox::Inbox::default(),
             galaxy: galaxy::Galaxy::default(),
             reef: reef::Reef::default(),
+            pitch: pitch::Pitch::default(),
             fleet: fleet::Fleet::default(),
             settings,
             settings_open: false,
@@ -489,6 +493,7 @@ impl Desk {
         changed |= self.tick_inbox(tx);
         changed |= self.tick_galaxy(tx);
         changed |= self.tick_reef(tx);
+        changed |= self.tick_pitch(tx);
         self.settle_pointer();
         changed |= self.autoscroll(tx);
         self.keep_find();

@@ -20,6 +20,7 @@ pub mod mobile;
 mod palette;
 mod paths;
 mod perf;
+mod pitch;
 mod reef;
 mod theme;
 mod ui;

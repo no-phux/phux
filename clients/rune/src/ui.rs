@@ -16,6 +16,7 @@ mod palette;
 mod panes;
 pub(crate) use panes::DIVIDER;
 mod phone;
+mod pitch;
 mod questions;
 mod reef;
 mod settings;
@@ -196,6 +197,7 @@ fn floating(root: El, desk: &Desk, p: &Ink, band: f32, cx: &mut Cx<Desk>) -> El 
         .children(desk.inbox.open.then(|| inbox::view(desk, p)))
         .children(desk.galaxy.open.then(|| galaxy::view(desk, p, cx)))
         .children(desk.reef.open.then(|| reef::view(desk, p, cx)))
+        .children(desk.pitch.open.then(|| pitch::view(desk, p, cx)))
         .children(desk.settings_open.then(|| settings::view(desk, p)))
         .children(machines::sheet(desk, p))
         .children(tabs::rename_sheet(desk, p))

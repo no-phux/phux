@@ -18,7 +18,7 @@ use crate::reef::{Mood, Pt, Reef, TILE};
 mod drift;
 mod fish;
 mod forms;
-mod pen;
+pub(super) mod pen;
 mod scene;
 
 use pen::Pen;
