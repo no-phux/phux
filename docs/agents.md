@@ -411,32 +411,10 @@ when the session is deleted or the server stops (an in-place
 id). **This is not a sandbox.** Any program running as your user can still
 reach the server's main socket with full access.
 
-**Held actions wait for you.** A device or automation key enrolled with a
-held verb has those actions held until a person decides:
-
-| Scope | Holds |
-| --- | --- |
-| `?signal@SEL` | Kills, signals, and forced detaches |
-| `?terminate@SEL` | Ending or removing a session or pane (`SESSION_KILL`, `SESSION_DELETE`, `RESOURCE_TERMINATE`, `RESOURCE_REMOVE`) |
-| `?input@page`, `?input@window`, `?input@display` (each optionally `:HOST`) | Input to documents of that class (`SEND_DOCUMENT_INPUT`) |
-
-Other verbs cannot be held, and `?input` only on a control class: a frame
-(not a command) that needs a held verb is refused, never held, so a held
-`input` anywhere else would refuse keystrokes. File transfer (`GET_FILE`,
-`PUT_FILE`) rides `input` on a pane or the server, so it is not holdable
-either. An un-held grant that also covers the subject wins. A phux older
-than a marker refuses the scope, at enrollment or at connect, rather than
-grant the verb un-held. Deciding needs the held verbs un-held on the same
-subject (the owner socket always may).
-
-```sh
-phux approvals          # what is waiting
-phux approve ID
-phux deny ID
-```
-
-Nothing on this machine's own socket is ever held. See
-[Remote machines](./remote.md#who-can-do-what) for keys and scopes.
+**Held actions wait for you.** A key enrolled with a held verb such as
+`?signal` waits for `phux approve ID` or `phux deny ID`; `phux approvals`
+lists them. This machine's own socket is never held. See
+[Held actions](./approvals.md).
 
 ## Complete terminal creation
 
