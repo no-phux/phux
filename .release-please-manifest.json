@@ -1,7 +1,7 @@
 {
-  ".": "0.131.0",
+  ".": "0.132.0",
   "integrations/pi": "0.8.1",
-  "integrations/opencode-v2": "0.8.0",
+  "integrations/opencode-v2": "0.8.1",
   "integrations/claude": "0.7.0",
   "integrations/omp": "0.4.1",
   "integrations/grok": "0.3.0"
