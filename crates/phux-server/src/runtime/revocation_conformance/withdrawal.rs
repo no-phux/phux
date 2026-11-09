@@ -290,3 +290,34 @@ async fn revocation_does_not_kill_the_workloads_terminals() {
     })
     .await;
 }
+
+#[tokio::test(flavor = "current_thread")]
+async fn a_sync_that_drops_a_managed_credential_ends_its_live_connections() {
+    local(async {
+        let dir = tempfile::tempdir().unwrap();
+        let registry = dir.path().join("workload-keys");
+        let org = crate::workload::TestOrg::new("no-phux");
+        let leaf = org.leaf(&rcgen::KeyPair::generate().unwrap());
+        let sync = |entries: &[serde_json::Value]| {
+            WorkloadRegistry::sync_managed(&registry, org.name, &org.document(entries)).unwrap()
+        };
+        sync(&[crate::workload::managed_entry(&leaf, &["*@global"])]);
+        let credential_id = WorkloadRegistry::load(&registry).unwrap().credentials()[0]
+            .id
+            .clone();
+        let engine = std::sync::Arc::new(crate::policy::ScopedPolicy::paired(std::sync::Arc::new(
+            crate::workload::ReloadingWorkloadRegistry::load(registry.clone()).unwrap(),
+        )));
+        let fx = Fixture::with_engine(dir, registry.clone(), credential_id, engine);
+        let agent = fx.workload().await;
+
+        assert_eq!(sync(&[]).removed, 1);
+        fx.sweep();
+
+        agent
+            .assert_ended_with(DetachReason::AuthorizationRevoked)
+            .await;
+        agent.finish().await;
+    })
+    .await;
+}

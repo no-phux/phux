@@ -1,8 +1,9 @@
 //! The authority and registry verbs of `phux workload`: `authority
-//! [--init|--rotate]`, `list`, `repair-paired`, `grant`, `ungrant`, and
-//! `revoke`.
+//! [--init|--rotate]`, `list`, `repair-paired`, `grant`, `ungrant`,
+//! `revoke`, and `sync-managed`.
 
-use std::path::PathBuf;
+use std::io::Read;
+use std::path::{Path, PathBuf};
 
 use chrono::Utc;
 use phux_protocol::kinds::Verb;
@@ -12,7 +13,7 @@ use phux_server::workload::{self, WorkloadCredential, WorkloadPaths, WorkloadReg
 use serde_json::json;
 
 use super::{Report, cli_error, timestamp};
-use crate::commands::json_err::CliError;
+use crate::commands::json_err::{CliError, codes};
 use crate::commands::update::apply::hex_lower;
 
 pub(super) fn authority(paths: &WorkloadPaths, init: bool) -> Result<Report, CliError> {
@@ -155,6 +156,12 @@ fn credential_lines(credential: &WorkloadCredential, now: i64, public_keys: bool
         format!("  principal: {}", credential.enrolled_for().as_str()),
         format!("  expires: {expires}"),
     ];
+    if let Some(subject) = &credential.subject {
+        lines.push(format!("  subject: {subject}"));
+    }
+    if let Some(org) = &credential.managed {
+        lines.push(format!("  managed by: {org}"));
+    }
     if let Some(revoked_at) = credential.revoked_at {
         lines.push(format!("  revoked: {}", timestamp(revoked_at)));
     }
@@ -179,6 +186,8 @@ fn credential_document(
         "principal": credential.enrolled_for().as_str(),
         "expires_at": credential.expires_at,
         "revoked_at": credential.revoked_at,
+        "subject": credential.subject,
+        "managed": credential.managed,
     });
     if public_keys {
         document["public_key"] = json!(hex_lower(&credential.public_key));
@@ -390,6 +399,55 @@ fn revoke_ticket(paths: &WorkloadPaths, ticket_id: &str) -> Result<Report, CliEr
             "newly_revoked": newly_revoked,
         }),
         prose,
+        payload: None,
+    })
+}
+
+/// Largest `sync-managed` document read: the registry's own file bound.
+const MAX_MANAGED_DOCUMENT: u64 = 4 * 1024 * 1024;
+
+/// `phux workload sync-managed`: replace organization `org`'s credentials
+/// with the document in `file` (stdin for `-` or none).
+pub(super) fn sync_managed(
+    paths: &WorkloadPaths,
+    org: &str,
+    file: Option<&Path>,
+) -> Result<Report, CliError> {
+    let mut document = Vec::new();
+    let read = match file.filter(|path| *path != Path::new("-")) {
+        // The path is not echoed, as for `add-key --file`.
+        Some(path) => std::fs::File::open(path)
+            .and_then(|file| file.take(MAX_MANAGED_DOCUMENT).read_to_end(&mut document)),
+        None => std::io::stdin()
+            .lock()
+            .take(MAX_MANAGED_DOCUMENT)
+            .read_to_end(&mut document),
+    };
+    read.map_err(|error| {
+        CliError::new(
+            codes::WORKLOAD,
+            format!("cannot read the managed credentials document: {error}"),
+            "",
+        )
+    })?;
+    let outcome = WorkloadRegistry::sync_managed(&paths.registry, org, &document)
+        .map_err(|error| cli_error(&error))?;
+    Ok(Report {
+        document: json!({
+            "schema_version": 1,
+            "operation": "sync-managed",
+            "org": org,
+            "added": outcome.added,
+            "updated": outcome.updated,
+            "removed": outcome.removed,
+            "unchanged": outcome.unchanged,
+            "registry_generation": outcome.generation,
+            "restart_required": false,
+        }),
+        prose: vec![format!(
+            "{org}: {} added, {} updated, {} removed, {} unchanged (registry generation {}).",
+            outcome.added, outcome.updated, outcome.removed, outcome.unchanged, outcome.generation
+        )],
         payload: None,
     })
 }

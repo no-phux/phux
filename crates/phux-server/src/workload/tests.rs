@@ -7,6 +7,8 @@ use super::*;
 
 #[path = "tests/grants.rs"]
 mod grants;
+#[path = "tests/managed.rs"]
+mod managed;
 #[path = "tests/paired.rs"]
 mod paired;
 #[path = "tests/watch.rs"]

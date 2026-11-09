@@ -6854,6 +6854,8 @@ Commands:
                  ceiling.
   revoke         Revoke a credential: new connections are refused and live ones
                  end.
+  sync-managed   Replace an organization's managed credentials with one
+                 document.
   ungrant        Remove one scope grant from an enrolled credential.
   help           Print this message or the help of the given subcommand(s)
 
@@ -7042,6 +7044,35 @@ Arguments:
                    pair --enroll` or `phux host ticket`.
 
 Flags:
+  -h, --help           Print help
+
+Global flags:
+      --socket <PATH>  Server socket to dial (default: `$PHUX_SOCKET`)
+      --json           Emit the result as JSON on stdout.
+```
+
+## `phux workload sync-managed`
+
+```text
+Replace an organization's managed credentials with one document.
+
+Reads `{"v":1,"org":NAME,"roots":[PEM CA...],"credentials":[...]}` from FILE, or
+stdin when FILE is `-` or omitted. Each credential is a PEM `certificate` that
+chains to one of `roots`, `scopes` as `add-key --scope` takes them, a
+`principal` (`human` or `automation`), and an optional `subject` and RFC 3339
+`expires_at` (clamped to the certificate's expiry). Every credential this
+organization managed before is replaced; others are untouched. A removed
+credential's live connections end. A managed credential connects without a
+pairing token, so only feed this a document from a control plane you trust.
+
+Usage: phux workload sync-managed <--org <NAME>> [FILE]
+
+Arguments:
+  [FILE]  The document, or `-` for stdin (the default).
+
+Flags:
+      --org <NAME>     The organization: 1 to 63 of a-z, 0-9, and `-`; must
+                       match the document's `org`.
   -h, --help           Print help
 
 Global flags:

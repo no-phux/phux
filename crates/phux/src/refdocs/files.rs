@@ -85,6 +85,7 @@ pub(crate) fn page() -> Page {
          ├── remote-key.pem      # its private key (owner-only, 0600)\n\
          ├── remote-tokens       # structured credential store (owner-only, 0600)\n\
          ├── enrollment-tickets  # single-use enrollment ticket hashes (owner-only, 0600)\n\
+         ├── workload-org-roots/ # each organization's root certificates (owner-only)\n\
          ├── reports/            # local bug-report bundles (TUI C-a B, phux report)\n\
          ├── ideas/              # phux idea spool, one file per unsent capture\n\
          ├── service-wrapper.sh  # `phux service install --restore` wrapper\n\
@@ -162,6 +163,12 @@ pub(crate) fn page() -> Page {
            the scope and lifetime the credential it enrolls gets; the \
            first redemption consumes it. It sits beside the \
            workload registry and moves with `PHUX_WORKLOAD_KEYS`.\n\
+         - `workload-org-roots/` holds `<org>.pem`, the root \
+           certificates `phux workload sync-managed` was handed for that \
+           organization, mode `0600` in a `0700` directory. A paired \
+           listener trusts them beside the workload CA and re-reads them \
+           when they change. It sits beside the workload registry and \
+           moves with `PHUX_WORKLOAD_KEYS`.\n\
          - `ideas/` is the `phux idea` spool (`ideas/spool/`, one file per \
            idea that does not yet have a 2xx). The file keeps the \
            idempotency key. A network failure leaves it; the next \

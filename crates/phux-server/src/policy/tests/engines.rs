@@ -23,6 +23,8 @@ fn credential(id: &str, scopes: &[&str]) -> AuthenticatedCredential {
         expires_at: None,
         generation: 1,
         registry_instance: None,
+        subject: None,
+        managed: None,
     }
 }
 

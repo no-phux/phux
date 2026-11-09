@@ -1,7 +1,8 @@
 //! `phux workload` — the mTLS workload authority (ADR-0116,
 //! `docs/remote.md#who-can-connect`): `authority [--init|--rotate]`, `add-key` (enroll a
 //! certificate or sign a CSR, read from stdin or `--file`, never argv), `list`,
-//! `repair-paired`, `grant`/`ungrant` (one scope, no re-pair), and `revoke`.
+//! `repair-paired`, `grant`/`ungrant` (one scope, no re-pair), `revoke`, and
+//! `sync-managed` (an organization's credentials, as one document).
 //! Like `phux pair` these write the state directory directly; a running
 //! server sees the new registry generation on its next connection.
 //! Nothing here reads or prints a private key, the CA key's path, or any
@@ -20,7 +21,7 @@ mod add_key;
 mod registry;
 
 use self::add_key::{AddKey, IssuedTo, add_key};
-use self::registry::{authority, change_scope, list, repair_paired, revoke, rotate};
+use self::registry::{authority, change_scope, list, repair_paired, revoke, rotate, sync_managed};
 
 /// Default credential lifetime: 90 days.
 const DEFAULT_EXPIRY_SECONDS: i64 = 90 * 24 * 60 * 60;
@@ -193,6 +194,26 @@ pub(crate) enum WorkloadAction {
         #[usage(value_name = "CREDENTIAL_ID")]
         credential_id: String,
     },
+    /// Replace an organization's managed credentials with one document.
+    ///
+    /// Reads `{"v":1,"org":NAME,"roots":[PEM CA...],"credentials":[...]}`
+    /// from FILE, or stdin when FILE is `-` or omitted. Each credential is a
+    /// PEM `certificate` that chains to one of `roots`, `scopes` as `add-key
+    /// --scope` takes them, a `principal` (`human` or `automation`), and an
+    /// optional `subject` and RFC 3339 `expires_at` (clamped to the
+    /// certificate's expiry). Every credential this organization managed
+    /// before is replaced; others are untouched. A removed credential's live
+    /// connections end. A managed credential connects without a pairing
+    /// token, so only feed this a document from a control plane you trust.
+    SyncManaged {
+        /// The organization: 1 to 63 of a-z, 0-9, and `-`; must match the
+        /// document's `org`.
+        #[usage(long, value_name = "NAME")]
+        org: String,
+        /// The document, or `-` for stdin (the default).
+        #[usage(value_name = "FILE")]
+        file: Option<PathBuf>,
+    },
 }
 
 /// `phux workload ...`. Exit 0 on success, 1 on any refusal or failure.
@@ -241,6 +262,7 @@ pub(crate) fn run(action: WorkloadAction, json: bool) -> ExitCode {
             scope,
         } => change_scope(&paths, &credential_id, &scope, false),
         WorkloadAction::Revoke { credential_id } => revoke(&paths, &credential_id),
+        WorkloadAction::SyncManaged { org, file } => sync_managed(&paths, &org, file.as_deref()),
     };
     match outcome {
         Ok(report) => report.print(json),

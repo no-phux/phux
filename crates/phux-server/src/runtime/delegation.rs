@@ -266,6 +266,8 @@ fn stamp(credential: &DelegatedCredential) -> AuthenticatedCredential {
         expires_at: Some(credential.expires_at),
         generation: 0,
         registry_instance: None,
+        subject: None,
+        managed: None,
     }
 }
 

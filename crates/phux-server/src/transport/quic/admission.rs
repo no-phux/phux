@@ -63,8 +63,11 @@ pub(super) async fn admit_connection(
     let credential = match &admission {
         QuicAdmission::Open => None,
         admission => {
-            let preamble =
-                tokio::time::timeout(ADMISSION_DEADLINE, admit(&mut recv, admission)).await;
+            let preamble = tokio::time::timeout(
+                ADMISSION_DEADLINE,
+                admit_unless_managed(&mut recv, admission, workload_credential.as_ref()),
+            )
+            .await;
             let Ok(Some(credential)) = preamble else {
                 if preamble.is_err() {
                     debug!(%remote, "quic auth preamble timed out");
@@ -80,7 +83,7 @@ pub(super) async fn admit_connection(
                 conn.close(AUTH_FAILED_CODE.into(), b"unauthorized");
                 return None;
             };
-            Some(credential)
+            credential
         }
     };
 
@@ -164,6 +167,25 @@ pub(super) async fn admit(
             token.authenticate(&preamble)
         }
     }
+}
+
+/// [`admit`], except for a workload credential an organization manages under
+/// the pairing store: the organization's CA and the registry entry are its
+/// authority (`docs/remote.md#managed-by-an-organization`), so its client's
+/// preamble is read and the value ignored. `None` refuses; `Some(None)`
+/// admits with no bearer.
+async fn admit_unless_managed(
+    recv: &mut quinn::RecvStream,
+    admission: &QuicAdmission,
+    workload: Option<&crate::auth::AuthenticatedCredential>,
+) -> Option<Option<crate::auth::AuthenticatedCredential>> {
+    let managed = workload.is_some_and(|credential| credential.managed.is_some());
+    if managed && matches!(admission, QuicAdmission::Store(_)) {
+        return read_length_prefixed(recv, MAX_TOKEN_PREAMBLE)
+            .await
+            .map(|_| None);
+    }
+    admit(recv, admission).await.map(Some)
 }
 
 /// The pairing-store admission retained so its bearer's revocation ends the
