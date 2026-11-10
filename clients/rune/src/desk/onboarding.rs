@@ -316,7 +316,7 @@ impl Desk {
     /// the list to drag in.
     pub fn grant(&mut self, service: Service) {
         self.ask(
-            &["server", "permissions", "--open", service.id()],
+            &["server", "permissions", "--open", service.id(), "--json"],
             QUICK,
             |out| Done::Opened(out.map(|b| words::parse_opened(&b))),
         );

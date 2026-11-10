@@ -5,7 +5,7 @@
 //!
 //! - `phux skill setup|status --json`: per agent
 //!   `{agent, detected, skill:{path, state}, hook:{state, reason?}}`.
-//! - `phux server permissions --json`: `{responsible_path, services:[{service,
+//! - `phux server permissions --json`: `{bundle, responsible_path, permissions:[{service,
 //!   status}]}`, or the bare array.
 //! - `phux server permissions --open SERVICE`: prints the server's bundle.
 //! - `phux migrate --json --agent ID`: `{sources, agent, config_path,
@@ -262,7 +262,7 @@ impl Permissions {
 
 pub fn parse_permissions(bytes: &[u8]) -> Result<Permissions, String> {
     let value = json(bytes)?;
-    let services = list(&value, &["services"])
+    let services = list(&value, &["permissions", "services"])
         .iter()
         .filter_map(|row| {
             let id = row["service"].as_str()?;
@@ -277,7 +277,7 @@ pub fn parse_permissions(bytes: &[u8]) -> Result<Permissions, String> {
         })
         .collect();
     Ok(Permissions {
-        responsible_path: string(&value, "responsible_path"),
+        responsible_path: string(&value, "bundle").or_else(|| string(&value, "responsible_path")),
         services,
     })
 }
@@ -422,6 +422,15 @@ mod tests {
         assert_eq!(
             perms.responsible_path.as_deref(),
             Some("/Apps/phux Server.app")
+        );
+        let shipped = br#"{"executable":"/x/phux","responsible_path":"/Apps/phux Server.app",
+            "bundle":"/S/Current/phux Server.app",
+            "permissions":[{"service":"screen_recording","status":"granted"}]}"#;
+        let perms = parse_permissions(shipped).unwrap();
+        assert_eq!(perms.grant(Service::ScreenRecording), Grant::Granted);
+        assert_eq!(
+            perms.responsible_path.as_deref(),
+            Some("/S/Current/phux Server.app")
         );
         let bare = br#"[{"service":"accessibility","status":"granted"}]"#;
         let perms = parse_permissions(bare).unwrap();
