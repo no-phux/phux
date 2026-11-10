@@ -79,7 +79,13 @@ final class OnboardingController: UITableViewController {
         cell.accessibilityIdentifier = ["scan-pairing", "paste-pairing", "find-tailnet"][indexPath.row]
         if busy { cell.selectionStyle = .none; cell.contentView.alpha = 0.5 }
         if indexPath.row == 1 {
-            let paste = UIPasteControl()
+            let options = UIPasteControl.Configuration()
+            options.displayMode = .iconOnly
+            let paste = UIPasteControl(configuration: options)
+            // UITableView accessory views need their own nonzero bounds;
+            // intrinsic content size alone leaves this control invisible.
+            paste.frame = CGRect(x: 0, y: 0, width: 44, height: 44)
+            paste.accessibilityLabel = "Paste pairing link"
             paste.target = self
             cell.accessoryView = paste
         }

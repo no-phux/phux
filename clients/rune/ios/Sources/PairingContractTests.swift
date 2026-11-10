@@ -39,6 +39,9 @@ enum PairingContractTests {
         let welcome = OnboardingController(values: nil)
         welcome.loadViewIfNeeded()
         try require(welcome.tableView.numberOfRows(inSection: 1) == 3, "Scan, Paste and Tailscale are primary")
+        let paste = welcome.tableView(welcome.tableView, cellForRowAt: IndexPath(row: 1, section: 1)).accessoryView
+        try require(paste is UIPasteControl && (paste?.bounds.width ?? 0) >= 44 && (paste?.bounds.height ?? 0) >= 44,
+                    "the explicit-consent Paste control must be visible and tappable")
         welcome.receive(link)
         guard case .review = welcome.flow.stage else { throw Failure(message: "import must stage a confirmation") }
         welcome.flow.cancel()
