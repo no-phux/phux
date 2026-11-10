@@ -68,29 +68,26 @@ pub fn view(desk: &Desk, cx: &mut Cx<Desk>) -> El {
     } else {
         ground
     };
-    if desk.native.is_some() {
-        // An accessory inside `screen` precedes root sheets and is inert
-        // behind their modal scrims. Reserve it below the modal content and
-        // append it AFTER every sheet, just as an OS input accessory behaves.
-        let content = overlays(
-            el().h(0.0).grow(1.0).w_full().min_h(0.0).child(screen),
-            desk,
-            &p,
-        );
-        return col()
-            .key("phone")
-            .w_full()
-            .h_full()
-            .fill(fill)
-            .child(content)
-            .children(bar);
-    }
-    let screen =
-        screen
-            .key("phone")
-            .children(bar)
-            .child(keyboard(phone, keyboard_visible, &controls));
-    overlays(el().w_full().h_full().fill(fill).child(screen), desk, &p)
+    // Both keyboards sit after every sheet, outside its measured viewport.
+    // Rune treats post-modal controls as part of the modal: keys remain live
+    // while the scrim still blocks the terminal and navigation behind it.
+    let content = overlays(
+        el().h(0.0).grow(1.0).w_full().min_h(0.0).child(screen),
+        desk,
+        &p,
+    );
+    col()
+        .key("phone")
+        .w_full()
+        .h_full()
+        .fill(fill)
+        .child(content)
+        .children(bar)
+        .children(
+            desk.native
+                .is_none()
+                .then(|| keyboard(phone, keyboard_visible, &controls)),
+        )
 }
 
 fn overlays(root: El, desk: &Desk, p: &Ink) -> El {

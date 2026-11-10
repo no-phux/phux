@@ -171,9 +171,8 @@ impl Desk {
     }
 
     /// A key from the drawn keyboard or the accessory bar, for whatever has
-    /// the keyboard: the palette's or find's field, the confirm bar, else
-    /// the terminal. A sheet the drawn keyboard can't type into yet gets
-    /// nothing, never the terminal behind it.
+    /// the keyboard: a field or modal first, else the terminal. Delivery is
+    /// synchronous, so closing a field cannot redirect a queued key behind it.
     pub fn soft(&mut self, soft: Soft, tx: &mut Tx) {
         if self.native.is_some() && super::native_input::accessory(self, &soft, tx) {
             return;
@@ -185,6 +184,10 @@ impl Desk {
             Some(Modal::Confirm) => Field::Confirm,
             Some(Modal::PhonePicker) => Field::PanePicker,
             Some(Modal::Settings) => Field::Settings,
+            Some(Modal::Rename | Modal::Machines | Modal::Inbox) => {
+                super::native_input::accessory(self, &soft, tx);
+                return;
+            }
             Some(_) => return,
         };
         let Some(phone) = self.phone.as_mut() else {
