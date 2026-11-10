@@ -24,6 +24,9 @@ pub struct Platform {
 #[serde(deny_unknown_fields)]
 pub struct Configuration {
     pub endpoint: String,
+    /// Relay SNI; also scopes the end-to-end authority handshake to its route.
+    #[serde(default)]
+    pub tls_server_name: Option<String>,
     #[serde(default)]
     pub certificate_pin: Option<String>,
     #[serde(default)]
@@ -56,7 +59,22 @@ impl Configuration {
             )
         });
         self.validate_credential_shapes()?;
+        self.apply_relay_route(&mut target)?;
         Ok(target)
+    }
+
+    fn apply_relay_route(&self, target: &mut Target) -> Result<(), String> {
+        let Some(name) = &self.tls_server_name else {
+            return Ok(());
+        };
+        if !matches!(target.transport, phux_client_runtime::Transport::Quic(_)) {
+            return Err("A relay route needs a quic:// endpoint.".into());
+        }
+        let route = phux_client_runtime::target::validate_tls_server_name(name)
+            .map_err(|_| "The relay route must be a DNS server name.")?;
+        target.tls_server_name = Some(route.clone());
+        target.authority.route = Some(route);
+        Ok(())
     }
 
     pub fn enrollment_target(&self) -> Result<Target, String> {
@@ -121,6 +139,82 @@ impl Configuration {
         }
         Ok(())
     }
+}
+
+/// Import one complete enrollment link without merging stored credentials.
+/// Returns configuration plus ephemeral ticket and public confirmation labels.
+/// No connection or enrollment starts until the native host obtains consent.
+pub fn parse_pairing_invite(raw: &str) -> Result<Value, String> {
+    validate_invite_input(raw)?;
+    let normalized;
+    let link = if let Some(query) = raw.strip_prefix("phux-rune://connect?") {
+        normalized = format!("https://phux.sh/connect?{query}");
+        normalized.as_str()
+    } else {
+        raw
+    };
+    let invite = phux_client_runtime::pairing::parse_connect_link(link)?;
+    let configuration = invite_configuration(&invite)?;
+    let ticket = invite
+        .enrollment_ticket
+        .as_deref()
+        .ok_or("Pairing needs the single-use enrollment ticket. Generate a new phone QR.")?;
+    if !is_hex_secret(ticket) {
+        return Err("The enrollment ticket must contain 64 hexadecimal digits.".into());
+    }
+    let endpoint = configuration["endpoint"]
+        .as_str()
+        .ok_or("Invalid pairing endpoint.")?;
+    let peer = invite.tls_server_name.as_ref().map_or_else(
+        || endpoint.to_owned(),
+        |route| format!("{route} via {endpoint}"),
+    );
+    Ok(json!({"configuration": configuration, "ticket": ticket,
+        "name": invite.name, "peer": peer}))
+}
+
+fn validate_invite_input(raw: &str) -> Result<(), String> {
+    if raw.len() > phux_client_runtime::pairing::MAX_CONNECT_LINK_BYTES {
+        return Err("Pairing links must not exceed 16 KiB.".into());
+    }
+    if raw.chars().any(char::is_control) {
+        return Err("Pairing links must not contain control characters.".into());
+    }
+    Ok(())
+}
+
+fn invite_configuration(
+    invite: &phux_client_runtime::pairing::ConnectLink,
+) -> Result<Value, String> {
+    let endpoint = invite
+        .quic
+        .as_deref()
+        .ok_or("Phone pairing needs a quic:// endpoint. Generate a new phone QR.")?;
+    let pin = invite
+        .cert_fingerprint
+        .as_deref()
+        .filter(|pin| !pin.is_empty())
+        .ok_or("Pairing needs the server certificate pin.")?;
+    let authority = invite
+        .ca_fingerprint
+        .as_deref()
+        .ok_or("Pairing needs the certificate authority pin. Generate a new phone QR.")?;
+    if !is_hex_secret(&invite.token) {
+        return Err("The pairing token must contain 64 hexadecimal digits.".into());
+    }
+    let mut value = json!({"endpoint": endpoint, "certificate_pin": pin,
+        "authority_ca": authority, "token": invite.token});
+    if let Some(route) = &invite.tls_server_name {
+        value["tls_server_name"] = json!(route);
+    }
+    let configuration: Configuration =
+        serde_json::from_value(value.clone()).map_err(|_| "Invalid pairing configuration.")?;
+    configuration.enrollment_target()?;
+    Ok(value)
+}
+
+fn is_hex_secret(value: &str) -> bool {
+    value.len() == 64 && value.bytes().all(|byte| byte.is_ascii_hexdigit())
 }
 
 fn validate_pin(pin: &str) -> Result<(), String> {
@@ -251,13 +345,31 @@ pub fn report(rt: &rune::Runtime<State>, frames: u64, marker: &str) -> Value {
 }
 
 #[cfg(test)]
+mod pairing_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use phux_client_runtime::Transport;
 
+    #[test]
+    fn relay_configuration_rejects_invalid_sni_without_dropping_it() {
+        let mut configuration = config("quic://localhost:8788");
+        for route in ["", "127.0.0.1", "secret/bad", "-bad", "secret\0"] {
+            configuration.tls_server_name = Some(route.into());
+            let error = configuration.target().unwrap_err();
+            assert!(!error.contains("secret"));
+        }
+        configuration.tls_server_name = Some("mini-route".into());
+        assert!(configuration.target().is_ok());
+        configuration.endpoint = "wss://localhost:8787".into();
+        assert!(configuration.target().is_err());
+    }
+
     fn config(endpoint: &str) -> Configuration {
         Configuration {
             endpoint: endpoint.into(),
+            tls_server_name: None,
             certificate_pin: None,
             token: None,
             session: None,
