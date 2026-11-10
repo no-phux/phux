@@ -51,7 +51,8 @@ pub fn configure_terminal_for_kitty_graphics(
 /// whose content generation the outer terminal lacks is transmitted once, an
 /// image whose placements moved is re-placed without its payload, and an
 /// image that is no longer visibly placed is deleted. Unchanged state writes
-/// nothing. Placements keep their original identities, source rectangles,
+/// nothing. Image ids go through a [`KittyResidency::shared`] mapping.
+/// Placements keep their original identities, source rectangles,
 /// offsets and stacking order. Raw pixel payloads travel zlib-compressed
 /// (`o=z`) when that is smaller.
 ///
@@ -96,7 +97,7 @@ pub fn emit_kitty_graphics_snapshot(
     transmit_images(&graphics, out, &mut image_ids)?;
     replay.retain(|p| image_ids.binary_search(&p.image_id).is_ok());
     for placement in replay {
-        placement.write(out, (0, 0))?;
+        placement.write(out, (0, 0), placement.image_id)?;
     }
     Ok(!image_ids.is_empty())
 }
@@ -124,7 +125,7 @@ fn transmit_images(
     for index in 0..ids.len() {
         let id = ids[index];
         if let Some(image) = graphics.image(id)
-            && write_image_apc(out, &image)?
+            && write_image_apc(out, &image, id)?
         {
             ids[transmitted] = id;
             transmitted += 1;
@@ -220,7 +221,13 @@ impl ReplayPlacement {
         }))
     }
 
-    fn write(&self, out: &mut impl Write, origin: (u16, u16)) -> Result<(), KittyReplayError> {
+    /// Write this placement for the outer terminal's image `image_id`.
+    fn write(
+        &self,
+        out: &mut impl Write,
+        origin: (u16, u16),
+        image_id: u32,
+    ) -> Result<(), KittyReplayError> {
         if let Some((col, row)) = self.position {
             write_cup(
                 out,
@@ -232,7 +239,7 @@ impl ReplayPlacement {
         write!(
             out,
             "\x1b_Ga=p,i={},p={},U={},c={},r={},x={},y={},w={},h={},X={},Y={},z={},C=1,q=2;\x1b\\",
-            self.image_id,
+            image_id,
             if self.external { self.placement_id } else { 0 },
             u8::from(self.virtual_placement),
             geometry.cols,
@@ -398,15 +405,20 @@ fn mapped_source_interval(
     ))
 }
 
-/// Replace pixels and retire old placements before replaying the current set.
-fn write_image_apc(out: &mut impl Write, image: &Image<'_>) -> Result<bool, KittyReplayError> {
+/// Replace pixels and retire old placements before replaying the current set,
+/// as the outer terminal's image `id`.
+fn write_image_apc(
+    out: &mut impl Write,
+    image: &Image<'_>,
+    id: u32,
+) -> Result<bool, KittyReplayError> {
     let Some((format, data)) = image_payload(image)? else {
         return Ok(false);
     };
     let compressed = (format != PNG_FORMAT).then(|| zlib(data)).flatten();
     let header = ImageHeader {
         format,
-        id: image.id()?,
+        id,
         width: image.width()?,
         height: image.height()?,
         compressed: compressed.is_some(),
@@ -544,6 +556,7 @@ fn write_cup(out: &mut impl Write, row: u16, col: u16) -> io::Result<()> {
     )
 }
 
+mod ids;
 mod residency;
 
 pub use residency::KittyResidency;

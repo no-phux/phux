@@ -8,11 +8,15 @@
 
 use std::{io::Write, mem, ops::Range};
 
-use libghostty_vt::kitty::graphics::Graphics;
+use libghostty_vt::{
+    kitty::graphics::Graphics,
+    style::{RgbColor, StyleColor},
+};
 
 use super::{
-    KittyReplayError, ReplayPlacement, image_payload, write_delete_image, write_delete_placements,
-    write_image_apc,
+    KittyReplayError, ReplayPlacement,
+    ids::{self, IdMap},
+    image_payload, write_delete_image, write_delete_placements, write_image_apc,
 };
 
 /// libghostty never stamps a stored image with generation zero, so zero
@@ -23,13 +27,17 @@ const UNKNOWN_GENERATION: u64 = 0;
 /// as [`super::emit_kitty_graphics_replay`] last left them.
 ///
 /// Own one per pane renderer per outer terminal. A fresh value assumes the
-/// outer terminal holds nothing of this pane.
+/// outer terminal holds nothing of this pane. The default sends pane image
+/// ids unchanged, for an outer terminal that shows this pane alone; panes
+/// sharing one outer terminal each use [`Self::shared`].
 #[derive(Debug, Default)]
 pub struct KittyResidency {
     held: Resident,
     /// Scratch for the replay being staged, swapped with `held` on success
     /// so steady-state replays do not allocate.
     next: Resident,
+    /// Pane-to-outer image ids; `None` sends pane ids as they are.
+    ids: Option<IdMap>,
 }
 
 #[derive(Debug, Default)]
@@ -43,6 +51,8 @@ struct Resident {
 #[derive(Debug)]
 struct ResidentImage {
     id: u32,
+    /// The id the outer terminal knows this image by.
+    outer: u32,
     generation: u64,
     /// This image's commands within [`Resident::placements`].
     placements: Range<usize>,
@@ -69,6 +79,34 @@ impl Resident {
 }
 
 impl KittyResidency {
+    /// A residency for one of several panes sharing an outer terminal: its
+    /// image ids are mapped into outer ids no other shared residency on this
+    /// thread uses, stable for the residency's life.
+    #[must_use]
+    pub fn shared() -> Self {
+        Self {
+            held: Resident::default(),
+            next: Resident::default(),
+            ids: Some(IdMap::default()),
+        }
+    }
+
+    /// The id the outer terminal knows pane image `pane_id` by, once mapped.
+    #[must_use]
+    pub fn outer_id(&self, pane_id: u32) -> Option<u32> {
+        self.ids
+            .as_ref()
+            .map_or(Some(pane_id), |ids| ids.get(pane_id))
+    }
+
+    /// The foreground a Unicode placeholder cell painted with `fg` must use on
+    /// the outer terminal: its image id's low 24 bits, mapped, as truecolour.
+    /// The placement id (underline colour) and the high byte (third
+    /// diacritic) need no rewrite.
+    pub fn placeholder_fg(&mut self, fg: StyleColor) -> RgbColor {
+        ids::placeholder_color(self.ids.as_mut(), fg)
+    }
+
     /// Forget what the outer terminal shows: after a screen clear, a dropped
     /// or unshipped frame, or anything else that may have removed images or
     /// placements behind the replay's back. The next replay re-transmits
@@ -99,6 +137,7 @@ impl KittyResidency {
         match self.sync(graphics, out) {
             Ok(touched_cells) => {
                 mem::swap(&mut self.held, &mut self.next);
+                self.prune_ids(graphics)?;
                 Ok(touched_cells)
             }
             Err(error) => {
@@ -125,12 +164,14 @@ impl KittyResidency {
             if image_payload(&image)?.is_none() {
                 continue;
             }
+            let outer = self.ids.as_mut().map_or(id, |ids| ids.outer(id));
             let start = self.next.placements.len();
             for placement in group {
-                placement.write(&mut self.next.placements, origin)?;
+                placement.write(&mut self.next.placements, origin, outer)?;
             }
             self.next.images.push(ResidentImage {
                 id,
+                outer,
                 generation: image.generation()?,
                 placements: start..self.next.placements.len(),
                 classic: group.iter().any(|p| !p.virtual_placement),
@@ -157,7 +198,7 @@ impl KittyResidency {
         let mut touched_cells = false;
         for image in &self.held.images {
             if self.next.get(image.id).is_none() {
-                write_delete_image(out, image.id)?;
+                write_delete_image(out, image.outer)?;
                 touched_cells |= image.classic;
             }
         }
@@ -181,11 +222,11 @@ impl KittyResidency {
                     return Ok(false);
                 }
                 // Anonymous p=0 placements cannot be replaced by ID.
-                write_delete_placements(out, image.id)?;
+                write_delete_placements(out, image.outer)?;
             }
             _ => {
                 if let Some(pixels) = graphics.image(image.id) {
-                    write_image_apc(out, &pixels)?;
+                    write_image_apc(out, &pixels, image.outer)?;
                 }
             }
         }
@@ -204,6 +245,24 @@ impl KittyResidency {
         self.held.images.sort_unstable_by_key(|image| image.id);
         self.next.placements.clear();
         self.forget();
+    }
+}
+
+impl KittyResidency {
+    /// Past [`IdMap`]'s bound, release the mappings of images neither held
+    /// nor stored any more.
+    fn prune_ids(&mut self, graphics: &Graphics<'_>) -> Result<(), KittyReplayError> {
+        let Some(map) = self.ids.as_mut().filter(|map| map.wants_prune()) else {
+            return Ok(());
+        };
+        let mut stored = Vec::new();
+        graphics.image_ids_into(&mut stored)?;
+        let held = &self.held.images;
+        map.prune(|low| {
+            let same = |id: &u32| id & 0x00FF_FFFF == low;
+            stored.iter().any(same) || held.iter().any(|image| same(&image.id))
+        });
+        Ok(())
     }
 }
 

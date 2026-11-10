@@ -2,6 +2,7 @@ use super::*;
 
 mod compression;
 mod residency;
+mod shared;
 
 #[test]
 fn base64_encodes_padding_cases() {
