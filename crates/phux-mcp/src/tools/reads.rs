@@ -22,14 +22,16 @@ async fn phux_ls(args: &Value) -> Result<Value, ToolError> {
 /// `phux_snapshot` — read a pane as structured data. `scrollback` is
 /// tri-state (absent: viewport; `0`: all history; `N`: last `N` rows);
 /// `tail`/`unwrap` are the ADR-0077 projections `phux snapshot` applies too.
+/// A document target is refused for its per-kind tool ([`terminal_reader`]).
 async fn phux_snapshot(args: &Value) -> Result<Value, ToolError> {
     let socket = socket_or_default(args);
     let selector = parse_target(args)?;
     let read = SnapshotRead::parse(args)?;
-    let terminal_id = resolve_selector(&socket, &selector, false).await?;
+    let resolved = resolve_resource(&socket, &selector, false).await?;
+    terminal_reader("phux_snapshot", Verb::Snapshot, &resolved)?;
     let screen = phux_client::snapshot::get_screen_scrollback_format(
         &socket,
-        terminal_id,
+        resolved.id,
         read.history(),
         read.cells,
         read.format_byte(),

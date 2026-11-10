@@ -8,7 +8,9 @@ async fn phux_send_keys(args: &Value) -> Result<Value, ToolError> {
             "`keys` must be a non-empty array of strings",
         ));
     }
-    let pane = resolve_selector(&socket, &selector, true).await?;
+    let resolved = resolve_resource(&socket, &selector, true).await?;
+    read::route(Verb::SendKeys, &resolved).map_err(|err| wrong_kind_error(&err))?;
+    let pane = resolved.id;
     phux_client::send_keys::send_to(&socket, pane.clone(), &keys).await?;
     Ok(json!({ "sent": true, "pane": pane_value(&pane) }))
 }

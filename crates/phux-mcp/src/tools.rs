@@ -17,6 +17,7 @@ use std::time::Duration;
 use phux_client::attach::AttachError;
 use phux_client::attach::connection::Connection;
 use phux_client::detach::DetachOutcome;
+use phux_client::read::{self, Resolved, Route, Verb};
 use phux_client::selector::{self, Selector};
 use phux_client::snapshot::{PROJECTED_DOCUMENT_MAX_BYTES, ScreenState};
 use phux_client::state::{self, StateView};

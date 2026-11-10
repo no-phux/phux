@@ -4,10 +4,11 @@ use std::time::Duration;
 
 use phux_client::attach::AttachError;
 use phux_client::deadline::Deadline;
+use phux_client::read::{Resolved, Route, Verb};
 use phux_client::wait::{Condition, MatchRegex, MatchScope};
 use phux_server::runtime::default_socket_path;
 
-use crate::commands::{cli_runtime, json_err, parse_selector, resolve_target};
+use crate::commands::{cli_runtime, json_err, parse_selector, read_kind, resolve_resource};
 
 /// Row count a bare `--tail` requests; pinned to the attribute literal and
 /// the `phux-core` constant by [`tests::bare_tail_matches_the_documented_constant`].
@@ -73,6 +74,11 @@ pub(crate) fn run_wait(mut args: WaitArgs<'_>) -> ExitCode {
         tail: args.tail,
         output_only: args.output_only,
     };
+    let terminal_flags = [
+        ("--tail", args.tail.is_some()),
+        ("--output-only", args.output_only),
+        ("--idle", args.idle.is_some()),
+    ];
     let condition = condition_for(&mut args);
     let timeout = args.timeout.map(Duration::from_secs);
     let socket_path = args.socket.unwrap_or_else(default_socket_path);
@@ -84,15 +90,29 @@ pub(crate) fn run_wait(mut args: WaitArgs<'_>) -> ExitCode {
     rt.block_on(async move {
         let deadline = Deadline::new(timeout);
         let preparation = async {
-            let terminal_id = resolve_target(&socket_path, &selector, "wait", json).await?;
-            probe_output_marks(&socket_path, &terminal_id, &scope).await;
-            Ok(terminal_id)
+            let (resolved, route) =
+                resolve_routed(&socket_path, &selector, &terminal_flags, json).await?;
+            if route == Route::Terminal {
+                probe_output_marks(&socket_path, &resolved.id, &scope).await;
+            }
+            Ok((resolved, route))
         };
         // Resolution and the probe share the first read's floor, so
         // `--timeout 0` still gets one real check of the condition.
         let first_read = deadline.floored(phux_client::wait::FIRST_READ_FLOOR);
         let terminal_id = match first_read.run(preparation).await {
-            Some(Ok(id)) => id,
+            Some(Ok((resolved, Route::Document(kind)))) => {
+                return read_kind::wait_document(
+                    &socket_path,
+                    &resolved,
+                    kind,
+                    &condition,
+                    first_read,
+                    json,
+                )
+                .await;
+            }
+            Some(Ok((resolved, Route::Terminal))) => resolved.id,
             Some(Err(code)) => return code,
             None => {
                 return report_result(
@@ -126,6 +146,22 @@ pub(crate) fn run_wait(mut args: WaitArgs<'_>) -> ExitCode {
         };
         report_result(&result, json)
     })
+}
+
+/// Resolve the target and how `wait` reaches it ([`phux_client::read`]),
+/// refusing a kind with no text and a Terminal flag given for a document.
+async fn resolve_routed(
+    socket_path: &std::path::Path,
+    selector: &phux_client::selector::Selector,
+    terminal_flags: &[(&'static str, bool)],
+    json: bool,
+) -> Result<(Resolved, Route), ExitCode> {
+    let resolved = resolve_resource(socket_path, selector, "wait", json, false).await?;
+    let route = phux_client::read::route(Verb::Wait, &resolved)
+        .map_err(|err| read_kind::wrong_kind(json, &err))?;
+    phux_client::read::terminal_only(&resolved, route, terminal_flags)
+        .map_err(|err| read_kind::terminal_only(json, &err))?;
+    Ok((resolved, route))
 }
 
 // Probe only for --output-only. The caller bounds this with the same deadline

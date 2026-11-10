@@ -239,13 +239,15 @@ phux ranks agent evidence with the screen as the floor
 3. Pixels.
 
 Pixels are for a person watching and the last resort for an agent. An
-agent reads a tree with `phux agent tree snapshot|follow` or MCP
-`phux_tree_snapshot` and `phux_tree_wait`; producing one on macOS needs
-the Accessibility grant, not Screen Recording. A browser page has no kind of its own: `phux agent page mirror` drives one
-over the DevTools Protocol and publishes its accessibility tree into an
-`AccessibilityTree` and its screencast into a `PixelSurface` under one
-pane, so `phux agent tree snapshot` and `phux agent surface snapshot` read
-it like any other. Navigation and input are typed intents to the page's
+agent reads a tree with
+[`phux snapshot` and `phux wait`](./scripting.md#reading-a-screen),
+`phux agent tree snapshot|follow`, or MCP `phux_tree_snapshot` and
+`phux_tree_wait`; producing one on macOS needs the Accessibility grant, not
+Screen Recording. A browser page has no kind of its own: `phux agent page
+mirror` drives one over the DevTools Protocol and publishes its
+accessibility tree into an `AccessibilityTree` and its screencast into a
+`PixelSurface` under one pane, so `phux agent tree snapshot` and `phux agent
+surface snapshot` read it like any other. Navigation and input are typed intents to the page's
 producer, addressed to either of its documents.
 
 ## Authority
@@ -268,9 +270,6 @@ Each gap below holds on current `main`:
 - **A PTY-less producer.** Every producer runs in a Terminal pane,
   `phux agent app run` included. A supervised process without a PTY is
   added only if a PTY proves costly.
-- **Generic read verbs.** `phux snapshot` and `phux wait` read Terminals
-  only (`GET_SCREEN`); an application is read with the `phux agent
-  tree|surface|doc` verbs (`phux-rbz0y.9`).
 - **The kind catalog.** `KindSpec` does not yet own a kind's stream
   contract, spawn rule, geometry or input vocabulary; a new kind still edits
   closed matches in `phux-protocol`, the client kernel and the hub relay

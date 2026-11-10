@@ -53,6 +53,84 @@ pub(crate) async fn resolve_selector(
     }
 }
 
+/// [`resolve_selector`], reporting the resource's kind so a tool can
+/// dispatch on it ([`phux_client::read`]). An exact ID still resolves
+/// without the inventory; its kind is read from it when it can be, and is
+/// otherwise taken as a Terminal, whose read the server answers as before.
+///
+/// # Errors
+///
+/// As [`resolve_selector`].
+pub(crate) async fn resolve_resource(
+    socket: &Path,
+    selector: &Selector,
+    for_input: bool,
+) -> Result<Resolved, ToolError> {
+    if let Some(id) = selector.explicit_id() {
+        return Ok(match state::get_state(socket).await {
+            Ok(view) => Resolved::in_snapshot(view.snapshot(), id),
+            Err(_) => Resolved {
+                id,
+                kind: phux_protocol::ids::ResourceKind::Terminal,
+            },
+        });
+    }
+    let view = state::get_state(socket).await?;
+    let id = resolve_one_with(socket, selector, &view, for_input).await?;
+    Ok(Resolved::in_snapshot(view.snapshot(), id))
+}
+
+/// A verb refused for its target's kind, on the CLI's error contract.
+fn wrong_kind_error(err: &read::WrongKind) -> ToolError {
+    contract_error("wrong_resource_kind", err.to_string(), err.remedy(), 2)
+}
+
+/// Refuse anything but a Terminal for `tool`, an MCP screen reader.
+///
+/// The CLI verb reads a document by kind, through an attach; the MCP tool
+/// does not, so that it keeps its read-only annotation, and names the
+/// per-kind tool that reads the document instead.
+///
+/// # Errors
+///
+/// `wrong_resource_kind` naming the tool to use, or the kind refusal.
+fn terminal_reader(tool: &str, verb: Verb, resolved: &Resolved) -> Result<(), ToolError> {
+    let routed = read::route(verb, resolved);
+    if matches!(routed, Ok(Route::Terminal)) {
+        return Ok(());
+    }
+    let Some(instead) = per_kind_tool(verb, resolved.kind) else {
+        return routed.map(drop).map_err(|err| wrong_kind_error(&err));
+    };
+    Err(contract_error(
+        "wrong_resource_kind",
+        format!(
+            "{tool} reads a terminal's screen, and {} is {}",
+            selector::format_terminal_id(&resolved.id),
+            read::kind_label(resolved.kind)
+        ),
+        &format!("use {instead}"),
+        2,
+    ))
+}
+
+/// The tool that reads a document of `kind` for `verb`; `None` for a kind
+/// that is not a document.
+const fn per_kind_tool(verb: Verb, kind: phux_protocol::ids::ResourceKind) -> Option<&'static str> {
+    use phux_protocol::ids::ResourceKind;
+    match (verb, kind) {
+        (Verb::Snapshot, ResourceKind::AccessibilityTree) => Some("phux_tree_snapshot"),
+        (_, ResourceKind::PixelSurface) => Some("phux_surface_snapshot"),
+        (_, ResourceKind::AccessibilityTree) | (Verb::Wait, ResourceKind::Document) => {
+            Some("phux_tree_wait, which matches any document's text")
+        }
+        (_, ResourceKind::Document) => Some(
+            "`phux snapshot @N` on the CLI; no MCP tool reads a typed document's content yet",
+        ),
+        _ => None,
+    }
+}
+
 /// Resolve `selector` against `view` to one pane as the CLI does (ADR-0021),
 /// preferring the focused pane. A miss against a degraded view says so
 /// rather than claiming the target is gone. For read tools; a tool that
