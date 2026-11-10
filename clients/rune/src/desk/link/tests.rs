@@ -19,6 +19,8 @@ use phux_protocol::ids::ResourceId;
 use crate::desk::{NoticeKind, Pending, Shown};
 use crate::launch::{self, Options};
 
+mod phone;
+
 /// A refused token as the QUIC lane renders it (`dial::dial_message`).
 const QUIC_REFUSED: &str =
     "mini refused the pairing token (unauthorized); re-pair it with `phux host add mini`";

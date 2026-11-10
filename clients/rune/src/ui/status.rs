@@ -12,6 +12,8 @@ use crate::desk::link::{Banner, Standing};
 use crate::desk::{Desk, Notice, NoticeKind, Pending};
 use crate::launch::INSTALL;
 
+mod phone;
+
 /// A notice's words, wrapping; with none it draws nothing.
 pub fn notice_line(notice: Option<&Notice>, p: &Ink) -> El {
     let (line, kind) = notice.map_or((String::new(), NoticeKind::Error), |notice| {
@@ -201,8 +203,23 @@ fn action(label: &'static str, key: &'static str, p: &Ink, press: fn(&mut Desk))
     button(label, key, p, press).grow(0.0).px(12.0)
 }
 
-/// The one thing to do about `standing`, when there is one.
-fn remedy(standing: &Standing, remote: bool, p: &Ink) -> Option<El> {
+/// The title and detail for `standing`, in this window's voice: the phone
+/// app has its own for what a desktop would answer with a command.
+fn said(desk: &Desk, standing: &Standing) -> (String, String) {
+    let machine = desk.machines.label();
+    let on_phone = desk
+        .native
+        .as_ref()
+        .and_then(|_| phone::words(standing, machine, desk.unpaired()));
+    on_phone.unwrap_or_else(|| {
+        let (title, detail) = words(standing, machine, desk.machines.current.is_some());
+        (title.to_owned(), detail)
+    })
+}
+
+/// The one thing to do about `standing`, when there is one. `updates` is
+/// whether this computer's can fix it.
+fn remedy(standing: &Standing, updates: bool, p: &Ink) -> Option<El> {
     Some(match standing {
         Standing::Starting | Standing::Connecting(_) | Standing::Opening => return None,
         Standing::NoSessions => action("New session", "placeholder-session", p, Desk::new_session),
@@ -212,7 +229,7 @@ fn remedy(standing: &Standing, remote: bool, p: &Ink) -> Option<El> {
             p,
             Desk::new_terminal,
         ),
-        Standing::Incompatible(_) if updates_can_fix(standing, remote) => {
+        Standing::Incompatible(_) if updates => {
             action("Check for updates", "placeholder-update", p, |d| {
                 d.updater.check_now();
             })
@@ -230,27 +247,40 @@ fn retry(p: &Ink) -> El {
 
 pub fn placeholder(desk: &Desk, p: &Ink) -> El {
     let standing = desk.standing();
-    let remote = desk.machines.current.is_some();
-    let (title, detail) = words(&standing, desk.machines.label(), remote);
+    let native = desk.native.is_some();
+    let (title, detail) = said(desk, &standing);
+    // The phone app has no updater, and its other computers are in its host.
+    let updates = !native && updates_can_fix(&standing, desk.machines.current.is_some());
+    let repair = phone::repairs(desk, &standing);
+    let elsewhere = if native {
+        "Change computer…"
+    } else {
+        "Other machines…"
+    };
     let failed = matches!(
         standing,
         Standing::Unreachable(_) | Standing::Incompatible(_)
     );
     let color = if failed { p.danger } else { p.dim };
-    let buttons = row()
-        .w_full()
-        .center()
-        .gap(8.0)
-        .pt(6.0)
-        .children(remedy(&standing, remote, p))
+    let actions = repair
+        .then(|| phone::pair_again("placeholder-pair", p))
+        .into_iter()
+        .chain(remedy(&standing, updates, p))
+        // Words under the phone's dial mean it has gone on long enough to
+        // act on.
+        .chain(phone::slow_dial(desk, &standing).then(|| retry(p)))
         // A server updated from elsewhere never says so.
-        .children(updates_can_fix(&standing, remote).then(|| retry(p)))
-        .child(action(
-            "Other machines…",
-            "placeholder-machines",
-            p,
-            Desk::toggle_machines,
-        ));
+        .chain(updates.then(|| retry(p)))
+        // Pairing again already goes where the phone's computers are.
+        .chain((!repair).then(|| {
+            action(
+                elsewhere,
+                "placeholder-machines",
+                p,
+                Desk::toggle_machines,
+            )
+        }));
+    let buttons = row().w_full().center().gap(8.0).pt(6.0).children(actions);
     col()
         .gap(6.0)
         .items_center()
@@ -268,13 +298,23 @@ pub fn banner(desk: &Desk, p: &Ink) -> Option<El> {
     let machine = desk.machines.label();
     let remote = desk.machines.current.is_some();
     let (lost, why) = match &banner {
-        Banner::Reconnecting(why) => (format!("Lost {machine}. Reconnecting…"), why.clone()),
-        Banner::Stuck(standing) => {
-            let (title, why) = words(standing, machine, remote);
-            (title.to_owned(), why)
-        }
+        // Short, so a narrow window still shows the state.
+        Banner::Reconnecting(why) => (format!("Reconnecting to {machine}…"), why.clone()),
+        Banner::Stuck(standing) => said(desk, standing),
     };
-    let update = matches!(&banner, Banner::Stuck(standing) if updates_can_fix(standing, remote));
+    // The phone app has no updater to check with.
+    let update = desk.native.is_none()
+        && matches!(&banner, Banner::Stuck(standing) if updates_can_fix(standing, remote));
+    let repair = matches!(&banner, Banner::Stuck(standing) if phone::repairs(desk, standing));
+    let actions = update
+        .then(|| {
+            action("Check for updates", "banner-update", p, |d| {
+                d.updater.check_now();
+            })
+        })
+        .into_iter()
+        .chain(repair.then(|| phone::pair_again("banner-pair", p)))
+        .chain([action("Retry", "banner-retry", p, Desk::reconnect)]);
     // A held confirmation keeps the top of the stage.
     let top = if desk.pending.is_some() { 96.0 } else { 44.0 };
     Some(
@@ -305,12 +345,7 @@ pub fn banner(desk: &Desk, p: &Ink) -> Option<El> {
                             .child(text(lost).font(LABEL_STRONG).color(p.text).truncate())
                             .child(text(why).font(CAPTION).color(p.dim).wrap()),
                     )
-                    .children(update.then(|| {
-                        action("Check for updates", "banner-update", p, |d| {
-                            d.updater.check_now();
-                        })
-                    }))
-                    .child(action("Retry", "banner-retry", p, Desk::reconnect)),
+                    .children(actions),
             ),
     )
 }
@@ -405,60 +440,4 @@ pub fn title_bar(desk: &Desk, p: &Ink, lights: f32) -> El {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use phux_protocol::ids::ResourceId;
-
-    #[test]
-    fn settings_open_from_the_titlebar_with_or_without_the_sidebar() {
-        use rune::accesskit::Action;
-
-        for sidebar_open in [true, false] {
-            let mut desk = Desk::settings_test_fixture();
-            desk.settings_open = false;
-            desk.sidebar_open = sidebar_open;
-            let mut rt = rune::Runtime::new(
-                desk,
-                crate::ui::view,
-                (1100.0, 720.0),
-                rune::Env::new(false, 1.0),
-            );
-            rt.frame(0.0);
-            assert!(rt.find("settings-button").is_some());
-            assert!(rt.accessibility_action("settings-button", Action::Click, None));
-            rt.frame(0.0);
-            assert!(rt.state.settings_open);
-            assert!(rt.find("settings-about").is_some());
-        }
-    }
-
-    #[test]
-    fn a_remote_servers_update_happens_on_that_machine() {
-        let behind =
-            Standing::Incompatible("server requires 12.x; update the phux server".to_owned());
-        assert!(updates_can_fix(&behind, false));
-        assert!(!updates_can_fix(&behind, true));
-        assert!(
-            words(&behind, "mini", true)
-                .1
-                .contains("`phux update` on mini")
-        );
-        assert!(!words(&behind, "here", false).1.contains("`phux update`"));
-        // The app is this computer's to update, wherever the server is.
-        let ahead = Standing::Incompatible("update the phux app/client".to_owned());
-        assert!(updates_can_fix(&ahead, true));
-    }
-
-    #[test]
-    fn a_held_tab_close_counts_its_terminals() {
-        let close = |n| Pending::CloseTab((0..n).map(ResourceId::local).collect());
-        assert_eq!(
-            question(&close(1)).0,
-            "Close this tab? Anything running in it ends."
-        );
-        assert_eq!(
-            question(&close(3)).0,
-            "Close this tab and its 3 terminals? Anything running in them ends."
-        );
-    }
-}
+mod tests;
