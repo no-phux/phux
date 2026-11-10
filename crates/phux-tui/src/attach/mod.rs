@@ -62,6 +62,8 @@ pub mod server_frame;
 // phux-jx39.3: the session state server frames fold into.
 mod session_mirror;
 mod stdout_writer;
+// Non-Terminal layout leaves: placeholder tiles, no input or resize.
+mod surface_leaf;
 mod terminal_probe;
 mod tty_input;
 pub mod update_notice;

@@ -42,8 +42,12 @@ pub(super) fn handle_terminal_closed<W: crate::attach::RenderSink>(
         ctx.members.remove(terminal_id);
         return outcome;
     }
-    // A non-Terminal resource has no slot or layout leaf to close.
+    // A non-Terminal resource has no slot; only a placeholder leaf, if any,
+    // folds out, with no pane-exit notice.
     if ctx.is_non_terminal(terminal_id) {
+        if window_holding_pane(ctx.workspace, terminal_id).is_some() {
+            return fold_dead_resource(ctx, terminal_id, None, Vec::new());
+        }
         return FrameOutcome {
             chrome_dirty: true,
             ..FrameOutcome::default()

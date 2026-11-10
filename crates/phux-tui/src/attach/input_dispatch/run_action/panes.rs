@@ -217,14 +217,19 @@ fn split_host(host: Option<SatelliteHost>, support: DirectorySupport) -> SplitHo
 /// Close the focused pane with one correlated `KILL_RESOURCE`. A
 /// `TerminalNotFound` refusal folds the leaf out too, so a pane whose
 /// resource died under us can still be dismissed.
-pub(in crate::attach) fn kill_focused_pane(
-    ActionCall {
+pub(in crate::attach) fn kill_focused_pane(call: ActionCall<'_, '_>) {
+    // A placeholder's resource belongs to another client (a document's
+    // producer, an agent): killing its pane only closes the view.
+    if call.focused.is_some_and(|id| call.ctx.is_surface_leaf(id)) {
+        super::windows::close_view(call);
+        return;
+    }
+    let ActionCall {
         ctx,
         focused,
         effects,
         ..
-    }: ActionCall<'_, '_>,
-) {
+    } = call;
     let Some(focused_id) = focused.cloned() else {
         tracing::warn!("kill-pane: no focused pane to kill; dropping action");
         effects.bell = true;
@@ -246,6 +251,9 @@ fn focused_command(
     effects: &mut ActionEffects,
     command: impl FnOnce(ResourceId) -> Command,
 ) {
+    if super::placeholders::refuse_on_placeholder(ctx, effects, focused, "terminal command") {
+        return;
+    }
     let Some(focused_id) = focused.cloned() else {
         tracing::warn!("no focused pane; dropping action");
         effects.bell = true;
