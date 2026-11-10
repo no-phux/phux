@@ -305,7 +305,7 @@ phux runtime-info --json
 `phux skill` prints the guide compiled into that binary. `runtime-info`
 prints the protocol and capabilities of that binary. `phux skill setup`
 installs a short skill in each installed agent's skill directory that
-points it at `phux skill`; see [Teaching an agent phux](./agents.md#teaching-an-agent-phux).
+points it at `phux skill`; see [Agent skill setup](./agent-skill.md).
 
 ## Run without a terminal
 
