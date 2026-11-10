@@ -41,13 +41,13 @@ impl Tx<'_> {
                 None => {
                     return Err(Refusal::invalid(
                         "parent",
-                        format!("a {} binds to a parent", spec.kind),
+                        format!("{} needs a parent", spec.kind),
                     ));
                 }
                 Some(kind) if !kind.can_parent() => {
                     return Err(Refusal::invalid(
                         "parent",
-                        format!("a {kind} cannot supervise a producer"),
+                        format!("{kind} cannot supervise a producer"),
                     ));
                 }
                 Some(_) => {}

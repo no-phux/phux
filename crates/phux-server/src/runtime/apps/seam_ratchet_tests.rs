@@ -27,27 +27,50 @@ fn app_of(path: &str) -> Option<&str> {
         .map(|(app, _)| app)
 }
 
-/// `source` without its inline `#[cfg(test)] mod … {` and what follows.
-fn without_inline_tests(source: &str) -> &str {
-    let mut offset = 0;
-    let mut gated: Option<usize> = None;
+/// `source` without its inline `#[cfg(test)] mod … { … }` blocks. A block
+/// ends where its braces balance, so code after it is still scanned.
+fn without_inline_tests(source: &str) -> String {
+    let mut kept = String::with_capacity(source.len());
+    let mut pending = String::new();
+    let mut gated = false;
+    let mut depth = 0usize;
     for line in source.split_inclusive('\n') {
-        let code = line.trim_end();
-        match gated {
-            _ if code == "#[cfg(test)]" => gated = gated.or(Some(offset)),
-            Some(_) if code.starts_with("#[") => {}
-            Some(start) if code.starts_with("mod ") && code.ends_with('{') => {
-                return &source[..start];
-            }
-            _ => gated = None,
+        if depth > 0 {
+            depth = balance(depth, line);
+            continue;
         }
-        offset += line.len();
+        let code = line.trim();
+        if code == "#[cfg(test)]" || (gated && code.starts_with("#[")) {
+            gated = true;
+            pending.push_str(line);
+            continue;
+        }
+        if gated && code.starts_with("mod ") && code.ends_with('{') {
+            depth = balance(0, line);
+            pending.clear();
+            gated = false;
+            continue;
+        }
+        kept.push_str(&pending);
+        pending.clear();
+        gated = false;
+        kept.push_str(line);
     }
-    source
+    kept.push_str(&pending);
+    kept
+}
+
+/// Brace depth after `line`, starting from `depth`.
+fn balance(depth: usize, line: &str) -> usize {
+    line.chars().fold(depth, |depth, c| match c {
+        '{' => depth + 1,
+        '}' => depth.saturating_sub(1),
+        _ => depth,
+    })
 }
 
 fn tokens_outside(source: &str, tokens: &[&str]) -> usize {
-    count(without_inline_tests(source), tokens)
+    count(&without_inline_tests(source), tokens)
 }
 
 /// The document engine's API, outside the document app.

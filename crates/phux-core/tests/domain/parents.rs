@@ -83,7 +83,7 @@ fn a_projection_binds_under_a_resource_that_can_supervise_its_producer() {
     for launch in projections() {
         let kind = launch.kind();
         let reason = parent_refusal(create(&mut h, under(None, launch.clone())));
-        assert!(reason.contains("binds to a parent"), "{kind}: {reason}");
+        assert!(reason.contains("needs a parent"), "{kind}: {reason}");
 
         let child = create(&mut h, under(Some(terminal), launch.clone()))
             .unwrap_or_else(|refusal| panic!("{kind} under a terminal: {refusal:?}"));
