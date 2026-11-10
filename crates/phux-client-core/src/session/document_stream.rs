@@ -165,12 +165,15 @@ impl DocumentStream {
             return Err(KernelError::BootstrapStagingLimitExceeded);
         }
         let mut bytes = cut.buffer;
-        // A typed bootstrap names the content type first; one that does not
-        // leaves the bytes untyped.
-        if self.kind == ResourceKind::Document
-            && let Some((content_type, document)) =
+        // Every typed cut names its own content type first; an earlier
+        // cut's never stands in for a missing one.
+        if self.kind == ResourceKind::Document {
+            let Some((content_type, document)) =
                 phux_protocol::wire::frame::typed_document::split_bootstrap(&bytes)
-        {
+            else {
+                self.retire_generation(resource_id, generation, cut.base_seq, effects);
+                return Err(KernelError::UntypedDocument(resource_id.clone()));
+            };
             self.content_type = Some(content_type.to_owned());
             bytes = document.to_vec();
         }

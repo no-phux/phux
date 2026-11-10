@@ -357,3 +357,29 @@ fn a_new_incarnation_may_reuse_an_open_document_id_for_any_kind() {
     )
     .unwrap();
 }
+
+#[test]
+fn every_typed_cut_names_its_own_content_type() {
+    let mut kernel = kernel();
+    let mut effects = EffectBuffer::new();
+    let id = surface();
+    let typed = BootstrapStreamProfile::DocumentTypedV1;
+    let named = phux_protocol::wire::frame::typed_document::encode_bootstrap("text/plain", b"one");
+    begin_profile(&mut kernel, &id, typed, first(), &mut effects).unwrap();
+    chunk(&mut kernel, &id, first(), 0, &named, &mut effects).unwrap();
+    ready(&mut kernel, 0, first(), &mut effects).unwrap();
+    assert_eq!(
+        documents(&effects)[0].content_type.as_deref(),
+        Some("text/plain")
+    );
+
+    // A recut that names none does not inherit the earlier cut's.
+    let recut = (stream(), generation(2));
+    begin_profile(&mut kernel, &id, typed, recut, &mut effects).unwrap();
+    assert!(matches!(
+        ready(&mut kernel, 0, recut, &mut effects),
+        Err(KernelError::UntypedDocument(_))
+    ));
+    assert!(resync_required(&effects));
+    assert!(documents(&effects).is_empty());
+}

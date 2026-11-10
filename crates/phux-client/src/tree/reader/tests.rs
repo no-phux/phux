@@ -161,3 +161,30 @@ fn a_typed_bootstrap_without_a_content_type_or_a_terminal_profile_is_refused() {
             .is_err()
     );
 }
+
+#[test]
+fn a_later_typed_cut_without_its_own_content_type_is_refused() {
+    let mut reader = Reader::new(surface());
+    reader
+        .absorb(begin(1, BootstrapStreamProfile::DocumentTypedV1))
+        .unwrap();
+    let (stream_id, bootstrap_id) = ids(1);
+    let named = phux_protocol::wire::frame::typed_document::encode_bootstrap("text/plain", b"a");
+    reader
+        .absorb(FrameKind::BootstrapChunk {
+            terminal_id: surface(),
+            stream_id,
+            bootstrap_id,
+            chunk_seq: 0,
+            payload: named.into(),
+        })
+        .unwrap();
+    assert!(matches!(
+        reader.absorb(ready(1)).unwrap(),
+        Absorbed::Document(_)
+    ));
+    reader
+        .absorb(begin(2, BootstrapStreamProfile::DocumentTypedV1))
+        .unwrap();
+    assert!(reader.absorb(ready(2)).is_err(), "no stale content type");
+}

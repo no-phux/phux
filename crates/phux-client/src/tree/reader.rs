@@ -7,7 +7,6 @@ use std::convert::Infallible;
 use std::time::Instant;
 
 use phux_client_core::session::{DocumentLane, DocumentPublication, KernelError};
-use phux_protocol::ResourceKind;
 use phux_protocol::ids::ResourceId;
 use phux_protocol::wire::frame::{AgentEvent, FrameKind};
 
@@ -71,10 +70,10 @@ impl Reader {
                 stream_id,
                 bootstrap_id,
                 ..
-            } if terminal_id == self.tree => {
-                let cut = self.lane.ready(stream_id, bootstrap_id, now_ms);
-                return cut.map_or_else(|error| self.refused(&error), typed_cut);
-            }
+            } if terminal_id == self.tree => self
+                .lane
+                .ready(stream_id, bootstrap_id, now_ms)
+                .map(|cut| Absorbed::Document(document(cut))),
             FrameKind::ResourceOutput {
                 terminal_id,
                 stream_id,
@@ -123,17 +122,6 @@ impl Reader {
         }
         Err(AttachError::Protocol(format!("document stream {}: {error}", self.tree)).into())
     }
-}
-
-/// A typed bootstrap must name its content type; the lane leaves one that
-/// does not untyped, which a headless reader refuses.
-fn typed_cut(cut: DocumentPublication) -> Result<Absorbed, TreeError> {
-    if cut.kind == ResourceKind::Document && cut.content_type.is_none() {
-        return Err(
-            AttachError::Protocol("a typed bootstrap without a content type".to_owned()).into(),
-        );
-    }
-    Ok(Absorbed::Document(document(cut)))
 }
 
 fn document(publication: DocumentPublication) -> Document {
