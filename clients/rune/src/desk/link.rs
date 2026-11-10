@@ -235,7 +235,7 @@ impl Desk {
     }
 
     fn connect(&mut self, target: Target) {
-        match sessions::connect(target) {
+        match sessions::connect(target, self.native.is_some()) {
             Ok(client) => {
                 self.client = Some(std::sync::Arc::new(client));
                 self.apply_theme();
