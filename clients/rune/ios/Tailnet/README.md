@@ -18,8 +18,9 @@ let link = try await TailnetPairing.bootstrap(
 // Pass link directly to the shared Rust pairing parser. Never log it.
 ```
 
-`TailnetPeer`, `TailnetSnapshot`, their phases and `TailnetDirectory` preserve
-the phux-mobile reference APIs. Cancel the stream's consuming task to stop
+`TailnetPeer`, `TailnetSnapshot`, their phases and `TailnetDirectory` follow
+the phux-mobile reference APIs, without its email-derived SSH username guess:
+a tailnet owner is not an operating-system account. Cancel the stream's consuming task to stop
 the directory node. State lives in Application Support, excluded from backup;
 the SDK disables log uploads before creating a node. Sign-out resets its
 authentication, closes it, then deletes its state and ends active streams.

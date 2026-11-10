@@ -100,6 +100,7 @@ final class PairingFlow {
         let current = generation
         stage = .enrolling(invite.name)
         message = nil
+        OnboardingStatus.record(.enrolling, invite: invite)
         changed?()
         let enroll = enroll, discard = discard
         operation = Task { [weak self] in
@@ -110,11 +111,13 @@ final class PairingFlow {
                     return
                 }
                 self.operation = nil
+                OnboardingStatus.record(.identityIssued, invite: invite)
                 self.saveIssued(issued)
             } catch {
                 guard let self, self.generation == current else { return }
                 self.operation = nil
                 self.stage = .welcome
+                OnboardingStatus.record(.enrollmentFailed, invite: invite, failure: error)
                 self.message = "Couldn't pair this phone. Check Tailscale, make a fresh pairing code on the computer, and try again."
                 self.changed?()
             }

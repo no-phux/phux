@@ -81,7 +81,7 @@ secrets travel through a private app-container file, not launch arguments,
 logs or evidence artifacts. It injects a command through the actual UIKit
 `insertText` entry, requires
 the returned marker in a real terminal grid and presented frame, records the
-element tree/report/screenshot and twelve UIKit input/onboarding-contract groups, and
+element tree/report/screenshot and fourteen UIKit input/onboarding-contract groups, and
 backgrounds/resumes the app through the
 OS before checking continued rendering. A fresh process then reconnects from
 saved settings and the same Keychain key, with no ticket or pairing payload.
@@ -140,9 +140,16 @@ Manage discovery lets you sign out without deleting your Phux identity.
 
 The installed Tailscale app **must also be connected to the same tailnet**:
 SSH, enrollment and terminal sockets use that VPN, not the embedded directory.
-Confirm the computer's SSH username; Tailscale SSH can authenticate without a
+Enter the computer's local account name, not its owner's Tailscale email.
+Rune remembers only account names that completed SSH, never guessed email
+prefixes or passwords. Tailscale SSH can authenticate without a
 password and may ask for a browser check. Ordinary SSH can use a one-time
-password, never persisted. Host keys come from the authenticated netmap for
+computer login password, never persisted—not an Apple ID password or phone
+passcode. Failed setup shows a visible retry/QR recovery alert, not only a
+footer. Credential-free phase/error codes stay locally in
+`Documents/rune-onboarding-status.json` for support and are excluded from
+backups; no raw SSH output, password, token, ticket or banner is recorded.
+Host keys come from the authenticated netmap for
 Tailscale SSH. Ordinary SSH additionally requires the full MagicDNS name to
 resolve through the phone's VPN to the selected netmap address; without that
 same-tailnet proof, use QR instead. A discovered IP alone is never Phux trust.

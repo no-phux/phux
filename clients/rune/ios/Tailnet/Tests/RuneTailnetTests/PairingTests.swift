@@ -20,7 +20,7 @@ final class PairingTests: XCTestCase {
         let machine = try XCTUnwrap(snapshot.peers.first)
         XCTAssertEqual(machine.address, peer.address)
         XCTAssertEqual(machine.dnsName, peer.dnsName)
-        XCTAssertEqual(machine.suggestedUsername, "me")
+        XCTAssertEqual(machine.owner, "me@example.com")
         XCTAssertTrue(machine.isPickable)
         XCTAssertTrue(machine.servesTailscaleSSH)
         XCTAssertFalse(TailnetSnapshot.isTailnetIPv4("100.64.bad.1.2"))

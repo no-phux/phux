@@ -164,33 +164,17 @@ final class TailscaleSetupController: UITableViewController {
         present(alert, animated: true)
     }
 
-    private func confirmSSH(_ peer: TailnetPeer) {
-        let alert = UIAlertController(title: "Connect to \(peer.name)",
-            message: "Use SSH to get a one-time pairing code from the running Phux server. Nothing is installed or upgraded.", preferredStyle: .alert)
-        alert.addTextField { field in
-            field.placeholder = "SSH username"; field.text = peer.suggestedUsername
-            field.textContentType = .username
-            field.autocapitalizationType = .none; field.autocorrectionType = .no
+    private func confirmSSH(_ peer: TailnetPeer, username: String? = nil) {
+        let alert = SSHAccountPrompt.make(peer: peer, username: username ?? SSHAccountPrompt.saved(for: peer)) {
+            [weak self] user, password in self?.pair(peer, username: user, password: password)
         }
-        if !peer.servesTailscaleSSH {
-            alert.addTextField { field in
-                field.placeholder = "SSH password (used once)"
-                field.isSecureTextEntry = true; field.textContentType = .password
-            }
-        }
-        alert.addAction(UIAlertAction(title: "Cancel", style: .cancel))
-        alert.addAction(UIAlertAction(title: "Get pairing code", style: .default) { [weak self, weak alert] _ in
-            let user = alert?.textFields?.first?.text ?? ""
-            let password = alert?.textFields?.dropFirst().first?.text
-            alert?.textFields?.forEach { $0.text = nil }
-            self?.pair(peer, username: user, password: password)
-        })
         present(alert, animated: true)
     }
 
     private func pair(_ peer: TailnetPeer, username: String, password: String?) {
         guard pairing == nil else { return }
         selected = peer.id; checkURL = nil; message = nil
+        OnboardingStatus.record(.connecting, peer: peer)
         pairing = Task { [weak self] in
             defer {
                 self?.pairing = nil
@@ -203,13 +187,32 @@ final class TailscaleSetupController: UITableViewController {
                         Task { @MainActor [weak self] in self?.checkBanner(banner) }
                     })
                 guard !Task.isCancelled, let self else { return }
+                SSHAccountPrompt.remember(username, for: peer)
+                OnboardingStatus.record(.codeReceived, peer: peer)
                 self.finishPairing(link)
             } catch {
                 guard !Task.isCancelled else { return }
-                self?.message = Self.pairingFailure(error)
+                OnboardingStatus.record(.failed, peer: peer, failure: error)
+                self?.showPairingFailure(error, peer: peer, username: username)
             }
         }
         refresh()
+    }
+
+    private func showPairingFailure(_ error: Error, peer: TailnetPeer, username: String) {
+        let detail = Self.pairingFailure(error)
+        message = detail
+        let alert = SSHAccountPrompt.failure(peer: peer, message: detail, retry: { [weak self] in
+            self?.confirmSSH(peer, username: username)
+        }, back: { [weak self] in
+            self?.navigationController?.popToRootViewController(animated: true)
+        })
+        let show = { [weak self] in
+            guard let self, self.view.window != nil else { return }
+            self.present(alert, animated: true)
+        }
+        if presentedViewController != nil { dismiss(animated: true, completion: show) }
+        else { show() }
     }
 
     private func finishPairing(_ link: String) {
@@ -247,7 +250,12 @@ final class TailscaleSetupController: UITableViewController {
         // These enums have fixed, credential-free diagnostics. Arbitrary
         // SSH/NIO errors and remote output never cross into the UI.
         if let error = error as? TailnetPairingError { return error.localizedDescription }
-        if let error = error as? SSHFailure { return error.localizedDescription }
+        if let error = error as? SSHFailure {
+            if case .authenticationFailed = error {
+                return "The computer rejected that login. Use its local account name and computer login password—not your Tailscale or Apple ID login. You can retry or use QR / paste without SSH."
+            }
+            return error.localizedDescription
+        }
         return "Couldn't get a pairing code. Check SSH access and that Phux is running with QUIC, or scan the computer's phux pair --enroll QR."
     }
 

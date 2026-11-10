@@ -56,13 +56,6 @@ public struct TailnetPeer: Sendable, Equatable, Identifiable {
     /// and it has an address to dial.
     public var isPickable: Bool { canRunPhux && online && address != nil }
 
-    /// A starting username: the owner's login before `@`, which is the
-    /// account name on many Linux machines. The person can always edit it.
-    public var suggestedUsername: String? {
-        guard let owner, let local = owner.split(separator: "@").first, !local.isEmpty
-        else { return nil }
-        return String(local)
-    }
 }
 
 /// What the embedded node reports.

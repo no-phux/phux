@@ -18,10 +18,40 @@ enum PairingContractTests {
 
     static func run() async throws -> [String] {
         try parsingAndFirstRun()
+        try tailnetAccountsAndFailures()
         try await confirmationAndCommit()
         try await saveRetry()
         try await cancelledLateCompletion()
-        return ["pairing-import", "pairing-confirmation", "pairing-save-retry", "pairing-cancelled-identity"]
+        return ["pairing-import", "pairing-confirmation", "pairing-save-retry", "pairing-cancelled-identity",
+                "tailnet-account", "tailnet-errors"]
+    }
+
+    private static func tailnetAccountsAndFailures() throws {
+        var peer = TailnetPeer(id: "account-fixture", name: "Computer", dnsName: "computer.example.ts.net",
+            platform: .macOS, online: true, address: "100.64.1.2", owner: "not-a-local-account@example.com")
+        let fresh = SSHAccountPrompt.make(peer: peer, username: nil) { _, _ in }
+        try require(fresh.textFields?.first?.text?.isEmpty != false, "never infer a computer account from a Tailscale email")
+        try require(fresh.message?.contains("not your Tailscale") == true, "explain which account/password are needed")
+        try require(fresh.textFields?.last?.isSecureTextEntry == true, "ordinary SSH password entry is protected")
+        let retry = SSHAccountPrompt.make(peer: peer, username: "local-user") { _, _ in }
+        try require(retry.textFields?.first?.text == "local-user", "retry retains the explicit account name")
+        try require(retry.textFields?.last?.text?.isEmpty != false, "retry never retains a password")
+        peer.sshHostKeys = ["ssh-ed25519 fixture"]
+        let pinned = SSHAccountPrompt.make(peer: peer, username: nil) { _, _ in }
+        try require(pinned.textFields?.count == 1, "Tailscale SSH does not ask for a computer password")
+        let failure = SSHAccountPrompt.failure(peer: peer, message: "safe", retry: {}, back: {})
+        try require(failure.actions.map(\.title) == ["Try again", "Back to QR / paste"], "a failed login has visible recovery actions")
+        let error = SSHFailure.authenticationFailed(passwordAccepted: true)
+        try require(OnboardingStatus.code(error) == "ssh_authentication", "diagnose authentication separately from discovery")
+        try require(OnboardingStatus.code(SSHFailure.unreachable("SECRET-CREDENTIAL")) == "ssh_unreachable", "diagnostics never persist raw errors")
+        try require(TailscaleSetupController.pairingFailure(error).contains("local account"), "authentication errors name the correct credential")
+        OnboardingStatus.record(.failed, peer: peer, failure: SSHFailure.unreachable("SECRET-CREDENTIAL"))
+        let documents = try FileManager.default.url(for: .documentDirectory, in: .userDomainMask, appropriateFor: nil, create: false)
+        let bytes = try Data(contentsOf: documents.appendingPathComponent("rune-onboarding-status.json"))
+        let report = try JSONSerialization.jsonObject(with: bytes) as? [String: Any]
+        try require(report?["failure"] as? String == "ssh_unreachable", "support evidence contains the typed failure code")
+        try require(Set(report?.keys.map { $0 } ?? []) == ["schema", "phase", "peer", "time", "failure"], "support evidence is a strict public-field whitelist")
+        try require(!String(decoding: bytes, as: UTF8.self).contains("SECRET-CREDENTIAL"), "raw errors never reach support evidence")
     }
 
     private static func parsingAndFirstRun() throws {

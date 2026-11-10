@@ -4,7 +4,8 @@ import uuid
 SESSION = "rune-ios-native"
 INPUT_CONTRACTS = ("field-editing", "rejected-edit", "composition-revision", "raw-composition",
                    "raw-replacement", "hardware-routing", "directional-selection", "dismissal",
-                   "pairing-import", "pairing-confirmation", "pairing-save-retry", "pairing-cancelled-identity")
+                   "pairing-import", "pairing-confirmation", "pairing-save-retry", "pairing-cancelled-identity",
+                   "tailnet-account", "tailnet-errors")
 
 
 def validate_report(report, transport="quic", resumed=False):
