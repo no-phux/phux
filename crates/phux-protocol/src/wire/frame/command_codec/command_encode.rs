@@ -24,6 +24,7 @@ use super::{
 pub(in crate::wire) fn encode_command(command: &Command, enc: &mut Encoder<'_>) {
     match command {
         Command::DescribeApi => enc.write_u8(crate::wire::frame::COMMAND_TAG_DESCRIBE_API),
+        Command::PrivacyStatus => enc.write_u8(crate::wire::frame::COMMAND_TAG_PRIVACY_STATUS),
         Command::NativeAgent { request } => {
             enc.write_u8(crate::wire::frame::COMMAND_TAG_NATIVE_AGENT);
             enc.write_bytes(request.encoded());

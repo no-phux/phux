@@ -212,6 +212,24 @@ pub(crate) enum HostAction {
         json: JsonOpt,
     },
 
+    /// Set the colour a host is drawn in, or go back to its automatic one.
+    ///
+    /// Every client hashes a host's name to one of eight palette colours;
+    /// this overrides that for a `[[remote]]` entry, or for this machine
+    /// with `--local` (`[host] color`). `auto` removes the override.
+    Color {
+        /// `NAME COLOR` for a registered remote, or `COLOR` alone with
+        /// `--local`. COLOR is a palette id (blue, violet, magenta, sky,
+        /// coral, olive, slate, copper) or `auto`.
+        #[usage(required = true, value_name = "[NAME] COLOR", num_args = 1..=2)]
+        args: Vec<String>,
+        /// Colour this machine instead of a registered remote.
+        #[usage(long)]
+        local: bool,
+        #[usage(flatten)]
+        json: JsonOpt,
+    },
+
     /// Renew a remote's workload client certificate over ssh.
     ///
     /// Enrolls a fresh certificate the way `phux host add` does (the key is

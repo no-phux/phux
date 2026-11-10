@@ -73,7 +73,7 @@ pub(in crate::attach) fn reopen_views(
     }: ActionCall<'_, '_>,
 ) {
     let hidden = crate::attach::session_mirror::unarranged_members(
-        ctx.session_members,
+        &super::placeholders::reopenable_members(ctx),
         ctx.workspace,
         panes,
     );
@@ -130,24 +130,31 @@ fn confirmed_targets(resolved: &phux_config::keybind::ResolvedAction) -> Option<
 }
 
 fn confirm_kill_window(ctx: &mut DispatchCtx<'_>, effects: &mut ActionEffects) {
-    let Some(confirm) = kill_window_confirm(ctx) else {
+    if let Some(confirm) = kill_window_confirm(ctx) {
+        ctx.overlays.push(Box::new(confirm));
+        return;
+    }
+    // A tab of placeholders only ends nothing: close its views, unasked.
+    if !super::placeholders::close_active_window_views(ctx, effects) {
         tracing::warn!("kill-window: no active window to kill; dropping action");
         effects.bell = true;
-        return;
-    };
-    ctx.overlays.push(Box::new(confirm));
+    }
 }
 
 /// The confirm for killing the active window's terminals; `None` when no
-/// window is active.
+/// window is active or it holds no terminal. Placeholder leaves are neither
+/// counted nor killed: the kill only closes their views.
 pub(in crate::attach::input_dispatch) fn kill_window_confirm(
     ctx: &DispatchCtx<'_>,
 ) -> Option<crate::render::overlay::KillConfirmOverlay> {
-    let leaves = ctx
+    let leaves: Vec<ResourceId> = ctx
         .workspace
         .active_group()
         .and_then(|ls| ls.tree.as_ref().map(crate::layout::leaves))
-        .unwrap_or_default();
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|leaf| !ctx.is_surface_leaf(leaf))
+        .collect();
     if leaves.is_empty() {
         return None;
     }
@@ -236,10 +243,17 @@ fn shown_elsewhere(ctx: &DispatchCtx<'_>, active: usize, leaf: &ResourceId) -> V
     out
 }
 
-/// Kill exactly `leaves`, one correlated `KILL_RESOURCE` each.
-fn kill_targets(ctx: &mut DispatchCtx<'_>, effects: &mut ActionEffects, leaves: Vec<ResourceId>) {
+/// Kill exactly the terminals among `targets`, one correlated
+/// `KILL_RESOURCE` each, and close the views of the placeholders the kill
+/// would strand (or that were named): those resources are not ours to end.
+fn kill_targets(ctx: &mut DispatchCtx<'_>, effects: &mut ActionEffects, targets: Vec<ResourceId>) {
+    let (named_views, leaves): (Vec<_>, Vec<_>) = targets
+        .into_iter()
+        .partition(|leaf| ctx.is_surface_leaf(leaf));
+    let views = super::placeholders::views_closed_by_kill(ctx, &leaves, &named_views);
+    let closed = super::placeholders::close_views(ctx, effects, &views);
     if leaves.is_empty() {
-        effects.bell = true;
+        effects.bell = !closed;
         return;
     }
     effects.kill_requests = leaves

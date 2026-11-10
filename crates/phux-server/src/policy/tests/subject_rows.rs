@@ -443,6 +443,7 @@ fn rows(world: &mut World) -> Vec<Row> {
         on_global(command(Command::DetachClients { session: None }), "signal"),
         // Owner-socket rows: no remote grant reaches them.
         denied(command(Command::Shutdown)),
+        denied(command(Command::PrivacyStatus)),
         denied(command(Command::OpenListener {
             transport: ListenerTransport::Quic,
             port_range: None,

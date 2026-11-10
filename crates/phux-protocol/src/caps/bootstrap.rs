@@ -148,6 +148,14 @@ pub enum BootstrapCodec {
     /// then the newest document; every live message is a whole document.
     /// Gated on `ServerFeatureExt::TypedDocument`.
     DocumentTypedV1,
+    /// A codec tag this build does not know, from a newer server. Only
+    /// the tag is kept; any bytes after it in the field are skipped. Only
+    /// decoding builds one, and never for an allocated tag
+    /// ([`Self::is_allocated_tag`]).
+    Unknown {
+        /// The unrecognised codec tag.
+        tag: u8,
+    },
 }
 
 impl BootstrapCodec {
@@ -165,6 +173,21 @@ impl BootstrapCodec {
     pub const PIXEL_SURFACE_PNG_V1_TAG: u8 = 5;
     /// Wire tag for typed document v1.
     pub const DOCUMENT_TYPED_V1_TAG: u8 = 6;
+
+    /// Whether `tag` names a codec this build knows, which
+    /// [`Self::Unknown`] must never carry.
+    #[must_use]
+    pub const fn is_allocated_tag(tag: u8) -> bool {
+        matches!(
+            tag,
+            Self::SYNTHESIZED_VT_V1_TAG
+                | Self::NATIVE_TAG
+                | Self::AGENT_EVENTS_JSONL_V1_TAG
+                | Self::ACCESSIBILITY_TREE_JSON_V1_TAG
+                | Self::PIXEL_SURFACE_PNG_V1_TAG
+                | Self::DOCUMENT_TYPED_V1_TAG
+        )
+    }
 }
 
 /// Additive set of exact native engine codecs.
@@ -464,6 +487,12 @@ pub enum BootstrapStreamProfile {
     /// ([`crate::wire::frame::typed_document`]), followed by raw live
     /// replacements, each a whole document of that type.
     DocumentTypedV1,
+    /// A stream whose codec this build does not know. A client refuses
+    /// that one resource and ignores its stream; the connection stays.
+    Unknown {
+        /// The unrecognised [`BootstrapCodec`] tag.
+        codec_tag: u8,
+    },
 }
 
 /// Select one explicit profile and the negotiated payload bounds.

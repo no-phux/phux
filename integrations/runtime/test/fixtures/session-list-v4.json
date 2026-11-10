@@ -1,0 +1,93 @@
+{
+  "schema_version": 4,
+  "sessions": [
+    {
+      "name": "fixture",
+      "windows": 1,
+      "attached": false,
+      "attached_clients": 0,
+      "keep_empty": true,
+      "empty": false,
+      "lifetime": "persistent",
+      "members": 4,
+      "exec": {
+        "dormant": 0,
+        "starting": 0,
+        "running": 4,
+        "stopping": 0,
+        "completed": 0,
+        "failed": 0,
+        "lost": 0,
+        "abandoned": 0
+      },
+      "project": null,
+      "project_link": null,
+      "key": "kpyripyvngx7fk72jbvu6iw77i"
+    }
+  ],
+  "terminals": [
+    "@1"
+  ],
+  "unreachable": [],
+  "resources": [
+    {
+      "id": "@1",
+      "kind": "terminal",
+      "parent": null,
+      "lifecycle": "running",
+      "exit": null,
+      "key": "ad6ljbakr2a6oaytvupz2wl6gu"
+    },
+    {
+      "id": "@2",
+      "kind": "accessibility_tree",
+      "name": "Fixture",
+      "parent": "@1",
+      "lifecycle": "running",
+      "exit": null,
+      "producer": "gone",
+      "key": "wwvyhqqql6qjybfn3b4vf2uxtq"
+    },
+    {
+      "id": "@3",
+      "kind": "pixel_surface",
+      "name": "Fixture",
+      "parent": "@1",
+      "lifecycle": "running",
+      "exit": null,
+      "producer": "gone",
+      "control": "page",
+      "key": "ycayxadzbmof32izox7lhetwqm"
+    },
+    {
+      "id": "@4",
+      "kind": "document",
+      "name": "notes",
+      "parent": "@1",
+      "lifecycle": "running",
+      "exit": null,
+      "producer": "gone",
+      "key": "2jvhg7s4zdb3zwarjnwmagjnhy"
+    }
+  ],
+  "hosts": [
+    {
+      "host": null,
+      "local": true,
+      "reachable": true,
+      "unreachable": null,
+      "sessions": [
+        {
+          "name": "fixture",
+          "id": 1,
+          "windows": 1,
+          "panes": 1,
+          "attached": false,
+          "attached_clients": 0,
+          "active_terminal": "@1"
+        }
+      ]
+    }
+  ],
+  "hosts_complete": true
+}

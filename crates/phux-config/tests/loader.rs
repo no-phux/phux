@@ -50,6 +50,28 @@ impl Drop for EnvGuard {
     }
 }
 
+/// `[host] color` and `[[remote]] color` load through every entry point
+/// that reads `config.toml`: `load_from` (server startup, the hub's
+/// satellite reader, the CLI), the bounded parse (the FFI machine registry)
+/// and the plain parse.
+#[test]
+fn host_colours_load_through_every_config_entry_point() {
+    let tmp = TempDir::new().expect("tempdir");
+    let path = tmp.path().join("config.toml");
+    let text = "[host]\ncolor = \"violet\"\n\n[[remote]]\nname = \"mini\"\n\
+                endpoint = \"quic://mini:8788\"\ncolor = \"teal\"\n\n\
+                [[satellites]]\nname = \"box\"\nendpoint = \"quic://box:8788\"\n";
+    std::fs::write(&path, text).expect("write config");
+    let check = |cfg: phux_config::Config| {
+        assert_eq!(cfg.host.color.as_deref(), Some("violet"));
+        assert_eq!(cfg.remote[0].color.as_deref(), Some("teal"));
+        assert_eq!(cfg.satellites[0].name, "box");
+    };
+    check(loader::load_from(&path).expect("load_from"));
+    check(phux_config::parse_with_defaults_bounded(text, &path, 1 << 20).expect("bounded"));
+    check(phux_config::parse_str(text, &path).expect("parse_str"));
+}
+
 /// A missing file is the shipped defaults; a present file layers over
 /// them; any other I/O error (here `EISDIR`) propagates.
 #[test]

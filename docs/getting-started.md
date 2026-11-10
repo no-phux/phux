@@ -158,10 +158,12 @@ When an agent is waiting on you, <kbd>C-a</kbd> <kbd>q</kbd> jumps to it and <kb
 
 ## Coming from tmux
 
-Already have tmux configured the way you like? Run
-`phux config import-tmux` to preview a native config layer and a report of
-what carries over. See [Bring your tmux keys to phux](./tmux-import.md)
-before applying it.
+Already have tmux, zellij, Ghostty or herdr configured the way you like?
+Run `phux migrate` and your coding agent moves your key bindings into your
+phux config, checks it and reports what carried over. See [Migrate your
+config with your agent](./migrate.md). Without an agent,
+`phux config import-tmux` previews a native config layer from a running
+tmux; see [Bring your tmux keys to phux](./tmux-import.md) before applying it.
 
 Most keys match tmux, with <kbd>C-a</kbd> where tmux uses <kbd>C-b</kbd>. What's different:
 

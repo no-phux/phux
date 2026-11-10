@@ -89,11 +89,39 @@ def device_bundle_info(app):
     platform = run("/usr/bin/xcrun", "vtool", "-show-build", executable).decode()
     if "platform IOS\n" not in platform or "IOSSIMULATOR" in platform:
         raise ValueError("executable is not an iOS device binary")
-    if (app / "Frameworks").exists() or (app / "PlugIns").exists():
-        raise ValueError("nested executable signing requires an explicit per-bundle profile")
+    if (app / "PlugIns").exists():
+        raise ValueError("app extensions require an explicit per-bundle profile")
     if any(path.is_symlink() for path in app.rglob("*")):
         raise ValueError("symlinked bundle content is not supported by this static-app packager")
+    validate_frameworks(app)
     return info
+
+
+def validate_frameworks(app):
+    """Only the pinned native discovery SDK may be embedded, never plug-ins."""
+    directory = app / "Frameworks"
+    if not directory.exists():
+        return
+    frameworks = list(directory.iterdir())
+    if len(frameworks) != 1 or frameworks[0].name != "TailscaleKit.framework":
+        raise ValueError("only the pinned TailscaleKit framework may be embedded")
+    framework = frameworks[0]
+    info = plistlib.loads((framework / "Info.plist").read_bytes())
+    if (info.get("CFBundleIdentifier") != "io.tailscale.Tailscale"
+            or info.get("CFBundleExecutable") != "TailscaleKit"
+            or info.get("CFBundlePackageType") != "FMWK"):
+        raise ValueError("unexpected TailscaleKit framework identity")
+    platform = run("/usr/bin/xcrun", "vtool", "-show-build", framework / "TailscaleKit").decode()
+    if "platform IOS\n" not in platform or "IOSSIMULATOR" in platform:
+        raise ValueError("embedded TailscaleKit must be an iOS device framework")
+
+
+def sign_frameworks(app, identity):
+    # Frameworks inherit no app/keychain entitlements. Sign inside-out, never
+    # use --deep signing to guess executable ownership or provisioning.
+    for framework in (app / "Frameworks").glob("*.framework"):
+        run("/usr/bin/codesign", "--force", "--sign", identity, "--timestamp=none", framework)
+        run("/usr/bin/codesign", "--verify", "--strict", framework)
 
 
 def require_devices(profile, devices):
@@ -116,9 +144,10 @@ def package(app, profile_path, identity, base_url, out, devices):
     shutil.copy2(profile_path, signed / "embedded.mobileprovision")
     xcent = out / "entitlements.plist"
     xcent.write_bytes(plistlib.dumps(entitlements))
+    sign_frameworks(signed, identity)
     run("/usr/bin/codesign", "--force", "--sign", identity, "--entitlements", xcent,
         "--generate-entitlement-der", "--timestamp=none", signed)
-    run("/usr/bin/codesign", "--verify", "--strict", signed)
+    run("/usr/bin/codesign", "--verify", "--strict", "--deep", signed)
     signed_entitlements = plistlib.loads(run("/usr/bin/codesign", "-d", "--entitlements", ":-", signed))
     if signed_entitlements != entitlements:
         raise ValueError("signed entitlements differ from the authorized profile")

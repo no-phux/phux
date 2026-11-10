@@ -59,7 +59,8 @@ more, and never for a frame that settles a request.
 
 1. The client sends `HELLO` (`0x01`): its name, protocol
    `major.minor.patch`, and `ClientCapabilities` (color support, image and
-   keyboard protocols, which bootstrap profiles it can consume, compression).
+   keyboard protocols, which bootstrap profiles and
+   [resource kinds](./compatibility.md) it can consume, compression).
 2. The server checks the client's major against its own. Any minor or
    patch is admitted; another major gets `ERROR` with
    `VERSION_INCOMPATIBLE` and a close.
@@ -265,16 +266,15 @@ An `AccessibilityTree` (wire tag 2, gated on `features_ext.ACCESSIBILITY_TREE`)
 and a `PixelSurface` (wire tag 3, gated on `features_ext.PIXEL_SURFACE`)
 are replicated documents: a producer running in the parent Terminal
 replaces the whole document with the substrate's `PUBLISH_RESOURCE_STATE`
-(at most 4 MiB; one JSON document for a tree, one PNG or JPEG image (told apart by
-signature) for a surface,
-whose size is the surface's geometry), and the engine keeps the newest. A
-viewer's `ATTACH_RESOURCE` bootstraps it under the kind's codec
-(`AccessibilityTreeJsonV1`, `PixelSurfacePngV1`), `0 x 0`, with the newest
-document in the chunks and its sequence as `base_seq`; each later document
-arrives as one `RESOURCE_OUTPUT`. A viewer the broadcast laps is tombstoned
-(`OUTBOUND_GAP`) and recut from the newest document, so the only thing a
-slow viewer skips is intermediate documents. The stream takes no input, no
-acknowledgement and no history request.
+(at most 4 MiB; a JSON document for a tree, a PNG or JPEG told apart by
+signature for a surface, sized to the surface's geometry), and the engine
+keeps the newest. A viewer's `ATTACH_RESOURCE` bootstraps it under the
+kind's codec (`AccessibilityTreeJsonV1`, `PixelSurfacePngV1`), `0 x 0`,
+with the newest document in the chunks and its sequence as `base_seq`; each
+later document arrives as one `RESOURCE_OUTPUT`. A viewer the broadcast
+laps is tombstoned (`OUTBOUND_GAP`) and recut from the newest document, so
+a slow viewer skips only intermediate documents. The stream takes no
+input, acknowledgement or history request.
 
 A `Document` (wire tag 4, `features_ext.TYPED_DOCUMENT`) is one for any
 format: `SPAWN_RESOURCE` names its MIME content type in `provider` and an
@@ -283,8 +283,8 @@ carries the content type ahead of the document
 ([typed documents](./resource-kinds.md#typed-documents)).
 
 Input for a document goes to its producer, not into the stream:
-`SEND_DOCUMENT_INPUT` (command tag `0x48`) names a document resource and one
-typed intent (navigate to a URL, click at a point in the surface image's
+`SEND_DOCUMENT_INPUT` (command tag `0x48`) names a document and one typed
+intent (navigate to a URL, click at a point in the surface image's
 pixels, insert text, press a named key, scroll, or activate an accessibility
 node by its id). The server relays it,
 unread, as an unstamped `document_input` event (tag `0x20`) on the

@@ -204,7 +204,7 @@ impl Desk {
     }
 
     /// Finish a selection drag whose release won't come, where it last was.
-    fn end_drag(&mut self) {
+    pub(in crate::desk) fn end_drag(&mut self) {
         if let Some(held) = self.pointer.held.take()
             && self.gesture != 0
         {

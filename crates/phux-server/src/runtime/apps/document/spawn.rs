@@ -1,4 +1,4 @@
-//! Spawning a document resource under the Terminal its producer runs in.
+//! Spawning a document resource under the resource its producer runs in.
 
 use phux_protocol::wire::frame::{AgentEvent, FrameKind, SpawnError};
 use phux_tree::DocumentActor;
@@ -10,8 +10,8 @@ use crate::runtime::apps::ResourceSpawn;
 use crate::runtime::spawn_reply::{refuse_spawn, spawned_result};
 
 /// The target, wire parent, and core parent a document spawn binds to, or
-/// why it is refused. The parent must be a live local Terminal; `provider`
-/// names what the producer observes.
+/// why it is refused. The parent must be live and local, and is checked fit
+/// when the document registers; `provider` names what the producer observes.
 fn admit<'a, A: DocumentApi>(
     spawn: &ResourceSpawn<'a>,
 ) -> Result<
@@ -62,14 +62,19 @@ pub(crate) async fn spawn_document<A: DocumentApi>(spawn: ResourceSpawn<'_>) {
         root_token,
         limits: bootstrap_limits,
         connection_token,
+        decodes,
         ..
     } = spawn;
 
     let token = root_token.child_token();
     let bundle = DocumentActor::<A>::build(core_parent, target, token.clone());
     let registered = state.with_mut(|s| {
-        if s.resource_handle(core_parent).is_none() {
+        let Some(parent_handle) = s.resource_handle(core_parent) else {
             return Err(SpawnError::ParentNotFound);
+        };
+        // The parent supervises the producer, as an agent session's does.
+        if !crate::runtime::apps::spawn::supervises_producers(parent_handle) {
+            return Err(SpawnError::ParentKindMismatch);
         }
         let actor = s.actor_for(client_id);
         let name = resource.native_id.as_deref();
@@ -128,17 +133,20 @@ pub(crate) async fn spawn_document<A: DocumentApi>(spawn: ResourceSpawn<'_>) {
         }))
         .await;
     // The spawner watches its own document: run the (empty) bootstrap and
-    // the live pump the `ATTACH_RESOURCE` path runs.
-    let _ = attach_document::<A>(
-        state,
-        client_id,
-        &wire_doc,
-        core_doc,
-        &bundle.handle,
-        out_tx,
-        bootstrap_limits,
-        connection_token,
-    )
-    .await;
+    // the live pump the `ATTACH_RESOURCE` path runs. One whose `HELLO` does
+    // not list the kind stays its producer, streamed nothing.
+    if decodes.contains(A::WIRE_KIND) {
+        let _ = attach_document::<A>(
+            state,
+            client_id,
+            &wire_doc,
+            core_doc,
+            &bundle.handle,
+            out_tx,
+            bootstrap_limits,
+            connection_token,
+        )
+        .await;
+    }
     debug!(?client_id, request_id, resource = %wire_doc, kind = A::LABEL, target, "SPAWN_RESOURCE: document bound to its parent");
 }

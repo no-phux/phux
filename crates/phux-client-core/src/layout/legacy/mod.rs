@@ -12,7 +12,7 @@ use std::io::Cursor;
 use phux_protocol::ResourceId;
 use thiserror::Error;
 
-use super::{ArrangementDoc, Group, LayoutState, identity, leaves};
+use super::{ArrangementDoc, Group, LayoutState, identity};
 
 /// CBOR shadow types + conversions for layout persistence (L3 metadata).
 pub(in crate::layout) mod serialize;
@@ -35,10 +35,6 @@ pub enum LayoutDecodeError {
     /// The envelope's CBOR shape failed to decode.
     #[error("cbor decode failure: {0}")]
     Cbor(String),
-    /// A leaf names a resource that is not a Terminal. Only Terminal-kind
-    /// resources occupy layout slots; an `AgentSession` has no grid to tile.
-    #[error("layout leaf {0:?} is not a terminal resource")]
-    NonTerminalLeaf(ResourceId),
 }
 
 /// Errors returned by [`ArrangementDoc::encode_cbor`].
@@ -141,32 +137,5 @@ impl ArrangementDoc {
         identity::validate(&groups)?;
         let active = (envelope.focused_window_index as usize).min(groups.len().saturating_sub(1));
         Ok(Self { groups, active })
-    }
-
-    /// Decode a layout blob and reject any leaf `is_terminal` refuses.
-    ///
-    /// The envelope carries bare ids, so the caller supplies what it knows
-    /// about resource kinds. Ids the caller cannot classify (a peer session's
-    /// panes, say) must return `true`: the check refuses known non-terminal
-    /// resources, it does not demand proof of terminal-ness.
-    ///
-    /// # Errors
-    /// Every [`Self::decode_cbor`] error, plus
-    /// [`LayoutDecodeError::NonTerminalLeaf`] naming the first refused leaf in
-    /// group then depth-first order.
-    pub fn decode_cbor_checked(
-        bytes: &[u8],
-        is_terminal: &dyn Fn(&ResourceId) -> bool,
-    ) -> Result<Self, LayoutDecodeError> {
-        let arrangement = Self::decode_cbor(bytes)?;
-        let refused = arrangement
-            .groups
-            .iter()
-            .filter_map(|group| group.state.tree.as_ref())
-            .flat_map(leaves)
-            .find(|leaf| !is_terminal(leaf));
-        refused.map_or(Ok(arrangement), |leaf| {
-            Err(LayoutDecodeError::NonTerminalLeaf(leaf))
-        })
     }
 }

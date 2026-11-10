@@ -91,6 +91,7 @@ mod bootstrap;
 mod capabilities;
 mod commands;
 mod events;
+mod kind_profiles;
 mod kinds;
 mod leases;
 mod listings;

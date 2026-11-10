@@ -44,6 +44,16 @@ pub fn choose(requested: Option<&str>, topology: &Topology, inbox: Option<&str>)
         })
 }
 
+/// Where the phone app last was. It has no launch arguments to name a
+/// session, and should reopen where it left off, not wherever is newest.
+const LAST_SESSION: &str = "last_session";
+
+/// The remembered session, while the server still has it: one that is gone
+/// is never made again, and falls through to the usual choice.
+fn remembered(last: Option<String>, topology: &Topology) -> Option<String> {
+    last.filter(|name| topology.session_named(name).is_some())
+}
+
 /// The session a reconnect returns to. A persistent key wins over a reused
 /// name, and a key that's gone never falls back to the name.
 fn returning<'a>(
@@ -72,6 +82,10 @@ impl Desk {
         };
         let selected = client.selected_session();
         if let Some(session) = topology.sessions.iter().find(|s| Some(s.id) == selected) {
+            let moved = self.link.home.as_ref().map(|(name, _)| name) != Some(&session.name);
+            if moved && self.native.is_some() {
+                let _ = self.prefs.set(LAST_SESSION, &session.name);
+            }
             self.link.home = Some((session.name.clone(), session.key));
             if std::mem::take(&mut self.link.creating) {
                 client.with_control(|c| c.set_session_recovery(SessionRecovery::CallerValidated));
@@ -87,7 +101,9 @@ impl Desk {
         let home = back.map_or_else(
             || {
                 // Asked for once: a killed session isn't made again.
+                let last = self.native.as_ref().and(self.prefs.get(LAST_SESSION));
                 let requested = self.launch.session.take();
+                let requested = requested.or_else(|| remembered(last, topology));
                 choose(
                     requested.as_deref(),
                     topology,
@@ -141,6 +157,7 @@ mod tests {
     fn topology(sessions: Vec<SessionDescriptor>) -> Topology {
         Topology {
             sessions,
+            resources: Vec::new(),
             panes: Vec::new(),
             agent_sessions: Vec::new(),
             documents: Vec::new(),
@@ -208,5 +225,24 @@ mod tests {
         let other = SessionKey::new([2; 16]).unwrap();
         assert!(returning(&graph, "home", Some(other)).is_none());
         assert_eq!(returning(&graph, "home", None).map(|s| s.id), Some(2));
+    }
+
+    #[test]
+    fn the_phone_reopens_its_last_session_only_while_it_exists() {
+        let topology = topology(vec![session(1, "work", 10), session(2, "new", 20)]);
+        let last = |name: &str| remembered(Some(name.to_owned()), &topology);
+        assert_eq!(last("work"), Some("work".to_owned()));
+        assert_eq!(last("gone"), None);
+        assert_eq!(remembered(None, &topology), None);
+        // It outranks the newest session as a named launch does, and one
+        // that is gone is not made again.
+        assert_eq!(
+            choose(last("work").as_deref(), &topology, None),
+            Home::Existing("work".to_owned())
+        );
+        assert_eq!(
+            choose(last("gone").as_deref(), &topology, None),
+            Home::Existing("new".to_owned())
+        );
     }
 }

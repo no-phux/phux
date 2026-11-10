@@ -72,7 +72,8 @@ fn decoded_after_scene_build_is_not_yet_render_eligible() {
     assert_eq!(ready(&rt), Some(image.id()));
 }
 
-fn reattach(client: &Client, resource: ResourceRecord, bytes: &[u8]) {
+/// A new connection's attach, whose cut rides that attach's stream; returns it.
+fn reattach(client: &Client, resource: ResourceRecord, bytes: &[u8]) -> StreamId {
     client.with_control(ControlPlane::connection_opened);
     outbound(client);
     client.feed(hello(1)).unwrap();
@@ -93,12 +94,16 @@ fn reattach(client: &Client, resource: ResourceRecord, bytes: &[u8]) {
             initial_client_id: ClientId::new(1),
         })
         .unwrap();
-    publish(client, 1, ResourceKind::PixelSurface, bytes);
+    let stream = StreamId::new(u64::from(attach_id) + 1).unwrap();
+    publish_on(client, 1, stream, ResourceKind::PixelSurface, bytes);
     client.feed(FrameKind::AttachReady { attach_id }).unwrap();
+    stream
 }
 
-fn churn(mode: &str, client: &Arc<Client>, rt: &mut Runtime<Desk>, base: &[u8]) {
+/// Turn the identity over 64 times; returns the stream the last cut rides.
+fn churn(mode: &str, client: &Arc<Client>, rt: &mut Runtime<Desk>, base: &[u8]) -> StreamId {
     let last = png(173);
+    let mut stream = StreamId::new(1).unwrap();
     for n in 1..=64u8 {
         let bytes = stamped(if n == 64 { &last } else { base }, u64::from(n));
         let mut resource = record(n + 1, ResourceKind::PixelSurface).with_live(Some(id(1)));
@@ -112,7 +117,7 @@ fn churn(mode: &str, client: &Arc<Client>, rt: &mut Runtime<Desk>, base: &[u8]) 
             ));
         }
         if mode == "epoch" {
-            reattach(client, resource.clone(), &bytes);
+            stream = reattach(client, resource.clone(), &bytes);
         } else {
             replace_record(client, resource.clone());
             if mode == "renew" {
@@ -142,6 +147,7 @@ fn churn(mode: &str, client: &Arc<Client>, rt: &mut Runtime<Desk>, base: &[u8]) 
     assert!(document.surface.flight.is_none());
     assert!(document.surface.pending.is_some());
     assert!(matches!(document.body, Body::Decoding));
+    stream
 }
 
 fn run_case(mode: &str, latest: &str) {
@@ -150,7 +156,7 @@ fn run_case(mode: &str, latest: &str) {
     let (release, wake) = busy_cache(&mut rt, &base);
     publish(&client, 1, ResourceKind::PixelSurface, &base);
     observe(&mut rt, &client);
-    churn(mode, &client, &mut rt, &base);
+    let stream = churn(mode, &client, &mut rt, &base);
     let pending = rt.state.resources.entries[&id(1)]
         .surface
         .pending
@@ -169,7 +175,7 @@ fn run_case(mode: &str, latest: &str) {
         "a blocked admission retains its buffer instead of copying a PNG every poll"
     );
     if latest == "invalid" {
-        update(&client, 1000, b"malformed latest PNG");
+        update_on(&client, stream, 1000, b"malformed latest PNG");
         observe(&mut rt, &client);
         assert!(matches!(
             rt.state.resources.entries[&id(1)].body,
@@ -184,7 +190,7 @@ fn run_case(mode: &str, latest: &str) {
         for _ in 0..surface::MAX_DECODES {
             wake.recv_timeout(Duration::from_secs(10)).unwrap();
         }
-        update(&client, 1000, &stamped(&png(197), 1000));
+        update_on(&client, stream, 1000, &stamped(&png(197), 1000));
         observe(&mut rt, &client);
         assert!(rt.state.resources.entries[&id(1)].surface.pending.is_none());
     } else if latest == "invalid" {
@@ -196,7 +202,7 @@ fn run_case(mode: &str, latest: &str) {
             "retired completions cannot conceal the latest error"
         );
         assert_eq!(rt.state.resources.decodes.started, surface::MAX_DECODES);
-        update(&client, 1001, &stamped(&png(173), 1001));
+        update_on(&client, stream, 1001, &stamped(&png(173), 1001));
         observe(&mut rt, &client);
     }
     while ready(&rt).is_none() {

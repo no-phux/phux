@@ -118,6 +118,7 @@ fn remote(
         remote_phux: None,
         client_cert: cert,
         client_key: key.map(PathBuf::from),
+        color: None,
     }
 }
 

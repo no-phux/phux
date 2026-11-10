@@ -171,6 +171,12 @@ enum InputContractTests {
         try require(f.operations.last?["op"] as? String == "copy", "Command-C routed to desktop clipboard")
         try require(f.input.handleKey("a", flags: .command), "Command-A must use explicit select-all")
         try require(f.operations.last?["op"] as? String == "select_all", "Command-A routed to desktop handler")
+        try require(!f.input.handleKey("\r", flags: []), "A bare terminal Return must keep its place among typed text")
+        f.input.insertText("\n")
+        try require(f.operations.last?["name"] as? String == "Enter", "UIKit's Return must still send Enter")
+        try require(!f.input.handleKey("\u{7F}", flags: []), "A bare terminal Backspace must keep its place too")
+        try require(f.input.handleKey("\r", flags: .shift), "A chorded Return is its own key")
+        try require(f.input.handleKey(UIKeyCommand.inputUpArrow, flags: []), "Arrows have no text to order with")
         // Keep the person's pasteboard untouched; direct paste routing is covered
         // by the qualification probe when it installs a disposable clipboard.
     }

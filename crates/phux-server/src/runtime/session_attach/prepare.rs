@@ -87,6 +87,12 @@ pub(crate) fn prepare_attach(
             .iter()
             .map(|pane| pane.wire_terminal_id.clone())
             .collect();
+        // A kind the client does not decode is live, not closed: it stays in
+        // the snapshot but is neither staged nor streamed.
+        let panes: Vec<_> = panes
+            .into_iter()
+            .filter(|pane| crate::id_bridge::client_decodes(&client_caps, pane.handle.kind))
+            .collect();
         let closed = snapshot
             .resources
             .iter()

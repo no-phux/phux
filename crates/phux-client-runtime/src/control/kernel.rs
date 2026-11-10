@@ -240,12 +240,8 @@ impl ControlPlane {
                     if let Some(relabel) = self.relabel_in_flight(&key.terminal_id) {
                         relabel.title = Some(title.clone());
                     }
-                    if let Some(pane) = self
-                        .topology
-                        .as_mut()
-                        .and_then(|topology| topology.pane_mut(&key.terminal_id))
-                    {
-                        pane.title = Some(title.clone());
+                    if let Some(topology) = self.topology.as_mut() {
+                        topology.retitle(&key.terminal_id, &title);
                     }
                     self.push_event(Event::TitleChanged {
                         terminal_id: key.terminal_id,
@@ -286,6 +282,14 @@ impl ControlPlane {
                     reason,
                 });
             }
+            KernelStatus::Unsupported {
+                terminal_id,
+                codec_tag,
+            } => tracing::warn!(
+                %terminal_id,
+                codec_tag,
+                "the server streamed a resource in a codec this build cannot decode; ignoring it"
+            ),
             // Folded from the agent event itself, for every terminal the
             // subscription covers rather than only the kernel's.
             KernelStatus::Cwd { .. }

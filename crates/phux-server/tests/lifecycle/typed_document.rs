@@ -7,7 +7,7 @@ use phux_protocol::caps::BootstrapStreamProfile;
 use phux_protocol::ids::ResourceId;
 use phux_protocol::wire::frame::typed_document::split_bootstrap;
 use phux_protocol::wire::frame::{
-    Command, CommandResult, ErrorCode, FrameKind, SpawnResource, SpawnResult,
+    Command, CommandResult, ErrorCode, FrameKind, SpawnError, SpawnResource, SpawnResult,
 };
 use phux_server::LaunchCommand as CommandBuilder;
 use phux_server_testkit::{Spawn, command, send_frame, spawn_resource};
@@ -184,6 +184,39 @@ fn a_typed_document_carries_its_content_type_to_a_late_viewer() {
         assert!(matches!(taken, CommandResult::OkWith(_)), "{taken:?}");
 
         drop((owner, viewer));
+        server.stop().await;
+    });
+}
+
+/// A document binds under a parent that supervises its producer: an unknown
+/// parent is not found, and another document, which supervises nothing, is
+/// the wrong kind of parent.
+#[test]
+fn a_document_under_an_unfit_parent_is_refused() {
+    phux_server_testkit::run_local(async {
+        let server = Server::start(Some("demo"), |cfg| {
+            let mut seed = CommandBuilder::new("/bin/sh");
+            seed.args(["-c", FOREVER]);
+            phux_server_testkit::seed_pty(cfg, seed);
+        });
+        let mut owner = server.connect().await;
+        attach(&mut owner, "demo").await;
+        let parent = spawned(&mut owner, 1, sh(FOREVER)).await;
+        let doc = open(&mut owner, 2, &parent, "text/markdown").await;
+        for (request_id, under, refusal) in [
+            (3, doc, SpawnError::ParentKindMismatch),
+            (4, ResourceId::local(999_999), SpawnError::ParentNotFound),
+        ] {
+            let spawn = Spawn {
+                resource: Some(Box::new(SpawnResource::document(under, "text/plain", None))),
+                ..Spawn::default()
+            };
+            assert_eq!(
+                spawn_resource(&mut owner, request_id, spawn).await,
+                SpawnResult::Err(refusal)
+            );
+        }
+        drop(owner);
         server.stop().await;
     });
 }

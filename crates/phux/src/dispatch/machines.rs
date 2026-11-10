@@ -44,7 +44,11 @@ pub(crate) fn run_service(
 }
 
 pub(super) fn server(args: commands::ServerArgs, socket: Option<PathBuf>) -> ExitCode {
+    if let Some(commands::ServerAction::Permissions { json, open }) = args.action {
+        return commands::server::run_permissions(socket, json.json, open);
+    }
     let commands::ServerArgs {
+        action: _,
         // --ensure returns from run before tracing and this dispatch.
         ensure: _,
         json: _,

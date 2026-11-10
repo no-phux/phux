@@ -83,6 +83,11 @@ impl FrameKind {
         if client_caps.quic_streams {
             u8_field(enc, field::hello::QUIC_STREAMS, 1);
         }
+        // Always explicit, so a server never has to guess this client's
+        // kinds from the legacy default.
+        enc.write_field_with(field::hello::RESOURCE_KINDS, |e| {
+            e.write_u64_be(client_caps.resource_kinds.as_wire());
+        });
     }
 
     /// Write the exact protocol version `HELLO_OK` admits the peer at.

@@ -74,10 +74,7 @@ pub enum Body {
 }
 
 pub const fn document_kind(kind: ResourceKind) -> bool {
-    matches!(
-        kind,
-        ResourceKind::AccessibilityTree | ResourceKind::PixelSurface | ResourceKind::Document
-    )
+    kind.is_document()
 }
 
 impl Resources {

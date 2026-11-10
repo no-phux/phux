@@ -12,6 +12,7 @@ use phux_protocol::{
 };
 
 use agent_stream::{AgentLog, AgentPublication, AgentRecordError, AgentSessionState, AgentStream};
+use document_stream::DocumentStream;
 
 use crate::engine::{
     BootstrapProgress, CanonicalGeometry, DocumentPoint, DocumentSpace, EngineAdapter,
@@ -34,6 +35,7 @@ const MAX_BOOTSTRAP_STAGING_LIFETIME_MS: u64 = 30_000;
 mod attach;
 mod bootstrap;
 mod document;
+mod document_stream;
 mod effects;
 mod error;
 mod history_pages;
@@ -42,8 +44,11 @@ mod lifecycle;
 mod output;
 mod queries;
 mod replicas;
+mod staging_rules;
+mod unsupported;
 mod update;
 
+pub use document_stream::DocumentLane;
 pub use effects::{
     DocumentPublication, EffectBuffer, KernelDamage, KernelDamageKind, KernelEffect, KernelJob,
     KernelSend, KernelStatus, TombstoneRecord,
@@ -212,11 +217,14 @@ pub struct SessionKernel<E: EngineAdapter> {
     retain_replica_on_close: HashSet<ResourceId>,
     /// Kind per resource; survives closure, released with the resource.
     kinds: HashMap<ResourceId, ResourceKind>,
-    /// Document resources (trees, surfaces) and the bootstrap cut each is
-    /// staging; the kernel keeps no document, only the cut in flight.
-    documents: HashMap<ResourceId, DocumentStaging>,
+    /// Document resources (trees, surfaces, typed documents): the cut in
+    /// flight and the generation fence; the kernel keeps no document.
+    documents: HashMap<ResourceId, DocumentStream>,
     /// `AgentSession` resources: record streams without replicas.
     agents: HashMap<ResourceId, AgentStream>,
+    /// Resources whose stream codec this build does not know; their stream
+    /// frames are ignored until a known `BOOTSTRAP_BEGIN` or a close.
+    unsupported: HashSet<ResourceId>,
     /// Last controller views for closed native sources, readable but unavailable.
     closed_native_views: HashMap<ResourceId, phux_protocol::native_agent::NativeView>,
     closed: HashSet<ResourceId>,
@@ -281,6 +289,7 @@ impl<E: EngineAdapter> SessionKernel<E> {
             kinds: HashMap::new(),
             documents: HashMap::new(),
             agents: HashMap::new(),
+            unsupported: HashSet::new(),
             closed_native_views: HashMap::new(),
             closed: HashSet::new(),
             exit_reported: HashSet::new(),
@@ -335,6 +344,11 @@ impl<E: EngineAdapter> SessionKernel<E> {
                 })
             })
             .chain(self.agents.iter().filter_map(|(terminal_id, stream)| {
+                stream
+                    .expired_staging(now_ms)
+                    .map(|generation| (terminal_id.clone(), generation))
+            }))
+            .chain(self.documents.iter().filter_map(|(terminal_id, stream)| {
                 stream
                     .expired_staging(now_ms)
                     .map(|generation| (terminal_id.clone(), generation))
@@ -416,6 +430,19 @@ fn retired_error<E>(terminal_id: &ResourceId, generation: GenerationId) -> Kerne
     }
 }
 
+/// The resource kinds this kernel decodes, for a host's `HELLO`.
+///
+/// A kind gains its bit here with its decoder; a host that draws fewer
+/// kinds lists fewer in `RESOURCE_KINDS`.
+pub const KERNEL_RESOURCE_KINDS: phux_protocol::caps::ResourceKindSet =
+    phux_protocol::caps::ResourceKindSet::with(&[
+        ResourceKind::Terminal,
+        ResourceKind::AgentSession,
+        ResourceKind::AccessibilityTree,
+        ResourceKind::PixelSurface,
+        ResourceKind::Document,
+    ]);
+
 /// Whether a stream profile names the `AgentSession` record codec. Such a
 /// stream is legal under every connection profile: it carries no engine
 /// checkpoint and no VT, so profile negotiation does not constrain it.
@@ -438,16 +465,6 @@ const fn document_kind(profile: BootstrapStreamProfile) -> Option<ResourceKind> 
         BootstrapStreamProfile::DocumentTypedV1 => Some(ResourceKind::Document),
         _ => None,
     }
-}
-
-/// The bootstrap cut of one document, gathered chunk by chunk until READY.
-#[derive(Debug, Default)]
-struct DocumentStaging {
-    kind: Option<ResourceKind>,
-    base_seq: u64,
-    buffer: Vec<u8>,
-    /// A typed document's content type, from its bootstrap.
-    content_type: Option<String>,
 }
 
 const fn profile_matches(selected: BootstrapProfile, incoming: BootstrapStreamProfile) -> bool {
@@ -483,3 +500,6 @@ mod property_tests;
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod unsupported_tests;

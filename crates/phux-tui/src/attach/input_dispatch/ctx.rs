@@ -30,6 +30,8 @@ pub(in crate::attach) struct DispatchCtx<'a> {
     pub control_dial: Option<&'a crate::attach::Dial>,
     /// Connection-owned engine replicas used for terminal queries and local scrolling.
     pub engine_kernel: &'a mut crate::attach::pane_state::AttachKernel,
+    /// Non-Terminal resources the server's graph named: placeholder leaves.
+    pub leaves: &'a crate::attach::surface_leaf::LeafBook,
     /// Keybind resolver state. `None` when the on-disk config failed
     /// to parse; the dispatcher then forwards every key to the focused
     /// pane unchanged.
@@ -208,6 +210,13 @@ pub(in crate::attach) enum DragGrab {
 }
 
 impl DispatchCtx<'_> {
+    /// Whether `id` is a non-Terminal leaf: a placeholder that takes no
+    /// input, resize, signal, or kill.
+    pub(super) fn is_surface_leaf(&self, id: &phux_protocol::ResourceId) -> bool {
+        crate::attach::surface_leaf::SurfaceLeaves::new(self.engine_kernel, self.leaves)
+            .contains(id)
+    }
+
     /// Take the next client request id, advancing the driver's counter.
     pub(super) const fn take_request_id(&mut self) -> u32 {
         let request_id = *self.next_request_id;

@@ -165,7 +165,11 @@ impl Connection {
                     geometry: CanonicalGeometry { cols, rows },
                     base_seq,
                 });
-                if applied && !self.is_agent_session(&terminal_id) {
+                let refused = matches!(
+                    profile,
+                    phux_protocol::BootstrapStreamProfile::Unknown { .. }
+                );
+                if applied && !refused && !self.is_agent_session(&terminal_id) {
                     self.focused_terminal
                         .get_or_insert_with(|| terminal_id.clone());
                 }

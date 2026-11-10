@@ -20,6 +20,7 @@ unshipped experiment, and phone apps are not available yet. See
 
 - [Configuration file](./config.md): where the file lives, how it layers over the defaults, and when a change takes effect.
 - [Key bindings](./keys.md): change the prefix, rebind or unbind keys, and see what's in effect.
+- [Migrate your config](./migrate.md): your coding agent moves your tmux, zellij, Ghostty or herdr keys into phux.
 - [Themes](./themes.md): install, pick, and write colour themes.
 - [Status bar and sidebar](./status-bar.md): what the bar and the sidebar show, and how to change it.
 - [Hooks](./hooks.md): run a command when something happens.
@@ -36,6 +37,8 @@ unshipped experiment, and phone apps are not available yet. See
 - [Driving terminals from scripts](./scripting.md): snapshot, send keys, run, wait, with JSON output and exit codes.
 - [Runnable examples](../examples/README.md): small programs for learning the CLI and integrations.
 - [Coding agents](./agents.md): see which agent needs you, connect your agent's host, and use the MCP server.
+- [Mail across a hub](./hub-mail.md): shared mail and path claims between a hub and the machines joined to it.
+- [Agent skill setup](./agent-skill.md): `phux skill setup` teaches every installed agent about phux.
 - [ACP sessions](./acp.md): run an agent through the Agent Client Protocol, and answer its permission requests yourself.
 
 ## Build on phux

@@ -15,6 +15,13 @@ impl super::SessionLoop {
         terminal_ids: &[ResourceId],
     ) -> Result<(), AttachError> {
         for terminal_id in terminal_ids {
+            // A document, tree, or surface has no stream this client decodes
+            // (a newer server refuses its attach): only Terminals and agent
+            // record streams are attached.
+            let kind = self.mirror.surface_leaves().kind(terminal_id);
+            if kind.is_some_and(|kind| kind != phux_protocol::ResourceKind::AgentSession) {
+                continue;
+            }
             if self
                 .mirror
                 .pending_resource_ops

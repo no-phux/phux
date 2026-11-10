@@ -20,8 +20,17 @@ extern "C" {
 /* Additive members of an open enum (PhuxClientStatusKind, PhuxClientDamageKind,
  * PhuxClientAgentRecordsKind, and similarly documented "additive" kinds) do
  * not bump this version: a host must already tolerate a member it does not
- * recognise by skipping that effect. Only a struct layout or function
- * signature change bumps PHUX_CLIENT_ABI_VERSION. */
+ * recognise by skipping that effect. A struct member that fills existing
+ * padding, moving no other offset and not the struct's size, is additive
+ * too (PhuxArrangementNode.resource_kind, PhuxCatalogTerminal.resource_kind).
+ * A bridge that predates such a member leaves its bytes undefined, and no
+ * call reports which members a bridge fills: ship and use this header only
+ * with the library built from the same checkout (the PhuxFFI xcframework
+ * bundles both). Any other struct layout or function signature change bumps
+ * PHUX_CLIENT_ABI_VERSION.
+ *
+ * Layouts, offsets and the padding above are those of 64-bit targets
+ * (sizeof(void *) == 8), the only ones the C ABI ships for and tests. */
 #define PHUX_CLIENT_MAX_OUTBOUND_BYTES (64u * 1024u)
 #define PHUX_CLIENT_RELEASE_CARGO_PROFILE "ffi-release"
 

@@ -48,7 +48,22 @@ pub(crate) async fn resolve_target(
     verb: &str,
     json: bool,
 ) -> Result<phux_protocol::ids::ResourceId, ExitCode> {
-    resolve_target_with(socket_path, selector, verb, json, false).await
+    resolve_target_with(socket_path, selector, verb, json, false)
+        .await
+        .map(|resolved| resolved.id)
+}
+
+/// [`resolve_target`], reporting the resolved resource's kind too, for the
+/// verbs that dispatch on it ([`phux_client::read`]); `for_input` as
+/// [`resolve_target_for_input`].
+pub(crate) async fn resolve_resource(
+    socket_path: &Path,
+    selector: &phux_client::selector::Selector,
+    verb: &str,
+    json: bool,
+    for_input: bool,
+) -> Result<phux_client::selector::Resolved, ExitCode> {
+    resolve_target_with(socket_path, selector, verb, json, for_input).await
 }
 
 /// [`resolve_target`] for the verbs that deliver input into the pane
@@ -61,7 +76,9 @@ pub(crate) async fn resolve_target_for_input(
     verb: &str,
     json: bool,
 ) -> Result<phux_protocol::ids::ResourceId, ExitCode> {
-    resolve_target_with(socket_path, selector, verb, json, true).await
+    resolve_target_with(socket_path, selector, verb, json, true)
+        .await
+        .map(|resolved| resolved.id)
 }
 
 async fn resolve_target_with(
@@ -70,7 +87,8 @@ async fn resolve_target_with(
     verb: &str,
     json: bool,
     for_input: bool,
-) -> Result<phux_protocol::ids::ResourceId, ExitCode> {
+) -> Result<phux_client::selector::Resolved, ExitCode> {
+    use phux_client::selector::Resolved;
     let (snapshot, degradation) = phux_client::state::get_state(socket_path)
         .await
         .map_err(|err| json_err::report_no_server(json, &err, socket_path, verb))?
@@ -85,7 +103,7 @@ async fn resolve_target_with(
                 .await
                 .map_err(|err| report_agent_resolve_error(json, &err, true))?;
         partial::warn_partial_view(verb, &degradation);
-        return Ok(target.terminal);
+        return Ok(Resolved::in_snapshot(&snapshot, target.terminal));
     }
     let candidates = resolve_targets(socket_path, selector, &snapshot)
         .await
@@ -101,7 +119,7 @@ async fn resolve_target_with(
     // A hit is still worth a word: the pane we picked is the best of what a
     // partial fleet offered, and the user is about to act on it.
     partial::warn_partial_view(verb, &degradation);
-    Ok(picked)
+    Ok(Resolved::in_snapshot(&snapshot, picked))
 }
 
 /// Report a `%name` refusal on the shared error contract and return its

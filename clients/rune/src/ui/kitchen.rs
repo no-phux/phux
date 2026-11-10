@@ -277,6 +277,11 @@ fn sign(k: &Kitchen, i: usize, [x, y]: Pt) -> El {
                 .radius(3.0)
                 .items_center()
                 .fill(rgba([38.0, 48.0, 44.0], 1.0))
+                .child(crate::host_color::dot(
+                    &l.host,
+                    7.0,
+                    rgba([38.0, 48.0, 44.0], 1.0),
+                ))
                 .child(
                     text(l.host.to_uppercase())
                         .font(TextStyle::new(10.5, 600.0))
@@ -356,6 +361,7 @@ fn pills(k: &Kitchen) -> Vec<El> {
                     text,
                     badge: None,
                     amber,
+                    host: None,
                 },
                 [at[0], y],
                 k.w,

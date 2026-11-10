@@ -9,6 +9,8 @@ use super::{
     sync_overlays_to_focused_pane,
 };
 
+mod delivery_fences;
+
 impl super::SessionLoop {
     // ---- small shared projections -------------------------------------
 
@@ -80,6 +82,7 @@ impl super::SessionLoop {
             &self.mirror.session_name,
             self.viewport_dims,
             sidebar,
+            &self.mirror.leaves,
         );
         let scene = PaneScene {
             workspace: &self.mirror.workspace,
@@ -155,6 +158,7 @@ impl super::SessionLoop {
             &self.mirror.session_name,
             self.viewport_dims,
             sidebar,
+            &self.mirror.leaves,
         );
         let focus = self.mirror.paint_focus();
         let focused = focus.as_ref();
@@ -238,6 +242,7 @@ impl super::SessionLoop {
             &self.mirror.session_name,
             self.viewport_dims,
             sidebar,
+            &self.mirror.leaves,
         );
         Some(crate::attach::paint::paint_empty_session(
             out,
@@ -277,6 +282,7 @@ impl super::SessionLoop {
             &self.mirror.session_name,
             self.viewport_dims,
             sidebar,
+            &self.mirror.leaves,
         );
         let focus = self.mirror.paint_focus();
         paint_active_overlay(
@@ -469,39 +475,6 @@ impl super::SessionLoop {
         }
     }
 
-    pub(super) fn clear_focused_delivery_fence_after_paint(&mut self) {
-        let Some(terminal_id) = self.mirror.focused_resource.clone() else {
-            return;
-        };
-        self.clear_delivery_fence_after_paint(&terminal_id);
-    }
-
-    pub(super) fn clear_visible_delivery_fences_after_paint(&mut self) {
-        let Some(layout) = self
-            .mirror
-            .workspace
-            .render_group(self.mirror.zoomed.as_ref())
-        else {
-            return;
-        };
-        let visible = layout
-            .tree
-            .as_ref()
-            .map_or_else(Vec::new, crate::layout::leaves);
-        for terminal_id in visible {
-            self.clear_delivery_fence_after_paint(&terminal_id);
-        }
-    }
-
-    pub(super) fn clear_delivery_fence_after_paint(&mut self, terminal_id: &ResourceId) {
-        if !self.delivery_fence_paint_pending.remove(terminal_id) {
-            return;
-        }
-        if let Some(journal) = self.input_replay.as_ref() {
-            journal.borrow_mut().clear_delivery_fence(terminal_id);
-        }
-    }
-
     /// Rebuild and repaint the session picker, if it is open.
     pub(super) fn refresh_session_picker<W: crate::attach::RenderSink>(
         &mut self,
@@ -680,6 +653,7 @@ impl super::SessionLoop {
             &self.mirror.session_name,
             self.viewport_dims,
             sidebar,
+            &self.mirror.leaves,
         );
         let painted = crate::attach::paint::close_frame_with_chrome(
             crate::attach::paint::FrameBlock::begin(out),
