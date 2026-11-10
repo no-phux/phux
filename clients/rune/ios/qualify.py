@@ -7,6 +7,7 @@ Never selects a user's simulator or the installed/production phux server.
 
 import argparse
 import hashlib
+import importlib.util
 import json
 import os
 from pathlib import Path
@@ -18,9 +19,17 @@ import sys
 import tempfile
 import time
 import uuid
+import urllib.parse
+
+_spec = importlib.util.spec_from_file_location("rune_qualification_reports", Path(__file__).with_name("qualification_reports.py"))
+_reports = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(_reports)
+SESSION = _reports.SESSION
+INPUT_CONTRACTS = _reports.INPUT_CONTRACTS
+validate_report = _reports.validate_report
+validate_input_contracts = _reports.validate_input_contracts
 
 BUNDLE_ID = "sh.phux.rune.ios"
-SESSION = "rune-ios-native"
 MARKER = "RUNE_IOS_INPUT_OK"
 XCRUN = "/usr/bin/xcrun"
 # The data-container lookup: tries, and seconds each.
@@ -52,9 +61,9 @@ def simulator_pair(runtimes, device_types):
     raise ValueError("no available iOS >=26 runtime with an advertised compatible iPhone")
 
 
-def marker_command():
+def marker_command(marker=MARKER):
     # Literal marker must not appear in the terminal's command echo.
-    escaped = "".join(f"\\{byte:03o}" for byte in (MARKER + "\n").encode())
+    escaped = "".join(f"\\{byte:03o}" for byte in (marker + "\n").encode())
     return f"printf '{escaped}'"
 
 
@@ -71,26 +80,6 @@ def server_environment(scratch):
             "TMPDIR": str(scratch), "PHUX_PROFILE": "rune-ios-qualification",
             "PHUX_WS_SECURE": "1",
             "RUNE_PREFS_DIR": str(prefs)}
-
-
-def validate_report(report, transport="quic"):
-    if report.get("error"):
-        raise ValueError(f"native qualification error: {report['error']}")
-    expected = {"schema": 1, "session": SESSION, "connected": True,
-                "input_through_native": True, "marker_seen": True, "transport": f"paired-{transport}"}
-    for field, value in expected.items():
-        if type(report.get(field)) is not type(value) or report[field] != value:
-            raise ValueError(f"invalid qualification {field}: {report.get(field)!r}")
-    if type(report.get("frames")) is not int or report["frames"] < 1:
-        raise ValueError("qualification drew no frames")
-    if not isinstance(report.get("terminal_id"), str) or not report["terminal_id"].strip():
-        raise ValueError("qualification has no terminal identity")
-    validate_input_contracts(report.get("input_contracts"))
-
-
-def validate_input_contracts(contracts):
-    if not isinstance(contracts, list) or len(contracts) < 8:
-        raise ValueError("native UIKit input contract groups did not pass")
 
 
 class Qualification:
@@ -173,9 +162,14 @@ class Qualification:
         paired = subprocess.run([str(self.phux), "--socket", str(socket), "pair", "--json", "--enroll"],
                                 env=env, capture_output=True, check=True, timeout=30)
         pair = json.loads(paired.stdout)
-        self.configuration = {"endpoint": "quic://" + pair["quic_addr"],
-            "certificate_pin": pair["cert_fingerprint"], "authority_ca": pair["ca_fingerprint"],
-            "token": pair["token"], "session": SESSION, "enrollment_ticket": pair["enrollment_ticket"]}
+        # The CLI intentionally does not advertise loopback to phones. Mint
+        # the same QR payload shape here, then use the actual shared importer
+        # and native confirmation/enrollment path, never hand-fill trust fields.
+        fields = {"url": "wss://" + pair["ws_addr"], "quic": "quic://" + pair["quic_addr"],
+                  "name": SESSION, "fp": pair["cert_fingerprint"], "ca": pair["ca_fingerprint"],
+                  "token": pair["token"], "enroll": pair["enrollment_ticket"]}
+        self.configuration = {"pairing_link": "https://phux.sh/connect?" + urllib.parse.urlencode(
+            fields, quote_via=urllib.parse.quote)}
         if self.transport == "wss":
             self.configuration["qualification_endpoint"] = "wss://" + pair["ws_addr"]
         return socket
@@ -233,7 +227,8 @@ class Qualification:
         if self.server.poll() is not None:
             raise ValueError("isolated server exited during qualification")
 
-    def collect_report(self, pid):
+    def collect_report(self, pid, resumed=False):
+        prefix = "resume-" if resumed else ""
         if self.documents is None:
             raise ValueError("app data container was not resolved before launch")
         documents = self.documents
@@ -244,20 +239,20 @@ class Qualification:
             if time.monotonic() >= deadline:
                 raise TimeoutError("native qualification report not written within 90s")
             time.sleep(0.5)
-        shutil.copy2(source, self.out / source.name)
-        report = json.loads((self.out / source.name).read_text())
-        validate_report(report, self.transport)
+        shutil.copy2(source, self.out / (prefix + source.name))
+        report = json.loads((self.out / (prefix + source.name)).read_text())
+        validate_report(report, self.transport, resumed)
         tree = documents / "rune-tree.json"
-        shutil.copy2(tree, self.out / tree.name)
-        if SESSION not in json.dumps(json.loads((self.out / tree.name).read_text())):
+        shutil.copy2(tree, self.out / (prefix + tree.name))
+        if SESSION not in json.dumps(json.loads((self.out / (prefix + tree.name)).read_text())):
             raise ValueError("native view tree does not show the qualification session")
         self.require_alive(pid)
-        self.simctl("io", self.udid, "screenshot", self.out / "ios-system-keyboard.png")
-        self.cycle_scene(documents, pid)
+        self.simctl("io", self.udid, "screenshot", self.out / (prefix + "ios-system-keyboard.png"))
+        self.cycle_scene(documents, pid, prefix)
         time.sleep(3)
         self.require_alive(pid)
-        self.simctl("io", self.udid, "screenshot", self.out / "ios-native.png")
-        if not (self.out / "ios-native.png").stat().st_size:
+        self.simctl("io", self.udid, "screenshot", self.out / (prefix + "ios-native.png"))
+        if not (self.out / (prefix + "ios-native.png")).stat().st_size:
             raise ValueError("empty simulator screenshot")
         return report
 
@@ -270,21 +265,40 @@ class Qualification:
             time.sleep(0.5)
         return json.loads(source.read_text())
 
-    def cycle_scene(self, documents, pid):
+    def cycle_scene(self, documents, pid, prefix=""):
         # Drive the actual UIKit scene to background/foreground on our own
         # simulator. An in-app state toggle is not OS lifecycle evidence.
         background = documents / "rune-background.json"
         background.unlink(missing_ok=True)
         self.simctl("launch", self.udid, "com.apple.Preferences")
         self.await_scene_report(background, pid, "native scene did not acknowledge OS backgrounding")
-        shutil.copy2(background, self.out / background.name)
+        shutil.copy2(background, self.out / (prefix + background.name))
         self.require_alive(pid)
-        self.simctl("launch", self.udid, BUNDLE_ID)
         lifecycle = documents / "rune-lifecycle.json"
+        lifecycle.unlink(missing_ok=True)
+        self.simctl("launch", self.udid, BUNDLE_ID)
         resumed = self.await_scene_report(lifecycle, pid, "no presented frame after native background/foreground")
         if not resumed.get("marker_seen") or resumed.get("resumed_frames", 0) <= resumed.get("background_frames", 0):
             raise ValueError("native lifecycle did not resume the same live terminal")
-        shutil.copy2(lifecycle, self.out / lifecycle.name)
+        shutil.copy2(lifecycle, self.out / (prefix + lifecycle.name))
+
+    def resume_identity(self, original):
+        # New process, no ticket/configuration launch argument: only saved
+        # public preferences plus Keychain token and held key may reconnect.
+        self.simctl("terminate", self.udid, BUNDLE_ID, timeout=60)
+        for name in ("rune-qualification.json", "rune-tree.json"):
+            (self.documents / name).unlink(missing_ok=True)
+        marker = MARKER + "_RESUMED"
+        launched = self.simctl("launch", self.udid, BUNDLE_ID, "--qualification-resume",
+            "--qualification-session", SESSION, "--qualification-input", marker_command(marker),
+            "--qualification-marker", marker, timeout=120)
+        match = re.search(rf"^{re.escape(BUNDLE_ID)}: ([0-9]+)$", launched, re.MULTILINE)
+        if not match:
+            raise ValueError("simulator did not report the resumed app PID")
+        report = self.collect_report(int(match[1]), resumed=True)
+        if report["key_id"] != original["key_id"]:
+            raise ValueError("relaunch did not use the same saved device identity")
+        return report
 
     def stop_server(self):
         if self.server is not None and self.server.poll() is None:
@@ -344,8 +358,9 @@ def qualify(app, phux, out, transport="quic"):
             lane.create_simulator()
             pid = lane.launch(socket)
             report = lane.collect_report(pid)
+            resumed = lane.resume_identity(report)
             (out / "evidence.json").write_text(json.dumps({
-                "schema": 1, "report": report, "app_pid": pid,
+                "schema": 1, "report": report, "resumed_report": resumed, "app_pid": pid,
                 "phux": str(phux), "phux_sha256": hashlib.sha256(phux.read_bytes()).hexdigest(),
                 "input_proof": f"native insertText + Enter over paired {transport.upper()} with platform-held enrolled identity; not OS keyboard/IME proof",
             }, indent=2) + "\n")
@@ -353,7 +368,15 @@ def qualify(app, phux, out, transport="quic"):
             lane.failure_screenshot()
             raise
         finally:
-            lane.cleanup()
+            failed = sys.exc_info()[0] is not None
+            try:
+                lane.cleanup()
+            except ValueError as error:
+                if not failed:
+                    raise
+                # cleanup.json retains the exact owned-resource failure;
+                # never replace the app/assertion failure with teardown noise.
+                print(f"Additional simulator cleanup failure: {error}", file=sys.stderr)
 
 
 def absolute_path(value):

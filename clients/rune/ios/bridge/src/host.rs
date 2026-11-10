@@ -40,6 +40,16 @@ pub unsafe extern "C" fn phux_rune_ios_validate(configuration: *const c_char) ->
     })
 }
 
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn phux_rune_ios_pairing_import(invite: *const c_char) -> *mut c_char {
+    attempt(|| {
+        // Borrowed only for this call; the returned JSON is bridge-owned and
+        // released through phux_rune_ios_free, just like validation responses.
+        let invite = unsafe { text(invite)? };
+        string(mobile::parse_pairing_invite(invite)?)
+    })
+}
+
 pub(super) fn attempt<T: Default>(f: impl FnOnce() -> Result<T, String>) -> T {
     match catch_unwind(AssertUnwindSafe(f)) {
         Ok(Ok(result)) => result,

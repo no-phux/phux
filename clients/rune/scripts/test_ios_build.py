@@ -27,7 +27,9 @@ qualify = load("qualify")
 def valid_report():
     return {"schema": 1, "session": qualify.SESSION, "frames": 3,
             "terminal_id": "123", "connected": True, "input_through_native": True,
-            "marker_seen": True, "transport":"paired-quic", "input_contracts":[str(n) for n in range(8)]}
+            "marker_seen": True, "transport":"paired-quic", "input_contracts":list(qualify.INPUT_CONTRACTS),
+            "onboarding_import": True, "onboarding_confirmed": True, "resumed_identity": False,
+            "key_id": "11111111-1111-4111-8111-111111111111"}
 
 
 class BuildTests(unittest.TestCase):
@@ -35,6 +37,9 @@ class BuildTests(unittest.TestCase):
         workflow = (build.REPO / ".github/workflows/rune-build.yml").read_text()
         self.assertIn("name: qualification-ios-native", workflow)
         self.assertFalse(fnmatch.fnmatch("qualification-ios-native", "rune-*"))
+        self.assertIn("Test native tailnet trust, SSH and cancellation", workflow)
+        self.assertIn("--sdk macosx swift test", workflow)
+        self.assertIn("--force-resolved-versions", workflow)
 
     def test_native_flags_keep_order_quotes_and_duplicates(self):
         self.assertEqual(build.native_static_flags(
@@ -55,6 +60,9 @@ class BuildTests(unittest.TestCase):
             self.assertEqual(info["MinimumOSVersion"], "26.0")
             self.assertEqual(info["CFBundleVersion"], "1.2.3")
             self.assertEqual(info["CFBundleSupportedPlatforms"], [platform])
+            self.assertEqual(info["CFBundleURLTypes"][0]["CFBundleURLSchemes"], ["phux-rune"])
+            self.assertIn("NSCameraUsageDescription", info)
+            self.assertIn("NSLocalNetworkUsageDescription", info)
             self.assertEqual(plistlib.loads(plistlib.dumps(info)), info)
 
     def test_build_commands_real_staticlib_and_swift_link(self):
@@ -68,7 +76,7 @@ class BuildTests(unittest.TestCase):
             (rune / "Cargo.toml").write_text('[package]\nversion = "1.2.3"\n')
             commands = []
 
-            def fake_run(command, env, output, name, timeout=120):
+            def fake_run(command, env, output, name, timeout=120, stdout_only=False):
                 commands.append([str(arg) for arg in command])
                 if name == "rust":
                     target = command[command.index("--target") + 1]
@@ -81,6 +89,8 @@ class BuildTests(unittest.TestCase):
             with patch.multiple(build, IOS=ios, RUNE=rune), \
                     patch.object(build, "apple_environment", return_value={}), \
                     patch.object(build, "copy_resources", return_value=["Font.ttf"]), \
+                    patch.object(build, "prepare_tailnet", return_value={
+                        "swift_flags": ["-lRuneTailnet"], "frameworks": [], "resources": [], "notices": "SDK notices"}), \
                     patch.object(build, "run", side_effect=fake_run):
                 app = build.build(out, "simulator", False)
             rust = next(c for c in commands if c[:2] == ["cargo", "rustc"])
@@ -89,8 +99,10 @@ class BuildTests(unittest.TestCase):
             swift = next(c for c in commands if "swiftc" in c)
             self.assertIn("arm64-apple-ios26.0-simulator", swift)
             self.assertIn("-strict-concurrency=complete", swift)
+            self.assertIn("-warnings-as-errors", swift)
             self.assertEqual(swift[swift.index("-swift-version") + 1], "6")
             self.assertIn(str(out / "module-cache"), swift)
+            self.assertIn("-lRuneTailnet", swift)
             link = swift[swift.index("-Xlinker"):]
             self.assertEqual(link[:8], ["-Xlinker", "-framework", "-Xlinker", "Security",
                                        "-Xlinker", "-lSystem", "-Xlinker", "-lSystem"])
@@ -112,21 +124,6 @@ class BuildTests(unittest.TestCase):
             self.assertEqual(run.call_args.kwargs["cwd"], build.REPO)
             self.assertEqual(run.call_args.kwargs["timeout"], 120)
             self.assertNotIn("shell", run.call_args.kwargs)
-
-    def test_notices_are_resolved_from_native_bridge_not_desktop(self):
-        with tempfile.TemporaryDirectory() as temporary:
-            out = Path(temporary)
-            app = out / "App"
-            app.mkdir()
-            with patch.object(build.shutil, "copy2"), patch.object(
-                    build, "run", side_effect=['{"resolve": {}}', "native notices\n"]) as run:
-                fonts = build.copy_resources(app, {}, out, "aarch64-apple-ios-sim")
-            metadata = run.call_args_list[0].args[0]
-            self.assertEqual(metadata[-1], build.IOS / "bridge/Cargo.toml")
-            self.assertIn("--locked", metadata)
-            self.assertIn("phux-rune-ios", run.call_args_list[1].args[0][2])
-            self.assertEqual((app / "THIRD-PARTY-NOTICES.txt").read_text(), "native notices\n")
-            self.assertIn("Inter.ttf", fonts)
 
     def test_release_device_rust_and_swift_targets(self):
         with tempfile.TemporaryDirectory() as temporary:

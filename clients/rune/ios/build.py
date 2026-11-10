@@ -2,6 +2,7 @@
 """Build a UIKit host and the real Rune Rust staticlib, without Xcode projects."""
 
 import argparse
+import importlib.util
 import json
 import os
 from pathlib import Path
@@ -32,13 +33,15 @@ def apple_environment(out):
     return dict(item.decode().split("=", 1) for item in result.stdout.split(b"\0") if item)
 
 
-def run(command, env, out, name, timeout=120):
+def run(command, env, out, name, timeout=120, stdout_only=False):
     command = [str(arg) for arg in command]
     (out / f"{name}.command.json").write_text(json.dumps(command, indent=2) + "\n")
-    with (out / f"{name}.log").open("w") as log:
+    with (out / f"{name}.log").open("w") as log, \
+            (out / f"{name}.stderr.log").open("w") as diagnostics:
         subprocess.run(command, cwd=REPO, env=env, stdout=log,
-                       stderr=subprocess.STDOUT, check=True, timeout=timeout)
-    return (out / f"{name}.log").read_text()
+                       stderr=diagnostics, check=True, timeout=timeout)
+    output = (out / f"{name}.log").read_text()
+    return output if stdout_only else output + (out / f"{name}.stderr.log").read_text()
 
 
 def native_static_flags(output):
@@ -62,6 +65,10 @@ def bundle_plist(version, simulator, fonts):
         "CFBundleSupportedPlatforms": ["iPhoneSimulator" if simulator else "iPhoneOS"],
         "LSRequiresIPhoneOS": True, "UIDeviceFamily": [1, 2],
         "UILaunchScreen": {}, "UIAppFonts": fonts,
+        "NSCameraUsageDescription": "Scan a Phux pairing QR to connect without typing credentials.",
+        "NSLocalNetworkUsageDescription": "Connect securely to your computer and get its Phux pairing code over SSH.",
+        "CFBundleURLTypes": [{"CFBundleURLName": BUNDLE_ID + ".pairing",
+                              "CFBundleURLSchemes": ["phux-rune"]}],
         "UIApplicationSceneManifest": {
             "UIApplicationSupportsMultipleScenes": False,
             "UISceneConfigurations": {"UIWindowSceneSessionRoleApplication": [{
@@ -85,7 +92,7 @@ def copy_resources(app, env, out, target):
     # bridge-only dependencies. Reuse the packaging notice renderer/reader.
     metadata = run(["cargo", "metadata", "--locked", "--format-version", "1",
                     "--filter-platform", target, "--manifest-path", IOS / "bridge/Cargo.toml"],
-                   env, out, "notice-metadata", timeout=300)
+                   env, out, "notice-metadata", timeout=300, stdout_only=True)
     metadata_path = out / "notice-metadata.json"
     metadata_path.write_text(metadata)
     renderer = json.dumps(str(RUNE / "scripts/third-party.ts"))
@@ -99,7 +106,7 @@ const read = runeNoticeReader(crates, canonicalLicenses());
 process.stdout.write(renderNotices(crates, read, 'Phux Rune'));
 """
     notices = run(["bun", "-e", script, metadata_path], env, out,
-                  "third-party-notices", timeout=300)
+                  "third-party-notices", timeout=300, stdout_only=True)
     if not notices.strip():
         raise ValueError("empty third-party notices")
     (app / "THIRD-PARTY-NOTICES.txt").write_text(notices)
@@ -121,10 +128,10 @@ def build_rust(out, env, triple, release):
     return library, flags, profile
 
 
-def build_swift(out, env, app, sources, library, flags, simulator, release):
+def build_swift(out, env, app, sources, library, flags, simulator, release, swift_flags=()):
     sdk = "iphonesimulator" if simulator else "iphoneos"
     sdk_path = run(["/usr/bin/xcrun", "--sdk", sdk, "--show-sdk-path"],
-                   env, out, "sdk").strip()
+                   env, out, "sdk", stdout_only=True).strip()
     swift_target = f"arm64-apple-ios{MIN_IOS}" + ("-simulator" if simulator else "")
     module_cache = out / "module-cache"
     module_cache.mkdir(exist_ok=True)
@@ -135,10 +142,10 @@ def build_swift(out, env, app, sources, library, flags, simulator, release):
         entitlement = simulator_entitlements(out)
         for flag in ["-sectcreate", "__TEXT", "__entitlements", str(entitlement)]:
             linker_flags.extend(["-Xlinker", flag])
-    run(["/usr/bin/xcrun", "--sdk", sdk, "swiftc", "-swift-version", "6", "-strict-concurrency=complete", "-target", swift_target,
+    run(["/usr/bin/xcrun", "--sdk", sdk, "swiftc", "-swift-version", "6", "-strict-concurrency=complete", "-warnings-as-errors", "-target", swift_target,
          "-sdk", sdk_path, "-module-cache-path", module_cache,
          "-import-objc-header", IOS / "Bridge.h", "-parse-as-library",
-         "-O" if release else "-Onone", *sources, library, *linker_flags,
+         "-O" if release else "-Onone", *sources, library, *linker_flags, *swift_flags,
          "-o", app / "PhuxRune"], env, out, "swift", timeout=600)
 
 
@@ -153,6 +160,31 @@ def simulator_entitlements(out):
     return entitlement
 
 
+def prepare_tailnet(out, env, target, release):
+    spec = importlib.util.spec_from_file_location("rune_tailnet_build", IOS / "tailnet.py")
+    helper = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(helper)
+    return helper.prepare(out, env, target, release)
+
+
+def embed_tailnet(app, payload, env, out, simulator):
+    for framework in payload["frameworks"]:
+        destination = app / "Frameworks" / framework.name
+        destination.parent.mkdir(exist_ok=True)
+        shutil.copytree(framework, destination)
+        if simulator:
+            run(["/usr/bin/codesign", "--force", "--sign", "-", "--timestamp=none", destination],
+                env, out, "sign-" + framework.stem)
+    for resource in payload["resources"]:
+        destination = app / resource.name
+        if resource.is_dir():
+            shutil.copytree(resource, destination)
+        else:
+            shutil.copy2(resource, destination)
+    with (app / "THIRD-PARTY-NOTICES.txt").open("a") as handle:
+        handle.write("\n" + payload["notices"])
+
+
 def build(out, target, release):
     sources = sorted((IOS / "Sources").glob("*.swift"))
     if not sources or not (IOS / "Bridge.h").is_file():
@@ -165,8 +197,10 @@ def build(out, target, release):
     simulator = target == "simulator"
     triple = "aarch64-apple-ios-sim" if simulator else "aarch64-apple-ios"
     library, flags, profile = build_rust(out, env, triple, release)
-    build_swift(out, env, app, sources, library, flags, simulator, release)
+    payload = prepare_tailnet(out, env, target, release)
+    build_swift(out, env, app, sources, library, flags, simulator, release, payload["swift_flags"])
     fonts = copy_resources(app, env, out, triple)
+    embed_tailnet(app, payload, env, out, simulator)
     version = tomllib.loads((RUNE / "Cargo.toml").read_text())["package"]["version"]
     with (app / "Info.plist").open("wb") as handle:
         plistlib.dump(bundle_plist(version, simulator, fonts), handle)
@@ -174,8 +208,8 @@ def build(out, target, release):
     if simulator:
         run(["/usr/bin/codesign", "--force", "--sign", "-", "--timestamp=none", app],
             env, out, "sign")
-        run(["/usr/bin/codesign", "--verify", "--strict", app], env, out, "verify-sign")
-    revision = run(["git", "rev-parse", "HEAD"], env, out, "revision").strip()
+        run(["/usr/bin/codesign", "--verify", "--strict", "--deep", app], env, out, "verify-sign")
+    revision = run(["git", "rev-parse", "HEAD"], env, out, "revision", stdout_only=True).strip()
     (out / "build.json").write_text(json.dumps({
         "schema": 1, "app": str(app), "target": triple, "minimum_ios": MIN_IOS,
         "profile": profile, "revision": revision, "native_static_flags": flags,

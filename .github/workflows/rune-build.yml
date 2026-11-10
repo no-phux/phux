@@ -189,6 +189,15 @@ jobs:
         run: |
           python3 clients/rune/ios/build.py --out "$RUNNER_TEMP/ios-simulator" --target simulator
           python3 clients/rune/ios/build.py --out "$RUNNER_TEMP/ios-device" --target device
+      - name: Test native tailnet trust, SSH and cancellation
+        run: |
+          helper="$RUNNER_TEMP/ios-simulator/tailnet"
+          xcrun --sdk macosx swift test --package-path "$helper/package" \
+            --scratch-path "$helper/test-build" --cache-path "$helper/cache" \
+            --config-path "$helper/config" --security-path "$helper/security" \
+            --manifest-cache local --disable-keychain --disable-netrc --force-resolved-versions \
+            --sdk "$(xcrun --sdk macosx --show-sdk-path)" --triple arm64-apple-macosx26.0 \
+            --jobs 8
       - name: Qualify native rendering and input against the same-source dev server
         run: |
           cargo build --locked -p phux
@@ -206,8 +215,12 @@ jobs:
             ${{ runner.temp }}/ios-qualification
             ${{ runner.temp }}/ios-simulator/*.json
             ${{ runner.temp }}/ios-simulator/*.log
+            ${{ runner.temp }}/ios-simulator/tailnet/*.log
+            ${{ runner.temp }}/ios-simulator/tailnet/*.command.json
             ${{ runner.temp }}/ios-simulator/Phux Rune.app
             ${{ runner.temp }}/ios-device/*.json
             ${{ runner.temp }}/ios-device/*.log
+            ${{ runner.temp }}/ios-device/tailnet/*.log
+            ${{ runner.temp }}/ios-device/tailnet/*.command.json
           if-no-files-found: warn
           retention-days: 14

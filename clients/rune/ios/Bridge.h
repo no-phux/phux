@@ -10,6 +10,9 @@
 // the last runtime waker retires. wake/release may run on a worker thread.
 typedef void (*PhuxRuneCallback)(void *context);
 char *phux_rune_ios_validate(const char *configuration);
+// Parse a complete pairing link. Secrets remain transient; the result is
+// staged for explicit peer confirmation, not saved or dialed by this call.
+char *phux_rune_ios_pairing_import(const char *link);
 void *phux_rune_ios_create(void *layer, double width, double height, double scale,
                           bool dark, const char *configuration, void *context,
                           PhuxRuneCallback wake, PhuxRuneCallback release, void *identity);
