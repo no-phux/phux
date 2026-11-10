@@ -25,7 +25,10 @@ struct PairingInvite {
         self.configuration = configuration
         self.ticket = ticket
         self.peer = peer
-        self.name = value["name"] as? String ?? peer
+        // A link need not carry a name; show its host then, never an endpoint.
+        let named = (value["name"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let host = URLComponents(string: configuration["endpoint"] as? String ?? "")?.host
+        self.name = named.isEmpty ? host ?? peer : named
     }
 
     /// The computer's host name alone: what a person can check, without a

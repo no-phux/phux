@@ -84,6 +84,9 @@ enum PairingContractTests {
         let invite = try PairingInvite(link: link)
         try require(invite.configuration["endpoint"] as? String == "quic://computer.example:8788", "QR prefers QUIC")
         try require(invite.name == "My Mac", "QR preserves its decoded name")
+        let unnamed = try PairingInvite(link: link.replacingOccurrences(of: "&name=My%20Mac", with: ""))
+        try require(unnamed.name == "computer.example" && unnamed.host == "computer.example",
+                    "a link without a name is shown by its host, never by its endpoint")
         try require(invite.configuration["ticket"] == nil, "ticket is never a saved configuration field")
         for invalid in [link + "\0ignored", String(repeating: "x", count: 16_385), "https://elsewhere.invalid/SECRET-CREDENTIAL"] {
             do {
