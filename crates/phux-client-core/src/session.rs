@@ -47,6 +47,7 @@ mod replicas;
 mod staging_rules;
 mod update;
 
+pub use document_stream::DocumentLane;
 pub use effects::{
     DocumentPublication, EffectBuffer, KernelDamage, KernelDamageKind, KernelEffect, KernelJob,
     KernelSend, KernelStatus, TombstoneRecord,

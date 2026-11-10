@@ -1,5 +1,6 @@
 //! The document reader and target checks.
 use super::*;
+use phux_protocol::caps::BootstrapStreamProfile;
 use phux_protocol::ids::{BootstrapId, StreamId};
 
 #[test]

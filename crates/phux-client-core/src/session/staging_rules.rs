@@ -8,8 +8,15 @@ use phux_protocol::wire::frame::TombstoneReason;
 
 use super::{
     EffectBuffer, GenerationId, KernelEffect, KernelError, KernelStatus,
-    MAX_BOOTSTRAP_STAGING_LIFETIME_MS, TombstoneRecord,
+    MAX_BOOTSTRAP_STAGING_BYTES, MAX_BOOTSTRAP_STAGING_CHUNKS, MAX_BOOTSTRAP_STAGING_LIFETIME_MS,
+    TombstoneRecord,
 };
+
+/// Whether staged totals, including the chunk being admitted, fit the
+/// connection-wide bootstrap ceilings.
+pub(super) const fn within_staging_ceilings(bytes: usize, chunks: usize) -> bool {
+    bytes <= MAX_BOOTSTRAP_STAGING_BYTES && chunks <= MAX_BOOTSTRAP_STAGING_CHUNKS
+}
 
 /// Contiguous `chunk_seq`, then the connection budget and staging lifetime.
 pub(super) const fn chunk_admission<E>(

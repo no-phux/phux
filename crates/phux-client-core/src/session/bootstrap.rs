@@ -3,10 +3,9 @@
 use super::{
     AgentStream, BootstrapId, BootstrapStreamProfile, CanonicalGeometry, DocumentStream,
     EffectBuffer, EngineAdapter, GenerationId, HistoryCursor, KernelEffect, KernelError,
-    KernelStatus, MAX_BOOTSTRAP_STAGING_BYTES, MAX_BOOTSTRAP_STAGING_CHUNKS, ReplicaKey,
-    ResourceId, SessionKernel, Staging, StreamId, TombstoneReason, TombstoneRecord, generation_of,
-    mismatch_error, profile_matches, progressive_finish_missing, retained_engine_effect_bytes,
-    retired_error, staging_expired,
+    KernelStatus, MAX_BOOTSTRAP_STAGING_BYTES, ReplicaKey, ResourceId, SessionKernel, Staging,
+    StreamId, TombstoneReason, TombstoneRecord, generation_of, mismatch_error, profile_matches,
+    progressive_finish_missing, retained_engine_effect_bytes, retired_error, staging_expired,
 };
 
 impl<E: EngineAdapter> SessionKernel<E> {
@@ -143,8 +142,7 @@ impl<E: EngineAdapter> SessionKernel<E> {
             bytes = bytes.checked_add(staging.accepted_bytes)?;
             chunks = chunks.checked_add(staging.accepted_chunks)?;
         }
-        (bytes <= MAX_BOOTSTRAP_STAGING_BYTES && chunks <= MAX_BOOTSTRAP_STAGING_CHUNKS)
-            .then_some((bytes, chunks))
+        super::staging_rules::within_staging_ceilings(bytes, chunks).then_some((bytes, chunks))
     }
 
     fn bootstrap_retained_bytes(&self) -> Option<usize> {

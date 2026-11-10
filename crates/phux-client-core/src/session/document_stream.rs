@@ -10,6 +10,10 @@ use std::collections::HashMap;
 
 use phux_protocol::wire::frame::TombstoneReason;
 
+mod lane;
+
+pub use lane::DocumentLane;
+
 use super::staging_rules::{chunk_admission, retire_for_codec_failure, staging_lifetime_exceeded};
 use super::{
     BootstrapId, DocumentPublication, EffectBuffer, EngineAdapter, GenerationId, KernelEffect,
