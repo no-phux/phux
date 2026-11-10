@@ -44,7 +44,7 @@ pub(crate) fn run_ask(
             Err(err @ AttachError::Io(_)) => {
                 json_err::report_no_server(json, &err, &socket_path, "ask")
             }
-            Err(AttachError::Refused(msg)) => {
+            Err(AttachError::Refused(msg) | AttachError::WrongResourceKind(msg)) => {
                 error!("cannot report ask for '{target}': {msg}");
                 ExitCode::FAILURE
             }
