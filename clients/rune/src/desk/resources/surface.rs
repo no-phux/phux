@@ -69,11 +69,12 @@ fn complete(image: &rune::Image) -> bool {
 }
 
 impl Document {
-    /// An image whose content type is PNG, JPEG, GIF or WebP: a surface's
-    /// by signature, a typed document's as declared. The cache accepts SVG
-    /// too, so nothing else reaches it. Full validation, 8192-side /
-    /// 256 MiB decode limits, and mip generation remain on Rune's real
-    /// decoder workers.
+    /// Bytes that start with a PNG, JPEG, GIF or WebP signature matching
+    /// their content type (`document_view::raster_type`: PNG or JPEG for a
+    /// surface, the declared type for a typed document). The cache would
+    /// also decode SVG, so a signature check, not a declared type, is what
+    /// keeps SVG out. Full validation, 8192-side / 256 MiB decode limits,
+    /// and mip generation remain on Rune's real decoder workers.
     pub(super) fn publish_image(
         &mut self,
         bytes: &[u8],

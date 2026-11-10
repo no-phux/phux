@@ -17,8 +17,9 @@ pub enum DocumentContent {
     /// No bytes: an empty publication.
     Empty,
     /// An image of this lower-case content type essence (`image/png`,
-    /// `image/jpeg`, `image/gif` or `image/webp`). The publication's bytes
-    /// are the image; the client's decoder checks them.
+    /// `image/jpeg`, `image/gif` or `image/webp`) whose bytes start with
+    /// that format's signature ([`raster_type`]). The publication's bytes
+    /// are the image; the client's decoder checks the rest.
     Image(String),
     /// Source text, JSON pretty-printed.
     Text {
@@ -48,6 +49,26 @@ pub fn is_image(content_type: &str) -> bool {
     )
 }
 
+/// The raster format `bytes` start with, as its content type.
+///
+/// PNG, JPEG, GIF (87a or 89a) or WebP (`RIFF`, a size, `WEBP`). A client
+/// hands an image decoder only bytes this names, so SVG or a mislabeled
+/// blob never reaches one.
+#[must_use]
+pub fn raster_type(bytes: &[u8]) -> Option<&'static str> {
+    if bytes.starts_with(b"\x89PNG\r\n\x1a\n") {
+        Some("image/png")
+    } else if bytes.starts_with(&[0xff, 0xd8, 0xff]) {
+        Some("image/jpeg")
+    } else if bytes.starts_with(b"GIF87a") || bytes.starts_with(b"GIF89a") {
+        Some("image/gif")
+    } else if bytes.len() >= 12 && bytes.starts_with(b"RIFF") && &bytes[8..12] == b"WEBP" {
+        Some("image/webp")
+    } else {
+        None
+    }
+}
+
 /// The content type of a `kind` publication of `bytes`.
 ///
 /// JSON for an accessibility tree, PNG or JPEG by signature for a pixel
@@ -65,13 +86,10 @@ pub fn content_type(
 ) -> Result<String, String> {
     match kind {
         ResourceKind::AccessibilityTree => Ok("application/json".to_owned()),
-        ResourceKind::PixelSurface if bytes.starts_with(b"\x89PNG\r\n\x1a\n") => {
-            Ok("image/png".to_owned())
-        }
-        ResourceKind::PixelSurface if bytes.starts_with(&[0xff, 0xd8, 0xff]) => {
-            Ok("image/jpeg".to_owned())
-        }
-        ResourceKind::PixelSurface => Err("Invalid frame: not a PNG or JPEG".to_owned()),
+        ResourceKind::PixelSurface => match raster_type(bytes) {
+            Some(png_or_jpeg @ ("image/png" | "image/jpeg")) => Ok(png_or_jpeg.to_owned()),
+            _ => Err("Invalid frame: not a PNG or JPEG".to_owned()),
+        },
         ResourceKind::Document => Ok(declared.unwrap_or("application/octet-stream").to_owned()),
         _ => Err("Unsupported document kind".to_owned()),
     }
@@ -90,6 +108,13 @@ pub fn decode(kind: ResourceKind, declared: Option<&str>, bytes: &[u8]) -> Docum
     };
     let essence = essence_of(&content_type).to_ascii_lowercase();
     if is_image(&essence) {
+        // A declared image whose bytes are another format is not drawn.
+        if raster_type(bytes) != Some(essence.as_str()) {
+            return DocumentContent::Opaque {
+                content_type,
+                len: bytes.len(),
+            };
+        }
         return DocumentContent::Image(essence);
     }
     let text = if essence == "application/json" {
@@ -203,7 +228,11 @@ mod tests {
             DocumentContent::Image("image/png".to_owned())
         );
         assert_eq!(
-            decode(ResourceKind::Document, Some("IMAGE/WEBP; q=1"), b"RIFF"),
+            decode(
+                ResourceKind::Document,
+                Some("IMAGE/WEBP; q=1"),
+                b"RIFF\0\0\0\0WEBPVP8 "
+            ),
             DocumentContent::Image("image/webp".to_owned())
         );
         assert!(!is_image("image/svg+xml") && !is_image("image/tiff"));
@@ -226,6 +255,44 @@ mod tests {
                 DocumentContent::Empty
             );
         }
+    }
+
+    #[test]
+    fn only_bytes_with_a_raster_signature_are_images() {
+        for (bytes, expected) in [
+            (&b"\x89PNG\r\n\x1a\n"[..], Some("image/png")),
+            (&[0xff, 0xd8, 0xff, 0xe0], Some("image/jpeg")),
+            (b"GIF87a..", Some("image/gif")),
+            (b"GIF89a..", Some("image/gif")),
+            (b"RIFF\x10\0\0\0WEBPVP8 ", Some("image/webp")),
+            (b"RIFF\x10\0\0\0WAVEfmt ", None),
+            (b"RIFF", None),
+            (b"<svg xmlns='http://www.w3.org/2000/svg'/>", None),
+            (b"", None),
+        ] {
+            assert_eq!(raster_type(bytes), expected, "{bytes:?}");
+        }
+        // A declared image whose bytes are another format, or SVG behind a
+        // raster type, is its type and size, never an image.
+        for (declared, bytes) in [
+            ("image/png", &b"<svg/>"[..]),
+            ("image/webp", b"GIF89a.."),
+            ("image/gif", b"RIFF"),
+        ] {
+            assert_eq!(
+                decode(ResourceKind::Document, Some(declared), bytes),
+                DocumentContent::Opaque {
+                    content_type: declared.to_owned(),
+                    len: bytes.len()
+                },
+                "{declared}"
+            );
+        }
+        assert_eq!(
+            decode(ResourceKind::PixelSurface, None, b"GIF89a.."),
+            DocumentContent::Invalid("Invalid frame: not a PNG or JPEG".to_owned()),
+            "a surface is PNG or JPEG only"
+        );
     }
 
     #[test]

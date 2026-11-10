@@ -195,3 +195,26 @@ fn every_kind_takes_the_one_decode_path_by_its_content_type() {
     ));
     assert!(matches!(surface.body, Body::Empty));
 }
+
+#[test]
+fn a_declared_image_without_its_signature_never_reaches_the_cache() {
+    let cache = rune::ImageCache::new(Arc::new(|| {}));
+    let mut decodes = surface::Decodes::default();
+    let svg = b"<svg xmlns='http://www.w3.org/2000/svg'/>".to_vec();
+    for (seq, content_type) in ["image/png", "image/webp", "image/gif"]
+        .into_iter()
+        .enumerate()
+    {
+        let mut d = Document::new(record(1, ResourceKind::Document));
+        let published = publication(seq as u64, content_type, svg.clone());
+        assert!(d.publish(&published, Some(&cache), &mut decodes));
+        assert_eq!(
+            text(&d.body),
+            format!("{} bytes of {content_type}", svg.len()),
+            "{content_type}"
+        );
+    }
+    let (body, _) = typed("image/svg+xml", &svg);
+    assert!(text(&body).starts_with("<svg"), "SVG is source");
+    assert_eq!(decodes.started, 0, "nothing was handed to a decoder");
+}
