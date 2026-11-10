@@ -41,6 +41,7 @@ use phux_client::agent_prompt::{ApplyVerdict, Refusal as ApplyRefusal, apply_inp
 use phux_client::agent_wait::{AgentWaitError, AgentWaitResult, wait_for_agent_state};
 use phux_client::attach::AttachError;
 use phux_client::attach::connection::{Answer, Connection};
+use phux_client::read::Verb;
 use phux_protocol::caps::ServerFeature;
 use phux_protocol::ids::{InputOperationId, ResourceId};
 use phux_protocol::input::InputEvent;
@@ -510,7 +511,8 @@ async fn open_target(
 ) -> Result<(ResourceId, Connection), ExitCode> {
     // `agent start` types the launch line over acknowledged input, so a
     // `%name` takes the ADR-0075 point 5 withdrawn-record guard.
-    let terminal = resolve_target_for_input(socket_path, selector, "agent start", req.json).await?;
+    let terminal =
+        resolve_target_for_input(socket_path, selector, Verb::AgentStart, req.json).await?;
     // APPLY_INPUT is local-only and `phux.agent/v1` does not federate.
     if !matches!(terminal, ResourceId::Local { .. }) {
         return Err(satellite_refusal(&terminal).emit(req.json));

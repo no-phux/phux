@@ -11,13 +11,15 @@ async fn phux_upload(args: &Value) -> Result<Value, ToolError> {
     let secs = upload_timeout_secs(args)?;
     let socket = socket_arg(args)?;
     let deadline = tokio::time::Instant::now() + Duration::from_secs(secs);
-    let pane = tokio::time::timeout_at(deadline, async {
-        resolve_selector(&socket, &selector, false).await
+    let resolved = tokio::time::timeout_at(deadline, async {
+        resolve_resource(&socket, &selector, false).await
     })
     .await
     .map_err(|_| {
         ToolError::new("upload deadline elapsed during target resolution; no transfer started")
     })??;
+    read::require_terminal(Verb::Upload, &resolved).map_err(|err| wrong_kind_error(&err))?;
+    let pane = resolved.id;
     let receipt = phux_client::upload::upload_file(
         phux_client_runtime::runtime::Target::uds(socket),
         pane,

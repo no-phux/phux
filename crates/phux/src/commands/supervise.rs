@@ -10,6 +10,7 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 
 use phux_client::kill::KeyedError;
+use phux_client::read::Verb;
 use phux_client::signal::LeaseOutcome;
 use phux_protocol::caps::ServerFeature;
 use phux_protocol::ids::IdempotencyKey;
@@ -51,7 +52,11 @@ fn ttl_ms(ttl: Option<u32>) -> u32 {
 /// `take` is `Some(ttl_ms)`; `give` is `None`, distinguishing the two verbs
 /// for the shared resolve-then-request body below.
 fn run_lease(target: &str, json: bool, socket: Option<PathBuf>, take: Option<u32>) -> ExitCode {
-    let verb = if take.is_some() { "take" } else { "give" };
+    let verb = if take.is_some() {
+        Verb::Take
+    } else {
+        Verb::Give
+    };
     let selector = match parse_selector(Some(target)) {
         Ok(sel) => sel,
         Err(code) => return code,
@@ -94,8 +99,8 @@ fn run_lease(target: &str, json: bool, socket: Option<PathBuf>, take: Option<u32
                 }
                 ExitCode::SUCCESS
             }
-            Ok(outcome) => report_refusal(json, verb, target, outcome),
-            Err(err) => json_err::report_no_server(json, &err, &socket_path, verb),
+            Ok(outcome) => report_refusal(json, verb.name(), target, outcome),
+            Err(err) => json_err::report_no_server(json, &err, &socket_path, verb.name()),
         }
     })
 }
@@ -194,6 +199,9 @@ pub(crate) fn run_signal(
             }
             Err(phux_client::signal::SignalError::Agent(err)) => {
                 crate::commands::report_agent_resolve_error(json, &err, true)
+            }
+            Err(phux_client::signal::SignalError::WrongKind(err)) => {
+                crate::commands::read_kind::wrong_kind(json, &err)
             }
             Err(phux_client::signal::SignalError::Keyed(KeyedError::Unsupported)) => {
                 crate::commands::spawn::unsupported_server(json, ServerFeature::KeyedSignal)

@@ -1,5 +1,6 @@
-//! `phux snapshot`, `phux wait` and `phux send-keys` dispatch on their
-//! target's kind (phux-rbz0y.9), each run as its own `phux` subprocess
+//! `phux snapshot`, `phux wait`, `phux send-keys` and the other
+//! Terminal-only verbs dispatch on their target's kind (phux-rbz0y.9,
+//! phux-rbz0y.20), each run as its own `phux` subprocess
 //! against a real server: a tree reads as `phux agent tree snapshot` reads
 //! it, a document as its text, a surface only to `--out`, and a verb or flag
 //! that does not apply to the kind exits 2.
@@ -197,4 +198,45 @@ fn send_keys_refuses_every_document_kind() {
     for id in [&f.tree, &f.notes, &f.surface] {
         f.refused(&["send-keys", "--json", id, "Enter"], "wrong_resource_kind");
     }
+}
+
+/// Every verb that reaches a Terminal only refuses a document up front, as
+/// `send-keys` does, instead of failing downstream (`run`'s "no OSC-133
+/// shell marks").
+#[test]
+#[ignore = "spawns a real phux server; run via `just e2e`."]
+fn terminal_only_verbs_refuse_every_document_kind() {
+    let f = Fixture::start();
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("upload.txt");
+    std::fs::write(&file, b"x").unwrap();
+    let file = file.to_str().unwrap();
+    let cast = dir.path().join("out.cast");
+    let cast = cast.to_str().unwrap();
+    for id in [&f.tree, &f.notes, &f.surface] {
+        let id = id.as_str();
+        for args in [
+            &["run", "--json", "--timeout", "5", id, "true"][..],
+            &["paste", "--json", id, "hi"],
+            &["resize", "--json", id, "80x24"],
+            &["upload", "--json", id, file],
+            &["take", "--json", id],
+            &["give", "--json", id],
+            &["signal", "--json", id, "freeze"],
+            &["ask", "--json", id, "ok?"],
+            &["rec", "--json", "-o", cast, "--duration", "1", id],
+            &["agent", "send-keys", "--json", id, "Enter"],
+            &["agent", "prompt", "--json", id, "hi"],
+            &[
+                "agent", "answer", "--json", "--id", "q", "--choice", "1", id,
+            ],
+        ] {
+            f.refused(args, "wrong_resource_kind");
+        }
+        let report = f.run(&["agent", "report-state", id, "working"]);
+        assert_eq!(report.status.code(), Some(2), "{report:?}");
+    }
+    // A Terminal still takes them.
+    let pasted = f.run(&["paste", "--json", "work", "x"]);
+    assert!(pasted.status.success(), "{pasted:?}");
 }

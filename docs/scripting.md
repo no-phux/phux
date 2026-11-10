@@ -192,9 +192,14 @@ On an accessibility tree or a text document, `phux wait @N` follows the
 resource instead and checks each document as it arrives: `--until` matches
 anywhere in the document, `--regex` one line of it. `--tail`,
 `--output-only` and `--idle` are for a terminal and exit 2 here. A resource
-that closes before it matches exits 1. `phux send-keys` refuses a document
-(exit 2); its input goes to the producer through `phux agent page type` and
-`phux agent page key`.
+that closes before it matches exits 1.
+
+A verb that reaches a terminal only refuses any other kind before it sends
+anything, with `wrong_resource_kind` and exit 2: `send-keys`, `paste`,
+`run`, `resize`, `upload`, `take`, `give`, `signal`, `ask`, `rec`, and
+`phux agent send-keys|prompt|answer|start|report-state`, with their MCP
+tools. A document's input goes to its producer through `phux agent page
+type` and `phux agent page key`.
 
 ## Watching events
 

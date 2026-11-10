@@ -17,6 +17,7 @@ use std::process::ExitCode;
 use std::time::Duration;
 
 use phux_client::attach::AttachError;
+use phux_client::read::Verb;
 use phux_record::cast::{CastEvent, CastHeader, CastVersion, CastWriter, EventCode, read_cast};
 use phux_record::error::RecordError;
 use phux_record::render::{OutputFormat, RenderOptions, render_cast};
@@ -24,7 +25,9 @@ use phux_record::timeline::clamp_idle;
 use phux_server::runtime::default_socket_path;
 use usage::Subcommands;
 
-use crate::commands::{RecFormat, cli_runtime, json_err, parse_selector, resolve_target};
+use crate::commands::{
+    RecFormat, cli_runtime, json_err, parse_selector, resolve_target, resolve_terminal_target,
+};
 
 pub(crate) use spec::RecordSpec;
 
@@ -230,7 +233,7 @@ fn capture(
     let rt = cli_runtime()?;
 
     rt.block_on(async move {
-        let terminal_id = resolve_target(&socket_path, &selector, "rec", json).await?;
+        let terminal_id = resolve_terminal_target(&socket_path, &selector, Verb::Rec, json).await?;
 
         // Progress is a live counter on stderr, rewritten in place. It is
         // suppressed under `--json` so a consumer that reads stderr for

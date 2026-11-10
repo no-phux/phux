@@ -20,6 +20,7 @@ use phux_client::agent_prompt::{
     PromptError, PromptOutcome, Refusal, deliver_acknowledged, validate_batch,
 };
 use phux_client::attach::AttachError;
+use phux_client::read::Verb;
 use phux_protocol::ids::InputOperationId;
 use phux_server::runtime::default_socket_path;
 
@@ -164,8 +165,13 @@ pub(super) fn run_agent_send_keys(
     let key_count = keys.len();
 
     rt.block_on(async move {
-        let pane = match resolve_target_for_input(&socket_path, &selector, "agent send-keys", json)
-            .await
+        let pane = match resolve_target_for_input(
+            &socket_path,
+            &selector,
+            Verb::AgentSendKeys,
+            json,
+        )
+        .await
         {
             Ok(id) => id,
             Err(code) => return code,

@@ -2,11 +2,12 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use phux_client::attach::AttachError;
+use phux_client::read::Verb;
 use phux_client::recovery::{EffectCertainty, NextAction, Recovery, ScopeKind};
 use phux_protocol::ids::ResourceId;
 use phux_server::runtime::default_socket_path;
 
-use crate::commands::{cli_runtime, json_err, parse_selector, resolve_resource};
+use crate::commands::{cli_runtime, json_err, parse_selector, resolve_target_for_input};
 
 /// Version of the `send-keys --json` and `paste --json` receipts.
 pub(crate) const RECEIPT_SCHEMA_VERSION: u8 = 1;
@@ -38,16 +39,12 @@ pub(crate) fn run_send_keys(
         Err(code) => return code,
     };
     rt.block_on(async move {
-        let resolved =
-            match resolve_resource(&socket_path, &selector, "send-keys", json, true).await {
-                Ok(resolved) => resolved,
+        // Keys reach a Terminal only; a document's input is typed intents.
+        let pane =
+            match resolve_target_for_input(&socket_path, &selector, Verb::SendKeys, json).await {
+                Ok(id) => id,
                 Err(code) => return code,
             };
-        // Keys reach a Terminal only; a document's input is typed intents.
-        if let Err(err) = phux_client::read::route(phux_client::read::Verb::SendKeys, &resolved) {
-            return crate::commands::read_kind::wrong_kind(json, &err);
-        }
-        let pane = resolved.id;
         match phux_client::send_keys::send_counted(&socket_path, &pane, keys).await {
             Ok(events) => report_receipt(json, &pane, events),
             Err(failure) => report_input_failure(

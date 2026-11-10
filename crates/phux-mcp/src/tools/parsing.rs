@@ -36,31 +36,17 @@ fn required_target(args: &Value) -> Result<Selector, ToolError> {
     parse_selector(required_str(args, "target")?)
 }
 
-/// Exact IDs bypass inventory/name resolution, including for retained resources.
-pub(crate) async fn resolve_selector(
-    socket: &Path,
-    selector: &Selector,
-    for_input: bool,
-) -> Result<ResourceId, ToolError> {
-    if let Some(id) = selector.explicit_id() {
-        return Ok(id);
-    }
-    let view = state::get_state(socket).await?;
-    if for_input {
-        resolve_one_for_input(socket, selector, &view).await
-    } else {
-        resolve_one(socket, selector, &view).await
-    }
-}
-
-/// [`resolve_selector`], reporting the resource's kind so a tool can
-/// dispatch on it ([`phux_client::read`]). An exact ID still resolves
-/// without the inventory; its kind is read from it when it can be, and is
-/// otherwise taken as a Terminal, whose read the server answers as before.
+/// Resolve `selector` to one resource and the kind the inventory lists it
+/// as, so a tool can dispatch on it ([`phux_client::read`]). An exact ID,
+/// retained resources included, resolves without the inventory; its kind
+/// is read from it when it can be, and is otherwise taken as a Terminal,
+/// whose read the server answers as before. `for_input` refuses a `%name`
+/// whose record has the withdrawn shape (ADR-0075 point 5), as the CLI's
+/// input verbs refuse it.
 ///
 /// # Errors
 ///
-/// As [`resolve_selector`].
+/// A [`ToolError`] when the selector matches no pane, or `agent_withdrawn`.
 pub(crate) async fn resolve_resource(
     socket: &Path,
     selector: &Selector,
@@ -81,7 +67,7 @@ pub(crate) async fn resolve_resource(
 }
 
 /// A verb refused for its target's kind, on the CLI's error contract.
-fn wrong_kind_error(err: &read::WrongKind) -> ToolError {
+pub(crate) fn wrong_kind_error(err: &read::WrongKind) -> ToolError {
     contract_error("wrong_resource_kind", err.to_string(), err.remedy(), 2)
 }
 
@@ -134,7 +120,7 @@ const fn per_kind_tool(verb: Verb, kind: phux_protocol::ids::ResourceKind) -> Op
 /// Resolve `selector` against `view` to one pane as the CLI does (ADR-0021),
 /// preferring the focused pane. A miss against a degraded view says so
 /// rather than claiming the target is gone. For read tools; a tool that
-/// delivers input resolves through [`resolve_one_for_input`].
+/// delivers input resolves through [`resolve_resource`].
 ///
 /// # Errors
 ///
@@ -145,22 +131,6 @@ pub(crate) async fn resolve_one(
     view: &StateView,
 ) -> Result<ResourceId, ToolError> {
     resolve_one_with(socket, selector, view, false).await
-}
-
-/// [`resolve_one`] for the tools that deliver input into the pane
-/// (`phux_send_keys`, `phux_paste`): identical, except that a `%name` whose
-/// record has the withdrawn shape is refused (ADR-0075 point 5), as the
-/// CLI's input verbs refuse it.
-///
-/// # Errors
-///
-/// A [`ToolError`] when the selector matches no pane, or `agent_withdrawn`.
-pub(crate) async fn resolve_one_for_input(
-    socket: &std::path::Path,
-    selector: &Selector,
-    view: &StateView,
-) -> Result<ResourceId, ToolError> {
-    resolve_one_with(socket, selector, view, true).await
 }
 
 async fn resolve_one_with(

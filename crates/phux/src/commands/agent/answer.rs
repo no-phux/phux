@@ -22,6 +22,7 @@ use std::process::ExitCode;
 use phux_client::agent_prompt::{ApplyVerdict, supports_acknowledged_input};
 use phux_client::ask::{AskMarker, MAX_ANSWER_BYTES, deliver_answer, parse_ask_title};
 use phux_client::attach::connection::Connection;
+use phux_client::read::Verb;
 use phux_protocol::ids::InputOperationId;
 use phux_server::runtime::default_socket_path;
 
@@ -293,11 +294,12 @@ pub(super) fn run_agent_answer(
     };
 
     rt.block_on(async move {
-        let pane =
-            match resolve_target_for_input(&socket_path, &selector, "agent answer", json).await {
-                Ok(pane) => pane,
-                Err(code) => return code,
-            };
+        let pane = match resolve_target_for_input(&socket_path, &selector, Verb::AgentAnswer, json)
+            .await
+        {
+            Ok(pane) => pane,
+            Err(code) => return code,
+        };
         let label = phux_client::selector::format_terminal_id(&pane);
         if !pane.is_local() {
             return Refusal::new(

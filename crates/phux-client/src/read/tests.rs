@@ -39,10 +39,10 @@ fn each_verb_routes_each_kind_from_the_catalog() {
                 Some(Doc(Kind::Document)),
                 None,
             ],
-            Verb::SendKeys => [Some(Terminal), None, None, None, None, None],
+            _ => [Some(Terminal), None, None, None, None, None],
         }
     };
-    for verb in [Verb::Snapshot, Verb::Wait, Verb::SendKeys] {
+    for verb in Verb::ALL {
         for (kind, want) in ALL.into_iter().zip(expect(verb)) {
             let got = route(verb, &at(kind));
             assert_eq!(got.as_ref().ok().copied(), want, "{verb:?} {kind:?}");
@@ -51,6 +51,57 @@ fn each_verb_routes_each_kind_from_the_catalog() {
             }
         }
     }
+}
+
+#[test]
+fn each_verb_names_a_method_only_the_terminal_facet_carries() {
+    for verb in Verb::ALL {
+        let carriers: Vec<_> = kinds::KINDS
+            .iter()
+            .filter(|spec| {
+                spec.methods
+                    .iter()
+                    .any(|method| method.name == verb.terminal_method())
+            })
+            .map(|spec| spec.kind)
+            .collect();
+        assert_eq!(carriers, [ResourceKind::Terminal], "{verb:?}");
+    }
+}
+
+#[test]
+fn a_terminal_verb_refuses_every_other_kind_up_front() {
+    for verb in Verb::ALL {
+        assert_eq!(
+            require_terminal(verb, &at(ResourceKind::Terminal)),
+            Ok(()),
+            "{verb:?}"
+        );
+        for kind in &ALL[1..] {
+            let refusal = require_terminal(verb, &at(*kind)).unwrap_err();
+            assert_eq!((refusal.kind, refusal.verb), (*kind, verb));
+        }
+    }
+    // A verb that types into a document names its producer's intents; any
+    // other names a Terminal.
+    let paste = require_terminal(Verb::Paste, &at(ResourceKind::Document)).unwrap_err();
+    assert_eq!(
+        paste.to_string(),
+        "`paste` does not apply to @5, a document"
+    );
+    assert!(
+        paste.remedy().contains("phux agent page type"),
+        "{}",
+        paste.remedy()
+    );
+    let prompt = require_terminal(Verb::AgentPrompt, &at(ResourceKind::AccessibilityTree));
+    assert!(prompt.unwrap_err().remedy().contains("phux agent page"));
+    let run = require_terminal(Verb::Run, &at(ResourceKind::Document)).unwrap_err();
+    assert!(
+        run.remedy().starts_with("address a Terminal"),
+        "{}",
+        run.remedy()
+    );
 }
 
 #[test]

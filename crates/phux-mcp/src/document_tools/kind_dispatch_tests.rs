@@ -1,7 +1,8 @@
-//! `phux_snapshot`, `phux_wait` and `phux_send_keys` check their target's
-//! kind against a real server: a Terminal reads as before, and a document
-//! is refused with `wrong_resource_kind` naming the tool that reads it, so
-//! the two readers stay read-only (they never attach).
+//! `phux_snapshot`, `phux_wait`, `phux_send_keys` and the other
+//! Terminal-only tools check their target's kind against a real server: a
+//! Terminal reads as before, and a document is refused with
+//! `wrong_resource_kind` naming the tool that reads it, so the two readers
+//! stay read-only (they never attach).
 
 use phux_client::tree::Kind;
 use phux_server_testkit::{
@@ -123,6 +124,36 @@ fn the_screen_verbs_dispatch_on_the_target_kind() {
             assert_eq!(code, "wrong_resource_kind");
             assert!(remedy.contains("phux agent page"), "{remedy}");
         }
+
+        // Every other Terminal-only tool refuses a document before it sends.
+        let file = dir.path().join("upload.txt");
+        std::fs::write(&file, b"x").unwrap();
+        for (tool, args, remedy_has) in [
+            ("phux_paste", json!({ "text": "hi" }), "phux agent page"),
+            ("phux_upload", json!({ "path": file }), "address a Terminal"),
+            (
+                "phux_ask",
+                json!({ "id": "q", "question": "ok?" }),
+                "address a Terminal",
+            ),
+            (
+                "phux_signal",
+                json!({ "signal": "freeze" }),
+                "address a Terminal",
+            ),
+        ] {
+            for id in [&tree_id, &notes] {
+                let (code, remedy) = refused(tool, &target(id, &socket, args.clone())).await;
+                assert_eq!(code, "wrong_resource_kind", "{tool} {id:?}");
+                assert!(remedy.contains(remedy_has), "{tool}: {remedy}");
+            }
+        }
+        let pasted = ok(
+            "phux_paste",
+            &target(&pane, &socket, json!({ "text": "x" })),
+        )
+        .await;
+        assert_eq!(pasted["sent"], true, "a Terminal still takes a paste");
 
         drop(producer);
         join_after_shutdown(shutdown, server).await;

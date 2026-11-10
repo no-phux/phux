@@ -391,6 +391,7 @@ fn signal_error(target: &str, err: phux_client::signal::SignalError) -> ToolErro
         }
         SignalError::Miss { degradation } => incomplete_view_miss(target, degradation.notices()),
         SignalError::Agent(err) => crate::tools::agent_resolve_error(&err),
+        SignalError::WrongKind(err) => crate::tools::wrong_kind_error(&err),
         SignalError::Keyed(KeyedError::Unsupported) => unsupported_keyed_signal(),
         SignalError::Keyed(KeyedError::Attach(err)) => err.into(),
     }

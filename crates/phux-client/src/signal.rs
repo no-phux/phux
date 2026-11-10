@@ -137,6 +137,9 @@ pub enum SignalError {
         /// What the snapshot could not see; empty means a genuine miss.
         degradation: Degradation,
     },
+    /// The pane is not a Terminal, so it has no process group to signal.
+    #[error(transparent)]
+    WrongKind(#[from] crate::read::WrongKind),
     /// Connect, keyed-signal, or transport failure.
     #[error(transparent)]
     Keyed(#[from] KeyedError),
@@ -161,7 +164,8 @@ pub struct Delivered {
 ///
 /// An input-verb resolution, including the withdrawn `%name` guard.
 /// Snapshot partial-view notices for a hit are appended to `notices`
-/// before the signal is sent.
+/// before the signal is sent. A resource that is not a Terminal is refused
+/// before anything is sent.
 ///
 /// # Errors
 ///
@@ -176,6 +180,9 @@ pub async fn deliver(
     let mut conn = Connection::connect(socket).await?;
     let (snapshot, degradation) = crate::state::get_state_on(&mut conn).await?.into_parts();
     let terminal = resolve_one_for_input(&mut conn, selector, &snapshot, &degradation).await?;
+    let resolved = selector::Resolved::in_snapshot(&snapshot, terminal);
+    crate::read::require_terminal(crate::read::Verb::Signal, &resolved)?;
+    let terminal = resolved.id;
     notices.extend(degradation.notices().iter().cloned());
     let (outcome, interleaved) = match key {
         None => request_lease(&mut conn, 1, signal_command(terminal, signal)).await?,
@@ -297,5 +304,34 @@ mod tests {
             "{result:?}"
         );
         assert!(notices.is_empty());
+    }
+
+    #[tokio::test]
+    async fn deliver_refuses_a_document_before_signalling() {
+        use crate::testkit::ScriptSpec;
+        use phux_protocol::ids::{ResourceKind, SessionId, WindowId};
+        use phux_protocol::wire::info::{ResourceInfo, SessionSnapshot};
+
+        let window = WindowId::new(10);
+        let snapshot = SessionSnapshot::new(SessionId::new(1), window, ResourceId::local(1))
+            .with_resources(vec![
+                ResourceInfo::new(ResourceId::local(2), window, 80, 24)
+                    .with_kind(ResourceKind::Document),
+            ]);
+        let (result, _, seen) = deliver_on(ScriptSpec::new().state(snapshot), "@2").await;
+        let Err(SignalError::WrongKind(refusal)) = result else {
+            panic!("expected a kind refusal, got {result:?}");
+        };
+        assert_eq!(refusal.kind, ResourceKind::Document);
+        assert!(
+            !seen.iter().any(|frame| matches!(
+                frame,
+                phux_protocol::wire::frame::FrameKind::Command {
+                    command: Command::SignalTerminal { .. },
+                    ..
+                }
+            )),
+            "nothing is signalled: {seen:?}"
+        );
     }
 }
