@@ -530,6 +530,15 @@ impl Reader {
         Ok(match frame {
             FrameKind::BootstrapBegin {
                 terminal_id,
+                profile: BootstrapStreamProfile::Unknown { codec_tag },
+                ..
+            } if terminal_id == self.tree => {
+                return Err(TreeError::Protocol(AttachError::Protocol(format!(
+                    "the server streams this document in codec {codec_tag}, which this build cannot decode"
+                ))));
+            }
+            FrameKind::BootstrapBegin {
+                terminal_id,
                 base_seq,
                 profile,
                 ..

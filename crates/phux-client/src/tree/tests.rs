@@ -142,3 +142,22 @@ fn an_old_server_is_told_apart_by_the_kind_it_lacks() {
             .contains("PIXEL_SURFACE")
     );
 }
+
+#[test]
+fn a_document_in_an_unknown_codec_is_refused_rather_than_misread() {
+    let tree = ResourceId::local(6);
+    let mut reader = Reader::new(tree.clone());
+    let begin = FrameKind::BootstrapBegin {
+        terminal_id: tree,
+        stream_id: StreamId::new(1).unwrap(),
+        bootstrap_id: BootstrapId::new(1).unwrap(),
+        profile: BootstrapStreamProfile::Unknown { codec_tag: 0x77 },
+        cols: 0,
+        rows: 0,
+        base_seq: 0,
+    };
+    assert!(matches!(
+        reader.absorb(begin),
+        Err(TreeError::Protocol(AttachError::Protocol(_)))
+    ));
+}
