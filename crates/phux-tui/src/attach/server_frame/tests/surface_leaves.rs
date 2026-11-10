@@ -6,7 +6,6 @@
 //! decodes no documents never bootstraps one to it, so only the fallback
 //! test below feeds a document bootstrap.
 
-use super::resource_kinds::document;
 use super::*;
 
 /// A Terminal (`pane`) and, when given, a titled pixel surface in session 1.
@@ -249,11 +248,12 @@ fn a_document_bootstrap_classifies_a_leaf_the_graph_did_not_name() {
     });
     assert!(begin.layout_replaced, "the first word repaints the tile");
     assert!(paint(&mut h).contains("Document"));
-    // The rest of the stream never reaches the TTY or repaints again.
-    document(
-        &mut h,
+    // The rest of the same generation never reaches the TTY.
+    h.send(chunk_frame(
         &doc,
-        phux_protocol::BootstrapStreamProfile::DocumentTypedV1,
-    );
+        b"\x0atext/plain\x1b]52;c;bm90LXR0eQ==\x07untrusted document",
+    ));
+    h.send(ready_frame(&doc));
+    h.send(output_frame(&doc, 2, b"\x1b[2Juntrusted live document"));
     assert!(!h.out_str().contains("untrusted"));
 }
