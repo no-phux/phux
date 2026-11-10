@@ -1,4 +1,5 @@
 """Native framework, privacy and notice packaging contracts."""
+import json
 from pathlib import Path
 import plistlib
 import sys
@@ -21,6 +22,32 @@ class NativeAssetTests(unittest.TestCase):
                 combined = helper.run(command, {}, out, "compiler")
                 self.assertIn("/a path", combined)
                 self.assertIn("warning: diagnostic", combined)
+
+    def test_icon_and_launch_colour_are_compiled_for_the_target_or_fail(self):
+        for simulator, platform in ((True, "iphonesimulator"), (False, "iphoneos")):
+            with self.subTest(simulator=simulator), tempfile.TemporaryDirectory() as temporary:
+                out = Path(temporary)
+                app = out / "App"
+                app.mkdir()
+                compiled = {"CFBundleIcons": {"CFBundlePrimaryIcon": {"CFBundleIconName": "AppIcon"}}}
+
+                def actool(command, env, output, name, timeout=120, stdout_only=False):
+                    self.assertEqual(command[command.index("--platform") + 1], platform)
+                    self.assertEqual(command[command.index("--app-icon") + 1], "AppIcon")
+                    (app / "Assets.car").touch()
+                    (output / "assets-info.plist").write_bytes(plistlib.dumps(compiled))
+
+                with patch.object(build, "run", side_effect=actool):
+                    self.assertEqual(build.compile_assets(app, {}, out, simulator), compiled)
+                catalog = out / "Assets.xcassets"
+                self.assertEqual((catalog / "AppIcon.appiconset/AppIcon.png").read_bytes(),
+                                 (build.IOS / "AppIcon.png").read_bytes())
+                colour = json.loads((catalog / "LaunchGround.colorset/Contents.json").read_text())
+                self.assertEqual(colour["colors"][0]["color"]["components"],
+                                 {"red": "0x09", "green": "0x0A", "blue": "0x0C", "alpha": "1.000"})
+                with patch.object(build, "run"), self.assertRaises(ValueError):
+                    (out / "assets-info.plist").write_bytes(plistlib.dumps({}))
+                    build.compile_assets(app, {}, out, simulator)
 
     def test_tailnet_framework_resources_notices_and_inside_out_simulator_signing(self):
         for simulator in (True, False):

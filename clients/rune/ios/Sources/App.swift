@@ -22,7 +22,8 @@ final class SceneDelegate: UIResponder, UIWindowSceneDelegate {
         root = controller
         if let url = options.urlContexts.first?.url { controller.importPairing(url) }
         let window = UIWindow(windowScene:scene)
-        window.rootViewController = UINavigationController(rootViewController:controller)
+        // Rune draws its own header; a UIKit bar above it would double the chrome.
+        window.rootViewController = controller
         self.window = window
         window.makeKeyAndVisible()
     }
@@ -46,13 +47,28 @@ final class RuneController: UIViewController, UIAdaptivePresentationControllerDe
     private var started = false
     private var pendingLink: String?
     private var qualificationTask: Task<Void,Never>?
+    /// What the surface's edges show; UIKit continues it under the status
+    /// bar and home indicator so the terminal is not framed by system chrome.
+    private var ground = UIColor(named: "LaunchGround") ?? .black
+    private lazy var empty = EmptyState { [weak self] in self?.showConnection() }
     isolated deinit { qualificationTask?.cancel() }
+    override var preferredStatusBarStyle: UIStatusBarStyle {
+        var (red, green, blue): (CGFloat, CGFloat, CGFloat) = (0, 0, 0)
+        ground.getRed(&red, green: &green, blue: &blue, alpha: nil)
+        return 0.2126 * red + 0.7152 * green + 0.0722 * blue < 0.5 ? .lightContent : .darkContent
+    }
     override func viewDidLoad() {
         super.viewDidLoad()
-        title = "Phux Rune"
-        view.backgroundColor = .systemBackground
-        navigationItem.rightBarButtonItem = UIBarButtonItem(title:"Connection", style:.plain,
-            target:self, action:#selector(showConnection))
+        view.backgroundColor = ground
+        empty.frame = view.bounds
+        empty.autoresizingMask = [.flexibleWidth, .flexibleHeight]
+        view.addSubview(empty)
+    }
+    private func paint(_ ground: UIColor) {
+        guard ground != self.ground else { return }
+        self.ground = ground
+        view.backgroundColor = ground
+        setNeedsStatusBarAppearanceUpdate()
     }
     override func viewDidAppear(_ animated:Bool) {
         super.viewDidAppear(animated)
@@ -89,7 +105,7 @@ final class RuneController: UIViewController, UIAdaptivePresentationControllerDe
         connection(link: url.absoluteString)
     }
 
-    @objc private func showConnection() { connection(link: nil) }
+    private func showConnection() { connection(link: nil) }
 
     func setSceneActive(_ active: Bool) {
         // A native setup sheet must own input even after returning from a
@@ -147,6 +163,8 @@ final class RuneController: UIViewController, UIAdaptivePresentationControllerDe
             self?.present(alert,animated:true)
         }
         surface.connectionRequested = { [weak self] in self?.showConnection() }
+        surface.groundChanged = { [weak self] ground in self?.paint(ground) }
+        empty.isHidden = true
         surface.translatesAutoresizingMaskIntoConstraints = false
         view.addSubview(surface)
         NSLayoutConstraint.activate([
@@ -156,4 +174,26 @@ final class RuneController: UIViewController, UIAdaptivePresentationControllerDe
             surface.bottomAnchor.constraint(equalTo:view.keyboardLayoutGuide.topAnchor)])
         self.surface = surface
     }
+}
+
+/// Shown only while no computer is connected, so dismissing first-run setup
+/// never leaves a blank screen. Dark like the launch screen and the terminal.
+@MainActor
+private final class EmptyState: UIView {
+    init(connect: @escaping () -> Void) {
+        super.init(frame: .zero)
+        overrideUserInterfaceStyle = .dark
+        var content = UIContentUnavailableConfiguration.empty()
+        content.image = UIImage(systemName: "desktopcomputer")
+        content.text = "No computer connected"
+        content.secondaryText = "Pair this phone with a computer running Phux to open its terminals here."
+        content.button = .borderedProminent()
+        content.button.title = "Connect a computer"
+        content.buttonProperties.primaryAction = UIAction { _ in connect() }
+        let body = UIContentUnavailableView(configuration: content)
+        body.frame = bounds
+        body.autoresizingMask = [.flexibleWidth, .flexibleHeight]
+        addSubview(body)
+    }
+    @available(*, unavailable) required init?(coder: NSCoder) { fatalError() }
 }

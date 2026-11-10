@@ -29,6 +29,7 @@ struct Host {
     input: Input,
     frames: u64,
     poisoned: bool,
+    dark: bool,
 }
 
 #[unsafe(no_mangle)]
@@ -144,6 +145,7 @@ pub unsafe extern "C" fn phux_rune_ios_create(
             input: Input::default(),
             frames: 0,
             poisoned: false,
+            dark,
         }))
         .cast())
     })
@@ -208,9 +210,11 @@ pub unsafe extern "C" fn phux_rune_ios_frame(pointer: *mut c_void) -> *mut c_cha
             .as_mut()
             .ok_or("Missing native state.")?;
         let connection_requested = std::mem::take(&mut native.connection_requested);
+        let ground = mobile::edge_srgb(host.layer.runtime(), host.dark);
         string(
             json!({"drew":frame.drew,"animating":frame.animating || reconciled,
-            "wake_after_secs":frame.wake_after_secs,"input":input,"connection_requested":connection_requested}),
+            "wake_after_secs":frame.wake_after_secs,"input":input,"connection_requested":connection_requested,
+            "ground":ground}),
         )
     })
 }
@@ -327,7 +331,9 @@ pub unsafe extern "C" fn phux_rune_ios_traits(
     reduced_motion: bool,
 ) {
     attempt(|| {
-        let rt = unsafe { host(pointer)? }.layer.runtime_mut();
+        let host = unsafe { host(pointer)? };
+        host.dark = dark;
+        let rt = host.layer.runtime_mut();
         rt.set_system_dark(dark);
         rt.set_system_reduced_motion(reduced_motion);
         Ok(())

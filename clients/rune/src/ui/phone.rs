@@ -37,13 +37,7 @@ pub fn view(desk: &Desk, cx: &mut Cx<Desk>) -> El {
     let fallback = Phone::default();
     let phone = desk.phone.as_ref().unwrap_or(&fallback);
     let keyboard_visible = desk.phone_keyboard_visible();
-    // The terminal's own ground runs under everything, as on a phone.
-    let ground = desk
-        .client
-        .as_ref()
-        .zip(desk.shown.as_ref())
-        .and_then(|(client, shown)| client.acquire_view(shown.view?))
-        .map_or(p.bg, |frame| crate::grid::background(&frame));
+    let ground = terminal_ground(desk, &p);
     // Glass floats over the terminal, which may stay dark while UIKit/the
     // desktop prefers light chrome. Its ink must contrast with that ground,
     // not disappear into it. Fields/sheets keep their own opaque theme ink.
@@ -63,11 +57,7 @@ pub fn view(desk: &Desk, cx: &mut Cx<Desk>) -> El {
         .child(stage)
         .children((!desk.settings_open).then(|| tab_pills(desk, &controls)));
     let bar = (!desk.settings_open || keyboard_visible).then(|| accessory(desk, phone, &controls));
-    let fill = if desk.settings_open {
-        p.sidebar
-    } else {
-        ground
-    };
+    let fill = edge_fill(desk, &p);
     // Both keyboards sit after every sheet, outside its measured viewport.
     // Rune treats post-modal controls as part of the modal: keys remain live
     // while the scrim still blocks the terminal and navigation behind it.
@@ -88,6 +78,30 @@ pub fn view(desk: &Desk, cx: &mut Cx<Desk>) -> El {
                 .is_none()
                 .then(|| keyboard(phone, keyboard_visible, &controls)),
         )
+}
+
+/// The terminal's own ground runs under everything, as on a phone.
+fn terminal_ground(desk: &Desk, p: &Ink) -> Color {
+    desk.client
+        .as_ref()
+        .zip(desk.shown.as_ref())
+        .and_then(|(client, shown)| client.acquire_view(shown.view?))
+        .map_or(p.bg, |frame| crate::grid::background(&frame))
+}
+
+fn edge_fill(desk: &Desk, p: &Ink) -> Color {
+    if desk.settings_open {
+        p.sidebar
+    } else {
+        terminal_ground(desk, p)
+    }
+}
+
+/// The phone's edge colour, for a native host to continue under the status
+/// bar and home indicator it keeps outside the surface.
+pub(crate) fn edge_color(desk: &Desk, dark: bool) -> Color {
+    let accent = rune::SystemAccent::DEFAULT.accent(dark);
+    edge_fill(desk, &super::ink(dark, accent, desk.settings.theme))
 }
 
 fn overlays(root: El, desk: &Desk, p: &Ink) -> El {

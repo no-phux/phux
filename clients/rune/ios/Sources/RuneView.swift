@@ -12,6 +12,7 @@ final class RuneView: UIView {
     override class var layerClass: AnyClass { CAMetalLayer.self }
     let editor = RuneInput()
     var connectionRequested: (() -> Void)?
+    var groundChanged: ((UIColor) -> Void)?
     var failed: ((String) -> Void)?
     var qualification: QualificationProbe?
     private var configuration: [String: Any]
@@ -31,7 +32,7 @@ final class RuneView: UIView {
         super.init(frame: .zero)
         active = UIApplication.shared.applicationState == .active
         isMultipleTouchEnabled = true
-        backgroundColor = .black
+        backgroundColor = UIColor(named: "LaunchGround") ?? .black
         editor.send = { [weak self] operation, context in self?.send(operation, context: context) }
         editor.didDismiss = { [weak self] context in _ = self?.send(["op":"dismiss"], context: context) }
         addSubview(editor)
@@ -93,6 +94,9 @@ final class RuneView: UIView {
                 DispatchQueue.main.asyncAfter(deadline: .now() + max(0.001, after), execute: work)
             }
             if frame["connection_requested"] as? Bool == true { connectionRequested?() }
+            if let ground = frame["ground"] as? [Double], ground.count == 3 {
+                groundChanged?(UIColor(red: ground[0], green: ground[1], blue: ground[2], alpha: 1))
+            }
             if frame["drew"] as? Bool == true { drawableRetries = 0 }
             else if timer == nil, drawableRetries < 3 {
                 drawableRetries += 1

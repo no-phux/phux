@@ -63,7 +63,10 @@ class BuildTests(unittest.TestCase):
             self.assertEqual(info["CFBundleURLTypes"][0]["CFBundleURLSchemes"], ["phux-rune"])
             self.assertIn("NSCameraUsageDescription", info)
             self.assertIn("NSLocalNetworkUsageDescription", info)
+            self.assertEqual(info["UILaunchScreen"], {"UIColorName": "LaunchGround"})
             self.assertEqual(plistlib.loads(plistlib.dumps(info)), info)
+        icons = {"CFBundleIcons": {"CFBundlePrimaryIcon": {"CFBundleIconName": "AppIcon"}}}
+        self.assertEqual(build.bundle_plist("1.0.0", False, [], icons)["CFBundleIcons"], icons["CFBundleIcons"])
 
     def test_build_commands_real_staticlib_and_swift_link(self):
         with tempfile.TemporaryDirectory(prefix="rune path ") as temporary:
@@ -89,6 +92,7 @@ class BuildTests(unittest.TestCase):
             with patch.multiple(build, IOS=ios, RUNE=rune), \
                     patch.object(build, "apple_environment", return_value={}), \
                     patch.object(build, "copy_resources", return_value=["Font.ttf"]), \
+                    patch.object(build, "compile_assets", return_value={}), \
                     patch.object(build, "prepare_tailnet", return_value={
                         "swift_flags": ["-lRuneTailnet"], "frameworks": [], "resources": [], "notices": "SDK notices"}), \
                     patch.object(build, "run", side_effect=fake_run):
