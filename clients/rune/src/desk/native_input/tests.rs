@@ -10,6 +10,7 @@ fn native(d: &mut Desk) {
         active: true,
         connection_requested: false,
         paste_requested: false,
+        away_since: None,
     });
 }
 
@@ -529,6 +530,7 @@ fn a_native_shell_uses_the_full_available_stage_without_drawn_keys() {
         active: true,
         connection_requested: false,
         paste_requested: false,
+        away_since: None,
     });
     rt.set_viewport((393.0, 600.0), 2.0);
     for _ in 0..120 {

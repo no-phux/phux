@@ -200,6 +200,7 @@ impl Desk {
         if !sent {
             return self.say(NoticeKind::Error, INPUT_PAUSED);
         }
+        self.nudge_typing(&client);
         if self.notice.as_ref().is_some_and(|n| n.text == INPUT_PAUSED) {
             self.notice = None;
         }

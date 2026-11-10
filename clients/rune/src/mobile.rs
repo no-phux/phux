@@ -6,6 +6,7 @@ use phux_client_runtime::Target;
 use serde::Deserialize;
 use serde_json::{Value, json};
 use std::sync::Arc;
+use std::time::{Duration, SystemTime};
 
 pub use crate::desk::Desk as State;
 pub use crate::desk::native_input::{Action, Bridge as Input, Operation};
@@ -20,6 +21,25 @@ pub struct Platform {
     /// A command asked for the system pasteboard, which only the host reads.
     pub paste_requested: bool,
     pub active: bool,
+    /// When the app left the foreground. Wall time: a monotonic clock may
+    /// stand still while the device sleeps.
+    pub away_since: Option<SystemTime>,
+}
+
+impl Platform {
+    /// Note a lifecycle edge at `now`. Coming back, how long the app was
+    /// away, when it had left.
+    fn set_active(&mut self, active: bool, now: SystemTime) -> Option<Duration> {
+        self.active = active;
+        if !active {
+            // Resigning and then backgrounding is one absence, from the first.
+            self.away_since.get_or_insert(now);
+            return None;
+        }
+        // A clock set back while away measures nothing: only probe then.
+        let since = self.away_since.take()?;
+        Some(now.duration_since(since).unwrap_or_default())
+    }
 }
 
 #[derive(Deserialize)]
@@ -297,6 +317,7 @@ fn with_target(target: Target, session: Option<String>) -> State {
         connection_requested: false,
         paste_requested: false,
         active: true,
+        away_since: None,
     });
     state
 }
@@ -305,10 +326,13 @@ pub fn set_active(rt: &mut rune::Runtime<State>, active: bool) {
     rt.cancel_composition();
     rt.update(|state, tx| {
         state.preedit = None;
-        if let Some(native) = &mut state.native {
-            native.active = active;
-        }
+        let now = SystemTime::now();
+        let native = state.native.as_mut();
+        let away = native.and_then(|native| native.set_active(active, now));
         state.focus_changed(active);
+        if active {
+            state.resume_link(away);
+        }
         tx.instant();
     });
 }
@@ -354,126 +378,4 @@ pub use host::{edge_srgb, paste, take_requests, zoom};
 mod pairing_tests;
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use phux_client_runtime::Transport;
-
-    #[test]
-    fn relay_configuration_rejects_invalid_sni_without_dropping_it() {
-        let mut configuration = config("quic://localhost:8788");
-        for route in ["", "127.0.0.1", "secret/bad", "-bad", "secret\0"] {
-            configuration.tls_server_name = Some(route.into());
-            let error = configuration.target().unwrap_err();
-            assert!(!error.contains("secret"));
-        }
-        configuration.tls_server_name = Some("mini-route".into());
-        assert!(configuration.target().is_ok());
-        configuration.endpoint = "wss://localhost:8787".into();
-        assert!(configuration.target().is_err());
-    }
-
-    fn config(endpoint: &str) -> Configuration {
-        Configuration {
-            endpoint: endpoint.into(),
-            tls_server_name: None,
-            certificate_pin: None,
-            token: None,
-            session: None,
-            authority_ca: None,
-            chain_pem: None,
-            key_id: None,
-        }
-    }
-
-    #[test]
-    fn remote_enrollment_and_connection_have_distinct_requirements() {
-        let mut configuration = config("quic://example.com:8788");
-        configuration.certificate_pin = Some("ab".repeat(32));
-        configuration.token = Some("cd".repeat(32));
-        assert!(configuration.target().is_ok());
-        assert!(configuration.enrollment_target().is_err());
-        assert!(configuration.validate_connection().is_err());
-        configuration.authority_ca = Some(format!("sha256:{}", "ef".repeat(32)));
-        let target = configuration.enrollment_target().unwrap();
-        assert_eq!(target.authority.ca, configuration.authority_ca);
-        configuration.chain_pem = Some("public certificate".into());
-        assert!(configuration.validate_connection().is_err());
-        configuration.key_id = Some("device-key".into());
-        assert!(configuration.validate_connection().is_ok());
-        assert!(state_with_identity(configuration, None).is_err());
-    }
-
-    #[test]
-    fn mobile_rejects_malformed_credentials_and_wss_enrollment() {
-        let mut configuration = config("quic://localhost:8788");
-        for pin in ["no", "sha256:", &"x".repeat(64)] {
-            configuration.authority_ca = Some(pin.into());
-            assert!(configuration.target().is_err());
-        }
-        configuration.authority_ca = Some(format!("sha256:{}", "ab:".repeat(31) + "ab"));
-        assert!(configuration.enrollment_target().is_ok());
-        for token in ["secret", "a", "00\n"] {
-            configuration.token = Some(token.into());
-            assert!(configuration.target().is_err());
-        }
-        configuration.token = None;
-        configuration.endpoint = "wss://localhost:8788".into();
-        assert!(configuration.target().is_ok());
-        assert!(configuration.enrollment_target().is_err());
-    }
-
-    #[test]
-    fn configuration_round_trips_public_identity_fields_and_rejects_tickets() {
-        let configuration: Configuration = serde_json::from_value(json!({
-            "endpoint": "quic://localhost:8788",
-            "authority_ca": format!("sha256:{}", "ab".repeat(32)),
-            "chain_pem": "public chain",
-            "key_id": "persistent-key-tag"
-        }))
-        .unwrap();
-        assert_eq!(configuration.chain_pem.as_deref(), Some("public chain"));
-        assert_eq!(configuration.key_id.as_deref(), Some("persistent-key-tag"));
-        assert!(configuration.enrollment_target().is_ok());
-        assert!(
-            serde_json::from_value::<Configuration>(json!({
-                "endpoint": "quic://localhost:8788", "ticket": "not persisted"
-            }))
-            .is_err()
-        );
-        let unpaired = config("quic://localhost:8788");
-        assert!(unpaired.validate_connection().is_ok());
-        assert!(matches!(
-            unpaired.target_with_identity(None).unwrap().client_identity,
-            TlsClientIdentity::None
-        ));
-    }
-
-    #[test]
-    fn mobile_never_infers_remote_trust_or_a_local_cli() {
-        for endpoint in [
-            "ws://example.com/",
-            "wss://example.com/",
-            "quic://example.com:8788",
-            "file:///tmp/s",
-            "quic://localhost/path",
-            "wss://secret@example.com/",
-        ] {
-            assert!(config(endpoint).target().is_err(), "{endpoint}");
-        }
-        for endpoint in [
-            "ws://127.0.0.1:9999/",
-            "quic://localhost:8788",
-            "quic://[::1]:8788",
-        ] {
-            assert!(config(endpoint).target().is_ok());
-        }
-        assert_eq!(
-            config("quic://[::1]:8788").target().unwrap().transport,
-            Transport::Quic("[::1]:8788".into())
-        );
-        let resolved = crate::launch::Resolved::embedded(None);
-        assert!(!resolved.can_ensure());
-        assert!(!resolved.missing_cli());
-        assert!(resolved.ensured().phux.is_none());
-    }
-}
+mod tests;

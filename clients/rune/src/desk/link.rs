@@ -19,6 +19,7 @@ use crate::launch::Resolved;
 use crate::machines::LOCAL;
 
 mod replacement;
+mod resume;
 mod standing;
 
 pub use standing::{Banner, Standing};
@@ -81,6 +82,8 @@ pub struct Link {
     /// The local server was just handed off: until then, a protocol refusal
     /// may be the old one on its way out.
     handoff_until: Option<Instant>,
+    /// When typing last probed the link, on the app clock.
+    nudged: Option<f64>,
 }
 
 impl Default for Link {
@@ -104,6 +107,7 @@ impl Default for Link {
             moved: None,
             server: 0,
             handoff_until: None,
+            nudged: None,
         }
     }
 }
