@@ -429,12 +429,22 @@ static C_DELEGATION: Rule = Rule::verbs(
     &[Verb::Terminate],
     GLOBAL_OWNER_UDS,
 );
+// Listing, starting or stopping a host's mirrors shows its screen: a
+// control selector of the class the target falls in (`window`, or
+// `display` for `display[:OUTPUT]`; listing is `window`), as for the
+// documents it opens. Rune's macOS runner reports from the owner socket.
+static C_MIRROR: Rule = Rule::verbs("`MIRROR`", &[Verb::Observe], Subject::ControlledDocument);
+static C_MIRROR_PROVIDE: Rule = Rule::verbs(
+    "`MIRROR_PROVIDE`",
+    &[Verb::Observe],
+    GLOBAL_OWNER_UDS,
+);
 static C_UNCLASSIFIED: Rule = Rule::deny("Unknown, retired, or otherwise unclassified command tag");
 
 /// The nested-command table of workload-auth §6, in spec row order.
 ///
 /// [`classify_command`] returns one of these rows for every decoded command.
-pub static COMMAND_RULES: [&Rule; 56] = [
+pub static COMMAND_RULES: [&Rule; 58] = [
     &C_SPAWN,
     &C_ATTACH_RESOURCE,
     &C_DETACH_RESOURCE,
@@ -468,6 +478,8 @@ pub static COMMAND_RULES: [&Rule; 56] = [
     &C_APPEND_RESOURCE_OUTPUT,
     &C_PUBLISH_RESOURCE_STATE,
     &C_SEND_DOCUMENT_INPUT,
+    &C_MIRROR,
+    &C_MIRROR_PROVIDE,
     &C_NATIVE_SPAWN,
     &C_NATIVE_LIST,
     &C_NATIVE_LAUNCH,

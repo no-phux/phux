@@ -58,10 +58,12 @@ const fn command_variant(command: &Command) -> usize {
         Command::GetCreation { .. } => 53,
         Command::PublishResourceState { .. } => 54,
         Command::SendDocumentInput { .. } => 55,
+        Command::Mirror { .. } => 56,
+        Command::MirrorProvide { .. } => 57,
     }
 }
 
-const COMMAND_VARIANTS: usize = 56;
+const COMMAND_VARIANTS: usize = 58;
 
 fn operation() -> IdempotencyKey {
     IdempotencyKey::new([3; 16]).unwrap()
@@ -554,6 +556,22 @@ fn command_samples() -> Vec<(Command, &'static Rule)> {
                 control: None,
             },
             &C_SEND_DOCUMENT_INPUT,
+        ),
+        (
+            Command::Mirror {
+                host: None,
+                op: crate::wire::frame::MirrorOp::Start {
+                    target: "display".to_owned(),
+                    jpeg: false,
+                },
+            },
+            &C_MIRROR,
+        ),
+        (
+            Command::MirrorProvide {
+                targets: "[]".to_owned(),
+            },
+            &C_MIRROR_PROVIDE,
         ),
         (
             Command::KillResourceIf {

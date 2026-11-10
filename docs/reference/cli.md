@@ -1144,6 +1144,7 @@ Commands:
             its `mirror-<target>` session, restarting any that exit. Rune runs
             this on macOS, where the server's own children cannot hold Screen
             Recording access; one runs per server.
+  targets   List the displays and windows `mirror` can name on this host.
   help      Print this message or the help of the given subcommand(s)
 
 Flags:
@@ -1293,6 +1294,21 @@ Flags:
 
 Global flags:
       --socket <PATH>     Server socket to dial (default: `$PHUX_SOCKET`)
+```
+
+## `phux agent surface targets`
+
+```text
+List the displays and windows `mirror` can name on this host.
+
+Usage: phux agent surface targets [--json]
+
+Flags:
+      --json
+  -h, --help           Print help
+
+Global flags:
+      --socket <PATH>  Server socket to dial (default: `$PHUX_SOCKET`)
 ```
 
 ## `phux agent tree`

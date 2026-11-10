@@ -468,7 +468,7 @@ impl Desk {
             tx.wake_after(Duration::from_millis(250));
         }
         changed |= self.finish_uploads(&client);
-        changed |= self.take_paths(&client);
+        changed |= self.take_paths(&client) | self.take_screens();
         changed |= self.sync_alerts();
         changed |= self.tick_inbox(tx);
         changed |= self.tick_galaxy(tx);

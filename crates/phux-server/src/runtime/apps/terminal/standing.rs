@@ -30,6 +30,9 @@ use crate::runtime::apps::terminal::commands::seed::{
 use crate::runtime::apps::terminal::commands::{SeedOrigin, SpawnAttribution};
 use crate::state::SharedState;
 
+mod demand;
+pub(crate) use demand::{handle, provide};
+
 /// How the supervisor reads `[[mirrors]]`, at start and on every reload.
 #[derive(Clone)]
 pub struct MirrorSource(Arc<dyn Fn() -> Result<Vec<MirrorConfigEntry>, String> + Send + Sync>);
@@ -91,7 +94,9 @@ async fn supervise(
     let mut entries = read(&source, Vec::new());
     let mut slots = BTreeMap::new();
     loop {
-        tick(&state, &entries, &mut slots, Instant::now(), &root_token);
+        state.with_mut(|s| s.mirror_demand_mut().config.clone_from(&entries));
+        let wanted = state.with(|s| s.mirror_demand().wanted());
+        tick(&state, &wanted, &mut slots, Instant::now(), &root_token);
         tokio::select! {
             () = root_token.cancelled() => return,
             () = tokio::time::sleep(TICK) => {}

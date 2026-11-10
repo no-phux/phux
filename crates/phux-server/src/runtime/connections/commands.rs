@@ -156,11 +156,12 @@ pub(in crate::runtime) fn route(command: &Command, has_input_lane: bool) -> Rout
     if has_input_lane && local_input {
         return Route::InputLane;
     }
-    // A copy waits on the producer reading its clipboard; nothing else on
-    // the connection should wait with it.
+    // A copy waits on the producer reading its clipboard, and a mirror
+    // start for its surface; nothing else on the connection should wait.
     if matches!(
         command,
         Command::Checkout { .. }
+            | Command::Mirror { .. }
             | Command::SendDocumentInput {
                 intent: phux_protocol::wire::frame::DocumentInput::CopyClipboard { .. },
                 ..

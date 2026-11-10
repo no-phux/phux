@@ -63,6 +63,7 @@ mod input_delivery;
 mod kernel;
 pub mod keys;
 mod lifecycle;
+mod mirror;
 mod native_agent;
 mod options;
 mod org_plane;
@@ -87,6 +88,7 @@ pub use extensions::{
 pub use geometry::TerminalResizeOutcome;
 pub use global_metadata::{GlobalMetadata, MAX_WATCHED_GLOBAL_KEYS};
 pub use input::mint_input_operation_id;
+pub use mirror::{MirrorCall, MirrorError};
 pub use options::{
     ControlOptions, InboundDelivery, MAX_QUEUED_INBOUND_BYTES, MAX_QUEUED_INBOUND_FRAMES,
     PredictionStyle, SessionRecovery,

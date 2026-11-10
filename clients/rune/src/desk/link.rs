@@ -378,7 +378,9 @@ impl Desk {
         next.palette_picked = self.palette_picked;
         // A path search belongs to the old connection.
         next.palette_mode = match self.palette_mode {
-            crate::palette::Mode::Paths => crate::palette::Mode::All,
+            crate::palette::Mode::Paths | crate::palette::Mode::Screens => {
+                crate::palette::Mode::All
+            }
             mode => mode,
         };
         next.theme_before = self.theme_before;

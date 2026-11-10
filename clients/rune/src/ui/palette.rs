@@ -30,6 +30,7 @@ pub fn view(desk: &Desk, ink: &Ink, top: f32) -> El {
         Mode::Sessions => "Switch session, or name a new one…",
         Mode::Themes => "Preview a theme…",
         Mode::Paths => "Find a file or folder…",
+        Mode::Screens => "Filter displays and windows…",
     };
     let (open, glyph) = match mode {
         Mode::Paths => ("insert", "/"),
@@ -55,6 +56,7 @@ pub fn view(desk: &Desk, ink: &Ink, top: f32) -> El {
     let empty = match search {
         Some(s) if s.searching() => "Searching…",
         Some(s) if s.note.is_some() && hits.is_empty() => s.note.as_deref().unwrap_or_default(),
+        _ if mode == Mode::Screens && hits.is_empty() => desk.resources.screens.empty_text(),
         _ => "Nothing matches",
     };
     if hits.is_empty() {
