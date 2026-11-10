@@ -522,32 +522,6 @@ fn an_inventory_subscribes_and_reads_only_terminals_new_to_it() {
 }
 
 #[test]
-fn a_satellite_pane_is_not_subscribed_to_the_occupant_record_a_hub_cannot_route() {
-    let (mut plane, read) = discovered();
-    answer_metadata(&mut plane, read, None);
-    let satellite = ResourceId::satellite("powerhouse-1", 3);
-    let mut current = snapshot();
-    current.resources.push(ResourceInfo::new(
-        satellite.clone(),
-        WindowId::new(1),
-        20,
-        4,
-    ));
-    let frames = refresh_after_settling(&mut plane, current);
-    let keys: Vec<&str> = frames
-        .iter()
-        .filter_map(|frame| match frame {
-            FrameKind::SubscribeMetadata {
-                scope: Scope::Resource(id),
-                key,
-            } if *id == satellite => Some(key.as_str()),
-            _ => None,
-        })
-        .collect();
-    assert_eq!(keys, [RESOURCE_AGENT_KEY, RESOURCE_ASKED_KEY], "{frames:?}");
-}
-
-#[test]
 fn a_detach_ends_the_subscriptions_so_the_next_inventory_renews_them() {
     let (mut plane, read) = discovered();
     answer_metadata(&mut plane, read, None);
@@ -616,3 +590,4 @@ fn a_denied_read_is_a_stable_answer_that_recovery_does_not_repeat() {
 }
 
 mod asked;
+mod satellite;
