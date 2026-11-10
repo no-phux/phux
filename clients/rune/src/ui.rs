@@ -198,12 +198,7 @@ fn floating(root: El, desk: &Desk, p: &Ink, band: f32, cx: &mut Cx<Desk>) -> El 
     root.children(status::banner(desk, p))
         .children(updates::card(desk, p, band))
         .children(desk.inbox.open.then(|| inbox::view(desk, p)))
-        .children(desk.galaxy.open.then(|| galaxy::view(desk, p, cx)))
-        .children(desk.reef.open.then(|| reef::view(desk, p, cx)))
-        .children(desk.pitch.open.then(|| pitch::view(desk, p, cx)))
-        .children(desk.kitchen.open.then(|| kitchen::view(desk, p, cx)))
-        .children(desk.pitlane.open.then(|| pitlane::view(desk, p, cx)))
-        .children(desk.hive.open.then(|| hive::view(desk, p, cx)))
+        .children(playground(desk, p, cx))
         .children(desk.settings_open.then(|| settings::view(desk, p)))
         .children(machines::sheet(desk, p))
         .children(tabs::rename_sheet(desk, p))
@@ -213,6 +208,58 @@ fn floating(root: El, desk: &Desk, p: &Ink, band: f32, cx: &mut Cx<Desk>) -> El 
                 .menu
                 .map(|at| palette::context_menu(desk, at, p)),
         )
+}
+
+/// A playground view: whether it is open, how it draws, how it closes.
+type View = (bool, fn(&Desk, &Ink, &mut Cx<Desk>) -> El, fn(&mut Desk));
+
+/// The open playground view, if any, with the way out every one of them
+/// shows. A new view is one more row here.
+fn playground(desk: &Desk, p: &Ink, cx: &mut Cx<Desk>) -> Option<El> {
+    let views: [View; 6] = [
+        (desk.galaxy.open, galaxy::view, Desk::close_galaxy),
+        (desk.reef.open, reef::view, Desk::close_reef),
+        (desk.pitch.open, pitch::view, Desk::close_pitch),
+        (desk.kitchen.open, kitchen::view, Desk::close_kitchen),
+        (desk.pitlane.open, pitlane::view, Desk::close_pitlane),
+        (desk.hive.open, hive::view, Desk::close_hive),
+    ];
+    let (_, view, close) = views.into_iter().find(|v| v.0)?;
+    // A child of the view: the view is modal, so anything beside it is inert.
+    Some(view(desk, p, cx).child(esc_chip(p, close)))
+}
+
+/// A frosted key cap, top right in the titlebar band clear of every view's
+/// own chrome: `esc` closes this. Escape lets go of a pick first; a press
+/// here always closes.
+fn esc_chip(p: &Ink, close: fn(&mut Desk)) -> El {
+    const KEY: TextStyle = TextStyle::new(10.5, 600.0).mono();
+    pressable("playground-esc", p)
+        .pin(None, Some(9.0), Some(16.0), None)
+        .h(24.0)
+        .pl(4.0)
+        .pr(9.0)
+        .gap(6.0)
+        .items_center()
+        .radius(8.0)
+        .continuous_corners()
+        .backdrop_blur(FROST)
+        .fill(p.raised.alpha(0.72))
+        .border(1.0, p.text.alpha(0.14))
+        .shadow(4.0, 14.0, p.shade)
+        .hover(p.text.alpha(0.08))
+        .label("Close, Escape")
+        .on_press(close)
+        .child(
+            el().h(16.0)
+                .px(5.0)
+                .radius(4.0)
+                .center()
+                .fill(p.text.alpha(0.07))
+                .border(1.0, p.text.alpha(0.22))
+                .child(text("esc").font(KEY).color(p.text).a11y_hidden()),
+        )
+        .child(text("close").font(CAPTION).color(p.dim).a11y_hidden())
 }
 
 /// The bare window: the pane edge to edge under a band the traffic lights
