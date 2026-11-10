@@ -11,7 +11,6 @@ use std::collections::HashMap;
 
 use crate::layout::{LayoutNode, SplitDir};
 use libghostty_vt::Terminal as GhosttyTerminal;
-use libghostty_vt::render::{CellIterator, RenderState, RowIterator};
 use phux_client_core::engine::ghostty::GhosttyAdapter;
 use phux_client_core::session::{EffectBuffer as KernelEffectBuffer, KernelInput, SessionKernel};
 use phux_protocol::ids::ResourceId;
@@ -27,57 +26,11 @@ use super::session_mirror::SessionMirror;
 use crate::layout::{ArrangementDoc, Group, LayoutState};
 use crate::predict::{PredictionState, PredictiveConfig};
 
+mod glass;
+use glass::{dump, term_grid};
+
 const fn tid(id: u32) -> ResourceId {
     ResourceId::local(id)
-}
-
-/// Read a terminal's visible grid as one `String` per row (blank cells as
-/// spaces; ASCII-only fixtures, so no wide-glyph spacer handling needed).
-/// Uses its own iterators so reading never disturbs a pane renderer's
-/// incremental dirty state.
-fn term_grid(term: &GhosttyTerminal<'_, '_>) -> Vec<String> {
-    let mut state = RenderState::new().expect("RenderState");
-    let mut rows_it = RowIterator::new().expect("RowIterator");
-    let mut cells_it = CellIterator::new().expect("CellIterator");
-    let snap = state.update(term).expect("snapshot");
-    let total_rows = snap.rows().expect("rows");
-    let total_cols = snap.cols().expect("cols");
-    let mut grid = Vec::new();
-    let mut ri = rows_it.update(&snap).expect("row iter");
-    let mut r: u16 = 0;
-    while let Some(row) = ri.next() {
-        if r >= total_rows {
-            break;
-        }
-        let mut line = String::new();
-        let mut ci = cells_it.update(row).expect("cell iter");
-        let mut c: u16 = 0;
-        while let Some(cell) = ci.next() {
-            if c >= total_cols {
-                break;
-            }
-            let graphemes = cell.graphemes().expect("graphemes");
-            if graphemes.is_empty() {
-                line.push(' ');
-            } else {
-                for ch in graphemes {
-                    line.push(ch);
-                }
-            }
-            c += 1;
-        }
-        grid.push(line);
-        r += 1;
-    }
-    grid
-}
-
-fn dump(grid: &[String]) -> String {
-    grid.iter()
-        .enumerate()
-        .map(|(i, l)| format!("{i:2}|{l}|"))
-        .collect::<Vec<_>>()
-        .join("\n")
 }
 
 /// A driver-shaped rig: the attach loop's paint-relevant state, plus a
