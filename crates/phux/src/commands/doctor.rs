@@ -110,6 +110,7 @@ pub(crate) fn run_doctor(json: bool, socket: Option<PathBuf>) -> ExitCode {
     checks.extend([
         check_plugins(),
         check_agent_shim(),
+        check_skill(),
         check_remote_cert(),
         check_token_store(),
         check_workload_authority(),
@@ -338,6 +339,27 @@ fn check_agent_shim() -> Check {
         );
     };
     shim_check(shim::installed_shim_schema(&path), shim::SHIM_SCHEMA, &path)
+}
+
+/// Has `phux skill setup` (or `npx skills add no-phux/skills`) taught any
+/// agent about phux? Not installed is normal, so it passes with a hint.
+fn check_skill() -> Check {
+    match crate::skill::setup::doctor_summary() {
+        Err(err) => Check::warn("skill", err, "set HOME and re-run `phux doctor`"),
+        Ok((_, stale)) if !stale.is_empty() => Check::warn(
+            "skill",
+            format!("phux skill stub is stale for {}", stale.join(", ")),
+            "run `phux skill setup` to update it",
+        ),
+        Ok((installed, _)) if !installed.is_empty() => Check::pass(
+            "skill",
+            format!("phux skill installed for {}", installed.join(", ")),
+        ),
+        Ok(_) => Check {
+            hint: Some("run `phux skill setup` to teach your agents about phux".to_owned()),
+            ..Check::pass("skill", "no phux skill installed for any agent")
+        },
+    }
 }
 
 /// The pure half of [`check_agent_shim`].

@@ -193,7 +193,9 @@ pub(crate) fn dispatch(
         }
         // Returned above, before process-global setup.
         Some(Command::Mcp(..)) => ExitCode::FAILURE,
-        Some(Command::Skill(commands::SkillArgs { scope })) => skill::run(scope),
+        Some(Command::Skill(commands::SkillArgs { action, scope })) => {
+            skill::dispatch(action, scope, socket)
+        }
         Some(Command::Mission(commands::MissionArgs { action })) => {
             commands::mission::run(action, socket)
         }
