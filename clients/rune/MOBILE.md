@@ -46,6 +46,7 @@ desktop one, so every CI build and release proves it draws a session.
 | A tap on a URL or OSC 8 link opens it; a finger that travels past a few points is a selection instead | `src/desk/links.rs` |
 | Accessory bar: ⌘ commands (Done in Settings search), esc, tab, one-shot ⌃ ⌥ ⇧ latches, a drag pad that sends arrows, the keyboard toggle; commands respect the active modal | `src/ui/phone.rs`, `src/desk/phone.rs` |
 | Keyboard: letters, digits and symbols, shift, delete, space, return; types into the terminal, keeps focus while editing palette/find/Settings search fields, and answers the confirm bar | `src/ui/phone.rs`, `src/desk/phone.rs` |
+| Type into rename, machine setup and inbox reply sheets with the drawn keyboard, including 320×568 previews. Sheets reserve keyboard/accessory space; synchronous field edits and stale-question checks keep input out of the terminal behind them. Native UIKit editing uses the same field handlers | `src/desk/native_input/`, `src/desk/phone/runtime/sheets.rs`, `src/ui/phone.rs` |
 | The command palette as a sheet over the terminal, above the keyboard; paths open there too | `src/ui/palette.rs` |
 | Settings: grouped category drill-down, readable phone-sized controls, current values and bottom search. Overflow fades only hidden edges; keyboard-revealed controls stay clear. Search brings up its own keyboard; Done/Hide preserves the query and the terminal's keyboard preference. Theme selection uses the existing live-preview palette and returns to Settings | `src/ui/settings.rs`, `src/ui/settings/`, `src/desk/settings.rs` |
 | Machines, the inbox and the reconnect banner, narrowed to a phone's width | `src/ui.rs` (`Sheet`), `src/ui/inbox.rs`, `src/ui/status.rs` |
@@ -66,6 +67,5 @@ desktop one, so every CI build and release proves it draws a session.
 
 | Piece | Today |
 | --- | --- |
-| Type into a sheet's field (rename, add a machine, the inbox reply) | The drawn keyboard reaches the terminal, the palette, find, Settings search and the confirm bar |
 | Phone sheets for machines and the inbox | The desktop's, narrowed |
 | A suggested-commands home for the palette (sessions, new tab, new session, split) | The full ranked list |
