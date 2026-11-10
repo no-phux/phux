@@ -5,6 +5,10 @@ native configuration layer for phux's terminal UI. It brings over common
 bindings and a few preferences, with a report of what changes or cannot be
 represented. Desktop shortcuts use a separate configuration.
 
+To have your coding agent do the migration from your config files instead,
+with Ghostty, zellij and herdr bindings too, use
+[`phux migrate`](./migrate.md).
+
 Start tmux with your usual configuration first, then preview:
 
 ```sh

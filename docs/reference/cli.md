@@ -80,6 +80,7 @@ Maintain:
   logs          Show where the logs live, or tail one
   report        Capture or list local bug reports [aliases: bug]
   config        Inspect, scaffold, and reload the config file
+  migrate       Have your coding agent bring your terminal keys into phux
   plugin        Manage plugin manifests in the config
   update        Update phux, keeping sessions alive
   upgrade       Hot-swap the running server to the installed binary
@@ -2291,7 +2292,8 @@ Reads global options and key tables from an already running tmux, without
 sourcing files or changing either server. By default, prints TOML on stdout and
 a fidelity report on stderr. Unsupported bindings are never executed or silently
 replaced with a different phux action. This configures the terminal UI; desktop
-shortcuts are separate.
+shortcuts are separate. To have your coding agent migrate from your config files
+instead, run `phux migrate`.
 
 Usage: phux config import-tmux [FLAGS]
 
@@ -3672,6 +3674,46 @@ Flags:
 
 Global flags:
       --socket <PATH>  Server socket to dial (default: `$PHUX_SOCKET`)
+```
+
+## `phux migrate`
+
+```text
+Have your coding agent bring your terminal keys into phux
+
+Reads your tmux, zellij, Ghostty and herdr configs, translates every key binding
+it can into phux config lines, and starts your agent (claude, codex or opencode)
+with a strict prompt: write those lines into `phux config path`, run `phux
+config check` and `phux config reload`, and report what migrated, what replaced
+a phux default, which sources conflicted and what could not migrate. Inside a
+phux pane the agent opens in a split to the right; elsewhere in a new session
+named `migrate`.
+
+`--print` prints the prompt instead, for any other agent. With nothing to
+migrate it says so and exits 0.
+
+Examples:
+phux migrate
+phux migrate --agent codex --source tmux
+phux migrate --print | pbcopy
+
+Usage: phux migrate [FLAGS]
+
+Flags:
+      --agent <AGENT>    The agent to start. Default: the one installed, or ask
+                         when there are several.
+                         [possible values: claude, codex, opencode]
+      --print            Print the prompt and exit; start nothing.
+      --source <SOURCE>  Read only this source (repeatable). Default: every
+                         source found.
+                         [possible values: tmux, zellij, ghostty, herdr]
+      --json             Emit one JSON document: the sources found, the agent,
+                         the config path and what was launched (with `--print`,
+                         the prompt too).
+  -h, --help             Print help
+
+Global flags:
+      --socket <PATH>    Server socket to dial (default: `$PHUX_SOCKET`)
 ```
 
 ## `phux mission`

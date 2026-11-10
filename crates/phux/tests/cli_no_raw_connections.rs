@@ -39,6 +39,11 @@ const ALLOWLIST: &[(&str, usize, &str)] = &[
         "request-shaping for the placed spawn, not round trips",
     ),
     ("launch.rs", 1, "builds its `SpawnResource` request literal"),
+    (
+        "migrate.rs",
+        1,
+        "builds the agent pane's `SpawnResource` request literal",
+    ),
     ("play.rs", 1, "`phux play`'s own `SPAWN_RESOURCE`"),
     ("bootstrap.rs", 3, "`phux bootstrap`'s `OPEN_LISTENER`"),
     ("config.rs", 4, "`config set`'s `SET_METADATA`"),

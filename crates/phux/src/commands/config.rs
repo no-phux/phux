@@ -1,7 +1,7 @@
 mod bundled;
 mod config_json;
 mod distro;
-mod import_tmux;
+pub(crate) mod import_tmux;
 mod keys;
 mod live_feed;
 mod show;
