@@ -292,6 +292,13 @@ fn hit_row(hit: &Hit, index: usize, picked: bool, ink: &Ink) -> El {
                 .truncate(),
         )
         .child(el().grow(1.0))
+        .children(match &hit.item.target {
+            Target::Screen(host, _) => {
+                let host = host.as_deref().unwrap_or(crate::machines::LOCAL);
+                Some(crate::host_color::dot(host, 7.0, ink.raised))
+            }
+            _ => None,
+        })
         .child(
             text(hit.item.detail.clone())
                 .font(CAPTION)

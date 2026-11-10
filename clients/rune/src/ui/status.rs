@@ -297,6 +297,7 @@ pub fn banner(desk: &Desk, p: &Ink) -> Option<El> {
                     .items_center()
                     .fill(p.raised)
                     .border(1.0, p.separator)
+                    .child(crate::host_color::dot(machine, 8.0, p.raised))
                     .child(
                         col()
                             .gap(2.0)

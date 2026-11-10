@@ -12,6 +12,7 @@ mod dock;
 mod galaxy;
 mod grid;
 mod hive;
+mod host_color;
 mod inbox;
 mod keys;
 mod kitchen;

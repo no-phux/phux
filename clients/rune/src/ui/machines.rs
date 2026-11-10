@@ -1,22 +1,25 @@
 //! The machines sheet, and the sidebar control that opens it.
 
-use rune::{El, TextStyle, col, el, row, text, text_input};
+use rune::{Color, El, TextStyle, col, el, row, text, text_input};
 
 use super::overlay::key_hint;
 use super::settings::section;
 use super::{CAPTION, Ink, LABEL, LABEL_STRONG, Sheet, icons, pressable};
 use crate::desk::Desk;
+use crate::host_color;
 use crate::machines::{Host, LOCAL, Peer};
+use phux_config_core::host_color::PALETTE;
 
 pub fn switch(desk: &Desk, ink: &Ink) -> El {
     pressable("machine-switch", ink)
         .h(24.0)
         .px(6.0)
-        .gap(3.0)
+        .gap(5.0)
         .radius(6.0)
         .min_w(0.0)
         .items_center()
         .on_press(|d: &mut Desk| d.toggle_machines())
+        .child(host_color::dot(desk.machines.label(), 8.0, ink.sidebar))
         .child(
             text(desk.machines.label().to_owned())
                 .font(LABEL_STRONG)
@@ -77,6 +80,57 @@ fn removal(name: &str, desk: &Desk, ink: &Ink) -> Vec<El> {
     ]
 }
 
+/// The row's colour, pressed to show the swatches.
+fn color_button(name: &str, ink: &Ink) -> El {
+    let held = name.to_owned();
+    pressable(format!("machine-color-{name}"), ink)
+        .size(22.0, 22.0)
+        .radius(11.0)
+        .center()
+        .label(format!("Colour for {name}"))
+        .on_press(move |d: &mut Desk| d.pick_color(Some(held.clone())))
+        .child(host_color::dot(name, 12.0, ink.raised))
+}
+
+/// Eight swatches and Auto under the row whose colour is being picked; the
+/// current pick wears a ring.
+fn picker(name: &str, desk: &Desk, ink: &Ink) -> Option<El> {
+    if desk.machines.picking.as_deref() != Some(name) {
+        return None;
+    }
+    let (rgb, picked) = host_color::entry(name);
+    let mut row = row().w_full().pl(40.0).pb(4.0).gap(6.0).items_center();
+    for (i, (id, hex)) in PALETTE.iter().enumerate() {
+        let held = name.to_owned();
+        let on = picked && *hex == rgb;
+        row = row.child(
+            el().key(format!("machine-swatch-{name}-{id}"))
+                .size(20.0, 20.0)
+                .radius(10.0)
+                .center()
+                .border(2.0, if on { ink.text } else { Color::TRANSPARENT })
+                .cursor(rune::Cursor::Pointer)
+                .label((*id).to_owned())
+                .on_press(move |d: &mut Desk| d.recolor_machine(held.clone(), id))
+                .child(
+                    el().size(14.0, 14.0)
+                        .radius(7.0)
+                        .fill(host_color::swatch(i, ink.raised)),
+                ),
+        );
+    }
+    let held = name.to_owned();
+    let auto = pressable(format!("machine-swatch-{name}-auto"), ink)
+        .px(7.0)
+        .h(20.0)
+        .radius(10.0)
+        .items_center()
+        .border(1.0, if picked { ink.separator } else { ink.text })
+        .on_press(move |d: &mut Desk| d.recolor_machine(held.clone(), "auto"))
+        .child(text("Auto").font(CAPTION).color(ink.text));
+    Some(row.child(auto))
+}
+
 fn row_shell(key: String, ink: &Ink) -> El {
     pressable(key, ink)
         .w_full()
@@ -91,6 +145,7 @@ fn local_machine(desk: &Desk, ink: &Ink) -> El {
     let current = desk.machines.current.is_none();
     row_shell(format!("machine-{LOCAL}"), ink)
         .on_press(|d: &mut Desk| d.switch_machine(None))
+        .child(color_button(LOCAL, ink))
         .child(text(LOCAL).font(LABEL).color(ink.text).truncate())
         .child(el().grow(1.0))
         .children(
@@ -114,7 +169,8 @@ fn machine(host: &Host, desk: &Desk, ink: &Ink) -> El {
         row_shell(format!("machine-{name}"), ink)
             .on_press(move |d: &mut Desk| d.switch_machine(Some(held.clone())))
     };
-    row.child(label)
+    row.child(color_button(&name, ink))
+        .child(label)
         .child(el().grow(1.0))
         .children(
             host.needs_direct
@@ -198,9 +254,12 @@ pub fn sheet(desk: &Desk, ink: &Ink) -> Option<El> {
         .w_full()
         .padding(16.0)
         .gap(6.0)
-        .child(local_machine(desk, ink));
+        .child(local_machine(desk, ink))
+        .children(picker(LOCAL, desk, ink));
     for host in &list.hosts {
-        body = body.child(machine(host, desk, ink));
+        body = body
+            .child(machine(host, desk, ink))
+            .children(picker(&host.name, desk, ink));
     }
     if !list.peers.is_empty() {
         body = body

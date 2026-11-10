@@ -347,6 +347,7 @@ pub fn buoy(pen: &mut Pen, r: &Reef, z: &Zone, zi: usize) -> Label {
         text,
         badge: (waiting > 0).then_some(waiting),
         amber: false,
+        host: Some(z.host.clone()),
     }
 }
 
