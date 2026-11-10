@@ -144,9 +144,8 @@ phux skill             # everything
 `phux mcp --skill` prints the same guide for the MCP tools. Both are also
 installable as skills with `npx skills add no-phux/skills`.
 
-`phux skill setup` installs a short `phux` skill for every installed agent
-that points it at `phux skill`, plus a Claude Code session hook. See
-[Agent skill setup](./agent-skill.md).
+`phux skill setup` installs a `phux` skill stub and a Claude Code session
+hook for each installed agent ([Agent skill setup](./agent-skill.md)).
 
 ## MCP
 
@@ -415,11 +414,9 @@ when the session is deleted or the server stops (an in-place
 id). **This is not a sandbox.** Any program running as your user can still
 reach the server's main socket with full access.
 
-**On macOS, agents share the server's privacy grants.** macOS charges every
-program in a pane to the phux server, so an agent can read what Full Disk
-Access opens, and the server holds no grant until you give one. `phux
-server permissions` lists what it holds
-([macOS permissions](./install.md#macos-permissions)).
+**On macOS, agents share the server's privacy grants.** Every program in a
+pane is charged to the phux server; `phux server permissions` lists what it
+holds ([macOS permissions](./install.md#macos-permissions)).
 
 **Held actions wait for you.** A key enrolled with a held verb such as
 `?signal` waits for `phux approve ID` or `phux deny ID`; `phux approvals`
