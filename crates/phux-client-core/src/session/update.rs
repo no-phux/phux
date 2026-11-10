@@ -60,7 +60,7 @@ impl<E: EngineAdapter> SessionKernel<E> {
                 geometry,
                 base_seq,
             } => {
-                self.unsupported.remove(terminal_id);
+                self.lift_refusal(terminal_id);
                 let frame = BeginFrame {
                     generation: GenerationId {
                         stream_id,
@@ -235,26 +235,37 @@ impl<E: EngineAdapter> SessionKernel<E> {
         effects: &mut EffectBuffer,
     ) -> Result<(), KernelError<E::Error>> {
         self.ensure_open(terminal_id)?;
-        match &mut frame {
+        let opens = match &mut frame {
             StreamFrame::Begin(begin) => {
                 let kind = LaneKind::of_profile(begin.profile);
                 self.expect_kind(terminal_id, kind.resource_kind())?;
                 kind.admit_begin(self.selected_profile, begin)?;
-                self.lanes.open(terminal_id, kind);
+                Some(kind)
             }
             StreamFrame::Chunk(chunk) => {
                 chunk.usage_allowed = self
                     .next_bootstrap_staging_usage(chunk.payload.len())
                     .is_some();
+                None
             }
-            StreamFrame::Ready(_) | StreamFrame::Output(_) => {}
-        }
-        let now_ms = self.monotonic_now_ms();
-        let attach_blocks = self.attach_blocks(terminal_id);
-        let lane = self
-            .lanes
-            .get_mut(terminal_id)
-            .ok_or_else(|| KernelError::UnknownTerminal(terminal_id.clone()))?;
+            StreamFrame::Ready(_) | StreamFrame::Output(_) => None,
+        };
+        // Live output reads no clock, and only a publishing frame can damage.
+        let now_ms = if matches!(frame, StreamFrame::Output(_)) {
+            0
+        } else {
+            self.monotonic_now_ms()
+        };
+        let attach_blocks = matches!(frame, StreamFrame::Ready(_) | StreamFrame::Output(_))
+            && self.attach_blocks(terminal_id);
+        // One lookup per frame: a begin's `open` is its lane.
+        let lane = match opens {
+            Some(kind) => self.lanes.open(terminal_id, kind),
+            None => self
+                .lanes
+                .get_mut(terminal_id)
+                .ok_or_else(|| KernelError::UnknownTerminal(terminal_id.clone()))?,
+        };
         let mut cx = LaneCx {
             resource_id: terminal_id,
             adapter: &mut self.adapter,

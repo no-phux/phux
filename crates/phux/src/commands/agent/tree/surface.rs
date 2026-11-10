@@ -46,7 +46,8 @@ pub(crate) enum SurfaceAction {
     Snapshot {
         /// The surface.
         target: String,
-        /// Where the image goes; stdout when absent.
+        /// Where the image goes; stdout when absent, unless stdout is a
+        /// terminal.
         #[usage(long, value_name = "PATH")]
         out: Option<PathBuf>,
         #[usage(long)]

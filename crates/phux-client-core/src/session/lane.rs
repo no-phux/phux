@@ -84,9 +84,12 @@ pub(super) struct LaneCx<'a, E: EngineAdapter> {
     pub(super) engine_effects: &'a mut EngineEffectBuffer,
     pub(super) history_config: HistoryCacheConfig,
     pub(super) perf_echo: &'a EchoProbe,
+    /// The kernel's monotonic clock, read for staging frames; 0 for live
+    /// output, which no lane times.
     pub(super) now_ms: u64,
     /// The resource is held behind an unreleased ATTACH barrier, so its
-    /// damage waits for `ATTACH_READY`.
+    /// damage waits for `ATTACH_READY`. Only READY and live output, the
+    /// frames that damage, read it; it is `false` for the others.
     pub(super) attach_blocks: bool,
     /// Set by the lane; applied by the kernel even when the frame fails.
     pub(super) attach: AttachSignal,

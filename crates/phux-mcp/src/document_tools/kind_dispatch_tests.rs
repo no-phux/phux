@@ -91,8 +91,10 @@ fn the_screen_verbs_dispatch_on_the_target_kind() {
         let waited = target(&pane, &socket, json!({ "idle_ms": 50, "timeout_secs": 5 }));
         assert_eq!(ok("phux_wait", &waited).await["outcome"], "met");
 
-        // Each document is refused for the tool that reads it.
+        // Each document is refused for what reads or drives it. These are
+        // exact IDs, so the kind is read only after the server refuses.
         let until = json!({ "until": "x", "timeout_secs": 1 });
+        let keys = json!({ "keys": ["Enter"] });
         for (tool, id, extra, instead) in [
             ("phux_snapshot", &tree_id, none(), "phux_tree_snapshot"),
             (
@@ -101,27 +103,33 @@ fn the_screen_verbs_dispatch_on_the_target_kind() {
                 none(),
                 "phux_surface_snapshot",
             ),
-            ("phux_snapshot", &notes, none(), "phux snapshot @N"),
+            ("phux_snapshot", &notes, none(), "`phux snapshot @"),
             ("phux_wait", &tree_id, until.clone(), "phux_tree_wait"),
-            ("phux_wait", &notes, until.clone(), "phux_tree_wait"),
+            ("phux_wait", &notes, until.clone(), "`phux wait @"),
             (
                 "phux_wait",
                 &surface_id,
                 until.clone(),
                 "phux_surface_snapshot",
             ),
+            (
+                "phux_send_keys",
+                &tree_id,
+                keys.clone(),
+                "phux_document_key",
+            ),
+            (
+                "phux_send_keys",
+                &surface_id,
+                keys.clone(),
+                "phux_document_key",
+            ),
+            ("phux_send_keys", &notes, keys.clone(), "takes no keys"),
+            ("phux_send_keys", &blob, keys.clone(), "takes no keys"),
         ] {
-            let (code, remedy) = refused(tool, &target(id, &socket, extra)).await;
+            let (code, remedy) = refused(tool, &target(id, &socket, extra.clone())).await;
             assert_eq!(code, "wrong_resource_kind", "{tool} {id:?}");
             assert!(remedy.contains(instead), "{tool} {id:?}: {remedy}");
-        }
-
-        // Send-keys: keys reach a Terminal only.
-        for id in [&tree_id, &surface_id, &notes, &blob] {
-            let keys = target(id, &socket, json!({ "keys": ["Enter"] }));
-            let (code, remedy) = refused("phux_send_keys", &keys).await;
-            assert_eq!(code, "wrong_resource_kind");
-            assert!(remedy.contains("phux agent page"), "{remedy}");
         }
 
         drop(producer);

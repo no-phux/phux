@@ -65,7 +65,7 @@ impl<E: EngineAdapter> SessionKernel<E> {
         effects: &mut EffectBuffer,
     ) {
         self.perf_echo.forget(terminal_id);
-        self.unsupported.remove(terminal_id);
+        self.lift_refusal(terminal_id);
         let lane = self.lanes.remove(terminal_id);
         // Only tracked Terminals get a process-exit status: agent sessions report
         // via `AgentSessionStatus`, and a forgotten id has nothing new to say.
