@@ -97,7 +97,7 @@ pub fn unsupported(error: &str) -> bool {
         "unexpected argument",
         "unknown subcommand",
         "no such command",
-        "not installed",
+        "phux is not installed",
     ]
     .iter()
     .any(|words| error.contains(words))
@@ -477,6 +477,9 @@ mod tests {
         ));
         assert!(unsupported("error: unexpected argument '--json' found"));
         assert!(!unsupported("permission denied"));
+        assert!(!unsupported(
+            r#"{"error":{"message":"claude is not installed"}}"#
+        ));
     }
 
     #[test]

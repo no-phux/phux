@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 use serde_json::json;
 
 use super::sources::{Verdict, discover};
-use super::{agent_argv, document, prompt};
+use super::{agent_argv, document, prompt, user_executable};
 use crate::commands::{MigrateAgent, MigrateSource};
 
 fn fixture_home() -> PathBuf {
@@ -208,4 +208,24 @@ fn each_agent_takes_the_prompt_its_own_way() {
     assert_eq!(argv(MigrateAgent::Claude), ["/bin/a", "--", "hi"]);
     assert_eq!(argv(MigrateAgent::Codex), ["/bin/a", "--", "hi"]);
     assert_eq!(argv(MigrateAgent::Opencode), ["/bin/a", "--prompt", "hi"]);
+}
+
+#[cfg(unix)]
+#[test]
+fn an_agent_off_path_is_found_where_its_installer_puts_it() {
+    use std::os::unix::fs::PermissionsExt;
+    let home = tempfile::tempdir().expect("tempdir");
+    let bin = home.path().join(".local/bin");
+    std::fs::create_dir_all(&bin).expect("bin dir");
+    let claude = bin.join("claude");
+    std::fs::write(&claude, "#!/bin/sh\n").expect("write");
+    std::fs::set_permissions(&claude, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+    assert_eq!(
+        user_executable("claude", Some(home.path())),
+        Some(claude.canonicalize().expect("canonical"))
+    );
+    assert_eq!(
+        user_executable("no-such-agent-xyz", Some(home.path())),
+        None
+    );
 }
