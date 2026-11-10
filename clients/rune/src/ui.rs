@@ -191,7 +191,12 @@ pub fn view(desk: &Desk, cx: &mut Cx<Desk>) -> El {
     // No root paste hook: it would read the clipboard before anything here
     // saw the key. ⌘V and Edit ▸ Paste come to `Desk::key` instead, which
     // answers to the modal and keeps the terminal asked for.
-    let root = el().w_full().h_full().fill(p.sidebar).child(main);
+    let root = el()
+        .w_full()
+        .h_full()
+        .fill(p.sidebar)
+        .child(main)
+        .child(crate::host_color::edge(desk.machines.label(), p.sidebar));
     floating(root, desk, &p, band, cx)
 }
 
@@ -283,7 +288,12 @@ fn bare(desk: &Desk, p: &Ink, lights: f32, band_h: f32, cx: &mut Cx<Desk>) -> El
         .children(status::confirm_bar(desk, p))
         .children(overlay::toast(desk, p));
     let main = col().key("main").w_full().h_full().child(band).child(stage);
-    let root = el().w_full().h_full().fill(p.bg).child(main);
+    let root = el()
+        .w_full()
+        .h_full()
+        .fill(p.bg)
+        .child(main)
+        .child(crate::host_color::edge(desk.machines.label(), p.bg));
     floating(root, desk, p, band_h, cx)
 }
 

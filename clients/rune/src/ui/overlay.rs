@@ -10,6 +10,7 @@ use super::status::notice_line;
 use super::{CAPTION, Ink, PAD, keep_from_pane, pressable};
 use crate::desk::{Desk, NoticeKind};
 use crate::grid::Metrics;
+use crate::host_color::{dot, named};
 
 const FIND_W: f32 = 340.0;
 const PILL_W: f32 = 132.0;
@@ -62,6 +63,12 @@ pub(super) fn key_hint(key: &'static str, what: &'static str, ink: &Ink) -> El {
 
 /// The current notice, bottom left, clear of the live pill. The inbox's
 /// footer says it instead while the drawer is open.
+/// The machine a notice is about, when it names one.
+fn named_machine<'a>(desk: &'a Desk, text: &str) -> Option<&'a str> {
+    let hosts = desk.machines.hosts.iter().map(|host| host.name.as_str());
+    named(text, std::iter::once(crate::machines::LOCAL).chain(hosts))
+}
+
 pub fn toast(desk: &Desk, ink: &Ink) -> Option<El> {
     let notice = desk.notice.as_ref().filter(|_| !desk.inbox.open)?;
     let edge = match notice.kind {
@@ -87,6 +94,7 @@ pub fn toast(desk: &Desk, ink: &Ink) -> Option<El> {
         .border(1.0, edge)
         .shadow(8.0, 24.0, Color::BLACK.alpha(0.35))
         .transition(Transition::opacity())
+        .children(named_machine(desk, &notice.text).map(|host| dot(host, 8.0, ink.raised)))
         .child(notice_line(Some(notice), ink));
     let toast = match notice.action {
         Some((label, _)) => toast.child(

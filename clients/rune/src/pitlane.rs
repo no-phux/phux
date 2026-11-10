@@ -17,14 +17,6 @@ mod sim;
 pub const AMBER: Rgb = [255.0, 181.0, 71.0];
 pub const MINT: Rgb = [98.0, 230.0, 180.0];
 pub const GOLD: Rgb = [255.0, 206.0, 84.0];
-/// Garage colours, by machine in order.
-pub const TEAM: [Rgb; 5] = [
-    [98.0, 230.0, 180.0],
-    [120.0, 168.0, 255.0],
-    [255.0, 112.0, 170.0],
-    [255.0, 200.0, 90.0],
-    [180.0, 140.0, 255.0],
-];
 /// The prototype's ranks, by creature tier.
 pub const RANKS: [&str; 5] = ["Rookie", "Regular", "Veteran", "Star", "Legend"];
 
@@ -462,8 +454,7 @@ impl PitLane {
         self.garages = hosts
             .iter()
             .zip(&per_host)
-            .enumerate()
-            .map(|(i, ((host, known), ids))| {
+            .map(|((host, known), ids)| {
                 let bays = ids
                     .iter()
                     .enumerate()
@@ -482,7 +473,8 @@ impl PitLane {
                     known: *known,
                     u0: u,
                     u1: u + per * ids.len().max(1) as f32,
-                    c: TEAM[i % TEAM.len()],
+                    // The team colour is the machine's own.
+                    c: crate::host_color::channels(host),
                     bays,
                 };
                 u = g.u1 + per * 0.5;

@@ -2700,6 +2700,7 @@ dependencies = [
  "objc2-foundation 0.3.2",
  "phux-client-core",
  "phux-client-runtime",
+ "phux-config-core",
  "phux-perf",
  "phux-protocol",
  "rune",
