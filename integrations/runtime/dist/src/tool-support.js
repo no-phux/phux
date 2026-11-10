@@ -64,3 +64,20 @@ export function boundedResult(header, body, phuxTruncated = false) {
     }
     return { text: `${header}\n${text}${truncated ? `\n${notice}` : ""}${suffix}`, truncated };
 }
+/** Bound inventory rows from the start: the header and the first rows carry the structure, unlike terminal text. */
+export function headBoundedLines(header, rows) {
+    const notice = (kept) => `[phux adapter truncated the list after ${kept} of ${rows.length} rows]`;
+    const budget = MAX_MODEL_BYTES - Buffer.byteLength(header + notice(rows.length), "utf8") - 2;
+    const lineBudget = MAX_MODEL_LINES - 2;
+    let bytes = 0;
+    let kept = 0;
+    for (const row of rows) {
+        const size = Buffer.byteLength(row, "utf8") + 1;
+        if (kept >= lineBudget || bytes + size > budget)
+            break;
+        bytes += size;
+        kept++;
+    }
+    const truncated = kept < rows.length;
+    return { text: [header, ...rows.slice(0, kept), ...(truncated ? [notice(kept)] : [])].join("\n"), truncated };
+}

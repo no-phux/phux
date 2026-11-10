@@ -22,6 +22,7 @@ if (process.argv[2] !== "--isolated") {
     assert.equal(extracted.exitCode, 0, extracted.stderr.toString());
     await mkdir(join(root, "home"));
     await mkdir(join(root, "agent"));
+    await mkdir(join(root, "tmp"));
     const executable = join(root, "phux-fixture");
     await writeFile(executable, [
       "#!/bin/sh",
@@ -48,6 +49,7 @@ if (process.argv[2] !== "--isolated") {
         PHUX_SOCKET: join(root, "never-connect.sock"),
         PHUX_TERMINAL_ID: "17",
         SMOKE_PNG,
+        TMPDIR: join(root, "tmp"),
         NO_COLOR: "1",
       },
       stdout: "inherit",

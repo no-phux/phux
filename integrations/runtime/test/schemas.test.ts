@@ -120,7 +120,7 @@ test("phux_list renders the canonical v3 CLI fixture through the shared tool", a
     resources: [TERMINAL_ROW], unreachable: [],
   });
   assert.equal(result.metadata.operation, "list");
-  assert.match(result.content, /"schema_version": 3/);
+  assert.match(result.content, /^list schema_version=3 sessions=1 terminals=1 resources=1\n/);
   assert.match(result.content, /"fixture"/);
 });
 

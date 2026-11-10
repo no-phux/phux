@@ -1,5 +1,7 @@
 import assert from "node:assert/strict";
-import { writeFileSync } from "node:fs";
+import { mkdtempSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import test from "node:test";
 
 import type { AgentToolResult, ExtensionAPI } from "@earendil-works/pi-coding-agent";
@@ -15,7 +17,10 @@ import {
   registerPhuxListTool,
 } from "../src/resource-tools.js";
 import type { ProcessResult, RunRequest } from "../src/runner.js";
-import type { PhuxToolDetails } from "../src/tools.js";
+import { MAX_MODEL_BYTES, type PhuxToolDetails } from "../src/tools.js";
+
+// Saved frames and trees go to a private directory under TMPDIR; isolate it.
+process.env.TMPDIR = mkdtempSync(join(tmpdir(), "phux-pi-test-"));
 
 type Execute = (id: string, params: Record<string, unknown>, signal?: AbortSignal) => Promise<AgentToolResult<PhuxToolDetails>>;
 
@@ -76,6 +81,19 @@ test("phux_list prints every resource kind beside the sessions", async () => {
   assert.equal(listed.details.summary, "1 session(s), 4 resource(s)");
 });
 
+test("phux_list keeps the header, sessions and first resources of a large fleet", async () => {
+  const resources = Array.from({ length: 400 }, (_, index) => ({ id: `@${index + 1}`, kind: "terminal", name: `pane ${index + 1}`, parent: null }));
+  const sessions = Array.from({ length: 15 }, (_, index) => ({ name: `session-${index}`, windows: 1, attached: false }));
+  const { run } = fixture(() => completed({ ...LIST, sessions, resources }));
+  const listed = text(await run("phux_list", {}));
+  const lines = listed.split("\n");
+  assert.ok(Buffer.byteLength(listed) <= MAX_MODEL_BYTES);
+  assert.equal(lines[0], "sessions=15 resources=400");
+  assert.equal(lines[1], "session-0\twindows=1\tattached=false");
+  assert.equal(lines[16], '@1\tkind=terminal\tparent=-\tname="pane 1"\tlifecycle=running');
+  assert.match(lines.at(-1)!, /truncated the list to its first/);
+});
+
 test("document tools call the CLI verbs and return the shared runtime's results", async () => {
   const { requests, run } = fixture((request) => {
     if (request.args[0] === "ls") return completed(LIST);
@@ -95,6 +113,7 @@ test("document tools call the CLI verbs and return the shared runtime's results"
   assert.equal(tree.details.target, "@2");
 
   const waited = await run("phux_tree_wait", { target: "@2", until: "OK", timeout_seconds: 7 });
+  await run("phux_tree_wait", { target: "@2", until: "OK" });
   assert.equal(waited.details.summary, "tree_wait target=@2 outcome=timed_out");
 
   const surface = await run("phux_surface_snapshot", { target: "@3" });
@@ -105,8 +124,10 @@ test("document tools call the CLI verbs and return the shared runtime's results"
     ["ls", "--json", "--socket", "/tmp/phux.sock"],
     ["agent", "tree", "snapshot", "--json"],
     ["agent", "tree", "follow", "--json"],
+    ["agent", "tree", "follow", "--json"],
     ["agent", "surface", "snapshot", "--json"],
   ]);
+  assert.deepEqual(requests[3]?.args.slice(5, 7), ["--timeout", "60"], "Pi shares MCP's 60-second default");
   assert.deepEqual(requests[2]?.args.slice(4), ["--until=OK", "--timeout", "7", "--socket", "/tmp/phux.sock", "--", "@2"]);
   await assert.rejects(run("phux_tree_snapshot", { target: "alias:browser" }), /exact @N/);
 });

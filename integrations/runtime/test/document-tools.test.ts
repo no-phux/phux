@@ -1,11 +1,17 @@
 import assert from "node:assert/strict";
-import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { dirname, join } from "node:path";
 import test from "node:test";
 
 import { PhuxCli } from "../src/adapter.js";
 import type { ProcessResult, RunRequest } from "../src/runner.js";
-import { MAX_INLINE_IMAGE_BYTES } from "../src/resource-tools.js";
+import { keptFilesDirectory } from "../src/kept-files.js";
+import { MAX_INLINE_IMAGE_BYTES, MAX_INLINE_IMAGE_SIDE } from "../src/resource-tools.js";
 import { createPhuxTools, MAX_MODEL_BYTES } from "../src/tools.js";
+
+// Kept files go to a private directory under TMPDIR; isolate it from the real one.
+process.env.TMPDIR = mkdtempSync(join(tmpdir(), "phux-runtime-test-"));
 
 const CONTEXT = { sessionID: "test", messageID: "message", id: "call", agent: "test" };
 const PNG = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==", "base64");
@@ -56,6 +62,39 @@ test("phux_list and phux_documents read every kind from one ls call", async () =
   assert.deepEqual(requests.map((request) => request.args), [["ls", "--json", "--socket", "/tmp/private.sock"], ["ls", "--json", "--socket", "/tmp/private.sock"]]);
 });
 
+test("phux_list keeps the header, sessions and first resources of a large inventory", async () => {
+  const resource = (index: number) => ({
+    id: `@${index}`, kind: index % 3 === 0 ? "accessibility_tree" : "terminal", name: `pane ${index} ${"x".repeat(40)}`,
+    parent: index % 3 === 0 ? `@${index - 1}` : null, lifecycle: "running", exit: null, key: "0123456789abcdefghijklmnop",
+  });
+  const inventory = (resources: number) => ({
+    schema_version: 4,
+    sessions: Array.from({ length: 15 }, (_, index) => ({ name: `session-${index}`, windows: 2, attached: index === 0 })),
+    terminals: Array.from({ length: resources }, (_, index) => `@${index + 1}`),
+    unreachable: [],
+    resources: Array.from({ length: resources }, (_, index) => resource(index + 1)),
+  });
+  const real = harness(() => completed(inventory(32)));
+  const listed = await real.tools.phux_list!.execute({}, CONTEXT);
+  const lines = listed.content.split("\n");
+  assert.equal(lines[0], "list schema_version=4 sessions=15 terminals=32 resources=32");
+  assert.equal(lines[1], '{"session":"session-0","windows":2,"attached":true}');
+  assert.ok(lines.includes('{"session":"session-14","windows":2,"attached":false}'));
+  assert.ok(lines.some((line) => line.startsWith('{"terminals":["@1",')));
+  assert.equal(lines.filter((line) => line.startsWith('{"id":')).length, 32, "every resource survives a realistic host");
+  assert.equal(listed.metadata.modelOutputTruncated, false);
+  assert.equal((listed.metadata.result as { resources: unknown[] }).resources.length, 32);
+
+  const huge = harness(() => completed(inventory(400)));
+  const cut = await huge.tools.phux_list!.execute({}, CONTEXT);
+  assert.ok(Buffer.byteLength(cut.content, "utf8") <= MAX_MODEL_BYTES);
+  assert.ok(cut.content.startsWith("list schema_version=4 sessions=15 terminals=400 resources=400\n{\"session\":\"session-0\""));
+  assert.match(cut.content, /\{"id":"@1","kind":"terminal"/);
+  assert.match(cut.content, /\[phux adapter truncated the list after \d+ of 416 rows\]$/);
+  assert.equal(cut.metadata.modelOutputTruncated, true);
+  assert.equal(cut.metadata.result, undefined);
+});
+
 test("phux_tree_snapshot invokes the CLI verb and returns the document", async () => {
   const { requests, tools } = harness(() => completed({ schema_version: 1, seq: 4, document: TREE }));
   const result = await tools.phux_tree_snapshot!.execute({ target: "@2" }, CONTEXT);
@@ -78,8 +117,9 @@ test("an oversized tree keeps its head in the model and its whole JSON on disk",
   assert.ok(!result.content.includes("\ufffd"));
   const path = result.metadata.documentPath as string;
   assert.deepEqual(JSON.parse(readFileSync(path, "utf8")), big);
+  assert.equal(dirname(path), keptFilesDirectory());
+  assert.match(result.content, /kept|whole JSON is at/);
   assert.equal(result.metadata.modelOutputTruncated, true);
-  rmSync(path.replace(/\/tree\.json$/, ""), { recursive: true });
 });
 
 test("phux_tree_wait maps the CLI's match, timeout and closed tree to outcomes", async () => {
@@ -101,7 +141,8 @@ test("phux_tree_wait maps the CLI's match, timeout and closed tree to outcomes",
   const closed = await tools.phux_tree_wait!.execute({ target: "@2", until: "x" }, CONTEXT);
   assert.deepEqual(closed.metadata.result, { schema_version: 1, outcome: "closed" });
   assert.equal(closed.metadata.outcome, "closed");
-  assert.ok(requests[2]?.args.includes("30"), "default deadline is 30 seconds");
+  assert.deepEqual(requests[2]?.args.slice(5, 7), ["--timeout", "60"], "default deadline is MCP's 60 seconds");
+  assert.equal(requests[2]?.timeoutMs, 65_000);
   await assert.rejects(tools.phux_tree_wait!.execute({ target: "@2", until: "x" }, CONTEXT), /Disconnected/);
   await assert.rejects(tools.phux_tree_wait!.execute({ target: "@2", until: "x", timeout_seconds: 3601 }, CONTEXT), /3600/);
   assert.equal(requests.length, 4);
@@ -127,6 +168,8 @@ test("phux_surface_snapshot writes the frame to a private file and returns it as
   assert.match(result.content, /^surface_snapshot target=@3 seq=3 bytes=70 format=png 1x1\nframe attached as an image$/);
   assert.equal(existsSync(out), false, "an inlined frame leaves no file behind");
   assert.equal(JSON.stringify(result.metadata).includes(PNG.toString("base64")), false);
+  assert.equal((result.metadata.result as { out: unknown }).out, null, "an attached frame leaves no path to open");
+  assert.equal(dirname(out), keptFilesDirectory());
 });
 
 test("an empty or oversized surface frame is reported without inlining", async () => {
@@ -143,7 +186,18 @@ test("an empty or oversized surface frame is reported without inlining", async (
   const kept = await large.tools.phux_surface_snapshot!.execute({ target: "@3" }, CONTEXT);
   assert.equal(kept.images, undefined);
   const path = kept.metadata.framePath as string;
-  assert.ok(path.endsWith("/frame.jpg") && existsSync(path));
-  assert.match(kept.content, /saved at .*frame\.jpg/);
-  rmSync(path.replace(/\/frame\.jpg$/, ""), { recursive: true });
+  assert.ok(path.endsWith(".jpg") && existsSync(path) && dirname(path) === keptFilesDirectory());
+  assert.equal((kept.metadata.result as { out: unknown }).out, path, "out names the kept file, not the renamed one");
+  assert.match(kept.content, /saved at .*\.jpg/);
+  rmSync(path);
+
+  for (const [width, height] of [[MAX_INLINE_IMAGE_SIDE + 1, 1], [1, MAX_INLINE_IMAGE_SIDE + 1]]) {
+    const wide = harness((request) => {
+      writeFileSync(outPath(request), PNG);
+      return completed({ schema_version: 1, seq: 6, bytes: PNG.length, format: "png", width, height });
+    });
+    const result = await wide.tools.phux_surface_snapshot!.execute({ target: "@3" }, CONTEXT);
+    assert.equal(result.images, undefined, `${width}x${height} must not be inlined`);
+    assert.ok(existsSync(result.metadata.framePath as string));
+  }
 });

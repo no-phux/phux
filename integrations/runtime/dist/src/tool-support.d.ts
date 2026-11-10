@@ -86,3 +86,8 @@ export declare function boundedResult(header: string, body: string, phuxTruncate
     readonly text: string;
     readonly truncated: boolean;
 };
+/** Bound inventory rows from the start: the header and the first rows carry the structure, unlike terminal text. */
+export declare function headBoundedLines(header: string, rows: readonly string[]): {
+    readonly text: string;
+    readonly truncated: boolean;
+};

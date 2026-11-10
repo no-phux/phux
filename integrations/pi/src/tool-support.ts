@@ -1,4 +1,5 @@
 import {
+  truncateHead,
   truncateTail,
   type AgentToolResult,
   type Theme,
@@ -90,4 +91,15 @@ export function renderSummary(
   const suffix = details.modelOutputTruncated ? " (model output truncated)" : "";
   const safe = sanitizeRenderText(`${details.summary}${suffix}`);
   return new Text(theme.fg(details.exitCode === undefined || details.exitCode === 0 ? "success" : "warning", safe), 0, 0);
+}
+
+/** Bound inventory rows from the start, so the header and the first rows survive a large fleet. */
+export function headBoundedResult(header: string, body: string): { readonly text: string; readonly truncated: boolean } {
+  const notice = `[Pi adapter truncated the list to its first ${String(MAX_MODEL_LINES)} lines within ${String(MAX_MODEL_BYTES)} bytes]`;
+  const reserved = Buffer.byteLength(header) + Buffer.byteLength(notice) + 2;
+  const bodyResult = truncateHead(body, { maxBytes: Math.max(0, MAX_MODEL_BYTES - reserved), maxLines: Math.max(0, MAX_MODEL_LINES - 2) });
+  return {
+    text: [header, ...(bodyResult.content.length === 0 ? [] : [bodyResult.content]), ...(bodyResult.truncated ? [notice] : [])].join("\n"),
+    truncated: bodyResult.truncated,
+  };
 }
