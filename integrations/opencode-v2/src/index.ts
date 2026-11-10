@@ -9,7 +9,7 @@ import {
 } from "../../runtime/src/awareness.js";
 import { deletedSessionId, applyServerEvent } from "./events.js";
 import { OpenCodeLifecycle } from "./lifecycle.js";
-import { createPhuxTools, type PhuxToolDefinition, type ToolContext } from "../../runtime/src/tools.js";
+import { createPhuxTools, type PhuxToolDefinition, type ToolContext, type ToolResult } from "../../runtime/src/tools.js";
 import { PARENT_PANE_RULE, parentPane } from "./parent.js";
 import { DEFAULT_MAX_TERMINALS, OwnedTerminals } from "./terminals.js";
 import { createGuiService, registerTerminals } from "./gui-service.js";
@@ -100,7 +100,7 @@ export default Plugin.define({
           description: tool.description,
           input: tool.input,
           options: { codemode: true, permission: tool.name },
-          execute: (input, context) => tool.execute(input, context),
+          execute: async (input, context) => withImages(await tool.execute(input, context)),
         });
       }
     });
@@ -167,7 +167,7 @@ export default Plugin.define({
 /**
  * The shared catalog minus what OpenCode already does better or what invites
  * misuse: phux_create made a named session per task, and phux_list and
- * phux_runtime_info duplicate phux_panes and phux_status.
+ * phux_runtime_info duplicate phux_panes, phux_documents and phux_status.
  */
 const SHARED_TOOLS = [
   "phux_panes",
@@ -180,7 +180,23 @@ const SHARED_TOOLS = [
   "phux_agent_wait",
   "phux_resource_wait",
   "phux_status",
+  "phux_documents",
+  "phux_tree_snapshot",
+  "phux_tree_wait",
+  "phux_surface_snapshot",
 ] as const;
+
+/** A surface frame reaches the model as a data-URL file part beside the text. */
+function withImages(result: ToolResult) {
+  if (result.images === undefined || result.images.length === 0) return { content: result.content, metadata: result.metadata };
+  const files = result.images.map((image, index) => ({
+    type: "file" as const,
+    uri: `data:${image.mimeType};base64,${image.data}`,
+    mime: image.mimeType,
+    name: `frame-${index + 1}.${image.mimeType === "image/png" ? "png" : "jpg"}`,
+  }));
+  return { content: [{ type: "text" as const, text: result.content }, ...files], metadata: result.metadata };
+}
 
 const TARGET = { type: "string", minLength: 2, maxLength: 512, pattern: "^(?:[^/\\s]+/)?@[0-9]+$", description: "Exact @N or host/@N returned by phux_spawn." };
 

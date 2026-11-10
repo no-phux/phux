@@ -150,6 +150,7 @@ test("selects and persists RPC targets through standard UI without invoking cust
     "phux_kill", "phux_signal",
     "phux_tag", "phux_ask", "phux_watch_events",
     "phux_rendered_snapshot", "phux_targets",
+    "phux_documents", "phux_tree_snapshot", "phux_tree_wait", "phux_surface_snapshot",
   ]);
   // Identity is still declared at session boundaries only. Per-turn events
   // feed the AgentSession stream and must not write detector state; message

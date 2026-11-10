@@ -148,11 +148,14 @@ with a native permission action for each tool name:
 - Terminal control: `phux_run`, `phux_send_keys`, `phux_paste`.
 - Observation: `phux_snapshot`, `phux_wait`.
 - Agent control: `phux_agent_prompt`, `phux_agent_wait`, `phux_resource_wait`.
+- Documents: `phux_documents` lists accessibility trees, pixel surfaces, and
+  typed documents; `phux_tree_snapshot` and `phux_tree_wait` read a tree's
+  JSON; `phux_surface_snapshot` returns a surface's frame as an image file part.
 - Diagnostics: `phux_status`.
 
 The shared runtime's `phux_create`, `phux_list`, and `phux_runtime_info` are not
 registered here. Creating a named session per task left sessions behind, and the
-other two duplicate `phux_panes` and `phux_status`.
+other two duplicate `phux_panes`, `phux_documents`, and `phux_status`.
 
 A pane from `phux_spawn` belongs to the OpenCode session that spawned it. It
 becomes that session's default target and carries the `opencode-owned` tag. Each

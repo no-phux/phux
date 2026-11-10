@@ -12,6 +12,7 @@ const DIRECT_TARGET = /^(?:[^\s/@]+\/)?@[0-9]+$/;
 const READ_TOOLS: Readonly<Record<string, true>> = {
   phux_list: true, phux_panes: true, phux_snapshot: true, phux_wait: true,
   phux_agent_wait: true, phux_resource_wait: true, phux_status: true, phux_runtime_info: true,
+  phux_documents: true, phux_tree_snapshot: true, phux_tree_wait: true, phux_surface_snapshot: true,
 };
 const CONTROL_GUIDANCE =
   " Use phux for persistent terminals, REPLs, interactive agents, and long-running services; " +
@@ -82,7 +83,8 @@ export default function phuxExtension(pi: ExtensionAPI): void {
       async execute(toolCallId, params, signal, _onUpdate, ctx) {
         try {
           const result = await tools(ctx)[definition.name]!.execute(params, executionContext(ctx, toolCallId, signal));
-          return { content: [{ type: "text", text: result.content }], details: result.metadata };
+          const images = (result.images ?? []).map((image) => ({ type: "image" as const, ...image }));
+          return { content: [{ type: "text" as const, text: result.content }, ...images], details: result.metadata };
         } catch (error) {
           return errorResult(error);
         }
