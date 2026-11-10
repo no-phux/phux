@@ -112,6 +112,7 @@ impl<E: EngineAdapter> SessionKernel<E> {
         effects: &mut EffectBuffer,
     ) {
         self.perf_echo.forget(terminal_id);
+        self.unsupported.remove(terminal_id);
         // Only tracked Terminals get a process-exit status: agent sessions report
         // via `AgentSessionStatus`, and a forgotten id has nothing new to say.
         let was_tracked_terminal = self.terminals.contains_key(terminal_id);

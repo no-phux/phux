@@ -286,6 +286,14 @@ impl ControlPlane {
                     reason,
                 });
             }
+            KernelStatus::Unsupported {
+                terminal_id,
+                codec_tag,
+            } => tracing::warn!(
+                %terminal_id,
+                codec_tag,
+                "the server streamed a resource in a codec this build cannot decode; ignoring it"
+            ),
             // Folded from the agent event itself, for every terminal the
             // subscription covers rather than only the kernel's.
             KernelStatus::Cwd { .. }

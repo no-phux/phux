@@ -8,6 +8,7 @@ include!("caps/transport.rs");
 include!("caps/bootstrap.rs");
 include!("caps/server_features.rs");
 include!("caps/advertisements.rs");
+include!("caps/resource_kinds.rs");
 
 #[cfg(test)]
 mod tests {
@@ -35,6 +36,22 @@ mod tests {
             assert_eq!(back, v);
         }
         assert!(ColorSupport::from_wire(0xFF).is_none());
+    }
+
+    #[test]
+    fn legacy_resource_kinds_are_frozen_at_tags_zero_to_four() {
+        // A HELLO without RESOURCE_KINDS must never gain a later kind.
+        assert_eq!(ResourceKindSet::LEGACY.as_wire(), 0x1F);
+        assert_eq!(
+            ClientCapabilities::new().resource_kinds,
+            ResourceKindSet::LEGACY
+        );
+        assert_eq!(ResourceKindSet::default(), ResourceKindSet::LEGACY);
+        assert!(!ResourceKindSet::LEGACY.contains(crate::ids::ResourceKind::Unknown { tag: 5 }));
+        assert!(
+            !ResourceKindSet::from_wire(u64::MAX)
+                .contains(crate::ids::ResourceKind::Unknown { tag: 64 })
+        );
     }
 
     #[test]

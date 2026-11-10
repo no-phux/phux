@@ -28,6 +28,7 @@ mod frame_shapes;
 mod history;
 mod payloads;
 mod profile_selection;
+mod unknown_codec;
 
 const fn stream(raw: u64) -> StreamId {
     StreamId::new(raw).unwrap()

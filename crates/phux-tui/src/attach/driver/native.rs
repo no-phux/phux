@@ -26,7 +26,11 @@ use tokio::signal::unix::{SignalKind, signal};
 /// # Errors
 /// Transport, negotiation, or development-profile isolation failures.
 pub async fn connect(socket: &std::path::Path) -> Result<Connection, AttachError> {
-    let mut caps = ClientCapabilities::new().with_layers(LayerSet::with(&[Layer::L3]));
+    let mut caps = ClientCapabilities::new()
+        .with_layers(LayerSet::with(&[Layer::L3]))
+        .with_resource_kinds(phux_protocol::caps::ResourceKindSet::with(&[
+            phux_protocol::ids::ResourceKind::Terminal,
+        ]));
     caps.bootstrap.profiles = BootstrapProfileSet::with(&[BootstrapProfileKind::SynthesizedVtRaw]);
     Connection::connect_with_hello(socket, "phux-native-terminal".into(), caps).await
 }

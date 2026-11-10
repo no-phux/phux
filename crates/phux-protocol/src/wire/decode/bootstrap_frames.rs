@@ -331,6 +331,10 @@ pub(super) fn checked_bootstrap_dimensions(
 ) -> Result<(u16, u16), DecodeError> {
     let cols = req(cols)?;
     let rows = req(rows)?;
+    // A newer codec decides for itself whether it has a grid.
+    if matches!(profile, crate::caps::BootstrapStreamProfile::Unknown { .. }) {
+        return Ok((cols, rows));
+    }
     let gridless = matches!(
         profile,
         crate::caps::BootstrapStreamProfile::AgentEventsJsonlV1

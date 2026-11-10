@@ -83,7 +83,13 @@ pub(super) fn attach_client_caps(
     let mut client_caps = ClientCapabilities::new()
         .with_bootstrap(bootstrap)
         .with_color_support(detect_color_support())
-        .with_layers(LayerSet::with(&[Layer::L3]));
+        .with_layers(LayerSet::with(&[Layer::L3]))
+        // The TUI draws terminals and agent sessions, no tree, surface or
+        // document, so the server streams it none.
+        .with_resource_kinds(phux_protocol::caps::ResourceKindSet::with(&[
+            phux_protocol::ids::ResourceKind::Terminal,
+            phux_protocol::ids::ResourceKind::AgentSession,
+        ]));
     if let Some(colors) = default_colors {
         client_caps = client_caps.with_default_colors(colors);
     }

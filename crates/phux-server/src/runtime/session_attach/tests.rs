@@ -26,6 +26,7 @@ mod backpressure;
 mod capture_close;
 mod failure;
 mod fixtures;
+mod undecodable;
 use fixtures::{agent_cut, agent_stub, parked_tree, wait_for_capture};
 
 struct Reader(mpsc::Receiver<BytesMut>);
@@ -63,6 +64,17 @@ impl Connection {
     }
 
     async fn start_bounded(state: &SharedState, terminal_profile: bool, capacity: usize) -> Self {
+        let kinds = phux_protocol::caps::ResourceKindSet::all();
+        Self::start_with(state, terminal_profile, capacity, Some(kinds)).await
+    }
+
+    /// `kinds: None` sends a legacy `HELLO` without `RESOURCE_KINDS`.
+    async fn start_with(
+        state: &SharedState,
+        terminal_profile: bool,
+        capacity: usize,
+        kinds: Option<phux_protocol::caps::ResourceKindSet>,
+    ) -> Self {
         let client = state.with_mut(|s| {
             let client = s.new_client_id();
             s.set_peer_identity(
@@ -105,15 +117,21 @@ impl Connection {
             BootstrapCapabilities::new()
                 .with_profiles(phux_protocol::caps::BootstrapProfileSet::new())
         };
-        connection
-            .send(FrameKind::Hello {
-                client_name: "session-kinds-test".to_owned(),
-                protocol_major: phux_protocol::PROTOCOL_VERSION.major,
-                protocol_minor: phux_protocol::PROTOCOL_VERSION.minor,
-                protocol_patch: phux_protocol::PROTOCOL_VERSION.patch,
-                client_caps: ClientCapabilities::default().with_bootstrap(bootstrap),
-            })
-            .await;
+        let hello = FrameKind::Hello {
+            client_name: "session-kinds-test".to_owned(),
+            protocol_major: phux_protocol::PROTOCOL_VERSION.major,
+            protocol_minor: phux_protocol::PROTOCOL_VERSION.minor,
+            protocol_patch: phux_protocol::PROTOCOL_VERSION.patch,
+            client_caps: ClientCapabilities::default()
+                .with_bootstrap(bootstrap)
+                .with_resource_kinds(kinds.unwrap_or_default()),
+        };
+        let mut bytes = BytesMut::new();
+        hello.encode(&mut bytes);
+        if kinds.is_none() {
+            undecodable::strip_resource_kinds(&mut bytes);
+        }
+        connection.tx.send(bytes).await.unwrap();
         let FrameKind::HelloOk {
             selected_profile, ..
         } = connection.next().await

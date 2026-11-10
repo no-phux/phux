@@ -224,6 +224,16 @@ pub enum KernelError<E> {
         /// The declared kind.
         kind: ResourceKind,
     },
+    /// A stream names a codec this build cannot decode.
+    #[error(
+        "resource {terminal_id} streams codec {codec_tag:#04x}, which this build cannot decode"
+    )]
+    UnknownCodec {
+        /// Target resource.
+        terminal_id: ResourceId,
+        /// The codec tag `BOOTSTRAP_BEGIN` named.
+        codec_tag: u8,
+    },
     /// A typed document's bootstrap did not name its content type.
     #[error("typed document bootstrap for {0} names no content type")]
     UntypedDocument(ResourceId),

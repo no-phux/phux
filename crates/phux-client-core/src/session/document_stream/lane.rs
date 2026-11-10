@@ -61,8 +61,8 @@ impl DocumentLane {
     ///
     /// # Errors
     ///
-    /// A non-document profile, a profile of another document kind, or a
-    /// retired or duplicate generation.
+    /// A codec this build cannot decode, a non-document profile, a profile
+    /// of another document kind, or a retired or duplicate generation.
     pub fn begin(
         &mut self,
         stream_id: StreamId,
@@ -71,6 +71,12 @@ impl DocumentLane {
         base_seq: u64,
         now_ms: u64,
     ) -> Result<(), KernelError<Infallible>> {
+        if let BootstrapStreamProfile::Unknown { codec_tag } = profile {
+            return Err(KernelError::UnknownCodec {
+                terminal_id: self.resource_id.clone(),
+                codec_tag,
+            });
+        }
         let incoming = document_kind(profile).ok_or_else(|| KernelError::UnsupportedKind {
             terminal_id: self.resource_id.clone(),
             kind: if is_agent_profile(profile) {

@@ -30,6 +30,9 @@ pub(crate) struct SpawnRequest {
     pub(crate) initial_size: Option<(u16, u16)>,
     /// Kind, parent, and provenance fields; `None` is a plain Terminal.
     pub(crate) resource: Option<Box<phux_protocol::wire::frame::SpawnResource>>,
+    /// The kinds the spawner's `HELLO` says it decodes; not part of the
+    /// request's identity.
+    pub(crate) decodes: phux_protocol::caps::ResourceKindSet,
 }
 
 /// Only an owner explicitly addressed to this satellite can cross its link.
@@ -108,6 +111,7 @@ pub(crate) async fn handle_spawn_terminal(
         owner_terminal,
         agent_session,
         resource,
+        decodes,
         ..
     } = request;
 
@@ -125,7 +129,19 @@ pub(crate) async fn handle_spawn_terminal(
         }),
     };
     match crate::id_bridge::core_kind(kind) {
-        Some(crate::resource::ResourceKind::Terminal) => {}
+        Some(crate::resource::ResourceKind::Terminal) => {
+            // The spawner consumes the new Terminal's stream.
+            if !decodes.contains(phux_protocol::ids::ResourceKind::Terminal) {
+                let _ = out_tx
+                    .send(Outbound::Frame(FrameKind::Error {
+                        request_id: Some(request_id),
+                        code: ErrorCode::CodecUnavailable,
+                        message: "this connection's HELLO does not list the terminal resource kind, so it cannot consume its stream".to_owned(),
+                    }))
+                    .await;
+                return;
+            }
+        }
         Some(other) => {
             let resource = resource.unwrap_or_default();
             crate::runtime::apps::app_for(other)
@@ -139,6 +155,7 @@ pub(crate) async fn handle_spawn_terminal(
                     root_token,
                     limits: bootstrap_limits,
                     connection_token,
+                    decodes,
                 })
                 .await;
             return;

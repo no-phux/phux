@@ -102,6 +102,7 @@ pub fn client_caps(vt: &Vt) -> ClientCapabilities {
     ClientCapabilities::new()
         .with_image_protocols(ImageProtocolSet::new())
         .with_bootstrap(bootstrap)
+        .with_resource_kinds(WEB_RESOURCE_KINDS)
 }
 
 fn synthesized_bootstrap_caps() -> BootstrapCapabilities {
@@ -115,7 +116,16 @@ fn synthesized_client_caps() -> ClientCapabilities {
     ClientCapabilities::new()
         .with_image_protocols(ImageProtocolSet::new())
         .with_bootstrap(synthesized_bootstrap_caps())
+        .with_resource_kinds(WEB_RESOURCE_KINDS)
 }
+
+/// The web client draws terminals and agent badges, no tree, surface or
+/// document, so the server streams it none.
+const WEB_RESOURCE_KINDS: phux_protocol::caps::ResourceKindSet =
+    phux_protocol::caps::ResourceKindSet::with(&[
+        phux_protocol::ids::ResourceKind::Terminal,
+        phux_protocol::ids::ResourceKind::AgentSession,
+    ]);
 
 /// Leads every failure message for a protocol-major refusal, so a redial
 /// loop that sees only the message can tell it from a transient loss.
