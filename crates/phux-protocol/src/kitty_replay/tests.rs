@@ -1,6 +1,7 @@
 use super::*;
 
 mod compression;
+mod heal;
 mod residency;
 mod shared;
 

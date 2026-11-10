@@ -205,39 +205,3 @@ fn a_placeholder_in_pane_b_is_drawn_with_bs_pixels() {
     // The rewritten colour is stable: a clean repaint sends nothing.
     assert!(paint_at(&mut b, (0, 4)).is_empty());
 }
-
-/// A pane showing an image is due a heal one interval after the full send;
-/// the heal re-sends it once, and a pane without images is never due.
-#[test]
-fn a_heal_re_sends_visible_images_once_per_interval() {
-    let mut slot = PaneSlot::new_with_size(10, 5).expect("slot");
-    let _ = paint_slot(&mut slot);
-    assert!(slot.renderer.kitty_heal_at().is_none());
-    slot.terminal.vt_write(&red(77));
-    let before = tokio::time::Instant::now();
-    let _ = paint_slot(&mut slot);
-    let due = slot.renderer.kitty_heal_at().expect("due a heal");
-    assert!(due >= before + TerminalRenderer::KITTY_HEAL_INTERVAL);
-    assert!(due <= tokio::time::Instant::now() + TerminalRenderer::KITTY_HEAL_INTERVAL);
-    // Clean repaints neither re-send nor push the deadline out.
-    assert!(paint_slot(&mut slot).is_empty());
-    assert_eq!(slot.renderer.kitty_heal_at(), Some(due));
-
-    let mut panes = HashMap::from([(ResourceId::local(1), slot)]);
-    assert_eq!(kitty_heal_deadline(&panes), Some(due));
-    heal_kitty(&mut panes);
-    let slot = panes.get_mut(&ResourceId::local(1)).expect("slot");
-    assert!(slot.renderer.kitty_heal_at().is_none());
-    let healed = paint_slot(slot);
-    assert_eq!(kitty_commands(&healed, b"t,"), 1, "{healed:?}");
-    assert!(
-        slot.renderer
-            .kitty_heal_at()
-            .is_some_and(|again| again >= due)
-    );
-    assert!(paint_slot(slot).is_empty());
-
-    slot.terminal.vt_write(b"\x1b_Ga=d,d=I,i=77,q=2;\x1b\\");
-    let _ = paint_slot(slot);
-    assert!(slot.renderer.kitty_heal_at().is_none(), "no image, no heal");
-}

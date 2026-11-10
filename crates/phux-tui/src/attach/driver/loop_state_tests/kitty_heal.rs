@@ -23,22 +23,27 @@ fn kitty_transmits(bytes: &[u8]) -> usize {
     bytes.windows(6).filter(|w| *w == b"\x1b_Ga=t").count()
 }
 
-/// Regaining the outer terminal's focus re-sends the visible images once;
-/// losing it sends nothing.
+/// Focus-in re-sends images sent more than a few seconds ago, not ones
+/// just sent; losing focus sends nothing and parks the timer.
 #[tokio::test(flavor = "current_thread")]
-async fn an_outer_focus_in_re_sends_kitty_images() {
+async fn an_outer_focus_in_re_sends_kitty_images_not_just_sent() {
     use phux_protocol::input::focus::FocusEvent;
 
     let (mut state, mut client, server, mut out, _) = kitty_image_loop().await;
     let sidebar = state.sidebar();
-    for (event, sends) in [(FocusEvent::Lost, 0), (FocusEvent::Gained, 1)] {
+    for event in [FocusEvent::Lost, FocusEvent::Gained] {
         state
             .dispatch_batch(&mut client, &mut out, sidebar, vec![InputEvent::Focus(event)])
             .await
             .expect("dispatch");
-        assert_eq!(kitty_transmits(&out), sends, "{event:?}: {out:?}");
+        assert_eq!(kitty_transmits(&out), 0, "{event:?}: {out:?}");
         out.clear();
     }
+    state.on_host_focus(&mut out, sidebar, false);
+    assert!(state.housekeeping_deadline().is_none(), "unfocused: no timer");
+    let away = std::time::Instant::now() + std::time::Duration::from_secs(6);
+    state.heal_kitty_images(&mut out, sidebar, away, true);
+    assert_eq!(kitty_transmits(&out), 1, "{out:?}");
     drop(client);
     drop(server);
 }
@@ -47,24 +52,17 @@ async fn an_outer_focus_in_re_sends_kitty_images() {
 /// not before.
 #[tokio::test(flavor = "current_thread")]
 async fn the_housekeeping_timer_re_sends_images_after_the_interval() {
-    let (mut state, client, server, mut out, a) = kitty_image_loop().await;
+    let (mut state, client, server, mut out, _) = kitty_image_loop().await;
     let sidebar = state.sidebar();
     let due = state.housekeeping_deadline().expect("a heal is armed");
     assert!(due > tokio::time::Instant::now());
     state.on_housekeeping_due(&mut out, sidebar);
     assert_eq!(kitty_transmits(&out), 0, "not due yet");
 
-    state
-        .mirror
-        .panes
-        .get_mut(&a)
-        .expect("slot")
-        .renderer
-        .backdate_kitty_send();
-    assert!(state.housekeeping_deadline().is_some_and(|at| at <= tokio::time::Instant::now()));
-    state.on_housekeeping_due(&mut out, sidebar);
+    let later = due.into_std() + std::time::Duration::from_millis(1);
+    state.heal_kitty_images(&mut out, sidebar, later, false);
     assert_eq!(kitty_transmits(&out), 1, "{out:?}");
-    assert!(state.housekeeping_deadline().is_some_and(|at| at > tokio::time::Instant::now()));
+    assert!(state.housekeeping_deadline().is_some_and(|next| next > due));
     drop(client);
     drop(server);
 }

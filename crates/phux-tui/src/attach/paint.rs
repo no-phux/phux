@@ -1039,40 +1039,6 @@ mod tests {
         assert!(unarranged_lines(1, None)[2].contains("command palette"));
     }
 
-    /// The empty state says what happened and names the `new-window` chord
-    /// (or the palette), with no pane owning the cursor.
-    #[test]
-    fn empty_session_state_names_the_new_window_action() {
-        let lines = empty_session_lines(Some("C-a c"));
-        assert_eq!(
-            lines[..3],
-            [
-                "Empty session",
-                "Open a new tab to start a terminal.",
-                "C-a c  new tab"
-            ]
-        );
-        assert!(empty_session_lines(None)[2].contains("command palette"));
-        let mut out: Vec<u8> = Vec::new();
-        let theme = Theme::default();
-        let mut chrome = ChromeCtx {
-            viewport: (80, 24),
-            sidebar: None,
-            status_bar: None,
-            sidebar_painter: None,
-            session_name: "parked",
-            theme: &theme,
-            leaves: &crate::attach::surface_leaf::LeafBook::default(),
-        };
-        let _ = paint_empty_session(&mut out, &mut chrome, &lines);
-        let text = String::from_utf8_lossy(&out);
-        assert!(
-            lines.iter().all(|line| text.contains(line.as_str())),
-            "{text:?}"
-        );
-        assert!(text.contains("\x1b[?25l"));
-    }
-
     /// An unchanged layout tiles once however often it is read, and every
     /// component of the key (tree, content rect, viewport) forces a retile.
     #[test]

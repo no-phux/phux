@@ -118,26 +118,69 @@ fn release_and_drop_delete_what_the_outer_terminal_holds() {
     assert!(out.is_empty());
 }
 
+fn rgb_low(g: u8, b: u8) -> StyleColor {
+    StyleColor::Rgb(libghostty_vt::style::RgbColor { r: 0, g, b })
+}
+
+/// Past the bound, mappings no stored image, held image or painted
+/// placeholder cell uses are released; a painted one survives until a full
+/// walk stops painting it, so its image could come back under the same id.
 #[test]
 fn unused_mappings_are_pruned_past_the_bound() {
     let mut source = terminal();
     let mut held = KittyResidency::shared();
     // Placeholder cells may name ids that never existed; each gets a mapping.
-    for low in 1..=300 {
-        let _ = held.placeholder_fg(StyleColor::Rgb(libghostty_vt::style::RgbColor {
-            r: 0,
-            g: 1,
-            b: u8::try_from(low % 256).unwrap(),
-        }));
+    for b in 0..=255 {
+        let _ = held.placeholder_fg(rgb_low(1, b));
     }
     transmit(&mut source, 7, 8, 8);
     source.vt_write(b"\x1b_Ga=p,i=7,c=1,r=1,C=1,q=2;\x1b\\");
     let _ = replay_with(&source, &mut held, (0, 0));
+    assert!(held.outer_id(0x0000_0105).is_some(), "painted: kept");
+
+    // A forced paint shows only one of them now, among enough new ones to
+    // pass the doubled bound the first prune left.
+    held.begin_full_walk();
+    let still = held.placeholder_fg(rgb_low(1, 9));
+    for (g, last) in [(2, 255), (3, 3)] {
+        for b in 0..=last {
+            let _ = held.placeholder_fg(rgb_low(g, b));
+        }
+    }
+    let _ = replay_with(&source, &mut held, (0, 0));
     let kept = outer(&held, 7);
-    assert!(
-        held.outer_id(0x0001_0005).is_none(),
-        "an unused id was pruned"
-    );
+    assert!(held.outer_id(0x0000_0105).is_none(), "unpainted: pruned");
+    let mapped = held.outer_id(0x0000_0109).expect("still painted");
+    assert_eq!(u32::from_be_bytes([0, still.r, still.g, still.b]), mapped);
     let _ = replay_with(&source, &mut held, (0, 0));
     assert_eq!(outer(&held, 7), kept);
+}
+
+/// Once a prune has run, the next waits until the map has doubled, so a
+/// map full of painted mappings is not rescanned on every paint.
+#[test]
+fn a_prune_leaves_headroom_before_the_next() {
+    let mut map = super::super::ids::IdMap::default();
+    let painted = |map: &mut super::super::ids::IdMap, low| {
+        super::super::ids::placeholder_color(Some(map), rgb_low(2, low))
+    };
+    for low in 0..=255 {
+        let _ = painted(&mut map, low);
+    }
+    assert!(!map.wants_prune());
+    let _ = map.outer(0x0003_0000);
+    assert!(map.wants_prune());
+    map.prune(|_| false);
+    assert!(
+        !map.wants_prune(),
+        "256 painted mappings stay, headroom to 514"
+    );
+    for low in 0..=255 {
+        let _ = map.outer(0x0004_0000 | low);
+    }
+    assert!(!map.wants_prune());
+    for low in 0..=2 {
+        let _ = map.outer(0x0005_0000 | low);
+    }
+    assert!(map.wants_prune());
 }

@@ -61,9 +61,8 @@ impl super::super::SessionLoop {
             self.input_events = events;
             return Ok(Step::Continue);
         }
-        // Images may have gone while the terminal was elsewhere.
-        if self.note_host_focus(&events) {
-            self.heal_kitty_images(out, sidebar);
+        if let Some(focused) = self.note_host_focus(&events) {
+            self.on_host_focus(out, sidebar, focused);
         }
         // Computed before dispatch drains `events`; armed after, so it keys to
         // the pane focus landed on.

@@ -129,3 +129,30 @@ fn a_closed_panes_images_are_deleted_by_the_next_frame() {
         id_b
     ));
 }
+
+/// The empty-session screen shows no pane, so it takes every image off.
+#[test]
+fn the_empty_session_screen_deletes_every_panes_images() {
+    let a = ResourceId::local(1);
+    let (kernel, _, mut panes) = published_test_state(&[(&a, VIEWPORT.0, VIEWPORT.1, RED)]);
+    let mut outer = outer_terminal();
+    outer
+        .terminal
+        .vt_write(&paint_in_place(&leaf(&a), &mut panes, &kernel));
+    let id_a = outer_id(&panes, &a);
+    let theme = Theme::default();
+    let mut chrome = ChromeCtx {
+        viewport: VIEWPORT,
+        sidebar: None,
+        status_bar: None,
+        sidebar_painter: None,
+        session_name: "demo",
+        theme: &theme,
+        leaves: &crate::attach::surface_leaf::LeafBook::default(),
+    };
+    let mut out = Vec::new();
+    let _ = paint_empty_session(&mut out, &mut chrome, &["empty".to_owned()], &mut panes);
+    assert!(deletes(&out, id_a), "{out:?}");
+    outer.terminal.vt_write(&out);
+    assert!(outer_images(&outer).is_empty());
+}

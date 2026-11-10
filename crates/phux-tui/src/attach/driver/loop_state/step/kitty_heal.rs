@@ -1,17 +1,20 @@
-//! Heal kitty images the outer terminal may have dropped, on the loop's
-//! housekeeping timer it shares with agent notifications.
+//! Heal kitty images the outer terminal may have dropped (see
+//! `attach::kitty_heal`), on the loop's housekeeping timer it shares with
+//! agent notifications and on outer focus-in.
+
+use std::time::Instant;
 
 use super::super::{RepaintLevel, SidebarReservation};
-use crate::attach::pane_state::{heal_kitty, kitty_heal_deadline};
 
 impl super::super::SessionLoop {
     /// The earlier of the next agent notification and the next kitty heal.
     pub(in crate::attach::driver::loop_state) fn housekeeping_deadline(
         &self,
     ) -> Option<tokio::time::Instant> {
+        let heal = self.mirror.kitty_heal.deadline(&self.mirror.panes);
         [
             self.notifier.deadline(),
-            kitty_heal_deadline(&self.mirror.panes),
+            heal.map(tokio::time::Instant::from_std),
         ]
         .into_iter()
         .flatten()
@@ -27,22 +30,46 @@ impl super::super::SessionLoop {
         sidebar: Option<SidebarReservation>,
     ) {
         self.on_notify_due(out);
-        let now = tokio::time::Instant::now();
-        if kitty_heal_deadline(&self.mirror.panes).is_some_and(|at| at <= now) {
-            self.heal_kitty_images(out, sidebar);
+        self.heal_kitty_images(out, sidebar, Instant::now(), false);
+    }
+
+    /// The outer terminal reported its focus; regaining it heals images that
+    /// may have gone while it was elsewhere.
+    pub(in crate::attach::driver::loop_state) fn on_host_focus<W: crate::attach::RenderSink>(
+        &mut self,
+        out: &mut W,
+        sidebar: Option<SidebarReservation>,
+        focused: bool,
+    ) {
+        self.mirror.kitty_heal.note_focus(focused);
+        if focused {
+            self.heal_kitty_images(out, sidebar, Instant::now(), true);
         }
     }
 
-    /// Forget what the outer terminal holds of every pane's kitty images and
-    /// repaint the visible panes' rows in place, which re-sends the images
-    /// and leaves clean cells alone. Under an overlay or a held switch the
-    /// next paint re-sends them.
+    /// Mark the images due a heal at `now` (the focus-in set when
+    /// `on_focus`) for re-sending and repaint the visible panes' rows in
+    /// place, which re-sends them and leaves clean cells alone. Under an
+    /// overlay or a held switch the heal is deferred instead.
     pub(in crate::attach::driver::loop_state) fn heal_kitty_images<W: crate::attach::RenderSink>(
         &mut self,
         out: &mut W,
         sidebar: Option<SidebarReservation>,
+        now: Instant,
+        on_focus: bool,
     ) {
-        heal_kitty(&mut self.mirror.panes);
-        self.repaint_view(out, sidebar, RepaintLevel::Rows);
+        if self.overlays.is_active() || self.paint_held() {
+            self.mirror.kitty_heal.defer(now);
+            return;
+        }
+        let mirror = &mut self.mirror;
+        let healed = if on_focus {
+            mirror.kitty_heal.heal_on_focus(&mut mirror.panes, now)
+        } else {
+            mirror.kitty_heal.heal_due(&mut mirror.panes, now)
+        };
+        if healed {
+            self.repaint_view(out, sidebar, RepaintLevel::Rows);
+        }
     }
 }

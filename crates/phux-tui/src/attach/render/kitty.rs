@@ -8,21 +8,15 @@
 //! [`KittyResidency::placeholder_fg`].
 //!
 //! The residency never re-sends an unchanged image, which kitty and Ghostty
-//! honour: only `ED2`, a reset or an alt-screen switch clear images there.
-//! Images still go missing behind its back (Ghostty evicting the oldest under
-//! its quota, a user clear such as Cmd-K, a terminal that ties images to the
-//! cells they cover), so they heal on a bounded schedule: an outer focus-in
-//! and [`HEAL_INTERVAL`] after a full send forget the residency (see
-//! `pane_state::heal_kitty`), and terminals known to tie images to cells
-//! ([`ties_images_to_cells`]) re-send on every paint, as phux did before.
+//! honour; images lost behind its back heal on the schedule in
+//! `attach::kitty_heal`, through [`super::TerminalRenderer::kitty_sends`]
+//! and [`super::TerminalRenderer::kitty_resend`]. Terminals known to tie
+//! images to cells ([`ties_images_to_cells`]) re-send on every paint.
 
 use std::io::{self, Write};
-use std::time::Duration;
-
-use tokio::time::Instant;
 
 use libghostty_vt::{Terminal as GhosttyTerminal, kitty::graphics::PlacementIterator};
-use phux_protocol::kitty_replay::{self, KittyResidency};
+use phux_protocol::kitty_replay::{self, ImageSend, KittyResidency};
 
 use super::{FrontBuffer, RenderError};
 
@@ -34,19 +28,16 @@ pub(super) fn is_placeholder(text: &str) -> bool {
     text.starts_with(PLACEHOLDER)
 }
 
-/// How long an image stays on screen before it is re-sent whole.
-///
-/// One minute bounds a hole a quota eviction or a user clear left to a
-/// minute, and costs one compressed payload per visible image per minute
-/// (about 4.8 KB a minute for the 96x96 image of `docs/assets/payload.sh`,
-/// placement and row repaint included), next to the full re-send on every
-/// paint it replaces. Focus-in covers the common case of coming back to the
-/// terminal.
-const HEAL_INTERVAL: Duration = Duration::from_mins(1);
-
 /// Whether the outer terminal, judged by its environment, drops an image
 /// from the cells text overwrites (`WezTerm`, Konsole) instead of keeping it
-/// until a clear, so images must be re-placed on every paint.
+/// until a clear, so images must be re-sent on every paint.
+///
+/// The environment is all the TUI knows of the terminal (it sends no
+/// `XTVERSION` query), so this misses such a terminal behind tmux or screen
+/// (`TERM_PROGRAM` names the multiplexer), over SSH (neither variable is
+/// forwarded by default), or under a renamed `TERM_PROGRAM`; those fall back
+/// to the timed heal. A variable inherited from an outer session (Konsole
+/// launching another terminal) can also turn it on needlessly.
 fn ties_images_to_cells(env: impl Fn(&str) -> Option<String>) -> bool {
     env("TERM_PROGRAM").is_some_and(|program| program.eq_ignore_ascii_case("wezterm"))
         || env("KONSOLE_VERSION").is_some_and(|version| !version.is_empty())
@@ -70,9 +61,6 @@ const fn heals_every_paint() -> bool {
 pub(super) struct PaneKitty<'alloc> {
     placements: PlacementIterator<'alloc>,
     residency: KittyResidency,
-    /// When the outer terminal was last sent every visible image whole;
-    /// `None` while the pane shows no image or until the next send.
-    sent_at: Option<Instant>,
 }
 
 impl PaneKitty<'_> {
@@ -80,7 +68,6 @@ impl PaneKitty<'_> {
         Ok(Self {
             placements: PlacementIterator::new()?,
             residency: KittyResidency::shared(),
-            sent_at: None,
         })
     }
 
@@ -92,7 +79,13 @@ impl PaneKitty<'_> {
     /// Assume the outer terminal may have lost this pane's images.
     pub(super) fn forget(&mut self) {
         self.residency.forget();
-        self.sent_at = None;
+    }
+
+    /// A forced paint: the screen may have been cleared, and every row,
+    /// placeholder cells included, is painted again.
+    pub(super) fn begin_full_paint(&mut self) {
+        self.residency.forget();
+        self.residency.begin_full_walk();
     }
 }
 
@@ -105,35 +98,19 @@ impl super::TerminalRenderer<'_> {
         if self.kitty.residency.release(out)? {
             self.front.invalidate_all();
         }
-        self.kitty.sent_at = None;
         Ok(())
     }
 
-    /// When this pane's images are next due a heal; `None` while it shows
-    /// none.
-    pub(in crate::attach) fn kitty_heal_at(&self) -> Option<Instant> {
-        self.kitty.sent_at.map(|sent| sent + HEAL_INTERVAL)
+    /// The images the outer terminal holds for this pane, with when and at
+    /// what cost each was last sent.
+    pub(in crate::attach) fn kitty_sends(&self) -> impl Iterator<Item = ImageSend> + '_ {
+        self.kitty.residency.sends()
     }
 
-    /// Assume the outer terminal lost this pane's images, so the next paint
-    /// re-sends them; cells are untouched.
-    pub(in crate::attach) fn heal_kitty(&mut self) {
-        self.kitty.forget();
+    /// Re-send pane image `pane_id` on the next paint; cells are untouched.
+    pub(in crate::attach) fn kitty_resend(&mut self, pane_id: u32) {
+        self.kitty.residency.resend(pane_id);
     }
-
-    /// How long after a full send this pane's images are due a heal.
-    #[cfg(test)]
-    pub(crate) const KITTY_HEAL_INTERVAL: Duration = HEAL_INTERVAL;
-
-    /// Pretend the last full send happened one heal interval earlier.
-    #[cfg(test)]
-    pub(crate) fn backdate_kitty_send(&mut self) {
-        self.kitty.sent_at = self
-            .kitty
-            .sent_at
-            .and_then(|at| at.checked_sub(HEAL_INTERVAL));
-    }
-
     /// The outer id this pane's image `pane_id` is shown under, once mapped.
     #[cfg(test)]
     pub(crate) fn kitty_outer_id(&self, pane_id: u32) -> Option<u32> {
@@ -157,7 +134,7 @@ impl<'alloc> PaneKitty<'alloc> {
     ) -> Result<bool, RenderError> {
         let (origin, clip) = at;
         if heals_every_paint() {
-            self.forget();
+            self.residency.resend_all();
         }
         let touched_cells = kitty_replay::emit_kitty_graphics_replay(
             terminal,
@@ -169,11 +146,6 @@ impl<'alloc> PaneKitty<'alloc> {
         )?;
         if touched_cells {
             front.invalidate_all();
-        }
-        if !self.residency.holds_images() {
-            self.sent_at = None;
-        } else if self.sent_at.is_none() {
-            self.sent_at = Some(Instant::now());
         }
         Ok(touched_cells)
     }

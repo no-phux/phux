@@ -560,7 +560,7 @@ mod ids;
 mod residency;
 
 pub use ids::write_orphaned_deletes;
-pub use residency::KittyResidency;
+pub use residency::{ImageSend, KittyResidency};
 
 #[cfg(test)]
 mod tests;

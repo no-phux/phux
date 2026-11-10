@@ -26,7 +26,9 @@ const LOW: u32 = 0x00FF_FFFF;
 
 /// Mappings kept before unused ones are pruned. Below it a mapping lives as
 /// long as its residency, so placeholder cells painted once keep pointing at
-/// the right outer image even if the pane deletes and re-sends it.
+/// the right outer image even if the pane deletes and re-sends it. Past it a
+/// prune scan runs only once the map has doubled since the last, so its cost
+/// stays amortised however many mappings stay in use.
 const PRUNE_ABOVE: usize = 256;
 
 thread_local! {
@@ -64,10 +66,31 @@ impl IdSpace {
 }
 
 /// One residency's pane-to-outer mapping of image ids' low 24 bits.
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub(super) struct IdMap {
-    /// `(pane low, outer low)`, sorted by pane low.
-    lows: Vec<(u32, u32)>,
+    /// Sorted by pane low.
+    lows: Vec<Mapping>,
+    /// The size past which the next prune scan runs.
+    prune_at: usize,
+}
+
+impl Default for IdMap {
+    fn default() -> Self {
+        Self {
+            lows: Vec::new(),
+            prune_at: PRUNE_ABOVE,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+struct Mapping {
+    pane: u32,
+    outer: u32,
+    /// A placeholder cell painted since the last full walk spells it, so
+    /// it may still be on screen: a prune must keep it, or the image coming
+    /// back under a new outer id would stay invisible in those clean cells.
+    painted: bool,
 }
 
 impl IdMap {
@@ -79,39 +102,62 @@ impl IdMap {
     /// The outer id already mapped for pane image `pane`.
     pub(super) fn get(&self, pane: u32) -> Option<u32> {
         let index = self.find(pane & LOW).ok()?;
-        Some((pane & !LOW) | self.lows[index].1)
+        Some((pane & !LOW) | self.lows[index].outer)
     }
 
     fn find(&self, low: u32) -> Result<usize, usize> {
-        self.lows.binary_search_by_key(&low, |&(pane, _)| pane)
+        self.lows.binary_search_by_key(&low, |mapping| mapping.pane)
     }
 
     fn low(&mut self, pane_low: u32) -> u32 {
-        match self.find(pane_low) {
-            Ok(index) => self.lows[index].1,
-            Err(index) => {
-                let low = SPACE.with(|space| space.borrow_mut().allocate());
-                self.lows.insert(index, (pane_low, low));
-                low
-            }
+        self.mapping(pane_low).outer
+    }
+
+    fn mapping(&mut self, pane_low: u32) -> &mut Mapping {
+        let index = self.find(pane_low).unwrap_or_else(|index| {
+            let outer = SPACE.with(|space| space.borrow_mut().allocate());
+            let mapping = Mapping {
+                pane: pane_low,
+                outer,
+                painted: false,
+            };
+            self.lows.insert(index, mapping);
+            index
+        });
+        &mut self.lows[index]
+    }
+
+    /// The outer low a placeholder cell spelling `pane_low` is painted with.
+    fn painted_low(&mut self, pane_low: u32) -> u32 {
+        let mapping = self.mapping(pane_low);
+        mapping.painted = true;
+        mapping.outer
+    }
+
+    /// Every on-screen placeholder cell is about to be painted again.
+    pub(super) fn begin_full_walk(&mut self) {
+        for mapping in &mut self.lows {
+            mapping.painted = false;
         }
     }
 
     pub(super) const fn wants_prune(&self) -> bool {
-        self.lows.len() > PRUNE_ABOVE
+        self.lows.len() > self.prune_at
     }
 
-    /// Release the mappings whose pane low `keep` rejects.
+    /// Release the mappings whose pane low `keep` rejects and no painted
+    /// placeholder cell spells.
     pub(super) fn prune(&mut self, keep: impl Fn(u32) -> bool) {
         SPACE.with(|space| {
             let mut space = space.borrow_mut();
-            self.lows.retain(|&(pane, outer)| {
-                keep(pane) || {
-                    space.release(outer);
+            self.lows.retain(|mapping| {
+                mapping.painted || keep(mapping.pane) || {
+                    space.release(mapping.outer);
                     false
                 }
             });
         });
+        self.prune_at = PRUNE_ABOVE.max(self.lows.len() * 2);
     }
 }
 
@@ -120,8 +166,8 @@ impl Drop for IdMap {
         // A thread tearing down its locals may already have dropped the space.
         let _ = SPACE.try_with(|space| {
             let mut space = space.borrow_mut();
-            for &(_, outer) in &self.lows {
-                space.release(outer);
+            for mapping in &self.lows {
+                space.release(mapping.outer);
             }
         });
     }
@@ -179,5 +225,5 @@ const fn low_color(low: u32) -> RgbColor {
 /// Map a placeholder foreground through `ids` (identity without a map).
 pub(super) fn placeholder_color(ids: Option<&mut IdMap>, fg: StyleColor) -> RgbColor {
     let low = placeholder_low(fg);
-    low_color(ids.map_or(low, |ids| ids.low(low)))
+    low_color(ids.map_or(low, |ids| ids.painted_low(low)))
 }

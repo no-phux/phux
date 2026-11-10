@@ -25,17 +25,18 @@ impl super::SessionLoop {
         );
     }
 
-    /// Track the outer terminal window's focus from `?1004` reports; `true`
-    /// when the batch regained it.
-    pub(super) fn note_host_focus(&mut self, events: &[InputEvent]) -> bool {
-        let mut gained = false;
+    /// Track the outer terminal window's focus from `?1004` reports; the
+    /// batch's last report, if any.
+    pub(super) fn note_host_focus(&mut self, events: &[InputEvent]) -> Option<bool> {
+        let mut focused = None;
         for event in events {
             if let InputEvent::Focus(focus) = event {
-                gained = matches!(focus, FocusEvent::Gained);
+                let gained = matches!(focus, FocusEvent::Gained);
                 self.notifier.set_client_focused(gained);
+                focused = Some(gained);
             }
         }
-        gained
+        focused
     }
 
     /// Post whatever came due: OSC bytes or a bell to the outer terminal, or
