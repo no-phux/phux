@@ -155,10 +155,23 @@ A kind supplies:
 
 - its state and a codec for it (VT bytes, a record, a whole document);
 - the frames and commands it owns, through its `ResourceApp`;
-- its row in the kind catalog (`KindSpec`): gate, methods, events and
-  metadata keys;
-- its geometry, in its own units: cells for a Terminal, the newest image's
-  own size in pixels for a `PixelSurface`.
+- its row in the kind catalog (`KindSpec`): gate, methods, events,
+  metadata keys, and two contracts:
+  - its stream: the codec tags it streams with their feature gates, its
+    [delivery mode](#delivery-modes), its geometry (none, cells for a
+    Terminal, the newest image's own size in pixels for a `PixelSurface`),
+    whether a cursor resumes it, and whether it is the connection's
+    Terminal profile;
+  - its spawn: whether it names a parent, what `provider` and `native_id`
+    mean and how long they may be, which other fields it refuses, and any
+    check of its own (a `Document`'s content type).
+
+The decoder, the authorization classifier, the hub relay, session attach,
+`SPAWN_RESOURCE` and the client kernel read those contracts instead of
+matching on kinds, so a new kind is its app plus one catalog row. A codec
+with no variant of its own decodes as `BootstrapCodec::Kind`. Only a
+Terminal's stream needs the connection's Terminal profile: a client that
+selected none at `HELLO` still spawns and watches every other kind.
 
 phux supplies, the same for every kind: identity, authorization from the
 kind catalog, generations and fences, sequence numbers, bounded mailboxes,
@@ -253,7 +266,9 @@ producer, addressed to either of its documents.
 ## Authority
 
 The kind catalog stays the one table for discovery and authorization, so a
-new kind starts denied. Observing a display shows every application on the
+new kind starts denied. A served kind that names a parent is spawned on the
+same rows as an agent session: `CREATE` on the parent's Group and `BIND` on
+the parent. Observing a display shows every application on the
 machine, and input to it is control of the machine, so window and display
 grants are separate from terminal grants and from each other. A device paired
 to watch terminals does not inherit a desktop. Control classes, who may watch
@@ -270,10 +285,9 @@ Each gap below holds on current `main`:
 - **A PTY-less producer.** Every producer runs in a Terminal pane,
   `phux agent app run` included. A supervised process without a PTY is
   added only if a PTY proves costly.
-- **The kind catalog.** `KindSpec` does not yet own a kind's stream
-  contract, spawn rule, geometry or input vocabulary; a new kind still edits
-  closed matches in `phux-protocol`, the client kernel and the hub relay
-  (`phux-rbz0y.7`).
+- **The kind catalog.** `KindSpec` does not own a kind's input
+  vocabulary, and a new kind still adds a `ResourceKind` variant and its
+  app (`phux-rbz0y.7`).
 - **The client kernel.** It keeps one hard-coded lane per kind (terminals,
   agents, documents) (`phux-rbz0y.8`).
 - **Clients.** The terminal UI shows a non-terminal pane as a placeholder
