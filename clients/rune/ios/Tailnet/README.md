@@ -73,7 +73,11 @@ links that verified local binary rather than downloading another copy.
 mandatory checksum. No development checkout is used as a dependency.
 
 The package is built by SwiftPM's `swiftbuild` engine with an explicit iOS SDK,
-`arm64-apple-ios26.0[-simulator]`, and warnings as errors. Build commands and
+`arm64-apple-ios26.0[-simulator]`, and warnings as errors for `RuneTailnet` and
+`RuneTailnetTests` in every configuration. The manifest scopes this policy to
+first-party targets; forwarding it globally conflicts with SwiftBuild's
+dependency warning suppression on Xcode 26. The direct UIKit compiler retains
+its own warnings-as-errors gate. Build commands and
 logs are retained under `out/tailnet`, plus `integration.json` with paths and
 notices. No worktree `.build` is created.
 

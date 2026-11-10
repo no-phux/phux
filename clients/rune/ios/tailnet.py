@@ -217,8 +217,8 @@ def prepare(out: Path, env: dict, target: str, release: bool) -> dict:
                "--disable-keychain", "--disable-netrc", "--force-resolved-versions",
                "--sdk", sdk_path, "--triple", triple, "--configuration", profile,
                "--build-system", "swiftbuild", "--jobs", "8"]
-    run(["/usr/bin/xcrun", "--sdk", "macosx", "swift", "build", *options, "--product", "RuneTailnet",
-         "-Xswiftc", "-warnings-as-errors"], env, out, "build", timeout=2400)
+    run(["/usr/bin/xcrun", "--sdk", "macosx", "swift", "build", *options, "--product", "RuneTailnet"],
+        env, out, "build", timeout=2400)
     products = Path(run(["/usr/bin/xcrun", "--sdk", "macosx", "swift", "build", *options, "--show-bin-path"],
                         env, out, "products", stdout_only=True).strip())
     library = products / "libRuneTailnet.a"

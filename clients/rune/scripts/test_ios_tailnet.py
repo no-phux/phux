@@ -30,6 +30,24 @@ class TailnetBuildTests(unittest.TestCase):
         })
         self.assertTrue(all(len(pin["state"]["revision"]) == 40 for pin in pins))
 
+    def test_warnings_are_errors_for_each_first_party_target_in_all_configurations(self):
+        manifest = (tailnet.PACKAGE / "Package.swift").read_text()
+        for kind, name in (("target", "RuneTailnet"), ("testTarget", "RuneTailnetTests")):
+            with self.subTest(target=name):
+                target = manifest.split(f'.{kind}(name: "{name}",', 1)[1].split("\n        .", 1)[0]
+                self.assertIn('swiftSettings: [.unsafeFlags(["-warnings-as-errors"])]', target)
+                self.assertNotIn(".when(", target)
+                self.assertNotIn("-suppress-warnings", target)
+        self.assertEqual(manifest.count('"-warnings-as-errors"'), 2)
+
+    def test_ci_host_tests_do_not_forward_warning_flags_to_dependencies(self):
+        workflow = (IOS.parents[2] / ".github/workflows/rune-build.yml").read_text()
+        step = workflow.split("- name: Test native tailnet trust, SSH and cancellation", 1)[1]
+        step = step.split("\n      - ", 1)[0]
+        self.assertIn("swift test", step)
+        self.assertNotIn("-warnings-as-errors", step)
+        self.assertNotIn("-Xswiftc", step)
+
     def test_artifact_digest_is_checked_before_extracting(self):
         with tempfile.TemporaryDirectory() as directory:
             out = Path(directory)
@@ -114,11 +132,13 @@ class TailnetBuildTests(unittest.TestCase):
             self.assertIn("--force-resolved-versions", build)
             self.assertIn("--disable-keychain", build)
             self.assertIn("arm64-apple-ios26.0", build)
-            self.assertIn("-warnings-as-errors", build)
+            self.assertNotIn("-warnings-as-errors", build)
+            self.assertNotIn("-Xswiftc", build)
             self.assertIn(str(out / "tailnet/build"), build)
             copied = (out / "tailnet/package/Package.swift").read_text()
             self.assertIn('path: "', copied)
             self.assertNotIn(tailnet.ARTIFACT_URL, copied)
+            self.assertEqual(copied.count('swiftSettings: [.unsafeFlags(["-warnings-as-errors"])]'), 2)
             self.assertTrue((out / "tailnet/integration.json").is_file())
 
     def test_invalid_target_does_not_create_output(self):

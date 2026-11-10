@@ -197,7 +197,7 @@ jobs:
             --config-path "$helper/config" --security-path "$helper/security" \
             --manifest-cache local --disable-keychain --disable-netrc --force-resolved-versions \
             --sdk "$(xcrun --sdk macosx --show-sdk-path)" --triple arm64-apple-macosx26.0 \
-            --jobs 8 -Xswiftc -warnings-as-errors
+            --jobs 8
       - name: Qualify native rendering and input against the same-source dev server
         run: |
           cargo build --locked -p phux
