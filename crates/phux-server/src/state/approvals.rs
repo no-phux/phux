@@ -368,14 +368,18 @@ fn actor_json(actor: &ActorRef) -> Value {
 }
 
 /// The subjects the held command names, in the registry selector grammar
-/// (`terminal:3`, `terminal:<host>/3`, `global`), or `session:<name>` for a
-/// forced detach of one session.
+/// (`terminal:3`, `terminal:<host>/3`, `session:<key>`, `resource:<key>`,
+/// `global`), or `session:<name>` for a forced detach of one session.
 fn subjects(command: &Command) -> Vec<String> {
-    if let Command::DetachClients {
-        session: Some(name),
-    } = command
-    {
-        return vec![format!("session:{name}")];
+    match command {
+        Command::DetachClients {
+            session: Some(name),
+        } => return vec![format!("session:{name}")],
+        Command::SessionDelete { session, .. } | Command::SessionKill { session, .. } => {
+            return vec![format!("session:{session}")];
+        }
+        Command::ResourceRemove { resource, .. } => return vec![format!("resource:{resource}")],
+        _ => {}
     }
     let terminals: Vec<String> = crate::policy::held_terminals(command)
         .map(crate::audit::terminal_selector)

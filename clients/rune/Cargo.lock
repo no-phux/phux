@@ -2585,7 +2585,7 @@ dependencies = [
 
 [[package]]
 name = "phux-client-core"
-version = "0.133.0"
+version = "0.134.0"
 dependencies = [
  "ciborium",
  "libghostty-vt",
@@ -2601,7 +2601,7 @@ dependencies = [
 
 [[package]]
 name = "phux-client-runtime"
-version = "0.133.0"
+version = "0.134.0"
 dependencies = [
  "bytes",
  "futures-util",
@@ -2629,7 +2629,7 @@ dependencies = [
 
 [[package]]
 name = "phux-config-core"
-version = "0.133.0"
+version = "0.134.0"
 dependencies = [
  "nix",
  "serde",
@@ -2640,7 +2640,7 @@ dependencies = [
 
 [[package]]
 name = "phux-core"
-version = "0.133.0"
+version = "0.134.0"
 dependencies = [
  "serde",
  "sha2",
@@ -2650,7 +2650,7 @@ dependencies = [
 
 [[package]]
 name = "phux-dial"
-version = "0.133.0"
+version = "0.134.0"
 dependencies = [
  "futures-util",
  "hex",
@@ -2667,7 +2667,7 @@ dependencies = [
 
 [[package]]
 name = "phux-perf"
-version = "0.133.0"
+version = "0.134.0"
 dependencies = [
  "libc",
  "nix",
@@ -2677,7 +2677,7 @@ dependencies = [
 
 [[package]]
 name = "phux-protocol"
-version = "0.133.0"
+version = "0.134.0"
 dependencies = [
  "bitflags 2.13.2",
  "bytes",
@@ -2693,7 +2693,7 @@ dependencies = [
 
 [[package]]
 name = "phux-rune"
-version = "0.1.7"
+version = "0.1.8"
 dependencies = [
  "image",
  "objc2 0.6.5",
@@ -2891,7 +2891,7 @@ dependencies = [
 [[package]]
 name = "procwatch"
 version = "0.1.0"
-source = "git+https://github.com/anomalyco/rune?rev=a8a535174de04eaefb9b3290f3b1b9922069e8d4#a8a535174de04eaefb9b3290f3b1b9922069e8d4"
+source = "git+https://github.com/anomalyco/rune?rev=9c28a20a835bc2b9635f715d1ca2a55b53d9095c#9c28a20a835bc2b9635f715d1ca2a55b53d9095c"
 dependencies = [
  "libc",
 ]
@@ -2925,7 +2925,7 @@ dependencies = [
 
 [[package]]
 name = "quictun"
-version = "0.133.0"
+version = "0.134.0"
 dependencies = [
  "quinn",
  "rustls",
@@ -3195,7 +3195,7 @@ dependencies = [
 [[package]]
 name = "rune"
 version = "0.0.1"
-source = "git+https://github.com/anomalyco/rune?rev=a8a535174de04eaefb9b3290f3b1b9922069e8d4#a8a535174de04eaefb9b3290f3b1b9922069e8d4"
+source = "git+https://github.com/anomalyco/rune?rev=9c28a20a835bc2b9635f715d1ca2a55b53d9095c#9c28a20a835bc2b9635f715d1ca2a55b53d9095c"
 dependencies = [
  "accesskit",
  "accesskit_macos",
@@ -3273,12 +3273,12 @@ dependencies = [
 [[package]]
 name = "rune-motion"
 version = "0.1.0"
-source = "git+https://github.com/anomalyco/rune?rev=a8a535174de04eaefb9b3290f3b1b9922069e8d4#a8a535174de04eaefb9b3290f3b1b9922069e8d4"
+source = "git+https://github.com/anomalyco/rune?rev=9c28a20a835bc2b9635f715d1ca2a55b53d9095c#9c28a20a835bc2b9635f715d1ca2a55b53d9095c"
 
 [[package]]
 name = "rune-notify"
 version = "0.0.1"
-source = "git+https://github.com/anomalyco/rune?rev=a8a535174de04eaefb9b3290f3b1b9922069e8d4#a8a535174de04eaefb9b3290f3b1b9922069e8d4"
+source = "git+https://github.com/anomalyco/rune?rev=9c28a20a835bc2b9635f715d1ca2a55b53d9095c#9c28a20a835bc2b9635f715d1ca2a55b53d9095c"
 dependencies = [
  "block2 0.5.1",
  "objc2 0.5.3",
@@ -3289,7 +3289,7 @@ dependencies = [
 [[package]]
 name = "rune-perf"
 version = "0.1.0"
-source = "git+https://github.com/anomalyco/rune?rev=a8a535174de04eaefb9b3290f3b1b9922069e8d4#a8a535174de04eaefb9b3290f3b1b9922069e8d4"
+source = "git+https://github.com/anomalyco/rune?rev=9c28a20a835bc2b9635f715d1ca2a55b53d9095c#9c28a20a835bc2b9635f715d1ca2a55b53d9095c"
 dependencies = [
  "procwatch",
  "serde_json",
@@ -3298,7 +3298,7 @@ dependencies = [
 [[package]]
 name = "rune-staging"
 version = "0.0.1"
-source = "git+https://github.com/anomalyco/rune?rev=a8a535174de04eaefb9b3290f3b1b9922069e8d4#a8a535174de04eaefb9b3290f3b1b9922069e8d4"
+source = "git+https://github.com/anomalyco/rune?rev=9c28a20a835bc2b9635f715d1ca2a55b53d9095c#9c28a20a835bc2b9635f715d1ca2a55b53d9095c"
 dependencies = [
  "wgpu",
 ]
@@ -3306,7 +3306,7 @@ dependencies = [
 [[package]]
 name = "rune-taffy"
 version = "0.0.1"
-source = "git+https://github.com/anomalyco/rune?rev=a8a535174de04eaefb9b3290f3b1b9922069e8d4#a8a535174de04eaefb9b3290f3b1b9922069e8d4"
+source = "git+https://github.com/anomalyco/rune?rev=9c28a20a835bc2b9635f715d1ca2a55b53d9095c#9c28a20a835bc2b9635f715d1ca2a55b53d9095c"
 dependencies = [
  "taffy",
 ]

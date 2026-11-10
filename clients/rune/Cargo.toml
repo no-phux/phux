@@ -1,6 +1,6 @@
 [package]
 name = "phux-rune"
-version = "0.1.7"
+version = "0.1.8"
 description = "The phux desktop client, built on the Rune UI framework."
 edition = "2024"
 publish = false
@@ -21,9 +21,9 @@ phux-client-runtime = { path = "../../crates/phux-client-runtime" }
 phux-perf = { path = "../../crates/phux-perf" }
 phux-protocol = { path = "../../crates/phux-protocol" }
 # Rune has no releases; apps pin a `dev` revision (dev is fast-forward only).
-rune = { git = "https://github.com/anomalyco/rune", rev = "a8a535174de04eaefb9b3290f3b1b9922069e8d4" }
-rune-notify = { git = "https://github.com/anomalyco/rune", rev = "a8a535174de04eaefb9b3290f3b1b9922069e8d4" }
-rune-perf = { git = "https://github.com/anomalyco/rune", rev = "a8a535174de04eaefb9b3290f3b1b9922069e8d4" }
+rune = { git = "https://github.com/anomalyco/rune", rev = "9c28a20a835bc2b9635f715d1ca2a55b53d9095c" }
+rune-notify = { git = "https://github.com/anomalyco/rune", rev = "9c28a20a835bc2b9635f715d1ca2a55b53d9095c" }
+rune-perf = { git = "https://github.com/anomalyco/rune", rev = "9c28a20a835bc2b9635f715d1ca2a55b53d9095c" }
 # Never called directly: Rune's decoder guesses the format, so these
 # features (unified with Rune's png/jpeg) let typed documents draw GIF/WebP.
 image = { version = "0.25", default-features = false, features = ["gif", "webp"] }

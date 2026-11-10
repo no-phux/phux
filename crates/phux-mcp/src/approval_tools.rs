@@ -38,7 +38,7 @@ fn approvals_schema() -> Value {
 fn approve_schema() -> Value {
     schema(
         "phux_approve",
-        "Decide one held action. `approve` releases it: the server runs it once, as the workload that asked, under that workload's own grant. `deny` refuses it and nothing runs. Deciding needs un-held `signal` on the held action's subject. Approving requires confirm=true; a denial never does.",
+        "Decide one held action. `approve` releases it: the server runs it once, as the workload that asked, under that workload's own grant. `deny` refuses it and nothing runs. Deciding needs the held verbs (`signal`, `terminate`, or `input`) un-held on the held action's subject. Approving requires confirm=true; a denial never does.",
         json!({
             "id": {
                 "type": "string",
@@ -108,7 +108,7 @@ fn approval_error(err: ApprovalError) -> ToolError {
         other => crate::tools::contract_error(
             "approval_refused",
             other.to_string(),
-            "use a caller with inventory and observe on Global approval records; deciding additionally requires un-held signal on the subject",
+            "use a caller with inventory and observe on Global approval records; deciding additionally requires the held verbs un-held on the subject",
             1,
         ),
     }

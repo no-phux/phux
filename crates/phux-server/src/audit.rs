@@ -179,9 +179,9 @@ pub fn audit_actor(identity: &ConnectionIdentity) -> AuditActor {
     AuditActor {
         credential: credential.map(|credential| credential.id.clone()),
         principal: credential.map(|credential| credential.principal.clone()),
-        // Filled from the credential once it carries a subject (C1) and a
-        // delegating credential (C3).
-        subject: None,
+        subject: credential.and_then(|credential| credential.subject.clone()),
+        // The connection's grant names its delegator, not its identity:
+        // `ServerState::audit_actor` fills it.
         on_behalf_of: None,
         transport,
     }
@@ -281,6 +281,13 @@ fn write_sorted(value: &Value, out: &mut String) {
 #[must_use]
 pub(crate) fn command_name(command: &phux_protocol::wire::frame::Command) -> &'static str {
     use phux_protocol::kinds::{self, Carrier};
+    // `SESSION_KILL` shares `SESSION_DELETE`'s row, so the row cannot tell them apart.
+    if matches!(
+        command,
+        phux_protocol::wire::frame::Command::SessionKill { .. }
+    ) {
+        return "SESSION_KILL";
+    }
     let rule = kinds::command_rule(command);
     kinds::methods()
         .filter(|method| matches!(method.carrier, Carrier::Command(_)))

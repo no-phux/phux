@@ -2,10 +2,10 @@
 
 use super::*;
 
-/// Held commands are SIGNAL-class, and every SIGNAL-class command routes to
-/// the handler, as an approved one does.
+/// Every command a hold can catch (SIGNAL, TERMINATE, document INPUT)
+/// routes to the handler, as an approved one does.
 #[test]
-fn every_signal_class_command_routes_to_the_handler() {
+fn every_holdable_command_routes_to_the_handler() {
     use phux_protocol::wire::frame::TerminalSignal;
     let terminal = WireResourceId::local(3);
     for held in [
@@ -27,6 +27,20 @@ fn every_signal_class_command_routes_to_the_handler() {
         },
         Command::DetachClients { session: None },
         Command::Upgrade,
+        // Held by `?terminate` and `?input@CLASS`.
+        Command::SessionKill {
+            operation: phux_protocol::ids::OperationId::new([1; 16]).unwrap(),
+            session: phux_protocol::ids::SessionKey::new([1; 16]).unwrap(),
+        },
+        Command::ResourceRemove {
+            operation: phux_protocol::ids::OperationId::new([1; 16]).unwrap(),
+            resource: phux_protocol::ids::ResourceKey::new([1; 16]).unwrap(),
+        },
+        Command::SendDocumentInput {
+            terminal_id: WireResourceId::local(3),
+            intent: phux_protocol::wire::frame::DocumentInput::Click { x: 1, y: 1 },
+            control: None,
+        },
     ] {
         for lane in [false, true] {
             assert_eq!(
