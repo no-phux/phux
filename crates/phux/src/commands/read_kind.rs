@@ -104,11 +104,8 @@ pub(crate) async fn snapshot_document(
         Err(err) => return report_read(json, socket, "snapshot", &err),
     };
     match (kind, out) {
-        // A tree's JSON goes to the file as bytes, as a document's would.
-        (Kind::Tree, Some(path)) => print_document(Kind::Document, json, Some(path), &document),
-        (_, Some(path)) => print_document(kind, json, Some(path), &document),
-        (Kind::Tree, None) => print_document(Kind::Tree, json, None, &document),
-        (_, None) => print_unfiled(json, &document),
+        (Kind::Document, None) => print_unfiled(json, &document),
+        _ => print_document(kind, json, out, &document),
     }
 }
 
