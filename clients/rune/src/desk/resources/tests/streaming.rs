@@ -82,10 +82,14 @@ fn live() -> (
 }
 
 fn update(client: &Client, seq: u64, bytes: &[u8]) {
+    update_on(client, StreamId::new(1).unwrap(), seq, bytes);
+}
+
+fn update_on(client: &Client, stream_id: StreamId, seq: u64, bytes: &[u8]) {
     client
         .feed(FrameKind::ResourceOutput {
             terminal_id: id(1),
-            stream_id: StreamId::new(1).unwrap(),
+            stream_id,
             bootstrap_id: BootstrapId::new(1).unwrap(),
             seq,
             bytes: bytes.to_vec().into(),
