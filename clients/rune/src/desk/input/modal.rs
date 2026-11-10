@@ -16,6 +16,7 @@ pub enum Modal {
     PitLane,
     Hive,
     Machines,
+    News,
     Settings,
     Rename,
     Palette,
@@ -49,6 +50,7 @@ impl Modal {
             | Self::Hive => action.works_over_sheets(),
             Self::ContextMenu
             | Self::Machines
+            | Self::News
             | Self::Rename
             | Self::Confirm
             | Self::PhonePicker => false,

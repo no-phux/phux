@@ -13,6 +13,7 @@ mod icons;
 mod inbox;
 mod kitchen;
 mod machines;
+mod news;
 mod onboarding;
 mod overlay;
 mod palette;
@@ -202,6 +203,7 @@ fn floating(root: El, desk: &Desk, p: &Ink, band: f32, cx: &mut Cx<Desk>) -> El 
         .children(playground(desk, p, cx))
         .children(desk.settings_open.then(|| settings::view(desk, p)))
         .children(machines::sheet(desk, p))
+        .children(desk.news.open.then(|| news::view(desk, p)))
         .children(tabs::rename_sheet(desk, p))
         .children(desk.palette_open.then(|| palette::view(desk, p, 96.0)))
         .children(
