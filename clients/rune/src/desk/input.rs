@@ -128,25 +128,6 @@ impl Desk {
         }
     }
 
-    fn navigation_sheet_key(&mut self, modal: Modal, event: &rune::KeyEvent) -> bool {
-        match (modal, &event.key) {
-            (Modal::Galaxy, rune::Key::Escape) => self.close_galaxy(),
-            (Modal::Galaxy, rune::Key::Enter) => self.open_picked(),
-            (Modal::Reef, rune::Key::Escape) => self.reef_escape(),
-            (Modal::Reef, rune::Key::Enter) => self.open_fish(),
-            (Modal::Pitch, rune::Key::Escape) => self.pitch_escape(),
-            (Modal::Pitch, rune::Key::Enter) => self.open_player(),
-            (Modal::Kitchen, rune::Key::Escape) => self.kitchen_escape(),
-            (Modal::Kitchen, rune::Key::Enter) => self.open_chef(),
-            (Modal::PitLane, rune::Key::Escape) => self.pitlane_escape(),
-            (Modal::PitLane, rune::Key::Enter) => self.open_car(),
-            (Modal::Hive, rune::Key::Escape) => self.hive_escape(),
-            (Modal::Hive, rune::Key::Enter) => self.open_bee(),
-            _ => return false,
-        }
-        true
-    }
-
     /// A command while `modal` has the keyboard, from a chord or a menu pick.
     /// Whatever the field or sheet doesn't take is a command or nothing, never
     /// terminal input (Ctrl-C must not reach the job from the find field).

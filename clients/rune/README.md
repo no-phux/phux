@@ -57,31 +57,18 @@ The app finds `phux` (`--phux`, `PHUX_BIN`, `~/.local/bin`,
 reuses the server with `phux server --ensure`, and attaches the most recent
 session (or `--session NAME`). It never creates a session on its own.
 
-- **Getting started.** The first time an installed app connects, the
-  terminal area shows five steps. **Welcome** has **Continue** and **Skip for
-  now**. **Look** has Colour scheme (Auto follows the system with no theme;
-  Light and Dark narrow the themes to that kind), the sidebar shown or
-  hidden, and a strip of the real themes. Each pick applies to the window at
-  once. **Agents & permissions** installs the phux agent skill with
-  `phux skill setup --json`, and checks it first with `phux skill status
-  --json`. On macOS it also shows how many of Full Disk Access, Screen
-  Recording and Accessibility are granted, from `phux server permissions
-  --json`. **Grant…** opens a sheet that checks again every second. Each
-  **Grant…** in the sheet runs `phux server permissions --open SERVICE`,
-  which opens that System Settings pane, and the sheet shows the server's
-  app so you can drag it into the list. **Bring your setup** appears only
-  when Claude Code, Codex or OpenCode is installed. Choosing one runs
-  `phux migrate --json --agent ID`, and the agent's pane opens beside the
-  step. **Copy prompt** copies `phux migrate --print` for any other agent.
-  Key bindings move; themes and fonts don't. **All set** shows three keys
-  from Rune's own keymap. **Start using phux** opens a session, making one
-  named after your home folder if there is none. Enter continues; Escape
-  goes back, or skips on the first step. A phux without one of these
-  commands shows **Update phux to enable this** instead. Quitting part way
-  through resumes at the same step next launch. **Get Started** in the
-  palette, the Help menu or Settings → About & Updates reopens it.
-  Development runs aimed at a server (`--socket`, `--phux`, `PHUX_PROFILE`)
-  never open it on their own.
+- **Getting started.** An installed app's first connection walks through
+  five steps in the terminal area: **Welcome**; **Look** (colour scheme,
+  sidebar and themes, applied live); **Agents & permissions** (`phux skill
+  setup --json`, and on macOS a sheet that opens each privacy pane with
+  `phux server permissions --open SERVICE`, offers the server's app to drag
+  in, and polls until it is granted); **Bring your setup**, shown only with
+  Claude Code, Codex or OpenCode installed (`phux migrate --json --agent ID`
+  opens the agent's pane beside it; key bindings move, themes and fonts
+  don't); and **All set**, with three keys from the keymap. Enter
+  continues; Escape goes back. A quit resumes at the same step. An older
+  phux reads **Update phux to enable this**. **Get Started** in the palette
+  or Settings reopens it; runs aimed at a server never open it on their own.
 - **Machines.** The switcher under the sidebar's title moves the window to
   any machine in the CLI's registry; the choice is remembered, and sessions
   keep running wherever they are. **Add a machine** takes `me@host` or a
