@@ -74,7 +74,7 @@ pub(super) fn reference_reply(frame: &FrameKind, spec: &mut ScriptSpec) -> Vec<F
                 .retain(|(stored_scope, stored_key, _)| stored_scope != scope || stored_key != key);
             Vec::new()
         }
-        // `handle_spawn_terminal`: `RESOURCE_SPAWNED` after anything queued,
+        // The server's `dispatch_spawn`: `RESOURCE_SPAWNED` after anything queued,
         // or a hub-relayed correlated `ERROR`.
         FrameKind::SpawnResource { request_id, .. } => {
             let mut out = std::mem::take(&mut spec.pre_ack);
@@ -88,7 +88,7 @@ pub(super) fn reference_reply(frame: &FrameKind, spec: &mut ScriptSpec) -> Vec<F
             }
             let result = spec.spawn.clone().expect(
                 "a scripted server whose client sends SPAWN_RESOURCE must declare an \
-                 outcome: handle_spawn_terminal always answers. Call \
+                 outcome: the server always answers a spawn. Call \
                  ScriptSpec::spawn_result or ScriptSpec::refuse_spawn.",
             );
             out.push(FrameKind::ResourceSpawned {

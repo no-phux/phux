@@ -5,35 +5,9 @@
 )]
 
 use super::*;
+use crate::runtime::apps::ResourceSpawn;
+use crate::runtime::apps::spawn::SpawnLaunch;
 use phux_terminal_api::actor::TerminalResource as _;
-
-/// The decoded `SPAWN_RESOURCE` payload, minus `request_id`.
-#[derive(Debug)]
-pub(crate) struct SpawnRequest {
-    /// Group under which to spawn (v0.1 servers expose `GroupId(1)`).
-    pub(crate) group: GroupId,
-    /// Command + argv, or `None` for the server's default shell.
-    pub(crate) command: Option<Vec<String>>,
-    /// Working directory, or `None` for the server's default policy.
-    pub(crate) cwd: Option<String>,
-    /// Environment pairs, `None` = inherit the server's environment.
-    pub(crate) env: Option<Vec<(String, String)>>,
-    /// First-class `TERM` override.
-    pub(crate) term: Option<String>,
-    /// Satellite host to route the spawn to, `None` = local.
-    pub(crate) satellite: Option<phux_protocol::ids::SatelliteHost>,
-    /// Existing Terminal on the spawn's host whose exact window owns the new pane.
-    pub(crate) owner_terminal: Option<phux_protocol::ids::ResourceId>,
-    /// Opaque native agent-session provenance to install before publication.
-    pub(crate) agent_session: Option<Vec<u8>>,
-    /// `(cols, rows)` for the pane's grid and PTY, `None` for the default.
-    pub(crate) initial_size: Option<(u16, u16)>,
-    /// Kind, parent, and provenance fields; `None` is a plain Terminal.
-    pub(crate) resource: Option<Box<phux_protocol::wire::frame::SpawnResource>>,
-    /// The kinds the spawner's `HELLO` says it decodes; not part of the
-    /// request's identity.
-    pub(crate) decodes: phux_protocol::caps::ResourceKindSet,
-}
 
 /// Only an owner explicitly addressed to this satellite can cross its link.
 /// Provenance remains an independent local-only restriction.
@@ -59,127 +33,70 @@ fn satellite_spawn_owner(
     }
 }
 
-/// Handle `SPAWN_RESOURCE` (SPEC §10.1): spawn a PTY-backed Terminal into
-/// the spawning client's current session (or the most recently active one
-/// for a detached spawner), auto-subscribe the spawner, and publish its first
-/// generation. Refusals ride the typed `RESOURCE_SPAWNED` reply. Satellite
-/// spawns are relayed over the hub link and never touch local dispatch;
-/// other kinds are dispatched by kind (ADR-0102).
+/// Serve a Terminal `SPAWN_RESOURCE` (SPEC §10.1): spawn a PTY-backed
+/// Terminal into the spawning client's current session (or the most recently
+/// active one for a detached spawner), auto-subscribe the spawner, and
+/// publish its first generation. Refusals ride the typed `RESOURCE_SPAWNED`
+/// reply. Satellite spawns are relayed over the hub link and never touch
+/// local dispatch.
 #[allow(
-    clippy::too_many_arguments,
     clippy::too_many_lines,
     reason = "linear orchestration, one named helper per stage"
 )]
-pub(crate) async fn handle_spawn_terminal(
-    state: &SharedState,
-    client_id: ClientId,
-    request_id: u32,
-    request: SpawnRequest,
-    out_tx: &tokio::sync::mpsc::Sender<Outbound>,
-    bootstrap_profile: Option<BootstrapProfile>,
-    bootstrap_limits: BootstrapLimits,
-    root_token: &CancellationToken,
-    connection_token: &CancellationToken,
-    output_pumps: &mut JoinSet<()>,
-    defer_subscription: bool,
-) {
-    // The spawner consumes the new Terminal's stream, so it needs a profile.
-    let Some(profile) = bootstrap_profile.and_then(bootstrap_stream_profile) else {
-        let _ = out_tx
-            .send(Outbound::Frame(FrameKind::Error {
-                request_id: Some(request_id),
-                code: ErrorCode::CodecUnavailable,
-                message: match bootstrap_profile {
-                    None => super::super::commands::NO_TERMINAL_PROFILE.to_owned(),
-                    Some(_) => {
-                        "SPAWN_RESOURCE selected an unsupported bootstrap profile".to_owned()
-                    }
-                },
-            }))
-            .await;
-        return;
-    };
-    let initial_size = usable_initial_size(request.initial_size);
-    log_spawn_request(client_id, request_id, &request, initial_size);
-    let SpawnRequest {
+pub(crate) async fn handle_spawn_terminal(spawn: ResourceSpawn<'_>) {
+    let ResourceSpawn {
+        state,
+        client_id,
+        request_id,
+        resource,
+        satellite,
+        launch,
+        out_tx,
+        root_token,
+        profile,
+        limits: bootstrap_limits,
+        connection_token,
+        output_pumps,
+        defer_subscription,
+        decodes,
+    } = spawn;
+    let SpawnLaunch {
         group,
         command,
         cwd,
         env,
         term,
-        satellite,
         owner_terminal,
         agent_session,
-        resource,
-        decodes,
-        ..
-    } = request;
-
-    // An unrecognised kind is refused, never spawned as a Terminal.
-    let kind = resource
-        .as_ref()
-        .map_or(phux_protocol::ids::ResourceKind::Terminal, |r| r.kind);
-    let bind_instance = resource.as_ref().is_some_and(|r| r.bind_instance);
+        initial_size,
+    } = launch;
+    let initial_size = usable_initial_size(initial_size);
+    let bind_instance = resource.bind_instance;
     let attribution = crate::runtime::commands::SpawnAttribution {
         actor: Some(client_id),
-        operation_id: resource.as_ref().and_then(|r| r.idempotency_key),
-        retain_secs: state.with(|s| {
-            s.retain_policy()
-                .resolve(resource.as_ref().and_then(|r| r.retain_secs))
-        }),
+        operation_id: resource.idempotency_key,
+        retain_secs: state.with(|s| s.retain_policy().resolve(resource.retain_secs)),
     };
-    match crate::id_bridge::core_kind(kind) {
-        Some(crate::resource::ResourceKind::Terminal) => {
-            // The spawner consumes the new Terminal's stream.
-            if !decodes.contains(phux_protocol::ids::ResourceKind::Terminal) {
-                let _ = out_tx
-                    .send(Outbound::Frame(FrameKind::Error {
-                        request_id: Some(request_id),
-                        code: ErrorCode::CodecUnavailable,
-                        message: "this connection's HELLO does not list the terminal resource kind, so it cannot consume its stream".to_owned(),
-                    }))
-                    .await;
-                return;
-            }
-        }
-        Some(other) => {
-            let resource = resource.unwrap_or_default();
-            crate::runtime::apps::app_for(other)
-                .spawn(crate::runtime::apps::ResourceSpawn {
-                    state,
-                    client_id,
-                    request_id,
-                    resource: &resource,
-                    satellite: satellite.as_ref(),
-                    out_tx,
-                    root_token,
-                    limits: bootstrap_limits,
-                    connection_token,
-                    decodes,
-                })
-                .await;
-            return;
-        }
-        None => {
-            warn!(
-                ?client_id,
-                request_id,
-                ?kind,
-                "SPAWN_RESOURCE: unknown kind"
-            );
-            refuse_spawn(out_tx, request_id, SpawnError::UnsupportedKind).await;
-            return;
-        }
+    // The spawner consumes the new Terminal's stream.
+    if !decodes.contains(phux_protocol::ids::ResourceKind::Terminal) {
+        let _ = out_tx
+            .send(Outbound::Frame(FrameKind::Error {
+                request_id: Some(request_id),
+                code: ErrorCode::CodecUnavailable,
+                message: "this connection's HELLO does not list the terminal resource kind, so it cannot consume its stream".to_owned(),
+            }))
+            .await;
+        return;
     }
     // A Terminal takes no parent (ADR-0104 §5).
-    if resource.as_ref().is_some_and(|r| r.parent.is_some()) {
+    if resource.parent.is_some() {
         refuse_spawn(out_tx, request_id, SpawnError::ParentKindMismatch).await;
         return;
     }
 
     // The satellite validates the rest and its errors relay back verbatim.
     if let Some(host) = satellite {
-        let spawn = satellite_spawn_owner(&host, owner_terminal, agent_session.is_some()).map(
+        let spawn = satellite_spawn_owner(host, owner_terminal, agent_session.is_some()).map(
             |owner_terminal| SatelliteSpawn {
                 group,
                 command,
@@ -191,11 +108,11 @@ pub(crate) async fn handle_spawn_terminal(
                 resource: forwarded_resource(
                     bind_instance,
                     attribution.operation_id,
-                    resource.as_ref().and_then(|r| r.retain_secs),
+                    resource.retain_secs,
                 ),
             },
         );
-        dispatch_satellite_spawn(state, client_id, out_tx, request_id, &host, spawn).await;
+        dispatch_satellite_spawn(state, client_id, out_tx, request_id, host, spawn).await;
         return;
     }
 
