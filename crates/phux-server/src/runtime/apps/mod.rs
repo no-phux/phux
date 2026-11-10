@@ -20,9 +20,9 @@ use std::time::Duration;
 use futures_util::future::LocalBoxFuture;
 use phux_protocol::caps::{BootstrapLimits, BootstrapProfile, ClientCapabilities};
 use phux_protocol::ids::{
-    OperationId, ResourceId as WireResourceId, ResourceKey, Revision, SatelliteHost, StreamId,
+    OperationId, ResourceId as WireResourceId, ResourceKey, Revision, StreamId,
 };
-use phux_protocol::wire::frame::{Command, CommandResult, FrameKind, SpawnResource};
+use phux_protocol::wire::frame::{Command, CommandResult, FrameKind};
 use tokio_util::sync::CancellationToken;
 
 use super::commands::{AttachResourceFailure, CommandContext};
@@ -37,7 +37,10 @@ use crate::upgrade::blob::{AgentSessionBlob, AgentStreamCut};
 
 pub(crate) mod agent_session;
 pub(crate) mod document;
+pub(crate) mod spawn;
 pub(crate) mod terminal;
+
+pub(crate) use spawn::ResourceSpawn;
 
 use terminal::input_lane::{InputCredits, InputLaneHandle};
 
@@ -69,29 +72,6 @@ pub(crate) struct StreamBootstrap<'a> {
     pub(crate) connection_token: &'a CancellationToken,
     /// A replay cursor, for kinds that resume from one.
     pub(crate) after_seq: Option<u64>,
-}
-
-/// One `SPAWN_RESOURCE` addressed to an app's kind.
-#[derive(Debug, Clone, Copy)]
-pub(crate) struct ResourceSpawn<'a> {
-    /// Server state.
-    pub(crate) state: &'a SharedState,
-    /// The spawning connection.
-    pub(crate) client_id: ClientId,
-    /// The request to answer.
-    pub(crate) request_id: u32,
-    /// Kind, parent, and provenance.
-    pub(crate) resource: &'a SpawnResource,
-    /// Satellite to relay to, `None` for local.
-    pub(crate) satellite: Option<&'a SatelliteHost>,
-    /// Where the reply and the stream's frames go.
-    pub(crate) out_tx: &'a tokio::sync::mpsc::Sender<Outbound>,
-    /// The server's cancellation.
-    pub(crate) root_token: &'a CancellationToken,
-    /// The negotiated bootstrap limits.
-    pub(crate) limits: BootstrapLimits,
-    /// The connection's cancellation.
-    pub(crate) connection_token: &'a CancellationToken,
 }
 
 /// One already-committed launch effect. The app must execute this exact
