@@ -86,6 +86,8 @@ pub enum Shortcut {
     KeyboardShortcuts,
     /// The handful of keys worth learning first, with the full list one row away.
     EssentialShortcuts,
+    /// First-run onboarding, from the top.
+    GetStarted,
     SelectAll,
     PromptUp,
     PromptDown,

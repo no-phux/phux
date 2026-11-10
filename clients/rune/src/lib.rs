@@ -19,6 +19,7 @@ mod launch;
 mod links;
 mod machines;
 pub mod mobile;
+mod onboarding;
 mod palette;
 mod paths;
 mod perf;

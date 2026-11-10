@@ -124,7 +124,7 @@ fn divider(path: SplitPath, horizontal: bool, ratio: f32, ink: &Ink) -> El {
 
 /// How a card is lit: the keyboard's, among several, glows in the accent.
 #[derive(Clone, Copy, PartialEq, Eq)]
-enum Lit {
+pub(super) enum Lit {
     Resting,
     Focused,
 }
@@ -132,7 +132,7 @@ enum Lit {
 /// A floating glass card around `content`: rounded, lifted off the window by
 /// its shadow, and edged with a top-lit hairline rim. `content` is clipped to
 /// the corners; the rim draws over it and never takes the pointer.
-fn card(content: El, ground: Color, lit: Lit, ink: &Ink) -> El {
+pub(super) fn card(content: El, ground: Color, lit: Lit, ink: &Ink) -> El {
     let (top, bottom) = match lit {
         Lit::Resting => (ink.text.alpha(0.16), ink.text.alpha(0.05)),
         Lit::Focused => (ink.accent.alpha(0.8), ink.accent.alpha(0.35)),

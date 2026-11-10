@@ -13,6 +13,7 @@ mod icons;
 mod inbox;
 mod kitchen;
 mod machines;
+mod onboarding;
 mod overlay;
 mod palette;
 mod panes;
@@ -180,7 +181,7 @@ pub fn view(desk: &Desk, cx: &mut Cx<Desk>) -> El {
                                 .w_full()
                                 .min_w(0.0)
                                 .min_h(0.0)
-                                .child(panes::view(desk, &p, cx))
+                                .child(onboarding::stage(desk, &p, cx))
                                 .children(status::confirm_bar(desk, &p))
                                 .children(overlay::toast(desk, &p)),
                         ),
