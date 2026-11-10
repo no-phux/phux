@@ -351,6 +351,8 @@ fn owning_kind(command: &Command) -> Option<ResourceKind> {
 }
 
 #[cfg(test)]
+mod seam_ratchet_tests;
+#[cfg(test)]
 mod seam_tests;
 #[cfg(test)]
 mod tests;

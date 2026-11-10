@@ -44,7 +44,7 @@ fn is_test_source(path: &str) -> bool {
         || name.ends_with("_tests.rs")
 }
 
-fn count(source: &str, tokens: &[&str]) -> usize {
+pub(super) fn count(source: &str, tokens: &[&str]) -> usize {
     source
         .lines()
         .filter(|line| !line.trim_start().starts_with("//"))
@@ -115,7 +115,7 @@ fn agent_session_crossings(path: &str, source: &str) -> usize {
     count(&source, &AGENT_SESSION_TOKENS) + braced_agent_session_imports(&source)
 }
 
-fn walk(
+pub(super) fn walk(
     dir: &Path,
     root: &Path,
     crossings_in: fn(&str, &str) -> usize,
