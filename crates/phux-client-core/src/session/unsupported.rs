@@ -62,6 +62,11 @@ impl<E: EngineAdapter> SessionKernel<E> {
 
     /// Whether `input` belongs to a refused stream and changes nothing.
     pub(super) fn is_refused_stream_frame(&self, input: &KernelInput<'_>) -> bool {
+        // Every stream frame passes here: skip the hash while nothing is
+        // refused, which is the steady state.
+        if self.unsupported.is_empty() {
+            return false;
+        }
         let terminal_id = match input {
             KernelInput::BootstrapChunk { terminal_id, .. }
             | KernelInput::BootstrapReady { terminal_id, .. }
@@ -73,6 +78,13 @@ impl<E: EngineAdapter> SessionKernel<E> {
             _ => return false,
         };
         self.unsupported.contains(terminal_id)
+    }
+
+    /// Forget `terminal_id`'s refusal: a known bootstrap, a close, or a release.
+    pub(super) fn lift_refusal(&mut self, terminal_id: &ResourceId) {
+        if !self.unsupported.is_empty() {
+            self.unsupported.remove(terminal_id);
+        }
     }
 
     /// Whether the kernel refused `terminal_id`'s stream as an unknown codec.
