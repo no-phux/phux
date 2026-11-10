@@ -267,9 +267,12 @@ impl Desk {
         };
         // ponytail: always this computer's server, even with the window on
         // another machine; a migration started then runs here, out of view.
+        // `phux skill` never dials a server and refuses `--socket`.
         let mut argv: Vec<String> = match &self.launch.socket {
-            Ok(socket) => vec!["--socket".to_owned(), socket.display().to_string()],
-            Err(_) => Vec::new(),
+            Ok(socket) if args.first() != Some(&"skill") => {
+                vec!["--socket".to_owned(), socket.display().to_string()]
+            }
+            _ => Vec::new(),
         };
         argv.extend(args.iter().map(|a| (*a).to_owned()));
         std::thread::spawn(move || {

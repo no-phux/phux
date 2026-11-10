@@ -99,9 +99,8 @@ pub(super) fn migrate(desk: &Desk, p: &Ink) -> El {
                         )),
                 )
                 .child(note(
-                    "The agent brings over key bindings from tmux, zellij, Ghostty, kitty, \
-                     WezTerm, iTerm2 and Alacritty, and asks before replacing one. Themes \
-                     and fonts don't move.",
+                    "The agent brings over key bindings from tmux, zellij, Ghostty and herdr, \
+                     and asks before replacing one. Themes and fonts don't move.",
                     p,
                 ))
                 .children(failed)

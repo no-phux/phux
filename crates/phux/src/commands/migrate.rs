@@ -169,9 +169,13 @@ const fn agent_id(agent: MigrateAgent) -> &'static str {
 
 /// Each supported agent found on this machine, with its executable.
 fn installed_agents() -> Vec<(MigrateAgent, PathBuf)> {
+    let home = std::env::var_os("HOME").map(PathBuf::from);
+    let find = |name: &str| {
+        phux_plugin::executable_path(name).or_else(|| user_executable(name, home.as_deref()))
+    };
     [
-        (MigrateAgent::Claude, phux_plugin::executable_path("claude")),
-        (MigrateAgent::Codex, phux_plugin::executable_path("codex")),
+        (MigrateAgent::Claude, find("claude")),
+        (MigrateAgent::Codex, find("codex")),
         (
             MigrateAgent::Opencode,
             phux_plugin::opencode_executable_path(),
@@ -180,6 +184,17 @@ fn installed_agents() -> Vec<(MigrateAgent, PathBuf)> {
     .into_iter()
     .filter_map(|(agent, path)| Some((agent, path?)))
     .collect()
+}
+
+/// An agent installed where its installer puts it but off `PATH`: the case
+/// for Rune and other GUI launches, whose `PATH` is launchd's minimal one.
+fn user_executable(name: &str, home: Option<&Path>) -> Option<PathBuf> {
+    let mut dirs: Vec<PathBuf> = home
+        .map(|home| vec![home.join(".local/bin"), home.join(".claude/local")])
+        .unwrap_or_default();
+    dirs.extend(["/opt/homebrew/bin", "/usr/local/bin"].map(PathBuf::from));
+    let path = std::env::join_paths(dirs).ok()?;
+    phux_plugin::executable_on_path(name, &path)
 }
 
 /// How each agent takes its first message on the command line.
