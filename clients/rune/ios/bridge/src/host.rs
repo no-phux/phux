@@ -29,7 +29,6 @@ struct Host {
     input: Input,
     frames: u64,
     poisoned: bool,
-    dark: bool,
 }
 
 #[unsafe(no_mangle)]
@@ -153,7 +152,6 @@ pub unsafe extern "C" fn phux_rune_ios_create(
             input: Input::default(),
             frames: 0,
             poisoned: false,
-            dark,
         }))
         .cast())
     })
@@ -211,7 +209,7 @@ pub unsafe extern "C" fn phux_rune_ios_frame(pointer: *mut c_void) -> *mut c_cha
         let reconciled = host.input.reconcile(host.layer.runtime_mut());
         let input = host.input.snapshot(host.layer.runtime());
         let requests = mobile::take_requests(host.layer.runtime_mut());
-        let ground = mobile::edge_srgb(host.layer.runtime(), host.dark);
+        let ground = mobile::edge_srgb(host.layer.runtime());
         string(
             json!({"drew":frame.drew,"animating":frame.animating || reconciled,
             "wake_after_secs":frame.wake_after_secs,"input":input,"requests":requests,
@@ -342,9 +340,7 @@ pub unsafe extern "C" fn phux_rune_ios_traits(
     reduced_motion: bool,
 ) {
     attempt(|| {
-        let host = unsafe { host(pointer)? };
-        host.dark = dark;
-        let rt = host.layer.runtime_mut();
+        let rt = unsafe { host(pointer)? }.layer.runtime_mut();
         rt.set_system_dark(dark);
         rt.set_system_reduced_motion(reduced_motion);
         Ok(())

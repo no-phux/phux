@@ -115,7 +115,13 @@ pub fn toast(desk: &Desk, ink: &Ink) -> Option<El> {
     } else {
         (None, Some(12.0))
     };
-    Some(row().pin(Some(12.0), top, Some(12.0), bottom).child(toast))
+    let line = row().pin(Some(12.0), top, Some(12.0), bottom);
+    // Centred on a phone, where it is a passing word, not a place to act.
+    Some(if desk.phone.is_some() {
+        line.center().child(toast)
+    } else {
+        line.child(toast)
+    })
 }
 
 /// The find bar, top right of the pane find belongs to.

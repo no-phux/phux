@@ -58,8 +58,8 @@ pub fn zoom(rt: &mut rune::Runtime<State>, larger: bool) {
 
 /// The surface's edge colour as sRGB, so UIKit can paint the status-bar and
 /// home-indicator strips it keeps outside the surface as one ground.
-pub fn edge_srgb(rt: &rune::Runtime<State>, dark: bool) -> [f32; 3] {
-    let color = crate::ui::phone_edge_color(&rt.state, dark);
+pub fn edge_srgb(rt: &rune::Runtime<State>) -> [f32; 3] {
+    let color = crate::ui::phone_edge_color(&rt.state);
     [color.r, color.g, color.b].map(|linear| {
         let linear = linear.clamp(0.0, 1.0);
         if linear <= 0.003_130_8 {
@@ -89,15 +89,16 @@ mod tests {
     fn edge_colour_is_the_settings_page_or_the_terminal_ground_as_srgb() {
         let mut rt = runtime();
         // No terminal yet: the theme's own ground, encoded for UIKit.
-        let ground = edge_srgb(&rt, true);
-        let linear = crate::ui::phone_edge_color(&rt.state, true);
+        let ground = edge_srgb(&rt);
+        let linear = crate::ui::phone_edge_color(&rt.state);
         assert!(ground.iter().all(|c| (0.0..=1.0).contains(c)), "{ground:?}");
+        let lifted = ground.iter().zip([linear.r, linear.g, linear.b]);
         assert!(
-            ground[2] > linear.b,
-            "sRGB encoding lifts a dark linear value"
+            lifted.into_iter().all(|(srgb, linear)| *srgb >= linear),
+            "sRGB encoding never darkens a linear value"
         );
         rt.update(|state, _| state.settings_open = true);
-        assert_ne!(edge_srgb(&rt, true), ground, "Settings paints its own page");
+        assert_ne!(edge_srgb(&rt), ground, "Settings paints its own page");
     }
 
     #[test]

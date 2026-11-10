@@ -243,6 +243,12 @@ final class RuneInput: UITextView, UITextViewDelegate {
             if name == "Up" || name == "Down" { return context?.multiline != true }
             return name == "Escape" || name == "Tab"
         }
+        // A bare Return or Backspace stays in UIKit's text pipeline with the
+        // characters around it. Sent from here, one in a burst of fast key
+        // presses overtakes text still on its way: "seq 1 300" then Return
+        // ran "seq" alone.
+        let chorded = !flags.intersection([.shift, .control, .alternate, .command]).isEmpty
+        if name == "Enter" || name == "Backspace" { return chorded }
         // Option-only characters/dead keys stay UIKit-owned unless the
         // person explicitly chose Option as Meta in terminal Settings.
         if name != nil { return true }

@@ -29,19 +29,14 @@ pub(super) const TOP_BAR: f32 = ROUND + 4.0 + 8.0;
 const STATUS_INSET: f32 = 12.0;
 
 pub fn view(desk: &Desk, cx: &mut Cx<Desk>) -> El {
-    let p = super::ink(cx.system_dark(), cx.accent(), desk.settings.theme);
+    let p = ink(desk, cx.accent());
     let fallback = Phone::default();
     let phone = desk.phone.as_ref().unwrap_or(&fallback);
     let keyboard_visible = desk.phone_keyboard_visible();
-    let ground = terminal_ground(desk, &p);
-    // Glass floats over the terminal, which may stay dark while UIKit/the
-    // desktop prefers light chrome. Its ink must contrast with that ground,
-    // not disappear into it. Fields/sheets keep their own opaque theme ink.
-    let controls = if desk.settings_open {
-        super::ink(cx.system_dark(), cx.accent(), desk.settings.theme)
-    } else {
-        ground_ink(ground, cx.accent(), desk.settings.theme)
-    };
+    // Glass floats beside the terminal, which may not have taken a newly
+    // chosen theme yet: its ink contrasts with the ground actually drawn.
+    let drawn = ground_ink(terminal_ground(desk), cx.accent(), desk.settings.theme);
+    let controls = if desk.settings_open { &p } else { &drawn };
     cx.foreground(p.text);
     let stage = phone_stage(desk, &p, cx);
     let screen = col()
@@ -49,14 +44,14 @@ pub fn view(desk: &Desk, cx: &mut Cx<Desk>) -> El {
         .w_full()
         .h_full()
         .pt(top_inset(desk, cx))
-        .children((!desk.settings_open).then(|| top_bar(desk, &controls)))
+        .children((!desk.settings_open).then(|| top_bar(desk, controls)))
         .child(stage)
         .children(
             (!desk.settings_open)
-                .then(|| tab_pills(desk, &controls))
+                .then(|| tab_pills(desk, controls))
                 .flatten(),
         );
-    let bar = (!desk.settings_open || keyboard_visible).then(|| accessory(desk, phone, &controls));
+    let bar = (!desk.settings_open || keyboard_visible).then(|| accessory(desk, phone, controls));
     let fill = edge_fill(desk, &p);
     // Both keyboards sit after every sheet, outside its measured viewport.
     // Rune treats post-modal controls as part of the modal: keys remain live
@@ -76,32 +71,52 @@ pub fn view(desk: &Desk, cx: &mut Cx<Desk>) -> El {
         .children(
             desk.native
                 .is_none()
-                .then(|| keyboard(phone, keyboard_visible, &controls)),
+                .then(|| keyboard(phone, keyboard_visible, controls)),
         )
 }
 
-/// The terminal's own ground runs under everything, as on a phone.
-fn terminal_ground(desk: &Desk, p: &Ink) -> Color {
-    desk.client
+/// The terminal's own ground runs under everything, as on a phone. Before
+/// a terminal is on screen it is the theme's, or the black a terminal
+/// starts on: never the system's light page behind a dark launch.
+fn terminal_ground(desk: &Desk) -> Color {
+    let frame = desk
+        .client
         .as_ref()
         .zip(desk.shown.as_ref())
-        .and_then(|(client, shown)| client.acquire_view(shown.view?))
-        .map_or(p.bg, |frame| crate::grid::background(&frame))
+        .and_then(|(client, shown)| client.acquire_view(shown.view?));
+    frame.map_or_else(
+        || {
+            let theme = desk.settings.theme;
+            theme.map_or(Color::BLACK, |theme| crate::theme::color(theme.background))
+        },
+        |frame| crate::grid::background(&frame),
+    )
+}
+
+/// A phone shows one surface at a time, so its sheets and pages take the
+/// chosen theme's ink, or with none the terminal ground's, never the
+/// system appearance: a light-mode phone would otherwise open white sheets
+/// over a dark terminal.
+fn ink(desk: &Desk, accent: Color) -> Ink {
+    match desk.settings.theme {
+        Some(theme) => super::ink(theme.dark, accent, Some(theme)),
+        None => ground_ink(terminal_ground(desk), accent, None),
+    }
 }
 
 fn edge_fill(desk: &Desk, p: &Ink) -> Color {
     if desk.settings_open {
         p.sidebar
     } else {
-        terminal_ground(desk, p)
+        terminal_ground(desk)
     }
 }
 
 /// The phone's edge colour, for a native host to continue under the status
 /// bar and home indicator it keeps outside the surface.
-pub(crate) fn edge_color(desk: &Desk, dark: bool) -> Color {
-    let accent = rune::SystemAccent::DEFAULT.accent(dark);
-    edge_fill(desk, &super::ink(dark, accent, desk.settings.theme))
+pub(crate) fn edge_color(desk: &Desk) -> Color {
+    let accent = rune::SystemAccent::DEFAULT.accent(true);
+    edge_fill(desk, &ink(desk, accent))
 }
 
 fn overlays(root: El, desk: &Desk, p: &Ink) -> El {
@@ -502,5 +517,22 @@ mod tests {
             );
             assert!(crate::theme::contrast(ink.text, ground) >= 4.5);
         }
+    }
+
+    #[test]
+    fn a_phone_takes_its_sheets_from_the_theme_or_the_ground_never_the_system() {
+        let mut desk = Desk::settings_test_fixture().with_phone(true);
+        desk.settings.theme = None;
+        desk.settings_open = false;
+        // No terminal yet: the black one starts on, so a light-mode phone
+        // does not open on a white page between a dark launch and terminal.
+        assert_eq!(terminal_ground(&desk), Color::BLACK);
+        assert_eq!(edge_color(&desk), Color::BLACK);
+        let sheets = ink(&desk, Color::WHITE);
+        assert_eq!(crate::theme::on_fill(sheets.raised), Color::WHITE);
+        let light = crate::theme::all().find(|theme| !theme.dark);
+        desk.settings.theme = light;
+        let sheets = ink(&desk, Color::WHITE);
+        assert_eq!(crate::theme::on_fill(sheets.raised), Color::BLACK);
     }
 }
