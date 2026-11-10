@@ -173,6 +173,12 @@ pub struct SpawnContract {
     pub native_id: SpawnFacet,
     /// Further `spawn_terminal` field ids it refuses, in check order.
     pub forbidden: &'static [u32],
+    /// Whether a scoped grant may open it beside a parent it may bind, on
+    /// the parent rows (`CREATE` on the parent's Group, `BIND` on the
+    /// parent). A new kind leaves this `false` and starts denied to every
+    /// grant but the owner socket's (`docs/resource-kinds.md#authority`). A
+    /// root ignores it: a Terminal has rows of its own.
+    pub scoped_child: bool,
     /// The kind's own check, after the presence rules.
     pub validate: Option<SpawnCheck>,
 }
@@ -233,7 +239,13 @@ pub const fn needs_terminal_profile(kind: ResourceKind) -> bool {
 /// is not a Terminal, so it would.
 #[must_use]
 pub const fn parent_rule(kind: ResourceKind) -> ParentRule {
-    match kind_spec(kind) {
+    parent_rule_in(&KINDS, kind)
+}
+
+/// [`parent_rule`] under `catalog`.
+#[must_use]
+pub const fn parent_rule_in(catalog: &'static [KindSpec], kind: ResourceKind) -> ParentRule {
+    match kind_spec_in(catalog, kind) {
         Some(spec) => spec.spawn.parent,
         None => ParentRule::Required,
     }
@@ -312,12 +324,13 @@ const fn optional_native_id(meaning: &'static str) -> SpawnFacet {
 }
 
 /// The spawn of a projection under a parent, produced by what `provider`
-/// names.
+/// names, that a scoped grant opens only if `scoped_child`.
 const fn projection_spawn(
     provider: SpawnFacet,
     native_id: &'static str,
     forbidden: &'static [u32],
     validate: Option<SpawnCheck>,
+    scoped_child: bool,
 ) -> SpawnContract {
     SpawnContract {
         parent: ParentRule::Required,
@@ -325,6 +338,7 @@ const fn projection_spawn(
         native_id: optional_native_id(native_id),
         forbidden,
         validate,
+        scoped_child,
     }
 }
 

@@ -74,11 +74,10 @@ static F_SPAWN_CHILD_SATELLITE: Rule = Rule::verbs(
 static F_SPAWN_KIND_MISMATCH: Rule = Rule::deny(
     "`SPAWN_RESOURCE { kind: not TERMINAL, parent: None }` or `{ kind: TERMINAL, parent: Some }`",
 );
-// Declaring a window or display is claiming control of the machine, which
-// viewers' `input@window`/`input@display` grants then reach: no scoped
-// grant opens one (`docs/authority.md`).
-static F_SPAWN_MACHINE_CONTROL: Rule =
-    Rule::deny("`SPAWN_RESOURCE { control: WINDOW | DISPLAY }`");
+// Declaring a control class (page, window, display) claims what viewers'
+// `input@CLASS` grants then reach: only the owner socket opens one
+// (`docs/authority.md`).
+static F_SPAWN_MACHINE_CONTROL: Rule = Rule::deny("`SPAWN_RESOURCE { control: Some }`");
 static F_RESIZE_TERMINAL: Rule =
     Rule::verbs("`RESIZE_TERMINAL`", &[Verb::Bind], Subject::NamedTerminal);
 static F_MOVE_RESOURCE: Rule = Rule::verbs(

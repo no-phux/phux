@@ -163,7 +163,7 @@ fn spawn_samples() -> Vec<(FrameKind, &'static Rule)> {
         samples.push((spawn(None, None, Some(resource)), &F_SPAWN_KIND_MISMATCH));
     }
     for (control, expected) in [
-        (ControlClass::Page, &F_SPAWN_CHILD_LOCAL),
+        (ControlClass::Page, &F_SPAWN_MACHINE_CONTROL),
         (ControlClass::Window, &F_SPAWN_MACHINE_CONTROL),
         (ControlClass::Display, &F_SPAWN_MACHINE_CONTROL),
     ] {

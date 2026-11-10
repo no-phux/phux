@@ -80,6 +80,14 @@ pub(super) fn decode_agent_facet_str(
 /// A kind this build does not serve passes unvalidated so the server can
 /// answer `UnsupportedKind` rather than fail the connection.
 pub(super) fn validate_spawn_for_kind(frame: &FrameKind) -> Result<(), DecodeError> {
+    validate_spawn_for_kind_in(&crate::kinds::KINDS, frame)
+}
+
+/// [`validate_spawn_for_kind`] under `catalog`.
+pub(super) fn validate_spawn_for_kind_in(
+    catalog: &'static [crate::kinds::KindSpec],
+    frame: &FrameKind,
+) -> Result<(), DecodeError> {
     let FrameKind::SpawnResource {
         command,
         cwd,
@@ -96,7 +104,7 @@ pub(super) fn validate_spawn_for_kind(frame: &FrameKind) -> Result<(), DecodeErr
     let Some(resource) = resource.as_deref() else {
         return Ok(());
     };
-    let Some(spec) = crate::kinds::kind_spec(resource.kind) else {
+    let Some(spec) = crate::kinds::kind_spec_in(catalog, resource.kind) else {
         return Ok(());
     };
     let contract = &spec.spawn;

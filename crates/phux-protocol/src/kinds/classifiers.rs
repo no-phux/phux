@@ -179,40 +179,64 @@ fn spawn_rule(
     owned: bool,
     resource: Option<&SpawnResource>,
 ) -> &'static Rule {
+    spawn_rule_in(&KINDS, satellite, owned, resource)
+}
+
+/// [`spawn_rule`] under `catalog`.
+fn spawn_rule_in(
+    catalog: &'static [KindSpec],
+    satellite: Option<&SatelliteHost>,
+    owned: bool,
+    resource: Option<&SpawnResource>,
+) -> &'static Rule {
     let kind = resource.map_or(ResourceKind::Terminal, |spawn| spawn.kind);
     let parent = resource.and_then(|spawn| spawn.parent.as_ref());
-    if kind_contradicts_binding(kind, parent) {
+    if kind_contradicts_binding(catalog, kind, parent) {
         return &F_SPAWN_KIND_MISMATCH;
     }
-    if resource.is_some_and(|spawn| {
-        matches!(
-            spawn.control,
-            Some(ControlClass::Window | ControlClass::Display)
-        )
-    }) {
+    if resource.is_some_and(|spawn| spawn.control.is_some()) {
         return &F_SPAWN_MACHINE_CONTROL;
     }
     match parent {
         None => terminal_spawn_rule(satellite.is_some(), owned),
-        Some(parent) if is_unowned_served_child(kind, owned) => child_spawn_rule(satellite, parent),
-        // An unknown child kind, or a child that also names an owner
-        // Terminal: no row covers it.
+        Some(parent) if is_unowned_scoped_child(catalog, kind, owned) => {
+            child_spawn_rule(satellite, parent)
+        }
+        // A kind that has not opted into the parent rows (an unknown one
+        // included), or a child that also names an owner Terminal: no row
+        // covers it, so it starts denied.
         Some(_) => &F_UNCLASSIFIED,
     }
 }
 
 /// A kind's catalog spawn contract says whether it has a parent (L1 §1.2);
 /// a kind this build does not serve is not a Terminal, so it would.
-const fn kind_contradicts_binding(kind: ResourceKind, parent: Option<&ResourceId>) -> bool {
-    matches!(parent_rule(kind), ParentRule::Required) != parent.is_some()
+const fn kind_contradicts_binding(
+    catalog: &'static [KindSpec],
+    kind: ResourceKind,
+    parent: Option<&ResourceId>,
+) -> bool {
+    matches!(parent_rule_in(catalog, kind), ParentRule::Required) != parent.is_some()
 }
 
-/// A served kind whose spawn names a parent, with no owner Terminal.
-const fn is_unowned_served_child(kind: ResourceKind, owned: bool) -> bool {
+/// A served child kind whose contract opts into the parent rows
+/// ([`SpawnContract::scoped_child`]), with no owner Terminal.
+const fn is_unowned_scoped_child(
+    catalog: &'static [KindSpec],
+    kind: ResourceKind,
+    owned: bool,
+) -> bool {
     !owned
         && matches!(
-            kind_spec(kind),
-            Some(KindSpec { spawn: SpawnContract { parent: ParentRule::Required, .. }, .. })
+            kind_spec_in(catalog, kind),
+            Some(KindSpec {
+                spawn: SpawnContract {
+                    parent: ParentRule::Required,
+                    scoped_child: true,
+                    ..
+                },
+                ..
+            })
         )
 }
 

@@ -55,6 +55,16 @@ mod spawn_rules;
 use caps::{decode_client_capabilities, decode_server_capabilities, negotiated_bootstrap_limits};
 pub use correlation::{frame_request_id, newer_server_fallback};
 use resource_frames::decode_flag;
+
+/// `SPAWN_RESOURCE`'s per-kind field rules under `catalog`, for the
+/// catalog's own fixture tests.
+#[cfg(test)]
+pub(crate) fn validate_spawn_for_kind_in(
+    catalog: &'static [crate::kinds::KindSpec],
+    frame: &FrameKind,
+) -> Result<(), DecodeError> {
+    spawn_rules::validate_spawn_for_kind_in(catalog, frame)
+}
 use spawn_rules::{absorb_spawn_resource_field, bind_spawn_result, validate_spawn_for_kind};
 
 /// A required field; absent is [`DecodeError::UnexpectedEof`].

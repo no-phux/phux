@@ -54,25 +54,43 @@ fn controlled_surface(parent: &WireResourceId, control: ControlClass) -> SpawnRe
     }
 }
 
-/// A page is opened on the parent rows; a window or display is control of
-/// the machine, which no scoped grant opens, whatever it holds.
+/// Declaring any control class (a page included) claims what viewers'
+/// `input@CLASS` grants reach: no scoped grant opens one, whatever it holds,
+/// while the same surface with no class opens on the parent rows.
 fn child_spawn_rows(world: &World) -> Vec<Row> {
     let parent = world.alpha.clone();
     let create = format!("create@group:{}", world.alpha_group);
     let bind = format!("bind@terminal:{}", local_id(&parent));
-    let page = spawn(
-        None,
-        None,
-        Some(controlled_surface(&parent, ControlClass::Page)),
-    );
-    let mut rows = vec![row(
-        page,
-        &[&[&create, &bind]],
-        &[&[&create], &[&bind]],
-    )];
-    for control in [ControlClass::Window, ControlClass::Display] {
+    ControlClass::ALL
+        .into_iter()
+        .map(|control| {
+            let frame = spawn(None, None, Some(controlled_surface(&parent, control)));
+            row(frame, &[], &[&["*@global"], &[&create, &bind]])
+        })
+        .collect()
+}
+
+/// A scoped grant with CREATE+BIND on the parent opens a class-less surface
+/// but no page, window or display.
+#[test]
+fn a_scoped_grant_opens_no_controlled_document() {
+    let world = world();
+    let parent = world.alpha.clone();
+    let grant = [
+        format!("create@group:{}", world.alpha_group),
+        format!("bind@terminal:{}", local_id(&parent)),
+    ];
+    let plain = SpawnResource {
+        control: None,
+        ..controlled_surface(&parent, ControlClass::Page)
+    };
+    assert!(admits_set(&world, &grant, &spawn(None, None, Some(plain))));
+    for control in ControlClass::ALL {
         let frame = spawn(None, None, Some(controlled_surface(&parent, control)));
-        rows.push(row(frame, &[], &[&["*@global"], &[&create, &bind]]));
+        assert!(
+            !admits_set(&world, &grant, &frame),
+            "a scoped grant opened a {} document",
+            control.name()
+        );
     }
-    rows
 }

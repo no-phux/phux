@@ -272,6 +272,7 @@ pub static KINDS: [KindSpec; 5] = [
             },
             forbidden: &[spawn_field::CONTROL],
             validate: None,
+            scoped_child: false,
         },
         methods: &[
             method!("INPUT_KEY", Carrier::Frame(TYPE_INPUT_KEY), [F_INPUT]),
@@ -454,6 +455,7 @@ pub static KINDS: [KindSpec; 5] = [
             "the provider's own session id",
             &AGENT_SESSION_REFUSED_FIELDS,
             None,
+            true,
         ),
         methods: &[
             method!(
@@ -500,6 +502,7 @@ pub static KINDS: [KindSpec; 5] = [
             "the document's name",
             &PROJECTION_LAUNCH_FIELDS,
             None,
+            true,
         ),
         // Fed through the substrate's `PUBLISH_RESOURCE_STATE`.
         methods: &[],
@@ -525,6 +528,7 @@ pub static KINDS: [KindSpec; 5] = [
             "the document's name",
             &PROJECTION_LAUNCH_FIELDS,
             None,
+            true,
         ),
         // Fed through the substrate's `PUBLISH_RESOURCE_STATE`.
         methods: &[],
@@ -554,6 +558,7 @@ pub static KINDS: [KindSpec; 5] = [
             "the document's name",
             &PROJECTION_LAUNCH_FIELDS,
             Some(validate_document_spawn),
+            true,
         ),
         // Fed through the substrate's `PUBLISH_RESOURCE_STATE`.
         methods: &[],
