@@ -14,6 +14,9 @@ final class TailscaleSetupController: UITableViewController {
     private var message: String?
     private var checkURL: URL?
     private var selected: String?
+    /// The page a tap opened, and the phase it was opened to get past.
+    private weak var browser: SFSafariViewController?
+    private var browserPhase: TailnetSnapshot.Phase?
 
     init() { super.init(style: .insetGrouped) }
     @available(*, unavailable) required init?(coder: NSCoder) { fatalError() }
@@ -22,6 +25,7 @@ final class TailscaleSetupController: UITableViewController {
     override func viewDidLoad() {
         super.viewDidLoad()
         title = "Find your computer"
+        overrideUserInterfaceStyle = .dark
         tableView.accessibilityIdentifier = "tailnet-computers"
         NotificationCenter.default.addObserver(self, selector: #selector(refresh),
             name: UIApplication.didBecomeActiveNotification, object: nil)
@@ -33,9 +37,25 @@ final class TailscaleSetupController: UITableViewController {
         watching = Task { [weak self] in
             for await snapshot in directory.snapshots() {
                 guard !Task.isCancelled else { break }
-                self?.snapshot = snapshot
-                self?.refresh()
+                self?.apply(snapshot)
             }
+        }
+    }
+
+    private func apply(_ snapshot: TailnetSnapshot) {
+        self.snapshot = snapshot
+        closeFinishedBrowser()
+        refresh()
+    }
+
+    /// Tailscale's page does not close itself once sign-in or approval lands.
+    private func closeFinishedBrowser() {
+        guard let browser, presentedViewController === browser, snapshot.phase != browserPhase else { return }
+        switch snapshot.phase {
+        case .running, .needsApproval:
+            self.browser = nil
+            dismiss(animated: true)
+        default: break
         }
     }
 
@@ -61,95 +81,154 @@ final class TailscaleSetupController: UITableViewController {
     override func tableView(_ tableView: UITableView, titleForFooterInSection section: Int) -> String? {
         switch section {
         case 0: "Signing in adds a discovery-only Phux Rune device to your tailnet. Its state stays on this phone, outside backups. No logs are uploaded."
-        case 1: message ?? "Choose an online Mac or Linux computer. SSH gets its one-time Phux code securely; you won't type addresses, pins or tokens."
-        default: "Keep the Tailscale app connected to the same tailnet. Rune's discovery node does not replace the phone's VPN. Scan a pairing QR instead if SSH is unavailable."
+        case 1: message ?? "Choose an online Mac or Linux computer. Rune signs in to it over SSH once to get a pairing code; there's nothing else to type."
+        default: "Keep the Tailscale app connected to the same tailnet. Rune's discovery does not replace the phone's VPN. If SSH is unavailable, scan a pairing QR instead."
         }
+    }
+
+    /// What tapping a row does, or nil for a row that only informs. One
+    /// answer for highlighting and selection, so no row lights up and does nothing.
+    private func action(at indexPath: IndexPath) -> (() -> Void)? {
+        guard pairing == nil else { return nil }
+        switch indexPath.section {
+        case 0: return loginAction()
+        case 2: return TailnetPairing.hasSystemTunnel() ? nil : { [weak self] in self?.openTailscale() }
+        default:
+            guard indexPath.row < snapshot.peers.count else { return nil }
+            let peer = snapshot.peers[indexPath.row]
+            return peer.isPickable ? { [weak self] in self?.choose(peer) } : nil
+        }
+    }
+
+    private func loginAction() -> (() -> Void)? {
+        switch snapshot.phase {
+        case .starting, .needsLogin(loginURL: nil): return nil
+        case .needsLogin(loginURL: let url?): return { [weak self] in self?.openBrowser(url) }
+        case .needsApproval:
+            return { [weak self] in self?.openBrowser(URL(string: "https://login.tailscale.com/admin/machines")!) }
+        case .running, .stopped: return { [weak self] in self?.signOut() }
+        }
+    }
+
+    /// What one row says, before it becomes a cell.
+    private struct Row {
+        var title = ""
+        var detail: String?
+        var icon: String?
+        /// Waiting on something: a spinner where the chevron would be.
+        var busy = false
+        /// Listed but not offered, with `detail` saying why.
+        var dimmed = false
     }
 
     override func tableView(_ tableView: UITableView, cellForRowAt indexPath: IndexPath) -> UITableViewCell {
-        let cell = UITableViewCell(style: .subtitle, reuseIdentifier: nil)
-        cell.detailTextLabel?.numberOfLines = 0
-        cell.textLabel?.numberOfLines = 2
-        if indexPath.section == 0 { return loginCell(cell) }
-        if indexPath.section == 2 { return tunnelCell(cell) }
-        guard !snapshot.peers.isEmpty else {
-            cell.textLabel?.text = "No computers available yet"
-            cell.detailTextLabel?.text = "Sign in, allow any device approval, and check that your computers are online."
-            cell.selectionStyle = .none
-            return cell
+        let row = switch indexPath.section {
+        case 0: loginRow()
+        case 2: tunnelRow()
+        default: peerRow(indexPath.row)
         }
-        let peer = snapshot.peers[indexPath.row]
-        cell.textLabel?.text = selected == peer.id ? "Getting a code from \(peer.name)…" : peer.name
-        cell.detailTextLabel?.text = peer.online ? peer.dnsName : "Offline"
-        cell.imageView?.image = UIImage(systemName: "desktopcomputer")
-        cell.accessoryType = peer.isPickable ? .disclosureIndicator : .none
-        cell.contentView.alpha = peer.isPickable && pairing == nil ? 1 : 0.5
+        let cell = UITableViewCell.titled(row.title, detail: row.detail, icon: row.icon,
+                                          tint: view.tintColor, dimmed: row.dimmed)
+        let tappable = action(at: indexPath) != nil
+        cell.selectionStyle = tappable ? .default : .none
+        if row.busy {
+            let spinner = UIActivityIndicatorView(style: .medium)
+            spinner.startAnimating()
+            cell.accessoryView = spinner
+        } else if tappable, navigates(indexPath) {
+            cell.accessoryType = .disclosureIndicator
+        }
         return cell
     }
 
-    private func loginCell(_ cell: UITableViewCell) -> UITableViewCell {
-        cell.imageView?.image = UIImage(systemName: "network")
+    /// A chevron promises another screen; signing out only asks a question.
+    private func navigates(_ indexPath: IndexPath) -> Bool {
+        guard indexPath.section == 0 else { return true }
+        switch snapshot.phase {
+        case .running, .stopped: return false
+        default: return true
+        }
+    }
+
+    private func peerRow(_ index: Int) -> Row {
+        guard index < snapshot.peers.count else {
+            return Row(title: "No computers yet",
+                       detail: "Sign in above, then check that your computers are online in Tailscale.")
+        }
+        let peer = snapshot.peers[index]
+        var row = Row(title: peer.name, detail: peer.dnsName, icon: "desktopcomputer")
+        if selected == peer.id {
+            row.title = "Getting a code from \(peer.name)…"
+            row.busy = true
+        } else if !peer.canRunPhux {
+            row.detail = "Phux runs on Mac and Linux computers"
+            row.dimmed = true
+        } else if !peer.online {
+            row.detail = "Offline"
+            row.dimmed = true
+        } else if !peer.isPickable {
+            row.detail = "No Tailscale address yet"
+            row.dimmed = true
+        } else {
+            row.dimmed = pairing != nil
+        }
+        return row
+    }
+
+    private func loginRow() -> Row {
+        var row = Row(icon: "network")
         switch snapshot.phase {
         case .starting:
-            cell.textLabel?.text = "Starting secure discovery…"
+            row.title = "Starting Tailscale discovery…"
+            row.busy = true
         case .needsLogin(let url):
-            cell.textLabel?.text = url == nil ? "Getting sign-in ready…" : "Sign in to Tailscale"
-            cell.detailTextLabel?.text = "Use your existing Tailscale account"
-            cell.accessoryType = url == nil ? .none : .disclosureIndicator
+            row.title = url == nil ? "Getting sign-in ready…" : "Sign in to Tailscale"
+            row.detail = "Use your existing Tailscale account"
+            row.busy = url == nil
         case .needsApproval:
-            cell.textLabel?.text = "Approve Rune in Tailscale"
-            cell.detailTextLabel?.text = "Your tailnet requires administrator device approval"
-            cell.accessoryType = .disclosureIndicator
+            row.title = "Approve this phone in Tailscale"
+            row.detail = "Your tailnet's admin approves new devices"
         case .running:
-            cell.textLabel?.text = "Signed in · manage discovery"
-            cell.detailTextLabel?.text = snapshot.tailnetName
-            cell.accessoryType = .disclosureIndicator
+            row.title = "Sign out of discovery"
+            row.detail = snapshot.tailnetName.map { "Signed in to \($0)" } ?? "Signed in"
         case .stopped:
-            cell.textLabel?.text = "Discovery could not start"
-            cell.detailTextLabel?.text = "Sign out and retry, or scan a pairing QR"
-            cell.accessoryType = .disclosureIndicator
+            row.title = "Discovery couldn't start"
+            row.detail = "Tap to sign out and start again, or scan a pairing QR instead"
         }
-        return cell
+        return row
     }
 
-    private func tunnelCell(_ cell: UITableViewCell) -> UITableViewCell {
-        let connected = TailnetPairing.hasSystemTunnel()
-        cell.textLabel?.text = connected ? "Tailscale VPN connected" : "Connect the Tailscale app"
-        cell.detailTextLabel?.text = connected ? "The selected computer must be on this same tailnet" : "Install or open Tailscale and turn its connection on"
-        cell.imageView?.image = UIImage(systemName: connected ? "checkmark.shield" : "shield")
-        cell.accessoryType = .disclosureIndicator
-        return cell
+    private func tunnelRow() -> Row {
+        TailnetPairing.hasSystemTunnel()
+            ? Row(title: "Tailscale is on", detail: "Your computer must be on this same tailnet", icon: "checkmark.shield")
+            : Row(title: "Turn on Tailscale", detail: "Install or open the Tailscale app and connect it", icon: "shield.slash")
+    }
+
+    override func tableView(_ tableView: UITableView, shouldHighlightRowAt indexPath: IndexPath) -> Bool {
+        action(at: indexPath) != nil
     }
 
     override func tableView(_ tableView: UITableView, didSelectRowAt indexPath: IndexPath) {
         tableView.deselectRow(at: indexPath, animated: true)
-        guard pairing == nil else { return }
-        if indexPath.section == 0 { login(); return }
-        if indexPath.section == 2 { openTailscale(); return }
-        guard !snapshot.peers.isEmpty else { return }
-        let peer = snapshot.peers[indexPath.row]
-        guard peer.isPickable else { return }
+        action(at: indexPath)?()
+    }
+
+    private func choose(_ peer: TailnetPeer) {
         guard TailnetPairing.hasSystemTunnel() else {
-            message = "Turn on the Tailscale app on this phone, then return and choose your computer."
-            refresh()
+            let alert = UIAlertController.dark(title: "Turn on Tailscale first",
+                message: "Open the Tailscale app on this phone and connect it, then choose \(peer.name) again.")
+            alert.addAction(UIAlertAction(title: "OK", style: .cancel))
+            present(alert, animated: true)
             return
         }
         confirmSSH(peer)
     }
 
-    private func login() {
-        switch snapshot.phase {
-        case .needsLogin(let url): if let url { openBrowser(url) }
-        case .needsApproval: openBrowser(URL(string: "https://login.tailscale.com/admin/machines")!)
-        case .running, .stopped: signOut()
-        default: break
-        }
-    }
-
     private func signOut() {
-        let alert = UIAlertController(title: "Discovery account", message: "Sign out of Rune's discovery node? This doesn't sign out the Tailscale VPN app or remove your Phux identity.", preferredStyle: .alert)
+        let alert = UIAlertController.dark(title: "Sign out of Tailscale discovery?",
+            message: "Rune stops listing your computers. The Tailscale app stays signed in, and this phone stays paired.")
         alert.addAction(UIAlertAction(title: "Cancel", style: .cancel))
-        alert.addAction(UIAlertAction(title: "Sign out", style: .destructive) { [weak self] _ in
+        alert.addAction(UIAlertAction(title: "Sign Out", style: .destructive) { [weak self] _ in
             guard let self else { return }
             let directory = self.directory
             let previous = self.watching
@@ -157,7 +236,7 @@ final class TailscaleSetupController: UITableViewController {
             Task { @MainActor [weak self] in
                 await previous?.value
                 await directory.signOut()
-                self?.snapshot = TailnetSnapshot(phase: .starting)
+                self?.apply(TailnetSnapshot(phase: .starting))
                 self?.startWatching()
             }
         })
@@ -205,6 +284,7 @@ final class TailscaleSetupController: UITableViewController {
 
     private func showPairingFailure(detail: String, peer: TailnetPeer, username: String) {
         message = detail
+        UINotificationFeedbackGenerator().notificationOccurred(.error)
         let alert = SSHAccountPrompt.failure(peer: peer, message: detail, retry: { [weak self] in
             self?.confirmSSH(peer, username: username)
         }, back: { [weak self] in
@@ -227,7 +307,7 @@ final class TailscaleSetupController: UITableViewController {
                 self.navigationController?.popViewController(animated: true)
             } else {
                 OnboardingStatus.record(.importFailed, peer: peer)
-                self.showPairingFailure(detail: "Rune received a pairing code but could not import it. No phone identity was enrolled. Try QR / paste or update Rune.",
+                self.showPairingFailure(detail: "The computer sent a pairing code this version of Rune can't read. Nothing was changed. Update Rune, or scan the computer's QR code instead.",
                     peer: peer, username: username)
             }
         }
@@ -238,8 +318,8 @@ final class TailscaleSetupController: UITableViewController {
     private func checkBanner(_ banner: String) {
         guard checkURL == nil, pairing != nil, let url = Self.sshCheckURL(banner) else { return }
         checkURL = url
-        let alert = UIAlertController(title: "Approve Tailscale SSH",
-            message: "Your SSH policy needs a fresh sign-in check. Approve it to continue pairing.", preferredStyle: .alert)
+        let alert = UIAlertController.dark(title: "Tailscale needs to check it's you",
+            message: "Your tailnet asks for a fresh sign-in before SSH. Approve it to continue pairing.")
         alert.addAction(UIAlertAction(title: "Cancel setup", style: .cancel) { [weak self] _ in self?.pairing?.cancel() })
         alert.addAction(UIAlertAction(title: "Approve", style: .default) { [weak self] _ in self?.openBrowser(url) })
         present(alert, animated: true)
@@ -264,13 +344,16 @@ final class TailscaleSetupController: UITableViewController {
             }
             return error.localizedDescription
         }
-        return "Couldn't get a pairing code. Check SSH access and that Phux is running with QUIC, or scan the computer's phux pair --enroll QR."
+        return "Couldn't get a pairing code. Check SSH access and that Phux is running with QUIC, or scan the computer's \(pairCommand) QR."
     }
 
     private func openTailscale() { UIApplication.shared.open(URL(string: "https://tailscale.com/download/ios")!) }
 
     private func openBrowser(_ url: URL) {
         guard url.scheme == "https", url.host != nil, url.user == nil, url.password == nil else { return }
-        present(SFSafariViewController(url: url), animated: true)
+        let page = SFSafariViewController(url: url)
+        browser = page
+        browserPhase = snapshot.phase
+        present(page, animated: true)
     }
 }

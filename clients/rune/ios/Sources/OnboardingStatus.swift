@@ -38,7 +38,17 @@ enum OnboardingStatus {
     static func code(_ error: Error) -> String {
         if let error = error as? SSHFailure { return sshCode(error) }
         if let error = error as? TailnetPairingError { return pairingCode(error) }
+        if let error = error as? PairingFailure { return enrollmentCode(error) }
         return "unknown"
+    }
+
+    private static func enrollmentCode(_ error: PairingFailure) -> String {
+        switch error {
+        case .unreachable: "enroll_unreachable"
+        case .codeRejected: "enroll_code_rejected"
+        case .deviceKey: "enroll_device_key"
+        case .other: "unknown"
+        }
     }
 
     private static func sshCode(_ error: SSHFailure) -> String {

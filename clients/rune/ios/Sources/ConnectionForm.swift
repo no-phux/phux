@@ -4,6 +4,15 @@ import Security
 @MainActor
 enum HostSettings {
     static let service = "sh.phux.rune.ios"
+    private static let nameKey = "paired-computer-name"
+
+    /// What the person calls the saved computer. Kept beside the saved
+    /// configuration, never inside it: the shared parser rejects unknown fields.
+    static var computerName: String? {
+        guard let endpoint = UserDefaults.standard.dictionary(forKey: "remote-host")?["endpoint"] as? String else { return nil }
+        return UserDefaults.standard.string(forKey: nameKey) ?? URLComponents(string: endpoint)?.host
+    }
+
     static func load() throws -> [String: Any]? {
         guard var values = UserDefaults.standard.dictionary(forKey: "remote-host"),
               let endpoint = values["endpoint"] as? String else { return nil }
@@ -23,13 +32,13 @@ enum HostSettings {
         }
         return values
     }
-    static func save(_ values: [String: Any]) throws {
+    static func save(_ values: [String: Any], name: String? = nil) throws {
         try NativeBridge.validate(values)
         if values["chain_pem"] != nil {
             try NativeIdentity(configuration: values).validate(configuration: values)
         }
         guard let endpoint = values["endpoint"] as? String else {
-            throw NativeFailure.message("The host endpoint is missing.")
+            throw NativeFailure.message("The computer's address is missing.")
         }
         let previous = UserDefaults.standard.dictionary(forKey:"remote-host")?["endpoint"] as? String
         let query: [String: Any] = [kSecClass as String:kSecClassGenericPassword,
@@ -49,6 +58,9 @@ enum HostSettings {
         let publicKeys = ["endpoint", "certificate_pin", "authority_ca", "chain_pem", "key_id", "session", "tls_server_name"]
         let publicValues = values.filter { publicKeys.contains($0.key) }
         UserDefaults.standard.set(publicValues,forKey:"remote-host")
+        // A name describes one computer; never let it outlive a change of host.
+        if let name, !name.isEmpty { UserDefaults.standard.set(String(name.prefix(128)), forKey: nameKey) }
+        else if previous != endpoint { UserDefaults.standard.removeObject(forKey: nameKey) }
         // Commit the new working credential before retiring the previous one.
         if let previous, previous != endpoint {
             do { try removeToken(previous) }
@@ -65,7 +77,7 @@ enum HostSettings {
         if removed { pending.remove(endpoint) } else { pending.insert(endpoint) }
         UserDefaults.standard.set(Array(pending),forKey:"pending-token-cleanup")
         guard removed else {
-            throw NativeFailure.message("New host saved, but could not remove the previous pairing token (Keychain \(status)); cleanup will retry when the app becomes active.")
+            throw NativeFailure.message("New computer saved, but could not remove the previous pairing token (Keychain \(status)); cleanup will retry when the app becomes active.")
         }
     }
 
@@ -78,7 +90,7 @@ enum HostSettings {
 }
 
 @MainActor
-final class ConnectionForm: UIViewController {
+final class ConnectionForm: UIViewController, UITextFieldDelegate {
     var connected: (([String: Any]) -> Void)?
     private let initial: [String: Any]
     private let endpoint = UITextField()
@@ -88,13 +100,16 @@ final class ConnectionForm: UIViewController {
     private let ticket = UITextField()
     private let session = UITextField()
     private let route = UITextField()
-    private let error = UILabel()
-    private let enroll = UIButton(type: .system)
-    private let connect = UIButton(type: .system)
+    private let status = UILabel()
+    private let scroll = UIScrollView()
+    private let enroll = UIButton(configuration: .borderedProminent())
+    private let connect = UIButton(configuration: .bordered())
     private var enrolled: [String: Any]
     private var enrollment: Task<Void, Never>?
     private var generation = 0
     isolated deinit { enrollment?.cancel() }
+
+    private var fields: [UITextField] { [endpoint, pin, authority, token, ticket, session, route] }
 
     init(values: [String: Any]?) {
         initial = values ?? [:]; enrolled = values ?? [:]
@@ -104,38 +119,42 @@ final class ConnectionForm: UIViewController {
     override func viewDidLoad() {
         super.viewDidLoad()
         title = "Advanced setup"
+        overrideUserInterfaceStyle = .dark
         view.backgroundColor = .systemBackground
-        let body = UIStackView(); body.axis = .vertical; body.spacing = 14
+        let body = UIStackView(); body.axis = .vertical; body.spacing = 18
         body.translatesAutoresizingMaskIntoConstraints = false
         let explanation = UILabel()
-        explanation.text = "Use the endpoint, certificate pin, authority pin, token and one-time ticket from phux pair --enroll. Enroll over QUIC first; this phone keeps its private key in the platform keystore. Never paste a private key."
-        explanation.numberOfLines = 0; explanation.font = .preferredFont(forTextStyle:.body)
+        explanation.text = "For troubleshooting or a custom address. Copy each value from \(pairCommand) on your computer. To pair the usual way, go back and scan its QR code."
+        explanation.numberOfLines = 0; explanation.textColor = .secondaryLabel
+        explanation.font = .preferredFont(forTextStyle:.body); explanation.adjustsFontForContentSizeCategory = true
         body.addArrangedSubview(explanation)
-        for (field,key,label) in [(endpoint,"endpoint","quic://host:8788 or wss://host"),
-                                   (pin,"certificate_pin","SHA-256 certificate pin"),
-                                   (authority,"authority_ca","Authority pin (sha256:…)"),
-                                   (token,"token","Pairing token"),
-                                   (ticket,"ticket","One-time enrollment ticket"),
-                                   (session,"session","Session (optional)"),
-                                   (route,"tls_server_name","Relay route (optional)")] {
+        for (field,key,title,hint) in [(endpoint,"endpoint","Address","quic://host:8788 or wss://host"),
+                                        (pin,"certificate_pin","Certificate pin","SHA-256 fingerprint"),
+                                        (authority,"authority_ca","Authority pin","sha256:…"),
+                                        (token,"token","Pairing token","64 hex digits"),
+                                        (ticket,"ticket","One-time enrollment ticket","Needed to enroll, never saved"),
+                                        (session,"session","Session","Optional"),
+                                        (route,"tls_server_name","Relay route","Optional")] {
             field.text = initial[key] as? String
-            field.placeholder = label; field.accessibilityLabel = label
-            field.borderStyle = .roundedRect
-            field.autocapitalizationType = .none; field.autocorrectionType = .no
-            field.smartQuotesType = .no; field.smartDashesType = .no
-            field.heightAnchor.constraint(greaterThanOrEqualToConstant:44).isActive = true
-            body.addArrangedSubview(field)
+            body.addArrangedSubview(labelled(field, title: title, hint: hint))
         }
+        endpoint.keyboardType = .URL; endpoint.textContentType = .URL
         token.isSecureTextEntry = true; ticket.isSecureTextEntry = true
-        enroll.setTitle("Enroll this phone",for:.normal)
+        route.returnKeyType = .done
+        enroll.configuration?.title = "Enroll & Connect"
         enroll.addTarget(self,action:#selector(enrollPhone),for:.touchUpInside)
-        enroll.heightAnchor.constraint(greaterThanOrEqualToConstant:44).isActive = true
-        body.addArrangedSubview(enroll)
-        connect.setTitle("Connect",for:.normal); connect.addTarget(self,action:#selector(connectHost),for:.touchUpInside)
-        connect.heightAnchor.constraint(greaterThanOrEqualToConstant:44).isActive = true
-        body.addArrangedSubview(connect)
-        error.numberOfLines = 0; error.textColor = .systemRed; body.addArrangedSubview(error)
-        let scroll = UIScrollView(); scroll.translatesAutoresizingMaskIntoConstraints = false
+        connect.configuration?.title = "Connect"
+        connect.addTarget(self,action:#selector(connectHost),for:.touchUpInside)
+        for button in [enroll, connect] {
+            button.configuration?.buttonSize = .large
+            button.heightAnchor.constraint(greaterThanOrEqualToConstant:44).isActive = true
+            body.addArrangedSubview(button)
+        }
+        status.numberOfLines = 0; status.textColor = .systemRed
+        status.font = .preferredFont(forTextStyle:.footnote); status.adjustsFontForContentSizeCategory = true
+        body.addArrangedSubview(status)
+        scroll.translatesAutoresizingMaskIntoConstraints = false
+        scroll.keyboardDismissMode = .interactive
         view.addSubview(scroll); scroll.addSubview(body)
         NSLayoutConstraint.activate([
             scroll.topAnchor.constraint(equalTo:view.safeAreaLayoutGuide.topAnchor),
@@ -146,6 +165,42 @@ final class ConnectionForm: UIViewController {
             body.leadingAnchor.constraint(equalTo:scroll.contentLayoutGuide.leadingAnchor,constant:20),
             body.trailingAnchor.constraint(equalTo:scroll.contentLayoutGuide.trailingAnchor,constant:-20),
             body.widthAnchor.constraint(equalTo:scroll.frameLayoutGuide.widthAnchor,constant:-40)])
+    }
+
+    /// A placeholder vanishes with the first character; the title stays.
+    private func labelled(_ field: UITextField, title: String, hint: String) -> UIView {
+        let label = UILabel()
+        label.text = title; label.textColor = .secondaryLabel; label.numberOfLines = 0
+        label.font = .preferredFont(forTextStyle:.subheadline); label.adjustsFontForContentSizeCategory = true
+        label.isAccessibilityElement = false // The field carries the same name.
+        field.placeholder = hint; field.accessibilityLabel = title
+        field.font = .preferredFont(forTextStyle:.body); field.adjustsFontForContentSizeCategory = true
+        field.borderStyle = .roundedRect
+        field.keyboardType = .asciiCapable; field.returnKeyType = .next
+        field.autocapitalizationType = .none; field.autocorrectionType = .no
+        field.spellCheckingType = .no
+        field.smartQuotesType = .no; field.smartDashesType = .no
+        field.clearButtonMode = .whileEditing
+        field.delegate = self
+        field.heightAnchor.constraint(greaterThanOrEqualToConstant:44).isActive = true
+        let group = UIStackView(arrangedSubviews:[label, field]); group.axis = .vertical; group.spacing = 6
+        return group
+    }
+
+    func textFieldShouldReturn(_ textField: UITextField) -> Bool {
+        let next = fields.firstIndex(of: textField).map { $0 + 1 } ?? fields.count
+        if next < fields.count { fields[next].becomeFirstResponder() } else { textField.resignFirstResponder() }
+        return false
+    }
+
+    /// An outcome below the keyboard or off the screen was never delivered.
+    private func report(_ text: String?, failed: Bool = true) {
+        status.textColor = failed ? .systemRed : .secondaryLabel
+        status.text = text
+        guard let text else { return }
+        view.layoutIfNeeded()
+        scroll.scrollRectToVisible(status.convert(status.bounds, to: scroll), animated: true)
+        UIAccessibility.post(notification: .announcement, argument: text)
     }
 
     override func viewDidDisappear(_ animated: Bool) {
@@ -179,10 +234,11 @@ final class ConnectionForm: UIViewController {
     }
 
     private func setEnrolling(_ busy: Bool) {
-        for field in [endpoint, pin, authority, token, ticket, session, route] { field.isEnabled = !busy }
+        for field in fields { field.isEnabled = !busy }
         enroll.isEnabled = !busy; connect.isEnabled = !busy
         isModalInPresentation = busy
-        enroll.setTitle(busy ? "Enrolling…" : "Enroll this phone", for: .normal)
+        enroll.configuration?.title = busy ? "Enrolling…" : "Enroll & Connect"
+        enroll.configuration?.showsActivityIndicator = busy
     }
 
     @objc private func enrollPhone() {
@@ -190,21 +246,22 @@ final class ConnectionForm: UIViewController {
         let values = configuration()
         let oneTimeTicket = ticket.text ?? ""
         ticket.text = nil
-        error.textColor = .systemRed
-        error.text = nil
+        view.endEditing(true)
+        report(nil)
         generation += 1
         let operation = generation
         setEnrolling(true)
         // Do not retain the form across the network operation. A dismissed
         // form cannot install a late chain, even if the ticket was accepted.
         enrollment = Task { [weak self] in
+            var issued: [String: Any]?
             do {
-                let issued = try await NativeIdentity.enroll(configuration: values, ticket: oneTimeTicket)
+                let identity = try await NativeIdentity.enroll(configuration: values, ticket: oneTimeTicket)
                 guard let self, self.generation == operation, !Task.isCancelled else {
-                    try NativeIdentity.discard(configuration: issued)
+                    try NativeIdentity.discard(configuration: identity)
                     return
                 }
-                self.finishEnrollment(issued)
+                issued = identity
             } catch {
                 guard let self, self.generation == operation else {
                     // Keystore cleanup failures remain visible even after the
@@ -212,11 +269,12 @@ final class ConnectionForm: UIViewController {
                     NSLog("Device enrollment did not complete: %@", error.localizedDescription)
                     return
                 }
-                self.error.text = error.localizedDescription
+                self.report(error.localizedDescription)
             }
             guard let self, self.generation == operation else { return }
             self.enrollment = nil
             self.setEnrolling(false)
+            if let issued { self.finishEnrollment(issued) }
         }
     }
 
@@ -225,20 +283,19 @@ final class ConnectionForm: UIViewController {
         // one-time ticket is already spent, so Connect can retry the save.
         enrolled = issued
         do {
+            // Saved and opened together: an enrolled form that could still be
+            // backed out of left the saved computer and the live one apart.
             try HostSettings.save(issued)
-            error.textColor = .secondaryLabel
-            error.text = "This phone is enrolled. Connect to open the host."
+            connected?(issued)
         } catch {
-            self.error.textColor = .systemRed
-            self.error.text = error.localizedDescription
+            report("This phone is enrolled, but saving failed: \(error.localizedDescription) Tap Connect to try again; you don't need another ticket.")
         }
     }
 
     @objc private func connectHost() {
         guard enrollment == nil else { return }
         let values = configuration()
-        error.textColor = .systemRed
         do { try HostSettings.save(values); view.endEditing(true); connected?(values) }
-        catch { self.error.text = error.localizedDescription }
+        catch { report(error.localizedDescription) }
     }
 }

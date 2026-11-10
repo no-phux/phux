@@ -115,15 +115,43 @@ as well as the existing desktop and desktop-hosted phone checks.
 
 ## Connect
 
+The app is iPhone-only for now: a fixed portrait form, declared as such in
+the bundle (`UIDeviceFamily` 1) and its asset catalog. It opts out of the
+phone's 60 Hz display-link cap (`CADisableMinimumFrameDurationOnPhone`).
+Setup is dark on a light-mode phone too, alerts included, like the terminal
+behind it.
+
 First run offers **Scan pairing QR**, **Paste pairing link**, and **Find with
 Tailscale**. On your computer, `phux pair --enroll` prints the code and link.
-Scan the QR or use the explicit Paste button for its whole link. Review the
-named computer and tap **Pair & connect**. No endpoint, pins, token or ticket
-transcription is needed. The old credential fields remain **Advanced setup**.
+Scan the QR, or paste its whole link: the row's Paste button never asks, and
+tapping the row itself reads the clipboard behind the system's one prompt. An
+empty clipboard or anything that is not a pairing link is answered with an
+alert, never silence.
+
+A staged pairing takes the whole screen: **Pair with _name_?**, the host it
+will connect to, a filled **Pair & Connect** button and **Cancel**. The other
+ways to connect are hidden until that is answered, and nothing is enrolled or
+replaced before the button. Enrolling shows progress alone. No endpoint, pins,
+token or ticket transcription is needed. The old credential fields remain
+**Advanced setup**, labelled, where **Enroll & Connect** saves and opens the
+computer in one step.
+
+A pairing that fails interrupts with an alert, an error haptic and a VoiceOver
+announcement, worded by what went wrong: the computer could not be reached
+(the same code is offered again), the code expired or was already used, this
+phone could not create its key, or anything else. The raw error is never
+shown; the class is recorded as `enroll_unreachable`, `enroll_code_rejected`
+or `enroll_device_key` in the support file described below. A valid scan and a
+completed pairing answer with a success haptic.
+
+Once a computer is saved the screen is titled **Change computer**, names the
+computer this phone is paired with, and says that pairing another replaces it.
+The name is a preference of its own, beside the saved configuration.
 
 The camera requires permission and supported hardware; denied/unavailable
-camera access leaves Paste available. Invalid QR content does not stop
-scanning. Cold and warm `phux-rune://connect?…` links use the same confirmation
+camera access leaves Paste available. The scanner always shows what to scan,
+says so in the same caption when a code is not a pairing code, keeps scanning,
+and offers the flashlight where the phone has one. Cold and warm `phux-rune://connect?…` links use the same confirmation
 path. Rune does not claim the other mobile app's `phux` scheme or HTTPS
 Universal Links. Current and legacy Phux pairing URLs can be scanned/pasted.
 Every import is bounded, rejects ambiguous credentials and stages a complete
@@ -140,7 +168,10 @@ its own discovery-only node to your tailnet; this is separate from the
 installed Tailscale app. Device approval, ACL visibility and device limits
 still apply. Discovery runs while its picker is open; local node state is
 excluded from backups and SDK log uploads are disabled before startup.
-Manage discovery lets you sign out without deleting your Phux identity.
+**Sign out of discovery** leaves the Tailscale app signed in and this phone
+paired. Rune closes Tailscale's sign-in page itself once sign-in or approval
+lands. Rows that cannot be chosen say why and do not respond: an offline
+computer, one that is not a Mac or Linux machine, a connected VPN.
 
 The installed Tailscale app **must also be connected to the same tailnet**:
 SSH, enrollment and terminal sockets use that VPN, not the embedded directory.
@@ -149,8 +180,9 @@ Rune remembers only account names that completed SSH, never guessed email
 prefixes or passwords. Tailscale SSH can authenticate without a
 password and may ask for a browser check. Ordinary SSH can use a one-time
 computer login password, never persisted—not an Apple ID password or phone
-passcode. Failed setup shows a visible retry/QR recovery alert, not only a
-footer. Credential-free phase/error codes stay locally in
+passcode. The request cannot be sent with a blank account name. Failed setup
+shows an alert that can retry, go back to scan or paste, or simply be read;
+so does choosing a computer while the Tailscale app is off. Credential-free phase/error codes stay locally in
 `Documents/rune-onboarding-status.json` for support and are excluded from
 backups; no raw SSH output, password, token, ticket or banner is recorded.
 Host keys come from the authenticated netmap for
@@ -162,7 +194,7 @@ SSH only locates an existing Phux and requests `pair --json --enroll` from its
 running server. It does not install, upgrade or start a server. A computer
 without SSH access or a running paired QUIC listener can use QR after that
 server is configured. The returned link goes through the same parser and
-explicit **Pair & connect** confirmation as a camera scan.
+explicit **Pair & Connect** confirmation as a camera scan.
 
 Enrollment runs off the UI thread through the shared runtime;
 it checks the issued chain against the pinned CA and device public key.
@@ -215,5 +247,5 @@ unmounted ACP fields lose only focus/preedit, never their committed draft.
 Remaining qualification/integration is tracked in Beads: provisioned device
 and TestFlight, OS-driven keyboard/IME tests, physical-camera recognition and
 real-device Tailscale sign-in/SSH qualification,
-VoiceOver mapping, native links/file/image clipboard, haptics and
+VoiceOver mapping, native links/file/image clipboard, terminal haptics and
 Android. See [MOBILE.md](../MOBILE.md) for the desktop/native distinction.
