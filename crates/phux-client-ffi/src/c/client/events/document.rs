@@ -8,8 +8,9 @@ impl Client {
     /// Stage one document: `detail` is its wire kind tag, `seq` its publish
     /// sequence, `status_code` the length of the content type that `bytes`
     /// starts with (0 for a tree or surface), and the rest of `bytes` the
-    /// document. Live-only and newest-wins, so a newer document supersedes
-    /// a staged older one of the same resource instead of queueing behind it.
+    /// document. Live-only, and the last delivered wins (not the highest
+    /// `seq`), so it supersedes a staged one of the same resource instead of
+    /// queueing behind it.
     pub(super) fn document_effect(&mut self, publication: &DocumentPublication) {
         self.owned_effects.retain(|effect| {
             effect.kind != EFFECT_DOCUMENT || effect.terminal_id != publication.resource_id

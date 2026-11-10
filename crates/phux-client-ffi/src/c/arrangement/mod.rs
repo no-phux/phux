@@ -230,7 +230,7 @@ impl SharedArrangement {
         self.server_revision
     }
 
-    /// Leaf-capable resources of the selected session no group shows.
+    /// Terminals of the selected session that no group shows.
     pub(super) fn unarranged(&self) -> usize {
         self.catalog.unarranged(&self.topology, self.selected)
     }

@@ -23,15 +23,19 @@
  * PHUX_CLIENT_EFFECT_DOCUMENT carries one whole document of a document-kind
  * resource (PHUX_RESOURCE_ACCESSIBILITY_TREE, _PIXEL_SURFACE or _DOCUMENT)
  * attached with phux_client_queue_attach_resource: the bootstrap cut, or a
- * newer publish. terminal_id is the resource id,
- * detail its PhuxResourceKind tag, seq the publish sequence (the newest per
- * resource is the one to show), and status_code the byte length of the
- * content type that bytes starts with: zero for a tree (JSON) or a surface
- * (PNG or JPEG), the typed document's ASCII content type (at most 255 bytes,
- * e.g. text/markdown) otherwise. The document is the rest of bytes, after
- * those status_code bytes. stream_id, bootstrap_id, first_row and last_row
- * are zero. Live-only: nothing is journaled or needs acceptance, and a newer
- * document supersedes a staged one of the same resource before it is read.
+ * newer publish. terminal_id is the resource id, detail its
+ * PhuxResourceKind tag, seq its publish sequence, and status_code the byte
+ * length of the content type that bytes starts with: zero for a tree (JSON)
+ * or a surface (PNG or JPEG), the typed document's ASCII content type (at
+ * most 255 bytes, e.g. text/markdown) otherwise. The document is the rest of
+ * bytes, after those status_code bytes. stream_id, bootstrap_id, first_row
+ * and last_row are zero. Live-only: nothing is journaled or needs
+ * acceptance. Show the last document delivered for a resource, not the one
+ * with the highest seq: a reconnect or a new stream generation may restart
+ * the sequence.
+ * Until phux_client_effect_clear, a newer document of a resource removes
+ * the staged older one, so the indices of the effects after it shift; read
+ * phux_client_effect_count and indices afresh after every mutable call.
  */
 typedef enum PhuxClientEffectKind {
     PHUX_CLIENT_EFFECT_DAMAGE = 1,

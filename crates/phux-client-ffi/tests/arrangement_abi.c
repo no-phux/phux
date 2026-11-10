@@ -4,6 +4,8 @@
 #include <stddef.h>
 
 _Static_assert(PHUX_CLIENT_ABI_VERSION == 3u, "the arrangement records are ABI 3");
+_Static_assert(sizeof(void *) == 8, "the pinned layouts are the 64-bit ones");
+_Static_assert(PHUX_ARRANGEMENT_LEAF_KIND_UNLISTED == 0xFFFFFFFFu, "never a wire kind tag");
 _Static_assert(sizeof(PhuxArrangementInfo) == 128, "arrangement info size");
 _Static_assert(offsetof(PhuxArrangementInfo, revision) == 16, "revision offset");
 _Static_assert(offsetof(PhuxArrangementInfo, message) == 56, "message offset");
