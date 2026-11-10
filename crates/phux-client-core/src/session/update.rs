@@ -31,10 +31,7 @@ impl<E: EngineAdapter> SessionKernel<E> {
                 terminal_id,
                 profile: BootstrapStreamProfile::Unknown { codec_tag },
                 ..
-            } => {
-                self.refuse_unknown_codec(terminal_id, codec_tag, effects);
-                Ok(())
-            }
+            } => self.refuse_unknown_codec(terminal_id, codec_tag, effects),
             KernelInput::AttachStarted {
                 attach_id,
                 terminals,

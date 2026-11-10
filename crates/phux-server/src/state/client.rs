@@ -222,9 +222,12 @@ impl ServerState {
         // snapshot, but nothing of it streams to this client.
         let session_panes = self.registry().members(session_id);
         for pane in session_panes {
+            // The registry's kind, so a pane whose handle is not yet
+            // registered is still subscribed, and an unknown record is not.
             let decodes = self
-                .resource_handle(pane)
-                .is_none_or(|handle| crate::id_bridge::client_decodes(&client_caps, handle.kind));
+                .registry()
+                .record(pane)
+                .is_some_and(|record| crate::id_bridge::client_decodes(&client_caps, record.kind));
             if decodes {
                 self.resources.subscribe(client_id, pane);
             }

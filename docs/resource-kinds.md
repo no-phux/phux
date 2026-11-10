@@ -14,11 +14,11 @@ Document. A Document carries a content type fixed when it is opened, so a
 producer publishes Markdown, HTML, SVG, CSV, JSON or images without a new
 kind or a wire change; `phux agent doc open|publish|snapshot|follow` drive
 one ([protocol](./protocol.md#commands-events-resources)).
-Session membership and aggregate attach are kind-neutral. Apps supply bounded
-captures; the host publishes the complete attach barrier before releasing live
-output or lifecycle closes. AgentSession is catalogued at session attach, but
-its app defers records to explicit, cursor-bearing `ATTACH_RESOURCE` requests.
-It does not gate aggregate readiness or emit an unsolicited full replacement.
+Membership and aggregate attach are kind-neutral but stream only the kinds a
+client's `HELLO` lists. Apps supply bounded captures; the host publishes the
+attach barrier before live output or lifecycle closes. AgentSession is listed
+at attach; its records wait for an explicit, cursor-bearing `ATTACH_RESOURCE`,
+so it neither gates aggregate readiness nor sends an unsolicited replacement.
 Document-only and agent-only sessions can attach without a Terminal codec.
 The server links only the pure Terminal contract; the executable
 supplies the concrete engine ([architecture](./architecture.md#where-to-look)).

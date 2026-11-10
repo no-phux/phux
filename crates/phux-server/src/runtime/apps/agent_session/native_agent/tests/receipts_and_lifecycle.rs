@@ -290,6 +290,7 @@ async fn generic_hooks_cannot_create_another_source_or_self_input_under_native_g
                     root_token: &fx.root,
                     limits: fx.context(fx.owner).limits,
                     connection_token: &fx.root,
+                    decodes: phux_protocol::caps::ResourceKindSet::LEGACY,
                 },
             )
             .await;

@@ -277,6 +277,7 @@ mod tests {
                 phux_protocol::wire::frame::SpawnResource::default()
                     .with_idempotency_key(IdempotencyKey::new([4; 16])),
             )),
+            decodes: phux_protocol::caps::ResourceKindSet::LEGACY,
         }
     }
 

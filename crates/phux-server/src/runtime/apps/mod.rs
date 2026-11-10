@@ -92,6 +92,9 @@ pub(crate) struct ResourceSpawn<'a> {
     pub(crate) limits: BootstrapLimits,
     /// The connection's cancellation.
     pub(crate) connection_token: &'a CancellationToken,
+    /// The kinds the spawner decodes. It stays the producer of what it
+    /// spawns either way; it is streamed the resource only if listed.
+    pub(crate) decodes: phux_protocol::caps::ResourceKindSet,
 }
 
 /// One already-committed launch effect. The app must execute this exact

@@ -155,3 +155,68 @@ async fn a_hello_without_resource_kinds_streams_every_legacy_kind() {
         })
         .await;
 }
+
+fn spawn_frame(
+    request_id: u32,
+    resource: Option<phux_protocol::wire::frame::SpawnResource>,
+) -> FrameKind {
+    FrameKind::SpawnResource {
+        request_id,
+        group: phux_protocol::ids::GroupId::new(1),
+        command: resource.is_none().then(|| vec!["/bin/cat".to_owned()]),
+        cwd: None,
+        env: None,
+        term: None,
+        satellite: None,
+        owner_terminal: None,
+        agent_session: None,
+        initial_size: None,
+        resource: resource.map(Box::new),
+    }
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn a_spawner_is_streamed_only_the_kinds_it_lists() {
+    LocalSet::new()
+        .run_until(async {
+            let state = SharedState::new();
+            let (_, parent) = parent(&state, true);
+            let parent_wire = state.with_mut(|s| s.intern_resource_wire(parent));
+            let kinds = ResourceKindSet::with(&[ResourceKind::AgentSession]);
+            let mut connection = Connection::start_with(&state, true, 64, Some(kinds)).await;
+
+            // The producer of a tree it does not decode: spawned, no stream.
+            let tree = phux_protocol::wire::frame::SpawnResource::accessibility_tree(
+                parent_wire,
+                "fixture",
+            );
+            connection.send(spawn_frame(1, Some(tree))).await;
+            let frame = connection.next().await;
+            let FrameKind::ResourceSpawned {
+                request_id: 1,
+                result,
+            } = frame
+            else {
+                panic!("RESOURCE_SPAWNED, got {frame:?}")
+            };
+            assert!(result.spawned_id().is_some(), "{result:?}");
+
+            // A Terminal it does not decode is refused before it runs.
+            connection.send(spawn_frame(2, None)).await;
+            assert!(matches!(
+                connection.next().await,
+                FrameKind::Error {
+                    request_id: Some(2),
+                    code: ErrorCode::CodecUnavailable,
+                    ..
+                }
+            ));
+            connection.send(FrameKind::Ping { nonce: 4 }).await;
+            assert!(matches!(
+                connection.next().await,
+                FrameKind::Pong { nonce: 4 }
+            ));
+            connection.finish().await;
+        })
+        .await;
+}

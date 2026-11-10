@@ -59,7 +59,10 @@ and a resource only to a client whose `HELLO` `RESOURCE_KINDS` (`u64`, bit
 `1 << tag` per kind wire tag) lists its kind. A session `ATTACH` keeps any
 other resource in the snapshot but neither subscribes nor bootstraps it;
 `ATTACH_RESOURCE` of one is refused with `CODEC_UNAVAILABLE`, and the
-connection stays. A `HELLO` without the field reads as the five kinds that
+connection stays. A client that spawns or publishes one stays its producer,
+so its input and closure still reach it, but nothing of it is streamed; a
+Terminal spawn is refused with `CODEC_UNAVAILABLE`. A kind tag of 64 or
+more has no bit and is never streamed. A `HELLO` without the field reads as the five kinds that
 existed when it was added. Clients from before AccessibilityTree,
 PixelSurface and Document send the same `HELLO` as the ones after, so a
 server cannot tell them apart; counting those three keeps every current
@@ -94,10 +97,12 @@ and the runtime, the C ABI, the TUI, and the web client all apply it:
 Only malformed bytes close the connection. A `HELLO_OK` or
 `BOOTSTRAP_BEGIN` naming an output mode, Terminal profile, or engine codec
 the client did not offer is malformed too, since the server must pick from
-the offer. A `BOOTSTRAP_BEGIN` codec tag the client does not know is
-another kind's newer codec, not malformed: it decodes as `Unknown`, the
-client refuses that one resource and ignores the rest of its stream, and
-every other resource and the connection carry on. A server never compresses a frame that settles a request (replies,
+the offer. A `BOOTSTRAP_BEGIN` codec tag the client does not know decodes
+as `Unknown`. On a resource of no kind the client knows, or of a document
+kind, the client refuses that one resource and ignores the rest of its
+stream, and every other resource and the connection carry on; on one it
+knows as a Terminal or AgentSession it is malformed. A server never
+compresses a frame that settles a request (replies,
 `ERROR`, `ATTACHED`, `ATTACH_READY`), because a client could not find the
 type byte of one it cannot read; only bulk frames such as
 `BOOTSTRAP_CHUNK` and `HISTORY_PAGE` are compressed.
@@ -122,6 +127,12 @@ only when that satellite advertises the feature, and refuses
 - A new resource kind is a new kind tag. A server streams it only to a
   client that lists that tag in `RESOURCE_KINDS`, so a client lists exactly
   the kinds it decodes.
+- A new codec for an existing kind is not covered by `RESOURCE_KINDS`: a
+  shipped client that lists the kind cannot decode it. One from before
+  `RESOURCE_KINDS` closes the connection; a later one drops a document and
+  closes on a Terminal or AgentSession. Send it only to a client that
+  offers it, as Terminal profiles are offered at `HELLO`, or behind a
+  feature bit.
 - Ship new behavior behind a feature bit in
   [`caps/server_features.rs`](../crates/phux-protocol/src/caps/server_features.rs).
   Do not bump the major for an additive change; a shipped bit is never

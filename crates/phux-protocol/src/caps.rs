@@ -39,6 +39,22 @@ mod tests {
     }
 
     #[test]
+    fn legacy_resource_kinds_are_frozen_at_tags_zero_to_four() {
+        // A HELLO without RESOURCE_KINDS must never gain a later kind.
+        assert_eq!(ResourceKindSet::LEGACY.as_wire(), 0x1F);
+        assert_eq!(
+            ClientCapabilities::new().resource_kinds,
+            ResourceKindSet::LEGACY
+        );
+        assert_eq!(ResourceKindSet::default(), ResourceKindSet::LEGACY);
+        assert!(!ResourceKindSet::LEGACY.contains(crate::ids::ResourceKind::Unknown { tag: 5 }));
+        assert!(
+            !ResourceKindSet::from_wire(u64::MAX)
+                .contains(crate::ids::ResourceKind::Unknown { tag: 64 })
+        );
+    }
+
+    #[test]
     fn protocol_sets_ignore_unknown_bits() {
         assert_eq!(ImageProtocolSet::from_wire(0xFF), ImageProtocolSet::all());
         assert_eq!(ImageProtocolSet::all().as_wire(), 0x07);

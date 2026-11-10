@@ -7,7 +7,7 @@ use phux_protocol::wire::frame::{CloseReason, TombstoneReason};
 use phux_protocol::{BootstrapId, BootstrapProfile, BootstrapStreamProfile, ResourceId, StreamId};
 
 use super::kernel_rig::RigAdapter;
-use super::{EffectBuffer, KernelEffect, KernelInput, KernelStatus, SessionKernel};
+use super::{EffectBuffer, KernelEffect, KernelError, KernelInput, KernelStatus, SessionKernel};
 use crate::engine::CanonicalGeometry;
 
 fn stream() -> StreamId {
@@ -73,13 +73,12 @@ fn an_unknown_codec_refuses_one_resource_and_the_rest_carry_on() {
     let document = ResourceId::local(3);
     let grid = CanonicalGeometry::new(80, 24).unwrap();
 
-    // The alien is an attach participant, so refusing it must not hold the
-    // barrier open.
+    // The alien is of no kind the kernel knows, and outside the barrier.
     kernel
         .update(
             KernelInput::AttachStarted {
                 attach_id: 7,
-                terminals: &[terminal.clone(), alien.clone()],
+                terminals: std::slice::from_ref(&terminal),
             },
             &mut effects,
         )
@@ -89,7 +88,7 @@ fn an_unknown_codec_refuses_one_resource_and_the_rest_carry_on() {
             begin(
                 &alien,
                 BootstrapStreamProfile::Unknown { codec_tag: 0x77 },
-                grid,
+                GRIDLESS,
             ),
             &mut effects,
         )
@@ -195,4 +194,122 @@ fn a_known_bootstrap_lifts_the_refusal() {
         effects.as_slice(),
         [KernelEffect::Document(document)] if document.bytes == b"\x89PNG"
     ));
+}
+
+#[test]
+fn an_unknown_codec_on_a_document_kind_is_refused_too() {
+    let mut kernel = SessionKernel::new(RigAdapter::default(), BootstrapProfile::SynthesizedVtRaw);
+    let mut effects = EffectBuffer::new();
+    let id = ResourceId::local(5);
+    kernel
+        .update(
+            begin(&id, BootstrapStreamProfile::DocumentTypedV1, GRIDLESS),
+            &mut effects,
+        )
+        .unwrap();
+    kernel
+        .update(chunk(&id, b"\x0atext/plainhalf"), &mut effects)
+        .unwrap();
+    kernel
+        .update(
+            begin(
+                &id,
+                BootstrapStreamProfile::Unknown { codec_tag: 9 },
+                GRIDLESS,
+            ),
+            &mut effects,
+        )
+        .unwrap();
+    assert!(kernel.is_unsupported(&id));
+    kernel.update(ready(&id), &mut effects).unwrap();
+    assert!(effects.as_slice().is_empty(), "the half cut was dropped");
+}
+
+#[test]
+fn an_unknown_codec_on_a_terminal_is_a_profile_mismatch() {
+    let mut kernel = SessionKernel::new(RigAdapter::default(), BootstrapProfile::SynthesizedVtRaw);
+    let mut effects = EffectBuffer::new();
+    let terminal = ResourceId::local(6);
+    kernel
+        .update(
+            KernelInput::AttachStarted {
+                attach_id: 1,
+                terminals: std::slice::from_ref(&terminal),
+            },
+            &mut effects,
+        )
+        .unwrap();
+    let grid = CanonicalGeometry::new(80, 24).unwrap();
+    let result = kernel.update(
+        begin(
+            &terminal,
+            BootstrapStreamProfile::Unknown { codec_tag: 0x77 },
+            grid,
+        ),
+        &mut effects,
+    );
+    assert!(matches!(
+        result,
+        Err(KernelError::ProfileMismatch {
+            incoming: BootstrapStreamProfile::Unknown { codec_tag: 0x77 },
+            ..
+        })
+    ));
+    assert!(!kernel.is_unsupported(&terminal));
+}
+
+#[test]
+fn an_unknown_codec_on_an_agent_session_is_a_kind_mismatch() {
+    let mut kernel = SessionKernel::new(RigAdapter::default(), BootstrapProfile::SynthesizedVtRaw);
+    let mut effects = EffectBuffer::new();
+    let agent = ResourceId::local(7);
+    kernel
+        .update(
+            begin(&agent, BootstrapStreamProfile::AgentEventsJsonlV1, GRIDLESS),
+            &mut effects,
+        )
+        .unwrap();
+    let result = kernel.update(
+        begin(
+            &agent,
+            BootstrapStreamProfile::Unknown { codec_tag: 0x77 },
+            GRIDLESS,
+        ),
+        &mut effects,
+    );
+    assert!(matches!(
+        result,
+        Err(KernelError::KindMismatch {
+            declared: phux_protocol::ResourceKind::AgentSession,
+            ..
+        })
+    ));
+    assert!(!kernel.is_unsupported(&agent));
+}
+
+#[test]
+fn an_unknown_codec_on_a_closed_resource_is_refused_as_closed() {
+    let mut kernel = SessionKernel::new(RigAdapter::default(), BootstrapProfile::SynthesizedVtRaw);
+    let mut effects = EffectBuffer::new();
+    let id = ResourceId::local(8);
+    kernel
+        .update(
+            KernelInput::ResourceClosed {
+                terminal_id: &id,
+                exit_status: None,
+                signal: None,
+                reason: CloseReason::Unknown,
+            },
+            &mut effects,
+        )
+        .unwrap();
+    let result = kernel.update(
+        begin(
+            &id,
+            BootstrapStreamProfile::Unknown { codec_tag: 1 },
+            GRIDLESS,
+        ),
+        &mut effects,
+    );
+    assert!(matches!(result, Err(KernelError::ClosedTerminal(_))));
 }

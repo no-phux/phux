@@ -1,32 +1,58 @@
 //! Refusing one resource whose stream codec this build does not know.
 //!
 //! A newer server may stream a kind or codec this client cannot decode
-//! (`docs/compatibility.md#a-newer-server-an-older-client`). That is not a
-//! protocol violation: the kernel reports it once, drops whatever it staged
-//! for the resource, and ignores the stream's later frames, so every other
-//! resource and the connection carry on.
+//! (`docs/compatibility.md#a-newer-server-an-older-client`). For a resource
+//! of no known kind, or of a document kind, that is not a protocol
+//! violation: the kernel reports it once, drops whatever it staged for the
+//! resource, and ignores the stream's later frames, so every other resource
+//! and the connection carry on. A Terminal or `AgentSession` has no newer
+//! codec this client did not offer, so an unknown one there is malformed.
 
 use super::{
-    EffectBuffer, EngineAdapter, KernelEffect, KernelInput, KernelStatus, ResourceId, SessionKernel,
+    BootstrapStreamProfile, EffectBuffer, EngineAdapter, KernelEffect, KernelError, KernelInput,
+    KernelStatus, ResourceId, ResourceKind, SessionKernel,
 };
 
 impl<E: EngineAdapter> SessionKernel<E> {
-    /// Refuse `terminal_id`'s stream, which names `codec_tag`.
+    /// Refuse `terminal_id`'s stream, which names `codec_tag`, or fail when
+    /// the resource is a kind whose codec cannot be newer.
     pub(super) fn refuse_unknown_codec(
         &mut self,
         terminal_id: &ResourceId,
         codec_tag: u8,
         effects: &mut EffectBuffer,
-    ) {
+    ) -> Result<(), KernelError<E::Error>> {
+        self.ensure_open(terminal_id)?;
+        match self.kinds.get(terminal_id) {
+            Some(ResourceKind::Terminal) => {
+                return Err(KernelError::ProfileMismatch {
+                    selected: self.selected_profile,
+                    incoming: BootstrapStreamProfile::Unknown { codec_tag },
+                });
+            }
+            // The codec names no kind this build knows.
+            Some(declared @ ResourceKind::AgentSession) => {
+                return Err(KernelError::KindMismatch {
+                    terminal_id: terminal_id.clone(),
+                    declared: *declared,
+                    incoming: ResourceKind::Unknown { tag: codec_tag },
+                });
+            }
+            _ => {}
+        }
+        // Only a Terminal or AgentSession stages a replica or a record
+        // stream, and both were refused above; a document stages a cut.
+        debug_assert!(
+            !self.terminals.contains_key(terminal_id) && !self.agents.contains_key(terminal_id)
+        );
         self.documents.remove(terminal_id);
-        // A refused participant must not hold the aggregate barrier open.
-        self.mark_attach_resolved(terminal_id);
         if self.unsupported.insert(terminal_id.clone()) {
             effects.push(KernelEffect::Status(KernelStatus::Unsupported {
                 terminal_id: terminal_id.clone(),
                 codec_tag,
             }));
         }
+        Ok(())
     }
 
     /// Whether `input` belongs to a refused stream and changes nothing.

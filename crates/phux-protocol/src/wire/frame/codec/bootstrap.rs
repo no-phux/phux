@@ -34,7 +34,13 @@ pub(in crate::wire) fn encode_bootstrap_codec(codec: BootstrapCodec, enc: &mut E
         BootstrapCodec::DocumentTypedV1 => {
             enc.write_u8(BootstrapCodec::DOCUMENT_TYPED_V1_TAG);
         }
-        BootstrapCodec::Unknown { tag } => enc.write_u8(tag),
+        BootstrapCodec::Unknown { tag } => {
+            debug_assert!(
+                !BootstrapCodec::is_allocated_tag(tag),
+                "Unknown codec carries allocated tag {tag}"
+            );
+            enc.write_u8(tag);
+        }
     }
 }
 

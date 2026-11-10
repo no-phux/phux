@@ -73,8 +73,9 @@ pub struct ClientCapabilities {
     /// explicit offer, never inferred from the transport.
     pub quic_streams: bool,
     /// The resource kinds this client decodes (HELLO field 11); a server
-    /// streams no other. Absent on the wire reads as
-    /// [`ResourceKindSet::LEGACY`].
+    /// streams no other. Absent on the wire, and by default, it is
+    /// [`ResourceKindSet::LEGACY`]; a client that decodes a later kind lists
+    /// it explicitly.
     pub resource_kinds: ResourceKindSet,
 }
 
@@ -114,7 +115,7 @@ impl ClientCapabilities {
             compression: CompressionSet::new(),
             ssh_origin: None,
             quic_streams: false,
-            resource_kinds: ResourceKindSet::all(),
+            resource_kinds: ResourceKindSet::LEGACY,
         }
     }
 

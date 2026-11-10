@@ -6,7 +6,9 @@
 /// (`docs/compatibility.md#a-newer-server-an-older-client`).
 ///
 /// Bits for kinds this build does not know are kept, not dropped: they
-/// are a newer client's claim and cost a server nothing to carry.
+/// are a newer client's claim and cost a server nothing to carry. A kind
+/// tag of 64 or more has no bit, so it cannot be advertised and is never
+/// streamed through this field; a kind that needs one needs a new field.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct ResourceKindSet(u64);
 
@@ -22,9 +24,9 @@ impl ResourceKindSet {
     /// `AccessibilityTree`, `PixelSurface` and `Document` releases cannot
     /// decode those three, but they send the same `HELLO` as the ones that can,
     /// so a server cannot tell them apart; withholding the three would
-    /// break every current client to protect superseded ones. A kind added
-    /// after this field is never in this set.
-    pub const LEGACY: Self = Self(Self::KNOWN);
+    /// break every current client to protect superseded ones. Frozen at
+    /// wire tags 0 to 4: a kind added after this field is never in it.
+    pub const LEGACY: Self = Self(0b1_1111);
 
     const fn bit(tag: u8) -> u64 {
         if tag < 64 { 1 << tag } else { 0 }
@@ -81,6 +83,6 @@ impl ResourceKindSet {
 
 impl Default for ResourceKindSet {
     fn default() -> Self {
-        Self::all()
+        Self::LEGACY
     }
 }

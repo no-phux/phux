@@ -421,6 +421,19 @@ fn retired_error<E>(terminal_id: &ResourceId, generation: GenerationId) -> Kerne
     }
 }
 
+/// The resource kinds this kernel decodes, for a host's `HELLO`.
+///
+/// A kind gains its bit here with its decoder; a host that draws fewer
+/// kinds lists fewer in `RESOURCE_KINDS`.
+pub const KERNEL_RESOURCE_KINDS: phux_protocol::caps::ResourceKindSet =
+    phux_protocol::caps::ResourceKindSet::with(&[
+        ResourceKind::Terminal,
+        ResourceKind::AgentSession,
+        ResourceKind::AccessibilityTree,
+        ResourceKind::PixelSurface,
+        ResourceKind::Document,
+    ]);
+
 /// Whether a stream profile names the `AgentSession` record codec. Such a
 /// stream is legal under every connection profile: it carries no engine
 /// checkpoint and no VT, so profile negotiation does not constrain it.
