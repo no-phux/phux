@@ -456,6 +456,7 @@ fn registered_entry(target: &RemoteTarget, new: &remote::NewRemote) -> RemoteEnt
         remote_phux: new.remote_phux.clone(),
         client_cert: new.client_cert.clone(),
         client_key: new.client_key.clone(),
+        color: None,
     })
 }
 
@@ -551,18 +552,9 @@ mod tests {
 
     fn entry(name: &str, endpoint: &str) -> RemoteEntry {
         RemoteEntry {
-            index: 0,
             name: name.to_owned(),
             endpoint: endpoint.to_owned(),
-            token_file: None,
-            cert_fingerprint: None,
-            tls_server_name: None,
-            session: None,
-            ssh: None,
-            direct: None,
-            remote_phux: None,
-            client_cert: None,
-            client_key: None,
+            ..RemoteEntry::default()
         }
     }
 

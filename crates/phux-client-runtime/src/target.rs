@@ -532,15 +532,7 @@ mod tests {
         RemoteConfigEntry {
             name: name.to_owned(),
             endpoint: endpoint.to_owned(),
-            token_file: None,
-            cert_fingerprint: None,
-            tls_server_name: None,
-            session: None,
-            ssh: None,
-            direct: None,
-            remote_phux: None,
-            client_cert: None,
-            client_key: None,
+            ..RemoteConfigEntry::default()
         }
     }
 

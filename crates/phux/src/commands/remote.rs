@@ -28,7 +28,7 @@ const KEY: &str = "remote";
 
 /// A registered remote, with its position in the array of tables so an
 /// update can rewrite the right entry.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub(crate) struct RemoteEntry {
     pub(crate) index: usize,
     pub(crate) name: String,
@@ -55,6 +55,8 @@ pub(crate) struct RemoteEntry {
     /// Its private key: the path is displayable, the bytes behind it are the
     /// secret and are read only by the TLS stack at dial time.
     pub(crate) client_key: Option<PathBuf>,
+    /// Palette id overriding the automatic host colour, when set.
+    pub(crate) color: Option<String>,
 }
 
 impl RemoteEntry {
@@ -217,6 +219,7 @@ pub(crate) fn load_registry() -> Result<Vec<RemoteEntry>, String> {
             remote_phux: remote.remote_phux,
             client_cert: remote.client_cert,
             client_key: remote.client_key,
+            color: remote.color,
         })
         .collect())
 }

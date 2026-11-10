@@ -36,6 +36,8 @@ pub(super) struct HostRow {
     pub(super) client_cert: Option<PathBuf>,
     /// Remote only: its private key's path (never its bytes).
     pub(super) client_key: Option<PathBuf>,
+    /// Remote only: the palette id overriding the hashed colour.
+    pub(super) color: Option<String>,
 }
 
 impl HostRow {
@@ -53,10 +55,17 @@ impl HostRow {
             direct: entry.direct,
             client_cert: entry.client_cert,
             client_key: entry.client_key,
+            color: entry.color,
         }
     }
 
+    /// A just-written remote; its colour is whatever the entry already had,
+    /// since an add or renew never touches it.
     pub(super) fn from_new_remote(new: remote::NewRemote) -> Self {
+        let color = remote::load_registry()
+            .ok()
+            .and_then(|entries| entries.into_iter().find(|entry| entry.name == new.name))
+            .and_then(|entry| entry.color);
         Self {
             name: new.name,
             role: HostRole::Remote,
@@ -70,6 +79,7 @@ impl HostRow {
             direct: new.direct,
             client_cert: new.client_cert,
             client_key: new.client_key,
+            color,
         }
     }
 
@@ -87,6 +97,7 @@ impl HostRow {
             direct: None,
             client_cert: None,
             client_key: None,
+            color: None,
         }
     }
 }
@@ -113,6 +124,10 @@ pub(super) fn run_list(role: Option<HostRole>, json: bool) -> ExitCode {
         return crate::output::json(&serde_json::json!({
             "schema_version": 1,
             "hosts": hosts,
+            "local": {
+                "name": phux_config::instance::local_host_name(),
+                "color": super::color::local_color(),
+            },
         }));
     }
     if rows.is_empty() {
@@ -220,5 +235,6 @@ pub(super) fn row_json(row: &HostRow) -> serde_json::Value {
         // Paths only, like the token file: the key bytes never appear.
         "client_cert": row.client_cert.as_ref().map(|p| p.display().to_string()),
         "client_key": row.client_key.as_ref().map(|p| p.display().to_string()),
+        "color": phux_config::host_color::resolve(&row.name, row.color.as_deref()),
     })
 }

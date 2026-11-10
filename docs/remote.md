@@ -107,6 +107,9 @@ so its panes show up here as `mini/@7`.
 Several terminals and the desktop app can attach to the same remote session
 at once.
 
+Each machine has a colour on every client; `phux host color mini violet`
+picks one ([host colours](./clients.md#host-colours)).
+
 ## Who can connect
 
 A server's `[policy] mode` decides who can connect:

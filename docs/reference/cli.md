@@ -2645,6 +2645,7 @@ Usage: phux host <SUBCOMMAND>
 Commands:
   add       Add a machine so `phux attach NAME` reaches it.
   attach    Attach to a registered remote host (same as `phux attach NAME`).
+  color     Set the colour a host is drawn in, or go back to its automatic one.
   disable   Disable a satellite without forgetting it; a running hub drops its
             link.
   discover  List the machines on this computer's Tailscale network.
@@ -2783,6 +2784,33 @@ Arguments:
   <NAME>  Registered remote name.
 
 Flags:
+  -h, --help           Print help
+
+Global flags:
+      --socket <PATH>  Server socket to dial (default: `$PHUX_SOCKET`)
+```
+
+## `phux host color`
+
+```text
+Set the colour a host is drawn in, or go back to its automatic one.
+
+Every client hashes a host's name to one of eight palette colours; this
+overrides that for a `[[remote]]` entry, or for this machine with `--local`
+(`[host] color`). `auto` removes the override.
+
+Usage: phux host color [--local] [--json] <[NAME] COLOR>…
+
+Arguments:
+  <[NAME] COLOR>…  `NAME COLOR` for a registered remote, or `COLOR` alone with
+                   `--local`. COLOR is a palette id (blue, violet, magenta, sky,
+                   coral, olive, slate, copper) or `auto`.
+
+Flags:
+      --local          Colour this machine instead of a registered remote.
+      --json           Emit stable, versioned JSON on stdout instead of the
+                       human view. On failure, stdout stays empty and stderr
+                       carries one JSON error object.
   -h, --help           Print help
 
 Global flags:
