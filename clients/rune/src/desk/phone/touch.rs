@@ -5,8 +5,8 @@
 //! alternate-screen pagers and programs with their own scrolling all follow
 //! the finger.
 //!
-//! Rune's drag carries no time. Every clock here is the app clock `poll`
-//! was last given, so a gesture is timed from the first poll after it began.
+//! Rune's drag carries no time. Every clock here is the app clock: a frame
+//! polls before it delivers its input, so a handler reads that frame's.
 
 use std::time::Duration;
 
@@ -63,8 +63,8 @@ pub struct Touch {
     /// Where the finger landed and where it is, in the grid's points.
     origin: [f32; 2],
     at: [f32; 2],
-    /// When the first poll after the press ran.
-    since: Option<f64>,
+    /// When the finger landed.
+    since: f64,
     mode: Mode,
     /// Vertical travel already scrolled, and what the last poll hasn't timed.
     scrolled: f32,
@@ -136,7 +136,7 @@ impl Desk {
             terminal: terminal.clone(),
             origin: at,
             at,
-            since: None,
+            since: clock,
             mode: if caught { Mode::Scroll } else { Mode::Pending },
             scrolled: 0.0,
             untimed: 0.0,
@@ -258,16 +258,22 @@ impl Desk {
 
     fn time_touch(&mut self, tx: &mut Tx) {
         let clock = self.clock;
-        let covered = self.modal().is_some();
+        if self.touch_lost() {
+            return self.phone_interrupted();
+        }
         let Some(touch) = self.phone.as_mut().and_then(|p| p.touch.as_mut()) else {
             return;
         };
-        let since = *touch.since.get_or_insert(clock);
+        let since = touch.since;
         match touch.mode {
-            Mode::Pending if covered => {}
             Mode::Pending if clock - since >= HOLD => self.hold(tx),
             Mode::Pending => tx.wake_after(Duration::from_secs_f64(HOLD - (clock - since))),
             Mode::Scroll => {
+                // A finger that rested has no speed left to throw with,
+                // whatever its last roll-off adds.
+                if clock - touch.moved > SETTLE {
+                    touch.velocity = 0.0;
+                }
                 let dt = (clock - touch.sampled) as f32;
                 if touch.untimed != 0.0 && dt > 0.0 {
                     let now = touch.untimed / dt;
@@ -282,6 +288,33 @@ impl Desk {
             }
             Mode::Select | Mode::Report => {}
         }
+    }
+
+    /// Whether the finger's release can no longer arrive: its pane is not
+    /// the one on screen, or a modal took the pointer. Rune drops such a
+    /// press without a word, and a hold must not fire for a finger that
+    /// is gone.
+    fn touch_lost(&self) -> bool {
+        let Some(touch) = self.phone.as_ref().and_then(|p| p.touch.as_ref()) else {
+            return false;
+        };
+        let shown = self.shown.as_ref().map(|shown| &shown.terminal);
+        shown != Some(&touch.terminal) || self.phone_content_blocked()
+    }
+
+    /// End whatever the finger was doing, as a cancelled release would: the
+    /// app left the foreground with it down, or its release was lost.
+    pub(crate) fn phone_interrupted(&mut self) {
+        self.stop_coast();
+        let Some(touch) = self.phone.as_mut().and_then(|p| p.touch.take()) else {
+            return;
+        };
+        match touch.mode {
+            Mode::Select => self.end_drag(),
+            Mode::Report => self.release_capture(),
+            Mode::Pending | Mode::Scroll => {}
+        }
+        self.forget_link_tap();
     }
 
     /// The finger stayed put: a program that tracks the mouse gets the

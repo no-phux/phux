@@ -89,6 +89,25 @@ fn a_finger_that_rests_before_lifting_throws_nothing() {
 }
 
 #[test]
+fn a_rest_forgets_the_drags_speed_whatever_the_lift_adds() {
+    let (client, mut rt) = fixture(true);
+    let (x, y) = in_grid(&rt);
+    touch(&mut rt, Started, x, y);
+    tick(&mut rt, 1.0);
+    touch(&mut rt, Moved, x, y + 40.0);
+    tick(&mut rt, 1.016);
+    touch(&mut rt, Moved, x, y + 80.0);
+    tick(&mut rt, 1.032);
+    // A second at rest, then the roll-off a lifting finger makes.
+    tick(&mut rt, 2.0);
+    touch(&mut rt, Moved, x, y + 82.0);
+    touch(&mut rt, Ended, x, y + 82.0);
+    tick(&mut rt, 2.016);
+    assert!(!coasting(&rt));
+    no_input(&client);
+}
+
+#[test]
 fn a_touch_that_catches_a_coast_stops_it_and_is_not_a_tap() {
     let (client, mut rt) = fixture(true);
     rt.update(|d, _| d.phone.as_mut().unwrap().keyboard = false);
@@ -186,14 +205,14 @@ fn a_hold_hands_a_tracking_program_its_drag_unless_shift_is_latched() {
     output(&client, 1, 1, b"\x1b[?1002h\x1b[?1006h");
     poll(&mut rt);
     let (x, y) = in_grid(&rt);
-    let hold_and_drag = |rt: &mut Runtime<Desk>| {
+    let hold_and_drag = |rt: &mut Runtime<Desk>, at: f64| {
+        tick(rt, at);
         touch(rt, Started, x, y);
-        tick(rt, 1.0);
-        tick(rt, 1.4);
+        tick(rt, at + 0.4);
         touch(rt, Moved, x + 90.0, y + 17.0);
         touch(rt, Ended, x + 90.0, y + 17.0);
     };
-    hold_and_drag(&mut rt);
+    hold_and_drag(&mut rt, 1.0);
     let sent = mice(&outbound(&client));
     assert_eq!(sent.first(), Some(&(MouseAction::Press, MouseButton::Left)));
     assert!(sent.contains(&(MouseAction::Motion, MouseButton::Left)));
@@ -204,7 +223,7 @@ fn a_hold_hands_a_tracking_program_its_drag_unless_shift_is_latched() {
     assert!(rt.copy_request.is_none());
     // ⇧ keeps the selection local, as Shift does on a desktop.
     rt.update(|d, _| d.phone.as_mut().unwrap().shift = true);
-    hold_and_drag(&mut rt);
+    hold_and_drag(&mut rt, 2.0);
     assert!(mice(&outbound(&client)).is_empty());
     assert!(rt.copy_request.take().is_some());
 }
@@ -235,4 +254,33 @@ fn a_tap_brings_the_keyboard_back_or_clicks_a_tracking_program() {
         !rt.state.phone.as_ref().unwrap().keyboard,
         "a click in a program is not a request to type"
     );
+}
+
+#[test]
+fn a_hold_is_timed_from_the_touch_and_never_fires_for_a_finger_that_is_gone() {
+    let (client, mut rt) = fixture(true);
+    let (x, y) = in_grid(&rt);
+    let held = |rt: &mut Runtime<Desk>| rt.state.phone.as_mut().unwrap().feedback.take();
+    // The first poll after the touch is already past the hold.
+    touch(&mut rt, Started, x, y);
+    tick(&mut rt, 1.36);
+    assert!(held(&mut rt).is_some());
+    // Left mid-hold (the app resigned, a sheet took the pointer): the
+    // selection ends where it was, and nothing is copied.
+    rt.update(|d, _| d.phone_interrupted());
+    assert_eq!(rt.state.gesture, 0);
+    assert!(rt.state.phone.as_ref().unwrap().touch.is_none());
+    touch(&mut rt, Cancelled, x, y);
+    assert!(rt.copy_request.is_none());
+
+    // Its pane left the screen under a still finger: Rune drops the press
+    // without a release, and the hold must not fire on the pane behind.
+    tick(&mut rt, 2.0);
+    touch(&mut rt, Started, x, y);
+    rt.update(|d, _| d.focus_pane(&id(2)));
+    tick(&mut rt, 2.5);
+    assert_eq!(held(&mut rt), None);
+    assert!(rt.state.phone.as_ref().unwrap().touch.is_none());
+    assert_eq!(focus(&rt), id(2));
+    no_input(&client);
 }

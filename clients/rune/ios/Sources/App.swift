@@ -140,6 +140,13 @@ final class RuneController: UIViewController, UIAdaptivePresentationControllerDe
     }
 
     func presentationControllerDidDismiss(_ presentationController: UIPresentationController) {
+        setupClosed()
+    }
+
+    /// Setup went away without pairing. Opened by a pairing link at launch,
+    /// it came before the saved computer did: backing out returns to it.
+    private func setupClosed() {
+        if surface == nil, let saved = try? HostSettings.load() { open(saved) }
         setSceneActive(UIApplication.shared.applicationState == .active)
     }
 
@@ -154,9 +161,7 @@ final class RuneController: UIViewController, UIAdaptivePresentationControllerDe
         if surface == nil, empty.isHidden { showDisconnected() }
         // Unreadable saved settings must not block pairing again.
         let form = OnboardingController(values: try? HostSettings.load())
-        form.closed = { [weak self] in
-            self?.setSceneActive(UIApplication.shared.applicationState == .active)
-        }
+        form.closed = { [weak self] in self?.setupClosed() }
         form.connected = { [weak self] configuration in
             self?.dismiss(animated:true) { self?.open(configuration) }
         }

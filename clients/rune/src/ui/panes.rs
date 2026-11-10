@@ -354,7 +354,9 @@ fn terminal_input(host: El, desk: &Desk, id: &ResourceId) -> El {
         }
         // Only the primary button opens links; the rest are the program's.
         let cmd = mods.cmd && tx.button() == PointerButton::Primary;
-        if !d.press_link(&press, drag.phase, x, y, cmd, tx) {
+        // A phone opens links by its finger's tap alone: any other button
+        // there is the program's, press and release both.
+        if d.phone.is_some() || !d.press_link(&press, drag.phase, x, y, cmd, tx) {
             let step = Press {
                 phase: drag.phase,
                 x,

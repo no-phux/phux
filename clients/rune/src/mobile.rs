@@ -345,6 +345,9 @@ pub fn set_active(rt: &mut rune::Runtime<State>, active: bool) {
         state.focus_changed(active);
         if active {
             state.resume_link(away);
+        } else {
+            // A finger still down will not be heard lifting.
+            state.phone_interrupted();
         }
         tx.instant();
     });

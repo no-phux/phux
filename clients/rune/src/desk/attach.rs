@@ -56,9 +56,20 @@ impl Desk {
     /// A native host's answer to `paste_requested`: its pasteboard's text,
     /// under the same confirmation as any other paste.
     pub fn paste_from_host(&mut self, text: &str) {
+        if !self.pastes_allowed() {
+            return self.say(NoticeKind::Error, "Nothing was pasted.");
+        }
         if let Some(terminal) = self.shown.as_ref().map(|s| s.terminal.clone()) {
             self.paste(&terminal, text);
         }
+    }
+
+    /// The host's pasteboard held more than a paste may carry.
+    pub fn paste_too_large(&mut self) {
+        self.say(
+            NoticeKind::Error,
+            "Clipboard too large to paste (over 1 MiB).",
+        );
     }
 
     /// The clipboard's reply to a paste asked for on `server`.

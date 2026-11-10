@@ -122,7 +122,10 @@ final class NativeBridge {
     func touch(_ identity: UInt64, phase: UInt32, point: CGPoint, seconds: Double) {
         phux_rune_ios_touch(pointer, identity, phase, point.x, point.y, seconds)
     }
-    func paste(_ text: String) { text.withCString { phux_rune_ios_paste(pointer, $0) } }
+    func paste(_ text: String) {
+        // A C string ends at its first NUL; a pasteboard's text need not.
+        text.replacingOccurrences(of: "\0", with: "").withCString { phux_rune_ios_paste(pointer, $0) }
+    }
     func pathChanged() { phux_rune_ios_path_changed(pointer) }
     func zoom(larger: Bool) { phux_rune_ios_zoom(pointer, larger) }
     func active(_ active: Bool) { phux_rune_ios_active(pointer, active) }

@@ -300,7 +300,8 @@ pub unsafe extern "C" fn phux_rune_ios_touch(
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn phux_rune_ios_paste(pointer: *mut c_void, pasted: *const c_char) {
     attempt(|| {
-        let pasted = unsafe { text(pasted)? };
+        // Oversized or invalid text is refused aloud, not silently dropped.
+        let pasted = unsafe { text(pasted) }.ok();
         mobile::paste(unsafe { host(pointer)? }.layer.runtime_mut(), pasted);
         Ok(())
     });

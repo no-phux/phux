@@ -30,10 +30,14 @@ pub fn take_requests(rt: &mut rune::Runtime<State>) -> Value {
         "open_urls": urls, "feedback": feedback})
 }
 
-/// The host's pasteboard text, answering a `paste` request.
-pub fn paste(rt: &mut rune::Runtime<State>, text: &str) {
+/// The host's pasteboard text, answering a `paste` request. `None`: it
+/// held more than the bridge carries, which is said rather than dropped.
+pub fn paste(rt: &mut rune::Runtime<State>, text: Option<&str>) {
     rt.update(|state, tx| {
-        state.paste_from_host(text);
+        match text {
+            Some(text) => state.paste_from_host(text),
+            None => state.paste_too_large(),
+        }
         tx.instant();
     });
 }
