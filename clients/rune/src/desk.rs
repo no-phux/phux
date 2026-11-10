@@ -39,6 +39,7 @@ pub mod machines;
 pub mod mouse;
 pub(crate) mod native_input;
 mod notice;
+pub mod onboarding;
 mod palette;
 pub mod phone;
 pub mod pitch;
@@ -173,6 +174,8 @@ pub struct Desk {
     pub(crate) fleet: fleet::Fleet,
     pub settings: settings::Settings,
     pub settings_open: bool,
+    /// First-run onboarding, while open, and what it has learned.
+    pub onboarding: onboarding::Onboarding,
     /// Navigation and search belong to this window, never to stored preferences.
     pub settings_ui: settings::SettingsUi,
     pub tabs: tabs::Tabs,
@@ -385,6 +388,7 @@ impl Desk {
             fleet: fleet::Fleet::default(),
             settings,
             settings_open: false,
+            onboarding: onboarding::Onboarding::default(),
             settings_ui: settings::SettingsUi::default(),
             tabs: tabs::Tabs::default(),
             updater: updates::Updater::new(&prefs, resolved),
@@ -448,6 +452,7 @@ impl Desk {
             | self.pump_link()
             | self.pump_links()
             | self.follow_omarchy()
+            | self.pump_onboarding(tx)
             | self.expire_notice(tx);
         let Some(client) = self.client.clone() else {
             return updated | self.tend_link(tx);

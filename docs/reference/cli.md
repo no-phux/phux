@@ -36,7 +36,7 @@ Sessions:
 
 Panes:
   spawn         Create a pane without attaching
-  snapshot      Read a pane's screen as text or JSON
+  snapshot      Read a pane's screen, or a document, as text or JSON
   send-keys     Send keys to a pane
   paste         Paste text into a pane
   run           Run a command in a pane and capture its exit code
@@ -80,6 +80,7 @@ Maintain:
   logs          Show where the logs live, or tail one
   report        Capture or list local bug reports [aliases: bug]
   config        Inspect, scaffold, and reload the config file
+  migrate       Have your coding agent bring your terminal keys into phux
   plugin        Manage plugin manifests in the config
   update        Update phux, keeping sessions alive
   upgrade       Hot-swap the running server to the installed binary
@@ -333,7 +334,8 @@ Commands:
   follow    Write every document as it arrives.
   open      Open a document under the pane its producer runs in.
   publish   Replace the document from a file, or stdin.
-  snapshot  Write the newest document to a file, or stdout.
+  snapshot  Write the newest document to a file, or stdout: text with control
+            characters shown as signs, binary only into a pipe.
   help      Print this message or the help of the given subcommand(s)
 
 Flags:
@@ -406,7 +408,8 @@ Global flags:
 ## `phux agent doc snapshot`
 
 ```text
-Write the newest document to a file, or stdout.
+Write the newest document to a file, or stdout: text with control characters
+shown as signs, binary only into a pipe.
 
 Usage: phux agent doc snapshot [--out <PATH>] [--json] <TARGET>
 
@@ -1269,7 +1272,8 @@ Arguments:
   <TARGET>  The surface.
 
 Flags:
-      --out <PATH>     Where the image goes; stdout when absent.
+      --out <PATH>     Where the image goes; stdout when absent, unless stdout
+                       is a terminal.
       --json
   -h, --help           Print help
 
@@ -1329,7 +1333,7 @@ Commands:
             Accessibility, or AT-SPI on Linux.
   open      Open a tree under the pane its producer runs in.
   publish   Replace the tree's document from a file, or stdin.
-  snapshot  Print the tree's newest document.
+  snapshot  Print the tree's newest document, control characters shown as signs.
   help      Print this message or the help of the given subcommand(s)
 
 Flags:
@@ -1455,7 +1459,7 @@ Global flags:
 ## `phux agent tree snapshot`
 
 ```text
-Print the tree's newest document.
+Print the tree's newest document, control characters shown as signs.
 
 Usage: phux agent tree snapshot [--json] <TARGET>
 
@@ -2291,7 +2295,8 @@ Reads global options and key tables from an already running tmux, without
 sourcing files or changing either server. By default, prints TOML on stdout and
 a fidelity report on stderr. Unsupported bindings are never executed or silently
 replaced with a different phux action. This configures the terminal UI; desktop
-shortcuts are separate.
+shortcuts are separate. To have your coding agent migrate from your config files
+instead, run `phux migrate`.
 
 Usage: phux config import-tmux [FLAGS]
 
@@ -3672,6 +3677,46 @@ Flags:
 
 Global flags:
       --socket <PATH>  Server socket to dial (default: `$PHUX_SOCKET`)
+```
+
+## `phux migrate`
+
+```text
+Have your coding agent bring your terminal keys into phux
+
+Reads your tmux, zellij, Ghostty and herdr configs, translates every key binding
+it can into phux config lines, and starts your agent (claude, codex or opencode)
+with a strict prompt: write those lines into `phux config path`, run `phux
+config check` and `phux config reload`, and report what migrated, what replaced
+a phux default, which sources conflicted and what could not migrate. Inside a
+phux pane the agent opens in a split to the right; elsewhere in a new session
+named `migrate`.
+
+`--print` prints the prompt instead, for any other agent. With nothing to
+migrate it says so and exits 0.
+
+Examples:
+phux migrate
+phux migrate --agent codex --source tmux
+phux migrate --print | pbcopy
+
+Usage: phux migrate [FLAGS]
+
+Flags:
+      --agent <AGENT>    The agent to start. Default: the one installed, or ask
+                         when there are several.
+                         [possible values: claude, codex, opencode]
+      --print            Print the prompt and exit; start nothing.
+      --source <SOURCE>  Read only this source (repeatable). Default: every
+                         source found.
+                         [possible values: tmux, zellij, ghostty, herdr]
+      --json             Emit one JSON document: the sources found, the agent,
+                         the config path and what was launched (with `--print`,
+                         the prompt too).
+  -h, --help             Print help
+
+Global flags:
+      --socket <PATH>    Server socket to dial (default: `$PHUX_SOCKET`)
 ```
 
 ## `phux mission`
@@ -6304,6 +6349,12 @@ against a pane another client is using.
 TARGET is a selector (see the top-level help); omit it for the
 most-recently-focused session.
 
+A TARGET that names a document resource by `@N` or `^key` is read by its kind:
+an accessibility tree prints its JSON, as `phux agent tree snapshot` does; a
+typed document prints its content when it is text, and otherwise its size and
+type; a pixel surface needs `--out FILE`. A document read attaches as an
+observer while it reads. The screen flags apply to a terminal only.
+
 Usage: phux snapshot [FLAGS] [TARGET]
 
 Arguments:
@@ -6354,6 +6405,10 @@ Flags:
                         document with the `rendered` field populated. Mutually
                         exclusive with `--cells` and `--rendered`.
                         [possible values: html, vt]
+      --out <FILE>      Write a document resource's content to this file, as
+                        `phux agent surface|doc snapshot --out` does; a pixel
+                        surface needs it. A terminal refuses it: its screen
+                        prints on stdout.
       --cols <COLS>     Composited viewport width for `--rendered` (no TTY to
                         measure).
                         (default: 80)
@@ -6975,6 +7030,13 @@ the top-level help); omit it for the most-recently-focused session.
 Matching is against the lines as WRITTEN: rows the terminal soft-wrapped at its
 right edge are joined first, so text that straddles a wrap is found rather than
 silently never matching.
+
+A TARGET that names an accessibility tree or a text document by `@N` or `^key`
+waits on its text instead, as each document arrives: `--until` matches a
+substring of the whole document, and `--regex` one line of it. `--tail`,
+`--output-only` and `--idle` apply to a terminal only; a document wait needs
+`--until` or `--regex`, and a binary document or a surface is refused (exit 2).
+A document that closes before it matches exits 1.
 
 Flags may come before or after TARGET; a bare `--tail` reads the next word as N,
 so spell N out when TARGET follows it.

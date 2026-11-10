@@ -74,9 +74,9 @@ test("packed plugin shares the host OpenTUI and Solid runtime outside the checko
       rpcs: ["phux"],
       gui: true,
       tools: [
-        "phux_agent_prompt", "phux_agent_wait", "phux_kill", "phux_panes", "phux_paste",
+        "phux_agent_prompt", "phux_agent_wait", "phux_documents", "phux_kill", "phux_panes", "phux_paste",
         "phux_resource_wait", "phux_run", "phux_send_keys", "phux_snapshot", "phux_spawn",
-        "phux_status", "phux_wait",
+        "phux_status", "phux_surface_snapshot", "phux_tree_snapshot", "phux_tree_wait", "phux_wait",
       ],
     });
   } finally {

@@ -91,10 +91,10 @@ The server logs each intent at info with the sender's credential id (or
 `owner`), the resource, its kind, the length of any text (never the text)
 and its outcome, one line per burst plus a summary.
 
-Agents read documents over MCP the way they read panes: `phux_documents`
-lists them, `phux_tree_snapshot` and `phux_tree_wait` read a tree's JSON, and
-`phux_surface_snapshot` returns a surface's PNG as MCP image content
-([parity](./reference/parity.md)). They drive one with `phux_document_navigate`,
+Agents read documents like panes, over MCP or the pi, Oh My Pi and OpenCode
+plugins: `phux_documents` lists them, `phux_tree_snapshot` and
+`phux_tree_wait` read a tree's JSON, and `phux_surface_snapshot` a frame
+([parity](./reference/parity.md)). MCP agents drive one with `phux_document_navigate`,
 `phux_document_click`, `phux_document_type`, `phux_document_key` and
 `phux_document_scroll`, one tool per intent. The loop: find a surface and its
 `control` in `phux_documents`, look at it with `phux_surface_snapshot`, click
@@ -286,11 +286,12 @@ phux failed to keep.
 
 Two parts change (`phux-phiio.4`):
 
-- The producer binding stops naming a kind (landed with `phux-phiio.4`:
-  a parent is fit when its handle carries the `AgentParent` companion, and
-  the guardian is checked against the parent record's activation). The rule
-  that matters is that a projection's parent supervises its producer and
-  carries the activation the producer is checked against. A helper keeps running in a Terminal, as the ACP guardian does, so
+- The producer binding names no kind. The organization checks structure:
+  a projection's parent exists and can supervise
+  (`ResourceKind::requires_parent`, `can_parent`). At spawn the app checks
+  it is fit, its handle carrying the `AgentParent` companion (agent
+  sessions and documents alike), and a guardian against its activation.
+  A helper keeps running in a Terminal, as the ACP guardian does, so
   it inherits supervision, logs and upgrade survival; a PTY-less supervised
   process is a later kind, added only if a PTY proves costly.
 - The server relays per-viewer feedback to the producer: acknowledgements,
@@ -321,10 +322,9 @@ phux already ranks agent evidence with the screen as the floor
 
 Pixels are for a person watching and the last resort for an agent. The first
 non-terminal kind is therefore a replicated accessibility tree
-(`phux-phiio.6`; the kind, its engine and its stream landed, see
-[protocol](./protocol.md#commands-events-resources); `phux snapshot`,
-`phux wait` and the macOS producer follow): `phux snapshot` and `phux wait`
-for an application, with no
+(`phux-phiio.6`; the kind, its engine, its stream and the macOS producer
+landed, see [protocol](./protocol.md#commands-events-resources)):
+[`phux snapshot` and `phux wait`](./scripting.md#reading-a-screen) for an app, with no
 Screen Recording grant. A pixel surface follows (`phux-phiio.7`), drawn first
 by the desktop app, then a browser page over CDP (`phux-phiio.8`), whose
 screencast is already acknowledged per frame. A page needed no kind of its

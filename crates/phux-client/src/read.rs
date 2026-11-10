@@ -1,0 +1,433 @@
+//! Kind dispatch for the verbs that read, wait on, or type into one
+//! resource: `phux snapshot`, `phux wait` and `phux send-keys`.
+//!
+//! Their MCP tools route through it too, but read a Terminal only, so they keep their
+//! read-only annotation and name the per-kind tool for a document.
+//!
+//! The kind catalog ([`phux_protocol::kinds`]) decides. A kind whose facet
+//! carries `GET_SCREEN` is read as a screen, and one whose facet carries
+//! `ROUTE_INPUT` takes keys: today the Terminal. The document kinds are
+//! read through an attach ([`crate::tree`]); their input goes to their
+//! producer as typed intents, which keys do not map onto, so `send-keys`
+//! refuses them. Any other kind, or one this build does not know, is
+//! refused with [`WrongKind`].
+
+use std::borrow::Cow;
+use std::path::Path;
+
+use phux_protocol::ids::{ResourceId, ResourceKind};
+use phux_protocol::kinds;
+use phux_protocol::wire::frame::typed_document::is_textual;
+use serde_json::{Value, json};
+
+use crate::attach::AttachError;
+use crate::attach::connection::Connection;
+use crate::deadline::Deadline;
+use crate::selector::format_terminal_id;
+use crate::tree::{self, Document, FollowEnd, Kind, TreeError, image_size};
+use crate::wait::{Condition, MatchRegex};
+
+pub use crate::selector::Resolved;
+
+/// `schema_version` of the documents this module builds.
+pub const SCHEMA_VERSION: u8 = 1;
+
+/// A verb that dispatches on its target's kind.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Verb {
+    /// Read the resource once.
+    Snapshot,
+    /// Block until its content matches.
+    Wait,
+    /// Type keys into it.
+    SendKeys,
+}
+
+impl Verb {
+    /// The CLI verb's name.
+    #[must_use]
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::Snapshot => "snapshot",
+            Self::Wait => "wait",
+            Self::SendKeys => "send-keys",
+        }
+    }
+
+    /// The Terminal facet method the verb sends.
+    const fn screen_method(self) -> &'static str {
+        match self {
+            Self::Snapshot | Self::Wait => "GET_SCREEN",
+            Self::SendKeys => "ROUTE_INPUT",
+        }
+    }
+}
+
+/// How a verb reaches its resource.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Route {
+    /// The Terminal facet: `GET_SCREEN` to read, `ROUTE_INPUT` to type.
+    Terminal,
+    /// A document kind, read through an attach.
+    Document(Kind),
+}
+
+/// A verb that does not apply to its resource's kind.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[error("`{}` does not apply to {}, {}", verb.name(), format_terminal_id(resource), kind_label(*kind))]
+pub struct WrongKind {
+    /// The resource named.
+    pub resource: ResourceId,
+    /// Its kind.
+    pub kind: ResourceKind,
+    /// The verb refused.
+    pub verb: Verb,
+}
+
+impl WrongKind {
+    /// What to do instead, naming the resource.
+    #[must_use]
+    pub fn remedy(&self) -> String {
+        let id = format_terminal_id(&self.resource);
+        if kinds::kind_spec(self.kind).is_none() {
+            return "this phux does not know the resource's kind; update phux".to_owned();
+        }
+        match (self.verb, document_kind(self.kind)) {
+            // A page's or a window's tree and surface take page input.
+            (Verb::SendKeys, Some(Kind::Tree | Kind::Surface)) => format!(
+                "its producer takes typed intents: `phux agent page type {id} TEXT` or \
+                 `phux agent page key {id} KEY`"
+            ),
+            (Verb::SendKeys, Some(Kind::Document)) => {
+                "a typed document takes no keys: its producer publishes it".to_owned()
+            }
+            (Verb::Wait, Some(Kind::Surface)) => format!(
+                "a surface is pixels, not text: read it with `phux snapshot {id} --out FILE`, \
+                 or wait on the accessibility tree beside it"
+            ),
+            _ if self.kind == ResourceKind::AgentSession => format!(
+                "read an agent session with `phux agent log {id}`; address its parent pane \
+                 for the screen and for keys"
+            ),
+            _ => "address a Terminal; `phux ls --json` lists each resource's kind".to_owned(),
+        }
+    }
+}
+
+/// An option that applies to a Terminal only, given for another kind.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[error("`{option}` applies to a terminal only, and {} is {}", format_terminal_id(resource), kind_label(*kind))]
+pub struct TerminalOnly {
+    /// The resource named.
+    pub resource: ResourceId,
+    /// Its kind.
+    pub kind: ResourceKind,
+    /// The option, as the caller spells it (`--tail`, `cells`).
+    pub option: &'static str,
+}
+
+/// How `verb` reaches `resolved`, read from the kind catalog.
+///
+/// # Errors
+///
+/// [`WrongKind`] when the verb does not apply to the kind: an
+/// `AgentSession`, a kind this build does not know, a document for
+/// `send-keys`, or a pixel surface for `wait`, which has no text.
+pub fn route(verb: Verb, resolved: &Resolved) -> Result<Route, WrongKind> {
+    let refuse = || WrongKind {
+        resource: resolved.id.clone(),
+        kind: resolved.kind,
+        verb,
+    };
+    let spec = kinds::kind_spec(resolved.kind).ok_or_else(refuse)?;
+    if spec
+        .methods
+        .iter()
+        .any(|method| method.name == verb.screen_method())
+    {
+        return Ok(Route::Terminal);
+    }
+    match (verb, document_kind(resolved.kind)) {
+        (Verb::Snapshot, Some(kind)) | (Verb::Wait, Some(kind @ (Kind::Tree | Kind::Document))) => {
+            Ok(Route::Document(kind))
+        }
+        _ => Err(refuse()),
+    }
+}
+
+/// The first of `options` that is set, refused for a resource that is not
+/// read as a screen. `options` pairs each option's spelling with whether
+/// the caller gave it.
+///
+/// # Errors
+///
+/// [`TerminalOnly`] naming that option.
+pub fn terminal_only(
+    resolved: &Resolved,
+    route: Route,
+    options: &[(&'static str, bool)],
+) -> Result<(), TerminalOnly> {
+    if route == Route::Terminal {
+        return Ok(());
+    }
+    options
+        .iter()
+        .find(|(_, given)| *given)
+        .map_or(Ok(()), |(option, _)| {
+            Err(TerminalOnly {
+                resource: resolved.id.clone(),
+                kind: resolved.kind,
+                option,
+            })
+        })
+}
+
+/// The document kind `kind` names, if it is one.
+const fn document_kind(kind: ResourceKind) -> Option<Kind> {
+    match kind {
+        ResourceKind::AccessibilityTree => Some(Kind::Tree),
+        ResourceKind::PixelSurface => Some(Kind::Surface),
+        ResourceKind::Document => Some(Kind::Document),
+        _ => None,
+    }
+}
+
+/// How a message names `kind`, with its article: `an accessibility tree`.
+#[must_use]
+pub fn kind_label(kind: ResourceKind) -> String {
+    match kind {
+        ResourceKind::Terminal => "a terminal".to_owned(),
+        ResourceKind::AgentSession => "an agent session".to_owned(),
+        ResourceKind::AccessibilityTree => "an accessibility tree".to_owned(),
+        ResourceKind::PixelSurface => "a pixel surface".to_owned(),
+        ResourceKind::Document => "a document".to_owned(),
+        other => format!("a resource of kind {other}"),
+    }
+}
+
+/// The text of a document of `kind`: a tree's JSON, or a typed document
+/// whose content type is text. `None` for a surface or a binary document.
+#[must_use]
+pub fn text_of(kind: Kind, document: &Document) -> Option<Cow<'_, str>> {
+    let textual = match kind {
+        Kind::Tree => true,
+        Kind::Surface => false,
+        Kind::Document => document.content_type.as_deref().is_some_and(is_textual),
+    };
+    textual.then(|| String::from_utf8_lossy(&document.bytes))
+}
+
+/// `text` made safe to print to a terminal: a control character cannot act.
+///
+/// A document's text is the producer's, and a raw ESC, CSI or OSC in it
+/// would drive the reader's terminal: write its clipboard (OSC 52), retitle
+/// it, or forge a status report (OSC 7501). Newline and tab pass; a CRLF
+/// line end becomes a newline. Every other C0 control and DEL becomes its
+/// visible Control Pictures sign (ESC is `␛`, a lone CR `␍`, DEL `␡`), and a
+/// C1 control (U+0080 to U+009F) becomes U+FFFD.
+#[must_use]
+pub fn terminal_safe(text: &str) -> Cow<'_, str> {
+    let unsafe_char = |c: char| c.is_control() && c != '\n' && c != '\t';
+    if !text.contains(unsafe_char) {
+        return Cow::Borrowed(text);
+    }
+    let mut safe = String::with_capacity(text.len());
+    let mut chars = text.chars().peekable();
+    while let Some(c) = chars.next() {
+        match c {
+            '\r' if chars.peek() == Some(&'\n') => {}
+            '\n' | '\t' => safe.push(c),
+            '\u{7f}' => safe.push('\u{2421}'),
+            c if u32::from(c) < 0x20 => {
+                safe.push(char::from_u32(0x2400 + u32::from(c)).unwrap_or('\u{fffd}'));
+            }
+            c if c.is_control() => safe.push('\u{fffd}'),
+            c => safe.push(c),
+        }
+    }
+    Cow::Owned(safe)
+}
+
+/// A document's text as a terminal shows it: [`text_of`], made
+/// [`terminal_safe`], ending in a newline. `None` when it has no text.
+#[must_use]
+pub fn terminal_text(kind: Kind, document: &Document) -> Option<String> {
+    let text = text_of(kind, document)?;
+    let mut safe = terminal_safe(&text).into_owned();
+    if !safe.is_empty() && !safe.ends_with('\n') {
+        safe.push('\n');
+    }
+    Some(safe)
+}
+
+/// The newest document of `resource`, over a fresh connection.
+///
+/// # Errors
+///
+/// The refusal, or a connection failure.
+pub async fn document(socket: &Path, resource: &ResourceId) -> Result<Document, TreeError> {
+    let mut conn = Connection::connect(socket).await?;
+    tree::snapshot(&mut conn, resource).await
+}
+
+/// A typed document as `phux snapshot --json` prints it: the facts
+/// `phux agent doc snapshot --json` prints, and its `text` when the content
+/// type is text.
+#[must_use]
+pub fn document_json(document: &Document) -> Value {
+    let size = image_size(&document.bytes).ok();
+    json!({
+        "schema_version": SCHEMA_VERSION,
+        "seq": document.seq,
+        "bytes": document.bytes.len(),
+        "content_type": document.content_type,
+        "format": size.map(|s| s.0.name()),
+        "width": size.map(|s| s.1),
+        "height": size.map(|s| s.2),
+        "text": text_of(Kind::Document, document),
+    })
+}
+
+/// What a document wait matches: a wait's text condition.
+#[derive(Debug, Clone, Copy)]
+pub enum TextMatch<'a> {
+    /// The text contains this substring, as `phux agent tree follow --until`.
+    Contains(&'a str),
+    /// Some line of the text matches this pattern.
+    Regex(&'a MatchRegex),
+}
+
+impl<'a> TextMatch<'a> {
+    /// The text condition `condition` names; `None` for an idle wait, which
+    /// reads a screen.
+    #[must_use]
+    pub const fn of(condition: &'a Condition) -> Option<Self> {
+        match condition {
+            Condition::Contains(needle) => Some(Self::Contains(needle.as_str())),
+            Condition::Matches(pattern) => Some(Self::Regex(pattern)),
+            Condition::Idle(_) => None,
+        }
+    }
+
+    /// Whether `text` meets it.
+    #[must_use]
+    pub fn is_match(&self, text: &str) -> bool {
+        match self {
+            Self::Contains(needle) => text.contains(needle),
+            Self::Regex(pattern) => text.lines().any(|line| pattern.is_match(line)),
+        }
+    }
+}
+
+/// How a document wait ended. `reads` counts the documents examined.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DocumentWait {
+    /// A document matched.
+    Matched {
+        /// The document that matched.
+        document: Document,
+        /// Documents examined.
+        reads: u64,
+    },
+    /// The resource closed first.
+    Closed {
+        /// Documents examined.
+        reads: u64,
+    },
+    /// The deadline passed first.
+    TimedOut {
+        /// Documents examined.
+        reads: u64,
+    },
+}
+
+/// Why a document wait could not run.
+#[derive(Debug, thiserror::Error)]
+pub enum WaitError {
+    /// The document is not text, so no text condition can hold.
+    #[error(
+        "{} is a {content_type} document, not text; a wait matches text",
+        format_terminal_id(resource)
+    )]
+    NotText {
+        /// The document.
+        resource: ResourceId,
+        /// Its content type.
+        content_type: String,
+    },
+    /// The read failed.
+    #[error(transparent)]
+    Tree(#[from] TreeError),
+}
+
+/// Follow `resource`, a document of `kind`, until a document's text meets
+/// `matcher`, it closes, or `deadline` passes.
+///
+/// As a screen wait floors only its first read, the first document gets at
+/// least [`FIRST_READ_FLOOR`](crate::wait::FIRST_READ_FLOOR) to arrive, so
+/// a zero budget still checks it once; every later one is bounded by
+/// `deadline` itself.
+///
+/// # Errors
+///
+/// [`WaitError::NotText`] for a binary document, or the read's failure; a
+/// dropped connection is [`AttachError::Disconnected`].
+pub async fn wait_document(
+    socket: &Path,
+    resource: &ResourceId,
+    kind: Kind,
+    matcher: TextMatch<'_>,
+    deadline: Deadline,
+) -> Result<DocumentWait, WaitError> {
+    let mut reads = 0;
+    let mut outcome: Option<Result<Document, WaitError>> = None;
+    let first_seen = tokio::sync::Notify::new();
+    let first_read = deadline.floored(crate::wait::FIRST_READ_FLOOR);
+    let followed = {
+        let follow = first_read.run(async {
+            let mut conn = Connection::connect(socket).await?;
+            tree::follow(&mut conn, resource, |document| {
+                reads += 1;
+                if reads == 1 {
+                    first_seen.notify_one();
+                }
+                let verdict = match text_of(kind, &document) {
+                    None => Some(Err(WaitError::NotText {
+                        resource: resource.clone(),
+                        content_type: document.content_type.clone().unwrap_or_default(),
+                    })),
+                    Some(text) if matcher.is_match(&text) => Some(Ok(())),
+                    Some(_) => None,
+                };
+                outcome = verdict.map(|verdict| verdict.map(|()| document));
+                outcome.is_none()
+            })
+            .await
+        });
+        // Past the first document, the unfloored budget ends the wait.
+        let budget = async {
+            first_seen.notified().await;
+            deadline.run(std::future::pending::<()>()).await
+        };
+        tokio::select! {
+            biased;
+            followed = follow => followed,
+            None = budget => None,
+        }
+    };
+    match (followed, outcome) {
+        (_, Some(Ok(document))) => Ok(DocumentWait::Matched { document, reads }),
+        (_, Some(Err(err))) => Err(err),
+        (None, None) => Ok(DocumentWait::TimedOut { reads }),
+        (Some(Err(err)), None) => Err(err.into()),
+        (Some(Ok(FollowEnd::Disconnected)), None) => {
+            Err(TreeError::Protocol(AttachError::Disconnected).into())
+        }
+        (Some(Ok(FollowEnd::Closed | FollowEnd::Stopped)), None) => {
+            Ok(DocumentWait::Closed { reads })
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests;

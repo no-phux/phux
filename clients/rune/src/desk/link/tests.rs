@@ -48,6 +48,7 @@ fn pane(id: u32, session: u32, cwd: Option<&str>) -> PaneDescriptor {
 fn topology(panes: Vec<PaneDescriptor>) -> Topology {
     Topology {
         sessions: Vec::new(),
+        resources: Vec::new(),
         panes,
         agent_sessions: Vec::new(),
         documents: Vec::new(),

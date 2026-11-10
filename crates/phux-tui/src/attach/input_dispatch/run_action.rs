@@ -19,6 +19,7 @@ use super::pickers::switch_window;
 
 mod modes;
 mod panes;
+mod placeholders;
 mod plugins;
 mod sessions;
 mod spawn;

@@ -25,7 +25,7 @@ pub(crate) fn catalog() -> Value {
         },
         {
             "name": "phux_snapshot",
-            "description": "Capture a pane as structured screen data (side-effect-free; does not attach or resize).",
+            "description": "Capture a pane as structured screen data (side-effect-free; does not attach or resize). Reads a terminal only: a document resource is refused with `wrong_resource_kind` naming the tool that reads it (phux_tree_snapshot for an accessibility tree, phux_surface_snapshot for a pixel surface).",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -41,7 +41,7 @@ pub(crate) fn catalog() -> Value {
         },
         {
             "name": "phux_send_keys",
-            "description": "Send input to a pane. Each key is a named key (Enter, Tab, C-c, ...) or a literal string, tmux-style.",
+            "description": "Send input to a pane. Each key is a named key (Enter, Tab, C-c, ...) or a literal string, tmux-style. Keys reach a terminal only: a document resource is refused with `wrong_resource_kind`, because a page's or a window's tree and surface take typed intents (phux_document_type, phux_document_key) and a typed document takes no input.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -99,7 +99,7 @@ pub(crate) fn catalog() -> Value {
         },
         {
             "name": "phux_wait",
-            "description": "Poll a pane until it contains text (`until`) or settles (`idle_ms`). Returns whether the condition was met.",
+            "description": "Poll a pane until it contains text (`until`) or settles (`idle_ms`). Returns whether the condition was met. Waits on a terminal only: a document resource is refused with `wrong_resource_kind`; wait on an accessibility tree with phux_tree_wait, and on a typed document with `phux wait @N --until TEXT` on the CLI.",
             "inputSchema": {
                 "type": "object",
                 "properties": {

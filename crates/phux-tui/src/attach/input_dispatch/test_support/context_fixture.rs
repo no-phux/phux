@@ -25,6 +25,7 @@ pub(super) fn test_engine_kernel() -> AttachKernel {
 )]
 pub(super) struct CtxFixture {
     pub(super) engine_kernel: AttachKernel,
+    pub(super) leaves: crate::attach::surface_leaf::LeafBook,
     pub(super) focus_history: FocusHistory,
     pub(super) workspace: ArrangementDoc,
     pub(super) layout_read_complete: bool,
@@ -94,6 +95,7 @@ impl Default for CtxFixture {
     fn default() -> Self {
         Self {
             engine_kernel: test_engine_kernel(),
+            leaves: crate::attach::surface_leaf::LeafBook::default(),
             focus_history: FocusHistory::default(),
             workspace: ArrangementDoc::single(tid(1)),
             layout_read_complete: true,
@@ -166,6 +168,7 @@ impl CtxFixture {
         DispatchCtx {
             control_dial: None,
             engine_kernel: &mut self.engine_kernel,
+            leaves: &self.leaves,
             resolver: None,
             focus_history: self.focus_history.clone(),
             workspace: &mut self.workspace,

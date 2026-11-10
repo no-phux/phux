@@ -168,12 +168,12 @@ impl ControlPlane {
             return;
         };
         for (terminal_id, relabel) in relabels {
+            if let Some(title) = &relabel.title {
+                topology.retitle(&terminal_id, title);
+            }
             let Some(pane) = topology.pane_mut(&terminal_id) else {
                 continue;
             };
-            if relabel.title.is_some() {
-                pane.title = relabel.title;
-            }
             if relabel.cwd.is_some() {
                 pane.cwd = relabel.cwd;
             }

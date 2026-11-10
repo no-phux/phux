@@ -115,6 +115,7 @@ impl<E: EngineAdapter> SessionKernel<E> {
         // Only tracked Terminals get a process-exit status: agent sessions report
         // via `AgentSessionStatus`, and a forgotten id has nothing new to say.
         let was_tracked_terminal = self.terminals.contains_key(terminal_id);
+        self.documents.remove(terminal_id);
         if let Some(stream) = self.agents.remove(terminal_id)
             && let Some(mut view) = stream.native_view().cloned()
         {

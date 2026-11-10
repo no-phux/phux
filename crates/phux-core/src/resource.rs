@@ -58,6 +58,35 @@ impl ResourceKind {
     }
 }
 
+impl ResourceKind {
+    /// Whether a resource of this kind must be created under a parent: a
+    /// producer-fed projection binds to the resource that supervises its
+    /// producer (docs/resource-kinds.md, Producers).
+    #[must_use]
+    pub const fn requires_parent(self) -> bool {
+        match self {
+            Self::Terminal => false,
+            Self::AgentSession | Self::AccessibilityTree | Self::PixelSurface | Self::Document => {
+                true
+            }
+        }
+    }
+
+    /// Whether a resource of this kind can be such a parent: it runs a
+    /// process that can supervise a producer. A projection runs none. This is
+    /// the structural fact the organization can know; whether a live parent
+    /// is fit to supervise a given producer is its app's check at spawn.
+    #[must_use]
+    pub const fn can_parent(self) -> bool {
+        match self {
+            Self::Terminal => true,
+            Self::AgentSession | Self::AccessibilityTree | Self::PixelSurface | Self::Document => {
+                false
+            }
+        }
+    }
+}
+
 impl std::fmt::Display for ResourceKind {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(self.as_str())

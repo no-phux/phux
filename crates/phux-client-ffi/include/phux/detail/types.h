@@ -61,11 +61,16 @@ typedef struct PhuxSessionInfo {
 /**
  * Wire ResourceKind tags. PhuxResourceInfo.kind carries the raw tag, so a kind
  * this header does not name still reaches the host; treat it as opaque and
- * never as a terminal.
+ * never as a terminal. ACCESSIBILITY_TREE, PIXEL_SURFACE and DOCUMENT are the
+ * document kinds: each delivers whole documents as PHUX_CLIENT_EFFECT_DOCUMENT
+ * and can occupy an arrangement leaf. Additive like every enum here.
  */
 typedef enum PhuxResourceKind {
     PHUX_RESOURCE_TERMINAL = 0,
-    PHUX_RESOURCE_AGENT_SESSION = 1
+    PHUX_RESOURCE_AGENT_SESSION = 1,
+    PHUX_RESOURCE_ACCESSIBILITY_TREE = 2,
+    PHUX_RESOURCE_PIXEL_SURFACE = 3,
+    PHUX_RESOURCE_DOCUMENT = 4
 } PhuxResourceKind;
 
 /**
@@ -75,7 +80,9 @@ typedef enum PhuxResourceKind {
  * sessions and kinds, minus resources the server has since reported closed.
  * Only PHUX_RESOURCE_TERMINAL resources in the focused session take part in the
  * attach and have grids; other kinds never publish a replica and refuse
- * terminal-facet calls with PHUX_CLIENT_INVALID_STATE. parent is NULL when the
+ * terminal-facet calls with PHUX_CLIENT_INVALID_STATE. A document kind,
+ * attached with phux_client_queue_attach_resource, publishes
+ * PHUX_CLIENT_EFFECT_DOCUMENT instead. parent is NULL when the
  * resource has no parent, otherwise it borrows bridge storage until the next
  * mutable call. provider/native_id/state are UTF-8 spans, empty for kinds
  * without an agent facet. session_id is the live session it belongs to (0

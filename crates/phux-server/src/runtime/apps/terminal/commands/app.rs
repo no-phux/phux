@@ -109,19 +109,7 @@ impl ResourceApp for TerminalApp {
     }
 
     fn spawn<'a>(&'a self, spawn: ResourceSpawn<'a>) -> LocalBoxFuture<'a, ()> {
-        // A Terminal spawn needs the whole `SpawnRequest` (argv, cwd, size,
-        // owner), so `handle_spawn_terminal` serves it before dispatching here; a
-        // spawn that reaches this arm is a host bug, refused rather than
-        // started without its launch.
-        error!(
-            request_id = spawn.request_id,
-            "a Terminal SPAWN_RESOURCE reached the app without its request"
-        );
-        Box::pin(crate::runtime::spawn_reply::refuse_spawn(
-            spawn.out_tx,
-            spawn.request_id,
-            SpawnError::UnsupportedKind,
-        ))
+        super::super::attach::handle_spawn_terminal(spawn).boxed_local()
     }
 
     fn resumed(&self, _state: &SharedState) {

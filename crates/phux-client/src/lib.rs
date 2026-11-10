@@ -65,6 +65,8 @@ pub mod tree;
 // Project identity (ADR-0168): discovery, the stored document, grouping.
 pub mod project_groups;
 pub use phux_client_runtime::project_identity;
+// Kind dispatch for the snapshot, wait and send-keys verbs.
+pub mod read;
 pub mod record;
 pub mod resize;
 pub mod resource;

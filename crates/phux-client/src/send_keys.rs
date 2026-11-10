@@ -357,7 +357,7 @@ async fn route_input(
         .into_result_ignoring_interleaved()
     {
         CommandResult::Ok => Ok(()),
-        CommandResult::Error { message, .. } => Err(AttachError::Refused(message)),
+        CommandResult::Error { code, message } => Err(AttachError::refusal(code, message)),
         other => Err(AttachError::Protocol(crate::explain::explain_unexpected(
             "ROUTE_INPUT",
             &other,

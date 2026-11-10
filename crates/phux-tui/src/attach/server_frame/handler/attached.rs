@@ -6,6 +6,7 @@ use phux_protocol::ids::{ClientId, ResourceId};
 use phux_protocol::wire::frame::SessionLifetime;
 
 use super::super::engine_route::{attach_agent_sessions, attach_participants};
+use super::spawned::window_holding_pane;
 use super::windows::focused_session_name;
 use super::{FrameCtx, FrameOutcome, KernelRoute, is_terminal};
 use crate::attach::outcome::AttachError;
@@ -30,6 +31,8 @@ pub(super) fn handle_attached<W: crate::attach::RenderSink>(
     *ctx.lifetime = focused.map_or(SessionLifetime::Ephemeral, session_lifetime);
     *ctx.session_key = focused.and_then(|s| s.key);
     *ctx.members = session_terminals(snapshot);
+    // The graph names every non-Terminal leaf before any bootstrap of it.
+    ctx.leaves.replace(&snapshot.resources);
     if focused_session_is_empty(snapshot) {
         return Ok(attach_empty_session(ctx, snapshot, initial_client_id));
     }
@@ -188,7 +191,7 @@ pub(super) fn seed_bootstrap_geometry<W: crate::attach::RenderSink>(
     rows: u16,
 ) -> Result<FrameOutcome, AttachError> {
     if ctx.is_non_terminal(&terminal_id) {
-        return Ok(FrameOutcome::default());
+        return Ok(first_word_of_a_surface_leaf(ctx, &terminal_id));
     }
     let slot = match ctx.panes.entry(terminal_id) {
         std::collections::hash_map::Entry::Occupied(entry) => entry.into_mut(),
@@ -198,6 +201,23 @@ pub(super) fn seed_bootstrap_geometry<W: crate::attach::RenderSink>(
     };
     slot.geometry = (cols.max(1), rows.max(1));
     Ok(FrameOutcome::default())
+}
+
+/// A non-Terminal bootstrap: when it is the first word that an arranged
+/// leaf is not a Terminal, record it and repaint, so the placeholder
+/// replaces the blank tile now rather than on some later full repaint.
+fn first_word_of_a_surface_leaf<W: crate::attach::RenderSink>(
+    ctx: &mut FrameCtx<'_, W>,
+    terminal_id: &ResourceId,
+) -> FrameOutcome {
+    let Some(kind) = ctx.engine_kernel.resource_kind(terminal_id) else {
+        return FrameOutcome::default();
+    };
+    let learned = ctx.leaves.note_spawned(terminal_id, kind);
+    FrameOutcome {
+        layout_replaced: learned && window_holding_pane(ctx.workspace, terminal_id).is_some(),
+        ..FrameOutcome::default()
+    }
 }
 
 /// Record a bootstrap chunk on the span; staging has nothing to paint.

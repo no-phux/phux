@@ -19,9 +19,6 @@ printf 'scoped:\n' >"$repo/just/docs.just"
 mkdir -p "$repo/docs/reference"
 printf '# CLI\n\n## `phux agent`\n\n## `phux agent wait`\n\nUsage: phux agent <SUBCOMMAND>\n\n## `phux agent show`\n' >"$repo/docs/reference/cli.md"
 printf '# Target\n\n## Build cache (mbx)\n\n## Repeat\n\n## Repeat\n\n<a id="explicit"></a>\n' >"$repo/docs/Parent/Leaf.md"
-# An early match must drain more than a pipe buffer of trailing anchors.
-# Otherwise grep -q can SIGPIPE awk and turn a valid anchor into a violation.
-awk 'BEGIN { for (i = 0; i < 10000; i++) print "## Trailing anchor " i }' >>"$repo/docs/Parent/Leaf.md"
 expect_pass() {
     if ! "$BASH" "$repo/scripts/check-docs.sh" "$@" >"$scratch/output" 2>&1; then
         printf 'unexpected failure: %s\n' "$*" >&2
@@ -72,6 +69,15 @@ printf '[missing](./missing.md)\n' >"$repo/docs/guide.md"
 expect_fail 'missing.md does not exist' --only=links
 printf '[anchor](./Parent/Leaf.md#missing)\n' >"$repo/docs/guide.md"
 expect_fail 'has no heading #missing' --only=links
+# An early anchor on a page with more headings than a pipe holds: the lookup
+# reads every anchor, so the writer is never cut off and failed by pipefail.
+{
+    printf '# Early\n'
+    for i in $(seq 1 6000); do printf '## Heading %s with padding\n' "$i"; done
+} >"$repo/docs/Parent/Long.md"
+printf '[early](./Parent/Long.md#early)\n' >"$repo/docs/guide.md"
+expect_pass --only=links
+rm "$repo/docs/Parent/Long.md"
 printf '```sh\nphux gone\n```\n' >"$repo/docs/guide.md"
 expect_fail '`phux gone` is not a command' --only=commands
 printf '```sh\nphux agent gone\n```\n' >"$repo/docs/guide.md"

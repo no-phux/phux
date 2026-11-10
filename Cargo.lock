@@ -3502,6 +3502,7 @@ version = "0.135.0"
 dependencies = [
  "bytes",
  "phux-core",
+ "phux-protocol",
  "phux-resource",
  "serde_json",
  "tokio",

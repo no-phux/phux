@@ -212,6 +212,12 @@ fn split(a: u32, b: u32) -> LayoutNode {
 }
 
 fn publish(client: &Client, n: u32, kind: ResourceKind, bytes: &[u8]) {
+    publish_on(client, n, StreamId::new(u64::from(n)).unwrap(), kind, bytes);
+}
+
+/// [`publish`] on `stream_id`: a reattach's cut rides a new stream, as the
+/// server's does, since a generation is never bootstrapped twice.
+fn publish_on(client: &Client, n: u32, stream_id: StreamId, kind: ResourceKind, bytes: &[u8]) {
     let profile = match kind {
         ResourceKind::PixelSurface => BootstrapStreamProfile::PixelSurfacePngV1,
         ResourceKind::Terminal => BootstrapStreamProfile::SynthesizedVtRaw,
@@ -220,7 +226,7 @@ fn publish(client: &Client, n: u32, kind: ResourceKind, bytes: &[u8]) {
     for frame in [
         FrameKind::BootstrapBegin {
             terminal_id: id(n),
-            stream_id: StreamId::new(u64::from(n)).unwrap(),
+            stream_id,
             bootstrap_id: BootstrapId::new(1).unwrap(),
             profile,
             cols: if kind == ResourceKind::Terminal {
@@ -237,14 +243,14 @@ fn publish(client: &Client, n: u32, kind: ResourceKind, bytes: &[u8]) {
         },
         FrameKind::BootstrapChunk {
             terminal_id: id(n),
-            stream_id: StreamId::new(u64::from(n)).unwrap(),
+            stream_id,
             bootstrap_id: BootstrapId::new(1).unwrap(),
             chunk_seq: 0,
             payload: bytes.to_vec().into(),
         },
         FrameKind::BootstrapReady {
             terminal_id: id(n),
-            stream_id: StreamId::new(u64::from(n)).unwrap(),
+            stream_id,
             bootstrap_id: BootstrapId::new(1).unwrap(),
             history_cursor: None,
         },

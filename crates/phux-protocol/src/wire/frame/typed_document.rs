@@ -43,6 +43,18 @@ pub fn essence_of(content_type: &str) -> &str {
     content_type.split(';').next().unwrap_or_default().trim()
 }
 
+/// Whether a document of `content_type` is text: `text/*`, JSON, and the
+/// `+xml` and `+json` structured syntaxes, the families a publish must
+/// carry as UTF-8.
+#[must_use]
+pub fn is_textual(content_type: &str) -> bool {
+    let essence = essence_of(content_type).to_ascii_lowercase();
+    essence.starts_with("text/")
+        || essence == "application/json"
+        || essence.ends_with("+xml")
+        || essence.ends_with("+json")
+}
+
 /// The bootstrap payload of a `Document`: its content type behind a
 /// one-byte length, then `document`.
 ///
@@ -99,6 +111,22 @@ mod tests {
             assert!(validate_content_type(bad).is_err(), "{bad}");
         }
         assert_eq!(essence_of("Text/Plain ; charset=utf-8"), "Text/Plain");
+    }
+
+    #[test]
+    fn text_families_are_textual_and_images_are_not() {
+        for text in [
+            "text/markdown",
+            "Text/CSV; charset=utf-8",
+            "application/json",
+            "image/svg+xml",
+            "application/vnd.phux.board+json",
+        ] {
+            assert!(is_textual(text), "{text}");
+        }
+        for binary in ["image/png", "application/octet-stream", "application/pdf"] {
+            assert!(!is_textual(binary), "{binary}");
+        }
     }
 
     #[test]

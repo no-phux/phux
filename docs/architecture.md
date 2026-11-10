@@ -238,7 +238,9 @@ graph contains no Terminal engine, libghostty or PTY implementation. The
 executable explicitly injects a `TerminalEngineFactory`; no built-in engine is
 selected by the host. The private Terminal app uses `phux-terminal-api` ports;
 native encoding, ordered PTY writes and capability adaptation stay engine-owned.
-`seam_tests.rs` and the lint lane's `build-features-check` enforce this separation. The host
+`seam_tests.rs` and the lint lane's `build-features-check` enforce this separation;
+`seam_ratchet_tests.rs` lists the kind references the host still makes, and
+that list only shrinks. The host
 holds a lossless OS-native `LaunchCommand`; deciding what a pane runs is the app's job.
 Organization launches also pass through the app: support is checked before
 commit, then the committed effect executes only through the recorded kind.

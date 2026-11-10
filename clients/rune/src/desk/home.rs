@@ -141,6 +141,7 @@ mod tests {
     fn topology(sessions: Vec<SessionDescriptor>) -> Topology {
         Topology {
             sessions,
+            resources: Vec::new(),
             panes: Vec::new(),
             agent_sessions: Vec::new(),
             documents: Vec::new(),

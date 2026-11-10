@@ -6,6 +6,7 @@ use super::{
 };
 
 mod agent_delivery;
+mod document;
 
 impl Client {
     pub(crate) fn state(&self) -> PhuxClientState {
@@ -279,6 +280,7 @@ impl Client {
             Event::AgentPublication { publication, .. } => {
                 self.agent_publication_effect(publication);
             }
+            Event::DocumentPublished { publication } => self.document_effect(&publication),
             Event::AgentSessionClosed {
                 terminal_id,
                 stream,

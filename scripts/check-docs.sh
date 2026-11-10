@@ -130,8 +130,9 @@ heading_anchors() {
     ' "$1"
 }
 
+# Not `grep -q`: it quits at the first match, and under pipefail the awk it
+# cut off (SIGPIPE) would fail a page whose anchors outrun one pipe write.
 has_anchor() {
-    # Drain the producer: an early grep -q exit can SIGPIPE awk under pipefail.
     heading_anchors "$1" | grep -Fx -- "$2" >/dev/null
 }
 
