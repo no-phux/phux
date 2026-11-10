@@ -66,7 +66,10 @@ def bundle_plist(version, simulator, fonts, icons=None):
         "CFBundlePackageType": "APPL", "CFBundleShortVersionString": version,
         "CFBundleVersion": version.split("-", 1)[0], "MinimumOSVersion": MIN_IOS,
         "CFBundleSupportedPlatforms": ["iPhoneSimulator" if simulator else "iPhoneOS"],
-        "LSRequiresIPhoneOS": True, "UIDeviceFamily": [1, 2],
+        # A fixed portrait phone form for now; iPad would be a letterboxed lie.
+        "LSRequiresIPhoneOS": True, "UIDeviceFamily": [1],
+        # Without this an iPhone caps the display link at 60 Hz.
+        "CADisableMinimumFrameDurationOnPhone": True,
         "UILaunchScreen": {"UIColorName": "LaunchGround"}, "UIAppFonts": fonts,
         "NSCameraUsageDescription": "Scan a Phux pairing QR to connect without typing credentials.",
         "NSLocalNetworkUsageDescription": "Connect securely to your computer and get its Phux pairing code over SSH.",
@@ -137,7 +140,7 @@ def compile_assets(app, env, out, simulator):
     partial = out / "assets-info.plist"
     run(["/usr/bin/xcrun", "actool", catalog, "--compile", app, "--platform",
          "iphonesimulator" if simulator else "iphoneos", "--minimum-deployment-target", MIN_IOS,
-         "--target-device", "iphone", "--target-device", "ipad", "--app-icon", "AppIcon",
+         "--target-device", "iphone", "--app-icon", "AppIcon",
          "--output-partial-info-plist", partial, "--errors", "--warnings"],
         env, out, "assets", timeout=300)
     icons = plistlib.loads(partial.read_bytes())

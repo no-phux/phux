@@ -34,6 +34,8 @@ class NativeAssetTests(unittest.TestCase):
                 def actool(command, env, output, name, timeout=120, stdout_only=False):
                     self.assertEqual(command[command.index("--platform") + 1], platform)
                     self.assertEqual(command[command.index("--app-icon") + 1], "AppIcon")
+                    devices = [command[at + 1] for at, arg in enumerate(command) if arg == "--target-device"]
+                    self.assertEqual(devices, ["iphone"])
                     (app / "Assets.car").touch()
                     (output / "assets-info.plist").write_bytes(plistlib.dumps(compiled))
 

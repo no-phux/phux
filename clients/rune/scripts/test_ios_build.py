@@ -65,6 +65,8 @@ class BuildTests(unittest.TestCase):
             self.assertIn("NSCameraUsageDescription", info)
             self.assertIn("NSLocalNetworkUsageDescription", info)
             self.assertEqual(info["UILaunchScreen"], {"UIColorName": "LaunchGround"})
+            self.assertEqual(info["UIDeviceFamily"], [1])  # A portrait phone form only.
+            self.assertIs(info["CADisableMinimumFrameDurationOnPhone"], True)
             self.assertEqual(plistlib.loads(plistlib.dumps(info)), info)
         icons = {"CFBundleIcons": {"CFBundlePrimaryIcon": {"CFBundleIconName": "AppIcon"}}}
         self.assertEqual(build.bundle_plist("1.0.0", False, [], icons)["CFBundleIcons"], icons["CFBundleIcons"])
