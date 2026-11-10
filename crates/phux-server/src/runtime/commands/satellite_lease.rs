@@ -146,7 +146,7 @@ pub(super) async fn relay_satellite_attach(
     if cursor && kind != Some(phux_protocol::ids::ResourceKind::AgentSession) {
         return invalid_agent_cursor();
     }
-    if ctx.profile.is_none() && kind == Some(phux_protocol::ids::ResourceKind::Terminal) {
+    if ctx.profile.is_none() && crate::hub::relay::stream_needs_terminal_profile(kind) {
         return CommandResult::Error {
             code: ErrorCode::CodecUnavailable,
             message: crate::runtime::apps::terminal::commands::NO_TERMINAL_PROFILE.to_owned(),

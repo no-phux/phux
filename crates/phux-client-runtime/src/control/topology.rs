@@ -115,7 +115,8 @@ pub struct SatelliteSession {
     pub host: String,
     /// The session's name on the satellite.
     pub name: String,
-    /// Its terminals, satellite-tagged, in window order.
+    /// Its resources of every kind, satellite-tagged; Terminals in window
+    /// order.
     pub members: Vec<ResourceId>,
 }
 
