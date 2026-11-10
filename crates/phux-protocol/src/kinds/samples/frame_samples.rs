@@ -122,11 +122,11 @@ fn spawn_samples() -> Vec<(FrameKind, &'static Rule)> {
         ),
         (
             spawn(None, None, Some(agent(terminal()))),
-            &F_SPAWN_AGENT_LOCAL,
+            &F_SPAWN_CHILD_LOCAL,
         ),
         (
             spawn(Some("h"), None, Some(agent(remote_parent.clone()))),
-            &F_SPAWN_AGENT_SATELLITE,
+            &F_SPAWN_CHILD_SATELLITE,
         ),
         // A local or different-host parent under a satellite spawn, and an
         // agent session that also names an owner: no row covers them.
@@ -157,7 +157,7 @@ fn spawn_samples() -> Vec<(FrameKind, &'static Rule)> {
     }
     samples.push((
         spawn(None, None, Some(keyed(agent(terminal())))),
-        &F_SPAWN_AGENT_LOCAL,
+        &F_SPAWN_CHILD_LOCAL,
     ));
     for resource in mismatched_spawns() {
         samples.push((spawn(None, None, Some(resource)), &F_SPAWN_KIND_MISMATCH));

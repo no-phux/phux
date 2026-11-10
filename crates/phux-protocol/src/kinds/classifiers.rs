@@ -173,7 +173,7 @@ fn attach_rule(target: &AttachTarget) -> &'static Rule {
 
 /// The spawn rows. A kind that contradicts its binding is refused first, so
 /// the decoder's `SPAWN_FAILED` never runs; a Terminal is then placed by its
-/// satellite and owner fields, and an agent session by its parent.
+/// satellite and owner fields, and every other served kind by its parent.
 fn spawn_rule(
     satellite: Option<&SatelliteHost>,
     owned: bool,
@@ -186,11 +186,9 @@ fn spawn_rule(
     }
     match parent {
         None => terminal_spawn_rule(satellite.is_some(), owned),
-        Some(parent) if is_unowned_agent_session(kind, owned) => {
-            agent_session_spawn_rule(satellite, parent)
-        }
-        // An unknown child kind, or an agent session that also names an
-        // owner Terminal: no row covers it.
+        Some(parent) if is_unowned_served_child(kind, owned) => child_spawn_rule(satellite, parent),
+        // An unknown child kind, or a child that also names an owner
+        // Terminal: no row covers it.
         Some(_) => &F_UNCLASSIFIED,
     }
 }
@@ -200,8 +198,9 @@ const fn kind_contradicts_binding(kind: ResourceKind, parent: Option<&ResourceId
     kind.is_terminal() == parent.is_some()
 }
 
-const fn is_unowned_agent_session(kind: ResourceKind, owned: bool) -> bool {
-    matches!(kind, ResourceKind::AgentSession) && !owned
+/// A kind this build serves, other than a Terminal, with no owner Terminal.
+fn is_unowned_served_child(kind: ResourceKind, owned: bool) -> bool {
+    !owned && !kind.is_terminal() && kind_spec(kind).is_some()
 }
 
 fn terminal_spawn_rule(remote: bool, owned: bool) -> &'static Rule {
@@ -213,17 +212,17 @@ fn terminal_spawn_rule(remote: bool, owned: bool) -> &'static Rule {
     }
 }
 
-/// A remote agent session must name a parent on the same satellite; a local
-/// or different-host parent is default-deny.
-fn agent_session_spawn_rule(
+/// A remote child must name a parent on the same satellite; a local or
+/// different-host parent is default-deny.
+fn child_spawn_rule(
     satellite: Option<&SatelliteHost>,
     parent: &ResourceId,
 ) -> &'static Rule {
     let Some(host) = satellite else {
-        return &F_SPAWN_AGENT_LOCAL;
+        return &F_SPAWN_CHILD_LOCAL;
     };
     if parent_lives_on(parent, host) {
-        &F_SPAWN_AGENT_SATELLITE
+        &F_SPAWN_CHILD_SATELLITE
     } else {
         &F_UNCLASSIFIED
     }

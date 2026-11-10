@@ -200,12 +200,12 @@ mod tests {
     fn agent_session_spawn_rows_follow_parent_and_host() {
         assert_eq!(
             row(&spawn(None, None, Some(agent(terminal())))),
-            F_SPAWN_AGENT_LOCAL.case
+            F_SPAWN_CHILD_LOCAL.case
         );
         let remote_parent = ResourceId::satellite("h", 7);
         assert_eq!(
             row(&spawn(Some("h"), None, Some(agent(remote_parent.clone())))),
-            F_SPAWN_AGENT_SATELLITE.case
+            F_SPAWN_CHILD_SATELLITE.case
         );
         // A local or different-host parent under a satellite spawn.
         assert_eq!(
@@ -219,6 +219,45 @@ mod tests {
         // No row covers an agent session that also names an owner.
         assert_eq!(
             row(&spawn(None, Some(terminal()), Some(agent(terminal())))),
+            F_UNCLASSIFIED.case
+        );
+    }
+
+    /// Every served child kind lands on the parent rows, not default-deny,
+    /// so a scoped grant can open one beside a Terminal it may bind.
+    #[test]
+    fn every_served_child_kind_spawns_on_the_parent_rows() {
+        let remote_parent = ResourceId::satellite("h", 7);
+        for spec in KINDS.iter().filter(|spec| !spec.kind.is_terminal()) {
+            let child = |parent: ResourceId| SpawnResource {
+                kind: spec.kind,
+                ..agent(parent)
+            };
+            assert_eq!(
+                row(&spawn(None, None, Some(child(terminal())))),
+                F_SPAWN_CHILD_LOCAL.case,
+                "{}",
+                spec.name
+            );
+            assert_eq!(
+                row(&spawn(Some("h"), None, Some(child(remote_parent.clone())))),
+                F_SPAWN_CHILD_SATELLITE.case,
+                "{}",
+                spec.name
+            );
+            assert_eq!(
+                row(&spawn(None, Some(terminal()), Some(child(terminal())))),
+                F_UNCLASSIFIED.case,
+                "{}",
+                spec.name
+            );
+        }
+        let unknown = SpawnResource {
+            kind: ResourceKind::Unknown { tag: 9 },
+            ..agent(terminal())
+        };
+        assert_eq!(
+            row(&spawn(None, None, Some(unknown))),
             F_UNCLASSIFIED.case
         );
     }

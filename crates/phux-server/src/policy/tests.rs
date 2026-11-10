@@ -118,3 +118,4 @@ include!("tests/keyed_selectors.rs");
 include!("tests/control_input.rs");
 include!("tests/holds.rs");
 include!("tests/watch_documents.rs");
+include!("tests/child_spawn.rs");

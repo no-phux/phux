@@ -61,13 +61,13 @@ static F_SPAWN_OWNED: Rule = Rule::verbs(
 );
 static F_SPAWN_SATELLITE_OWNED: Rule =
     Rule::deny("`SPAWN_RESOURCE { satellite: Some, owner_terminal: Some }`");
-static F_SPAWN_AGENT_LOCAL: Rule = Rule::verbs(
-    "`SPAWN_RESOURCE { kind: AGENT_SESSION, satellite: None, parent: Some }`",
+static F_SPAWN_CHILD_LOCAL: Rule = Rule::verbs(
+    "`SPAWN_RESOURCE { kind: served non-TERMINAL, satellite: None, parent: Some }`",
     &[Verb::Create, Verb::Bind],
     Subject::ParentTerminalGroup,
 );
-static F_SPAWN_AGENT_SATELLITE: Rule = Rule::verbs(
-    "`SPAWN_RESOURCE { kind: AGENT_SESSION, satellite: Some(H), parent: Some(Satellite { H, .. }) }`",
+static F_SPAWN_CHILD_SATELLITE: Rule = Rule::verbs(
+    "`SPAWN_RESOURCE { kind: served non-TERMINAL, satellite: Some(H), parent: Some(Satellite { H, .. }) }`",
     &[Verb::Create, Verb::Bind],
     Subject::SatelliteHostAndParent,
 );
@@ -179,8 +179,8 @@ pub static FRAME_RULES: [&Rule; 40] = [
     &F_SPAWN_LOCAL,
     &F_SPAWN_OWNED,
     &F_SPAWN_SATELLITE_OWNED,
-    &F_SPAWN_AGENT_LOCAL,
-    &F_SPAWN_AGENT_SATELLITE,
+    &F_SPAWN_CHILD_LOCAL,
+    &F_SPAWN_CHILD_SATELLITE,
     &F_SPAWN_KIND_MISMATCH,
     &F_RESIZE_TERMINAL,
     &F_MOVE_RESOURCE,

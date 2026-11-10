@@ -27,8 +27,8 @@ pub static SUBSTRATE_METHODS: &[MethodSpec] = &[
             F_SPAWN_LOCAL,
             F_SPAWN_OWNED,
             F_SPAWN_SATELLITE_OWNED,
-            F_SPAWN_AGENT_LOCAL,
-            F_SPAWN_AGENT_SATELLITE,
+            F_SPAWN_CHILD_LOCAL,
+            F_SPAWN_CHILD_SATELLITE,
             F_SPAWN_KIND_MISMATCH,
             F_UNCLASSIFIED,
         ]
