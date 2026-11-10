@@ -179,6 +179,10 @@ jobs:
           for target in aarch64-apple-darwin x86_64-unknown-linux-gnu aarch64-unknown-linux-gnu; do
             for suffix in "" .sha256 .sha256.minisig; do test -f "dist/phux-${TAG}-${target}.tar.gz${suffix}"; done
           done
+          # phux Server.app, installed beside the CLI on macOS.
+          for suffix in "" .sha256 .sha256.minisig; do
+            test -f "dist/phux-server-${TAG}-aarch64-apple-darwin.tar.gz${suffix}"
+          done
           test -f "dist/phux-${TAG}.cdx.json" && test -f "dist/phux-mcp-${TAG}.cdx.json"
           gh release upload "$TAG" dist/phux-*.tar.gz dist/phux-*.tar.gz.sha256 dist/phux-*.tar.gz.sha256.minisig \
             dist/*.cdx.json --clobber

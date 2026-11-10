@@ -101,8 +101,8 @@ async fn read_record(
 ///
 /// [`ApprovalError::Unsupported`] before sending anything to a server
 /// without the feature; [`ApprovalError::Refused`] when the server refused
-/// the decision (no such pending approval, or no un-held `SIGNAL` on its
-/// subject); a transport failure otherwise.
+/// the decision (no such pending approval, or the held verbs not un-held
+/// on its subject); a transport failure otherwise.
 pub async fn decide(
     conn: &mut Connection,
     id: ApprovalId,

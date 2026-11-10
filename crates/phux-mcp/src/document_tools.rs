@@ -206,6 +206,15 @@ fn tree_error(err: &TreeError) -> ToolError {
 }
 
 #[cfg(test)]
+#[allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    reason = "tests"
+)]
+mod kind_dispatch_tests;
+
+#[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used, reason = "tests")]
 mod tests {
     use phux_client::tree::Kind;

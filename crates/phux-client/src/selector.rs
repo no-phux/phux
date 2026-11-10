@@ -29,7 +29,9 @@
 //! at the final `/@` so the canonical formatter round-trips. `@N` and
 //! `host/@N` resolve a resource of any kind; every other form resolves
 //! Terminal-kind resources only, so an `AgentSession` never shifts a pane
-//! index (ADR-0102).
+//! index (ADR-0102), and a session-addressed verb reaches the session's
+//! Terminal. [`Resolved`] reports the kind of what a selector named, so the
+//! read, wait and input verbs dispatch on it ([`crate::read`]).
 
 use phux_protocol::ids::{KEY_MIN_PREFIX, KEY_TEXT_LEN, ResourceId};
 
@@ -44,8 +46,8 @@ pub use agent::{
     resolve_agent, resolve_agent_for_input,
 };
 pub use resolve::{
-    Arrangements, ResolveContext, TagIndex, format_terminal_id, pick_target_pane, resolve,
-    resolve_in, resolve_with_tags, whole_session_name,
+    Arrangements, ResolveContext, Resolved, TagIndex, format_terminal_id, pick_target_pane,
+    resolve, resolve_in, resolve_with_tags, whole_session_name,
 };
 
 /// A parsed selector. Resolution happens later against a snapshot.

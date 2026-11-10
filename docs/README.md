@@ -20,6 +20,7 @@ unshipped experiment, and phone apps are not available yet. See
 
 - [Configuration file](./config.md): where the file lives, how it layers over the defaults, and when a change takes effect.
 - [Key bindings](./keys.md): change the prefix, rebind or unbind keys, and see what's in effect.
+- [Migrate your config](./migrate.md): your coding agent moves your tmux, zellij, Ghostty or herdr keys into phux.
 - [Themes](./themes.md): install, pick, and write colour themes.
 - [Status bar and sidebar](./status-bar.md): what the bar and the sidebar show, and how to change it.
 - [Hooks](./hooks.md): run a command when something happens.
@@ -36,6 +37,7 @@ unshipped experiment, and phone apps are not available yet. See
 - [Driving terminals from scripts](./scripting.md): snapshot, send keys, run, wait, with JSON output and exit codes.
 - [Runnable examples](../examples/README.md): small programs for learning the CLI and integrations.
 - [Coding agents](./agents.md): see which agent needs you, connect your agent's host, and use the MCP server.
+- [Agent skill setup](./agent-skill.md): `phux skill setup` teaches every installed agent about phux.
 - [ACP sessions](./acp.md): run an agent through the Agent Client Protocol, and answer its permission requests yourself.
 
 ## Build on phux
@@ -89,6 +91,7 @@ Generated from the `phux` binary, so they match the code these docs describe.
 - [Organization](./organization.md): how the server owns sessions and their contents.
 - [Substrate](./substrate.md): how people, hosts, and agents fit together.
 - [Resource kinds beyond terminals](./resource-kinds.md): the design for accessibility-tree, pixel and browser resources, and the order it lands in.
+- [Held actions](./approvals.md): which actions a key's scope can hold for approval, and who may decide them.
 - [Authority over pages, windows, and displays](./authority.md): who may watch or control a mirrored page, window, or display, and why no terminal grant does.
 - [Applications as resources](./applications.md): `phux spawn --app`, launching an app with its mirrors and quitting it with its pane.
 - [Server protocol](./protocol.md): framing, handshake, capabilities, and changing the wire.

@@ -122,7 +122,7 @@ pub unsafe extern "C" fn phux_client_arrangement_group_get(
     })
 }
 
-/// Read one flattened split or terminal leaf.
+/// Read one flattened split or resource leaf.
 /// # Safety
 /// Client is live and unmodified; output is initialized, writable and disjoint.
 #[unsafe(no_mangle)]
@@ -146,13 +146,15 @@ pub unsafe extern "C" fn phux_client_arrangement_node_get(
             first: node.first,
             second: node.second,
             ratio: node.ratio,
+            resource_kind: node.resource_kind,
             ..PhuxArrangementNode::default()
         };
         Ok(())
     })
 }
 
-/// Read a durable terminal from any session without subscribing or allocating an emulator.
+/// Read a durable leaf-capable resource from any session without subscribing
+/// or allocating an emulator.
 /// # Safety
 /// Client is live and unmodified; output is initialized, writable and disjoint.
 #[unsafe(no_mangle)]
@@ -175,6 +177,7 @@ pub unsafe extern "C" fn phux_client_catalog_terminal_get(
         *out = PhuxCatalogTerminal {
             terminal_id: terminal_id_out(&terminal.id),
             session_id: terminal.session,
+            resource_kind: u32::from(terminal.kind.as_wire()),
             title: bytes_out(terminal.title.as_bytes()),
             cwd: bytes_out(terminal.cwd.as_bytes()),
             ..PhuxCatalogTerminal::default()

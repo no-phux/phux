@@ -278,6 +278,12 @@ pub fn executable_path(name: &str) -> Option<PathBuf> {
     executable_at_path(name, std::env::var_os("PATH").as_deref())
 }
 
+/// Resolve `name` against an explicit search path instead of `PATH`.
+#[must_use]
+pub fn executable_on_path(name: &str, path: &OsStr) -> Option<PathBuf> {
+    executable_at_path(name, Some(path))
+}
+
 fn executable_at_path(name: &str, path: Option<&OsStr>) -> Option<PathBuf> {
     let direct = Path::new(name);
     if direct.components().count() > 1 {

@@ -3,9 +3,9 @@
 #[cfg(doc)]
 use super::KernelStatus;
 use super::{
-    AgentSessionDeclaration, AgentStream, BootstrapId, BootstrapStreamProfile, DocumentPublication,
-    EffectBuffer, EngineAdapter, GenerationId, HistoryPageInput, KernelEffect, KernelError,
-    KernelInput, ResourceId, ResourceKind, SessionKernel, StreamId, TombstoneRecord, document_kind,
+    AgentSessionDeclaration, AgentStream, BootstrapId, BootstrapStreamProfile, EffectBuffer,
+    EngineAdapter, GenerationId, HistoryPageInput, KernelEffect, KernelError, KernelInput,
+    ResourceId, ResourceKind, SessionKernel, StreamId, TombstoneRecord, document_kind,
     is_agent_profile,
 };
 
@@ -29,9 +29,21 @@ impl<E: EngineAdapter> SessionKernel<E> {
         match input {
             KernelInput::BootstrapBegin {
                 terminal_id,
+                stream_id,
+                bootstrap_id,
                 profile: BootstrapStreamProfile::Unknown { codec_tag },
+                base_seq,
                 ..
-            } => self.refuse_unknown_codec(terminal_id, codec_tag, effects),
+            } => self.refuse_unknown_codec(
+                terminal_id,
+                GenerationId {
+                    stream_id,
+                    bootstrap_id,
+                },
+                codec_tag,
+                base_seq,
+                effects,
+            ),
             KernelInput::AttachStarted {
                 attach_id,
                 terminals,
@@ -47,12 +59,11 @@ impl<E: EngineAdapter> SessionKernel<E> {
             } => {
                 self.lift_refusal(terminal_id);
                 if let Some(kind) = document_kind(profile) {
-                    self.expect_kind(terminal_id, kind)?;
-                    let staging = self.documents.entry(terminal_id.clone()).or_default();
-                    staging.kind = Some(kind);
-                    staging.base_seq = base_seq;
-                    staging.buffer.clear();
-                    return Ok(());
+                    let generation = GenerationId {
+                        stream_id,
+                        bootstrap_id,
+                    };
+                    return self.document_bootstrap_begin(terminal_id, generation, kind, base_seq);
                 }
                 if is_agent_profile(profile) {
                     self.agent_bootstrap_begin(
@@ -77,64 +88,65 @@ impl<E: EngineAdapter> SessionKernel<E> {
             }
             KernelInput::BootstrapChunk {
                 terminal_id,
+                stream_id,
+                bootstrap_id,
+                chunk_seq,
                 payload,
+            } if self.documents.contains_key(terminal_id) => self.document_bootstrap_chunk(
+                terminal_id,
+                GenerationId {
+                    stream_id,
+                    bootstrap_id,
+                },
+                chunk_seq,
+                payload,
+                effects,
+            ),
+            KernelInput::BootstrapReady {
+                terminal_id,
+                stream_id,
+                bootstrap_id,
                 ..
-            } if self.documents.contains_key(terminal_id) => {
-                if let Some(staging) = self.documents.get_mut(terminal_id) {
-                    staging.buffer.extend_from_slice(payload);
-                }
-                Ok(())
-            }
-            KernelInput::BootstrapReady { terminal_id, .. }
-                if self.documents.contains_key(terminal_id) =>
-            {
-                if let Some(staging) = self.documents.get_mut(terminal_id)
-                    && let Some(kind) = staging.kind
-                {
-                    let mut bytes = std::mem::take(&mut staging.buffer);
-                    // A typed bootstrap names the content type first; one
-                    // that does not leaves the bytes untyped.
-                    if kind == ResourceKind::Document
-                        && let Some((content_type, document)) =
-                            phux_protocol::wire::frame::typed_document::split_bootstrap(&bytes)
-                    {
-                        staging.content_type = Some(content_type.to_owned());
-                        bytes = document.to_vec();
-                    }
-                    effects.push(KernelEffect::Document(DocumentPublication {
-                        resource_id: terminal_id.clone(),
-                        kind,
-                        seq: staging.base_seq,
-                        bytes,
-                        content_type: staging.content_type.clone(),
-                    }));
-                }
-                Ok(())
-            }
+            } if self.documents.contains_key(terminal_id) => self.document_bootstrap_ready(
+                terminal_id,
+                GenerationId {
+                    stream_id,
+                    bootstrap_id,
+                },
+                effects,
+            ),
             KernelInput::ResourceOutput {
                 terminal_id,
+                stream_id,
+                bootstrap_id,
                 seq,
                 payload,
-                ..
+            } if self.documents.contains_key(terminal_id) => self.document_output(
+                terminal_id,
+                GenerationId {
+                    stream_id,
+                    bootstrap_id,
+                },
+                seq,
+                payload,
+                effects,
+            ),
+            KernelInput::Tombstone {
+                terminal_id,
+                stream_id,
+                bootstrap_id,
+                reason,
+                last_valid_seq,
             } if self.documents.contains_key(terminal_id) => {
-                if let Some(staging) = self.documents.get(terminal_id)
-                    && let Some(kind) = staging.kind
-                {
-                    effects.push(KernelEffect::Document(DocumentPublication {
-                        resource_id: terminal_id.clone(),
-                        kind,
-                        seq,
-                        bytes: payload.to_vec(),
-                        content_type: staging.content_type.clone(),
-                    }));
-                }
-                Ok(())
-            }
-            // A lapped viewer is fenced and recut; the recut's READY carries
-            // the newest document, so the tombstone itself changes nothing.
-            KernelInput::Tombstone { terminal_id, .. }
-                if self.documents.contains_key(terminal_id) =>
-            {
+                self.document_tombstone(
+                    terminal_id,
+                    stream_id,
+                    bootstrap_id,
+                    TombstoneRecord {
+                        reason,
+                        last_valid_seq,
+                    },
+                );
                 Ok(())
             }
             KernelInput::BootstrapChunk {

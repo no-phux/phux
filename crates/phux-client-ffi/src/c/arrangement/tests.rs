@@ -5,6 +5,9 @@ use phux_client_core::layout::{self, Group, LayoutNode, LayoutState};
 use phux_protocol::wire::info::{ResourceInfo, SessionInfo, WindowInfo};
 use phux_protocol::{ResourceId, SessionId, WindowId};
 
+mod abi;
+mod leaf_kinds;
+
 fn registry(selected: u32, extra: bool) -> SessionSnapshot {
     let mut panes = vec![
         ResourceInfo::new(ResourceId::local(1), WindowId::new(10), 80, 24),
@@ -942,87 +945,6 @@ fn a_facet_only_snapshot_with_no_windows_joins_and_counts_without_the_window_sur
     legacy_sessions[1] = legacy_sessions[1].clone().with_window_count(4);
     let catalog = Catalog::from_snapshot(legacy.with_sessions(legacy_sessions), 1).unwrap();
     assert_eq!(catalog.sessions[1].window_count, 4);
-}
-
-#[allow(
-    clippy::cognitive_complexity,
-    reason = "one walk over every layout pin"
-)]
-#[test]
-fn abi_null_version_size_and_disconnect() {
-    assert_eq!(std::mem::size_of::<PhuxArrangementInfo>(), 128);
-    assert_eq!(std::mem::offset_of!(PhuxArrangementInfo, revision), 16);
-    assert_eq!(std::mem::offset_of!(PhuxArrangementInfo, message), 56);
-    assert_eq!(std::mem::offset_of!(PhuxArrangementInfo, backend), 72);
-    assert_eq!(
-        std::mem::offset_of!(PhuxArrangementInfo, server_revision),
-        80
-    );
-    assert_eq!(std::mem::offset_of!(PhuxArrangementInfo, session_key), 88);
-    assert_eq!(
-        std::mem::offset_of!(PhuxArrangementInfo, arrangement_key),
-        104
-    );
-    assert_eq!(
-        std::mem::offset_of!(PhuxArrangementInfo, unarranged_count),
-        120
-    );
-    assert_eq!(
-        std::mem::offset_of!(PhuxArrangementInfo, unplaced_count),
-        124
-    );
-    assert_eq!(std::mem::size_of::<PhuxArrangementGroup>(), 56);
-    assert_eq!(std::mem::size_of::<PhuxArrangementNode>(), 56);
-    assert_eq!(std::mem::size_of::<PhuxCatalogTerminal>(), 80);
-    assert_eq!(std::mem::size_of::<PhuxArrangementMutation>(), 136);
-    assert_eq!(
-        std::mem::offset_of!(PhuxArrangementMutation, path_bits),
-        128
-    );
-    let mut client = harness();
-    let mut info = PhuxArrangementInfo::default();
-    // SAFETY: deliberate null/invalid headers, otherwise owned disjoint values.
-    unsafe {
-        assert_eq!(
-            phux_client_arrangement_info(std::ptr::null(), &raw mut info),
-            PhuxClientResult::InvalidArgument
-        );
-        assert_eq!(
-            phux_client_arrangement_info(&raw const *client, std::ptr::null_mut()),
-            PhuxClientResult::InvalidArgument
-        );
-        info.size -= 1;
-        assert_eq!(
-            phux_client_arrangement_info(&raw const *client, &raw mut info),
-            PhuxClientResult::InvalidArgument
-        );
-        info = PhuxArrangementInfo::default();
-        info.version += 1;
-        assert_eq!(
-            phux_client_arrangement_info(&raw const *client, &raw mut info),
-            PhuxClientResult::InvalidArgument
-        );
-        info = PhuxArrangementInfo::default();
-        assert_eq!(
-            phux_client_arrangement_info(&raw const *client, &raw mut info),
-            PhuxClientResult::Ok
-        );
-        assert_eq!(info.terminal_count, 3);
-        assert_eq!(
-            phux_client_arrangement_mutate(&raw mut *client, std::ptr::null()),
-            PhuxClientResult::InvalidArgument
-        );
-        assert_eq!(
-            phux_client_arrangement_refresh(&raw mut *client, 1),
-            PhuxClientResult::Ok
-        );
-        assert_eq!(
-            phux_client_disconnect(&raw mut *client),
-            PhuxClientResult::Ok
-        );
-    }
-    assert_eq!(client.inner.arrangement.status, 4);
-    assert!(client.inner.arrangement.pending.is_none());
 }
 
 #[test]

@@ -6,6 +6,8 @@ use phux_protocol::ids::ResourceId;
 
 use crate::keys::{COMMANDS, ESSENTIALS, Shortcut};
 
+pub mod phone;
+
 /// One thing the palette can do.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Target {
@@ -73,20 +75,7 @@ pub struct Hit {
 /// Everything the palette lists, in its empty-query order: terminals, then
 /// sessions, then actions, then themes.
 pub fn items(topology: Option<&Topology>) -> Vec<Item> {
-    let mut out = Vec::new();
-    if let Some(topology) = topology {
-        for pane in &topology.panes {
-            out.push(Item {
-                title: pane_label(pane),
-                detail: format!("{} · {}", pane.session_name, pane.terminal_id),
-                kind: "terminal",
-                target: Target::Terminal {
-                    id: pane.terminal_id.clone(),
-                    session: pane.session_name.clone(),
-                },
-            });
-        }
-    }
+    let mut out = terminal_items(topology);
     out.extend(session_items(topology));
     for command in COMMANDS.iter().filter(|command| command.listed) {
         out.push(Item {
@@ -98,6 +87,22 @@ pub fn items(topology: Option<&Topology>) -> Vec<Item> {
     }
     out.extend(theme_items());
     out
+}
+
+/// Every terminal, with its session.
+pub fn terminal_items(topology: Option<&Topology>) -> Vec<Item> {
+    let panes = topology.into_iter().flat_map(|t| &t.panes);
+    panes
+        .map(|pane| Item {
+            title: pane_label(pane),
+            detail: format!("{} · {}", pane.session_name, pane.terminal_id),
+            kind: "terminal",
+            target: Target::Terminal {
+                id: pane.terminal_id.clone(),
+                session: pane.session_name.clone(),
+            },
+        })
+        .collect()
 }
 
 /// Every theme, System first.

@@ -131,7 +131,7 @@ fn a_document_and_a_running_mirror_survive_graceful_upgrade() {
         .expect("doc snapshot");
     assert_eq!(
         String::from_utf8_lossy(&snapshot.stdout),
-        "# before the upgrade",
+        "# before the upgrade\n",
         "the document crossed with its id and newest document"
     );
     assert!(

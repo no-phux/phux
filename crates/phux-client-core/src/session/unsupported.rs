@@ -3,23 +3,25 @@
 //! A newer server may stream a kind or codec this client cannot decode
 //! (`docs/compatibility.md#a-newer-server-an-older-client`). For a resource
 //! of no known kind, or of a document kind, that is not a protocol
-//! violation: the kernel reports it once, drops whatever it staged for the
-//! resource, and ignores the stream's later frames, so every other resource
-//! and the connection carry on. A Terminal or `AgentSession` has no newer
+//! violation: the kernel reports it once, fences whatever generations it
+//! held for the resource, and ignores the stream's later frames, so every
+//! other resource and the connection carry on. A Terminal or `AgentSession` has no newer
 //! codec this client did not offer, so an unknown one there is malformed.
 
 use super::{
-    BootstrapStreamProfile, EffectBuffer, EngineAdapter, KernelEffect, KernelError, KernelInput,
-    KernelStatus, ResourceId, ResourceKind, SessionKernel,
+    BootstrapStreamProfile, EffectBuffer, EngineAdapter, GenerationId, KernelEffect, KernelError,
+    KernelInput, KernelStatus, ResourceId, ResourceKind, SessionKernel,
 };
 
 impl<E: EngineAdapter> SessionKernel<E> {
-    /// Refuse `terminal_id`'s stream, which names `codec_tag`, or fail when
-    /// the resource is a kind whose codec cannot be newer.
+    /// Refuse `terminal_id`'s stream, whose `generation` names `codec_tag`,
+    /// or fail when the resource is a kind whose codec cannot be newer.
     pub(super) fn refuse_unknown_codec(
         &mut self,
         terminal_id: &ResourceId,
+        generation: GenerationId,
         codec_tag: u8,
+        base_seq: u64,
         effects: &mut EffectBuffer,
     ) -> Result<(), KernelError<E::Error>> {
         self.ensure_open(terminal_id)?;
@@ -41,11 +43,14 @@ impl<E: EngineAdapter> SessionKernel<E> {
             _ => {}
         }
         // Only a Terminal or AgentSession stages a replica or a record
-        // stream, and both were refused above; a document stages a cut.
+        // stream, and both were refused above; a document stages a cut. Its
+        // generations stay fenced rather than forgotten.
         debug_assert!(
             !self.terminals.contains_key(terminal_id) && !self.agents.contains_key(terminal_id)
         );
-        self.documents.remove(terminal_id);
+        if let Some(stream) = self.documents.get_mut(terminal_id) {
+            stream.fence_for_unknown_codec(generation, base_seq);
+        }
         if self.unsupported.insert(terminal_id.clone()) {
             effects.push(KernelEffect::Status(KernelStatus::Unsupported {
                 terminal_id: terminal_id.clone(),

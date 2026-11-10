@@ -3,7 +3,7 @@ name: using-phux
 description: Drives persistent terminals and supervises terminal-hosted agents with the phux CLI. Use for REPLs, debuggers, dev servers, interactive programs, durable shell state, or multi-agent terminal workflows; prefer a one-shot shell for independent commands.
 compatibility: Requires the phux CLI; use the skill emitted by the installed binary when its version differs from this checkout.
 metadata:
-  version: "0.133.0" # x-release-please-version
+  version: "0.137.0" # x-release-please-version
 ---
 
 # Using phux
@@ -122,6 +122,44 @@ another acquisition, even from your own pane. Renew/release require that exact
 fence; stale cleanup cannot remove a replacement. Do not replace a stale
 receipt with a newly listed fence automatically. Claims are advisory; only
 explicit release or expiry frees them, not a worker exit or a quiet pane.
+
+## Handing work to the phux assistant
+
+Hand off work that is bounded, separate from your current change, and
+worth its own branch: a fix, an investigation, a review. Each handoff starts
+another agent on the user's account, so do it only when the user asked for
+it. Keep work you are already doing in your own turn.
+
+A mission is one handoff. Run it from inside the repository; phux creates the
+task, a worktree and branch, and a visible session running the worker:
+
+```sh
+phux launch --list                       # agent kinds you can start
+phux mission add "Fix the flaky login test" --start --agent claude \
+  --description "Open a PR; don't merge. Evidence: the failing CI run." --json
+phux mission show phux/3 --json          # the alias add printed
+phux mission list --json
+```
+
+The phux assistant is Crew: one lead agent that files and supervises missions
+for the user. `phux config distro current` names it when it is on. Turning
+it on changes the user's config, so ask first:
+
+```sh
+phux config distro use crew
+phux launch crew --json -- --agent claude   # prints the lead's terminal_id
+phux mail send @12 -t login-fix -m "Ship the flaky login fix; PR only."
+```
+
+There is one lead per Crew home, so a second launch exits at once. If a lead
+is already running, ask the user which pane holds it, then mail it there.
+
+When you need the human to decide, ask through phux rather than only in
+your pane. The answer arrives as your next input:
+
+```sh
+phux ask --id merge-12 --suggest Yes --suggest No @$PHUX_TERMINAL_ID "Merge PR 12?"
+```
 
 <!-- phux-skill-region: terminal -->
 ## Driving interactive terminals

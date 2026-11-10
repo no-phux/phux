@@ -7,7 +7,8 @@ use super::plumbing::{
     AttachIdVerdict, ConnectionClose, classify_attach_id, detach_on_request, reply_pong,
 };
 use crate::runtime::apps::ResourceFrame;
-use crate::runtime::apps::terminal::attach::{SpawnRequest, handle_move_terminal};
+use crate::runtime::apps::spawn::SpawnRequest;
+use crate::runtime::apps::terminal::attach::handle_move_terminal;
 use crate::runtime::apps::terminal::commands::handle_viewport_resize;
 use crate::runtime::apps::terminal::terminal_streams::{
     AttachFrame, direction_invalid, is_input_frame, is_metadata_frame, is_stream_frame,

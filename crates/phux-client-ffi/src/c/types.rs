@@ -37,10 +37,22 @@ pub const AGENT_RECORDS_LIVE: u32 = 2;
 /// `detail` on an `AGENT_RECORDS` effect: the resource closed; `bytes` is
 /// empty and the resource leaves the resource list.
 pub const AGENT_RECORDS_CLOSED: u32 = 3;
+/// `PhuxClientEffect.kind` carrying one whole document of a document kind.
+///
+/// `detail` is its kind tag, `seq` its publish sequence, and `bytes` its
+/// content type (`status_code` bytes long, empty for a tree or surface) then
+/// the document.
+pub const EFFECT_DOCUMENT: u32 = 5;
 /// `PhuxResourceInfo.kind` wire tag for a PTY-backed Terminal resource.
 pub const RESOURCE_KIND_TERMINAL: u32 = 0;
 /// `PhuxResourceInfo.kind` wire tag for an `AgentSession` resource.
 pub const RESOURCE_KIND_AGENT_SESSION: u32 = 1;
+/// `PhuxResourceInfo.kind` wire tag for an `AccessibilityTree` resource.
+pub const RESOURCE_KIND_ACCESSIBILITY_TREE: u32 = 2;
+/// `PhuxResourceInfo.kind` wire tag for a `PixelSurface` resource.
+pub const RESOURCE_KIND_PIXEL_SURFACE: u32 = 3;
+/// `PhuxResourceInfo.kind` wire tag for a typed `Document` resource.
+pub const RESOURCE_KIND_DOCUMENT: u32 = 4;
 
 #[repr(i32)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

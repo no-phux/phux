@@ -20,6 +20,7 @@ use phux_protocol::wire::info::SessionInfo;
 use super::actions::{PendingSplit, PendingWindow};
 use super::pane_state::{AttachKernel, PaneSlot};
 use super::server_frame::AgentMetaIndex;
+use super::surface_leaf::{LeafBook, SurfaceLeaves};
 use crate::layout::ArrangementDoc;
 use crate::predict::PredictionState;
 
@@ -64,6 +65,8 @@ pub(in crate::attach) struct SessionMirror {
     pub(in crate::attach) pending_resource_ops: HashMap<u32, ResourceId>,
     /// ADR-0040 `phux.agent/v1` index, read when composing window labels.
     pub(in crate::attach) agent_meta: AgentMetaIndex,
+    /// Non-Terminal resources the server's graph named: placeholder leaves.
+    pub(in crate::attach) leaves: LeafBook,
 }
 
 impl SessionMirror {
@@ -71,6 +74,36 @@ impl SessionMirror {
     /// overlay: terminals that keep running with no view, sorted.
     pub(in crate::attach) fn unarranged_members(&self) -> Vec<ResourceId> {
         unarranged_members(&self.members, &self.workspace, &self.panes)
+    }
+
+    /// The members `reopen-views` may show again: the session's terminals
+    /// and the documents, trees, and surfaces `session` holds.
+    pub(in crate::attach) fn reopenable_members(
+        &self,
+        session: Option<phux_protocol::ids::SessionId>,
+    ) -> HashSet<ResourceId> {
+        let mut members = self.members.clone();
+        if let Some(session) = session {
+            members.extend(self.leaves.documents_in(session));
+        }
+        members
+    }
+
+    /// Whether any window of the arrangement shows `id`.
+    pub(in crate::attach) fn arranges(&self, id: &ResourceId) -> bool {
+        self.workspace.groups.iter().any(|group| {
+            group
+                .state
+                .tree
+                .as_ref()
+                .is_some_and(|tree| crate::layout::leaves(tree).contains(id))
+        })
+    }
+
+    /// Classifies this session's leaves: a non-Terminal one tiles a
+    /// placeholder and takes no input or resize.
+    pub(in crate::attach) const fn surface_leaves(&self) -> SurfaceLeaves<'_> {
+        SurfaceLeaves::new(&self.engine_kernel, &self.leaves)
     }
 
     /// The pane that owns paint focus: the floating overlay while one is
@@ -100,6 +133,7 @@ impl SessionMirror {
             expected_closes: HashSet::new(),
             pending_resource_ops: HashMap::new(),
             agent_meta: AgentMetaIndex::default(),
+            leaves: LeafBook::default(),
         }
     }
 }

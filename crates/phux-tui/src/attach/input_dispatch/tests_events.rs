@@ -35,3 +35,4 @@ include!("tests_events/input_delivery_prediction.rs");
 include!("tests_events/floating.rs");
 include!("tests_events/layout_read.rs");
 include!("tests_events/key_modes.rs");
+include!("tests_events/surface_leaf.rs");

@@ -248,19 +248,22 @@ impl ControlPlane {
         self.close_proven(closed)?;
         let mut topology = self.project_topology(snapshot);
         if let Some(engine) = &self.engine {
-            topology
-                .panes
-                .retain(|pane| !engine.is_closed(&pane.terminal_id));
+            topology.retain_listed(|id| !engine.is_closed(id));
         }
         // The snapshot carries the user-set title; the shell's title only
         // ever arrives live, so a refresh keeps the one already shown.
         if let Some(previous) = &self.topology {
-            for pane in &mut topology.panes {
-                if pane.title.is_none() {
-                    pane.title = previous
-                        .pane(&pane.terminal_id)
-                        .and_then(|shown| shown.title.clone());
-                }
+            let shown: Vec<(ResourceId, String)> = topology
+                .panes
+                .iter()
+                .filter(|pane| pane.title.is_none())
+                .filter_map(|pane| {
+                    let title = previous.pane(&pane.terminal_id)?.title.clone()?;
+                    Some((pane.terminal_id.clone(), title))
+                })
+                .collect();
+            for (id, title) in shown {
+                topology.retitle(&id, &title);
             }
         }
         if self.attached_session.is_none() && self.active_attach_id.is_none() {

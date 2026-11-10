@@ -9,9 +9,11 @@
 //! Both spellings are strict: the §5 canonical bytes (unsorted, duplicate,
 //! unknown-bit, zero-verb, non-minimal, truncated, or trailing images are
 //! refused, never normalized) and the registry grammar
-//! `"<verb>[,<verb>...]@<selector>"`. The grammar may hold `?signal` for
-//! approval (ADR-0128); a hold is server-local and never in the canonical
-//! image.
+//! `"<verb>[,<verb>...]@<selector>"`. The grammar may hold `?signal`,
+//! `?terminate`, or (on a control selector only) `?input` for approval
+//! (ADR-0128); a hold is server-local and never in the canonical image. A
+//! build that predates a hold marker refuses the whole scope string, so an
+//! older server never grants the verb un-held.
 //!
 //! The scope schema is versioned ([`ScopeSchema`]). Schema v2 adds
 //! `ORGANIZE` and `TERMINATE`; a v1 grant decodes with `SIGNAL` implying
@@ -117,8 +119,11 @@ const ALL_VERBS: &str = "*";
 /// The prefix that marks a verb as held for approval (ADR-0128).
 const HELD_PREFIX: char = '?';
 
-/// The only verb a grant may hold: approvals are held `SIGNAL` actions.
-const HOLDABLE: Verbs = Verbs::of(&[Verb::Signal]);
+/// The verbs a grant may hold: every row needing them is a command, whose
+/// result can wait for a decision. `INPUT` only on a control selector
+/// ([`Selector::Control`]): there it reaches only `SEND_DOCUMENT_INPUT`, while
+/// anywhere else it would also refuse every keystroke frame.
+const HOLDABLE: Verbs = Verbs::of(&[Verb::Signal, Verb::Terminate, Verb::Input]);
 
 // -----------------------------------------------------------------------------
 // Errors.
@@ -185,11 +190,12 @@ pub enum ScopeGrammarError {
     /// A verb outside the closed set of the record's schema (v1 has no
     /// `organize` or `terminate`).
     #[error(
-        "a scope names a verb outside inventory|observe|create|bind|input|signal|?signal|organize|terminate|*"
+        "a scope names a verb outside inventory|observe|create|bind|input|signal|organize|terminate|*, each optionally held with `?`"
     )]
     UnknownVerb,
-    /// `?` on a verb other than `signal`: only `SIGNAL` actions are held.
-    #[error("a scope may hold only `?signal`")]
+    /// `?` on a verb other than `signal` or `terminate`, or `?input` on a
+    /// selector other than `page`, `window`, or `display`.
+    #[error("a scope may hold only `?signal`, `?terminate`, or `?input` on page|window|display")]
     UnholdableVerb,
     /// A verb listed twice, or `*` combined with named verbs.
     #[error("a scope repeats a verb or combines `*` with named verbs")]

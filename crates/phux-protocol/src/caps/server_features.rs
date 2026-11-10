@@ -237,7 +237,8 @@ define_server_features! {
     /// with `INCARNATION_CHANGED` fencing. A client MUST see the bit before
     /// retrying a keyed command blind.
     KeyedSignal = KEYED_SIGNAL = 0x2000_0000,
-    /// The server holds `?signal` commands for approval (ADR-0128). A client
+    /// The server holds commands a scope marks held (`?signal`, and since
+    /// `?terminate` and `?input@CLASS`) for approval (ADR-0128). A client
     /// MUST see the bit before writing a decision: an older server stores the
     /// decide key as an ordinary value.
     Approvals = APPROVALS = 0x4000_0000,
@@ -390,6 +391,9 @@ pub enum ServerFeatureExt {
     /// The server answers `MIRROR`: it lists the displays and windows it
     /// can mirror and starts or stops a mirror of one on demand.
     Mirrors = 0x0004_0000,
+    /// The server answers the local-only `PRIVACY_STATUS`: the macOS
+    /// privacy grants it holds.
+    PrivacyStatus = 0x0008_0000,
 }
 
 impl ServerFeatureExt {
@@ -414,6 +418,7 @@ impl ServerFeatureExt {
         Self::PixelSurface,
         Self::TypedDocument,
         Self::Mirrors,
+        Self::PrivacyStatus,
     ];
 
     /// The `docs/protocol.md#handshake` constant, e.g. `"PATH_QUERY"`.
@@ -439,6 +444,7 @@ impl ServerFeatureExt {
             Self::PixelSurface => "PIXEL_SURFACE",
             Self::TypedDocument => "TYPED_DOCUMENT",
             Self::Mirrors => "MIRRORS",
+            Self::PrivacyStatus => "PRIVACY_STATUS",
         }
     }
 

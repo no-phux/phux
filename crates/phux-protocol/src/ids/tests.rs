@@ -19,6 +19,23 @@ fn resource_kind_tags_are_stable_and_unknown_round_trips() {
 }
 
 #[test]
+fn document_and_leaf_kinds_are_derived_from_one_place() {
+    let documents = [
+        ResourceKind::AccessibilityTree,
+        ResourceKind::PixelSurface,
+        ResourceKind::Document,
+    ];
+    for kind in documents {
+        assert!(kind.is_document() && kind.can_occupy_leaf(), "{kind}");
+    }
+    for kind in [ResourceKind::Terminal, ResourceKind::Unknown { tag: 90 }] {
+        assert!(!kind.is_document() && kind.can_occupy_leaf(), "{kind}");
+    }
+    let agent = ResourceKind::AgentSession;
+    assert!(!agent.is_document() && !agent.can_occupy_leaf());
+}
+
+#[test]
 fn input_operation_id_rejects_zero_and_redacts_debug() {
     assert!(InputOperationId::new([0; 16]).is_none());
     let id = InputOperationId::new([0x5a; 16]).expect("non-zero id");

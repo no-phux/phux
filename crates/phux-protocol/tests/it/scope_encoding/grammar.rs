@@ -159,6 +159,48 @@ fn held_signal_grammar_parses_merges_and_never_reaches_the_image() {
     assert!(clauses.admits(Verb::Signal, |_| true));
 }
 
+/// `?terminate` holds anywhere; `?input` holds only on a control selector,
+/// where it reaches nothing but document input. Every other hold refuses
+/// the whole string, which is also how a build that predates a marker
+/// refuses it: never by granting the verb un-held.
+#[test]
+fn held_terminate_and_document_input_grammar() {
+    let held = grant("inventory,?terminate@group:7");
+    assert_eq!(held.held, Verbs::of(&[Verb::Terminate]));
+    assert_eq!(held.to_string(), "inventory,?terminate@group:7");
+    for text in [
+        "?input@display",
+        "observe,?input@window:mini",
+        "?input@page",
+    ] {
+        let held = grant(text);
+        assert_eq!(held.held, Verbs::of(&[Verb::Input]), "{text}");
+        assert_eq!(held.to_string(), text);
+    }
+    let key = phux_protocol::ids::ResourceKey::new([0x11; 16]).unwrap();
+    let resource = format!("?input@resource:{key}");
+    for text in [
+        "?input@global",
+        "?input@host",
+        "?input@terminal:3",
+        resource.as_str(),
+        "?bind@global",
+        "?create@global",
+        "?organize@global",
+        "?inventory@global",
+    ] {
+        assert_eq!(
+            ScopeGrant::parse(text),
+            Err(ScopeGrammarError::UnholdableVerb),
+            "{text:?}"
+        );
+    }
+    // A held signal still implies nothing on a v1 record.
+    let v1 = ScopeGrant::parse_versioned("?signal@global", phux_protocol::scope::ScopeSchema::V1)
+        .unwrap();
+    assert_eq!(v1.verbs, Verbs::of(&[Verb::Signal]));
+}
+
 /// Schema v2 adds `ORGANIZE = 0x40` and `TERMINATE = 0x80`; a v1 image still
 /// refuses those bits, and a v1 grant reads with `SIGNAL` implying
 /// `TERMINATE` and `CREATE` implying `ORGANIZE` (workload-auth §5, R07).

@@ -24,26 +24,6 @@ pub(super) fn forwarded_resource(
     })
 }
 
-pub(super) fn log_spawn_request(
-    client_id: ClientId,
-    request_id: u32,
-    request: &SpawnRequest,
-    initial_size: Option<(u16, u16)>,
-) {
-    debug!(
-        ?client_id,
-        request_id,
-        group = ?request.group,
-        command = ?request.command,
-        cwd = ?request.cwd,
-        env_count = request.env.as_ref().map_or(0, Vec::len),
-        satellite = ?request.satellite,
-        owner_terminal = ?request.owner_terminal,
-        initial_size = ?initial_size,
-        "SPAWN_RESOURCE",
-    );
-}
-
 /// What one `SPAWN_RESOURCE` asks the PTY layer to build.
 pub(super) struct PaneSpawnPlan {
     /// The child to exec, fully configured from the wire frame.

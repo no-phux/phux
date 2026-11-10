@@ -10,6 +10,7 @@ use phux_protocol::wire::frame::{FrameKind, ViewportInfo};
 
 use crate::attach::connection::Connection;
 use crate::attach::outcome::AttachError;
+use crate::attach::surface_leaf::SurfaceLeaves;
 use crate::layout::{ArrangementDoc, LayoutState};
 
 use super::session_io::send_unless_peer_gone;
@@ -36,8 +37,13 @@ pub(super) fn view_rects(
 /// Emit `RESIZE_TERMINAL` for each pane whose rect changed from `prev_rects`
 /// (after a zoom or sidebar toggle), before repainting. `cell_px` rides
 /// every resize when the server applies it (ADR-0145).
+#[allow(
+    clippy::future_not_send,
+    reason = "the session kernel holds libghostty state; ADR-0003 binds us to current-thread"
+)]
 pub(super) async fn emit_view_reflow(
     conn: &mut Connection,
+    leaves: SurfaceLeaves<'_>,
     workspace: &ArrangementDoc,
     zoomed: Option<&ResourceId>,
     prev_rects: &HashMap<ResourceId, crate::layout::Rect>,
@@ -47,15 +53,20 @@ pub(super) async fn emit_view_reflow(
     let Some(ls) = workspace.render_group(zoomed) else {
         return Ok(());
     };
-    emit_layout_reflow(conn, ls.as_ref(), prev_rects, content, cell_px).await
+    emit_layout_reflow(conn, leaves, ls.as_ref(), prev_rects, content, cell_px).await
 }
 
 /// Emit `RESIZE_TERMINAL` for each pane whose painted tile changed size
 /// between two [`view_rects`] of the same window (a `resize-pane`, divider
 /// drag, or swap). Both sides come from the one tiling, so a viewport too
 /// small to tile cannot read as a change.
+#[allow(
+    clippy::future_not_send,
+    reason = "the session kernel holds libghostty state; ADR-0003 binds us to current-thread"
+)]
 pub(super) async fn emit_moved_tiles(
     conn: &mut Connection,
+    leaves: SurfaceLeaves<'_>,
     prev_rects: &HashMap<ResourceId, crate::layout::Rect>,
     rects: &HashMap<ResourceId, crate::layout::Rect>,
     cell_px: Option<(u16, u16)>,
@@ -64,7 +75,7 @@ pub(super) async fn emit_moved_tiles(
         let moved = prev_rects
             .get(terminal_id)
             .is_none_or(|prev| (prev.w, prev.h) != (rect.w, rect.h));
-        if !moved || rect.w == 0 || rect.h == 0 || !conn.can_route_terminal(terminal_id) {
+        if !moved || rect.w == 0 || rect.h == 0 || !resizable(conn, leaves, terminal_id) {
             continue;
         }
         conn.send(&FrameKind::ResizeTerminal {
@@ -80,8 +91,13 @@ pub(super) async fn emit_moved_tiles(
 
 /// Size every window of a just-restored workspace before its first full
 /// paint (ATTACHED only carried a one-pane fallback).
+#[allow(
+    clippy::future_not_send,
+    reason = "the session kernel holds libghostty state; ADR-0003 binds us to current-thread"
+)]
 pub(super) async fn emit_bootstrap_workspace_reflow(
     conn: &mut Connection,
+    leaves: SurfaceLeaves<'_>,
     workspace: &ArrangementDoc,
     zoomed: Option<&ResourceId>,
     content: crate::layout::Rect,
@@ -92,6 +108,7 @@ pub(super) async fn emit_bootstrap_workspace_reflow(
         if index == workspace.active {
             emit_view_reflow(
                 conn,
+                leaves,
                 workspace,
                 zoomed,
                 &no_previous_rects,
@@ -100,15 +117,21 @@ pub(super) async fn emit_bootstrap_workspace_reflow(
             )
             .await?;
         } else {
-            emit_layout_reflow(conn, &window.state, &no_previous_rects, content, cell_px).await?;
+            let previous = &no_previous_rects;
+            emit_layout_reflow(conn, leaves, &window.state, previous, content, cell_px).await?;
         }
     }
     Ok(())
 }
 
 /// Emit the resize diff for one concrete window layout.
+#[allow(
+    clippy::future_not_send,
+    reason = "the session kernel holds libghostty state; ADR-0003 binds us to current-thread"
+)]
 async fn emit_layout_reflow(
     conn: &mut Connection,
+    leaves: SurfaceLeaves<'_>,
     layout: &LayoutState,
     prev_rects: &HashMap<ResourceId, crate::layout::Rect>,
     content: crate::layout::Rect,
@@ -126,8 +149,11 @@ async fn emit_layout_reflow(
         // A leaf a persisted layout names before its ATTACH_RESOURCE is
         // confirmed has no QUIC stream yet, and may name a pane that died
         // with a previous server. It is sized once its stream binds.
-        if !conn.can_route_terminal(terminal_id) {
-            tracing::debug!(?terminal_id, "reflow: skipping a pane with no stream yet");
+        if !resizable(conn, leaves, terminal_id) {
+            tracing::debug!(
+                ?terminal_id,
+                "reflow: skipping a leaf with no terminal stream"
+            );
             continue;
         }
         send_unless_peer_gone(
@@ -142,6 +168,12 @@ async fn emit_layout_reflow(
         .await?;
     }
     Ok(())
+}
+
+/// Whether `RESIZE_TERMINAL` may name `terminal_id`: a routable stream that
+/// is not a document or surface leaf (whose geometry is its own).
+fn resizable(conn: &Connection, leaves: SurfaceLeaves<'_>, terminal_id: &ResourceId) -> bool {
+    conn.can_route_terminal(terminal_id) && !leaves.contains(terminal_id)
 }
 
 /// A `VIEWPORT_RESIZE` frame for `viewport`.
@@ -221,6 +253,7 @@ pub(super) fn current_viewport() -> Result<ViewportInfo, AttachError> {
 #[allow(clippy::expect_used, reason = "tests")]
 mod tests {
     use super::*;
+    use crate::attach::surface_leaf::LeafBook;
     use tokio::net::UnixStream;
 
     /// A restored workspace reflow must include off-screen windows. They are
@@ -230,9 +263,28 @@ mod tests {
     async fn restored_workspace_reflow_sizes_panes_in_every_window() {
         let first = ResourceId::local(1);
         let second = ResourceId::local(2);
-        let mut workspace = ArrangementDoc::single(first);
+        let document = ResourceId::local(3);
+        let mut workspace = ArrangementDoc::single(first.clone());
+        // A document leaf beside the first pane tiles a placeholder: it
+        // takes no RESIZE_TERMINAL, and the terminals size as before.
+        let tree = crate::layout::split_at(
+            &crate::layout::LayoutNode::Leaf(first),
+            &ResourceId::local(1),
+            &document,
+            crate::layout::SplitDir::Horizontal,
+            0.5,
+        )
+        .expect("split");
+        workspace.active_group_mut().expect("window").tree = Some(tree);
         workspace.add_group("2".to_owned(), second.clone());
         workspace.select(0);
+        // The graph names it; no document bootstrap reaches this client.
+        let (kernel, ..) = crate::attach::pane_state::published_test_state(&[]);
+        let mut book = LeafBook::default();
+        book.learn(&[phux_protocol::wire::info::ResourceInfo::resource(
+            document.clone(),
+            phux_protocol::ResourceKind::Document,
+        )]);
 
         let viewport = (100, 30);
         let content = crate::layout::Rect {
@@ -245,7 +297,14 @@ mod tests {
         let mut client = Connection::from_stream(client_stream);
         let mut server = Connection::from_stream(server_stream);
         let (sent, received) = tokio::join!(
-            emit_bootstrap_workspace_reflow(&mut client, &workspace, None, content, Some((9, 18))),
+            emit_bootstrap_workspace_reflow(
+                &mut client,
+                SurfaceLeaves::new(&kernel, &book),
+                &workspace,
+                None,
+                content,
+                Some((9, 18)),
+            ),
             async {
                 [
                     server.recv().await.expect("first resize frame"),
@@ -255,24 +314,27 @@ mod tests {
         );
 
         drop(client);
-        drop(server);
         sent.expect("bootstrap reflow sends");
-        let resized: std::collections::HashSet<_> = received
+        assert!(
+            server.recv().await.is_err(),
+            "nothing follows the two terminal resizes"
+        );
+        drop(server);
+        let resized: HashMap<_, _> = received
             .into_iter()
             .map(|frame| match frame {
                 FrameKind::ResizeTerminal {
                     terminal_id,
-                    cols: 100,
+                    cols,
                     rows: 30,
                     cell_px: Some((9, 18)),
-                } => terminal_id,
-                other => panic!("expected 100x30 resize at 9x18 px, got {other:?}"),
+                } => (terminal_id, cols),
+                other => panic!("expected a 30-row resize at 9x18 px, got {other:?}"),
             })
             .collect();
-        assert_eq!(
-            resized,
-            [ResourceId::local(1), second].into_iter().collect()
-        );
+        assert!(resized[&ResourceId::local(1)] < 100, "{resized:?}");
+        assert_eq!(resized.get(&second), Some(&100), "{resized:?}");
+        assert!(!resized.contains_key(&document), "{resized:?}");
     }
 
     /// ADR-0145: the resize cell size is the host's reported cell, only
@@ -307,8 +369,11 @@ mod tests {
             .expect("queue final close");
         drop(server);
 
+        let (kernel, ..) = crate::attach::pane_state::published_test_state(&[]);
+        let book = LeafBook::default();
         emit_view_reflow(
             &mut client,
+            SurfaceLeaves::new(&kernel, &book),
             &workspace,
             None,
             &HashMap::new(),

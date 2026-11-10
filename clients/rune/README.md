@@ -57,6 +57,18 @@ The app finds `phux` (`--phux`, `PHUX_BIN`, `~/.local/bin`,
 reuses the server with `phux server --ensure`, and attaches the most recent
 session (or `--session NAME`). It never creates a session on its own.
 
+- **Getting started.** An installed app's first connection walks through
+  five steps in the terminal area: **Welcome**; **Look** (colour scheme,
+  sidebar and themes, applied live); **Agents & permissions** (`phux skill
+  setup --json`, and on macOS a sheet that opens each privacy pane with
+  `phux server permissions --open SERVICE`, offers the server's app to drag
+  in, and polls until it is granted); **Bring your setup**, shown only with
+  Claude Code, Codex or OpenCode installed (`phux migrate --json --agent ID`
+  opens the agent's pane beside it; key bindings move, themes and fonts
+  don't); and **All set**, with three keys from the keymap. Enter
+  continues; Escape goes back. A quit resumes at the same step. An older
+  phux reads **Update phux to enable this**. **Get Started** in the palette
+  or Settings reopens it; runs aimed at a server never open it on their own.
 - **Machines.** The switcher under the sidebar's title moves the window to
   any machine in the CLI's registry; the choice is remembered, and sessions
   keep running wherever they are. **Add a machine** takes `me@host` or a
@@ -286,7 +298,9 @@ exposes that tree to the OS through Rune's
 [accessibility](https://github.com/anomalyco/rune/tree/dev/crates/rune#accessibility)
 support, which is also how tools drive a real window now that Rune's strobe
 bridge is gone. Headless time does not synchronize phux's server workers;
-wait for the attached terminal before measuring an interaction.
+use `--realtime` against a live server so frames keep pace with replies,
+and wait for the attached terminal before measuring an interaction. Packaged
+desktop and phone qualification uses this wall-clock pacing.
 
 The resource smoke test also reads back a genuine Rune GPU frame containing
 PNG and JSON panes together. Export that frame and its native accessibility
@@ -299,6 +313,9 @@ RUNE_RESOURCE_SNAP="$PWD/target/resource-native.png" \
 
 The test checks decoded PNG pixels, native image draw commands, JSON text,
 and the Read-only mirror label; `target/resource-native.json` is the tree.
+
+`RUNE_ONBOARDING_SNAP=DIR cargo test --locked every_step_renders` writes
+each onboarding step as a PNG under `DIR`.
 
 On macOS, notifications need the signed bundle (`rune_notify::available`);
 `cargo run` can't post, and Settings says so. On Linux any build posts while
@@ -327,6 +344,7 @@ do about a bad release.
 | `alerts`, `dock` | system notifications, their clicks, and the Dock count (`dock` is the crate's only `unsafe`) |
 | `theme` | built-in terminal palettes and the chrome drawn from them |
 | `palette` | palette items and fuzzy ranking |
+| `onboarding`, `desk/onboarding`, `ui/onboarding` | first-run steps: the CLI's `--json` answers parsed, step state in settings, the view |
 | `grid` | cell metrics and the draw list as Rune elements |
 | `keys` | Rune keys as phux key atoms and app shortcuts |
 | `ui` | window composition; `ui/*`: sidebar, tabs, panes, pane overlays (find, history), inbox, settings, palette |

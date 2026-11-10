@@ -192,6 +192,7 @@ mod tests {
         };
         let topology = Topology {
             sessions: vec![session(1, "tui"), session(2, "tui-2")],
+            resources: Vec::new(),
             panes: Vec::new(),
             agent_sessions: Vec::new(),
             documents: Vec::new(),

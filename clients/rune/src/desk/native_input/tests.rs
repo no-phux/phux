@@ -9,6 +9,8 @@ fn native(d: &mut Desk) {
         target: phux_client_runtime::Target::uds("/tmp/not-used"),
         active: true,
         connection_requested: false,
+        paste_requested: false,
+        away_since: None,
     });
 }
 
@@ -142,7 +144,10 @@ fn native_accessory_escape_cancels_rename_without_typing_behind_it() {
         "Done must edit focus, not hit the rename scrim"
     );
     assert!(!rt.state.tabs.rename_field.focused);
-    assert!(!rt.state.phone.as_ref().unwrap().keyboard);
+    assert!(
+        rt.state.phone.as_ref().unwrap().keyboard,
+        "a sheet's Done leaves the terminal's keyboard choice alone"
+    );
     no_terminal_input(&client);
 }
 
@@ -210,6 +215,8 @@ fn sanitized_paste_preserves_selection_and_undo_boundaries() {
 fn a_native_connection_replacement_keeps_its_host_and_trust() {
     let mut state = crate::mobile::state(crate::mobile::Configuration {
         endpoint: "quic://localhost:8788".into(),
+        name: None,
+        tls_server_name: None,
         certificate_pin: Some("11".repeat(32)),
         token: Some("22".repeat(32)),
         session: Some("work".into()),
@@ -523,6 +530,8 @@ fn a_native_shell_uses_the_full_available_stage_without_drawn_keys() {
         target: phux_client_runtime::Target::uds("/tmp/not-used"),
         active: true,
         connection_requested: false,
+        paste_requested: false,
+        away_since: None,
     });
     rt.set_viewport((393.0, 600.0), 2.0);
     for _ in 0..120 {

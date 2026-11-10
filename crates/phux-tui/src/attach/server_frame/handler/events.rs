@@ -1,5 +1,6 @@
 //! `EVENT` frames: organization changes, terminal control, asks, cwd, and activity.
 
+use phux_protocol::ResourceKind;
 use phux_protocol::ids::{ClientId, ResourceId};
 use phux_protocol::wire::frame::{AgentEvent, ArrangementOwner, FrameKind, ResourceLifecycle};
 
@@ -58,12 +59,30 @@ pub(super) fn handle_agent_event<W: crate::attach::RenderSink>(
             event: AgentEvent::InputActivity { origin },
             ..
         } => fold_input_activity(ctx, &terminal, origin),
+        // A document, tree, or surface spawned: its kind names a placeholder
+        // leaf before its bootstrap; the inventory refresh brings its name.
+        FrameKind::Event {
+            terminal: Some(terminal),
+            event: AgentEvent::ResourceSpawned { kind, .. },
+            ..
+        } if kind != ResourceKind::Terminal
+            && kind != ResourceKind::AgentSession
+            && !ctx.panes.contains_key(&terminal) =>
+        {
+            let learned = ctx.leaves.note_spawned(&terminal, kind);
+            FrameOutcome {
+                layout_replaced: learned && window_holding_pane(ctx.workspace, &terminal).is_some(),
+                members_dirty: true,
+                foreign_pane_set_dirty: true,
+                ..FrameOutcome::default()
+            }
+        }
         // Another session's pane set changed (server-wide event subscription).
         FrameKind::Event {
             terminal: Some(terminal),
             event: AgentEvent::ResourceSpawned { .. } | AgentEvent::ResourceClosed { .. },
             ..
-        } if !ctx.panes.contains_key(&terminal) && !ctx.is_non_terminal(&terminal) => {
+        } if !ctx.panes.contains_key(&terminal) && !ctx.holds_stream_of(&terminal) => {
             FrameOutcome {
                 foreign_pane_set_dirty: true,
                 ..FrameOutcome::default()

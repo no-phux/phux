@@ -288,26 +288,36 @@ fn satellite_host_session(
     sat: &phux_protocol::wire::info::SessionSnapshot,
     session: &phux_protocol::wire::info::SessionInfo,
 ) -> phux_protocol::wire::info::HostSessionInfo {
-    let members = session_members(host, sat, session.id);
+    let (panes, members): (Vec<bool>, Vec<_>) = session_members(sat, session.id)
+        .into_iter()
+        .filter_map(|pane| {
+            retag_satellite_resource_id(host, Some(&pane.id))
+                .map(|id| (pane.kind.is_terminal(), id))
+        })
+        .unzip();
+    let panes = panes.into_iter().filter(|terminal| *terminal).count();
     phux_protocol::wire::info::HostSessionInfo::new(session.id, session.name.clone())
         .with_created_at_unix_secs(session.created_at_unix_secs)
         .with_window_count(session.window_count)
-        .with_pane_count(u16::try_from(members.len()).unwrap_or(u16::MAX))
+        .with_pane_count(u16::try_from(panes).unwrap_or(u16::MAX))
         .with_attached_client_count(session.attached_client_count)
         .with_active_resource(session_active_resource(host, sat, session))
         .with_members(members)
 }
 
-/// A satellite session's Terminals, re-tagged for the hub, in window order.
+/// A satellite session's resources, in the satellite's order: a Terminal
+/// by its window, any other kind by its `session` facet (else its window,
+/// from a satellite that does not report one).
 fn session_members(
-    host: &phux_protocol::ids::SatelliteHost,
     sat: &phux_protocol::wire::info::SessionSnapshot,
     session: phux_protocol::SessionId,
-) -> Vec<phux_protocol::ids::ResourceId> {
+) -> Vec<&phux_protocol::wire::info::ResourceInfo> {
     sat.resources
         .iter()
-        .filter(|pane| pane.kind.is_terminal() && window_in_session(sat, pane.window_id, session))
-        .filter_map(|pane| retag_satellite_resource_id(host, Some(&pane.id)))
+        .filter(|pane| match pane.session {
+            Some(named) if !pane.kind.is_terminal() => named == session,
+            _ => window_in_session(sat, pane.window_id, session),
+        })
         .collect()
 }
 

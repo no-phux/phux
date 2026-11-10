@@ -11,9 +11,9 @@ use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    OrganizeCfg, connector::ConnectorConfigEntry, mirror::MirrorConfigEntry,
-    plugin::PluginConfigEntry, project::ProjectConfigEntry, remote::RemoteConfigEntry,
-    satellite::SatelliteConfigEntry, uplink::UplinkConfigEntry,
+    OrganizeCfg, connector::ConnectorConfigEntry, host_color::LocalHostCfg,
+    mirror::MirrorConfigEntry, plugin::PluginConfigEntry, project::ProjectConfigEntry,
+    remote::RemoteConfigEntry, satellite::SatelliteConfigEntry, uplink::UplinkConfigEntry,
 };
 
 /// Top-level config (`docs/config.md`).
@@ -48,6 +48,8 @@ pub struct Config {
     /// Remote servers this machine attaches to (ADR-0055), written by
     /// `phux host add`.
     pub remote: Vec<RemoteConfigEntry>,
+    /// `[host]`: this machine as clients draw it (its colour override).
+    pub host: LocalHostCfg,
     /// Named projects `phux project open NAME` resolves (ADR-0152).
     pub projects: Vec<ProjectConfigEntry>,
     /// Color slots: free-form `slot -> color` strings.

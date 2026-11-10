@@ -1,5 +1,6 @@
 //! The document reader and target checks.
 use super::*;
+use phux_protocol::caps::BootstrapStreamProfile;
 use phux_protocol::ids::{BootstrapId, StreamId};
 
 #[test]
@@ -158,6 +159,7 @@ fn a_document_in_an_unknown_codec_is_refused_rather_than_misread() {
     };
     assert!(matches!(
         reader.absorb(begin),
-        Err(TreeError::Protocol(AttachError::Protocol(_)))
+        Err(TreeError::Protocol(AttachError::Protocol(message)))
+            if message.contains("codec 0x77") && message.contains("cannot decode")
     ));
 }

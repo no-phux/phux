@@ -5,6 +5,9 @@ import { dirname, join, resolve } from "node:path";
 import type { ExtensionContext } from "@oh-my-pi/pi-coding-agent";
 import type { Skill } from "@oh-my-pi/pi-coding-agent/capability/skill";
 
+// A 1x1 PNG the fixture CLI writes for a surface snapshot.
+const SMOKE_PNG = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==";
+
 // Isolate before importing the SDK: discovery reads environment at module load.
 // Load the actual packed artifact so missing files and checkout imports fail.
 if (process.argv[2] !== "--isolated") {
@@ -19,11 +22,15 @@ if (process.argv[2] !== "--isolated") {
     assert.equal(extracted.exitCode, 0, extracted.stderr.toString());
     await mkdir(join(root, "home"));
     await mkdir(join(root, "agent"));
+    await mkdir(join(root, "tmp"));
     const executable = join(root, "phux-fixture");
     await writeFile(executable, [
       "#!/bin/sh",
       'case "$*" in',
       '  *"new --json"*) printf \'%s\\n\' \'{"session":"smoke","terminal_id":18}\' ;;',
+      '  *"agent surface snapshot --json"*)',
+      '    for arg in "$@"; do case "$arg" in --out=*) printf %s "$SMOKE_PNG" | base64 -d > "${arg#--out=}" ;; esac; done',
+      '    printf \'%s\\n\' \'{"schema_version":1,"seq":1,"bytes":70,"format":"png","width":1,"height":1,"content_type":null,"out":null}\' ;;',
       '  *) printf \'unexpected CLI invocation\\n\' >&2; exit 79 ;;',
       "esac",
       "",
@@ -41,6 +48,8 @@ if (process.argv[2] !== "--isolated") {
         PHUX_BIN: executable,
         PHUX_SOCKET: join(root, "never-connect.sock"),
         PHUX_TERMINAL_ID: "17",
+        SMOKE_PNG,
+        TMPDIR: join(root, "tmp"),
         NO_COLOR: "1",
       },
       stdout: "inherit",
@@ -77,6 +86,7 @@ if (process.argv[2] !== "--isolated") {
     "phux_list", "phux_create", "phux_snapshot", "phux_send_keys", "phux_run", "phux_wait",
     "phux_panes", "phux_paste", "phux_spawn", "phux_agent_prompt", "phux_agent_wait",
     "phux_resource_wait", "phux_status", "phux_runtime_info",
+    "phux_documents", "phux_tree_snapshot", "phux_tree_wait", "phux_surface_snapshot",
   ];
   assert.deepEqual([...extension.tools.keys()].sort(), names.sort());
   assert.deepEqual([...extension.commands.keys()].sort(), ["phux-attach", "phux-status"]);
@@ -119,6 +129,12 @@ if (process.argv[2] !== "--isolated") {
   assert.equal(cancelled.isError, true);
   assert.equal(cancelled.details.error.code, "aborted", "OMP signal must reach the subprocess runtime");
 
+  const surface = await extension.tools.get("phux_surface_snapshot")!.definition.execute(
+    "surface", { target: "@19" }, undefined, undefined, ctx,
+  );
+  assert.notEqual(surface.isError, true, JSON.stringify(surface));
+  assert.deepEqual(surface.content[1], { type: "image", data: SMOKE_PNG, mimeType: "image/png" }, "a surface frame must reach OMP as image content");
+
   const create = extension.tools.get("phux_create")!.definition;
   const created = await create.execute("create", { name: "smoke" }, undefined, undefined, ctx);
   assert.notEqual(created.isError, true);
@@ -146,5 +162,5 @@ if (process.argv[2] !== "--isolated") {
   for (const type of ["session_start", "agent_start", "agent_end", "session_shutdown"] as const) {
     for (const handler of extension.handlers.get(type) ?? []) await handler({ type, messages: [] } as never, ctx);
   }
-  console.log("Native OMP load smoke passed: isolated bundled package, 14 tools, JSON Schema validation, self-pane guard, cancellation, branch selection and navigation race.");
+  console.log("Native OMP load smoke passed: isolated bundled package, 18 tools, JSON Schema validation, self-pane guard, cancellation, surface image content, branch selection and navigation race.");
 }

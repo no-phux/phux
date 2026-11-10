@@ -226,6 +226,82 @@ fn an_unknown_codec_on_a_document_kind_is_refused_too() {
 }
 
 #[test]
+fn a_refused_documents_retired_generations_stay_fenced_after_a_known_recut() {
+    let mut kernel = SessionKernel::new(RigAdapter::default(), BootstrapProfile::SynthesizedVtRaw);
+    let mut effects = EffectBuffer::new();
+    let id = ResourceId::local(9);
+    let cut = |bootstrap: u64, profile| KernelInput::BootstrapBegin {
+        terminal_id: &id,
+        stream_id: stream(),
+        bootstrap_id: BootstrapId::new(bootstrap).unwrap(),
+        profile,
+        geometry: GRIDLESS,
+        base_seq: 0,
+    };
+    let chunk_of = |bootstrap: u64| KernelInput::BootstrapChunk {
+        terminal_id: &id,
+        stream_id: stream(),
+        bootstrap_id: BootstrapId::new(bootstrap).unwrap(),
+        chunk_seq: 0,
+        payload: b"\x0atext/plainhi",
+    };
+    let ready_of = |bootstrap: u64| KernelInput::BootstrapReady {
+        terminal_id: &id,
+        stream_id: stream(),
+        bootstrap_id: BootstrapId::new(bootstrap).unwrap(),
+        history_cursor: None,
+    };
+    let late = |bootstrap: u64| KernelInput::ResourceOutput {
+        terminal_id: &id,
+        stream_id: stream(),
+        bootstrap_id: BootstrapId::new(bootstrap).unwrap(),
+        seq: 5,
+        payload: b"late",
+    };
+
+    // Generation 1 publishes; generation 2 names an unknown codec.
+    kernel
+        .update(
+            cut(1, BootstrapStreamProfile::DocumentTypedV1),
+            &mut effects,
+        )
+        .unwrap();
+    kernel.update(chunk_of(1), &mut effects).unwrap();
+    kernel.update(ready_of(1), &mut effects).unwrap();
+    kernel
+        .update(
+            cut(2, BootstrapStreamProfile::Unknown { codec_tag: 9 }),
+            &mut effects,
+        )
+        .unwrap();
+    assert!(kernel.is_unsupported(&id));
+
+    // A known recut lifts the refusal and publishes generation 3.
+    kernel
+        .update(
+            cut(3, BootstrapStreamProfile::DocumentTypedV1),
+            &mut effects,
+        )
+        .unwrap();
+    kernel.update(chunk_of(3), &mut effects).unwrap();
+    kernel.update(ready_of(3), &mut effects).unwrap();
+    assert!(!kernel.is_unsupported(&id));
+
+    // Late frames of the published and the refused generations are fenced.
+    for bootstrap in [1, 2] {
+        assert!(matches!(
+            kernel.update(late(bootstrap), &mut effects),
+            Err(KernelError::RetiredGeneration { .. })
+        ));
+    }
+    kernel.update(late(3), &mut effects).unwrap();
+    assert!(matches!(
+        effects.as_slice(),
+        [KernelEffect::Document(document)] if document.bytes == b"late"
+    ));
+}
+
+#[test]
 fn an_unknown_codec_on_a_terminal_is_a_profile_mismatch() {
     let mut kernel = SessionKernel::new(RigAdapter::default(), BootstrapProfile::SynthesizedVtRaw);
     let mut effects = EffectBuffer::new();

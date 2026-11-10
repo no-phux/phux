@@ -22,6 +22,14 @@ it. It draws panes with libghostty, the same terminal emulator the server
 uses, so what you see is what the server has. See
 [libghostty in phux](./libghostty.md).
 
+A session's arrangement can also hold a document, window mirror,
+accessibility tree, or agent pane that another client placed there
+([resource kinds](./resource-kinds.md)). The terminal UI shows each as a
+tile naming its kind and title; it can take focus, but typing there does
+nothing and the tile is never resized. Killing such a pane, or a tab
+holding one, only closes its view: the resource and its producer keep
+running, and `reopen-views` shows a hidden document again.
+
 [Getting started](./getting-started.md) covers this client.
 <kbd>C-a</kbd> <kbd>S</kbd> opens settings, which edit your config file;
 [when a change takes effect](./config.md#when-a-change-takes-effect)
@@ -86,6 +94,25 @@ it. A token alone never gets a browser in.
 iOS and Android apps are in progress and not available yet. `phux pair --qr`
 already prints the pairing code they will scan; see
 [pairing with a link](./remote.md#pairing-with-a-link).
+
+## Host colours
+
+Every client draws each machine in one of eight colours (blue, violet,
+magenta, sky, coral, olive, slate, copper), picked from a hash of its name,
+so `mini` looks the same on the desktop, on mobile, and in `phux host ls
+--json`. Amber, mint, and red stay reserved for agent state, and a name is
+always shown beside the colour. Pick a colour yourself when two machines
+land on the same one:
+
+```sh
+phux host color mini violet      # [[remote]] color = "violet"
+phux host color --local sky      # this machine: [host] color = "sky"
+phux host color mini auto        # back to the hashed colour
+```
+
+`phux host ls --json` reports each host's resolved `color` (`id`, `hex`,
+and whether an `override` chose it) and this machine under `local`. The
+desktop's Machines sheet sets the same override.
 
 ## Your own
 

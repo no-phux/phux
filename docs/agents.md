@@ -144,6 +144,9 @@ phux skill             # everything
 `phux mcp --skill` prints the same guide for the MCP tools. Both are also
 installable as skills with `npx skills add no-phux/skills`.
 
+`phux skill setup` installs a `phux` skill stub and a Claude Code session
+hook for each installed agent ([Agent skill setup](./agent-skill.md)).
+
 ## MCP
 
 `phux mcp` serves phux as MCP tools over stdio. Register it the way your
@@ -406,21 +409,19 @@ without `--yes` when there is none.
 list, read, and type into panes in its own session, but not create, kill,
 signal, or reorganize anything, and never more than you can. The key ends
 when the session is deleted or the server stops (an in-place
-`phux upgrade` keeps it). **This is not a
-sandbox.** Any program running as your user can still reach the server's
-main socket with full access.
+`phux upgrade` keeps it). Its connections report who minted it as
+`on_behalf_of` in `phux whoami --json` (`owner`, or the minting credential's
+id). **This is not a sandbox.** Any program running as your user can still
+reach the server's main socket with full access.
 
-**Held actions wait for you.** A device or automation key enrolled with
-`?signal` in its scope has its kills and signals held until a person decides:
+**On macOS, agents share the server's privacy grants.** Every program in a
+pane is charged to the phux server; `phux server permissions` lists what it
+holds ([macOS permissions](./install.md#macos-permissions)).
 
-```sh
-phux approvals          # what is waiting
-phux approve ID
-phux deny ID
-```
-
-Nothing on this machine's own socket is ever held. See
-[Remote machines](./remote.md#who-can-do-what) for keys and scopes.
+**Held actions wait for you.** A key enrolled with a held verb such as
+`?signal` waits for `phux approve ID` or `phux deny ID`; `phux approvals`
+lists them. This machine's own socket is never held. See
+[Held actions](./approvals.md).
 
 ## Complete terminal creation
 
