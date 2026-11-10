@@ -169,10 +169,11 @@ pub(super) const ROWS: &[SettingSpec] = &[
             max: APPROVAL_TTL_MAX,
         },
         summary: "Seconds a held action waits for a decision before it expires",
-        detail: "Only a workload grant spelled ?signal holds anything, so this is inert \
-                 until one exists. A held command that nobody approves or denies in time \
-                 is refused as expired and never runs. 86400 (one day) is the accepted \
-                 maximum; phux config check rejects 0 and anything larger.",
+        detail: "Only a workload grant spelled ?signal, ?terminate or ?input holds \
+                 anything, so this is inert until one exists. A held command that nobody \
+                 approves or denies in time is refused as expired and never runs. 86400 \
+                 (one day) is the accepted maximum; phux config check rejects 0 and \
+                 anything larger.",
         applies: Applies::NextSpawn,
     },
     SettingSpec {

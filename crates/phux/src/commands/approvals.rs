@@ -1,10 +1,10 @@
 //! `phux approvals`, `phux approve ID`, and `phux deny ID` (ADR-0128): the
 //! human side of server-held approvals.
 //!
-//! A workload whose grant holds `?signal` has its kills, signals, and forced
-//! detaches held by the server until a connection holding un-held `signal`
-//! on the same subject decides them. `approvals` lists what is waiting;
-//! `approve` releases one held action, which the server then runs once as
+//! A workload whose grant holds `?signal`, `?terminate`, or `?input@CLASS`
+//! has those actions held by the server until a connection holding the same
+//! verbs un-held on the same subject decides them. `approvals` lists what is
+//! waiting; `approve` releases one held action, which the server then runs once as
 //! the workload that asked, under that workload's own grant; `deny` refuses
 //! it. The wire work is [`phux_client::approvals`].
 

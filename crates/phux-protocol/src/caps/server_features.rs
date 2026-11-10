@@ -237,7 +237,8 @@ define_server_features! {
     /// with `INCARNATION_CHANGED` fencing. A client MUST see the bit before
     /// retrying a keyed command blind.
     KeyedSignal = KEYED_SIGNAL = 0x2000_0000,
-    /// The server holds `?signal` commands for approval (ADR-0128). A client
+    /// The server holds commands a scope marks held (`?signal`, and since
+    /// `?terminate` and `?input@CLASS`) for approval (ADR-0128). A client
     /// MUST see the bit before writing a decision: an older server stores the
     /// decide key as an ordinary value.
     Approvals = APPROVALS = 0x4000_0000,
