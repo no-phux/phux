@@ -112,6 +112,13 @@ impl KittyResidency {
         ids::placeholder_color(self.ids.as_mut(), fg)
     }
 
+    /// Whether the outer terminal holds (or may hold) any of this pane's
+    /// images.
+    #[must_use]
+    pub const fn holds_images(&self) -> bool {
+        !self.held.images.is_empty()
+    }
+
     /// Delete (`d=I`) every image the outer terminal holds for this pane and
     /// record that it holds nothing: the pane left the visible layout. Its id
     /// mapping is kept. Returns whether a classic placement was removed.

@@ -102,6 +102,7 @@ fn release_and_drop_delete_what_the_outer_terminal_holds() {
     assert_eq!(contains(&out, format!("a=d,d=I,i={id},").as_bytes()), 1);
     target.vt_write(&out);
     assert!(pixels(&target, id).is_none());
+    assert!(!held.holds_images());
     out.clear();
     assert!(!held.release(&mut out).unwrap());
     assert!(out.is_empty());

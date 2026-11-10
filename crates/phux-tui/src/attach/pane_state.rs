@@ -373,6 +373,23 @@ pub(super) fn release_hidden_kitty(
     }
 }
 
+/// The earliest moment a pane's kitty images are due a heal.
+pub(super) fn kitty_heal_deadline(
+    panes: &HashMap<ResourceId, PaneSlot>,
+) -> Option<tokio::time::Instant> {
+    panes
+        .values()
+        .filter_map(|slot| slot.renderer.kitty_heal_at())
+        .min()
+}
+
+/// Make every pane re-send its kitty images on its next paint.
+pub(super) fn heal_kitty(panes: &mut HashMap<ResourceId, PaneSlot>) {
+    for slot in panes.values_mut() {
+        slot.renderer.heal_kitty();
+    }
+}
+
 /// Forget the rows the predictive overlay painted over: its guesses are
 /// healed only by a whole-row repaint, and a diff against the pre-guess
 /// front row would strand the underline.
