@@ -23,6 +23,8 @@ pub struct WebDocument {
     pub content: Option<DocumentContent>,
     /// The newest publication's bytes when it is an image; empty otherwise.
     pub image: Vec<u8>,
+    /// Its stream faulted and was retired; this connection gets no more.
+    pub lost: bool,
 }
 
 impl WebDocument {
@@ -34,6 +36,7 @@ impl WebDocument {
             content_type: None,
             content: None,
             image: Vec::new(),
+            lost: false,
         }
     }
 
@@ -57,6 +60,9 @@ impl WebDocument {
     /// The tile's one line when it draws neither text nor an image.
     #[must_use]
     pub fn notice(&self) -> Option<String> {
+        if self.lost {
+            return Some("Document stream lost; reconnect to see it again".to_owned());
+        }
         match self.content.as_ref() {
             None => Some("Waiting for the producer’s first document…".to_owned()),
             Some(DocumentContent::Empty) => Some("Empty document".to_owned()),
@@ -80,6 +86,7 @@ impl WebDocument {
             Vec::new()
         };
         self.kind = publication.kind;
+        self.lost = false;
         self.seq = Some(publication.seq);
         self.content_type.clone_from(&publication.content_type);
         self.content = Some(content);
@@ -116,6 +123,14 @@ impl Connection {
     #[must_use]
     pub fn document(&self, id: &ResourceId) -> Option<&WebDocument> {
         self.documents.get(id)
+    }
+
+    /// Every visible terminal and its rectangle: the leaves the last-pane
+    /// and four-terminal guards count.
+    pub(super) fn terminal_rects(&self) -> Vec<(ResourceId, PaneRect)> {
+        let mut rects = self.pane_rects();
+        rects.retain(|(id, _)| !self.is_document(id));
+        rects
     }
 
     /// Whether `id` is a document resource rather than a terminal.
@@ -162,9 +177,11 @@ impl Connection {
         new
     }
 
-    /// Give each document a tile while the layout has room, and resize the
-    /// terminals that give it space.
-    pub(super) fn place_documents(&mut self, outcome: &mut Outcome) {
+    /// Give each document without a tile one while the layout has room
+    /// (four leaves). Runs for a new document and whenever a leaf frees up;
+    /// returns whether the layout changed, so the terminals that give a tile
+    /// room are resized.
+    pub(super) fn place_documents(&mut self) -> bool {
         let mut placed = false;
         for id in self.document_order.clone() {
             let leaves: Vec<_> = self.pane_rects().into_iter().map(|(id, _)| id).collect();
@@ -179,11 +196,27 @@ impl Connection {
             }
             placed = true;
         }
-        if placed {
-            outcome.panes = true;
-            if self.attach_ready {
-                outcome.send.extend(self.pane_resize_frames());
-            }
+        placed
+    }
+
+    /// A new terminal displaces the last document tile from a full layout;
+    /// [`Self::place_documents`] gives it back when a leaf frees up.
+    pub(super) fn make_room_for_terminal(&mut self) {
+        let rects = self.pane_rects();
+        if rects.len() < 4 {
+            return;
+        }
+        let Some((last, _)) = rects.iter().rev().find(|(id, _)| self.is_document(id)) else {
+            return;
+        };
+        self.layout = self.layout.take().and_then(|layout| layout.remove(last));
+    }
+
+    /// Mark a document whose stream faulted: the kernel retired it, and this
+    /// connection cannot reopen it.
+    pub(super) fn lose_document(&mut self, id: &ResourceId) {
+        if let Some(document) = self.documents.get_mut(id) {
+            document.lost = true;
         }
     }
 

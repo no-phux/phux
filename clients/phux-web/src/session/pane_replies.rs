@@ -233,6 +233,10 @@ impl Connection {
             return;
         }
         let id = id.clone();
+        self.make_room_for_terminal();
+        let Some(pending) = self.pending_split.as_ref() else {
+            return;
+        };
         if let Some(layout) = self.layout.as_mut() {
             if !layout.insert(&pending.target, id.clone(), pending.axis)
                 && let Some(target) = self.terminal_order.first()

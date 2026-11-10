@@ -42,9 +42,10 @@ impl Connection {
         {
             return Outcome::default();
         }
-        // A document's fault likewise costs only its tile.
-        let agent_frame = frame_resource_id(&frame)
-            .is_some_and(|id| self.is_agent_session(id) || self.is_document(id));
+        // A document's fault likewise costs only its tile, which says so.
+        let optional = frame_resource_id(&frame)
+            .filter(|id| self.is_agent_session(id) || self.is_document(id))
+            .cloned();
         let split_frame = frame_resource_id(&frame).is_some_and(|id| {
             self.pending_split
                 .as_ref()
@@ -52,9 +53,12 @@ impl Connection {
                 == Some(id)
         });
         let mut outcome = self.reduce_frame(frame);
-        if agent_frame && outcome.fatal.is_some() {
+        if let Some(id) = &optional
+            && outcome.fatal.take().is_some()
+        {
             self.failed = false;
-            outcome.fatal = None;
+            self.lose_document(id);
+            outcome.render = true;
         }
         if split_frame && let Some(message) = outcome.fatal.take() {
             self.failed = false;

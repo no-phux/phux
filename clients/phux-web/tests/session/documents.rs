@@ -215,7 +215,7 @@ async fn images_opaque_and_invalid_publications_and_their_lines() {
         4,
         3,
         BootstrapStreamProfile::DocumentTypedV1,
-        &typed("IMAGE/WEBP", b"RIFF"),
+        &typed("IMAGE/WEBP", b"RIFF\0\0\0\0WEBPVP8 "),
     );
     let surface = session.document(&ResourceId::local(2)).unwrap();
     assert_eq!(
@@ -309,4 +309,190 @@ async fn documents_tile_after_terminals_and_only_terminals_are_resized() {
     assert!(session.document(&ResourceId::local(2)).is_none());
     assert_eq!(session.pane_rects().len(), 1);
     assert_eq!(session.focused_pane(), Some(ResourceId::local(1)));
+}
+
+fn ids(session: &Connection) -> Vec<ResourceId> {
+    session.pane_rects().into_iter().map(|(id, _)| id).collect()
+}
+
+/// One terminal @1 and the documents `documents`, attached and published.
+async fn terminal_and(documents: &[u32]) -> Connection {
+    let mut resources = vec![ResourceInfo::new(
+        ResourceId::local(1),
+        WindowId::new(1),
+        41,
+        10,
+    )];
+    resources.extend(
+        documents
+            .iter()
+            .map(|id| resource(*id, ResourceKind::Document, None)),
+    );
+    let mut session = attached_to(resources).await;
+    publish(
+        &mut session,
+        1,
+        1,
+        BootstrapStreamProfile::SynthesizedVtRaw,
+        b"$ ",
+    );
+    for (serial, id) in documents.iter().enumerate() {
+        let payload = typed("text/plain", b"doc");
+        let serial = serial as u64 + 2;
+        publish(
+            &mut session,
+            *id,
+            serial,
+            BootstrapStreamProfile::DocumentTypedV1,
+            &payload,
+        );
+    }
+    session.on_frame(FrameKind::AttachReady { attach_id: 1 });
+    session
+}
+
+#[wasm_bindgen_test]
+async fn a_document_tile_never_counts_as_the_last_terminal() {
+    let mut session = terminal_and(&[2]).await;
+    assert_eq!(ids(&session), [ResourceId::local(1), ResourceId::local(2)]);
+    assert!(session.close_view().unwrap_err().contains("last view"));
+    assert!(session.kill_pane_frame().unwrap_err().contains("last pane"));
+    assert_eq!(session.focused_pane(), Some(ResourceId::local(1)));
+    assert!(
+        session.key_frame(key()).is_some(),
+        "input still has its terminal"
+    );
+}
+
+#[wasm_bindgen_test]
+async fn a_split_displaces_a_document_tile_that_returns_when_a_leaf_frees() {
+    let mut session = terminal_and(&[2, 3, 4]).await;
+    assert_eq!(ids(&session).len(), 4);
+    let spawn = requested_spawn(&mut session, "vertical");
+    let second = ResourceId::local(9);
+    let attach = announce_split(&mut session, spawn, second.clone());
+    bootstrap_split(&mut session, second.clone(), 9, b"second");
+    let committed = session.on_frame(FrameKind::CommandResult {
+        request_id: attach,
+        result: CommandResult::Ok,
+    });
+    assert!(committed.panes && !session.pane_pending());
+    let shown = ids(&session);
+    assert_eq!(shown.len(), 4);
+    assert!(shown.contains(&second) && !shown.contains(&ResourceId::local(4)));
+    assert!(
+        session.document(&ResourceId::local(4)).is_some(),
+        "kept, untiled"
+    );
+
+    // Closing the new terminal's view frees a leaf: the document returns.
+    let resizes = session.close_view().expect("two terminals are open");
+    assert!(ids(&session).contains(&ResourceId::local(4)));
+    assert!(!ids(&session).contains(&second));
+    assert!(
+        resized(&resizes)
+            .iter()
+            .all(|(id, _)| id == &ResourceId::local(1))
+    );
+}
+
+#[wasm_bindgen_test]
+async fn a_closed_terminal_frees_its_leaf_for_an_untiled_document() {
+    let mut session = terminal_and(&[]).await;
+    for id in [2, 3] {
+        publish(
+            &mut session,
+            id,
+            u64::from(id) + 10,
+            BootstrapStreamProfile::DocumentTypedV1,
+            &typed("text/plain", b"later"),
+        );
+    }
+    let spawn = requested_spawn(&mut session, "vertical");
+    let attach = announce_split(&mut session, spawn, ResourceId::local(9));
+    bootstrap_split(&mut session, ResourceId::local(9), 9, b"second");
+    session.on_frame(FrameKind::CommandResult {
+        request_id: attach,
+        result: CommandResult::Ok,
+    });
+    publish(
+        &mut session,
+        5,
+        20,
+        BootstrapStreamProfile::DocumentTypedV1,
+        &typed("text/plain", b"no room"),
+    );
+    assert!(
+        !ids(&session).contains(&ResourceId::local(5)),
+        "four leaves are full"
+    );
+    let closed = session.on_frame(FrameKind::ResourceClosed {
+        terminal_id: ResourceId::local(9),
+        exit_status: Some(0),
+        reason: CloseReason::Unknown,
+        signal: None,
+    });
+    assert!(closed.panes);
+    assert!(
+        ids(&session).contains(&ResourceId::local(5)),
+        "the freed leaf is its"
+    );
+}
+
+#[wasm_bindgen_test]
+async fn a_faulted_document_says_its_stream_is_lost_and_the_terminal_lives() {
+    let mut session = terminal_and(&[2]).await;
+    let (terminal_id, stream_id, bootstrap_id) = (ResourceId::local(2), stream(30), bootstrap(30));
+    session.on_frame(begin(
+        terminal_id.clone(),
+        stream_id,
+        bootstrap_id,
+        BootstrapStreamProfile::DocumentTypedV1,
+        0,
+        0,
+        0,
+    ));
+    // A typed cut whose length byte overruns it names no content type.
+    session.on_frame(FrameKind::BootstrapChunk {
+        terminal_id: terminal_id.clone(),
+        stream_id,
+        bootstrap_id,
+        chunk_seq: 0,
+        payload: Bytes::from_static(&[200]),
+    });
+    let ready = session.on_frame(FrameKind::BootstrapReady {
+        terminal_id,
+        stream_id,
+        bootstrap_id,
+        history_cursor: None,
+    });
+    assert!(ready.fatal.is_none() && ready.render);
+    assert!(!session.is_failed());
+    assert_eq!(
+        session
+            .document(&ResourceId::local(2))
+            .unwrap()
+            .notice()
+            .as_deref(),
+        Some("Document stream lost; reconnect to see it again")
+    );
+    assert!(
+        session.key_frame(key()).is_some(),
+        "the terminal still types"
+    );
+}
+
+#[wasm_bindgen_test]
+async fn a_declared_image_without_its_signature_is_its_type_and_size() {
+    let mut session = attached_to(vec![resource(3, ResourceKind::Document, None)]).await;
+    publish(
+        &mut session,
+        3,
+        1,
+        BootstrapStreamProfile::DocumentTypedV1,
+        &typed("image/png", b"<svg/>"),
+    );
+    let document = session.document(&ResourceId::local(3)).unwrap();
+    assert!(document.image.is_empty(), "nothing for an image decoder");
+    assert_eq!(document.notice().as_deref(), Some("image/png · 6 bytes"));
 }

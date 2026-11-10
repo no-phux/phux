@@ -116,7 +116,7 @@ impl Connection {
         let axis = Axis::parse(axis)?;
         self.pane_operation_ready()?;
         let panes = self.pane_rects();
-        if panes.len() + self.retiring_panes.len() >= 4 {
+        if self.terminal_rects().len() + self.retiring_panes.len() >= 4 {
             return Err("Four terminals are open or closing. Wait for cleanup or close a pane before splitting.".to_owned());
         }
         let target = self
@@ -164,7 +164,7 @@ impl Connection {
     /// Refuses the last view or a pending pane operation.
     pub fn close_view(&mut self) -> Result<Vec<Vec<u8>>, String> {
         self.pane_operation_ready()?;
-        if self.pane_rects().len() <= 1 {
+        if self.terminal_rects().len() <= 1 {
             return Err(
                 "Cannot close the last view. Use Release Session to leave the session.".to_owned(),
             );
@@ -178,6 +178,7 @@ impl Connection {
             .take()
             .and_then(|layout| layout.remove(&terminal_id));
         self.pane_sizes.remove(&terminal_id);
+        self.place_documents();
         self.cancel_path_query();
         self.focused_terminal = None;
         self.focused_terminal = self.first_published_terminal();
@@ -195,7 +196,7 @@ impl Connection {
     /// Refuses the last pane or another pending operation.
     pub fn kill_pane_frame(&mut self) -> Result<Vec<u8>, String> {
         self.pane_operation_ready()?;
-        if self.pane_rects().len() <= 1 {
+        if self.terminal_rects().len() <= 1 {
             return Err(
                 "Cannot kill the last pane. Use Release Session to end the session.".to_owned(),
             );

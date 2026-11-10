@@ -300,6 +300,7 @@ impl Connection {
                 .layout
                 .take()
                 .and_then(|layout| layout.remove(&terminal_id));
+            self.place_documents();
             if self
                 .pending_kill
                 .as_ref()

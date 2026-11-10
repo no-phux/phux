@@ -230,8 +230,11 @@ impl Connection {
         if outcome.render {
             self.render_visible = true;
         }
-        if new_document {
-            self.place_documents(&mut outcome);
+        if new_document && self.place_documents() {
+            outcome.panes = true;
+            if self.attach_ready {
+                outcome.send.extend(self.pane_resize_frames());
+            }
         }
         if outcome.fatal.is_some() {
             self.failed = true;

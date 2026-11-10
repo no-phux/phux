@@ -86,8 +86,10 @@ canvas with libghostty compiled to WebAssembly, over WebTransport or
 WebSocket. It works, but it isn't shipped: nothing serves it, and the
 server's browser listeners are off by default. Documents, trees, and
 surfaces get read-only tiles beside the terminals: text and JSON as source,
-PNG, JPEG, GIF and WebP as images, anything else as its type and size. Use
-it as a starting point for putting a terminal in a web page.
+PNG, JPEG, GIF and WebP as images, anything else as its type and size. It
+shows at most four panes; a new terminal takes the last document's tile,
+which comes back when a pane closes. Use it as a starting point for putting
+a terminal in a web page.
 
 **A browser needs a client certificate to connect to a paired server.**
 Over WebSocket, install an enrolled client certificate in the browser.

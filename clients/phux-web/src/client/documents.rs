@@ -53,7 +53,7 @@ impl App {
                     f64::from(pane.rows) * css_h,
                 ),
             );
-            let drawn = format!("{:?}", document.seq);
+            let drawn = format!("{:?}/{}", document.seq, document.lost);
             if tile.get_attribute("data-seq").as_deref() != Some(drawn.as_str()) {
                 draw(&page, &tile, document);
                 let _ = tile.set_attribute("data-seq", &drawn);
