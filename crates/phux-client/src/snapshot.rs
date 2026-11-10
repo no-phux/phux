@@ -216,7 +216,7 @@ fn decode_screen_reply(result: CommandResult) -> Result<ScreenState, AttachError
     match result {
         CommandResult::OkWith(CommandValue::Json(json)) => serde_json::from_str(&json)
             .map_err(|err| AttachError::Protocol(format!("malformed GET_SCREEN JSON: {err}"))),
-        CommandResult::Error { message, .. } => Err(AttachError::Refused(message)),
+        CommandResult::Error { code, message } => Err(AttachError::refusal(code, message)),
         other => Err(AttachError::Protocol(crate::explain::explain_unexpected(
             "GET_SCREEN",
             &other,

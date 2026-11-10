@@ -157,12 +157,20 @@ phux snapshot --format html @7   # with colors, as HTML
 | `--format html` / `vt` | Keeps colors and styling, as HTML or terminal escape sequences. |
 | `--json` | Prints a document instead of text. |
 
-`phux snapshot @N` also reads a document resource, by its kind. An
-accessibility tree prints its JSON, as `phux agent tree snapshot` does. A
-typed document prints its content when it is text, and otherwise its size
-and type. A pixel surface needs `--out FILE`, which writes the image, as
-`--out` writes any document. The screen options above apply to a terminal
-only, and `--out` to a document only; either one elsewhere exits 2.
+`phux snapshot @N` (or `^key`) also reads a document resource, by its
+kind. An accessibility tree prints its JSON, as `phux agent tree snapshot`
+does. A typed document prints its content when it is text, and otherwise
+its size and type. A pixel surface needs `--out FILE`, which writes the
+image, as `--out` writes any document. The screen options above apply to a
+terminal only, and `--out` to a document only; either one elsewhere exits 2.
+
+A document's text is its producer's, so printed text cannot drive your
+terminal: every control character but newline and tab shows as its sign
+(ESC as `␛`, a lone CR as `␍`, DEL as `␡`, a C1 control as `�`), a CRLF
+line end prints as a newline, and the text ends with a newline. `phux agent
+tree|doc snapshot` print the same way, and `phux agent surface|doc snapshot`
+write binary to stdout only when it is not a terminal. `--out` and `--json`
+keep the bytes exact.
 
 ```sh
 phux snapshot @12                     # a tree's JSON, or a document's text
@@ -190,11 +198,14 @@ give no pattern.
 
 On an accessibility tree or a text document, `phux wait @N` follows the
 resource instead and checks each document as it arrives: `--until` matches
-anywhere in the document, `--regex` one line of it. `--tail`,
-`--output-only` and `--idle` are for a terminal and exit 2 here. A resource
-that closes before it matches exits 1. `phux send-keys` refuses a document
-(exit 2); its input goes to the producer through `phux agent page type` and
-`phux agent page key`.
+anywhere in the document, `--regex` one line of it. As on a screen, only the
+first document gets the 2 second floor; `--timeout` bounds every later one.
+`--tail`, `--output-only` and `--idle` are for a terminal and exit 2 here,
+and so do an idle wait (no `--until` or `--regex`), a binary document, and a
+surface. A resource that closes before it matches exits 1. `phux send-keys`
+refuses a document (exit 2); a page's or a window's tree or surface takes
+input through `phux agent page type TARGET TEXT` and `phux agent page key
+TARGET KEY`.
 
 ## Watching events
 

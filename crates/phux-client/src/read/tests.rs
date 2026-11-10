@@ -61,10 +61,12 @@ fn a_refusal_names_the_verb_the_resource_and_its_kind_and_what_to_do() {
         "`send-keys` does not apply to @5, an accessibility tree"
     );
     assert!(
-        keys.remedy().contains("phux agent page key"),
+        keys.remedy().contains("phux agent page key @5 KEY"),
         "{}",
         keys.remedy()
     );
+    let typed = route(Verb::SendKeys, &at(ResourceKind::Document)).unwrap_err();
+    assert!(!typed.remedy().contains("page"), "{}", typed.remedy());
 
     let surface = route(Verb::Wait, &at(ResourceKind::PixelSurface)).unwrap_err();
     assert!(
@@ -144,4 +146,31 @@ fn a_text_match_is_a_substring_of_the_whole_text_or_a_regex_on_one_line() {
     assert!(matcher.is_match("# Plan\n## Done\nrest"));
     assert!(!matcher.is_match("# Plan ## Done"));
     assert!(TextMatch::of(&Condition::Idle(std::time::Duration::from_millis(5))).is_none());
+}
+
+#[test]
+fn control_characters_print_as_signs_and_cannot_act() {
+    // OSC 52 (clipboard), a title, a forged OSC 7501, a C1 CSI, DEL.
+    let hostile = "ok\x1b]52;c;aGk=\x07 \x1b]0;t\x1b\\ \x1b]7501;x\x07\u{9b}2J\x7f";
+    let safe = terminal_safe(hostile);
+    assert!(!safe.chars().any(char::is_control), "{safe:?}");
+    assert_eq!(safe, "ok␛]52;c;aGk=␇ ␛]0;t␛\\ ␛]7501;x␇\u{fffd}2J␡");
+    assert_eq!(terminal_safe("a\r\nb\rc\td\n"), "a\nb␍c\td\n");
+    assert!(matches!(terminal_safe("plain\ttext\n"), Cow::Borrowed(_)));
+}
+
+#[test]
+fn terminal_text_is_safe_and_ends_in_a_newline() {
+    let markdown = doc(Some("text/markdown"), b"# done\x1b[2J");
+    assert_eq!(
+        terminal_text(Kind::Document, &markdown).as_deref(),
+        Some("# done␛[2J\n")
+    );
+    let ended = doc(None, b"{}\n");
+    assert_eq!(terminal_text(Kind::Tree, &ended).as_deref(), Some("{}\n"));
+    assert_eq!(
+        terminal_text(Kind::Tree, &doc(None, b"")).as_deref(),
+        Some("")
+    );
+    assert_eq!(terminal_text(Kind::Surface, &ended), None);
 }
