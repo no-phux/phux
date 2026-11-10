@@ -109,6 +109,10 @@ pub(super) fn pin_validated_executable(
         .map_or_else(phux_config::instance::running_executable, |path| {
             Ok(phux_config::instance::without_deleted_suffix(path))
         })?;
+    // On macOS re-exec through the server bundle's `Current` path when it holds
+    // the installed build, never a version directory or a CLI binary, so the
+    // privacy grants given to `phux Server` keep applying.
+    let source_exe = phux_config::server_bundle::server_executable(source_exe);
     let executable = PinnedExecutable::open(&source_exe)?;
     validate_binary(&executable.path)?;
     Ok(executable)

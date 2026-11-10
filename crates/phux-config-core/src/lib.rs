@@ -17,6 +17,7 @@ pub mod layer;
 pub mod loader;
 mod organize;
 pub mod remote;
+pub mod server_bundle;
 pub mod socket;
 
 pub use error::{ConfigError, byte_offset_to_line_col};

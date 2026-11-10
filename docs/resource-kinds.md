@@ -305,10 +305,9 @@ Two parts change (`phux-phiio.4`):
   acknowledgements, viewport and RTT land with the first producer that
   consumes them.
 
-A macOS helper holds the Screen Recording and Accessibility grants. The
-system ties those grants to a stable signed binary, so the helper is not the
-server binary that `phux upgrade` replaces, and it keeps running across an
-upgrade.
+macOS ties the Screen Recording and Accessibility grants to a stable
+signed program: **phux Server**, the server's bundle, run through
+`Versions/Current` ([macOS permissions](./install.md#macos-permissions)).
 
 ## Semantic first
 
