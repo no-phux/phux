@@ -3,7 +3,8 @@
 </p>
 
 <p align="center">
-  A terminal multiplexer that knows what your agents are doing.
+  Oh good, another terminal multiplexer for agents.<br>
+  This one gives a phux.
 </p>
 
 <p align="center">
