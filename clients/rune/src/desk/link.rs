@@ -10,7 +10,6 @@ use std::sync::mpsc::{Receiver, Sender, channel};
 use std::time::{Duration, Instant};
 
 use phux_client_runtime::control::Status;
-use phux_client_runtime::reconnect::is_fatal_refusal_detail;
 use phux_client_runtime::{Client, Target};
 use phux_protocol::ids::SessionKey;
 use rune::Tx;
@@ -372,9 +371,7 @@ impl Desk {
 
     /// Retrying can't change this answer: someone has to act first.
     fn stuck(&self) -> bool {
-        self.link.incompatible.is_some()
-            || self.status == Status::Closed
-            || self.error.as_deref().is_some_and(is_fatal_refusal_detail)
+        self.link.incompatible.is_some() || self.status == Status::Closed || self.unpaired()
     }
 
     /// A connection opened. Only a server's first replays news: after that

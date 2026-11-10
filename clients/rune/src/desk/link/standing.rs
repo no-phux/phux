@@ -6,12 +6,21 @@ use phux_client_runtime::reconnect::is_fatal_refusal_detail;
 
 use super::{BANNER_AFTER, Desk, incompatible};
 
+/// How the QUIC lane words a refused pairing token, which the runtime's own
+/// detail rule doesn't read back.
+const QUIC_TOKEN_REFUSED: &str = "refused the pairing token";
+
+/// Retrying can't change this refusal: the pairing has to be made again.
+pub(super) fn refused_for_good(detail: &str) -> bool {
+    is_fatal_refusal_detail(detail) || detail.contains(QUIC_TOKEN_REFUSED)
+}
+
 /// A failure in words, without the transport's.
 pub fn plainly(error: &str) -> String {
     let lower = error.to_ascii_lowercase();
     if let Some(words) = incompatible(error) {
         words
-    } else if is_fatal_refusal_detail(error) {
+    } else if refused_for_good(error) {
         "This machine no longer accepts this computer. Set it up again from Machines.".to_owned()
     } else if lower.contains("refused") || lower.contains("no such file") {
         "The server isn't answering.".to_owned()
@@ -113,6 +122,12 @@ impl Desk {
         Some(Banner::Reconnecting(why.unwrap_or_else(|| {
             "Your sessions keep running on the server.".to_owned()
         })))
+    }
+
+    /// The machine refused this window's credential: pairing again is the
+    /// only way back.
+    pub fn unpaired(&self) -> bool {
+        self.error.as_deref().is_some_and(refused_for_good)
     }
 
     /// A word for the current machine's row.
