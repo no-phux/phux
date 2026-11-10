@@ -348,7 +348,7 @@ pub fn report(rt: &rune::Runtime<State>, frames: u64, marker: &str) -> Value {
 }
 
 mod host;
-pub use host::{edge_srgb, paste, take_requests};
+pub use host::{edge_srgb, paste, take_requests, zoom};
 
 #[cfg(test)]
 mod pairing_tests;

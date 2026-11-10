@@ -38,6 +38,17 @@ pub fn paste(rt: &mut rune::Runtime<State>, text: &str) {
     });
 }
 
+/// One step of text size from the host's pinch, kept like any other.
+pub fn zoom(rt: &mut rune::Runtime<State>, larger: bool) {
+    use crate::keys::Shortcut;
+    let step = if larger {
+        Shortcut::ZoomIn
+    } else {
+        Shortcut::ZoomOut
+    };
+    rt.update(|state, tx| state.shortcut(step, tx));
+}
+
 /// The surface's edge colour as sRGB, so UIKit can paint the status-bar and
 /// home-indicator strips it keeps outside the surface as one ground.
 pub fn edge_srgb(rt: &rune::Runtime<State>, dark: bool) -> [f32; 3] {
@@ -80,6 +91,23 @@ mod tests {
         );
         rt.update(|state, _| state.settings_open = true);
         assert_ne!(edge_srgb(&rt, true), ground, "Settings paints its own page");
+    }
+
+    #[test]
+    fn a_pinch_steps_the_text_size_both_ways() {
+        // Its own preferences: a text size is saved as it changes.
+        let mut rt = rune::Runtime::new(
+            State::settings_test_fixture(),
+            crate::ui::view,
+            (393.0, 852.0),
+            rune::Env::new(true, 2.0),
+        );
+        let size = rt.state.metrics().cell_h;
+        zoom(&mut rt, true);
+        assert!(rt.state.metrics().cell_h > size);
+        zoom(&mut rt, false);
+        zoom(&mut rt, false);
+        assert!(rt.state.metrics().cell_h < size);
     }
 
     #[test]

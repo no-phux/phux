@@ -116,6 +116,7 @@ final class NativeBridge {
         phux_rune_ios_touch(pointer, identity, phase, point.x, point.y, seconds)
     }
     func paste(_ text: String) { text.withCString { phux_rune_ios_paste(pointer, $0) } }
+    func zoom(larger: Bool) { phux_rune_ios_zoom(pointer, larger) }
     func active(_ active: Bool) { phux_rune_ios_active(pointer, active) }
     func traits(dark: Bool, reducedMotion: Bool) { phux_rune_ios_traits(pointer, dark, reducedMotion) }
 

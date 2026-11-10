@@ -35,8 +35,11 @@ final class RuneView: UIView {
         // While the keyboard animates the bounds, keep the last frame at its
         // own size against the top edge rather than stretching it. Core
         // Animation names this edge for an unflipped layer: UIKit's top.
+        // Unscaled contents need the layer's scale (set with each layout),
+        // or a 3x drawable would show three times too large.
         layer.contentsGravity = .bottomLeft
         layer.masksToBounds = true
+        addGestureRecognizer(UIPinchGestureRecognizer(target: self, action: #selector(pinched)))
         backgroundColor = UIColor(named: "LaunchGround") ?? .black
         editor.send = { [weak self] operation, context in self?.send(operation, context: context) }
         editor.didDismiss = { [weak self] context in _ = self?.send(["op":"dismiss"], context: context) }
@@ -56,6 +59,7 @@ final class RuneView: UIView {
     override func layoutSubviews() {
         super.layoutSubviews()
         guard active, window != nil, bounds.width > 0, bounds.height > 0 else { return }
+        layer.contentsScale = window?.screen.scale ?? traitCollection.displayScale
         do {
             if bridge == nil {
                 let box = WakeBox(); box.view = self
@@ -86,6 +90,15 @@ final class RuneView: UIView {
     }
 
     @objc private func preferencesChanged() { refresh() }
+
+    /// Text size by pinch, a step at a time so the terminal refits a few
+    /// times over a gesture instead of on every frame of it.
+    @objc private func pinched(_ pinch: UIPinchGestureRecognizer) {
+        guard active, pinch.state == .changed, abs(pinch.scale - 1) > 0.12 else { return }
+        bridge?.zoom(larger: pinch.scale > 1)
+        pinch.scale = 1
+        wake()
+    }
 
     func drawFrame() {
         guard active, !drawing, let bridge else { return }
