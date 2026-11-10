@@ -4,7 +4,7 @@
 use phux_protocol::ids::{ResourceId, ResourceKind, SessionId};
 use phux_protocol::wire::info::SessionSnapshot;
 
-use super::{DocumentDescriptor, OrganizationReplica, session_of};
+use super::{DocumentDescriptor, OrganizationReplica, Topology, session_of};
 
 /// One resource of any kind, denormalized with its session.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -75,6 +75,35 @@ pub(super) fn rehome(resources: &mut [ResourceDescriptor], replica: &Organizatio
             .and_then(|session| session.live);
         if let Some(live) = live {
             resource.session_id = live.get();
+        }
+    }
+}
+
+impl Topology {
+    /// Forget a closed resource in every listing, so no view keeps it.
+    pub(in crate::control) fn forget(&mut self, id: &ResourceId) {
+        self.retain_listed(|listed| listed != id);
+    }
+
+    /// Keep only the resources `keep` accepts, in every listing.
+    pub(in crate::control) fn retain_listed(&mut self, keep: impl Fn(&ResourceId) -> bool) {
+        self.resources.retain(|resource| keep(&resource.id));
+        self.panes.retain(|pane| keep(&pane.terminal_id));
+        self.agent_sessions.retain(|agent| keep(&agent.id));
+        self.documents.retain(|document| keep(&document.id));
+    }
+
+    /// A Terminal's live title, in its pane and its resource entry.
+    pub(in crate::control) fn retitle(&mut self, id: &ResourceId, title: &str) {
+        if let Some(pane) = self.pane_mut(id) {
+            pane.title = Some(title.to_owned());
+        }
+        if let Some(resource) = self
+            .resources
+            .iter_mut()
+            .find(|resource| &resource.id == id && resource.kind.is_terminal())
+        {
+            resource.title = Some(title.to_owned());
         }
     }
 }
@@ -169,5 +198,22 @@ mod tests {
         assert_eq!(topology.panes.len(), 1);
         assert_eq!(topology.agent_sessions.len(), 1);
         assert_eq!(topology.agent_sessions[0].id, ResourceId::local(4));
+    }
+
+    #[test]
+    fn a_close_and_a_retitle_reach_the_resource_listing_and_its_views() {
+        let mut topology = Topology::from_snapshot(&mixed());
+        topology.retitle(&ResourceId::local(1), "htop");
+        assert_eq!(topology.resources[1].title.as_deref(), Some("htop"));
+        assert_eq!(topology.panes[0].title.as_deref(), Some("htop"));
+        topology.retitle(&ResourceId::local(5), "not a terminal");
+        assert_eq!(topology.resources[0].title.as_deref(), Some("notes"));
+        for id in [1, 4, 5] {
+            topology.forget(&ResourceId::local(id));
+        }
+        let left: Vec<_> = topology.resources.iter().map(|r| r.id.clone()).collect();
+        assert_eq!(left, [3, 2, 9].map(ResourceId::local));
+        assert!(topology.panes.is_empty() && topology.agent_sessions.is_empty());
+        assert_eq!(topology.documents.len(), 2);
     }
 }

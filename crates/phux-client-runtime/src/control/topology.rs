@@ -124,8 +124,10 @@ pub struct SatelliteSession {
 pub struct Topology {
     /// Every session the server listed.
     pub sessions: Vec<SessionDescriptor>,
-    /// Every resource of every kind, in the server's order. `panes`,
-    /// `agent_sessions` and `documents` are views of it by kind.
+    /// Every resource of every kind, in the server's order, as of the last
+    /// snapshot: a close removes one (from every view) and a Terminal's live
+    /// title replaces its listed one. `panes`, `agent_sessions` and
+    /// `documents` are views of it by kind.
     pub resources: Vec<ResourceDescriptor>,
     /// Every Terminal-kind resource, in the server's order.
     pub panes: Vec<PaneDescriptor>,
