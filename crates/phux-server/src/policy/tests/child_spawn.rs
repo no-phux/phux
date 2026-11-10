@@ -44,3 +44,35 @@ fn a_scoped_grant_opens_every_child_kind_beside_a_terminal_it_binds() {
         }
     }
 }
+
+/// A surface beside `parent` that declares `control`.
+fn controlled_surface(parent: &WireResourceId, control: ControlClass) -> SpawnResource {
+    SpawnResource {
+        kind: phux_protocol::ids::ResourceKind::PixelSurface,
+        control: Some(control),
+        ..SpawnResource::agent_session(parent.clone(), "display")
+    }
+}
+
+/// A page is opened on the parent rows; a window or display is control of
+/// the machine, which no scoped grant opens, whatever it holds.
+fn child_spawn_rows(world: &World) -> Vec<Row> {
+    let parent = world.alpha.clone();
+    let create = format!("create@group:{}", world.alpha_group);
+    let bind = format!("bind@terminal:{}", local_id(&parent));
+    let page = spawn(
+        None,
+        None,
+        Some(controlled_surface(&parent, ControlClass::Page)),
+    );
+    let mut rows = vec![row(
+        page,
+        &[&[&create, &bind]],
+        &[&[&create], &[&bind]],
+    )];
+    for control in [ControlClass::Window, ControlClass::Display] {
+        let frame = spawn(None, None, Some(controlled_surface(&parent, control)));
+        rows.push(row(frame, &[], &[&["*@global"], &[&create, &bind]]));
+    }
+    rows
+}

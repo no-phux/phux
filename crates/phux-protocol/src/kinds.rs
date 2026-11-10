@@ -60,7 +60,7 @@ use crate::wire::frame::{
     EVENT_TAG_SESSION_DELETED, EVENT_TAG_SESSION_LIFETIME_CHANGED, EVENT_TAG_SESSION_PROJECT_SET,
     EVENT_TAG_SESSION_RENAMED,
 };
-use crate::wire::frame::{EVENT_TAG_SOURCE_GAP, SESSION_NAME_KEY};
+use crate::wire::frame::{ControlClass, EVENT_TAG_SOURCE_GAP, SESSION_NAME_KEY};
 
 include!("kinds/classification_types.rs");
 include!("kinds/rules.rs");

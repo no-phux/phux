@@ -18,6 +18,11 @@ surface mirror display[:OUTPUT]`), or none. Plain `phux agent tree open`,
 CLASS` says otherwise. `phux ls --json`, `phux resource show --json` and MCP
 `phux_documents` report it as `control`.
 
+Only the owner socket opens a `window` or `display` document: declaring one
+claims control of the machine. A scoped grant opens a `page`, or a document
+with no class, beside a Terminal it may bind (`CREATE` on its Group, `BIND`
+on it), as it opens an agent session.
+
 ## Watching
 
 Attaching to a window or display, its snapshots (`phux agent surface

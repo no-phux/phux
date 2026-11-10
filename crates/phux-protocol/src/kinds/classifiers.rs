@@ -184,6 +184,14 @@ fn spawn_rule(
     if kind_contradicts_binding(kind, parent) {
         return &F_SPAWN_KIND_MISMATCH;
     }
+    if resource.is_some_and(|spawn| {
+        matches!(
+            spawn.control,
+            Some(ControlClass::Window | ControlClass::Display)
+        )
+    }) {
+        return &F_SPAWN_MACHINE_CONTROL;
+    }
     match parent {
         None => terminal_spawn_rule(satellite.is_some(), owned),
         Some(parent) if is_unowned_served_child(kind, owned) => child_spawn_rule(satellite, parent),

@@ -281,6 +281,7 @@ Every client-originated frame lands on exactly one row.
 | `SPAWN_RESOURCE { kind: served non-TERMINAL, satellite: None, parent: Some }` | CREATE+BIND | `ParentTerminalGroup` |
 | `SPAWN_RESOURCE { kind: served non-TERMINAL, satellite: Some(H), parent: Some(Satellite { H, .. }) }` | CREATE+BIND | `SatelliteHostAndParent` |
 | `SPAWN_RESOURCE { kind: not TERMINAL, parent: None }` or `{ kind: TERMINAL, parent: Some }` | deny | `None` |
+| `SPAWN_RESOURCE { control: WINDOW | DISPLAY }` | deny | `None` |
 | `RESIZE_TERMINAL` | BIND | `NamedTerminal` |
 | `MOVE_RESOURCE` | BIND | `MovedAndOwnerTerminals` |
 | `SUBSCRIBE_EVENTS { terminal: Some }` | OBSERVE | `NamedTerminal` |

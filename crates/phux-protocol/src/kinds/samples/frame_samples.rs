@@ -162,6 +162,18 @@ fn spawn_samples() -> Vec<(FrameKind, &'static Rule)> {
     for resource in mismatched_spawns() {
         samples.push((spawn(None, None, Some(resource)), &F_SPAWN_KIND_MISMATCH));
     }
+    for (control, expected) in [
+        (ControlClass::Page, &F_SPAWN_CHILD_LOCAL),
+        (ControlClass::Window, &F_SPAWN_MACHINE_CONTROL),
+        (ControlClass::Display, &F_SPAWN_MACHINE_CONTROL),
+    ] {
+        let surface = SpawnResource {
+            kind: ResourceKind::PixelSurface,
+            control: Some(control),
+            ..agent(terminal())
+        };
+        samples.push((spawn(None, None, Some(surface)), expected));
+    }
     samples
 }
 
