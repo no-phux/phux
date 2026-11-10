@@ -163,8 +163,9 @@ A kind supplies:
     whether a cursor resumes it, and whether it is the connection's
     Terminal profile;
   - its spawn: whether it names a parent, what `provider` and `native_id`
-    mean and how long they may be, which other fields it refuses, and any
-    check of its own (a `Document`'s content type).
+    mean and how long they may be, which other fields it refuses, any
+    check of its own (a `Document`'s content type), and whether a scoped
+    grant may open it beside its parent.
 
 The decoder, the authorization classifier, the hub relay, session attach,
 `SPAWN_RESOURCE` and the client kernel read those contracts instead of
@@ -266,9 +267,12 @@ producer, addressed to either of its documents.
 ## Authority
 
 The kind catalog stays the one table for discovery and authorization, so a
-new kind starts denied. A served kind that names a parent is spawned on the
-same rows as an agent session: `CREATE` on the parent's Group and `BIND` on
-the parent. Observing a display shows every application on the
+new kind starts denied: a scoped grant opens one only once its spawn
+contract opts in (`scoped_child`), as `AgentSession`, `AccessibilityTree`,
+`PixelSurface` and `Document` do, and then on the agent session's rows:
+`CREATE` on the parent's Group and `BIND` on the parent. A document that
+declares a control class is the owner socket's to open
+([authority](./authority.md#control-classes)). Observing a display shows every application on the
 machine, and input to it is control of the machine, so window and display
 grants are separate from terminal grants and from each other. A device paired
 to watch terminals does not inherit a desktop. Control classes, who may watch

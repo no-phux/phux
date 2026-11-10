@@ -278,12 +278,20 @@ mod tests {
     /// The first reply `dispatch_spawn` sends for `request` on a connection
     /// that negotiated `profile`.
     async fn reply_to(request: SpawnRequest, profile: Option<BootstrapProfile>) -> FrameKind {
-        let state = SharedState::new();
+        reply_in(&SharedState::new(), request, profile).await
+    }
+
+    /// [`reply_to`] against `state`.
+    async fn reply_in(
+        state: &SharedState,
+        request: SpawnRequest,
+        profile: Option<BootstrapProfile>,
+    ) -> FrameKind {
         let (out_tx, mut out_rx) = tokio::sync::mpsc::channel(8);
         let token = CancellationToken::new();
         let mut pumps = JoinSet::new();
         dispatch_spawn(
-            &state,
+            state,
             ClientId(1),
             7,
             request,
@@ -351,6 +359,54 @@ mod tests {
             refusal(reply(ResourceKind::Unknown { tag: 99 }, None).await),
             SpawnError::UnsupportedKind
         );
+    }
+
+    /// A document's spawner becomes its producer, so only a connection that
+    /// may publish (the Unix socket or localhost) opens one: an unstamped
+    /// or remote one is refused before the parent is looked up.
+    #[tokio::test]
+    async fn only_a_connection_that_may_publish_opens_a_document() {
+        use phux_protocol::policy::TransportType;
+        let profile = Some(BootstrapProfile::SynthesizedVtRaw);
+        for transport in [
+            None,
+            Some(TransportType::Quic),
+            Some(TransportType::WebSocket),
+        ] {
+            let state = SharedState::new();
+            if let Some(transport) = transport {
+                let peer = phux_protocol::policy::PeerIdentity {
+                    transport,
+                    ..crate::runtime::test_support::owner_peer()
+                };
+                state.with_mut(|s| s.set_peer_identity(ClientId(1), peer));
+            }
+            let SpawnError::SpawnFailed(message) =
+                refusal(reply_in(&state, document_request(), profile).await)
+            else {
+                panic!("{transport:?} opened a document");
+            };
+            assert!(message.contains("local owner connection"), "{message}");
+        }
+        let state = SharedState::new();
+        state.with_mut(|s| {
+            s.set_peer_identity(ClientId(1), crate::runtime::test_support::owner_peer());
+        });
+        assert_eq!(
+            refusal(reply_in(&state, document_request(), profile).await),
+            SpawnError::ParentNotFound,
+            "the owner's socket reaches the parent lookup"
+        );
+    }
+
+    fn document_request() -> SpawnRequest {
+        let mut request = request(ResourceKind::Document);
+        request.resource = Some(Box::new(SpawnResource::document(
+            WireResourceId::local(3),
+            "text/plain",
+            None,
+        )));
+        request
     }
 
     #[tokio::test]
