@@ -131,7 +131,8 @@ heading_anchors() {
 }
 
 has_anchor() {
-    heading_anchors "$1" | grep -Fqx -- "$2"
+    # Drain the producer: an early grep -q exit can SIGPIPE awk under pipefail.
+    heading_anchors "$1" | grep -Fx -- "$2" >/dev/null
 }
 
 # `-e` alone passes `INSTALL.md` for `install.md` on a case-insensitive

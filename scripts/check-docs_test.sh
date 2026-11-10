@@ -19,6 +19,9 @@ printf 'scoped:\n' >"$repo/just/docs.just"
 mkdir -p "$repo/docs/reference"
 printf '# CLI\n\n## `phux agent`\n\n## `phux agent wait`\n\nUsage: phux agent <SUBCOMMAND>\n\n## `phux agent show`\n' >"$repo/docs/reference/cli.md"
 printf '# Target\n\n## Build cache (mbx)\n\n## Repeat\n\n## Repeat\n\n<a id="explicit"></a>\n' >"$repo/docs/Parent/Leaf.md"
+# An early match must drain more than a pipe buffer of trailing anchors.
+# Otherwise grep -q can SIGPIPE awk and turn a valid anchor into a violation.
+awk 'BEGIN { for (i = 0; i < 10000; i++) print "## Trailing anchor " i }' >>"$repo/docs/Parent/Leaf.md"
 expect_pass() {
     if ! "$BASH" "$repo/scripts/check-docs.sh" "$@" >"$scratch/output" 2>&1; then
         printf 'unexpected failure: %s\n' "$*" >&2
