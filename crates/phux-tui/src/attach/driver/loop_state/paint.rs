@@ -156,6 +156,7 @@ impl super::SessionLoop {
             self.viewport_dims,
             sidebar,
         );
+        chrome.resources = &self.peers.resources;
         let focus = self.mirror.paint_focus();
         let focused = focus.as_ref();
         Some(match level {
@@ -278,6 +279,7 @@ impl super::SessionLoop {
             self.viewport_dims,
             sidebar,
         );
+        chrome.resources = &self.peers.resources;
         let focus = self.mirror.paint_focus();
         paint_active_overlay(
             out,

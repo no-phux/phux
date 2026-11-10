@@ -246,6 +246,7 @@ impl Rig {
                 sidebar_painter: None,
                 session_name: &self.mirror.session_name,
                 theme: &theme,
+                resources: &[],
             };
             paint_full_frame(
                 &mut out,

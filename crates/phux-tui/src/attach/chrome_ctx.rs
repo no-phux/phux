@@ -1,8 +1,9 @@
 //! The chrome a paint writes, handed to the paint layer as one value.
 //!
-//! **TL;DR.** [`ChromeCtx`] bundles the six things every composited frame
-//! threads to its chrome tail: the viewport, the sidebar reservation, the two
-//! chrome painters, the session name, and the theme. [`PaneScene`] is the
+//! **TL;DR.** [`ChromeCtx`] bundles what every composited frame threads to
+//! its chrome tail: the viewport, the sidebar reservation, the two chrome
+//! painters, the session name, the theme, and the resource graph that names
+//! placeholder tiles. [`PaneScene`] is the
 //! shared view of where the panes are that the chrome projection reads. Both
 //! are built at the call site for one paint and dropped after it.
 //!
@@ -15,6 +16,7 @@
 use std::collections::HashMap;
 
 use phux_protocol::ids::ResourceId;
+use phux_protocol::wire::info::ResourceInfo;
 
 use super::paint::{ContentLayout, SidebarReservation, content_layout};
 use super::pane_state::PaneSlot;
@@ -41,6 +43,8 @@ pub(super) struct ChromeCtx<'a> {
     pub(super) session_name: &'a str,
     /// Chrome and overlay colors.
     pub(super) theme: &'a Theme,
+    /// The known resource graph; names the non-Terminal leaves' placeholders.
+    pub(super) resources: &'a [ResourceInfo],
 }
 
 impl<'a> ChromeCtx<'a> {
@@ -59,6 +63,7 @@ impl<'a> ChromeCtx<'a> {
             sidebar_painter: Some(sidebar_painter),
             session_name,
             theme: &settings.theme,
+            resources: &[],
         }
     }
 

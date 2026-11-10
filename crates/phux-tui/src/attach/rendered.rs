@@ -252,6 +252,7 @@ mod tests {
             sidebar_painter,
             session_name: "alpha",
             theme: &Theme::default(),
+            resources: &[],
         };
         compose_full_frame_cells(
             &chrome,

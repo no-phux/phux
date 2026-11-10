@@ -13,7 +13,8 @@ use super::replies::open_window;
 use crate::attach::actions;
 use crate::attach::actions::{Adopt, ParkedAdopt, PendingWindow, SpawnedPane};
 use crate::attach::outcome::AttachError;
-use crate::attach::pane_state::PaneSlot;
+use crate::attach::pane_state::{AttachKernel, PaneSlot};
+use crate::attach::surface_leaf::is_surface_leaf;
 use crate::layout::{ArrangementDoc, LayoutState};
 
 /// Apply a `RESOURCE_SPAWNED` reply for a parked `new-window`: append an
@@ -83,10 +84,11 @@ pub(super) fn layout_key_scope_session(scope: &Scope, key: &str) -> Option<Layou
 
 /// Whether a persisted layout names panes and none is in the `ATTACHED`
 /// snapshot (ADR-0105): a stale tree of dead panes that would hide the empty
-/// state.
+/// state. A known non-Terminal leaf (a document's placeholder) is present.
 pub(super) fn layout_names_only_absent_panes(
     incoming: &ArrangementDoc,
     panes: &HashMap<ResourceId, PaneSlot>,
+    kernel: &AttachKernel,
 ) -> bool {
     let mut leaves = incoming
         .groups
@@ -94,19 +96,24 @@ pub(super) fn layout_names_only_absent_panes(
         .filter_map(|window| window.state.tree.as_ref())
         .flat_map(crate::layout::leaves)
         .peekable();
-    leaves.peek().is_some() && leaves.all(|leaf| !panes.contains_key(&leaf))
+    leaves.peek().is_some()
+        && leaves.all(|leaf| !panes.contains_key(&leaf) && !is_surface_leaf(kernel, &leaf))
 }
 
+/// Leaves this client holds no pane for and must attach. A known
+/// non-Terminal leaf is already streamed by the session attach and only
+/// tiles a placeholder, so it is never attached as a Terminal.
 pub(super) fn unknown_layout_leaves(
     incoming: &ArrangementDoc,
     panes: &HashMap<ResourceId, PaneSlot>,
+    kernel: &AttachKernel,
 ) -> Vec<ResourceId> {
     incoming
         .groups
         .iter()
         .filter_map(|window| window.state.tree.as_ref())
         .flat_map(crate::layout::leaves)
-        .filter(|terminal| !panes.contains_key(terminal))
+        .filter(|leaf| !panes.contains_key(leaf) && !is_surface_leaf(kernel, leaf))
         .collect()
 }
 

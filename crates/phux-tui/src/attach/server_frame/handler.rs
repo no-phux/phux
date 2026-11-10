@@ -3,7 +3,6 @@
 
 use std::collections::{HashMap, HashSet};
 
-use phux_protocol::ResourceKind;
 use phux_protocol::ids::{ResourceId, SessionId, SessionKey};
 use phux_protocol::wire::frame::{FrameKind, SessionLifetime};
 
@@ -11,7 +10,7 @@ use crate::attach::actions::{self, PendingSplit, PendingWindow};
 use crate::attach::outcome::AttachError;
 use crate::attach::paint::SidebarReservation;
 use crate::attach::pane_state::{AttachKernel, PaneSlot};
-use crate::layout::{self, ArrangementDoc};
+use crate::layout::ArrangementDoc;
 use crate::predict::PredictionState;
 use crate::render::chrome::status_bar::StatusBarPainter;
 
@@ -127,24 +126,10 @@ struct FrameCtx<'a, W: crate::attach::RenderSink> {
 
 impl<W: crate::attach::RenderSink> FrameCtx<'_, W> {
     /// Known non-Terminal resources never acquire a VT slot or a TTY output
-    /// path. Unknown ids still take the strict Terminal validation path.
+    /// path; as layout leaves they tile a placeholder. Unknown ids still take
+    /// the strict Terminal validation path.
     fn is_non_terminal(&self, terminal_id: &ResourceId) -> bool {
-        !self.may_be_layout_leaf(terminal_id)
-    }
-
-    /// Whether a layout leaf may name `terminal_id`: anything the kernel does
-    /// not know to be a non-terminal kind. Peer ids it cannot classify pass.
-    fn may_be_layout_leaf(&self, terminal_id: &ResourceId) -> bool {
-        !matches!(
-            self.engine_kernel.resource_kind(terminal_id),
-            Some(kind) if kind != ResourceKind::Terminal
-        )
-    }
-
-    /// Decode one of OUR layout envelopes, refusing any leaf that names a
-    /// known non-terminal resource.
-    fn decode_own_layout(&self, bytes: &[u8]) -> Result<ArrangementDoc, layout::LayoutDecodeError> {
-        ArrangementDoc::decode_cbor_checked(bytes, &|leaf| self.may_be_layout_leaf(leaf))
+        crate::attach::surface_leaf::is_surface_leaf(self.engine_kernel, terminal_id)
     }
 }
 

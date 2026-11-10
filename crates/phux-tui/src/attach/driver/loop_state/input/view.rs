@@ -89,10 +89,13 @@ impl super::super::SessionLoop {
             self.content(sidebar),
             self.viewport_dims,
         );
+        // A placeholder tile blanks and redraws its whole rect, so it paints
+        // in place like a published pane.
+        let kernel = &self.mirror.engine_kernel;
         let level = super::classify_repaint(&prior.rects, &after, |id| {
-            self.mirror.panes.contains_key(id)
-                && crate::attach::pane_state::published_terminal(&self.mirror.engine_kernel, id)
-                    .is_some()
+            crate::attach::surface_leaf::is_surface_leaf(kernel, id)
+                || (self.mirror.panes.contains_key(id)
+                    && crate::attach::pane_state::published_terminal(kernel, id).is_some())
         });
         if level == RepaintLevel::Chrome && self.viewport_offsets(&after) != prior.viewports {
             return RepaintLevel::Rows;
@@ -131,6 +134,7 @@ impl super::super::SessionLoop {
         if self.mirror.zoomed != prior.zoomed || sidebar != prior.sidebar {
             emit_view_reflow(
                 conn,
+                &self.mirror.engine_kernel,
                 &self.mirror.workspace,
                 self.mirror.zoomed.as_ref(),
                 &prior.rects,
@@ -152,7 +156,8 @@ impl super::super::SessionLoop {
                 self.content(sidebar),
                 self.viewport_dims,
             );
-            emit_moved_tiles(conn, &prior.rects, &rects, self.resize_cell_px).await?;
+            let kernel = &self.mirror.engine_kernel;
+            emit_moved_tiles(conn, kernel, &prior.rects, &rects, self.resize_cell_px).await?;
         }
         Ok(())
     }

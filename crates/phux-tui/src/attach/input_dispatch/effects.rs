@@ -86,7 +86,10 @@ pub(super) async fn apply_action_effects<W: crate::attach::RenderSink>(
         *ctx.pending_path = Some(pending);
         conn.send(&frame).await?;
     }
-    if let Some((target, text)) = effects.insert_path {
+    if let Some((target, text)) = effects.insert_path.filter(|(target, _)| {
+        !crate::attach::surface_leaf::is_surface_leaf(ctx.engine_kernel, target)
+            && conn.can_route_terminal(target)
+    }) {
         // This is an input event, never a shell command or an Enter key.
         let paste = phux_protocol::input::paste::PasteEvent {
             data: text.into_bytes(),

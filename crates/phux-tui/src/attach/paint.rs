@@ -516,7 +516,11 @@ fn repaint_sidebar_strip<W: Write>(out: &mut W, chrome: &mut ChromeCtx<'_>, junc
 }
 
 /// Write `lines` centered in `rect`, each clipped to the rect's width.
-fn write_centered_lines<W: Write>(out: &mut W, rect: crate::layout::Rect, lines: &[String]) {
+pub(super) fn write_centered_lines<W: Write>(
+    out: &mut W,
+    rect: crate::layout::Rect,
+    lines: &[String],
+) {
     let count = u16::try_from(lines.len()).unwrap_or(u16::MAX);
     let top = rect.y.saturating_add(rect.h.saturating_sub(count) / 2);
     let bottom = rect.y.saturating_add(rect.h);
@@ -611,6 +615,7 @@ fn paint_full_frame_into<W: Write>(
             );
         }
     }
+    super::surface_leaf::paint_placeholders(out, &multi.rects, kernel, chrome.resources);
     let panes_ref = &*panes;
     let _ = crate::render::chrome::dividers::render_dividers(
         out,
@@ -1242,6 +1247,7 @@ mod tests {
             sidebar_painter: None,
             session_name: "parked",
             theme: &theme,
+            resources: &[],
         };
         let _ = paint_empty_session(&mut out, &mut chrome, &lines);
         let text = String::from_utf8_lossy(&out);
@@ -1496,6 +1502,7 @@ mod tests {
             sidebar_painter: strip,
             session_name: "demo",
             theme: &theme,
+            resources: &[],
         };
         paint_full_frame(
             out,
@@ -1678,6 +1685,7 @@ mod tests {
             sidebar_painter: None,
             session_name: "demo",
             theme: &theme,
+            resources: &[],
         };
         paint_bar_after_pane(&mut out, &mut chrome, cursor, fallback, clobbered);
         String::from_utf8_lossy(&out).into_owned()
@@ -1737,6 +1745,7 @@ mod tests {
             sidebar_painter: Some(strip),
             session_name: "demo",
             theme: &theme,
+            resources: &[],
         };
         let (kernel, _effects, _panes) = published_test_state(&[]);
         paint_chrome_in_place(

@@ -49,7 +49,14 @@ impl super::super::SessionLoop {
         if let FrameKind::CommandResult { request_id, result } = frame
             && let Some(terminal_id) = self.pending_stream_binds.remove(request_id)
         {
+            // A document attach answers after its bootstrap taught the kernel
+            // its kind; it streams on the control lane and binds nothing.
+            let document = crate::attach::surface_leaf::is_surface_leaf(
+                &self.mirror.engine_kernel,
+                &terminal_id,
+            );
             if conn.multistream_enabled()
+                && !document
                 && matches!(result, phux_protocol::wire::frame::CommandResult::Ok)
             {
                 conn.bind_terminal(&terminal_id).await?;
