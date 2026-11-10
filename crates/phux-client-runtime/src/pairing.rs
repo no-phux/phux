@@ -18,7 +18,7 @@ pub const LEGACY_CONNECT_URI_PREFIX: &str = "phux://connect";
 /// Credentials from a connect link. Treat the entire value as secret.
 #[derive(Clone, PartialEq, Eq)]
 pub struct ConnectLink {
-    /// WebSocket fallback; absent on relay-only links.
+    /// WebSocket fallback; absent on QUIC-only direct or relay links.
     pub url: Option<String>,
     /// Preferred QUIC endpoint, or the relay endpoint.
     pub quic: Option<String>,
@@ -46,13 +46,14 @@ impl std::fmt::Debug for ConnectLink {
 
 impl ConnectLink {
     /// Registry selection stays compatible with the CLI: WebSocket for a
-    /// direct link, QUIC for a routed relay link. Native hosts may prefer QUIC.
+    /// direct link when supplied, otherwise QUIC. Routed links select QUIC.
+    /// Native hosts may prefer QUIC even when a WebSocket fallback is supplied.
     #[must_use]
     pub fn registry_endpoint(&self) -> Option<&str> {
         if self.tls_server_name.is_some() {
             self.quic.as_deref()
         } else {
-            self.url.as_deref()
+            self.url.as_deref().or(self.quic.as_deref())
         }
     }
 }
@@ -190,8 +191,10 @@ fn validate_connect_endpoints(
             "connect code carries `sni=` but no `quic=` — a relay route is dialed over QUIC".into(),
         );
     }
-    if !routed && url.is_none() {
-        return Err("connect code carries no `url=` — it cannot name a server to dial".into());
+    if !routed && url.is_none() && quic.is_none() {
+        return Err(
+            "connect code carries no `url=` or `quic=` — it cannot name a server to dial".into(),
+        );
     }
     if let Some(url) = &url {
         validate_ws_endpoint(url)?;
@@ -306,6 +309,28 @@ mod tests {
                 .unwrap();
         assert_eq!(relay.registry_endpoint(), Some("quic://relay:4433"));
         assert_eq!(relay.tls_server_name.as_deref(), Some("mini-route"));
+    }
+
+    #[test]
+    fn pairing_accepts_direct_quic_without_inventing_a_websocket_fallback() {
+        let direct =
+            parse_connect_link("https://phux.sh/connect?quic=quic://mini:8788&token=t").unwrap();
+        assert_eq!(direct.url, None);
+        assert_eq!(direct.tls_server_name, None);
+        assert_eq!(direct.registry_endpoint(), Some("quic://mini:8788"));
+        for query in [
+            "token=t",
+            "url=&quic=&token=t",
+            "quic=quic://mini:0&token=t",
+            "quic=quic://user@mini:8788&token=t",
+            "quic=ws://mini:8788&token=t",
+            "url=wss://mini:8787&sni=route&token=t",
+        ] {
+            assert!(
+                parse_connect_link(&format!("https://phux.sh/connect?{query}")).is_err(),
+                "{query}"
+            );
+        }
     }
 
     #[test]

@@ -7,6 +7,8 @@ import RuneTailnet
 enum OnboardingStatus {
     enum Phase: String {
         case connecting, codeReceived = "code_received", failed
+        case importFailed = "import_failed"
+        case awaitingConfirmation = "awaiting_confirmation"
         case enrolling, identityIssued = "identity_issued", enrollmentFailed = "enrollment_failed"
     }
 

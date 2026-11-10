@@ -163,9 +163,10 @@ class Qualification:
                                 env=env, capture_output=True, check=True, timeout=30)
         pair = json.loads(paired.stdout)
         # The CLI intentionally does not advertise loopback to phones. Mint
-        # the same QR payload shape here, then use the actual shared importer
-        # and native confirmation/enrollment path, never hand-fill trust fields.
-        fields = {"url": "wss://" + pair["ws_addr"], "quic": "quic://" + pair["quic_addr"],
+        # the direct QUIC-only shape produced by native SSH setup here. The
+        # native contracts also run its actual Swift converter through Rust.
+        # Use the real importer/confirmation/enrollment path, not hand-filled settings.
+        fields = {"quic": "quic://" + pair["quic_addr"],
                   "name": SESSION, "fp": pair["cert_fingerprint"], "ca": pair["ca_fingerprint"],
                   "token": pair["token"], "enroll": pair["enrollment_ticket"]}
         self.configuration = {"pairing_link": "https://phux.sh/connect?" + urllib.parse.urlencode(

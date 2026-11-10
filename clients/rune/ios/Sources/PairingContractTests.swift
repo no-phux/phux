@@ -19,11 +19,30 @@ enum PairingContractTests {
     static func run() async throws -> [String] {
         try parsingAndFirstRun()
         try tailnetAccountsAndFailures()
+        try tailnetProducerImport()
         try await confirmationAndCommit()
         try await saveRetry()
         try await cancelledLateCompletion()
         return ["pairing-import", "pairing-confirmation", "pairing-save-retry", "pairing-cancelled-identity",
-                "tailnet-account", "tailnet-errors"]
+                "tailnet-account", "tailnet-errors", "tailnet-import"]
+    }
+
+    private static func tailnetProducerImport() throws {
+        let peer = TailnetPeer(id: "producer-fixture", name: "My Mac", dnsName: "computer.example.ts.net",
+            platform: .macOS, online: true, address: "100.64.1.2")
+        var document: [String: Any] = ["schema_version": 1, "token": String(repeating: "d", count: 64),
+            "cert_fingerprint": String(repeating: "a", count: 64),
+            "ca_fingerprint": "sha256:" + String(repeating: "b", count: 64),
+            "enrollment_ticket": String(repeating: "c", count: 64), "quic_addr": "0.0.0.0:8788",
+            "connect_link": link.replacingOccurrences(of: "computer.example", with: peer.dnsName)]
+        for hasWebSocket in [true, false] {
+            if !hasWebSocket { document.removeValue(forKey: "connect_link") }
+            let emitted = try TailnetPairing.pairingLink(from: JSONSerialization.data(withJSONObject: document), peer: peer)
+            let imported = try PairingInvite(link: emitted) // Actual Swift producer -> C -> Rust consumer.
+            try require(imported.configuration["endpoint"] as? String == "quic://100.64.1.2:8788",
+                        "the exact tailnet pairing output must import without a WebSocket fallback")
+            try require(imported.ticket == String(repeating: "c", count: 64), "producer/consumer preserves the one-use ticket")
+        }
     }
 
     private static func tailnetAccountsAndFailures() throws {
@@ -72,8 +91,11 @@ enum PairingContractTests {
         let paste = welcome.tableView(welcome.tableView, cellForRowAt: IndexPath(row: 1, section: 1)).accessoryView
         try require(paste is UIPasteControl && (paste?.bounds.width ?? 0) >= 44 && (paste?.bounds.height ?? 0) >= 44,
                     "the explicit-consent Paste control must be visible and tappable")
-        welcome.receive(link)
+        try require(welcome.receive(link), "accepted imports acknowledge peer review")
         guard case .review = welcome.flow.stage else { throw Failure(message: "import must stage a confirmation") }
+        let confirmation = welcome.tableView(welcome.tableView, cellForRowAt: IndexPath(row: 0, section: 0))
+        try require(confirmation.textLabel?.textColor == welcome.view.tintColor, "peer confirmation must look actionable")
+        try require(!welcome.receive("not-a-pairing-link"), "rejected imports must not acknowledge success")
         welcome.flow.cancel()
         let check = "https://login.tailscale.com/check/v1.3?ts_session_id=abc.def+ghi"
         try require(TailscaleSetupController.sshCheckURL("Please approve: \(check)\n")?.absoluteString == check,

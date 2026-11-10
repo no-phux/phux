@@ -100,7 +100,7 @@ final class PairingTests: XCTestCase {
     }
 
     func testSynthesizesDirectCanonicalLinkForWildcardQUIC() throws {
-        let link = try PairingDocument.link(json: document(), peer: peer)
+        let link = try TailnetPairing.pairingLink(from: document(), peer: peer)
         let parts = try XCTUnwrap(URLComponents(string: link))
         XCTAssertEqual(parts.scheme, "https")
         XCTAssertEqual(parts.host, "phux.sh")

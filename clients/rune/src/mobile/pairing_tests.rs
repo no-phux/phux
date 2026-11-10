@@ -47,6 +47,36 @@ fn pairing_imports_current_phone_qr_without_merging_old_identity() {
 }
 
 #[test]
+fn pairing_imports_the_quic_only_link_emitted_by_native_tailnet_setup() {
+    let direct = phone_invite().replace("url=wss://mini.tailnet.ts.net:8787&", "");
+    assert_eq!(
+        parse_pairing_invite(&direct).unwrap(),
+        parse_pairing_invite(&phone_invite()).unwrap()
+    );
+    assert!(
+        parse_pairing_invite(&direct.replace(&format!("&ca=sha256:{}", "cd".repeat(32)), ""))
+            .is_err(),
+        "QUIC-only imports still require explicit authority trust"
+    );
+    for (old, invalid) in [
+        (
+            "quic://mini.tailnet.ts.net:8788",
+            "quic://mini.tailnet.ts.net:0",
+        ),
+        (
+            "quic://mini.tailnet.ts.net:8788",
+            "quic://user@mini.tailnet.ts.net:8788",
+        ),
+        (
+            "quic://mini.tailnet.ts.net:8788",
+            "ws://mini.tailnet.ts.net:8788",
+        ),
+    ] {
+        assert!(parse_pairing_invite(&direct.replace(old, invalid)).is_err());
+    }
+}
+
+#[test]
 fn pairing_relay_sni_survives_configuration_and_authority_handshake() {
     let link = phone_invite().replace(
         "quic://mini.tailnet.ts.net:8788",
@@ -84,7 +114,7 @@ fn pairing_ignores_fallback_wss_metadata_and_never_imports_a_saved_chain() {
 
 #[test]
 fn pairing_requires_a_complete_enrollment_bundle_including_loopback() {
-    for field in ["url", "quic", "fp", "ca", "token", "enroll"] {
+    for field in ["quic", "fp", "ca", "token", "enroll"] {
         let link = phone_invite();
         let (prefix, query) = link.split_once('?').unwrap();
         let query = query

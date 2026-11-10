@@ -27,9 +27,12 @@ final class OnboardingController: UITableViewController {
         tableView.accessibilityIdentifier = "rune-onboarding"
     }
 
-    func receive(_ link: String) {
+    @discardableResult
+    func receive(_ link: String) -> Bool {
         loadViewIfNeeded()
-        flow.receive(link)
+        let accepted = flow.receive(link)
+        if accepted { tableView.scrollToRow(at: IndexPath(row: 0, section: 0), at: .top, animated: false) }
+        return accepted
     }
 
     private func refresh() {
@@ -115,6 +118,7 @@ final class OnboardingController: UITableViewController {
             configure(cell, "Pair & connect to \(invite.name)",
                       detail: "\(invite.peer)\nOnly continue if this is your computer. The code supplies its verified trust pins.", icon: "checkmark.shield")
             cell.accessibilityIdentifier = "confirm-pairing"
+            cell.textLabel?.textColor = view.tintColor
         case .enrolling(let name):
             configure(cell, "Pairing with \(name)…", detail: "Creating this phone's identity securely", icon: "lock.shield")
             let spinner = UIActivityIndicatorView(style: .medium); spinner.startAnimating()
@@ -176,7 +180,7 @@ final class OnboardingController: UITableViewController {
 
     private func tailnet() {
         let controller = TailscaleSetupController()
-        controller.received = { [weak self] text in self?.receive(text) }
+        controller.received = { [weak self] text in self?.receive(text) ?? false }
         navigationController?.pushViewController(controller, animated: true)
     }
 

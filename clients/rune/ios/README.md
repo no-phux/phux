@@ -81,7 +81,7 @@ secrets travel through a private app-container file, not launch arguments,
 logs or evidence artifacts. It injects a command through the actual UIKit
 `insertText` entry, requires
 the returned marker in a real terminal grid and presented frame, records the
-element tree/report/screenshot and fourteen UIKit input/onboarding-contract groups, and
+element tree/report/screenshot and fifteen UIKit input/onboarding-contract groups, and
 backgrounds/resumes the app through the
 OS before checking continued rendering. A fresh process then reconnects from
 saved settings and the same Keychain key, with no ticket or pairing payload.
@@ -128,6 +128,10 @@ path. Rune does not claim the other mobile app's `phux` scheme or HTTPS
 Universal Links. Current and legacy Phux pairing URLs can be scanned/pasted.
 Every import is bounded, rejects ambiguous credentials and stages a complete
 candidate without borrowing trust or secrets from an existing connection.
+Direct QUIC-only links are accepted without inventing a WebSocket fallback.
+Qualification covers the actual Swift SSH-document converter through the C/Rust
+importer, as well as live QUIC-only import and enrollment. A rejected import is
+reported before leaving the Tailscale picker; obtaining a code is not success.
 
 ### Find with Tailscale
 

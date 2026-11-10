@@ -21,6 +21,9 @@ use phux_client_runtime::pairing::{
     CONNECT_URI_PREFIX, LEGACY_CONNECT_URI_PREFIX, validate_quic_endpoint,
 };
 pub(crate) use phux_client_runtime::pairing::{ConnectLink, parse_connect_link};
+
+#[cfg(test)]
+mod endpoint_tests;
 use phux_config::overlay::MagicDns;
 
 use usage::Subcommands;
@@ -3028,52 +3031,6 @@ mod tests {
         );
         let legacy = legacy_connect_link(&link).expect("respells");
         assert_eq!(parse_connect_link(&legacy).expect("legacy parse"), parsed);
-    }
-
-    /// Old links (no `sni`) keep registering their WebSocket url; a link with
-    /// both registers the relay route, since `sni` only means anything there.
-    #[test]
-    fn registry_endpoint_is_the_url_unless_the_link_is_routed() {
-        let direct = parse_connect_link(
-            "https://phux.sh/connect?url=wss://mini:8787&quic=quic://mini:8788&token=tok",
-        )
-        .expect("parse");
-        assert_eq!(direct.registry_endpoint(), Some("wss://mini:8787"));
-        let both = parse_connect_link(
-            "https://phux.sh/connect?url=wss://mini:8787&quic=quic://relay:4433&sni=r&token=tok",
-        )
-        .expect("parse");
-        assert_eq!(both.registry_endpoint(), Some("quic://relay:4433"));
-        assert_eq!(both.tls_server_name.as_deref(), Some("r"));
-    }
-
-    /// `sni` without `quic` cannot be dialed, a bad name is refused rather
-    /// than offered, and a duplicate is ambiguous.
-    #[test]
-    fn relay_links_that_cannot_dial_are_refused() {
-        let no_quic = parse_connect_link("https://phux.sh/connect?url=wss://m:1&sni=r&token=t")
-            .expect_err("sni needs quic");
-        assert!(no_quic.contains("quic="), "{no_quic}");
-        for bad in ["-r", "127.0.0.1", "a%20b", "a/b"] {
-            assert!(
-                parse_connect_link(&format!(
-                    "https://phux.sh/connect?quic=quic://relay:4433&sni={bad}&token=t"
-                ))
-                .is_err(),
-                "accepted sni={bad}"
-            );
-        }
-        assert!(
-            parse_connect_link(
-                "https://phux.sh/connect?quic=quic://relay:4433&sni=a&sni=b&token=t"
-            )
-            .is_err()
-        );
-        // An empty `sni` is absent, so the link needs its `url` again.
-        assert!(
-            parse_connect_link("https://phux.sh/connect?quic=quic://relay:4433&sni=&token=t")
-                .is_err()
-        );
     }
 
     fn connector(relay: &str) -> phux_config::ConnectorConfigEntry {
