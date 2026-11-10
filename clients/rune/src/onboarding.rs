@@ -135,8 +135,9 @@ pub struct AgentSkill {
 impl AgentSkill {
     /// Whether the skill is in place, whatever the last run did to it.
     pub fn installed(&self) -> bool {
-        const IN_PLACE: [&str; 8] = [
+        const IN_PLACE: [&str; 9] = [
             "installed",
+            "present",
             "current",
             "up_to_date",
             "unchanged",
