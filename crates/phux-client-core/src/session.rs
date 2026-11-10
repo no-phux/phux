@@ -443,26 +443,24 @@ pub const KERNEL_RESOURCE_KINDS: phux_protocol::caps::ResourceKindSet =
         ResourceKind::Document,
     ]);
 
-/// Whether a stream profile names the `AgentSession` record codec. Such a
-/// stream is legal under every connection profile: it carries no engine
-/// checkpoint and no VT, so profile negotiation does not constrain it.
+/// Whether a stream profile names a record-log codec, the `AgentSession`
+/// lane's, as the codec's catalog stream contract says. Such a stream is
+/// legal under every connection profile: it carries no engine checkpoint
+/// and no VT, so profile negotiation does not constrain it.
 const fn is_agent_profile(profile: BootstrapStreamProfile) -> bool {
     matches!(
-        profile,
-        BootstrapStreamProfile::AgentEventsJsonlV1
-            | BootstrapStreamProfile::AgentEventsJsonlResumeV1 { .. }
+        profile.kind_spec(),
+        Some(spec) if spec.stream.delivers(phux_protocol::kinds::Delivery::Log)
     )
 }
 
-/// The document kind a stream profile carries, if it is a document codec.
-/// The kernel models no replica for one: a bootstrap is the document in
-/// chunks and every live frame is a whole newer document, each handed on as
-/// a [`KernelEffect::Document`].
+/// The document kind a stream profile carries, if its codec's catalog
+/// stream contract delivers whole documents. The kernel models no replica
+/// for one: a bootstrap is the document in chunks and every live frame is a
+/// whole newer document, each handed on as a [`KernelEffect::Document`].
 const fn document_kind(profile: BootstrapStreamProfile) -> Option<ResourceKind> {
-    match profile {
-        BootstrapStreamProfile::AccessibilityTreeJsonV1 => Some(ResourceKind::AccessibilityTree),
-        BootstrapStreamProfile::PixelSurfacePngV1 => Some(ResourceKind::PixelSurface),
-        BootstrapStreamProfile::DocumentTypedV1 => Some(ResourceKind::Document),
+    match profile.kind() {
+        Some(kind) if kind.is_document() => Some(kind),
         _ => None,
     }
 }
