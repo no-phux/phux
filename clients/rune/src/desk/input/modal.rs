@@ -18,6 +18,7 @@ pub enum Modal {
     Settings,
     Rename,
     Palette,
+    Onboarding,
     FindField,
     Confirm,
     PhonePicker,
@@ -36,6 +37,7 @@ impl Modal {
                 Shortcut::Copy | Shortcut::Paste | Shortcut::SelectAll
             ),
             Self::Palette => matches!(action, Shortcut::Palette),
+            Self::Onboarding => matches!(action, Shortcut::Palette) || action.works_over_sheets(),
             Self::Settings => matches!(action, Shortcut::Find) || action.works_over_sheets(),
             Self::Inbox
             | Self::Galaxy

@@ -57,6 +57,31 @@ The app finds `phux` (`--phux`, `PHUX_BIN`, `~/.local/bin`,
 reuses the server with `phux server --ensure`, and attaches the most recent
 session (or `--session NAME`). It never creates a session on its own.
 
+- **Getting started.** The first time an installed app connects, the
+  terminal area shows five steps. **Welcome** has **Continue** and **Skip for
+  now**. **Look** has Colour scheme (Auto follows the system with no theme;
+  Light and Dark narrow the themes to that kind), the sidebar shown or
+  hidden, and a strip of the real themes. Each pick applies to the window at
+  once. **Agents & permissions** installs the phux agent skill with
+  `phux skill setup --json`, and checks it first with `phux skill status
+  --json`. On macOS it also shows how many of Full Disk Access, Screen
+  Recording and Accessibility are granted, from `phux server permissions
+  --json`. **Grant…** opens a sheet that checks again every second. Each
+  **Grant…** in the sheet runs `phux server permissions --open SERVICE`,
+  which opens that System Settings pane, and the sheet shows the server's
+  app so you can drag it into the list. **Bring your setup** appears only
+  when Claude Code, Codex or OpenCode is installed. Choosing one runs
+  `phux migrate --json --agent ID`, and the agent's pane opens beside the
+  step. **Copy prompt** copies `phux migrate --print` for any other agent.
+  Key bindings move; themes and fonts don't. **All set** shows three keys
+  from Rune's own keymap. **Start using phux** opens a session, making one
+  named after your home folder if there is none. Enter continues; Escape
+  goes back, or skips on the first step. A phux without one of these
+  commands shows **Update phux to enable this** instead. Quitting part way
+  through resumes at the same step next launch. **Get Started** in the
+  palette, the Help menu or Settings → About & Updates reopens it.
+  Development runs aimed at a server (`--socket`, `--phux`, `PHUX_PROFILE`)
+  never open it on their own.
 - **Machines.** The switcher under the sidebar's title moves the window to
   any machine in the CLI's registry; the choice is remembered, and sessions
   keep running wherever they are. **Add a machine** takes `me@host` or a
@@ -302,6 +327,9 @@ RUNE_RESOURCE_SNAP="$PWD/target/resource-native.png" \
 The test checks decoded PNG pixels, native image draw commands, JSON text,
 and the Read-only mirror label; `target/resource-native.json` is the tree.
 
+`RUNE_ONBOARDING_SNAP=DIR cargo test --locked every_step_renders` writes
+each onboarding step as a PNG under `DIR`.
+
 On macOS, notifications need the signed bundle (`rune_notify::available`);
 `cargo run` can't post, and Settings says so. On Linux any build posts while
 `notify-send` is on `PATH`, and withdraws through `gdbus`.
@@ -329,6 +357,7 @@ do about a bad release.
 | `alerts`, `dock` | system notifications, their clicks, and the Dock count (`dock` is the crate's only `unsafe`) |
 | `theme` | built-in terminal palettes and the chrome drawn from them |
 | `palette` | palette items and fuzzy ranking |
+| `onboarding`, `desk/onboarding`, `ui/onboarding` | first-run steps: the CLI's `--json` answers parsed, step state in settings, the view |
 | `grid` | cell metrics and the draw list as Rune elements |
 | `keys` | Rune keys as phux key atoms and app shortcuts |
 | `ui` | window composition; `ui/*`: sidebar, tabs, panes, pane overlays (find, history), inbox, settings, palette |

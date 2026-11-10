@@ -311,6 +311,7 @@ pub const COMMANDS: &[Command] = &[
         [],
         []
     ),
+    row!(Shortcut::GetStarted, "Get Started", [], []),
     row!(Shortcut::CheckForUpdates, "Check for Updates", [], []),
     row!(Shortcut::InstallUpdate, "Update Now", [], []),
     row!(Shortcut::Machines, "Switch or Add Machine", [], []),
@@ -610,6 +611,7 @@ mod tests {
         ToggleFullScreen,
         KeyboardShortcuts,
         EssentialShortcuts,
+        GetStarted,
         SelectAll,
         PromptUp,
         PromptDown,

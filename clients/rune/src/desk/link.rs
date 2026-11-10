@@ -436,7 +436,7 @@ impl Desk {
             self.inbox.relist = true;
         } else {
             self.inbox.alerts.connected();
-            self.offer_tour();
+            self.first_run();
         }
     }
 

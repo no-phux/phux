@@ -60,6 +60,11 @@ impl Desk {
                 self.phone.as_ref().is_some_and(|phone| phone.picker),
                 Modal::PhonePicker,
             ),
+            // The migration's agent pane beside it takes typing.
+            (
+                self.onboarding.open && !self.onboarding.migrating(),
+                Modal::Onboarding,
+            ),
             (self.find_query.focused, Modal::FindField),
         ]
         .into_iter()
@@ -103,6 +108,7 @@ impl Desk {
             Modal::ContextMenu if escape => self.close_menu(),
             Modal::Rename if escape => self.cancel_rename(),
             Modal::Inbox if self.inbox_key(event, tx) => {}
+            Modal::Onboarding if self.onboarding_key(event) => {}
             _ if self.navigation_sheet_key(modal, event) => {}
             Modal::Machines => {
                 self.machines_key(event, tx);
@@ -287,6 +293,7 @@ impl Desk {
             Shortcut::ToggleFullScreen => tx.toggle_full_screen(),
             Shortcut::KeyboardShortcuts => self.show_shortcuts(),
             Shortcut::EssentialShortcuts => self.show_essentials(),
+            Shortcut::GetStarted => self.open_onboarding(),
             Shortcut::JumpToAttention => self.jump_to_attention(),
             Shortcut::SplitRight => self.split(SplitDir::Horizontal),
             Shortcut::SplitDown => self.split(SplitDir::Vertical),
