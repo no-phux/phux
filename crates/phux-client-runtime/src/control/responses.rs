@@ -1,7 +1,7 @@
 //! Handshake, attach, and command response handling.
 
-#[cfg(feature = "engine")]
 use super::subscriptions::{Origin, barrier_resources};
+#[cfg(feature = "engine")]
 use std::sync::Arc;
 
 use super::{

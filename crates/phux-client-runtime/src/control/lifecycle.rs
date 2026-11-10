@@ -1,7 +1,7 @@
 //! Construction, observation, and the connection lifecycle.
 
-#[cfg(feature = "engine")]
 use super::subscriptions::{KERNEL_KNOWN, Origin, STREAMED};
+#[cfg(feature = "engine")]
 use super::{Arc, EngineError, Publication, Scroll};
 use super::{
     BootstrapLimits, ControlOptions, ControlPlane, EngineHandle, Event, HashMap, HashSet,
