@@ -8,8 +8,8 @@ records explain history; [look them up deliberately](./architecture.md#historica
 
 **Process and runtime**
 
-- One server per user per profile; one current-thread runtime; a pane is a
-  `LocalSet` task that owns its `!Send` libghostty terminal.
+- One server per user per profile; one current-thread runtime; a Terminal
+  resource is a `LocalSet` task that owns its `!Send` libghostty terminal.
 - Hot upgrades re-exec and re-adopt live PTYs; cold restarts, crashes and
   reboots do not preserve PTYs. Records are not process recovery.
 - The upgrade blob's field names are a format. A candidate binary must parse

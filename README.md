@@ -118,7 +118,10 @@ Install phux and drive a session from code with
 phux knows which pane runs which agent and whether it is working, idle, or
 blocked on you. Agents reach phux through plugins for Claude Code, pi, Oh
 My Pi, OpenCode, and Grok, through the bundled MCP server (`phux mcp`), or
-through the CLI. To hand the manual to your agent:
+through the CLI. Besides terminals, agents read and drive the documents,
+accessibility trees, and screen surfaces phux hosts (MCP `phux_documents`,
+`phux_tree_snapshot`, `phux_surface_snapshot`, `phux_document_click`; see
+[resource kinds](./docs/resource-kinds.md)). To hand the manual to your agent:
 
 ```text
 Run `phux skill` and follow it to work with my phux terminals.

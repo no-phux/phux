@@ -57,7 +57,10 @@ detaches. Windows has no native desktop app: the CLI and server run in WSL 2,
 with PowerShell launchers.
 
 It shows every session and terminal with each agent's state, on this machine
-and on each machine you added with `phux host add` or **Add a machine**. It has
+and on each machine you added with `phux host add` or **Add a machine**. It
+also draws documents, accessibility trees, and pixel surfaces as panes,
+sends input to a mirrored page, window, or display, and starts mirrors from
+its palette ([resource kinds](./resource-kinds.md#available-now)). It has
 a command palette, splits from the session's server-stored arrangement (the
 same layout the terminal UI shows), find in history, ⌘-clickable links, an
 agent inbox with notifications, tabs, and themes. It ships as `rune-v*`
@@ -73,8 +76,9 @@ The previous GPUI desktop was retired after Desktop 0.62.0; its source is the
 A browser client exists in the phux repository. It draws a session on a
 canvas with libghostty compiled to WebAssembly, over WebTransport or
 WebSocket. It works, but it isn't shipped: nothing serves it, and the
-server's browser listeners are off by default. Use it as a starting point
-for putting a terminal in a web page.
+server's browser listeners are off by default. It draws terminals only;
+documents, trees, and surfaces in a session are not shown. Use it as a
+starting point for putting a terminal in a web page.
 
 **A browser needs a client certificate to connect to a paired server.**
 Over WebSocket, install an enrolled client certificate in the browser.

@@ -82,8 +82,14 @@ and the runtime, the C ABI, the TUI, and the web client all apply it:
 
 Only malformed bytes close the connection. A `HELLO_OK` or
 `BOOTSTRAP_BEGIN` naming an output mode, profile, or engine codec the
-client did not offer is malformed too, since the server must pick from the
-offer. A server never compresses a frame that settles a request (replies,
+client did not offer is malformed too, since the server must pick a
+Terminal's from the offer. The codec of every other kind is fixed by the
+kind and never offered. `HELLO` has no list of the kinds a client decodes,
+so a server cannot yet withhold a new kind from a client that does not know
+it, and a `BOOTSTRAP_BEGIN` naming a codec the client does not know also
+ends the connection. Beads `phux-rbz0y.1` tracks both.
+
+A server never compresses a frame that settles a request (replies,
 `ERROR`, `ATTACHED`, `ATTACH_READY`), because a client could not find the
 type byte of one it cannot read; only bulk frames such as
 `BOOTSTRAP_CHUNK` and `HISTORY_PAGE` are compressed.

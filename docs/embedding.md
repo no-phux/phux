@@ -124,6 +124,25 @@ next mutable call on the client. The low-level `phux_client_terminal_grid`
 and `phux_client_terminal_grid_metadata` are still there for a renderer that
 wants every cell.
 
+## Documents, trees, and surfaces
+
+A session can hold resources that are not terminals
+([resource kinds](./resource-kinds.md#available-now)). Each arrives whole:
+the runtime emits `Event::DocumentPublished`, whose `DocumentPublication`
+carries the resource id, its kind, the publish sequence, the bytes (JSON
+for a tree, PNG or JPEG for a surface, the content type of a typed
+document) and that content type. Show the newest `seq` per resource. The
+event is live-only, and there is no grid or replica to paint.
+
+UniFFI's `RemoteClient` projects the same event as
+`WireEvent::DocumentPublished`, with the document's `control` class
+(`page`, `window` or `display`). Offer input only when `control` is set:
+`send_document_input(resource_id, intent)` returns a request id that a
+`WireEvent::DocumentInputResult` settles, or `0` when nothing was sent.
+
+The C ABI has no document event yet, and adopting an arrangement drops its
+non-terminal leaves; Beads `phux-rbz0y.4` tracks it.
+
 ## Runtime consumer contract
 
 Native Rust consumers normally use the runtime's **Fed** delivery: the

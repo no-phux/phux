@@ -7,8 +7,8 @@ frame and field and is generated from the codec, so it cannot be stale.
 
 If you are writing a client in Rust, use `phux-client-core` and
 `phux-client-runtime` rather than this. If you are writing one in another
-language, [`clients/phux-web`](../clients/phux-web) is a complete
-non-native implementation to read alongside.
+language, [`clients/phux-web`](../clients/phux-web) is a non-native
+Terminal client to read alongside.
 
 If you only need agent status or to wait on a screen, you don't need the protocol: use `phux agent list --json` or `phux wait --until/--regex/--idle`.
 
@@ -104,15 +104,15 @@ prints the running server's.
 ## Attach and output
 
 `ATTACH` (`0x02`) names a session or pane and the client's viewport. The
-server answers `ATTACHED` (`0x81`), then for each pane streams a bootstrap
-(`BOOTSTRAP_BEGIN`, `BOOTSTRAP_CHUNK`..., `BOOTSTRAP_READY`) that brings the
-client's replica up to the current screen, then `ATTACH_READY` (`0x83`).
-From there, `RESOURCE_OUTPUT` (`0x90`) frames carry each pane's bytes with
-a per-stream sequence number. For a terminal, the bytes are the PTY's VT
-output, and the client feeds them to its own emulator. `RESOURCE_CLOSED`
-ends a stream. `DETACH` (`0x03`) gets `DETACHED`.
+server answers `ATTACHED` (`0x81`), then streams a bootstrap
+(`BOOTSTRAP_BEGIN`, `BOOTSTRAP_CHUNK`..., `BOOTSTRAP_READY`) in its kind's
+codec for each Terminal and document, then `ATTACH_READY` (`0x83`). From
+there, `RESOURCE_OUTPUT` (`0x90`) frames carry each resource's payload with
+a per-stream sequence number: a Terminal's VT output for the client's own
+emulator, or a whole newer document. `RESOURCE_CLOSED` ends a stream.
+`DETACH` (`0x03`) gets `DETACHED`.
 
-Which bootstrap you get depends on the profile the server selected:
+A Terminal's bootstrap follows the selected profile:
 
 - **Native state**: a libghostty checkpoint, for clients that run
   libghostty themselves. Exact, and the only profile that supports history
@@ -185,7 +185,9 @@ Without the capability, use the single-stream path.
 
 ## Input
 
-Input is structured. `INPUT_KEY` (`0x10`) carries a key event in
+Input is per kind; a document takes `SEND_DOCUMENT_INPUT`
+([below](#commands-events-resources)). For a Terminal,
+`INPUT_KEY` (`0x10`) carries a key event in
 libghostty's vocabulary: action, physical key, modifiers, text,
 unshifted codepoint. `INPUT_MOUSE`, `INPUT_FOCUS`, `INPUT_PASTE`, and
 `VIEWPORT_RESIZE` (`0x20`) likewise. The server encodes them to bytes for
@@ -252,7 +254,7 @@ enable it. Older servers do not advertise the bit; clients check before
 sending. Reports remain schema 1, with optional `rss_bytes` and `alloc`
 JSON fields that old readers ignore.
 
-Panes are **resources** with a **kind**: `Terminal`, `AgentSession`,
+Every resource has a **kind**: `Terminal` (a pane), `AgentSession`,
 `AccessibilityTree`, `PixelSurface` or `Document` so far, each with its own
 methods and events. A client
 tolerates kinds it does not know. The kind catalog in `phux-protocol::kinds`
@@ -302,10 +304,10 @@ are read by the server (`phux.agent/v1` is the agent record).
 `phux.tui.layout/v1` is a legacy layout adapter, not a competing source of
 membership or arrangement authority. See [organization](./organization.md).
 
-An `AgentSession` has an immutable, one-level parent that hosts agents;
-today that is a Terminal. Purging the
-parent closes its children atomically; closing a child never kills its
-parent. Process exit under Retain is not purge: see
+An `AgentSession` or document has an immutable, one-level parent that
+runs its producer; today a Terminal. Purging the parent closes its children
+atomically; closing a child never kills its parent. Process exit under
+Retain is not purge: see
 [activations and exit policy](./organization.md#activations-and-reconciliation).
 
 ### Complete terminal creation and discovery

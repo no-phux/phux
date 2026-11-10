@@ -5,11 +5,14 @@ format, message catalog, capabilities, version negotiation, and the
 structured input events a client sends.
 
 phux runs one server per user; clients attach over a local socket or QUIC
-and see the same panes. This crate is the contract between them. The wire
-is asymmetric: server to client carries the terminal's VT bytes, so a
-libghostty terminal on the client reproduces the server's screen exactly;
-client to server carries key, mouse, focus, and paste events built from
-libghostty's vocabulary, not re-encoded escape sequences.
+and see the same resources. This crate is the contract between them. Each
+resource kind declares its stream contract. A Terminal's is asymmetric:
+server to client carries the terminal's VT bytes, so a libghostty terminal
+on the client reproduces the server's screen exactly; client to server
+carries key, mouse, focus, and paste events built from libghostty's
+vocabulary, not re-encoded escape sequences. An agent session streams
+records, and an accessibility tree, pixel surface, or typed document
+streams whole documents.
 
 The code here is the specification. A machine-readable schema of every
 frame and field, generated from this codec and test-pinned, is at

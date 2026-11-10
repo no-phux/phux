@@ -88,7 +88,8 @@ Generated from the `phux` binary, so they match the code these docs describe.
 - [Decisions](./decisions.md): the constraints the code keeps, and why.
 - [Organization](./organization.md): how the server owns sessions and their contents.
 - [Substrate](./substrate.md): how people, hosts, and agents fit together.
-- [Resource kinds beyond terminals](./resource-kinds.md): the design for accessibility-tree, pixel and browser resources, and the order it lands in.
+- [Resource kinds beyond terminals](./resource-kinds.md): accessibility-tree, pixel-surface and typed-document resources, what is not done yet, and how they were built.
+- [Mirror formats and platforms](./mirrors.md): surface frame formats, the Linux tree and surface mirrors, and the notice shown while input arrives.
 - [Authority over pages, windows, and displays](./authority.md): who may watch or control a mirrored page, window, or display, and why no terminal grant does.
 - [Applications as resources](./applications.md): `phux spawn --app`, launching an app with its mirrors and quitting it with its pane.
 - [Server protocol](./protocol.md): framing, handshake, capabilities, and changing the wire.

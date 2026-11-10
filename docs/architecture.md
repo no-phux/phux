@@ -212,7 +212,7 @@ ownership recommendation. No keeper bootload service exists today.
 
 | To change | Start at |
 | --- | --- |
-| server behavior | `phux-server/src/runtime/mod.rs` (accept, lifecycle), `runtime/connections/mod.rs` (`handle_client`, `dispatch`, HELLO), `state/mod.rs`, `resource/terminal/` |
+| server behavior | `phux-server/src/runtime/mod.rs` (accept, lifecycle), `runtime/connections/mod.rs` (`handle_client`, `dispatch`, HELLO), `state/mod.rs`, `runtime/apps/` (one app per kind) |
 | organization | `phux-core/src/apply.rs`, `phux-server/src/state/org.rs`, `org_store.rs`; [durability and execution](./organization.md) |
 | input handling | `phux-server/src/runtime/apps/terminal/input_lane/` |
 | TUI rendering | `phux-tui/src/attach/render.rs`, `attach/paint.rs`, `render/chrome`, `render/overlay` |
@@ -258,7 +258,7 @@ A document-only or agent-only session needs no Terminal codec; a mixed
 session refuses a missing Terminal codec before changing subscriptions or
 geometry. Viewport votes, terminal roles, colors and grid resizing remain
 Terminal-specific. Phux Rune renders document panes without Terminal
-views; see [resource kinds beyond terminals](./resource-kinds.md#authority).
+views; see [resource kinds beyond terminals](./resource-kinds.md#available-now).
 
 The runtime root exports the server interface. Its `server` module assembles
 startup using `startup`, `posture`, `services`, and `listeners`; configuration

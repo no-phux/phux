@@ -6,7 +6,8 @@ that already runs. Part of [resource kinds beyond terminals](./resource-kinds.md
 `phux spawn --app NAME` (MCP `phux_app_open`) spawns a pane running
 `phux agent app run NAME`, which launches the application, runs the
 mirrors above in-process against its own pane, and ties their lifetime
-to the app. The pane is the supervisor, per `phux-phiio.4`.
+to the app. The pane is the supervisor
+([producers](./resource-kinds.md#producers)).
 
 - `--browser [URL]` runs the Chromium-family browser NAME (`chrome`,
   `chromium`, a bundle name or a path) as the helper's child, with a fresh
