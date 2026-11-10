@@ -2,6 +2,7 @@
 
 mod spawn;
 
+use super::subscriptions::{KindPolicy, Origin, RIDES_SHARED_PUMP, STREAMED};
 use std::collections::HashSet;
 
 use phux_protocol::wire::frame::InputMode;
@@ -211,8 +212,8 @@ impl ControlPlane {
         target: &HashSet<ResourceId>,
         home: &HashSet<ResourceId>,
     ) -> Vec<ResourceId> {
-        self.terminal_attached
-            .iter()
+        self.subscriptions
+            .ids(Origin::AttachResource)
             .filter(|id| !target.contains(*id) && !home.contains(*id))
             .cloned()
             .collect()
@@ -228,7 +229,7 @@ impl ControlPlane {
         }
         target
             .into_iter()
-            .filter(|id| !self.own_spawns.contains(id))
+            .filter(|id| !self.subscriptions.has(id, Origin::OwnSpawn))
             .collect()
     }
 
@@ -236,9 +237,7 @@ impl ControlPlane {
     /// (`Command::AttachResource`); the reply is [`Event::TerminalAttached`]
     /// with the returned correlation.
     pub fn attach_terminal(&mut self, terminal_id: &ResourceId) -> u32 {
-        if self.attach_terminals.contains(terminal_id)
-            || self.own_spawns.contains(terminal_id)
-            || self.terminal_attached.contains(terminal_id)
+        if self.subscriptions.has_any(terminal_id, STREAMED)
             || self.attach_request_for_terminal(terminal_id).is_some()
         {
             return 0;
@@ -250,16 +249,31 @@ impl ControlPlane {
         let request_id = self.next_request_id();
         self.pending
             .insert(request_id, Pending::AttachTerminal(terminal_id.clone()));
-        self.terminal_attached.insert(terminal_id.clone());
+        let kind = self.resource_kind_of(terminal_id);
+        let policy = KindPolicy::of(kind);
+        self.subscriptions
+            .insert(terminal_id, kind, Origin::AttachResource);
         let (cols, rows) = self.viewport();
+        let after_seq = policy
+            .resumes_from_cursor
+            .then(|| self.agent_after_seq(terminal_id))
+            .flatten();
         self.queue_frame(&FrameKind::Command {
             request_id,
-            command: Command::attach_terminal(terminal_id.clone(), self.options.attach_role),
+            command: policy.attach_command(
+                terminal_id.clone(),
+                self.options.attach_role,
+                after_seq,
+            ),
         });
         // ATTACH_RESOURCE does not resize; reflow the terminal to this
         // viewport as a session ATTACH would have. A connection that casts
-        // no geometry vote (a 0x0 viewport) sizes terminals explicitly.
-        if self.votes_on_geometry() && self.follows_global_geometry(terminal_id) {
+        // no geometry vote (a 0x0 viewport) sizes terminals explicitly, and
+        // only a kind the viewport sizes is ever resized.
+        if policy.votes_on_geometry
+            && self.votes_on_geometry()
+            && self.follows_global_geometry(terminal_id)
+        {
             self.queue_frame(&FrameKind::ResizeTerminal {
                 terminal_id: terminal_id.clone(),
                 cols,
@@ -278,7 +292,9 @@ impl ControlPlane {
         self.terminal_roles.remove(terminal_id);
         self.geometry_bootstrapped.remove(terminal_id);
         let request_id = self.next_request_id();
-        let was_attached = self.terminal_attached.remove(terminal_id);
+        let was_attached = self
+            .subscriptions
+            .remove(terminal_id, Origin::AttachResource);
         self.pending.insert(
             request_id,
             Pending::DetachTerminal {
@@ -309,7 +325,7 @@ impl ControlPlane {
         if !self.stream_recoveries.insert(terminal_id.clone()) {
             return StreamRecovery::Noop;
         }
-        if self.attach_terminals.contains(terminal_id) || self.own_spawns.contains(terminal_id) {
+        if self.subscriptions.has_any(terminal_id, RIDES_SHARED_PUMP) {
             // Their streams ride the original session/spawn pump. Adding a
             // per-terminal attach would double-pump output on this socket.
             return StreamRecovery::Reconnect;

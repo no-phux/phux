@@ -3,6 +3,7 @@
 
 mod sessions;
 
+use super::subscriptions::{KERNEL_KNOWN, Origin};
 use super::{AgentEvent, ControlError, ControlPlane, EngineEvent, Event, ResourceId, ResourceKind};
 pub(super) use sessions::AgentSubscription;
 
@@ -63,18 +64,16 @@ impl ControlPlane {
     }
 
     pub(super) fn kernel_knows(&self, terminal_id: &ResourceId) -> bool {
-        self.attach_terminals.contains(terminal_id)
-            || self.own_spawns.contains(terminal_id)
-            || self.terminal_attached.contains(terminal_id)
-            || self.agent_streams.contains(terminal_id)
+        self.subscriptions.has_any(terminal_id, KERNEL_KNOWN)
     }
 
     /// A terminal spawned by another client has no output pump on this
     /// connection: attach it on the live socket and refresh the topology
     /// so it gets its window and session context.
     pub(super) fn pick_up_foreign_spawn(&mut self, terminal_id: &ResourceId) {
-        let already_admitted = self.own_spawns.contains(terminal_id)
-            || self.terminal_attached.contains(terminal_id)
+        let already_admitted = self
+            .subscriptions
+            .has_any(terminal_id, &[Origin::OwnSpawn, Origin::AttachResource])
             || self.engine.as_ref().is_some_and(|engine| {
                 engine.has_projection(terminal_id) || engine.is_closed(terminal_id)
             });
@@ -188,19 +187,21 @@ impl ControlPlane {
         self.live_asks.remove(terminal_id);
         self.command_states.remove(terminal_id);
         self.listings.forget(terminal_id);
-        let was_known = self.own_spawns.contains(terminal_id)
-            || self.terminal_attached.contains(terminal_id)
+        let was_known = self
+            .subscriptions
+            .has_any(terminal_id, &[Origin::OwnSpawn, Origin::AttachResource])
             || self
                 .topology
                 .as_ref()
                 .is_some_and(|topology| topology.pane(terminal_id).is_some());
-        self.terminal_attached.remove(terminal_id);
+        self.subscriptions
+            .remove(terminal_id, Origin::AttachResource);
         self.preserve_terminal_geometry.remove(terminal_id);
         self.terminal_roles.remove(terminal_id);
         self.geometry_bootstrapped.remove(terminal_id);
         self.stream_recoveries.remove(terminal_id);
-        self.own_spawns.remove(terminal_id);
-        self.agent_streams.remove(terminal_id);
+        self.subscriptions
+            .remove_all(terminal_id, &[Origin::OwnSpawn, Origin::AgentDeclared]);
         // Whatever its kind, a closed resource leaves every listing.
         if let Some(topology) = self.topology.as_mut() {
             topology.forget(terminal_id);
