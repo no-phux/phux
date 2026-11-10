@@ -298,6 +298,13 @@ fn session_list(desk: &Desk, topology: &Topology, waiting: &HashMap<u32, usize>,
     list
 }
 
+/// Whether a satellite session member is a Terminal: not a document or an
+/// agent session the hub's topology already knows.
+fn is_terminal_member(topology: &Topology, id: &ResourceId) -> bool {
+    !topology.documents.iter().any(|doc| &doc.id == id)
+        && !topology.agent_sessions.iter().any(|agent| &agent.id == id)
+}
+
 /// A hub's satellite sessions, each under a `host · session` header: its
 /// terminals, then the mirrors their producers run (#2051 keeps them out of
 /// the hub's own sessions).
@@ -317,17 +324,25 @@ fn satellite_list(desk: &Desk, topology: &Topology, ink: &Ink) -> El {
         list = list.child(memo(format!("satellite-{name}"), (&header, theme), || {
             session_header(&header, ink)
         }));
-        let terminals = session.members.iter().map(|id| {
-            let label = topology.pane(id).map_or_else(|| id.to_string(), pane_label);
-            (id, label, None)
-        });
+        // Members are every kind the session names; documents are listed
+        // once below as mirrors and agent sessions have no row of their own.
+        let terminals = session
+            .members
+            .iter()
+            .filter(|id| is_terminal_member(topology, id))
+            .map(|id| {
+                let label = topology.pane(id).map_or_else(|| id.to_string(), pane_label);
+                (id, label, None)
+            });
         let mirrors = topology
             .documents
             .iter()
             .filter(|doc| {
-                doc.parent
-                    .as_ref()
-                    .is_some_and(|p| session.members.contains(p))
+                session.members.contains(&doc.id)
+                    || doc
+                        .parent
+                        .as_ref()
+                        .is_some_and(|p| session.members.contains(p))
             })
             .map(|doc| {
                 let label = doc.name.clone().unwrap_or_else(|| "Mirror".to_owned());

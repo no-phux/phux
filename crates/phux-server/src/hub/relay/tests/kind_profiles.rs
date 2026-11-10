@@ -55,7 +55,11 @@ fn only_a_terminal_stream_needs_the_links_terminal_profile() {
             "{kind:?} with smaller bounds"
         );
     }
-    for kind in [Some(ResourceKind::Terminal), None] {
+    for kind in [
+        Some(ResourceKind::Terminal),
+        Some(ResourceKind::Unknown { tag: 99 }),
+        None,
+    ] {
         for profile in other_profiles {
             assert!(
                 session

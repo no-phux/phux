@@ -54,8 +54,9 @@ fn a_satellite_surface_on_a_hub_is_listed_shown_and_streamed() {
         .with_hosts(vec![phux_protocol::wire::info::HostInventory::reachable(
             "box".into(),
             vec![
+                // Members name every kind the session holds (#2158).
                 phux_protocol::wire::info::HostSessionInfo::new(SessionId::new(2), "lab")
-                    .with_members(vec![producer.clone()]),
+                    .with_members(vec![producer.clone(), surface.clone()]),
             ],
         )])
         .with_resources(vec![
@@ -91,6 +92,10 @@ fn a_satellite_surface_on_a_hub_is_listed_shown_and_streamed() {
     assert!(texts.iter().any(|t| t == "box · lab"), "{texts:?}");
     assert!(rt.find("pane-box/@69").is_some(), "its terminal");
     assert!(rt.find("pane-box/@70").is_some(), "its mirror");
+    assert!(
+        !texts.iter().any(|t| t == "box/@70"),
+        "a document member is not also drawn as a terminal row: {texts:?}"
+    );
     assert!(rt.accessibility_action("pane-box/@70", Action::Click, None));
     step(&mut rt);
     let sent = outbound(&client);
