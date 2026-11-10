@@ -235,6 +235,7 @@ impl HeadlessSession {
             sidebar_painter: Some(&mut sidebar_painter),
             session_name: &mirror.session_name,
             theme: &self.theme,
+            leaves: &mirror.leaves,
         };
         crate::attach::rendered::compose_full_frame_cells(
             &chrome,

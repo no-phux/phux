@@ -419,6 +419,7 @@ impl H {
                 sidebar_painter: None,
                 session_name: &self.mirror.session_name,
                 theme: &theme,
+                leaves: &crate::attach::surface_leaf::LeafBook::default(),
             };
             crate::attach::paint::paint_full_frame(
                 &mut self.out,
@@ -890,6 +891,7 @@ fn reconcile_repairs_missing_local_focus_and_invalid_active_index() {
 mod resource_kinds;
 use resource_kinds::mixed_kind_snapshot;
 mod hello_ok;
+mod surface_leaves;
 
 /// A `DIRECTORY_LISTING` is handed to the driver, never rejected by the
 /// catch-all (that would tear down a healthy attach over a picker reply).
@@ -3021,16 +3023,17 @@ fn closing_an_agent_session_removes_only_its_row() {
     assert!(crate::attach::agent_rows::agent_session_rows(&h.mirror.engine_kernel).is_empty());
 }
 
+/// Rune places native agent panes: an `AgentSession` leaf is adopted as a
+/// placeholder tile, not refused, and never attached as a Terminal.
 #[test]
-fn a_layout_naming_an_agent_session_is_refused() {
+fn a_layout_naming_an_agent_session_tiles_it_as_a_placeholder() {
     let (mut h, _) = kind_attached();
-    let mut bad = ArrangementDoc::single(tid(1));
-    bad.groups[0].state = split2(1, 2, 1);
-    let error = h
-        .try_send(layout_changed(1, Some(bad.encode_cbor().unwrap())))
-        .expect_err("non-terminal layout must be refused");
-    assert!(error.to_string().contains("is not a terminal resource"));
-    assert_eq!(h.leaves(), vec![tid(1)]);
+    let mut mixed = ArrangementDoc::single(tid(1));
+    mixed.groups[0].state = split2(1, 2, 1);
+    let outcome = h.send(layout_changed(1, Some(mixed.encode_cbor().unwrap())));
+    assert!(outcome.layout_replaced && outcome.attach_panes.is_empty());
+    assert_eq!(h.leaves(), vec![tid(1), tid(2)]);
+    assert!(!h.mirror.panes.contains_key(&tid(2)));
 }
 
 #[test]

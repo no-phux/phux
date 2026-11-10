@@ -86,15 +86,7 @@ pub(super) async fn apply_action_effects<W: crate::attach::RenderSink>(
         *ctx.pending_path = Some(pending);
         conn.send(&frame).await?;
     }
-    if let Some((target, text)) = effects.insert_path {
-        // This is an input event, never a shell command or an Enter key.
-        let paste = phux_protocol::input::paste::PasteEvent {
-            data: text.into_bytes(),
-            trust: phux_protocol::input::paste::PasteTrust::Untrusted,
-        };
-        conn.send(&phux_protocol::input::InputEvent::Paste(paste).into_frame(target))
-            .await?;
-    }
+    send_path_insert(effects.insert_path, out, conn, ctx).await?;
     send_kill_frames(
         effects.kill_frames,
         effects.expected_closes,
@@ -138,6 +130,35 @@ pub(super) async fn apply_action_effects<W: crate::attach::RenderSink>(
     );
     send_session_rename(effects.rename_session, conn, ctx).await?;
     Ok(layout_changed)
+}
+
+/// Paste a picked path into its target pane as untrusted input, never a
+/// shell command or an Enter key. A placeholder leaf takes no paste, and a
+/// Terminal with no stream yet cannot carry one: bell instead of failing
+/// the send.
+#[allow(
+    clippy::future_not_send,
+    reason = "client-side libghostty Terminal is !Send; ADR-0003 binds us to current-thread"
+)]
+async fn send_path_insert<W: crate::attach::RenderSink>(
+    insert: Option<(ResourceId, String)>,
+    out: &mut W,
+    conn: &mut Connection,
+    ctx: &DispatchCtx<'_>,
+) -> Result<(), AttachError> {
+    let Some((target, text)) = insert else {
+        return Ok(());
+    };
+    if ctx.is_surface_leaf(&target) || !conn.can_route_terminal(&target) {
+        let _ = actions::write_bell(out);
+        return Ok(());
+    }
+    let paste = phux_protocol::input::paste::PasteEvent {
+        data: text.into_bytes(),
+        trust: phux_protocol::input::paste::PasteTrust::Untrusted,
+    };
+    conn.send(&phux_protocol::input::InputEvent::Paste(paste).into_frame(target))
+        .await
 }
 
 /// Execute a picker-committed pane move on a dedicated control connection:

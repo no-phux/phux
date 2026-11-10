@@ -246,6 +246,7 @@ impl Rig {
                 sidebar_painter: None,
                 session_name: &self.mirror.session_name,
                 theme: &theme,
+                leaves: &crate::attach::surface_leaf::LeafBook::default(),
             };
             paint_full_frame(
                 &mut out,

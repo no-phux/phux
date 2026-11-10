@@ -80,6 +80,7 @@ impl super::SessionLoop {
             &self.mirror.session_name,
             self.viewport_dims,
             sidebar,
+            &self.mirror.leaves,
         );
         let scene = PaneScene {
             workspace: &self.mirror.workspace,
@@ -155,6 +156,7 @@ impl super::SessionLoop {
             &self.mirror.session_name,
             self.viewport_dims,
             sidebar,
+            &self.mirror.leaves,
         );
         let focus = self.mirror.paint_focus();
         let focused = focus.as_ref();
@@ -238,6 +240,7 @@ impl super::SessionLoop {
             &self.mirror.session_name,
             self.viewport_dims,
             sidebar,
+            &self.mirror.leaves,
         );
         Some(crate::attach::paint::paint_empty_session(
             out,
@@ -277,6 +280,7 @@ impl super::SessionLoop {
             &self.mirror.session_name,
             self.viewport_dims,
             sidebar,
+            &self.mirror.leaves,
         );
         let focus = self.mirror.paint_focus();
         paint_active_overlay(
@@ -680,6 +684,7 @@ impl super::SessionLoop {
             &self.mirror.session_name,
             self.viewport_dims,
             sidebar,
+            &self.mirror.leaves,
         );
         let painted = crate::attach::paint::close_frame_with_chrome(
             crate::attach::paint::FrameBlock::begin(out),

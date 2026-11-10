@@ -3,21 +3,6 @@
 use super::*;
 
 #[test]
-fn checked_decode_refuses_a_known_non_terminal_leaf() {
-    let ws = ws_split(1, 2, 1);
-    let bytes = ws.encode_cbor().expect("encode");
-    let refused = ArrangementDoc::decode_cbor_checked(&bytes, &|id| id != &t(2))
-        .expect_err("a leaf naming a non-terminal resource must be refused");
-    assert!(matches!(
-        refused,
-        LayoutDecodeError::NonTerminalLeaf(ref id) if id == &t(2)
-    ));
-    // Unclassifiable ids pass: the predicate only refuses what it knows.
-    let accepted = ArrangementDoc::decode_cbor_checked(&bytes, &|_| true).expect("decode");
-    assert_eq!(accepted, ws);
-}
-
-#[test]
 fn render_group_zooms_to_a_live_leaf() {
     let ws = ws_split(1, 2, 1);
     let rendered = ws.render_group(Some(&t(2))).expect("active window");

@@ -167,9 +167,14 @@ pub(in crate::attach) fn push_copy_mode(
         ctx,
         focused,
         panes,
+        effects,
         ..
     }: ActionCall<'_, '_>,
 ) {
+    // A placeholder has no grid to select from.
+    if super::placeholders::refuse_on_placeholder(ctx, effects, focused, "copy-mode") {
+        return;
+    }
     let pane_rect = focused_pane_rect(ctx, focused);
     let (row, col) = focused
         .and_then(|id| panes.get(id))

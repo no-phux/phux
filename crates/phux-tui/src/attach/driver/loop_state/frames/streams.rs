@@ -49,7 +49,12 @@ impl super::super::SessionLoop {
         if let FrameKind::CommandResult { request_id, result } = frame
             && let Some(terminal_id) = self.pending_stream_binds.remove(request_id)
         {
+            // A document (named by the graph, or by the bootstrap an older
+            // server sends before this reply) streams on the control lane
+            // and binds nothing.
+            let document = self.mirror.surface_leaves().contains(&terminal_id);
             if conn.multistream_enabled()
+                && !document
                 && matches!(result, phux_protocol::wire::frame::CommandResult::Ok)
             {
                 conn.bind_terminal(&terminal_id).await?;
