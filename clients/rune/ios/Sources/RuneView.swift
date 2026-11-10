@@ -32,11 +32,16 @@ final class RuneView: UIView {
         super.init(frame: .zero)
         active = UIApplication.shared.applicationState == .active
         isMultipleTouchEnabled = true
+        // While the keyboard animates the bounds, keep the last frame at its
+        // own size against the top edge rather than stretching it. Core
+        // Animation names this edge for an unflipped layer: UIKit's top.
+        layer.contentsGravity = .bottomLeft
+        layer.masksToBounds = true
         backgroundColor = UIColor(named: "LaunchGround") ?? .black
         editor.send = { [weak self] operation, context in self?.send(operation, context: context) }
         editor.didDismiss = { [weak self] context in _ = self?.send(["op":"dismiss"], context: context) }
         addSubview(editor)
-        registerForTraitChanges([UITraitUserInterfaceStyle.self]) { (view: RuneView, _:UITraitCollection) in view.wake() }
+        registerForTraitChanges([UITraitUserInterfaceStyle.self]) { (view: RuneView, _:UITraitCollection) in view.refresh() }
         NotificationCenter.default.addObserver(self,selector:#selector(preferencesChanged),
             name:UIAccessibility.reduceMotionStatusDidChangeNotification,object:nil)
         tick.owner = self
@@ -66,13 +71,21 @@ final class RuneView: UIView {
         } catch { fail(error) }
     }
 
+    /// The display link draws the next frame; drawing here as well would
+    /// add an off-vsync frame to every touch sample.
     func wake() {
         guard active else { return }
         displayLink?.isPaused = false
-        setNeedsLayout()
+        if bridge == nil { setNeedsLayout() }
     }
 
-    @objc private func preferencesChanged() { wake() }
+    /// Size, appearance or accessibility changed: lay out, which tells Rune.
+    private func refresh() {
+        setNeedsLayout()
+        wake()
+    }
+
+    @objc private func preferencesChanged() { refresh() }
 
     func drawFrame() {
         guard active, !drawing, let bridge else { return }
@@ -93,7 +106,7 @@ final class RuneView: UIView {
                 timer = work
                 DispatchQueue.main.asyncAfter(deadline: .now() + max(0.001, after), execute: work)
             }
-            if frame["connection_requested"] as? Bool == true { connectionRequested?() }
+            if let requests = frame["requests"] as? [String: Any] { serve(requests) }
             if let ground = frame["ground"] as? [Double], ground.count == 3 {
                 groundChanged?(UIColor(red: ground[0], green: ground[1], blue: ground[2], alpha: 1))
             }
@@ -108,15 +121,40 @@ final class RuneView: UIView {
         } catch { fail(error) }
     }
 
+    /// What the frame asked of the system: Rune reaches no pasteboard, link
+    /// opener or haptics from inside a layer, so UIKit answers for it.
+    private func serve(_ requests: [String: Any]) {
+        if let text = requests["copied_text"] as? String { UIPasteboard.general.string = text }
+        if requests["paste"] as? Bool == true, let text = UIPasteboard.general.string {
+            bridge?.paste(text)
+            wake()
+        }
+        for link in requests["open_urls"] as? [String] ?? [] {
+            guard let url = URL(string: link), ["http", "https", "mailto"].contains(url.scheme?.lowercased() ?? "")
+            else { continue }
+            UIApplication.shared.open(url)
+        }
+        switch requests["feedback"] as? String {
+        case "hold": UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+        case "copied": UINotificationFeedbackGenerator().notificationOccurred(.success)
+        default: break
+        }
+        if requests["connection"] as? Bool == true { connectionRequested?() }
+    }
+
     private func send(_ operation: [String: Any], context: InputContext) -> [String: Any]? {
         guard active, let bridge else { return nil }
         do { let result = try bridge.input(operation, context: context); wake(); return result }
         catch { fail(error); return nil }
     }
 
-    func setActive(_ active: Bool) {
-        guard self.active != active else { return }
-        editor.retire()
+    func setActive(_ active: Bool, keepingKeyboard: Bool = false) {
+        guard self.active != active else {
+            // Already inactive with its keyboard kept; now it must go.
+            if !active, !keepingKeyboard { editor.retire() }
+            return
+        }
+        if keepingKeyboard { editor.suspend() } else { editor.retire() }
         if !active {
             for identity in identities.values { bridge?.touch(identity, phase:3, point:.zero, seconds:ProcessInfo.processInfo.systemUptime) }
             identities.removeAll()
@@ -126,7 +164,7 @@ final class RuneView: UIView {
         bridge?.active(active)
         if let bridge { qualification?.active(active,bridge:bridge) }
         self.active = active
-        if active { wake() }
+        if active { refresh() }
     }
 
     func close() {

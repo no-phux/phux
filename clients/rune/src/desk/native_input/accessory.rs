@@ -35,8 +35,9 @@ pub(crate) fn done(d: &mut Desk, tx: &mut Tx) {
             edit.cancel_composition();
         }
     }
+    // Unfocusing hides the field's keyboard. Whether the terminal shows one
+    // is its own choice, and still stands when this sheet closes.
     if let Some(phone) = &mut d.phone {
-        phone.keyboard = false;
         phone.release();
     }
     d.preedit = None;

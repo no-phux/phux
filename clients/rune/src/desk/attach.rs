@@ -31,7 +31,7 @@ impl Desk {
     /// Read the clipboard for the terminal on screen now: the reply comes
     /// back later, and the keyboard may have moved on by then.
     pub(super) fn paste_clipboard(&mut self, tx: &mut Tx) {
-        if self.paste_into_document(tx) {
+        if self.native.is_none() && self.paste_into_document(tx) {
             return;
         }
         if self.shown.as_ref().is_some_and(|s| s.view.is_none()) {
@@ -41,10 +41,24 @@ impl Desk {
             return self.say(NoticeKind::Error, "No terminal to paste into.");
         };
         let terminal = shown.terminal.clone();
+        if let Some(native) = &mut self.native {
+            // The system owns a phone's pasteboard and asks its user first;
+            // the host answers through the input bridge's paste.
+            native.paste_requested = true;
+            return;
+        }
         let server = self.link.server;
         tx.read_clipboard(move |desk: &mut Self, content, _| {
             desk.paste_answered(&terminal, server, content);
         });
+    }
+
+    /// A native host's answer to `paste_requested`: its pasteboard's text,
+    /// under the same confirmation as any other paste.
+    pub fn paste_from_host(&mut self, text: &str) {
+        if let Some(terminal) = self.shown.as_ref().map(|s| s.terminal.clone()) {
+            self.paste(&terminal, text);
+        }
     }
 
     /// The clipboard's reply to a paste asked for on `server`.

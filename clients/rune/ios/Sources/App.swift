@@ -18,6 +18,7 @@ final class SceneDelegate: UIResponder, UIWindowSceneDelegate {
     private var root: RuneController?
     func scene(_ scene: UIScene, willConnectTo session: UISceneSession, options: UIScene.ConnectionOptions) {
         guard let scene = scene as? UIWindowScene else { return }
+        phux_rune_ios_prewarm() // Compile the renderer while UIKit builds the window.
         let controller = RuneController()
         root = controller
         if let url = options.urlContexts.first?.url { controller.importPairing(url) }
@@ -37,6 +38,7 @@ final class SceneDelegate: UIResponder, UIWindowSceneDelegate {
         root?.setSceneActive(true)
     }
     func sceneWillResignActive(_ scene: UIScene) { root?.setSceneActive(false) }
+    func sceneDidEnterBackground(_ scene: UIScene) { root?.surface?.setActive(false) }
     func sceneDidDisconnect(_ scene: UIScene) { root?.surface?.close() }
 }
 
@@ -49,19 +51,22 @@ final class RuneController: UIViewController, UIAdaptivePresentationControllerDe
     private var qualificationTask: Task<Void,Never>?
     /// What the surface's edges show; UIKit continues it under the status
     /// bar and home indicator so the terminal is not framed by system chrome.
-    private var ground = UIColor(named: "LaunchGround") ?? .black
-    private lazy var empty = EmptyState { [weak self] in self?.showConnection() }
+    private static let launchGround = UIColor(named: "LaunchGround") ?? .black
+    private var ground = RuneController.launchGround
+    private let empty = EmptyState()
     isolated deinit { qualificationTask?.cancel() }
-    override var preferredStatusBarStyle: UIStatusBarStyle {
+    private var groundIsDark: Bool {
         var (red, green, blue): (CGFloat, CGFloat, CGFloat) = (0, 0, 0)
         ground.getRed(&red, green: &green, blue: &blue, alpha: nil)
-        return 0.2126 * red + 0.7152 * green + 0.0722 * blue < 0.5 ? .lightContent : .darkContent
+        return 0.2126 * red + 0.7152 * green + 0.0722 * blue < 0.5
     }
+    override var preferredStatusBarStyle: UIStatusBarStyle { groundIsDark ? .lightContent : .darkContent }
     override func viewDidLoad() {
         super.viewDidLoad()
         view.backgroundColor = ground
         empty.frame = view.bounds
         empty.autoresizingMask = [.flexibleWidth, .flexibleHeight]
+        empty.isHidden = true // Until launch knows there is no saved computer.
         view.addSubview(empty)
     }
     private func paint(_ ground: UIColor) {
@@ -69,6 +74,27 @@ final class RuneController: UIViewController, UIAdaptivePresentationControllerDe
         self.ground = ground
         view.backgroundColor = ground
         setNeedsStatusBarAppearanceUpdate()
+        surface?.editor.match(dark: groundIsDark)
+    }
+    private func showDisconnected() {
+        empty.show(title: "No computer connected",
+            detail: "Pair this phone with a computer running Phux to open its terminals here.",
+            primary: "Connect a computer") { [weak self] in self?.showConnection() }
+    }
+    /// A surface that cannot open or draw is replaced, not left dead under
+    /// an alert: retrying builds a new one from the saved computer.
+    private func showFailure(_ message: String) {
+        surface?.close(); surface?.removeFromSuperview(); surface = nil
+        paint(Self.launchGround)
+        empty.show(title: "Couldn't open the terminal", detail: message, primary: "Try Again",
+            action: { [weak self] in self?.reopen() },
+            secondary: "Change computer", other: { [weak self] in self?.showConnection() })
+    }
+    private func reopen() {
+        do {
+            if let configuration = try HostSettings.load() { open(configuration) }
+            else { showConnection() }
+        } catch { showFailure(error.localizedDescription) }
     }
     override func viewDidAppear(_ animated:Bool) {
         super.viewDidAppear(animated)
@@ -83,10 +109,7 @@ final class RuneController: UIViewController, UIAdaptivePresentationControllerDe
             connection(link: link)
             return
         }
-        do {
-            if let configuration = try HostSettings.load() { open(configuration) }
-            else { showConnection() }
-        } catch { show(error.localizedDescription) }
+        reopen()
     }
 
     private func qualify(_ probe: QualificationProbe) {
@@ -109,8 +132,11 @@ final class RuneController: UIViewController, UIAdaptivePresentationControllerDe
 
     func setSceneActive(_ active: Bool) {
         // A native setup sheet must own input even after returning from a
-        // camera permission prompt or Tailscale's approval browser.
-        surface?.setActive(active && !(presentedViewController is UINavigationController))
+        // camera permission prompt or Tailscale's approval browser. Without
+        // one, a passing interruption (Control Center, a banner) keeps the
+        // keyboard it would only bring straight back.
+        let covered = presentedViewController is UINavigationController
+        surface?.setActive(active && !covered, keepingKeyboard: !covered)
     }
 
     func presentationControllerDidDismiss(_ presentationController: UIPresentationController) {
@@ -125,9 +151,9 @@ final class RuneController: UIViewController, UIAdaptivePresentationControllerDe
             deliver(link, to: form, navigation: nav)
             return
         }
-        let values: [String:Any]?
-        do { values = try HostSettings.load() } catch { show(error.localizedDescription); return }
-        let form = OnboardingController(values:values)
+        if surface == nil, empty.isHidden { showDisconnected() }
+        // Unreadable saved settings must not block pairing again.
+        let form = OnboardingController(values: try? HostSettings.load())
         form.closed = { [weak self] in
             self?.setSceneActive(UIApplication.shared.applicationState == .active)
         }
@@ -148,7 +174,7 @@ final class RuneController: UIViewController, UIAdaptivePresentationControllerDe
         } else { form.receive(link) }
     }
     private func show(_ message:String) {
-        let alert = UIAlertController(title:"Connection",message:message,preferredStyle:.alert)
+        let alert = UIAlertController(title:"Phux Rune",message:message,preferredStyle:.alert)
         alert.addAction(UIAlertAction(title:"OK",style:.default))
         present(alert,animated:true)
     }
@@ -158,10 +184,9 @@ final class RuneController: UIViewController, UIAdaptivePresentationControllerDe
         surface.qualification = probe
         surface.failed = { [weak self] message in
             self?.probe?.failure(message)
-            let alert = UIAlertController(title:"Could not open Rune",message:message,preferredStyle:.alert)
-            alert.addAction(UIAlertAction(title:"Connection",style:.default) { _ in self?.showConnection() })
-            self?.present(alert,animated:true)
+            self?.showFailure(message)
         }
+        surface.editor.match(dark: groundIsDark)
         surface.connectionRequested = { [weak self] in self?.showConnection() }
         surface.groundChanged = { [weak self] ground in self?.paint(ground) }
         empty.isHidden = true
@@ -176,24 +201,35 @@ final class RuneController: UIViewController, UIAdaptivePresentationControllerDe
     }
 }
 
-/// Shown only while no computer is connected, so dismissing first-run setup
-/// never leaves a blank screen. Dark like the launch screen and the terminal.
+/// What the root shows without a surface, so dismissing setup or a failed
+/// open never leaves a blank screen. Dark like the launch screen.
 @MainActor
 private final class EmptyState: UIView {
-    init(connect: @escaping () -> Void) {
+    private let body = UIContentUnavailableView(configuration: .empty())
+    init() {
         super.init(frame: .zero)
         overrideUserInterfaceStyle = .dark
-        var content = UIContentUnavailableConfiguration.empty()
-        content.image = UIImage(systemName: "desktopcomputer")
-        content.text = "No computer connected"
-        content.secondaryText = "Pair this phone with a computer running Phux to open its terminals here."
-        content.button = .borderedProminent()
-        content.button.title = "Connect a computer"
-        content.buttonProperties.primaryAction = UIAction { _ in connect() }
-        let body = UIContentUnavailableView(configuration: content)
         body.frame = bounds
         body.autoresizingMask = [.flexibleWidth, .flexibleHeight]
         addSubview(body)
     }
     @available(*, unavailable) required init?(coder: NSCoder) { fatalError() }
+
+    func show(title: String, detail: String, primary: String, action: @escaping () -> Void,
+              secondary: String? = nil, other: (() -> Void)? = nil) {
+        var content = UIContentUnavailableConfiguration.empty()
+        content.image = UIImage(systemName: "desktopcomputer")
+        content.text = title
+        content.secondaryText = detail
+        content.button = .borderedProminent()
+        content.button.title = primary
+        content.buttonProperties.primaryAction = UIAction { _ in action() }
+        if let secondary, let other {
+            content.secondaryButton = .bordered()
+            content.secondaryButton.title = secondary
+            content.secondaryButtonProperties.primaryAction = UIAction { _ in other() }
+        }
+        body.configuration = content
+        isHidden = false
+    }
 }

@@ -17,6 +17,8 @@ pub use rune;
 pub struct Platform {
     pub(crate) target: Target,
     pub connection_requested: bool,
+    /// A command asked for the system pasteboard, which only the host reads.
+    pub paste_requested: bool,
     pub active: bool,
 }
 
@@ -293,6 +295,7 @@ fn with_target(target: Target, session: Option<String>) -> State {
     state.native = Some(Platform {
         target,
         connection_requested: false,
+        paste_requested: false,
         active: true,
     });
     state
@@ -308,20 +311,6 @@ pub fn set_active(rt: &mut rune::Runtime<State>, active: bool) {
         state.focus_changed(active);
         tx.instant();
     });
-}
-
-/// The surface's edge colour as sRGB, so UIKit can paint the status-bar and
-/// home-indicator strips it keeps outside the surface as one ground.
-pub fn edge_srgb(rt: &rune::Runtime<State>, dark: bool) -> [f32; 3] {
-    let color = crate::ui::phone_edge_color(&rt.state, dark);
-    [color.r, color.g, color.b].map(|linear| {
-        let linear = linear.clamp(0.0, 1.0);
-        if linear <= 0.003_130_8 {
-            linear * 12.92
-        } else {
-            1.055 * linear.powf(1.0 / 2.4) - 0.055
-        }
-    })
 }
 
 /// Local qualification evidence; no credentials, endpoint or clipboard
@@ -358,6 +347,9 @@ pub fn report(rt: &rune::Runtime<State>, frames: u64, marker: &str) -> Value {
         "marker_seen": !marker.is_empty() && text.contains(marker), "error": state.error})
 }
 
+mod host;
+pub use host::{edge_srgb, paste, take_requests};
+
 #[cfg(test)]
 mod pairing_tests;
 
@@ -391,26 +383,6 @@ mod tests {
             chain_pem: None,
             key_id: None,
         }
-    }
-
-    #[test]
-    fn edge_colour_is_the_settings_page_or_the_terminal_ground_as_srgb() {
-        let mut rt = rune::Runtime::new(
-            with_target(config("quic://localhost:8788").target().unwrap(), None),
-            crate::ui::view,
-            (393.0, 852.0),
-            rune::Env::new(true, 2.0),
-        );
-        // No terminal yet: the theme's own ground, encoded for UIKit.
-        let ground = edge_srgb(&rt, true);
-        let linear = crate::ui::phone_edge_color(&rt.state, true);
-        assert!(ground.iter().all(|c| (0.0..=1.0).contains(c)), "{ground:?}");
-        assert!(
-            ground[2] > linear.b,
-            "sRGB encoding lifts a dark linear value"
-        );
-        rt.update(|state, _| state.settings_open = true);
-        assert_ne!(edge_srgb(&rt, true), ground, "Settings paints its own page");
     }
 
     #[test]

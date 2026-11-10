@@ -1,6 +1,6 @@
 //! ⌘-click (Ctrl-click elsewhere) opens a link; holding ⌘ over one
 //! underlines it and shows where it goes. A phone has no ⌘: there a tap that
-//! lifts where it landed opens the link, and a drag still selects.
+//! lifts where it landed opens the link (`phone/touch.rs`).
 
 use std::sync::{Arc, Mutex};
 
@@ -166,6 +166,7 @@ impl Desk {
         if phase != Phase::Down {
             if let Some(url) = self.tapped(terminal, phase, x, y) {
                 self.open_link(terminal, &url, tx);
+                return true;
             }
             let opened = self.pointer.opened;
             if phase == Phase::Up {
@@ -187,6 +188,13 @@ impl Desk {
         self.open_link(terminal, &link.url, tx);
         self.pointer.opened = true;
         true
+    }
+}
+
+impl Desk {
+    /// The finger's gesture became something other than a tap.
+    pub(super) fn forget_link_tap(&mut self) {
+        self.pointer.tap = None;
     }
 }
 

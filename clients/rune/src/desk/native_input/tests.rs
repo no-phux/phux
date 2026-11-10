@@ -9,6 +9,7 @@ fn native(d: &mut Desk) {
         target: phux_client_runtime::Target::uds("/tmp/not-used"),
         active: true,
         connection_requested: false,
+        paste_requested: false,
     });
 }
 
@@ -142,7 +143,10 @@ fn native_accessory_escape_cancels_rename_without_typing_behind_it() {
         "Done must edit focus, not hit the rename scrim"
     );
     assert!(!rt.state.tabs.rename_field.focused);
-    assert!(!rt.state.phone.as_ref().unwrap().keyboard);
+    assert!(
+        rt.state.phone.as_ref().unwrap().keyboard,
+        "a sheet's Done leaves the terminal's keyboard choice alone"
+    );
     no_terminal_input(&client);
 }
 
@@ -524,6 +528,7 @@ fn a_native_shell_uses_the_full_available_stage_without_drawn_keys() {
         target: phux_client_runtime::Target::uds("/tmp/not-used"),
         active: true,
         connection_requested: false,
+        paste_requested: false,
     });
     rt.set_viewport((393.0, 600.0), 2.0);
     for _ in 0..120 {

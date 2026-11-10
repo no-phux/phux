@@ -488,6 +488,7 @@ impl Desk {
         changed |= self.tick_hive(tx);
         self.settle_pointer();
         changed |= self.autoscroll(tx);
+        changed |= self.phone_touch_tick(tx);
         self.keep_find();
         // Also catches a display-scale change, which re-snaps the cells.
         self.fit();

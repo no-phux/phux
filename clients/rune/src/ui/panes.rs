@@ -339,6 +339,19 @@ fn terminal_input(host: El, desk: &Desk, id: &ResourceId) -> El {
     .on_drag(move |d: &mut Desk, drag, tx| {
         // Drag points include the padding; the grid starts inside it.
         let (x, y, mods) = (drag.x - PAD, drag.y - PAD, tx.mods());
+        // A phone's finger scrolls, holds to select and taps (`phone/touch.rs`).
+        if d.phone.is_some() && tx.button() == PointerButton::Primary {
+            let step = Press {
+                phase: drag.phase,
+                x,
+                y,
+                clicks: drag.clicks,
+                mods,
+                button: PointerButton::Primary,
+            };
+            let travel = [drag.dx, drag.dy];
+            return d.phone_touch(&press, &step, travel, drag.cancelled(), tx);
+        }
         // Only the primary button opens links; the rest are the program's.
         let cmd = mods.cmd && tx.button() == PointerButton::Primary;
         if !d.press_link(&press, drag.phase, x, y, cmd, tx) {
