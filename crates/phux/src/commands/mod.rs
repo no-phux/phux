@@ -68,6 +68,7 @@ pub(crate) mod launch;
 pub(crate) mod logs;
 pub(crate) mod ls;
 pub(crate) mod mcp;
+pub(crate) mod migrate;
 pub(crate) mod mission;
 pub(crate) mod mission_project;
 pub(crate) mod mission_start;

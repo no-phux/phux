@@ -168,6 +168,7 @@ pub(crate) fn dispatch(
         Some(Command::Config(commands::ConfigArgs { action })) => {
             commands::config::run_config(&action, socket)
         }
+        Some(Command::Migrate(args)) => commands::migrate::run(args, socket),
         Some(Command::Plugin(commands::PluginArgs { action })) => {
             commands::plugin::run_plugin(&action)
         }
