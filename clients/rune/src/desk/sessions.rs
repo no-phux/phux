@@ -1,12 +1,10 @@
 //! Choosing what is on screen across sessions: show a terminal, make a
 //! terminal or session, step through them.
 
-use std::time::Duration;
-
 use phux_client_runtime::control::{
     ControlOptions, PredictionStyle, SessionRecovery, SpawnRequest, Status, Topology,
 };
-use phux_client_runtime::{Client, ClientOptions, ConnectOptions, Runtime, Target};
+use phux_client_runtime::{Client, ClientOptions, Runtime, Target};
 use phux_protocol::ids::ResourceId;
 use phux_protocol::input::focus::FocusEvent;
 use phux_protocol::wire::frame::{AttachTarget, RolePolicy};
@@ -209,24 +207,10 @@ pub(super) fn default_pane(topology: &Topology, session: u32) -> Option<Resource
 /// Lines of history each terminal keeps on hand and asks the server for.
 const SCROLLBACK_LINES: u32 = 16_384;
 
-/// How long a dial may take. Someone holding a phone is told their computer
-/// can't be reached sooner than a desktop window gives up on a machine.
-fn patience(phone: bool) -> ConnectOptions {
-    let patient = ConnectOptions::default();
-    if !phone {
-        return patient;
-    }
-    ConnectOptions {
-        dial_timeout: Duration::from_secs(8),
-        initial_budget: Duration::from_secs(10),
-        ..patient
-    }
-}
-
 /// Dials on the runtime's thread: a machine that's away shows as connecting.
 /// With no attach the connection only reads the inventory, on this one and
 /// on every reconnect, until `settle_home` selects a session.
-pub(super) fn connect(target: Target, phone: bool) -> Result<Client, String> {
+pub(super) fn connect(target: Target) -> Result<Client, String> {
     Runtime::connect(
         target,
         ClientOptions {
@@ -243,24 +227,8 @@ pub(super) fn connect(target: Target, phone: bool) -> Result<Client, String> {
                 subscribe_agent_sessions: true,
                 ..ControlOptions::default()
             },
-            connect: patience(phone),
+            ..ClientOptions::default()
         },
     )
     .map_err(|error| format!("could not connect: {error}"))
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn a_phone_gives_up_on_a_dial_sooner_than_a_desktop() {
-        let (desktop, phone) = (patience(false), patience(true));
-        assert_eq!(desktop, phux_client_runtime::ConnectOptions::default());
-        assert_eq!(phone.dial_timeout, Duration::from_secs(8));
-        assert_eq!(phone.initial_budget, Duration::from_secs(10));
-        assert!(phone.dial_timeout < desktop.dial_timeout);
-        assert!(phone.initial_budget < desktop.initial_budget);
-        assert_eq!(phone.ladder, desktop.ladder);
-    }
 }
