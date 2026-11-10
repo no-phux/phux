@@ -1,8 +1,11 @@
 //! The bootstrap codec, profile, and stream-profile sub-record codecs.
 //!
-//! Only a server sends these, and only to name a choice from the client's
-//! own offer, so a value the client does not know is malformed, not newer:
-//! skipping `HELLO_OK` or `BOOTSTRAP_BEGIN` would hang the handshake.
+//! Only a server sends these. A Terminal profile or engine codec names a
+//! choice from the client's own offer; every other kind's codec is fixed by
+//! the kind and never offered. Either way a value the client does not know
+//! decodes as malformed, not newer: skipping `HELLO_OK` or `BOOTSTRAP_BEGIN`
+//! would hang the handshake. That makes an unknown kind codec close the
+//! connection (`docs/compatibility.md`, Beads `phux-rbz0y.1`).
 
 use crate::caps::{
     BootstrapCodec, BootstrapProfile, BootstrapStreamProfile, EngineCodec, EngineFeatureSet,

@@ -1,6 +1,6 @@
 //! Wire protocol for phux: framing, message catalog, version negotiation,
-//! capabilities, and the VT-bytes-out, structured-input-in shape of terminal
-//! traffic.
+//! capabilities, the resource kinds and their stream contracts, and the
+//! VT-bytes-out, structured-input-in shape of Terminal traffic.
 //!
 //! This crate is the specification. `docs/spec/wire-schema.json` in the
 //! repository is generated from it and test-pinned; `docs/protocol.md`

@@ -83,15 +83,15 @@ pub const RESOURCE_ID_TAG_SATELLITE: u8 = 1;
     Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, serde::Serialize, serde::Deserialize,
 )]
 pub enum ResourceId {
-    /// A terminal owned by the receiving server (wire tag = 0).
+    /// A resource owned by the receiving server (wire tag = 0).
     Local {
         /// Monotonic per-server identifier.
         id: u32,
     },
-    /// A terminal owned by a federation peer (wire tag = 1). A hub rewrites
+    /// A resource owned by a federation peer (wire tag = 1). A hub rewrites
     /// it to the peer's `Local` space and re-tags replies (SPEC L1 §9.1).
     Satellite {
-        /// Federation peer that owns the terminal.
+        /// Federation peer that owns the resource.
         host: SatelliteHost,
         /// Peer-local identifier (scope: `host`).
         id: u32,
@@ -99,13 +99,13 @@ pub enum ResourceId {
 }
 
 impl ResourceId {
-    /// Construct a `Local` terminal id.
+    /// Construct a `Local` resource id.
     #[must_use]
     pub const fn local(id: u32) -> Self {
         Self::Local { id }
     }
 
-    /// Construct a `Satellite` terminal id. Non-hub servers MUST NOT emit one.
+    /// Construct a `Satellite` resource id. Non-hub servers MUST NOT emit one.
     #[must_use]
     pub fn satellite(host: impl Into<SatelliteHost>, id: u32) -> Self {
         Self::Satellite {
@@ -129,7 +129,7 @@ impl ResourceId {
         }
     }
 
-    /// The federation host that owns this terminal, or `None` for
+    /// The federation host that owns this resource, or `None` for
     /// [`Local`](Self::Local).
     #[must_use]
     pub const fn host(&self) -> Option<&SatelliteHost> {
@@ -139,7 +139,7 @@ impl ResourceId {
         }
     }
 
-    /// `true` iff this is a [`Local`](Self::Local) terminal id.
+    /// `true` iff this is a [`Local`](Self::Local) resource id.
     #[must_use]
     pub const fn is_local(&self) -> bool {
         matches!(self, Self::Local { .. })
@@ -186,21 +186,26 @@ pub const RESOURCE_KIND_TAG_DOCUMENT: u8 = 4;
 #[non_exhaustive]
 pub enum ResourceKind {
     /// A PTY plus libghostty terminal (wire tag = 0); the only kind that
-    /// takes input, resize, screen reads, history, and signals.
+    /// takes structured `INPUT_*` frames, grid resize, screen reads,
+    /// history, and signals. Document kinds take typed intents through
+    /// `SEND_DOCUMENT_INPUT` instead.
     #[default]
     Terminal,
-    /// A producer-fed agent event stream bound to a Terminal (wire tag = 1).
+    /// A producer-fed agent event stream (wire tag = 1), bound to a parent
+    /// that hosts agents: one whose handle carries the `AgentParent`
+    /// companion, which today only a Terminal does.
     AgentSession,
     /// A producer-fed accessibility tree of an application, bound to the
-    /// Terminal its producer runs in (wire tag = 2). Newest snapshot wins.
+    /// parent its producer runs in, today a Terminal (wire tag = 2). Newest
+    /// snapshot wins.
     AccessibilityTree,
     /// A producer-fed pixel surface, a window or display as PNG or JPEG images,
-    /// bound to the Terminal its producer runs in (wire tag = 3). Newest
-    /// image wins; its size is the surface's geometry.
+    /// bound to the parent its producer runs in, today a Terminal (wire tag
+    /// = 3). Newest image wins; its size is the surface's geometry.
     PixelSurface,
     /// A producer-fed document of any content type (a MIME type fixed when
-    /// it is opened), bound to the Terminal its producer runs in (wire tag
-    /// = 4). Newest document wins.
+    /// it is opened), bound to the parent its producer runs in, today a
+    /// Terminal (wire tag = 4). Newest document wins.
     Document,
     /// A kind this build does not recognise, preserved for relays.
     Unknown {
@@ -242,7 +247,8 @@ impl ResourceKind {
         matches!(self, Self::Terminal)
     }
 
-    /// Lower-case stable name (`terminal`, `agent_session`, `unknown`).
+    /// Lower-case stable name (`terminal`, `agent_session`,
+    /// `accessibility_tree`, `pixel_surface`, `document`, `unknown`).
     #[must_use]
     pub const fn as_str(self) -> &'static str {
         match self {
