@@ -84,6 +84,29 @@ test("the catalog drops session-per-task creation and adds owned kill", async ()
   }
 });
 
+test("document reads register and a surface frame reaches OpenCode as a file part", async () => {
+  delete process.env.PHUX_TERMINAL_ID;
+  fakeCli();
+  const png = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==", "base64");
+  spyOn(PhuxCli.prototype, "surfaceSnapshot").mockImplementation(async (_target, out) => {
+    await Bun.write(out, png);
+    return { schema_version: 1, seq: 2, bytes: png.length, format: "png", width: 1, height: 1, content_type: null, out };
+  });
+  const host = await setupHost(false);
+  try {
+    for (const name of ["phux_documents", "phux_tree_snapshot", "phux_tree_wait", "phux_surface_snapshot"]) {
+      expect(host.toolNames()).toContain(name);
+    }
+    const result = await host.execute("phux_surface_snapshot", { target: "@3" }, "a") as { content: unknown[] };
+    expect(result.content[1]).toEqual({
+      type: "file", uri: `data:image/png;base64,${png.toString("base64")}`, mime: "image/png", name: "frame-1.png",
+    });
+    expect("images" in result).toBe(false);
+  } finally {
+    await host.close();
+  }
+});
+
 test("spawned terminals are owned, capped, killable only by their owner, and released", async () => {
   delete process.env.PHUX_TERMINAL_ID;
   delete process.env.PHUX_TARGET;

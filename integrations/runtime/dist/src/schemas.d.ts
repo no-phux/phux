@@ -1,13 +1,20 @@
+import { type ResourceEntry } from "./resources.js";
+export { SchemaValidationError } from "./validate.js";
+export * from "./resources.js";
 export interface SessionSummary {
     readonly name: string;
     readonly windows: number;
     readonly attached: boolean;
 }
 export interface SessionList {
-    readonly schema_version: 1 | 2 | 3;
+    readonly schema_version: 1 | 2 | 3 | 4;
     readonly sessions: readonly SessionSummary[];
-    /** Canonical selectors for every addressable terminal (v2/v3; empty for v1). */
+    /** Canonical selectors for every addressable terminal (v2+; empty for v1). */
     readonly terminals: readonly string[];
+    /** Every addressable resource of every kind (v3+; empty when absent). */
+    readonly resources: readonly ResourceEntry[];
+    /** One diagnostic per unreachable federation satellite; empty when absent. */
+    readonly unreachable: readonly string[];
 }
 export interface CursorState {
     readonly x: number;
@@ -231,10 +238,6 @@ export interface AgentSessionCloseResult {
     readonly resource: string;
     readonly closed: true;
 }
-export declare class SchemaValidationError extends Error {
-    readonly path: string;
-    constructor(path: string, expectation: string);
-}
 export declare function parseSessionList(value: unknown): SessionList;
 export declare function parseScreenState(value: unknown): ScreenState;
 export declare function parseCreateResult(value: unknown): CreateResult;
@@ -259,4 +262,3 @@ export declare function parseAgentPromptResult(value: unknown): Record<string, u
 export declare function parseAgentWaitResult(value: unknown): Record<string, unknown>;
 export declare function parseResourceWaitResult(value: unknown): Record<string, unknown>;
 export declare function parseStatusResult(value: unknown): Record<string, unknown>;
-export {};
