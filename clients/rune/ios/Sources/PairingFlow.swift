@@ -60,21 +60,26 @@ final class PairingFlow {
         if case .finish(let issued) = stage { try? discard(issued) }
     }
 
-    func receive(_ link: String) {
+    @discardableResult
+    func receive(_ link: String) -> Bool {
         guard operation == nil else {
             message = "Finish or cancel the current pairing before opening another code."
             changed?()
-            return
+            return false
         }
         do {
             let invite = try PairingInvite(link: link)
             cancel()
             stage = .review(invite)
             message = nil
+            OnboardingStatus.record(.awaitingConfirmation, invite: invite)
+            changed?()
+            return true
         } catch {
             message = error.localizedDescription
+            changed?()
+            return false
         }
-        changed?()
     }
 
     func confirm() {

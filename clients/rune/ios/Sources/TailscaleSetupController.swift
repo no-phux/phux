@@ -6,7 +6,7 @@ import RuneTailnet
 /// installed Tailscale tunnel; discovering an IP never establishes Phux trust.
 @MainActor
 final class TailscaleSetupController: UITableViewController {
-    var received: ((String) -> Void)?
+    var received: ((String) -> Bool)?
     private let directory = EmbeddedTailnet(hostName: "phux-rune-ios")
     private var snapshot = TailnetSnapshot(phase: .starting)
     private var watching: Task<Void, Never>?
@@ -189,7 +189,7 @@ final class TailscaleSetupController: UITableViewController {
                 guard !Task.isCancelled, let self else { return }
                 SSHAccountPrompt.remember(username, for: peer)
                 OnboardingStatus.record(.codeReceived, peer: peer)
-                self.finishPairing(link)
+                self.finishPairing(link, peer: peer, username: username)
             } catch {
                 guard !Task.isCancelled else { return }
                 OnboardingStatus.record(.failed, peer: peer, failure: error)
@@ -200,7 +200,10 @@ final class TailscaleSetupController: UITableViewController {
     }
 
     private func showPairingFailure(_ error: Error, peer: TailnetPeer, username: String) {
-        let detail = Self.pairingFailure(error)
+        showPairingFailure(detail: Self.pairingFailure(error), peer: peer, username: username)
+    }
+
+    private func showPairingFailure(detail: String, peer: TailnetPeer, username: String) {
         message = detail
         let alert = SSHAccountPrompt.failure(peer: peer, message: detail, retry: { [weak self] in
             self?.confirmSSH(peer, username: username)
@@ -215,13 +218,18 @@ final class TailscaleSetupController: UITableViewController {
         else { show() }
     }
 
-    private func finishPairing(_ link: String) {
+    private func finishPairing(_ link: String, peer: TailnetPeer, username: String) {
         // Approval can finish while Safari covers this controller. Preserve
         // the code and return to explicit peer confirmation, not a hidden UI.
         let deliver = { [weak self] in
             guard let self else { return }
-            self.received?(link)
-            self.navigationController?.popViewController(animated: true)
+            if self.received?(link) == true {
+                self.navigationController?.popViewController(animated: true)
+            } else {
+                OnboardingStatus.record(.importFailed, peer: peer)
+                self.showPairingFailure(detail: "Rune received a pairing code but could not import it. No phone identity was enrolled. Try QR / paste or update Rune.",
+                    peer: peer, username: username)
+            }
         }
         if presentedViewController != nil { dismiss(animated: true, completion: deliver) }
         else { deliver() }

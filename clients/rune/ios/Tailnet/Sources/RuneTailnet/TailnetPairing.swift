@@ -30,6 +30,12 @@ public enum TailnetPairingError: Error, Sendable, Equatable, LocalizedError {
 }
 
 public enum TailnetPairing {
+    /// Bind an SSH pairing document to its authenticated netmap peer. The
+    /// returned link still requires the shared native credential importer.
+    public static func pairingLink(from document: Data, peer: TailnetPeer) throws -> String {
+        try PairingDocument.link(json: document, peer: peer)
+    }
+
     /// Discovery runs an embedded node, but connections use the installed
     /// system Tailscale VPN. A cellular CGNAT address is not sufficient.
     public static func hasSystemTunnel() -> Bool { SystemTailnet.isInterfaceUp() }
@@ -149,7 +155,7 @@ public enum TailnetPairing {
         guard let answer = PairingScripts.answer(in: paired.stdout) else {
             throw TailnetPairingError.invalidPairing
         }
-        return try PairingDocument.link(json: Data(answer.utf8), peer: peer)
+        return try pairingLink(from: Data(answer.utf8), peer: peer)
     }
 
     static func addressBytes(_ host: String) -> [UInt8]? {
