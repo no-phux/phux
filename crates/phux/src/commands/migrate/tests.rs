@@ -7,7 +7,9 @@ use super::{agent_argv, document, prompt};
 use crate::commands::{MigrateAgent, MigrateSource};
 
 fn fixture_home() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR")).join("src/commands/migrate/testdata/home")
+    // Read at run time: a compiled-in checkout path defeats the build cache.
+    PathBuf::from(std::env::var_os("CARGO_MANIFEST_DIR").expect("cargo sets CARGO_MANIFEST_DIR"))
+        .join("src/commands/migrate/testdata/home")
 }
 
 fn render(home: &Path, sources: &[super::sources::Source]) -> String {
