@@ -224,6 +224,9 @@ pub enum KernelError<E> {
         /// The declared kind.
         kind: ResourceKind,
     },
+    /// A typed document's bootstrap did not name its content type.
+    #[error("typed document bootstrap for {0} names no content type")]
+    UntypedDocument(ResourceId),
     /// An `AgentSession` stream payload was not well-formed JSONL.
     #[error("agent session stream failed: {0}")]
     AgentRecord(#[from] AgentRecordError),

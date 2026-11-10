@@ -260,7 +260,7 @@ impl Connection {
         if split.is_some() && only_split {
             self.pane_refusal("New pane bootstrap timed out. The other panes are still available; try splitting again.".to_owned())
         } else {
-            self.protocol_failure("terminal bootstrap staging timed out")
+            self.protocol_failure("bootstrap staging timed out")
         }
     }
 

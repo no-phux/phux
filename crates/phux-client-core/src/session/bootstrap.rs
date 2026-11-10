@@ -1,12 +1,11 @@
 //! Bootstrap staging: begin, chunk validation, limits, and READY.
 
 use super::{
-    AgentStream, BootstrapId, BootstrapStreamProfile, CanonicalGeometry, EffectBuffer,
-    EngineAdapter, GenerationId, HistoryCursor, KernelEffect, KernelError, KernelStatus,
-    MAX_BOOTSTRAP_STAGING_BYTES, MAX_BOOTSTRAP_STAGING_CHUNKS, ReplicaKey, ResourceId,
-    SessionKernel, Staging, StreamId, TombstoneReason, TombstoneRecord, generation_of,
-    mismatch_error, profile_matches, progressive_finish_missing, retained_engine_effect_bytes,
-    retired_error, staging_expired,
+    AgentStream, BootstrapId, BootstrapStreamProfile, CanonicalGeometry, DocumentStream,
+    EffectBuffer, EngineAdapter, GenerationId, HistoryCursor, KernelEffect, KernelError,
+    KernelStatus, MAX_BOOTSTRAP_STAGING_BYTES, ReplicaKey, ResourceId, SessionKernel, Staging,
+    StreamId, TombstoneReason, TombstoneRecord, generation_of, mismatch_error, profile_matches,
+    progressive_finish_missing, retained_engine_effect_bytes, retired_error, staging_expired,
 };
 
 impl<E: EngineAdapter> SessionKernel<E> {
@@ -126,6 +125,11 @@ impl<E: EngineAdapter> SessionKernel<E> {
             .agents
             .values()
             .filter_map(AgentStream::staged_accounting)
+            .chain(
+                self.documents
+                    .values()
+                    .filter_map(DocumentStream::staged_accounting),
+            )
         {
             bytes = bytes.checked_add(accepted_bytes)?;
             chunks = chunks.checked_add(accepted_chunks)?;
@@ -138,8 +142,7 @@ impl<E: EngineAdapter> SessionKernel<E> {
             bytes = bytes.checked_add(staging.accepted_bytes)?;
             chunks = chunks.checked_add(staging.accepted_chunks)?;
         }
-        (bytes <= MAX_BOOTSTRAP_STAGING_BYTES && chunks <= MAX_BOOTSTRAP_STAGING_CHUNKS)
-            .then_some((bytes, chunks))
+        super::staging_rules::within_staging_ceilings(bytes, chunks).then_some((bytes, chunks))
     }
 
     fn bootstrap_retained_bytes(&self) -> Option<usize> {
@@ -239,6 +242,10 @@ impl<E: EngineAdapter> SessionKernel<E> {
         effects: &mut EffectBuffer,
     ) {
         if let Some(stream) = self.agents.get_mut(terminal_id) {
+            stream.retire_for_limit(terminal_id, generation, effects);
+            return;
+        }
+        if let Some(stream) = self.documents.get_mut(terminal_id) {
             stream.retire_for_limit(terminal_id, generation, effects);
             return;
         }
