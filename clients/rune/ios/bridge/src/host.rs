@@ -309,6 +309,14 @@ pub unsafe extern "C" fn phux_rune_ios_paste(pointer: *mut c_void, pasted: *cons
 }
 
 #[unsafe(no_mangle)]
+pub unsafe extern "C" fn phux_rune_ios_path_changed(pointer: *mut c_void) {
+    attempt(|| {
+        mobile::path_changed(unsafe { host(pointer)? }.layer.runtime_mut());
+        Ok(())
+    });
+}
+
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn phux_rune_ios_zoom(pointer: *mut c_void, larger: bool) {
     attempt(|| {
         mobile::zoom(unsafe { host(pointer)? }.layer.runtime_mut(), larger);

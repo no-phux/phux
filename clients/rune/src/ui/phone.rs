@@ -23,6 +23,8 @@ const CHIP: TextStyle = TextStyle::new(16.0, 500.0);
 const TAB: TextStyle = TextStyle::new(14.0, 500.0);
 /// A round control: the 44-point touch target.
 const ROUND: f32 = 44.0;
+/// The top bar's capsule and the gap under it: where a banner starts.
+pub(super) const TOP_BAR: f32 = ROUND + 4.0 + 8.0;
 /// Room for the status bar, which Rune doesn't report on a phone yet.
 const STATUS_INSET: f32 = 12.0;
 

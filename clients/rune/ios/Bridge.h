@@ -43,6 +43,8 @@ void phux_rune_ios_touch(void *host, uint64_t identity, uint32_t phase,
                          double x, double y, double seconds);
 // Answers a frame's `paste` request with the system pasteboard's text.
 void phux_rune_ios_paste(void *host, const char *text);
+// The network path changed: rebind the connection and probe it now.
+void phux_rune_ios_path_changed(void *host);
 // One step of terminal text size, from a pinch.
 void phux_rune_ios_zoom(void *host, bool larger);
 void phux_rune_ios_active(void *host, bool active);

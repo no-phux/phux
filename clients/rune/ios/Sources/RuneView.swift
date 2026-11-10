@@ -1,5 +1,6 @@
 import UIKit
 import QuartzCore
+import Network
 
 @MainActor
 private final class DisplayTick: NSObject {
@@ -25,6 +26,9 @@ final class RuneView: UIView {
     private var identities: [ObjectIdentifier: UInt64] = [:]
     private var nextIdentity: UInt64 = 0
     private var drawableRetries = 0
+    private let path = NWPathMonitor()
+    private var pathSettled = false
+    private var pathWork: DispatchWorkItem?
     isolated deinit { close() }
 
     init(configuration: [String: Any]) {
@@ -53,6 +57,9 @@ final class RuneView: UIView {
         link.add(to: .main, forMode: .common)
         link.isPaused = true
         displayLink = link
+        let box = PathBox(); box.view = self
+        path.pathUpdateHandler = { _ in box.schedule() }
+        path.start(queue: DispatchQueue(label: "sh.phux.rune.path"))
     }
     @available(*, unavailable) required init?(coder: NSCoder) { fatalError() }
 
@@ -99,6 +106,21 @@ final class RuneView: UIView {
     }
 
     @objc private func preferencesChanged() { refresh() }
+
+    /// Wi-Fi to cellular, or the VPN coming up: tell the connection once the
+    /// burst of updates settles. The first update only reports the path the
+    /// connection was already dialed on.
+    func pathChanged() {
+        guard pathSettled else { pathSettled = true; return }
+        pathWork?.cancel()
+        let work = DispatchWorkItem { [weak self] in
+            guard let self, self.active else { return }
+            self.bridge?.pathChanged()
+            self.wake()
+        }
+        pathWork = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.4, execute: work)
+    }
 
     /// Text size by pinch, a step at a time so the terminal refits a few
     /// times over a gesture instead of on every frame of it.
@@ -192,6 +214,7 @@ final class RuneView: UIView {
     func close() {
         setActive(false)
         displayLink?.invalidate(); displayLink = nil
+        path.cancel(); pathWork?.cancel(); pathWork = nil
         editor.retire(); editor.resignFirstResponder()
         bridge?.close(); bridge = nil
     }

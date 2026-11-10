@@ -38,6 +38,13 @@ pub fn paste(rt: &mut rune::Runtime<State>, text: &str) {
     });
 }
 
+/// The host saw the network path change (Wi-Fi to cellular, a VPN coming
+/// up): move the connection to it and probe, instead of waiting out the
+/// quiet clock on a socket that may be dead.
+pub fn path_changed(rt: &mut rune::Runtime<State>) {
+    rt.update(|state, _| state.resume_link(None));
+}
+
 /// One step of text size from the host's pinch, kept like any other.
 pub fn zoom(rt: &mut rune::Runtime<State>, larger: bool) {
     use crate::keys::Shortcut;

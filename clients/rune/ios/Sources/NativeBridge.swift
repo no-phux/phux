@@ -8,6 +8,13 @@ final class WakeBox: @unchecked Sendable {
     func schedule() { DispatchQueue.main.async { [self] in view?.wake() } }
 }
 
+// Network path updates arrive on a private queue; like a wake, the weak
+// UIKit owner is read only after hopping to the main queue.
+final class PathBox: @unchecked Sendable {
+    weak var view: RuneView?
+    func schedule() { DispatchQueue.main.async { [self] in view?.pathChanged() } }
+}
+
 private let nativeWake: @convention(c) (UnsafeMutableRawPointer?) -> Void = { context in
     guard let context else { return }
     Unmanaged<WakeBox>.fromOpaque(context).takeUnretainedValue().schedule()
@@ -116,6 +123,7 @@ final class NativeBridge {
         phux_rune_ios_touch(pointer, identity, phase, point.x, point.y, seconds)
     }
     func paste(_ text: String) { text.withCString { phux_rune_ios_paste(pointer, $0) } }
+    func pathChanged() { phux_rune_ios_path_changed(pointer) }
     func zoom(larger: Bool) { phux_rune_ios_zoom(pointer, larger) }
     func active(_ active: Bool) { phux_rune_ios_active(pointer, active) }
     func traits(dark: Bool, reducedMotion: Bool) { phux_rune_ios_traits(pointer, dark, reducedMotion) }

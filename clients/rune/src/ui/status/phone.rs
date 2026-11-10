@@ -4,12 +4,11 @@
 
 use rune::El;
 
+use super::super::phone::TOP_BAR;
 use super::{Ink, TITLEBAR_H, action, server_behind};
 use crate::desk::Desk;
 use crate::desk::link::Standing;
 
-/// The phone's top bar, with the gap under it.
-const TOP_BAR: f32 = 56.0;
 /// A held confirmation on a phone, with the gap under it.
 const CONFIRMATION: f32 = 68.0;
 

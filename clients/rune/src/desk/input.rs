@@ -181,6 +181,7 @@ impl Desk {
     /// Ghostty does. Input the connection can't take now is said, not dropped
     /// quietly.
     pub(super) fn send_input(&mut self, send: impl FnOnce(&mut ControlPlane, &ResourceId) -> bool) {
+        self.stop_coast();
         let (Some(client), Some(shown)) = (self.client.clone(), &self.shown) else {
             return;
         };
