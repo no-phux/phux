@@ -286,7 +286,9 @@ exposes that tree to the OS through Rune's
 [accessibility](https://github.com/anomalyco/rune/tree/dev/crates/rune#accessibility)
 support, which is also how tools drive a real window now that Rune's strobe
 bridge is gone. Headless time does not synchronize phux's server workers;
-wait for the attached terminal before measuring an interaction.
+use `--realtime` against a live server so frames keep pace with replies,
+and wait for the attached terminal before measuring an interaction. Packaged
+desktop and phone qualification uses this wall-clock pacing.
 
 The resource smoke test also reads back a genuine Rune GPU frame containing
 PNG and JSON panes together. Export that frame and its native accessibility
