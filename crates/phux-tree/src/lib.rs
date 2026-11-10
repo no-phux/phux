@@ -16,6 +16,7 @@ use bytes::Bytes;
 use phux_core::ids::ResourceId;
 pub use phux_core::image::{ImageFormat, image_size};
 use phux_core::resource::ResourceKind;
+use phux_protocol::wire::frame::typed_document::is_textual;
 use phux_resource::{
     Delivery, LeaseChange, ResourceCore, ResourceCoreChannels, ResourceFacet, ResourceHandle,
     ResourceOps, ResourceOutput, WrongResourceKind,
@@ -93,10 +94,7 @@ impl DocumentKind for TypedDocument {
             }
         } else if essence == "application/json" {
             json(bytes)
-        } else if essence.starts_with("text/")
-            || essence.ends_with("+xml")
-            || essence.ends_with("+json")
-        {
+        } else if is_textual(&essence) {
             std::str::from_utf8(bytes)
                 .map(|_| ())
                 .map_err(|error| format!("a {essence} document is UTF-8: {error}"))

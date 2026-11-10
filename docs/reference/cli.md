@@ -333,7 +333,8 @@ Commands:
   follow    Write every document as it arrives.
   open      Open a document under the pane its producer runs in.
   publish   Replace the document from a file, or stdin.
-  snapshot  Write the newest document to a file, or stdout.
+  snapshot  Write the newest document to a file, or stdout: text with control
+            characters shown as signs, binary only into a pipe.
   help      Print this message or the help of the given subcommand(s)
 
 Flags:
@@ -406,7 +407,8 @@ Global flags:
 ## `phux agent doc snapshot`
 
 ```text
-Write the newest document to a file, or stdout.
+Write the newest document to a file, or stdout: text with control characters
+shown as signs, binary only into a pipe.
 
 Usage: phux agent doc snapshot [--out <PATH>] [--json] <TARGET>
 
@@ -1269,7 +1271,8 @@ Arguments:
   <TARGET>  The surface.
 
 Flags:
-      --out <PATH>     Where the image goes; stdout when absent.
+      --out <PATH>     Where the image goes; stdout when absent, unless stdout
+                       is a terminal.
       --json
   -h, --help           Print help
 
@@ -1329,7 +1332,7 @@ Commands:
             Accessibility, or AT-SPI on Linux.
   open      Open a tree under the pane its producer runs in.
   publish   Replace the tree's document from a file, or stdin.
-  snapshot  Print the tree's newest document.
+  snapshot  Print the tree's newest document, control characters shown as signs.
   help      Print this message or the help of the given subcommand(s)
 
 Flags:
@@ -1455,7 +1458,7 @@ Global flags:
 ## `phux agent tree snapshot`
 
 ```text
-Print the tree's newest document.
+Print the tree's newest document, control characters shown as signs.
 
 Usage: phux agent tree snapshot [--json] <TARGET>
 
@@ -6177,11 +6180,11 @@ against a pane another client is using.
 TARGET is a selector (see the top-level help); omit it for the
 most-recently-focused session.
 
-A TARGET that names a document resource by `@N` is read by its kind: an
-accessibility tree prints its JSON, as `phux agent tree snapshot` does; a typed
-document prints its content when it is text, and otherwise its size and type; a
-pixel surface needs `--out FILE`. A document read attaches as an observer while
-it reads. The screen flags apply to a terminal only.
+A TARGET that names a document resource by `@N` or `^key` is read by its kind:
+an accessibility tree prints its JSON, as `phux agent tree snapshot` does; a
+typed document prints its content when it is text, and otherwise its size and
+type; a pixel surface needs `--out FILE`. A document read attaches as an
+observer while it reads. The screen flags apply to a terminal only.
 
 Usage: phux snapshot [FLAGS] [TARGET]
 
@@ -6859,11 +6862,12 @@ Matching is against the lines as WRITTEN: rows the terminal soft-wrapped at its
 right edge are joined first, so text that straddles a wrap is found rather than
 silently never matching.
 
-A TARGET that names an accessibility tree or a text document by `@N` waits on
-its text instead, as each document arrives: `--until` matches a substring of the
-whole document, and `--regex` one line of it. `--tail`, `--output-only` and
-`--idle` apply to a terminal only, and a document that closes before it matches
-exits 1.
+A TARGET that names an accessibility tree or a text document by `@N` or `^key`
+waits on its text instead, as each document arrives: `--until` matches a
+substring of the whole document, and `--regex` one line of it. `--tail`,
+`--output-only` and `--idle` apply to a terminal only; a document wait needs
+`--until` or `--regex`, and a binary document or a surface is refused (exit 2).
+A document that closes before it matches exits 1.
 
 Flags may come before or after TARGET; a bare `--tail` reads the next word as N,
 so spell N out when TARGET follows it.

@@ -57,7 +57,7 @@ impl<E: EngineAdapter> SessionKernel<E> {
                 geometry,
                 base_seq,
             } => {
-                self.unsupported.remove(terminal_id);
+                self.lift_refusal(terminal_id);
                 if let Some(kind) = document_kind(profile) {
                     let generation = GenerationId {
                         stream_id,
