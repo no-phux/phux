@@ -46,6 +46,10 @@ impl Platform {
 #[serde(deny_unknown_fields)]
 pub struct Configuration {
     pub endpoint: String,
+    /// What the person calls this computer, from pairing. Only words: the
+    /// endpoint is what gets dialed.
+    #[serde(default)]
+    pub name: Option<String>,
     /// Relay SNI; also scopes the end-to-end authority handshake to its route.
     #[serde(default)]
     pub tls_server_name: Option<String>,
@@ -82,7 +86,16 @@ impl Configuration {
         });
         self.validate_credential_shapes()?;
         self.apply_relay_route(&mut target)?;
+        if let Some(name) = self.display_name() {
+            target.name = name.to_owned();
+        }
         Ok(target)
+    }
+
+    /// The computer's name when pairing gave one fit to show.
+    fn display_name(&self) -> Option<&str> {
+        let name = self.name.as_deref()?.trim();
+        (!name.is_empty() && !name.chars().any(char::is_control)).then_some(name)
     }
 
     fn apply_relay_route(&self, target: &mut Target) -> Result<(), String> {

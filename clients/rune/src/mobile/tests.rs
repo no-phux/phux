@@ -20,6 +20,7 @@ fn relay_configuration_rejects_invalid_sni_without_dropping_it() {
 fn config(endpoint: &str) -> Configuration {
     Configuration {
         endpoint: endpoint.into(),
+        name: None,
         tls_server_name: None,
         certificate_pin: None,
         token: None,
@@ -120,6 +121,33 @@ fn mobile_never_infers_remote_trust_or_a_local_cli() {
     assert!(!resolved.can_ensure());
     assert!(!resolved.missing_cli());
     assert!(resolved.ensured().phux.is_none());
+}
+
+#[test]
+fn a_paired_name_is_what_the_window_says_and_never_what_it_dials() {
+    let named = |name: serde_json::Value| -> Configuration {
+        serde_json::from_value(json!({"endpoint": "quic://localhost:8788", "name": name}))
+            .expect("a configuration")
+    };
+    let target = named(json!("  Phil's Mac mini ")).target().unwrap();
+    assert_eq!(target.name, "Phil's Mac mini");
+    assert_eq!(target.transport, Transport::Quic("localhost:8788".into()));
+    let paired = state(named(json!("mini"))).unwrap();
+    assert_eq!(paired.machines.label(), "mini");
+    let native = paired.native.as_ref().unwrap();
+    assert_eq!(
+        native.target.transport,
+        Transport::Quic("localhost:8788".into())
+    );
+    // Nothing fit to show leaves the endpoint to speak for itself.
+    for unnamed in [json!(null), json!(""), json!("   "), json!("mini\nrm -rf")] {
+        assert_eq!(named(unnamed).target().unwrap().name, "localhost:8788");
+    }
+    // Settings saved before pairing carried a name still open.
+    let saved: Configuration =
+        serde_json::from_value(json!({"endpoint": "quic://localhost:8788"})).unwrap();
+    assert_eq!(saved.name, None);
+    assert_eq!(state(saved).unwrap().machines.label(), "localhost:8788");
 }
 
 #[test]

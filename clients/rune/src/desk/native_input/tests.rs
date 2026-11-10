@@ -215,6 +215,7 @@ fn sanitized_paste_preserves_selection_and_undo_boundaries() {
 fn a_native_connection_replacement_keeps_its_host_and_trust() {
     let mut state = crate::mobile::state(crate::mobile::Configuration {
         endpoint: "quic://localhost:8788".into(),
+        name: None,
         tls_server_name: None,
         certificate_pin: Some("11".repeat(32)),
         token: Some("22".repeat(32)),
