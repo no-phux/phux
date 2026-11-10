@@ -13,7 +13,8 @@ use phux_terminal_api::actor::TerminalResource as _;
 use super::*;
 use crate::resource::ResourceKind;
 use crate::runtime::apps::{
-    FrameAdmission, ResourceApp, ResourceFrame, ResourceLaunch, ResourceSpawn, StreamBootstrap,
+    FrameAdmission, KindResume, ResourceApp, ResourceFrame, ResourceLaunch, ResourceSpawn,
+    StreamBootstrap, UpgradeCut,
 };
 use crate::runtime::connections::dispatch::FrameFlow;
 use crate::runtime::operation_dedupe::OperationClaim;
@@ -110,6 +111,14 @@ impl ResourceApp for TerminalApp {
 
     fn spawn<'a>(&'a self, spawn: ResourceSpawn<'a>) -> LocalBoxFuture<'a, ()> {
         super::super::attach::handle_spawn_terminal(spawn).boxed_local()
+    }
+
+    fn begin_upgrade(&self, _state: &SharedState) -> Option<Box<dyn UpgradeCut>> {
+        Some(Box::<super::super::upgrade::TerminalCut>::default())
+    }
+
+    fn resume(&self, state: &SharedState) -> Box<dyn KindResume> {
+        super::super::upgrade::resume(state)
     }
 
     fn resumed(&self, _state: &SharedState) {

@@ -1,6 +1,5 @@
 #![allow(clippy::unwrap_used, reason = "tests")]
 
-use super::super::handoff::*;
 use super::super::*;
 use super::support::*;
 use crate::runtime::apps::agent_session::upgrade::request_agent_session_cut;
@@ -106,7 +105,7 @@ async fn a_session_created_after_capture_aborts_the_upgrade() {
         context.listener_fd,
         context.listener_fd,
         &context.tree_identity,
-        &UpgradeHandoffs::default(),
+        &[],
     );
     assert!(matches!(outcome, Err(UpgradeError::TreeChanged)));
 }
@@ -147,11 +146,7 @@ async fn upgrade_carries_agent_sessions_with_their_id_and_log_tail() {
             let resumed = SharedState::new();
             let watchers = resumed
                 .with_mut(|s| {
-                    s.rebuild_from_blob(
-                        &blob,
-                        crate::runtime::apps::terminal::upgrade::unwired,
-                        crate::runtime::apps::rebuild_session,
-                    )
+                    crate::runtime::apps::terminal::test_support::rebuild_unwired(s, &blob)
                 })
                 .expect("rebuild")
                 .exit_watchers;

@@ -155,6 +155,8 @@ A kind supplies:
 
 - its state and a codec for it (VT bytes, a record, a whole document);
 - the frames and commands it owns, through its `ResourceApp`;
+- what of it crosses `phux upgrade`, which the same app writes into the
+  upgrade blob at the cut and rebuilds on resume;
 - its row in the kind catalog (`KindSpec`): gate, methods, events and
   metadata keys;
 - its geometry, in its own units: cells for a Terminal, the newest image's
@@ -279,9 +281,6 @@ Each gap below holds on current `main`:
 - **Clients.** The terminal UI shows a non-terminal pane as a placeholder
   tile, not its content ([clients](./clients.md)). phux-web drops document
   publications (`phux-rbz0y.10`).
-- **Upgrade.** Terminals, agent sessions and documents cross `phux upgrade`
-  through separate paths in the upgrade blob, not through `ResourceApp`
-  (`phux-rbz0y.13`).
 
 ## History
 
