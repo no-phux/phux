@@ -26,7 +26,9 @@ A session's arrangement can also hold a document, window mirror,
 accessibility tree, or agent pane that another client placed there
 ([resource kinds](./resource-kinds.md)). The terminal UI shows each as a
 tile naming its kind and title; it can take focus, but typing there does
-nothing and the tile is never resized.
+nothing and the tile is never resized. Killing such a pane, or a tab
+holding one, only closes its view: the resource and its producer keep
+running, and `reopen-views` shows a hidden document again.
 
 [Getting started](./getting-started.md) covers this client.
 <kbd>C-a</kbd> <kbd>S</kbd> opens settings, which edit your config file;

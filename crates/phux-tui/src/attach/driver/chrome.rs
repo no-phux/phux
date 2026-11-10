@@ -925,7 +925,7 @@ mod tests {
                 sidebar_painter: Some(painter),
                 session_name: "",
                 theme: &theme,
-                resources: &[],
+                leaves: &crate::attach::surface_leaf::LeafBook::default(),
             };
             let scene = PaneScene {
                 workspace: &workspace,

@@ -252,7 +252,7 @@ mod tests {
             sidebar_painter,
             session_name: "alpha",
             theme: &Theme::default(),
-            resources: &[],
+            leaves: &crate::attach::surface_leaf::LeafBook::default(),
         };
         compose_full_frame_cells(
             &chrome,

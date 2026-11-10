@@ -10,7 +10,7 @@ use phux_protocol::wire::frame::{FrameKind, ViewportInfo};
 
 use crate::attach::connection::Connection;
 use crate::attach::outcome::AttachError;
-use crate::attach::pane_state::AttachKernel;
+use crate::attach::surface_leaf::SurfaceLeaves;
 use crate::layout::{ArrangementDoc, LayoutState};
 
 use super::session_io::send_unless_peer_gone;
@@ -43,7 +43,7 @@ pub(super) fn view_rects(
 )]
 pub(super) async fn emit_view_reflow(
     conn: &mut Connection,
-    kernel: &AttachKernel,
+    leaves: SurfaceLeaves<'_>,
     workspace: &ArrangementDoc,
     zoomed: Option<&ResourceId>,
     prev_rects: &HashMap<ResourceId, crate::layout::Rect>,
@@ -53,7 +53,7 @@ pub(super) async fn emit_view_reflow(
     let Some(ls) = workspace.render_group(zoomed) else {
         return Ok(());
     };
-    emit_layout_reflow(conn, kernel, ls.as_ref(), prev_rects, content, cell_px).await
+    emit_layout_reflow(conn, leaves, ls.as_ref(), prev_rects, content, cell_px).await
 }
 
 /// Emit `RESIZE_TERMINAL` for each pane whose painted tile changed size
@@ -66,7 +66,7 @@ pub(super) async fn emit_view_reflow(
 )]
 pub(super) async fn emit_moved_tiles(
     conn: &mut Connection,
-    kernel: &AttachKernel,
+    leaves: SurfaceLeaves<'_>,
     prev_rects: &HashMap<ResourceId, crate::layout::Rect>,
     rects: &HashMap<ResourceId, crate::layout::Rect>,
     cell_px: Option<(u16, u16)>,
@@ -75,7 +75,7 @@ pub(super) async fn emit_moved_tiles(
         let moved = prev_rects
             .get(terminal_id)
             .is_none_or(|prev| (prev.w, prev.h) != (rect.w, rect.h));
-        if !moved || rect.w == 0 || rect.h == 0 || !resizable(conn, kernel, terminal_id) {
+        if !moved || rect.w == 0 || rect.h == 0 || !resizable(conn, leaves, terminal_id) {
             continue;
         }
         conn.send(&FrameKind::ResizeTerminal {
@@ -97,7 +97,7 @@ pub(super) async fn emit_moved_tiles(
 )]
 pub(super) async fn emit_bootstrap_workspace_reflow(
     conn: &mut Connection,
-    kernel: &AttachKernel,
+    leaves: SurfaceLeaves<'_>,
     workspace: &ArrangementDoc,
     zoomed: Option<&ResourceId>,
     content: crate::layout::Rect,
@@ -108,7 +108,7 @@ pub(super) async fn emit_bootstrap_workspace_reflow(
         if index == workspace.active {
             emit_view_reflow(
                 conn,
-                kernel,
+                leaves,
                 workspace,
                 zoomed,
                 &no_previous_rects,
@@ -118,7 +118,7 @@ pub(super) async fn emit_bootstrap_workspace_reflow(
             .await?;
         } else {
             let previous = &no_previous_rects;
-            emit_layout_reflow(conn, kernel, &window.state, previous, content, cell_px).await?;
+            emit_layout_reflow(conn, leaves, &window.state, previous, content, cell_px).await?;
         }
     }
     Ok(())
@@ -131,7 +131,7 @@ pub(super) async fn emit_bootstrap_workspace_reflow(
 )]
 async fn emit_layout_reflow(
     conn: &mut Connection,
-    kernel: &AttachKernel,
+    leaves: SurfaceLeaves<'_>,
     layout: &LayoutState,
     prev_rects: &HashMap<ResourceId, crate::layout::Rect>,
     content: crate::layout::Rect,
@@ -149,7 +149,7 @@ async fn emit_layout_reflow(
         // A leaf a persisted layout names before its ATTACH_RESOURCE is
         // confirmed has no QUIC stream yet, and may name a pane that died
         // with a previous server. It is sized once its stream binds.
-        if !resizable(conn, kernel, terminal_id) {
+        if !resizable(conn, leaves, terminal_id) {
             tracing::debug!(
                 ?terminal_id,
                 "reflow: skipping a leaf with no terminal stream"
@@ -172,9 +172,8 @@ async fn emit_layout_reflow(
 
 /// Whether `RESIZE_TERMINAL` may name `terminal_id`: a routable stream that
 /// is not a document or surface leaf (whose geometry is its own).
-fn resizable(conn: &Connection, kernel: &AttachKernel, terminal_id: &ResourceId) -> bool {
-    conn.can_route_terminal(terminal_id)
-        && !crate::attach::surface_leaf::is_surface_leaf(kernel, terminal_id)
+fn resizable(conn: &Connection, leaves: SurfaceLeaves<'_>, terminal_id: &ResourceId) -> bool {
+    conn.can_route_terminal(terminal_id) && !leaves.contains(terminal_id)
 }
 
 /// A `VIEWPORT_RESIZE` frame for `viewport`.
@@ -254,6 +253,7 @@ pub(super) fn current_viewport() -> Result<ViewportInfo, AttachError> {
 #[allow(clippy::expect_used, reason = "tests")]
 mod tests {
     use super::*;
+    use crate::attach::surface_leaf::LeafBook;
     use tokio::net::UnixStream;
 
     /// A restored workspace reflow must include off-screen windows. They are
@@ -278,12 +278,13 @@ mod tests {
         workspace.active_group_mut().expect("window").tree = Some(tree);
         workspace.add_group("2".to_owned(), second.clone());
         workspace.select(0);
-        let (mut kernel, ..) = crate::attach::pane_state::published_test_state(&[]);
-        crate::attach::surface_leaf::declare_document(
-            &mut kernel,
-            &document,
-            phux_protocol::BootstrapStreamProfile::DocumentTypedV1,
-        );
+        // The graph names it; no document bootstrap reaches this client.
+        let (kernel, ..) = crate::attach::pane_state::published_test_state(&[]);
+        let mut book = LeafBook::default();
+        book.learn(&[phux_protocol::wire::info::ResourceInfo::resource(
+            document.clone(),
+            phux_protocol::ResourceKind::Document,
+        )]);
 
         let viewport = (100, 30);
         let content = crate::layout::Rect {
@@ -298,7 +299,7 @@ mod tests {
         let (sent, received) = tokio::join!(
             emit_bootstrap_workspace_reflow(
                 &mut client,
-                &kernel,
+                SurfaceLeaves::new(&kernel, &book),
                 &workspace,
                 None,
                 content,
@@ -369,9 +370,10 @@ mod tests {
         drop(server);
 
         let (kernel, ..) = crate::attach::pane_state::published_test_state(&[]);
+        let book = LeafBook::default();
         emit_view_reflow(
             &mut client,
-            &kernel,
+            SurfaceLeaves::new(&kernel, &book),
             &workspace,
             None,
             &HashMap::new(),

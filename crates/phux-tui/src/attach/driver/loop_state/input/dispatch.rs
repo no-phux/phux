@@ -22,6 +22,7 @@ impl super::super::SessionLoop {
         let mut ctx = DispatchCtx {
             control_dial: self.control_dial.as_deref(),
             engine_kernel: &mut self.mirror.engine_kernel,
+            leaves: &self.mirror.leaves,
             resolver: self.settings.resolver.as_mut(),
             focus_history: self.focus_history.clone(),
             workspace: &mut self.mirror.workspace,

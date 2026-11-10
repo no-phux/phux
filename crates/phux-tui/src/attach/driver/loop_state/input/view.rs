@@ -93,7 +93,7 @@ impl super::super::SessionLoop {
         // in place like a published pane.
         let kernel = &self.mirror.engine_kernel;
         let level = super::classify_repaint(&prior.rects, &after, |id| {
-            crate::attach::surface_leaf::is_surface_leaf(kernel, id)
+            self.mirror.surface_leaves().contains(id)
                 || (self.mirror.panes.contains_key(id)
                     && crate::attach::pane_state::published_terminal(kernel, id).is_some())
         });
@@ -134,7 +134,7 @@ impl super::super::SessionLoop {
         if self.mirror.zoomed != prior.zoomed || sidebar != prior.sidebar {
             emit_view_reflow(
                 conn,
-                &self.mirror.engine_kernel,
+                self.mirror.surface_leaves(),
                 &self.mirror.workspace,
                 self.mirror.zoomed.as_ref(),
                 &prior.rects,
@@ -156,8 +156,8 @@ impl super::super::SessionLoop {
                 self.content(sidebar),
                 self.viewport_dims,
             );
-            let kernel = &self.mirror.engine_kernel;
-            emit_moved_tiles(conn, kernel, &prior.rects, &rects, self.resize_cell_px).await?;
+            let leaves = self.mirror.surface_leaves();
+            emit_moved_tiles(conn, leaves, &prior.rects, &rects, self.resize_cell_px).await?;
         }
         Ok(())
     }

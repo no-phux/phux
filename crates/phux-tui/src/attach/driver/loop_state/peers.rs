@@ -216,7 +216,7 @@ impl super::SessionLoop {
     ) -> Result<(), AttachError> {
         emit_view_reflow(
             conn,
-            &self.mirror.engine_kernel,
+            self.mirror.surface_leaves(),
             &self.mirror.workspace,
             self.mirror.zoomed.as_ref(),
             prev_rects,

@@ -18,6 +18,7 @@ use super::engine_route::{KernelRoute, is_terminal, route_engine_frame};
 use super::index::{AgentMetaIndex, note_agent_change};
 use super::outcome::{FrameOutcome, frame_kind_label, input_authority_notice, pane_label};
 use crate::attach::session_mirror::SessionMirror;
+use crate::attach::surface_leaf::{LeafBook, SurfaceLeaves};
 
 mod attached;
 mod closed;
@@ -113,6 +114,8 @@ struct FrameCtx<'a, W: crate::attach::RenderSink> {
     pending_resource_ops: &'a mut HashMap<u32, ResourceId>,
     // ADR-0040 `phux.agent/v1` index, read when composing window labels.
     agent_meta: &'a mut AgentMetaIndex,
+    // Non-Terminal resources the server's graph named.
+    leaves: &'a mut LeafBook,
     // An overlay is on top: mirrors keep ingesting, stdout paints are
     // suppressed; the driver repaints on dismiss.
     overlay_active: bool,
@@ -129,7 +132,21 @@ impl<W: crate::attach::RenderSink> FrameCtx<'_, W> {
     /// path; as layout leaves they tile a placeholder. Unknown ids still take
     /// the strict Terminal validation path.
     fn is_non_terminal(&self, terminal_id: &ResourceId) -> bool {
-        crate::attach::surface_leaf::is_surface_leaf(self.engine_kernel, terminal_id)
+        self.surface_leaves().contains(terminal_id)
+    }
+
+    /// Whether this client already streams `terminal_id` as a non-Terminal
+    /// (an agent record or a document bootstrap): its lifecycle is no peer's
+    /// pane-set change.
+    fn holds_stream_of(&self, terminal_id: &ResourceId) -> bool {
+        self.engine_kernel
+            .resource_kind(terminal_id)
+            .is_some_and(|kind| kind != phux_protocol::ResourceKind::Terminal)
+    }
+
+    /// The graph's and the kernel's word on which leaves are not Terminals.
+    const fn surface_leaves(&self) -> SurfaceLeaves<'_> {
+        SurfaceLeaves::new(self.engine_kernel, self.leaves)
     }
 }
 
@@ -169,6 +186,7 @@ pub(in crate::attach) fn handle_server_frame<W: crate::attach::RenderSink>(
         expected_closes,
         pending_resource_ops,
         agent_meta,
+        leaves,
     } = mirror;
     let FrameEnv {
         focused_session,
@@ -223,6 +241,7 @@ pub(in crate::attach) fn handle_server_frame<W: crate::attach::RenderSink>(
         expected_closes,
         pending_resource_ops,
         agent_meta,
+        leaves,
         overlay_active,
         defer_paint,
         frame_span: &frame_span,

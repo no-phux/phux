@@ -75,7 +75,7 @@ impl<W: crate::attach::RenderSink> EventEnv<'_, '_, W> {
         let Some(pane) = self.input_target() else {
             return false;
         };
-        if crate::attach::surface_leaf::is_surface_leaf(self.ctx.engine_kernel, &pane) {
+        if self.ctx.is_surface_leaf(&pane) {
             return false;
         }
         let bracketed = published_terminal(self.ctx.engine_kernel, &pane)
@@ -135,13 +135,17 @@ impl<W: crate::attach::RenderSink> EventEnv<'_, '_, W> {
         event: InputEvent,
         acknowledged: bool,
     ) -> Result<(), AttachError> {
-        // A document or surface leaf takes no terminal input, and a resource
-        // with no stream to carry it (one never bound under QUIC) would fail
-        // the send: either way the event is dropped, not fatal.
-        if crate::attach::surface_leaf::is_surface_leaf(self.ctx.engine_kernel, &pane)
-            || !self.conn.can_route_terminal(&pane)
-        {
-            tracing::debug!(terminal = ?pane, "dropping input: not a routable terminal");
+        // A document or surface leaf takes no terminal input: typing there
+        // is a no-op.
+        if self.ctx.is_surface_leaf(&pane) {
+            tracing::debug!(terminal = ?pane, "dropping input: a placeholder leaf");
+            return Ok(());
+        }
+        // A Terminal with no stream to carry it yet (attach unconfirmed under
+        // QUIC) would fail the send: drop the event, audibly, not fatally.
+        if !self.conn.can_route_terminal(&pane) {
+            tracing::debug!(terminal = ?pane, "dropping input: the pane has no stream yet");
+            let _ = crate::attach::actions::write_bell(self.out);
             return Ok(());
         }
         let Some(journal) = self.ctx.input_replay else {

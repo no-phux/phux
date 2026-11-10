@@ -174,7 +174,7 @@ fn paint_bar(painter: &mut StatusBarPainter, cols: u16, out: &mut Vec<u8>) -> St
         sidebar_painter: None,
         session_name: "demo",
         theme: &theme,
-        resources: &[],
+        leaves: &crate::attach::surface_leaf::LeafBook::default(),
     };
     paint_bar_after_pane(out, &mut chrome, None, None, false)
 }
@@ -824,7 +824,7 @@ fn shipped_frame_rows(
         sidebar_painter: Some(&mut sidebar_painter),
         session_name: "phux",
         theme: &theme,
-        resources: &[],
+        leaves: &crate::attach::surface_leaf::LeafBook::default(),
     };
     paint_full_frame(
         &mut out,
@@ -974,7 +974,7 @@ fn overlay_frame(overlay: Box<dyn RenderOverlay>, with_painter: bool) -> (Vec<St
         sidebar_painter: with_painter.then_some(&mut sidebar_painter),
         session_name: "probe",
         theme: &theme,
-        resources: &[],
+        leaves: &crate::attach::surface_leaf::LeafBook::default(),
     };
     paint_active_overlay(
         &mut out,

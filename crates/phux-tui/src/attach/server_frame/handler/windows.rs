@@ -13,8 +13,8 @@ use super::replies::open_window;
 use crate::attach::actions;
 use crate::attach::actions::{Adopt, ParkedAdopt, PendingWindow, SpawnedPane};
 use crate::attach::outcome::AttachError;
-use crate::attach::pane_state::{AttachKernel, PaneSlot};
-use crate::attach::surface_leaf::is_surface_leaf;
+use crate::attach::pane_state::PaneSlot;
+use crate::attach::surface_leaf::SurfaceLeaves;
 use crate::layout::{ArrangementDoc, LayoutState};
 
 /// Apply a `RESOURCE_SPAWNED` reply for a parked `new-window`: append an
@@ -88,7 +88,7 @@ pub(super) fn layout_key_scope_session(scope: &Scope, key: &str) -> Option<Layou
 pub(super) fn layout_names_only_absent_panes(
     incoming: &ArrangementDoc,
     panes: &HashMap<ResourceId, PaneSlot>,
-    kernel: &AttachKernel,
+    surface: SurfaceLeaves<'_>,
 ) -> bool {
     let mut leaves = incoming
         .groups
@@ -97,7 +97,7 @@ pub(super) fn layout_names_only_absent_panes(
         .flat_map(crate::layout::leaves)
         .peekable();
     leaves.peek().is_some()
-        && leaves.all(|leaf| !panes.contains_key(&leaf) && !is_surface_leaf(kernel, &leaf))
+        && leaves.all(|leaf| !panes.contains_key(&leaf) && !surface.contains(&leaf))
 }
 
 /// Leaves this client holds no pane for and must attach. A known
@@ -106,14 +106,14 @@ pub(super) fn layout_names_only_absent_panes(
 pub(super) fn unknown_layout_leaves(
     incoming: &ArrangementDoc,
     panes: &HashMap<ResourceId, PaneSlot>,
-    kernel: &AttachKernel,
+    surface: SurfaceLeaves<'_>,
 ) -> Vec<ResourceId> {
     incoming
         .groups
         .iter()
         .filter_map(|window| window.state.tree.as_ref())
         .flat_map(crate::layout::leaves)
-        .filter(|leaf| !panes.contains_key(leaf) && !is_surface_leaf(kernel, leaf))
+        .filter(|leaf| !panes.contains_key(leaf) && !surface.contains(leaf))
         .collect()
 }
 

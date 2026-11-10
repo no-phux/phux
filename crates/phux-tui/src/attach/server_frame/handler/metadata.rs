@@ -77,7 +77,7 @@ pub(super) fn handle_metadata_value<W: crate::attach::RenderSink>(
         });
     };
     match ArrangementDoc::decode_cbor(&bytes) {
-        Ok(new_ws) if layout_names_only_absent_panes(&new_ws, ctx.panes, ctx.engine_kernel) => {
+        Ok(new_ws) if layout_names_only_absent_panes(&new_ws, ctx.panes, ctx.surface_leaves()) => {
             tracing::debug!(
                 "persisted layout names only panes absent from the snapshot; discarding"
             );
@@ -277,7 +277,7 @@ fn adopt_workspace<W: crate::attach::RenderSink>(
     let reconciled =
         reconcile_loaded_workspace(incoming, ctx.workspace, ctx.focused_resource.as_ref());
     *ctx.workspace = reconciled;
-    let attach_panes = unknown_layout_leaves(ctx.workspace, ctx.panes, ctx.engine_kernel);
+    let attach_panes = unknown_layout_leaves(ctx.workspace, ctx.panes, ctx.surface_leaves());
     *ctx.focused_resource = ctx.workspace.active_group().and_then(|ls| ls.focus.clone());
     attach_panes
 }

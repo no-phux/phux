@@ -615,7 +615,8 @@ fn paint_full_frame_into<W: Write>(
             );
         }
     }
-    super::surface_leaf::paint_placeholders(out, &multi.rects, kernel, chrome.resources);
+    let leaves = super::surface_leaf::SurfaceLeaves::new(kernel, chrome.leaves);
+    super::surface_leaf::paint_placeholders(out, &multi.rects, leaves);
     let panes_ref = &*panes;
     let _ = crate::render::chrome::dividers::render_dividers(
         out,
@@ -1247,7 +1248,7 @@ mod tests {
             sidebar_painter: None,
             session_name: "parked",
             theme: &theme,
-            resources: &[],
+            leaves: &crate::attach::surface_leaf::LeafBook::default(),
         };
         let _ = paint_empty_session(&mut out, &mut chrome, &lines);
         let text = String::from_utf8_lossy(&out);
@@ -1502,7 +1503,7 @@ mod tests {
             sidebar_painter: strip,
             session_name: "demo",
             theme: &theme,
-            resources: &[],
+            leaves: &crate::attach::surface_leaf::LeafBook::default(),
         };
         paint_full_frame(
             out,
@@ -1685,7 +1686,7 @@ mod tests {
             sidebar_painter: None,
             session_name: "demo",
             theme: &theme,
-            resources: &[],
+            leaves: &crate::attach::surface_leaf::LeafBook::default(),
         };
         paint_bar_after_pane(&mut out, &mut chrome, cursor, fallback, clobbered);
         String::from_utf8_lossy(&out).into_owned()
@@ -1745,7 +1746,7 @@ mod tests {
             sidebar_painter: Some(strip),
             session_name: "demo",
             theme: &theme,
-            resources: &[],
+            leaves: &crate::attach::surface_leaf::LeafBook::default(),
         };
         let (kernel, _effects, _panes) = published_test_state(&[]);
         paint_chrome_in_place(
