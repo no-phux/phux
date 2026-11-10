@@ -222,6 +222,30 @@ impl DocumentStream {
         }
     }
 
+    /// A cut in a codec this build cannot decode replaces the stream: the
+    /// cut in flight, the published generation, and the refused one are
+    /// fenced, so their late frames stay fenced once a known bootstrap lifts
+    /// the refusal.
+    pub(super) fn fence_for_unknown_codec(&mut self, generation: GenerationId, base_seq: u64) {
+        let replaced = |last_valid_seq| TombstoneRecord {
+            reason: TombstoneReason::ExplicitReattach,
+            last_valid_seq,
+        };
+        if let Some(cut) = self.staging.take() {
+            self.retired
+                .entry(cut.generation)
+                .or_insert_with(|| replaced(cut.base_seq));
+        }
+        if let Some((published, last_seq)) = self.published.take() {
+            self.retired
+                .entry(published)
+                .or_insert_with(|| replaced(last_seq));
+        }
+        self.retired
+            .entry(generation)
+            .or_insert_with(|| replaced(base_seq));
+    }
+
     fn publication(
         &self,
         resource_id: &ResourceId,

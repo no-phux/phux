@@ -82,6 +82,7 @@ pub(super) async fn spawn_agent_session(spawn: ResourceSpawn<'_>) {
         root_token,
         limits: bootstrap_limits,
         connection_token,
+        decodes,
         ..
     } = spawn;
     let Some(provider) = resource.provider.as_deref().filter(|p| !p.is_empty()) else {
@@ -199,19 +200,22 @@ pub(super) async fn spawn_agent_session(spawn: ResourceSpawn<'_>) {
         }))
         .await;
     // The subscription alone forwards nothing: run the (empty) bootstrap and
-    // live pump the `ATTACH_RESOURCE` path runs.
-    let _ = attach_agent_session(
-        state,
-        client_id,
-        &wire_session,
-        core_session,
-        &bundle.handle,
-        out_tx,
-        bootstrap_limits,
-        connection_token,
-        None,
-    )
-    .await;
+    // live pump the `ATTACH_RESOURCE` path runs. One whose `HELLO` does not
+    // list the kind stays its producer, streamed nothing.
+    if decodes.contains(phux_protocol::ids::ResourceKind::AgentSession) {
+        let _ = attach_agent_session(
+            state,
+            client_id,
+            &wire_session,
+            core_session,
+            &bundle.handle,
+            out_tx,
+            bootstrap_limits,
+            connection_token,
+            None,
+        )
+        .await;
+    }
     debug!(
         ?client_id,
         request_id,

@@ -45,6 +45,7 @@ mod output;
 mod queries;
 mod replicas;
 mod staging_rules;
+mod unsupported;
 mod update;
 
 pub use document_stream::DocumentLane;
@@ -221,6 +222,9 @@ pub struct SessionKernel<E: EngineAdapter> {
     documents: HashMap<ResourceId, DocumentStream>,
     /// `AgentSession` resources: record streams without replicas.
     agents: HashMap<ResourceId, AgentStream>,
+    /// Resources whose stream codec this build does not know; their stream
+    /// frames are ignored until a known `BOOTSTRAP_BEGIN` or a close.
+    unsupported: HashSet<ResourceId>,
     /// Last controller views for closed native sources, readable but unavailable.
     closed_native_views: HashMap<ResourceId, phux_protocol::native_agent::NativeView>,
     closed: HashSet<ResourceId>,
@@ -285,6 +289,7 @@ impl<E: EngineAdapter> SessionKernel<E> {
             kinds: HashMap::new(),
             documents: HashMap::new(),
             agents: HashMap::new(),
+            unsupported: HashSet::new(),
             closed_native_views: HashMap::new(),
             closed: HashSet::new(),
             exit_reported: HashSet::new(),
@@ -425,6 +430,19 @@ fn retired_error<E>(terminal_id: &ResourceId, generation: GenerationId) -> Kerne
     }
 }
 
+/// The resource kinds this kernel decodes, for a host's `HELLO`.
+///
+/// A kind gains its bit here with its decoder; a host that draws fewer
+/// kinds lists fewer in `RESOURCE_KINDS`.
+pub const KERNEL_RESOURCE_KINDS: phux_protocol::caps::ResourceKindSet =
+    phux_protocol::caps::ResourceKindSet::with(&[
+        ResourceKind::Terminal,
+        ResourceKind::AgentSession,
+        ResourceKind::AccessibilityTree,
+        ResourceKind::PixelSurface,
+        ResourceKind::Document,
+    ]);
+
 /// Whether a stream profile names the `AgentSession` record codec. Such a
 /// stream is legal under every connection profile: it carries no engine
 /// checkpoint and no VT, so profile negotiation does not constrain it.
@@ -482,3 +500,6 @@ mod property_tests;
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod unsupported_tests;

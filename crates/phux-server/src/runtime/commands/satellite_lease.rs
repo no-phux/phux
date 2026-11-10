@@ -130,11 +130,18 @@ pub(super) async fn relay_satellite_attach(
     let needs_kind_for_profile = ctx
         .profile
         .is_none_or(|profile| relay.needs_kind_for_profile(profile));
-    if kind.is_none() && (cursor || needs_kind_for_profile) {
+    let kinds = ctx.client_caps.resource_kinds;
+    let narrowed = !kinds.includes(phux_protocol::caps::ResourceKindSet::all());
+    if kind.is_none() && (cursor || needs_kind_for_profile || narrowed) {
         kind = Some(match relay.resource_kind(target.terminal).await {
             Ok(kind) => kind,
             Err(refusal) => return refusal,
         });
+    }
+    if let Some(kind) = kind
+        && !kinds.contains(kind)
+    {
+        return super::dispatch::undecodable_kind(kind);
     }
     if cursor && kind != Some(phux_protocol::ids::ResourceKind::AgentSession) {
         return invalid_agent_cursor();

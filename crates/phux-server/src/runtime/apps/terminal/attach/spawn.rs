@@ -58,6 +58,7 @@ pub(crate) async fn handle_spawn_terminal(spawn: ResourceSpawn<'_>) {
         connection_token,
         output_pumps,
         defer_subscription,
+        decodes,
     } = spawn;
     let SpawnLaunch {
         group,
@@ -76,6 +77,17 @@ pub(crate) async fn handle_spawn_terminal(spawn: ResourceSpawn<'_>) {
         operation_id: resource.idempotency_key,
         retain_secs: state.with(|s| s.retain_policy().resolve(resource.retain_secs)),
     };
+    // The spawner consumes the new Terminal's stream.
+    if !decodes.contains(phux_protocol::ids::ResourceKind::Terminal) {
+        let _ = out_tx
+            .send(Outbound::Frame(FrameKind::Error {
+                request_id: Some(request_id),
+                code: ErrorCode::CodecUnavailable,
+                message: "this connection's HELLO does not list the terminal resource kind, so it cannot consume its stream".to_owned(),
+            }))
+            .await;
+        return;
+    }
     // A Terminal takes no parent (ADR-0104 §5).
     if resource.parent.is_some() {
         refuse_spawn(out_tx, request_id, SpawnError::ParentKindMismatch).await;

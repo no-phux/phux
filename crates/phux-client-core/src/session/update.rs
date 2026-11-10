@@ -23,7 +23,27 @@ impl<E: EngineAdapter> SessionKernel<E> {
         effects: &mut EffectBuffer,
     ) -> Result<(), KernelError<E::Error>> {
         effects.clear();
+        if self.is_refused_stream_frame(&input) {
+            return Ok(());
+        }
         match input {
+            KernelInput::BootstrapBegin {
+                terminal_id,
+                stream_id,
+                bootstrap_id,
+                profile: BootstrapStreamProfile::Unknown { codec_tag },
+                base_seq,
+                ..
+            } => self.refuse_unknown_codec(
+                terminal_id,
+                GenerationId {
+                    stream_id,
+                    bootstrap_id,
+                },
+                codec_tag,
+                base_seq,
+                effects,
+            ),
             KernelInput::AttachStarted {
                 attach_id,
                 terminals,
@@ -37,6 +57,7 @@ impl<E: EngineAdapter> SessionKernel<E> {
                 geometry,
                 base_seq,
             } => {
+                self.lift_refusal(terminal_id);
                 if let Some(kind) = document_kind(profile) {
                     let generation = GenerationId {
                         stream_id,

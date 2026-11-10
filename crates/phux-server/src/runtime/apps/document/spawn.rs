@@ -62,6 +62,7 @@ pub(crate) async fn spawn_document<A: DocumentApi>(spawn: ResourceSpawn<'_>) {
         root_token,
         limits: bootstrap_limits,
         connection_token,
+        decodes,
         ..
     } = spawn;
 
@@ -132,17 +133,20 @@ pub(crate) async fn spawn_document<A: DocumentApi>(spawn: ResourceSpawn<'_>) {
         }))
         .await;
     // The spawner watches its own document: run the (empty) bootstrap and
-    // the live pump the `ATTACH_RESOURCE` path runs.
-    let _ = attach_document::<A>(
-        state,
-        client_id,
-        &wire_doc,
-        core_doc,
-        &bundle.handle,
-        out_tx,
-        bootstrap_limits,
-        connection_token,
-    )
-    .await;
+    // the live pump the `ATTACH_RESOURCE` path runs. One whose `HELLO` does
+    // not list the kind stays its producer, streamed nothing.
+    if decodes.contains(A::WIRE_KIND) {
+        let _ = attach_document::<A>(
+            state,
+            client_id,
+            &wire_doc,
+            core_doc,
+            &bundle.handle,
+            out_tx,
+            bootstrap_limits,
+            connection_token,
+        )
+        .await;
+    }
     debug!(?client_id, request_id, resource = %wire_doc, kind = A::LABEL, target, "SPAWN_RESOURCE: document bound to its parent");
 }

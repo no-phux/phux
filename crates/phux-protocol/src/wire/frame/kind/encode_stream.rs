@@ -45,6 +45,9 @@ impl FrameKind {
             BootstrapStreamProfile::DocumentTypedV1 => {
                 (BootstrapCodec::DocumentTypedV1, OutputMode::Raw)
             }
+            BootstrapStreamProfile::Unknown { codec_tag } => {
+                (BootstrapCodec::Unknown { tag: codec_tag }, OutputMode::Raw)
+            }
         };
         enc.write_field_with(field::bootstrap_begin::CODEC, |e| {
             encode_bootstrap_codec(codec, e);

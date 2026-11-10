@@ -1,8 +1,10 @@
 //! The bootstrap codec, profile, and stream-profile sub-record codecs.
 //!
-//! Only a server sends these, and only to name a choice from the client's
-//! own offer, so a value the client does not know is malformed, not newer:
-//! skipping `HELLO_OK` or `BOOTSTRAP_BEGIN` would hang the handshake.
+//! Only a server sends these. A Terminal profile or engine codec names a
+//! choice from the client's own offer, so one the client does not know is
+//! malformed, not newer: skipping `HELLO_OK` would hang the handshake. A
+//! codec tag the client does not know is another kind's newer codec: it
+//! decodes as `Unknown` and the client refuses only that resource.
 
 use crate::caps::{
     BootstrapCodec, BootstrapProfile, BootstrapStreamProfile, EngineCodec, EngineFeatureSet,
@@ -32,6 +34,13 @@ pub(in crate::wire) fn encode_bootstrap_codec(codec: BootstrapCodec, enc: &mut E
         BootstrapCodec::DocumentTypedV1 => {
             enc.write_u8(BootstrapCodec::DOCUMENT_TYPED_V1_TAG);
         }
+        BootstrapCodec::Unknown { tag } => {
+            debug_assert!(
+                !BootstrapCodec::is_allocated_tag(tag),
+                "Unknown codec carries allocated tag {tag}"
+            );
+            enc.write_u8(tag);
+        }
     }
 }
 
@@ -52,7 +61,7 @@ pub(in crate::wire) fn decode_bootstrap_codec(
         }
         BootstrapCodec::PIXEL_SURFACE_PNG_V1_TAG => Ok(BootstrapCodec::PixelSurfacePngV1),
         BootstrapCodec::DOCUMENT_TYPED_V1_TAG => Ok(BootstrapCodec::DocumentTypedV1),
-        _ => Err(DecodeError::InvalidBootstrapProfile),
+        tag => Ok(BootstrapCodec::Unknown { tag }),
     }
 }
 
@@ -120,6 +129,10 @@ pub(in crate::wire) const fn decode_bootstrap_stream_profile(
             Ok(BootstrapStreamProfile::PixelSurfacePngV1)
         }
         (BootstrapCodec::DocumentTypedV1, 0, None) => Ok(BootstrapStreamProfile::DocumentTypedV1),
+        // A newer codec's output mode and cursor mean what it says they do.
+        (BootstrapCodec::Unknown { tag }, _, _) => {
+            Ok(BootstrapStreamProfile::Unknown { codec_tag: tag })
+        }
         _ => Err(DecodeError::InvalidBootstrapProfile),
     }
 }

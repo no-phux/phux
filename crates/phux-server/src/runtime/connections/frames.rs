@@ -286,49 +286,7 @@ impl<R: FrameReader> FrameDispatch<'_, R> {
                     &self.plumbing.out_tx,
                 );
             }
-            FrameKind::SpawnResource {
-                request_id,
-                group,
-                command,
-                cwd,
-                env,
-                term,
-                satellite,
-                owner_terminal,
-                agent_session,
-                initial_size,
-                resource,
-            } => {
-                let Some(selection) = self.negotiated.as_ref() else {
-                    return FrameFlow::Continue(());
-                };
-                crate::runtime::idempotent_create::handle_spawn_resource(
-                    state,
-                    client_id,
-                    request_id,
-                    SpawnRequest {
-                        group,
-                        command,
-                        cwd,
-                        env,
-                        term,
-                        satellite,
-                        owner_terminal,
-                        agent_session,
-                        initial_size,
-                        resource,
-                    },
-                    &self.plumbing.out_tx,
-                    selection.profile,
-                    selection.limits,
-                    self.root_token,
-                    self.token,
-                    &mut self.plumbing.output_pumps,
-                    // QUIC multi-stream: content starts at STREAM_BIND (L1 §4.9).
-                    selection.quic_streams(),
-                )
-                .await;
-            }
+            frame @ FrameKind::SpawnResource { .. } => return self.spawn_resource(frame).await,
             FrameKind::MoveResource {
                 request_id,
                 terminal,
@@ -346,6 +304,58 @@ impl<R: FrameReader> FrameDispatch<'_, R> {
             }
             other => return direction_invalid(client_id, &other),
         }
+        FrameFlow::Continue(())
+    }
+
+    /// `SPAWN_RESOURCE`, with the kinds the connection's `HELLO` decodes.
+    async fn spawn_resource(self, frame: FrameKind) -> FrameFlow {
+        let (state, client_id) = (self.state, self.client_id);
+        let FrameKind::SpawnResource {
+            request_id,
+            group,
+            command,
+            cwd,
+            env,
+            term,
+            satellite,
+            owner_terminal,
+            agent_session,
+            initial_size,
+            resource,
+        } = frame
+        else {
+            return direction_invalid(self.client_id, &frame);
+        };
+        let Some(selection) = self.negotiated.as_ref() else {
+            return FrameFlow::Continue(());
+        };
+        crate::runtime::idempotent_create::handle_spawn_resource(
+            state,
+            client_id,
+            request_id,
+            SpawnRequest {
+                group,
+                command,
+                cwd,
+                env,
+                term,
+                satellite,
+                owner_terminal,
+                agent_session,
+                initial_size,
+                resource,
+                decodes: selection.client_caps.resource_kinds,
+            },
+            &self.plumbing.out_tx,
+            selection.profile,
+            selection.limits,
+            self.root_token,
+            self.token,
+            &mut self.plumbing.output_pumps,
+            // QUIC multi-stream: content starts at STREAM_BIND (L1 §4.9).
+            selection.quic_streams(),
+        )
+        .await;
         FrameFlow::Continue(())
     }
 }

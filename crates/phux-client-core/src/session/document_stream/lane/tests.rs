@@ -151,6 +151,19 @@ fn only_one_document_kind_is_admitted() {
         })
     ));
     assert!(matches!(
+        fresh.begin(
+            stream_id,
+            bootstrap_id,
+            BootstrapStreamProfile::Unknown { codec_tag: 0x77 },
+            0,
+            0
+        ),
+        Err(KernelError::UnknownCodec {
+            codec_tag: 0x77,
+            ..
+        })
+    ));
+    assert!(matches!(
         fresh.output(stream_id, bootstrap_id, 1, b"x"),
         Err(KernelError::UnknownTerminal(_))
     ));

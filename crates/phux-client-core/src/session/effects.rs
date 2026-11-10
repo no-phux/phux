@@ -112,6 +112,15 @@ pub enum KernelStatus {
         /// Engine/server reason for ending this cursor chain.
         reason: HistoryUnavailableReason,
     },
+    /// The server streamed a resource in a codec this build does not know
+    /// (a newer kind or codec). The kernel ignores that resource's stream;
+    /// every other resource and the connection carry on.
+    Unsupported {
+        /// The refused resource.
+        terminal_id: ResourceId,
+        /// The unrecognised `BOOTSTRAP_BEGIN` codec tag.
+        codec_tag: u8,
+    },
     /// The scoped Terminal's working directory changed (`AgentEvent::CwdChanged`).
     Cwd {
         /// The Terminal whose cwd changed.

@@ -6,7 +6,9 @@
     reason = "private module shared across the runtime; pub would violate unreachable_pub"
 )]
 
-use phux_protocol::caps::{BootstrapLimits, BootstrapProfile, BootstrapStreamProfile};
+use phux_protocol::caps::{
+    BootstrapLimits, BootstrapProfile, BootstrapStreamProfile, ResourceKindSet,
+};
 use phux_protocol::ids::{GroupId, ResourceId as WireResourceId, SatelliteHost};
 use phux_protocol::wire::frame::{ErrorCode, FrameKind, SpawnError, SpawnResource};
 use tokio::task::JoinSet;
@@ -40,6 +42,9 @@ pub(crate) struct SpawnRequest {
     pub(crate) initial_size: Option<(u16, u16)>,
     /// Kind, parent, and provenance fields; `None` is a plain Terminal.
     pub(crate) resource: Option<Box<SpawnResource>>,
+    /// The kinds the spawner's `HELLO` says it decodes; not part of the
+    /// request's identity.
+    pub(crate) decodes: ResourceKindSet,
 }
 
 /// The process-launch fields of a `SPAWN_RESOURCE`. Only a kind that starts a
@@ -93,6 +98,9 @@ pub(crate) struct ResourceSpawn<'a> {
     pub(crate) output_pumps: &'a mut JoinSet<()>,
     /// Whether content waits for `STREAM_BIND` (QUIC multi-stream, L1 §4.9).
     pub(crate) defer_subscription: bool,
+    /// The kinds the spawner decodes. It stays the producer of what it
+    /// spawns either way; it is streamed the resource only if listed.
+    pub(crate) decodes: ResourceKindSet,
 }
 
 /// What one connection lends a spawn it sent.
@@ -162,6 +170,7 @@ pub(crate) async fn dispatch_spawn(
         agent_session,
         initial_size,
         resource,
+        decodes,
     } = request;
     // An absent record is a plain Terminal: the default record's kind.
     let resource = resource.unwrap_or_default();
@@ -199,6 +208,7 @@ pub(crate) async fn dispatch_spawn(
             connection_token,
             output_pumps,
             defer_subscription,
+            decodes,
         })
         .await;
 }
@@ -252,6 +262,7 @@ mod tests {
                 kind,
                 ..SpawnResource::default()
             })),
+            decodes: ResourceKindSet::LEGACY,
         }
     }
 

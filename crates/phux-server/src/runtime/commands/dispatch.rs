@@ -156,16 +156,33 @@ async fn dispatch_attach_resource(
 ) -> CommandResult {
     // A deferring kind's content subscription waits for STREAM_BIND. Kind
     // resolution precedes routing.
-    let defers = ctx.state.with(|s| {
+    let kind = ctx.state.with(|s| {
         s.resource_from_wire(terminal_id)
             .and_then(|core| s.resource_handle(core))
-            .is_some_and(|handle| {
-                crate::runtime::apps::app_for(handle.kind).defers_stream_bootstrap()
-            })
+            .map(|handle| handle.kind)
     });
+    if let Some(kind) = kind
+        && !crate::id_bridge::client_decodes(&ctx.client_caps, kind)
+    {
+        return undecodable_kind(crate::id_bridge::wire_kind(kind));
+    }
+    let defers =
+        kind.is_some_and(|kind| crate::runtime::apps::app_for(kind).defers_stream_bootstrap());
     if ctx.defer_subscription && defers {
         subscribe_deferred_attach(&ctx.state, ctx.client_id, terminal_id, &ctx.out_tx, role).await
     } else {
         handle_attach_terminal(ctx, terminal_id, role, agent_after_seq).await
+    }
+}
+
+/// `ATTACH_RESOURCE` of a kind the connection's `HELLO` did not list: the
+/// client could not decode its stream. The connection stays.
+pub(super) fn undecodable_kind(kind: phux_protocol::ids::ResourceKind) -> CommandResult {
+    CommandResult::Error {
+        code: ErrorCode::CodecUnavailable,
+        message: format!(
+            "this connection's HELLO does not list the {} resource kind, so it cannot consume its stream",
+            kind.as_str()
+        ),
     }
 }

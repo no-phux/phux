@@ -82,3 +82,66 @@ fn a_zero_limit_is_unadvertised_and_takes_the_default() {
     assert_eq!(limits.max_chunk_bytes(), DEFAULT_BOOTSTRAP_CHUNK_BYTES);
     assert_eq!(limits.max_history_page_bytes(), DEFAULT_HISTORY_PAGE_BYTES);
 }
+
+#[test]
+fn a_hello_without_resource_kinds_accepts_the_legacy_kinds() {
+    use phux_protocol::caps::ResourceKindSet;
+    use phux_protocol::ids::ResourceKind;
+
+    let legacy = client_caps(&caps(0, 0, 0, 0, (0, 0))).resource_kinds;
+    assert_eq!(legacy, ResourceKindSet::LEGACY);
+    for kind in [
+        ResourceKind::Terminal,
+        ResourceKind::AgentSession,
+        ResourceKind::AccessibilityTree,
+        ResourceKind::PixelSurface,
+        ResourceKind::Document,
+    ] {
+        assert!(legacy.contains(kind), "{kind:?}");
+    }
+    assert!(!legacy.contains(ResourceKind::Unknown { tag: 5 }));
+}
+
+#[test]
+fn resource_kinds_round_trip_exactly_with_a_newer_clients_bits() {
+    use phux_protocol::caps::{ClientCapabilities, ResourceKindSet};
+    use phux_protocol::ids::ResourceKind;
+
+    let narrow = ResourceKindSet::with(&[ResourceKind::Terminal, ResourceKind::AgentSession]);
+    let frame = FrameKind::Hello {
+        client_name: "narrow".to_owned(),
+        protocol_major: 1,
+        protocol_minor: 0,
+        protocol_patch: 0,
+        client_caps: ClientCapabilities::new().with_resource_kinds(narrow),
+    };
+    let mut encoded = bytes::BytesMut::new();
+    frame.encode(&mut encoded);
+    let FrameKind::Hello { client_caps, .. } = FrameKind::decode(&encoded).expect("decodes").0
+    else {
+        panic!("not HELLO");
+    };
+    assert_eq!(client_caps.resource_kinds, narrow);
+    assert!(!client_caps.resource_kinds.contains(ResourceKind::Document));
+
+    let mut fields = Vec::new();
+    tlv_field(&mut fields, 1, b"newer");
+    tlv_field(&mut fields, 2, &1u16.to_be_bytes());
+    tlv_field(&mut fields, 3, &0u16.to_be_bytes());
+    tlv_field(&mut fields, 4, &0u16.to_be_bytes());
+    tlv_field(&mut fields, 5, &caps(0, 0, 0, 0, (0, 0)));
+    tlv_field(&mut fields, 11, &((1u64 << 63) | 1).to_be_bytes());
+    let FrameKind::Hello { client_caps, .. } = FrameKind::decode(&framed_tlv(0x01, &fields))
+        .expect("decodes")
+        .0
+    else {
+        panic!("not HELLO");
+    };
+    assert!(client_caps.resource_kinds.contains(ResourceKind::Terminal));
+    assert!(
+        !client_caps
+            .resource_kinds
+            .contains(ResourceKind::AgentSession)
+    );
+    assert_eq!(client_caps.resource_kinds.as_wire(), (1u64 << 63) | 1);
+}
