@@ -35,7 +35,8 @@ pub(crate) enum DocAction {
         #[usage(long)]
         json: bool,
     },
-    /// Write the newest document to a file, or stdout.
+    /// Write the newest document to a file, or stdout: text with control
+    /// characters shown as signs, binary only into a pipe.
     Snapshot {
         /// The document resource.
         target: String,

@@ -107,7 +107,7 @@ pub(crate) fn run_wait(mut args: WaitArgs<'_>) -> ExitCode {
                     &resolved,
                     kind,
                     &condition,
-                    first_read,
+                    deadline,
                     json,
                 )
                 .await;
