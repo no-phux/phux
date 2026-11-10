@@ -18,6 +18,7 @@ impl Desk {
         // A hub's satellite resource is in none of its sessions: it is
         // viewed from whichever one is attached.
         if terminal.host().is_none()
+            && !session_name.is_empty()
             && attached.as_deref() != Some(session_name)
             && let Some(client) = &self.client
         {

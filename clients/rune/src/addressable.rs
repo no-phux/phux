@@ -67,28 +67,31 @@ fn kind_name(kind: ResourceKind) -> &'static str {
 
 impl Desk {
     /// What this window can show: every terminal, and each document it
-    /// holds a mirror for, named as its organization record names it.
+    /// holds a mirror for, named and placed as its organization record
+    /// says. A local resource in no session it can name is left out, since
+    /// showing it would attach a session called "".
     pub fn addressable(&self) -> Vec<Addressable> {
         let Some(topology) = &self.topology else {
             return Vec::new();
         };
+        let org = self.client.as_ref().map(|client| client.organization());
         let mut all = list(topology);
         all.retain_mut(|r| {
-            if r.kind.is_terminal() {
-                return true;
+            if !r.kind.is_terminal() {
+                let Some(document) = self.resources.entries.get(&r.id) else {
+                    return false;
+                };
+                let record = &document.record;
+                if let Some(name) = record.name.as_ref().filter(|n| !n.trim().is_empty()) {
+                    r.label.clone_from(name);
+                }
+                if r.session.is_empty()
+                    && let Some(session) = org.as_ref().and_then(|o| o.session(&record.session))
+                {
+                    r.session.clone_from(&session.name);
+                }
             }
-            let Some(document) = self.resources.entries.get(&r.id) else {
-                return false;
-            };
-            if let Some(name) = document
-                .record
-                .name
-                .as_ref()
-                .filter(|n| !n.trim().is_empty())
-            {
-                r.label.clone_from(name);
-            }
-            true
+            !r.session.is_empty()
         });
         all
     }

@@ -47,3 +47,33 @@ fn a_local_document_has_a_sidebar_row_a_palette_row_a_cycle_stop_and_a_title() {
     step(&mut rt);
     assert_eq!(rt.state.shown.as_ref().unwrap().resource, id(2));
 }
+
+#[test]
+fn a_document_in_no_known_session_is_named_by_its_record_or_left_out() {
+    let records = [
+        record(1, ResourceKind::Terminal),
+        record(2, ResourceKind::AccessibilityTree),
+    ];
+    let (_client, mut rt) = fixture(&records, &doc(LayoutNode::Leaf(id(1))));
+    let unsessioned = |d: &mut Desk| {
+        let topology = d.topology.as_mut().unwrap();
+        let listed = topology.resources.iter_mut().find(|r| r.id == id(2));
+        listed.unwrap().session_id = 0;
+    };
+    rt.update(|d, _| unsessioned(d));
+    let document = |d: &Desk| d.addressable().into_iter().find(|r| r.id == id(2));
+    let named = document(&rt.state).expect("its record names the session");
+    assert_eq!(named.session, "work");
+
+    rt.update(|d, _| {
+        let entry = d.resources.entries.get_mut(&id(2)).unwrap();
+        entry.record.session = SessionKey::new([9; 16]).unwrap();
+    });
+    assert_eq!(document(&rt.state), None, "no session row called \"\"");
+    assert!(
+        !rt.state
+            .palette_hits()
+            .iter()
+            .any(|h| matches!(&h.item.target, crate::palette::Target::Terminal { id: shown, .. } if *shown == id(2)))
+    );
+}
