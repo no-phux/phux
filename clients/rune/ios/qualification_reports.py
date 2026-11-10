@@ -14,7 +14,7 @@ def validate_report(report, transport="quic", resumed=False):
     expected = {"schema": 1, "session": SESSION, "connected": True,
                 "input_through_native": True, "marker_seen": True, "transport": f"paired-{transport}",
                 "onboarding_import": not resumed, "onboarding_confirmed": not resumed,
-                "resumed_identity": resumed}
+                "resumed_identity": resumed, "surface_at_scale": True}
     for field, value in expected.items():
         if type(report.get(field)) is not type(value) or report[field] != value:
             raise ValueError(f"invalid qualification {field}: {report.get(field)!r}")

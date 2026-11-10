@@ -18,6 +18,8 @@ RUNE = REPO / "clients/rune"
 IOS = RUNE / "ios"
 MIN_IOS = "26.0"
 BUNDLE_ID = "sh.phux.rune.ios"
+# The app icon's own ground (#090A0C), also the root view's before a frame.
+LAUNCH_GROUND = ("0x09", "0x0A", "0x0C")
 
 
 def apple_environment(out):
@@ -56,15 +58,19 @@ def native_static_flags(output):
     return flags
 
 
-def bundle_plist(version, simulator, fonts):
+def bundle_plist(version, simulator, fonts, icons=None):
     return {
+        **(icons or {}),
         "CFBundleIdentifier": BUNDLE_ID, "CFBundleExecutable": "PhuxRune",
         "CFBundleName": "Phux Rune", "CFBundleDisplayName": "Phux Rune",
         "CFBundlePackageType": "APPL", "CFBundleShortVersionString": version,
         "CFBundleVersion": version.split("-", 1)[0], "MinimumOSVersion": MIN_IOS,
         "CFBundleSupportedPlatforms": ["iPhoneSimulator" if simulator else "iPhoneOS"],
-        "LSRequiresIPhoneOS": True, "UIDeviceFamily": [1, 2],
-        "UILaunchScreen": {}, "UIAppFonts": fonts,
+        # A fixed portrait phone form for now; iPad would be a letterboxed lie.
+        "LSRequiresIPhoneOS": True, "UIDeviceFamily": [1],
+        # Without this an iPhone caps the display link at 60 Hz.
+        "CADisableMinimumFrameDurationOnPhone": True,
+        "UILaunchScreen": {"UIColorName": "LaunchGround"}, "UIAppFonts": fonts,
         "NSCameraUsageDescription": "Scan a Phux pairing QR to connect without typing credentials.",
         "NSLocalNetworkUsageDescription": "Connect securely to your computer and get its Phux pairing code over SSH.",
         "CFBundleURLTypes": [{"CFBundleURLName": BUNDLE_ID + ".pairing",
@@ -111,6 +117,36 @@ process.stdout.write(renderNotices(crates, read, 'Phux Rune'));
         raise ValueError("empty third-party notices")
     (app / "THIRD-PARTY-NOTICES.txt").write_text(notices)
     return [font.name for font in fonts]
+
+
+def compile_assets(app, env, out, simulator):
+    """The home-screen icon, and a launch colour matching the terminal so a
+    light-mode phone does not flash white before the first frame."""
+    catalog = out / "Assets.xcassets"
+    if catalog.exists():
+        shutil.rmtree(catalog)  # Our derived catalog, never a source tree.
+    info = {"author": "xcode", "version": 1}
+    icon = catalog / "AppIcon.appiconset"
+    icon.mkdir(parents=True)
+    (catalog / "Contents.json").write_text(json.dumps({"info": info}))
+    shutil.copy2(IOS / "AppIcon.png", icon / "AppIcon.png")
+    (icon / "Contents.json").write_text(json.dumps({"info": info, "images": [{
+        "filename": "AppIcon.png", "idiom": "universal", "platform": "ios", "size": "1024x1024"}]}))
+    ground = catalog / "LaunchGround.colorset"
+    ground.mkdir()
+    components = dict(zip(("red", "green", "blue"), LAUNCH_GROUND), alpha="1.000")
+    (ground / "Contents.json").write_text(json.dumps({"info": info, "colors": [{
+        "idiom": "universal", "color": {"color-space": "srgb", "components": components}}]}))
+    partial = out / "assets-info.plist"
+    run(["/usr/bin/xcrun", "actool", catalog, "--compile", app, "--platform",
+         "iphonesimulator" if simulator else "iphoneos", "--minimum-deployment-target", MIN_IOS,
+         "--target-device", "iphone", "--app-icon", "AppIcon",
+         "--output-partial-info-plist", partial, "--errors", "--warnings"],
+        env, out, "assets", timeout=300)
+    icons = plistlib.loads(partial.read_bytes())
+    if "CFBundleIcons" not in icons or not (app / "Assets.car").is_file():
+        raise ValueError("actool did not compile the app icon")
+    return icons
 
 
 def build_rust(out, env, triple, release):
@@ -201,9 +237,10 @@ def build(out, target, release):
     build_swift(out, env, app, sources, library, flags, simulator, release, payload["swift_flags"])
     fonts = copy_resources(app, env, out, triple)
     embed_tailnet(app, payload, env, out, simulator)
+    icons = compile_assets(app, env, out, simulator)
     version = tomllib.loads((RUNE / "Cargo.toml").read_text())["package"]["version"]
     with (app / "Info.plist").open("wb") as handle:
-        plistlib.dump(bundle_plist(version, simulator, fonts), handle)
+        plistlib.dump(bundle_plist(version, simulator, fonts, icons), handle)
     # A device build is an unsigned development bundle, not an installable IPA.
     if simulator:
         run(["/usr/bin/codesign", "--force", "--sign", "-", "--timestamp=none", app],

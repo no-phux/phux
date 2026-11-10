@@ -61,7 +61,7 @@ pub(super) fn key_hint(key: &'static str, what: &'static str, ink: &Ink) -> El {
         .child(text(what).font(CAPTION).color(ink.dim))
 }
 
-/// The current notice, bottom left, clear of the live pill. The inbox's
+/// The current notice, bottom left (top on a phone), clear of the live pill. The inbox's
 /// footer says it instead while the drawer is open.
 /// The machine a notice is about, when it names one.
 fn named_machine<'a>(desk: &'a Desk, text: &str) -> Option<&'a str> {
@@ -116,12 +116,20 @@ pub fn toast(desk: &Desk, ink: &Ink) -> Option<El> {
         ink,
         Desk::dismiss_notice,
     ));
-    // The host gives the words a width to wrap at.
-    Some(
-        row()
-            .pin(Some(12.0), None, Some(12.0), Some(12.0))
-            .child(toast),
-    )
+    // The host gives the words a width to wrap at. A phone's prompt sits on
+    // the stage's last row, so a notice there goes to the top instead.
+    let (top, bottom) = if desk.phone.is_some() {
+        (Some(12.0), None)
+    } else {
+        (None, Some(12.0))
+    };
+    let line = row().pin(Some(12.0), top, Some(12.0), bottom);
+    // Centred on a phone, where it is a passing word, not a place to act.
+    Some(if desk.phone.is_some() {
+        line.center().child(toast)
+    } else {
+        line.child(toast)
+    })
 }
 
 /// The find bar, top right of the pane find belongs to.

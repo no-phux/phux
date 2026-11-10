@@ -29,6 +29,7 @@ def valid_report():
             "terminal_id": "123", "connected": True, "input_through_native": True,
             "marker_seen": True, "transport":"paired-quic", "input_contracts":list(qualify.INPUT_CONTRACTS),
             "onboarding_import": True, "onboarding_confirmed": True, "resumed_identity": False,
+            "surface_at_scale": True,
             "key_id": "11111111-1111-4111-8111-111111111111"}
 
 
@@ -63,7 +64,12 @@ class BuildTests(unittest.TestCase):
             self.assertEqual(info["CFBundleURLTypes"][0]["CFBundleURLSchemes"], ["phux-rune"])
             self.assertIn("NSCameraUsageDescription", info)
             self.assertIn("NSLocalNetworkUsageDescription", info)
+            self.assertEqual(info["UILaunchScreen"], {"UIColorName": "LaunchGround"})
+            self.assertEqual(info["UIDeviceFamily"], [1])  # A portrait phone form only.
+            self.assertIs(info["CADisableMinimumFrameDurationOnPhone"], True)
             self.assertEqual(plistlib.loads(plistlib.dumps(info)), info)
+        icons = {"CFBundleIcons": {"CFBundlePrimaryIcon": {"CFBundleIconName": "AppIcon"}}}
+        self.assertEqual(build.bundle_plist("1.0.0", False, [], icons)["CFBundleIcons"], icons["CFBundleIcons"])
 
     def test_build_commands_real_staticlib_and_swift_link(self):
         with tempfile.TemporaryDirectory(prefix="rune path ") as temporary:
@@ -89,6 +95,7 @@ class BuildTests(unittest.TestCase):
             with patch.multiple(build, IOS=ios, RUNE=rune), \
                     patch.object(build, "apple_environment", return_value={}), \
                     patch.object(build, "copy_resources", return_value=["Font.ttf"]), \
+                    patch.object(build, "compile_assets", return_value={}), \
                     patch.object(build, "prepare_tailnet", return_value={
                         "swift_flags": ["-lRuneTailnet"], "frameworks": [], "resources": [], "notices": "SDK notices"}), \
                     patch.object(build, "run", side_effect=fake_run):
@@ -183,7 +190,7 @@ class QualificationTests(unittest.TestCase):
                 qualify.validate_report(report)
         for field, value in (("frames", True), ("frames", 0), ("schema", True),
                              ("connected", 1), ("input_through_native", False),
-                             ("marker_seen", False), ("terminal_id", ""),
+                             ("marker_seen", False), ("terminal_id", ""), ("surface_at_scale", False),
                              ("session", "other"), ("error", "connection failed")):
             with self.subTest(field=field, value=value), self.assertRaises(ValueError):
                 qualify.validate_report({**valid_report(), field: value})

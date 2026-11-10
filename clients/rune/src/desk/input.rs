@@ -181,6 +181,7 @@ impl Desk {
     /// Ghostty does. Input the connection can't take now is said, not dropped
     /// quietly.
     pub(super) fn send_input(&mut self, send: impl FnOnce(&mut ControlPlane, &ResourceId) -> bool) {
+        self.stop_coast();
         let (Some(client), Some(shown)) = (self.client.clone(), &self.shown) else {
             return;
         };
@@ -200,6 +201,7 @@ impl Desk {
         if !sent {
             return self.say(NoticeKind::Error, INPUT_PAUSED);
         }
+        self.nudge_typing(&client);
         if self.notice.as_ref().is_some_and(|n| n.text == INPUT_PAUSED) {
             self.notice = None;
         }

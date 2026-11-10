@@ -57,7 +57,8 @@ fn rename_accepts_drawn_text_submit_and_cancel_without_terminal_input() {
             .rename_session(phux_protocol::ids::SessionKey::new([1; 16]).unwrap(), "old");
         rt.frame(0.0);
         visible_editor(&rt, "rename-field");
-        tap(&mut rt, "phone-latch-Shift", 0.1);
+        // The keyboard's own shift: at 320 points the strip's ⇧ is scrolled away.
+        tap(&mut rt, "phone-cap-shift", 0.1);
         tap(&mut rt, "phone-cap-120", 0.3);
         assert_eq!(rt.state.tabs.rename_field.text, "X");
         tap(&mut rt, "phone-cap-backspace", 0.5);

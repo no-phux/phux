@@ -10,7 +10,6 @@ use std::sync::mpsc::{Receiver, Sender, channel};
 use std::time::{Duration, Instant};
 
 use phux_client_runtime::control::Status;
-use phux_client_runtime::reconnect::is_fatal_refusal_detail;
 use phux_client_runtime::{Client, Target};
 use phux_protocol::ids::SessionKey;
 use rune::Tx;
@@ -20,6 +19,7 @@ use crate::launch::Resolved;
 use crate::machines::LOCAL;
 
 mod replacement;
+mod resume;
 mod standing;
 
 pub use standing::{Banner, Standing};
@@ -82,6 +82,8 @@ pub struct Link {
     /// The local server was just handed off: until then, a protocol refusal
     /// may be the old one on its way out.
     handoff_until: Option<Instant>,
+    /// When typing last probed the link, on the app clock.
+    nudged: Option<f64>,
 }
 
 impl Default for Link {
@@ -105,6 +107,7 @@ impl Default for Link {
             moved: None,
             server: 0,
             handoff_until: None,
+            nudged: None,
         }
     }
 }
@@ -366,15 +369,13 @@ impl Desk {
     }
 
     /// Whether the connection is working: anything else waits on this module.
-    fn link_is_up(&self) -> bool {
+    pub(super) fn link_is_up(&self) -> bool {
         self.client.is_some() && self.status == Status::Attached && self.link.ended.is_none()
     }
 
     /// Retrying can't change this answer: someone has to act first.
     fn stuck(&self) -> bool {
-        self.link.incompatible.is_some()
-            || self.status == Status::Closed
-            || self.error.as_deref().is_some_and(is_fatal_refusal_detail)
+        self.link.incompatible.is_some() || self.status == Status::Closed || self.unpaired()
     }
 
     /// A connection opened. Only a server's first replays news: after that

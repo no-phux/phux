@@ -305,7 +305,10 @@ fn dismiss(rt: &mut Runtime<Desk>, target: &Target) {
             edit.focused = false;
             edit.cancel_composition();
         }
-        if let Some(phone) = &mut d.phone {
+        // Dismissing a field's keyboard says nothing about the terminal's.
+        if matches!(target, Target::Terminal(_))
+            && let Some(phone) = &mut d.phone
+        {
             phone.keyboard = false;
         }
         tx.blur();

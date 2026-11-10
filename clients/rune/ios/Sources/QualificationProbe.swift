@@ -99,7 +99,7 @@ final class QualificationProbe {
         return value
     }
 
-    func observe(bridge: NativeBridge, input: RuneInput) throws {
+    func observe(bridge: NativeBridge, input: RuneInput, surfaceAtScale: Bool) throws {
         try recordResumedFrame(bridge)
         guard !finished else { return }
         var report = try bridge.report(marker: marker)
@@ -113,6 +113,7 @@ final class QualificationProbe {
         report["onboarding_import"] = imported
         report["onboarding_confirmed"] = imported
         report["resumed_identity"] = resuming
+        report["surface_at_scale"] = surfaceAtScale
         report["key_id"] = keyID
         report["input_contracts"] = inputContracts
         report["input_evidence"] = "UIKit insertText entry; not physical OS typing or IME automation"

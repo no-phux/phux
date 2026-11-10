@@ -2,6 +2,7 @@ use super::*;
 
 mod fixture;
 mod input;
+mod touch;
 mod viewport;
 
 fn id(n: u32) -> ResourceId {
@@ -298,10 +299,11 @@ fn returning_keeps_real_views_scroll_selection_and_only_focused_pane_is_fit_or_s
     let (client, mut rt) = fixture(true);
     let first = rt.state.shown.as_ref().unwrap().view.unwrap();
     let second = rt.state.others[&id(2)].unwrap();
-    let (x, y) = rt.find("phone-history").unwrap();
-    touch(&mut rt, Started, x, y);
-    touch(&mut rt, Moved, x, y + 80.0);
-    touch(&mut rt, Ended, x, y + 80.0);
+    let [x, y, _, _] = geometry(&rt, &format!("phone-spatial-pane-{}", id(1))).rect;
+    touch(&mut rt, Started, x + 60.0, y + 100.0);
+    touch(&mut rt, Moved, x + 60.0, y + 180.0);
+    touch(&mut rt, Ended, x + 60.0, y + 180.0);
+    poll(&mut rt);
     let offset = client.acquire_view(first).unwrap().scrollbar.offset;
     assert!(
         !client.acquire_view(first).unwrap().scrollbar.at_tail(),
@@ -385,44 +387,6 @@ fn keyboard_resizes_only_focus_and_drag_frames_do_not_storm_pty_sizes() {
         2,
         "hidden siblings never laid out for sizing"
     );
-}
-
-#[test]
-fn history_handle_uses_alt_screen_arrows_and_program_wheel_policy() {
-    use phux_protocol::input::{key::PhysicalKey, mouse::MouseButton};
-    use phux_protocol::wire::frame::FrameKind;
-    let (client, mut rt) = fixture(true);
-    output(&client, 1, 1, b"\x1b[?1049h");
-    poll(&mut rt);
-    let (x, y) = rt.find("phone-history").unwrap();
-    let drag = |rt: &mut rune::Runtime<Desk>| {
-        touch(rt, Started, x, y);
-        touch(rt, Moved, x, y + 60.0);
-        touch(rt, Ended, x, y + 60.0);
-    };
-    drag(&mut rt);
-    let frames = outbound(&client);
-    assert!(frames.iter().any(
-        |f| matches!(f, FrameKind::InputKey { event, .. } if event.key == PhysicalKey::ArrowUp)
-    ));
-    assert!(
-        !frames
-            .iter()
-            .any(|f| matches!(f, FrameKind::InputMouse { .. }))
-    );
-    output(&client, 1, 2, b"\x1b[?1000h\x1b[?1006h");
-    poll(&mut rt);
-    drag(&mut rt);
-    let frames = outbound(&client);
-    assert!(frames.iter().any(
-        |f| matches!(f, FrameKind::InputMouse { event, .. } if event.button == MouseButton::Four)
-    ));
-    assert!(
-        !frames
-            .iter()
-            .any(|f| matches!(f, FrameKind::InputKey { .. } | FrameKind::InputPaste { .. }))
-    );
-    assert_eq!(focus(&rt), id(1));
 }
 
 #[test]
@@ -571,24 +535,4 @@ fn dead_views_are_recreated_and_closed_terminal_focus_uses_full_group() {
     assert!(!rt.state.others.contains_key(&id(3)));
     assert!(!rt.state.layout_is_stale());
     no_input(&client);
-}
-
-#[test]
-fn content_touch_drags_remain_program_mouse_input_not_spatial_navigation() {
-    use phux_protocol::wire::frame::FrameKind;
-    let (client, mut rt) = fixture(true);
-    output(&client, 1, 1, b"\x1b[?1002h\x1b[?1006h");
-    poll(&mut rt);
-    let [x, y, _, _] = geometry(&rt, &format!("phone-spatial-pane-{}", id(1))).rect;
-    touch(&mut rt, Started, x + 50.0, y + 150.0);
-    touch(&mut rt, Moved, x + 120.0, y + 160.0);
-    touch(&mut rt, Ended, x + 120.0, y + 160.0);
-    assert_eq!(focus(&rt), id(1));
-    assert_eq!(rt.state.phone.as_ref().unwrap().travel, [0.0; 2]);
-    assert!(
-        outbound(&client)
-            .iter()
-            .any(|f| matches!(f, FrameKind::InputMouse { .. })),
-        "content still owns its mouse gesture"
-    );
 }

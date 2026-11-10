@@ -22,7 +22,9 @@ pub fn view(desk: &Desk, ink: &Ink, top: f32) -> El {
     let hits = desk.palette_hits();
     let picked = desk.palette_picked.min(hits.len().saturating_sub(1));
     let mode = desk.palette_mode;
+    let phone = desk.phone.is_some();
     let prompt = match mode {
+        Mode::All if phone => "Search commands and terminals…",
         Mode::All => "Jump to a terminal, session, or action…",
         Mode::Mirror(source) => source.prompt(),
         Mode::Shortcuts => "Filter keyboard shortcuts…",
@@ -50,7 +52,7 @@ pub fn view(desk: &Desk, ink: &Ink, top: f32) -> El {
         .on_submit(|d: &mut Desk, tx| d.palette_run(None, tx));
     let mut results = col().key("palette-results").w_full().padding(6.0).gap(1.0);
     for (index, hit) in hits.iter().take(crate::palette::ROWS).enumerate() {
-        results = results.child(hit_row(hit, index, index == picked, ink));
+        results = results.child(hit_row(hit, index, index == picked, phone, ink));
     }
     let search = desk.paths.as_ref();
     let empty = match search {
@@ -118,8 +120,9 @@ pub fn view(desk: &Desk, ink: &Ink, top: f32) -> El {
                 })
                 .child(results),
         )
-        .child(el().w_full().h(1.0).fill(ink.separator))
-        .child(
+        // A phone taps its rows; the keys this footer teaches are a desktop's.
+        .children((!phone).then(|| el().w_full().h(1.0).fill(ink.separator)))
+        .children((!phone).then(|| {
             row()
                 .w_full()
                 .px(14.0)
@@ -127,8 +130,8 @@ pub fn view(desk: &Desk, ink: &Ink, top: f32) -> El {
                 .gap(14.0)
                 .child(hint("↑↓", "move", ink))
                 .child(hint("↩", open, ink))
-                .child(hint("esc", "close", ink)),
-        );
+                .child(hint("esc", "close", ink))
+        }));
     let scrim = el()
         .key("palette-scrim")
         .absolute(0.0, 0.0)
@@ -258,7 +261,7 @@ fn mark(hit: &Hit, ink: &Ink) -> El {
         .border(2.0, ring)
 }
 
-fn hit_row(hit: &Hit, index: usize, picked: bool, ink: &Ink) -> El {
+fn hit_row(hit: &Hit, index: usize, picked: bool, phone: bool, ink: &Ink) -> El {
     let title = &hit.item.title;
     // Matched characters in the accent, at their byte ranges.
     let spans = hit
@@ -273,7 +276,7 @@ fn hit_row(hit: &Hit, index: usize, picked: bool, ink: &Ink) -> El {
         .collect();
     pressable(format!("palette-row-{index}"), ink)
         .w_full()
-        .h(36.0)
+        .h(if phone { 44.0 } else { 36.0 })
         .px(12.0)
         .gap(10.0)
         .radius(8.0)

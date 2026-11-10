@@ -20,6 +20,7 @@ mod palette;
 mod panes;
 pub(crate) use panes::DIVIDER;
 mod phone;
+pub(crate) use phone::edge_color as phone_edge_color;
 mod pitch;
 mod pitlane;
 mod questions;
