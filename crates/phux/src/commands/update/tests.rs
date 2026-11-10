@@ -161,6 +161,7 @@ fn run(
         handoff: &handoff,
         install,
         release_keys: &[&release_key],
+        server_bundle: None,
     };
     execute(opts, &env)
 }

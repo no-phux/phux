@@ -5815,7 +5815,11 @@ Run a server in the foreground
 Binds a Unix domain socket, pre-seeds a session whose initial pane spawns the
 user's `$SHELL` inside a real PTY, and serves `ATTACH` requests until Ctrl-C.
 
-Usage: phux server [FLAGS]
+Usage: phux server [FLAGS] [SUBCOMMAND]
+
+Commands:
+  permissions  Show the macOS privacy grants the running server holds.
+  help         Print this message or the help of the given subcommand(s)
 
 Flags:
       --ensure                    Ensure the selected local socket accepts, then
@@ -5917,6 +5921,37 @@ Flags:
 Global flags:
       --socket <PATH>             Server socket to dial (default:
                                   `$PHUX_SOCKET`)
+```
+
+## `phux server permissions`
+
+```text
+Show the macOS privacy grants the running server holds.
+
+macOS charges every program in a pane to the server, so Full Disk Access, Screen
+Recording and Accessibility are the server's to hold. Lists each as `granted`,
+`denied` (or never asked), `not_determined` or `unknown` (always, off macOS),
+plus the program macOS charges them to (`responsible_path`). Probing never
+prompts. Asks over the local socket only; does not start a server. `--json`
+prints `{"executable", "responsible_path", "bundle", "permissions": [{"service",
+"status"}]}`.
+
+Usage: phux server permissions [--json] [--open <SERVICE>]
+
+Flags:
+      --json            Emit stable, versioned JSON on stdout instead of the
+                        human view. On failure, stdout stays empty and stderr
+                        carries one JSON error object.
+      --open <SERVICE>  Open SERVICE's pane in System Settings and print the
+                        path to add there: the `phux Server` bundle through its
+                        `Current` link, or the app macOS charges the server to.
+                        Works without a server.
+                        [possible values: full-disk-access, screen-recording,
+                        accessibility]
+  -h, --help            Print help
+
+Global flags:
+      --socket <PATH>   Server socket to dial (default: `$PHUX_SOCKET`)
 ```
 
 ## `phux service`
