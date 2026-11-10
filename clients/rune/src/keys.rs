@@ -63,6 +63,8 @@ pub enum Shortcut {
     Kitchen,
     /// The fleet as a pit lane: machines as garages, agents as race cars.
     PitLane,
+    /// The fleet as beehives: machines as comb frames, agents as bees.
+    Hive,
     Settings,
     /// The themes, previewed live as the highlight moves.
     ChangeTheme,
@@ -103,6 +105,7 @@ impl Shortcut {
                 | Self::Pitch
                 | Self::Kitchen
                 | Self::PitLane
+                | Self::Hive
                 | Self::Settings
                 | Self::ChangeTheme
                 | Self::ZoomIn

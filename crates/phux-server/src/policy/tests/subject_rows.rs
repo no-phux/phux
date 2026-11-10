@@ -578,5 +578,6 @@ fn rows(world: &mut World) -> Vec<Row> {
             &[&[&s("create,bind,input", &gb)], &[&s("create,bind", &ga)]],
         ),
     ]);
+    rows.extend(mirror_rows());
     rows
 }

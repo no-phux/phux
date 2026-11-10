@@ -13,6 +13,9 @@ use phux_protocol::wire::frame::ErrorCode;
 
 use super::RemoteClient;
 
+// A host's screen mirrors: async calls of the same shape.
+mod mirror;
+
 /// One HTTP header, in order; names may repeat.
 #[derive(uniffi::Record, Clone, Debug, PartialEq, Eq)]
 pub struct WireServiceHttpHeader {

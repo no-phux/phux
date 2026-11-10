@@ -102,6 +102,7 @@ pub fn with_menus(app: App<Desk>) -> App<Desk> {
         item!(VIEW, Pitch),
         item!(VIEW, Kitchen),
         item!(VIEW, PitLane),
+        item!(VIEW, Hive),
         item!(VIEW, Palette),
         item!(VIEW, KeyboardShortcuts),
         item!(VIEW, EssentialShortcuts),
@@ -307,6 +308,7 @@ impl Desk {
                 palette::rank(items, query)
             }
             Mode::Mirror(source) => self.mirror_items(source, query),
+            Mode::Screens => self.screen_hits(query),
             Mode::Shortcuts => palette::rank(palette::shortcut_items(), query),
             Mode::Essentials => palette::rank(palette::essential_items(), query),
             Mode::Themes => palette::rank(palette::theme_items(), query),
@@ -401,6 +403,8 @@ impl Desk {
         match target {
             Target::Mirror(source) => self.open_palette(Mode::Mirror(source)),
             Target::StartMirror(source, target) => self.ask_mirror(source, target),
+            Target::Screens => self.open_screens(),
+            Target::Screen(host, target) => self.start_screen(host, target),
             Target::Terminal { id, session } => self.show(id, &session),
             Target::Session(name) => self.show_session(&name),
             Target::Action(action) => self.shortcut(action, tx),

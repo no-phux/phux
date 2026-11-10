@@ -65,11 +65,16 @@ pub fn snow(pen: &mut Pen, r: &Reef) {
 /// Each edge is `N` bands, the outer as dark as `N` stacked ones and each
 /// further in one fewer, cut on whole points so no seam shows between them.
 pub fn vignette(pen: &mut Pen, r: &Reef) {
-    pen.screen();
     let (w, h) = (r.w, r.h);
     let a = 0.35 + r.nt * 0.25;
-    let (r0, r1) = (w.min(h) * 0.35, w.max(h) * 0.8);
-    let cy = h * 0.475;
+    let r0r1 = [w.min(h) * 0.35, w.max(h) * 0.8];
+    edges(pen, [w, h], h * 0.475, r0r1, [0.0, 8.0, 16.0], a);
+}
+
+/// A radial vignette of `c` at `a` round `[w / 2, cy]`, clear inside `r0`
+/// and darkest at `r1`, as edge bands in screen points.
+pub fn edges(pen: &mut Pen, [w, h]: [f32; 2], cy: f32, [r0, r1]: [f32; 2], c: Rgb, a: f32) {
+    pen.screen();
     const N: usize = 8;
     for (d, side) in [(w / 2.0, 0), (w / 2.0, 1), (cy, 2), (h - cy, 3)] {
         let depth = d - r0;
@@ -90,7 +95,7 @@ pub fn vignette(pen: &mut Pen, r: &Reef) {
                 _ => (0.0, h - to, w, to - from),
             };
             let stacked = 1.0 - (1.0 - edge).powi((N - b) as i32);
-            pen.rect(x, y, rw, rh, [0.0, 8.0, 16.0], stacked);
+            pen.rect(x, y, rw, rh, c, stacked);
         }
     }
 }

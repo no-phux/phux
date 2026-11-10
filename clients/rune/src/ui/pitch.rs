@@ -25,6 +25,7 @@ use players::Spot;
 const ON_AMBER: [f32; 3] = [42.0, 22.0, 0.0];
 const PILL: TextStyle = TextStyle::new(11.0, 500.0).mono();
 const BOARD: TextStyle = TextStyle::new(10.5, 600.0).mono();
+const BENCH: TextStyle = TextStyle::new(9.5, 500.0).mono();
 
 pub(super) fn view(desk: &Desk, p: &Ink, cx: &mut Cx<Desk>) -> El {
     desk.pitch.night.set(p.bg.luminance() < 0.5);
@@ -152,9 +153,11 @@ pub(super) fn view(desk: &Desk, p: &Ink, cx: &mut Cx<Desk>) -> El {
         .children(clouds)
         .child(full(canvas(air.into_shape()).key("pitch-air")))
         .children(r.zones.iter().enumerate().map(|(i, _)| board(r, i)))
+        .children((0..r.zones.len()).filter_map(|i| bench(r, i)))
         .child(full(canvas(play.into_shape()).key("pitch-play")).on_press(Desk::pitch_deselect))
         .children(numbers)
         .children(ring)
+        .children(dozing(r, &spots))
         .children(pills)
         .children(targets)
         .child(readout(r, waiting, p))
@@ -268,6 +271,79 @@ fn board(r: &Pitch, i: usize) -> El {
                         )
                 })),
         )
+}
+
+/// Over a squad's dugout, while any of its players sit there: they are
+/// idle, waiting on nothing but a new task.
+fn bench(r: &Pitch, i: usize) -> Option<El> {
+    let z = &r.zones[i];
+    if z.idle == 0 {
+        return None;
+    }
+    let (l, t) = (z.z0 + z.zw * 0.3, r.strip);
+    // Above the dugout's roof; standing up the side, on its middle.
+    let [x, y] = if r.portrait {
+        r.to_s(l, -t * 0.64)
+    } else {
+        // Clear of the heads of the players sat in it.
+        let [x, y] = r.to_s(l, -t * 0.94);
+        [x, y - 20.0]
+    };
+    let ink = mix([210.0, 255.0, 236.0], MINT, r.nt * 0.5);
+    Some(
+        row()
+            .key(format!("pitch-bench-{i}"))
+            .absolute(x - 80.0, y - 7.5)
+            .w(160.0)
+            .h(15.0)
+            .justify_center()
+            .inert()
+            .child(
+                row()
+                    .h(15.0)
+                    .px(6.0)
+                    .radius(3.0)
+                    .items_center()
+                    .fill(rgba([12.0, 18.0, 28.0], 0.62))
+                    .border(1.0, rgba(MINT, 0.18 + 0.15 * r.nt))
+                    .child(
+                        text(format!("bench · {} idle", z.idle))
+                            .font(BENCH)
+                            .color(rgba(ink, 0.8)),
+                    ),
+            ),
+    )
+}
+
+/// A soft "z" drifting up from each player sat on the bench; held still
+/// with reduced motion.
+fn dozing<'a>(
+    r: &'a Pitch,
+    spots: &'a [(&crate::pitch::Player, Spot)],
+) -> impl Iterator<Item = El> + 'a {
+    spots
+        .iter()
+        .filter(|(q, _)| q.who.mood == Mood::Idle && q.sit > 0.5)
+        .map(|(q, s)| {
+            let k = if r.reduce {
+                0.35
+            } else {
+                (r.t * 0.3 + q.who.number as f32 * 0.37).fract()
+            };
+            let alpha = 0.9 * (k * 6.0).min(1.0) * (1.0 - k);
+            text("z")
+                .key(format!("pitch-z-{:?}", q.who.id))
+                .absolute(
+                    s.at[0] + 0.4 * s.r + 5.0 * k,
+                    s.at[1] - 0.9 * s.r - 10.0 * k,
+                )
+                .font(TextStyle::new(10.0 + 4.0 * k, 700.0).mono())
+                .color(rgba(
+                    mix([24.0, 40.0, 58.0], [236.0, 242.0, 248.0], r.nt),
+                    alpha,
+                ))
+                .inert()
+        })
 }
 
 fn readout(r: &Pitch, waiting: usize, p: &Ink) -> El {

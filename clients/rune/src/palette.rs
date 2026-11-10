@@ -11,6 +11,10 @@ use crate::keys::{COMMANDS, ESSENTIALS, Shortcut};
 pub enum Target {
     Mirror(crate::desk::resources::Source),
     StartMirror(crate::desk::resources::Source, String),
+    /// List every host's displays and windows.
+    Screens,
+    /// Start mirroring a target on a host (`None`: this one) and open it.
+    Screen(Option<String>, String),
     Terminal {
         id: ResourceId,
         session: String,
@@ -42,6 +46,8 @@ pub enum Mode {
     Themes,
     /// Paths on the focused pane's host, in the server's order.
     Paths,
+    /// Every host's displays and windows, to mirror one.
+    Screens,
 }
 
 /// The most rows the palette renders; the highlight stays within them.

@@ -230,6 +230,12 @@ const fn dangerous(method: MethodSpec) -> MethodSpec {
     }
 }
 
+/// The gate on `MIRROR` and `MIRROR_PROVIDE`.
+const MIRRORS: Option<FeatureGate> = Some(FeatureGate::FeaturesExt {
+    mask: ServerFeatureExt::Mirrors.mask(),
+    wire_name: ServerFeatureExt::Mirrors.wire_name(),
+});
+
 /// Methods addressed to the server or the connection, not to one resource.
 ///
 /// These are the handshake, session attach, server lifecycle, telemetry,
@@ -268,6 +274,15 @@ pub static SERVER_METHODS: &[MethodSpec] = &[
             mask: ServerFeatureExt::PathQuery.mask(),
             wire_name: ServerFeatureExt::PathQuery.wire_name(),
         })
+    ),
+    // A host's screen mirrors: list, start, stop; Rune's macOS runner
+    // reports its targets and learns its mirrors through MIRROR_PROVIDE.
+    method!("MIRROR", Carrier::Command(COMMAND_TAG_MIRROR), [C_MIRROR], MIRRORS),
+    method!(
+        "MIRROR_PROVIDE",
+        Carrier::Command(COMMAND_TAG_MIRROR_PROVIDE),
+        [C_MIRROR_PROVIDE],
+        MIRRORS
     ),
     method!(
         "GET_FILE",

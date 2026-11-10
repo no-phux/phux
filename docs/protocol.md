@@ -292,6 +292,9 @@ full. Nobody else sees the event and it is never journaled. Only the owner
 socket or a control grant reaches it; the class fields and the hub's stamp
 are in [resource kinds](./resource-kinds.md#authority).
 
+`MIRROR` (tag `0x4a`, `MIRRORS`) lists, starts or stops a host's screen
+mirrors ([picker](./applications.md#picking-a-screen-or-window)).
+
 `GET_METADATA` / `SET_METADATA` / `SUBSCRIBE_METADATA` (`0x50`-`0x54`)
 attach small keyed values to resources. Some keys are plain storage; some
 are read by the server (`phux.agent/v1` is the agent record).

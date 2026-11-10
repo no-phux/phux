@@ -48,6 +48,7 @@ mod surface_indicator;
 mod surface_input;
 mod surface_mirror;
 mod surface_standing;
+mod surface_targets;
 #[cfg(any(target_os = "linux", test))]
 mod surface_wayland;
 

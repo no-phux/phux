@@ -308,7 +308,7 @@ fn refused(json: bool, message: &str) -> ExitCode {
 }
 
 #[cfg(target_os = "macos")]
-mod macos {
+pub(super) mod macos {
     use std::process::Command;
 
     use crate::commands::agent::tree::surface::Frames;
@@ -354,11 +354,17 @@ JSON.stringify(windows.map(w => ({ id: w.kCGWindowNumber, owner: w.kCGWindowOwne
     /// The first normal-layer on-screen window of `App`, or of `App:title`
     /// whose title contains `title`.
     fn window_by_name(spec: &str) -> Result<u32, String> {
+        pick_window(spec, &window_list()?)
+    }
+
+    /// The on-screen windows as `[{id, owner, name, layer}]` JSON. Without
+    /// Screen Recording access every `name` is empty.
+    pub(in crate::commands::agent::tree) fn window_list() -> Result<String, String> {
         let output = Command::new("osascript")
             .args(["-l", "JavaScript", "-e", WINDOW_LIST])
             .output()
             .map_err(|err| format!("could not list windows: {err}"))?;
-        pick_window(spec, &String::from_utf8_lossy(&output.stdout))
+        Ok(String::from_utf8_lossy(&output.stdout).into_owned())
     }
 
     pub(super) fn pick_window(spec: &str, listing: &str) -> Result<u32, String> {

@@ -93,6 +93,9 @@ fn resource_key_point(s: &ServerState, key: &phux_protocol::ids::ResourceKey) ->
 /// The document a `SEND_DOCUMENT_INPUT` names. A local one must exist; a
 /// satellite one is matched by host alone (see [`ControlPoint::class`]).
 fn controlled_document(s: &ServerState, request: Request<'_>) -> Option<Point> {
+    if let Request::Command(Command::Mirror { host, op }) = request {
+        return Some(Point::Control(mirror_control(host.as_deref(), op)));
+    }
     let Request::Command(Command::SendDocumentInput { terminal_id, .. }) = request else {
         return None;
     };
@@ -112,6 +115,26 @@ fn controlled_document(s: &ServerState, request: Request<'_>) -> Option<Point> {
         },
     };
     Some(Point::Control(document))
+}
+
+/// What a `MIRROR` shows: a `display[:OUTPUT]` target the display, any
+/// other target, and the target list (window titles), a window.
+fn mirror_control(host: Option<&str>, op: &phux_protocol::wire::frame::MirrorOp) -> ControlPoint {
+    use phux_protocol::wire::frame::{ControlClass, MirrorOp};
+    let target = match op {
+        MirrorOp::Start { target, .. } | MirrorOp::Stop { target } => target.trim(),
+        MirrorOp::Targets => "",
+    };
+    let display = target == "display" || target.starts_with("display:");
+    ControlPoint {
+        class: Some(if display {
+            ControlClass::Display
+        } else {
+            ControlClass::Window
+        }),
+        host: host.map(str::to_owned),
+        key: None,
+    }
 }
 
 /// What a "named Terminal" row needs. `OBSERVE` on a window or display

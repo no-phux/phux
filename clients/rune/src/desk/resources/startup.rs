@@ -86,6 +86,7 @@ fn argv(
 impl Desk {
     pub(in crate::desk) fn resource_items(&self) -> Vec<Item> {
         let mut items = self.document_items();
+        items.push(Self::screens_item());
         items.extend(
             [Source::Page, Source::Tree, Source::Surface].map(|source| Item {
                 title: format!("Start {} mirror…", source.verb()),

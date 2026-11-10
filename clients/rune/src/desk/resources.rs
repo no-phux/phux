@@ -14,6 +14,7 @@ use super::Desk;
 
 mod input;
 mod satellite;
+mod screens;
 mod selection;
 mod startup;
 mod subscriptions;
@@ -43,6 +44,8 @@ pub struct Resources {
     pub(super) input: phux_client_core::document_input::DocumentInputs,
     /// The copy from a host clipboard awaiting its reply.
     pub(super) copying: Option<u32>,
+    /// The screen and window picker.
+    pub screens: screens::Screens,
 }
 
 struct PendingDocument {

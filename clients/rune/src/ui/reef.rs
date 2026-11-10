@@ -15,7 +15,7 @@ use crate::creature;
 use crate::desk::Desk;
 use crate::reef::{Mood, Pt, Reef, TILE};
 
-mod drift;
+pub(super) mod drift;
 mod fish;
 mod forms;
 pub(super) mod pen;

@@ -156,6 +156,21 @@ fn players_settle_where_their_mood_puts_them() {
     );
 }
 
+/// The bench label counts each squad's idle players, and only its own.
+#[test]
+fn each_squad_counts_its_own_bench() {
+    let mut p = pitch(vec![
+        agent(1, 0, Mood::Idle),
+        agent(2, 0, Mood::Idle),
+        agent(3, 0, Mood::Waiting),
+        agent(4, 2, Mood::Idle),
+        agent(5, 1, Mood::Working),
+    ]);
+    run(&mut p, 0.1);
+    let idle: Vec<usize> = p.zones.iter().map(|z| z.idle).collect();
+    assert_eq!(idle, [2, 0, 1]);
+}
+
 #[test]
 fn finishing_celebrates_once_with_confetti() {
     let mut p = pitch(vec![agent(1, 0, Mood::Working)]);
