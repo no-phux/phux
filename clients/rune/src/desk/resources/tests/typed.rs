@@ -4,8 +4,6 @@
 use super::*;
 use crate::desk::resources::typed::{self, MAX_TEXT};
 
-mod animation;
-
 fn typed(content_type: &str, bytes: &[u8]) -> (Body, String) {
     typed::decode(content_type, bytes)
 }

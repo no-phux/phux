@@ -231,10 +231,6 @@ its producer as document input. Any other document is a **Read-only mirror**,
 and a refused send turns a live one **View only**. Closing its view does not
 stop the producer.
 
-Typed image documents use Rune's PNG, JPEG, GIF and WebP decoder. GIF, WebP
-and animated PNG play while drawn, without another producer publication;
-an image outside the visible area does not request animation frames.
-
 To start a source, choose **Start page/tree/surface mirror…** in the palette,
 name the existing source, then confirm. Rune starts a dedicated producer
 terminal using the selected local CLI and socket, never the focused shell.
