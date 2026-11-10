@@ -15,6 +15,9 @@ use phux_protocol::wire::info::{ResourceInfo, SessionSnapshot};
 
 use super::organization::OrganizationReplica;
 
+mod resource;
+pub use resource::ResourceDescriptor;
+
 /// One session in the server's graph.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SessionDescriptor {
@@ -121,6 +124,9 @@ pub struct SatelliteSession {
 pub struct Topology {
     /// Every session the server listed.
     pub sessions: Vec<SessionDescriptor>,
+    /// Every resource of every kind, in the server's order. `panes`,
+    /// `agent_sessions` and `documents` are views of it by kind.
+    pub resources: Vec<ResourceDescriptor>,
     /// Every Terminal-kind resource, in the server's order.
     pub panes: Vec<PaneDescriptor>,
     /// Every `AgentSession` resource.
@@ -217,10 +223,12 @@ impl Topology {
                 state: resource.agent.as_ref().map(|facet| facet.state.clone()),
             })
             .collect();
-        let documents = documents(snapshot);
+        let resources = resource::resources(snapshot);
+        let documents = resource::documents(&resources);
         let satellite_sessions = satellite_sessions(snapshot);
         Self {
             sessions,
+            resources,
             panes,
             agent_sessions,
             documents,
@@ -260,6 +268,7 @@ impl Topology {
                 session.awaiting_organization = record.awaiting_organization;
             }
         }
+        resource::rehome(&mut self.resources, replica);
         for pane in &mut self.panes {
             if let Some(record) = replica.resource_by_live(&pane.terminal_id) {
                 if let Some(session) = replica.session(&record.session)
@@ -314,28 +323,6 @@ impl Topology {
             .find(|pane| pane.session_id == session_id)
             .map(|pane| &pane.terminal_id)
     }
-}
-
-/// The snapshot's document-kind resources.
-fn documents(snapshot: &SessionSnapshot) -> Vec<DocumentDescriptor> {
-    snapshot
-        .resources
-        .iter()
-        .filter(|resource| {
-            matches!(
-                resource.kind,
-                ResourceKind::AccessibilityTree
-                    | ResourceKind::PixelSurface
-                    | ResourceKind::Document
-            )
-        })
-        .map(|resource| DocumentDescriptor {
-            id: resource.id.clone(),
-            kind: resource.kind,
-            parent: resource.parent.clone(),
-            name: resource.title.clone(),
-        })
-        .collect()
 }
 
 /// A hub's satellite sessions, from its inventory rows.

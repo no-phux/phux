@@ -7,7 +7,7 @@
 use std::path::Path;
 use std::time::Duration;
 
-use phux_protocol::ids::{ResourceId, ResourceKind};
+use phux_protocol::ids::ResourceId;
 use phux_protocol::wire::info::ResourceInfo;
 use serde_json::{Value, json};
 
@@ -78,10 +78,7 @@ pub fn document_entry(info: &ResourceInfo) -> Value {
 /// Whether `info` is a document resource: a tree, a surface or a typed document.
 #[must_use]
 pub const fn is_document(info: &ResourceInfo) -> bool {
-    matches!(
-        info.kind,
-        ResourceKind::AccessibilityTree | ResourceKind::PixelSurface | ResourceKind::Document
-    )
+    info.kind.is_document()
 }
 
 /// The documents under `pane`, once `want` of them exist or `timeout`
