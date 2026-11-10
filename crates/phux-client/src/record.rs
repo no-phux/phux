@@ -141,7 +141,11 @@ fn recorder_client_name() -> String {
 }
 
 const fn recorder_client_caps() -> ClientCapabilities {
-    ClientCapabilities::new().with_color_support(ColorSupport::TrueColor)
+    ClientCapabilities::new()
+        .with_color_support(ColorSupport::TrueColor)
+        .with_resource_kinds(phux_protocol::caps::ResourceKindSet::with(&[
+            phux_protocol::ids::ResourceKind::Terminal,
+        ]))
 }
 
 /// Drain the subscription into asciicast events until a stop condition.

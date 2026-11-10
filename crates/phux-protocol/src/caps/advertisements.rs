@@ -72,6 +72,10 @@ pub struct ClientCapabilities {
     /// Whether this client can demultiplex per-Terminal QUIC streams. An
     /// explicit offer, never inferred from the transport.
     pub quic_streams: bool,
+    /// The resource kinds this client decodes (HELLO field 11); a server
+    /// streams no other. Absent on the wire reads as
+    /// [`ResourceKindSet::LEGACY`].
+    pub resource_kinds: ResourceKindSet,
 }
 
 /// Effective default colors reported by the client's outer terminal.
@@ -110,7 +114,15 @@ impl ClientCapabilities {
             compression: CompressionSet::new(),
             ssh_origin: None,
             quic_streams: false,
+            resource_kinds: ResourceKindSet::all(),
         }
+    }
+
+    /// Builder setter for [`Self::resource_kinds`].
+    #[must_use]
+    pub const fn with_resource_kinds(mut self, kinds: ResourceKindSet) -> Self {
+        self.resource_kinds = kinds;
+        self
     }
 
     /// Builder setter for [`Self::compression`].

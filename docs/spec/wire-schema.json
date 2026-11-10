@@ -56,7 +56,8 @@
         {"id":5,"name":"CLIENT_CAPS","type":"ClientCapabilities","presence":"required"},
         {"id":6,"name":"COMPRESSION","type":"u8","presence":"optional"},
         {"id":9,"name":"SSH_ORIGIN","type":"SshOrigin","presence":"optional"},
-        {"id":10,"name":"QUIC_STREAMS","type":"bool","presence":"optional"}
+        {"id":10,"name":"QUIC_STREAMS","type":"bool","presence":"optional"},
+        {"id":11,"name":"RESOURCE_KINDS","type":"u64","presence":"optional"}
       ]
     },
     {

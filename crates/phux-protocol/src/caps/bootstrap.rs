@@ -148,6 +148,12 @@ pub enum BootstrapCodec {
     /// then the newest document; every live message is a whole document.
     /// Gated on `ServerFeatureExt::TypedDocument`.
     DocumentTypedV1,
+    /// A codec tag this build does not know, from a newer server. Only
+    /// the tag is kept; any bytes after it in the field are skipped.
+    Unknown {
+        /// The unrecognised codec tag.
+        tag: u8,
+    },
 }
 
 impl BootstrapCodec {
@@ -464,6 +470,12 @@ pub enum BootstrapStreamProfile {
     /// ([`crate::wire::frame::typed_document`]), followed by raw live
     /// replacements, each a whole document of that type.
     DocumentTypedV1,
+    /// A stream whose codec this build does not know. A client refuses
+    /// that one resource and ignores its stream; the connection stays.
+    Unknown {
+        /// The unrecognised [`BootstrapCodec`] tag.
+        codec_tag: u8,
+    },
 }
 
 /// Select one explicit profile and the negotiated payload bounds.

@@ -42,6 +42,7 @@ mod lifecycle;
 mod output;
 mod queries;
 mod replicas;
+mod unsupported;
 mod update;
 
 pub use effects::{
@@ -217,6 +218,9 @@ pub struct SessionKernel<E: EngineAdapter> {
     documents: HashMap<ResourceId, DocumentStaging>,
     /// `AgentSession` resources: record streams without replicas.
     agents: HashMap<ResourceId, AgentStream>,
+    /// Resources whose stream codec this build does not know; their stream
+    /// frames are ignored until a known `BOOTSTRAP_BEGIN` or a close.
+    unsupported: HashSet<ResourceId>,
     /// Last controller views for closed native sources, readable but unavailable.
     closed_native_views: HashMap<ResourceId, phux_protocol::native_agent::NativeView>,
     closed: HashSet<ResourceId>,
@@ -281,6 +285,7 @@ impl<E: EngineAdapter> SessionKernel<E> {
             kinds: HashMap::new(),
             documents: HashMap::new(),
             agents: HashMap::new(),
+            unsupported: HashSet::new(),
             closed_native_views: HashMap::new(),
             closed: HashSet::new(),
             exit_reported: HashSet::new(),
@@ -483,3 +488,6 @@ mod property_tests;
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod unsupported_tests;

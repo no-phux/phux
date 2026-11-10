@@ -8,6 +8,7 @@ include!("caps/transport.rs");
 include!("caps/bootstrap.rs");
 include!("caps/server_features.rs");
 include!("caps/advertisements.rs");
+include!("caps/resource_kinds.rs");
 
 #[cfg(test)]
 mod tests {

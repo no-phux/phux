@@ -217,10 +217,17 @@ impl ServerState {
         }
 
         // Subscribe every pane, not just the active one: the input gate
-        // drops keys to unsubscribed panes, and every pane renders live.
+        // drops keys to unsubscribed panes, and every pane renders live. A
+        // kind the client does not decode is left out: it stays in the
+        // snapshot, but nothing of it streams to this client.
         let session_panes = self.registry().members(session_id);
         for pane in session_panes {
-            self.resources.subscribe(client_id, pane);
+            let decodes = self
+                .resource_handle(pane)
+                .is_none_or(|handle| crate::id_bridge::client_decodes(&client_caps, handle.kind));
+            if decodes {
+                self.resources.subscribe(client_id, pane);
+            }
         }
         Ok(session_id)
     }

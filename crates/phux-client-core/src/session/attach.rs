@@ -85,6 +85,7 @@ impl<E: EngineAdapter> SessionKernel<E> {
         self.retain_replica_on_close.remove(terminal_id);
         self.agents.remove(terminal_id);
         self.documents.remove(terminal_id);
+        self.unsupported.remove(terminal_id);
         self.closed_native_views.remove(terminal_id);
         self.kinds.remove(terminal_id);
         self.closed.remove(terminal_id);
@@ -94,8 +95,9 @@ impl<E: EngineAdapter> SessionKernel<E> {
     }
 
     /// Forget what only the previous server incarnation could mean: every
-    /// `AgentSession` resource, open or closed, and every closed resource's
-    /// tombstone, as [`Self::release_terminal`] forgets one. A new
+    /// `AgentSession` resource, open or closed, every closed resource's
+    /// tombstone, and every refused unknown-codec stream, as
+    /// [`Self::release_terminal`] forgets one. A new
     /// incarnation may reuse those ids for a resource of any kind.
     pub fn release_incarnation(&mut self) {
         let stale: Vec<ResourceId> = self
@@ -104,6 +106,7 @@ impl<E: EngineAdapter> SessionKernel<E> {
             .filter(|(_, kind)| **kind == ResourceKind::AgentSession)
             .map(|(terminal_id, _)| terminal_id.clone())
             .chain(self.closed.iter().cloned())
+            .chain(self.unsupported.iter().cloned())
             .collect();
         for terminal_id in stale {
             let _ = self.release_terminal(&terminal_id);

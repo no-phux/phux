@@ -131,6 +131,7 @@ impl Decoder<'_> {
         let mut compression: Option<crate::caps::CompressionSet> = None;
         let mut ssh_origin = None;
         let mut quic_streams = false;
+        let mut resource_kinds = crate::caps::ResourceKindSet::LEGACY;
         while let Some((id, value)) = self.read_field()? {
             match id {
                 f::CLIENT_NAME => client_name = Some(utf8_value(value)?),
@@ -146,6 +147,10 @@ impl Decoder<'_> {
                 }
                 f::SSH_ORIGIN => ssh_origin = crate::wire::ssh_origin::decode_ssh_origin(value),
                 f::QUIC_STREAMS => quic_streams = sub!(value, Decoder::read_u8) != 0,
+                f::RESOURCE_KINDS => {
+                    resource_kinds =
+                        crate::caps::ResourceKindSet::from_wire(sub!(value, Decoder::read_u64_be));
+                }
                 _ => {}
             }
         }
@@ -158,7 +163,9 @@ impl Decoder<'_> {
         if let Some(compression) = compression {
             client_caps = client_caps.with_compression(compression);
         }
-        client_caps = client_caps.with_quic_streams(quic_streams);
+        client_caps = client_caps
+            .with_quic_streams(quic_streams)
+            .with_resource_kinds(resource_kinds);
         Ok(FrameKind::Hello {
             client_name: req(client_name)?,
             protocol_major: req(protocol_major)?,
