@@ -11,6 +11,7 @@ mod diag;
 mod dock;
 mod galaxy;
 mod grid;
+mod hive;
 mod inbox;
 mod keys;
 mod kitchen;

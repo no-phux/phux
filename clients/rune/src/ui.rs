@@ -8,6 +8,7 @@ use crate::theme::{Marks, SELECTED_WASH, Selection, Theme, on_fill};
 
 mod documents;
 mod galaxy;
+mod hive;
 mod icons;
 mod inbox;
 mod kitchen;
@@ -202,6 +203,7 @@ fn floating(root: El, desk: &Desk, p: &Ink, band: f32, cx: &mut Cx<Desk>) -> El 
         .children(desk.pitch.open.then(|| pitch::view(desk, p, cx)))
         .children(desk.kitchen.open.then(|| kitchen::view(desk, p, cx)))
         .children(desk.pitlane.open.then(|| pitlane::view(desk, p, cx)))
+        .children(desk.hive.open.then(|| hive::view(desk, p, cx)))
         .children(desk.settings_open.then(|| settings::view(desk, p)))
         .children(machines::sheet(desk, p))
         .children(tabs::rename_sheet(desk, p))
