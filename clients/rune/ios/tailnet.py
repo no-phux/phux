@@ -21,13 +21,15 @@ TAILSCALE_REVISION = "3af8bca979a5e3f7e93e603fbc71b2c02b2512ad"
 GO_VERSION = "1.27.2"
 
 
-def run(command, env, out, name, timeout=1800):
+def run(command, env, out, name, timeout=1800, stdout_only=False):
     command = [str(value) for value in command]
     (out / f"{name}.command.json").write_text(json.dumps(command, indent=2) + "\n")
-    with (out / f"{name}.log").open("w") as log:
+    with (out / f"{name}.log").open("w") as log, \
+            (out / f"{name}.stderr.log").open("w") as diagnostics:
         subprocess.run(command, env=env, cwd=out, check=True, timeout=timeout,
-                       stdout=log, stderr=subprocess.STDOUT)
-    return (out / f"{name}.log").read_text()
+                       stdout=log, stderr=diagnostics)
+    output = (out / f"{name}.log").read_text()
+    return output if stdout_only else output + (out / f"{name}.stderr.log").read_text()
 
 
 def verify_archive(archive):
@@ -208,7 +210,7 @@ def prepare(out: Path, env: dict, target: str, release: bool) -> dict:
     package = copied_package(out, xcframework)
     tailscale = tailscale_notices(out)
     sdk = "iphonesimulator" if target == "simulator" else "iphoneos"
-    sdk_path = run(["/usr/bin/xcrun", "--sdk", sdk, "--show-sdk-path"], env, out, "sdk").strip()
+    sdk_path = run(["/usr/bin/xcrun", "--sdk", sdk, "--show-sdk-path"], env, out, "sdk", stdout_only=True).strip()
     options = ["--package-path", package, "--scratch-path", out / "build",
                "--cache-path", out / "cache", "--config-path", out / "config",
                "--security-path", out / "security", "--manifest-cache", "local",
@@ -218,7 +220,7 @@ def prepare(out: Path, env: dict, target: str, release: bool) -> dict:
     run(["/usr/bin/xcrun", "--sdk", "macosx", "swift", "build", *options, "--product", "RuneTailnet",
          "-Xswiftc", "-warnings-as-errors"], env, out, "build", timeout=2400)
     products = Path(run(["/usr/bin/xcrun", "--sdk", "macosx", "swift", "build", *options, "--show-bin-path"],
-                        env, out, "products").strip())
+                        env, out, "products", stdout_only=True).strip())
     library = products / "libRuneTailnet.a"
     modules = products / "Modules" if (products / "Modules").is_dir() else products
     if not library.is_file() or not (modules / "RuneTailnet.swiftmodule").exists():

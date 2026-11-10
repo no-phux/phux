@@ -5,7 +5,8 @@
        reason APIs cover the Go runtime's monotonic clock and the embedded
        node's state files inside this app's own container. No private keys
        are exported or included in backups. SwiftPM dependency privacy
-       manifests are shipped separately in their original resource bundles. -->
+       manifests are shipped separately in their original resource bundles.
+       UserDefaults holds Rune's own public connection preferences. -->
   <key>NSPrivacyTracking</key><false/>
   <key>NSPrivacyTrackingDomains</key><array/>
   <key>NSPrivacyCollectedDataTypes</key><array/>
@@ -14,5 +15,7 @@
       <key>NSPrivacyAccessedAPITypeReasons</key><array><string>C617.1</string></array></dict>
     <dict><key>NSPrivacyAccessedAPIType</key><string>NSPrivacyAccessedAPICategorySystemBootTime</string>
       <key>NSPrivacyAccessedAPITypeReasons</key><array><string>35F9.1</string></array></dict>
+    <dict><key>NSPrivacyAccessedAPIType</key><string>NSPrivacyAccessedAPICategoryUserDefaults</string>
+      <key>NSPrivacyAccessedAPITypeReasons</key><array><string>CA92.1</string></array></dict>
   </array>
 </dict></plist>

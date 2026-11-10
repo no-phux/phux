@@ -90,7 +90,7 @@ class TailnetBuildTests(unittest.TestCase):
             framework.mkdir(parents=True)
             commands = []
 
-            def run(command, env, destination, name, timeout=1800):
+            def run(command, env, destination, name, timeout=1800, stdout_only=False):
                 commands.append([str(value) for value in command])
                 self.assertFalse(any(key.startswith("PHUX_") for key in env))
                 self.assertNotIn("SDKROOT", env)  # SwiftPM manifests use the host SDK.

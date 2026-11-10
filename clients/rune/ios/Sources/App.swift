@@ -20,26 +20,31 @@ final class SceneDelegate: UIResponder, UIWindowSceneDelegate {
         guard let scene = scene as? UIWindowScene else { return }
         let controller = RuneController()
         root = controller
+        if let url = options.urlContexts.first?.url { controller.importPairing(url) }
         let window = UIWindow(windowScene:scene)
         window.rootViewController = UINavigationController(rootViewController:controller)
         self.window = window
         window.makeKeyAndVisible()
     }
+    func scene(_ scene: UIScene, openURLContexts contexts: Set<UIOpenURLContext>) {
+        if let url = contexts.first?.url { root?.importPairing(url) }
+    }
     func sceneDidBecomeActive(_ scene: UIScene) {
         for error in NativeIdentity.retryPendingCleanup() + HostSettings.retryPendingCleanup() {
             NSLog("Deferred credential cleanup: %@",error)
         }
-        root?.surface?.setActive(true)
+        root?.setSceneActive(true)
     }
-    func sceneWillResignActive(_ scene: UIScene) { root?.surface?.setActive(false) }
+    func sceneWillResignActive(_ scene: UIScene) { root?.setSceneActive(false) }
     func sceneDidDisconnect(_ scene: UIScene) { root?.surface?.close() }
 }
 
 @MainActor
-final class RuneController: UIViewController {
+final class RuneController: UIViewController, UIAdaptivePresentationControllerDelegate {
     private(set) var surface: RuneView?
     private let probe = QualificationProbe(arguments:ProcessInfo.processInfo.arguments)
     private var started = false
+    private var pendingLink: String?
     private var qualificationTask: Task<Void,Never>?
     isolated deinit { qualificationTask?.cancel() }
     override func viewDidLoad() {
@@ -47,41 +52,84 @@ final class RuneController: UIViewController {
         title = "Phux Rune"
         view.backgroundColor = .systemBackground
         navigationItem.rightBarButtonItem = UIBarButtonItem(title:"Connection", style:.plain,
-            target:self, action:#selector(connection))
+            target:self, action:#selector(showConnection))
     }
     override func viewDidAppear(_ animated:Bool) {
         super.viewDidAppear(animated)
         guard !started else { return }
         started = true
         if let probe {
-            qualificationTask = Task { [weak self] in
-                do {
-                    try probe.testInputContracts()
-                    var configuration = try await NativeIdentity.enroll(configuration:probe.configuration,
-                        ticket:probe.enrollmentTicket)
-                    if let endpoint = probe.connectionEndpoint { configuration["endpoint"] = endpoint }
-                    guard !Task.isCancelled, let self else {
-                        try NativeIdentity.discard(configuration:configuration); return
-                    }
-                    try HostSettings.save(configuration)
-                    self.open(configuration)
-                } catch { probe.failure(error.localizedDescription); self?.show(error.localizedDescription) }
-            }
+            qualify(probe)
+            return
+        }
+        if let link = pendingLink {
+            pendingLink = nil
+            connection(link: link)
             return
         }
         do {
             if let configuration = try HostSettings.load() { open(configuration) }
-            else { connection() }
+            else { showConnection() }
         } catch { show(error.localizedDescription) }
     }
-    @objc private func connection() {
+
+    private func qualify(_ probe: QualificationProbe) {
+        qualificationTask = Task { [weak self] in
+            do {
+                try await probe.testInputContracts()
+                let configuration = try await probe.prepareConnection()
+                guard !Task.isCancelled, let self else { return }
+                self.open(configuration)
+            } catch { probe.failure(error.localizedDescription); self?.show(error.localizedDescription) }
+        }
+    }
+    func importPairing(_ url: URL) {
+        guard url.scheme == "phux-rune" else { return }
+        guard started else { pendingLink = url.absoluteString; return }
+        connection(link: url.absoluteString)
+    }
+
+    @objc private func showConnection() { connection(link: nil) }
+
+    func setSceneActive(_ active: Bool) {
+        // A native setup sheet must own input even after returning from a
+        // camera permission prompt or Tailscale's approval browser.
+        surface?.setActive(active && !(presentedViewController is UINavigationController))
+    }
+
+    func presentationControllerDidDismiss(_ presentationController: UIPresentationController) {
+        setSceneActive(UIApplication.shared.applicationState == .active)
+    }
+
+    private func connection(link: String?) {
+        if let nav = presentedViewController as? UINavigationController,
+           let form = nav.viewControllers.first as? OnboardingController {
+            guard link != nil else { return }
+            nav.popToRootViewController(animated: false)
+            deliver(link, to: form, navigation: nav)
+            return
+        }
         let values: [String:Any]?
         do { values = try HostSettings.load() } catch { show(error.localizedDescription); return }
-        let form = ConnectionForm(values:values)
+        let form = OnboardingController(values:values)
+        form.closed = { [weak self] in
+            self?.setSceneActive(UIApplication.shared.applicationState == .active)
+        }
         form.connected = { [weak self] configuration in
             self?.dismiss(animated:true) { self?.open(configuration) }
         }
-        present(UINavigationController(rootViewController:form),animated:true)
+        let nav = UINavigationController(rootViewController: form)
+        if let link { form.receive(link) }
+        surface?.setActive(false)
+        present(nav, animated:true)
+        nav.presentationController?.delegate = self
+    }
+
+    private func deliver(_ link: String?, to form: OnboardingController, navigation: UINavigationController) {
+        guard let link else { return }
+        if navigation.presentedViewController != nil {
+            navigation.dismiss(animated: false) { form.receive(link) }
+        } else { form.receive(link) }
     }
     private func show(_ message:String) {
         let alert = UIAlertController(title:"Connection",message:message,preferredStyle:.alert)
@@ -95,10 +143,10 @@ final class RuneController: UIViewController {
         surface.failed = { [weak self] message in
             self?.probe?.failure(message)
             let alert = UIAlertController(title:"Could not open Rune",message:message,preferredStyle:.alert)
-            alert.addAction(UIAlertAction(title:"Connection",style:.default) { _ in self?.connection() })
+            alert.addAction(UIAlertAction(title:"Connection",style:.default) { _ in self?.showConnection() })
             self?.present(alert,animated:true)
         }
-        surface.connectionRequested = { [weak self] in self?.connection() }
+        surface.connectionRequested = { [weak self] in self?.showConnection() }
         surface.translatesAutoresizingMaskIntoConstraints = false
         view.addSubview(surface)
         NSLayoutConstraint.activate([

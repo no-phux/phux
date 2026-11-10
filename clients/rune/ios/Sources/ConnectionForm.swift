@@ -46,7 +46,7 @@ enum HostSettings {
         } else if status != errSecSuccess {
             throw NativeFailure.message("Could not update the pairing credential (Keychain \(status)).")
         }
-        let publicKeys = ["endpoint", "certificate_pin", "authority_ca", "chain_pem", "key_id", "session"]
+        let publicKeys = ["endpoint", "certificate_pin", "authority_ca", "chain_pem", "key_id", "session", "tls_server_name"]
         let publicValues = values.filter { publicKeys.contains($0.key) }
         UserDefaults.standard.set(publicValues,forKey:"remote-host")
         // Commit the new working credential before retiring the previous one.
@@ -87,6 +87,7 @@ final class ConnectionForm: UIViewController {
     private let authority = UITextField()
     private let ticket = UITextField()
     private let session = UITextField()
+    private let route = UITextField()
     private let error = UILabel()
     private let enroll = UIButton(type: .system)
     private let connect = UIButton(type: .system)
@@ -102,7 +103,7 @@ final class ConnectionForm: UIViewController {
     @available(*, unavailable) required init?(coder:NSCoder) { fatalError() }
     override func viewDidLoad() {
         super.viewDidLoad()
-        title = "Connect a host"
+        title = "Advanced setup"
         view.backgroundColor = .systemBackground
         let body = UIStackView(); body.axis = .vertical; body.spacing = 14
         body.translatesAutoresizingMaskIntoConstraints = false
@@ -115,7 +116,8 @@ final class ConnectionForm: UIViewController {
                                    (authority,"authority_ca","Authority pin (sha256:…)"),
                                    (token,"token","Pairing token"),
                                    (ticket,"ticket","One-time enrollment ticket"),
-                                   (session,"session","Session (optional)")] {
+                                   (session,"session","Session (optional)"),
+                                   (route,"tls_server_name","Relay route (optional)")] {
             field.text = initial[key] as? String
             field.placeholder = label; field.accessibilityLabel = label
             field.borderStyle = .roundedRect
@@ -158,13 +160,14 @@ final class ConnectionForm: UIViewController {
     private func configuration() -> [String: Any] {
         var values: [String: Any] = [:]
         for (key, field) in [("endpoint", endpoint), ("certificate_pin", pin),
-                             ("authority_ca", authority), ("token", token), ("session", session)] {
+                             ("authority_ca", authority), ("token", token), ("session", session),
+                             ("tls_server_name", route)] {
             let text = (field.text ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
             if !text.isEmpty { values[key] = text }
         }
         // Editing host ownership/trust invalidates the saved chain. Session
         // changes alone do not. Never spend a ticket using an old CA silently.
-        let ownership = ["certificate_pin", "authority_ca", "token"]
+        let ownership = ["certificate_pin", "authority_ca", "token", "tls_server_name"]
         let newHost = URLComponents(string: values["endpoint"] as? String ?? "")?.host?.lowercased()
         let savedHost = URLComponents(string: enrolled["endpoint"] as? String ?? "")?.host?.lowercased()
         let sameHost = newHost != nil && newHost == savedHost
@@ -176,7 +179,7 @@ final class ConnectionForm: UIViewController {
     }
 
     private func setEnrolling(_ busy: Bool) {
-        for field in [endpoint, pin, authority, token, ticket, session] { field.isEnabled = !busy }
+        for field in [endpoint, pin, authority, token, ticket, session, route] { field.isEnabled = !busy }
         enroll.isEnabled = !busy; connect.isEnabled = !busy
         isModalInPresentation = busy
         enroll.setTitle(busy ? "Enrolling…" : "Enroll this phone", for: .normal)

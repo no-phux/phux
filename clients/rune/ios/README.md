@@ -24,8 +24,11 @@ python3 clients/rune/ios/qualify.py --app '/absolute/scratch/ios-sim/Phux Rune.a
 ```
 
 The direct Swift/static-library build needs no generated Xcode project or
-new project generator. It derives Rust's ordered native link flags, bundles
-license/font notices and ad-hoc signs the simulator app. The device bundle
+new project generator. A small Swift package supplies the Tailscale directory
+and SSH client; its pinned dynamic TailscaleKit framework is embedded and
+signed inside-out. Builds resolve these dependencies into the output path,
+not the checkout. The build derives Rust's ordered native link flags, bundles
+Cargo, Swift and Go license notices, and ad-hoc signs the simulator app. The device bundle
 is linked **without provisioning or distribution signing**, not installable
 device qualification. Do not install it over another app or use production
 Phux to run a test.
@@ -58,7 +61,9 @@ in the page, manifest or IPA.
 
 Packaging rejects expired/development/store/enterprise profiles, missing
 device coverage, wrong bundle/certificate, simulator binaries and unsupported
-nested executables/symlinks. It signs using the local keychain without exporting
+nested executables/symlinks. Only the expected device TailscaleKit framework
+is admitted; it is signed without app entitlements before the app. Packaging
+signs using the local keychain without exporting
 the private key, verifies the signature and exact authorized entitlements,
 and never installs an app, changes provisioning or uploads to TestFlight.
 The user must approve installation on the phone. A signed IPA and reachable
@@ -68,16 +73,19 @@ physical-device qualification.
 `qualify.py` creates and deletes its own exact simulator UDID, selects a
 compatible available runtime/model pair, and owns a same-source server on a
 short temporary socket with clean configuration. All commands are bounded.
-It mints a one-use ticket on a private `paired` server, enrolls through the
-shared runtime using a simulator Keychain-held P-256 signing key, then dials
+It mints a one-use ticket on a private `paired` server, imports the QR payload
+through the canonical Rust parser and native confirmation operation, enrolls
+through the shared runtime using a simulator Keychain-held P-256 signing key, then dials
 QUIC with the issued client certificate, pinned authority and token. Pairing
 secrets travel through a private app-container file, not launch arguments,
 logs or evidence artifacts. It injects a command through the actual UIKit
 `insertText` entry, requires
 the returned marker in a real terminal grid and presented frame, records the
-element tree/report/screenshot and eight UIKit input-contract groups, and
+element tree/report/screenshot and twelve UIKit input/onboarding-contract groups, and
 backgrounds/resumes the app through the
-OS before checking continued rendering. It never adopts a user's simulator
+OS before checking continued rendering. A fresh process then reconnects from
+saved settings and the same Keychain key, with no ticket or pairing payload.
+It never adopts a user's simulator
 or production socket. Qualification-only socket/command launch arguments
 are compiled out on devices.
 
@@ -107,15 +115,52 @@ as well as the existing desktop and desktop-hosted phone checks.
 
 ## Connect
 
-Run `phux pair --enroll` on the server. The Connection sheet accepts its
-`quic://host:port`, leaf fingerprint, `sha256:` authority pin, token and
-one-time enrollment ticket, plus an optional session. Tap **Enroll this phone**,
-then **Connect**. Enrollment runs off the UI thread through the shared runtime;
+First run offers **Scan pairing QR**, **Paste pairing link**, and **Find with
+Tailscale**. On your computer, `phux pair --enroll` prints the code and link.
+Scan the QR or use the explicit Paste button for its whole link. Review the
+named computer and tap **Pair & connect**. No endpoint, pins, token or ticket
+transcription is needed. The old credential fields remain **Advanced setup**.
+
+The camera requires permission and supported hardware; denied/unavailable
+camera access leaves Paste available. Invalid QR content does not stop
+scanning. Cold and warm `phux-rune://connect?…` links use the same confirmation
+path. Rune does not claim the other mobile app's `phux` scheme or HTTPS
+Universal Links. Current and legacy Phux pairing URLs can be scanned/pasted.
+Every import is bounded, rejects ambiguous credentials and stages a complete
+candidate without borrowing trust or secrets from an existing connection.
+
+### Find with Tailscale
+
+Sign in inside Rune and choose an online Mac or Linux computer. Rune adds
+its own discovery-only node to your tailnet; this is separate from the
+installed Tailscale app. Device approval, ACL visibility and device limits
+still apply. Discovery runs while its picker is open; local node state is
+excluded from backups and SDK log uploads are disabled before startup.
+Manage discovery lets you sign out without deleting your Phux identity.
+
+The installed Tailscale app **must also be connected to the same tailnet**:
+SSH, enrollment and terminal sockets use that VPN, not the embedded directory.
+Confirm the computer's SSH username; Tailscale SSH can authenticate without a
+password and may ask for a browser check. Ordinary SSH can use a one-time
+password, never persisted. Host keys come from the authenticated netmap for
+Tailscale SSH. Ordinary SSH additionally requires the full MagicDNS name to
+resolve through the phone's VPN to the selected netmap address; without that
+same-tailnet proof, use QR instead. A discovered IP alone is never Phux trust.
+
+SSH only locates an existing Phux and requests `pair --json --enroll` from its
+running server. It does not install, upgrade or start a server. A computer
+without SSH access or a running paired QUIC listener can use QR after that
+server is configured. The returned link goes through the same parser and
+explicit **Pair & connect** confirmation as a camera scan.
+
+Enrollment runs off the UI thread through the shared runtime;
 it checks the issued chain against the pinned CA and device public key.
 Tickets are never saved. On devices, the private key stays in the Secure
 Enclave; the simulator uses a Keychain-held `SecKey`. No private key enters
 Rust. Each enrollment uses a fresh key; failed/cancelled staged keys are
 removed and old working identities preserved.
+If saving an issued identity fails, Retry saves that same identity rather
+than consuming the one-use ticket again.
 If a locked Keychain prevents removal, the public key tag is queued for
 cleanup on the next activation; the original enrollment error is retained.
 Replacing the saved endpoint retires its old token only after the new
@@ -131,8 +176,9 @@ The issued public chain and key tag are preferences, not private key material.
 Keychain failures are shown, not silently downgraded. Pairing credentials
 are never included in qualification reports.
 
-No native path starts `phux server --ensure`, discovers a local CLI, or runs
-the desktop binary updater. Reconnect retains the native target and trust.
+No native path starts `phux server --ensure`, discovers a phone-local CLI, or
+runs the desktop binary updater. The SSH setup step locates the CLI only on
+the explicitly selected computer. Reconnect retains the native target and trust.
 The scene pauses all rendering before backgrounding; worker wakes dispatch
 onto the main queue, and display scheduling honors Rune's motion/deadlines.
 Qualification waits for explicit native background/resumed-frame reports,
@@ -156,6 +202,7 @@ out after every sheet's modal content, so its controls remain tappable;
 unmounted ACP fields lose only focus/preedit, never their committed draft.
 
 Remaining qualification/integration is tracked in Beads: provisioned device
-and TestFlight, OS-driven keyboard/IME tests, camera/QR pairing-link import,
+and TestFlight, OS-driven keyboard/IME tests, physical-camera recognition and
+real-device Tailscale sign-in/SSH qualification,
 VoiceOver mapping, native links/file/image clipboard, haptics and
 Android. See [MOBILE.md](../MOBILE.md) for the desktop/native distinction.
