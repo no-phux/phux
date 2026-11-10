@@ -461,7 +461,7 @@ fn explicit_detach_cannot_bypass_initial_barrier_but_withdraws_released_particip
     effects.clear();
     assert!(kernel.detach_terminal(&id));
     assert!(!kernel.active_attach_contains(&id));
-    assert!(kernel.terminals.is_empty());
+    assert!(kernel.lanes.is_empty());
     assert!(kernel.closed.is_empty());
     for n in 2..=512 {
         let next = terminal(n);
@@ -474,7 +474,7 @@ fn explicit_detach_cannot_bypass_initial_barrier_but_withdraws_released_particip
             &mut effects,
         );
         assert!(kernel.detach_terminal(&next));
-        assert!(kernel.terminals.is_empty());
+        assert!(kernel.lanes.is_empty());
         assert!(kernel.closed.is_empty());
         effects.clear();
     }
@@ -488,14 +488,14 @@ fn release_terminal_reclaims_churn_and_allows_explicit_subscription_replacement(
         let id = terminal(n);
         publish_direct(&mut kernel, &id, stream(1), bootstrap(1), 0, &mut effects);
         assert!(kernel.release_terminal(&id));
-        assert!(kernel.terminals.is_empty());
+        assert!(kernel.lanes.is_empty());
         assert!(kernel.closed.is_empty());
         // Same ID can acquire a new explicitly admitted subscription.
         begin(&mut kernel, &id, stream(2), bootstrap(1), 0, &mut effects);
         kernel.update(closed(&id), &mut effects).unwrap();
         assert!(kernel.closed.contains(&id));
         assert!(kernel.release_terminal(&id));
-        assert!(kernel.terminals.is_empty());
+        assert!(kernel.lanes.is_empty());
         assert!(kernel.closed.is_empty());
         effects.clear();
     }
@@ -646,8 +646,8 @@ fn bootstrap_staging_byte_ceiling_is_connection_wide() {
         &mut effects,
     );
     kernel
-        .terminals
-        .get_mut(&first)
+        .lanes
+        .terminal_mut(&first)
         .and_then(|state| state.staging.as_mut())
         .expect("first staging")
         .accepted_bytes = MAX_BOOTSTRAP_STAGING_BYTES;
@@ -679,8 +679,8 @@ fn bootstrap_staging_ceiling_counts_engine_and_pending_effect_capacity() {
     let mut effects = EffectBuffer::new();
     begin(&mut kernel, &id, stream_id, bootstrap_id, 9, &mut effects);
     kernel
-        .terminals
-        .get_mut(&id)
+        .lanes
+        .terminal_mut(&id)
         .and_then(|state| state.staging.as_mut())
         .expect("staging")
         .engine
@@ -3558,7 +3558,7 @@ fn agent_bootstrap_accepts_exact_record_limit_including_split_lf() {
         )
         .unwrap();
     assert_eq!(
-        kernel.agents[&agent].staged_record_count(),
+        kernel.lanes.agent(&agent).unwrap().staged_record_count(),
         Some(0),
         "no decoding before LF"
     );
@@ -3594,7 +3594,14 @@ fn assert_agent_replacement_failure(kernel: &SessionKernel<FakeAdapter>, effects
             bootstrap_id, reason: TombstoneReason::CodecFailure, ..
         }) if *bootstrap_id == bootstrap(5)
     )));
-    assert!(kernel.agents[&terminal(2)].staged_record_count().is_none());
+    assert!(
+        kernel
+            .lanes
+            .agent(&terminal(2))
+            .unwrap()
+            .staged_record_count()
+            .is_none()
+    );
 }
 
 fn published_agent_with_record() -> SessionKernel<FakeAdapter> {
