@@ -234,12 +234,16 @@ impl DocumentStream {
         if let Some(cut) = self.staging.take() {
             self.retired
                 .entry(cut.generation)
-                .or_insert(replaced(cut.base_seq));
+                .or_insert_with(|| replaced(cut.base_seq));
         }
         if let Some((published, last_seq)) = self.published.take() {
-            self.retired.entry(published).or_insert(replaced(last_seq));
+            self.retired
+                .entry(published)
+                .or_insert_with(|| replaced(last_seq));
         }
-        self.retired.entry(generation).or_insert(replaced(base_seq));
+        self.retired
+            .entry(generation)
+            .or_insert_with(|| replaced(base_seq));
     }
 
     fn publication(
