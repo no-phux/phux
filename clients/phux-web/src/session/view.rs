@@ -175,6 +175,7 @@ impl Connection {
         let result = kernel.update_at(browser_monotonic_ms(), input, &mut self.effects);
         let focused = self.focused_terminal.as_ref();
         let mut outcome = Outcome::default();
+        let mut new_document = false;
         for effect in self.effects.as_slice() {
             match effect {
                 KernelEffect::Send(KernelSend::Input { terminal_id, event }) => {
@@ -207,8 +208,14 @@ impl Connection {
                 }
                 KernelEffect::Damage(_) => outcome.render = true,
                 KernelEffect::AgentPublication(_) => outcome.badges = true,
-                // The web client draws no tree or surface yet.
-                KernelEffect::Document(_) => {}
+                KernelEffect::Document(publication) => {
+                    new_document |= Self::store_document(
+                        &mut self.documents,
+                        &mut self.document_order,
+                        publication,
+                    );
+                    outcome.render = true;
+                }
                 KernelEffect::Status(KernelStatus::Engine {
                     key,
                     status: EngineStatus::Bell,
@@ -222,6 +229,9 @@ impl Connection {
         }
         if outcome.render {
             self.render_visible = true;
+        }
+        if new_document {
+            self.place_documents(&mut outcome);
         }
         if outcome.fatal.is_some() {
             self.failed = true;

@@ -20,9 +20,11 @@ impl Connection {
             return self.protocol_failure("ATTACHED used the wrong attach identifier");
         }
         self.learn_session_key(&snapshot);
-        // Only Terminal-kind resources build panes and gate the
-        // barrier; an AgentSession bound to one of them is declared
-        // to the kernel as a record stream and projected as a badge.
+        self.learn_documents(&snapshot);
+        // Only Terminal-kind resources gate the barrier; documents take
+        // read-only tiles after them, and an AgentSession bound to one of
+        // them is declared to the kernel as a record stream and projected
+        // as a badge.
         let terminal_ids: Vec<_> = snapshot
             .resources
             .iter()
@@ -292,6 +294,7 @@ impl Connection {
             reason,
         });
         if applied && !was_agent {
+            self.forget_document(&terminal_id);
             self.terminal_order.retain(|id| id != &terminal_id);
             self.layout = self
                 .layout
