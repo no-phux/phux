@@ -23,6 +23,8 @@
 //! - [`agent_record`] — the one `phux.agent/v1` record reader.
 //! - [`ask`] — the ADR-0035 ask-sentinel reader every answer path guards
 //!   with.
+//! - [`document_view`] — what a document publication draws as, by its
+//!   content type.
 //!
 //! # Frontend boundary
 //!
@@ -39,6 +41,7 @@
 pub mod agent_record;
 pub mod ask;
 pub mod document_input;
+pub mod document_view;
 pub mod engine;
 #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
 pub mod grid;
