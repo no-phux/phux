@@ -231,7 +231,7 @@ const SCANS: [Scan; 6] = [
         krate: "phux-server",
         matches: host_kind_branches,
         baseline: &[
-            ("hub/relay/admission.rs", 1, KIND_SPEC),
+            ("hub/relay.rs", 2, KIND_SPEC),
             ("hub/relay/requests.rs", 1, KIND_SPEC),
             (
                 "id_bridge.rs",
@@ -245,7 +245,7 @@ const SCANS: [Scan; 6] = [
                 10,
                 "permanent: app_for, the one kind-to-app match",
             ),
-            ("runtime/commands/satellite_lease.rs", 2, KIND_SPEC),
+            ("runtime/commands/satellite_lease.rs", 1, KIND_SPEC),
             ("runtime/organization/translate.rs", 3, LAUNCH),
             ("state/bindings.rs", 1, SLOTS),
             ("state/legacy_snapshot.rs", 4, KIND_SPEC),
