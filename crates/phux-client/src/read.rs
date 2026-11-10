@@ -1,6 +1,8 @@
 //! Kind dispatch for the verbs that read, wait on, or type into one
-//! resource: `phux snapshot`, `phux wait`, `phux send-keys`, and the MCP
-//! tools that mirror them.
+//! resource: `phux snapshot`, `phux wait` and `phux send-keys`.
+//!
+//! Their MCP tools route through it too, but read a Terminal only, so they keep their
+//! read-only annotation and name the per-kind tool for a document.
 //!
 //! The kind catalog ([`phux_protocol::kinds`]) decides. A kind whose facet
 //! carries `GET_SCREEN` is read as a screen, and one whose facet carries

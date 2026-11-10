@@ -25,7 +25,7 @@ pub(crate) fn catalog() -> Value {
         },
         {
             "name": "phux_snapshot",
-            "description": "Capture a pane as structured screen data (side-effect-free; does not attach or resize). A target naming a document resource (@N from phux_documents) is read by kind instead, through a brief observer attach: an accessibility tree returns what phux_tree_snapshot returns, a pixel surface what phux_surface_snapshot returns (the image as MCP image content), and a typed document its `seq`, `bytes`, `content_type`, and `text` when the type is text. The screen arguments (`scrollback`, `cells`, `format`, `tail`, `unwrap`) apply to a terminal only.",
+            "description": "Capture a pane as structured screen data (side-effect-free; does not attach or resize). Reads a terminal only: a document resource is refused with `wrong_resource_kind` naming the tool that reads it (phux_tree_snapshot for an accessibility tree, phux_surface_snapshot for a pixel surface).",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -99,7 +99,7 @@ pub(crate) fn catalog() -> Value {
         },
         {
             "name": "phux_wait",
-            "description": "Poll a pane until it contains text (`until`) or settles (`idle_ms`). Returns whether the condition was met. A target naming an accessibility tree or a text document (@N) follows it through an observer attach until a document's text contains `until`, as phux_tree_wait; `outcome` is then met (with the document's `seq`), timed_out, or closed. `idle_ms` applies to a terminal only, and a pixel surface has no text to wait on.",
+            "description": "Poll a pane until it contains text (`until`) or settles (`idle_ms`). Returns whether the condition was met. Waits on a terminal only: a document resource is refused with `wrong_resource_kind`; wait on a tree's or a document's text with phux_tree_wait.",
             "inputSchema": {
                 "type": "object",
                 "properties": {

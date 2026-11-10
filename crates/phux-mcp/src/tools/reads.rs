@@ -22,18 +22,13 @@ async fn phux_ls(args: &Value) -> Result<Value, ToolError> {
 /// `phux_snapshot` — read a pane as structured data. `scrollback` is
 /// tri-state (absent: viewport; `0`: all history; `N`: last `N` rows);
 /// `tail`/`unwrap` are the ADR-0077 projections `phux snapshot` applies too.
-/// A document target is read by kind, as its per-kind tool reads it.
+/// A document target is refused for its per-kind tool ([`terminal_reader`]).
 async fn phux_snapshot(args: &Value) -> Result<Value, ToolError> {
     let socket = socket_or_default(args);
     let selector = parse_target(args)?;
     let read = SnapshotRead::parse(args)?;
     let resolved = resolve_resource(&socket, &selector, false).await?;
-    let route = read::route(Verb::Snapshot, &resolved).map_err(|err| wrong_kind_error(&err))?;
-    read::terminal_only(&resolved, route, &read.terminal_args())
-        .map_err(|err| terminal_only_error(&err))?;
-    if let Route::Document(kind) = route {
-        return crate::document_tools::snapshot_of(kind, &socket, &resolved.id).await;
-    }
+    terminal_reader("phux_snapshot", Verb::Snapshot, &resolved)?;
     let screen = phux_client::snapshot::get_screen_scrollback_format(
         &socket,
         resolved.id,
@@ -76,17 +71,6 @@ impl<'a> SnapshotRead<'a> {
             ));
         }
         Ok(read)
-    }
-
-    /// The screen arguments, each with whether it was given.
-    const fn terminal_args(&self) -> [(&'static str, bool); 5] {
-        [
-            ("scrollback", self.scrollback.is_some()),
-            ("cells", self.cells),
-            ("format", self.format.is_some()),
-            ("tail", self.tail.is_some()),
-            ("unwrap", self.unwrap),
-        ]
     }
 
     /// The history window to request: `tail` asks for history too.

@@ -152,17 +152,10 @@ pub(crate) const TOOLS: &[Row] = &[
         "upload",
         Touches::Wire(&[RESOLVE, "PUT_FILE"]),
     ),
-    // A document target is read through an attach (`phux_client::read`).
     cli(
         "phux_snapshot",
         "snapshot",
-        Touches::Wire(&[
-            RESOLVE,
-            "GET_METADATA",
-            "GET_SCREEN",
-            "ATTACH_RESOURCE",
-            "DETACH_RESOURCE",
-        ]),
+        Touches::Wire(&[RESOLVE, "GET_METADATA", "GET_SCREEN"]),
     ),
     cli(
         "phux_send_keys",
@@ -183,17 +176,7 @@ pub(crate) const TOOLS: &[Row] = &[
         // server-owned `phux.pane-occupant/v1` record before typing.
         Touches::Wire(&[RESOLVE, "GET_METADATA", "ROUTE_INPUT", "GET_SCREEN"]),
     ),
-    cli(
-        "phux_wait",
-        "wait",
-        Touches::Wire(&[
-            RESOLVE,
-            "GET_SCREEN",
-            "ATTACH_RESOURCE",
-            "SUBSCRIBE_EVENTS",
-            "DETACH_RESOURCE",
-        ]),
-    ),
+    cli("phux_wait", "wait", Touches::Wire(&[RESOLVE, "GET_SCREEN"])),
     residue(
         "phux_new",
         "new",

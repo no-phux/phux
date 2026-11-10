@@ -91,68 +91,15 @@
       "truncated": {
         "type": "boolean"
       },
-      "seq": {
-        "type": "integer",
-        "description": "A document resource's sequence; 0 before its first publish."
-      },
-      "document": {
-        "description": "An accessibility tree's JSON document, null before its first publish."
-      },
-      "bytes": {
-        "type": "integer"
-      },
-      "content_type": {
-        "type": [
-          "string",
-          "null"
-        ]
-      },
-      "text": {
-        "type": [
-          "string",
-          "null"
-        ],
-        "description": "A typed document's content when its type is text."
-      },
-      "format": {
-        "type": [
-          "string",
-          "null"
-        ]
-      },
-      "width": {
-        "type": [
-          "integer",
-          "null"
-        ]
-      },
-      "height": {
-        "type": [
-          "integer",
-          "null"
-        ]
-      },
       "resource_id": {
         "type": "string",
         "description": "Exact reusable resource ID, when this result identifies one resource."
       }
     },
-    "anyOf": [
-      {
-        "description": "A terminal's screen.",
-        "required": [
-          "pane",
-          "cols",
-          "rows"
-        ]
-      },
-      {
-        "description": "A document resource: a tree, a surface, or a typed document.",
-        "required": [
-          "schema_version",
-          "seq"
-        ]
-      }
+    "required": [
+      "pane",
+      "cols",
+      "rows"
     ]
   },
   "phux_send_keys": {
@@ -265,21 +212,10 @@
         "type": "integer"
       },
       "outcome": {
-        "type": "string",
-        "enum": [
-          "met",
-          "timed_out",
-          "closed"
-        ],
-        "description": "`closed`: a document resource closed before it matched."
+        "type": "string"
       },
       "polls": {
-        "type": "integer",
-        "description": "Screen reads, or for a document resource the documents examined."
-      },
-      "seq": {
-        "type": "integer",
-        "description": "The matching document's sequence, when a document resource met the condition."
+        "type": "integer"
       },
       "resource_id": {
         "type": "string",

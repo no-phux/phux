@@ -1,7 +1,7 @@
-//! `phux_snapshot`, `phux_wait` and `phux_send_keys` dispatch on their
-//! target's kind against a real server: a document target reads as its
-//! per-kind tool reads it, a Terminal reads as before, and a verb that does
-//! not apply is refused by kind.
+//! `phux_snapshot`, `phux_wait` and `phux_send_keys` check their target's
+//! kind against a real server: a Terminal reads as before, and a document
+//! is refused with `wrong_resource_kind` naming the tool that reads it, so
+//! the two readers stay read-only (they never attach).
 
 use phux_client::tree::Kind;
 use phux_server_testkit::{
@@ -25,24 +25,22 @@ fn target(id: &ResourceId, socket: &std::path::Path, mut args: Value) -> Value {
 }
 
 async fn ok(tool: &str, args: &Value) -> Value {
-    let mut result = crate::tools::dispatch(tool, args)
+    let result = crate::tools::dispatch(tool, args)
         .await
         .unwrap_or_else(|err| panic!("{tool} {args}: {err}"));
-    let image = result.as_object_mut().unwrap().remove(IMAGE_CONTENT_KEY);
     crate::contract_tests::validate_output(tool, &result);
-    if let Some(image) = image {
-        result[IMAGE_CONTENT_KEY] = image;
-    }
     result
 }
 
-async fn refused(tool: &str, args: &Value) -> String {
+/// The refusal's `(code, remedy)`; every one exits 2.
+async fn refused(tool: &str, args: &Value) -> (String, String) {
     let err = crate::tools::dispatch(tool, args)
         .await
         .expect_err("refused");
-    let code = err.document()["error"]["code"].as_str().unwrap().to_owned();
-    assert_eq!(err.document()["exit_code"], 2, "{err}");
-    code
+    let doc = err.document();
+    assert_eq!(doc["exit_code"], 2, "{err}");
+    let field = |value: &Value| value.as_str().unwrap_or_default().to_owned();
+    (field(&doc["error"]["code"]), field(&doc["remedy"]))
 }
 
 #[test]
@@ -88,61 +86,42 @@ fn the_screen_verbs_dispatch_on_the_target_kind() {
             tree::publish(&mut producer, id, bytes).await.unwrap();
         }
         let none = || json!({});
-
-        // Snapshot: each document as its own tool reads it.
-        let snap = ok("phux_snapshot", &target(&tree_id, &socket, none())).await;
-        let per_kind = ok("phux_tree_snapshot", &target(&tree_id, &socket, none())).await;
-        assert_eq!(snap, per_kind);
-        let surface = ok("phux_snapshot", &target(&surface_id, &socket, none())).await;
-        assert_eq!(
-            (surface["width"].as_u64(), surface["height"].as_u64()),
-            (Some(1), Some(1))
-        );
-        assert_eq!(surface[IMAGE_CONTENT_KEY]["mimeType"], "image/png");
-        let text = ok("phux_snapshot", &target(&notes, &socket, none())).await;
-        assert_eq!(
-            (text["text"].as_str(), text["content_type"].as_str()),
-            (Some("# hi\n## Done"), Some("text/markdown"))
-        );
-        let binary = ok("phux_snapshot", &target(&blob, &socket, none())).await;
-        assert!(binary["text"].is_null(), "{binary}");
-        assert_eq!(binary["bytes"], 3);
         let screen = ok("phux_snapshot", &target(&pane, &socket, none())).await;
-        assert!(
-            screen["cols"].as_u64().is_some(),
-            "a Terminal still reads as a screen"
-        );
-        let tail = target(&tree_id, &socket, json!({ "tail": 3 }));
-        assert_eq!(refused("phux_snapshot", &tail).await, "usage_error");
+        assert!(screen["cols"].as_u64().is_some(), "a Terminal still reads");
+        let waited = target(&pane, &socket, json!({ "idle_ms": 50, "timeout_secs": 5 }));
+        assert_eq!(ok("phux_wait", &waited).await["outcome"], "met");
 
-        // Wait: a tree or a text document follows its text.
-        let until = |id, text| target(id, &socket, json!({ "until": text, "timeout_secs": 1 }));
-        let met = ok("phux_wait", &until(&tree_id, "hello")).await;
-        assert_eq!(met["outcome"], "met", "{met}");
-        let met = ok("phux_wait", &until(&notes, "## Done")).await;
-        assert_eq!(met["outcome"], "met", "{met}");
-        let missed = ok("phux_wait", &until(&tree_id, "never-there")).await;
-        assert_eq!(missed["outcome"], "timed_out", "{missed}");
-        assert_eq!(
-            refused("phux_wait", &until(&surface_id, "x")).await,
-            "wrong_resource_kind"
-        );
-        assert_eq!(
-            refused("phux_wait", &until(&blob, "x")).await,
-            "usage_error"
-        );
-        let idle = target(&tree_id, &socket, json!({ "idle_ms": 50 }));
-        assert_eq!(refused("phux_wait", &idle).await, "usage_error");
-        let bare = target(&tree_id, &socket, none());
-        assert_eq!(refused("phux_wait", &bare).await, "usage_error");
+        // Each document is refused for the tool that reads it.
+        let until = json!({ "until": "x", "timeout_secs": 1 });
+        for (tool, id, extra, instead) in [
+            ("phux_snapshot", &tree_id, none(), "phux_tree_snapshot"),
+            (
+                "phux_snapshot",
+                &surface_id,
+                none(),
+                "phux_surface_snapshot",
+            ),
+            ("phux_snapshot", &notes, none(), "phux snapshot @N"),
+            ("phux_wait", &tree_id, until.clone(), "phux_tree_wait"),
+            ("phux_wait", &notes, until.clone(), "phux_tree_wait"),
+            (
+                "phux_wait",
+                &surface_id,
+                until.clone(),
+                "phux_surface_snapshot",
+            ),
+        ] {
+            let (code, remedy) = refused(tool, &target(id, &socket, extra)).await;
+            assert_eq!(code, "wrong_resource_kind", "{tool} {id:?}");
+            assert!(remedy.contains(instead), "{tool} {id:?}: {remedy}");
+        }
 
         // Send-keys: keys reach a Terminal only.
-        for id in [&tree_id, &surface_id, &notes] {
+        for id in [&tree_id, &surface_id, &notes, &blob] {
             let keys = target(id, &socket, json!({ "keys": ["Enter"] }));
-            assert_eq!(
-                refused("phux_send_keys", &keys).await,
-                "wrong_resource_kind"
-            );
+            let (code, remedy) = refused("phux_send_keys", &keys).await;
+            assert_eq!(code, "wrong_resource_kind");
+            assert!(remedy.contains("phux agent page"), "{remedy}");
         }
 
         drop(producer);

@@ -1,5 +1,5 @@
 /// `phux_wait` — poll the pane named by the selector until a condition
-/// holds; a tree or text document target is followed until its text does.
+/// holds; a document target is refused for its per-kind tool.
 async fn phux_wait(args: &Value) -> Result<Value, ToolError> {
     let socket = socket_or_default(args);
     let selector = parse_target(args)?;
@@ -14,13 +14,7 @@ async fn phux_wait(args: &Value) -> Result<Value, ToolError> {
     let timeout = num_arg(args, "timeout_secs").map(Duration::from_secs);
 
     let resolved = resolve_resource(&socket, &selector, false).await?;
-    let route = read::route(Verb::Wait, &resolved).map_err(|err| wrong_kind_error(&err))?;
-    read::terminal_only(&resolved, route, &[("idle_ms", args.get("idle_ms").is_some())])
-        .map_err(|err| terminal_only_error(&err))?;
-    if let Route::Document(kind) = route {
-        return crate::document_tools::wait_on(kind, &socket, &resolved.id, &condition, timeout)
-            .await;
-    }
+    terminal_reader("phux_wait", Verb::Wait, &resolved)?;
     let result = phux_client::wait::poll_until(
         &socket,
         resolved.id,
