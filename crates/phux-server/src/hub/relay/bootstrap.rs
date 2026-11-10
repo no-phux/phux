@@ -18,18 +18,12 @@ impl RelaySession {
         if spec.stream.needs_terminal_profile {
             return profile == self.bootstrap_profile.terminal_stream();
         }
-        let advertised = |gate: Option<phux_protocol::kinds::FeatureGate>| {
-            gate.is_none_or(|gate| {
-                gate.advertised(self.satellite_features, self.satellite_features_ext)
-            })
-        };
-        let codec = spec.stream.codec(profile.codec().tag());
-        let resumes = profile.resume_after_seq().is_none()
-            || spec
-                .stream
-                .resume
-                .is_some_and(|gate| advertised(Some(gate)));
-        codec.is_some_and(|codec| advertised(codec.gate)) && resumes
+        spec.stream.admits(
+            profile.codec().tag(),
+            profile.resume_after_seq().is_some(),
+            self.satellite_features,
+            self.satellite_features_ext,
+        )
     }
 
     pub(super) fn begin_bootstrap_flow(

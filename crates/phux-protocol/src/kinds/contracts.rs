@@ -82,6 +82,35 @@ impl StreamContract {
         false
     }
 
+    /// Whether a peer that advertised `features` and `features_ext` may
+    /// send this kind a stream in codec `tag`, with a resume cursor iff
+    /// `resumes`: the codec is this kind's and its gate, and for a cursor
+    /// the resume gate, is advertised. A Terminal profile, which the
+    /// connection negotiates instead, is the caller's to compare.
+    #[must_use]
+    pub const fn admits(
+        &self,
+        tag: u8,
+        resumes: bool,
+        features: crate::caps::ServerFeatureSet,
+        features_ext: crate::caps::ServerFeatureExtSet,
+    ) -> bool {
+        let codec_gate = match self.codec(tag) {
+            Some(codec) => codec.gate,
+            None => return false,
+        };
+        let codec_ok = match codec_gate {
+            Some(gate) => gate.advertised(features, features_ext),
+            None => true,
+        };
+        let resume_ok = match (resumes, self.resume) {
+            (false, _) => true,
+            (true, Some(gate)) => gate.advertised(features, features_ext),
+            (true, None) => false,
+        };
+        codec_ok && resume_ok
+    }
+
     /// The codec with wire tag `tag`, if this kind streams it.
     #[must_use]
     pub const fn codec(&self, tag: u8) -> Option<&'static StreamCodec> {

@@ -117,3 +117,49 @@ pub(in crate::wire) const fn decode_bootstrap_stream_profile(
         _ => Err(DecodeError::InvalidBootstrapProfile),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::caps::OutputMode;
+
+    /// Each stream profile's `BOOTSTRAP_BEGIN` codec bytes, output mode and
+    /// resume cursor, pinned: the catalog decides which kind owns a tag,
+    /// never the bytes.
+    #[test]
+    fn every_stream_profile_encodes_its_pinned_codec_bytes() {
+        use BootstrapStreamProfile as P;
+        let v2 = EngineCodec::LibghosttyCheckpointV2;
+        let snapshot = EngineCodec::LibghosttySnapshotV1;
+        let raw = OutputMode::Raw;
+        let cases: [(P, &[u8], OutputMode, Option<u64>); 10] = [
+            (P::NativeState { codec: v2 }, &[1, 2], raw, None),
+            (P::NativeState { codec: snapshot }, &[1, 4], raw, None),
+            (P::SynthesizedVtRaw, &[0], raw, None),
+            (P::SynthesizedVtStateSync, &[0], OutputMode::StateSync, None),
+            (P::AgentEventsJsonlV1, &[3], raw, None),
+            (
+                P::AgentEventsJsonlResumeV1 { after_seq: 7 },
+                &[3],
+                raw,
+                Some(7),
+            ),
+            (P::AccessibilityTreeJsonV1, &[4], raw, None),
+            (P::PixelSurfacePngV1, &[5], raw, None),
+            (P::DocumentTypedV1, &[6], raw, None),
+            (P::Unknown { codec_tag: 200 }, &[200], raw, None),
+        ];
+        for (profile, bytes, mode, resume) in cases {
+            let mut buf = bytes::BytesMut::new();
+            encode_bootstrap_codec(profile.codec(), &mut Encoder::new(&mut buf));
+            assert_eq!(&buf[..], bytes, "{profile:?}");
+            assert_eq!(profile.output_mode(), mode, "{profile:?}");
+            assert_eq!(profile.resume_after_seq(), resume, "{profile:?}");
+            let codec = decode_bootstrap_codec(&mut Decoder::new(&buf)).unwrap();
+            assert_eq!(
+                decode_bootstrap_stream_profile(codec, mode.as_wire(), resume),
+                Ok(profile)
+            );
+        }
+    }
+}
