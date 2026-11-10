@@ -124,6 +124,20 @@ next mutable call on the client. The low-level `phux_client_terminal_grid`
 and `phux_client_terminal_grid_metadata` are still there for a renderer that
 wants every cell.
 
+### Documents and non-terminal leaves
+
+An arrangement leaf, and a `phux_client_catalog_terminal_get` entry, is any
+resource but an `AgentSession`: a terminal, an accessibility tree, a pixel
+surface, a typed document, or a kind the header does not name. Read
+`resource_kind` before creating a terminal view; only a terminal has a grid.
+A read never prunes these leaves, so a write never loses another client's
+placement. A document kind delivers whole documents instead: attach it with
+`phux_client_queue_attach_resource`, then read `PHUX_CLIENT_EFFECT_DOCUMENT`
+effects. `bytes` holds the content type (`status_code` bytes long, empty for
+a tree or surface), then the document; the newest `seq` wins. In Rust these
+are `Event::DocumentPublished` and `Topology::resources`
+([resource kinds](./resource-kinds.md)).
+
 ## Runtime consumer contract
 
 Native Rust consumers normally use the runtime's **Fed** delivery: the

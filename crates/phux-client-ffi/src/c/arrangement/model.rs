@@ -13,9 +13,12 @@ pub(super) const MAX_TEXT: usize = 4096;
 pub(super) const MAX_GROUPS: usize = 32;
 pub(super) const MAX_NODES: usize = 512;
 
+/// A resource that can occupy a leaf: a Terminal, a document, or a kind
+/// this build does not name ([`ResourceKind::can_occupy_leaf`]).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) struct CatalogTerminal {
     pub id: ResourceId,
+    pub kind: ResourceKind,
     pub session: u32,
     pub title: String,
     pub cwd: String,
@@ -28,6 +31,8 @@ pub(super) struct Node {
     pub first: u32,
     pub second: u32,
     pub ratio: f32,
+    /// A leaf's wire `ResourceKind` tag; 0 for a split.
+    pub resource_kind: u32,
 }
 
 #[derive(Default)]
@@ -59,7 +64,7 @@ impl Catalog {
             || snapshot
                 .resources
                 .iter()
-                .filter(|p| p.kind == ResourceKind::Terminal)
+                .filter(|p| p.kind.can_occupy_leaf())
                 .count()
                 > 256
             || snapshot.windows.len() > 256
@@ -100,7 +105,7 @@ impl Catalog {
         let mut terminals = snapshot
             .resources
             .into_iter()
-            .filter(|p| p.kind == ResourceKind::Terminal)
+            .filter(|p| p.kind.can_occupy_leaf())
             .map(|p| catalog_terminal(p, &owners))
             .collect::<Result<Vec<_>, BridgeError>>()?;
         sessions.sort_by_key(|s| s.session_id);
@@ -125,7 +130,40 @@ impl Catalog {
         })
     }
 
-    /// Terminals of `selected` that no group of `doc` shows.
+    /// Flatten `arrangement`, naming each leaf's kind from this catalog.
+    pub(super) fn flatten(
+        &self,
+        arrangement: &ArrangementDoc,
+    ) -> Result<(Vec<Node>, Vec<u32>), BridgeError> {
+        let (mut nodes, roots) = flatten(arrangement)?;
+        for node in &mut nodes {
+            let Some(id) = &node.terminal else { continue };
+            if let Some(entry) = self.terminals.iter().find(|t| &t.id == id) {
+                node.resource_kind = u32::from(entry.kind.as_wire());
+            }
+        }
+        Ok((nodes, roots))
+    }
+
+    /// Whether `other` publishes the same thing. Attached-client counts
+    /// are noise here: they change with every viewer and move no
+    /// arrangement.
+    pub(super) fn publishes_same(&self, other: &Self) -> bool {
+        self.terminals == other.terminals
+            && self.sessions.len() == other.sessions.len()
+            && self.sessions.iter().zip(&other.sessions).all(|(a, b)| {
+                a.session_id == b.session_id
+                    && a.name == b.name
+                    && a.created_at_unix_secs == b.created_at_unix_secs
+                    && a.window_count == b.window_count
+                    && a.keep_empty == b.keep_empty
+                    && a.key == b.key
+                    && a.lifetime == b.lifetime
+                    && a.snapshot_members == b.snapshot_members
+            })
+    }
+
+    /// Leaf-capable resources of `selected` that no group of `doc` shows.
     pub(super) fn unarranged(&self, doc: &ArrangementDoc, selected: u32) -> usize {
         let placed: HashSet<ResourceId> = doc
             .groups
@@ -195,6 +233,7 @@ fn catalog_terminal(
     text(&cwd)?;
     Ok(CatalogTerminal {
         id: pane.id,
+        kind: pane.kind,
         session,
         title,
         cwd,
@@ -280,6 +319,7 @@ fn flatten_node(
         first: 0,
         second: 0,
         ratio: 0.0,
+        resource_kind: 0,
     });
     nodes[index as usize] = flatten_value(tree, nodes, depth)?;
     Ok(index)
@@ -299,6 +339,7 @@ fn flatten_value(
                 first: 0,
                 second: 0,
                 ratio: 0.0,
+                resource_kind: 0,
             }
         }
         LayoutNode::Split {
@@ -316,6 +357,7 @@ fn flatten_value(
                 first: flatten_node(left, nodes, depth + 1)?,
                 second: flatten_node(right, nodes, depth + 1)?,
                 ratio: *ratio,
+                resource_kind: 0,
             }
         }
     })

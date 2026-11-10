@@ -6,9 +6,13 @@
 /* ------------------------------------------------- shared arrangement
  *
  * The attached session's arrangement: its groups (tabs), each one split tree
- * of terminal leaves. Rust-owned. All output records require initialized
+ * of resource leaves. A leaf, and a catalog entry, is any resource but an
+ * AgentSession: a terminal, a document kind, or a kind this header does not
+ * name (kept so a newer peer's placement is never pruned). Read its kind
+ * from resource_kind; the terminal_id fields keep their names but hold any
+ * leaf resource. Rust-owned. All output records require initialized
  * size/version. Borrowed names/IDs expire on the next mutable client call.
- * Catalog bounds: 256 sessions, 256 terminals; arrangement: 32 groups, 512
+ * Catalog bounds: 256 sessions, 256 resources; arrangement: 32 groups, 512
  * nodes, depth 64. Names/title/cwd/host are bounded to 4096 UTF-8 bytes
  * (refusal, no truncation). Group IDs are random 128-bit identities, stable
  * while the group exists.
@@ -17,8 +21,8 @@
  * holds: closing a view never ends work, and an empty arrangement means the
  * members are not arranged, not that the session is empty. Nothing is
  * synthesized when a session has no stored arrangement (state UNARRANGED,
- * zero groups); unarranged_count says how many of its terminals no group
- * shows, so a host can offer to arrange them.
+ * zero groups); unarranged_count says how many of its catalog resources no
+ * group shows, so a host can offer to arrange them.
  *
  * Backend ORGANIZATION (the server advertised ORGANIZATION, which gives
  * every session a stored arrangement): reads are ARRANGEMENT_GET. A read
@@ -63,6 +67,7 @@ typedef struct PhuxArrangementInfo {
     uint32_t session_id;
     /* PHUX_ARRANGEMENT_STATE_* */
     uint32_t state;
+    /* terminal_count counts catalog entries, every leaf-capable kind. */
     uint32_t group_count, node_count, terminal_count;
     /* Latest refresh/mutation: 0 idle, 1 pending, 2 confirmed, 3 refused,
      * 4 disconnected/unknown outcome. request_id=0 is an automatic read. */
@@ -76,8 +81,8 @@ typedef struct PhuxArrangementInfo {
      * when unknown or absent. */
     uint8_t session_key[16];
     uint8_t arrangement_key[16];
-    /* Terminals of the session no group shows; stored entries without a live
-     * handle here. */
+    /* Catalog resources of the session no group shows; stored entries
+     * without a live handle here. */
     uint32_t unarranged_count;
     uint32_t unplaced_count;
 } PhuxArrangementInfo;
@@ -96,6 +101,9 @@ typedef struct PhuxArrangementNode {
     PhuxResourceId terminal_id;
     uint32_t first, second;
     float ratio;
+    /* A leaf's PhuxResourceKind tag; 0 for a split. In former tail padding:
+     * the record's size is unchanged. */
+    uint32_t resource_kind;
 } PhuxArrangementNode;
 typedef struct PhuxCatalogTerminal {
     size_t size;
@@ -103,6 +111,9 @@ typedef struct PhuxCatalogTerminal {
     PhuxResourceId terminal_id;
     /* 0 means unknown ownership (e.g. satellite); never inferred from numeric ID. */
     uint32_t session_id;
+    /* PhuxResourceKind tag. In former padding: no other offset moves. Only a
+     * PHUX_RESOURCE_TERMINAL entry has a grid; title is a document's name. */
+    uint32_t resource_kind;
     PhuxBytes title, cwd;
 } PhuxCatalogTerminal;
 typedef struct PhuxArrangementMutation {

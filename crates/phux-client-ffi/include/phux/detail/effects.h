@@ -19,12 +19,26 @@
  * or zero for an empty replacement. CLOSED has empty bytes and retires the
  * resource from the catalog. Hosts must tolerate effect kinds they
  * do not recognise; new kinds are additive.
+ *
+ * PHUX_CLIENT_EFFECT_DOCUMENT carries one whole document of a document-kind
+ * resource (PHUX_RESOURCE_ACCESSIBILITY_TREE, _PIXEL_SURFACE or _DOCUMENT)
+ * attached with phux_client_queue_attach_resource: the bootstrap cut, or a
+ * newer publish. terminal_id is the resource id,
+ * detail its PhuxResourceKind tag, seq the publish sequence (the newest per
+ * resource is the one to show), and status_code the byte length of the
+ * content type that bytes starts with: zero for a tree (JSON) or a surface
+ * (PNG or JPEG), the typed document's ASCII content type (at most 255 bytes,
+ * e.g. text/markdown) otherwise. The document is the rest of bytes, after
+ * those status_code bytes. stream_id, bootstrap_id, first_row and last_row
+ * are zero. Live-only: nothing is journaled or needs acceptance, and a newer
+ * document supersedes a staged one of the same resource before it is read.
  */
 typedef enum PhuxClientEffectKind {
     PHUX_CLIENT_EFFECT_DAMAGE = 1,
     PHUX_CLIENT_EFFECT_STATUS = 2,
     PHUX_CLIENT_EFFECT_JOB = 3,
-    PHUX_CLIENT_EFFECT_AGENT_RECORDS = 4
+    PHUX_CLIENT_EFFECT_AGENT_RECORDS = 4,
+    PHUX_CLIENT_EFFECT_DOCUMENT = 5
 } PhuxClientEffectKind;
 
 typedef enum PhuxClientAgentRecordsKind {
@@ -171,7 +185,8 @@ typedef enum PhuxClientHistoryUnavailableCode {
  * PhuxClientCloseReason for EXITED, the ControlAction wire value for
  * INPUT_HOLDER, and zero otherwise (including CWD, COMMAND_STARTED, and
  * COMMAND_FINISHED, whose own payload is documented on PhuxClientStatusKind
- * above).
+ * above). On a DOCUMENT effect it is the content type's length (see
+ * PhuxClientEffectKind).
  */
 
 /** Borrowed effect. bytes contains title/error detail when defined by kind. The replica never answers terminal queries (the server's canonical terminal is the sole answerer), so no PTY reply appears here or in the outgoing queue. */

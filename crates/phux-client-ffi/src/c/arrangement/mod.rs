@@ -230,7 +230,7 @@ impl SharedArrangement {
         self.server_revision
     }
 
-    /// Terminals of the selected session that no group shows.
+    /// Leaf-capable resources of the selected session no group shows.
     pub(super) fn unarranged(&self) -> usize {
         self.catalog.unarranged(&self.topology, self.selected)
     }
@@ -822,26 +822,9 @@ fn topology_equal(a: &ArrangementDoc, b: &ArrangementDoc) -> bool {
             .all(|(a, b)| a.id == b.id && a.name == b.name && a.state.tree == b.state.tree)
 }
 
-/// Whether two catalogs publish the same thing. Attached-client counts are
-/// noise here: they change with every viewer and move no arrangement.
-fn catalog_equal(a: &Catalog, b: &Catalog) -> bool {
-    a.terminals == b.terminals
-        && a.sessions.len() == b.sessions.len()
-        && a.sessions.iter().zip(&b.sessions).all(|(a, b)| {
-            a.session_id == b.session_id
-                && a.name == b.name
-                && a.created_at_unix_secs == b.created_at_unix_secs
-                && a.window_count == b.window_count
-                && a.keep_empty == b.keep_empty
-                && a.key == b.key
-                && a.lifetime == b.lifetime
-                && a.snapshot_members == b.snapshot_members
-        })
-}
-
 fn publish_catalog(client: &mut Client, catalog: Catalog) -> Result<(), BridgeError> {
     let ws = &mut client.arrangement;
-    if !catalog_equal(&ws.catalog, &catalog) || ws.revision == 0 {
+    if !ws.catalog.publishes_same(&catalog) || ws.revision == 0 {
         ws.revision = ws
             .revision
             .checked_add(1)
@@ -892,10 +875,10 @@ fn publish(
     topology: ArrangementDoc,
     authoritative: bool,
 ) -> Result<(), BridgeError> {
-    let (nodes, roots) = model::flatten(&topology)?;
+    let (nodes, roots) = catalog.flatten(&topology)?;
     let ws = &mut client.arrangement;
     if !topology_equal(&ws.topology, &topology)
-        || !catalog_equal(&ws.catalog, &catalog)
+        || !ws.catalog.publishes_same(&catalog)
         || ws.authoritative != authoritative
         || ws.state == PHUX_ARRANGEMENT_STATE_UNAVAILABLE
         || ws.revision == 0
