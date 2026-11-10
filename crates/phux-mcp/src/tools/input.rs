@@ -8,10 +8,13 @@ async fn phux_send_keys(args: &Value) -> Result<Value, ToolError> {
             "`keys` must be a non-empty array of strings",
         ));
     }
-    let resolved = resolve_resource(&socket, &selector, true).await?;
-    read::require_terminal(Verb::SendKeys, &resolved).map_err(|err| wrong_kind_error(&err))?;
-    let pane = resolved.id;
-    phux_client::send_keys::send_to(&socket, pane.clone(), &keys).await?;
+    let target = resolve_kinded(&socket, &selector, true).await?;
+    target.require_terminal("phux_send_keys", Verb::SendKeys)?;
+    if let Err(err) = phux_client::send_keys::send_to(&socket, target.id.clone(), &keys).await {
+        let tool = "phux_send_keys";
+        return Err(target.refused(tool, Verb::SendKeys, &socket, err).await);
+    }
+    let pane = target.id;
     Ok(json!({ "sent": true, "pane": pane_value(&pane) }))
 }
 
@@ -32,10 +35,14 @@ async fn phux_paste(args: &Value) -> Result<Value, ToolError> {
     } else {
         PasteTrust::Trusted
     };
-    let resolved = resolve_resource(&socket, &selector, true).await?;
-    read::require_terminal(Verb::Paste, &resolved).map_err(|err| wrong_kind_error(&err))?;
-    let pane = resolved.id;
-    phux_client::send_keys::paste_to(&socket, pane.clone(), text.into_bytes(), trust).await?;
+    let target = resolve_kinded(&socket, &selector, true).await?;
+    target.require_terminal("phux_paste", Verb::Paste)?;
+    let pasted =
+        phux_client::send_keys::paste_to(&socket, target.id.clone(), text.into_bytes(), trust);
+    if let Err(err) = pasted.await {
+        return Err(target.refused("phux_paste", Verb::Paste, &socket, err).await);
+    }
+    let pane = target.id;
     Ok(json!({ "sent": true, "pane": pane_value(&pane), "untrusted": untrusted }))
 }
 

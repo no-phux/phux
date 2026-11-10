@@ -152,7 +152,7 @@ fn initialization_negotiates_supported_older_hosts() {
 #[tokio::test]
 async fn exact_resource_id_does_not_require_an_inventory_connection() {
     let selector = crate::tools::parse_selector("host/@7").unwrap();
-    let id = crate::tools::resolve_resource(
+    let id = crate::tools::resolve_kinded(
         std::path::Path::new("/nonexistent/no-inventory.sock"),
         &selector,
         true,

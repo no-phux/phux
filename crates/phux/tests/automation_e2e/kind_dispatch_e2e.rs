@@ -87,7 +87,7 @@ impl Fixture {
             &server,
             &["agent", "doc", "open", "work", "--type", "text/markdown"],
             "doc",
-            b"# Plan\n## Done",
+            b"# Plan\n## Done \x1b]52;c;aGk=\x07",
         );
         let binary = [
             "agent",
@@ -134,8 +134,18 @@ fn snapshot_reads_each_document_kind_as_its_own_verb_does() {
         assert!(verb.status.success(), "{verb:?}");
         assert_eq!(verb.stdout, per_kind.stdout, "{json:?}");
     }
-    // A text document prints its content; a binary one its size and type.
-    assert_eq!(f.run(&["snapshot", &f.notes]).stdout, b"# Plan\n## Done");
+    // A text document prints its content, safe for a terminal and ending
+    // in a newline; a binary one its size and type.
+    let shown = f.run(&["snapshot", &f.notes]).stdout;
+    assert_eq!(
+        String::from_utf8(shown).unwrap(),
+        "# Plan\n## Done ␛]52;c;aGk=␇\n"
+    );
+    let per_kind = f.run(&["agent", "doc", "snapshot", &f.notes]).stdout;
+    assert_eq!(
+        String::from_utf8(per_kind).unwrap(),
+        "# Plan\n## Done ␛]52;c;aGk=␇\n"
+    );
     let binary = String::from_utf8(f.run(&["snapshot", &f.blob]).stdout).unwrap();
     assert!(
         binary.starts_with("3 bytes of application/octet-stream"),
@@ -143,7 +153,10 @@ fn snapshot_reads_each_document_kind_as_its_own_verb_does() {
     );
     let doc = f.run(&["snapshot", "--json", &f.notes]);
     let doc: serde_json::Value = serde_json::from_slice(&doc.stdout).unwrap();
-    assert_eq!(doc["text"], "# Plan\n## Done");
+    assert_eq!(
+        doc["text"], "# Plan\n## Done \x1b]52;c;aGk=\x07",
+        "--json is exact"
+    );
     // A surface goes to a file only.
     f.refused(&["snapshot", "--json", &f.surface], "usage_error");
     let dir = tempfile::tempdir().unwrap();
@@ -152,6 +165,14 @@ fn snapshot_reads_each_document_kind_as_its_own_verb_does() {
     let out = f.run(&["snapshot", "--out", frame_arg, &f.surface]);
     assert!(out.status.success(), "{out:?}");
     assert_eq!(std::fs::read(&frame).unwrap(), PNG);
+    let saved = dir.path().join("notes.md");
+    let out = f.run(&["snapshot", "--out", saved.to_str().unwrap(), &f.notes]);
+    assert!(out.status.success(), "{out:?}");
+    assert_eq!(
+        std::fs::read(&saved).unwrap(),
+        b"# Plan\n## Done \x1b]52;c;aGk=\x07",
+        "--out is exact"
+    );
     // Screen flags are a terminal's; `--out` is a document's.
     f.refused(
         &["snapshot", "--json", "--tail", "3", &f.tree],
@@ -174,7 +195,7 @@ fn wait_follows_a_tree_or_a_text_document() {
     let wait = |args: &[&str]| f.run(&[&["wait", "--timeout", "5"][..], args].concat());
     assert_eq!(wait(&["--until", "hello", &f.tree]).status.code(), Some(0));
     assert_eq!(
-        wait(&["--regex", "^## Done$", &f.notes]).status.code(),
+        wait(&["--regex", "^## Done ", &f.notes]).status.code(),
         Some(0)
     );
     let missed = f.run(&["wait", "--timeout", "1", "--until", "never", &f.tree]);

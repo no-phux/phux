@@ -179,27 +179,34 @@ pub struct WrongKind {
 }
 
 impl WrongKind {
-    /// What to do instead.
+    /// What to do instead, naming the resource.
     #[must_use]
-    pub fn remedy(&self) -> &'static str {
+    pub fn remedy(&self) -> String {
+        let id = format_terminal_id(&self.resource);
         if kinds::kind_spec(self.kind).is_none() {
-            return "this phux does not know the resource's kind; update phux";
+            return "this phux does not know the resource's kind; update phux".to_owned();
         }
         match (self.verb, document_kind(self.kind)) {
-            (verb, Some(_)) if verb.types() => {
-                "a document takes input through its producer as typed intents: \
-                 `phux agent page type TEXT` or `phux agent page key KEY` \
-                 (MCP phux_document_type, phux_document_key)"
+            // A page's or a window's tree and surface take page input.
+            (verb, Some(Kind::Tree | Kind::Surface)) if verb.types() => format!(
+                "its producer takes typed intents: `phux agent page type {id} TEXT` or \
+                 `phux agent page key {id} KEY`"
+            ),
+            (Verb::SendKeys, Some(Kind::Document)) => {
+                "a typed document takes no keys: its producer publishes it".to_owned()
             }
-            (Verb::Wait, Some(Kind::Surface)) => {
-                "a surface is pixels, not text: read it with `phux snapshot TARGET --out FILE`, \
+            (verb, Some(Kind::Document)) if verb.types() => {
+                "a typed document takes no input: its producer publishes it".to_owned()
+            }
+            (Verb::Wait, Some(Kind::Surface)) => format!(
+                "a surface is pixels, not text: read it with `phux snapshot {id} --out FILE`, \
                  or wait on the accessibility tree beside it"
-            }
-            _ if self.kind == ResourceKind::AgentSession => {
-                "read an agent session with `phux agent log`; address its parent pane \
+            ),
+            _ if self.kind == ResourceKind::AgentSession => format!(
+                "read an agent session with `phux agent log {id}`; address its parent pane \
                  for the screen and for keys"
-            }
-            _ => "address a Terminal; `phux ls --json` lists each resource's kind",
+            ),
+            _ => "address a Terminal; `phux ls --json` lists each resource's kind".to_owned(),
         }
     }
 }
@@ -326,6 +333,49 @@ pub fn text_of(kind: Kind, document: &Document) -> Option<Cow<'_, str>> {
     textual.then(|| String::from_utf8_lossy(&document.bytes))
 }
 
+/// `text` made safe to print to a terminal: a control character cannot act.
+///
+/// A document's text is the producer's, and a raw ESC, CSI or OSC in it
+/// would drive the reader's terminal: write its clipboard (OSC 52), retitle
+/// it, or forge a status report (OSC 7501). Newline and tab pass; a CRLF
+/// line end becomes a newline. Every other C0 control and DEL becomes its
+/// visible Control Pictures sign (ESC is `␛`, a lone CR `␍`, DEL `␡`), and a
+/// C1 control (U+0080 to U+009F) becomes U+FFFD.
+#[must_use]
+pub fn terminal_safe(text: &str) -> Cow<'_, str> {
+    let unsafe_char = |c: char| c.is_control() && c != '\n' && c != '\t';
+    if !text.contains(unsafe_char) {
+        return Cow::Borrowed(text);
+    }
+    let mut safe = String::with_capacity(text.len());
+    let mut chars = text.chars().peekable();
+    while let Some(c) = chars.next() {
+        match c {
+            '\r' if chars.peek() == Some(&'\n') => {}
+            '\n' | '\t' => safe.push(c),
+            '\u{7f}' => safe.push('\u{2421}'),
+            c if u32::from(c) < 0x20 => {
+                safe.push(char::from_u32(0x2400 + u32::from(c)).unwrap_or('\u{fffd}'));
+            }
+            c if c.is_control() => safe.push('\u{fffd}'),
+            c => safe.push(c),
+        }
+    }
+    Cow::Owned(safe)
+}
+
+/// A document's text as a terminal shows it: [`text_of`], made
+/// [`terminal_safe`], ending in a newline. `None` when it has no text.
+#[must_use]
+pub fn terminal_text(kind: Kind, document: &Document) -> Option<String> {
+    let text = text_of(kind, document)?;
+    let mut safe = terminal_safe(&text).into_owned();
+    if !safe.is_empty() && !safe.ends_with('\n') {
+        safe.push('\n');
+    }
+    Some(safe)
+}
+
 /// The newest document of `resource`, over a fresh connection.
 ///
 /// # Errors
@@ -429,6 +479,11 @@ pub enum WaitError {
 /// Follow `resource`, a document of `kind`, until a document's text meets
 /// `matcher`, it closes, or `deadline` passes.
 ///
+/// As a screen wait floors only its first read, the first document gets at
+/// least [`FIRST_READ_FLOOR`](crate::wait::FIRST_READ_FLOOR) to arrive, so
+/// a zero budget still checks it once; every later one is bounded by
+/// `deadline` itself.
+///
 /// # Errors
 ///
 /// [`WaitError::NotText`] for a binary document, or the read's failure; a
@@ -442,11 +497,16 @@ pub async fn wait_document(
 ) -> Result<DocumentWait, WaitError> {
     let mut reads = 0;
     let mut outcome: Option<Result<Document, WaitError>> = None;
-    let followed = deadline
-        .run(async {
+    let first_seen = tokio::sync::Notify::new();
+    let first_read = deadline.floored(crate::wait::FIRST_READ_FLOOR);
+    let followed = {
+        let follow = first_read.run(async {
             let mut conn = Connection::connect(socket).await?;
             tree::follow(&mut conn, resource, |document| {
                 reads += 1;
+                if reads == 1 {
+                    first_seen.notify_one();
+                }
                 let verdict = match text_of(kind, &document) {
                     None => Some(Err(WaitError::NotText {
                         resource: resource.clone(),
@@ -459,8 +519,18 @@ pub async fn wait_document(
                 outcome.is_none()
             })
             .await
-        })
-        .await;
+        });
+        // Past the first document, the unfloored budget ends the wait.
+        let budget = async {
+            first_seen.notified().await;
+            deadline.run(std::future::pending::<()>()).await
+        };
+        tokio::select! {
+            biased;
+            followed = follow => followed,
+            None = budget => None,
+        }
+    };
     match (followed, outcome) {
         (_, Some(Ok(document))) => Ok(DocumentWait::Matched { document, reads }),
         (_, Some(Err(err))) => Err(err),

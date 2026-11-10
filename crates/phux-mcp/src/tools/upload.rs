@@ -11,25 +11,36 @@ async fn phux_upload(args: &Value) -> Result<Value, ToolError> {
     let secs = upload_timeout_secs(args)?;
     let socket = socket_arg(args)?;
     let deadline = tokio::time::Instant::now() + Duration::from_secs(secs);
-    let resolved = tokio::time::timeout_at(deadline, async {
-        resolve_resource(&socket, &selector, false).await
+    let target = tokio::time::timeout_at(deadline, async {
+        resolve_kinded(&socket, &selector, false).await
     })
     .await
     .map_err(|_| {
         ToolError::new("upload deadline elapsed during target resolution; no transfer started")
     })??;
-    read::require_terminal(Verb::Upload, &resolved).map_err(|err| wrong_kind_error(&err))?;
-    let pane = resolved.id;
+    target.require_terminal("phux_upload", Verb::Upload)?;
     let receipt = phux_client::upload::upload_file(
-        phux_client_runtime::runtime::Target::uds(socket),
-        pane,
+        phux_client_runtime::runtime::Target::uds(socket.clone()),
+        target.id.clone(),
         path.into(),
         extension,
         deadline.saturating_duration_since(tokio::time::Instant::now()),
     )
     .await
     .map_err(|err| ToolError::new(err.to_string()))?;
+    if wrong_kind(&receipt) {
+        let err = AttachError::WrongResourceKind(receipt.message);
+        return Err(target.refused("phux_upload", Verb::Upload, &socket, err).await);
+    }
     upload_document(&receipt)
+}
+
+/// Whether the server refused the first chunk for the target's kind, so
+/// nothing was written.
+fn wrong_kind(receipt: &phux_client::upload::UploadReceipt) -> bool {
+    use phux_protocol::wire::frame::ErrorCode;
+    receipt.outcome == phux_client::upload::UploadOutcome::Refused
+        && receipt.code == Some(ErrorCode::WrongResourceKind.as_wire())
 }
 
 fn upload_path(args: &Value) -> Result<String, ToolError> {

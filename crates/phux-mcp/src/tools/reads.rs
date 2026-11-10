@@ -22,21 +22,25 @@ async fn phux_ls(args: &Value) -> Result<Value, ToolError> {
 /// `phux_snapshot` — read a pane as structured data. `scrollback` is
 /// tri-state (absent: viewport; `0`: all history; `N`: last `N` rows);
 /// `tail`/`unwrap` are the ADR-0077 projections `phux snapshot` applies too.
-/// A document target is refused for its per-kind tool ([`terminal_reader`]).
+/// A document target is refused for its per-kind tool ([`Target`]).
 async fn phux_snapshot(args: &Value) -> Result<Value, ToolError> {
+    const TOOL: &str = "phux_snapshot";
     let socket = socket_or_default(args);
     let selector = parse_target(args)?;
     let read = SnapshotRead::parse(args)?;
-    let resolved = resolve_resource(&socket, &selector, false).await?;
-    terminal_reader("phux_snapshot", Verb::Snapshot, &resolved)?;
-    let screen = phux_client::snapshot::get_screen_scrollback_format(
+    let target = resolve_kinded(&socket, &selector, false).await?;
+    target.require_terminal(TOOL, Verb::Snapshot)?;
+    let read_screen = phux_client::snapshot::get_screen_scrollback_format(
         &socket,
-        resolved.id,
+        target.id.clone(),
         read.history(),
         read.cells,
         read.format_byte(),
-    )
-    .await?;
+    );
+    let screen = match read_screen.await {
+        Ok(screen) => screen,
+        Err(err) => return Err(target.refused(TOOL, Verb::Snapshot, &socket, err).await),
+    };
     read.document(screen)
 }
 

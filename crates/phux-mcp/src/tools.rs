@@ -36,5 +36,6 @@ include!("tools/upload.rs");
 include!("tools/watch.rs");
 include!("tools/lifecycle.rs");
 include!("tools/parsing.rs");
+include!("tools/kinds.rs");
 include!("tools/tests.rs");
 include!("tools/upload_tests.rs");

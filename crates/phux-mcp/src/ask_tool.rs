@@ -1,22 +1,21 @@
 //! `phux_ask`: report that an agent in a pane is asking for human input.
 
 use phux_client::ask::AskedPayload;
+use phux_client::read::Verb;
 use phux_client::selector;
 use phux_protocol::ids::ResourceId;
 use serde_json::{Value, json};
 
 use crate::tools::{
-    ToolError, num_arg, optional_string_array, parse_selector, required_str, resolve_resource,
-    socket_or_default, wrong_kind_error,
+    ToolError, num_arg, optional_string_array, parse_selector, required_str, resolve_kinded,
+    socket_or_default,
 };
 
 pub(crate) async fn call(args: &Value) -> Result<Value, ToolError> {
     let socket = socket_or_default(args);
     let selector = parse_selector(required_str(args, "target")?)?;
-    let resolved = resolve_resource(&socket, &selector, false).await?;
-    phux_client::read::require_terminal(phux_client::read::Verb::Ask, &resolved)
-        .map_err(|err| wrong_kind_error(&err))?;
-    let pane = resolved.id;
+    let target = resolve_kinded(&socket, &selector, false).await?;
+    target.require_terminal("phux_ask", Verb::Ask)?;
     let payload = AskedPayload {
         id: required_str(args, "id")?.to_owned(),
         question: required_str(args, "question")?.to_owned(),
@@ -24,8 +23,10 @@ pub(crate) async fn call(args: &Value) -> Result<Value, ToolError> {
         elapsed_seconds: num_arg(args, "elapsed_seconds"),
     };
 
-    phux_client::ask::report(&socket, pane.clone(), payload.clone()).await?;
-    Ok(success_value(&pane, &payload))
+    if let Err(err) = phux_client::ask::report(&socket, target.id.clone(), payload.clone()).await {
+        return Err(target.refused("phux_ask", Verb::Ask, &socket, err).await);
+    }
+    Ok(success_value(&target.id, &payload))
 }
 
 pub(crate) fn schema() -> Value {
