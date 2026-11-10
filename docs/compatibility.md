@@ -96,13 +96,15 @@ and the runtime, the C ABI, the TUI, and the web client all apply it:
 
 Only malformed bytes close the connection. A `HELLO_OK` or
 `BOOTSTRAP_BEGIN` naming an output mode, Terminal profile, or engine codec
-the client did not offer is malformed too, since the server must pick from
-the offer. A `BOOTSTRAP_BEGIN` codec tag the client does not know decodes
-as `Unknown`. On a resource of no kind the client knows, or of a document
-kind, the client refuses that one resource and ignores the rest of its
-stream, and every other resource and the connection carry on; on one it
-knows as a Terminal or AgentSession it is malformed. A server never
-compresses a frame that settles a request (replies,
+the client did not offer is malformed too, since the server must pick a
+Terminal's from the offer; the codec of every other kind is fixed by the
+kind and never offered. A `BOOTSTRAP_BEGIN` codec tag the client does not
+know decodes as `Unknown`. On a resource of no kind the client knows, or of
+a document kind, the client refuses that one resource and ignores the rest
+of its stream, and every other resource and the connection carry on; on
+one it knows as a Terminal or AgentSession it is malformed.
+
+A server never compresses a frame that settles a request (replies,
 `ERROR`, `ATTACHED`, `ATTACH_READY`), because a client could not find the
 type byte of one it cannot read; only bulk frames such as
 `BOOTSTRAP_CHUNK` and `HISTORY_PAGE` are compressed.

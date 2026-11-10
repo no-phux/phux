@@ -160,6 +160,11 @@ read-only or destructive the same way the server treats it. Tools that kill,
 detach, send a destructive signal, or approve something require
 `confirm: true`.
 
+Other resources have tools too: `phux_documents` lists documents, trees
+and surfaces, `phux_tree_snapshot`, `phux_tree_wait` and
+`phux_surface_snapshot` read them, `phux_document_*` sends input, and
+`phux_app_open` runs an application ([parity](./reference/parity.md)).
+
 `phux_agent_list` accepts the same filters as the CLI: `states` is an
 optional array such as `["blocked", "done"]`, and `query` is optional text.
 They filter the current inventory; they are not a completion gate.

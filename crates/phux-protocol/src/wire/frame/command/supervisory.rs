@@ -296,8 +296,12 @@ macro_rules! supervisory_commands {
     /// most [`MAX_PUBLISH_BYTES`](super::MAX_PUBLISH_BYTES). Viewers get the
     /// newest state; a slow viewer skips intermediate ones. Refused with
     /// [`ErrorCode::WrongResourceKind`], [`ErrorCode::NotProducer`] or
-    /// [`ErrorCode::RecordInvalid`] (nothing published). Gated on
-    /// [`ServerFeatureExt::AccessibilityTree`](crate::caps::ServerFeatureExt::AccessibilityTree).
+    /// [`ErrorCode::RecordInvalid`] (nothing published). Serves
+    /// `AccessibilityTree`, `PixelSurface` and `Document`. The method has no
+    /// gate of its own: a client checks the bit of the kind it publishes to,
+    /// [`ServerFeatureExt::AccessibilityTree`](crate::caps::ServerFeatureExt::AccessibilityTree),
+    /// [`ServerFeatureExt::PixelSurface`](crate::caps::ServerFeatureExt::PixelSurface)
+    /// or [`ServerFeatureExt::TypedDocument`](crate::caps::ServerFeatureExt::TypedDocument).
     PublishResourceState {
         /// The producer-fed resource whose state this replaces.
         terminal_id: ResourceId,

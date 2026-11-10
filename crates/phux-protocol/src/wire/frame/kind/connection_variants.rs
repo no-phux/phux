@@ -58,13 +58,14 @@ macro_rules! connection_frames {
         nonce: u64,
     },
 
-    /// `RESOURCE_OUTPUT` — live terminal content (`docs/protocol.md#attach-and-output`).
+    /// `RESOURCE_OUTPUT` — live resource content under its kind's codec
+    /// (`docs/protocol.md#attach-and-output`).
     ///
     /// `seq` is contiguous and non-wrapping within one `(stream_id,
     /// bootstrap_id)`. Under `NativeState`, `bytes` are the exact PTY bytes
     /// and MUST NOT be rewritten.
     ResourceOutput {
-        /// Target terminal.
+        /// Target resource.
         terminal_id: ResourceId,
         /// Logical subscription receiving this output.
         stream_id: StreamId,
@@ -72,7 +73,8 @@ macro_rules! connection_frames {
         bootstrap_id: BootstrapId,
         /// Monotonic stream sequence.
         seq: u64,
-        /// Opaque VT bytes.
+        /// The kind's payload: VT bytes for a Terminal, whole records for an
+        /// `AgentSession`, one whole document for a document kind.
         bytes: bytes::Bytes,
     },
 
@@ -163,9 +165,9 @@ macro_rules! connection_frames {
 
     /// `ATTACHED` — metadata inventory for an accepted attach.
     ///
-    /// Terminal content follows separately through bootstrap streams. This
+    /// Resource content follows separately through bootstrap streams. This
     /// frame does not mean those streams are renderable; `ATTACH_READY` marks
-    /// the aggregate boundary after every pane is READY or closed.
+    /// the aggregate boundary after every stream is READY or closed.
     Attached {
         /// Client-chosen correlation id from `ATTACH`.
         attach_id: u32,
@@ -194,7 +196,7 @@ macro_rules! connection_frames {
     /// `BOOTSTRAP_BEGIN` — declares one replica generation. Agent streams
     /// either replace the retained log or append a cursor-anchored suffix.
     BootstrapBegin {
-        /// Target terminal.
+        /// Target resource.
         terminal_id: ResourceId,
         /// Logical subscription.
         stream_id: StreamId,
@@ -203,16 +205,18 @@ macro_rules! connection_frames {
         /// Concrete stream profile: codec, output mode, and optional agent
         /// resume anchor. Native `StateSync` is not permitted.
         profile: BootstrapStreamProfile,
-        /// Authoritative PTY width at the actor cut.
+        /// A Terminal's authoritative PTY width at the actor cut; `0` for
+        /// a kind without a grid.
         cols: u16,
-        /// Authoritative PTY height at the actor cut.
+        /// A Terminal's authoritative PTY height at the actor cut; `0` for
+        /// a kind without a grid.
         rows: u16,
         /// Actor cut sequence; first live output is `base_seq + 1`.
         base_seq: u64,
     },
-    /// `BOOTSTRAP_CHUNK` — one bounded opaque checkpoint fragment.
+    /// `BOOTSTRAP_CHUNK` — one bounded opaque fragment of the bootstrap payload.
     BootstrapChunk {
-        /// Target terminal.
+        /// Target resource.
         terminal_id: ResourceId,
         /// Logical subscription.
         stream_id: StreamId,
@@ -225,7 +229,7 @@ macro_rules! connection_frames {
     },
     /// `BOOTSTRAP_READY` — prior chunks reach the selected codec's READY boundary.
     BootstrapReady {
-        /// Target terminal.
+        /// Target resource.
         terminal_id: ResourceId,
         /// Logical subscription.
         stream_id: StreamId,
@@ -270,7 +274,7 @@ macro_rules! connection_frames {
     },
     /// `BOOTSTRAP_TOMBSTONE` — permanently invalidates one generation.
     BootstrapTombstone {
-        /// Target terminal.
+        /// Target resource.
         terminal_id: ResourceId,
         /// Logical subscription.
         stream_id: StreamId,

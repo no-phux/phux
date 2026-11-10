@@ -24,10 +24,12 @@ phux stores the records
 [effects](../crates/phux-terminal/src/actor/effects.rs)).
 
 A rendering client feeds those VT bytes to its own libghostty terminal.
-The [phux-protocol README](../crates/phux-protocol/README.md) says a
+This is the Terminal kind's stream contract; other kinds declare their
+own ([decisions](./decisions.md)). The
+[phux-protocol README](../crates/phux-protocol/README.md) says a
 libghostty terminal on the client reproduces the server's screen
-exactly, and that client-to-server input is key, mouse, focus, and
-paste events built from libghostty's vocabulary. The server encodes
+exactly, and that a Terminal's client-to-server input is key, mouse,
+focus, and paste events built from libghostty's vocabulary. The server encodes
 those events for the PTY. Selection and text extraction belong to
 libghostty ([decisions](./decisions.md)).
 
