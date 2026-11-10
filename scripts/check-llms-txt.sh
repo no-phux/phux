@@ -111,7 +111,7 @@ check_links() {
             continue
         fi
         if [[ -n "$anchor" && "$resolved" == *.md ]] &&
-            ! heading_anchors "$resolved" | grep -Fqx -- "$anchor"; then
+            ! heading_anchors "$resolved" | grep -Fx -- "$anchor" >/dev/null; then
             violate "${file#"$ROOT"/}:$lineno $link has no heading #$anchor"
         fi
     done < <(all_links "$file")
