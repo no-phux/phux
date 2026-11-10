@@ -11,6 +11,7 @@
 #![deny(rustdoc::private_intra_doc_links)]
 
 mod error;
+pub mod host_color;
 pub mod instance;
 pub mod known_authorities;
 pub mod layer;

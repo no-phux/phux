@@ -789,7 +789,7 @@ fn add_json_emits_the_documented_host_document() {
         Some(3),
         "exactly the three documented top-level keys; document: {doc}"
     );
-    assert_eq!(host.len(), 12, "exactly the twelve documented host keys");
+    assert_eq!(host.len(), 13, "exactly the documented host keys");
     let enrollment = doc["enrollment"]
         .as_object()
         .expect("an `enrollment` object");
