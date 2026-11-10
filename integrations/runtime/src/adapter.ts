@@ -1,3 +1,4 @@
+import { retryUpgradeSeal } from "./agent-session.js";
 import { PhuxError } from "./errors.js";
 import {
   DEFAULT_MAX_OUTPUT_BYTES,
@@ -29,8 +30,13 @@ import {
   parseAgentWaitResult,
   parseResourceWaitResult,
   parseStatusResult,
+  parseSurfaceFacts,
+  parseTreeDocument,
   parseVersionedDocument,
   SchemaValidationError,
+  type SurfaceFacts,
+  type TreeDocument,
+  type TreeWaitResult,
   type AgentEmitResult,
   type AgentEventType,
   type AgentRecord,
@@ -59,6 +65,15 @@ export type {
   AgentSessionOpenResult,
 } from "./schemas.js";
 export { AGENT_EVENT_TYPES, isAgentEventType } from "./schemas.js";
+export {
+  AgentSessionEmitter,
+  hasAgentSessionCli,
+  isAgentSessionUnsupported,
+  isUpgradeSealRefusal,
+  UPGRADE_RETRY_BUDGET_MS,
+  type AgentSessionCli,
+  type AgentSessionEmitterOptions,
+} from "./agent-session.js";
 
 export interface PhuxCliOptions {
   readonly executable?: string;
@@ -441,20 +456,10 @@ export class PhuxCli {
     const stdin = options.data === undefined ? undefined : wellFormedJson(options.data);
     args.push("--json");
     this.pushSocket(args);
-    // A graceful upgrade seals the stream from its cut until the re-exec and
-    // refuses appends in that window; nothing was appended, so retry it.
-    const started = Date.now();
-    for (let attempt = 0; ; attempt += 1) {
-      try {
-        return await this.jsonCommand("agent emit", args, options, parseAgentEmitResult, stdin);
-      } catch (error) {
-        const delay = Math.min(UPGRADE_RETRY_BASE_MS * 2 ** attempt, UPGRADE_RETRY_MAX_DELAY_MS);
-        if (!isUpgradeSealRefusal(error) || Date.now() - started + delay > UPGRADE_RETRY_BUDGET_MS) {
-          throw error;
-        }
-        await sleep(delay, options.signal);
-      }
-    }
+    return retryUpgradeSeal(
+      () => this.jsonCommand("agent emit", args, options, parseAgentEmitResult, stdin),
+      options.signal,
+    );
   }
 
   /** Close a pane's AgentSession; the parent pane is untouched. */
@@ -621,6 +626,36 @@ export class PhuxCli {
     args.push("--", target);
     return this.outcomeCommand("resource wait", args, boundedExecution(options), parseResourceWaitResult,
       (document) => document.outcome === "exited" ? 0 : document.outcome === "gone" ? 1 : 124);
+  }
+
+  /** The newest accessibility-tree document; `document` is null before the first publish. */
+  async treeSnapshot(target: string, options: ExecutionOptions = {}): Promise<TreeDocument> {
+    const args = this.withSocket(["agent", "tree", "snapshot", "--json"]);
+    args.push("--", target);
+    return this.jsonCommand("agent tree snapshot", args, options, parseTreeDocument);
+  }
+
+  /** `agent tree follow --until`: a CLI timeout or a closed tree is an outcome, not an error. */
+  async treeWait(target: string, until: string, options: RunOptions = {}): Promise<TreeWaitResult> {
+    if (until.length === 0) throw new TypeError("until must be non-empty");
+    const args = this.withSocket(["agent", "tree", "follow", "--json", `--until=${until}`, "--timeout", String(operationSeconds(options))]);
+    args.push("--", target);
+    try {
+      const document = await this.jsonCommand("agent tree follow", args, boundedExecution(options), parseTreeDocument);
+      return { ...document, outcome: "matched" };
+    } catch (error) {
+      const outcome = treeWaitOutcome(error);
+      if (outcome === undefined) throw error;
+      return { schema_version: 1, outcome };
+    }
+  }
+
+  /** The surface's newest frame is written to `out`; stdout carries only its facts. */
+  async surfaceSnapshot(target: string, out: string, options: ExecutionOptions = {}): Promise<SurfaceFacts> {
+    if (out.trim().length === 0) throw new TypeError("out must be non-empty");
+    const args = this.withSocket(["agent", "surface", "snapshot", "--json", `--out=${out}`]);
+    args.push("--", target);
+    return this.jsonCommand("agent surface snapshot", args, options, parseSurfaceFacts);
   }
 
   private async outcomeCommand(
@@ -794,6 +829,17 @@ function operationSeconds(options: RunOptions): number {
 
 function boundedExecution(options: RunOptions): ExecutionOptions {
   return { ...options, timeoutMs: options.timeoutMs ?? operationSeconds(options) * 1000 + 5000 };
+}
+
+/** `agent tree follow` reports both as a `workload` error (commands/agent/tree.rs `run_follow`). */
+function treeWaitOutcome(error: unknown): "timed_out" | "closed" | undefined {
+  if (!(error instanceof PhuxError) || error.code !== "command_failed") return undefined;
+  const detail = error.cliError?.["error"];
+  if (detail === null || typeof detail !== "object" || Array.isArray(detail)) return undefined;
+  const { code, message } = detail as Record<string, unknown>;
+  if (code !== "workload" || typeof message !== "string") return undefined;
+  if (message.startsWith("no document matched within ")) return "timed_out";
+  return message.startsWith("the tree ended (Closed)") ? "closed" : undefined;
 }
 
 function pushUntil(args: string[], states: readonly AgentLifecycleState[] | undefined): void {
@@ -1021,186 +1067,6 @@ function requireNonNegativeInteger(value: number, name: string): void {
 function requirePositiveInteger(value: number, name: string): void {
   if (!Number.isSafeInteger(value) || value < 1) {
     throw new RangeError(`${name} must be a positive safe integer`);
-  }
-}
-
-/** The three AgentSession CLI verbs, so hosts can inject a fake without constructing argv. */
-export interface AgentSessionCli {
-  agentSessionOpen(target: string, options: AgentSessionOpenOptions): Promise<AgentSessionOpenResult>;
-  agentEmit(target: string, type: AgentEventType, options?: AgentEmitOptions): Promise<AgentEmitResult>;
-  agentSessionClose(target: string, options?: ExecutionOptions): Promise<AgentSessionCloseResult>;
-}
-
-export function hasAgentSessionCli(cli: object): cli is AgentSessionCli {
-  const candidate = cli as Record<string, unknown>;
-  return typeof candidate.agentSessionOpen === "function" &&
-    typeof candidate.agentEmit === "function" &&
-    typeof candidate.agentSessionClose === "function";
-}
-
-/** Total time `agentEmit` spends retrying an upgrade-sealed stream. */
-export const UPGRADE_RETRY_BUDGET_MS = 3000;
-const UPGRADE_RETRY_BASE_MS = 50;
-const UPGRADE_RETRY_MAX_DELAY_MS = 800;
-
-/**
- * True for exactly the refusal a graceful upgrade gives an append between
- * its cut of the stream and the re-exec (L1 §4.8): `overflow` whose
- * diagnostic says the server is upgrading. Nothing was appended, so the
- * same record is safe to resend; every other `overflow` is not retried.
- */
-export function isUpgradeSealRefusal(error: unknown): boolean {
-  if (!(error instanceof PhuxError) || error.code !== "command_failed") return false;
-  const detail = error.cliError?.["error"];
-  if (detail === null || typeof detail !== "object" || Array.isArray(detail)) return false;
-  const { code, message } = detail as Record<string, unknown>;
-  return code === "overflow" && typeof message === "string" && /server is upgrading/.test(message);
-}
-
-function sleep(ms: number, signal: AbortSignal | undefined): Promise<void> {
-  return new Promise((resolve, reject) => {
-    if (signal?.aborted === true) {
-      reject(abortedRetry());
-      return;
-    }
-    const onAbort = (): void => {
-      clearTimeout(timer);
-      reject(abortedRetry());
-    };
-    const timer = setTimeout(() => {
-      signal?.removeEventListener("abort", onAbort);
-      resolve();
-    }, ms);
-    signal?.addEventListener("abort", onAbort, { once: true });
-  });
-}
-
-function abortedRetry(): PhuxError {
-  return new PhuxError("aborted", "phux agent emit was aborted while waiting out a server upgrade");
-}
-
-/**
- * True when `phux agent session open` is missing: an older binary without the
- * verb, or a server that refuses with `unsupported_server`. Emit must then
- * fail closed; identity-only `agent set` still runs.
- */
-export function isAgentSessionUnsupported(error: unknown): boolean {
-  if (!(error instanceof PhuxError) || error.code !== "command_failed") return false;
-  const haystack = `${error.message}\n${error.stderr ?? ""}`;
-  return /unsupported_server|unrecognized subcommand|invalid subcommand|unknown command|not a valid command/i
-    .test(haystack);
-}
-
-export interface AgentSessionEmitterOptions {
-  readonly provider: string;
-  readonly onError?: (error: unknown) => void;
-}
-
-/**
- * Open once per pane, emit only after a successful open, close the session we
- * opened. A missing verb marks the emitter unavailable for the rest of its
- * life so later hooks do not retry a command the server does not have.
- */
-export class AgentSessionEmitter {
-  private readonly cli: AgentSessionCli | null;
-  private readonly provider: string;
-  private readonly onError: (error: unknown) => void;
-  private target: string | null = null;
-  private nativeId: string | null = null;
-  private resource: string | null = null;
-  private unavailable = false;
-
-  constructor(cli: AgentSessionCli | object | null, options: AgentSessionEmitterOptions) {
-    this.cli = cli !== null && hasAgentSessionCli(cli) ? cli : null;
-    this.provider = options.provider;
-    this.onError = options.onError ?? (() => {});
-    if (this.cli === null) this.unavailable = true;
-    if (this.provider.trim().length === 0) throw new TypeError("provider must be non-empty");
-  }
-
-  get isOpen(): boolean {
-    return this.resource !== null;
-  }
-
-  get isUnavailable(): boolean {
-    return this.unavailable;
-  }
-
-  /** Adopt only an identity the host verified against its own declaration. */
-  adopt(target: string, nativeId: string, identity: AgentSessionOpenResult): void {
-    if (identity.parent !== target || identity.provider !== this.provider || identity.native_id !== nativeId) {
-      throw new Error("AgentSession identity does not match its hosting binding");
-    }
-    if (!/^(?:[^/\s]+\/)?@\d+$/.test(identity.resource) || identity.resource === target) {
-      throw new Error("AgentSession identity must name its exact child resource");
-    }
-    this.target = target;
-    this.nativeId = nativeId;
-    this.resource = identity.resource;
-  }
-
-  async bind(target: string | null, nativeId: string, options: ExecutionOptions = {}): Promise<void> {
-    if (this.unavailable) return;
-    if (target === this.target && this.isOpen && this.nativeId === nativeId) return;
-    if (this.isOpen && (this.target !== target || this.nativeId !== nativeId)) {
-      await this.finish(options);
-    }
-    if (target === null) return;
-    await this.open(target, nativeId, options);
-  }
-
-  async emit(
-    type: AgentEventType,
-    data: Readonly<Record<string, unknown>> | undefined,
-    options: ExecutionOptions = {},
-  ): Promise<void> {
-    if (this.unavailable || this.resource === null || this.cli === null) return;
-    try {
-      await this.cli.agentEmit(this.resource, type, {
-        ...options,
-        ...(data === undefined ? {} : { data }),
-      });
-    } catch (error) {
-      this.onError(error);
-    }
-  }
-
-  async finish(options: ExecutionOptions = {}): Promise<void> {
-    const resource = this.resource;
-    this.resource = null;
-    this.target = null;
-    this.nativeId = null;
-    if (this.unavailable || resource === null || this.cli === null) return;
-    try {
-      await this.cli.agentEmit(resource, "session_end", options);
-    } catch (error) {
-      this.onError(error);
-    }
-    try {
-      await this.cli.agentSessionClose(resource, options);
-    } catch (error) {
-      this.onError(error);
-    }
-  }
-
-  private async open(target: string, nativeId: string, options: ExecutionOptions): Promise<void> {
-    if (this.cli === null) return;
-    try {
-      const opened = await this.cli.agentSessionOpen(target, {
-        provider: this.provider,
-        nativeId,
-        ...options,
-      });
-      this.adopt(target, nativeId, opened);
-    } catch (error) {
-      if (isAgentSessionUnsupported(error)) {
-        this.unavailable = true;
-        return;
-      }
-      this.onError(error);
-      return;
-    }
-    await this.emit("session_start", { provider: this.provider, native_id: nativeId }, options);
   }
 }
 

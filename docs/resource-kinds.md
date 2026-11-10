@@ -91,10 +91,10 @@ The server logs each intent at info with the sender's credential id (or
 `owner`), the resource, its kind, the length of any text (never the text)
 and its outcome, one line per burst plus a summary.
 
-Agents read documents over MCP the way they read panes: `phux_documents`
-lists them, `phux_tree_snapshot` and `phux_tree_wait` read a tree's JSON, and
-`phux_surface_snapshot` returns a surface's PNG as MCP image content
-([parity](./reference/parity.md)). They drive one with `phux_document_navigate`,
+Agents read documents like panes, over MCP or the pi, Oh My Pi and OpenCode
+plugins: `phux_documents` lists them, `phux_tree_snapshot` and
+`phux_tree_wait` read a tree's JSON, and `phux_surface_snapshot` a frame
+([parity](./reference/parity.md)). MCP agents drive one with `phux_document_navigate`,
 `phux_document_click`, `phux_document_type`, `phux_document_key` and
 `phux_document_scroll`, one tool per intent. The loop: find a surface and its
 `control` in `phux_documents`, look at it with `phux_surface_snapshot`, click

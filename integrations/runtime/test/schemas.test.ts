@@ -26,6 +26,8 @@ const agentPane = {
   title: null, cwd: null, sources: [], explanation: "fixture",
 };
 
+const TERMINAL_ROW = { id: "@1", kind: "terminal", name: null, parent: null, lifecycle: "running", exit: null, key: null };
+
 function inventory(row: unknown) {
   return parseAgentStateList({ schema_version: 1, agents: [row] }).agents[0];
 }
@@ -62,6 +64,8 @@ test("session-list parser accepts v2 terminal inventory and normalizes v1", () =
     schema_version: 1,
     sessions: [],
     terminals: [],
+    resources: [],
+    unreachable: [],
   });
   assert.deepEqual(parseSessionList({
     schema_version: 2,
@@ -71,6 +75,8 @@ test("session-list parser accepts v2 terminal inventory and normalizes v1", () =
     schema_version: 2,
     sessions: [{ name: "work", windows: 1, attached: false }],
     terminals: ["@3", "devbox/@7"],
+    resources: [],
+    unreachable: [],
   });
   assert.throws(
     () => parseSessionList({ schema_version: 2, sessions: [] }),
@@ -86,12 +92,14 @@ test("session-list parser projects the installed 0.51.0+next.c420325 v3 CLI fixt
     schema_version: 3,
     sessions: [{ name: "fixture", windows: 1, attached: false }],
     terminals: ["@1"],
+    resources: [TERMINAL_ROW],
+    unreachable: [],
   });
 });
 
 test("session-list v3 retains strict summary validation and rejects future schemas", () => {
   const valid = { schema_version: 3, sessions: [{ name: "work", windows: 1, attached: false }], terminals: ["@3", "devbox/@7"] };
-  for (const schema_version of [0, 4, 99, "3", null]) {
+  for (const schema_version of [0, 5, 99, "3", null]) {
     assert.throws(() => parseSessionList({ ...valid, schema_version }), /\$\.schema_version/);
   }
   for (const sessions of [null, {}, [{ name: "", windows: 1, attached: false }], [{ name: "work", windows: -1, attached: false }], [{ name: "work", windows: 1, attached: "false" }]]) {
@@ -109,6 +117,7 @@ test("phux_list renders the canonical v3 CLI fixture through the shared tool", a
   const result = await tools.phux_list!.execute({}, { sessionID: "fixture", agent: "fixture", messageID: "fixture", id: "fixture" });
   assert.deepEqual(result.metadata.result, {
     schema_version: 3, sessions: [{ name: "fixture", windows: 1, attached: false }], terminals: ["@1"],
+    resources: [TERMINAL_ROW], unreachable: [],
   });
   assert.equal(result.metadata.operation, "list");
   assert.match(result.content, /"schema_version": 3/);
