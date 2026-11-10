@@ -1,4 +1,4 @@
-//! Spawning a document resource under the Terminal its producer runs in.
+//! Spawning a document resource under the resource its producer runs in.
 
 use phux_protocol::wire::frame::{AgentEvent, FrameKind, SpawnError};
 use phux_tree::DocumentActor;
@@ -10,8 +10,8 @@ use crate::runtime::apps::ResourceSpawn;
 use crate::runtime::spawn_reply::{refuse_spawn, spawned_result};
 
 /// The target, wire parent, and core parent a document spawn binds to, or
-/// why it is refused. The parent must be a live local Terminal; `provider`
-/// names what the producer observes.
+/// why it is refused. The parent must be live and local, and is checked fit
+/// when the document registers; `provider` names what the producer observes.
 fn admit<'a, A: DocumentApi>(
     spawn: &ResourceSpawn<'a>,
 ) -> Result<
@@ -68,8 +68,12 @@ pub(crate) async fn spawn_document<A: DocumentApi>(spawn: ResourceSpawn<'_>) {
     let token = root_token.child_token();
     let bundle = DocumentActor::<A>::build(core_parent, target, token.clone());
     let registered = state.with_mut(|s| {
-        if s.resource_handle(core_parent).is_none() {
+        let Some(parent_handle) = s.resource_handle(core_parent) else {
             return Err(SpawnError::ParentNotFound);
+        };
+        // The parent supervises the producer, as an agent session's does.
+        if !crate::runtime::apps::spawn::supervises_producers(parent_handle) {
+            return Err(SpawnError::ParentKindMismatch);
         }
         let actor = s.actor_for(client_id);
         let name = resource.native_id.as_deref();

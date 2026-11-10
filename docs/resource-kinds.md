@@ -286,11 +286,12 @@ phux failed to keep.
 
 Two parts change (`phux-phiio.4`):
 
-- The producer binding stops naming a kind (landed with `phux-phiio.4`:
-  a parent is fit when its handle carries the `AgentParent` companion, and
-  the guardian is checked against the parent record's activation). The rule
-  that matters is that a projection's parent supervises its producer and
-  carries the activation the producer is checked against. A helper keeps running in a Terminal, as the ACP guardian does, so
+- The producer binding names no kind. The organization checks structure:
+  a projection's parent exists and can supervise
+  (`ResourceKind::requires_parent`, `can_parent`). At spawn the app checks
+  it is fit, its handle carrying the `AgentParent` companion (agent
+  sessions and documents alike), and a guardian against its activation.
+  A helper keeps running in a Terminal, as the ACP guardian does, so
   it inherits supervision, logs and upgrade survival; a PTY-less supervised
   process is a later kind, added only if a PTY proves costly.
 - The server relays per-viewer feedback to the producer: acknowledgements,
