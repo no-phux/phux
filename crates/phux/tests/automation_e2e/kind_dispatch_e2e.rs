@@ -221,9 +221,9 @@ fn send_keys_refuses_every_document_kind() {
     }
 }
 
-/// Every verb that reaches a Terminal only refuses a document up front, as
-/// `send-keys` does, instead of failing downstream (`run`'s "no OSC-133
-/// shell marks").
+/// Every verb that reaches a Terminal only refuses a document or an agent
+/// session up front, as `send-keys` does, instead of failing downstream
+/// (`run`'s "no OSC-133 shell marks").
 #[test]
 #[ignore = "spawns a real phux server; run via `just e2e`."]
 fn terminal_only_verbs_refuse_every_document_kind() {
@@ -234,8 +234,23 @@ fn terminal_only_verbs_refuse_every_document_kind() {
     let file = file.to_str().unwrap();
     let cast = dir.path().join("out.cast");
     let cast = cast.to_str().unwrap();
-    for id in [&f.tree, &f.notes, &f.surface] {
+    let opened = f.run(&[
+        "agent",
+        "session",
+        "open",
+        "work",
+        "--provider",
+        "claude",
+        "--json",
+    ]);
+    assert!(opened.status.success(), "{opened:?}");
+    let opened: serde_json::Value = serde_json::from_slice(&opened.stdout).unwrap();
+    let session = opened["resource"].as_str().unwrap().to_owned();
+    let parent = opened["parent"].as_str().unwrap().to_owned();
+    for id in [&f.tree, &f.notes, &f.surface, &session] {
         let id = id.as_str();
+        // A dangerous signal is refused for the kind before it asks.
+        f.refused(&["signal", "--json", id, "kill"], "wrong_resource_kind");
         for args in [
             &["run", "--json", "--timeout", "5", id, "true"][..],
             &["paste", "--json", id, "hi"],
@@ -257,6 +272,16 @@ fn terminal_only_verbs_refuse_every_document_kind() {
         let report = f.run(&["agent", "report-state", id, "working"]);
         assert_eq!(report.status.code(), Some(2), "{report:?}");
     }
+    // An agent session's refusal names the pane it runs in.
+    let signalled = f.run(&["signal", "--json", &session, "freeze"]);
+    let stderr = String::from_utf8_lossy(&signalled.stderr);
+    let doc: serde_json::Value =
+        serde_json::from_str(stderr.lines().last().unwrap_or_default()).unwrap();
+    let remedy = doc["remedy"].as_str().unwrap_or_default();
+    assert!(
+        remedy.contains(&format!("its parent pane {parent}")),
+        "{remedy}"
+    );
     // A Terminal still takes them.
     let pasted = f.run(&["paste", "--json", "work", "x"]);
     assert!(pasted.status.success(), "{pasted:?}");

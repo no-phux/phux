@@ -53,7 +53,11 @@ fn the_screen_verbs_dispatch_on_the_target_kind() {
     run_local(async {
         let dir = tempfile::tempdir().unwrap();
         let socket = dir.path().join("kinds.sock");
-        let (shutdown, server) = spawn_server_with(socket.clone(), Some("main"), |_| {});
+        let uploads = dir.path().join("uploads");
+        let upload_root = uploads.clone();
+        let (shutdown, server) = spawn_server_with(socket.clone(), Some("main"), |cfg| {
+            cfg.env.upload_dir = Some(upload_root);
+        });
         drop(wait_for_socket(&socket, SOCKET_CONNECT_DEADLINE).await);
         let view = phux_client::state::get_state(&socket).await.unwrap();
         let pane = phux_client::resource::terminals(&view.into_snapshot_ignoring_degradation())
@@ -165,6 +169,18 @@ fn the_screen_verbs_dispatch_on_the_target_kind() {
             assert_eq!(code, "wrong_resource_kind", "{tool} {id:?}");
             assert!(remedy.contains(instead), "{tool} {id:?}: {remedy}");
         }
+        // A refused upload wrote nothing; a Terminal's lands in the same place.
+        let landed = || std::fs::read_dir(&uploads).map_or(0, Iterator::count);
+        assert_eq!(landed(), 0, "a refused upload left a file");
+        let uploaded = ok("phux_upload", &target(&pane, &socket, upload.clone())).await;
+        assert_eq!(uploaded["receipt"]["outcome"], "completed", "{uploaded}");
+        let path = uploaded["receipt"]["path"].as_str().unwrap();
+        let root = uploads.canonicalize().unwrap();
+        let landed_at = std::path::Path::new(path).canonicalize().unwrap();
+        assert!(
+            landed_at.starts_with(&root),
+            "{path} is outside {uploads:?}"
+        );
         let pasted = ok(
             "phux_paste",
             &target(&pane, &socket, json!({ "text": "x" })),

@@ -176,6 +176,8 @@ pub struct WrongKind {
     pub kind: ResourceKind,
     /// The verb refused.
     pub verb: Verb,
+    /// The resource it is bound to, when the inventory names one.
+    pub parent: Option<ResourceId>,
 }
 
 impl WrongKind {
@@ -202,11 +204,26 @@ impl WrongKind {
                 "a surface is pixels, not text: read it with `phux snapshot {id} --out FILE`, \
                  or wait on the accessibility tree beside it"
             ),
-            _ if self.kind == ResourceKind::AgentSession => format!(
-                "read an agent session with `phux agent log {id}`; address its parent pane \
-                 for the screen and for keys"
-            ),
+            _ if self.kind == ResourceKind::AgentSession => self.agent_session_remedy(&id),
             _ => "address a Terminal; `phux ls --json` lists each resource's kind".to_owned(),
+        }
+    }
+
+    /// An agent session runs in a Terminal, its parent pane: the verb
+    /// reaches that pane, and `phux agent log` reads the session itself.
+    fn agent_session_remedy(&self, id: &str) -> String {
+        let pane = self.parent.as_ref().map_or_else(
+            || "its parent pane".to_owned(),
+            |parent| format!("its parent pane {}", format_terminal_id(parent)),
+        );
+        match self.verb {
+            Verb::Snapshot | Verb::Wait | Verb::Rec => {
+                format!("read an agent session with `phux agent log {id}`; {pane} has the screen")
+            }
+            verb if verb.types() || matches!(verb, Verb::Run | Verb::AgentStart) => format!(
+                "type into {pane}, where the agent runs; `phux agent log {id}` reads the session"
+            ),
+            _ => format!("address {pane}, the terminal the agent runs in"),
         }
     }
 }
@@ -268,6 +285,7 @@ fn wrong_kind(verb: Verb, resolved: &Resolved) -> WrongKind {
         resource: resolved.id.clone(),
         kind: resolved.kind,
         verb,
+        parent: resolved.parent.clone(),
     }
 }
 

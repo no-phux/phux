@@ -6,6 +6,7 @@ fn at(kind: ResourceKind) -> Resolved {
     Resolved {
         id: ResourceId::local(5),
         kind,
+        parent: None,
     }
 }
 
@@ -135,6 +136,24 @@ fn a_refusal_names_the_verb_the_resource_and_its_kind_and_what_to_do() {
     let session = route(Verb::Snapshot, &at(ResourceKind::AgentSession)).unwrap_err();
     assert!(session.to_string().ends_with("an agent session"));
     assert!(session.remedy().contains("phux agent log"));
+    assert!(session.remedy().contains("its parent pane has the screen"));
+
+    // A known parent is named, and the wording follows the verb.
+    let bound = Resolved {
+        parent: Some(ResourceId::local(3)),
+        ..at(ResourceKind::AgentSession)
+    };
+    let remedy = |verb| require_terminal(verb, &bound).unwrap_err().remedy();
+    assert!(remedy(Verb::Snapshot).contains("its parent pane @3 has the screen"));
+    assert!(remedy(Verb::Paste).starts_with("type into its parent pane @3"));
+    assert!(remedy(Verb::Run).starts_with("type into its parent pane @3"));
+    for verb in [Verb::Resize, Verb::Signal, Verb::Upload] {
+        let remedy = remedy(verb);
+        assert_eq!(
+            remedy,
+            "address its parent pane @3, the terminal the agent runs in"
+        );
+    }
 
     let unknown = route(Verb::Snapshot, &at(ResourceKind::Unknown { tag: 200 })).unwrap_err();
     assert!(unknown.to_string().contains("unknown(200)"), "{unknown}");

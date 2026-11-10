@@ -8,6 +8,8 @@
 pub(crate) struct Target {
     pub(crate) id: ResourceId,
     kind: Option<phux_protocol::ids::ResourceKind>,
+    /// The resource it is bound to, when the inventory read names one.
+    parent: Option<ResourceId>,
 }
 
 /// Resolve `selector` to one pane, keeping the kind the inventory read
@@ -25,14 +27,19 @@ pub(crate) async fn resolve_kinded(
     for_input: bool,
 ) -> Result<Target, ToolError> {
     if let Some(id) = selector.explicit_id() {
-        return Ok(Target { id, kind: None });
+        return Ok(Target {
+            id,
+            kind: None,
+            parent: None,
+        });
     }
     let view = state::get_state(socket).await?;
     let id = resolve_one_with(socket, selector, &view, for_input).await?;
-    let kind = Resolved::in_snapshot(view.snapshot(), id.clone()).kind;
+    let resolved = Resolved::in_snapshot(view.snapshot(), id);
     Ok(Target {
-        id,
-        kind: Some(kind),
+        id: resolved.id,
+        kind: Some(resolved.kind),
+        parent: resolved.parent,
     })
 }
 
@@ -49,6 +56,7 @@ impl Target {
         let resolved = Resolved {
             id: self.id.clone(),
             kind,
+            parent: self.parent.clone(),
         };
         kind_refusal(tool, verb, &resolved).map_or(Ok(()), Err)
     }
@@ -132,6 +140,12 @@ fn instead(verb: Verb, resolved: &Resolved) -> String {
         (Verb::Snapshot | Verb::Wait, ResourceKind::AgentSession) => {
             "read an agent session with phux_agent_log".to_owned()
         }
+        (_, ResourceKind::AgentSession) => {
+            let pane = resolved.parent.as_ref().map_or_else(String::new, |parent| {
+                format!(" {}", selector::format_terminal_id(parent))
+            });
+            format!("address its parent pane{pane}, the terminal the agent runs in")
+        }
         _ => "address a Terminal; phux_ls lists each resource's kind".to_owned(),
     }
 }
@@ -142,6 +156,7 @@ pub(crate) fn wrong_kind_error(tool: &str, err: &read::WrongKind) -> ToolError {
     let resolved = Resolved {
         id: err.resource.clone(),
         kind: err.kind,
+        parent: err.parent.clone(),
     };
     kind_refusal(tool, err.verb, &resolved).unwrap_or_else(|| {
         contract_error("wrong_resource_kind", err.to_string(), &err.remedy(), 2)
@@ -200,6 +215,7 @@ mod kind_tests {
         let target = |kind| Target {
             id: ResourceId::local(5),
             kind: Some(kind),
+            parent: None,
         };
         let tree = target(ResourceKind::AccessibilityTree);
         let err = tree.require_terminal("phux_snapshot", Verb::Snapshot).unwrap_err();
@@ -207,11 +223,18 @@ mod kind_tests {
         let session = target(ResourceKind::AgentSession);
         let err = session.require_terminal("phux_wait", Verb::Wait).unwrap_err();
         assert!(err.0.contains("phux_agent_log"), "{err}");
+        let bound = Target {
+            parent: Some(ResourceId::local(3)),
+            ..target(ResourceKind::AgentSession)
+        };
+        let err = bound.require_terminal("phux_signal", Verb::Signal).unwrap_err();
+        assert!(err.0.contains("its parent pane @3"), "{err}");
         let pane = target(ResourceKind::Terminal);
         assert!(pane.require_terminal("phux_send_keys", Verb::SendKeys).is_ok());
         let exact = Target {
             id: ResourceId::local(5),
             kind: None,
+            parent: None,
         };
         assert!(exact.require_terminal("phux_snapshot", Verb::Snapshot).is_ok());
     }
