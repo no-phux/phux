@@ -1,4 +1,5 @@
-//! The phone app's connection: its own words and the way back to pairing.
+//! The phone app's connection: its own words, the way back to pairing, and
+//! where its banner and buttons land.
 
 use std::time::{Duration, Instant};
 
@@ -8,7 +9,7 @@ use rune::accesskit::Action;
 
 use super::super::standing::{UNPAIRED, plainly_on_phone, reach_hint};
 use super::{Banner, Desk, QUIC_REFUSED, Standing, embedded, stale};
-use crate::desk::Shown;
+use crate::desk::{Pending, Shown};
 
 const UNANSWERED: &str = "100.79.155.27:8788 did not answer within 15s; check that it is up and its network is connected";
 
@@ -172,6 +173,33 @@ fn a_desktops_stuck_banner_is_unchanged() {
 }
 
 #[test]
+fn the_phones_banner_clears_its_top_bar_and_takes_a_thumb() {
+    let mut rt = drawn(failed(QUIC_REFUSED), PHONE);
+    let (bar, _) = rt.presented("phone-top").expect("the top bar");
+    let (banner, _) = rt.presented("reconnect-banner").expect("the banner");
+    assert!(banner[1] >= bar[1] + bar[3], "{banner:?} under {bar:?}");
+    for key in ["banner-pair", "banner-retry"] {
+        let (button, _) = rt.presented(key).expect(key);
+        assert!(button[3] >= 44.0, "{key}: {button:?}");
+    }
+    // A held confirmation keeps the top of the stage; the banner goes under.
+    rt.update(|desk, _| desk.pending = Some(Pending::Close(ResourceId::local(1))));
+    for _ in 0..60 {
+        rt.frame(1.0 / 60.0);
+    }
+    let (confirm, _) = rt.presented("confirm-bar").expect("the confirmation");
+    let (banner, _) = rt.presented("reconnect-banner").expect("the banner");
+    assert!(
+        banner[1] >= confirm[1] + confirm[3],
+        "{banner:?} under {confirm:?}"
+    );
+    for key in ["confirm-cancel", "confirm-ok"] {
+        let (button, _) = rt.presented(key).expect(key);
+        assert!(button[3] >= 44.0, "{key}: {button:?}");
+    }
+}
+
+#[test]
 fn the_phones_placeholder_offers_what_can_help() {
     let keys = |desk: Desk| {
         let rt = drawn(desk, PHONE);
@@ -189,11 +217,11 @@ fn the_phones_placeholder_offers_what_can_help() {
     };
     // Refused: pair again, which is also where its other computers are.
     let [pair, retry, machines] = keys(unshown(QUIC_REFUSED));
-    assert!(pair.is_some() && retry.is_some());
+    assert!(pair.is_some_and(|h| h >= 44.0) && retry.is_some_and(|h| h >= 44.0));
     assert_eq!(machines, None);
     // Unanswered: try again, or go elsewhere.
     let [pair, retry, machines] = keys(unshown(UNANSWERED));
-    assert!(pair.is_none() && retry.is_some() && machines.is_some());
+    assert!(pair.is_none() && retry.is_some() && machines.is_some_and(|h| h >= 44.0));
     // Dialing says nothing at first, then offers a retry beside its hint.
     let mut dialing = unshown(UNANSWERED);
     dialing.status = Status::Connecting;

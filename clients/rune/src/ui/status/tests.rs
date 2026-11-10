@@ -46,11 +46,11 @@ fn a_remote_servers_update_happens_on_that_machine() {
 fn a_held_tab_close_counts_its_terminals() {
     let close = |n| Pending::CloseTab((0..n).map(ResourceId::local).collect());
     assert_eq!(
-        question(&close(1)).0,
+        question(&close(1), false).0,
         "Close this tab? Anything running in it ends."
     );
     assert_eq!(
-        question(&close(3)).0,
+        question(&close(3), false).0,
         "Close this tab and its 3 terminals? Anything running in them ends."
     );
 }
@@ -60,6 +60,30 @@ fn phone() -> Desk {
     let configuration = serde_json::json!({"endpoint": "quic://localhost:8788", "name": "mini"});
     crate::mobile::state(serde_json::from_value(configuration).expect("a configuration"))
         .expect("a loopback host needs no pairing")
+}
+
+#[test]
+fn a_touch_confirmation_names_no_key() {
+    let paste = Pending::Paste(ResourceId::local(1), "a\nb".to_owned());
+    let session = Pending::CloseSession(
+        phux_protocol::ids::SessionKey::new([1; 16]).expect("a key"),
+        "work".to_owned(),
+    );
+    let asks = [
+        (paste, "Paste"),
+        (Pending::Close(ResourceId::local(1)), "Close"),
+        (Pending::CloseTab(vec![ResourceId::local(1)]), "Close"),
+        (
+            Pending::CloseTab(vec![ResourceId::local(1), ResourceId::local(2)]),
+            "Close",
+        ),
+        (session, "End session"),
+    ];
+    for (pending, verb) in asks {
+        assert_eq!(question(&pending, true).1, verb);
+        assert_eq!(question(&pending, false).1, format!("{verb} (Return)"));
+        assert_eq!(question(&pending, true).0, question(&pending, false).0);
+    }
 }
 
 #[test]

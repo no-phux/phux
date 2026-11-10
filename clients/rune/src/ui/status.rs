@@ -14,6 +14,18 @@ use crate::launch::INSTALL;
 
 mod phone;
 
+/// The least height of something a thumb presses, in points.
+const TOUCH: f32 = 44.0;
+
+/// A button as this window is used: on a phone, tall enough to touch.
+fn touchable(desk: &Desk, button: El) -> El {
+    if desk.phone.is_some() {
+        button.min_h(TOUCH)
+    } else {
+        button
+    }
+}
+
 /// A notice's words, wrapping; with none it draws nothing.
 pub fn notice_line(notice: Option<&Notice>, p: &Ink) -> El {
     let (line, kind) = notice.map_or((String::new(), NoticeKind::Error), |notice| {
@@ -36,8 +48,10 @@ pub fn notice_line(notice: Option<&Notice>, p: &Ink) -> El {
         .min_w(0.0)
 }
 
-/// What a held action would do, and the word for doing it.
-fn question(pending: &Pending) -> (String, &'static str) {
+/// What a held action would do, and the word for doing it. A keyboard is
+/// told its key; `touch` has none to name.
+fn question(pending: &Pending, touch: bool) -> (String, &'static str) {
+    let keyed = |bare: &'static str, keyed: &'static str| if touch { bare } else { keyed };
     match pending {
         Pending::Mirror(source, target) => (
             format!(
@@ -54,27 +68,27 @@ fn question(pending: &Pending) -> (String, &'static str) {
                 format!(
                     "This paste has {lines} line{plural} and would run as typed commands. Paste anyway?"
                 ),
-                "Paste (Return)",
+                keyed("Paste", "Paste (Return)"),
             )
         }
         Pending::Close(terminal) => (
             format!("Close {terminal}? Anything running in it ends."),
-            "Close (Return)",
+            keyed("Close", "Close (Return)"),
         ),
         Pending::CloseTab(terminals) if terminals.len() == 1 => (
             "Close this tab? Anything running in it ends.".to_owned(),
-            "Close (Return)",
+            keyed("Close", "Close (Return)"),
         ),
         Pending::CloseTab(terminals) => (
             format!(
                 "Close this tab and its {} terminals? Anything running in them ends.",
                 terminals.len()
             ),
-            "Close (Return)",
+            keyed("Close", "Close (Return)"),
         ),
         Pending::CloseSession(_, name) => (
             format!("End session {name} and everything running in it?"),
-            "End session (Return)",
+            keyed("End session", "End session (Return)"),
         ),
     }
 }
@@ -82,7 +96,10 @@ fn question(pending: &Pending) -> (String, &'static str) {
 /// The action waiting on Return or Escape, floating over the terminals so
 /// asking never resizes them.
 pub fn confirm_bar(desk: &Desk, p: &Ink) -> Option<El> {
-    let (message, verb) = question(desk.pending.as_ref()?);
+    let touch = desk.phone.is_some();
+    let (message, verb) = question(desk.pending.as_ref()?, touch);
+    let cancel = if touch { "Cancel" } else { "Cancel (Esc)" };
+    let press = |button: El| touchable(desk, button.grow(0.0).px(10.0));
     Some(
         row()
             .key("confirm-bar")
@@ -107,16 +124,13 @@ pub fn confirm_bar(desk: &Desk, p: &Ink) -> Option<El> {
                     .grow(1.0)
                     .min_w(0.0),
             )
-            .child(
-                button("Cancel (Esc)", "confirm-cancel", p, Desk::cancel_pending)
-                    .grow(0.0)
-                    .px(10.0),
-            )
-            .child(
-                button(verb, "confirm-ok", p, Desk::confirm_pending)
-                    .grow(0.0)
-                    .px(10.0),
-            ),
+            .child(press(button(
+                cancel,
+                "confirm-cancel",
+                p,
+                Desk::cancel_pending,
+            )))
+            .child(press(button(verb, "confirm-ok", p, Desk::confirm_pending))),
     )
 }
 
@@ -280,11 +294,17 @@ pub fn placeholder(desk: &Desk, p: &Ink) -> El {
                 Desk::toggle_machines,
             )
         }));
-    let buttons = row().w_full().center().gap(8.0).pt(6.0).children(actions);
+    let buttons = row()
+        .w_full()
+        .center()
+        .gap(8.0)
+        .pt(6.0)
+        .children(actions.map(|button| touchable(desk, button)));
     col()
         .gap(6.0)
         .items_center()
         .max_w(520.0)
+        .px(if desk.phone.is_some() { 16.0 } else { 0.0 })
         .child(text(title).font(TextStyle::new(15.0, 600.0)).color(color))
         .child(text(detail).font(LABEL).color(p.dim).wrap())
         .children((standing == Standing::NoCli).then(|| install_line(p)))
@@ -315,11 +335,9 @@ pub fn banner(desk: &Desk, p: &Ink) -> Option<El> {
         .into_iter()
         .chain(repair.then(|| phone::pair_again("banner-pair", p)))
         .chain([action("Retry", "banner-retry", p, Desk::reconnect)]);
-    // A held confirmation keeps the top of the stage.
-    let top = if desk.pending.is_some() { 96.0 } else { 44.0 };
     Some(
         col()
-            .absolute(0.0, top)
+            .absolute(0.0, phone::banner_top(desk))
             .w_full()
             .px(12.0)
             .items_center()
@@ -345,7 +363,7 @@ pub fn banner(desk: &Desk, p: &Ink) -> Option<El> {
                             .child(text(lost).font(LABEL_STRONG).color(p.text).truncate())
                             .child(text(why).font(CAPTION).color(p.dim).wrap()),
                     )
-                    .children(actions),
+                    .children(actions.map(|button| touchable(desk, button))),
             ),
     )
 }
