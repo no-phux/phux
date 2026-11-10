@@ -231,6 +231,8 @@ self_test() {
     printf '# Embed\n' >"$repo/docs/embedding.md"
     printf '# Releasing\n\n## npm and crates.io\n\n## Versioning\n' >"$repo/docs/releasing.md"
     printf '# CLI\n\n## `phux send-keys`\n\n## `phux paste`\n\n## `phux detach`\n\n## `phux kill`\n\n## `phux attach`\n' >>"$repo/docs/reference/cli.md"
+    # Early matching anchors must not SIGPIPE their producer under pipefail.
+    awk 'BEGIN { for (i = 0; i < 10000; i++) print "## Trailing anchor " i }' >>"$repo/docs/reference/cli.md"
     printf 'fn main() {}\n' >"$repo/crates/phux-server/src/agent_state.rs"
     printf 'fn drain_state() {}\n' >"$repo/crates/phux-server/src/runtime/connections/agent_state.rs"
     printf '{}\n' >"$repo/integrations/runtime/package.json"
@@ -319,6 +321,15 @@ EOF
         printf 'self-test: fixture should pass\n' >&2
         exit 1
     fi
+
+    printf '[missing](./reference/cli.md#missing-anchor)\n' >"$repo/docs/missing.md"
+    ROOT="$repo" check_links "$repo/docs/missing.md" >"$scratch/out" 2>"$scratch/err"
+    if [[ "$VIOLATIONS" -ne 1 ]] || ! grep -Fq 'has no heading #missing-anchor' "$scratch/err"; then
+        printf 'self-test: a missing anchor should still fail\n' >&2
+        cat "$scratch/err" >&2
+        exit 1
+    fi
+    VIOLATIONS=0
 
     awk '
         !done && $0 == "## Entry points" {

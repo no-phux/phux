@@ -1,13 +1,16 @@
-**Phux Rune 0.1.10** makes native iOS onboarding scan-first, with clearer Tailscale discovery and SSH recovery.
+**Phux Rune 0.1.11** makes the desktop-hosted phone keyboard work in sheets and keeps phone mode when switching machines.
 
-- **Scan QR, explicitly Paste, or Find with Tailscale.** Import a pairing invitation instead of transcribing endpoints, certificate pins or tokens. Review and confirm the peer before automatic platform-held key enrollment; saved-key reconnect reuses that identity.
-- **Tailscale discovery is not the VPN.** Rune's embedded directory is a separate Tailscale node. The installed Tailscale VPN must be connected for the phone to reach the selected computer.
-- **SSH uses your computer's local account, not your Tailscale email.** The password is used once for pairing and is never persisted. Rune no longer guesses the account from an email address. Failed attempts offer a prominent retry and QR alternative, plus credential-free local phase/error codes. Pairing does not install or upgrade phux, or start its server.
+- **Type into phone sheets.** The drawn keyboard now edits rename fields, machine setup and typed inbox replies in the desktop-hosted phone form. Sheets leave room for the keyboard and accessory row. Return, Escape, selection replacement, delete and one-shot shift stay with the active field; stale or missing inbox reply editors do not accept text.
+- **Switch machines without losing phone mode.** The phone form and keyboard/symbol preferences survive machine replacement, while old pane navigation, picker and modifier latches are cleared.
+- **Native editing is unchanged.** Native iOS fields still use UIKit. Drawn-keyboard editing of ACP drafts remains unsupported; native ACP keeps its existing mounted-editor path.
+- **Guided desktop setup.** The first connection in an installed app now walks through appearance, agent skills and permissions, optional key-binding migration from an installed agent, and essential shortcuts. Progress survives quitting, and **Get Started** reopens the guide. Agent discovery also checks common installation directories outside the GUI's minimal PATH; migration failures show their actual cause.
+
+Rune stays on the newest-good framework revision, `9c28a20`. The newer dev revision `45eb5cab` still contains the regression that repeats GIFs without a loop extension forever, so this release does not adopt it.
 
 ### Verification and availability
 
-An ad-hoc 0.1.9 preview was installed and launched on a physical iPhone 18 Pro. The user's device discovery worked, but SSH login failed; that report drove the account guidance and recovery fixes. Successful user authentication, camera scanning and Secure Enclave enrollment have **not** been demonstrated on that physical device.
+Phone-feature touch tests cover rename, machine setup, inbox replies and actual machine replacement at phone sizes, including 320×568. The feature's desktop and phone baseline frames were unchanged outside the intended field editing. Rune's format, strict clippy, 524 Rust tests, 82 Python driver tests, four Bun tests and dependency-policy check passed for that feature; release CI checks the final combined source separately.
 
-Simulator qualification passed 14 native groups and QUIC/WSS enrollment with same-key reconnect after relaunch. Validation also passed 19 Swift SSH tests, 82 Python driver tests, 518 Rune library tests and the Rune dependency-policy check.
+Native simulator qualification passed 14 groups with QUIC and WSS enrollment and same-key reconnect after relaunch. This is simulator evidence, not new physical-device or TestFlight proof. Successful user authentication, camera scanning and Secure Enclave enrollment remain unverified on the physical iPhone.
 
-This public 0.1.10 release contains desktop archives and a macOS DMG. Native iOS builds and simulator evidence are CI artifacts, not a public iPhone OTA installer or a TestFlight release.
+This public 0.1.11 release contains desktop archives and a macOS DMG. Native iOS builds and simulator evidence are CI artifacts, not a public iPhone OTA installer or a TestFlight release.
