@@ -303,6 +303,11 @@ impl Desk {
         let topology = self.topology.as_ref();
         let query = &self.palette_query.text;
         match self.palette_mode {
+            Mode::All if self.phone.is_some() => {
+                let native = self.native.is_some();
+                let items = palette::phone::items(topology, native, self.resource_items());
+                palette::rank(items, query)
+            }
             Mode::All => {
                 let mut items = self.resource_items();
                 items.extend(palette::items(topology));
