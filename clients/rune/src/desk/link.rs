@@ -365,7 +365,7 @@ impl Desk {
     }
 
     /// Whether the connection is working: anything else waits on this module.
-    fn link_is_up(&self) -> bool {
+    pub(super) fn link_is_up(&self) -> bool {
         self.client.is_some() && self.status == Status::Attached && self.link.ended.is_none()
     }
 
