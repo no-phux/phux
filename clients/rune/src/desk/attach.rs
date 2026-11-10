@@ -40,7 +40,7 @@ impl Desk {
         let Some(shown) = &self.shown else {
             return self.say(NoticeKind::Error, "No terminal to paste into.");
         };
-        let terminal = shown.terminal.clone();
+        let terminal = shown.resource.clone();
         let server = self.link.server;
         tx.read_clipboard(move |desk: &mut Self, content, _| {
             desk.paste_answered(&terminal, server, content);
@@ -170,7 +170,7 @@ mod tests {
             phux_client_runtime::control::ControlOptions::default(),
         )));
         desk.shown = Some(crate::desk::Shown {
-            terminal: ResourceId::local(terminal),
+            resource: ResourceId::local(terminal),
             view: phux_client_runtime::ViewId::from_raw(1),
         });
     }

@@ -2,10 +2,14 @@
 //! decoder workers, GIF/WebP included.
 
 use super::*;
-use crate::desk::resources::typed::{self, MAX_TEXT};
+use phux_client_core::document_view::{MAX_TEXT, is_image};
 
+/// A non-image publication's body and caption, through the one decode path.
 fn typed(content_type: &str, bytes: &[u8]) -> (Body, String) {
-    typed::decode(content_type, bytes)
+    let mut d = Document::new(record(1, ResourceKind::Document));
+    let published = publication(1, content_type, bytes.to_vec());
+    assert!(d.publish(&published, None, &mut surface::Decodes::default()));
+    (d.body, d.detail.expect("a typed document names its type"))
 }
 
 fn text(body: &Body) -> &str {
@@ -44,8 +48,8 @@ fn text_and_structured_suffixes_are_source_never_rendered() {
 fn an_unknown_type_is_named_by_size() {
     let (body, _) = typed("application/pdf", b"%PDF-1.7");
     assert_eq!(text(&body), "8 bytes of application/pdf");
-    assert!(!typed::image("image/svg+xml") && !typed::image("image/tiff"));
-    assert!(typed::image("IMAGE/WEBP; q=1") && typed::image("image/gif"));
+    assert!(!is_image("image/svg+xml") && !is_image("image/tiff"));
+    assert!(is_image("IMAGE/WEBP; q=1") && is_image("image/gif"));
 }
 
 #[test]
@@ -81,7 +85,7 @@ fn encoded(format: image::ImageFormat) -> Vec<u8> {
 
 #[test]
 fn a_document_is_a_mirror_with_pending_empty_text_and_image_states() {
-    assert!(document_kind(ResourceKind::Document));
+    assert!(ResourceKind::Document.is_document());
     let cache = rune::ImageCache::new(Arc::new(|| {}));
     let mut decodes = surface::Decodes::default();
     let mut d = Document::new(record(1, ResourceKind::Document));
@@ -142,4 +146,52 @@ fn a_broken_typed_image_is_an_invalid_image() {
         std::thread::yield_now();
     }
     assert!(matches!(&d.body, Body::Invalid(error) if error.starts_with("Invalid image")));
+}
+
+#[test]
+fn every_kind_takes_the_one_decode_path_by_its_content_type() {
+    let mut decodes = surface::Decodes::default();
+    let published = |kind, seq, bytes: &[u8]| DocumentPublication {
+        resource_id: id(1),
+        kind,
+        seq,
+        bytes: bytes.to_vec(),
+        content_type: None,
+    };
+    let mut tree = Document::new(record(1, ResourceKind::AccessibilityTree));
+    let json = br#"{"a":[1]}"#;
+    assert!(tree.publish(
+        &published(ResourceKind::AccessibilityTree, 0, json),
+        None,
+        &mut decodes
+    ));
+    let (typed_body, _) = typed("application/json", json);
+    assert_eq!(text(&tree.body), text(&typed_body), "a tree is JSON");
+    assert_eq!(tree.detail, None, "a tree declares no type");
+    let long = format!("[\"{}\"]", "a".repeat(MAX_TEXT));
+    assert!(tree.publish(
+        &published(ResourceKind::AccessibilityTree, 1, long.as_bytes()),
+        None,
+        &mut decodes
+    ));
+    assert_eq!(
+        tree.detail.as_deref(),
+        Some("showing the first 256 KiB of 257 KiB"),
+        "a tree is cut like any text"
+    );
+    let mut surface = Document::new(record(2, ResourceKind::PixelSurface));
+    assert!(surface.publish(
+        &published(ResourceKind::PixelSurface, 0, b"GIF89a"),
+        None,
+        &mut decodes
+    ));
+    assert!(
+        matches!(&surface.body, Body::Invalid(why) if why == "Invalid frame: not a PNG or JPEG")
+    );
+    assert!(surface.publish(
+        &published(ResourceKind::PixelSurface, 1, b""),
+        None,
+        &mut decodes
+    ));
+    assert!(matches!(surface.body, Body::Empty));
 }

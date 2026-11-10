@@ -35,7 +35,7 @@ impl Field {
             }
             ("find-query", Some(Modal::FindField)) => (
                 Self::Find,
-                format!("{:?}", d.shown.as_ref().map(|s| (&s.terminal, s.view))),
+                format!("{:?}", d.shown.as_ref().map(|s| (&s.resource, s.view))),
             ),
             ("settings-query", Some(Modal::Settings)) if d.settings_search_focused() => {
                 (Self::Settings, "settings".into())
@@ -226,7 +226,7 @@ fn terminal(d: &Desk, connection: &str) -> Option<Target> {
     let shown = d.shown.as_ref()?;
     Some(Target::Terminal(format!(
         "{connection}:{}:{:?}",
-        shown.terminal, shown.view?
+        shown.resource, shown.view?
     )))
 }
 

@@ -45,7 +45,7 @@ impl Desk {
         let Some((terminal, view)) = self
             .shown
             .as_ref()
-            .and_then(|s| Some((s.terminal.clone(), s.view?)))
+            .and_then(|s| Some((s.resource.clone(), s.view?)))
         else {
             return;
         };
@@ -187,7 +187,7 @@ impl Desk {
                 && self
                     .shown
                     .as_ref()
-                    .is_some_and(|s| s.terminal == find.terminal)
+                    .is_some_and(|s| s.resource == find.terminal)
         });
         if !alive {
             self.close_find();

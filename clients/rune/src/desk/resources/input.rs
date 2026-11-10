@@ -74,7 +74,7 @@ impl Desk {
 
     /// The surface on screen, when it takes input now.
     fn shown_input_document(&self) -> Option<ResourceId> {
-        let id = self.shown.as_ref()?.terminal.clone();
+        let id = self.shown.as_ref()?.resource.clone();
         self.document_input_frame(&id).is_some().then_some(id)
     }
 
@@ -165,7 +165,7 @@ impl Desk {
     /// A key nothing else took, while a surface that takes input is shown;
     /// true when the document took it.
     pub(in crate::desk) fn document_key(&mut self, event: &rune::KeyEvent) -> bool {
-        let Some(id) = self.shown.as_ref().map(|s| s.terminal.clone()) else {
+        let Some(id) = self.shown.as_ref().map(|s| s.resource.clone()) else {
             return false;
         };
         if self.document_input_frame(&id).is_none() {

@@ -48,9 +48,9 @@ impl Desk {
         if let Some(view) = shown.view {
             let _ = client.destroy_view(view);
         }
-        self.fitted.remove(&shown.terminal);
+        self.fitted.remove(&shown.resource);
         self.painted.replace(None);
-        Some(shown.terminal)
+        Some(shown.resource)
     }
 
     pub(super) fn close_shown(&mut self, client: &Client, excluded: &[ResourceId]) {
@@ -71,7 +71,7 @@ impl Desk {
         let shown = self
             .shown
             .as_ref()
-            .map(|shown| &shown.terminal)
+            .map(|shown| &shown.resource)
             .or_else(|| self.wanted.as_ref().map(|(id, _)| id))?;
         let all = phux_client_core::layout::leaves(tree);
         let at = all.iter().position(|id| id == shown)?;
@@ -92,15 +92,10 @@ impl Desk {
                 if self.resources.dismissed.contains(&record.key) {
                     return false;
                 }
-                match record.kind {
-                    phux_protocol::ids::ResourceKind::Terminal => {
-                        topology.as_ref().is_some_and(|t| t.pane(id).is_some())
-                    }
-                    kind => {
-                        super::resources::document_kind(kind)
-                            && !self.resources.execution_closed(record)
-                    }
+                if record.kind.is_terminal() {
+                    return topology.as_ref().is_some_and(|t| t.pane(id).is_some());
                 }
+                record.kind.is_document() && !self.resources.execution_closed(record)
             })
             .cloned()
     }
@@ -211,7 +206,7 @@ impl Desk {
             return false;
         };
         self.subscribe_document(client, &target);
-        if self.shown.as_ref().is_some_and(|s| s.terminal == target) {
+        if self.shown.as_ref().is_some_and(|s| s.resource == target) {
             self.wanted = None;
             return false;
         }
@@ -239,18 +234,18 @@ impl Desk {
         };
         // The old focus stays on screen if the layout still shows it.
         if let Some(old) = self.shown.take() {
-            self.others.insert(old.terminal, old.view);
+            self.others.insert(old.resource, old.view);
             self.painted.replace(None);
         }
         self.activities.seen(&target);
         self.shown = Some(Shown {
-            terminal: target,
+            resource: target,
             view,
         });
         if let Some(phone) = self.phone.as_mut() {
             phone.reset_navigation();
             self.layout = Some(phux_client_core::layout::LayoutNode::Leaf(
-                self.shown.as_ref().expect("just opened").terminal.clone(),
+                self.shown.as_ref().expect("just opened").resource.clone(),
             ));
         }
         self.wanted = None;
@@ -279,7 +274,7 @@ mod tests {
         let view = |raw| phux_client_runtime::ViewId::from_raw(raw).expect("nonzero");
         // Nothing is published for either view: both died with the replica.
         desk.shown = Some(Shown {
-            terminal: ResourceId::local(1),
+            resource: ResourceId::local(1),
             view: Some(view(1)),
         });
         desk.others.insert(ResourceId::local(2), Some(view(2)));

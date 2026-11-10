@@ -94,7 +94,7 @@ fn question(d: &mut Desk, soft: &Soft, tx: &mut Tx) -> bool {
             && !d
                 .shown
                 .as_ref()
-                .is_some_and(|shown| &shown.terminal == terminal)
+                .is_some_and(|shown| &shown.resource == terminal)
         {
             return true;
         }

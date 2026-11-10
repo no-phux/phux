@@ -196,7 +196,7 @@ impl Desk {
             return;
         };
         let Some(view) = shown.view else { return };
-        let terminal = shown.terminal.clone();
+        let terminal = shown.resource.clone();
         let frame = client.acquire_view(view);
         let behind = frame.as_ref().is_some_and(|f| !f.scrollbar.at_tail());
         let sent = client.with_control(|control| {
@@ -381,7 +381,7 @@ impl Desk {
     /// vouches for, after asking otherwise. Closing is not undoable, so
     /// "unknown" asks too.
     pub fn close_terminal(&mut self) {
-        let Some(terminal) = self.shown.as_ref().map(|s| s.terminal.clone()) else {
+        let Some(terminal) = self.shown.as_ref().map(|s| s.resource.clone()) else {
             return;
         };
         if self.is_document(&terminal) {
@@ -490,7 +490,7 @@ impl Desk {
     /// The view showing `terminal`, focused or not.
     pub(super) fn view_of(&self, terminal: &ResourceId) -> Option<ViewId> {
         match &self.shown {
-            Some(shown) if &shown.terminal == terminal => shown.view,
+            Some(shown) if &shown.resource == terminal => shown.view,
             _ => self.others.get(terminal).copied().flatten(),
         }
     }

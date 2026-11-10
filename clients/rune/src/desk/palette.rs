@@ -189,7 +189,7 @@ impl Desk {
 
     /// Paths under the focused pane's folder, searched on its host.
     pub(super) fn open_paths(&mut self) {
-        let Some(terminal) = self.shown.as_ref().map(|s| s.terminal.clone()) else {
+        let Some(terminal) = self.shown.as_ref().map(|s| s.resource.clone()) else {
             return;
         };
         let Some(origin) = self.focused_cwd() else {
@@ -304,7 +304,7 @@ impl Desk {
         match self.palette_mode {
             Mode::All => {
                 let mut items = self.resource_items();
-                items.extend(palette::items(topology));
+                items.extend(palette::items(topology, &self.addressable()));
                 palette::rank(items, query)
             }
             Mode::Mirror(source) => self.mirror_items(source, query),
@@ -340,7 +340,7 @@ impl Desk {
     pub fn cursor_point(&self) -> Option<[f32; 2]> {
         let shown = self.shown.as_ref()?;
         let frame = self.client.as_ref()?.acquire_view(shown.view?)?;
-        let [x, y] = *self.origins.get(&shown.terminal)?;
+        let [x, y] = *self.origins.get(&shown.resource)?;
         let m = self.metrics();
         let (col, row) = (f32::from(frame.cursor.col), f32::from(frame.cursor.row));
         Some([x + col * m.cell_w, y + (row + 1.0) * m.cell_h])

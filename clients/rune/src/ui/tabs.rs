@@ -9,7 +9,7 @@ use crate::desk::{Desk, Renaming, Tab};
 
 fn tab(desk: &Desk, tab: &Tab, index: usize, ink: &Ink) -> El {
     let waiting = tab
-        .terminals
+        .resources
         .iter()
         .any(|id| desk.activities.mark(id).needs_you());
     let dot = waiting.then(|| {

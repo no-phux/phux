@@ -69,26 +69,11 @@ fn complete(image: &rune::Image) -> bool {
 }
 
 impl Document {
-    pub(super) fn publish_surface(
-        &mut self,
-        bytes: &[u8],
-        images: Option<&rune::ImageCache>,
-        decodes: &mut Decodes,
-    ) {
-        // The cache accepts SVG too; this resource contract accepts PNG or
-        // JPEG only. Full validation, 8192-side / 256 MiB decode limits, and
-        // mip generation remain on Rune's real decoder workers.
-        let png = bytes.starts_with(b"\x89PNG\r\n\x1a\n");
-        if !bytes.is_empty() && !png && !bytes.starts_with(&[0xff, 0xd8, 0xff]) {
-            self.invalidate_surface();
-            self.body = Body::Invalid("Invalid frame: not a PNG or JPEG".to_owned());
-            return;
-        }
-        self.publish_image(bytes, images, decodes);
-    }
-
-    /// Any image the cache decodes; a typed document's content type, not
-    /// a signature, already says it is PNG, JPEG, GIF or WebP.
+    /// An image whose content type is PNG, JPEG, GIF or WebP: a surface's
+    /// by signature, a typed document's as declared. The cache accepts SVG
+    /// too, so nothing else reaches it. Full validation, 8192-side /
+    /// 256 MiB decode limits, and mip generation remain on Rune's real
+    /// decoder workers.
     pub(super) fn publish_image(
         &mut self,
         bytes: &[u8],

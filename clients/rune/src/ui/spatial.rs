@@ -30,10 +30,10 @@ pub fn view(desk: &Desk, phone: &Phone, ink: &Ink, area: El) -> El {
     let Some(shown) = desk.shown.as_ref() else {
         return area;
     };
-    let fallback = phux_client_core::layout::LayoutNode::Leaf(shown.terminal.clone());
+    let fallback = phux_client_core::layout::LayoutNode::Leaf(shown.resource.clone());
     let tree = phone.tree.as_ref().unwrap_or(&fallback);
     let all = spatial::rects(tree);
-    let Some((_, focus)) = all.iter().find(|(id, _)| id == &shown.terminal) else {
+    let Some((_, focus)) = all.iter().find(|(id, _)| id == &shown.resource) else {
         return area;
     };
     let content = canvas(desk, phone, &all, *focus, ink);
@@ -62,7 +62,7 @@ pub fn view(desk: &Desk, phone: &Phone, ink: &Ink, area: El) -> El {
             .child(toolbar(desk, all.len() > 1, &controls_ink(desk, ink))),
     );
     if desk.phone_picker_visible() {
-        stage = stage.child(picker(desk, &all, &shown.terminal, ink));
+        stage = stage.child(picker(desk, &all, &shown.resource, ink));
     }
     stage
 }
@@ -71,7 +71,7 @@ fn toolbar(desk: &Desk, several: bool, ink: &Ink) -> El {
     let terminal = desk
         .shown
         .as_ref()
-        .is_some_and(|s| !desk.is_document(&s.terminal));
+        .is_some_and(|s| !desk.is_document(&s.resource));
     if !several && !terminal {
         return el().key("phone-navigation-toolbar").h(0.0);
     }
@@ -131,7 +131,7 @@ fn canvas(desk: &Desk, phone: &Phone, all: &[(ResourceId, Rect)], focus: Rect, i
         })
         .motion(tok::motion::SNAPPY);
     for (id, rect) in all {
-        let focused = desk.shown.as_ref().is_some_and(|s| &s.terminal == id);
+        let focused = desk.shown.as_ref().is_some_and(|s| &s.resource == id);
         if fallback && !focused {
             continue;
         }
@@ -206,7 +206,7 @@ pub(super) fn minimap(desk: &Desk, ink: &Ink) -> Option<El> {
     if all.len() < 2 {
         return None;
     }
-    let map = map(&all, &desk.shown.as_ref()?.terminal, ink);
+    let map = map(&all, &desk.shown.as_ref()?.resource, ink);
     Some(if desk.modal().is_some() {
         map.inert()
     } else {

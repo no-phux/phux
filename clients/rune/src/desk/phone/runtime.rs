@@ -47,7 +47,7 @@ fn a_tap_on_a_url_opens_it_and_a_drag_across_it_does_not() {
         .shown
         .as_ref()
         .expect("a terminal")
-        .terminal
+        .resource
         .clone();
     let m = rt.state.metrics();
     let cell = |col: f32| (m.cell_w * (col + 0.5), m.cell_h * 0.5);

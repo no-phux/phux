@@ -241,21 +241,18 @@ fn waiting_by_session(desk: &Desk, topology: &Topology) -> HashMap<u32, usize> {
     waiting
 }
 
-/// Every session's header and rows, rebuilt only where their inputs moved:
-/// the view runs for each frame of terminal output.
+/// Every session's header and rows (its terminals, then its documents),
+/// rebuilt only where their inputs moved: the view runs for each frame of
+/// terminal output.
 fn session_list(desk: &Desk, topology: &Topology, waiting: &HashMap<u32, usize>, ink: &Ink) -> El {
     let mut list = col().w_full().gap(1.0).px(8.0);
-    let shown = desk.shown.as_ref().map(|s| &s.terminal);
+    let shown = desk.shown.as_ref().map(|s| &s.resource);
     let current = desk.selected_session_name();
     let theme = desk.settings.theme.map(|t| t.id);
+    let all = desk.addressable();
     for session in &topology.sessions {
-        let panes: Vec<_> = topology
-            .panes
-            .iter()
-            .filter(|p| p.session_id == session.id)
-            .collect();
-        let alone = panes.len() == 1;
-        let labels: Vec<_> = panes.iter().map(|p| pane_label(p)).collect();
+        let rows: Vec<_> = all.iter().filter(|r| r.session_id == session.id).collect();
+        let alone = rows.len() == 1;
         if !alone {
             let header = Header {
                 id: session.id,
@@ -270,19 +267,20 @@ fn session_list(desk: &Desk, topology: &Topology, waiting: &HashMap<u32, usize>,
                 || session_header(&header, ink),
             ));
         }
-        for (pane, label) in panes.iter().zip(&labels) {
-            let id = &pane.terminal_id;
+        for resource in &rows {
+            let (id, label) = (&resource.id, &resource.label);
             let (name, place) = if alone {
                 let place = (*label != session.name).then(|| label.clone());
                 (session.name.clone(), place)
             } else {
                 // Twins are told apart by what the CLI calls them.
-                let twin = labels.iter().filter(|other| *other == label).count() > 1;
-                (label.clone(), twin.then(|| id.to_string()))
+                let twin = rows.iter().filter(|other| other.label == *label).count() > 1;
+                let mirror = (!resource.kind.is_terminal()).then(|| "Read-only mirror".to_owned());
+                (label.clone(), twin.then(|| id.to_string()).or(mirror))
             };
             let row = Row {
                 id,
-                session: &pane.session_name,
+                session: &resource.session,
                 name,
                 place,
                 rename: session.key.filter(|_| alone),
@@ -310,7 +308,7 @@ fn is_terminal_member(topology: &Topology, id: &ResourceId) -> bool {
 /// the hub's own sessions).
 fn satellite_list(desk: &Desk, topology: &Topology, ink: &Ink) -> El {
     let mut list = col().w_full().gap(1.0).px(8.0);
-    let shown = desk.shown.as_ref().map(|s| &s.terminal);
+    let shown = desk.shown.as_ref().map(|s| &s.resource);
     let theme = desk.settings.theme.map(|t| t.id);
     for (n, session) in topology.satellite_sessions.iter().enumerate() {
         let name = format!("{} · {}", session.host, session.name);

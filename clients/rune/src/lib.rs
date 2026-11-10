@@ -4,6 +4,7 @@
 //! and terminal the server lists, the selected terminal, and a status line.
 
 mod activity;
+mod addressable;
 mod alerts;
 mod creature;
 mod desk;
