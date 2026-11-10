@@ -13,7 +13,7 @@
 //!
 //! [ADR-0125]: https://github.com/no-phux/phux/blob/d21db2e345aeaff43a681b3a04dfd43f2cc082ca/docs/adr/0125-kind-catalog-is-generated-metadata.md
 
-use crate::caps::{ServerFeature, ServerFeatureExt};
+use crate::caps::{BootstrapCodec, ServerFeature, ServerFeatureExt};
 use crate::ids::{ResourceId, ResourceKind, SatelliteHost};
 use crate::wire::frame::{
     APPROVAL_DECIDE_KEY_PREFIX, APPROVAL_DENY, APPROVAL_KEY_PREFIX, EVENT_TAG_APPROVAL_DECIDED,
@@ -67,6 +67,7 @@ include!("kinds/rules.rs");
 include!("kinds/classifiers.rs");
 include!("kinds/method_catalog.rs");
 include!("kinds/resource_catalog.rs");
+include!("kinds/contracts.rs");
 
 /// Every catalog method: server-level, then substrate, then each kind's
 /// facet in [`KINDS`] order.
@@ -151,10 +152,12 @@ pub fn frame_is_dangerous(frame: &FrameKind) -> bool {
 /// The catalog entry for `kind`, or `None` for a kind this build does not
 /// serve.
 #[must_use]
-pub fn kind_spec(kind: ResourceKind) -> Option<&'static KindSpec> {
-    KINDS.iter().find(|spec| spec.kind == kind)
+pub const fn kind_spec(kind: ResourceKind) -> Option<&'static KindSpec> {
+    kind_spec_in(&KINDS, kind)
 }
 
+#[cfg(test)]
+mod contract_tests;
 #[cfg(test)]
 mod samples;
 
@@ -256,10 +259,7 @@ mod tests {
             kind: ResourceKind::Unknown { tag: 9 },
             ..agent(terminal())
         };
-        assert_eq!(
-            row(&spawn(None, None, Some(unknown))),
-            F_UNCLASSIFIED.case
-        );
+        assert_eq!(row(&spawn(None, None, Some(unknown))), F_UNCLASSIFIED.case);
     }
 
     #[test]

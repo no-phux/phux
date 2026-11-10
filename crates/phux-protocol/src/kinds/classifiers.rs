@@ -201,14 +201,19 @@ fn spawn_rule(
     }
 }
 
-/// A Terminal has no parent and every other kind has one (L1 §1.2).
+/// A kind's catalog spawn contract says whether it has a parent (L1 §1.2);
+/// a kind this build does not serve is not a Terminal, so it would.
 const fn kind_contradicts_binding(kind: ResourceKind, parent: Option<&ResourceId>) -> bool {
-    kind.is_terminal() == parent.is_some()
+    matches!(parent_rule(kind), ParentRule::Required) != parent.is_some()
 }
 
-/// A kind this build serves, other than a Terminal, with no owner Terminal.
-fn is_unowned_served_child(kind: ResourceKind, owned: bool) -> bool {
-    !owned && !kind.is_terminal() && kind_spec(kind).is_some()
+/// A served kind whose spawn names a parent, with no owner Terminal.
+const fn is_unowned_served_child(kind: ResourceKind, owned: bool) -> bool {
+    !owned
+        && matches!(
+            kind_spec(kind),
+            Some(KindSpec { spawn: SpawnContract { parent: ParentRule::Required, .. }, .. })
+        )
 }
 
 fn terminal_spawn_rule(remote: bool, owned: bool) -> &'static Rule {

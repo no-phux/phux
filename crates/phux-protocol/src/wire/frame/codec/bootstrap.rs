@@ -15,33 +15,23 @@ use crate::wire::encode::Encoder;
 use crate::wire::error::DecodeError;
 
 pub(in crate::wire) fn encode_bootstrap_codec(codec: BootstrapCodec, enc: &mut Encoder<'_>) {
-    match codec {
-        BootstrapCodec::SynthesizedVtV1 => {
-            enc.write_u8(BootstrapCodec::SYNTHESIZED_VT_V1_TAG);
-        }
-        BootstrapCodec::Native(version) => {
-            enc.write_u8(BootstrapCodec::NATIVE_TAG);
-            enc.write_u8(version.as_wire());
-        }
-        BootstrapCodec::AgentEventsJsonlV1 => {
-            enc.write_u8(BootstrapCodec::AGENT_EVENTS_JSONL_V1_TAG);
-        }
-        BootstrapCodec::AccessibilityTreeJsonV1 => {
-            enc.write_u8(BootstrapCodec::ACCESSIBILITY_TREE_JSON_V1_TAG);
-        }
-        BootstrapCodec::PixelSurfacePngV1 => {
-            enc.write_u8(BootstrapCodec::PIXEL_SURFACE_PNG_V1_TAG);
-        }
-        BootstrapCodec::DocumentTypedV1 => {
-            enc.write_u8(BootstrapCodec::DOCUMENT_TYPED_V1_TAG);
-        }
-        BootstrapCodec::Unknown { tag } => {
-            debug_assert!(
-                !BootstrapCodec::is_allocated_tag(tag),
-                "Unknown codec carries allocated tag {tag}"
-            );
-            enc.write_u8(tag);
-        }
+    debug_assert!(
+        match codec {
+            BootstrapCodec::Unknown { tag } => !BootstrapCodec::is_allocated_tag(tag),
+            BootstrapCodec::Kind { tag } => {
+                tag != BootstrapCodec::NATIVE_TAG
+                    && matches!(
+                        BootstrapCodec::from_tag_in(&[], tag),
+                        BootstrapCodec::Unknown { .. }
+                    )
+            }
+            _ => true,
+        },
+        "{codec:?} carries a tag another variant names"
+    );
+    enc.write_u8(codec.tag());
+    if let BootstrapCodec::Native(version) = codec {
+        enc.write_u8(version.as_wire());
     }
 }
 
@@ -49,20 +39,13 @@ pub(in crate::wire) fn decode_bootstrap_codec(
     dec: &mut Decoder<'_>,
 ) -> Result<BootstrapCodec, DecodeError> {
     match dec.read_u8()? {
-        BootstrapCodec::SYNTHESIZED_VT_V1_TAG => Ok(BootstrapCodec::SynthesizedVtV1),
         BootstrapCodec::NATIVE_TAG => {
             let value = dec.read_u8()?;
             let codec =
                 EngineCodec::from_wire(value).ok_or(DecodeError::InvalidBootstrapProfile)?;
             Ok(BootstrapCodec::Native(codec))
         }
-        BootstrapCodec::AGENT_EVENTS_JSONL_V1_TAG => Ok(BootstrapCodec::AgentEventsJsonlV1),
-        BootstrapCodec::ACCESSIBILITY_TREE_JSON_V1_TAG => {
-            Ok(BootstrapCodec::AccessibilityTreeJsonV1)
-        }
-        BootstrapCodec::PIXEL_SURFACE_PNG_V1_TAG => Ok(BootstrapCodec::PixelSurfacePngV1),
-        BootstrapCodec::DOCUMENT_TYPED_V1_TAG => Ok(BootstrapCodec::DocumentTypedV1),
-        tag => Ok(BootstrapCodec::Unknown { tag }),
+        tag => Ok(BootstrapCodec::from_tag(tag)),
     }
 }
 
@@ -104,6 +87,9 @@ pub(in crate::wire) fn decode_bootstrap_profile(
     }
 }
 
+/// The stream `BOOTSTRAP_BEGIN` describes: a Terminal profile, or the
+/// kind-fixed codec of the catalog kind that streams it, raw, with a cursor
+/// only where that kind's contract resumes.
 pub(in crate::wire) const fn decode_bootstrap_stream_profile(
     codec: BootstrapCodec,
     output_mode: u8,
@@ -117,22 +103,16 @@ pub(in crate::wire) const fn decode_bootstrap_stream_profile(
         (BootstrapCodec::SynthesizedVtV1, 1, None) => {
             Ok(BootstrapStreamProfile::SynthesizedVtStateSync)
         }
-        (BootstrapCodec::AgentEventsJsonlV1, 0, None) => {
-            Ok(BootstrapStreamProfile::AgentEventsJsonlV1)
-        }
-        (BootstrapCodec::AgentEventsJsonlV1, 0, Some(after_seq)) => {
-            Ok(BootstrapStreamProfile::AgentEventsJsonlResumeV1 { after_seq })
-        }
-        (BootstrapCodec::AccessibilityTreeJsonV1, 0, None) => {
-            Ok(BootstrapStreamProfile::AccessibilityTreeJsonV1)
-        }
-        (BootstrapCodec::PixelSurfacePngV1, 0, None) => {
-            Ok(BootstrapStreamProfile::PixelSurfacePngV1)
-        }
-        (BootstrapCodec::DocumentTypedV1, 0, None) => Ok(BootstrapStreamProfile::DocumentTypedV1),
         // A newer codec's output mode and cursor mean what it says they do.
         (BootstrapCodec::Unknown { tag }, _, _) => {
             Ok(BootstrapStreamProfile::Unknown { codec_tag: tag })
+        }
+        (codec, 0, after_seq) => {
+            match BootstrapStreamProfile::for_kind_codec_in(&crate::kinds::KINDS, codec, after_seq)
+            {
+                Some(profile) => Ok(profile),
+                None => Err(DecodeError::InvalidBootstrapProfile),
+            }
         }
         _ => Err(DecodeError::InvalidBootstrapProfile),
     }

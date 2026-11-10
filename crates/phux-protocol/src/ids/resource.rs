@@ -247,37 +247,38 @@ impl ResourceKind {
         matches!(self, Self::Terminal)
     }
 
-    /// `true` for the replicated document kinds (`AccessibilityTree`,
-    /// `PixelSurface`, `Document`): every stream frame is a newer whole
-    /// document, and the newest one is the one to show.
+    /// `true` for the kinds whose catalog stream delivers whole documents
+    /// (`AccessibilityTree`, `PixelSurface`, `Document`): every stream frame
+    /// is a newer whole document, and the newest one is the one to show.
     #[must_use]
     pub const fn is_document(self) -> bool {
-        matches!(
-            self,
-            Self::AccessibilityTree | Self::PixelSurface | Self::Document
-        )
+        match crate::kinds::kind_spec(self) {
+            Some(spec) => spec.stream.delivers(crate::kinds::Delivery::WholeDocument),
+            None => false,
+        }
     }
 
-    /// `true` when a resource of this kind can occupy an arrangement leaf:
-    /// every kind but `AgentSession`, a record stream bound to its parent
-    /// Terminal. An unknown kind counts, because a newer peer may have
-    /// placed one and pruning it would lose that placement.
+    /// `true` when a resource of this kind can occupy an arrangement leaf,
+    /// as its catalog row says: every kind but `AgentSession`, a record
+    /// stream bound to its parent Terminal. An unknown kind counts, because
+    /// a newer peer may have placed one and pruning it would lose that
+    /// placement.
     #[must_use]
     pub const fn can_occupy_leaf(self) -> bool {
-        !matches!(self, Self::AgentSession)
+        match crate::kinds::kind_spec(self) {
+            Some(spec) => spec.leaf,
+            None => true,
+        }
     }
 
-    /// Lower-case stable name (`terminal`, `agent_session`,
-    /// `accessibility_tree`, `pixel_surface`, `document`, `unknown`).
+    /// Lower-case stable name from the catalog (`terminal`,
+    /// `agent_session`, `accessibility_tree`, `pixel_surface`, `document`),
+    /// or `unknown`.
     #[must_use]
     pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::Terminal => "terminal",
-            Self::AgentSession => "agent_session",
-            Self::AccessibilityTree => "accessibility_tree",
-            Self::PixelSurface => "pixel_surface",
-            Self::Document => "document",
-            Self::Unknown { .. } => "unknown",
+        match crate::kinds::kind_spec(self) {
+            Some(spec) => spec.key,
+            None => "unknown",
         }
     }
 }
