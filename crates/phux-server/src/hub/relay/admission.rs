@@ -6,7 +6,7 @@ use super::{
     ClientId, Command, CommandResult, DirectoryListingResult, ErrorCode, FrameKind, Outbound,
     PathQueryResult, PendingListing, PendingPathQuery, ProxySubscriber, ProxySubscription,
     Registration, RelaySession, ResourceId, SatelliteSpawn, ServerFeature, SnapshotGate,
-    SpawnError, listing_refusal, oneshot, path_refusal,
+    SpawnError, listing_refusal, oneshot, path_refusal, stream_needs_terminal_profile,
 };
 
 impl RelaySession {
@@ -250,8 +250,7 @@ impl RelaySession {
         if !subscription.awaits_snapshot {
             return None;
         }
-        let profile_matches = subscription.resource_kind
-            == Some(phux_protocol::ids::ResourceKind::AgentSession)
+        let profile_matches = !stream_needs_terminal_profile(subscription.resource_kind)
             || subscription.bootstrap_profile == Some(self.bootstrap_profile);
         if profile_matches && subscription.bootstrap_limits == Some(self.bootstrap_limits) {
             return None;
