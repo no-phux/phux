@@ -29,6 +29,7 @@ def valid_report():
             "terminal_id": "123", "connected": True, "input_through_native": True,
             "marker_seen": True, "transport":"paired-quic", "input_contracts":list(qualify.INPUT_CONTRACTS),
             "onboarding_import": True, "onboarding_confirmed": True, "resumed_identity": False,
+            "surface_at_scale": True,
             "key_id": "11111111-1111-4111-8111-111111111111"}
 
 
@@ -187,7 +188,7 @@ class QualificationTests(unittest.TestCase):
                 qualify.validate_report(report)
         for field, value in (("frames", True), ("frames", 0), ("schema", True),
                              ("connected", 1), ("input_through_native", False),
-                             ("marker_seen", False), ("terminal_id", ""),
+                             ("marker_seen", False), ("terminal_id", ""), ("surface_at_scale", False),
                              ("session", "other"), ("error", "connection failed")):
             with self.subTest(field=field, value=value), self.assertRaises(ValueError):
                 qualify.validate_report({**valid_report(), field: value})

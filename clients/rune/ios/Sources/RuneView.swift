@@ -75,6 +75,15 @@ final class RuneView: UIView {
         } catch { fail(error) }
     }
 
+    /// Whether a point of the view shows a point of the drawable: unscaled
+    /// contents with the wrong layer scale draw the terminal several times
+    /// too large, which no report from inside Rune can see.
+    private var showsPixelsAtScale: Bool {
+        guard let metal = layer as? CAMetalLayer else { return false }
+        let (drawable, scale) = (metal.drawableSize, metal.contentsScale)
+        return abs(drawable.width - bounds.width * scale) <= 1 && abs(drawable.height - bounds.height * scale) <= 1
+    }
+
     /// The display link draws the next frame; drawing here as well would
     /// add an off-vsync frame to every touch sample.
     func wake() {
@@ -130,7 +139,7 @@ final class RuneView: UIView {
                 timer = retry
                 DispatchQueue.main.asyncAfter(deadline:.now() + 0.05, execute:retry)
             }
-            try qualification?.observe(bridge: bridge, input: editor)
+            try qualification?.observe(bridge: bridge, input: editor, surfaceAtScale: showsPixelsAtScale)
         } catch { fail(error) }
     }
 
