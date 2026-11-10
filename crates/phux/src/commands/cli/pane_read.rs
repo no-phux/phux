@@ -14,7 +14,8 @@ use usage::Args;
 /// TARGET is a selector (see the top-level help); omit it for the
 /// most-recently-focused session.
 ///
-/// A TARGET that names a document resource by `@N` is read by its kind:
+/// A TARGET that names a document resource by `@N` or `^key` is read by
+/// its kind:
 /// an accessibility tree prints its JSON, as `phux agent tree snapshot`
 /// does; a typed document prints its content when it is text, and
 /// otherwise its size and type; a pixel surface needs `--out FILE`. A
@@ -124,10 +125,12 @@ pub(crate) struct SnapshotArgs {
             soft-wrapped at its right edge are joined first, so text that \
             straddles a wrap is found rather than silently never matching.\n\n\
             A TARGET that names an accessibility tree or a text document by `@N` \
-            waits on its text instead, as each document arrives: `--until` matches \
-            a substring of the whole document, and `--regex` one line of it. \
-            `--tail`, `--output-only` and `--idle` apply to a terminal only, and a \
-            document that closes before it matches exits 1.\n\n\
+            or `^key` waits on its text instead, as each document arrives: \
+            `--until` matches a substring of the whole document, and `--regex` one \
+            line of it. `--tail`, `--output-only` and `--idle` apply to a terminal \
+            only; a document wait needs `--until` or `--regex`, and a binary \
+            document or a surface is refused (exit 2). A document that closes \
+            before it matches exits 1.\n\n\
             Flags may come before or after TARGET; a bare `--tail` reads the \
             next word as N, so spell N out when TARGET follows it.\n\n\
             Examples:\n  \

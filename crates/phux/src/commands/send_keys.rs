@@ -90,7 +90,7 @@ pub(crate) fn report_input_failure(
     if !json {
         return match err {
             AttachError::Io(_) => crate::commands::report_no_server(err, socket_path, verb),
-            AttachError::Refused(msg) => {
+            AttachError::Refused(msg) | AttachError::WrongResourceKind(msg) => {
                 error!("{verb} refused for '{target}': {msg} (try `phux ls`)");
                 ExitCode::FAILURE
             }

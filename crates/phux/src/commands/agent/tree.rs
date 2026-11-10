@@ -35,6 +35,7 @@ mod page;
 mod page_input;
 mod page_mirror;
 mod parent_watch;
+mod print;
 mod redial;
 mod surface;
 #[cfg(any(target_os = "macos", target_os = "linux", test))]
@@ -55,6 +56,7 @@ mod surface_wayland;
 pub(crate) use app::{AppAction, run_app};
 pub(crate) use doc::{DocAction, run_doc};
 pub(crate) use page::{PageAction, run_page};
+pub(crate) use print::print_document;
 pub(crate) use surface::SurfaceAction;
 pub(crate) use surface::run_surface;
 
@@ -80,7 +82,7 @@ pub(crate) enum TreeAction {
         #[usage(long)]
         json: bool,
     },
-    /// Print the tree's newest document.
+    /// Print the tree's newest document, control characters shown as signs.
     Snapshot {
         /// The tree.
         target: String,
@@ -301,81 +303,6 @@ pub(super) struct Sink<'a> {
     pub(super) until: Option<&'a str>,
     /// Write each document to this file instead of stdout (surfaces).
     pub(super) out: Option<&'a std::path::Path>,
-}
-
-/// Deliver one document: a tree as text or JSON on stdout, a surface as
-/// bytes to `out` (or stdout) with a JSON line about it when asked.
-pub(crate) fn print_document(
-    kind: Kind,
-    json: bool,
-    out: Option<&std::path::Path>,
-    document: &Document,
-) -> ExitCode {
-    match kind {
-        Kind::Tree if json => {
-            let value: serde_json::Value = if document.bytes.is_empty() {
-                serde_json::Value::Null
-            } else {
-                serde_json::from_slice(&document.bytes).unwrap_or(serde_json::Value::Null)
-            };
-            outln!(
-                "{}",
-                serde_json::json!({
-                    "schema_version": SCHEMA_VERSION,
-                    "seq": document.seq,
-                    "document": value,
-                })
-            );
-        }
-        Kind::Tree => {
-            if !document.bytes.is_empty() {
-                outln!("{}", String::from_utf8_lossy(&document.bytes));
-            }
-        }
-        Kind::Surface | Kind::Document => {
-            if !document.bytes.is_empty() {
-                let written = out.map_or_else(
-                    || {
-                        // Flushed: stdout holds binary back until a newline byte.
-                        use std::io::Write as _;
-                        let mut stdout = std::io::stdout().lock();
-                        stdout
-                            .write_all(&document.bytes)
-                            .and_then(|()| stdout.flush())
-                    },
-                    |path| std::fs::write(path, &document.bytes),
-                );
-                if let Err(err) = written {
-                    return json_err::emit(
-                        json,
-                        &json_err::CliError::new(
-                            json_err::codes::USAGE_ERROR,
-                            format!("could not write the document: {err}"),
-                            "pass a writable `--out PATH`",
-                        ),
-                        EXIT_FAILURE,
-                    );
-                }
-            }
-            if json {
-                let size = image_size(&document.bytes).ok();
-                outln!(
-                    "{}",
-                    serde_json::json!({
-                        "schema_version": SCHEMA_VERSION,
-                        "seq": document.seq,
-                        "bytes": document.bytes.len(),
-                        "format": size.map(|s| s.0.name()),
-                        "width": size.map(|s| s.1),
-                        "height": size.map(|s| s.2),
-                        "content_type": document.content_type,
-                        "out": out.map(|p| p.display().to_string()),
-                    })
-                );
-            }
-        }
-    }
-    ExitCode::SUCCESS
 }
 
 pub(super) fn run_open(
