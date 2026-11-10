@@ -53,6 +53,48 @@ pub(crate) async fn resolve_selector(
     }
 }
 
+/// [`resolve_selector`], reporting the resource's kind so a tool can
+/// dispatch on it ([`phux_client::read`]). An exact ID still resolves
+/// without the inventory; its kind is read from it when it can be, and is
+/// otherwise taken as a Terminal, whose read the server answers as before.
+///
+/// # Errors
+///
+/// As [`resolve_selector`].
+pub(crate) async fn resolve_resource(
+    socket: &Path,
+    selector: &Selector,
+    for_input: bool,
+) -> Result<Resolved, ToolError> {
+    if let Some(id) = selector.explicit_id() {
+        return Ok(match state::get_state(socket).await {
+            Ok(view) => Resolved::in_snapshot(view.snapshot(), id),
+            Err(_) => Resolved {
+                id,
+                kind: phux_protocol::ids::ResourceKind::Terminal,
+            },
+        });
+    }
+    let view = state::get_state(socket).await?;
+    let id = resolve_one_with(socket, selector, &view, for_input).await?;
+    Ok(Resolved::in_snapshot(view.snapshot(), id))
+}
+
+/// A verb refused for its target's kind, on the CLI's error contract.
+fn wrong_kind_error(err: &read::WrongKind) -> ToolError {
+    contract_error("wrong_resource_kind", err.to_string(), err.remedy(), 2)
+}
+
+/// A Terminal-only argument given for another kind.
+fn terminal_only_error(err: &read::TerminalOnly) -> ToolError {
+    contract_error(
+        "usage_error",
+        err.to_string(),
+        &format!("drop `{}`, or name a terminal", err.option),
+        2,
+    )
+}
+
 /// Resolve `selector` against `view` to one pane as the CLI does (ADR-0021),
 /// preferring the focused pane. A miss against a degraded view says so
 /// rather than claiming the target is gone. For read tools; a tool that

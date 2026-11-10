@@ -235,8 +235,6 @@ mod tests {
     fn reads_are_read_only_and_signals_and_input_are_destructive() {
         for tool in [
             "phux_ls",
-            "phux_snapshot",
-            "phux_wait",
             "phux_watch",
             "phux_status",
             "phux_doctor",
@@ -287,7 +285,10 @@ mod tests {
             "phux_relaunch",
             "phux_organize",
             "phux_perf_trace",
-            // A document read attaches, which needs `BIND`.
+            // A document read attaches, which needs `BIND`; the screen
+            // verbs read a document target by kind the same way.
+            "phux_snapshot",
+            "phux_wait",
             "phux_tree_snapshot",
             "phux_tree_wait",
             "phux_surface_snapshot",

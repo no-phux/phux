@@ -1,15 +1,20 @@
 use std::fmt::Write as _;
+use std::ops::ControlFlow;
 use std::path::PathBuf;
 use std::process::ExitCode;
 
 use base64::Engine as _;
 use phux_client::attach::AttachError;
+use phux_client::read::{Route, Verb};
 use phux_client::snapshot::{RenderedFrame, ScreenState};
 use phux_protocol::wire::frame::AttachTarget;
 use phux_server::runtime::default_socket_path;
 use phux_tui::attach::run_headless_rendered;
 
-use crate::commands::{SnapshotFormat, cli_runtime, json_err, parse_selector, resolve_target};
+use crate::commands::{
+    SnapshotFormat, cli_runtime, json_err, parse_selector, read_kind, resolve_resource,
+    resolve_target,
+};
 
 /// Options for the structured pane read (ADR-0022 §2, ADR-0077).
 pub(crate) struct ReadOpts {
@@ -26,6 +31,9 @@ pub(crate) struct ReadOpts {
     /// Render through the server's libghostty-vt Formatter instead of the
     /// lines/cells JSON (`--format html|vt`, D9).
     pub format: Option<SnapshotFormat>,
+    /// Where a document resource's content goes (`--out`); refused for a
+    /// Terminal.
+    pub out: Option<PathBuf>,
 }
 
 /// Options for the composited `--rendered` view (`phux-l5xa`). Bundled so the
@@ -43,6 +51,7 @@ pub(crate) struct RenderedOpts {
 /// `phux snapshot [TARGET]` — read a pane as structured data (ADR-0022) via
 /// the side-effect-free `GET_SCREEN`, emitting JSON or a boxed text view.
 ///
+/// A document resource is read by kind instead ([`read_kind`]).
 /// `--rendered` instead drives the headless client render (and ATTACHES).
 /// `--tail` / `--unwrap` (ADR-0077) are client-side projections of the reply;
 /// with `--format` (D9) the reply has no lines, so `--tail N` becomes the
@@ -76,9 +85,9 @@ pub(crate) fn run_snapshot(
     let format = read.format;
 
     rt.block_on(async move {
-        let terminal_id = match resolve_target(&socket_path, &selector, "snapshot", json).await {
-            Ok(id) => id,
-            Err(code) => return code,
+        let terminal_id = match terminal_or_document(&socket_path, &selector, read, json).await {
+            ControlFlow::Continue(id) => id,
+            ControlFlow::Break(code) => return code,
         };
 
         // `scrollback` maps onto the wire request; `format` asks the server to
@@ -134,6 +143,45 @@ pub(crate) fn run_snapshot(
             ExitCode::SUCCESS
         }
     })
+}
+
+/// Resolve the target and dispatch on its kind ([`phux_client::read`]):
+/// `Continue` with a Terminal to read as a screen, or `Break` once a
+/// document is read or the target is refused.
+async fn terminal_or_document(
+    socket_path: &std::path::Path,
+    selector: &phux_client::selector::Selector,
+    read: &ReadOpts,
+    json: bool,
+) -> ControlFlow<ExitCode, phux_protocol::ids::ResourceId> {
+    let resolved = match resolve_resource(socket_path, selector, "snapshot", json, false).await {
+        Ok(resolved) => resolved,
+        Err(code) => return ControlFlow::Break(code),
+    };
+    let route = match phux_client::read::route(Verb::Snapshot, &resolved) {
+        Ok(route) => route,
+        Err(err) => return ControlFlow::Break(read_kind::wrong_kind(json, &err)),
+    };
+    let terminal_flags = [
+        ("--scrollback", read.scrollback.is_some()),
+        ("--cells", read.cells),
+        ("--tail", read.tail.is_some()),
+        ("--unwrap", read.unwrap),
+        ("--format", read.format.is_some()),
+    ];
+    if let Err(err) = phux_client::read::terminal_only(&resolved, route, &terminal_flags) {
+        return ControlFlow::Break(read_kind::terminal_only(json, &err));
+    }
+    let out = read.out.as_deref();
+    match (route, out) {
+        (Route::Document(kind), _) => ControlFlow::Break(
+            read_kind::snapshot_document(socket_path, &resolved, kind, out, json).await,
+        ),
+        (Route::Terminal, Some(_)) => {
+            ControlFlow::Break(read_kind::out_on_terminal(json, &resolved))
+        }
+        (Route::Terminal, None) => ControlFlow::Continue(resolved.id),
+    }
 }
 
 /// `--format html|vt`: write the rendered capture straight to stdout (no
@@ -376,10 +424,25 @@ mod tests {
             tail,
             unwrap: false,
             format: None,
+            out: None,
         };
         assert_eq!(history_request(&opts(None, None)), None);
         assert_eq!(history_request(&opts(None, Some(80))), Some(80));
         assert_eq!(history_request(&opts(Some(5), Some(80))), Some(5));
+    }
+
+    /// `--out` names where a document's content goes; the composited view
+    /// has none, so the two are refused together at the parser.
+    #[test]
+    fn out_parses_and_conflicts_with_rendered() {
+        let parsed = crate::parse_cli(["phux", "snapshot", "--out", "frame.png", "@3"])
+            .ok()
+            .and_then(|cli| cli.command);
+        let Some(crate::commands::Command::Snapshot(args)) = parsed else {
+            panic!("expected the snapshot variant");
+        };
+        assert_eq!(args.out.as_deref(), Some(std::path::Path::new("frame.png")));
+        assert!(crate::parse_cli(["phux", "snapshot", "--out", "f", "--rendered"]).is_err());
     }
 
     /// clap's `default_missing_value` must be a string literal, so bare

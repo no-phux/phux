@@ -157,6 +157,18 @@ phux snapshot --format html @7   # with colors, as HTML
 | `--format html` / `vt` | Keeps colors and styling, as HTML or terminal escape sequences. |
 | `--json` | Prints a document instead of text. |
 
+`phux snapshot @N` also reads a document resource, by its kind. An
+accessibility tree prints its JSON, as `phux agent tree snapshot` does. A
+typed document prints its content when it is text, and otherwise its size
+and type. A pixel surface needs `--out FILE`, which writes the image, as
+`--out` writes any document. The screen options above apply to a terminal
+only, and `--out` to a document only; either one elsewhere exits 2.
+
+```sh
+phux snapshot @12                     # a tree's JSON, or a document's text
+phux snapshot --out frame.png @13     # a surface's newest image
+```
+
 ## Waiting for output
 
 `phux wait` polls a pane's screen until a line matches. It exits 0 on a
@@ -175,6 +187,14 @@ without it, `wait` matches every line and says so on stderr.
 
 `--idle MS` waits until the screen holds still. It is the default when you
 give no pattern.
+
+On an accessibility tree or a text document, `phux wait @N` follows the
+resource instead and checks each document as it arrives: `--until` matches
+anywhere in the document, `--regex` one line of it. `--tail`,
+`--output-only` and `--idle` are for a terminal and exit 2 here. A resource
+that closes before it matches exits 1. `phux send-keys` refuses a document
+(exit 2); its input goes to the producer through `phux agent page type` and
+`phux agent page key`.
 
 ## Watching events
 

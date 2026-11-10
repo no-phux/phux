@@ -260,7 +260,7 @@ pub(super) async fn connect(
     Ok((conn, resource))
 }
 
-pub(super) fn report(json: bool, err: &TreeError) -> ExitCode {
+pub(crate) fn report(json: bool, err: &TreeError) -> ExitCode {
     let (code, hint) = match err {
         TreeError::Unsupported(_) => (
             json_err::codes::SERVER_TOO_OLD,
@@ -305,7 +305,7 @@ pub(super) struct Sink<'a> {
 
 /// Deliver one document: a tree as text or JSON on stdout, a surface as
 /// bytes to `out` (or stdout) with a JSON line about it when asked.
-fn print_document(
+pub(crate) fn print_document(
     kind: Kind,
     json: bool,
     out: Option<&std::path::Path>,

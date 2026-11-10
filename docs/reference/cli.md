@@ -36,7 +36,7 @@ Sessions:
 
 Panes:
   spawn         Create a pane without attaching
-  snapshot      Read a pane's screen as text or JSON
+  snapshot      Read a pane's screen, or a document, as text or JSON
   send-keys     Send keys to a pane
   paste         Paste text into a pane
   run           Run a command in a pane and capture its exit code
@@ -6177,6 +6177,12 @@ against a pane another client is using.
 TARGET is a selector (see the top-level help); omit it for the
 most-recently-focused session.
 
+A TARGET that names a document resource by `@N` is read by its kind: an
+accessibility tree prints its JSON, as `phux agent tree snapshot` does; a typed
+document prints its content when it is text, and otherwise its size and type; a
+pixel surface needs `--out FILE`. A document read attaches as an observer while
+it reads. The screen flags apply to a terminal only.
+
 Usage: phux snapshot [FLAGS] [TARGET]
 
 Arguments:
@@ -6227,6 +6233,10 @@ Flags:
                         document with the `rendered` field populated. Mutually
                         exclusive with `--cells` and `--rendered`.
                         [possible values: html, vt]
+      --out <FILE>      Write a document resource's content to this file, as
+                        `phux agent surface|doc snapshot --out` does; a pixel
+                        surface needs it. A terminal refuses it: its screen
+                        prints on stdout.
       --cols <COLS>     Composited viewport width for `--rendered` (no TTY to
                         measure).
                         (default: 80)
@@ -6848,6 +6858,12 @@ the top-level help); omit it for the most-recently-focused session.
 Matching is against the lines as WRITTEN: rows the terminal soft-wrapped at its
 right edge are joined first, so text that straddles a wrap is found rather than
 silently never matching.
+
+A TARGET that names an accessibility tree or a text document by `@N` waits on
+its text instead, as each document arrives: `--until` matches a substring of the
+whole document, and `--regex` one line of it. `--tail`, `--output-only` and
+`--idle` apply to a terminal only, and a document that closes before it matches
+exits 1.
 
 Flags may come before or after TARGET; a bare `--tail` reads the next word as N,
 so spell N out when TARGET follows it.

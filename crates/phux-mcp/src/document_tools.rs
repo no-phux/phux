@@ -5,6 +5,8 @@
 //! `phux agent surface snapshot --json` prints; a tree wait is
 //! `phux agent tree follow --until` with a timeout that is a result, not an
 //! error. The input tools (`input`) drive a document as the snapshot shows it.
+//! `phux_snapshot` and `phux_wait` read a document target through the same
+//! documents (`snapshot_of`, `wait_on`).
 
 mod element;
 mod input;
@@ -15,7 +17,10 @@ use std::time::Duration;
 
 use base64::Engine as _;
 use phux_client::attach::connection::Connection;
-use phux_client::tree::{self, Document, FollowEnd, TreeError, image_size};
+use phux_client::deadline::Deadline;
+use phux_client::read::{self, DocumentWait, TextMatch, WaitError};
+use phux_client::tree::{self, Document, FollowEnd, Kind, TreeError, image_size};
+use phux_client::wait::Condition;
 use phux_protocol::ids::ResourceId;
 use serde_json::{Value, json};
 
@@ -168,6 +173,60 @@ async fn tree_wait(args: &Value) -> Result<Value, ToolError> {
     }
 }
 
+/// `phux_snapshot` of a document resource: what its per-kind tool returns,
+/// and for a typed document its facts and text ([`read::document_json`]).
+pub(crate) async fn snapshot_of(
+    kind: Kind,
+    socket: &std::path::Path,
+    id: &ResourceId,
+) -> Result<Value, ToolError> {
+    let document = read::document(socket, id)
+        .await
+        .map_err(|err| tree_error(&err))?;
+    Ok(match kind {
+        Kind::Tree => tree_json(&document),
+        Kind::Surface => surface_json(&document),
+        Kind::Document => with_image(read::document_json(&document), &document),
+    })
+}
+
+/// `phux_wait` on a tree or a text document: `outcome` met (with the
+/// document's `seq`), `timed_out`, or `closed`, and `polls` the documents read.
+pub(crate) async fn wait_on(
+    kind: Kind,
+    socket: &std::path::Path,
+    id: &ResourceId,
+    condition: &Condition,
+    timeout: Option<Duration>,
+) -> Result<Value, ToolError> {
+    let matcher = TextMatch::of(condition).ok_or_else(|| {
+        crate::tools::contract_error(
+            "usage_error",
+            "a document resource has no idle: a wait on it matches text",
+            "pass `until`",
+            2,
+        )
+    })?;
+    let deadline = Deadline::new(timeout).floored(phux_client::wait::FIRST_READ_FLOOR);
+    let waited = read::wait_document(socket, id, kind, matcher, deadline).await;
+    Ok(match waited {
+        Ok(DocumentWait::Matched { document, reads }) => {
+            json!({ "outcome": "met", "polls": reads, "seq": document.seq })
+        }
+        Ok(DocumentWait::TimedOut { reads }) => json!({ "outcome": "timed_out", "polls": reads }),
+        Ok(DocumentWait::Closed { reads }) => json!({ "outcome": "closed", "polls": reads }),
+        Err(err @ WaitError::NotText { .. }) => {
+            return Err(crate::tools::contract_error(
+                "usage_error",
+                err.to_string(),
+                "wait on a text document or a tree",
+                2,
+            ));
+        }
+        Err(WaitError::Tree(err)) => return Err(tree_error(&err)),
+    })
+}
+
 /// `{ schema_version, seq, document }`, as the CLI prints a tree.
 fn tree_json(document: &Document) -> Value {
     let value = serde_json::from_slice(&document.bytes).unwrap_or(Value::Null);
@@ -178,7 +237,7 @@ fn tree_json(document: &Document) -> Value {
 /// when there is one.
 fn surface_json(document: &Document) -> Value {
     let image = image_size(&document.bytes).ok();
-    let mut doc = json!({
+    let doc = json!({
         "schema_version": SCHEMA_VERSION,
         "seq": document.seq,
         "bytes": document.bytes.len(),
@@ -186,7 +245,13 @@ fn surface_json(document: &Document) -> Value {
         "width": image.map(|(_, w, _)| w),
         "height": image.map(|(_, _, h)| h),
     });
-    if let Some((format, _, _)) = image {
+    with_image(doc, document)
+}
+
+/// `doc`, carrying `document` as an MCP image block when it is a PNG or
+/// JPEG.
+fn with_image(mut doc: Value, document: &Document) -> Value {
+    if let Ok((format, _, _)) = image_size(&document.bytes) {
         doc[IMAGE_CONTENT_KEY] = json!({
             "type": "image",
             "data": base64::engine::general_purpose::STANDARD.encode(&document.bytes),
@@ -204,6 +269,15 @@ async fn connect(args: &Value) -> Result<(Connection, ResourceId), ToolError> {
 fn tree_error(err: &TreeError) -> ToolError {
     ToolError::new(err.to_string())
 }
+
+#[cfg(test)]
+#[allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    reason = "tests"
+)]
+mod kind_dispatch_tests;
 
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used, reason = "tests")]
