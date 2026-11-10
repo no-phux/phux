@@ -36,6 +36,7 @@ unshipped experiment, and phone apps are not available yet. See
 - [Driving terminals from scripts](./scripting.md): snapshot, send keys, run, wait, with JSON output and exit codes.
 - [Runnable examples](../examples/README.md): small programs for learning the CLI and integrations.
 - [Coding agents](./agents.md): see which agent needs you, connect your agent's host, and use the MCP server.
+- [Agent skill setup](./agent-skill.md): `phux skill setup` teaches every installed agent about phux.
 - [ACP sessions](./acp.md): run an agent through the Agent Client Protocol, and answer its permission requests yourself.
 
 ## Build on phux

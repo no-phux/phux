@@ -144,6 +144,10 @@ phux skill             # everything
 `phux mcp --skill` prints the same guide for the MCP tools. Both are also
 installable as skills with `npx skills add no-phux/skills`.
 
+`phux skill setup` installs a short `phux` skill for every installed agent
+that points it at `phux skill`, plus a Claude Code session hook. See
+[Agent skill setup](./agent-skill.md).
+
 ## MCP
 
 `phux mcp` serves phux as MCP tools over stdio. Register it the way your

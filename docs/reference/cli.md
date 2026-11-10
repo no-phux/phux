@@ -6185,7 +6185,17 @@ phux skill agent
 phux --skill=terminal
 phux --skill=quick | pbcopy
 
-Usage: phux skill [SCOPE]
+`phux skill setup` installs a small `phux` skill in each installed agent's skill
+directory that points the agent here, plus a Claude Code session hook; `status`
+reports it and `remove` takes it out.
+
+Usage: phux skill [SCOPE] [SUBCOMMAND]
+
+Commands:
+  remove  Remove the skill stubs and hook `phux skill setup` installed
+  setup   Teach every installed agent about phux
+  status  Report each agent's skill stub and hook without changing anything
+  help    Print this message or the help of the given subcommand(s)
 
 Arguments:
   [SCOPE]  Amount and subject of guidance to print.
@@ -6193,6 +6203,88 @@ Arguments:
            (default: full)
 
 Flags:
+  -h, --help           Print help
+
+Global flags:
+      --socket <PATH>  Server socket to dial (default: `$PHUX_SOCKET`)
+```
+
+## `phux skill remove`
+
+```text
+Remove the skill stubs and hook `phux skill setup` installed
+
+Only files carrying phux's stub marker and the hook phux added are removed; any
+other skill is left alone.
+
+Usage: phux skill remove [FLAGS]
+
+Flags:
+      --agent <AGENT>  Only this agent (repeatable). Default: all four.
+                       [possible values: claude, codex, opencode, pi]
+      --project        Remove from this repository instead of the home
+                       directory.
+      --dry-run        Report what would change and change nothing.
+      --json           Print the per-agent result as JSON
+                       (`phux.skill-setup/v1`).
+  -h, --help           Print help
+
+Global flags:
+      --socket <PATH>  Server socket to dial (default: `$PHUX_SOCKET`)
+```
+
+## `phux skill setup`
+
+```text
+Teach every installed agent about phux
+
+Writes a stub skill named `phux` into each detected agent's user skill
+directory: `~/.claude/skills` for Claude Code, and the shared `~/.agents/skills`
+(written once) for Codex, `OpenCode` and pi. With no agent detected, only
+`~/.agents/skills` is written. The stub tells the agent to run `phux skill`, so
+the guide it reads always matches the installed binary. For Claude Code it also
+merges one `SessionStart` hook into `~/.claude/settings.json` that tells each
+new session whether it runs inside a phux pane; the hook is skipped when the
+`install-claude` shim or the phux Claude Code plugin already registers phux
+hooks. A `phux` skill phux did not install is left alone and reported as a
+conflict; a `using-phux` skill (from `npx skills add no-phux/skills`) is
+reported as present. Running it again updates a stale stub and reports the rest
+as up to date.
+
+Usage: phux skill setup [FLAGS]
+
+Flags:
+      --agent <AGENT>  Only this agent (repeatable). Default: every detected
+                       agent.
+                       [possible values: claude, codex, opencode, pi]
+      --project        Install into this repository (`.claude/skills`,
+                       `.agents/skills`, `.claude/settings.json`) instead of the
+                       home directory.
+      --dry-run        Report what would change and change nothing.
+      --force          Write the stub over a `phux` skill phux did not install,
+                       or beside a `using-phux` one.
+      --json           Print the per-agent result as JSON
+                       (`phux.skill-setup/v1`).
+  -h, --help           Print help
+
+Global flags:
+      --socket <PATH>  Server socket to dial (default: `$PHUX_SOCKET`)
+```
+
+## `phux skill status`
+
+```text
+Report each agent's skill stub and hook without changing anything
+
+Usage: phux skill status [FLAGS]
+
+Flags:
+      --agent <AGENT>  Only this agent (repeatable). Default: all four.
+                       [possible values: claude, codex, opencode, pi]
+      --project        Report the repository's skills instead of the home
+                       directory's.
+      --json           Print the per-agent result as JSON
+                       (`phux.skill-setup/v1`).
   -h, --help           Print help
 
 Global flags:
