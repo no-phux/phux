@@ -12,10 +12,19 @@ use crate::c::error::BridgeError;
 pub(super) const MAX_TEXT: usize = 4096;
 pub(super) const MAX_GROUPS: usize = 32;
 pub(super) const MAX_NODES: usize = 512;
+/// Terminals the catalog holds, across every session.
+pub(super) const MAX_TERMINALS: usize = 256;
+/// Leaf-capable resources other than Terminals (trees, surfaces, documents,
+/// unnamed kinds) the catalog holds, across every session: a mirror adds
+/// several per pane, so they get their own, larger bound.
+pub(super) const MAX_OTHER_LEAVES: usize = 1024;
 
+/// A resource that can occupy a leaf: a Terminal, a document, or a kind
+/// this build does not name ([`ResourceKind::can_occupy_leaf`]).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) struct CatalogTerminal {
     pub id: ResourceId,
+    pub kind: ResourceKind,
     pub session: u32,
     pub title: String,
     pub cwd: String,
@@ -28,6 +37,8 @@ pub(super) struct Node {
     pub first: u32,
     pub second: u32,
     pub ratio: f32,
+    /// A leaf's wire `ResourceKind` tag, or `UNLISTED`; 0 for a split.
+    pub resource_kind: u32,
 }
 
 #[derive(Default)]
@@ -55,17 +66,7 @@ impl Catalog {
         snapshot: SessionSnapshot,
         selected: u32,
     ) -> Result<Self, BridgeError> {
-        if snapshot.sessions.len() > 256
-            || snapshot
-                .resources
-                .iter()
-                .filter(|p| p.kind == ResourceKind::Terminal)
-                .count()
-                > 256
-            || snapshot.windows.len() > 256
-        {
-            return Err(BridgeError::state("catalog capacity exceeded"));
-        }
+        check_capacity(&snapshot)?;
         unique(
             snapshot.windows.iter().map(|w| w.id),
             "duplicate registry window",
@@ -100,8 +101,8 @@ impl Catalog {
         let mut terminals = snapshot
             .resources
             .into_iter()
-            .filter(|p| p.kind == ResourceKind::Terminal)
-            .map(|p| catalog_terminal(p, &owners))
+            .filter(|p| p.kind.can_occupy_leaf())
+            .filter_map(|p| catalog_entry(p, &owners).transpose())
             .collect::<Result<Vec<_>, BridgeError>>()?;
         sessions.sort_by_key(|s| s.session_id);
         terminals.sort_by(|a, b| a.id.cmp(&b.id));
@@ -125,7 +126,45 @@ impl Catalog {
         })
     }
 
-    /// Terminals of `selected` that no group of `doc` shows.
+    /// Flatten `arrangement`, naming each leaf's kind from this catalog.
+    pub(super) fn flatten(
+        &self,
+        arrangement: &ArrangementDoc,
+    ) -> Result<(Vec<Node>, Vec<u32>), BridgeError> {
+        let (mut nodes, roots) = flatten(arrangement)?;
+        for node in &mut nodes {
+            let Some(id) = &node.terminal else { continue };
+            node.resource_kind = self
+                .terminals
+                .iter()
+                .find(|t| &t.id == id)
+                .map_or(super::PHUX_ARRANGEMENT_LEAF_KIND_UNLISTED, |entry| {
+                    u32::from(entry.kind.as_wire())
+                });
+        }
+        Ok((nodes, roots))
+    }
+
+    /// Whether `other` publishes the same thing. Attached-client counts
+    /// are noise here: they change with every viewer and move no
+    /// arrangement.
+    pub(super) fn publishes_same(&self, other: &Self) -> bool {
+        self.terminals == other.terminals
+            && self.sessions.len() == other.sessions.len()
+            && self.sessions.iter().zip(&other.sessions).all(|(a, b)| {
+                a.session_id == b.session_id
+                    && a.name == b.name
+                    && a.created_at_unix_secs == b.created_at_unix_secs
+                    && a.window_count == b.window_count
+                    && a.keep_empty == b.keep_empty
+                    && a.key == b.key
+                    && a.lifetime == b.lifetime
+                    && a.snapshot_members == b.snapshot_members
+            })
+    }
+
+    /// Terminals of `selected` that no group of `doc` shows. Other kinds are
+    /// left out: a mirror's tree or surface is routinely unplaced.
     pub(super) fn unarranged(&self, doc: &ArrangementDoc, selected: u32) -> usize {
         let placed: HashSet<ResourceId> = doc
             .groups
@@ -135,7 +174,7 @@ impl Catalog {
             .collect();
         self.terminals
             .iter()
-            .filter(|t| t.session == selected && !placed.contains(&t.id))
+            .filter(|t| t.kind.is_terminal() && t.session == selected && !placed.contains(&t.id))
             .count()
     }
 }
@@ -183,22 +222,64 @@ fn session_summary(
     })
 }
 
-fn catalog_terminal(
+/// Bound the snapshot before projecting it; Terminals and other leaf kinds
+/// are counted separately (see [`MAX_OTHER_LEAVES`]).
+fn check_capacity(snapshot: &SessionSnapshot) -> Result<(), BridgeError> {
+    let leaves = snapshot
+        .resources
+        .iter()
+        .filter(|p| p.kind.can_occupy_leaf());
+    let terminals = leaves.clone().filter(|p| p.kind.is_terminal()).count();
+    let others = leaves.count() - terminals;
+    if snapshot.sessions.len() > 256
+        || terminals > MAX_TERMINALS
+        || others > MAX_OTHER_LEAVES
+        || snapshot.windows.len() > 256
+    {
+        return Err(BridgeError::state("catalog capacity exceeded"));
+    }
+    Ok(())
+}
+
+/// One catalog entry. A Terminal with an invalid identity or text fails the
+/// catalog, as it always has. Any other kind is display-only here, so its
+/// text is made safe instead, and an identity no leaf could carry is
+/// skipped rather than costing every other entry.
+fn catalog_entry(
     pane: ResourceInfo,
     owners: &HashMap<WindowId, u32>,
-) -> Result<CatalogTerminal, BridgeError> {
-    terminal(&pane.id)?;
+) -> Result<Option<CatalogTerminal>, BridgeError> {
+    let strict = pane.kind.is_terminal();
+    if let Err(error) = terminal(&pane.id) {
+        return if strict { Err(error) } else { Ok(None) };
+    }
     let session = session_of(owners, &pane);
-    let title = pane.title.unwrap_or_default();
-    let cwd = pane.cwd.unwrap_or_default();
-    text(&title)?;
-    text(&cwd)?;
-    Ok(CatalogTerminal {
+    let mut title = pane.title.unwrap_or_default();
+    let mut cwd = pane.cwd.unwrap_or_default();
+    if strict {
+        text(&title)?;
+        text(&cwd)?;
+    } else {
+        sanitize(&mut title);
+        sanitize(&mut cwd);
+    }
+    Ok(Some(CatalogTerminal {
         id: pane.id,
+        kind: pane.kind,
         session,
         title,
         cwd,
-    })
+    }))
+}
+
+/// Drop NULs and cut to [`MAX_TEXT`] bytes at a character boundary.
+fn sanitize(value: &mut String) {
+    value.retain(|c| c != '\0');
+    let mut end = value.len().min(MAX_TEXT);
+    while !value.is_char_boundary(end) {
+        end -= 1;
+    }
+    value.truncate(end);
 }
 
 pub(super) fn text(value: &str) -> Result<(), BridgeError> {
@@ -280,6 +361,7 @@ fn flatten_node(
         first: 0,
         second: 0,
         ratio: 0.0,
+        resource_kind: 0,
     });
     nodes[index as usize] = flatten_value(tree, nodes, depth)?;
     Ok(index)
@@ -299,6 +381,7 @@ fn flatten_value(
                 first: 0,
                 second: 0,
                 ratio: 0.0,
+                resource_kind: 0,
             }
         }
         LayoutNode::Split {
@@ -316,6 +399,7 @@ fn flatten_value(
                 first: flatten_node(left, nodes, depth + 1)?,
                 second: flatten_node(right, nodes, depth + 1)?,
                 ratio: *ratio,
+                resource_kind: 0,
             }
         }
     })
