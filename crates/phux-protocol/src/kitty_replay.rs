@@ -559,6 +559,7 @@ fn write_cup(out: &mut impl Write, row: u16, col: u16) -> io::Result<()> {
 mod ids;
 mod residency;
 
+pub use ids::write_orphaned_deletes;
 pub use residency::KittyResidency;
 
 #[cfg(test)]

@@ -12,9 +12,15 @@
 //! image. Pane ids that differ only in the high byte map to outer ids that
 //! differ only in the high byte, so the mapping stays one-to-one.
 
-use std::{cell::RefCell, collections::HashSet};
+use std::{
+    cell::RefCell,
+    collections::HashSet,
+    io::{self, Write},
+};
 
 use libghostty_vt::style::{RgbColor, StyleColor};
+
+use super::write_delete_image;
 
 const LOW: u32 = 0x00FF_FFFF;
 
@@ -27,13 +33,15 @@ thread_local! {
     static SPACE: RefCell<IdSpace> = RefCell::new(IdSpace::default());
 }
 
-/// The outer low-24-bit ids in use on this thread.
+/// The outer low-24-bit ids in use on this thread, and the outer images of
+/// dropped residencies still waiting for their delete.
 #[derive(Debug, Default)]
 struct IdSpace {
     /// The last id handed out. Allocation walks forward and wraps, so a freed
     /// id is reused only after every other id has been tried.
     last: u32,
     live: HashSet<u32>,
+    orphans: Vec<u32>,
 }
 
 impl IdSpace {
@@ -49,7 +57,9 @@ impl IdSpace {
     }
 
     fn release(&mut self, low: u32) {
-        self.live.remove(&low);
+        if !self.orphans.iter().any(|outer| outer & LOW == low) {
+            self.live.remove(&low);
+        }
     }
 }
 
@@ -115,6 +125,39 @@ impl Drop for IdMap {
             }
         });
     }
+}
+
+/// Queue outer images a dropped residency left on the outer terminal for
+/// [`write_orphaned_deletes`]. Their ids stay allocated until then.
+pub(super) fn orphan(outer: impl IntoIterator<Item = u32>) {
+    let _ = SPACE.try_with(|space| space.borrow_mut().orphans.extend(outer));
+}
+
+/// Delete (`d=I`) the outer images shared residencies dropped while holding.
+///
+/// A closed pane's renderer leaves its images on the outer terminal; this
+/// deletes them and frees their ids. Returns whether anything was written.
+/// Call it at the start of each composited frame, on the thread that owns
+/// the residencies.
+pub fn write_orphaned_deletes(out: &mut impl Write) -> io::Result<bool> {
+    let orphans = SPACE.with(|space| std::mem::take(&mut space.borrow_mut().orphans));
+    if orphans.is_empty() {
+        return Ok(false);
+    }
+    let written = orphans
+        .iter()
+        .try_for_each(|&id| write_delete_image(out, id));
+    SPACE.with(|space| {
+        let mut space = space.borrow_mut();
+        if written.is_err() {
+            space.orphans.extend(&orphans);
+            return;
+        }
+        for outer in &orphans {
+            space.live.remove(&(outer & LOW));
+        }
+    });
+    written.map(|()| true)
 }
 
 /// The image id's low 24 bits a placeholder cell with foreground `fg` spells,

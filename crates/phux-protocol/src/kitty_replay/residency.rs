@@ -6,7 +6,11 @@
 //! per-image generation stamp is the content identity, and the placement
 //! commands last written (origin applied) are compared byte for byte.
 
-use std::{io::Write, mem, ops::Range};
+use std::{
+    io::{self, Write},
+    mem,
+    ops::Range,
+};
 
 use libghostty_vt::{
     kitty::graphics::Graphics,
@@ -81,7 +85,8 @@ impl Resident {
 impl KittyResidency {
     /// A residency for one of several panes sharing an outer terminal: its
     /// image ids are mapped into outer ids no other shared residency on this
-    /// thread uses, stable for the residency's life.
+    /// thread uses, stable for the residency's life. Dropping it while it
+    /// still holds images queues them for [`super::write_orphaned_deletes`].
     #[must_use]
     pub fn shared() -> Self {
         Self {
@@ -105,6 +110,18 @@ impl KittyResidency {
     /// diacritic) need no rewrite.
     pub fn placeholder_fg(&mut self, fg: StyleColor) -> RgbColor {
         ids::placeholder_color(self.ids.as_mut(), fg)
+    }
+
+    /// Delete (`d=I`) every image the outer terminal holds for this pane and
+    /// record that it holds nothing: the pane left the visible layout. Its id
+    /// mapping is kept. Returns whether a classic placement was removed.
+    pub fn release(&mut self, out: &mut impl Write) -> io::Result<bool> {
+        for image in &self.held.images {
+            write_delete_image(out, image.outer)?;
+        }
+        let touched_cells = self.held.images.iter().any(|image| image.classic);
+        self.held.clear();
+        Ok(touched_cells)
     }
 
     /// Forget what the outer terminal shows: after a screen clear, a dropped
@@ -263,6 +280,14 @@ impl KittyResidency {
             stored.iter().any(same) || held.iter().any(|image| same(&image.id))
         });
         Ok(())
+    }
+}
+
+impl Drop for KittyResidency {
+    fn drop(&mut self) {
+        if self.ids.is_some() {
+            ids::orphan(self.held.images.iter().map(|image| image.outer));
+        }
     }
 }
 

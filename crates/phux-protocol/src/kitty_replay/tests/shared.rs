@@ -88,6 +88,36 @@ fn high_byte_ids_keep_their_high_byte() {
 }
 
 #[test]
+fn release_and_drop_delete_what_the_outer_terminal_holds() {
+    let mut source = terminal();
+    transmit(&mut source, 7, 8, 8);
+    source.vt_write(b"\x1b_Ga=p,i=7,c=1,r=1,C=1,q=2;\x1b\\");
+    let mut held = KittyResidency::shared();
+    let mut target = terminal();
+    target.vt_write(&replay_with(&source, &mut held, (0, 0)));
+    let id = outer(&held, 7);
+
+    let mut out = Vec::new();
+    assert!(held.release(&mut out).unwrap(), "a classic placement went");
+    assert_eq!(contains(&out, format!("a=d,d=I,i={id},").as_bytes()), 1);
+    target.vt_write(&out);
+    assert!(pixels(&target, id).is_none());
+    out.clear();
+    assert!(!held.release(&mut out).unwrap());
+    assert!(out.is_empty());
+
+    // Shown again, then dropped while held: the next frame deletes it.
+    target.vt_write(&replay_with(&source, &mut held, (0, 0)));
+    assert_eq!(outer(&held, 7), id);
+    drop(held);
+    assert!(write_orphaned_deletes(&mut out).unwrap());
+    assert_eq!(contains(&out, format!("a=d,d=I,i={id},").as_bytes()), 1);
+    out.clear();
+    assert!(!write_orphaned_deletes(&mut out).unwrap());
+    assert!(out.is_empty());
+}
+
+#[test]
 fn unused_mappings_are_pruned_past_the_bound() {
     let mut source = terminal();
     let mut held = KittyResidency::shared();
