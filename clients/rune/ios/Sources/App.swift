@@ -174,12 +174,20 @@ final class RuneController: UIViewController, UIAdaptivePresentationControllerDe
         } else { form.receive(link) }
     }
     private func show(_ message:String) {
-        let alert = UIAlertController(title:"Phux Rune",message:message,preferredStyle:.alert)
+        let alert = UIAlertController.dark(title: "Phux Rune couldn't start", message: message)
         alert.addAction(UIAlertAction(title:"OK",style:.default))
         present(alert,animated:true)
     }
-    private func open(_ configuration: [String: Any]) {
+    private func open(_ saved: [String: Any]) {
         surface?.close(); surface?.removeFromSuperview()
+        // Words only: what banners call the computer. A tailnet name reads
+        // best as its first label; an address stays whole.
+        var configuration = saved
+        if let name = HostSettings.computerName {
+            let label = name.split(separator: ".").first.map(String.init) ?? name
+            let hostname = name.contains(where: \.isLetter) && !name.contains(" ")
+            configuration["name"] = hostname ? label : name
+        }
         let surface = RuneView(configuration:configuration)
         surface.qualification = probe
         surface.failed = { [weak self] message in

@@ -28,7 +28,12 @@ new project generator. A small Swift package supplies the Tailscale directory
 and SSH client; its pinned dynamic TailscaleKit framework is embedded and
 signed inside-out. Builds resolve these dependencies into the output path,
 not the checkout. The build derives Rust's ordered native link flags, bundles
-Cargo, Swift and Go license notices, and ad-hoc signs the simulator app. The device bundle
+Cargo, Swift and Go license notices, and ad-hoc signs the simulator app.
+It compiles a small asset catalog with `actool`: a launch colour matching
+the terminal ground, and `ios/AppIcon.png`, which is
+`packaging/AppIcon.png` flattened onto its own ground (an iOS icon may not
+have transparent corners). Use `--release` for a build meant for a phone:
+a debug build of the renderer is not representative of how it scrolls. The device bundle
 is linked **without provisioning or distribution signing**, not installable
 device qualification. Do not install it over another app or use production
 Phux to run a test.
@@ -83,7 +88,9 @@ logs or evidence artifacts. It injects a command through the actual UIKit
 the returned marker in a real terminal grid and presented frame, records the
 element tree/report/screenshot and fifteen UIKit input/onboarding-contract groups, and
 backgrounds/resumes the app through the
-OS before checking continued rendering. A fresh process then reconnects from
+OS before checking continued rendering. The report must also say the surface
+shows its drawable at the screen's scale: Rune reports its own geometry, not
+how the layer presents it. A fresh process then reconnects from
 saved settings and the same Keychain key, with no ticket or pairing payload.
 It never adopts a user's simulator
 or production socket. Qualification-only socket/command launch arguments
@@ -247,5 +254,5 @@ unmounted ACP fields lose only focus/preedit, never their committed draft.
 Remaining qualification/integration is tracked in Beads: provisioned device
 and TestFlight, OS-driven keyboard/IME tests, physical-camera recognition and
 real-device Tailscale sign-in/SSH qualification,
-VoiceOver mapping, native links/file/image clipboard, terminal haptics and
-Android. See [MOBILE.md](../MOBILE.md) for the desktop/native distinction.
+VoiceOver mapping, file/image clipboard, haptics beyond a hold and a copy,
+hardware-keyboard repeat, landscape and Android. See [MOBILE.md](../MOBILE.md) for the desktop/native distinction.
