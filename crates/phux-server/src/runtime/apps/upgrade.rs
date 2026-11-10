@@ -36,7 +36,11 @@ pub(crate) trait UpgradeCut {
     /// unchanged. Fails when a resource this kind may not drop has no cut.
     fn carry(&self, state: &ServerState, blob: &mut StateBlob) -> Result<(), UpgradeError>;
 
-    /// The descriptors in `blob` this kind's resources need across exec.
+    /// The descriptors in `blob` this kind's resources need across exec,
+    /// whose `FD_CLOEXEC` the host clears. Name only descriptors this cut
+    /// owns and keeps open until exec (a Terminal's duplicated PTY masters):
+    /// any other could be closed and its number reused before exec, leaking
+    /// an unrelated descriptor into the new image.
     fn inherited_fds(&self, blob: &StateBlob) -> Vec<RawFd>;
 
     /// The upgrade did not happen: release what the cut holds within a

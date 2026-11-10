@@ -24,7 +24,7 @@ use super::DocumentApi;
 use crate::runtime::apps::{KindResume, UpgradeCut};
 use crate::runtime::connections::pane_events::PaneEvents;
 use crate::runtime::upgrade::UpgradeError;
-use crate::state::upgrade_blob::{KindRebuild, RebuildError, ResumeCx, live_pane_wires};
+use crate::state::upgrade_blob::{KindRebuild, Missing, RebuildError, ResumeCx, live_pane_wires};
 use crate::state::{ServerState, SharedState};
 use crate::upgrade::blob::{DocumentBlob, StateBlob};
 
@@ -167,7 +167,10 @@ impl<A: DocumentApi> KindRebuild for DocumentResume<A> {
     fn rebuild(&mut self, cx: &mut ResumeCx<'_>) -> Result<(), RebuildError> {
         let blob = cx.blob;
         for carried in &blob.documents {
-            let Some(core) = cx.record(carried.wire_id) else {
+            let (wire, parent_wire) = (carried.wire_id, carried.parent_wire_id);
+            let Some(core) = cx.record(wire) else {
+                // Which document kind it was is its record's to say.
+                cx.skip("document", wire, parent_wire, Missing::Record);
                 continue;
             };
             let target = cx
@@ -177,7 +180,12 @@ impl<A: DocumentApi> KindRebuild for DocumentResume<A> {
                 .and_then(|record| record.launch.as_ref())
                 .and_then(A::launch_target)
                 .map(str::to_owned);
-            let (Some(target), Some(parent)) = (target, cx.parent(carried.parent_wire_id)) else {
+            let Some(target) = target else {
+                // Another kind's record: its own app rebuilds it.
+                continue;
+            };
+            let Some(parent) = cx.parent(parent_wire) else {
+                cx.skip(A::LABEL, wire, parent_wire, Missing::Parent);
                 continue;
             };
             let document = carried.document.as_deref().and_then(|text| {

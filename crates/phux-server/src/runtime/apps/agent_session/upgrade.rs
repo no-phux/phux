@@ -19,7 +19,7 @@ use crate::resource::ResourceHandle;
 use crate::runtime::apps::{KindResume, UpgradeCut};
 use crate::runtime::connections::pane_events::PaneEvents;
 use crate::runtime::upgrade::UpgradeError;
-use crate::state::upgrade_blob::{KindRebuild, RebuildError, ResumeCx, live_pane_wires};
+use crate::state::upgrade_blob::{KindRebuild, Missing, RebuildError, ResumeCx, live_pane_wires};
 use crate::state::{ServerState, SharedState};
 use crate::upgrade::blob::{AgentSessionBlob, AgentStreamCut, StateBlob};
 use phux_agent_session::session::{AgentSessionActor, AgentSessionBootstrap, BootstrapRequest};
@@ -271,6 +271,9 @@ fn carried_cut(carried: &AgentSessionBlob) -> AgentSessionBootstrap {
     }
 }
 
+/// How a resume's log names this kind.
+const KIND: &str = "agent session";
+
 /// Rebuilds every carried session, then the native controllers.
 #[derive(Debug, Default)]
 pub(crate) struct AgentSessionResume;
@@ -285,10 +288,13 @@ impl KindRebuild for AgentSessionResume {
         let log_bytes = cx.state.agent_log_bytes();
         let blob = cx.blob;
         for carried in &blob.agent_sessions {
-            let (Some(parent), Some(core)) = (
-                cx.parent(carried.parent_wire_id),
-                cx.record(carried.wire_id),
-            ) else {
+            let (wire, parent_wire) = (carried.wire_id, carried.parent_wire_id);
+            let Some(parent) = cx.parent(parent_wire) else {
+                cx.skip(KIND, wire, parent_wire, Missing::Parent);
+                continue;
+            };
+            let Some(core) = cx.record(wire) else {
+                cx.skip(KIND, wire, parent_wire, Missing::Record);
                 continue;
             };
             if let Some(facet) = cx

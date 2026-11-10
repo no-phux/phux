@@ -21,6 +21,24 @@ pub(crate) trait KindRebuild {
     fn restore(&mut self, state: &mut ServerState, blob: &StateBlob);
 }
 
+/// What a carried resource needed that did not cross.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Missing {
+    /// No rebuilt resource that can parent it holds its parent's wire id.
+    Parent,
+    /// The merged records hold none under its key.
+    Record,
+}
+
+impl Missing {
+    const fn as_str(self) -> &'static str {
+        match self {
+            Self::Parent => "parent",
+            Self::Record => "record",
+        }
+    }
+}
+
 /// The fresh state of one resume, as each [`KindRebuild`] sees it.
 pub(crate) struct ResumeCx<'a> {
     /// The state being built. Committed only if every kind rebuilds.
@@ -30,6 +48,8 @@ pub(crate) struct ResumeCx<'a> {
     keyed: &'a Keyed,
     /// Each resource rebuilt so far, by wire id.
     rebuilt: HashMap<u32, ResourceId>,
+    /// Each carried resource a kind dropped, already logged.
+    skipped: HashSet<u32>,
     exit_watchers: ExitWatchers,
 }
 
@@ -44,6 +64,7 @@ impl<'a> ResumeCx<'a> {
             blob,
             keyed,
             rebuilt: HashMap::new(),
+            skipped: HashSet::new(),
             exit_watchers: Vec::new(),
         }
     }
@@ -94,14 +115,30 @@ impl<'a> ResumeCx<'a> {
         Ok(())
     }
 
+    /// Drop the `kind` resource carried under `wire`: what it needs did not
+    /// cross. Losing one must not cost the whole tree. Logged once per
+    /// resource, however many kinds look at it.
+    pub(crate) fn skip(&mut self, kind: &'static str, wire: u32, parent: u32, missing: Missing) {
+        if self.skipped.insert(wire) {
+            tracing::warn!(
+                kind,
+                resource = wire,
+                parent,
+                missing = missing.as_str(),
+                "resume: carried resource's {} did not cross; dropped",
+                missing.as_str()
+            );
+        }
+    }
+
     /// Every rebuilt resource's exit receiver. A carried resource no kind
-    /// rebuilt is dropped; losing one must not cost the whole tree.
+    /// rebuilt or skipped had a record no kind claims; it is dropped too.
     pub(in crate::state) fn finish(self) -> ExitWatchers {
         for wire in resource_wires(self.blob) {
-            if !self.rebuilt.contains_key(&wire) {
+            if !self.rebuilt.contains_key(&wire) && !self.skipped.contains(&wire) {
                 tracing::warn!(
                     resource = wire,
-                    "resume: carried resource's parent or record did not cross; dropped"
+                    "resume: no kind claims the carried resource's record; dropped"
                 );
             }
         }

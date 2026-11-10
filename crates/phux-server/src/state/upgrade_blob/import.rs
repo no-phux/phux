@@ -293,6 +293,11 @@ pub(in crate::state) fn import_tree(
         current.receipts().cloned(),
     )?;
     crate::state::org::ensure_arrangements(&mut org);
+    // A document names its record by key, imported or not, so it resolves
+    // only if the current records already hold it.
+    keyed
+        .resources
+        .extend(blob.documents.iter().map(|d| (d.wire_id, d.key)));
     Ok((org, keyed, true))
 }
 

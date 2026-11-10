@@ -62,10 +62,13 @@ impl UpgradeCut for TerminalCut {
         Ok(())
     }
 
+    /// The masters this cut duplicated that `blob` names: a retained pane's
+    /// or a closed one's stays behind.
     fn inherited_fds(&self, blob: &StateBlob) -> Vec<RawFd> {
-        blob.panes
-            .iter()
-            .filter_map(|pane| pane.master_fd)
+        self.handoffs
+            .values()
+            .filter_map(|handoff| handoff.master_fd.as_ref().map(AsRawFd::as_raw_fd))
+            .filter(|fd| blob.panes.iter().any(|pane| pane.master_fd == Some(*fd)))
             .collect()
     }
 

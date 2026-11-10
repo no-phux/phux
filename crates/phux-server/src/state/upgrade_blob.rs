@@ -138,12 +138,12 @@ impl ServerState {
         self.lifecycle.upgrade_context()
     }
 
-    /// The handles of exactly the panes whose PTY a re-exec carries: live
-    /// Terminals with wire ids (the same walk as
-    /// [`Self::assemble_upgrade_blob`]). Everything else in the resource
-    /// table is left alone: other kinds cross through their own apps, and a
-    /// retained pane's PTY does not cross (ADR-0124 §6). Asking those would
-    /// only let an engine with nothing to hand off abort the upgrade.
+    /// The live tree panes a re-exec carries, with their handles: Terminal
+    /// members with wire ids, in the walk [`Self::assemble_upgrade_blob`]
+    /// makes ([`Self::carried_panes`]), less retained panes, whose PTY does
+    /// not cross (ADR-0124 §6). The Terminal app asks exactly these for a
+    /// handoff; other kinds cross through their own apps. Names every handle
+    /// that outlived its registry entry on the way.
     pub(crate) fn upgrade_handles(&self) -> Vec<(ResourceId, ResourceHandle)> {
         let carried = self.carried_panes();
         self.warn_orphan_resource_handles();
@@ -285,5 +285,5 @@ use rebuild::*;
     reason = "re-export for siblings"
 )]
 pub(crate) use rebuild::{RebuiltTree, dry_run_records};
-pub(crate) use resume::{KindRebuild, ResumeCx};
+pub(crate) use resume::{KindRebuild, Missing, ResumeCx};
 pub(crate) use validate::validate_upgrade_blob;
