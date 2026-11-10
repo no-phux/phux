@@ -38,6 +38,7 @@ mod links;
 pub mod machines;
 pub mod mouse;
 pub(crate) mod native_input;
+pub mod news;
 mod notice;
 pub mod onboarding;
 mod palette;
@@ -176,6 +177,8 @@ pub struct Desk {
     pub settings_open: bool,
     /// First-run onboarding, while open, and what it has learned.
     pub onboarding: onboarding::Onboarding,
+    /// What's new, and whether its bell is lit.
+    pub news: news::News,
     /// Navigation and search belong to this window, never to stored preferences.
     pub settings_ui: settings::SettingsUi,
     pub tabs: tabs::Tabs,
@@ -389,6 +392,7 @@ impl Desk {
             settings,
             settings_open: false,
             onboarding: onboarding::Onboarding::default(),
+            news: news::News::load(&prefs),
             settings_ui: settings::SettingsUi::default(),
             tabs: tabs::Tabs::default(),
             updater: updates::Updater::new(&prefs, resolved),

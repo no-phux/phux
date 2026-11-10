@@ -112,3 +112,8 @@ pub static FOX: Icon = Icon {
         r##"<circle cx="198" cy="232" r="13" fill="#bef264"/>"##,
     ),
 };
+icon!(
+    BELL,
+    "phux-bell",
+    "M4 11.5V7a4 4 0 0 1 8 0v4.5l1 1H3zM6.5 14h3"
+);

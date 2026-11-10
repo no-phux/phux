@@ -394,6 +394,7 @@ pub fn title_bar(desk: &Desk, p: &Ink, lights: f32) -> El {
                 .font(CAPTION.family(Family::SystemMono))
                 .color(p.dim),
         )
+        .child(super::news::bell(desk, p))
         .child(icon_press(
             &icons::SETTINGS,
             "Settings",
