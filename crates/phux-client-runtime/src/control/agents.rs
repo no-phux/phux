@@ -92,12 +92,8 @@ impl ControlPlane {
                 if let Some(relabel) = self.relabel_in_flight(&terminal_id) {
                     relabel.title = Some(title.clone());
                 }
-                if let Some(pane) = self
-                    .topology
-                    .as_mut()
-                    .and_then(|topology| topology.pane_mut(&terminal_id))
-                {
-                    pane.title = Some(title.clone());
+                if let Some(topology) = self.topology.as_mut() {
+                    topology.retitle(&terminal_id, &title);
                 }
                 self.push_event(Event::TitleChanged { terminal_id, title });
             }
@@ -205,6 +201,10 @@ impl ControlPlane {
         self.stream_recoveries.remove(terminal_id);
         self.own_spawns.remove(terminal_id);
         self.agent_streams.remove(terminal_id);
+        // Whatever its kind, a closed resource leaves every listing.
+        if let Some(topology) = self.topology.as_mut() {
+            topology.forget(terminal_id);
+        }
         // A subscribed agent stream ends as itself, never as a pane.
         // Retire delivery even when this id was not a runtime subscription,
         // so a close cannot replay a leased or held publication later.
@@ -212,11 +212,6 @@ impl ControlPlane {
             return true;
         }
         let _ = self.agent_delivery.retire(terminal_id);
-        if let Some(topology) = self.topology.as_mut() {
-            topology
-                .panes
-                .retain(|pane| &pane.terminal_id != terminal_id);
-        }
         let reports = self
             .input_replay
             .retire_terminal(terminal_id, "terminal closed");

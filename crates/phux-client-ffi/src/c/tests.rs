@@ -2,6 +2,7 @@ mod agent_stream;
 mod attach;
 mod callbacks;
 mod clear_presentation;
+mod documents;
 mod grid;
 mod handshake;
 mod newer_server;

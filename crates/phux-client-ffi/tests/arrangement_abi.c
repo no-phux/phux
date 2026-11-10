@@ -4,6 +4,8 @@
 #include <stddef.h>
 
 _Static_assert(PHUX_CLIENT_ABI_VERSION == 3u, "the arrangement records are ABI 3");
+_Static_assert(sizeof(void *) == 8, "the pinned layouts are the 64-bit ones");
+_Static_assert(PHUX_ARRANGEMENT_LEAF_KIND_UNLISTED == 0xFFFFFFFFu, "never a wire kind tag");
 _Static_assert(sizeof(PhuxArrangementInfo) == 128, "arrangement info size");
 _Static_assert(offsetof(PhuxArrangementInfo, revision) == 16, "revision offset");
 _Static_assert(offsetof(PhuxArrangementInfo, message) == 56, "message offset");
@@ -17,7 +19,13 @@ _Static_assert(sizeof(PhuxArrangementGroup) == 56, "group size");
 _Static_assert(offsetof(PhuxArrangementGroup, group_id) == 12, "group id offset");
 _Static_assert(sizeof(PhuxArrangementNode) == 56, "node size");
 _Static_assert(offsetof(PhuxArrangementNode, terminal_id) == 16, "node id offset");
+_Static_assert(offsetof(PhuxArrangementNode, ratio) == 48, "node ratio offset");
+_Static_assert(offsetof(PhuxArrangementNode, resource_kind) == 52, "node kind fills tail padding");
 _Static_assert(sizeof(PhuxCatalogTerminal) == 80, "catalog terminal size");
+_Static_assert(offsetof(PhuxCatalogTerminal, session_id) == 40, "catalog session offset");
+_Static_assert(offsetof(PhuxCatalogTerminal, resource_kind) == 44, "catalog kind fills padding");
+_Static_assert(offsetof(PhuxCatalogTerminal, title) == 48, "catalog title offset");
+_Static_assert(offsetof(PhuxCatalogTerminal, cwd) == 64, "catalog cwd offset");
 _Static_assert(sizeof(PhuxArrangementMutation) == 136, "mutation size");
 _Static_assert(offsetof(PhuxArrangementMutation, group_id) == 32, "mutation group offset");
 _Static_assert(offsetof(PhuxArrangementMutation, path_bits) == 128, "path offset");

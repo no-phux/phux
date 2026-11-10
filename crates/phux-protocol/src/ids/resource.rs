@@ -242,6 +242,26 @@ impl ResourceKind {
         matches!(self, Self::Terminal)
     }
 
+    /// `true` for the replicated document kinds (`AccessibilityTree`,
+    /// `PixelSurface`, `Document`): every stream frame is a newer whole
+    /// document, and the newest one is the one to show.
+    #[must_use]
+    pub const fn is_document(self) -> bool {
+        matches!(
+            self,
+            Self::AccessibilityTree | Self::PixelSurface | Self::Document
+        )
+    }
+
+    /// `true` when a resource of this kind can occupy an arrangement leaf:
+    /// every kind but `AgentSession`, a record stream bound to its parent
+    /// Terminal. An unknown kind counts, because a newer peer may have
+    /// placed one and pruning it would lose that placement.
+    #[must_use]
+    pub const fn can_occupy_leaf(self) -> bool {
+        !matches!(self, Self::AgentSession)
+    }
+
     /// Lower-case stable name (`terminal`, `agent_session`, `unknown`).
     #[must_use]
     pub const fn as_str(self) -> &'static str {

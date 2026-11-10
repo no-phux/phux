@@ -2,6 +2,10 @@
 use crate::c::{ABI_VERSION, PhuxBytes, PhuxResourceId};
 use std::mem;
 
+/// `PhuxArrangementNode.resource_kind` of a leaf whose resource the
+/// published catalog does not list: never mistaken for a Terminal (0).
+pub const PHUX_ARRANGEMENT_LEAF_KIND_UNLISTED: u32 = u32::MAX;
+
 /// Current snapshot and latest transaction result; spans expire on mutation.
 #[repr(C)]
 #[derive(Clone, Copy, Debug)]
@@ -47,9 +51,14 @@ pub struct PhuxArrangementNode {
     pub first: u32,
     pub second: u32,
     pub ratio: f32,
+    /// A leaf's wire `ResourceKind` tag, or
+    /// [`PHUX_ARRANGEMENT_LEAF_KIND_UNLISTED`]; 0 for a split. Occupies what
+    /// was tail padding, so the record's size is unchanged.
+    pub resource_kind: u32,
 }
 
-/// Durable terminal listing without an emulator or subscription.
+/// Durable listing of a leaf-capable resource (any kind but
+/// `AgentSession`) without an emulator or subscription.
 #[repr(C)]
 #[derive(Clone, Copy, Debug)]
 pub struct PhuxCatalogTerminal {
@@ -57,6 +66,9 @@ pub struct PhuxCatalogTerminal {
     pub version: u32,
     pub terminal_id: PhuxResourceId,
     pub session_id: u32,
+    /// The wire `ResourceKind` tag. Occupies what was padding before
+    /// `title`, so no other offset moves.
+    pub resource_kind: u32,
     pub title: PhuxBytes,
     pub cwd: PhuxBytes,
 }
