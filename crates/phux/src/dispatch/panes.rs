@@ -188,6 +188,7 @@ pub(super) fn snapshot(args: commands::SnapshotArgs, socket: Option<PathBuf>) ->
         unwrap,
         rendered,
         format,
+        out,
         cols,
         rows,
     } = args;
@@ -200,6 +201,7 @@ pub(super) fn snapshot(args: commands::SnapshotArgs, socket: Option<PathBuf>) ->
             tail,
             unwrap,
             format,
+            out,
         },
         &commands::snapshot::RenderedOpts {
             rendered,

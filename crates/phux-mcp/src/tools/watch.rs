@@ -1,4 +1,5 @@
-/// `phux_wait` — poll the pane named by the selector until a condition holds.
+/// `phux_wait` — poll the pane named by the selector until a condition
+/// holds; a document target is refused for its per-kind tool.
 async fn phux_wait(args: &Value) -> Result<Value, ToolError> {
     let socket = socket_or_default(args);
     let selector = parse_target(args)?;
@@ -12,15 +13,19 @@ async fn phux_wait(args: &Value) -> Result<Value, ToolError> {
     );
     let timeout = num_arg(args, "timeout_secs").map(Duration::from_secs);
 
-    let terminal_id = resolve_selector(&socket, &selector, false).await?;
-    let result = phux_client::wait::poll_until(
+    let target = resolve_kinded(&socket, &selector, false).await?;
+    target.require_terminal("phux_wait", Verb::Wait)?;
+    let poll = phux_client::wait::poll_until(
         &socket,
-        terminal_id,
+        target.id.clone(),
         &condition,
         timeout,
         DEFAULT_POLL_INTERVAL,
-    )
-    .await?;
+    );
+    let result = match poll.await {
+        Ok(result) => result,
+        Err(err) => return Err(target.refused("phux_wait", Verb::Wait, &socket, err).await),
+    };
     let outcome = match result.outcome {
         WaitOutcome::Met => "met",
         WaitOutcome::TimedOut => "timed_out",

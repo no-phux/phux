@@ -20,7 +20,7 @@ mod send_keys;
 mod session;
 pub(crate) mod shim;
 mod start;
-mod tree;
+pub(crate) mod tree;
 mod wait;
 
 use std::path::{Path, PathBuf};

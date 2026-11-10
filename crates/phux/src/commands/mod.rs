@@ -13,8 +13,8 @@ mod targets;
 pub(crate) use cli::*;
 pub(crate) use diagnostics::{print_attach_error, report_no_server};
 pub(crate) use targets::{
-    parse_selector, report_agent_resolve_error, resolve_target, resolve_target_for_input,
-    resolve_targets,
+    parse_selector, report_agent_resolve_error, resolve_resource, resolve_target,
+    resolve_target_for_input, resolve_targets,
 };
 
 /// The verb-scoped `--remote` this command carries, if any.
@@ -85,6 +85,7 @@ pub(crate) mod plan_usage;
 pub(crate) mod play;
 pub(crate) mod plugin;
 pub(crate) mod project;
+pub(crate) mod read_kind;
 pub(crate) mod rec;
 pub(crate) mod relay;
 pub(crate) mod remote;

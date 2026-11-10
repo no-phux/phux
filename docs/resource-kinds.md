@@ -322,10 +322,9 @@ phux already ranks agent evidence with the screen as the floor
 
 Pixels are for a person watching and the last resort for an agent. The first
 non-terminal kind is therefore a replicated accessibility tree
-(`phux-phiio.6`; the kind, its engine and its stream landed, see
-[protocol](./protocol.md#commands-events-resources); `phux snapshot`,
-`phux wait` and the macOS producer follow): `phux snapshot` and `phux wait`
-for an application, with no
+(`phux-phiio.6`; the kind, its engine, its stream and the macOS producer
+landed, see [protocol](./protocol.md#commands-events-resources)):
+[`phux snapshot` and `phux wait`](./scripting.md#reading-a-screen) for an app, with no
 Screen Recording grant. A pixel surface follows (`phux-phiio.7`), drawn first
 by the desktop app, then a browser page over CDP (`phux-phiio.8`), whose
 screencast is already acknowledged per frame. A page needed no kind of its
