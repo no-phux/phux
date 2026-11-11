@@ -300,6 +300,7 @@ impl Desk {
             Shortcut::FindPrevious => self.step_find(1),
             Shortcut::FindSelection => self.find_selection(),
             Shortcut::CopyMode => self.toggle_copy_mode(),
+            Shortcut::CopyConfig => self.copy_config(tx),
             Shortcut::Bare => self.toggle_bare(),
         }
     }

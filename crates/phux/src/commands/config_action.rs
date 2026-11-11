@@ -60,6 +60,23 @@ pub(crate) enum ConfigAction {
         distro: Option<String>,
     },
 
+    /// Print the snippet that makes a shell mark prompts and commands.
+    ///
+    /// phux reads the prompt and command marks a shell emits (OSC 133):
+    /// `phux wait --output-only`, copy mode's "last command's output" key
+    /// and the exit-code widget rely on them. This prints the snippet for
+    /// zsh, bash or fish; it contacts no server and reads no config.
+    ///
+    /// Examples:
+    ///   eval "$(phux config shell-integration zsh)"      (in ~/.zshrc)
+    ///   eval "$(phux config shell-integration bash)"     (in ~/.bashrc)
+    ///   phux config shell-integration fish | source      (in config.fish)
+    ShellIntegration {
+        /// The shell to print the snippet for: zsh, bash or fish.
+        #[usage(value_enum, value_name = "SHELL")]
+        shell: super::CompletionShell,
+    },
+
     /// Print the resolved config path. Pure path math — prints the path
     /// whether or not the file exists.
     Path,

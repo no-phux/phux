@@ -286,6 +286,7 @@ pub const COMMANDS: &[Command] = &[
         [l('j')]
     ),
     row!(Shortcut::Inbox, "Open Inbox", [m('i')], [l('i')]),
+    row!(Shortcut::CopyConfig, "Copy Settings as TOML", [], []),
     row!(Shortcut::Galaxy, "Open Galaxy", [], []),
     row!(Shortcut::Reef, "Open Reef", [], []),
     row!(Shortcut::Pitch, "Open Pitch", [], []),
@@ -494,12 +495,77 @@ pub fn command(action: Shortcut) -> Option<&'static Command> {
     COMMANDS.iter().find(|command| command.action == action)
 }
 
-/// What a chord does here, if anything.
-pub fn action_of(chord: Chord) -> Option<Shortcut> {
+/// A command's name in `[rune.keys]`: `SplitRight` is `split-right`, and
+/// the tabs are `tab-1` to `tab-9`.
+fn id(action: Shortcut) -> String {
+    if let Shortcut::Tab(index) = action {
+        return format!("tab-{}", index + 1);
+    }
+    let mut id = String::new();
+    for c in format!("{action:?}").chars() {
+        if c.is_ascii_uppercase() && !id.is_empty() {
+            id.push('-');
+        }
+        id.push(c.to_ascii_lowercase());
+    }
+    id
+}
+
+/// Chords from `[rune.keys]`; `None` takes the chord away from the table.
+// ponytail: menus and the shortcut list still show the built-in chords;
+// build them from this map too if people rebind enough to be misled.
+static USER: std::sync::OnceLock<Vec<(String, Option<Shortcut>)>> = std::sync::OnceLock::new();
+
+/// A chord as the table spells it: lower case, modifiers in `cmd`, `ctrl`,
+/// `alt`, `shift` order, then the key.
+fn canonical(chord: &str) -> String {
+    let lower = chord.to_ascii_lowercase();
+    let mut parts: Vec<&str> = lower.split('+').map(str::trim).collect();
+    let key = parts.pop().unwrap_or_default();
+    let held = ["cmd", "ctrl", "alt", "shift"]
+        .into_iter()
+        .filter(|name| parts.contains(name));
+    held.chain([key]).collect::<Vec<_>>().join("+")
+}
+
+/// Read `[rune.keys]`: the bindings, and a line for each one not understood.
+pub fn user_keys(
+    keys: &std::collections::BTreeMap<String, String>,
+) -> (Vec<(String, Option<Shortcut>)>, Vec<String>) {
+    let mut problems = Vec::new();
+    let mut bound = Vec::new();
+    for (chord, name) in keys {
+        let action = COMMANDS.iter().map(|command| command.action);
+        match (name.as_str(), action.into_iter().find(|a| id(*a) == *name)) {
+            ("none", _) => bound.push((canonical(chord), None)),
+            (_, Some(action)) => bound.push((canonical(chord), Some(action))),
+            (_, None) => problems.push(format!("{chord}: no command named {name}")),
+        }
+    }
+    (bound, problems)
+}
+
+/// Install `[rune.keys]` for this run and return what was not understood.
+pub fn bind(keys: &std::collections::BTreeMap<String, String>) -> Vec<String> {
+    let (bound, problems) = user_keys(keys);
+    let _ = USER.set(bound);
+    problems
+}
+
+fn lookup(user: &[(String, Option<Shortcut>)], chord: Chord) -> Option<Shortcut> {
+    let spelled = chord.accelerator();
+    if let Some((_, action)) = user.iter().find(|(key, _)| *key == spelled) {
+        return *action;
+    }
     COMMANDS
         .iter()
         .find(|command| command.chords().contains(&chord))
         .map(|command| command.action)
+}
+
+/// What a chord does here, if anything.
+pub fn action_of(chord: Chord) -> Option<Shortcut> {
+    lookup(USER.get().map_or(&[], Vec::as_slice), chord)
 }
 
 #[cfg(test)]

@@ -34,6 +34,8 @@ pub(crate) enum DialFailure {
     /// The WSL stdio bridge could not be started.
     #[cfg(windows)]
     Wsl(std::io::Error),
+    /// The ssh stdio bridge could not be started.
+    Ssh(std::io::Error),
     /// The remote dial failed (reachability, TLS, pin, or token).
     Remote(DialError),
     /// The QUIC connection closed as it was established, for this reason.
@@ -52,6 +54,9 @@ impl DialFailure {
             #[cfg(windows)]
             Self::Wsl(error) => ConnectionEnd::Dropped(Some(format!(
                 "{name}: could not start the WSL stdio bridge: {error}"
+            ))),
+            Self::Ssh(error) => ConnectionEnd::Dropped(Some(format!(
+                "{name}: could not start the ssh stdio bridge: {error}"
             ))),
             Self::Remote(error) if is_fatal_refusal(&error) => {
                 ConnectionEnd::Refused(dial_message(name, &error))
@@ -73,6 +78,10 @@ pub(crate) async fn establish(dial: &Dial) -> Result<Io, DialFailure> {
         Dial::Uds(path) => establish_uds(path).await,
         #[cfg(windows)]
         Dial::Wsl { socket, phux } => super::wsl::establish(socket, phux).map_err(DialFailure::Wsl),
+        Dial::Ssh {
+            destination,
+            remote_phux,
+        } => super::ssh::establish(destination, remote_phux).map_err(DialFailure::Ssh),
         Dial::Quic(plan) => establish_quic(plan).await,
         Dial::Ws(plan) => establish_ws(plan).await,
     }

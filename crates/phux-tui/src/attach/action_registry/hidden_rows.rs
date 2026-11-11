@@ -8,6 +8,15 @@ use crate::attach::input_dispatch::session_management;
 /// The actions with no palette row.
 pub(super) const HIDDEN_ROWS: &[ActionSpec] = &[
     ActionSpec {
+        name: "copy-text",
+        description: "Copy the given text to the clipboard",
+        params: "`text`",
+        palette: Palette::Hidden {
+            reason: "it is what a row of the link picker does; on its own it has no text to copy",
+        },
+        run: run::copy_text,
+    },
+    ActionSpec {
         name: "command-palette",
         description: "Open the fuzzy commands and help finder",
         params: "",

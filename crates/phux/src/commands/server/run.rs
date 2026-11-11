@@ -388,6 +388,8 @@ pub(crate) fn run_server(
     // Printed once the sockets are bound, so a failed start never claims
     // to be listening.
     let banner_session = session.unwrap_or("none").to_owned();
+    let restore_on_start = config.restore.on_start;
+    let restore_socket = socket_path.clone();
     let connector_count = connector_entries.len();
     let mut server = with_network_listeners(
         ServerRuntime::new(cfg, std::sync::Arc::new(phux_terminal::TerminalEngine)),
@@ -401,6 +403,9 @@ pub(crate) fn run_server(
             "server listening on {}{extra} (session={banner_session}; Ctrl-C to stop)",
             socket_path.display(),
         );
+        if restore_on_start {
+            restore_in_background(&restore_socket);
+        }
     });
     if !connector_entries.is_empty() {
         server = server.connectors(connector_entries, connect);
@@ -425,6 +430,27 @@ pub(crate) fn run_server(
     // Marks the whole server's keystroke path interactive (ADR-0096).
     phux_server::perf::mark_started();
     report_shutdown(rt.block_on(async move { server.run_async(shutdown_signal()).await }))
+}
+
+/// `[restore] on-start`: run `phux restore` against this server as its own
+/// process, so a slow relaunch never holds up the listener. After an upgrade
+/// handoff nothing ended, and it finds nothing to do.
+fn restore_in_background(socket: &Path) {
+    let spawned = std::env::current_exe().and_then(|exe| {
+        std::process::Command::new(exe)
+            .arg("--socket")
+            .arg(socket)
+            .arg("restore")
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+    });
+    match spawned {
+        // Reaped on a thread, so it leaves no zombie.
+        Ok(mut child) => drop(std::thread::spawn(move || child.wait())),
+        Err(err) => warn!("restore on start: could not run phux restore: {err}"),
+    }
 }
 
 /// Hand the runtime what each config-reload doorbell re-reads.

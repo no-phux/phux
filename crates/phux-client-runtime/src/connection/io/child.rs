@@ -1,18 +1,14 @@
 //! Ownership and bounded diagnostics for a byte-transparent stdio bridge.
 
 use std::io;
-#[cfg(any(windows, test))]
 use std::process::Stdio;
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 
-#[cfg(any(windows, test))]
 use tokio::io::AsyncReadExt as _;
 use tokio::process::Child;
-#[cfg(any(windows, test))]
 use tokio::process::{ChildStdin, ChildStdout, Command};
 
-#[cfg(any(windows, test))]
 const STDERR_TAIL: usize = 8 * 1024;
 const EXIT_WAIT: Duration = Duration::from_millis(100);
 
@@ -24,7 +20,6 @@ pub(crate) struct ChildLink {
 }
 
 impl ChildLink {
-    #[cfg(any(windows, test))]
     pub(super) fn spawn(command: &mut Command) -> io::Result<(Self, ChildStdout, ChildStdin)> {
         let mut child = command
             .stdin(Stdio::piped())
@@ -84,7 +79,6 @@ impl Drop for ChildLink {
     }
 }
 
-#[cfg(any(windows, test))]
 async fn drain(mut stderr: tokio::process::ChildStderr, tail: Arc<Mutex<Vec<u8>>>) {
     let mut chunk = [0; 4096];
     while let Ok(count) = stderr.read(&mut chunk).await {

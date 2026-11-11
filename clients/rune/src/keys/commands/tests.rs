@@ -87,6 +87,7 @@ every_shortcut!(
     FindPrevious,
     FindSelection,
     CopyMode,
+    CopyConfig,
     Inbox,
     Galaxy,
     Reef,
@@ -198,4 +199,34 @@ fn linux_chords_never_touch_plain_ctrl_letters() {
             "{chord:?}"
         );
     }
+}
+
+#[test]
+fn config_keys_add_a_chord_take_one_away_and_report_a_bad_name() {
+    let keys = [
+        ("Shift+Cmd+J", "split-right"),
+        ("cmd+d", "none"),
+        ("cmd+y", "no-such-thing"),
+        ("ctrl+9", "tab-3"),
+    ]
+    .into_iter()
+    .map(|(chord, name)| (chord.to_owned(), name.to_owned()))
+    .collect();
+    let (user, problems) = user_keys(&keys);
+    assert_eq!(problems, ["cmd+y: no command named no-such-thing"]);
+    assert_eq!(
+        lookup(&user, Chord::cmd(Cap::Char('j')).shift()),
+        Some(Shortcut::SplitRight)
+    );
+    assert_eq!(lookup(&user, Chord::cmd(Cap::Char('d'))), None);
+    assert_eq!(
+        lookup(&user, Chord::ctrl(Cap::Char('9'))),
+        Some(Shortcut::Tab(2))
+    );
+    // Every command has a name, and no two share one.
+    let mut ids: Vec<String> = COMMANDS.iter().map(|command| id(command.action)).collect();
+    ids.sort();
+    let count = ids.len();
+    ids.dedup();
+    assert_eq!(ids.len(), count);
 }

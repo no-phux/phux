@@ -351,6 +351,39 @@ pub(super) const PALETTE_ROWS: &[ActionSpec] = &[
         run: run::new_session,
     },
     ActionSpec {
+        name: "popup",
+        description: "Run a command in a floating pane that closes when it exits",
+        params: "`command?` (bare opens an interactive prompt); `cwd?`",
+        palette: Palette::Row {
+            title: "Popup…",
+            category: Category::Pane,
+            args: &[],
+        },
+        run: run::popup,
+    },
+    ActionSpec {
+        name: "url-picker",
+        description: "List the links in the focused pane and copy the one you choose",
+        params: "",
+        palette: Palette::Row {
+            title: "Copy a link…",
+            category: Category::Pane,
+            args: &[],
+        },
+        run: run::url_picker,
+    },
+    ActionSpec {
+        name: "restore-sessions",
+        description: "Relaunch the panes a server restart ended, resuming their agents",
+        params: "",
+        palette: Palette::Row {
+            title: "Restore sessions",
+            category: Category::Session,
+            args: &[],
+        },
+        run: run::restore_sessions,
+    },
+    ActionSpec {
         name: "new-worktree",
         description: "Create a git worktree for a new branch and switch to its session",
         params: "`branch?` (bare opens an interactive prompt); `cwd?` picks the repository",

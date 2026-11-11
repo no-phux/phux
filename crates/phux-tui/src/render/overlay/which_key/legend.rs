@@ -34,6 +34,8 @@ impl Group {
             "signal-terminal",
             "toggle-zoom",
             "focus-direction",
+            "url-picker",
+            "popup",
         ];
         if action.ends_with("-pane") || PANE.contains(&action) {
             Self::Pane
@@ -78,6 +80,7 @@ pub(super) const ACTION_ORDER: &[&str] = &[
     "detach",
     "new-session",
     "new-worktree",
+    "restore-sessions",
     "session-picker",
     "next-session",
     "previous-session",

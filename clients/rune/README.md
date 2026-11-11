@@ -154,7 +154,8 @@ session (or `--session NAME`). It never creates a session on its own.
   `font_family` in Rune's prefs can name any installed family, and one that
   isn't installed shows the system's. Font, text size, notifications,
   Option as Meta (macOS), copy on select, and close confirmation are remembered
-  immediately. Diagnostics stays available in development builds; update errors
+  immediately. A `[rune]` table in `config.toml` overrides any of them
+  ([config](../../docs/config.md#rune)). Diagnostics stays available in development builds; update errors
   and protocol warnings remain visible during search. A program's own OSC
   colours beat the theme. A soft upper edge and wider lower fade show where
   more settings are hidden. Keyboard-revealed controls stay clear of the fades;

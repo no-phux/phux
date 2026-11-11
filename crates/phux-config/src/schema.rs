@@ -11,7 +11,7 @@ use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    OrganizeCfg, connector::ConnectorConfigEntry, host_color::LocalHostCfg,
+    OrganizeCfg, RuneCfg, connector::ConnectorConfigEntry, host_color::LocalHostCfg,
     mirror::MirrorConfigEntry, plugin::PluginConfigEntry, producer::ProducerConfigEntry,
     project::ProjectConfigEntry, remote::RemoteConfigEntry, satellite::SatelliteConfigEntry,
     uplink::UplinkConfigEntry,
@@ -67,8 +67,23 @@ pub struct Config {
     pub voice: VoiceCfg,
     /// `[organize]`: the judge behind `phux organize`.
     pub organize: OrganizeCfg,
+    /// `[rune]`: settings the Rune desktop app reads; ignored elsewhere.
+    pub rune: RuneCfg,
     /// `[limits]`: server-enforced ceilings that are not per-pane defaults.
     pub limits: LimitsCfg,
+    /// `[restore]`: whether a starting server relaunches what the last one
+    /// ended.
+    pub restore: RestoreCfg,
+}
+
+/// `[restore]` table: bringing panes back after a reboot or a crash.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(default, rename_all = "kebab-case", deny_unknown_fields)]
+pub struct RestoreCfg {
+    /// Run `phux restore` when the server starts: relaunch every pane a
+    /// server stop ended, and resume agents whose integration supports it.
+    /// Nothing is typed into a relaunched program.
+    pub on_start: bool,
 }
 
 mod defaults;

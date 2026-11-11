@@ -181,6 +181,24 @@ binding in effect and where it came from, and <kbd>C-a</kbd>
 terminal must allow. Most do, some behind a setting. Over SSH it works if
 your local terminal allows it.
 
+**A program on another machine tries to open a browser and nothing
+happens.** A sign-in started in a pane on a server with no screen (`gh auth
+login`, a cloud CLI) has no browser to open. Give that machine a stand-in
+that hands the link to you instead. Save this as `~/.local/bin/phux-browser`
+there and make it executable:
+
+```sh
+#!/bin/sh
+printf '\033]52;c;%s\a' "$(printf %s "$1" | base64 | tr -d '\n')" > /dev/tty
+printf 'Open this on your own machine (copied to your clipboard):\n%s\n' "$1" > /dev/tty
+```
+
+Then set `BROWSER="$HOME/.local/bin/phux-browser"` in that machine's shell
+startup file. A program that opens a link now prints it in the pane and
+puts it on your clipboard, through the same OSC 52 path as copy. Nothing
+opens by itself. <kbd>C-a</kbd> <kbd>U</kbd> lists the pane's links if you
+need it again.
+
 **An agent's state is wrong.** `phux agent explain @N` shows the evidence
 behind the state: which source won and what it saw. If the screen rules for
 an agent misfire, override them in `~/.config/phux/agent-rules/`. See
@@ -230,7 +248,9 @@ phux ls            # sessions that need you come first, including work a restart
 phux restore       # relaunch every pane a server restart ended
 ```
 
-phux never relaunches or adopts processes on its own. After a crash, a pane
+Unless you set `[restore] on-start = true`
+([what survives what](./concepts.md#what-survives-what)), phux never
+relaunches processes on its own, and it never adopts them. After a crash, a pane
 can show as lost: its process may still be running, but phux no longer
 controls it. **There is no supported command yet to recover a lost pane.**
 Don't kill a guessed PID, edit the store, or restart other work to get past

@@ -258,6 +258,61 @@ make the file invalid is refused before it is written. A setting that
 comes from a file you extend can't be reset here; the page names that
 file so you can edit it.
 
+## Rune
+
+The Rune desktop app reads a `[rune]` table from the same file. A key set
+there wins over the choice Rune saved, and Settings shows it as set in
+`config.toml`; a key you leave out stays Rune's to remember.
+
+```toml
+[rune]
+theme = "nord"          # a theme id; "" follows the system
+font-size = 14.0        # the size each window starts at
+font-family = ""        # "" is the built-in face
+notifications = true
+option-as-meta = false
+copy-on-select = true
+confirm-close = false
+```
+
+**Copy Settings as TOML** in Rune's command palette puts your current
+choices on the clipboard as this table. Rune reads the file at launch.
+
+`[rune.keys]` binds Rune's own shortcuts. The key is a chord and the value
+is a command, or `"none"` to take a built-in chord away:
+
+```toml
+[rune.keys]
+"cmd+shift+d" = "split-right"
+"ctrl+alt+left" = "previous-tab"
+"cmd+d" = "none"
+```
+
+Modifiers are `cmd`, `ctrl`, `alt` and `shift`; `cmd` is the Super key off
+macOS. A built-in chord keeps working until you bind it to
+something else or to `"none"`. Menus and the shortcut list still show the
+built-in chords. The TUI's `[keybindings]` are separate: Rune's commands
+are the app's own.
+
+The command names:
+
+- Tabs and panes: `new-terminal` (a new tab), `close-terminal`, `close-tab`,
+  `next-tab`, `previous-tab`, `tab-1` to `tab-9`, `rename-tab`,
+  `split-right`, `split-down`, `zoom-pane`, `focus-left`, `focus-right`,
+  `focus-up`, `focus-down`, `next-terminal`, `previous-terminal`.
+- Sessions and machines: `new-session`, `switch-session`, `rename-session`,
+  `close-session`, `machines`, `retry-connection`, `jump-to-attention`,
+  `inbox`.
+- Text: `copy`, `paste`, `select-all`, `copy-mode`, `find`, `find-next`,
+  `find-previous`, `find-selection`, `insert-path`, `scroll-top`,
+  `scroll-bottom`, `prompt-up`, `prompt-down`, `zoom-in`, `zoom-out`,
+  `zoom-reset`.
+- The app: `palette`, `settings`, `change-theme`, `toggle-sidebar`,
+  `toggle-full-screen`, `keyboard-shortcuts`, `essential-shortcuts`,
+  `get-started`, `bare`, `copy-config`, `copy-diagnostics`,
+  `check-for-updates`, `install-update`, `galaxy`, `reef`, `pitch`,
+  `kitchen`, `pit-lane`, `hive`.
+
 ## Predictive echo
 
 Predictive echo shows your typing in a pane before the server echoes it

@@ -35,6 +35,8 @@ The configuration surface of `~/.config/phux/config.toml`. The loader layers you
 | `[policy]` | The authorization posture read at server start: `local` (owner socket only) or `paired` (workload mTLS, scope ceilings enforced at dispatch). |
 | `[voice]` | The server-side transcriber behind `TRANSCRIBE`: an argv that turns an uploaded clip into text for a paste. |
 | `[organize]` | Who judges where panes belong for `phux organize`: `TypeSafe`'s Jev with a key, else repository matching. |
+| `[restore]` | Whether a starting server relaunches the panes the last server stop ended, as `phux restore` does by hand. |
+| `[rune]` | Settings the Rune desktop app reads at launch; a key set here wins over the choice saved in the app. |
 | `[limits]` | Server-enforced ceilings that are not a per-pane spawn default: the largest L3 metadata value the server stores at one key. |
 
 ## Scalar keys
@@ -78,6 +80,7 @@ Every scalar knob with its shipped default, serialized from the schema itself, p
 | `organize.jev-key-command` | unset — `TYPESAFE_API_KEY` only. An argv whose trimmed stdout is the key, run when the variable is unset |
 | `organize.offline` | `false` |
 | `policy.mode` | unset — `local`, and a configured remote listener, relay connector, or workload authority location refuses to start the server. `local` admits the owner socket only; `paired` requires an enrolled workload certificate on every TLS connection |
+| `restore.on-start` | `false` |
 | `sidebar.agents-share` | `50` |
 | `sidebar.enabled` | `true` |
 | `sidebar.hosts` | `true` |
@@ -313,6 +316,8 @@ which-key-delay-ms = 400
 # T asks for a branch name, then makes a git worktree for it beside the
 # focused pane's repository and switches to its session.
 "T" = "new-worktree"
+# U lists the links in the focused pane, history included; Enter copies one.
+"U" = "url-picker"
 "N" = "next-session"
 "P" = "previous-session"
 ")" = "last-session"

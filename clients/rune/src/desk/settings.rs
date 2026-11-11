@@ -1,10 +1,11 @@
 //! The settings window's state: what is remembered between launches and how
 //! changing it reaches the runtime.
 
+use phux_config_core::RuneCfg;
 use rune::prefs::Prefs;
 use rune::{Key, KeyEvent, Tx};
 
-use super::Desk;
+use super::{Desk, NoticeKind};
 use crate::grid;
 use crate::theme::{self, Theme};
 
@@ -86,9 +87,66 @@ impl Settings {
             confirm_close: prefs.get("confirm_close").unwrap_or(false),
         }
     }
+
+    /// These settings with `config.toml`'s `[rune]` keys laid over them.
+    pub fn over(self, file: &RuneCfg) -> Self {
+        Self {
+            theme: file
+                .theme
+                .as_deref()
+                .map_or(self.theme, |id| theme::find(id)),
+            notifications: file.notifications.unwrap_or(self.notifications),
+            option_as_meta: file.option_as_meta.unwrap_or(self.option_as_meta),
+            copy_on_select: file.copy_on_select.unwrap_or(self.copy_on_select),
+            confirm_close: file.confirm_close.unwrap_or(self.confirm_close),
+        }
+    }
+}
+
+/// `config.toml`'s `[rune]` table, and what was wrong with the file if it
+/// did not load. Tests never read the real file.
+pub(super) fn load_file() -> (RuneCfg, Option<String>) {
+    if cfg!(test) {
+        return (RuneCfg::default(), None);
+    }
+    match phux_config_core::loader::load_client() {
+        Ok(config) => (config.rune, None),
+        Err(err) => (RuneCfg::default(), Some(err.to_string())),
+    }
 }
 
 impl Desk {
+    /// True, with a word on why, when `config.toml` owns a setting.
+    fn file_managed(&mut self, set: bool) -> bool {
+        if set {
+            self.say(
+                NoticeKind::Info,
+                "Set in config.toml. Edit the file to change it.",
+            );
+        }
+        set
+    }
+
+    /// What is chosen now, as a `[rune]` block for `config.toml`.
+    pub fn copy_config(&mut self, tx: &mut Tx) {
+        let settings = self.settings;
+        tx.copy(
+            RuneCfg {
+                theme: Some(settings.theme.map_or(String::new(), |t| t.id.to_owned())),
+                font_size: Some(self.font_size),
+                font_family: Some(self.font_family.clone()),
+                notifications: Some(settings.notifications),
+                option_as_meta: Some(settings.option_as_meta),
+                copy_on_select: Some(settings.copy_on_select),
+                confirm_close: Some(settings.confirm_close),
+                ..RuneCfg::default()
+            }
+            .to_toml(),
+        );
+        self.say(NoticeKind::Info, "Copied settings as a [rune] table.");
+    }
+
+    // A file's `font-size` is where each window starts; zooming still works.
     pub fn zoom(&mut self, size: Option<f32>) {
         self.font_size = size.map_or(grid::DEFAULT_FONT_SIZE, |s| {
             s.clamp(grid::MIN_FONT_SIZE, grid::MAX_FONT_SIZE)
@@ -101,6 +159,9 @@ impl Desk {
     /// Step to the next family in `grid::FONT_CHOICES`; one from prefs
     /// that isn't listed steps to the default.
     pub fn next_font(&mut self) {
+        if self.file_managed(self.file.font_family.is_some()) {
+            return;
+        }
         let at = grid::FONT_CHOICES
             .iter()
             .position(|f| *f == self.font_family);
@@ -282,6 +343,9 @@ impl Desk {
     }
 
     pub fn choose_theme(&mut self, theme: Option<&'static Theme>) {
+        if self.file_managed(self.file.theme.is_some()) {
+            return;
+        }
         self.settings.theme = theme;
         let _ = self
             .prefs
@@ -290,6 +354,9 @@ impl Desk {
     }
 
     pub fn toggle_notifications(&mut self) {
+        if self.file_managed(self.file.notifications.is_some()) {
+            return;
+        }
         self.settings.notifications = !self.settings.notifications;
         let _ = self
             .prefs
@@ -297,6 +364,9 @@ impl Desk {
     }
 
     pub fn toggle_option_as_meta(&mut self) {
+        if self.file_managed(self.file.option_as_meta.is_some()) {
+            return;
+        }
         self.settings.option_as_meta = !self.settings.option_as_meta;
         let _ = self
             .prefs
@@ -304,6 +374,9 @@ impl Desk {
     }
 
     pub fn toggle_copy_on_select(&mut self) {
+        if self.file_managed(self.file.copy_on_select.is_some()) {
+            return;
+        }
         self.settings.copy_on_select = !self.settings.copy_on_select;
         let _ = self
             .prefs
@@ -311,6 +384,9 @@ impl Desk {
     }
 
     pub fn toggle_confirm_close(&mut self) {
+        if self.file_managed(self.file.confirm_close.is_some()) {
+            return;
+        }
         self.settings.confirm_close = !self.settings.confirm_close;
         let _ = self
             .prefs

@@ -62,6 +62,10 @@ The **Palette** column is the command-palette section the action is offered unde
 | `toggle-project-group` | — | `project` (the group's key, as the sidebar header carries it) | Collapse or expand one project group in the sidebar's Sessions zone |
 | `new-session` | Session | `name?` (bare opens an interactive prompt); `cwd?`; `host?` | Create a new session and switch to it |
 | `new-worktree` | Session | `branch?` (bare opens an interactive prompt); `cwd?` picks the repository | Create a git worktree for a new branch and switch to its session |
+| `restore-sessions` | Session |  | Relaunch the panes a server restart ended, resuming their agents |
+| `url-picker` | Pane |  | List the links in the focused pane and copy the one you choose |
+| `copy-text` | — | `text` | Copy the given text to the clipboard |
+| `popup` | Pane | `command?` (bare opens an interactive prompt); `cwd?` | Run a command in a floating pane that closes when it exits |
 | `last-session` | Session |  | Switch back to the previous session |
 | `next-session` | Session |  | Switch to the next session by name |
 | `previous-session` | Session |  | Switch to the previous session by name |
@@ -80,6 +84,7 @@ The **Palette** column is the command-palette section the action is offered unde
 
 Why the dash rows have no palette entry:
 
+- `copy-text` — it is what a row of the link picker does; on its own it has no text to copy.
 - `command-palette` — it is an entry alias for the finder, so listing it inside the finder would recurse.
 - `show-help` — it is an entry alias for the same finder as `command-palette`, so listing it would duplicate that surface.
 - `select-window` — parameterized by `index`, which the palette has no UI to collect; the tab picker is the surface for "jump to tab N".

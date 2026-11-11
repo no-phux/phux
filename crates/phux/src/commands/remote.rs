@@ -9,8 +9,8 @@
 //! `client-cert` / `client-key` (the workload client certificate `phux host
 //! add` enrolled, ADR-0116, presented on every TLS dial to this remote).
 //!
-//! Endpoint schemes: `ssh://HOST` (no pairing; attach re-execs `ssh -t HOST phux
-//! attach`), `quic://HOST:PORT` (token and pin, ADR-0031), and `wss://HOST:PORT`
+//! Endpoint schemes: `ssh://HOST` (no pairing; attach rides QUIC or
+//! ssh stdio), `quic://HOST:PORT` (token and pin, ADR-0031), and `wss://HOST:PORT`
 //! (the same, where UDP is blocked). A remote is a server this consumer dials
 //! for itself; a satellite (`[[satellites]]`) is one a hub dials for its users.
 

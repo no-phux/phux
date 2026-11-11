@@ -181,6 +181,10 @@ fn fail(json: bool, message: &str, status: u8) -> ExitCode {
 fn managed_target(dial: Dial) -> Target {
     let (mut target, trust) = match dial {
         Dial::Uds(path) => return Target::uds(path),
+        Dial::Ssh {
+            destination,
+            remote_phux,
+        } => return Target::ssh(destination, remote_phux),
         Dial::Ws(ws) => {
             let mut target = Target::ws(ws.url);
             target.token = ws.token;
