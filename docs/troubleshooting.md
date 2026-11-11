@@ -131,6 +131,43 @@ Switch sessions with <kbd>C-a</kbd> <kbd>s</kbd>, or set
 **Remote attach fails.** See
 [Remote machines: troubleshooting](./remote.md#troubleshooting).
 
+## Private networks and VPNs
+
+**phux needs no VPN.** A machine you can SSH to, a
+[pairing link](./remote.md#pairing-with-a-link) on the same network, and a
+[relay](./remote.md#relays) all work without one. A private network is one
+more way for two machines to reach each other.
+
+**Tailscale and Headscale.** phux asks the `tailscale` command for this
+machine's address. Headscale uses the same client, so it needs nothing
+extra. `PHUX_TAILSCALE` names the command when it is not on `PATH`.
+
+**Netbird, WireGuard, ZeroTier, and others.** Tell phux the address this
+machine has on that network:
+
+```sh
+PHUX_OVERLAY_ADDRS=100.92.1.7 phux pair
+```
+
+Set the same variable where the server starts, so its listener binds that
+address. It takes several addresses separated by commas; the first is the
+one the server binds. phux does not install or configure the network.
+
+**A phone that will not pair.** A phone runs one VPN at a time, and some
+DNS profiles (NextDNS, for example) count as one. If the phone is on a
+different private network from the link, or a DNS profile is filtering the
+name in it, pairing times out. Check in this order:
+
+1. The phone and the machine are on the same Wi-Fi, or the same private
+   network, when you scan.
+2. Only one VPN or DNS profile is active on the phone.
+3. On iOS, the app has Local Network permission in Settings.
+4. `phux doctor` on the machine reports the address in the link as
+   reachable.
+
+If the two cannot share a network, pair through a
+[relay](./remote.md#relays).
+
 ## Keys, clipboard, and agents
 
 **Keys do nothing, or the prefix is wrong.** `phux config check` reports
