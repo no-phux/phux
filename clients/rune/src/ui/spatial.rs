@@ -67,24 +67,22 @@ pub fn view(desk: &Desk, phone: &Phone, ink: &Ink, area: El) -> El {
     stage
 }
 
+/// Move and Panes, only when there is somewhere to go. A lone terminal
+/// keeps the whole stage: its finger scrolls it directly.
 fn toolbar(desk: &Desk, several: bool, ink: &Ink) -> El {
-    let terminal = desk
-        .shown
-        .as_ref()
-        .is_some_and(|s| !desk.is_document(&s.terminal));
-    if !several && !terminal {
+    if !several {
         return el().key("phone-navigation-toolbar").h(0.0);
     }
-    let mut tools = row()
+    let tools = row()
         .key("phone-navigation-toolbar")
         .w_full()
         .h(TOUCH)
         .min_h(TOUCH)
         .gap(2.0)
         .radius(TOUCH / 2.0)
-        .preserve_focus_on_press(true);
-    if several {
-        tools = tools.child(handle(ink)).child(
+        .preserve_focus_on_press(true)
+        .child(handle(ink))
+        .child(
             quiet_control(
                 "phone-pane-picker",
                 "Choose pane by name or direction",
@@ -92,12 +90,7 @@ fn toolbar(desk: &Desk, several: bool, ink: &Ink) -> El {
                 ink,
             )
             .on_press(Desk::phone_picker),
-        );
-    }
-    if terminal {
-        tools = tools.child(history(ink));
-    }
-    let tools = tools
+        )
         .continuous_corners()
         .gradient(ink.text.alpha(0.06), ink.text.alpha(0.02))
         .border_gradient(1.0, ink.text.alpha(0.16), ink.text.alpha(0.04));
@@ -185,17 +178,6 @@ fn handle(ink: &Ink) -> El {
     )
     .cursor(Cursor::Grab)
     .on_drag(|d: &mut Desk, drag, _| d.phone_navigate(drag, false))
-}
-
-fn history(ink: &Ink) -> El {
-    quiet_control(
-        "phone-history",
-        "Scroll focused pane: drag up or down",
-        "↕  Scroll",
-        ink,
-    )
-    .cursor(Cursor::Grab)
-    .on_drag(|d: &mut Desk, drag, _| d.phone_history(drag))
 }
 
 /// Inline top-bar tile, not an overlay over terminal text. It replaces the

@@ -78,6 +78,10 @@ $XDG_STATE_HOME/<profile-dir>/
 - `reports/` holds local bug-report bundles written by the TUI `report-bug` action (`C-a B`) and by `phux report new`. Each subdirectory is one report (session, pane, version, log tails, optional screen dump, and a `report.md` an agent can open). `latest` points at the newest; `phux report` lists them and `phux report show` prints one.
 - `service-wrapper.sh` and `workspace.json` exist only under `phux service install --restore`. The wrapper starts `phux server --autosave workspace.json` and saves once more on stop. The server restores the archive on a fresh start and rewrites it (owner-only, `0600`) through a synced `workspace.json.autosave.tmp` and an atomic rename a few seconds after the workspace changes, so a crash or power loss leaves the latest layout. An archive that fails to restore is copied to `workspace.json.unrestored` first.
 
+## Server bundle (macOS)
+
+The install script and `phux update` keep the signed server app under `~/Library/Application Support/sh.phux/Server`: `Versions/<release>/phux Server.app` and `Versions/Current`, a symlink to the release in use. The previous release is kept for `phux update --rollback`; older ones are removed. Servers start through `Versions/Current` when it holds the same build as the CLI, so macOS privacy grants survive updates ([macOS permissions](../install.md#macos-permissions)). It is not profile-scoped: a development build never runs it.
+
 ## Decided: not built
 
 A `server.pid` file and a `journal/` directory of per-pane PTY output for crash recovery are decided: not built. Neither path exists today; a crash loses every pane's scrollback. The `EVENT` stream is a separate, memory-bounded journal that carries no PTY bytes. Workspace archives are written only where `phux archive export` or `phux server --autosave` is pointed.

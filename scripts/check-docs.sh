@@ -130,8 +130,10 @@ heading_anchors() {
     ' "$1"
 }
 
+# Not `grep -q`: it quits at the first match, and under pipefail the awk it
+# cut off (SIGPIPE) would fail a page whose anchors outrun one pipe write.
 has_anchor() {
-    heading_anchors "$1" | grep -Fqx -- "$2"
+    heading_anchors "$1" | grep -Fx -- "$2" >/dev/null
 }
 
 # `-e` alone passes `INSTALL.md` for `install.md` on a case-insensitive

@@ -11,12 +11,14 @@
 #![deny(rustdoc::private_intra_doc_links)]
 
 mod error;
+pub mod host_color;
 pub mod instance;
 pub mod known_authorities;
 pub mod layer;
 pub mod loader;
 mod organize;
 pub mod remote;
+pub mod server_bundle;
 pub mod socket;
 
 pub use error::{ConfigError, byte_offset_to_line_col};

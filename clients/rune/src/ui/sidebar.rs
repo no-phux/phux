@@ -9,12 +9,14 @@ use phux_client_runtime::control::Topology;
 use phux_protocol::ids::{ResourceId, SessionKey};
 use rune::{Color, El, col, el, memo, row, text};
 
-use super::{CAPTION, Ink, LABEL, LABEL_STRONG, NAME, SIDEBAR_W, icons, pressable};
+use super::{CAPTION, Ink, LABEL, NAME, SIDEBAR_W, icons, pressable};
 use crate::activity::Mark;
 use crate::desk::Desk;
 use crate::keys::{self, Shortcut};
-use crate::machines::{Glance, LOCAL};
 use crate::palette::pane_label;
+
+mod hosts;
+use hosts::{host_header, other_machines};
 
 /// A mark's colour, from the theme's own palette.
 pub(super) fn mark_color(mark: Mark, ink: &Ink) -> Color {
@@ -109,6 +111,8 @@ struct Header<'a> {
     key: Option<SessionKey>,
     current: bool,
     waiting: usize,
+    /// A satellite session's machine, and its colour so a recolour redraws.
+    host: Option<(&'a str, u32)>,
 }
 
 fn session_header(session: &Header, ink: &Ink) -> El {
@@ -127,6 +131,7 @@ fn session_header(session: &Header, ink: &Ink) -> El {
                 d.rename_session(key, &label);
             }
         })
+        .children((session.host).map(|(host, _)| crate::host_color::dot(host, 6.0, ink.sidebar)))
         .child(
             text(session.name.to_owned())
                 .font(CAPTION)
@@ -263,6 +268,7 @@ fn session_list(desk: &Desk, topology: &Topology, waiting: &HashMap<u32, usize>,
                 key: session.key,
                 current: current.as_deref() == Some(session.name.as_str()),
                 waiting: waiting.get(&session.id).copied().unwrap_or(0),
+                host: None,
             };
             list = list.child(memo(
                 format!("session-{}", session.id),
@@ -320,6 +326,7 @@ fn satellite_list(desk: &Desk, topology: &Topology, ink: &Ink) -> El {
             key: None,
             current: session.members.iter().any(|id| shown == Some(id)),
             waiting: 0,
+            host: Some((&session.host, crate::host_color::entry(&session.host).0)),
         };
         list = list.child(memo(format!("satellite-{name}"), (&header, theme), || {
             session_header(&header, ink)
@@ -363,121 +370,6 @@ fn satellite_list(desk: &Desk, topology: &Topology, ink: &Ink) -> El {
                 pane_row(&row, ink)
             }));
         }
-    }
-    list
-}
-
-/// A machine's line: open or folded, and how many sessions it holds once known.
-fn host_header(
-    label: &str,
-    open: bool,
-    count: Option<String>,
-    ink: &Ink,
-    press: impl Fn(&mut Desk) + 'static,
-) -> El {
-    let chevron = if open {
-        &icons::CHEVRON
-    } else {
-        &icons::CHEVRON_RIGHT
-    };
-    pressable(format!("host-{label}"), ink)
-        .w_full()
-        .h(26.0)
-        .px(6.0)
-        .gap(5.0)
-        .radius(6.0)
-        .items_center()
-        .on_press(press)
-        .child(rune::icon(chevron, 12.0).color(ink.dim))
-        .child(
-            text(label.to_owned())
-                .font(LABEL_STRONG)
-                .color(ink.text)
-                .truncate(),
-        )
-        .child(el().grow(1.0))
-        .children(count.map(|count| text(count).font(CAPTION).color(ink.dim)))
-}
-
-/// A session on another machine. Pressing it moves the window there, unless
-/// that machine's only route is ssh.
-fn glance_row(host: Option<String>, label: &str, glance: &Glance, dial: bool, ink: &Ink) -> El {
-    let terminals = match glance.terminals {
-        1 => "1 terminal".to_owned(),
-        n => format!("{n} terminals"),
-    };
-    let row = row()
-        .key(format!("glance-{label}-{}", glance.name))
-        .w_full()
-        .min_h(26.0)
-        .px(6.0)
-        .py(4.0)
-        .gap(6.0)
-        .radius(7.0)
-        .items_center()
-        .child(el().w(14.0))
-        .child(
-            text(glance.name.clone())
-                .font(NAME)
-                .color(ink.text.alpha(0.62))
-                .truncate(),
-        )
-        .child(el().grow(1.0))
-        .child(text(terminals).font(CAPTION).color(ink.dim));
-    if !dial {
-        return row;
-    }
-    let session = glance.name.clone();
-    row.hover(ink.hover)
-        .cursor(rune::Cursor::Pointer)
-        .on_press(move |d: &mut Desk| d.open_on(host.clone(), session.clone()))
-}
-
-/// Every machine but this window's, folded until pressed.
-fn other_machines(desk: &Desk, ink: &Ink) -> El {
-    let machines = &desk.machines;
-    let local = machines.current.is_some().then_some((None, LOCAL, true));
-    let remotes = machines
-        .hosts
-        .iter()
-        .filter(|host| machines.current.as_ref() != Some(&host.name))
-        .map(|host| {
-            (
-                Some(host.name.clone()),
-                host.name.as_str(),
-                !host.needs_direct,
-            )
-        });
-    let mut list = col().w_full().gap(1.0).px(8.0).pt(10.0);
-    for (host, label, dial) in local.into_iter().chain(remotes) {
-        let open = machines.expanded.contains(&host);
-        let listed = machines.glances.get(&host);
-        let count = match listed {
-            Some(Ok(sessions)) => Some(sessions.len().to_string()),
-            Some(Err(_)) => Some("offline".to_owned()),
-            None => None,
-        };
-        let held = host.clone();
-        list = list.child(host_header(label, open, count, ink, move |d: &mut Desk| {
-            d.toggle_host(held.clone());
-        }));
-        if !open {
-            continue;
-        }
-        let note = |words: String| {
-            el().w_full()
-                .px(26.0)
-                .py(3.0)
-                .child(text(words).font(CAPTION).color(ink.dim).truncate())
-        };
-        list = match listed {
-            Some(Ok(sessions)) if sessions.is_empty() => list.child(note("No sessions".to_owned())),
-            Some(Ok(sessions)) => sessions.iter().fold(list, |list, glance| {
-                list.child(glance_row(host.clone(), label, glance, dial, ink))
-            }),
-            Some(Err(error)) => list.child(note(error.clone())),
-            None => list.child(note("Listing…".to_owned())),
-        };
     }
     list
 }

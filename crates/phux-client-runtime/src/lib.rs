@@ -5,6 +5,7 @@
 //!   (ADR-0128), shared by the one-shot verbs and the control plane.
 //! - [`target`]: resolve `[USER@]HOST[:PORT]` against the `[[remote]]`
 //!   registry (ADR-0093 rung 1).
+//! - [`pairing`]: parse the canonical connect link without dialing or learning trust.
 //! - [`dial`]: dial a resolved entry under the CLI's trust rules.
 //! - [`reconnect`]: backoff ladders and fatal-refusal rules.
 //! - `tunnel` (Unix): the byte relay for a socket-owning embedder.
@@ -43,6 +44,7 @@ pub mod engine;
 pub mod enroll;
 pub mod handshake;
 pub mod organize;
+pub mod pairing;
 pub mod perf;
 pub mod project_identity;
 #[cfg(feature = "engine")]

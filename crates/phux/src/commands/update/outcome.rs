@@ -92,6 +92,9 @@ pub(crate) struct UpdateEnv<'a> {
     /// The minisign public keys a release checksum must be signed by:
     /// [`signature::RELEASE_KEYS`] outside tests.
     pub(crate) release_keys: &'a [&'a str],
+    /// Where a stable macOS release's `phux Server.app` is installed
+    /// (`phux_config::server_bundle::root`); `None` skips it.
+    pub(crate) server_bundle: Option<std::path::PathBuf>,
 }
 
 /// How the live-server handoff went.

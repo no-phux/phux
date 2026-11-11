@@ -411,6 +411,7 @@ fn samples(world: &World, agent: &WireResourceId) -> Vec<FrameKind> {
             ids: vec![t.clone()],
         }),
         command(Command::DescribeApi),
+        command(Command::PrivacyStatus),
         command(Command::GetState {
             scope: StateScope::Server,
         }),

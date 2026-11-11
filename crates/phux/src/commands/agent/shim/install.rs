@@ -207,7 +207,7 @@ pub(crate) fn installed_shim_schema(shim: &Path) -> Option<u32> {
     )
 }
 
-pub(super) fn atomic_write(path: &Path, bytes: &[u8], mode: u32) -> Result<(), String> {
+pub(crate) fn atomic_write(path: &Path, bytes: &[u8], mode: u32) -> Result<(), String> {
     let parent = path
         .parent()
         .ok_or_else(|| format!("{} has no parent directory", path.display()))?;

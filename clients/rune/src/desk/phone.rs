@@ -8,7 +8,9 @@ use super::Desk;
 use super::input::Modal;
 use crate::keys::{self, Typed};
 
+mod refit;
 pub mod spatial;
+pub mod touch;
 
 /// Points the arrow pad travels per arrow key it sends.
 const PAD_STEP: f32 = 16.0;
@@ -37,7 +39,13 @@ pub struct Phone {
     pub travel: [f32; 2],
     pub picker: bool,
     navigation: Option<(phux_protocol::ids::ResourceId, bool)>,
-    history: Option<(phux_protocol::ids::ResourceId, f32)>,
+    /// The finger on the terminal, and the coast it left behind.
+    touch: Option<touch::Touch>,
+    fling: Option<touch::Fling>,
+    /// The changed grid waiting for the keyboard or sheet layout to settle.
+    refit: Option<refit::Refit>,
+    /// What a native host should play next (a haptic).
+    pub feedback: Option<touch::Feedback>,
     pub ctrl: bool,
     pub alt: bool,
     pub shift: bool,
@@ -59,7 +67,10 @@ impl Default for Phone {
             travel: [0.0; 2],
             picker: false,
             navigation: None,
-            history: None,
+            touch: None,
+            fling: None,
+            refit: None,
+            feedback: None,
             ctrl: false,
             alt: false,
             shift: false,
@@ -92,7 +103,8 @@ impl Phone {
     pub(super) fn reset_navigation(&mut self) {
         self.navigation = None;
         self.travel = [0.0; 2];
-        self.history = None;
+        self.fling = None;
+        self.refit = None;
     }
 
     pub const fn latched(&self, latch: Latch) -> bool {
@@ -171,10 +183,10 @@ impl Desk {
     }
 
     /// A key from the drawn keyboard or the accessory bar, for whatever has
-    /// the keyboard: the palette's or find's field, the confirm bar, else
-    /// the terminal. A sheet the drawn keyboard can't type into yet gets
-    /// nothing, never the terminal behind it.
+    /// the keyboard: a field or modal first, else the terminal. Delivery is
+    /// synchronous, so closing a field cannot redirect a queued key behind it.
     pub fn soft(&mut self, soft: Soft, tx: &mut Tx) {
+        self.stop_coast();
         if self.native.is_some() && super::native_input::accessory(self, &soft, tx) {
             return;
         }
@@ -185,6 +197,10 @@ impl Desk {
             Some(Modal::Confirm) => Field::Confirm,
             Some(Modal::PhonePicker) => Field::PanePicker,
             Some(Modal::Settings) => Field::Settings,
+            Some(Modal::Rename | Modal::Machines | Modal::Inbox) => {
+                super::native_input::accessory(self, &soft, tx);
+                return;
+            }
             Some(_) => return,
         };
         let Some(phone) = self.phone.as_mut() else {
@@ -249,6 +265,18 @@ impl Desk {
             Typed::Text(text) => control.send_text(terminal, &text),
             Typed::Key(atom) => control.send_key(terminal, atom),
         });
+    }
+
+    /// One tap for a control chord worth its own key (⌃C), terminal only.
+    pub fn soft_chord(&mut self, key: char, tx: &mut Tx) {
+        if self.modal().is_some() {
+            return;
+        }
+        if let Some(phone) = self.phone.as_mut() {
+            phone.release();
+            phone.ctrl = true;
+        }
+        self.soft(Soft::Char(key), tx);
     }
 
     pub fn toggle_latch(&mut self, latch: Latch) {

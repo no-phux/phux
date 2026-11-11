@@ -1,0 +1,8 @@
+theme = catppuccin-mocha
+font-family = JetBrains Mono
+keybind = cmd+q=quit
+keybind = cmd+d=new_split:right
+keybind = ctrl+h=goto_split:right
+keybind = ctrl+shift+t=new_tab
+keybind = ctrl+a>c=new_tab
+keybind = ctrl+shift+c=copy_to_clipboard

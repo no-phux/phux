@@ -240,7 +240,9 @@ the intent is refused, never held.
 On macOS the Screen Recording and Accessibility grants belong to the app
 that starts the producer, not to the server: a server's children cannot
 hold Screen Recording, so Rune runs standing mirrors as its own children
-([standing mirrors](#standing-mirrors)).
+([standing mirrors](#standing-mirrors)). The server's own grants belong to
+**phux Server**, its signed bundle, run through `Versions/Current`
+([macOS permissions](./install.md#macos-permissions)).
 
 ## Semantic first
 

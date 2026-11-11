@@ -38,7 +38,9 @@ mod links;
 pub mod machines;
 pub mod mouse;
 pub(crate) mod native_input;
+pub mod news;
 mod notice;
+pub mod onboarding;
 mod palette;
 pub mod phone;
 pub mod pitch;
@@ -173,6 +175,10 @@ pub struct Desk {
     pub(crate) fleet: fleet::Fleet,
     pub settings: settings::Settings,
     pub settings_open: bool,
+    /// First-run onboarding, while open, and what it has learned.
+    pub onboarding: onboarding::Onboarding,
+    /// What's new, and whether its bell is lit.
+    pub news: news::News,
     /// Navigation and search belong to this window, never to stored preferences.
     pub settings_ui: settings::SettingsUi,
     pub tabs: tabs::Tabs,
@@ -385,6 +391,8 @@ impl Desk {
             fleet: fleet::Fleet::default(),
             settings,
             settings_open: false,
+            onboarding: onboarding::Onboarding::default(),
+            news: news::News::load(&prefs),
             settings_ui: settings::SettingsUi::default(),
             tabs: tabs::Tabs::default(),
             updater: updates::Updater::new(&prefs, resolved),
@@ -448,6 +456,7 @@ impl Desk {
             | self.pump_link()
             | self.pump_links()
             | self.follow_omarchy()
+            | self.pump_onboarding(tx)
             | self.expire_notice(tx);
         let Some(client) = self.client.clone() else {
             return updated | self.tend_link(tx);
@@ -479,9 +488,11 @@ impl Desk {
         changed |= self.tick_hive(tx);
         self.settle_pointer();
         changed |= self.autoscroll(tx);
+        changed |= self.phone_touch_tick(tx);
         self.keep_find();
-        // Also catches a display-scale change, which re-snaps the cells.
+        // Also re-snaps cells after a display-scale change.
         self.fit();
+        self.wake_phone_fit(tx);
         changed | self.blink(&client, tx) | self.tend_link(tx)
     }
 

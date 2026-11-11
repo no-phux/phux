@@ -57,6 +57,7 @@ pub mod org;
 pub mod organize;
 pub mod pane_move;
 pub mod perf;
+pub mod privacy;
 pub mod recovery;
 // Complete-intention terminal creation and connected-server API discovery.
 pub mod terminal;

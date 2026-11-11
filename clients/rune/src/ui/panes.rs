@@ -124,7 +124,7 @@ fn divider(path: SplitPath, horizontal: bool, ratio: f32, ink: &Ink) -> El {
 
 /// How a card is lit: the keyboard's, among several, glows in the accent.
 #[derive(Clone, Copy, PartialEq, Eq)]
-enum Lit {
+pub(super) enum Lit {
     Resting,
     Focused,
 }
@@ -132,7 +132,7 @@ enum Lit {
 /// A floating glass card around `content`: rounded, lifted off the window by
 /// its shadow, and edged with a top-lit hairline rim. `content` is clipped to
 /// the corners; the rim draws over it and never takes the pointer.
-fn card(content: El, ground: Color, lit: Lit, ink: &Ink) -> El {
+pub(super) fn card(content: El, ground: Color, lit: Lit, ink: &Ink) -> El {
     let (top, bottom) = match lit {
         Lit::Resting => (ink.text.alpha(0.16), ink.text.alpha(0.05)),
         Lit::Focused => (ink.accent.alpha(0.8), ink.accent.alpha(0.35)),
@@ -339,9 +339,24 @@ fn terminal_input(host: El, desk: &Desk, id: &ResourceId) -> El {
     .on_drag(move |d: &mut Desk, drag, tx| {
         // Drag points include the padding; the grid starts inside it.
         let (x, y, mods) = (drag.x - PAD, drag.y - PAD, tx.mods());
+        // A phone's finger scrolls, holds to select and taps (`phone/touch.rs`).
+        if d.phone.is_some() && tx.button() == PointerButton::Primary {
+            let step = Press {
+                phase: drag.phase,
+                x,
+                y,
+                clicks: drag.clicks,
+                mods,
+                button: PointerButton::Primary,
+            };
+            let travel = [drag.dx, drag.dy];
+            return d.phone_touch(&press, &step, travel, drag.cancelled(), tx);
+        }
         // Only the primary button opens links; the rest are the program's.
         let cmd = mods.cmd && tx.button() == PointerButton::Primary;
-        if !d.press_link(&press, drag.phase, x, y, cmd, tx) {
+        // A phone opens links by its finger's tap alone: any other button
+        // there is the program's, press and release both.
+        if d.phone.is_some() || !d.press_link(&press, drag.phase, x, y, cmd, tx) {
             let step = Press {
                 phase: drag.phase,
                 x,

@@ -4,13 +4,14 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawnSync } from "node:child_process";
+import { packReport } from "./pack-report.mjs";
 
 const packageDir = dirname(dirname(fileURLToPath(import.meta.url)));
 const temp = await mkdtemp(join(tmpdir(), "phux-pi-pack-"));
 
 try {
   const packed = run("npm", ["pack", "--json", "--ignore-scripts", "--pack-destination", temp], packageDir);
-  const report = JSON.parse(packed.stdout);
+  const report = packReport(packed.stdout);
   assert.equal(report.length, 1, "npm pack must produce exactly one archive");
   const entry = report[0];
   assert.equal(entry.name, "@phux/pi");

@@ -28,9 +28,12 @@ phux config distro off
 
 Names are searched in `$PHUX_DISTROS_DIR`, then
 `$XDG_DATA_HOME/phux/distros` (or `~/.local/share/phux/distros`), then a dev
-binary's source checkout. Keep a distro's dependencies alongside it: the
-bundled distros currently reference plugins in the monorepo. A full path works
-with an installed binary even when its build-time checkout is gone.
+binary's source checkout. `starter` and `crew` are compiled into every
+release: when no directory has `crew`, `list`, `use` and `config init
+--distro` write both, with the plugins `starter` names, under
+`~/.local/share/phux/` (`distros/` and `plugins/`). phux rewrites that copy
+when its version changes; delete a directory's `.phux-bundled` file to keep
+your own edits there. A full path works with any binary.
 
 These are local file edits, not commands to stop agents or restart servers.
 [Normal application timing](./config.md#when-a-change-takes-effect) still

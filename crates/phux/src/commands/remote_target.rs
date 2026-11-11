@@ -17,6 +17,8 @@
 //! identity: the server reached is decided by address and port (ADR-0003).
 //! `--no-enroll` is the no-ssh boundary; a pasted code never touches the host.
 
+mod code;
+
 use std::process::ExitCode;
 use std::time::Duration;
 
@@ -24,7 +26,6 @@ use super::attach;
 use super::enroll;
 use super::host;
 use super::json_err::CliError;
-use super::pair;
 use super::rec::RecordSpec;
 use super::remote::{self, Endpoint, RemoteEntry};
 
@@ -426,7 +427,7 @@ pub(crate) fn resolve(
 
     // Rung 2: a connect code carries the endpoint, the pin, and the token.
     if let Some(code) = code {
-        return register_from_code(target, code);
+        return code::register_from_code(target, code);
     }
 
     // Rung 3: mint credentials over the operator's existing ssh trust.
@@ -437,103 +438,6 @@ pub(crate) fn resolve(
     register_over_ssh(target, &target.registry_name(), None).map_err(|err| {
         unregistered_message(target, Some(&format!("{}\n{}", err.message, err.remedy)))
     })
-}
-
-/// Register a host from a pasted connect link and return the entry to
-/// dial.
-fn register_from_code(target: &RemoteTarget, code: &str) -> Result<RemoteEntry, String> {
-    let link = pair::parse_connect_link(code).map_err(|err| format!("--code: {err}"))?;
-
-    let name = target.registry_name();
-    let token_file = enroll::token_path(&phux_server::telemetry::state_dir(), &name);
-
-    // A relay link registers the relay with its route (ADR-0149); any other
-    // registers its WebSocket url, with its QUIC route kept beside it for
-    // the attach to promote once it answers.
-    let endpoint = link
-        .registry_endpoint()
-        .ok_or_else(|| "--code: the connect code names no endpoint".to_owned())?;
-    // Validate before the token lands: a rejected name or an unpinned
-    // routable endpoint must not leave an orphaned bearer token on disk.
-    // Same ordering `phux host add` uses, and for the same reason.
-    let new = remote::NewRemote::new(
-        &name,
-        endpoint,
-        Some(&token_file),
-        link.cert_fingerprint.as_deref(),
-        None,
-    )
-    .and_then(|new| new.with_tls_server_name(link.tls_server_name.as_deref()))
-    .and_then(|new| new.with_direct(link.quic.as_deref()))
-    .map_err(|err| format!("--code: {err}"))?;
-    let identity = enroll_from_code(&name, &link);
-    let new = new
-        .with_client_identity(
-            identity
-                .as_ref()
-                .map(|files| (files.certificate.as_path(), files.private_key.as_path())),
-        )
-        .map_err(|err| format!("--code: {err}"))?;
-
-    enroll::write_token(&token_file, &link.token).map_err(|err| format!("--code: {err}"))?;
-    remote::add_or_update(&new).map_err(|err| format!("--code: {err}"))?;
-    // A relay link pins the relay's leaf, and its `ca` is the server's,
-    // which the end-to-end session inside the relayed stream verifies
-    // (ADR-0154): keyed by the route beside the relay's leaf.
-    remote::pin_authority(
-        &name,
-        link.cert_fingerprint.as_deref(),
-        link.tls_server_name.as_deref(),
-        link.ca_fingerprint.as_deref(),
-    );
-
-    ok!("paired {name} -> {} (from the connect code)", new.endpoint);
-    hint!("next time, `phux --remote {name}` needs no code");
-
-    Ok(registered_entry(target, &new))
-}
-
-/// Enroll a workload certificate with the link's single-use ticket, when it
-/// carries one (ADR-0154). A failure is a warning, as for `host add`: the
-/// host is still registered, though a `paired` server, the only kind with a
-/// remote listener (ADR-0179), admits no dial without a certificate.
-fn enroll_from_code(name: &str, link: &pair::ConnectLink) -> Option<enroll::ClientIdentityFiles> {
-    let ticket = link.enrollment_ticket.as_deref()?;
-    let Some(quic) = link
-        .quic
-        .as_deref()
-        .and_then(|quic| quic.strip_prefix("quic://"))
-    else {
-        warn!("{name}: the link carries an enrollment ticket but no quic endpoint to enroll over");
-        return None;
-    };
-    let remotes_dir = phux_server::telemetry::state_dir().join("remotes");
-    let pins = enroll::TicketPins {
-        leaf: link.cert_fingerprint.as_deref(),
-        authority: link.ca_fingerprint.as_deref(),
-        route: link.tls_server_name.as_deref(),
-    };
-    let workload = enroll::WorkloadEnrollment {
-        dir: &remotes_dir,
-        name,
-    };
-    match enroll::enroll_with_ticket(quic, &pins, ticket, &workload) {
-        Ok(files) => {
-            ok!(
-                "{name}: enrolled a workload certificate ({})",
-                files.credential_id.as_deref().unwrap_or("unknown id")
-            );
-            Some(files)
-        }
-        Err(err) => {
-            warn!(
-                "{name}: could not enroll a workload certificate: {err}; \
-                 a server in `paired` mode refuses this host until it does (mint a new link with \
-                 `phux pair --enroll` there)"
-            );
-            None
-        }
-    }
 }
 
 /// Read back the entry just registered, so a write that did not round-trip
@@ -552,6 +456,7 @@ fn registered_entry(target: &RemoteTarget, new: &remote::NewRemote) -> RemoteEnt
         remote_phux: new.remote_phux.clone(),
         client_cert: new.client_cert.clone(),
         client_key: new.client_key.clone(),
+        color: None,
     })
 }
 
@@ -647,18 +552,9 @@ mod tests {
 
     fn entry(name: &str, endpoint: &str) -> RemoteEntry {
         RemoteEntry {
-            index: 0,
             name: name.to_owned(),
             endpoint: endpoint.to_owned(),
-            token_file: None,
-            cert_fingerprint: None,
-            tls_server_name: None,
-            session: None,
-            ssh: None,
-            direct: None,
-            remote_phux: None,
-            client_cert: None,
-            client_key: None,
+            ..RemoteEntry::default()
         }
     }
 

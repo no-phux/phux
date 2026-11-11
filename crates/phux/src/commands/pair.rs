@@ -17,6 +17,13 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::time::{Duration, Instant};
 
+use phux_client_runtime::pairing::{
+    CONNECT_URI_PREFIX, LEGACY_CONNECT_URI_PREFIX, validate_quic_endpoint,
+};
+pub(crate) use phux_client_runtime::pairing::{ConnectLink, parse_connect_link};
+
+#[cfg(test)]
+mod endpoint_tests;
 use phux_config::overlay::MagicDns;
 
 use usage::Subcommands;
@@ -65,35 +72,6 @@ pub(crate) enum PairAction {
         credential_id: String,
     },
 }
-
-/// Prefix of the one-tap connect link (and its QR):
-/// `https://phux.sh/connect?url=<ws(s)-url>[&quic=<quic-url>][&name=<n>][&fp=<sha256>]&token=<hex>`.
-/// `url` stays mandatory for older app builds; newer apps prefer `quic` when
-/// the running server reports a device-dialable QUIC listener.
-///
-/// A relay link (ADR-0149) is
-/// `...?quic=quic://<relay>&sni=<route>[&name=<n>][&fp=<relay-sha256>]&token=<hex>`:
-/// `sni` is the TLS server name the `quic` dial offers, which the relay
-/// routes on (ADR-0052), so it requires `quic` and carries no `url` (the
-/// relay has no WebSocket leg). A parser that predates `sni` refuses the
-/// link for its missing `url` rather than dialing the relay unrouted.
-///
-/// An https Universal Link rather than a custom scheme because it carries a
-/// bearer token: any iOS app may claim a custom scheme, but only the app that
-/// owns the domain receives a Universal Link.
-///
-/// This shape is owned HERE, per ADR-0031: consumers must accept it exactly, and
-/// changing it means changing the ADR and the consumers together.
-const CONNECT_URI_PREFIX: &str = "https://phux.sh/connect";
-
-/// The pre-`phux.sh` host. Still parsed (saved links must keep pairing), no
-/// longer emitted: it only redirects, and a redirect breaks a Universal Link.
-const LEGACY_HOST_CONNECT_URI_PREFIX: &str = "https://phux.phall.io/connect";
-
-/// The custom-scheme spelling of the same link, parsed for `--code` and
-/// printed beneath the https form for app builds without the Universal Link
-/// entitlement. The QR encodes the https form only.
-const LEGACY_CONNECT_URI_PREFIX: &str = "phux://connect";
 
 /// Build the one-tap link. `url`, `token`, and `fingerprint` are query-safe
 /// as-is; only the free-form `name` is percent-encoded.
@@ -211,228 +189,6 @@ fn percent_encode(value: &str) -> String {
         }
     }
     out
-}
-
-/// The credentials a connect link carries: what a phone scans and what a
-/// laptop pastes into `phux attach --remote HOST --code '<link>'`.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct ConnectLink {
-    /// The `ws://`/`wss://` fallback endpoint old clients continue to dial.
-    /// Present on every link but a relay link, which has no WebSocket leg.
-    pub(crate) url: Option<String>,
-    /// The preferred `quic://` endpoint, when the live listener is dialable;
-    /// on a relay link, the relay.
-    pub(crate) quic: Option<String>,
-    /// The TLS server name the `quic` dial offers: the relay route
-    /// (ADR-0149). `Some` only on a relay link, which always has `quic`.
-    pub(crate) tls_server_name: Option<String>,
-    /// The operator's label for the server, when the link carries one.
-    pub(crate) name: Option<String>,
-    /// The TLS certificate SHA-256 pin.
-    pub(crate) cert_fingerprint: Option<String>,
-    /// The `sha256:` fingerprint of the CA the server's leaf chains to
-    /// (`ca`, ADR-0153), canonical; `None` when the link carries none.
-    pub(crate) ca_fingerprint: Option<String>,
-    /// The single-use enrollment ticket (`enroll`, ADR-0154), hex. A secret
-    /// like the token — never echoed back.
-    pub(crate) enrollment_ticket: Option<String>,
-    /// The bearer pairing token. A secret — never echoed back.
-    pub(crate) token: String,
-}
-
-/// Parse a connect link: the exact inverse of [`build_connect_link`] and
-/// [`build_relay_connect_link`], also accepting the legacy prefixes. Strict
-/// about the endpoint (`url`, or `quic` with `sni`) and `token`, tolerant of
-/// unknown query keys.
-pub(crate) fn parse_connect_link(link: &str) -> Result<ConnectLink, String> {
-    let trimmed = link.trim().trim_matches(|c| c == '\'' || c == '"');
-    let query = trimmed
-        .strip_prefix(CONNECT_URI_PREFIX)
-        .or_else(|| trimmed.strip_prefix(LEGACY_HOST_CONNECT_URI_PREFIX))
-        .or_else(|| trimmed.strip_prefix(LEGACY_CONNECT_URI_PREFIX))
-        .and_then(|rest| rest.strip_prefix('?'))
-        .ok_or_else(|| {
-            format!(
-                "a connect code must start with `{CONNECT_URI_PREFIX}?` \
-                 (or `{LEGACY_CONNECT_URI_PREFIX}?`; paste the whole link `phux pair` printed)"
-            )
-        })?;
-
-    let ConnectFields {
-        url,
-        quic,
-        sni,
-        name,
-        fingerprint,
-        authority,
-        enrollment,
-        token,
-    } = parse_connect_fields(query)?;
-    let ca_fingerprint = authority
-        .filter(|ca| !ca.is_empty())
-        .map(|ca| {
-            phux_config::known_authorities::canonical_authority(&ca).ok_or_else(|| {
-                "connect code ca must be a sha256: certificate fingerprint".to_owned()
-            })
-        })
-        .transpose()?;
-    let tls_server_name = sni
-        .filter(|sni| !sni.is_empty())
-        .map(|sni| {
-            phux_client_runtime::target::validate_tls_server_name(&sni)
-                .map_err(|err| format!("connect code sni: {err}"))
-        })
-        .transpose()?;
-    let (url, quic) = validate_connect_endpoints(url, quic, tls_server_name.is_some())?;
-    let token = token
-        .filter(|token| !token.is_empty())
-        .ok_or_else(|| "connect code carries no `token=` — it grants no access".to_owned())?;
-
-    Ok(ConnectLink {
-        url,
-        quic,
-        tls_server_name,
-        name: name.filter(|name| !name.is_empty()),
-        cert_fingerprint: fingerprint.filter(|fp| !fp.is_empty()),
-        ca_fingerprint,
-        enrollment_ticket: enrollment.filter(|ticket| !ticket.is_empty()),
-        token,
-    })
-}
-
-#[derive(Default)]
-struct ConnectFields {
-    url: Option<String>,
-    quic: Option<String>,
-    sni: Option<String>,
-    name: Option<String>,
-    fingerprint: Option<String>,
-    authority: Option<String>,
-    enrollment: Option<String>,
-    token: Option<String>,
-}
-
-fn parse_connect_fields(query: &str) -> Result<ConnectFields, String> {
-    let mut fields = ConnectFields::default();
-    for pair in query.split('&').filter(|pair| !pair.is_empty()) {
-        let (key, raw) = pair
-            .split_once('=')
-            .ok_or_else(|| format!("connect code field {pair:?} has no value"))?;
-        let decoded = percent_decode(raw)?;
-        let slot = match key {
-            "url" => &mut fields.url,
-            "quic" => &mut fields.quic,
-            "sni" => &mut fields.sni,
-            "name" => &mut fields.name,
-            "fp" => &mut fields.fingerprint,
-            "ca" => &mut fields.authority,
-            "enroll" => &mut fields.enrollment,
-            "token" => &mut fields.token,
-            // Unknown keys are forward-compat room, not an error.
-            _ => continue,
-        };
-        assign_connect_field(slot, key, decoded)?;
-    }
-    Ok(fields)
-}
-
-/// Preserve an unambiguous credential contract while unknown additive fields
-/// remain forward-compatible.
-fn assign_connect_field(slot: &mut Option<String>, key: &str, value: String) -> Result<(), String> {
-    if slot.replace(value).is_some() {
-        return Err(format!("connect code carries duplicate `{key}=` fields"));
-    }
-    Ok(())
-}
-
-/// Validate the fallback and additive endpoint fields without involving a
-/// dialer. Reachability remains the runtime's job. A relay link (`routed`,
-/// it carries `sni`) needs `quic` and may omit `url`; any other needs `url`.
-fn validate_connect_endpoints(
-    url: Option<String>,
-    quic: Option<String>,
-    routed: bool,
-) -> Result<(Option<String>, Option<String>), String> {
-    let url = url.filter(|url| !url.is_empty());
-    let quic = quic.filter(|quic| !quic.is_empty());
-    if routed && quic.is_none() {
-        return Err(
-            "connect code carries `sni=` but no `quic=` — a relay route is dialed over QUIC"
-                .to_owned(),
-        );
-    }
-    if !routed && url.is_none() {
-        return Err("connect code carries no `url=` — it cannot name a server to dial".to_owned());
-    }
-    if let Some(url) = url.as_deref()
-        && !url.starts_with("wss://")
-        && !url.starts_with("ws://")
-    {
-        return Err(format!("connect code url {url:?} must be ws:// or wss://"));
-    }
-    if let Some(endpoint) = quic.as_deref() {
-        validate_quic_endpoint(endpoint)?;
-    }
-    Ok((url, quic))
-}
-
-impl ConnectLink {
-    /// The endpoint a registry entry built from this link dials: the relay
-    /// for a relay link, else the WebSocket `url`. Always `Some` for a link
-    /// [`parse_connect_link`] accepted.
-    pub(crate) fn registry_endpoint(&self) -> Option<&str> {
-        if self.tls_server_name.is_some() {
-            self.quic.as_deref()
-        } else {
-            self.url.as_deref()
-        }
-    }
-}
-
-fn validate_quic_endpoint(endpoint: &str) -> Result<(), String> {
-    let authority = endpoint.strip_prefix("quic://").ok_or_else(|| {
-        format!("connect code quic endpoint {endpoint:?} must start with quic://")
-    })?;
-    let (host, port) = authority
-        .rsplit_once(':')
-        .ok_or_else(|| format!("connect code quic endpoint {endpoint:?} needs HOST:PORT"))?;
-    let bracketed = host.starts_with('[') && host.ends_with(']');
-    let bare_host = host.trim_matches(['[', ']']);
-    let valid_host = !bare_host.is_empty()
-        && !authority.contains(['/', '?', '#', '@'])
-        && (bracketed || !host.contains(':'));
-    let valid_port = port.parse::<u16>().is_ok_and(|port| port != 0);
-    if valid_host && valid_port {
-        return Ok(());
-    }
-    Err(format!(
-        "connect code quic endpoint {endpoint:?} needs HOST:PORT with a non-zero numeric port"
-    ))
-}
-
-/// Decode the percent-escapes [`percent_encode`] produces. Only `name` is
-/// ever encoded on the minting side, but decoding every field keeps the
-/// parser honest against a link written by some other tool.
-fn percent_decode(value: &str) -> Result<String, String> {
-    let bytes = value.as_bytes();
-    let mut out = Vec::with_capacity(bytes.len());
-    let mut index = 0;
-    while index < bytes.len() {
-        if bytes[index] == b'%' {
-            let hex = bytes
-                .get(index + 1..index + 3)
-                .and_then(|hex| std::str::from_utf8(hex).ok())
-                .ok_or_else(|| format!("truncated percent-escape in {value:?}"))?;
-            let byte = u8::from_str_radix(hex, 16)
-                .map_err(|_| format!("invalid percent-escape `%{hex}` in {value:?}"))?;
-            out.push(byte);
-            index += 3;
-        } else {
-            out.push(bytes[index]);
-            index += 1;
-        }
-    }
-    String::from_utf8(out).map_err(|_| format!("connect code field {value:?} is not UTF-8"))
 }
 
 /// Turn a live listener bind into a device-dialable endpoint. An unspecified
@@ -3275,52 +3031,6 @@ mod tests {
         );
         let legacy = legacy_connect_link(&link).expect("respells");
         assert_eq!(parse_connect_link(&legacy).expect("legacy parse"), parsed);
-    }
-
-    /// Old links (no `sni`) keep registering their WebSocket url; a link with
-    /// both registers the relay route, since `sni` only means anything there.
-    #[test]
-    fn registry_endpoint_is_the_url_unless_the_link_is_routed() {
-        let direct = parse_connect_link(
-            "https://phux.sh/connect?url=wss://mini:8787&quic=quic://mini:8788&token=tok",
-        )
-        .expect("parse");
-        assert_eq!(direct.registry_endpoint(), Some("wss://mini:8787"));
-        let both = parse_connect_link(
-            "https://phux.sh/connect?url=wss://mini:8787&quic=quic://relay:4433&sni=r&token=tok",
-        )
-        .expect("parse");
-        assert_eq!(both.registry_endpoint(), Some("quic://relay:4433"));
-        assert_eq!(both.tls_server_name.as_deref(), Some("r"));
-    }
-
-    /// `sni` without `quic` cannot be dialed, a bad name is refused rather
-    /// than offered, and a duplicate is ambiguous.
-    #[test]
-    fn relay_links_that_cannot_dial_are_refused() {
-        let no_quic = parse_connect_link("https://phux.sh/connect?url=wss://m:1&sni=r&token=t")
-            .expect_err("sni needs quic");
-        assert!(no_quic.contains("quic="), "{no_quic}");
-        for bad in ["-r", "127.0.0.1", "a%20b", "a/b"] {
-            assert!(
-                parse_connect_link(&format!(
-                    "https://phux.sh/connect?quic=quic://relay:4433&sni={bad}&token=t"
-                ))
-                .is_err(),
-                "accepted sni={bad}"
-            );
-        }
-        assert!(
-            parse_connect_link(
-                "https://phux.sh/connect?quic=quic://relay:4433&sni=a&sni=b&token=t"
-            )
-            .is_err()
-        );
-        // An empty `sni` is absent, so the link needs its `url` again.
-        assert!(
-            parse_connect_link("https://phux.sh/connect?quic=quic://relay:4433&sni=&token=t")
-                .is_err()
-        );
     }
 
     fn connector(relay: &str) -> phux_config::ConnectorConfigEntry {

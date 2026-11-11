@@ -10,7 +10,7 @@ use std::path::PathBuf;
 use serde::{Deserialize, Serialize};
 
 /// A remote phux server declared in `config.toml`.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct RemoteConfigEntry {
     /// Local label `phux attach <name>` resolves (not a routable identity).
@@ -91,6 +91,11 @@ pub struct RemoteConfigEntry {
         skip_serializing_if = "Option::is_none"
     )]
     pub client_key: Option<PathBuf>,
+
+    /// Palette id overriding the host's automatic colour
+    /// ([`crate::host_color`]); absent or `"auto"` keeps the hash of `name`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub color: Option<String>,
 }
 
 impl RemoteConfigEntry {

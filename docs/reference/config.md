@@ -26,7 +26,8 @@ The configuration surface of `~/.config/phux/config.toml`. The loader layers you
 | `[[connector]]` | Outbound relay links this server supervises: relay endpoint, token-file path, and certificate pin. |
 | `[[uplink]]` | Hubs this server dials out to as a satellite, written by `phux host join`: satellite name, hub endpoint, the hub's CA pin, and the enrolled identity's paths. |
 | `[[mirrors]]` | Displays and windows the server keeps mirrored, each in its own `mirror-*` session, restarted with backoff and live-reloaded (Linux; macOS skips them). |
-| `[[remote]]` | Remote phux servers this machine attaches to, written by `phux host add` and resolved by `phux attach <name>`. |
+| `[[remote]]` | Remote phux servers this machine attaches to, written by `phux host add` and resolved by `phux attach <name>`; `color` overrides a host's automatic colour. |
+| `[host]` | This machine as clients draw it: `color` overrides its automatic colour (`phux host color --local`). |
 | `[[projects]]` | Named projects `phux project open <name>` resolves: a checkout path and an optional out-of-repo recipe. |
 | `[theme]` | Free-form color slots (`slot = "color"`) consumed by the renderer. |
 | `[experimental]` | Opt-in unstable knobs; anything here may change or disappear without notice. |
@@ -240,7 +241,7 @@ which-key-delay-ms = 400
 # Show or hide the sidebar.
 "b" = "toggle-sidebar"
 
-# Copy mode: scroll back, search, select, and copy. Arrows move, Enter
+# Copy mode: scroll back, search, select, and copy. Vi keys and arrows move, y
 # copies, Esc leaves.
 "[" = "copy-mode"
 
