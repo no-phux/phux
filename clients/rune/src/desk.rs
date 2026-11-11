@@ -298,6 +298,10 @@ impl Desk {
         // `RUNE_PREFS_DIR` keeps headless runs off the real settings.
         let prefs = rune::prefs::Prefs::open(PREFS_ID);
         let (file, file_error) = settings::load_file();
+        let key_problems = crate::keys::bind(&file.keys);
+        let file_error = file_error.or_else(|| {
+            (!key_problems.is_empty()).then(|| format!("[rune.keys] {}", key_problems.join("; ")))
+        });
         let font_size = file
             .font_size
             .or_else(|| prefs.get::<f32>("font_size"))

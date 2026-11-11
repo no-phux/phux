@@ -10,7 +10,7 @@ use rune::{Key, Mods, PhysicalKeyCode};
 mod commands;
 #[cfg(all(test, not(target_os = "macos")))]
 mod linux_tests;
-pub use commands::{COMMANDS, Command, ESSENTIALS, command};
+pub use commands::{COMMANDS, Command, ESSENTIALS, bind, command};
 use commands::{Cap, Chord};
 
 /// What a key press should do in the terminal.
