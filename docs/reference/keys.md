@@ -31,6 +31,7 @@ A capital letter means Shift: <kbd>X</kbd> is <kbd>Shift</kbd>+<kbd>x</kbd>. Whe
 | <kbd>g</kbd> | Give back the wheel | `give-input` |
 | <kbd>f</kbd> | Freeze pane | `signal-terminal` |
 | <kbd>u</kbd> | Resume pane | `signal-terminal` |
+| <kbd>U</kbd> | Copy a link… | `url-picker` |
 
 ## Tab
 
