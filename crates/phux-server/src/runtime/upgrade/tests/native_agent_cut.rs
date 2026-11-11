@@ -7,7 +7,7 @@ use phux_protocol::native_agent::{NativeCapabilities, NativeView, SpawnNativeAge
 
 use super::super::*;
 use super::support::*;
-use crate::state::native_agent::NativeBinding;
+use crate::upgrade::blob::NativeBinding;
 
 /// The wire id of a native agent no engine answers for.
 const GHOST: u32 = 9_999;

@@ -1,72 +1,20 @@
 //! SDK controller reservations, operation identity, and upgrade recovery.
-use super::{ClientId, ServerState};
+use crate::state::{AppSlot, ClientId, ServerState};
+pub(crate) use crate::upgrade::blob::{NativeBinding, NativeOperation, NativePublication};
 use phux_protocol::ids::ResourceId;
 use phux_protocol::native_agent::{
     MAX_NATIVE_OPERATIONS, MAX_NATIVE_PENDING, MAX_NATIVE_QUESTIONS, NATIVE_HOST_SPEC_ENV,
     NativeCommand, NativeCommandResult, NativeDisposition, NativeIntent, NativePublicationReceipt,
-    NativeQuestion, NativeState, NativeUpdate, NativeView, SpawnNativeAgent, validate_answer,
-    validate_payload,
+    NativeQuestion, NativeState, NativeUpdate, NativeView, validate_answer, validate_payload,
 };
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use sha2::{Digest, Sha256};
-use std::collections::{BTreeMap, VecDeque};
+use std::collections::BTreeMap;
 use std::sync::Arc;
 use tokio::sync::Notify;
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct NativeOperation {
-    pub command: NativeCommand,
-    pub result: NativeCommandResult,
-    pub delivered: bool,
-    /// Sticky across ambiguous receipts and upgrade: submission cannot be undone.
-    #[serde(default = "assume_submitted")]
-    pub submitted: bool,
-    pub requester: u64,
-}
-const fn assume_submitted() -> bool {
-    true
-}
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct NativePublication {
-    pub id: u64,
-    pub fingerprint: String,
-    pub receipt: Option<NativePublicationReceipt>,
-    pub view: Option<NativeView>,
-}
-/// Private upgrade state; never exported as organization launch intent.
-#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct NativeBinding {
-    pub launch: SpawnNativeAgent,
-    pub agent: ResourceId,
-    pub parent: ResourceId,
-    pub activation: String,
-    pub proof: String,
-    pub credential: String,
-    pub host_pid: Option<u32>,
-    pub generation: u64,
-    pub view: NativeView,
-    pub closed: bool,
-    #[serde(default)]
-    pub closure_committed: bool,
-    #[serde(default)]
-    pub publication_committed: u64,
-    #[serde(default)]
-    pub evidence_seq: u64,
-    pub operations: BTreeMap<u64, NativeOperation>,
-    pub pending: VecDeque<u64>,
-    pub answered: BTreeMap<String, u64>,
-    pub publications: VecDeque<NativePublication>,
-    pub publication_high_water: u64,
-}
-impl std::fmt::Debug for NativeBinding {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("NativeBinding")
-            .field("agent", &self.agent)
-            .field("parent", &self.parent)
-            .field("generation", &self.generation)
-            .finish_non_exhaustive()
-    }
-}
+/// The controllers of every native agent session, in the `AgentSession` app's
+/// slot of [`ServerState`].
 #[derive(Debug, Default)]
 pub(crate) struct NativeAgents {
     pub bindings: BTreeMap<ResourceId, NativeBinding>,
@@ -74,6 +22,28 @@ pub(crate) struct NativeAgents {
     pub sealed: bool,
     pub close_workers: std::collections::BTreeSet<ResourceId>,
 }
+
+impl AppSlot for NativeAgents {
+    fn forget_resource(
+        &mut self,
+        _resource: phux_core::ids::ResourceId,
+        wire: Option<&ResourceId>,
+    ) {
+        let Some(wire) = wire else {
+            return;
+        };
+        if self.bindings.remove(wire).is_some()
+            && let Some(wake) = self.wakes.remove(wire)
+        {
+            wake.notify_waiters();
+        }
+    }
+}
+
+/// The controllers before any native agent launched.
+static NO_AGENTS: std::sync::LazyLock<NativeAgents> =
+    std::sync::LazyLock::new(NativeAgents::default);
+
 pub(crate) fn fingerprint<T: Serialize>(value: &T) -> Result<String, String> {
     let bytes = serde_json::to_vec(value).map_err(|error| error.to_string())?;
     Ok(hex::encode(Sha256::digest(bytes)))
@@ -341,16 +311,16 @@ mod validate;
 use validate::*;
 
 impl ServerState {
-    pub(crate) const fn native_agents(&self) -> &NativeAgents {
-        &self.native_agents
+    pub(crate) fn native_agents(&self) -> &NativeAgents {
+        self.app_slot::<NativeAgents>().unwrap_or(&NO_AGENTS)
     }
-    pub(crate) const fn native_agents_mut(&mut self) -> &mut NativeAgents {
-        &mut self.native_agents
+    pub(crate) fn native_agents_mut(&mut self) -> &mut NativeAgents {
+        self.app_slot_mut::<NativeAgents>()
     }
     pub(crate) fn native_owned_terminal(&self, parent: phux_core::ids::ResourceId) -> bool {
         self.registry().record(parent).is_some_and(|record| matches!(&record.launch,
             Some(phux_core::LaunchSpec::Terminal(launch)) if launch.env.iter().any(|(key, _)| key == NATIVE_HOST_SPEC_ENV)))
-            || self.resource_wire_of(parent).is_some_and(|wire| self.native_agents.bindings.values().any(|binding| binding.parent == wire))
+            || self.resource_wire_of(parent).is_some_and(|wire| self.native_agents().bindings.values().any(|binding| binding.parent == wire))
     }
     pub(crate) fn native_host_identity(&self, client: ClientId) -> Option<(String, u32)> {
         let peer = self.peer_identity(client)?;
@@ -360,11 +330,11 @@ impl ServerState {
             return None;
         }
         let credential = self.authenticated_credential(client)?;
-        super::super::runtime::delegation::delegated_credential(peer, Some(credential))?;
+        crate::runtime::delegation::delegated_credential(peer, Some(credential))?;
         Some((credential.id.clone(), peer.pid?))
     }
     pub(crate) fn restore_native_agents(&mut self, blob: &crate::upgrade::blob::StateBlob) {
-        self.native_agents = NativeAgents::default();
+        *self.native_agents_mut() = NativeAgents::default();
         for carried in &blob.native_agents {
             if self.resource_from_wire(&carried.agent).is_none()
                 || self.resource_from_wire(&carried.parent).is_none()
@@ -386,22 +356,12 @@ impl ServerState {
                     bytes,
                 );
             }
-            self.native_agents
+            let agents = self.native_agents_mut();
+            agents
                 .wakes
                 .insert(binding.agent.clone(), Arc::new(Notify::new()));
-            self.native_agents
-                .bindings
-                .insert(binding.agent.clone(), binding);
+            agents.bindings.insert(binding.agent.clone(), binding);
         }
-    }
-    pub(crate) fn set_native_host_executable(&mut self, executable: Option<std::path::PathBuf>) {
-        self.config.native_host_executable = executable;
-    }
-    pub(crate) fn native_host_executable(&self) -> Result<std::path::PathBuf, std::io::Error> {
-        self.config
-            .native_host_executable
-            .clone()
-            .map_or_else(std::env::current_exe, Ok)
     }
     /// Reserve an activation on an imported dormant terminal without changing
     /// its organization key, membership, name, or arrangement position.
@@ -446,7 +406,7 @@ impl ServerState {
         view: &NativeView,
     ) -> Result<(), phux_core::Refusal> {
         let binding = self
-            .native_agents
+            .native_agents()
             .bindings
             .get(agent)
             .ok_or(phux_core::Refusal::NotFound)?;
@@ -499,7 +459,7 @@ impl ServerState {
             activation,
             launch: phux_core::LaunchSpec::Terminal(launch),
         })?;
-        if let Some(binding) = self.native_agents.bindings.get_mut(agent) {
+        if let Some(binding) = self.native_agents_mut().bindings.get_mut(agent) {
             binding.launch = recipe;
         }
         Ok(())

@@ -10,6 +10,7 @@ pub(crate) mod agent_state;
 pub(crate) mod attach;
 pub(crate) mod checkout;
 pub(crate) mod commands;
+mod engine;
 mod frames;
 #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
 pub(crate) mod history;

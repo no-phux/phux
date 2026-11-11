@@ -190,29 +190,13 @@ pub(crate) fn release_after_pump_fault(
     }
 }
 
-#[allow(
-    clippy::too_many_arguments,
-    reason = "single rollback boundary deliberately receives every staged and committed resource so cancellation, producer detach, pump abortion, and the fatal sentinel remain strictly ordered"
-)]
-pub(crate) async fn fail_aggregate_attach_prepublication(
-    state: &SharedState,
-    client_id: ClientId,
-    attach_id: u32,
-    out_tx: &tokio::sync::mpsc::Sender<Outbound>,
-    connection_token: &CancellationToken,
-    staged_handles: &[ResourceHandle],
-    staged_pumps: &mut JoinSet<()>,
-    committed_pumps: &mut JoinSet<()>,
-    reason: &str,
-) {
-    staged_pumps.abort_all();
-    while staged_pumps.join_next().await.is_some() {}
-    crate::runtime::connections::abort_output_pumps(committed_pumps, client_id, "failed ATTACH")
-        .await;
-
+/// Release `client_id`'s consumers of Terminal `handles` after a failed
+/// session `ATTACH`, each within a bounded wait so a wedged actor cannot hold
+/// the rollback.
+pub(crate) async fn release_aborted_consumers(client_id: ClientId, handles: &[ResourceHandle]) {
     let wire_client_id = crate::runtime::wire_client(client_id);
     let producer_deadline = std::time::Duration::from_secs(1);
-    for handle in staged_handles {
+    for handle in handles {
         // Native history cuts are a Terminal facet lease.
         #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
         if let Ok(terminal) = handle.terminal() {
@@ -242,23 +226,4 @@ pub(crate) async fn fail_aggregate_attach_prepublication(
             let _ = tokio::time::timeout(producer_deadline, done).await;
         }
     }
-    crate::runtime::connections::detach_and_release_consumer_state(state, client_id);
-
-    // The writer closes right after this terminal ERROR, discarding anything
-    // a surviving producer races in behind it.
-    if !matches!(
-        tokio::time::timeout(
-            producer_deadline,
-            out_tx.send(Outbound::FatalError {
-                request_id: None,
-                code: ErrorCode::CodecUnavailable,
-                message: format!("ATTACH {attach_id} failed before publication: {reason}"),
-            }),
-        )
-        .await,
-        Ok(Ok(()))
-    ) {
-        warn!(client = ?client_id, attach_id, "failed to enqueue terminal ATTACH error");
-    }
-    connection_token.cancel();
 }

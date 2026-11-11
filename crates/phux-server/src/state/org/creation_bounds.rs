@@ -8,13 +8,14 @@ fn create(
     session: phux_core::SessionKey,
     placement: CreatePlacement,
 ) -> Result<OrgCommit, Refusal> {
+    let launch = LaunchSpec::Terminal(TerminalLaunch::default());
     state.commit_system(Op::ResourceCreate {
         session: Some(session),
         placement: Some(placement),
         resource: NewResource {
-            kind: ResourceKind::Terminal,
+            kind: launch.kind(),
             name: None,
-            launch: Some(LaunchSpec::Terminal(TerminalLaunch::default())),
+            launch: Some(launch),
             on_exit: ExitPolicy::Retain,
             parent: None,
             launch_mode: phux_core::LaunchMode::Immediate,

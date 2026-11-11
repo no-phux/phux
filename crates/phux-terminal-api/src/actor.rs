@@ -272,39 +272,42 @@ impl phux_resource::ResourceFacet for TerminalHandle {
 }
 
 impl phux_resource::ResourceOps for TerminalHandle {
-    fn resize(&self, (cols, rows): (u16, u16), cell_px: Option<(u16, u16)>) -> bool {
-        self.resize
-            .try_send(ResizeRequest {
-                cols,
-                rows,
-                cell_px,
-                resync_clients: true,
-                resync_only: false,
-                resync_for: None,
-            })
-            .is_ok()
-    }
-
-    fn lease_changed(&self, change: phux_resource::LeaseChange) -> phux_resource::Delivery {
-        let control = self.control.clone();
-        Box::pin(async move {
-            let _ = control.send(ControlRequest::LeaseChanged(change)).await;
-        })
-    }
-
-    fn try_lease_changed(&self, change: phux_resource::LeaseChange) {
-        let _ = self.control.try_send(ControlRequest::LeaseChanged(change));
-    }
-
     fn retire(&self) -> phux_resource::Delivery {
         let control = self.control.clone();
         Box::pin(async move {
             let _ = control.send(ControlRequest::Retire).await;
         })
     }
+}
 
-    fn is_live_stream(&self) -> bool {
-        false
+/// A host resize: authoritative geometry every client resyncs to.
+impl phux_resource::companions::Resize for ResizeSender {
+    fn resize(&self, (cols, rows): (u16, u16), cell_px: Option<(u16, u16)>) -> bool {
+        self.try_send(ResizeRequest {
+            cols,
+            rows,
+            cell_px,
+            resync_clients: true,
+            resync_only: false,
+            resync_for: None,
+        })
+        .is_ok()
+    }
+}
+
+/// Lease changes, delivered on the actor's control mailbox.
+struct LeaseControl(mpsc::Sender<ControlRequest>);
+
+impl phux_resource::companions::LeaseSink for LeaseControl {
+    fn lease_changed(&self, change: phux_resource::LeaseChange) -> phux_resource::Delivery {
+        let control = self.0.clone();
+        Box::pin(async move {
+            let _ = control.send(ControlRequest::LeaseChanged(change)).await;
+        })
+    }
+
+    fn try_lease_changed(&self, change: phux_resource::LeaseChange) {
+        let _ = self.0.try_send(ControlRequest::LeaseChanged(change));
     }
 }
 
@@ -326,6 +329,21 @@ impl TerminalResource for phux_resource::ResourceHandle {
 }
 
 impl TerminalHandle {
+    /// The resource handle for this facet, with the companions every
+    /// Terminal offers: it is sized in cells and has an input lease.
+    #[must_use]
+    pub fn into_resource(
+        self,
+        parent: Option<phux_resource::ResourceId>,
+        output: tokio::sync::broadcast::Sender<phux_resource::ResourceOutput>,
+    ) -> phux_resource::ResourceHandle {
+        let resizable = phux_resource::companions::Resizable::new(self.resize.clone());
+        let leasable = phux_resource::companions::Leasable::new(LeaseControl(self.control.clone()));
+        phux_resource::ResourceHandle::new(parent, output, self)
+            .with_companion(resizable)
+            .with_companion(leasable)
+    }
+
     /// A facet whose senders are all disconnected (tests).
     #[cfg(any(test, feature = "test-support"))]
     #[must_use]

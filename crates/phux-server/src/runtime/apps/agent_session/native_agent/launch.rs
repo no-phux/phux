@@ -1,7 +1,7 @@
+use super::binding::NativeBinding;
 use super::controller::{denied, json, refusal};
 use crate::runtime::commands::CommandContext;
 use crate::state::SharedState;
-use crate::state::native_agent::NativeBinding;
 use phux_agent_session::session::AgentSessionActor;
 use phux_protocol::ids::ResourceId;
 use phux_protocol::native_agent::NATIVE_HOST_SPEC_ENV;
@@ -363,22 +363,22 @@ fn create_native_resources(
             .map_err(|error| CommandResult::Refused(crate::org_wire::refusal(&error)))?
             .1
         };
-        let facet = phux_core::AgentFacet {
+        let launch = phux_core::LaunchSpec::Agent(phux_core::resource::AgentLaunch {
             provider: spec.provider.clone(),
             native_id: spec.native_id.clone(),
-            state: None,
-        };
-        let agent = match s.create_agent_session(parent, &facet, &actor) {
-            Ok(agent) => agent,
-            Err(error) => {
-                if target.existing.is_some() {
-                    s.activation_ended(parent, phux_core::ExitOutcome::UNKNOWN, true);
-                } else {
-                    s.reap_resource(parent);
+        });
+        let agent =
+            match s.create_child(parent, phux_core::NewResource::child(launch, None), &actor) {
+                Ok(agent) => agent,
+                Err(error) => {
+                    if target.existing.is_some() {
+                        s.activation_ended(parent, phux_core::ExitOutcome::UNKNOWN, true);
+                    } else {
+                        s.reap_resource(parent);
+                    }
+                    return Err(CommandResult::Refused(crate::org_wire::refusal(&error)));
                 }
-                return Err(CommandResult::Refused(crate::org_wire::refusal(&error)));
-            }
-        };
+            };
         let parent_wire = crate::runtime::commands::register_pty_command(s, parent, command);
         let agent_wire = s.intern_resource_wire(agent);
         s.metadata_set(

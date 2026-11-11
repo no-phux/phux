@@ -107,11 +107,23 @@ fn drain_ask_sentinel(
     emitted
 }
 
+/// A retained pane's process exited, so its agent is gone: withdraw its
+/// `phux.agent/v1` state to `unknown` (L3 §3.7) in the retaining lock, as the
+/// drain's `Retract` arm does, and return the hook that owes.
+pub(super) fn retract_on_retained_exit(
+    s: &mut ServerState,
+    wire_terminal_id: &WireResourceId,
+) -> Option<HookEvent> {
+    let scope = Scope::Resource(wire_terminal_id.clone());
+    let hooks_live = s.hook_dispatcher().is_some();
+    drain_retract(s, wire_terminal_id, &scope, hooks_live)
+}
+
 /// The drain's `Retract` arm: the pane's agent is confirmed gone. A declared
 /// record (L3 §3.7), or a detector record carrying a human's identity, is
 /// withdrawn to `unknown` with its other fields kept; a record the detector
 /// wrote alone is deleted; anything else is not ours.
-pub(in crate::runtime) fn drain_retract(
+fn drain_retract(
     s: &mut ServerState,
     wire_terminal_id: &WireResourceId,
     scope: &Scope,
@@ -297,30 +309,6 @@ fn retract_hook(wire_terminal_id: &WireResourceId, prior: Option<Prior>) -> Opti
         prior,
         crate::hooks::AGENT_STATE_UNKNOWN,
     )
-}
-
-/// Re-arm the pane detector's edge filter after someone else wrote its
-/// `phux.agent/v1` record (ADR-0046 §E); otherwise the filter keeps modelling
-/// a store that no longer exists and suppresses the next write. A full or
-/// closed control mailbox is benign (the actor is wedged or gone).
-pub(in crate::runtime) fn invalidate_agent_detector(state: &SharedState, scope: &Scope, key: &str) {
-    if key != RESOURCE_AGENT_KEY {
-        return;
-    }
-    let Scope::Resource(wire) = scope else {
-        return;
-    };
-    let handle = state.with(|s| {
-        s.resource_from_wire(wire)
-            .and_then(|pane| s.resource_handle(pane).cloned())
-    });
-    if let Some(handle) = handle
-        && let Some(agent_parent) = handle.companion::<phux_agent_session::parent::AgentParent>()
-    {
-        let _ = agent_parent
-            .mailbox
-            .try_send(phux_agent_session::parent::AgentParentRequest::RecordInvalidated);
-    }
 }
 
 #[cfg(test)]

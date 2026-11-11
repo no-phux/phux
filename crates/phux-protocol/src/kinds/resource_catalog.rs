@@ -286,6 +286,7 @@ pub static KINDS: [KindSpec; 5] = [
                 gate: None,
                 shipped: false,
                 dangerous: false,
+                served_by: None,
             },
             method!(
                 "INPUT_TERMINAL_REPLY",

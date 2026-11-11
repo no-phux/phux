@@ -1,5 +1,5 @@
 use super::*;
-use crate::runtime::apps::terminal::attach::{self, handle_attach};
+use crate::runtime::apps::terminal::attach::handle_attach;
 use crate::runtime::apps::terminal::test_support::{
     StubRx, TerminalInput, seeded_terminal, snapshot_bytes, state_sync_outcome, stub_terminal,
 };

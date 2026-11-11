@@ -276,6 +276,25 @@ mod tests {
         assert_eq!(entry(&advertised, "MOVE_RESOURCE")["available"], true);
     }
 
+    /// A host-addressed method, even one a kind's app serves, is not a
+    /// method of any resource: a surface's list has no `MIRROR`.
+    #[test]
+    fn a_surface_lists_no_host_addressed_mirror() {
+        let negotiated = Negotiated {
+            features: ServerFeatureSet::with(ServerFeature::ALL),
+            features_ext: ServerFeatureExtSet::new(),
+            owner_uds: true,
+        };
+        let listed = availability(ResourceKind::PixelSurface, negotiated);
+        assert!(!listed.is_empty());
+        for name in ["MIRROR", "MIRROR_PROVIDE"] {
+            assert!(
+                listed.iter().all(|entry| entry.method.name != name),
+                "{name} listed as a surface method"
+            );
+        }
+    }
+
     /// A `features_ext` gate is never read as advertised from the `features`
     /// word, even when every word-0 bit is set; it is read from its own word.
     #[test]

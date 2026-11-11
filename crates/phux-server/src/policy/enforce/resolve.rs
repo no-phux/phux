@@ -103,7 +103,7 @@ fn controlled_document(s: &ServerState, request: Request<'_>) -> Option<Point> {
         WireResourceId::Local { .. } => {
             let core = s.resource_from_wire(terminal_id)?;
             ControlPoint {
-                class: s.document_control(core),
+                class: s.resource_control(core),
                 host: None,
                 key: resource_key_of(s, core),
             }
@@ -167,7 +167,7 @@ pub(super) fn watched_document(s: &ServerState, wire: &WireResourceId) -> Option
     }
     let core = s.resource_from_wire(wire)?;
     let class = s
-        .document_control(core)
+        .resource_control(core)
         .filter(|class| class.guards_observe())?;
     Some(ControlPoint {
         class: Some(class),

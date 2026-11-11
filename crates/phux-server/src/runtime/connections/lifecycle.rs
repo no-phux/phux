@@ -96,16 +96,17 @@ fn announce_lease_releases(
     actor: Option<phux_protocol::ids::ClientId>,
 ) {
     for pane in s.leases_held_by(client_id) {
-        let Some(handle) = s.resource_handle(pane) else {
+        let Some(lease) = s
+            .resource_handle(pane)
+            .and_then(|handle| handle.companion::<crate::resource::companions::Leasable>())
+        else {
             continue;
         };
-        handle
-            .ops()
-            .try_lease_changed(crate::resource::LeaseChange {
-                input_holder: None,
-                action: phux_protocol::wire::frame::ControlAction::Released,
-                actor,
-            });
+        lease.try_lease_changed(crate::resource::LeaseChange {
+            input_holder: None,
+            action: phux_protocol::wire::frame::ControlAction::Released,
+            actor,
+        });
     }
 }
 

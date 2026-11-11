@@ -26,6 +26,7 @@ pub(super) fn agent_stub(
     let (bootstrap, rx) = mpsc::channel(4);
     let (append, _append_rx) = mpsc::channel(1);
     let (output, _) = tokio::sync::broadcast::channel(8);
+    let ended = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
     let handle = ResourceHandle::new(
         Some(parent),
         output,
@@ -34,9 +35,10 @@ pub(super) fn agent_stub(
             native_id: None,
             append,
             bootstrap,
-            ended: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            ended: ended.clone(),
         },
-    );
+    )
+    .with_companion(crate::resource::companions::LiveStream::new(ended));
     state.with_mut(|s| {
         s.register_resource_handle(core, handle, CancellationToken::new())
             .unwrap();

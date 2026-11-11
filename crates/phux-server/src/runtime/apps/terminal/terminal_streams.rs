@@ -243,7 +243,7 @@ async fn bind_terminal_stream(
         crate::runtime::send_error(
             &plumbing.out_tx,
             ErrorCode::CodecUnavailable,
-            super::commands::NO_TERMINAL_PROFILE,
+            crate::runtime::apps::NO_TERMINAL_PROFILE,
         )
         .await;
         return;

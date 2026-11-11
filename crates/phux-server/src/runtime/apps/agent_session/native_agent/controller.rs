@@ -1,3 +1,4 @@
+use super::binding::NativeBinding;
 use super::closure::close;
 use super::integrations;
 use super::launch::spawn;
@@ -6,7 +7,6 @@ use super::source_dispatch::refuse_undeliverable;
 use crate::runtime::commands::CommandContext;
 use crate::state::ClientId;
 use crate::state::SharedState;
-use crate::state::native_agent::NativeBinding;
 use phux_protocol::ids::ResourceId;
 use phux_protocol::native_agent::NativeCommand;
 use phux_protocol::native_agent::NativeCommandResult;

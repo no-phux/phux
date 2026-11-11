@@ -152,7 +152,7 @@ pub(super) async fn relay_satellite_attach(
     if ctx.profile.is_none() && crate::hub::relay::stream_needs_terminal_profile(kind) {
         return CommandResult::Error {
             code: ErrorCode::CodecUnavailable,
-            message: crate::runtime::apps::terminal::commands::NO_TERMINAL_PROFILE.to_owned(),
+            message: crate::runtime::apps::NO_TERMINAL_PROFILE.to_owned(),
         };
     }
     // Narrow before the relay so no input slips through; widen only once the

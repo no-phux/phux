@@ -69,6 +69,53 @@ fn host_methods_are_not_resource_facets_but_checkout_is() {
     );
 }
 
+/// `MIRROR` and `MIRROR_PROVIDE` name no resource: they are server methods,
+/// listed on no kind's facet, and only their serving app comes from a kind.
+#[test]
+fn mirrors_are_host_methods_served_by_the_surface_app() {
+    for name in ["MIRROR", "MIRROR_PROVIDE"] {
+        let method = kinds::SERVER_METHODS
+            .iter()
+            .find(|method| method.name == name)
+            .expect("a server method");
+        assert_eq!(method.served_by, Some(ResourceKind::PixelSurface), "{name}");
+        assert!(
+            kinds::KINDS
+                .iter()
+                .all(|kind| kind.methods.iter().all(|method| method.name != name)),
+            "{name} is on a facet row"
+        );
+    }
+    let mirror = Command::Mirror {
+        host: None,
+        op: phux_protocol::wire::frame::MirrorOp::Targets,
+    };
+    let provide = Command::MirrorProvide {
+        targets: "[]".to_owned(),
+    };
+    for command in [&mirror, &provide] {
+        assert_eq!(kinds::command_kind(command), None, "{command:?}");
+        assert_eq!(
+            kinds::command_served_by(command),
+            Some(ResourceKind::PixelSurface),
+            "{command:?}"
+        );
+    }
+    assert_eq!(kinds::command_served_by(&Command::DescribeApi), None);
+}
+
+/// Only a host-addressed method names a serving kind; a facet or substrate
+/// method's kind is its row's.
+#[test]
+fn only_server_methods_name_a_serving_kind() {
+    let rows = kinds::SUBSTRATE_METHODS
+        .iter()
+        .chain(kinds::KINDS.iter().flat_map(|kind| kind.methods.iter()));
+    for method in rows {
+        assert_eq!(method.served_by, None, "{}", method.name);
+    }
+}
+
 #[test]
 fn path_query_catalog_requires_its_extended_feature() {
     let method = kinds::method_named("PATH_QUERY").expect("PATH_QUERY");

@@ -132,15 +132,18 @@ pub(super) async fn spawn_agent_session(spawn: ResourceSpawn<'_>) {
 
     // One borrow: an id observed in an event must already resolve.
     let registered = state.with_mut(|s| {
-        let facet = phux_core::resource::AgentFacet {
+        let launch = phux_core::LaunchSpec::Agent(phux_core::resource::AgentLaunch {
             provider: provider.to_owned(),
             native_id: resource.native_id.clone(),
-            state: None,
-        };
+        });
         validate_agent_parent(s, core_parent)?;
         let actor = s.actor_for(client_id);
         let core = s
-            .create_agent_session(core_parent, &facet, &actor)
+            .create_child(
+                core_parent,
+                phux_core::NewResource::child(launch, None),
+                &actor,
+            )
             .map_err(|_| SpawnError::ParentNotFound)?;
         let wire = s
             .spawn_resource_actor(core, bundle.handle.clone(), token, bundle.actor.run())

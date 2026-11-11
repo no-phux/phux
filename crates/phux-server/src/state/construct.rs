@@ -1,6 +1,6 @@
 use super::{
-    AgentState, ClientTable, HubState, IdSpace, LeaseTable, Lifecycle, MetadataStore,
-    ResourceTable, ServerState, SessionTable,
+    ClientTable, HubState, IdSpace, LeaseTable, Lifecycle, MetadataStore, ResourceTable,
+    ServerState, SessionTable,
 };
 
 impl ServerState {
@@ -13,7 +13,6 @@ impl ServerState {
             super::org::now_stamp(),
         );
         Self {
-            terminal_engine: None,
             sessions: SessionTable::new(phux_core::Registry::new(org)),
             org: super::org::OrgSide::memory(),
             clients: ClientTable::new(),
@@ -27,14 +26,12 @@ impl ServerState {
             satellite_spawns: super::satellite_spawns::SatelliteSpawnLedger::default(),
             idspace,
             metadata: MetadataStore::default(),
-            agent: AgentState::new(),
             config: super::ServerConfig::default(),
             hub: HubState::new(),
             uplinks: crate::uplink::Uplinks::default(),
             hook_dispatcher: None,
             plugin_startup: None,
             standing_mirrors: None,
-            mirror_demand: crate::state::mirror_demand::Demand::default(),
             push_grants: crate::push::PushGrants::default(),
             // Mints this process's incarnation and starts the idle clock —
             // see `Lifecycle::new`.
@@ -46,8 +43,7 @@ impl ServerState {
             remote_listeners: phux_protocol::wire::RemoteListenersReport::new(),
             operation_dedupe: crate::runtime::operation_dedupe::OperationDedupe::default(),
             approvals: super::approvals::ApprovalTable::default(),
-            native_agents: super::native_agent::NativeAgents::default(),
-            document_controls: std::collections::HashMap::new(),
+            app_slots: super::app_slots::AppSlots::default(),
         }
     }
 }

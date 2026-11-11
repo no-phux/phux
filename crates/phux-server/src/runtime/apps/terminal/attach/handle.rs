@@ -66,22 +66,16 @@ pub(crate) async fn stage_session(
     Ok(())
 }
 
-/// Record the outer viewport, but apply geometry only to Terminal adapters.
-pub(crate) fn apply_attach_viewport(
-    state: &SharedState,
-    client_id: ClientId,
+/// Size each Terminal of `panes` to `viewport` as its size policy resolves
+/// it, in the lock that recorded the viewport.
+pub(crate) fn apply_panes_viewport(
+    state: &mut crate::state::ServerState,
     panes: &[AttachSnapshotPane],
     viewport: phux_protocol::wire::frame::ViewportInfo,
 ) {
-    if viewport.cols == 0 || viewport.rows == 0 {
-        return;
+    for pane in panes {
+        apply_pane_viewport(state, pane, viewport);
     }
-    state.with_mut(|s| {
-        s.set_client_viewport(client_id, viewport);
-        for pane in panes {
-            apply_pane_viewport(s, pane, viewport);
-        }
-    });
 }
 
 fn apply_pane_viewport(
