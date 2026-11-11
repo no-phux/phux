@@ -1,10 +1,10 @@
-//! Kill confirmation: the modal `kill-window` raises before it terminates a
-//! window's terminals.
+//! Kill confirmation: the modal `kill-window` and `kill-pane` raise before
+//! they terminate terminals.
 //!
 //! It names how many terminals end and which of them are also shown
 //! elsewhere (another window, another session's arrangement), so closing a
-//! tab is never mistaken for closing a view. Enter or `y` commits
-//! `kill-window` with the exact target set it showed; Esc or `n` drops it.
+//! tab or pane is never mistaken for closing a view. Enter or `y` commits
+//! the kill with the exact target set it showed; Esc or `n` drops it.
 
 use std::collections::BTreeMap;
 
@@ -20,7 +20,7 @@ use super::widgets::{Modal, centered_panel};
 use super::{OverlayCommand, RenderOverlay};
 use crate::render::{ChromeBreakpoints, Theme};
 
-/// The arg `kill-window` carries once confirmed: the selectors of exactly
+/// The arg `kill-window` and `kill-pane` carry once confirmed: the selectors of exactly
 /// the terminals the confirm named.
 pub const KILL_TARGETS_ARG: &str = "terminals";
 
@@ -36,9 +36,12 @@ pub struct SharedTarget {
     pub elsewhere: Vec<String>,
 }
 
-/// Holds one `kill-window` until the user confirms or drops it.
+/// Holds one `kill-window` or `kill-pane` until the user confirms or drops
+/// it.
 #[derive(Debug, Clone)]
 pub struct KillConfirmOverlay {
+    action: &'static str,
+    title: &'static str,
     targets: Vec<ResourceId>,
     lines: Vec<String>,
     theme: Theme,
@@ -58,11 +61,37 @@ impl KillConfirmOverlay {
     ) -> Self {
         let count = targets.len();
         let noun = if count == 1 { "terminal" } else { "terminals" };
-        let mut lines = vec![if window.is_empty() {
+        let lines = vec![if window.is_empty() {
             format!("End {count} {noun} in this tab.")
         } else {
             format!("End {count} {noun} in tab {window}.")
         }];
+        Self::with_lines("kill-window", "Kill tab?", targets, lines, shared, theme)
+    }
+
+    /// Ask before terminating `target`, the focused pane's terminal, named
+    /// `label` (e.g. `pane 3`); `shared` names it when shown elsewhere.
+    #[must_use]
+    pub fn pane(label: &str, target: ResourceId, shared: &[SharedTarget], theme: &Theme) -> Self {
+        let lines = vec![format!("End {label} and what runs in it.")];
+        Self::with_lines(
+            "kill-pane",
+            "Kill pane?",
+            vec![target],
+            lines,
+            shared,
+            theme,
+        )
+    }
+
+    fn with_lines(
+        action: &'static str,
+        title: &'static str,
+        targets: Vec<ResourceId>,
+        mut lines: Vec<String>,
+        shared: &[SharedTarget],
+        theme: &Theme,
+    ) -> Self {
         for target in shared.iter().take(MAX_SHARED_LINES) {
             lines.push(format!(
                 "{} is also shown in {}",
@@ -77,6 +106,8 @@ impl KillConfirmOverlay {
             ));
         }
         Self {
+            action,
+            title,
             targets,
             lines,
             theme: *theme,
@@ -90,7 +121,7 @@ impl KillConfirmOverlay {
         &self.lines
     }
 
-    /// The `kill-window` this confirm commits: the exact target set it named.
+    /// The kill this confirm commits: the exact target set it named.
     #[must_use]
     pub fn committed_action(&self) -> ResolvedAction {
         let selectors = self
@@ -99,7 +130,7 @@ impl KillConfirmOverlay {
             .map(|id| toml::Value::String(selector(id)))
             .collect();
         ResolvedAction {
-            action: "kill-window".to_owned(),
+            action: self.action.to_owned(),
             args: BTreeMap::from([(KILL_TARGETS_ARG.to_owned(), toml::Value::Array(selectors))]),
         }
     }
@@ -129,7 +160,7 @@ impl RenderOverlay for KillConfirmOverlay {
             .iter()
             .map(|line| Line::styled(line.clone(), text))
             .collect();
-        Modal::new(&self.theme, "Kill tab?".to_owned(), lines)
+        Modal::new(&self.theme, self.title.to_owned(), lines)
             .footer("", "⏎ kill · esc")
             .render_into(self.modal_area(area, self.breakpoints), buf);
     }
@@ -231,5 +262,22 @@ mod tests {
         let lines = overlay(&many).lines().to_vec();
         assert_eq!(lines.len(), 1 + 4 + 1);
         assert_eq!(lines[5], "2 more shown elsewhere");
+    }
+
+    #[test]
+    fn a_pane_confirm_commits_kill_pane_for_its_one_terminal() {
+        let mut confirm =
+            KillConfirmOverlay::pane("pane 3", ResourceId::local(3), &[], &Theme::default());
+        assert_eq!(confirm.lines(), ["End pane 3 and what runs in it."]);
+        let OverlayCommand::Commit(action) = confirm.handle_key(&press(PhysicalKey::Y)) else {
+            panic!("commit");
+        };
+        assert_eq!(action.action, "kill-pane");
+        assert_eq!(
+            action.args.get(KILL_TARGETS_ARG),
+            Some(&toml::Value::Array(vec![toml::Value::String(
+                "@3".to_owned()
+            )]))
+        );
     }
 }

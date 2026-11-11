@@ -22,6 +22,7 @@ bind-key -T prefix 1 select-window -t :=1
 bind-key -T prefix C-b send-prefix
 bind-key -T prefix r source-file ~/.tmux.conf
 bind-key -T prefix & confirm-before -p "kill-window #W?" kill-window
+bind-key -T prefix x confirm-before -p "kill-pane #P?" kill-pane
 bind-key -T prefix , command-prompt -I "#W" { rename-window "%%" }
 "##,
     );
@@ -35,7 +36,7 @@ bind-key -T prefix , command-prompt -I "#W" { rename-window "%%" }
     assert_eq!(keys["1"]["index"].as_integer(), Some(0));
     assert_eq!(keys["C-b"].as_str(), Some("none"));
     assert_eq!(keys["q"].as_str(), Some("none"));
-    assert_eq!(keys["x"].as_str(), Some("none"));
+    assert_eq!(keys["x"].as_str(), Some("kill-pane"));
     assert_eq!(keys["&"].as_str(), Some("kill-window"));
     assert_eq!(keys[","].as_str(), Some("rename-window"));
     assert_eq!(
@@ -52,7 +53,7 @@ bind-key -T prefix , command-prompt -I "#W" { rename-window "%%" }
 #[test]
 fn rejects_scripts_chains_unknown_flags_targets_and_confirmation_loss() {
     let plan = make_plan(
-        r##"bind-key -T prefix x confirm-before -p "kill?" kill-pane
+        r##"bind-key -T prefix x confirm-before -p "kill?" kill-window -t :2
 bind-key -T prefix c new-window \; kill-session
 bind-key -T prefix v split-window -h -c "#{pane_current_path}"
 bind-key -T prefix q run-shell 'touch /tmp/must-not-run'

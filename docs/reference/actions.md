@@ -16,7 +16,7 @@ The **Palette** column is the command-palette section the action is offered unde
 |---|---|---|---|
 | `split-pane` | Pane | `direction` = `horizontal` \| `vertical`; `host?` (satellite); `resource?` (`@N` or `host/@N`) | Split the focused pane side-by-side (vertical divider) |
 | `move-pane` | Pane | `target` (local Terminal id; picker-supplied) | Move the focused pane beside another pane… |
-| `kill-pane` | Pane |  | Kill the focused pane's terminal |
+| `kill-pane` | Pane | `terminals?` (selector the confirm committed; omitted opens the confirm) | Kill the focused pane's terminal… |
 | `close-view` | Pane |  | Hide the focused pane; its terminal keeps running |
 | `reopen-views` | Tab |  | Show hidden terminals, one tab each |
 | `new-window` | Tab | `cwd?` (working directory on the attached server's host) | Open a new tab |

@@ -419,7 +419,11 @@ fn fixed_command(command: &[&str]) -> Option<(Value, Option<&'static str>)> {
         (&["next-window"], "next-window", None),
         (&["previous-window"], "previous-window", None),
         (&["new-window"], "new-window", None),
-        (&["kill-pane"], "kill-pane", None),
+        (
+            &["kill-pane"],
+            "kill-pane",
+            Some("phux asks before killing the pane"),
+        ),
         (&["rename-window"], "rename-window", None),
         (&["rename-session"], "rename-session", None),
         (&["resize-pane", "-Z"], "toggle-zoom", None),
@@ -471,6 +475,10 @@ fn adapted_prompt(command: &[&str]) -> Option<(Value, Option<&'static str>)> {
         ["confirm-before", "-p", _, "kill-window"] => (
             "kill-window",
             "phux confirms closing the active tab using its own prompt",
+        ),
+        ["confirm-before", "-p", _, "kill-pane"] => (
+            "kill-pane",
+            "phux confirms killing the pane using its own prompt",
         ),
         [
             "command-prompt",

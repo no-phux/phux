@@ -30,10 +30,10 @@ pub(super) const PALETTE_ROWS: &[ActionSpec] = &[
     },
     ActionSpec {
         name: "kill-pane",
-        description: "Kill the focused pane's terminal",
-        params: "",
+        description: "Kill the focused pane's terminal…",
+        params: "`terminals?` (selector the confirm committed; omitted opens the confirm)",
         palette: Palette::Row {
-            title: "Kill pane",
+            title: "Kill pane…",
             category: Category::Pane,
             args: &[],
         },

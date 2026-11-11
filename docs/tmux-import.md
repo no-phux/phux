@@ -93,10 +93,9 @@ default. Unsupported bindings stay unbound. In phux, an unbound key after
 the prefix goes to the pane; this differs from tmux's handling. Existing
 phux layers may explicitly restore or replace any binding.
 
-Confirmation is never silently removed. tmux's usual confirmed tab close
-maps to phux's own confirmed close. Its confirmed `kill-pane` binding
-stays unsupported because phux's `kill-pane` is immediate. A direct,
-unconfirmed tmux `kill-pane` can be mapped.
+Confirmation is never silently removed. tmux's usual confirmed tab and
+pane closes map to phux's own confirmed closes. A direct, unconfirmed tmux
+`kill-pane` maps too, and phux asks before killing the pane.
 
 Plugins, hooks, arbitrary shell commands, custom and copy-mode key tables,
 status format languages, secondary prefixes, and live sessions/processes

@@ -113,7 +113,9 @@ pub(in crate::attach) fn kill_window(
 }
 
 /// The confirmed target set, when the action carries one.
-fn confirmed_targets(resolved: &phux_config::keybind::ResolvedAction) -> Option<Vec<ResourceId>> {
+pub(super) fn confirmed_targets(
+    resolved: &phux_config::keybind::ResolvedAction,
+) -> Option<Vec<ResourceId>> {
     let toml::Value::Array(items) = resolved
         .args
         .get(crate::render::overlay::kill_confirm::KILL_TARGETS_ARG)?
@@ -182,6 +184,23 @@ pub(in crate::attach::input_dispatch) fn kill_window_confirm(
     Some(crate::render::overlay::KillConfirmOverlay::new(
         &window, leaves, &shared, ctx.theme,
     ))
+}
+
+/// The confirm for killing `leaf`, the focused pane's terminal.
+pub(super) fn kill_pane_confirm(
+    ctx: &DispatchCtx<'_>,
+    leaf: &ResourceId,
+) -> crate::render::overlay::KillConfirmOverlay {
+    let label = crate::attach::server_frame::pane_label(leaf);
+    let elsewhere = shown_elsewhere(ctx, ctx.workspace.active, leaf);
+    let shared: Vec<_> = (!elsewhere.is_empty())
+        .then(|| crate::render::overlay::SharedTarget {
+            label: label.clone(),
+            elsewhere,
+        })
+        .into_iter()
+        .collect();
+    crate::render::overlay::KillConfirmOverlay::pane(&label, leaf.clone(), &shared, ctx.theme)
 }
 
 /// How a message names a tab: a user-given name, else the index the tab bar
