@@ -100,9 +100,10 @@ session (or `--session NAME`). It never creates a session on its own.
   `notify-send`); clicking it goes there, and it is withdrawn when answered
   or seen. The Dock icon counts what's waiting.
 - **Tabs.** The session's arrangement groups, shared with the terminal UI.
-  ⌘T opens a terminal in a new tab, ⌘1–⌘9 switch, double-click renames. The
-  strip appears from two tabs up; a dot marks a tab that needs you, and a
-  jump from anywhere lands on the right tab.
+  ⌘T opens a terminal in a new tab, ⌘1–⌘9 switch, double-click renames, and
+  a drag reorders them on the server. The strip appears from two tabs up; a
+  dot marks a tab that needs you, and a jump from anywhere lands on the
+  right tab.
 - **Sidebar.** Every session and terminal on the server, each terminal with
   what it is doing: a declared agent's name and state (working pulses,
   blocked or asking needs you, done waits until you look), a running
@@ -211,8 +212,7 @@ each line; the window asks first (Return pastes, Esc cancels).
 
 ## Known gaps
 
-- One window. Tabs can't be dragged to reorder yet, and the server has no
-  call to rename a single terminal.
+- One window, and the server has no call to rename a single terminal.
 - No Kitty images; the only custom themes are Ghostty's and Omarchy's. Find covers the history the
   window has loaded, not the server's whole scrollback.
 - A question raised through a hook before the window connected has no text
