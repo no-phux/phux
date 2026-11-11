@@ -362,6 +362,17 @@ pub(super) const PALETTE_ROWS: &[ActionSpec] = &[
         run: run::popup,
     },
     ActionSpec {
+        name: "url-picker",
+        description: "List the links in the focused pane and copy the one you choose",
+        params: "",
+        palette: Palette::Row {
+            title: "Copy a link…",
+            category: Category::Pane,
+            args: &[],
+        },
+        run: run::url_picker,
+    },
+    ActionSpec {
         name: "new-worktree",
         description: "Create a git worktree for a new branch and switch to its session",
         params: "`branch?` (bare opens an interactive prompt); `cwd?` picks the repository",

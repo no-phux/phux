@@ -34,6 +34,7 @@ impl Group {
             "signal-terminal",
             "toggle-zoom",
             "focus-direction",
+            "url-picker",
             "popup",
         ];
         if action.ends_with("-pane") || PANE.contains(&action) {

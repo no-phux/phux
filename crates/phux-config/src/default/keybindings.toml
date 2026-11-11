@@ -112,6 +112,8 @@ which-key-delay-ms = 400
 # T asks for a branch name, then makes a git worktree for it beside the
 # focused pane's repository and switches to its session.
 "T" = "new-worktree"
+# U lists the links in the focused pane, history included; Enter copies one.
+"U" = "url-picker"
 "N" = "next-session"
 "P" = "previous-session"
 ")" = "last-session"

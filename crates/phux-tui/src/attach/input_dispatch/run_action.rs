@@ -27,6 +27,8 @@ mod spawn;
 mod views;
 mod windows;
 pub(in crate::attach) use popup::popup;
+mod urls;
+pub(in crate::attach) use urls::{copy_text, url_picker};
 mod worktree;
 
 pub(in crate::attach) use modes::{enter_mode, exit_mode};
