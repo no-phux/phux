@@ -164,6 +164,12 @@ const SECTIONS: &[Section] = &[
                   `TypeSafe`'s Jev with a key, else repository matching.",
     },
     Section {
+        key: "restore",
+        header: "[restore]",
+        summary: "Whether a starting server relaunches the panes the last \
+                  server stop ended, as `phux restore` does by hand.",
+    },
+    Section {
         key: "rune",
         header: "[rune]",
         summary: "Settings the Rune desktop app reads at launch; a key set \

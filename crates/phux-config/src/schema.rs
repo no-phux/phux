@@ -71,6 +71,19 @@ pub struct Config {
     pub rune: RuneCfg,
     /// `[limits]`: server-enforced ceilings that are not per-pane defaults.
     pub limits: LimitsCfg,
+    /// `[restore]`: whether a starting server relaunches what the last one
+    /// ended.
+    pub restore: RestoreCfg,
+}
+
+/// `[restore]` table: bringing panes back after a reboot or a crash.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(default, rename_all = "kebab-case", deny_unknown_fields)]
+pub struct RestoreCfg {
+    /// Run `phux restore` when the server starts: relaunch every pane a
+    /// server stop ended, and resume agents whose integration supports it.
+    /// Nothing is typed into a relaunched program.
+    pub on_start: bool,
 }
 
 mod defaults;
