@@ -201,6 +201,12 @@ impl Desk {
                 super::native_input::accessory(self, &soft, tx);
                 return;
             }
+            Some(Modal::News) => {
+                if matches!(soft, Soft::Key(Key::Escape)) {
+                    self.close_news();
+                }
+                return;
+            }
             Some(_) => return,
         };
         let Some(phone) = self.phone.as_mut() else {

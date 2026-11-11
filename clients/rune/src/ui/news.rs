@@ -1,4 +1,5 @@
-//! What's new: the title bar's bell and the sheet it opens.
+//! What's new: the bell (the title bar's, or the phone top bar's) and the
+//! sheet it opens.
 
 use rune::{El, col, el, text};
 
@@ -7,22 +8,37 @@ use super::{CAPTION, Ink, LABEL, LABEL_STRONG, Sheet, icon_press, icons};
 use crate::desk::Desk;
 use crate::desk::news::NOTES;
 
-/// The bell, with an accent dot while a note is unread.
-pub fn bell(desk: &Desk, p: &Ink) -> El {
-    let name = if desk.news.unread {
+/// What a screen reader says for the bell.
+pub fn bell_name(desk: &Desk) -> &'static str {
+    if desk.news.unread {
         "What's new, unread"
     } else {
         "What's new"
-    };
-    icon_press(&icons::BELL, name, "news-button", p, Desk::toggle_news)
-        .expanded(desk.news.open)
-        .children(desk.news.unread.then(|| {
-            el().absolute(15.0, 3.0)
-                .size(6.0, 6.0)
-                .radius(3.0)
-                .fill(p.accent)
-                .a11y_hidden()
-        }))
+    }
+}
+
+/// The accent dot on a bell while a note is unread, `size` across at `at`.
+pub fn unread_dot(desk: &Desk, p: &Ink, at: (f32, f32), size: f32) -> Option<El> {
+    desk.news.unread.then(|| {
+        el().absolute(at.0, at.1)
+            .size(size, size)
+            .radius(size / 2.0)
+            .fill(p.accent)
+            .a11y_hidden()
+    })
+}
+
+/// The title bar's bell.
+pub fn bell(desk: &Desk, p: &Ink) -> El {
+    icon_press(
+        &icons::BELL,
+        bell_name(desk),
+        "news-button",
+        p,
+        Desk::toggle_news,
+    )
+    .expanded(desk.news.open)
+    .children(unread_dot(desk, p, (15.0, 3.0), 6.0))
 }
 
 pub fn view(_desk: &Desk, p: &Ink) -> El {
@@ -58,22 +74,41 @@ mod tests {
     fn the_bell_opens_whats_new_and_close_shuts_it() {
         use rune::accesskit::Action;
 
-        let mut desk = Desk::settings_test_fixture();
+        for (phone, size, bell) in [
+            (false, (1100.0, 720.0), "news-button"),
+            (true, (393.0, 852.0), "phone-news"),
+        ] {
+            let mut desk = Desk::settings_test_fixture().with_phone(phone);
+            desk.settings_open = false;
+            desk.news.unread = true;
+            let mut rt =
+                rune::Runtime::new(desk, crate::ui::view, size, rune::Env::new(false, 1.0));
+            rt.frame(0.0);
+            assert!(rt.accessibility_action(bell, Action::Click, None), "{bell}");
+            rt.frame(0.0);
+            assert!(rt.state.news.open && !rt.state.news.unread, "{bell}");
+            assert!(rt.find("news").is_some(), "{bell}");
+            assert!(rt.accessibility_action("news-close", Action::Click, None));
+            rt.frame(0.0);
+            assert!(!rt.state.news.open, "{bell}");
+        }
+    }
+
+    #[test]
+    fn the_phone_bars_esc_closes_whats_new() {
+        use crate::desk::phone::Soft;
+
+        let mut desk = Desk::settings_test_fixture().with_phone(true);
         desk.settings_open = false;
-        desk.news.unread = true;
+        desk.toggle_news();
         let mut rt = rune::Runtime::new(
             desk,
             crate::ui::view,
-            (1100.0, 720.0),
+            (393.0, 852.0),
             rune::Env::new(false, 1.0),
         );
         rt.frame(0.0);
-        assert!(rt.accessibility_action("news-button", Action::Click, None));
-        rt.frame(0.0);
-        assert!(rt.state.news.open && !rt.state.news.unread);
-        assert!(rt.find("news").is_some());
-        assert!(rt.accessibility_action("news-close", Action::Click, None));
-        rt.frame(0.0);
+        rt.update(|d, tx| d.soft(Soft::Key(rune::Key::Escape), tx));
         assert!(!rt.state.news.open);
     }
 }

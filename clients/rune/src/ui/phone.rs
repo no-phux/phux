@@ -6,8 +6,8 @@
 use rune::{Color, Cursor, Cx, El, Key, TextStyle, col, el, row, text, tok};
 
 use super::{
-    Ink, TITLEBAR_H, icons, inbox, machines, overlay, palette, panes, settings, spatial, status,
-    tabs,
+    Ink, TITLEBAR_H, icons, inbox, machines, news, overlay, palette, panes, settings, spatial,
+    status, tabs,
 };
 use crate::desk::Desk;
 use crate::desk::phone::{Latch, Phone, Soft};
@@ -123,6 +123,7 @@ fn overlays(root: El, desk: &Desk, p: &Ink) -> El {
     root.children(status::banner(desk, p))
         .children(desk.inbox.open.then(|| inbox::view(desk, p)))
         .children(machines::sheet(desk, p))
+        .children(desk.news.open.then(|| news::view(desk, p)))
         .children(tabs::rename_sheet(desk, p))
         .children(
             desk.pointer
@@ -252,6 +253,15 @@ fn top_bar(desk: &Desk, p: &Ink) -> El {
         )
         .on_press_tx(|d: &mut Desk, tx| d.shortcut(Shortcut::Palette, tx))
     });
+    let bell = round(
+        "phone-news",
+        news::bell_name(desk),
+        glyph(&icons::BELL, 18.0, p.text),
+        p,
+    )
+    .expanded(desk.news.open)
+    .on_press(Desk::toggle_news)
+    .children(news::unread_dot(desk, p, (27.0, 10.0), 7.0));
     row()
         .key("phone-top")
         .w_full()
@@ -270,6 +280,7 @@ fn top_bar(desk: &Desk, p: &Ink) -> El {
             .on_press_tx(|d: &mut Desk, tx| d.shortcut(Shortcut::SwitchSession, tx)),
         )
         .child(place)
+        .child(bell)
         .child(trailing)
 }
 
