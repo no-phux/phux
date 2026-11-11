@@ -57,15 +57,18 @@ pub(crate) async fn handle_acquire_input(
         Ok(grant) => grant,
         Err(refusal) => return refusal,
     };
-    grant
+    if let Some(lease) = grant
         .handle
-        .ops()
-        .lease_changed(crate::resource::LeaseChange {
-            input_holder: Some(crate::runtime::wire_client(client_id)),
-            action: grant.action,
-            actor: Some(crate::runtime::wire_client(client_id)),
-        })
-        .await;
+        .companion::<crate::resource::companions::Leasable>()
+    {
+        lease
+            .lease_changed(crate::resource::LeaseChange {
+                input_holder: Some(crate::runtime::wire_client(client_id)),
+                action: grant.action,
+                actor: Some(crate::runtime::wire_client(client_id)),
+            })
+            .await;
+    }
     if let Some((ttl_ms, generation)) = grant.expiry {
         spawn_input_lease_expiry(state, grant.core, generation, ttl_ms);
     }
@@ -102,14 +105,15 @@ pub(in crate::runtime) fn spawn_input_lease_expiry(
         let Some(handle) = expired else {
             return;
         };
-        handle
-            .ops()
-            .lease_changed(crate::resource::LeaseChange {
-                input_holder: None,
-                action: ControlAction::Expired,
-                actor: None,
-            })
-            .await;
+        if let Some(lease) = handle.companion::<crate::resource::companions::Leasable>() {
+            lease
+                .lease_changed(crate::resource::LeaseChange {
+                    input_holder: None,
+                    action: ControlAction::Expired,
+                    actor: None,
+                })
+                .await;
+        }
     });
     // `false`: `generation` was already superseded, so abort now.
     let abort = join.abort_handle();
@@ -161,13 +165,14 @@ pub(crate) async fn handle_release_input(
         Ok(None) => return CommandResult::Ok,
         Err(refusal) => return refusal,
     };
-    handle
-        .ops()
-        .lease_changed(crate::resource::LeaseChange {
-            input_holder: None,
-            action: ControlAction::Released,
-            actor: Some(crate::runtime::wire_client(client_id)),
-        })
-        .await;
+    if let Some(lease) = handle.companion::<crate::resource::companions::Leasable>() {
+        lease
+            .lease_changed(crate::resource::LeaseChange {
+                input_holder: None,
+                action: ControlAction::Released,
+                actor: Some(crate::runtime::wire_client(client_id)),
+            })
+            .await;
+    }
     CommandResult::Ok
 }

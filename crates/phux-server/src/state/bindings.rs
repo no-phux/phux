@@ -13,7 +13,6 @@
 //! [`Registry::children`]: phux_core::registry::Registry::children
 
 use phux_core::ids::ResourceId;
-use phux_core::resource::ResourceKind;
 use phux_protocol::ids::ResourceId as WireResourceId;
 use phux_protocol::wire::frame::CloseReason;
 
@@ -82,8 +81,8 @@ impl ServerState {
             .is_some_and(|core| self.has_live_agent_session_child(core))
     }
 
-    /// Whether `parent` has a live `AgentSession` child (the detector's
-    /// ADR-0103 §5 query).
+    /// Whether `parent` has a live record-stream child, an `AgentSession`
+    /// (the detector's ADR-0103 §5 query).
     #[must_use]
     pub fn has_live_agent_session_child(&self, parent: ResourceId) -> bool {
         self.sessions
@@ -91,13 +90,11 @@ impl ServerState {
             .children(parent)
             .into_iter()
             .any(|child| {
-                self.sessions
-                    .registry
-                    .resource(child)
-                    .is_some_and(|r| r.kind == ResourceKind::AgentSession)
-                    && self
-                        .resource_handle(child)
-                        .is_some_and(|handle| handle.ops().is_live_stream())
+                self.resource_handle(child)
+                    .and_then(|handle| {
+                        handle.companion::<crate::resource::companions::LiveStream>()
+                    })
+                    .is_some_and(crate::resource::companions::LiveStream::is_live)
             })
     }
 

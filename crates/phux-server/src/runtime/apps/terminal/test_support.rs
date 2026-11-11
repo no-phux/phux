@@ -65,11 +65,7 @@ pub(crate) fn detached_terminal() -> ResourceHandle {
     let (core, channels) =
         ResourceCore::new(ResourceKind::Terminal, None, CancellationToken::new(), 8);
     drop(core);
-    ResourceHandle::new(
-        None,
-        channels.output,
-        TerminalHandle::detached_for_test(80, 24),
-    )
+    TerminalHandle::detached_for_test(80, 24).into_resource(None, channels.output)
 }
 
 /// Receivers for a [`stub_terminal`] handle; every channel stays open so
@@ -133,7 +129,7 @@ pub(crate) fn stub_terminal() -> (ResourceHandle, StubRx) {
         resize,
         ..TerminalHandle::detached_for_test(80, 24)
     };
-    let handle = ResourceHandle::new(None, broadcast::channel(8).0, facet);
+    let handle = facet.into_resource(None, broadcast::channel(8).0);
     let rx = StubRx {
         snapshot: snapshot_rx,
         resize: resize_rx,

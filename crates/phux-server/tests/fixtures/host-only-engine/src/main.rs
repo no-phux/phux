@@ -15,7 +15,7 @@ impl TerminalEngineFactory for FakeEngine {
         );
         let facet =
             phux_terminal_api::actor::TerminalHandle::detached_for_test(request.cols, request.rows);
-        let handle = phux_resource::ResourceHandle::new(None, channels.output, facet);
+        let handle = facet.into_resource(None, channels.output);
         let (_, program_status) = tokio::sync::watch::channel(Vec::new());
         let (_, events) = phux_resource::event_sink::event_sink(request.reports.event_capacity);
         Ok(EngineBundle {

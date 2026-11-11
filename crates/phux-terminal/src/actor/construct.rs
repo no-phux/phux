@@ -9,9 +9,9 @@ use super::{
     DEFAULT_SCROLLBACK, EncodedInputRequest, GhosttyTerminal, HashMap, InputEncoderSnapshot,
     NativeRequestReceivers, PerTerminalFocusEncoder, PerTerminalKeyEncoder,
     PerTerminalMouseEncoder, PerTerminalPasteEncoder, PtyEvent, PtyOwned, PtySource, Rc, RefCell,
-    ResourceCore, ResourceHandle, ResourceKind, ResourceLifecycle, SizeReportSize,
-    SnapshotSynthesizer, TerminalActor, TerminalActorBundle, TerminalActorError, TerminalHandle,
-    VecDeque, adopt_pty, effects, mpsc, spawn_pty, watch,
+    ResourceCore, ResourceKind, ResourceLifecycle, SizeReportSize, SnapshotSynthesizer,
+    TerminalActor, TerminalActorBundle, TerminalActorError, TerminalHandle, VecDeque, adopt_pty,
+    effects, mpsc, spawn_pty, watch,
 };
 use phux_config::ScrollbackLimits;
 
@@ -346,7 +346,8 @@ impl TerminalActor {
             cols,
             rows,
         };
-        let handle = ResourceHandle::new(actor.core.parent(), core_channels.output, facet)
+        let handle = facet
+            .into_resource(actor.core.parent(), core_channels.output)
             .with_companion(phux_agent_session::parent::AgentParent {
                 mailbox: agent_parent_tx,
             });

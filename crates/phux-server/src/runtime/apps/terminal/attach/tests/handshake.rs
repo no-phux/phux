@@ -8,7 +8,7 @@ use super::*;
 
 /// A Terminal handle with every channel closed (no actor behind it).
 fn detached_handle(facet: phux_terminal::actor::TerminalHandle) -> crate::resource::ResourceHandle {
-    crate::resource::ResourceHandle::new(None, tokio::sync::broadcast::channel(8).0, facet)
+    facet.into_resource(None, tokio::sync::broadcast::channel(8).0)
 }
 
 /// Drive `handle_attach` for session `name` with fixed defaults.

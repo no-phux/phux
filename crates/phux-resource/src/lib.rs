@@ -10,8 +10,9 @@
 //! stores without knowing its type, reached only through
 //! [`ResourceHandle::facet`], the single source of [`WrongResourceKind`].
 //! An app owns its facet type, so this crate names no kind's internals: what
-//! the host asks of every kind is [`ResourceOps`], and a surface several
-//! kinds could share is a [companion](ResourceHandle::companion).
+//! the host asks of every kind is [`ResourceOps`], and a surface only some
+//! kinds offer is a [companion](ResourceHandle::companion), such as those in
+//! [`companions`].
 //! Engines follow ADR-0014: `!Send` state stays in one `spawn_local` task.
 
 #![allow(
@@ -27,6 +28,7 @@ use phux_protocol::wire::frame::{ControlAction, FrameKind};
 use tokio::sync::{broadcast, oneshot};
 use tokio_util::sync::CancellationToken;
 
+pub mod companions;
 pub mod cwd_query;
 pub mod event_sink;
 pub mod handoff_env;
@@ -204,24 +206,12 @@ pub trait ResourceFacet: ResourceOps + std::any::Any {
 }
 
 /// What the host asks of any resource without knowing its kind. Every kind
-/// answers each one: there is no default to inherit by omission.
+/// answers each one: there is no default to inherit by omission. What only
+/// some kinds answer is a [companion](ResourceHandle::companion).
 pub trait ResourceOps: Send + Sync + std::fmt::Debug {
-    /// Ask the engine to take `size` in cells, returning whether it accepted.
-    fn resize(&self, size: (u16, u16), cell_px: Option<(u16, u16)>) -> bool;
-
-    /// Tell the engine its input lease changed, waiting for mailbox room.
-    fn lease_changed(&self, change: LeaseChange) -> Delivery;
-
-    /// [`Self::lease_changed`] for a caller that may not wait; a full
-    /// mailbox drops the notice.
-    fn try_lease_changed(&self, change: LeaseChange);
-
     /// The backing exited and the resource is retained (ADR-0124): report
     /// it, stop any background work, refuse input.
     fn retire(&self) -> Delivery;
-
-    /// Whether this resource is a record stream that has not ended.
-    fn is_live_stream(&self) -> bool;
 }
 
 /// `Send + Clone` handle to one resource's engine (ADR-0014). Every field

@@ -234,7 +234,6 @@ const SCANS: [Scan; 6] = [
                 "permanent: app_for, the one kind-to-app match",
             ),
             ("runtime/organization/translate.rs", 3, LAUNCH),
-            ("state/bindings.rs", 1, SLOTS),
             ("state/legacy_snapshot.rs", 4, KIND_SPEC),
             ("state/native_agent.rs", 1, SLOTS),
             (

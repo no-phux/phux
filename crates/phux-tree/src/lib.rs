@@ -18,8 +18,8 @@ pub use phux_core::image::{ImageFormat, image_size};
 use phux_core::resource::ResourceKind;
 use phux_protocol::wire::frame::typed_document::is_textual;
 use phux_resource::{
-    Delivery, LeaseChange, ResourceCore, ResourceCoreChannels, ResourceFacet, ResourceHandle,
-    ResourceOps, ResourceOutput, WrongResourceKind,
+    Delivery, ResourceCore, ResourceCoreChannels, ResourceFacet, ResourceHandle, ResourceOps,
+    ResourceOutput, WrongResourceKind,
 };
 use tokio::sync::{mpsc, oneshot};
 use tokio_util::sync::CancellationToken;
@@ -176,25 +176,11 @@ impl<K: DocumentKind> ResourceFacet for DocumentHandle<K> {
     const KIND: ResourceKind = K::KIND;
 }
 
-/// A document has no grid to size and no input lease.
+/// A document has no grid to size, no input lease, and is not a record
+/// stream.
 impl<K: DocumentKind> ResourceOps for DocumentHandle<K> {
-    fn resize(&self, _size: (u16, u16), _cell_px: Option<(u16, u16)>) -> bool {
-        false
-    }
-
-    fn lease_changed(&self, _change: LeaseChange) -> Delivery {
-        Box::pin(std::future::ready(()))
-    }
-
-    fn try_lease_changed(&self, _change: LeaseChange) {}
-
     fn retire(&self) -> Delivery {
         Box::pin(std::future::ready(()))
-    }
-
-    /// A tree is a document, not a record stream.
-    fn is_live_stream(&self) -> bool {
-        false
     }
 }
 

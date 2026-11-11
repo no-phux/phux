@@ -71,9 +71,12 @@ pub(super) async fn handle_attach_terminal(
                 let released = s.undo_attach_takeover(client_id, core, effects);
                 (released, s.input_lease_holder(core))
             });
-            if restore && effects.role_changed {
-                handle
-                    .ops()
+            let lease = handle.companion::<crate::resource::companions::Leasable>();
+            if restore
+                && effects.role_changed
+                && let Some(lease) = lease
+            {
+                lease
                     .lease_changed(crate::resource::LeaseChange {
                         input_holder: holder.map(super::super::wire_client),
                         action: ControlAction::RoleChanged,
@@ -81,9 +84,8 @@ pub(super) async fn handle_attach_terminal(
                     })
                     .await;
             }
-            if released {
-                handle
-                    .ops()
+            if released && let Some(lease) = lease {
+                lease
                     .lease_changed(crate::resource::LeaseChange {
                         input_holder: None,
                         action: ControlAction::Released,
@@ -222,14 +224,15 @@ pub(crate) async fn announce_role_effects_on(
 ) {
     let changed = effects.role_changed.then_some(ControlAction::RoleChanged);
     for action in [changed, effects.lease].into_iter().flatten() {
-        handle
-            .ops()
-            .lease_changed(crate::resource::LeaseChange {
-                input_holder: holder.map(super::super::wire_client),
-                action,
-                actor: Some(super::super::wire_client(client_id)),
-            })
-            .await;
+        if let Some(lease) = handle.companion::<crate::resource::companions::Leasable>() {
+            lease
+                .lease_changed(crate::resource::LeaseChange {
+                    input_holder: holder.map(super::super::wire_client),
+                    action,
+                    actor: Some(super::super::wire_client(client_id)),
+                })
+                .await;
+        }
     }
 }
 
