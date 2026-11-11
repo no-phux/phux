@@ -30,6 +30,7 @@ fn entry(endpoint: &str, fingerprint: Option<&str>) -> RemoteEntry {
         client_cert: None,
         client_key: None,
         color: None,
+        paused: false,
     }
 }
 

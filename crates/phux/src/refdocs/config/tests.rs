@@ -73,6 +73,7 @@ fn fully_populated_sample() -> Config {
         client_cert: Some(PathBuf::from("/state/remotes/mini.client.pem")),
         client_key: Some(PathBuf::from("/state/remotes/mini.client.key")),
         color: Some("violet".to_owned()),
+        paused: false,
     }];
     config.host.color = Some("sky".to_owned());
     config

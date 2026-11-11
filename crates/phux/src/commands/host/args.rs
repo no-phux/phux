@@ -276,17 +276,19 @@ pub(crate) enum HostAction {
         name: String,
     },
 
-    /// Enable a satellite; a running local hub dials it now.
+    /// Enable a satellite (a running local hub dials it now), or resume a
+    /// paused remote.
     Enable {
-        /// Registered satellite name.
+        /// Registered host name.
         name: String,
         #[usage(flatten)]
         json: JsonOpt,
     },
 
-    /// Disable a satellite without forgetting it; a running hub drops its link.
+    /// Disable a satellite without forgetting it (a running hub drops its
+    /// link), or pause a remote: it stays registered and nothing dials it.
     Disable {
-        /// Registered satellite name.
+        /// Registered host name.
         name: String,
         #[usage(flatten)]
         json: JsonOpt,

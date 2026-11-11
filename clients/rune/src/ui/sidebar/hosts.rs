@@ -92,7 +92,7 @@ pub(super) fn other_machines(desk: &Desk, ink: &Ink) -> El {
             (
                 Some(host.name.clone()),
                 host.name.as_str(),
-                !host.needs_direct,
+                !host.ssh_only && !host.paused,
             )
         });
     let mut list = col().w_full().gap(1.0).px(8.0).pt(10.0);

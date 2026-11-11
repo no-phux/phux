@@ -41,13 +41,9 @@ pub(super) fn resolve_host_role(
         Some(role) if found(role) => Ok(role),
         Some(role) if found(role.other()) => {
             let other = role.other().as_str();
-            let remedy = if matches!(verb, "enable" | "disable") {
-                "only satellites have an enabled state; remotes are always attachable".to_owned()
-            } else {
-                format!(
-                    "it is registered as a {other}; run `phux host {verb} --role {other} {name}`"
-                )
-            };
+            let remedy = format!(
+                "it is registered as a {other}; run `phux host {verb} --role {other} {name}`"
+            );
             Err((
                 CliError::new(
                     codes::REGISTRY,
@@ -318,14 +314,17 @@ pub(super) fn inbound_rename_refusal(row: &HostRow) -> Option<CliError> {
 }
 
 pub(super) fn run_enabled(name: &str, enabled: bool, json: bool) -> ExitCode {
-    let mut row = match find_host(
-        name,
-        Some(HostRole::Satellite),
-        if enabled { "enable" } else { "disable" },
-    ) {
+    let verb = if enabled { "enable" } else { "disable" };
+    // A name in both registries means the satellite, as it always has.
+    let found =
+        find_host(name, Some(HostRole::Satellite), verb).or_else(|_| find_host(name, None, verb));
+    let mut row = match found {
         Ok(row) => row,
         Err((err, code)) => return json_err::emit(json, &err, code),
     };
+    if row.role == HostRole::Remote {
+        return pause_remote(row, !enabled, json);
+    }
     if let Err(err) = edit_host_field(&row, "enabled", enabled.into()) {
         return json_err::emit(json, &registry_failure(err), 1);
     }
@@ -343,6 +342,25 @@ pub(super) fn run_enabled(name: &str, enabled: bool, json: bool) -> ExitCode {
     }
     outln!("Satellite {name:?} {state} in config.");
     outln!("  {}", reload.describe());
+    ExitCode::SUCCESS
+}
+
+/// Pause or resume a remote: it stays registered, and nothing dials it
+/// while paused.
+fn pause_remote(mut row: HostRow, paused: bool, json: bool) -> ExitCode {
+    if let Err(err) = edit_host_field(&row, "paused", paused.into()) {
+        return json_err::emit(json, &registry_failure(err), 1);
+    }
+    row.enabled = paused.then_some(false);
+    if json {
+        return crate::output::json(&serde_json::json!({
+            "schema_version": 1,
+            "host": row_json(&row),
+            "requires_restart": false,
+        }));
+    }
+    let state = if paused { "paused" } else { "resumed" };
+    outln!("Remote {:?} {state} in config.", row.name);
     ExitCode::SUCCESS
 }
 

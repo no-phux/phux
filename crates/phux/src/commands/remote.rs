@@ -57,6 +57,7 @@ pub(crate) struct RemoteEntry {
     pub(crate) client_key: Option<PathBuf>,
     /// Palette id overriding the automatic host colour, when set.
     pub(crate) color: Option<String>,
+    pub(crate) paused: bool,
 }
 
 impl RemoteEntry {
@@ -220,6 +221,7 @@ pub(crate) fn load_registry() -> Result<Vec<RemoteEntry>, String> {
             client_cert: remote.client_cert,
             client_key: remote.client_key,
             color: remote.color,
+            paused: remote.paused,
         })
         .collect())
 }

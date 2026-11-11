@@ -252,3 +252,20 @@ fn empty_states_name_the_add_command() {
     let satellites = empty_state(Some(HostRole::Satellite));
     assert!(satellites.contains("--role satellite"));
 }
+
+#[test]
+fn pausing_a_remote_writes_a_flag_the_registry_reads_back() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join("config.toml");
+    std::fs::write(
+        &path,
+        "[[remote]]\nname = 'mini'\nendpoint = 'quic://example:8788'\n",
+    )
+    .expect("seed");
+    let mut mini = row("mini", HostRole::Remote);
+    mini.endpoint = "quic://example:8788".to_owned();
+    edit_host_field_at(&path, &mini, "paused", true.into()).expect("pause");
+    let text = std::fs::read_to_string(&path).expect("read");
+    let cfg = phux_config::parse_with_defaults(&text, &path).expect("parses");
+    assert!(cfg.remote[0].paused, "{text}");
+}

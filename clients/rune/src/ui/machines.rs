@@ -160,26 +160,34 @@ fn local_machine(desk: &Desk, ink: &Ink) -> El {
         )
 }
 
-/// A machine a window can't dial is listed, with what it needs, but doesn't
-/// press: its only route is ssh.
 fn machine(host: &Host, desk: &Desk, ink: &Ink) -> El {
     let name = host.name.clone();
     let current = desk.machines.current.as_ref() == Some(&host.name);
     let label = text(name.clone()).font(LABEL).color(ink.text).truncate();
-    let row = if host.needs_direct {
-        row().w_full().px(10.0).py(7.0).gap(8.0).items_center()
+    let held = name.clone();
+    let (paused, pausing) = (host.paused, name.clone());
+    let shell = row_shell(format!("machine-{name}"), ink);
+    // A paused machine is not dialed, so its row opens nothing.
+    let shell = if paused {
+        shell
     } else {
-        let held = name.clone();
-        row_shell(format!("machine-{name}"), ink)
-            .on_press(move |d: &mut Desk| d.switch_machine(Some(held.clone())))
+        shell.on_press(move |d: &mut Desk| d.switch_machine(Some(held.clone())))
     };
-    row.child(color_button(&name, ink))
+    shell
+        .child(color_button(&name, ink))
         .child(label)
         .child(el().grow(1.0))
         .children(
-            host.needs_direct
-                .then(|| text("needs a direct route").font(CAPTION).color(ink.dim)),
+            host.ssh_only
+                .then(|| text("over ssh").font(CAPTION).color(ink.dim)),
         )
+        .children(paused.then(|| text("paused").font(CAPTION).color(ink.dim)))
+        .child(chip(
+            if paused { "Resume" } else { "Pause" },
+            format!("machine-pause-{name}"),
+            ink,
+            move |d: &mut Desk| d.pause_machine(pausing.clone(), !paused),
+        ))
         .children(
             current
                 .then(|| current_state(desk, ink))

@@ -168,6 +168,8 @@ impl PhuxRemoteTunnel {
             .map_or(REMOTE_TRANSPORT_NONE, |tunnel| match tunnel.transport() {
                 Transport::Quic(_) => REMOTE_TRANSPORT_QUIC,
                 Transport::Ws(_) => REMOTE_TRANSPORT_WS,
+                // A tunnel over ssh fails to serve, so it never reports one.
+                Transport::Ssh { .. } => REMOTE_TRANSPORT_NONE,
             })
     }
 

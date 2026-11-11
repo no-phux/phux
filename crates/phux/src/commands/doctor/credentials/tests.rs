@@ -119,6 +119,7 @@ fn remote(
         client_cert: cert,
         client_key: key.map(PathBuf::from),
         color: None,
+        paused: false,
     }
 }
 
