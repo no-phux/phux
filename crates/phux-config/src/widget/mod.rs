@@ -162,8 +162,8 @@ pub struct WidgetContext<'a> {
     pub cwd: &'a str,
     /// Exit code of the focused pane's last finished command (OSC 133 `D`).
     pub last_exit: Option<i32>,
-    /// Width of the whole row (not the widget's budget), read by the
-    /// `min-cols` / `max-cols` options. Set by [`StatusBar::render`].
+    /// Terminal width the `min-cols` / `max-cols` gates read;
+    /// [`StatusBar::render`] raises it to the row's width at least.
     pub cols: u16,
 }
 
@@ -382,7 +382,7 @@ pub type WidgetFactory =
 
 /// Universal widget-level [`CellStyle`] table.
 const STYLE_OPT: &str = "style";
-/// Universal visibility bounds on the *bar* width: outside them the widget
+/// Universal bounds on the terminal width: outside them the widget
 /// renders nothing, so one lineup can adapt to the terminal.
 const MIN_COLS_OPT: &str = "min-cols";
 const MAX_COLS_OPT: &str = "max-cols";
