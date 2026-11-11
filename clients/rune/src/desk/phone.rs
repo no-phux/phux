@@ -8,6 +8,7 @@ use super::Desk;
 use super::input::Modal;
 use crate::keys::{self, Typed};
 
+mod refit;
 pub mod spatial;
 pub mod touch;
 
@@ -41,6 +42,8 @@ pub struct Phone {
     /// The finger on the terminal, and the coast it left behind.
     touch: Option<touch::Touch>,
     fling: Option<touch::Fling>,
+    /// The changed grid waiting for the keyboard or sheet layout to settle.
+    refit: Option<refit::Refit>,
     /// What a native host should play next (a haptic).
     pub feedback: Option<touch::Feedback>,
     pub ctrl: bool,
@@ -66,6 +69,7 @@ impl Default for Phone {
             navigation: None,
             touch: None,
             fling: None,
+            refit: None,
             feedback: None,
             ctrl: false,
             alt: false,
@@ -100,6 +104,7 @@ impl Phone {
         self.navigation = None;
         self.travel = [0.0; 2];
         self.fling = None;
+        self.refit = None;
     }
 
     pub const fn latched(&self, latch: Latch) -> bool {

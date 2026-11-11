@@ -28,6 +28,7 @@ struct Host {
     layer: LayerHost<State>,
     input: Input,
     frames: u64,
+    viewport: ((f32, f32), f32),
     poisoned: bool,
 }
 
@@ -151,6 +152,7 @@ pub unsafe extern "C" fn phux_rune_ios_create(
             layer,
             input: Input::default(),
             frames: 0,
+            viewport: ((width as f32, height as f32), scale as f32),
             poisoned: false,
         }))
         .cast())
@@ -178,9 +180,13 @@ pub unsafe extern "C" fn phux_rune_ios_resize(
         if ![width, height, scale].iter().all(|v| v.is_finite()) {
             return Err("Non-finite viewport.".into());
         }
-        unsafe { host(pointer)? }
-            .layer
-            .resize((width as f32, height as f32), scale as f32);
+        let host = unsafe { host(pointer)? };
+        let viewport = ((width as f32, height as f32), scale as f32);
+        if host.viewport != viewport {
+            mobile::viewport_changed(host.layer.runtime_mut());
+            host.viewport = viewport;
+        }
+        host.layer.resize(viewport.0, viewport.1);
         Ok(())
     });
 }
