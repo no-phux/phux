@@ -224,6 +224,11 @@ impl Desk {
         self.split_sizes.insert(path, size);
     }
 
+    /// The whole split tree's size from its last layout, once it has one.
+    pub fn split_area(&self) -> Option<[f32; 2]> {
+        self.split_sizes.get(&Vec::new()).copied()
+    }
+
     /// The length a divider at `path` travels along.
     pub fn split_span(&self, path: &SplitPath, horizontal: bool) -> f32 {
         self.split_sizes
