@@ -72,13 +72,15 @@ pub(super) const ACTION_ORDER: &[&str] = &[
     "rename-window",
     "move-window",
     "go-to-directory",
+    // Detach leads its group: it is the first key onboarding teaches, so a
+    // cramped popup that keeps each group's first rows still shows it.
+    "detach",
     "new-session",
     "session-picker",
     "next-session",
     "previous-session",
     "last-session",
     "rename-session",
-    "detach",
     "command-palette",
     "show-help",
     "agent-fleet",
