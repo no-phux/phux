@@ -26,9 +26,12 @@ mod tests;
 /// The terminal area: the step when onboarding is open, the panes otherwise,
 /// and both while the migration's agent works.
 pub fn stage(desk: &Desk, p: &Ink, cx: &mut Cx<Desk>) -> El {
+    // The grant sheet moves the window in device pixels.
+    desk.scale.set(cx.env().scale);
     if !desk.onboarding.open || desk.bare.is_some() {
         return panes::view(desk, p, cx);
     }
+    desk.onboarding.fox.still.set(cx.is_reduced_motion());
     let step = panes::card(
         el().w_full().h_full().fill(p.bg).child(page(desk, p)),
         p.bg,
@@ -64,11 +67,11 @@ pub fn stage(desk: &Desk, p: &Ink, cx: &mut Cx<Desk>) -> El {
 fn page(desk: &Desk, p: &Ink) -> El {
     let step = desk.onboarding.step;
     let body = match step {
-        Step::Welcome => welcome(p),
+        Step::Welcome => welcome(desk, p),
         Step::Look => look::look(desk, p),
         Step::Agents => agents::agents(desk, p),
         Step::Migrate => migrate::migrate(desk, p),
-        Step::Done => done::done(p),
+        Step::Done => done::done(desk, p),
     };
     let content = col()
         .key(format!("onboarding-{}", step.id()))
@@ -242,13 +245,22 @@ fn nav(desk: &Desk, p: &Ink) -> Option<El> {
     )
 }
 
-fn welcome(p: &Ink) -> El {
+/// Brand art at `size`: blank, at that size, until it decodes.
+fn art(image: Option<&rune::Image>, size: f32) -> El {
+    let frame = el().size(size, size);
+    match image {
+        Some(image) => frame.pixels(image.pixels()),
+        None => frame,
+    }
+}
+
+fn welcome(desk: &Desk, p: &Ink) -> El {
     col()
         .w_full()
         .max_w(520.0)
         .gap(12.0)
         .items_center()
-        .child(rune::icon(&icons::FOX, 112.0).color(p.text).a11y_hidden())
+        .child(art(desk.fox_image(), 136.0).a11y_hidden())
         .child(
             text("Get started with phux")
                 .font(TextStyle::new(30.0, 700.0))

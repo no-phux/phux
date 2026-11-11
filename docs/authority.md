@@ -18,6 +18,14 @@ surface mirror display[:OUTPUT]`), or none. Plain `phux agent tree open`,
 CLASS` says otherwise. `phux ls --json`, `phux resource show --json` and MCP
 `phux_documents` report it as `control`.
 
+Only the owner socket opens a document that declares a class, `page`
+included: the class decides which viewers' `input@CLASS` grants reach its
+producer. A scoped grant opens a tree, surface or document with no class
+beside a Terminal it may bind (`CREATE` on its Group, `BIND` on it), as it
+opens an agent session, and only over the Unix socket or localhost, the
+connections that may publish to it. A delegated agent holds no `CREATE`,
+so it opens none.
+
 ## Watching
 
 Attaching to a window or display, its snapshots (`phux agent surface

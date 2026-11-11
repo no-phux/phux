@@ -35,8 +35,14 @@ async fn phux_paste(args: &Value) -> Result<Value, ToolError> {
     } else {
         PasteTrust::Trusted
     };
-    let pane = resolve_selector(&socket, &selector, true).await?;
-    phux_client::send_keys::paste_to(&socket, pane.clone(), text.into_bytes(), trust).await?;
+    let target = resolve_kinded(&socket, &selector, true).await?;
+    target.require_terminal("phux_paste", Verb::Paste)?;
+    let pasted =
+        phux_client::send_keys::paste_to(&socket, target.id.clone(), text.into_bytes(), trust);
+    if let Err(err) = pasted.await {
+        return Err(target.refused("phux_paste", Verb::Paste, &socket, err).await);
+    }
+    let pane = target.id;
     Ok(json!({ "sent": true, "pane": pane_value(&pane), "untrusted": untrusted }))
 }
 

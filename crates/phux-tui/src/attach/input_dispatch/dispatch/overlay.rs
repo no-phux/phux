@@ -205,7 +205,7 @@ impl<W: crate::attach::RenderSink> EventEnv<'_, '_, W> {
                     let cells =
                         crate::attach::copy::viewport_row_cells(terminal, req.row, req.pane_cols);
                     let col =
-                        crate::render::overlay::row_motion_target(&cells, req.col, req.motion);
+                        phux_client_core::motion::row_motion_target(&cells, req.col, req.motion);
                     self.ctx.overlays.apply_copy_motion(col);
                 }
                 Ok(true)

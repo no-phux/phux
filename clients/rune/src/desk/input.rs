@@ -83,6 +83,9 @@ impl Desk {
             self.modal_key(modal, event, action, tx);
             return true;
         }
+        if self.copy_mode_key(event, tx) {
+            return true;
+        }
         if self.native_text_shortcut(event) {
             return false;
         }
@@ -182,11 +185,12 @@ impl Desk {
     /// quietly.
     pub(super) fn send_input(&mut self, send: impl FnOnce(&mut ControlPlane, &ResourceId) -> bool) {
         self.stop_coast();
+        self.leave_copy_mode(false);
         let (Some(client), Some(shown)) = (self.client.clone(), &self.shown) else {
             return;
         };
         let Some(view) = shown.view else { return };
-        let terminal = shown.terminal.clone();
+        let terminal = shown.resource.clone();
         let frame = client.acquire_view(view);
         let behind = frame.as_ref().is_some_and(|f| !f.scrollbar.at_tail());
         let sent = client.with_control(|control| {
@@ -295,6 +299,7 @@ impl Desk {
             Shortcut::FindNext => self.step_find(-1),
             Shortcut::FindPrevious => self.step_find(1),
             Shortcut::FindSelection => self.find_selection(),
+            Shortcut::CopyMode => self.toggle_copy_mode(),
             Shortcut::Bare => self.toggle_bare(),
         }
     }
@@ -373,7 +378,7 @@ impl Desk {
     /// vouches for, after asking otherwise. Closing is not undoable, so
     /// "unknown" asks too.
     pub fn close_terminal(&mut self) {
-        let Some(terminal) = self.shown.as_ref().map(|s| s.terminal.clone()) else {
+        let Some(terminal) = self.shown.as_ref().map(|s| s.resource.clone()) else {
             return;
         };
         if self.is_document(&terminal) {
@@ -482,7 +487,7 @@ impl Desk {
     /// The view showing `terminal`, focused or not.
     pub(super) fn view_of(&self, terminal: &ResourceId) -> Option<ViewId> {
         match &self.shown {
-            Some(shown) if &shown.terminal == terminal => shown.view,
+            Some(shown) if &shown.resource == terminal => shown.view,
             _ => self.others.get(terminal).copied().flatten(),
         }
     }

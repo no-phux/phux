@@ -13,8 +13,8 @@ use phux_protocol::{
         ServerFeatureExt, ServerFeatureExtSet,
     },
     ids::{
-        ArrangementKey, AuthorityId, BootstrapId, ClientId, Revision, SessionId, SessionKey,
-        StreamId, WindowId,
+        ArrangementKey, AuthorityId, BootstrapId, ClientId, ResourceKind, Revision, SessionId,
+        SessionKey, StreamId, WindowId,
     },
     wire::{
         frame::{
@@ -288,7 +288,7 @@ fn document_only_startup_adopts_org_identity_secondary_leaves_and_tabs() {
         client.topology().unwrap().panes.is_empty(),
         "Topology stays terminal-only"
     );
-    assert_eq!(rt.state.shown.as_ref().unwrap().terminal, id(1));
+    assert_eq!(rt.state.shown.as_ref().unwrap().resource, id(1));
     assert!(rt.state.shown.as_ref().unwrap().view.is_none());
     assert_eq!(rt.state.others.get(&id(2)), Some(&None));
     assert_eq!(leaves(rt.state.layout.as_ref().unwrap()), [id(1), id(2)]);
@@ -298,7 +298,7 @@ fn document_only_startup_adopts_org_identity_secondary_leaves_and_tabs() {
     assert_eq!(rt.state.others.get(&id(1)), Some(&None));
     rt.update(|d, _| d.select_tab(1));
     step(&mut rt);
-    assert_eq!(rt.state.shown.as_ref().unwrap().terminal, id(3));
+    assert_eq!(rt.state.shown.as_ref().unwrap().resource, id(3));
     assert!(
         rt.state
             .palette_hits()
@@ -454,7 +454,7 @@ fn organization_removal_prunes_documents_and_hands_focus_to_live_neighbour() {
     remove(&client, 1, ResourceKind::AccessibilityTree);
     step(&mut rt);
     assert!(!rt.state.resources.entries.contains_key(&id(1)));
-    assert_eq!(rt.state.shown.as_ref().unwrap().terminal, id(2));
+    assert_eq!(rt.state.shown.as_ref().unwrap().resource, id(2));
     assert_eq!(leaves(rt.state.layout.as_ref().unwrap()), [id(2)]);
     assert!(rt.state.others.is_empty());
     assert!(
@@ -501,7 +501,7 @@ fn closing_a_mirror_view_preserves_unrelated_tabs_and_never_ends_its_producer() 
     );
     rt.update(|d, _| d.show(id(1), "work"));
     assert_eq!(
-        rt.state.shown.as_ref().unwrap().terminal,
+        rt.state.shown.as_ref().unwrap().resource,
         id(1),
         "direct reopen is still available"
     );
@@ -579,10 +579,11 @@ fn mixed_layout_keeps_terminal_view_and_readonly_secondary_document() {
     assert!(rt.state.others[&id(1)].is_some());
     remove(&client, 2, ResourceKind::AccessibilityTree);
     step(&mut rt);
-    assert_eq!(rt.state.shown.as_ref().unwrap().terminal, id(1));
+    assert_eq!(rt.state.shown.as_ref().unwrap().resource, id(1));
     assert!(rt.state.shown.as_ref().unwrap().view.is_some());
 }
 
+mod addressable;
 mod input;
 mod lifecycle;
 mod native;

@@ -160,6 +160,12 @@ pub(super) fn handle_metadata_changed<W: crate::attach::RenderSink>(
             value.as_deref(),
         ));
     }
+    if key == phux_client::session_order::SESSION_ORDER_KEY && matches!(scope, Scope::Global) {
+        return Ok(FrameOutcome {
+            session_order: Some(phux_client::session_order::decode(value.as_deref())),
+            ..FrameOutcome::default()
+        });
+    }
     let Some(LayoutKeyOwner::Session(key_session)) = layout_key_scope_session(scope, key) else {
         return Ok(FrameOutcome::default());
     };

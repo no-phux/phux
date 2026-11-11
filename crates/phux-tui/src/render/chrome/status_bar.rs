@@ -71,9 +71,19 @@ impl<'a> StatusBarContext<'a> {
             windows: self.windows,
             cwd: self.cwd,
             last_exit: self.last_exit,
-            // Placeholder: `StatusBar::render` stamps the real row width
-            // (the one place that knows it) before any widget sees this.
+            // Placeholder: `StatusBar::render` stamps the row width.
             cols: 0,
+        }
+    }
+
+    /// [`Self::as_widget`] for a bar on a `terminal_cols`-wide terminal, so
+    /// `min-cols` / `max-cols` gate on the terminal, not the narrower row a
+    /// sidebar or the key chip leaves the bar.
+    #[must_use]
+    pub const fn as_widget_in(&self, terminal_cols: u16) -> WidgetContext<'a> {
+        WidgetContext {
+            cols: terminal_cols,
+            ..self.as_widget()
         }
     }
 }

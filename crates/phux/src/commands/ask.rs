@@ -3,11 +3,12 @@ use std::process::ExitCode;
 
 use phux_client::ask::AskedPayload;
 use phux_client::attach::AttachError;
+use phux_client::read::Verb;
 use phux_client::selector::format_terminal_id;
 use phux_protocol::ResourceId;
 use phux_server::runtime::default_socket_path;
 
-use crate::commands::{cli_runtime, json_err, parse_selector, resolve_target};
+use crate::commands::{cli_runtime, json_err, parse_selector, resolve_terminal_target};
 
 pub(crate) fn run_ask(
     target: &str,
@@ -28,7 +29,7 @@ pub(crate) fn run_ask(
         Err(code) => return code,
     };
     rt.block_on(async move {
-        let pane = match resolve_target(&socket_path, &selector, "ask", json).await {
+        let pane = match resolve_terminal_target(&socket_path, &selector, Verb::Ask, json).await {
             Ok(id) => id,
             Err(code) => return code,
         };
@@ -43,7 +44,7 @@ pub(crate) fn run_ask(
             Err(err @ AttachError::Io(_)) => {
                 json_err::report_no_server(json, &err, &socket_path, "ask")
             }
-            Err(AttachError::Refused(msg)) => {
+            Err(AttachError::Refused(msg) | AttachError::WrongResourceKind(msg)) => {
                 error!("cannot report ask for '{target}': {msg}");
                 ExitCode::FAILURE
             }

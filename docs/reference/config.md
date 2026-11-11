@@ -26,6 +26,7 @@ The configuration surface of `~/.config/phux/config.toml`. The loader layers you
 | `[[connector]]` | Outbound relay links this server supervises: relay endpoint, token-file path, and certificate pin. |
 | `[[uplink]]` | Hubs this server dials out to as a satellite, written by `phux host join`: satellite name, hub endpoint, the hub's CA pin, and the enrolled identity's paths. |
 | `[[mirrors]]` | Displays and windows the server keeps mirrored, each in its own `mirror-*` session, restarted with backoff and live-reloaded (Linux; macOS skips them). |
+| `[[producers]]` | Commands kept running as document producers, each in its own `producer-*` session, like `[[mirrors]]`. |
 | `[[remote]]` | Remote phux servers this machine attaches to, written by `phux host add` and resolved by `phux attach <name>`; `color` overrides a host's automatic colour. |
 | `[host]` | This machine as clients draw it: `color` overrides its automatic colour (`phux host color --local`). |
 | `[[projects]]` | Named projects `phux project open <name>` resolves: a checkout path and an optional out-of-repo recipe. |
@@ -488,6 +489,15 @@ exclusive = true
 # max-width = 1920
 # interval-ms = 1000
 
+# Standing producers: any command this server keeps running as a document
+# producer (`docs/applications.md#standing-producers`), in its own session
+# `producer-<name>`, restarted and reloaded like the mirrors above. A first
+# word `phux` is this server's own binary.
+#
+# [[producers]]
+# name = "downloads"
+# command = ["phux", "agent", "doc", "folder", "/home/me/Downloads"]
+
 # Remote phux servers this machine attaches TO: `phux attach
 # mini` resolves the endpoint, certificate pin, and token recorded here, so
 # you never retype them. `phux host add me@mini` writes an entry for you
@@ -588,7 +598,7 @@ left = [
 center = []
 # The right slot changes shape with the terminal, via the universal
 # `min-cols` / `max-cols` options every widget accepts (they gate on the
-# width of the whole bar, not on the widget's own share).
+# terminal's width, not the bar's or the widget's own share).
 #
 # Wide enough for ambient context (>64 columns): session name and clock.
 # Narrower than that, those columns are worth more as an affordance: the

@@ -1,5 +1,6 @@
 //! Raw and acknowledged input delivery.
 
+use super::subscriptions::{Origin, RIDES_SHARED_PUMP};
 use super::{
     ControlPlane, Event, FocusEvent, FrameKind, InputEvent, InputOperationId, KeyEvent,
     MAX_APPLY_INPUT_COMMAND_BODY, MouseEvent, PasteEvent, PasteTrust, Pending, ResourceId, Status,
@@ -254,9 +255,8 @@ impl ControlPlane {
         {
             return false;
         }
-        self.attach_terminals.contains(terminal_id)
-            || self.own_spawns.contains(terminal_id)
-            || (self.terminal_attached.contains(terminal_id)
+        self.subscriptions.has_any(terminal_id, RIDES_SHARED_PUMP)
+            || (self.subscriptions.has(terminal_id, Origin::AttachResource)
                 && !self.pending.values().any(
                     |pending| matches!(pending, Pending::AttachTerminal(id) if id == terminal_id),
                 ))

@@ -1,5 +1,5 @@
-//! Admission and retirement rules shared by the replica-less lanes
-//! (`AgentSession` records and documents).
+//! Admission and retirement rules every lane shares: Terminal replicas,
+//! `AgentSession` records and documents.
 
 use std::collections::HashMap;
 
@@ -9,7 +9,7 @@ use phux_protocol::wire::frame::TombstoneReason;
 use super::{
     EffectBuffer, GenerationId, KernelEffect, KernelError, KernelStatus,
     MAX_BOOTSTRAP_STAGING_BYTES, MAX_BOOTSTRAP_STAGING_CHUNKS, MAX_BOOTSTRAP_STAGING_LIFETIME_MS,
-    TombstoneRecord,
+    TombstoneRecord, retired_error,
 };
 
 /// Whether staged totals, including the chunk being admitted, fit the
@@ -45,6 +45,31 @@ pub(super) const fn chunk_admission<E>(
 
 pub(super) const fn staging_lifetime_exceeded(started_at_ms: u64, now_ms: u64) -> bool {
     now_ms.saturating_sub(started_at_ms) > MAX_BOOTSTRAP_STAGING_LIFETIME_MS
+}
+
+/// Refuse a frame for a generation this lane already retired.
+pub(super) fn reject_retired<E>(
+    retired: &HashMap<GenerationId, TombstoneRecord>,
+    resource_id: &ResourceId,
+    generation: GenerationId,
+) -> Result<(), KernelError<E>> {
+    if retired.contains_key(&generation) {
+        Err(retired_error(resource_id, generation))
+    } else {
+        Ok(())
+    }
+}
+
+/// Fence a generation a newer one replaced; an earlier fence stands.
+pub(super) fn fence_replaced(
+    retired: &mut HashMap<GenerationId, TombstoneRecord>,
+    generation: GenerationId,
+    last_valid_seq: u64,
+) {
+    retired.entry(generation).or_insert(TombstoneRecord {
+        reason: TombstoneReason::ExplicitReattach,
+        last_valid_seq,
+    });
 }
 
 /// Fence `generation` as a codec failure and ask the host to recut it.

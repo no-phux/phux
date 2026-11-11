@@ -14,9 +14,6 @@
     reason = "private module shared across the runtime; pub would violate unreachable_pub"
 )]
 
-use std::collections::HashMap;
-use std::time::Duration;
-
 use futures_util::future::LocalBoxFuture;
 use phux_protocol::caps::{BootstrapLimits, BootstrapProfile, ClientCapabilities};
 use phux_protocol::ids::{
@@ -31,16 +28,16 @@ use super::connections::hello::NegotiatedConnection;
 use super::connections::plumbing::ClientPlumbing;
 use super::operation_dedupe::OperationClaim;
 use crate::resource::{ResourceHandle, ResourceKind};
-use crate::state::upgrade_blob::RebuiltSession;
-use crate::state::{ClientId, Outbound, ServerState, SharedState};
-use crate::upgrade::blob::{AgentSessionBlob, AgentStreamCut};
+use crate::state::{ClientId, Outbound, SharedState};
 
 pub(crate) mod agent_session;
 pub(crate) mod document;
 pub(crate) mod spawn;
 pub(crate) mod terminal;
+pub(crate) mod upgrade;
 
 pub(crate) use spawn::ResourceSpawn;
+pub(crate) use upgrade::{KindResume, UpgradeCut};
 
 use terminal::input_lane::{InputCredits, InputLaneHandle};
 
@@ -82,31 +79,6 @@ pub(crate) struct ResourceLaunch<'a> {
     pub(crate) resource: phux_core::ids::ResourceId,
     pub(crate) spec: &'a phux_core::LaunchSpec,
     pub(crate) root_token: &'a CancellationToken,
-}
-
-/// The agent-session streams one graceful upgrade carries. From the moment it
-/// exists until exec, the host holds it; dropping it releases whatever it
-/// still holds, and a successful exec replaces the process instead.
-pub(crate) trait StreamUpgrade {
-    /// Choose the streams to carry and return the future that cuts and seals
-    /// them. The choice happens in this call, not when the future first
-    /// runs, so the caller makes it in the same step as its tree identity.
-    fn cut<'a>(
-        &'a mut self,
-        state: &SharedState,
-        deadline: Duration,
-    ) -> LocalBoxFuture<'a, HashMap<phux_core::ids::ResourceId, AgentStreamCut>>;
-
-    /// A stream that cannot be left behind but has no cut in `cuts`.
-    fn uncarried(
-        &self,
-        state: &ServerState,
-        cuts: &HashMap<phux_core::ids::ResourceId, AgentStreamCut>,
-    ) -> Option<phux_protocol::ids::ResourceId>;
-
-    /// Reopen every sealed stream within a bounded window; a stream that
-    /// misses it is left to drop.
-    fn lift(&mut self) -> LocalBoxFuture<'_, ()>;
 }
 
 /// One client's stream or input frame about a resource, with what the
@@ -200,6 +172,14 @@ pub(crate) trait ResourceApp: Sync {
     /// Serve a `SPAWN_RESOURCE` of this kind.
     fn spawn<'a>(&'a self, spawn: ResourceSpawn<'a>) -> LocalBoxFuture<'a, ()>;
 
+    /// Begin carrying this kind's resources across a graceful upgrade;
+    /// `None` while another upgrade holds them.
+    fn begin_upgrade(&self, state: &SharedState) -> Option<Box<dyn UpgradeCut>>;
+
+    /// This kind's half of resuming from an upgrade blob, made before the
+    /// rebuild takes the state lock.
+    fn resume(&self, state: &SharedState) -> Box<dyn KindResume>;
+
     /// The tree came back from an upgrade blob and no client is connected.
     fn resumed(&self, state: &SharedState);
 
@@ -249,14 +229,24 @@ pub(crate) const fn app_for(kind: ResourceKind) -> &'static dyn ResourceApp {
     }
 }
 
+/// The kind of each [`APPS`] entry, in order. A parent's kind comes before
+/// its children's: an upgrade resume rebuilds in this order.
+const APP_KINDS: [ResourceKind; 5] = [
+    ResourceKind::Terminal,
+    ResourceKind::AgentSession,
+    ResourceKind::AccessibilityTree,
+    ResourceKind::PixelSurface,
+    ResourceKind::Document,
+];
+
 /// Every app this server hosts, for the questions the host asks all of
-/// them. `every_app_is_listed` holds it to [`app_for`].
+/// them. `every_app_is_listed` holds [`APP_KINDS`] to the catalog.
 static APPS: [&dyn ResourceApp; 5] = [
-    app_for(ResourceKind::Terminal),
-    app_for(ResourceKind::AgentSession),
-    app_for(ResourceKind::AccessibilityTree),
-    app_for(ResourceKind::PixelSurface),
-    app_for(ResourceKind::Document),
+    app_for(APP_KINDS[0]),
+    app_for(APP_KINDS[1]),
+    app_for(APP_KINDS[2]),
+    app_for(APP_KINDS[3]),
+    app_for(APP_KINDS[4]),
 ];
 
 /// The build fails if the catalog lists a kind this server does not serve,
@@ -293,25 +283,6 @@ pub(crate) fn claim_relaunch(
 ) -> Option<CommandResult> {
     APPS.iter()
         .find_map(|app| app.claim_relaunch(ctx, operation, resource, expected))
-}
-
-/// Begin carrying agent sessions across an upgrade, or `None` when another
-/// upgrade already holds them. Blob-shaped, so one kind fills it: see
-/// [`crate::upgrade::blob::StateBlob::agent_sessions`].
-pub(crate) fn begin_stream_upgrade(state: &SharedState) -> Option<Box<dyn StreamUpgrade>> {
-    agent_session::upgrade::begin(state)
-}
-
-/// Rebuild one carried agent session for
-/// [`ServerState::rebuild_from_blob`].
-pub(crate) fn rebuild_session(
-    carried: &AgentSessionBlob,
-    parent: phux_core::ids::ResourceId,
-    parent_handle: Option<&ResourceHandle>,
-    log_bytes: u32,
-    token: CancellationToken,
-) -> RebuiltSession {
-    agent_session::upgrade::rebuild(carried, parent, parent_handle, log_bytes, token)
 }
 
 /// The app serving a local resource, if this host still has its handle.

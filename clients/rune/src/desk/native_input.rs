@@ -243,7 +243,7 @@ impl Bridge {
             }
             Action::Cancel => rt.update(|d, _| d.preedit = None),
             Action::Paste { text } => rt.update(|d, _| {
-                if let Some(id) = d.shown.as_ref().map(|s| s.terminal.clone()) {
+                if let Some(id) = d.shown.as_ref().map(|s| s.resource.clone()) {
                     d.paste(&id, &text);
                 }
             }),
@@ -285,7 +285,7 @@ impl Bridge {
 
 fn terminal_caret(d: &Desk) -> Option<[f32; 4]> {
     let shown = d.shown.as_ref()?;
-    let origin = d.origins.get(&shown.terminal)?;
+    let origin = d.origins.get(&shown.resource)?;
     let frame = d.client.as_ref()?.acquire_view(shown.view?)?;
     let metrics = d.metrics();
     Some([

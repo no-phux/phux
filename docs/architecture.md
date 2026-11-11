@@ -230,7 +230,10 @@ such as how a stream bootstraps. `state/` sits below the apps and never names
 them; what it asks of any resource is the required `ResourceOps` on its handle.
 A new kind does not compile until `app_for` names its app, and neither
 `ResourceApp` nor `ResourceOps` has a default method to inherit; a new kind
-also takes one `APPS` row, which a test holds to `app_for`. A surface that is
+also takes one `APP_KINDS` row, which a test holds to the catalog. A graceful
+upgrade goes through the apps too: at the cut each app writes the upgrade-blob
+fields its kind owns, and on resume it rebuilds them, in `APP_KINDS` order so
+a parent's kind comes first. A surface that is
 not every kind's, such as the `AgentParent` mailbox of a resource that hosts an
 agent, is a companion on the handle, typed by the crate that owns it, so the
 host can use it without naming an engine. The server's production dependency

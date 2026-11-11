@@ -13,6 +13,7 @@
 //!   barrier shared by every frontend.
 //! - [`layout`] — the pane-geometry layout tree, split math, and the CBOR
 //!   metadata envelope that persists it server-side.
+//! - [`motion`] — vi cursor motions within a row, for keyboard copy mode.
 //! - [`multi_pane`] — layout tree → per-pane rectangles + the divider
 //!   cells between them (pure compute; the chrome layer rasterizes the
 //!   `DividerCell`s to VT).
@@ -23,6 +24,8 @@
 //! - [`agent_record`] — the one `phux.agent/v1` record reader.
 //! - [`ask`] — the ADR-0035 ask-sentinel reader every answer path guards
 //!   with.
+//! - [`document_view`] — what a document publication draws as, by its
+//!   content type.
 //!
 //! # Frontend boundary
 //!
@@ -39,6 +42,7 @@
 pub mod agent_record;
 pub mod ask;
 pub mod document_input;
+pub mod document_view;
 pub mod engine;
 #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
 pub mod grid;
@@ -47,6 +51,7 @@ pub mod history;
 pub mod input_replay;
 pub mod keys;
 pub mod layout;
+pub mod motion;
 pub mod multi_pane;
 pub mod newer_server;
 pub mod org_ops;

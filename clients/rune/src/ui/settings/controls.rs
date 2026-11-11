@@ -189,20 +189,19 @@ pub(super) fn preview(desk: &Desk, ink: &Ink) -> El {
                 .label("Terminal preview")
                 .child(
                     text("~/workspace  ·  main")
-                        .font(super::secondary(desk, CAPTION).family(Family::SystemMono))
+                        .font(super::secondary(desk, CAPTION).family(Family::Mono))
                         .color(fg),
                 )
                 .child(
                     text("❯ phux attach")
                         .font(
-                            super::primary(desk, TextStyle::new(14.0, 500.0))
-                                .family(Family::SystemMono),
+                            super::primary(desk, TextStyle::new(14.0, 500.0)).family(Family::Mono),
                         )
                         .color(accent),
                 )
                 .child(
                     text("Your sessions, right where you left them.")
-                        .font(super::secondary(desk, CAPTION).family(Family::SystemMono))
+                        .font(super::secondary(desk, CAPTION).family(Family::Mono))
                         .color(fg)
                         .wrap(),
                 ),

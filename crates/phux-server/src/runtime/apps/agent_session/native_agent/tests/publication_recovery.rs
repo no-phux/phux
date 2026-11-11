@@ -151,9 +151,7 @@ async fn dispatched_upgrade_operation_is_unknown_and_never_automatically_replaye
             );
             assert_eq!(fx.receive(generation).await.operation_id, 31);
             let cut = fx.cut().await;
-            let mut blob = fx.state.with_mut(|s| {
-                s.assemble_upgrade_blob(7, &crate::state::UpgradeHandoffs::default())
-            });
+            let mut blob = fx.state.with_mut(|s| s.assemble_upgrade_blob(7));
             let binding = fx
                 .state
                 .with(|s| s.native_agents().bindings[&fx.agent].clone());
@@ -246,9 +244,13 @@ async fn upgrade_recovers_atomic_publication_receipt_without_retained_record() {
             });
             let cut = fx.cut().await;
             let mut blob = fx.state.with(|s| {
-                s.with_upgrade_metadata(
-                    s.assemble_upgrade_blob(7, &crate::state::UpgradeHandoffs::default()),
-                )
+                let mut blob = s.with_upgrade_metadata(s.assemble_upgrade_blob(7));
+                crate::runtime::apps::agent_session::upgrade::carry_cuts(
+                    s,
+                    &mut blob,
+                    &std::collections::HashMap::new(),
+                );
+                blob
             });
             blob.agent_sessions = vec![crate::upgrade::blob::AgentSessionBlob {
                 wire_id: fx.agent.local_id().unwrap(),

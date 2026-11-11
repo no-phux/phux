@@ -437,7 +437,7 @@ fn readout(k: &Kitchen, waiting: usize, p: &Ink) -> El {
         }))
         .children(picked)
         .child(overlay::icon_button(
-            "✕",
+            &super::icons::CLOSE,
             "Close",
             "kitchen-close",
             p,

@@ -6,8 +6,8 @@ use rune::Tx;
 impl Desk {
     pub(in crate::desk) fn document_text_key(&self) -> Option<String> {
         let shown = self.shown.as_ref()?;
-        let document = self.resources.entries.get(&shown.terminal)?;
-        matches!(document.body, Body::Tree(_)).then(|| text_key(&shown.terminal))
+        let document = self.resources.entries.get(&shown.resource)?;
+        matches!(document.body, Body::Tree(_)).then(|| text_key(&shown.resource))
     }
 
     pub(in crate::desk) fn native_text_shortcut(&self, event: &rune::KeyEvent) -> bool {

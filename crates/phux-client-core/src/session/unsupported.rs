@@ -8,6 +8,7 @@
 //! other resource and the connection carry on. A Terminal or `AgentSession` has no newer
 //! codec this client did not offer, so an unknown one there is malformed.
 
+use super::lane::ResourceLane;
 use super::{
     BootstrapStreamProfile, EffectBuffer, EngineAdapter, GenerationId, KernelEffect, KernelError,
     KernelInput, KernelStatus, ResourceId, ResourceKind, SessionKernel,
@@ -45,10 +46,11 @@ impl<E: EngineAdapter> SessionKernel<E> {
         // Only a Terminal or AgentSession stages a replica or a record
         // stream, and both were refused above; a document stages a cut. Its
         // generations stay fenced rather than forgotten.
-        debug_assert!(
-            !self.terminals.contains_key(terminal_id) && !self.agents.contains_key(terminal_id)
-        );
-        if let Some(stream) = self.documents.get_mut(terminal_id) {
+        debug_assert!(!matches!(
+            self.lanes.get(terminal_id),
+            Some(ResourceLane::Terminal(_) | ResourceLane::Agent(_))
+        ));
+        if let Some(ResourceLane::Document(stream)) = self.lanes.get_mut(terminal_id) {
             stream.fence_for_unknown_codec(generation, base_seq);
         }
         if self.unsupported.insert(terminal_id.clone()) {

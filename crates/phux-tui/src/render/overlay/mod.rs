@@ -35,7 +35,6 @@ pub mod widgets;
 pub use clipboard_confirm::ClipboardConfirmOverlay;
 pub use copy_mode::{
     CopyModeOverlay, CopyMotionRequest, CopySearchRequest, CopySearchResult, CopySearchView,
-    row_motion_target,
 };
 pub use kill_confirm::{KillConfirmOverlay, SharedTarget};
 pub use menu::{ContextMenu, MenuRow};

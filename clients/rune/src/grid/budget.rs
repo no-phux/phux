@@ -363,7 +363,7 @@ fn window_phase() {
         replica.terminal.clone(),
     ));
     desk.shown = Some(Shown {
-        terminal: replica.terminal.clone(),
+        resource: replica.terminal.clone(),
         view: Some(replica.views[0]),
     });
     let mut runtime = Runtime::new(desk, crate::ui::view, SIZE, Env::new(true, SCALE));
@@ -400,7 +400,7 @@ pub(crate) fn input_fixture_showing(output: &str) -> (Arc<Client>, Runtime<Desk>
         replica.terminal.clone(),
     ));
     desk.shown = Some(Shown {
-        terminal: replica.terminal,
+        resource: replica.terminal,
         view: Some(replica.views[0]),
     });
     let mut rt = Runtime::new(desk, crate::ui::view, SIZE, Env::new(true, SCALE));

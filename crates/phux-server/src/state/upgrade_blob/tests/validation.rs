@@ -111,12 +111,7 @@ async fn rebuild_from_a_complete_blob_is_transactional() {
                 vec![no_pty_pane(3, 2)],
             );
             validate_upgrade_blob(&handoff).expect("complete topology");
-            state
-                .rebuild_from_blob(
-                    &handoff,
-                    crate::runtime::apps::terminal::upgrade::unwired,
-                    crate::runtime::apps::rebuild_session,
-                )
+            crate::runtime::apps::terminal::test_support::rebuild_unwired(&mut state, &handoff)
                 .expect("rebuild");
             assert_eq!(
                 session_names(&state),
@@ -178,12 +173,7 @@ async fn import_keeps_empty_sessions_and_clamps_edge_ratios() {
                 vec![window(2, 1, Vec::new()), split],
                 vec![no_pty_pane(6, 5), no_pty_pane(7, 5)],
             );
-            state
-                .rebuild_from_blob(
-                    &handoff,
-                    crate::runtime::apps::terminal::upgrade::unwired,
-                    crate::runtime::apps::rebuild_session,
-                )
+            crate::runtime::apps::terminal::test_support::rebuild_unwired(&mut state, &handoff)
                 .expect("an old image with an emptied window imports");
             let empty = state.session_by_name("empty").expect("empty kept");
             assert_eq!(empty.lifetime, phux_core::SessionLifetime::Persistent);
@@ -219,12 +209,7 @@ async fn rebuild_does_not_arm_last_session_self_exit() {
                 vec![window(2, 1, vec![3])],
                 vec![no_pty_pane(3, 2)],
             );
-            state
-                .rebuild_from_blob(
-                    &handoff,
-                    crate::runtime::apps::terminal::upgrade::unwired,
-                    crate::runtime::apps::rebuild_session,
-                )
+            crate::runtime::apps::terminal::test_support::rebuild_unwired(&mut state, &handoff)
                 .expect("rebuild");
             assert!(state.session_by_name("main").is_some());
             assert!(
@@ -245,10 +230,8 @@ async fn dangling_window_id_does_not_mutate_state() {
             let mut state = ServerState::new();
             let _ = state.seed_empty_session("already-here");
             let handoff = blob(vec![session(1, vec![99])], Vec::new(), Vec::new());
-            match state.rebuild_from_blob(
-                &handoff,
-                crate::runtime::apps::terminal::upgrade::unwired,
-                crate::runtime::apps::rebuild_session,
+            match crate::runtime::apps::terminal::test_support::rebuild_unwired(
+                &mut state, &handoff,
             ) {
                 Err(RebuildError::DanglingRef { kind, id }) => {
                     assert_eq!(kind, "window");
@@ -329,14 +312,10 @@ async fn an_agent_session_without_its_parent_pane_is_dropped() {
                 vec![no_pty_pane(3, 2)],
             );
             handoff.agent_sessions = vec![agent_session(4, 3), agent_session(5, 99)];
-            let watchers = state
-                .rebuild_from_blob(
-                    &handoff,
-                    crate::runtime::apps::terminal::upgrade::unwired,
-                    crate::runtime::apps::rebuild_session,
-                )
-                .expect("rebuild")
-                .exit_watchers;
+            let watchers =
+                crate::runtime::apps::terminal::test_support::rebuild_unwired(&mut state, &handoff)
+                    .expect("rebuild")
+                    .exit_watchers;
             assert_eq!(watchers.len(), 2, "the pane and its one session");
             let kept = state.resource_from_wire(&WireResourceId::local(4));
             assert!(kept.is_some(), "the bound session resumes under its id");
