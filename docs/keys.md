@@ -90,6 +90,22 @@ phux action:
 
 Without `command` it asks for one; the palette's **Popup…** row does the same.
 
+### Close a pane you can get back
+
+<kbd>C-a</kbd> <kbd>x</kbd> ends the pane's program. To put a pane away
+without ending it, use `close-view`: the pane leaves the tab and its
+program keeps running, and `reopen-views` brings every hidden pane back,
+one tab each. Both are in the command palette (**Hide pane (keeps
+running)** and **Reopen hidden terminals**); neither has a key until you
+give it one:
+
+```toml
+[keybindings.prefix-table]
+"x" = "close-view"      # close without ending the program
+"M-x" = "kill-pane"     # really end it
+"v" = "reopen-views"
+```
+
 ## Finding actions
 
 - Press <kbd>C-a</kbd> <kbd>Space</kbd> to open the command palette. It
