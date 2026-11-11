@@ -3,6 +3,7 @@
 use std::path::PathBuf;
 use std::process::ExitCode;
 
+use phux_client::read::Verb;
 use phux_protocol::caps::ServerFeature;
 use phux_protocol::wire::frame::{Command, CommandResult, ReportedAgentState};
 
@@ -18,7 +19,8 @@ pub(super) fn run(target: &str, state: &str, socket: Option<PathBuf>) -> ExitCod
     with_target_pane(
         Some(target),
         socket,
-        "agent report-state",
+        Verb::AgentReportState.name(),
+        Some(Verb::AgentReportState),
         false,
         move |conn, pane| {
             Box::pin(async move {

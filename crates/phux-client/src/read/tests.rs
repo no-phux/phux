@@ -6,6 +6,7 @@ fn at(kind: ResourceKind) -> Resolved {
     Resolved {
         id: ResourceId::local(5),
         kind,
+        parent: None,
     }
 }
 
@@ -39,10 +40,10 @@ fn each_verb_routes_each_kind_from_the_catalog() {
                 Some(Doc(Kind::Document)),
                 None,
             ],
-            Verb::SendKeys => [Some(Terminal), None, None, None, None, None],
+            _ => [Some(Terminal), None, None, None, None, None],
         }
     };
-    for verb in [Verb::Snapshot, Verb::Wait, Verb::SendKeys] {
+    for verb in Verb::ALL {
         for (kind, want) in ALL.into_iter().zip(expect(verb)) {
             let got = route(verb, &at(kind));
             assert_eq!(got.as_ref().ok().copied(), want, "{verb:?} {kind:?}");
@@ -51,6 +52,63 @@ fn each_verb_routes_each_kind_from_the_catalog() {
             }
         }
     }
+}
+
+#[test]
+fn each_verb_names_a_method_only_the_terminal_facet_carries() {
+    for verb in Verb::ALL {
+        let carriers: Vec<_> = kinds::KINDS
+            .iter()
+            .filter(|spec| {
+                spec.methods
+                    .iter()
+                    .any(|method| method.name == verb.terminal_method())
+            })
+            .map(|spec| spec.kind)
+            .collect();
+        assert_eq!(carriers, [ResourceKind::Terminal], "{verb:?}");
+    }
+}
+
+#[test]
+fn a_terminal_verb_refuses_every_other_kind_up_front() {
+    for verb in Verb::ALL {
+        assert_eq!(
+            require_terminal(verb, &at(ResourceKind::Terminal)),
+            Ok(()),
+            "{verb:?}"
+        );
+        for kind in &ALL[1..] {
+            let refusal = require_terminal(verb, &at(*kind)).unwrap_err();
+            assert_eq!((refusal.kind, refusal.verb), (*kind, verb));
+        }
+    }
+    // A verb that types into a page's tree names its producer's intents; a
+    // typed document takes none; any other verb names a Terminal.
+    let paste = require_terminal(Verb::Paste, &at(ResourceKind::AccessibilityTree)).unwrap_err();
+    assert_eq!(
+        paste.to_string(),
+        "`paste` does not apply to @5, an accessibility tree"
+    );
+    assert!(
+        paste.remedy().contains("phux agent page type @5 TEXT"),
+        "{}",
+        paste.remedy()
+    );
+    let typed = require_terminal(Verb::Paste, &at(ResourceKind::Document)).unwrap_err();
+    assert!(
+        typed.remedy().contains("takes no input"),
+        "{}",
+        typed.remedy()
+    );
+    let prompt = require_terminal(Verb::AgentPrompt, &at(ResourceKind::AccessibilityTree));
+    assert!(prompt.unwrap_err().remedy().contains("phux agent page"));
+    let run = require_terminal(Verb::Run, &at(ResourceKind::Document)).unwrap_err();
+    assert!(
+        run.remedy().starts_with("address a Terminal"),
+        "{}",
+        run.remedy()
+    );
 }
 
 #[test]
@@ -78,6 +136,24 @@ fn a_refusal_names_the_verb_the_resource_and_its_kind_and_what_to_do() {
     let session = route(Verb::Snapshot, &at(ResourceKind::AgentSession)).unwrap_err();
     assert!(session.to_string().ends_with("an agent session"));
     assert!(session.remedy().contains("phux agent log"));
+    assert!(session.remedy().contains("its parent pane has the screen"));
+
+    // A known parent is named, and the wording follows the verb.
+    let bound = Resolved {
+        parent: Some(ResourceId::local(3)),
+        ..at(ResourceKind::AgentSession)
+    };
+    let remedy = |verb| require_terminal(verb, &bound).unwrap_err().remedy();
+    assert!(remedy(Verb::Snapshot).contains("its parent pane @3 has the screen"));
+    assert!(remedy(Verb::Paste).starts_with("type into its parent pane @3"));
+    assert!(remedy(Verb::Run).starts_with("type into its parent pane @3"));
+    for verb in [Verb::Resize, Verb::Signal, Verb::Upload] {
+        let remedy = remedy(verb);
+        assert_eq!(
+            remedy,
+            "address its parent pane @3, the terminal the agent runs in"
+        );
+    }
 
     let unknown = route(Verb::Snapshot, &at(ResourceKind::Unknown { tag: 200 })).unwrap_err();
     assert!(unknown.to_string().contains("unknown(200)"), "{unknown}");
