@@ -380,6 +380,12 @@ async fn serve(
     match &resolved.transport {
         Transport::Quic(authority) => serve_quic(shared, resolved, authority, socket).await,
         Transport::Ws(url) => serve_ws(shared, resolved, url, socket).await,
+        // ponytail: no tunnel over ssh; splice a bridge child here if an
+        // embedder needs one.
+        Transport::Ssh { .. } => Err(format!(
+            "{} is reached over ssh, which this tunnel does not carry",
+            resolved.name
+        )),
     }
 }
 

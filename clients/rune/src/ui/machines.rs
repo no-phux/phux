@@ -160,25 +160,19 @@ fn local_machine(desk: &Desk, ink: &Ink) -> El {
         )
 }
 
-/// A machine a window can't dial is listed, with what it needs, but doesn't
-/// press: its only route is ssh.
 fn machine(host: &Host, desk: &Desk, ink: &Ink) -> El {
     let name = host.name.clone();
     let current = desk.machines.current.as_ref() == Some(&host.name);
     let label = text(name.clone()).font(LABEL).color(ink.text).truncate();
-    let row = if host.needs_direct {
-        row().w_full().px(10.0).py(7.0).gap(8.0).items_center()
-    } else {
-        let held = name.clone();
-        row_shell(format!("machine-{name}"), ink)
-            .on_press(move |d: &mut Desk| d.switch_machine(Some(held.clone())))
-    };
-    row.child(color_button(&name, ink))
+    let held = name.clone();
+    row_shell(format!("machine-{name}"), ink)
+        .on_press(move |d: &mut Desk| d.switch_machine(Some(held.clone())))
+        .child(color_button(&name, ink))
         .child(label)
         .child(el().grow(1.0))
         .children(
-            host.needs_direct
-                .then(|| text("needs a direct route").font(CAPTION).color(ink.dim)),
+            host.ssh_only
+                .then(|| text("over ssh").font(CAPTION).color(ink.dim)),
         )
         .children(
             current

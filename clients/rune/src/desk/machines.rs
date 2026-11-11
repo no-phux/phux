@@ -440,7 +440,7 @@ mod tests {
         let host = |name: &str| Host {
             name: name.to_owned(),
             ssh: None,
-            needs_direct: false,
+            ssh_only: false,
         };
         let mut list = Machines::new(None, None);
         list.hosts = vec![host("a"), host("b")];
@@ -480,7 +480,7 @@ mod tests {
             let hosts = vec![Host {
                 name: name.to_owned(),
                 ssh: None,
-                needs_direct: false,
+                ssh_only: false,
             }];
             Done::Listed(refresh, Ok(hosts), Vec::new())
         };

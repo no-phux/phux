@@ -41,8 +41,8 @@ pub struct Host {
     pub name: String,
     /// The ssh destination it was set up over.
     pub ssh: Option<String>,
-    /// Its only route is ssh, which needs a terminal: a window can't dial it.
-    pub needs_direct: bool,
+    /// Its only route is ssh: a window dials it through `ssh`, on demand.
+    pub ssh_only: bool,
 }
 
 /// A tailnet machine phux can run on that isn't registered yet.
@@ -97,7 +97,7 @@ fn parse_hosts(value: &Value) -> Vec<Host> {
             Some(Host {
                 name: name(&host["name"])?,
                 ssh: name(&host["ssh"]),
-                needs_direct: host["endpoint"]
+                ssh_only: host["endpoint"]
                     .as_str()
                     .is_some_and(|endpoint| endpoint.trim().starts_with("ssh://")),
             })
@@ -315,9 +315,9 @@ mod tests {
             { "name": "b", "role": "remote", "endpoint": "ssh://me@b" },
         ]});
         let hosts = parse_hosts(&doc);
-        assert!(!hosts[0].needs_direct);
+        assert!(!hosts[0].ssh_only);
         assert_eq!(hosts[0].ssh.as_deref(), Some("me@a"));
-        assert!(hosts[1].needs_direct);
+        assert!(hosts[1].ssh_only);
     }
 
     fn peer(ssh_host: &str) -> Peer {
@@ -343,7 +343,7 @@ mod tests {
         Host {
             name: name.to_owned(),
             ssh: ssh.map(str::to_owned),
-            needs_direct: false,
+            ssh_only: false,
         }
     }
 

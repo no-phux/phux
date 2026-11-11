@@ -234,6 +234,13 @@ impl From<Resolved> for Target {
         let transport = match &resolved.transport {
             Lane::Quic(authority) => Transport::Quic(authority.clone()),
             Lane::Ws(url) => Transport::Ws(url.clone()),
+            Lane::Ssh {
+                destination,
+                remote_phux,
+            } => Transport::Ssh {
+                destination: destination.clone(),
+                remote_phux: remote_phux.clone(),
+            },
         };
         Self {
             transport,
