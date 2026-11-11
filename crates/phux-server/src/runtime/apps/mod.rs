@@ -401,9 +401,10 @@ pub(crate) fn app_owning(command: &Command) -> Option<&'static dyn ResourceApp> 
     owning_kind(command).map(app_for)
 }
 
-/// The kind whose catalog rows carry `command`; `None` for a host command.
+/// The kind whose catalog rows carry `command`, or that serves the
+/// host-addressed method carrying it; `None` for a host command.
 fn owning_kind(command: &Command) -> Option<ResourceKind> {
-    phux_protocol::kinds::command_kind(command).and_then(crate::id_bridge::core_kind)
+    phux_protocol::kinds::command_served_by(command).and_then(crate::id_bridge::core_kind)
 }
 
 #[cfg(test)]

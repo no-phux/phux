@@ -286,6 +286,7 @@ pub static KINDS: [KindSpec; 5] = [
                 gate: None,
                 shipped: false,
                 dangerous: false,
+                served_by: None,
             },
             method!(
                 "INPUT_TERMINAL_REPLY",
@@ -530,19 +531,8 @@ pub static KINDS: [KindSpec; 5] = [
             None,
             true,
         ),
-        // Fed through the substrate's `PUBLISH_RESOURCE_STATE`. A host's
-        // screen mirrors produce surfaces: list, start, stop; Rune's macOS
-        // runner reports its targets and learns its mirrors through
-        // MIRROR_PROVIDE.
-        methods: &[
-            method!("MIRROR", Carrier::Command(COMMAND_TAG_MIRROR), [C_MIRROR], MIRRORS),
-            method!(
-                "MIRROR_PROVIDE",
-                Carrier::Command(COMMAND_TAG_MIRROR_PROVIDE),
-                [C_MIRROR_PROVIDE],
-                MIRRORS
-            ),
-        ],
+        // Fed through the substrate's `PUBLISH_RESOURCE_STATE`.
+        methods: &[],
         events: &[],
         metadata_keys: &[],
     },

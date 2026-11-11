@@ -224,9 +224,9 @@ ownership recommendation. No keeper bootload service exists today.
 | remote access | `crates/phux/src/commands/enroll.rs`, `remote_target.rs`, `phux-client-runtime/src/dial.rs`, `phux-server/src/transport/` |
 
 A resource kind is an app. The host reaches one through `ResourceApp` in
-`phux-server/src/runtime/apps/`: `app_owning` routes a facet command by the
-same catalog rows authorization uses, and `app_for` answers per-kind questions
-such as how a stream bootstraps. `state/` sits below the apps and never names
+`phux-server/src/runtime/apps/`: `app_owning` routes a facet command, or a
+host method an app serves, by the catalog rows authorization uses, and
+`app_for` answers per-kind questions such as how a stream bootstraps. `state/` sits below the apps and never names
 them: it asks any resource only for its lifecycle (`ResourceOps`), and holds
 each app's own state in a typed slot it cannot read (`state/app_slots.rs`).
 A new kind does not compile until `app_for` names its app, and neither
@@ -255,8 +255,8 @@ before allocating a wire identity, replacing a handle, or spawning the actor.
 Stream and input frames reach their resource's app through
 `ResourceApp::frame`, after host authorization, connection/subscription gates
 and satellite routing. `runtime/session_attach` owns aggregate capture,
-accounting and publication, and names no kind: each present kind's app
-fences, sizes and roles its own resources through its attach hooks.
+accounting and publication, and names no kind: each kind's app fences,
+sizes and roles its own resources.
 Apps stage bounded bootstraps under the same
 generation, with live output and lifecycle closes held behind the aggregate
 barrier. The AgentSession app retains catalog membership but defers its stream

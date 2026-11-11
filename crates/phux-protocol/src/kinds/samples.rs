@@ -169,6 +169,7 @@ fn only_exempt_or_read_only_methods_are_not_mutating() {
         gate: None,
         shipped: false,
         dangerous: false,
+        served_by: None,
     };
     assert!(
         denied.mutating(),
