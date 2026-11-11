@@ -349,8 +349,17 @@ pub fn read_token(path: Option<&Path>) -> Result<Option<String>, String> {
     let Some(path) = path else {
         return Ok(None);
     };
-    let raw = std::fs::read_to_string(path)
-        .map_err(|err| format!("could not read token file {}: {err}", path.display()))?;
+    let raw = std::fs::read_to_string(path).map_err(|err| {
+        // A synced config names a credential that lives on another machine.
+        if err.kind() == std::io::ErrorKind::NotFound {
+            return format!(
+                "token file {} is not on this machine; credentials are not shared \
+                 between machines, so pair this one with `phux host add`",
+                path.display()
+            );
+        }
+        format!("could not read token file {}: {err}", path.display())
+    })?;
     let token = raw
         .lines()
         .map(str::trim)

@@ -296,3 +296,10 @@ fn a_paused_entry_is_not_resolved() {
     let refusal = resolve_entry(&paused, &target).expect_err("paused");
     assert!(refusal.contains("phux host enable mini"), "{refusal}");
 }
+
+#[test]
+fn a_token_file_from_another_machine_says_to_pair_this_one() {
+    let missing = std::env::temp_dir().join("phux-no-such-token-file");
+    let refusal = read_token(Some(&missing)).expect_err("missing");
+    assert!(refusal.contains("phux host add"), "{refusal}");
+}

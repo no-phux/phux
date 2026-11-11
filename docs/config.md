@@ -231,7 +231,11 @@ keys:
   commands such as `phux host add` and point at token files that exist
   only on that machine. Tokens and certificates are never in
   `config.toml`; they are separate files and should not be copied between
-  machines.
+  machines. In a `[[remote]]` entry the `name`, `endpoint`, `ssh`, and
+  `color` mean the same thing everywhere; `token-file`, `cert-fingerprint`,
+  `client-cert`, and `client-key` belong to the machine that paired. If an
+  entry does reach a second machine, connecting says the token file is not
+  there, and `phux host add NAME` pairs that machine and fills them in.
 - **`[defaults]` belongs to the server.** It is read by the machine that
   runs the panes, so a laptop attaching to another machine gets that
   machine's shell and scrollback settings. Key bindings, the status bar,
