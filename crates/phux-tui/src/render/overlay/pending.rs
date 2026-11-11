@@ -52,7 +52,7 @@ impl PendingOverlay {
         ))];
         Modal::new(&self.theme, self.title.clone(), body)
             .wrap(true)
-            .footer("", "esc cancel")
+            .footer("", "esc")
     }
 }
 
@@ -152,7 +152,7 @@ mod tests {
             .collect::<Vec<_>>()
             .join("\n");
         assert!(text.contains("New tab in folder"), "title:\n{text}");
-        assert!(text.contains("esc cancel"), "legend:\n{text}");
+        assert!(text.contains("esc"), "legend:\n{text}");
     }
 
     #[test]
