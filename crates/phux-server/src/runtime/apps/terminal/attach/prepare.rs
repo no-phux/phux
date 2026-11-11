@@ -16,6 +16,14 @@ pub(crate) async fn apply_session_role(
     role: phux_protocol::wire::frame::RolePolicy,
     was_subscribed: bool,
 ) {
+    // `TerminalApp::after_attach` hands over only this kind's panes; an input
+    // role means nothing to another kind.
+    debug_assert!(
+        panes
+            .iter()
+            .all(|pane| pane.handle.kind == crate::resource::ResourceKind::Terminal),
+        "session roles apply only to Terminal panes"
+    );
     let changes: Vec<_> = state.with_mut(|s| {
         panes
             .iter()

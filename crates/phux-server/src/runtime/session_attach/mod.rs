@@ -167,6 +167,27 @@ async fn prepare_panes(
     });
 }
 
+/// [`prepare_panes`] for a first attach with no palette, driven to
+/// completion: the geometry tests' path to the production viewport steps.
+#[cfg(test)]
+pub(crate) fn prepare_panes_now(
+    state: &SharedState,
+    client_id: ClientId,
+    panes: &[AttachSnapshotPane],
+    viewport: ViewportInfo,
+) {
+    let attach = SessionAttach {
+        state,
+        client_id,
+        client_caps: ClientCapabilities::default(),
+        same_session: false,
+    };
+    // Nothing in this path awaits an actor: no pump to fence, no prior
+    // consumer, no palette to apply.
+    futures_util::FutureExt::now_or_never(prepare_panes(attach, panes, viewport))
+        .expect("a first attach with no palette prepares without waiting");
+}
+
 /// Record the declared role, then let each kind's app apply it.
 async fn apply_role(attach: SessionAttach<'_>, panes: &[AttachSnapshotPane], role: RolePolicy) {
     attach

@@ -96,7 +96,7 @@ fn pane_sizing_attach_resizes_each_pane_at_most_once() {
     };
 
     let client = attach_client(&state, "home");
-    attach::apply_attach_viewport(&state, client, &[target()], no_vote);
+    crate::runtime::session_attach::prepare_panes_now(&state, client, &[target()], no_vote);
     handle_terminal_resize(
         &state,
         client,
@@ -109,7 +109,7 @@ fn pane_sizing_attach_resizes_each_pane_at_most_once() {
     state.with_mut(|s| s.detach(client));
     drain(&mut rx);
     let again = attach_client(&state, "home");
-    attach::apply_attach_viewport(&state, again, &[target()], no_vote);
+    crate::runtime::session_attach::prepare_panes_now(&state, again, &[target()], no_vote);
     drain(&mut rx);
 
     assert_eq!(sizes, [(116, 37)], "one tile resize, never the full window");
@@ -281,7 +281,12 @@ fn closed_resize_delivery_never_advances_registry_geometry() {
         state.with(|s| s.registry().terminal(pane).unwrap().dims),
         (80, 24)
     );
-    attach::apply_attach_viewport(&state, client, &[target], ViewportInfo::new(100, 40));
+    crate::runtime::session_attach::prepare_panes_now(
+        &state,
+        client,
+        &[target],
+        ViewportInfo::new(100, 40),
+    );
     assert_eq!(
         state.with(|s| s.registry().terminal(pane).unwrap().dims),
         (80, 24)

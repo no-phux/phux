@@ -34,7 +34,7 @@ use std::path::PathBuf;
 use serde::{Deserialize, Serialize};
 
 mod native;
-pub use native::{NativeBinding, NativeOperation, NativePublication};
+pub(crate) use native::{NativeBinding, NativeOperation, NativePublication};
 
 /// The blob shape version. Bump on any incompatible change; add new fields
 /// with `#[serde(default)]` instead when the change is additive.

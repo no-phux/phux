@@ -29,6 +29,35 @@ fn a_launched_session_is_created_with_its_terminal_arranged() {
     assert!(arrangement_of(&state, empty).groups.is_empty());
 }
 
+/// `create_child` gives an agent session the facet its launch names, with no
+/// activity state, exactly as the agent-session create it replaced did, and
+/// records it running under its parent in the parent's session.
+#[test]
+fn a_child_agent_session_starts_with_its_launch_facet_and_no_state() {
+    let mut state = ServerState::new();
+    let (session, parent) = state.seed_session("work");
+    let launch = LaunchSpec::Agent(phux_core::resource::AgentLaunch {
+        provider: "claude".to_owned(),
+        native_id: Some("native-1".to_owned()),
+    });
+    let agent = state
+        .create_child(parent, NewResource::child(launch, None), &Actor::owner())
+        .expect("created");
+    let descriptor = state.registry().resource(agent).expect("descriptor");
+    assert_eq!(descriptor.parent, Some(parent));
+    assert_eq!(
+        descriptor.agent,
+        Some(phux_core::AgentFacet {
+            provider: "claude".to_owned(),
+            native_id: Some("native-1".to_owned()),
+            state: None,
+        })
+    );
+    let record = state.registry().record(agent).expect("record");
+    assert_eq!(record.on_exit, ExitPolicy::Remove);
+    assert_eq!(state.registry().session_of(agent), Some(session));
+}
+
 #[test]
 fn a_failed_store_write_refuses_and_leaves_memory_unchanged() {
     let mut state = ServerState::new();
