@@ -83,6 +83,7 @@ fn phone_sizes_reserve_toolbar_and_header_space_so_the_last_prompt_stays_visible
     for size in [(393.0, 852.0), (320.0, 568.0)] {
         for keyboard in [true, false] {
             let (client, mut rt) = fixture(true);
+            rt.poll = Some(Desk::poll);
             rt.set_viewport(size, 2.0);
             rt.update(|d, _| d.phone.as_mut().unwrap().keyboard = keyboard);
             settle(&mut rt);
