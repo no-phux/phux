@@ -190,6 +190,31 @@ curl -fsSL https://phux.sh/install | sh -s -- --dry-run
 
 A tarball saved from a browser can carry `com.apple.quarantine`; clear it with `xattr -d com.apple.quarantine <file>`. `curl` does not set that attribute.
 
+## Containers and small servers
+
+The Linux release needs glibc 2.35 or newer: Debian 12, Ubuntu 22.04 and
+later, and their arm64 builds, which covers 64-bit Raspberry Pi OS. Alpine
+and other musl systems are not supported yet; the install script will put
+the binary there, but it cannot start.
+
+[`examples/container/Dockerfile`](https://github.com/no-phux/phux/blob/main/examples/container/Dockerfile)
+builds a small image that runs a server as an unprivileged user:
+
+```sh
+docker build -t phux examples/container
+docker run -d --init --name phux -v phux-state:/home/phux/.local/state/phux \
+  -v phux-config:/home/phux/.config/phux phux
+docker exec -it phux phux            # attach from inside the container
+```
+
+- `--init` matters: panes are child processes, and something has to reap
+  them.
+- The two volumes hold sessions, credentials and config. With them, a
+  restarted container lists its sessions again and `phux restore` starts
+  their programs.
+- To reach it from another machine, give the server a listener and pair as
+  on any host ([Remote access](./remote.md)), and publish that port.
+
 ## Homebrew
 
 ```sh
