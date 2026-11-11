@@ -15,6 +15,7 @@ unshipped experiment, and phone apps are not available yet. See
 - [Getting started](./getting-started.md): install, a first agent, the keys that matter, detaching, and coming from tmux.
 - [Concepts](./concepts.md): the server, sessions, tabs, panes, clients, hosts, targets, and what survives a restart.
 - [phux vs tmux, Herdr, and cmux](./compare.md): which one fits the job.
+- [Roadmap](./roadmap.md): what is being built now, next, and later.
 
 ## Customize
 
