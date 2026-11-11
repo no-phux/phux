@@ -6890,13 +6890,14 @@ SOURCE is cloned with the system `git` (or copied) into the managed theme
 directory (`$XDG_DATA_HOME/phux/themes`, else `~/.local/share/phux/themes`)
 under a name derived from the URL as Omarchy derives it: the last path segment
 minus `.git`, an `omarchy-` or `phux-` prefix, and a `-theme` suffix. It must
-hold `colors.toml` at its root. Installing the same name again replaces it.
-Nothing in a theme is executed.
+hold `colors.toml` at its root. A local file is read as a Ghostty theme and
+converted. Installing the same name again replaces it. Nothing in a theme is
+executed.
 
 Usage: phux theme install [--json] <SOURCE>
 
 Arguments:
-  <SOURCE>  Git URL or local theme directory.
+  <SOURCE>  Git URL, local theme directory, or Ghostty theme file.
 
 Flags:
       --json           Emit a stable JSON document instead of human text.

@@ -7,6 +7,8 @@
 //! `config.toml` through the settings writer and rings the reload doorbell
 //! so attached clients repaint.
 
+mod ghostty;
+
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
@@ -185,7 +187,8 @@ fn set(
 }
 
 /// `phux theme install SOURCE`: a git URL (cloned with the system `git`) or a
-/// local directory (copied), holding `colors.toml` at its root. The result
+/// local directory (copied), holding `colors.toml` at its root, or a Ghostty
+/// theme file (converted). The result
 /// lands at `<themes dir>/<name>`, replacing a previous install of that name.
 fn install(source: &str, json: bool) -> Result<ExitCode, String> {
     let themes_dir = theme::themes_dir()
@@ -196,7 +199,13 @@ fn install(source: &str, json: bool) -> Result<ExitCode, String> {
 
     let local = Path::new(source);
     let is_dir = !source.contains("://") && local.is_dir();
-    let name = if is_dir {
+    let is_file = !source.contains("://") && local.is_file();
+    let name = if is_file {
+        // Ghostty's own themes have names like "Catppuccin Mocha".
+        local
+            .file_name()
+            .and_then(|n| theme::name_from_url(&n.to_string_lossy().replace(' ', "-")))
+    } else if is_dir {
         local
             .canonicalize()
             .ok()
@@ -209,7 +218,9 @@ fn install(source: &str, json: bool) -> Result<ExitCode, String> {
 
     let staging = themes_dir.join(format!(".staging-{name}-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&staging);
-    let staged = if is_dir {
+    let staged = if is_file {
+        ghostty_theme(local, &staging)
+    } else if is_dir {
         copy_theme_dir(local, &staging)
     } else {
         clone_theme(source, &staging)
@@ -257,6 +268,15 @@ fn install(source: &str, json: bool) -> Result<ExitCode, String> {
         colors.mode
     );
     Ok(ExitCode::SUCCESS)
+}
+
+fn ghostty_theme(file: &Path, staging: &Path) -> Result<(), String> {
+    let text = std::fs::read_to_string(file)
+        .map_err(|err| format!("could not read {}: {err}", file.display()))?;
+    let colors = ghostty::colors_toml(&text).map_err(|err| format!("{}: {err}", file.display()))?;
+    std::fs::create_dir_all(staging)
+        .and_then(|()| std::fs::write(staging.join(theme::COLORS_FILE), colors))
+        .map_err(|err| format!("could not write {}: {err}", staging.display()))
 }
 
 fn clone_theme(url: &str, staging: &Path) -> Result<(), String> {

@@ -29,6 +29,14 @@ path segment without `.git`, an `omarchy-` or `phux-` prefix, or a
 `-theme` suffix. Installing the same name again replaces it. Themes are
 kept in `$XDG_DATA_HOME/phux/themes`, or `~/.local/share/phux/themes`.
 
+A Ghostty theme file installs the same way. Give it the file, and phux
+converts its palette, background, foreground and selection colours:
+
+```sh
+phux theme install "/Applications/Ghostty.app/Contents/Resources/ghostty/themes/Catppuccin Mocha"
+phux theme set catppuccin-mocha
+```
+
 Plugins can ship themes too. An enabled plugin's themes appear in the
 list beside the ones you installed; an installed theme wins over a plugin
 theme with the same name.
