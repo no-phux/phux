@@ -324,6 +324,11 @@ impl Desk {
             self.settings_soft(event, tx);
         } else if event.key == Key::Escape {
             self.settings_dismiss();
+        } else if !self.settings_ui.query.focused && starts_search(event) {
+            // Typing anywhere but a field searches, as System Settings does:
+            // a focused button (the gear that opened the sheet) takes no text.
+            self.focus_settings_search();
+            self.settings_soft(event, tx);
         }
     }
 
@@ -333,6 +338,12 @@ impl Desk {
             self.copy(tx);
         }
     }
+}
+
+/// A printable key with no chord modifier: the start of a search.
+fn starts_search(event: &KeyEvent) -> bool {
+    let chord = event.mods.cmd || event.mods.ctrl || event.mods.alt || event.mods.logo;
+    matches!(&event.key, Key::Text(t) if !chord && !t.chars().any(char::is_control))
 }
 
 #[cfg(test)]

@@ -112,8 +112,10 @@ fn report_ensure_failure(json: bool, socket_path: &Path, err: &std::io::Error) -
     super::json_err::emit(true, &error, 1)
 }
 
-/// Noninteractive counterpart of naked `phux`'s coordinator startup.
-pub(crate) fn run_ensure(socket: Option<PathBuf>, json: bool) -> ExitCode {
+/// Noninteractive counterpart of naked `phux`'s coordinator startup. A
+/// server it starts seeds naked `phux`'s session unless `seed` is false
+/// (`--no-seed`): an app that picks its own session wants none made for it.
+pub(crate) fn run_ensure(socket: Option<PathBuf>, json: bool, seed: bool) -> ExitCode {
     let socket_path = socket.unwrap_or_else(default_socket_path);
     if let Err(err) = phux_server::runtime::validate_socket_path_len(&socket_path) {
         return report_ensure_failure(
@@ -122,7 +124,7 @@ pub(crate) fn run_ensure(socket: Option<PathBuf>, json: bool) -> ExitCode {
             &std::io::Error::new(std::io::ErrorKind::InvalidInput, err),
         );
     }
-    match ensure::with_deadline(socket_path.clone()) {
+    match ensure::with_deadline(socket_path.clone(), seed) {
         Ok(disposition) => {
             if json {
                 outln!("{}", ensure_document(&socket_path, disposition));
@@ -133,15 +135,19 @@ pub(crate) fn run_ensure(socket: Option<PathBuf>, json: bool) -> ExitCode {
     }
 }
 
-fn ensure_accepting(socket_path: &Path) -> std::io::Result<EnsureDisposition> {
-    let disposition = ensure_server(
-        socket_path,
-        &super::attach::resolved_default_session_name(),
-        super::attach::configured_spawn_on_attach().as_deref(),
-        // Availability-only: the quiet path skips version reconciliation, so a
-        // bundled CLI does not re-exec another installation's coordinator.
-        true,
-    )?;
+fn ensure_accepting(socket_path: &Path, seed: bool) -> std::io::Result<EnsureDisposition> {
+    // Availability-only: the quiet path skips version reconciliation, so a
+    // bundled CLI does not re-exec another installation's coordinator.
+    let disposition = if seed {
+        ensure_server(
+            socket_path,
+            &super::attach::resolved_default_session_name(),
+            super::attach::configured_spawn_on_attach().as_deref(),
+            true,
+        )?
+    } else {
+        ensure_server_unseeded(socket_path, true)?
+    };
     // The probe calls permission errors "Live" (to avoid unlinking another
     // user's socket); success here requires a real connect.
     std::os::unix::net::UnixStream::connect(socket_path).map(|stream| {

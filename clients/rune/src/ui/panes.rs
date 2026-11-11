@@ -40,11 +40,66 @@ pub fn view(desk: &Desk, ink: &Ink, cx: &mut Cx<Desk>) -> El {
         return super::spatial::view(desk, phone, ink, area);
     }
     let several = matches!(tree, LayoutNode::Split { .. });
-    area.child(node(desk, &tree, &mut Vec::new(), several, ink))
+    let floor = pane_floor(desk, &tree);
+    area.child(node(desk, &tree, &mut Vec::new(), several, floor, ink))
         .children(perf::hud(ink.dim))
 }
 
-fn node(desk: &Desk, tree: &LayoutNode, path: &mut SplitPath, several: bool, ink: &Ink) -> El {
+/// The fewest cells a pane is squeezed to while its window has room: a
+/// prompt and a short command. Deep splits halve a pane at every level, so
+/// without a floor the eighth split of a spiral draws one or two columns.
+const MIN_CELLS: [f32; 2] = [20.0, 4.0];
+
+/// The least room `tree` takes along each axis when every pane has `leaf`.
+fn least(tree: &LayoutNode, leaf: [f32; 2]) -> [f32; 2] {
+    match tree {
+        LayoutNode::Leaf(_) => leaf,
+        LayoutNode::Split {
+            dir, left, right, ..
+        } => {
+            let (a, b) = (least(left, leaf), least(right, leaf));
+            if *dir == SplitDir::Horizontal {
+                [a[0] + b[0] + DIVIDER, a[1].max(b[1])]
+            } else {
+                [a[0].max(b[0]), a[1] + b[1] + DIVIDER]
+            }
+        }
+    }
+}
+
+/// Each pane's floor in points: [`MIN_CELLS`] and its card's padding,
+/// shrunk on an axis where the whole tree couldn't keep it, so the split
+/// gives way before it ever overflows its window.
+pub(super) fn pane_floor(desk: &Desk, tree: &LayoutNode) -> [f32; 2] {
+    let Some(area) = desk.split_area() else {
+        return [0.0; 2];
+    };
+    let metrics = desk.metrics();
+    let leaf = [
+        MIN_CELLS[0] * metrics.cell_w + 2.0 * PAD,
+        MIN_CELLS[1] * metrics.cell_h + 2.0 * PAD,
+    ];
+    let (gutters, full) = (least(tree, [0.0; 2]), least(tree, leaf));
+    let fit = |axis: usize| {
+        let room = area[axis] - gutters[axis];
+        let need = full[axis] - gutters[axis];
+        if need > 0.0 {
+            (room / need).clamp(0.0, 1.0)
+        } else {
+            1.0
+        }
+    };
+    [leaf[0] * fit(0), leaf[1] * fit(1)]
+}
+
+fn node(
+    desk: &Desk,
+    tree: &LayoutNode,
+    path: &mut SplitPath,
+    several: bool,
+    floor: [f32; 2],
+    ink: &Ink,
+) -> El {
     let (dir, ratio, left, right) = match tree {
         LayoutNode::Leaf(id) => return pane(desk, id, several, ink),
         LayoutNode::Split {
@@ -57,12 +112,17 @@ fn node(desk: &Desk, tree: &LayoutNode, path: &mut SplitPath, several: bool, ink
     let horizontal = dir == SplitDir::Horizontal;
     let here = path.clone();
     path.push(false);
-    let first = node(desk, left, path, several, ink);
+    let first = node(desk, left, path, several, floor, ink);
     path.pop();
     path.push(true);
-    let second = node(desk, right, path, several, ink);
+    let second = node(desk, right, path, several, floor, ink);
     path.pop();
-    let share = |el: El, grow: f32| el.grow(grow.max(0.01)).min_w(0.0).min_h(0.0);
+    // Each side keeps its share unless that would squeeze a pane in it under
+    // the floor; then the other side gives up the difference.
+    let share = |el: El, grow: f32, side: &LayoutNode| {
+        let [w, h] = least(side, floor);
+        el.grow(grow.max(0.01)).min_w(w).min_h(h)
+    };
     let container = if horizontal { row() } else { col() };
     let measured = here.clone();
     container
@@ -73,9 +133,13 @@ fn node(desk: &Desk, tree: &LayoutNode, path: &mut SplitPath, several: bool, ink
         .h_full()
         .min_w(0.0)
         .min_h(0.0)
-        .child(share(el().w_full().h_full().child(first), ratio))
+        .child(share(el().w_full().h_full().child(first), ratio, left))
         .child(divider(here, horizontal, ratio, ink))
-        .child(share(el().w_full().h_full().child(second), 1.0 - ratio))
+        .child(share(
+            el().w_full().h_full().child(second),
+            1.0 - ratio,
+            right,
+        ))
 }
 
 /// A divider: the clear gutter between two cards, with a grip that shows
@@ -372,4 +436,37 @@ fn terminal_input(host: El, desk: &Desk, id: &ResourceId) -> El {
             }
         }
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn leaf(n: u32) -> LayoutNode {
+        LayoutNode::Leaf(ResourceId::local(n))
+    }
+
+    fn split(dir: SplitDir, left: LayoutNode, right: LayoutNode) -> LayoutNode {
+        LayoutNode::Split {
+            dir,
+            ratio: 0.5,
+            left: Box::new(left),
+            right: Box::new(right),
+        }
+    }
+
+    #[test]
+    fn a_split_needs_both_sides_and_its_gutter() {
+        // [1 | [2 / 3]]: two panes across, two stacked on the right.
+        let tree = split(
+            SplitDir::Horizontal,
+            leaf(1),
+            split(SplitDir::Vertical, leaf(2), leaf(3)),
+        );
+        assert_eq!(
+            least(&tree, [100.0, 40.0]),
+            [200.0 + DIVIDER, 80.0 + DIVIDER]
+        );
+        assert_eq!(least(&tree, [0.0; 2]), [DIVIDER, DIVIDER], "gutters alone");
+    }
 }

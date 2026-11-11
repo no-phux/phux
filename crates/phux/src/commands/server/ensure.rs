@@ -116,14 +116,17 @@ impl Drop for Cleanup {
     }
 }
 
-pub(super) fn with_deadline(socket_path: PathBuf) -> io::Result<super::EnsureDisposition> {
+pub(super) fn with_deadline(
+    socket_path: PathBuf,
+    seed: bool,
+) -> io::Result<super::EnsureDisposition> {
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()?;
-    runtime.block_on(watch(socket_path))
+    runtime.block_on(watch(socket_path, seed))
 }
 
-async fn watch(socket_path: PathBuf) -> io::Result<super::EnsureDisposition> {
+async fn watch(socket_path: PathBuf, seed: bool) -> io::Result<super::EnsureDisposition> {
     use tokio::signal::unix::{SignalKind, signal};
     // Fail closed if cancellation cannot be observed. No helper exists yet.
     let mut terminate = signal(SignalKind::terminate())?;
@@ -137,7 +140,7 @@ async fn watch(socket_path: PathBuf) -> io::Result<super::EnsureDisposition> {
             HELPERS.set(Some(helpers));
             let result = {
                 let _log_guard = crate::init_noninteractive_tracing();
-                super::ensure_accepting(&socket_path)
+                super::ensure_accepting(&socket_path, seed)
             };
             HELPERS.set(None);
             let _ = sender.send(result);

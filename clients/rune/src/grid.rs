@@ -35,6 +35,18 @@ pub const FONTS: &[&[u8]] = &[
 ];
 /// The sans and mono slots. `ui-monospace` puts the system's faces first in
 /// the mono slot, so the Nerd Font only ever fills in missing glyphs.
+///
+/// On Linux, Noto Sans backs Inter: Inter lacks Latin combining marks such
+/// as U+0335 and U+0322, and Rune's only fallback for that block is DejaVu
+/// Sans, which Arch and its derivatives don't install, so a session named
+/// in zalgo text drew tofu. Where Noto Sans is missing too, the name falls
+/// through as before.
+#[cfg(all(unix, not(target_vendor = "apple")))]
+pub const FAMILIES: (&str, &str) = (
+    "Inter, Noto Sans",
+    "ui-monospace, JetBrainsMonoNL Nerd Font Mono",
+);
+#[cfg(not(all(unix, not(target_vendor = "apple"))))]
 pub const FAMILIES: (&str, &str) = ("Inter", "ui-monospace, JetBrainsMonoNL Nerd Font Mono");
 
 pub const DEFAULT_FONT_SIZE: f32 = 13.0;
