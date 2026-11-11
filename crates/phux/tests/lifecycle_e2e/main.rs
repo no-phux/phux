@@ -18,6 +18,7 @@ mod idle_exit_e2e;
 mod pair_enable_e2e;
 mod pane_scope_e2e;
 mod plugin_startup_e2e;
+mod producer_kit_e2e;
 mod project_link_e2e;
 mod relay_route_e2e;
 mod remote_session_verbs_e2e;

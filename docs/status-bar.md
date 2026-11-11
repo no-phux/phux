@@ -97,7 +97,7 @@ click target.
 ### Changing shape with the terminal
 
 Every widget takes `min-cols` and `max-cols`. They compare against the
-width of the whole bar, and a widget outside its range takes no room at
+width of the terminal (not the bar, which a sidebar narrows), and a widget outside its range takes no room at
 all, so the rest get its columns:
 
 ```toml

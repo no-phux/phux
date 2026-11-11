@@ -51,13 +51,13 @@ A capital letter means Shift: <kbd>X</kbd> is <kbd>Shift</kbd>+<kbd>x</kbd>. Whe
 
 | Keys | Does | Action |
 |---|---|---|
+| <kbd>d</kbd> | Detach | `detach` |
 | <kbd>C</kbd> | New session… | `new-session` |
 | <kbd>s</kbd> | Go to session… | `session-picker` |
 | <kbd>N</kbd> | Next session | `next-session` |
 | <kbd>P</kbd> | Previous session | `previous-session` |
 | <kbd>)</kbd> | Last session | `last-session` |
 | <kbd>$</kbd> | Rename session… | `rename-session` |
-| <kbd>d</kbd> | Detach | `detach` |
 
 ## phux
 

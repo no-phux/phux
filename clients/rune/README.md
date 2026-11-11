@@ -187,26 +187,24 @@ session (or `--session NAME`). It never creates a session on its own.
 | ⌘W | Close the terminal (**Confirm before closing** asks if something is running) |
 | ⌘] / ⌘[ | Next / previous terminal |
 | ⌘B | Fold the sidebar |
-| ⌘F / ⌘G / ⌘⇧G | Find / older match / newer match |
-| ⌘E | Find the selected text |
-| ⌘-click | Open the link under the pointer |
-| ⌘C / ⌘V | Copy the selection / paste (bracketed by the server) |
+| ⌘F / ⌘G / ⌘⇧G / ⌘E | Find / older / newer / the selection |
+| ⌘⇧C | Copy mode: vi keys; `v` selects, `y` copies |
+| ⌘-click | Open the link under it |
+| ⌘C / ⌘V | Copy the selection / paste (bracketed) |
 | ⌘= / ⌘- / ⌘0 | Bigger / smaller / default text |
 | ⌘↑ / ⌘↓ | Top / bottom of history |
 | Drag, double- and triple-click | Select by cell, word, line (Shift selects over mouse-tracking programs) |
 
-On Linux the same chords use Ctrl-Shift (split down is Ctrl-Shift-E, and
-Ctrl-click opens links);
-plain Ctrl chords go to the shell. Ctrl and Alt chords follow the key's
+On Linux the same chords use Ctrl-Shift (split down is Ctrl-Shift-E, copy
+mode Ctrl-Shift-X, Ctrl-click opens links); plain Ctrl chords go to the shell. Ctrl and Alt chords follow the key's
 position, so Ctrl-C is ^C on any layout.
 
 In a text field, use the native editing keys: ⌘C/V/A on macOS, plain
 Ctrl+C/V/A on Linux. Terminal clipboard chords never act on the terminal
 behind a focused Find field.
 
-A paste with line breaks into a program that has not turned on bracketed
-paste would run each line; the window asks first (Return pastes, Esc
-cancels).
+A paste with line breaks into a program without bracketed paste would run
+each line; the window asks first (Return pastes, Esc cancels).
 
 ## Known gaps
 

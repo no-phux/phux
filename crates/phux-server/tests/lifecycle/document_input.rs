@@ -307,6 +307,7 @@ fn a_paste_waits_briefly_for_its_producers_outcome() {
             terminal_id: surface.clone(),
             intent,
             control: None,
+            on_behalf_of: None,
         };
         let paste = || {
             send(DocumentInput::Paste {

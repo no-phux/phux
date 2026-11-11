@@ -23,6 +23,8 @@ Start with [Build on phux](./building.md).
 - [OSC 7501: report status from any program](./program-protocol.md).
   [Any program can report status](./any-program-status.md) is a short emitter.
 - [Plugin API](./plugins.md). A `phux-plugin.toml` manifest.
+- [Publish your own resource kind](./applications.md#publish-your-own-kind).
+  `phux agent doc serve` over a pipe; `[[producers]]` keeps it running.
 - [Agent integrations](./agents.md#agent-setup). Includes Claude Code, pi,
   Oh My Pi, OpenCode, Grok, and any MCP client.
 - [Calling phux from a program](./agent-quickstart.md#call-phux-from-a-program)

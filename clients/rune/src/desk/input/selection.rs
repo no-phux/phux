@@ -130,6 +130,10 @@ impl Desk {
         let Some(engine) = client.engine() else {
             return;
         };
+        // A press starts the mouse's own selection.
+        if phase == Phase::Down {
+            self.leave_copy_mode(false);
+        }
         let metrics = self.metrics();
         let (col, row) = metrics.cell_at(x, y, frame.cols, frame.rows);
         let (cell_w, cell_h) = metrics.cell_px();
