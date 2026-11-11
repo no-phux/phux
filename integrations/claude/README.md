@@ -44,3 +44,9 @@ npm ci
 npm run gates
 claude --plugin-dir .
 ```
+
+`npm run gates` validates the plugin with the pinned `@anthropic-ai/claude-code`
+dev dependency, whose install script fetches the `claude` binary. npm 12, which
+CI and the release use, runs only install scripts listed under `allowScripts`,
+so bump that entry together with the dev dependency
+(`npm install-scripts approve @anthropic-ai/claude-code`).
