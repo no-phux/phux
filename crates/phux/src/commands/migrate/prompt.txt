@@ -1,9 +1,9 @@
 Move my terminal setup into phux, the terminal multiplexer I run.
-phux has already read my config files and translated every key binding it could; the
-lines are below, decided one by one. Your job is to write them into my phux config,
-check the file, reload, and report. Do not read phux's documentation or source code and
-do not go looking for action names: everything you need is in this prompt. Run only the
-commands this prompt names.
+phux has already read my config files and translated every key binding and setting it
+could; the lines are below, decided one by one. Your job is to write them into my phux
+config, check the file, reload, and report. Do not read phux's documentation or source
+code and do not go looking for action names: everything you need is in this prompt. Run
+only the commands this prompt names.
 
 ## Read these files, and nothing else in my home directory
 {{files}}
@@ -37,6 +37,9 @@ You may also read the phux config file named below, and nothing else.
   sequence, never both.
 - Quote every key: `"|" = ...`, `'"' = ...`, `"\\" = ...`.
 - Bind only the actions under "Actions you may bind" at the end of this prompt.
+- A setting is `name = value` with a bare name, under its table (`[keybindings]`,
+  `[defaults]`, `[status]`): `history-limit = 100000` in `[defaults]`. If the file
+  already has that table, add the line to it; never write a table header twice.
 
 ## Rules
 - Never bind a macOS system shortcut: cmd+q, cmd+h, cmd+m, cmd+tab, cmd+space,
@@ -50,6 +53,9 @@ You may also read the phux config file named below, and nothing else.
   changes only when a source line wins a conflict you asked me about.
 - Write each key once per table. Never write two lines that leave the later to win.
 - Never decide a conflict yourself. When the lines below say to ask, ask me and wait.
+- If a line marked "not written" looks to you as if an action under "Actions you may
+  bind" does exactly what it does, still write nothing for it: list it under "Possible
+  misses" in the report, so phux's translator can be fixed.
 
 {{sources}}## Conflicts between sources
 A source is one program with every file it loads. Inside one source the line the
@@ -65,7 +71,7 @@ terminal's environment, and a bare `phux` could be a different phux.
    file and run it again until it does.
 2. Compare the file with the tables above, line by line: every line marked "write" is
    in its table exactly as given, once, and nothing is written for a line marked "not
-   written" or "already phux's default". Fix the file until it matches.
+   written", "nothing to do" or "already phux's default". Fix the file until it matches.
 3. Run `{{phux}} config reload` once. Do not ask me first: I asked for this migration, and
    nothing takes effect until the reload. If it fails with "operation not permitted" or
    cannot connect, your sandbox blocked it: do not retry it and do not work around it.
@@ -76,11 +82,17 @@ terminal's environment, and a bare `phux` could be a different phux.
 4. Run `{{phux}} config keys --json`. Its `skipped` list must be empty: each entry is a
    binding phux will not use. Fix the file, run steps 1 and 3 again, and repeat until it
    is empty.
+5. Check that my keys still do what they did, from the same output. For every line
+   marked "write" or "already phux's default" in a key table, find the entry in
+   `bindings` with that `table` whose `keys` end with that key (prefix-table keys start
+   with the prefix) and confirm its `action` and `args` are the ones given. A key written
+   as `"none"` must have no entry in its table. Fix the file and run steps 1, 3 and 4
+   again until every one matches; any that cannot match goes under "Could not migrate".
 
 ## Report
 Keep it short. Do not print the file, a diff, or command output. Give the path of the
-file, then these four lists in this order, one line per entry, then one line each for
-config check, reload and keys.
+file, then these lists in this order, one line per entry, then one line each for config
+check, reload, keys and the step 5 check. Leave out a list with no entries.
 - Migrated: each source line written, quoted with its file and line number, the phux
   key it became and its action. A line marked "already phux's default" goes here with
   "(phux default)".
@@ -88,11 +100,17 @@ config check, reload and keys.
   the key did before, what it does now, and the source line that won.
 - Conflicts between sources: each key more than one source bound, which source won (by
   my answer), and the losing line quoted with its file and line number.
-- Could not migrate: every other source line, quoted as written with its file and line
-  number, and one sentence on why (the table's reason, where it gives one). Settings
-  are lines too: each theme, font, colour, mouse, status bar or include line goes here
-  on its own line, never summarised together.
-Never drop a line silently: every line in the tables above appears in exactly one list.
+- Could not migrate: every line marked "not written", and every line of yours you
+  translated without writing, quoted as written with its file and line number, and one
+  sentence on why (the table's reason, where it gives one). I lose these, so each one
+  gets its own line, never summarised together.
+- Nothing to do: the lines marked "nothing to do", grouped by reason: one line per
+  reason, giving the reason and every file and line number it covers. I lose nothing
+  here.
+- Possible misses: lines you listed under the rule above, each quoted with its file and
+  line number and the action you think matches.
+Never drop a line silently: every line in the tables above appears in exactly one of
+the first five lists.
 
 ## Actions you may bind
 {{reference}}

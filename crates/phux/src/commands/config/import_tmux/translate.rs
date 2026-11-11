@@ -385,6 +385,7 @@ pub(crate) fn map_command(
     key: &str,
     prefix: &str,
 ) -> Option<(Value, Option<&'static str>)> {
+    let command = without_message(command);
     if let Some(mapped) = fixed_command(command) {
         return Some(mapped);
     }
@@ -409,6 +410,20 @@ pub(crate) fn map_command(
         _ => return adapted_prompt(command),
     };
     Some((value, None))
+}
+
+/// `command \; display "text"`: the message only reports what the command
+/// did, so the command alone is mapped. Any other chain stays whole, and so
+/// stays unmapped.
+fn without_message<'a, 'b>(command: &'a [&'b str]) -> &'a [&'b str] {
+    match command {
+        [head @ .., ";", "display" | "display-message", text]
+            if !text.starts_with('-') && !head.contains(&";") =>
+        {
+            head
+        }
+        _ => command,
+    }
 }
 
 fn fixed_command(command: &[&str]) -> Option<(Value, Option<&'static str>)> {
@@ -523,7 +538,7 @@ pub(crate) fn window_target(
     command: &[&str],
     options: &BTreeMap<String, String>,
 ) -> Option<(Value, Option<&'static str>)> {
-    let ["select-window", "-t", target] = command else {
+    let ["select-window", "-t", target] = without_message(command) else {
         return None;
     };
     let target = target.strip_prefix(':')?;

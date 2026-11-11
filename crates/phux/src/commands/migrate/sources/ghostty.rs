@@ -25,6 +25,7 @@ pub(super) fn read(paths: &[PathBuf], ctx: &Ctx<'_>) -> Source {
         files,
         rows,
         note: None,
+        prefix: None,
     }
 }
 
@@ -48,13 +49,28 @@ fn ghostty_line(file: &Path, line: &str, ctx: &Ctx<'_>) -> Line {
             let reason = format!("loads {}; its lines follow", tilde(&include, ctx.home));
             Line::Row(Class::Other, Verdict::Skip(reason), Some(include))
         }
-        "theme" => skip(
+        "theme" => Line::Row(
             Class::Setting,
-            "the theme is not migrated; pick one with `phux theme list` and `phux theme set`",
+            Verdict::Same(
+                "Ghostty keeps its theme around phux; to colour phux itself, pick a theme with \
+                 `phux theme list` and `phux theme set`"
+                    .into(),
+            ),
+            None,
         ),
-        _ => skip(
+        "scrollback-limit" => Line::Row(
             Class::Setting,
-            format!("the Ghostty setting {name}; this migration moves key bindings only"),
+            Verdict::Same(
+                "phux keeps its own scrollback for each pane (`defaults.history-limit`)".into(),
+            ),
+            None,
+        ),
+        _ => Line::Row(
+            Class::Setting,
+            Verdict::Same(format!(
+                "Ghostty keeps using {name} around phux, so there is nothing to move"
+            )),
+            None,
         ),
     }
 }
@@ -126,7 +142,8 @@ fn ghostty_chord(trigger: &str) -> Option<Result<String, String>> {
         let reason = if MACOS_KEYS.contains(&spelled.join("+").as_str()) {
             "macOS uses this key itself"
         } else {
-            "phux key bindings have no Cmd key; Rune's Cmd shortcuts are built in"
+            "phux key bindings have no Cmd key. In Ghostty it still works, but on Ghostty's own \
+             tabs and splits, not phux's (Rune, phux's Mac app, has Cmd shortcuts built in)"
         };
         return Some(Err(reason.into()));
     }

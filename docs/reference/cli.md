@@ -3805,12 +3805,19 @@ Global flags:
 Have your coding agent bring your terminal keys into phux
 
 Reads your tmux, zellij, Ghostty and herdr configs, translates every key binding
-it can into phux config lines, and starts your agent (claude, codex or opencode)
-with a strict prompt: write those lines into `phux config path`, run `phux
-config check` and `phux config reload`, and report what migrated, what replaced
-a phux default, which sources conflicted and what could not migrate. Inside a
-phux pane the agent opens in a split to the right; elsewhere in a new session
-named `migrate`.
+and tmux setting it can into phux config lines, and starts your agent (claude,
+codex or opencode) with a strict prompt: write those lines into `phux config
+path`, run `phux config check` and `phux config reload`, check your keys still
+do what they did, and report what migrated, what replaced a phux default, which
+sources conflicted, what could not migrate and what needs nothing. Inside a phux
+pane the agent opens in a split to the right; elsewhere in a new session named
+`migrate`.
+
+With a tmux config, it first asks two questions on the terminal (Enter takes the
+default): beginner or advanced mode, and whether to keep phux's prefix or use
+tmux's. Beginner keeps a phux default wherever it already does what your tmux
+did; advanced mirrors tmux as closely as phux allows. `--advanced` and
+`--prefix` answer them up front.
 
 `--print` prints the prompt instead, for any other agent. With nothing to
 migrate it says so and exits 0.
@@ -3818,6 +3825,7 @@ migrate it says so and exits 0.
 Examples:
 phux migrate
 phux migrate --agent codex --source tmux
+phux migrate --advanced --prefix C-b
 phux migrate --print | pbcopy
 
 Usage: phux migrate [FLAGS]
@@ -3833,6 +3841,13 @@ Flags:
       --json             Emit one JSON document: the sources found, the agent,
                          the config path and what was launched (with `--print`,
                          the prompt too).
+      --advanced         Mirror tmux as closely as phux allows: tmux unbinds are
+                         written even where phux has the same action on another
+                         key, and tmux's prefix is the default answer. Default:
+                         beginner, or ask on a terminal.
+      --prefix <KEY>     The phux prefix to use, such as `C-a` or `C-b`.
+                         Default: phux's own (tmux's with `--advanced`), or ask
+                         on a terminal.
   -h, --help             Print help
 
 Global flags:

@@ -6,7 +6,7 @@ use std::path::Path;
 
 use toml::Value;
 
-use super::sources::{Row, Source, Table, Verdict, identity, tilde};
+use super::sources::{Row, Source, Verdict, identity, tilde};
 use crate::commands::MigrateSource;
 
 const TEMPLATE: &str = include_str!("prompt.txt");
@@ -157,9 +157,9 @@ fn sections(sources: &[Source], ctx: &Context<'_>) -> String {
             let _ = writeln!(
                 out,
                 "\n### Every {program} line, one by one\nWrite every line marked \"write\" \
-                 exactly as given, in the table it names, once. A line marked \"not written\" \
-                 or \"already phux's default\" gets nothing. Each line goes in the report under \
-                 the list its marking names."
+                 exactly as given, in the table it names, once. A line marked \"not written\", \
+                 \"nothing to do\" or \"already phux's default\" gets nothing. Each line goes in \
+                 the report under the list its marking names."
             );
             for row in decided {
                 let _ = writeln!(out, "- {}\n  {}", quote(row, home), verdict(&row.verdict));
@@ -183,6 +183,14 @@ fn sections(sources: &[Source], ctx: &Context<'_>) -> String {
 }
 
 fn quote(row: &Row, home: &Path) -> String {
+    if row.line == 0 {
+        // A line phux stands in for a program's built-in default.
+        return format!(
+            "{} (built-in default, no line) `{}`",
+            tilde(&row.file, home),
+            row.text
+        );
+    }
     format!("{}:{} `{}`", tilde(&row.file, home), row.line, row.text)
 }
 
@@ -200,7 +208,7 @@ fn verdict(verdict: &Verdict) -> String {
             note,
             replaces,
         } => {
-            let written = if *table == Table::Keybindings {
+            let written = if table.is_setting() {
                 format!("{key} = {value}")
             } else {
                 line(key, value)
@@ -215,6 +223,7 @@ fn verdict(verdict: &Verdict) -> String {
             out
         }
         Verdict::Default { .. } => "already phux's default, not written".into(),
+        Verdict::Same(reason) => format!("nothing to do: {reason}"),
         Verdict::Skip(reason) => format!("not written: {reason}"),
         Verdict::Raw => String::new(),
     }
@@ -275,9 +284,9 @@ fn conflicts(sources: &[Source], home: &Path) -> String {
         }
     }
     out.push_str(
-        "If a line already in the target file binds a key that a line above binds differently, \
-         ask me once about all such keys the same way. Keys you translate yourself follow the \
-         same rule.\n",
+        "If a line already in the target file binds a key or sets a setting that a line above \
+         writes differently, ask me once about all such lines the same way. Keys you translate \
+         yourself follow the same rule.\n",
     );
     out
 }

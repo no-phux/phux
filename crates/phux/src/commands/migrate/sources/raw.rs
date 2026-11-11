@@ -24,7 +24,7 @@ pub(super) fn zellij(path: &Path) -> Source {
             }
             return skip(
                 Class::Setting,
-                "a zellij setting; this migration moves key bindings only",
+                "a zellij setting; phux migrate translates zellij key bindings only",
             );
         }
         // ponytail: counts braces without parsing KDL strings; a `{` inside
@@ -45,6 +45,7 @@ pub(super) fn zellij(path: &Path) -> Source {
         files,
         rows,
         note: None,
+        prefix: None,
     }
 }
 
@@ -71,7 +72,7 @@ pub(super) fn herdr(path: &Path) -> Source {
         }
         skip(
             Class::Setting,
-            "a herdr setting; this migration moves key bindings only",
+            "a herdr setting; phux migrate translates herdr key bindings only",
         )
     };
     read_tree(path, &mut files, &mut rows, &mut decide);
@@ -80,5 +81,6 @@ pub(super) fn herdr(path: &Path) -> Source {
         files,
         rows,
         note: None,
+        prefix: None,
     }
 }

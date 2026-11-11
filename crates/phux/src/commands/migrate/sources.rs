@@ -9,7 +9,7 @@ mod tmux;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
-use phux_config::keybind::{KeyChord, parse_chord_sequence};
+use phux_config::keybind::{KeyChord, parse_chord, parse_chord_sequence};
 use phux_config::{Action, KeybindingsCfg};
 use toml::Value;
 
@@ -39,12 +39,28 @@ pub(super) struct Source {
     pub rows: Vec<Row>,
     /// Something the agent must know about the whole source.
     pub note: Option<String>,
+    /// The prefix the program used (tmux only): its `set prefix`, else C-b.
+    pub prefix: Option<String>,
 }
 
-/// What every decider needs: `$HOME` (for `~`) and the shipped bindings.
+/// How closely the migration follows the source.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(super) enum Mode {
+    /// Keep a phux default wherever it already does what the user wanted.
+    #[default]
+    Beginner,
+    /// Mirror the source as closely as phux allows.
+    Advanced,
+}
+
+/// What every decider needs: `$HOME` (for `~`), the shipped bindings and
+/// settings, and the mode.
 pub(super) struct Ctx<'a> {
     pub home: &'a Path,
     pub defaults: &'a KeybindingsCfg,
+    /// The shipped config as TOML, to tell a default setting from a change.
+    pub shipped: &'a Value,
+    pub mode: Mode,
 }
 
 /// One line of a source file.
@@ -74,6 +90,10 @@ pub(super) enum Table {
     Keybindings,
     Prefix,
     Global,
+    /// `[defaults]`: a setting, not a key.
+    Defaults,
+    /// `[status]`: a setting, not a key.
+    Status,
 }
 
 impl Table {
@@ -82,8 +102,31 @@ impl Table {
             Self::Keybindings => "[keybindings]",
             Self::Prefix => "[keybindings.prefix-table]",
             Self::Global => "[keybindings.global]",
+            Self::Defaults => "[defaults]",
+            Self::Status => "[status]",
         }
     }
+
+    /// The TOML table name, for looking up a shipped setting.
+    const fn name(self) -> &'static str {
+        match self {
+            Self::Keybindings | Self::Prefix | Self::Global => "keybindings",
+            Self::Defaults => "defaults",
+            Self::Status => "status",
+        }
+    }
+
+    /// Its keys are setting names, written bare, not key chords.
+    pub(super) const fn is_setting(self) -> bool {
+        matches!(self, Self::Keybindings | Self::Defaults | Self::Status)
+    }
+}
+
+/// What a written line claims: a key, or a setting by name.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub(super) enum Ident {
+    Keys(Vec<KeyChord>),
+    Name(String),
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -99,7 +142,10 @@ pub(super) enum Verdict {
     },
     /// phux already binds this key this way; nothing to write.
     Default { table: Table, key: String },
-    /// Nothing is written, for this reason.
+    /// Nothing is written and the user loses nothing: it keeps working
+    /// where it is, or phux already behaves this way. The reason says which.
+    Same(String),
+    /// Nothing is written, for this reason: the user loses it.
     Skip(String),
     /// The agent translates it.
     Raw,
@@ -119,12 +165,20 @@ impl Source {
 
 /// Every source found under `home`, in `MigrateSource` order. `only`
 /// narrows it; empty means all.
-pub(super) fn discover(home: &Path, xdg: Option<&Path>, only: &[MigrateSource]) -> Vec<Source> {
+pub(super) fn discover(
+    home: &Path,
+    xdg: Option<&Path>,
+    only: &[MigrateSource],
+    mode: Mode,
+) -> Vec<Source> {
     let config = xdg.map_or_else(|| home.join(".config"), Path::to_path_buf);
     let defaults = shipped_bindings();
+    let shipped = shipped_settings();
     let ctx = Ctx {
         home,
         defaults: &defaults,
+        shipped: &shipped,
+        mode,
     };
     let wanted = |kind| only.is_empty() || only.contains(&kind);
     let first = |paths: Vec<PathBuf>| paths.into_iter().find(|p| p.is_file());
@@ -176,10 +230,142 @@ pub(super) fn shipped_bindings() -> KeybindingsCfg {
         .unwrap_or_default()
 }
 
+/// The whole shipped config as TOML, to tell a default setting from a change.
+fn shipped_settings() -> Value {
+    phux_config::parse_with_defaults("", Path::new("config.toml"))
+        .ok()
+        .and_then(|cfg| Value::try_from(cfg).ok())
+        .unwrap_or_else(|| Value::Table(toml::Table::new()))
+}
+
+/// Settle the prefix: `chosen` is the one the user picked at setup. tmux's
+/// own prefix line (or, with none, a line standing for tmux's built-in C-b)
+/// becomes that choice, and the source's note says what was decided.
+pub(super) fn apply_prefix(sources: &mut [Source], chosen: &str, shipped: &str) {
+    let same = |a: &str, b: &str| parse_chord(a).ok() == parse_chord(b).ok();
+    for source in sources.iter_mut() {
+        let Some(tmux_prefix) = source.prefix.clone() else {
+            continue;
+        };
+        let keep = same(chosen, shipped);
+        let verdict = if keep && same(&tmux_prefix, shipped) {
+            Verdict::Default {
+                table: Table::Keybindings,
+                key: "prefix".into(),
+            }
+        } else if keep {
+            Verdict::Same(format!("I chose to keep phux's prefix, {shipped}"))
+        } else {
+            let note = (!same(chosen, &tmux_prefix))
+                .then(|| format!("I chose {chosen}; tmux used {tmux_prefix}"));
+            Verdict::Write {
+                table: Table::Keybindings,
+                key: "prefix".into(),
+                value: Value::String(chosen.to_owned()),
+                note,
+                replaces: Some(format!("the prefix {shipped}")),
+            }
+        };
+        let line = source.rows.iter().rposition(|row| {
+            matches!(
+                &row.verdict,
+                Verdict::Write {
+                    table: Table::Keybindings,
+                    ..
+                } | Verdict::Default {
+                    table: Table::Keybindings,
+                    ..
+                }
+            )
+        });
+        match line {
+            Some(index) => source.rows[index].verdict = verdict,
+            None if !keep => {
+                let file = source.files.first().cloned().unwrap_or_default();
+                source.rows.push(Row {
+                    file,
+                    line: 0,
+                    text: format!("set -g prefix {tmux_prefix}"),
+                    class: Class::Other,
+                    verdict,
+                });
+            }
+            None => {}
+        }
+        source.note = Some(if keep {
+            format!(
+                "tmux's prefix was {tmux_prefix}. I chose to keep phux's prefix, {shipped}: every \
+                 prefix-table line below fires after it. Do not change `prefix`."
+            )
+        } else {
+            format!(
+                "I chose {chosen} as my phux prefix: write the prefix line below, and every \
+                 prefix-table line fires after it."
+            )
+        });
+    }
+}
+
+/// Beginner mode: an unbind of a shipped prefix key is not written while
+/// phux still does the same thing on another key, so the user keeps a key
+/// and loses nothing (`unbind '"'` beside phux's own `-` split).
+pub(super) fn keep_redundant_unbinds(source: &mut Source, ctx: &Ctx<'_>) {
+    if ctx.mode == Mode::Advanced {
+        return;
+    }
+    let shipped = &ctx.defaults.prefix_table;
+    // Prefix keys this source writes to something else.
+    let rewritten: Vec<_> = source
+        .rows
+        .iter()
+        .filter(|row| matches!(row.verdict, Verdict::Write { .. }))
+        .filter_map(identity)
+        .filter(|(table, _)| *table == Table::Prefix)
+        .map(|(_, id)| id)
+        .collect();
+    for index in 0..source.rows.len() {
+        let row = &source.rows[index];
+        let Verdict::Write {
+            table: Table::Prefix,
+            key,
+            value,
+            ..
+        } = &row.verdict
+        else {
+            continue;
+        };
+        if row.class != Class::Unbinding || value.as_str() != Some("none") {
+            continue;
+        }
+        let Ok(sequence) = parse_chord_sequence(key) else {
+            continue;
+        };
+        let Some((_, action)) = shipped
+            .iter()
+            .find(|(spelling, _)| parse_chord_sequence(spelling).ok().as_ref() == Some(&sequence))
+        else {
+            continue;
+        };
+        // Another shipped key with the same action, left alone by this source.
+        let other = shipped.iter().find(|(spelling, other)| {
+            let Ok(keys) = parse_chord_sequence(spelling) else {
+                return false;
+            };
+            *other == action && keys != sequence && !rewritten.contains(&Ident::Keys(keys))
+        });
+        if let Some((spelling, _)) = other {
+            source.rows[index].verdict = Verdict::Same(format!(
+                "phux also does this on `{spelling}`, so beginner mode keeps `{key}` too; \
+                 `phux migrate --advanced` removes it as tmux did"
+            ));
+        }
+    }
+}
+
 /// Inside one source, the line the program loads last wins: earlier
 /// lines on the same key are not written.
 fn last_line_wins(source: &mut Source, home: &Path) {
-    let mut last: BTreeMap<(Table, Vec<KeyChord>), usize> = BTreeMap::new();
+    let mut last: BTreeMap<(Table, Ident), usize> = BTreeMap::new();
     for (index, row) in source.rows.iter().enumerate() {
         if let Some(id) = identity(row) {
             last.insert(id, index);
@@ -202,15 +388,15 @@ fn last_line_wins(source: &mut Source, home: &Path) {
     }
 }
 
-/// The key a written (or already-default) row claims.
-pub(super) fn identity(row: &Row) -> Option<(Table, Vec<KeyChord>)> {
+/// The key or setting a written (or already-default) row claims.
+pub(super) fn identity(row: &Row) -> Option<(Table, Ident)> {
     let (Verdict::Write { table, key, .. } | Verdict::Default { table, key }) = &row.verdict else {
         return None;
     };
-    if *table == Table::Keybindings {
-        return Some((*table, Vec::new()));
+    if table.is_setting() {
+        return Some((*table, Ident::Name(key.clone())));
     }
-    Some((*table, parse_chord_sequence(key).ok()?))
+    Some((*table, Ident::Keys(parse_chord_sequence(key).ok()?)))
 }
 
 /// `~/...` when under `$HOME`, for the prompt.
@@ -284,6 +470,21 @@ pub(super) fn against_default(
     let shipped = match table {
         Table::Prefix => &defaults.prefix_table,
         Table::Global => &defaults.global,
+        Table::Defaults | Table::Status => {
+            let current = ctx.shipped.get(table.name()).and_then(|t| t.get(&key));
+            return if current == Some(&value) {
+                Verdict::Default { table, key }
+            } else {
+                let replaces = current.map(|current| format!("{key} = {current}"));
+                Verdict::Write {
+                    table,
+                    key,
+                    value,
+                    note,
+                    replaces,
+                }
+            };
+        }
         Table::Keybindings => {
             return if value.as_str() == Some(defaults.prefix.as_str()) {
                 Verdict::Default { table, key }

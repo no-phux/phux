@@ -50,6 +50,30 @@ bind-key -T prefix , command-prompt -I "#W" { rename-window "%%" }
 }
 
 #[test]
+fn a_trailing_display_message_does_not_hide_the_command() {
+    let map = |line: &str| {
+        let binding = binding(line).unwrap();
+        let command: Vec<_> = binding.command.iter().map(String::as_str).collect();
+        map_command(&command, &binding.key, "C-b").map(|(value, _)| value.to_string())
+    };
+    assert_eq!(
+        map(r#"bind r source-file ~/.tmux.conf \; display "reloaded""#).as_deref(),
+        Some(r#""reload-config""#)
+    );
+    assert_eq!(
+        map(r"bind z resize-pane -Z \; display-message zoom").as_deref(),
+        Some(r#""toggle-zoom""#)
+    );
+    // Only a lone trailing message is dropped; any other chain stays unmapped.
+    assert_eq!(map(r"bind r source-file ~/.tmux.conf \; kill-server"), None);
+    assert_eq!(
+        map(r"bind r source-file a \; source-file b \; display hi"),
+        None
+    );
+    assert_eq!(map(r"bind r source-file a \; display -d 0 hi"), None);
+}
+
+#[test]
 fn rejects_scripts_chains_unknown_flags_targets_and_confirmation_loss() {
     let plan = make_plan(
         r##"bind-key -T prefix x confirm-before -p "kill?" kill-pane

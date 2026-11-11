@@ -22,29 +22,29 @@ use crate::commands::json_err::{self, CliError, codes};
 use crate::commands::server_target::ServerSpec;
 use crate::commands::{MigrateAgent, MigrateArgs, SpawnSplit, new, sh_quote, spawn};
 use crate::exit_codes::EXIT_USAGE;
+use sources::Mode;
 
 /// Version of the `phux migrate --json` document.
 const SCHEMA_VERSION: u8 = 1;
 
-pub(crate) fn run(args: MigrateArgs, socket: Option<PathBuf>) -> ExitCode {
-    let MigrateArgs {
-        agent,
-        print,
-        source,
-        json,
-    } = args;
+pub(crate) fn run(args: &MigrateArgs, socket: Option<PathBuf>) -> ExitCode {
     let home = std::env::var_os("HOME")
         .map(PathBuf::from)
         .unwrap_or_default();
     let xdg = std::env::var_os("XDG_CONFIG_HOME")
         .filter(|dir| !dir.is_empty())
         .map(PathBuf::from);
-    let found = sources::discover(&home, xdg.as_deref(), &source);
+    let settled = settle(&home, xdg.as_deref(), args);
+    let (agent, print, json) = (args.agent, args.print, args.json);
+    let (found, choices) = match settled {
+        Ok(settled) => settled,
+        Err(code) => return code,
+    };
     let config = phux_config::loader::config_path();
     let installed = installed_agents();
     if found.is_empty() {
         if json {
-            return crate::output::json(&document(&found, None, &config, None, 0));
+            return crate::output::json(&document(&found, None, &config, None, 0, &choices));
         }
         let message = "Nothing to migrate: no tmux, zellij, Ghostty or herdr config found.";
         if print {
@@ -59,7 +59,6 @@ pub(crate) fn run(args: MigrateArgs, socket: Option<PathBuf>) -> ExitCode {
         |exe| sh_quote(&exe.to_string_lossy()),
     );
     let reference = prompt::reference();
-    let prefix = sources::shipped_bindings().prefix;
     let date = chrono::Local::now().format("%Y-%m-%d").to_string();
     let text = prompt::render(
         &found,
@@ -68,7 +67,7 @@ pub(crate) fn run(args: MigrateArgs, socket: Option<PathBuf>) -> ExitCode {
             phux: &phux,
             config: &config,
             date: &date,
-            prefix: &prefix,
+            prefix: &choices.phux_prefix,
             reference: &reference,
         },
     );
@@ -78,7 +77,7 @@ pub(crate) fn run(args: MigrateArgs, socket: Option<PathBuf>) -> ExitCode {
                 [(only, _)] => Some(*only),
                 _ => None,
             });
-            let mut doc = document(&found, picked, &config, None, text.len());
+            let mut doc = document(&found, picked, &config, None, text.len(), &choices);
             doc["prompt"] = Value::String(text);
             return crate::output::json(&doc);
         }
@@ -115,9 +114,126 @@ pub(crate) fn run(args: MigrateArgs, socket: Option<PathBuf>) -> ExitCode {
             &config,
             launched.as_ref(),
             text.len(),
+            &choices,
         ));
     }
     ExitCode::SUCCESS
+}
+
+/// What the user chose for this run, for the prompt and the JSON.
+struct Choices {
+    mode: Mode,
+    phux_prefix: String,
+    /// The prefix tmux used, when a tmux config was found.
+    tmux_prefix: Option<String>,
+    /// The phux prefix the migration writes or keeps.
+    prefix: String,
+}
+
+/// Find the sources and settle the mode and the prefix: from the flags,
+/// else by asking on a terminal, else the defaults.
+fn settle(
+    home: &Path,
+    xdg: Option<&Path>,
+    args: &MigrateArgs,
+) -> Result<(Vec<sources::Source>, Choices), ExitCode> {
+    if let Some(key) = &args.prefix
+        && phux_config::keybind::parse_chord(key).is_err()
+    {
+        return Err(json_err::emit(
+            args.json,
+            &CliError::new(
+                codes::USAGE_ERROR,
+                format!("--prefix {key} is not a phux key"),
+                "write one key with its modifiers, such as C-a or C-b",
+            ),
+            EXIT_USAGE,
+        ));
+    }
+    let (only, advanced) = (args.source.as_slice(), args.advanced);
+    let interactive = !args.json && !args.print && std::io::stdin().is_terminal();
+    let tmux_prefix_of = |found: &[sources::Source]| found.iter().find_map(|s| s.prefix.clone());
+    // Discovery only reads files, so it runs again if the mode changes.
+    let mut mode = if advanced {
+        Mode::Advanced
+    } else {
+        Mode::Beginner
+    };
+    let mut found = sources::discover(home, xdg, only, mode);
+    if tmux_prefix_of(&found).is_some() && interactive && !advanced {
+        mode = ask_mode();
+        if mode == Mode::Advanced {
+            found = sources::discover(home, xdg, only, mode);
+        }
+    }
+    let phux_prefix = sources::shipped_bindings().prefix;
+    let tmux_prefix = tmux_prefix_of(&found);
+    let prefix = match (&args.prefix, &tmux_prefix) {
+        (Some(key), _) => key.clone(),
+        (None, Some(tmux)) if interactive && !same_key(tmux, &phux_prefix) => {
+            ask_prefix(&phux_prefix, tmux, mode)
+        }
+        (None, Some(tmux)) if mode == Mode::Advanced => tmux.clone(),
+        _ => phux_prefix.clone(),
+    };
+    sources::apply_prefix(&mut found, &prefix, &phux_prefix);
+    let choices = Choices {
+        mode,
+        phux_prefix,
+        tmux_prefix,
+        prefix,
+    };
+    Ok((found, choices))
+}
+
+fn same_key(a: &str, b: &str) -> bool {
+    use phux_config::keybind::parse_chord;
+    parse_chord(a).ok() == parse_chord(b).ok()
+}
+
+/// Ask beginner or advanced; Enter takes beginner.
+fn ask_mode() -> Mode {
+    let answer = ask_line(
+        "How closely should phux follow your tmux config?\n  \
+         1) beginner: keep phux's defaults where they already do what tmux did\n  \
+         2) advanced: mirror tmux as closely as phux allows\n\
+         Choose [1]: ",
+    );
+    if matches!(answer.as_str(), "2" | "advanced") {
+        Mode::Advanced
+    } else {
+        Mode::Beginner
+    }
+}
+
+/// Ask which prefix to use; Enter takes phux's (tmux's in advanced mode).
+fn ask_prefix(phux: &str, tmux: &str, mode: Mode) -> String {
+    let default = if mode == Mode::Advanced { "2" } else { "1" };
+    let answer = ask_line(&format!(
+        "tmux used the prefix {tmux}; phux's is {phux}.\n  \
+         1) keep phux's {phux}\n  \
+         2) use tmux's {tmux}\n\
+         Choose [{default}]: "
+    ));
+    let pick = if answer.is_empty() {
+        default
+    } else {
+        answer.as_str()
+    };
+    if pick == "2" || same_key(pick, tmux) {
+        tmux.to_owned()
+    } else {
+        phux.to_owned()
+    }
+}
+
+fn ask_line(question: &str) -> String {
+    let mut stderr = std::io::stderr();
+    let _ = write!(stderr, "{question}");
+    let _ = stderr.flush();
+    let mut answer = String::new();
+    let _ = std::io::stdin().lock().read_line(&mut answer);
+    answer.trim().to_owned()
 }
 
 /// The `--json` document. Stable: the Rune onboarding reads it.
@@ -127,6 +243,7 @@ fn document(
     config: &Path,
     launched: Option<&Value>,
     prompt_bytes: usize,
+    choices: &Choices,
 ) -> Value {
     let sources: Vec<Value> = found
         .iter()
@@ -146,6 +263,15 @@ fn document(
         "config_path": config,
         "launched": launched,
         "prompt_bytes": prompt_bytes,
+        "mode": match choices.mode {
+            Mode::Beginner => "beginner",
+            Mode::Advanced => "advanced",
+        },
+        "prefix": {
+            "phux": choices.phux_prefix,
+            "tmux": choices.tmux_prefix,
+            "chosen": choices.prefix,
+        },
     })
 }
 

@@ -2,8 +2,8 @@ use std::path::{Path, PathBuf};
 
 use serde_json::json;
 
-use super::sources::{Verdict, discover};
-use super::{agent_argv, document, prompt, user_executable};
+use super::sources::{Mode, Table, Verdict, apply_prefix, discover};
+use super::{Choices, agent_argv, document, prompt, user_executable};
 use crate::commands::{MigrateAgent, MigrateSource};
 
 fn fixture_home() -> PathBuf {
@@ -29,7 +29,7 @@ fn render(home: &Path, sources: &[super::sources::Source]) -> String {
 #[test]
 fn prompt_for_tmux_and_ghostty_matches_the_golden() {
     let home = fixture_home();
-    let sources = discover(&home, None, &[]);
+    let sources = discover(&home, None, &[], Mode::Beginner);
     let text = render(&home, &sources);
     let golden = home.parent().expect("testdata").join("prompt.golden.txt");
     if std::env::var_os("PHUX_UPDATE_MIGRATE_GOLDENS").is_some() {
@@ -46,7 +46,7 @@ fn prompt_for_tmux_and_ghostty_matches_the_golden() {
 #[test]
 fn tmux_lines_are_decided_one_by_one() {
     let home = fixture_home();
-    let sources = discover(&home, None, &[MigrateSource::Tmux]);
+    let sources = discover(&home, None, &[MigrateSource::Tmux], Mode::Beginner);
     let [tmux] = sources.as_slice() else {
         panic!("one source: {sources:?}");
     };
@@ -74,7 +74,6 @@ fn tmux_lines_are_decided_one_by_one() {
     assert!(
         matches!(verdict("bind -T copy-mode-vi v send -X begin-selection"), Verdict::Skip(reason) if reason.contains("copy-mode"))
     );
-    assert!(matches!(verdict("set -g mouse on"), Verdict::Skip(_)));
     // `base-index 1` makes tmux window 1 the first phux tab.
     let Verdict::Write { value, .. } = verdict("bind -n M-1 select-window -t :1") else {
         panic!("select-window is written");
@@ -86,9 +85,90 @@ fn tmux_lines_are_decided_one_by_one() {
 }
 
 #[test]
+fn tmux_settings_reloads_and_redundant_unbinds() {
+    let home = fixture_home();
+    let sources = discover(&home, None, &[MigrateSource::Tmux], Mode::Beginner);
+    let verdict = |text: &str| {
+        &sources[0]
+            .rows
+            .iter()
+            .find(|row| row.text == text)
+            .unwrap_or_else(|| panic!("no row {text}"))
+            .verdict
+    };
+    // Settings: phux's own, translated, phux's behaviour already, or lost.
+    assert!(matches!(
+        verdict("set -g mouse on"),
+        Verdict::Default {
+            table: Table::Defaults,
+            ..
+        }
+    ));
+    assert!(
+        matches!(verdict("set -g history-limit 100000"), Verdict::Write { table: Table::Defaults, key, .. } if key == "history-limit")
+    );
+    assert!(matches!(verdict("setw -g mode-keys vi"), Verdict::Same(_)));
+    assert!(
+        matches!(verdict("set -g base-index 1"), Verdict::Skip(reason) if reason.contains("from 0"))
+    );
+    // A trailing `display` does not hide the reload.
+    assert!(
+        matches!(verdict(r#"bind r source-file ~/.tmux.conf \; display "reloaded""#), Verdict::Write { value, .. } if value.as_str() == Some("reload-config"))
+    );
+    // Beginner keeps a split key phux also has on `-` and `|`.
+    assert!(matches!(verdict("unbind '\"'"), Verdict::Same(reason) if reason.contains("`-`")));
+    assert!(matches!(verdict("unbind %"), Verdict::Same(_)));
+}
+
+#[test]
+fn advanced_mode_writes_tmux_unbinds() {
+    let home = fixture_home();
+    let sources = discover(&home, None, &[MigrateSource::Tmux], Mode::Advanced);
+    let row = sources[0]
+        .rows
+        .iter()
+        .find(|row| row.text == "unbind %")
+        .expect("unbind row");
+    assert!(
+        matches!(&row.verdict, Verdict::Write { value, replaces: Some(_), .. } if value.as_str() == Some("none"))
+    );
+}
+
+#[test]
+fn the_prefix_follows_the_users_choice() {
+    let home = tempfile::tempdir().expect("tempdir");
+    let path = home.path().join(".tmux.conf");
+    std::fs::write(&path, "bind v split-window -h\n").expect("write");
+    let choose = |chosen: &str| {
+        let mut sources = discover(home.path(), None, &[], Mode::Beginner);
+        assert_eq!(sources[0].prefix.as_deref(), Some("C-b"));
+        apply_prefix(&mut sources, chosen, "C-a");
+        sources.remove(0)
+    };
+    // Keeping phux's prefix writes nothing, and the note says so.
+    let kept = choose("C-a");
+    assert_eq!(kept.rows.len(), 1);
+    assert!(
+        kept.note
+            .as_deref()
+            .is_some_and(|n| n.contains("keep phux's"))
+    );
+    // tmux's built-in C-b gets a stand-in line, written.
+    let tmux = choose("C-b");
+    let row = tmux.rows.last().expect("prefix row");
+    assert_eq!(row.line, 0);
+    assert!(
+        matches!(&row.verdict, Verdict::Write { table: Table::Keybindings, value, .. } if value.as_str() == Some("C-b"))
+    );
+    let text = render(home.path(), std::slice::from_ref(&tmux));
+    assert!(text.contains("(built-in default, no line) `set -g prefix C-b`"));
+    assert!(text.contains(r#"write `prefix = "C-b"` in `[keybindings]`"#));
+}
+
+#[test]
 fn ghostty_never_binds_cmd_and_names_macos_keys() {
     let home = fixture_home();
-    let sources = discover(&home, None, &[MigrateSource::Ghostty]);
+    let sources = discover(&home, None, &[MigrateSource::Ghostty], Mode::Beginner);
     let [ghostty] = sources.as_slice() else {
         panic!("one source: {sources:?}");
     };
@@ -105,12 +185,16 @@ fn ghostty_never_binds_cmd_and_names_macos_keys() {
         &Verdict::Skip("macOS uses this key itself".into())
     );
     assert!(
-        matches!(verdict("keybind = cmd+d=new_split:right"), Verdict::Skip(reason) if reason.contains("no Cmd"))
+        matches!(verdict("keybind = cmd+d=new_split:right"), Verdict::Skip(reason) if reason.contains("no Cmd") && reason.contains("Ghostty's own"))
     );
     assert!(
         matches!(verdict("keybind = ctrl+shift+t=new_tab"), Verdict::Write { key, .. } if key == "C-S-t")
     );
     assert_eq!(verdict("keybind = ctrl+a>c=new_tab"), &Verdict::Raw);
+    assert!(matches!(
+        verdict("font-family = JetBrains Mono"),
+        Verdict::Same(_)
+    ));
     assert_eq!(
         verdict("keybind = ctrl+shift+c=copy_to_clipboard"),
         &Verdict::Raw
@@ -139,7 +223,7 @@ fn every_source_is_found_under_a_temp_home() {
         ".config/herdr/config.toml",
         "[ui]\ntheme = \"x\"\n\n[keys]\nprefix = \"ctrl+b\"\nnew_tab = \"prefix+c\"\n",
     );
-    let sources = discover(home, None, &[]);
+    let sources = discover(home, None, &[], Mode::Beginner);
     let found: Vec<_> = sources.iter().map(|s| (s.kind, s.found())).collect();
     assert_eq!(
         found,
@@ -150,32 +234,39 @@ fn every_source_is_found_under_a_temp_home() {
             (MigrateSource::Herdr, (2, 0, 1)),
         ]
     );
-    // No `set prefix` line: tmux used C-b, and the agent is told phux keeps its own.
-    assert!(
-        sources[0]
-            .note
-            .as_deref()
-            .is_some_and(|n| n.contains("C-b"))
-    );
-    let only = discover(home, None, &[MigrateSource::Herdr]);
+    // No `set prefix` line: tmux used C-b.
+    assert_eq!(sources[0].prefix.as_deref(), Some("C-b"));
+    let only = discover(home, None, &[MigrateSource::Herdr], Mode::Beginner);
     assert_eq!(only.len(), 1);
     assert_eq!(only[0].kind, MigrateSource::Herdr);
 
     // An empty home has nothing to migrate.
     let empty = tempfile::tempdir().expect("tempdir");
-    assert!(discover(empty.path(), None, &[]).is_empty());
+    assert!(discover(empty.path(), None, &[], Mode::Beginner).is_empty());
 }
 
 #[test]
 fn json_document_shape_is_stable() {
     let home = fixture_home();
-    let sources = discover(&home, None, &[]);
+    let sources = discover(&home, None, &[], Mode::Beginner);
+    let choices = Choices {
+        mode: Mode::Beginner,
+        phux_prefix: "C-a".into(),
+        tmux_prefix: Some("C-b".into()),
+        prefix: "C-a".into(),
+    };
     let doc = document(
         &sources,
         Some(MigrateAgent::Claude),
         Path::new("/c/config.toml"),
         Some(&json!({ "pane": "@3" })),
         42,
+        &choices,
+    );
+    assert_eq!(doc["mode"], "beginner");
+    assert_eq!(
+        doc["prefix"],
+        json!({ "phux": "C-a", "tmux": "C-b", "chosen": "C-a" })
     );
     assert_eq!(doc["schema_version"], 1);
     assert_eq!(doc["agent"], "claude");
@@ -189,7 +280,7 @@ fn json_document_shape_is_stable() {
     assert!(found["unbindings"].is_u64() && found["settings"].is_u64());
     assert!(doc["sources"][0]["files"][0].is_string());
 
-    let none = document(&[], None, Path::new("/c/config.toml"), None, 0);
+    let none = document(&[], None, Path::new("/c/config.toml"), None, 0, &choices);
     assert_eq!(none["sources"], json!([]));
     assert!(none["agent"].is_null() && none["launched"].is_null());
 }

@@ -8,7 +8,8 @@ use phux_config::keybind::parse_chord;
 use toml::Value;
 
 use super::{
-    Class, Ctx, Line, Source, Table, Verdict, against_default, expand, read_tree, skip, tilde,
+    Class, Ctx, Line, Source, Table, Verdict, against_default, expand, keep_redundant_unbinds,
+    read_tree, skip, tilde,
 };
 use crate::commands::MigrateSource;
 use crate::commands::config::import_tmux::translate;
@@ -22,19 +23,15 @@ pub(super) fn read(path: &Path, ctx: &Ctx<'_>) -> Source {
     let mut decide =
         |file: &Path, line: &str| tmux_line(file, line, &mut prefix, &mut options, ctx);
     read_tree(path, &mut files, &mut rows, &mut decide);
-    let note = (!options.contains_key("prefix")).then(|| {
-        format!(
-            "These files never set a prefix, so tmux used C-b. phux keeps its own prefix, {}: \
-             every prefix-table line below fires after it. Do not change `prefix` unless I ask.",
-            ctx.defaults.prefix
-        )
-    });
-    Source {
+    let mut source = Source {
         kind: MigrateSource::Tmux,
         files,
         rows,
-        note,
-    }
+        note: None,
+        prefix: Some(prefix),
+    };
+    keep_redundant_unbinds(&mut source, ctx);
+    source
 }
 
 fn tmux_line(
@@ -219,10 +216,103 @@ fn tmux_set(
         );
         return Line::Row(Class::Setting, verdict, None);
     }
-    let reason = if name.starts_with('@') {
-        "a tmux plugin option; tmux plugins are not migrated".to_owned()
-    } else {
-        format!("the tmux option {name} is a setting; this migration moves key bindings only")
+    tmux_option(name, &value, ctx)
+}
+
+/// A tmux option other than `prefix`: a phux setting where one does the same
+/// job, else whether the user loses anything.
+fn tmux_option(name: &str, value: &str, ctx: &Ctx<'_>) -> Line {
+    let write = |table, key: &str, value: Value, note: Option<&str>| {
+        let verdict = against_default(ctx, table, key.into(), value, note.map(str::to_owned));
+        Line::Row(Class::Setting, verdict, None)
     };
-    skip(Class::Setting, reason)
+    let same = |reason: &str| Line::Row(Class::Setting, Verdict::Same(reason.into()), None);
+    let on = match value {
+        "on" => Some(true),
+        "off" => Some(false),
+        _ => None,
+    };
+    match (name, on) {
+        ("mouse", Some(on)) => write(Table::Defaults, "mouse", on.into(), None),
+        ("history-limit", _) if value.parse::<u32>().is_ok() => write(
+            Table::Defaults,
+            "history-limit",
+            Value::Integer(value.parse::<u32>().map(i64::from).unwrap_or_default()),
+            Some("phux also caps each pane's scrollback at `defaults.history-bytes`"),
+        ),
+        ("default-shell", _) if !value.is_empty() => {
+            write(Table::Defaults, "shell", value.into(), None)
+        }
+        ("status-position", _) if matches!(value, "top" | "bottom") => {
+            write(Table::Status, "position", value.into(), None)
+        }
+        ("set-clipboard", _) if matches!(value, "on" | "external") => {
+            write(Table::Defaults, "clipboard-write", "allow".into(), None)
+        }
+        ("set-clipboard", Some(false)) => {
+            write(Table::Defaults, "clipboard-write", "deny".into(), None)
+        }
+        ("mode-keys", _) if value == "vi" => same("phux copy mode already uses vi keys"),
+        ("mode-keys", _) => skip(
+            Class::Setting,
+            "phux copy mode uses vi keys and the arrows; it has no emacs keys",
+        ),
+        ("renumber-windows", Some(true)) => {
+            same("phux numbers tabs by position, so there are never gaps")
+        }
+        ("renumber-windows", _) => skip(
+            Class::Setting,
+            "phux numbers tabs by position and always closes gaps",
+        ),
+        ("base-index", _) if value == "0" => same("phux numbers tabs from 0 too"),
+        ("base-index", _) => skip(
+            Class::Setting,
+            "phux numbers tabs from 0, and no setting starts them at 1",
+        ),
+        ("pane-base-index", _) => skip(
+            Class::Setting,
+            "phux has no setting for where pane numbers start",
+        ),
+        ("escape-time", _) => {
+            same("phux waits a fixed 10 ms after Escape; there is nothing to set")
+        }
+        ("focus-events", Some(true)) => {
+            same("phux always reports focus to programs that ask for it")
+        }
+        ("default-terminal", _) => same(
+            "it names tmux to the programs inside it; phux sets TERM for its own panes \
+             (`defaults.term`)",
+        ),
+        ("terminal-overrides" | "terminal-features", _) => {
+            same("it tells tmux what your terminal can do; phux needs no override")
+        }
+        (
+            "status-style"
+            | "status-left"
+            | "status-right"
+            | "status-justify"
+            | "status-format"
+            | "status-interval"
+            | "status-bg"
+            | "status-fg"
+            | "status-left-length"
+            | "status-right-length"
+            | "status-left-style"
+            | "status-right-style",
+            _,
+        ) => skip(
+            Class::Setting,
+            "phux builds its status bar from widgets (`[status]`), not tmux formats; its \
+             default bar already shows the session name and the time",
+        ),
+        ("prefix2", _) => skip(Class::Setting, "phux has one prefix"),
+        _ if name.starts_with('@') => skip(
+            Class::Setting,
+            "a tmux plugin option; tmux plugins are not migrated",
+        ),
+        _ => skip(
+            Class::Setting,
+            format!("the tmux option {name} has no phux setting"),
+        ),
+    }
 }
