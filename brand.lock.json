@@ -17,6 +17,22 @@
       "destination": "docs/assets/logo.svg",
       "sha256": "6bc7d8192283ea1dfb9dc9ab9da82af5846cfdb18b77770924304311b4694c59"
     },
+    "playground/fox/atlas.json": {
+      "destination": "clients/rune/assets/brand/fox/atlas.json",
+      "sha256": "1746458a63b8e058164a95357aa06e65ee679e957df608ff3c84bc9fb87af20a"
+    },
+    "playground/fox/celebrate.png": {
+      "destination": "clients/rune/assets/brand/fox/celebrate.png",
+      "sha256": "a79bc727667ad713251c249e3715cc5a1a029688280a93e05f8687ed7ff33133"
+    },
+    "playground/fox/idle.png": {
+      "destination": "clients/rune/assets/brand/fox/idle.png",
+      "sha256": "285d5f94618f0e4bb4a52926dfa49e786dfe3d42018379f63db0c18c82f44f9e"
+    },
+    "playground/fox/still.png": {
+      "destination": "clients/rune/assets/brand/fox/still.png",
+      "sha256": "6656ece802cb23de95e4559c9fed7a3796edc6b2f57459938a0fa2d5f7c366e7"
+    },
     "tooling/brand.py": {
       "destination": "scripts/brand.py",
       "sha256": "7c1b9f2253ce695d65748b10ea2b2a0cf9a22c45f0d2d2d45001dc289a603e1d"

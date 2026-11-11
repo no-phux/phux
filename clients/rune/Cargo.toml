@@ -29,6 +29,8 @@ rune-perf = { git = "https://github.com/anomalyco/rune", rev = "9c28a20a835bc2b9
 # Never called directly: Rune's decoder guesses the format, so these
 # features (unified with Rune's png/jpeg) let typed documents draw GIF/WebP.
 image = { version = "0.25", default-features = false, features = ["gif", "webp"] }
+# Cuts the onboarding fox's 16-bit sprite strips into frames; already locked.
+png = "0.17"
 # Already in Rune's graph (resvg): paints the pitch's still background once per size.
 tiny-skia = { version = "0.11", default-features = false, features = ["std", "simd"] }
 serde_json = "1"

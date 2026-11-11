@@ -17,6 +17,8 @@ use phux_protocol::wire::frame::AttachTarget;
 use rune::{Key, KeyEvent, Tx};
 
 use super::{Desk, NoticeKind};
+
+mod fox;
 use crate::launch::run_for;
 use crate::onboarding::{
     self as words, AgentSkill, Migration, Permissions, Service, Step, unsupported,
@@ -93,6 +95,7 @@ pub struct Onboarding {
     asked_at: f64,
     asking: bool,
     done: (Sender<Done>, Receiver<Done>),
+    pub fox: fox::Fox,
 }
 
 impl Default for Onboarding {
@@ -110,6 +113,7 @@ impl Default for Onboarding {
             asked_at: f64::NEG_INFINITY,
             asking: false,
             done: channel(),
+            fox: fox::Fox::default(),
         }
     }
 }
@@ -175,6 +179,7 @@ impl Desk {
 
     fn go_to(&mut self, step: Step) {
         self.onboarding.step = step;
+        self.onboarding.fox.since = self.clock;
         self.onboarding.grant_sheet = false;
         self.onboarding.copied = false;
         let _ = self.prefs.set(STEP_KEY, step.id());
@@ -434,7 +439,7 @@ impl Desk {
             }
             tx.wake_after(Duration::from_secs_f64(due.clamp(0.1, POLL_EVERY)));
         }
-        changed
+        changed | self.tick_fox(tx)
     }
 }
 

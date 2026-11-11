@@ -201,7 +201,7 @@ pub(super) fn grant_sheet(desk: &Desk, p: &Ink) -> El {
                             .as_ref()
                             .map(|b| DragItem::new().file(b))
                     })
-                    .child(rune::icon(&icons::FOX, 44.0).color(p.text))
+                    .child(art(desk.badge_image(), 44.0).radius(10.0))
                     .child(text(name).font(CAPTION).color(p.text)),
             )
             .child(note_left(

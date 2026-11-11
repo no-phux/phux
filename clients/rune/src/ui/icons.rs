@@ -101,17 +101,6 @@ icon!(
     "M8 14a6 6 0 1 1 6-6c0 1.5-1 2.5-2.5 2.5H10a1.2 1.2 0 0 0-.8 2.1c.4.4.3 1.4-1.2 1.4zM5 7h.01M7 4.8h.01M10 5h.01"
 );
 
-/// The phux fox: its outline in the ink, the lime spine, and the eye.
-pub static FOX: Icon = Icon {
-    name: "phux-fox",
-    view: 512.0,
-    body: concat!(
-        r##"<polygon points="148,54 134,140 114,190 66,246 96,294 150,352 242,450 330,372 370,316 414,234 374,154 338,96 272,38 206,108" fill="none" stroke="currentColor" stroke-width="18" stroke-linejoin="round"/>"##,
-        r##"<polyline points="272,38 198,232 242,450" fill="none" stroke="#bef264" stroke-width="20" stroke-linejoin="round"/>"##,
-        r##"<circle cx="198" cy="232" r="30" fill="none" stroke="#bef264" stroke-width="12"/>"##,
-        r##"<circle cx="198" cy="232" r="13" fill="#bef264"/>"##,
-    ),
-};
 icon!(
     BELL,
     "phux-bell",
