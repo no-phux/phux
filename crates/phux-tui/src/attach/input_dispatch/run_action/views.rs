@@ -237,6 +237,7 @@ pub(in crate::attach) fn push_window_picker(
             .then(|| ctx.peers.terminal_counts())
             .as_ref(),
         ctx.peers.focused_session,
+        ctx.peers.session_order,
     );
     if items.iter().all(SelectItem::is_header) {
         effects.bell = true;
@@ -286,6 +287,7 @@ pub(in crate::attach) fn push_agent_fleet(
             agents: ctx.peers.foreign_agents,
             terminals: &ctx.peers.terminal_counts(),
         },
+        ctx.peers.session_order,
     );
     items.extend(crate::attach::fleet::satellite_agent_items(
         ctx.peers.foreign_agents,

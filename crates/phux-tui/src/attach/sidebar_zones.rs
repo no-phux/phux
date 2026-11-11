@@ -7,7 +7,8 @@ use std::collections::{BTreeSet, HashMap, HashSet};
 
 use phux_core::project_identity::SessionProject;
 
-use phux_protocol::ids::{ResourceId, SessionId};
+use phux_client::session_order;
+use phux_protocol::ids::{ResourceId, SessionId, SessionKey};
 use phux_protocol::wire::info::{HostInventory, ResourceInfo, SessionInfo, WindowInfo};
 
 use crate::layout::ArrangementDoc;
@@ -50,6 +51,8 @@ pub(super) struct PeerInputs<'a> {
     pub foreign_attention: &'a HashSet<ResourceId>,
     /// `phux.session.project/v1` tags, keyed by session id.
     pub project_tags: &'a HashMap<SessionId, String>,
+    /// The stored session order (`phux.session-order/v1`), first on top.
+    pub session_order: &'a [SessionKey],
     /// ADR-0168: project group keys collapsed in this client's sidebar.
     pub collapsed_projects: &'a BTreeSet<String>,
     /// Connection-lifetime review index. Peer rows read `seen`
@@ -117,11 +120,11 @@ impl<'a> PeerInputs<'a> {
         })
     }
 
-    /// The peer sessions, in the graph's order, paired with the cached layout
-    /// each one has (if any).
+    /// The peer sessions in the stored order, the rest in the graph's.
     fn ordered_sessions(&self) -> Vec<&SessionInfo> {
         let mut sessions: Vec<_> = self.sessions.iter().collect();
         sessions.sort_by_key(|s| s.id);
+        session_order::sort(&mut sessions, self.session_order, |s| s.key);
         sessions
     }
 }
@@ -681,6 +684,7 @@ mod tests {
                 foreign_agents: &self.agents,
                 foreign_attention: &self.attention,
                 project_tags: &self.project_tags,
+                session_order: &[],
                 collapsed_projects: &self.collapsed,
                 review: &self.review,
             }

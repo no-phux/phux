@@ -121,6 +121,7 @@ fn no_peers() -> crate::attach::sidebar_zones::PeerInputs<'static> {
         foreign_agents: &AGENTS,
         foreign_attention: &ATTENTION,
         project_tags: &TAGS,
+        session_order: &[],
         collapsed_projects: &COLLAPSED,
         review: &REVIEW,
     }

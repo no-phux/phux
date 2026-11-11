@@ -1235,6 +1235,7 @@ fn only_the_fleet_overlay_accepts_a_live_fleet_refresh() {
             agents: &HashMap::new(),
             terminals: &HashMap::new(),
         },
+        &[],
     );
     let mut f = fx(workspace.clone());
     f.run(&bare_action("agent-fleet"));
@@ -1305,6 +1306,7 @@ fn window_picker_groups_windows_under_their_session() {
             &foreign,
             None,
             Some(SessionId::new(1)),
+            &[],
         );
         assert!(items[0].is_header());
         assert_eq!(items[0].label, "work");
@@ -1366,6 +1368,7 @@ fn window_picker_counts_tabs_from_terminals_when_the_graph_reports_sessions() {
             &HashMap::new(),
             terminals,
             Some(SessionId::new(1)),
+            &[],
         );
         ["scratch", "logs", "idle"].map(|header| {
             let at = items
@@ -1414,6 +1417,7 @@ fn focus_pane_switches_window_and_focuses_leaf() {
             agents: &HashMap::new(),
             terminals: &HashMap::new(),
         },
+        &[],
     );
     let effects = run(&items[1].action.clone(), &mut workspace);
     assert_eq!((workspace.active, effects.set_focus), (0, Some(tid(2))));
@@ -1550,11 +1554,33 @@ fn session_picker_puts_sessions_that_need_you_first() {
     let sessions = [sinfo(1, "work"), sinfo(2, "alpha"), sinfo(3, "zeta")];
     let counts = SessionCounts {
         needs_you: HashMap::from([(SessionId::new(3), 2)]),
+        ..SessionCounts::default()
     };
     let items = session_picker_items(&sessions, Some(SessionId::new(1)), &counts);
     let labels: Vec<_> = items.iter().map(|i| i.label.as_str()).collect();
     assert_eq!(labels, ["work", "zeta", "alpha"]);
     assert_eq!(items[1].secondary.as_deref(), Some("2 need you"));
+}
+
+/// `phux.session-order/v1` outranks name; the unnamed follow by name.
+#[test]
+fn session_picker_follows_the_stored_session_order() {
+    let key = |n| phux_protocol::ids::SessionKey::new([n; 16]);
+    let mut sessions = [
+        sinfo(1, "work"),
+        sinfo(2, "alpha"),
+        sinfo(3, "zeta"),
+        sinfo(4, "beta"),
+    ];
+    sessions[2].key = key(3);
+    sessions[3].key = key(4);
+    let counts = SessionCounts {
+        order: vec![key(3).unwrap(), key(4).unwrap()],
+        ..SessionCounts::default()
+    };
+    let items = session_picker_items(&sessions, Some(SessionId::new(1)), &counts);
+    let labels: Vec<_> = items.iter().map(|i| i.label.as_str()).collect();
+    assert_eq!(labels, ["work", "zeta", "beta", "alpha"]);
 }
 
 /// phux-kmlrz: a live rename reorders the name-sorted picker. Selection
@@ -1996,6 +2022,7 @@ fn mixed_project_picker(with_tags: bool) -> Vec<crate::render::overlay::SelectIt
         foreign_agents: &foreign_agents,
         foreign_attention: &foreign_attention,
         project_tags: &tags,
+        session_order: &[],
         collapsed_projects: &std::collections::BTreeSet::new(),
         review: &review,
     };
@@ -2143,6 +2170,7 @@ fn move_pane_picker_offers_only_exact_cached_local_destinations() {
         Some(SessionId::new(1)),
         &sessions,
         &foreign,
+        &[],
     );
     assert_eq!(
         rows.iter().map(|r| r.label.as_str()).collect::<Vec<_>>(),

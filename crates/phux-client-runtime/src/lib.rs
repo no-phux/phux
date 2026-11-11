@@ -55,6 +55,7 @@ pub mod reconnect;
 pub mod release;
 pub mod runtime;
 pub mod session;
+pub mod session_order;
 pub mod target;
 #[cfg(unix)]
 pub mod tunnel;

@@ -62,6 +62,7 @@ fn local_items(
             agents: &HashMap::new(),
             terminals: &HashMap::new(),
         },
+        &[],
     )
 }
 
@@ -86,6 +87,7 @@ fn groups_current_session_panes_under_header_and_foreign_as_switch_rows() {
             agents: &HashMap::new(),
             terminals: &HashMap::from([(SessionId::new(2), 3)]),
         },
+        &[],
     );
     // Current session leads as a header, then one row per pane (3),
     // then the foreign session header + its switch row.
@@ -351,6 +353,7 @@ fn sessions_order_current_first_then_by_name() {
             agents: &HashMap::new(),
             terminals: &HashMap::new(),
         },
+        &[],
     );
     let headers: Vec<&str> = items
         .iter()
@@ -389,6 +392,7 @@ fn foreign_session_with_cached_layout_lists_one_step_pane_rows() {
             agents: &foreign_agents,
             terminals: &HashMap::new(),
         },
+        &[],
     );
     // work (current) header + its 1 pane, then scratch header + 3 pane
     // rows (no switch-session-only fallback).
@@ -454,6 +458,7 @@ fn foreign_session_with_empty_cached_layout_falls_back_to_switch_row() {
             agents: &HashMap::new(),
             terminals: &HashMap::from([(SessionId::new(2), 4)]),
         },
+        &[],
     );
     let scratch_hdr = items
         .iter()

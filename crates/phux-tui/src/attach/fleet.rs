@@ -26,7 +26,7 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
 
 use phux_protocol::ResourceId;
-use phux_protocol::ids::SessionId;
+use phux_protocol::ids::{SessionId, SessionKey};
 use phux_protocol::wire::info::SessionInfo;
 
 use super::agent_rows::{AgentSessionRow, AgentSessionRows};
@@ -104,8 +104,8 @@ pub(super) struct ForeignSessions<'a> {
     pub terminals: &'a HashMap<SessionId, usize>,
 }
 
-/// Build the dashboard rows. Sessions are headers, current first then by
-/// name. Current-session panes (windows in order, DFS leaves) commit
+/// Build the dashboard rows. Sessions are headers, current first, then in
+/// the stored session `order`, then by name. Current-session panes (windows in order, DFS leaves) commit
 /// `focus-pane { window, pane }`; a foreign session with a cached layout
 /// lists its panes committing `switch-session { name, window, pane }`, else
 /// one `switch-session { name }` row. Before any session graph, local panes
@@ -117,6 +117,7 @@ pub(super) fn fleet_items(
     agent_meta: &HashMap<ResourceId, AgentRecord>,
     pane_meta: &HashMap<ResourceId, FleetPaneMeta>,
     foreign: ForeignSessions<'_>,
+    order: &[SessionKey],
 ) -> Vec<SelectItem> {
     let ForeignSessions {
         layouts: foreign_layouts,
@@ -124,10 +125,14 @@ pub(super) fn fleet_items(
         terminals,
     } = foreign;
     let mut ordered: Vec<&SessionInfo> = sessions.iter().collect();
+    let rank = |s: &SessionInfo| phux_client::session_order::rank(order, s.key);
     ordered.sort_by(|a, b| {
         let a_cur = Some(a.id) == focused_session;
         let b_cur = Some(b.id) == focused_session;
-        b_cur.cmp(&a_cur).then_with(|| a.name.cmp(&b.name))
+        b_cur
+            .cmp(&a_cur)
+            .then_with(|| rank(a).cmp(&rank(b)))
+            .then_with(|| a.name.cmp(&b.name))
     });
 
     let mut items = Vec::new();
@@ -184,6 +189,7 @@ pub(super) fn live_fleet_items(
             agents: peers.foreign_agents,
             terminals: &peers.terminal_counts(),
         },
+        peers.session_order,
     );
     items.extend(satellite_agent_items(
         peers.foreign_agents,

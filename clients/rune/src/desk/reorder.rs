@@ -9,15 +9,13 @@ use std::sync::{Arc, Weak};
 
 use phux_client_runtime::Client;
 use phux_client_runtime::control::SessionDescriptor;
+use phux_client_runtime::session_order::{self, SESSION_ORDER_KEY};
 use phux_protocol::ids::SessionKey;
 use phux_protocol::wire::frame::{FrameKind, Scope};
 use rune::{Drag, Phase};
 
 use super::Desk;
 use crate::creature::{self, Stats};
-
-/// The sessions' order: a JSON array of session keys, first on top.
-pub const SESSION_ORDER_KEY: &str = "phux.session-order/v1";
 
 /// What a drag picked up, or is over.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -74,27 +72,13 @@ fn moved(mut keys: Vec<SessionKey>, from: SessionKey, to: SessionKey) -> Option<
     Some(keys)
 }
 
-/// `sessions` in the server's stored order; any it does not name follow,
-/// as listed.
-pub fn in_order<'a>(
-    sessions: &'a [SessionDescriptor],
-    order: &[SessionKey],
-) -> Vec<&'a SessionDescriptor> {
-    let mut sorted: Vec<_> = sessions.iter().collect();
-    sorted.sort_by_key(|s| {
-        s.key
-            .and_then(|key| order.iter().position(|o| *o == key))
-            .unwrap_or(usize::MAX)
-    });
-    sorted
-}
-
 impl Desk {
-    /// The sessions as the sidebar lists them.
+    /// The sessions as the sidebar lists them: the stored order, then the
+    /// rest as the server lists them.
     pub fn ordered_sessions(&self) -> Vec<&SessionDescriptor> {
-        self.topology
-            .as_ref()
-            .map_or_else(Vec::new, |t| in_order(&t.sessions, &self.reorder.order))
+        let mut sessions: Vec<_> = self.topology.iter().flat_map(|t| &t.sessions).collect();
+        session_order::sort(&mut sessions, &self.reorder.order, |s| s.key);
+        sessions
     }
 
     /// One phase of a tab or session drag: mark what is under the pointer,
@@ -168,14 +152,11 @@ impl Desk {
         let Some(keys) = moved(keys, from, to) else {
             return;
         };
-        let Ok(value) = serde_json::to_vec(&keys) else {
-            return;
-        };
         client.queue_frame(&FrameKind::SetMetadata {
             request_id: client.next_request_id(),
             scope: Scope::Global,
             key: SESSION_ORDER_KEY.to_owned(),
-            value,
+            value: session_order::encode(&keys),
         });
     }
 
@@ -192,10 +173,7 @@ impl Desk {
         }
         for value in client.take_global_metadata() {
             if value.key == SESSION_ORDER_KEY {
-                self.reorder.order = value
-                    .value
-                    .and_then(|bytes| serde_json::from_slice(&bytes).ok())
-                    .unwrap_or_default();
+                self.reorder.order = session_order::decode(value.value.as_deref());
                 changed = true;
             } else if value.key == creature::KEY {
                 self.fleet.here = Stats::parse(value.value.as_deref(), self.clock);

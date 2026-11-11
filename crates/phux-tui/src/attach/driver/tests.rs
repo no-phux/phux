@@ -1070,6 +1070,7 @@ fn all_floating_overlays_keep_sidebar_visible() {
             agents: &HashMap::new(),
             terminals: &HashMap::new(),
         },
+        &[],
     );
     assert!(!fleet_items.iter().all(SelectItem::is_header));
     let overlays: Vec<(&str, Box<dyn RenderOverlay>)> = vec![
