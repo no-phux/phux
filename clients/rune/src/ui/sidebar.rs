@@ -1,11 +1,13 @@
 //! The sidebar: every session and terminal on the server, each terminal
-//! with what it is doing, and what needs you counted per session. They sit
-//! under the machine this window is on; the other machines follow, folded,
-//! each opening to a glance at its sessions.
+//! with what it is doing, and what needs you counted per session. Sessions
+//! of one project sit together under its name, a linked worktree marked
+//! `└`. They sit under the machine this window is on; the other machines
+//! follow, folded, each opening to a glance at its sessions.
 
 use std::collections::HashMap;
 
-use phux_client_runtime::control::Topology;
+use phux_client_runtime::control::{SessionDescriptor, Topology};
+use phux_client_runtime::project_groups::Block;
 use phux_protocol::ids::{ResourceId, SessionKey};
 use rune::{Color, El, col, el, memo, row, text};
 
@@ -14,7 +16,7 @@ use crate::activity::Mark;
 use crate::desk::Desk;
 use crate::host_color;
 use crate::keys::{self, Shortcut};
-use crate::palette::pane_label;
+use crate::palette::{pane_label, project_blocks};
 
 mod hosts;
 use hosts::{host_header, other_machines};
@@ -123,6 +125,44 @@ struct Header<'a> {
     waiting: usize,
     /// A satellite session's machine, and its colour so a recolour redraws.
     host: Option<(&'a str, u32)>,
+    /// A linked worktree, marked under its project's primary checkout.
+    branch: bool,
+}
+
+/// The `└` a linked worktree's name follows.
+fn branch_mark(ink: &Ink) -> El {
+    text("└").font(CAPTION).color(ink.dim)
+}
+
+/// A pill counting what needs you.
+fn waiting_badge(waiting: usize, ink: &Ink) -> El {
+    el().px(6.0)
+        .radius(8.0)
+        .fill(mark_color(Mark::Blocked, ink).alpha(0.22))
+        .child(
+            text(waiting.to_string())
+                .font(CAPTION)
+                .color(mark_color(Mark::Blocked, ink)),
+        )
+}
+
+/// A project's name over its sessions, and what needs you across them.
+fn project_header(name: &str, waiting: usize, ink: &Ink) -> El {
+    row()
+        .w_full()
+        .pt(12.0)
+        .pb(2.0)
+        .px(8.0)
+        .gap(6.0)
+        .items_center()
+        .child(
+            text(name.to_owned())
+                .font(LABEL)
+                .color(ink.text.alpha(0.82))
+                .truncate(),
+        )
+        .child(el().grow(1.0))
+        .children((waiting > 0).then(|| waiting_badge(waiting, ink)))
 }
 
 fn session_header(session: &Header, ink: &Ink) -> El {
@@ -142,6 +182,7 @@ fn session_header(session: &Header, ink: &Ink) -> El {
             }
         })
         .children((session.host).map(|(host, _)| host_color::dot(host, 6.0, ink.sidebar)))
+        .children(session.branch.then(|| branch_mark(ink)))
         .child(
             text(session.name.to_owned())
                 .font(CAPTION)
@@ -149,19 +190,7 @@ fn session_header(session: &Header, ink: &Ink) -> El {
                 .truncate(),
         )
         .child(el().grow(1.0));
-    if session.waiting == 0 {
-        return header;
-    }
-    header.child(
-        el().px(6.0)
-            .radius(8.0)
-            .fill(mark_color(Mark::Blocked, ink).alpha(0.22))
-            .child(
-                text(session.waiting.to_string())
-                    .font(CAPTION)
-                    .color(mark_color(Mark::Blocked, ink)),
-            ),
-    )
+    header.children((session.waiting > 0).then(|| waiting_badge(session.waiting, ink)))
 }
 
 /// What a terminal's row draws, likewise. A session of one terminal is one
@@ -179,6 +208,8 @@ struct Row<'a> {
     selected: bool,
     /// The terminal's machine and its colour, so a recolour redraws.
     host: (&'a str, u32),
+    /// A one-terminal session that is a linked worktree.
+    branch: bool,
 }
 
 impl Row<'_> {
@@ -228,6 +259,7 @@ fn pane_row(pane: &Row, ink: &Ink) -> El {
                 d.rename_session(key, &label);
             }
         })
+        .children(pane.branch.then(|| branch_mark(ink)))
         .child(dot(mark, accent, ink))
         .child(
             col()
@@ -261,7 +293,8 @@ fn waiting_by_session(desk: &Desk, topology: &Topology) -> HashMap<u32, usize> {
 }
 
 /// Every session's header and rows, rebuilt only where their inputs moved:
-/// the view runs for each frame of terminal output.
+/// the view runs for each frame of terminal output. A project's sessions
+/// follow its header, indented.
 fn session_list(desk: &Desk, topology: &Topology, waiting: &HashMap<u32, usize>, ink: &Ink) -> El {
     let mut list = col().w_full().gap(1.0).px(8.0);
     let shown = desk.shown.as_ref().map(|s| &s.terminal);
@@ -269,7 +302,9 @@ fn session_list(desk: &Desk, topology: &Topology, waiting: &HashMap<u32, usize>,
     let theme = desk.settings.theme.map(|t| t.id);
     let here = desk.machines.label();
     let host = (here, host_color::entry(here).0);
-    for session in &topology.sessions {
+    let waiting_in = |id: u32| waiting.get(&id).copied().unwrap_or(0);
+    let session_rows = |session: &SessionDescriptor, branch: bool| {
+        let mut out = Vec::new();
         let panes: Vec<_> = topology
             .panes
             .iter()
@@ -283,10 +318,11 @@ fn session_list(desk: &Desk, topology: &Topology, waiting: &HashMap<u32, usize>,
                 name: &session.name,
                 key: session.key,
                 current: current.as_deref() == Some(session.name.as_str()),
-                waiting: waiting.get(&session.id).copied().unwrap_or(0),
+                waiting: waiting_in(session.id),
                 host: None,
+                branch,
             };
-            list = list.child(memo(
+            out.push(memo(
                 format!("session-{}", session.id),
                 (&header, theme),
                 || session_header(&header, ink),
@@ -312,11 +348,32 @@ fn session_list(desk: &Desk, topology: &Topology, waiting: &HashMap<u32, usize>,
                 mark: desk.activities.mark(id),
                 selected: shown == Some(id),
                 host,
+                branch: branch && alone,
             };
-            list = list.child(memo(format!("pane-{id}"), (&row, theme), || {
+            out.push(memo(format!("pane-{id}"), (&row, theme), || {
                 pane_row(&row, ink)
             }));
         }
+        out
+    };
+    for block in project_blocks(&topology.sessions, waiting_in) {
+        list = match block {
+            Block::Single(index) => list.children(session_rows(&topology.sessions[index], false)),
+            Block::Project(project) => list
+                .child(memo(
+                    format!("project-{}", project.key),
+                    (&project.name, project.needs_you, theme),
+                    || project_header(&project.name, project.needs_you, ink),
+                ))
+                .child(
+                    col().w_full().gap(1.0).pl(10.0).children(
+                        project
+                            .members
+                            .iter()
+                            .flat_map(|m| session_rows(&topology.sessions[m.index], m.linked)),
+                    ),
+                ),
+        };
     }
     list
 }
@@ -345,6 +402,7 @@ fn satellite_list(desk: &Desk, topology: &Topology, ink: &Ink) -> El {
             current: session.members.iter().any(|id| shown == Some(id)),
             waiting: 0,
             host: Some(host),
+            branch: false,
         };
         list = list.child(memo(format!("satellite-{name}"), (&header, theme), || {
             session_header(&header, ink)
@@ -384,6 +442,7 @@ fn satellite_list(desk: &Desk, topology: &Topology, ink: &Ink) -> El {
                 mark: desk.activities.mark(id),
                 selected: shown == Some(id),
                 host,
+                branch: false,
             };
             list = list.child(memo(format!("pane-{id}"), (&row, theme), || {
                 pane_row(&row, ink)

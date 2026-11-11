@@ -1,5 +1,6 @@
 //! Grouping session rows by project identity (ADR-0168): one pure rule for
-//! the TUI sidebar, the session picker, and `phux ls`.
+//! the TUI sidebar, the session picker, `phux ls`, and Rune's sidebar and
+//! switcher.
 //!
 //! An explicit project link (`phux project link`) outranks the repository
 //! identity, and a link equal to an identity's display name joins that

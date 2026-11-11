@@ -151,6 +151,8 @@ mod tests {
             members: 1,
             arrangement: None,
             awaiting_organization: false,
+            project: None,
+            project_link: None,
         }
     }
 

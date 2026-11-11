@@ -14,6 +14,7 @@ use phux_protocol::wire::frame::{ExecState, SessionLifetime};
 use phux_protocol::wire::info::{ResourceInfo, SessionSnapshot};
 
 use super::organization::OrganizationReplica;
+use crate::project_identity::{self, SessionProject};
 
 mod resource;
 pub use resource::ResourceDescriptor;
@@ -43,6 +44,10 @@ pub struct SessionDescriptor {
     pub arrangement: Option<ArrangementKey>,
     /// Whether it is imported work awaiting organization (Intake).
     pub awaiting_organization: bool,
+    /// Its repository identity, from its attributes (ADR-0168).
+    pub project: Option<SessionProject>,
+    /// Its explicit project link (`phux project link`), from its attributes.
+    pub project_link: Option<String>,
 }
 
 /// One Terminal-kind resource, denormalized with its session so a consumer
@@ -182,6 +187,8 @@ impl Topology {
                 .unwrap_or(u32::MAX),
                 arrangement: None,
                 awaiting_organization: false,
+                project: project_identity::of_session(session),
+                project_link: project_identity::link_of_session(session).map(str::to_owned),
             })
             .collect();
         let panes = terminal_resources(snapshot)
@@ -269,6 +276,9 @@ impl Topology {
                 session.members = record.members;
                 session.arrangement = record.arrangement;
                 session.awaiting_organization = record.awaiting_organization;
+                session.project = project_identity::of_attrs(&record.attrs);
+                session.project_link =
+                    project_identity::link_of_attrs(&record.attrs).map(str::to_owned);
             }
         }
         resource::rehome(&mut self.resources, replica);
