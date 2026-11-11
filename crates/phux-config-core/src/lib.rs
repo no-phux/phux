@@ -18,6 +18,7 @@ pub mod layer;
 pub mod loader;
 mod organize;
 pub mod remote;
+pub mod rune;
 pub mod server_bundle;
 pub mod socket;
 
@@ -26,3 +27,4 @@ pub use layer::{ConfigProvenance, KeyOrigin, LayerSource, MAX_EXTENDS_DEPTH};
 pub use loader::ClientConfig;
 pub use organize::OrganizeCfg;
 pub use remote::RemoteConfigEntry;
+pub use rune::RuneCfg;

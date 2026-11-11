@@ -11,7 +11,7 @@ use std::{fs, io};
 
 use serde::Deserialize;
 
-use crate::{ConfigError, OrganizeCfg, RemoteConfigEntry, layer};
+use crate::{ConfigError, OrganizeCfg, RemoteConfigEntry, RuneCfg, layer};
 
 /// The config path: `$XDG_CONFIG_HOME/phux/config.toml`, else
 /// `$HOME/.config/phux/config.toml` (no I/O).
@@ -42,13 +42,15 @@ pub fn config_path() -> PathBuf {
 
 /// The tables of `config.toml` every client reads. Other tables are left to
 /// the client that owns them; these keep their own unknown-field checks.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Deserialize)]
 #[serde(default)]
 pub struct ClientConfig {
     /// `[[remote]]`: the client-side remote-server registry (ADR-0055).
     pub remote: Vec<RemoteConfigEntry>,
     /// `[organize]`: the judge behind `phux organize`.
     pub organize: OrganizeCfg,
+    /// `[rune]`: the desktop app's file-managed settings.
+    pub rune: RuneCfg,
 }
 
 /// Parse `user_input` and its `extends` layers into a [`ClientConfig`].

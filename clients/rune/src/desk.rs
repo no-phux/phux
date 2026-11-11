@@ -184,6 +184,8 @@ pub struct Desk {
     /// The other machines, watched while the galaxy or the reef is open.
     pub(crate) fleet: fleet::Fleet,
     pub settings: settings::Settings,
+    /// `config.toml`'s `[rune]` keys, which win over saved choices.
+    pub file: phux_config_core::RuneCfg,
     pub settings_open: bool,
     /// First-run onboarding, while open, and what it has learned.
     pub onboarding: onboarding::Onboarding,
@@ -295,15 +297,19 @@ impl Desk {
     fn open(resolved: &Resolved, machine: Option<String>) -> Self {
         // `RUNE_PREFS_DIR` keeps headless runs off the real settings.
         let prefs = rune::prefs::Prefs::open(PREFS_ID);
-        let font_size = prefs
-            .get::<f32>("font_size")
+        let (file, file_error) = settings::load_file();
+        let font_size = file
+            .font_size
+            .or_else(|| prefs.get::<f32>("font_size"))
             .map_or(grid::DEFAULT_FONT_SIZE, |s| {
                 s.clamp(grid::MIN_FONT_SIZE, grid::MAX_FONT_SIZE)
             });
-        let font_family: String = prefs.get("font_family").unwrap_or_default();
+        let font_family: String = (file.font_family.clone())
+            .or_else(|| prefs.get("font_family"))
+            .unwrap_or_default();
         let sidebar_open = prefs.get("sidebar_open").unwrap_or(true);
-        let settings = settings::Settings::load(&prefs);
-        Self {
+        let settings = settings::Settings::load(&prefs).over(&file);
+        let mut desk = Self {
             client: None,
             error: None,
             status: Status::Idle,
@@ -392,7 +398,12 @@ impl Desk {
             phone: None,
             bare: None,
             native: None,
+            file,
+        };
+        if let Some(error) = file_error {
+            desk.say(NoticeKind::Error, error);
         }
+        desk
     }
 
     pub fn metrics(&self) -> Metrics {

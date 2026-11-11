@@ -96,6 +96,7 @@ pub fn with_menus(app: App<Desk>) -> App<Desk> {
         item!(VIEW, ZoomIn),
         item!(VIEW, ZoomOut),
         item!(VIEW, ZoomReset),
+        item!(VIEW, CopyConfig),
         item!(VIEW, Inbox),
         item!(VIEW, Galaxy),
         item!(VIEW, Reef),

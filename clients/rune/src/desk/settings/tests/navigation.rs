@@ -226,3 +226,22 @@ fn installed_update_preferences_persist_and_protocol_warnings_survive_search() {
     assert!(runtime.find("settings-update-warning").is_some());
     assert!(runtime.find("set-update-auto").is_none());
 }
+
+#[test]
+fn config_file_keys_win_and_cannot_be_changed_in_the_app() {
+    let mut desk = Desk::settings_test_fixture();
+    desk.file = phux_config_core::RuneCfg {
+        copy_on_select: Some(true),
+        theme: Some(String::new()),
+        ..Default::default()
+    };
+    desk.settings = Settings::load(&desk.prefs).over(&desk.file);
+    assert!(desk.settings.copy_on_select);
+    assert_eq!(desk.settings.theme, None);
+    desk.toggle_copy_on_select();
+    assert!(desk.settings.copy_on_select, "the file owns this switch");
+    assert_eq!(desk.prefs.get::<bool>("copy_on_select"), None);
+    // A key the file leaves alone is still the app's to remember.
+    desk.toggle_confirm_close();
+    assert_eq!(desk.prefs.get::<bool>("confirm_close"), Some(true));
+}

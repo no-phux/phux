@@ -196,29 +196,40 @@ impl Entry {
     }
 
     fn toggle(self, desk: &Desk, ink: &Ink) -> El {
-        let (key, value, press): (_, _, fn(&mut Desk)) = match self {
+        let file = &desk.file;
+        let (key, value, press, managed): (_, _, fn(&mut Desk), _) = match self {
             Self::CopySelect => (
                 "set-copy-select",
                 desk.settings.copy_on_select,
                 Desk::toggle_copy_on_select,
+                file.copy_on_select.is_some(),
             ),
             Self::ConfirmClose => (
                 "set-confirm-close",
                 desk.settings.confirm_close,
                 Desk::toggle_confirm_close,
+                file.confirm_close.is_some(),
             ),
             Self::OptionMeta => (
                 "set-option-meta",
                 desk.settings.option_as_meta,
                 Desk::toggle_option_as_meta,
+                file.option_as_meta.is_some(),
             ),
             _ => (
                 "set-notifications",
                 desk.settings.notifications,
                 Desk::toggle_notifications,
+                file.notifications.is_some(),
             ),
         };
-        controls::toggle(desk, key, self.title(), self.detail(), value, press, ink)
+        // A switch the file owns says so where its description goes.
+        let detail = if managed {
+            "Set in config.toml"
+        } else {
+            self.detail()
+        };
+        controls::toggle(desk, key, self.title(), detail, value, press, ink)
     }
 
     fn link(
