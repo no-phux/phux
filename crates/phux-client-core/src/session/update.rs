@@ -5,8 +5,7 @@ use super::KernelStatus;
 use super::{
     AgentSessionDeclaration, AgentStream, BootstrapId, BootstrapStreamProfile, EffectBuffer,
     EngineAdapter, GenerationId, HistoryPageInput, KernelEffect, KernelError, KernelInput,
-    ResourceId, ResourceKind, SessionKernel, StreamId, TombstoneRecord, document_kind,
-    is_agent_profile,
+    ResourceId, ResourceKind, SessionKernel, StreamId, StreamLane, TombstoneRecord, stream_lane,
 };
 
 impl<E: EngineAdapter> SessionKernel<E> {
@@ -58,32 +57,33 @@ impl<E: EngineAdapter> SessionKernel<E> {
                 base_seq,
             } => {
                 self.lift_refusal(terminal_id);
-                if let Some(kind) = document_kind(profile) {
-                    let generation = GenerationId {
-                        stream_id,
-                        bootstrap_id,
-                    };
-                    return self.document_bootstrap_begin(terminal_id, generation, kind, base_seq);
-                }
-                if is_agent_profile(profile) {
-                    self.agent_bootstrap_begin(
+                match stream_lane(profile) {
+                    StreamLane::Document(kind) => {
+                        let generation = GenerationId {
+                            stream_id,
+                            bootstrap_id,
+                        };
+                        self.document_bootstrap_begin(terminal_id, generation, kind, base_seq)
+                    }
+                    StreamLane::Agent => self.agent_bootstrap_begin(
                         terminal_id,
                         stream_id,
                         bootstrap_id,
                         profile,
                         base_seq,
-                    )
-                } else {
-                    self.expect_kind(terminal_id, ResourceKind::Terminal)?;
-                    self.bootstrap_begin(
-                        terminal_id,
-                        stream_id,
-                        bootstrap_id,
-                        profile,
-                        geometry,
-                        base_seq,
-                        effects,
-                    )
+                    ),
+                    StreamLane::Terminal => {
+                        self.expect_kind(terminal_id, ResourceKind::Terminal)?;
+                        self.bootstrap_begin(
+                            terminal_id,
+                            stream_id,
+                            bootstrap_id,
+                            profile,
+                            geometry,
+                            base_seq,
+                            effects,
+                        )
+                    }
                 }
             }
             KernelInput::BootstrapChunk {

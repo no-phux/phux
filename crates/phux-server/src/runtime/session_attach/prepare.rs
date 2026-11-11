@@ -2,7 +2,7 @@
 
 use super::{
     AttachSnapshotPane, BootstrapLimits, BootstrapProfile, ClientCapabilities, ClientId, ErrorCode,
-    Outbound, SharedState, apps, bootstrap_stream_profile, send_error, staging,
+    Outbound, SharedState, apps, send_error, staging,
 };
 use crate::state::AttachError;
 use std::collections::HashSet;
@@ -45,11 +45,7 @@ pub(crate) fn prepare_attach(
             .session(session)
             .map(|found| found.name.clone())
             .ok_or_else(|| AttachError::UnknownSession(format!("{session:?}")))?;
-        if bootstrap_profile
-            .and_then(bootstrap_stream_profile)
-            .is_none()
-            && !s.session_terminals(session).is_empty()
-        {
+        if bootstrap_profile.is_none() && super::session_needs_terminal_profile(s, session) {
             return Err(AttachError::TerminalProfileUnavailable);
         }
         if s.session_resources(session).len() > staging::MAX_AGGREGATE_BOOTSTRAP_PANES {

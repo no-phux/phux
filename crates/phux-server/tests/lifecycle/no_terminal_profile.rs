@@ -149,3 +149,62 @@ fn a_client_with_no_terminal_profile_is_admitted_and_refused_only_at_a_terminal_
         server.stop().await;
     });
 }
+
+/// A connection with no Terminal profile spawns, and is streamed, the kinds
+/// whose stream needs none; only a Terminal spawn is refused, with the
+/// connection kept.
+#[test]
+fn a_client_with_no_terminal_profile_spawns_every_kind_but_a_terminal() {
+    phux_server_testkit::run_local(async {
+        let server = Server::start(Some("demo"), |cfg| {
+            let mut seed = CommandBuilder::new("/bin/sh");
+            seed.args(["-c", FOREVER]);
+            phux_server_testkit::seed_pty(cfg, seed);
+        });
+        let mut owner = server.connect().await;
+        attach(&mut owner, "demo").await;
+        let parent = spawned(&mut owner, 1, sh(FOREVER)).await;
+        let mut viewer = connect_without_terminal_profile(&server).await;
+
+        let children = [
+            SpawnResource::agent_session(parent.clone(), "claude"),
+            SpawnResource::document(parent.clone(), "text/plain", None),
+        ];
+        for (child, request_id) in children.into_iter().zip(20..) {
+            let spawn = Spawn {
+                resource: Some(Box::new(child.clone())),
+                ..Spawn::default()
+            };
+            let SpawnResult::Ok(id) = spawn_resource(&mut viewer, request_id, spawn).await else {
+                panic!("{:?} spawn refused without a Terminal profile", child.kind);
+            };
+            wait_frame(&mut viewer, "the spawned stream", |frame| match frame {
+                FrameKind::BootstrapReady { terminal_id, .. } if terminal_id == id => Some(()),
+                _ => None,
+            })
+            .await;
+        }
+
+        send_frame(&mut viewer, &Spawn::default().frame(30)).await;
+        let (_, refusal) = recv_typed(&mut viewer).await;
+        assert!(
+            matches!(
+                &refusal,
+                FrameKind::Error {
+                    request_id: Some(30),
+                    code: ErrorCode::CodecUnavailable,
+                    ..
+                }
+            ),
+            "{refusal:?}"
+        );
+        send_frame(&mut viewer, &FrameKind::Ping { nonce: 8 }).await;
+        assert!(matches!(
+            recv_typed(&mut viewer).await.1,
+            FrameKind::Pong { nonce: 8 }
+        ));
+
+        drop((owner, viewer));
+        server.stop().await;
+    });
+}
