@@ -24,6 +24,8 @@ use crate::onboarding::{
     self as words, AgentSkill, Migration, Permissions, Service, Step, unsupported,
 };
 
+mod dock;
+
 const DONE_KEY: &str = "onboarding_done";
 const STEP_KEY: &str = "onboarding_step";
 /// How often the grant sheet asks again, in seconds.
@@ -90,6 +92,8 @@ pub struct Onboarding {
     pub bundle: Option<PathBuf>,
     pub migrate: Migrate,
     pub copied: bool,
+    /// Keeping the grant sheet clear of System Settings.
+    pub dock: dock::Dock,
     /// When the grant sheet last asked, on the app clock, and whether that
     /// answer is still out.
     asked_at: f64,
@@ -110,6 +114,7 @@ impl Default for Onboarding {
             bundle: None,
             migrate: Migrate::Choosing,
             copied: false,
+            dock: dock::Dock::default(),
             asked_at: f64::NEG_INFINITY,
             asking: false,
             done: channel(),
@@ -321,8 +326,9 @@ impl Desk {
     }
 
     /// Open `service`'s System Settings pane; the server's app shows beside
-    /// the list to drag in.
+    /// the list to drag in, and the sheet moves out from under Settings.
     pub fn grant(&mut self, service: Service) {
+        self.start_dock();
         self.ask(
             &["server", "permissions", "--open", service.id(), "--json"],
             QUICK,
@@ -437,6 +443,7 @@ impl Desk {
             if due <= 0.0 && !self.onboarding.asking {
                 self.ask_permissions();
             }
+            self.tick_dock(tx);
             tx.wake_after(Duration::from_secs_f64(due.clamp(0.1, POLL_EVERY)));
         }
         changed | self.tick_fox(tx)

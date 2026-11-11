@@ -29,6 +29,7 @@ mod pitch;
 mod pitlane;
 mod reef;
 mod standing;
+mod system_settings;
 mod theme;
 mod ui;
 mod updates;
@@ -68,8 +69,14 @@ pub fn run_desktop() {
     };
     let spec = app_spec(size, min_size);
     perf::report_to_file();
-    let app = desk::with_menus(rune::App::new(spec))
-        .init(move || Desk::new(&resolved).with_phone(phone))
+    let app = desk::with_menus(rune::App::new(spec));
+    let window = app.handle();
+    let app = app
+        .init(move || {
+            let mut desk = Desk::new(&resolved).with_phone(phone);
+            desk.onboarding.dock.window = Some(window);
+            desk
+        })
         .chrome(Chrome {
             full_size_content: true,
             traffic_lights: Some((14.0, 14.0)),

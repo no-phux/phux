@@ -61,10 +61,11 @@ fn skill_card(desk: &Desk, p: &Ink) -> El {
             )
             .child(el().grow(1.0))
             .child(
-                text(s.summary())
+                text(s.label())
                     .font(CAPTION)
                     .color(if s.installed() { p.marks.good } else { p.dim })
-                    .truncate(),
+                    .truncate()
+                    .help(s.hook_detail().unwrap_or_default()),
             )
     });
     let card = card.children(rows);
@@ -220,6 +221,8 @@ pub(super) fn grant_sheet(desk: &Desk, p: &Ink) -> El {
         .fill(p.raised)
         .border(1.0, p.separator)
         .shadow(18.0, 56.0, p.shade)
+        .on_screen_layout(|d: &mut Desk, at| d.onboarding.dock.sheet_at = at)
+        .on_layout(|d: &mut Desk, at| d.onboarding.dock.sheet_in_window = at)
         .transition(Transition::scale(0.97).combined(Transition::opacity()))
         .child(
             row()

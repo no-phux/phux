@@ -26,6 +26,8 @@ mod tests;
 /// The terminal area: the step when onboarding is open, the panes otherwise,
 /// and both while the migration's agent works.
 pub fn stage(desk: &Desk, p: &Ink, cx: &mut Cx<Desk>) -> El {
+    // The grant sheet moves the window in device pixels.
+    desk.scale.set(cx.env().scale);
     if !desk.onboarding.open || desk.bare.is_some() {
         return panes::view(desk, p, cx);
     }

@@ -39,7 +39,7 @@ url = "2"
 # The same digest the runtime uses, for a downloaded update.
 sha2 = "0.11"
 
-# The Dock count is the one call Rune doesn't wrap; same objc2 as Rune's.
+# The Dock count and System Settings' window, which Rune doesn't wrap; same objc2 as Rune's.
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = "0.6.5"
 objc2-foundation = { version = "0.3.2", features = ["NSString"] }
