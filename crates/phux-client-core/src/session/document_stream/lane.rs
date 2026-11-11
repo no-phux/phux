@@ -189,6 +189,29 @@ impl DocumentLane {
         )
     }
 
+    /// Whether a cut in flight has a deadline, so the caller knows to call
+    /// [`Self::stalled`] even while no frame arrives.
+    #[must_use]
+    pub fn has_deadline(&self) -> bool {
+        self.stream
+            .as_ref()
+            .is_some_and(|stream| stream.deadline_ms().is_some())
+    }
+
+    /// Whether the cut in flight stopped arriving by `now_ms`; it is fenced,
+    /// and reported once. The caller re-attaches to get a recut.
+    pub fn stalled(&mut self, now_ms: u64) -> bool {
+        let Some(stream) = self.stream.as_mut() else {
+            return false;
+        };
+        let Some(generation) = stream.expired_staging(now_ms) else {
+            return false;
+        };
+        self.scratch.clear();
+        stream.retire_for_limit(&self.resource_id, generation, &mut self.scratch);
+        true
+    }
+
     /// `BOOTSTRAP_TOMBSTONE`: fence a generation; its late frames are refused.
     pub fn tombstone(
         &mut self,

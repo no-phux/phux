@@ -26,6 +26,7 @@ impl<E: EngineAdapter> SessionKernel<E> {
         effects: &mut EffectBuffer,
     ) -> Result<(), KernelError<E::Error>> {
         effects.clear();
+        self.check_deadlines(&input, effects);
         if self.is_refused_stream_frame(&input) {
             return Ok(());
         }
@@ -283,6 +284,7 @@ impl<E: EngineAdapter> SessionKernel<E> {
             StreamFrame::Output(output) => lane.on_output(&mut cx, output, effects),
         };
         let signal = cx.attach;
+        self.deadline_watch |= opens.is_some();
         self.apply_attach_signal(terminal_id, signal);
         result?;
         if let StreamFrame::Chunk(chunk) = &frame

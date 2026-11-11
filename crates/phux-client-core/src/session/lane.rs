@@ -141,6 +141,8 @@ pub(super) trait LaneRails {
     fn staged_accounting(&self) -> Option<(usize, usize)>;
     /// The staging generation its clock has expired, if any.
     fn expired_staging(&self, now_ms: u64) -> Option<GenerationId>;
+    /// The first millisecond the staging cut is overdue.
+    fn deadline_ms(&self) -> Option<u64>;
     /// Fence `generation` for exceeding a staging limit and ask for a recut.
     fn retire_for_limit(
         &mut self,
@@ -232,6 +234,10 @@ impl<R> LaneRails for ResourceLane<R> {
         each_lane!(self, lane => lane.expired_staging(now_ms))
     }
 
+    fn deadline_ms(&self) -> Option<u64> {
+        each_lane!(self, lane => lane.deadline_ms())
+    }
+
     fn retire_for_limit(
         &mut self,
         resource_id: &ResourceId,
@@ -319,8 +325,8 @@ impl<R> LaneRegistry<R> {
         self.lanes.remove(resource_id)
     }
 
-    pub(super) fn iter(&self) -> impl Iterator<Item = (&ResourceId, &ResourceLane<R>)> {
-        self.lanes.iter()
+    pub(super) fn iter_mut(&mut self) -> impl Iterator<Item = (&ResourceId, &mut ResourceLane<R>)> {
+        self.lanes.iter_mut()
     }
 
     pub(super) fn values(&self) -> impl Iterator<Item = &ResourceLane<R>> {

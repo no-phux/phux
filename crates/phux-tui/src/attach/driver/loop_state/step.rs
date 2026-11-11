@@ -122,18 +122,7 @@ impl super::SessionLoop {
     ) -> Result<Step, AttachError> {
         self.arm_esc_flush();
         let flush_sleep = sleep_until_or_pending(self.esc_deadline);
-        // (Dis)arm which-key from the resolver's current pending state.
-        update_which_key_deadline(
-            &mut self.which_key_deadline,
-            self.settings
-                .resolver
-                .as_ref()
-                .is_some_and(phux_config::keybind::Resolver::pending_at_prefix),
-            self.settings.which_key.enabled,
-            self.overlays.is_active(),
-            tokio::time::Instant::now(),
-            self.settings.which_key.delay,
-        );
+        self.arm_which_key();
         let which_key_sleep = sleep_until_or_pending(self.which_key_deadline);
         // Status-bar repaint cadence; never fires for a bar with no polling widget.
         let status_tick = sleep_for_or_pending(
@@ -151,9 +140,10 @@ impl super::SessionLoop {
                 .min(),
         );
         let sync_output_sleep = sleep_until_or_pending(self.sync_output_deadline());
-        // Down satellite panes probe the host inventory on a fixed cadence.
+        // Down satellite panes probe the host inventory on a fixed cadence;
+        // a kernel deadline (a stalled cut, an overdue recut) shares the arm.
         self.arm_satellite_probe(tokio::time::Instant::now());
-        let satellite_probe = sleep_until_or_pending(self.satellite_probe_at);
+        let probe = sleep_until_or_pending(self.next_probe());
         let origin_fade = sleep_until_or_pending(self.next_input_origin_wake());
         // A coalesced agent notification, or a kitty image heal, comes due.
         let housekeeping = sleep_until_or_pending(self.housekeeping_deadline());
@@ -204,8 +194,9 @@ impl super::SessionLoop {
                 Ok(Step::Continue)
             }
 
-            // Ask which grey satellite panes can be reattached.
-            () = satellite_probe => self.probe_satellites(conn).await,
+            // Check the kernel's deadlines; ask which grey satellite panes can
+            // be reattached.
+            () = probe => self.on_probe_due(conn).await,
 
             // Dim, then clear, a transient input-origin badge.
             () = origin_fade => {
@@ -282,6 +273,57 @@ impl super::SessionLoop {
         sidebar: Option<SidebarReservation>,
     ) -> Result<Step, AttachError> {
         self.on_resize(conn, out, sidebar).await?;
+        Ok(Step::Continue)
+    }
+
+    /// (Dis)arm which-key from the resolver's current pending state.
+    fn arm_which_key(&mut self) {
+        update_which_key_deadline(
+            &mut self.which_key_deadline,
+            self.settings
+                .resolver
+                .as_ref()
+                .is_some_and(phux_config::keybind::Resolver::pending_at_prefix),
+            self.settings.which_key.enabled,
+            self.overlays.is_active(),
+            tokio::time::Instant::now(),
+            self.settings.which_key.delay,
+        );
+    }
+
+    /// The sooner of the satellite probe and the kernel's next deadline: a
+    /// bootstrap cut in flight or an awaited recut, checked even when frames
+    /// stop arriving.
+    fn next_probe(&self) -> Option<tokio::time::Instant> {
+        let kernel = self
+            .mirror
+            .engine_kernel
+            .next_deadline_in_ms()
+            .map(|ms| tokio::time::Instant::now() + std::time::Duration::from_millis(ms));
+        [self.satellite_probe_at, kernel]
+            .into_iter()
+            .flatten()
+            .min()
+    }
+
+    /// A stalled bootstrap cut or a recut that never began asks for a fresh
+    /// bootstrap, as a resync the kernel reports on a frame does; then a due
+    /// satellite probe runs.
+    async fn on_probe_due(&mut self, conn: &mut Connection) -> Result<Step, AttachError> {
+        let mirror = &mut self.mirror;
+        if mirror
+            .engine_kernel
+            .expire_bootstrap_staging_now(&mut mirror.kernel_effects)
+            > 0
+        {
+            self.request_rebootstrap(conn).await?;
+        }
+        if self
+            .satellite_probe_at
+            .is_some_and(|at| at <= tokio::time::Instant::now())
+        {
+            return self.probe_satellites(conn).await;
+        }
         Ok(Step::Continue)
     }
 

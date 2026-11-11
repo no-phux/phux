@@ -68,6 +68,12 @@ impl DocumentStream {
             .then_some(cut.generation)
     }
 
+    /// The first millisecond the cut in flight is overdue.
+    pub(super) fn deadline_ms(&self) -> Option<u64> {
+        let cut = self.staging.as_ref()?;
+        Some(cut.clock.deadline_ms(cut.buffer.len()))
+    }
+
     pub(super) fn retire_for_limit(
         &mut self,
         resource_id: &ResourceId,
@@ -304,6 +310,10 @@ impl LaneRails for DocumentStream {
 
     fn expired_staging(&self, now_ms: u64) -> Option<GenerationId> {
         Self::expired_staging(self, now_ms)
+    }
+
+    fn deadline_ms(&self) -> Option<u64> {
+        Self::deadline_ms(self)
     }
 
     fn retire_for_limit(

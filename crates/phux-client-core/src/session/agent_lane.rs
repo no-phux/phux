@@ -28,6 +28,11 @@ impl LaneRails for AgentStream {
         clock.expired(staged_bytes, now_ms).then_some(generation)
     }
 
+    fn deadline_ms(&self) -> Option<u64> {
+        let (_, clock, staged_bytes) = self.staging_clock()?;
+        Some(clock.deadline_ms(staged_bytes))
+    }
+
     fn retire_for_limit(
         &mut self,
         resource_id: &ResourceId,

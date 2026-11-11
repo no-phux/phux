@@ -1,4 +1,5 @@
-//! Staging expires on progress, not age.
+//! Staging expires on progress, not age, and an update reclaims a cut that
+//! stalled elsewhere when no host timer does.
 
 use phux_protocol::wire::frame::TombstoneReason;
 use phux_protocol::{BootstrapId, BootstrapProfile, BootstrapStreamProfile, ResourceId, StreamId};
@@ -6,7 +7,7 @@ use phux_protocol::{BootstrapId, BootstrapProfile, BootstrapStreamProfile, Resou
 use super::super::kernel_rig::RigAdapter;
 use super::super::{
     EffectBuffer, KernelEffect, KernelError, KernelInput, KernelStatus,
-    MAX_BOOTSTRAP_STAGING_IDLE_MS, SessionKernel,
+    MAX_BOOTSTRAP_STAGING_BYTES, MAX_BOOTSTRAP_STAGING_IDLE_MS, SessionKernel,
 };
 use super::{documents, generation, stream, surface};
 use crate::engine::CanonicalGeometry;
@@ -151,4 +152,64 @@ fn a_cut_that_stops_or_trickles_still_expires() {
         refused,
         (35_000, KernelError::BootstrapStagingLimitExceeded)
     ));
+}
+
+#[test]
+fn a_stalled_cut_from_an_earlier_connection_stops_holding_the_ceiling() {
+    // A terminal cut holding the whole byte budget went silent.
+    let mut kernel = kernel();
+    let stale = ResourceId::local(1);
+    begin(&mut kernel, 0, &stale, 1).unwrap();
+    kernel
+        .lanes
+        .terminal_mut(&stale)
+        .and_then(|state| state.staging.as_mut())
+        .unwrap()
+        .accepted_bytes = MAX_BOOTSTRAP_STAGING_BYTES;
+    begin(&mut kernel, IDLE - 1, &surface(), 1).unwrap();
+    assert!(matches!(
+        chunk(&mut kernel, IDLE, 0, b"x"),
+        Err(KernelError::BootstrapStagingLimitExceeded)
+    ));
+
+    // Past the idle window, the next update retires it and reports it.
+    let mut kernel = self::kernel();
+    begin(&mut kernel, 0, &stale, 1).unwrap();
+    kernel
+        .lanes
+        .terminal_mut(&stale)
+        .and_then(|state| state.staging.as_mut())
+        .unwrap()
+        .accepted_bytes = MAX_BOOTSTRAP_STAGING_BYTES;
+    let mut effects = EffectBuffer::new();
+    kernel
+        .update_at(
+            IDLE + 1,
+            KernelInput::BootstrapBegin {
+                terminal_id: &surface(),
+                stream_id: stream(),
+                bootstrap_id: generation(1),
+                profile: BootstrapStreamProfile::PixelSurfacePngV1,
+                geometry: CanonicalGeometry { cols: 0, rows: 0 },
+                base_seq: 4,
+            },
+            &mut effects,
+        )
+        .unwrap();
+    assert_eq!(
+        resyncs(&effects),
+        [(stale.clone(), TombstoneReason::CodecFailure)]
+    );
+    assert!(kernel.staging(&stale).is_none());
+    chunk(&mut kernel, IDLE + 1, 0, b"x").unwrap();
+
+    // A host that ticks owns expiry: an update leaves the cut to its tick.
+    let mut kernel = self::kernel();
+    begin(&mut kernel, 0, &stale, 1).unwrap();
+    let mut effects = EffectBuffer::new();
+    assert_eq!(kernel.expire_bootstrap_staging(0, &mut effects), 0);
+    begin(&mut kernel, IDLE + 1, &surface(), 1).unwrap();
+    assert!(kernel.staging(&stale).is_some());
+    assert_eq!(kernel.next_deadline_in_ms(), Some(0));
+    assert_eq!(kernel.expire_bootstrap_staging(IDLE + 1, &mut effects), 1);
 }

@@ -168,3 +168,19 @@ fn only_one_document_kind_is_admitted() {
         Err(KernelError::UnknownTerminal(_))
     ));
 }
+
+#[test]
+fn a_stalled_cut_is_reported_once_so_the_reader_can_reattach() {
+    let idle = MAX_BOOTSTRAP_STAGING_IDLE_MS;
+    let (stream_id, bootstrap_id) = ids(1);
+    let mut lane = begun(1);
+    assert!(lane.has_deadline());
+    assert!(!lane.stalled(idle));
+    assert!(lane.stalled(idle + 1), "a cut that stopped arriving");
+    assert!(!lane.has_deadline());
+    assert!(!lane.stalled(idle + 2));
+    assert!(matches!(
+        lane.chunk(stream_id, bootstrap_id, 0, b"late", idle + 2),
+        Err(KernelError::RetiredGeneration { .. })
+    ));
+}

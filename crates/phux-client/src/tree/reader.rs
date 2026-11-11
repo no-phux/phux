@@ -114,6 +114,18 @@ impl Reader {
         result.or_else(|error| self.refused(&error))
     }
 
+    /// Whether a cut in flight must be watched for a stall even while no
+    /// frame arrives.
+    pub(super) fn has_deadline(&self) -> bool {
+        self.lane.has_deadline()
+    }
+
+    /// Whether the cut in flight stopped arriving.
+    pub(super) fn stalled(&mut self) -> bool {
+        let now_ms = self.now_ms();
+        self.lane.stalled(now_ms)
+    }
+
     /// A frame off the current generations is dropped, as an attached client
     /// drops it; any other refusal means the stream broke its contract.
     fn refused(&self, error: &KernelError<Infallible>) -> Result<Absorbed, TreeError> {

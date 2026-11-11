@@ -39,6 +39,7 @@ const MIN_BOOTSTRAP_STAGING_BYTES_PER_SEC: u64 = 32 * 1024;
 mod agent_lane;
 mod attach;
 mod bootstrap;
+mod deadlines;
 mod document;
 mod document_stream;
 mod effects;
@@ -55,7 +56,7 @@ mod terminal_lane;
 mod unsupported;
 mod update;
 
-use lane::{LaneRails, LaneRegistry};
+use lane::LaneRegistry;
 use lifecycle::drain_engine_effects;
 use staging_rules::StagingClock;
 use terminal_lane::TerminalState;
@@ -227,6 +228,10 @@ pub struct SessionKernel<E: EngineAdapter> {
     perf_echo: crate::perf::EchoProbe,
     /// Caller-supplied monotonic time, selected by [`Self::update_at`].
     injected_now_ms: Option<u64>,
+    /// Some lane holds staging or awaits a recut, so updates check deadlines.
+    deadline_watch: bool,
+    /// The host calls the deadline tick, so updates leave deadlines to it.
+    host_ticks: bool,
     /// Native default clock. Web hosts inject their own monotonic time because
     /// `std::time::Instant::now` panics on `wasm32-unknown-unknown`.
     #[cfg(not(target_arch = "wasm32"))]
@@ -285,6 +290,8 @@ impl<E: EngineAdapter> SessionKernel<E> {
             history_config,
             perf_echo: crate::perf::EchoProbe::default(),
             injected_now_ms: None,
+            deadline_watch: false,
+            host_ticks: false,
             #[cfg(not(target_arch = "wasm32"))]
             monotonic_origin: Instant::now(),
         }
@@ -302,37 +309,15 @@ impl<E: EngineAdapter> SessionKernel<E> {
         input: KernelInput<'_>,
         effects: &mut EffectBuffer,
     ) -> Result<(), KernelError<E::Error>> {
-        self.injected_now_ms = Some(
-            self.injected_now_ms
-                .map_or(now_ms, |previous| previous.max(now_ms)),
-        );
+        self.inject_now(now_ms);
         self.update(input, effects)
     }
 
-    /// Retire every incomplete bootstrap whose staging clock expired.
-    ///
-    /// A synchronous kernel cannot observe a silent peer by itself. Drivers
-    /// should call this from their existing connection timer using the same
-    /// monotonic millisecond source passed to [`Self::update_at`].
-    pub fn expire_bootstrap_staging(&mut self, now_ms: u64, effects: &mut EffectBuffer) -> usize {
+    fn inject_now(&mut self, now_ms: u64) {
         self.injected_now_ms = Some(
             self.injected_now_ms
                 .map_or(now_ms, |previous| previous.max(now_ms)),
         );
-        effects.clear();
-        let now_ms = self.monotonic_now_ms();
-        let expired: Vec<_> = self
-            .lanes
-            .iter()
-            .filter_map(|(terminal_id, lane)| {
-                lane.expired_staging(now_ms)
-                    .map(|generation| (terminal_id.clone(), generation))
-            })
-            .collect();
-        for (terminal_id, generation) in &expired {
-            self.retire_staging_limit(terminal_id, *generation, effects);
-        }
-        expired.len()
     }
 
     fn monotonic_now_ms(&self) -> u64 {

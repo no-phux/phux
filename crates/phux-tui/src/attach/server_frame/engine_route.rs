@@ -272,7 +272,9 @@ fn classify_kernel_result<E>(
 where
     phux_client_core::session::KernelError<E>: std::fmt::Display,
 {
-    let resync_required = result.is_err() && emitted_resync_required(effects);
+    // A deadline the kernel checked during this update (another resource's
+    // stalled cut) reports a resync whatever this frame's own result.
+    let resync_required = emitted_resync_required(effects);
     let recovered_history_failure = result.is_err()
         && matches!(frame, FrameKind::HistoryPage { .. })
         && emitted_history_unavailable(effects);

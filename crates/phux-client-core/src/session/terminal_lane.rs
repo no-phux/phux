@@ -97,6 +97,11 @@ impl<R> LaneRails for TerminalState<R> {
             .then(|| generation_of(&staging.key))
     }
 
+    fn deadline_ms(&self) -> Option<u64> {
+        let staging = self.staging.as_ref()?;
+        Some(staging.clock.deadline_ms(staging.accepted_bytes))
+    }
+
     fn retire_for_limit(
         &mut self,
         resource_id: &ResourceId,
