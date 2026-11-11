@@ -19,7 +19,7 @@ use crate::palette::pane_label;
 pub struct Tab {
     pub id: [u8; 16],
     pub name: String,
-    pub terminals: Vec<ResourceId>,
+    pub resources: Vec<ResourceId>,
     pub active: bool,
 }
 
@@ -58,17 +58,17 @@ pub fn list(doc: &ArrangementDoc, listed: &[ResourceId]) -> Vec<Tab> {
         .iter()
         .enumerate()
         .filter_map(|(at, group)| {
-            let terminals: Vec<ResourceId> = group
+            let resources: Vec<ResourceId> = group
                 .state
                 .tree
                 .iter()
                 .flat_map(leaves)
                 .filter(|id| listed.contains(id))
                 .collect();
-            (!terminals.is_empty()).then(|| Tab {
+            (!resources.is_empty()).then(|| Tab {
                 id: group.id,
                 name: group.name.clone(),
-                terminals,
+                resources,
                 active: at == doc.active,
             })
         })
@@ -80,7 +80,7 @@ impl Desk {
         self.tabs.list = self
             .arrangement(client)
             .map_or_else(Vec::new, |(_, doc)| list(&doc, listed));
-        let shown = self.shown.as_ref().map(|s| s.terminal.clone());
+        let shown = self.shown.as_ref().map(|s| s.resource.clone());
         if let (Some(tab), Some(shown)) = (self.tabs.list.iter().find(|t| t.active), shown) {
             self.tabs.focus.insert(tab.id, shown);
         }
@@ -96,8 +96,8 @@ impl Desk {
             .tabs
             .focus
             .get(&tab.id)
-            .filter(|id| tab.terminals.contains(id))
-            .or(tab.terminals.first());
+            .filter(|id| tab.resources.contains(id))
+            .or(tab.resources.first());
         terminal
             .and_then(|id| self.topology.as_ref()?.pane(id))
             .map_or_else(
@@ -117,8 +117,8 @@ impl Desk {
         };
         let remembered = self.tabs.focus.get(&tab.id);
         let target = remembered
-            .filter(|id| tab.terminals.contains(id))
-            .or(tab.terminals.first())
+            .filter(|id| tab.resources.contains(id))
+            .or(tab.resources.first())
             .cloned();
         let session = self.selected_session_name();
         if let (Some(target), Some(session)) = (target, session) {
@@ -185,7 +185,7 @@ impl Desk {
         let Some(tab) = self.tabs.list.get(index) else {
             return;
         };
-        let terminals = tab.terminals.clone();
+        let terminals = tab.resources.clone();
         let (documents, terminals): (Vec<_>, Vec<_>) =
             terminals.into_iter().partition(|id| self.is_document(id));
         if !documents.is_empty() {
@@ -331,6 +331,6 @@ mod tests {
         let tabs = list(&doc(), &[id(1), id(2)]);
         assert_eq!(tabs.len(), 2);
         assert!(tabs[0].active && !tabs[1].active);
-        assert_eq!(tabs[1].terminals, vec![id(2)]);
+        assert_eq!(tabs[1].resources, vec![id(2)]);
     }
 }

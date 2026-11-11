@@ -46,7 +46,7 @@ impl Desk {
     pub(super) fn on_screen(&self) -> Vec<ResourceId> {
         match &self.layout {
             Some(tree) => phux_client_core::layout::leaves(tree),
-            None => self.shown.iter().map(|s| s.terminal.clone()).collect(),
+            None => self.shown.iter().map(|s| s.resource.clone()).collect(),
         }
     }
 
@@ -92,7 +92,7 @@ impl Desk {
             && self
                 .shown
                 .as_ref()
-                .is_some_and(|s| &s.terminal == id && s.view.is_some())
+                .is_some_and(|s| &s.resource == id && s.view.is_some())
     }
 
     fn apply_connection(&mut self, client: &Client, event: Event) -> bool {
@@ -195,7 +195,7 @@ impl Desk {
         let pending_phone = self.phone.is_some()
             && self.shown.is_none()
             && self.wanted.as_ref().is_some_and(|(wanted, _)| wanted == id);
-        if self.shown.as_ref().is_some_and(|s| &s.terminal == id) || pending_phone {
+        if self.shown.as_ref().is_some_and(|s| &s.resource == id) || pending_phone {
             let next = self
                 .layout
                 .as_ref()

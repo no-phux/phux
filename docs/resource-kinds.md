@@ -32,7 +32,12 @@ WebP as images, JSON pretty-printed, text and `+xml`/`+json` as source
 A tree or surface is named for what it observes (`--app Safari`, `--window
 display`, a mirrored page's title) and a typed document for its `--name`;
 that name is the tab title in Rune, `name` in `phux ls --json`
-resources and MCP `phux_documents`, and `title` in `phux resource show`. Documents can occupy mixed or document-only arrangements and survive
+resources and MCP `phux_documents`, and `title` in `phux resource show`.
+Rune lists a session's documents after its terminals in the sidebar, the
+palette and pane cycling, and names the window for a shown one. phux-web
+draws each in a read-only tile by its content type
+([clients](./clients.md#browser)).
+Documents can occupy mixed or document-only arrangements and survive
 restore/reconnect. Their streams are **read-only**: typing, paste, terminal grid
 resizing and file uploads do not control their source. Input goes to the
 producer instead: `SEND_DOCUMENT_INPUT` relays one typed intent to the
@@ -297,8 +302,7 @@ Each gap below holds on current `main`:
 - **The client kernel.** It keeps one hard-coded lane per kind (terminals,
   agents, documents) (`phux-rbz0y.8`).
 - **Clients.** The terminal UI shows a non-terminal pane as a placeholder
-  tile, not its content ([clients](./clients.md)). phux-web drops document
-  publications (`phux-rbz0y.10`).
+  tile, not its content ([clients](./clients.md)).
 - **Upgrade.** Terminals, agent sessions and documents cross `phux upgrade`
   through separate paths in the upgrade blob, not through `ResourceApp`
   (`phux-rbz0y.13`).

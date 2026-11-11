@@ -113,7 +113,7 @@ type Placement = Option<(ResourceId, SplitDir)>;
 
 /// Focused resource identity, with a view only for a terminal replica.
 pub struct Shown {
-    pub terminal: ResourceId,
+    pub resource: ResourceId,
     pub view: Option<ViewId>,
 }
 

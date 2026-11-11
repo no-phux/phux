@@ -383,7 +383,7 @@ pub fn report(rt: &rune::Runtime<State>, frames: u64, marker: &str) -> Value {
         })
         .unwrap_or_default();
     json!({"schema": 1, "frames": frames, "connected": grid.is_some(),
-        "session": state.selected_session_name(), "terminal_id": state.shown.as_ref().map(|s| s.terminal.to_string()),
+        "session": state.selected_session_name(), "terminal_id": state.shown.as_ref().map(|s| s.resource.to_string()),
         "marker_seen": !marker.is_empty() && text.contains(marker), "error": state.error})
 }
 

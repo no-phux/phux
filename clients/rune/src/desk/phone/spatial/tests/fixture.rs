@@ -266,7 +266,7 @@ pub fn settle(rt: &mut Runtime<Desk>) {
 }
 
 pub fn focus(rt: &Runtime<Desk>) -> ResourceId {
-    rt.state.shown.as_ref().unwrap().terminal.clone()
+    rt.state.shown.as_ref().unwrap().resource.clone()
 }
 
 pub fn geometry(rt: &Runtime<Desk>, key: &str) -> rune::ElementInfo {

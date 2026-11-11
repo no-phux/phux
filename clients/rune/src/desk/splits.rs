@@ -47,7 +47,7 @@ impl Desk {
             initial_size: None,
         });
         self.pending_splits
-            .insert(request, Some((shown.terminal.clone(), dir)));
+            .insert(request, Some((shown.resource.clone(), dir)));
         self.zoomed = None;
     }
 

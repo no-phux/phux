@@ -168,7 +168,7 @@ fn no_terminal_input(client: &phux_client_runtime::Client) {
 fn native_terminal_candidate_geometry_follows_the_real_grid_cursor() {
     let (_, mut rt) = crate::grid::budget::input_fixture();
     let shown = rt.state.shown.as_ref().unwrap();
-    let terminal = shown.terminal.clone();
+    let terminal = shown.resource.clone();
     let frame = rt
         .state
         .client
@@ -243,7 +243,7 @@ fn a_native_connection_replacement_keeps_its_host_and_trust() {
 fn a_confirm_bar_has_priority_over_a_still_focused_find_field() {
     let (_, mut rt, mut bridge) = field("find-query");
     rt.state.pending = Some(super::super::Pending::Paste(
-        rt.state.shown.as_ref().unwrap().terminal.clone(),
+        rt.state.shown.as_ref().unwrap().resource.clone(),
         "two\nlines".into(),
     ));
     assert_eq!(bridge.snapshot(&rt).kind, "control");
@@ -264,7 +264,7 @@ fn identical_acp_questions_in_new_activations_retire_the_owner() {
         questions: vec![],
         fields: serde_json::Value::Null,
     };
-    let terminal = rt.state.shown.as_ref().unwrap().terminal.clone();
+    let terminal = rt.state.shown.as_ref().unwrap().resource.clone();
     let view = NativeView {
         activation: "first".into(),
         backend: "acp".into(),
