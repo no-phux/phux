@@ -17,6 +17,13 @@
 - Preserve command exits, wait timeouts, delivery receipts/uncertainty, and
   output-only diagnostics without retrying mutations.
 
+## [0.9.2](https://github.com/no-phux/phux/compare/pi-extension-v0.9.1...pi-extension-v0.9.2) (2026-11-11)
+
+
+### Documentation
+
+* **pi:** note the npm 12 pack report; publish the pack fix as 0.9.2 ([#2237](https://github.com/no-phux/phux/issues/2237)) ([64ca10c](https://github.com/no-phux/phux/commit/64ca10c66e5ec48a44860f436cad77c652ef1829))
+
 ## [0.9.1](https://github.com/no-phux/phux/compare/pi-extension-v0.9.0...pi-extension-v0.9.1) (2026-11-11)
 
 
