@@ -188,7 +188,7 @@ fn document_and_terminal_staging_share_the_connection_ceilings() {
 }
 
 #[test]
-fn silent_document_staging_expires_on_tick_and_at_ready() {
+fn silent_document_staging_stalls_on_tick_and_expires_at_ready() {
     let mut kernel = kernel();
     let mut effects = EffectBuffer::new();
     begin(&mut kernel, first(), &mut effects).unwrap();
@@ -198,7 +198,15 @@ fn silent_document_staging_expires_on_tick_and_at_ready() {
         kernel.expire_bootstrap_staging(lifetime + 1, &mut effects),
         1
     );
-    assert!(resync_required(&effects));
+    // The tick reports a stalled document for its own re-attach.
+    assert!(!resync_required(&effects));
+    assert!(matches!(
+        effects.as_slice(),
+        [KernelEffect::Status(KernelStatus::DocumentStalled {
+            attempt: 1,
+            ..
+        })]
+    ));
     assert!(matches!(
         chunk(&mut kernel, &surface(), first(), 0, b"late", &mut effects),
         Err(KernelError::RetiredGeneration { .. })

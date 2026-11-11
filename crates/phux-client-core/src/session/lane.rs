@@ -14,8 +14,8 @@ use phux_protocol::{BootstrapProfile, BootstrapStreamProfile, ResourceId, Resour
 
 use super::{
     AgentStream, CanonicalGeometry, DocumentStream, EffectBuffer, EngineAdapter,
-    EngineEffectBuffer, GenerationId, HistoryCacheConfig, KernelError, TerminalState,
-    TombstoneReason, TombstoneRecord, document_kind, is_agent_profile,
+    EngineEffectBuffer, GenerationId, HistoryCacheConfig, KernelError, KernelStatus, TerminalState,
+    TombstoneRecord, document_kind, is_agent_profile,
 };
 use crate::perf::EchoProbe;
 
@@ -133,6 +133,18 @@ pub(super) enum StreamFrame<'a> {
     Output(OutputFrame<'a>),
 }
 
+impl StreamFrame<'_> {
+    /// The generation the frame names.
+    pub(super) const fn generation(&self) -> GenerationId {
+        match self {
+            Self::Begin(frame) => frame.generation,
+            Self::Chunk(frame) => frame.generation,
+            Self::Ready(frame) => frame.generation,
+            Self::Output(frame) => frame.generation,
+        }
+    }
+}
+
 /// The rails every lane keeps alike: the generation fence and staging.
 pub(super) trait LaneRails {
     /// Record an external tombstone at `now_ms`; staging for that
@@ -147,8 +159,9 @@ pub(super) trait LaneRails {
     fn staged_accounting(&self) -> Option<(usize, usize)>;
     /// The staging generation its clock has expired, if any.
     fn expired_staging(&self, now_ms: u64) -> Option<GenerationId>;
-    /// A fenced generation whose expected recut never began, reported once.
-    fn take_overdue_recut(&mut self, _now_ms: u64) -> Option<(GenerationId, TombstoneReason)> {
+    /// A stall due at `now_ms` that this lane recovers on its own (a
+    /// document's), reported once.
+    fn take_stall(&mut self, _resource_id: &ResourceId, _now_ms: u64) -> Option<KernelStatus> {
         None
     }
     /// The first millisecond a staging cut or an awaited recut is overdue.
@@ -217,7 +230,7 @@ impl<R> ResourceLane<R> {
         match kind {
             LaneKind::Terminal => Self::Terminal(TerminalState::default()),
             LaneKind::Agent => Self::Agent(AgentStream::new()),
-            LaneKind::Document(kind) => Self::Document(DocumentStream::new(kind)),
+            LaneKind::Document(kind) => Self::Document(DocumentStream::new(Some(kind))),
         }
     }
 
@@ -249,8 +262,8 @@ impl<R> LaneRails for ResourceLane<R> {
         each_lane!(self, lane => lane.expired_staging(now_ms))
     }
 
-    fn take_overdue_recut(&mut self, now_ms: u64) -> Option<(GenerationId, TombstoneReason)> {
-        each_lane!(self, lane => lane.take_overdue_recut(now_ms))
+    fn take_stall(&mut self, resource_id: &ResourceId, now_ms: u64) -> Option<KernelStatus> {
+        each_lane!(self, lane => lane.take_stall(resource_id, now_ms))
     }
 
     fn deadline_ms(&self) -> Option<u64> {

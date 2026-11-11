@@ -82,6 +82,7 @@ impl<E: EngineAdapter> SessionKernel<E> {
             return false;
         }
         self.lanes.remove(terminal_id);
+        self.benign_drops.remove(terminal_id);
         self.closed_replicas.remove(terminal_id);
         self.retain_replica_on_close.remove(terminal_id);
         self.lift_refusal(terminal_id);

@@ -67,6 +67,7 @@ impl<E: EngineAdapter> SessionKernel<E> {
         self.perf_echo.forget(terminal_id);
         self.lift_refusal(terminal_id);
         let lane = self.lanes.remove(terminal_id);
+        self.benign_drops.remove(terminal_id);
         // Only tracked Terminals get a process-exit status: agent sessions report
         // via `AgentSessionStatus`, and a forgotten id has nothing new to say.
         let was_tracked_terminal = matches!(lane, Some(ResourceLane::Terminal(_)));

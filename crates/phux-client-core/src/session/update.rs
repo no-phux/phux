@@ -18,9 +18,22 @@ impl<E: EngineAdapter> SessionKernel<E> {
     /// An adapter error retires the possibly mutated generation before
     /// returning and leaves a [`KernelStatus::ResyncRequired`] effect in the
     /// buffer. The host must execute effects even when this method returns an
-    /// error.
-    #[allow(clippy::too_many_lines)]
+    /// error. The kernel reads its clock at most once per update, and live
+    /// output reads it only while a deadline is pending.
     pub fn update(
+        &mut self,
+        input: KernelInput<'_>,
+        effects: &mut EffectBuffer,
+    ) -> Result<(), KernelError<E::Error>> {
+        self.clock_frozen = true;
+        let result = self.apply_input(input, effects);
+        self.clock_frozen = false;
+        self.frozen_now_ms.set(None);
+        result
+    }
+
+    #[allow(clippy::too_many_lines)]
+    fn apply_input(
         &mut self,
         input: KernelInput<'_>,
         effects: &mut EffectBuffer,
@@ -143,7 +156,8 @@ impl<E: EngineAdapter> SessionKernel<E> {
                     },
                     now_ms,
                 );
-                self.deadline_watch |= lane.deadline_ms().is_some();
+                let deadline_ms = lane.deadline_ms();
+                self.watch_deadline(deadline_ms);
                 self.apply_attach_signal(terminal_id, signal);
                 Ok(())
             }
@@ -288,8 +302,10 @@ impl<E: EngineAdapter> SessionKernel<E> {
             StreamFrame::Output(output) => lane.on_output(&mut cx, output, effects),
         };
         let signal = cx.attach;
-        self.deadline_watch |= opens.is_some();
+        let deadline_ms = opens.and_then(|_| lane.deadline_ms());
+        self.watch_deadline(deadline_ms);
         self.apply_attach_signal(terminal_id, signal);
+        self.tally_benign(terminal_id, frame.generation(), &result, effects);
         result?;
         if let StreamFrame::Chunk(chunk) = &frame
             && self.bootstrap_retained_bytes() > MAX_BOOTSTRAP_STAGING_BYTES

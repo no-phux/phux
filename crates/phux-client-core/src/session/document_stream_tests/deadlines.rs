@@ -110,6 +110,26 @@ fn resyncs(effects: &EffectBuffer) -> Vec<(ResourceId, TombstoneReason)> {
         .collect()
 }
 
+/// Document stalls: `(resource, reason, attempt)`, attempt `0` for lost.
+fn stalls(effects: &EffectBuffer) -> Vec<(ResourceId, TombstoneReason, u32)> {
+    effects
+        .as_slice()
+        .iter()
+        .filter_map(|effect| match effect {
+            KernelEffect::Status(KernelStatus::DocumentStalled {
+                terminal_id,
+                reason,
+                attempt,
+            }) => Some((terminal_id.clone(), *reason, *attempt)),
+            KernelEffect::Status(KernelStatus::DocumentLost {
+                terminal_id,
+                reason,
+            }) => Some((terminal_id.clone(), *reason, 0)),
+            _ => None,
+        })
+        .collect()
+}
+
 #[test]
 fn a_large_cut_on_a_slow_link_lands_while_it_keeps_moving() {
     // 16 MiB at 64 KiB/s: over four minutes, far past the idle window.
@@ -149,10 +169,9 @@ fn a_cut_that_stops_or_trickles_still_expires() {
         kernel.expire_bootstrap_staging(20_001 + IDLE, &mut effects),
         1
     );
-    assert_eq!(
-        resyncs(&effects),
-        [(surface(), TombstoneReason::CodecFailure)]
-    );
+    // A document stalls on its own; nothing else resyncs.
+    assert!(resyncs(&effects).is_empty());
+    assert_eq!(stalls(&effects), [(surface(), TombstoneReason::Other, 1)]);
 
     // A byte every few seconds never idles, but falls below the minimum rate.
     let mut kernel = self::kernel();
@@ -188,11 +207,12 @@ fn a_fenced_document_whose_recut_never_begins_is_reported_once() {
         1
     );
     assert_eq!(
-        resyncs(&effects),
-        [(surface(), TombstoneReason::OutboundGap)]
+        stalls(&effects),
+        [(surface(), TombstoneReason::OutboundGap, 1)]
     );
-    assert_eq!(kernel.expire_bootstrap_staging(9 * IDLE, &mut effects), 0);
-    assert_eq!(kernel.next_deadline_in_ms(), None);
+    assert!(resyncs(&effects).is_empty());
+    // The re-attach's recut is awaited twice as long.
+    assert_eq!(kernel.next_deadline_in_ms(), Some(2 * IDLE + 1));
 
     // A server that recuts at once is never reported.
     let mut kernel = self::kernel();
@@ -234,11 +254,11 @@ fn fenced_then_output_elsewhere(host_ticks: bool) -> EffectBuffer {
 fn without_a_host_timer_any_update_reports_an_overdue_recut() {
     let reported = fenced_then_output_elsewhere(false);
     assert_eq!(
-        resyncs(&reported),
-        [(surface(), TombstoneReason::OutboundGap)]
+        stalls(&reported),
+        [(surface(), TombstoneReason::OutboundGap, 1)]
     );
     // A host that ticks owns the deadlines; its tick reports them.
-    assert!(resyncs(&fenced_then_output_elsewhere(true)).is_empty());
+    assert!(stalls(&fenced_then_output_elsewhere(true)).is_empty());
 }
 
 #[test]
@@ -298,4 +318,116 @@ fn a_stalled_cut_from_an_earlier_connection_stops_holding_the_ceiling() {
     assert!(kernel.staging(&stale).is_some());
     assert_eq!(kernel.next_deadline_in_ms(), Some(0));
     assert_eq!(kernel.expire_bootstrap_staging(IDLE + 1, &mut effects), 1);
+}
+
+fn output_to(kernel: &mut Kernel, raw: u64, seq: u64) -> Outcome {
+    let (stream_id, bootstrap_id) = ids(raw);
+    kernel.update(
+        KernelInput::ResourceOutput {
+            terminal_id: &surface(),
+            stream_id,
+            bootstrap_id,
+            seq,
+            payload: b"doc",
+        },
+        &mut EffectBuffer::new(),
+    )
+}
+
+#[test]
+fn live_output_reads_the_clock_only_while_a_deadline_is_pending() {
+    // The kernel's own clock, as the runtime drives it.
+    let mut kernel = kernel();
+    let mut effects = EffectBuffer::new();
+    let begin_at = |kernel: &mut Kernel, id: &ResourceId, raw: u64| {
+        kernel.update(
+            KernelInput::BootstrapBegin {
+                terminal_id: id,
+                stream_id: stream(),
+                bootstrap_id: generation(raw),
+                profile: BootstrapStreamProfile::PixelSurfacePngV1,
+                geometry: CanonicalGeometry { cols: 0, rows: 0 },
+                base_seq: 4,
+            },
+            &mut EffectBuffer::new(),
+        )
+    };
+    begin_at(&mut kernel, &surface(), 1).unwrap();
+    kernel
+        .update(
+            KernelInput::BootstrapReady {
+                terminal_id: &surface(),
+                stream_id: stream(),
+                bootstrap_id: generation(1),
+                history_cursor: None,
+            },
+            &mut effects,
+        )
+        .unwrap();
+    // A sweep with nothing due clears the deadline the cut left behind.
+    kernel.next_deadline_ms = Some(0);
+    output_to(&mut kernel, 1, 5).unwrap();
+    let (reads, sweeps) = (kernel.clock_reads.get(), kernel.deadline_sweeps);
+    for seq in 6..1_006 {
+        output_to(&mut kernel, 1, seq).unwrap();
+    }
+    assert_eq!(kernel.clock_reads.get(), reads, "no deadline, no clock");
+    // A cut in flight elsewhere: one read and one comparison per update,
+    // and no lane scan before it is due.
+    begin_at(&mut kernel, &ResourceId::local(10), 1).unwrap();
+    let (reads, sweeps_before) = (kernel.clock_reads.get(), kernel.deadline_sweeps);
+    for seq in 1_006..2_006 {
+        output_to(&mut kernel, 1, seq).unwrap();
+    }
+    assert_eq!(kernel.clock_reads.get() - reads, 1_000);
+    assert_eq!(kernel.deadline_sweeps, sweeps_before);
+    assert_eq!(sweeps_before, sweeps, "opening a cut scans nothing");
+}
+
+#[test]
+fn a_run_of_frames_off_the_current_generation_asks_for_recovery() {
+    let mut kernel = kernel();
+    let mut effects = EffectBuffer::new();
+    begin(&mut kernel, 0, &surface(), 1).unwrap();
+    ready(&mut kernel, 0, 1, &mut effects).unwrap();
+    let mut last = EffectBuffer::new();
+    for seq in 0..64 {
+        let (stream_id, other) = ids(9);
+        kernel
+            .update_at(
+                0,
+                KernelInput::ResourceOutput {
+                    terminal_id: &surface(),
+                    stream_id,
+                    bootstrap_id: other,
+                    seq: seq + 5,
+                    payload: b"mis-tagged",
+                },
+                &mut last,
+            )
+            .unwrap_err();
+        assert_eq!(stalls(&last).is_empty(), seq < 63, "frame {seq}");
+    }
+    assert_eq!(stalls(&last), [(surface(), TombstoneReason::Other, 1)]);
+
+    // A terminal has no per-resource recovery: it resyncs.
+    let mut kernel = self::kernel();
+    let pane = ResourceId::local(1);
+    begin(&mut kernel, 0, &pane, 1).unwrap();
+    for seq in 0..64 {
+        kernel
+            .update_at(
+                0,
+                KernelInput::ResourceOutput {
+                    terminal_id: &pane,
+                    stream_id: stream(),
+                    bootstrap_id: generation(9),
+                    seq: seq + 5,
+                    payload: b"mis-tagged",
+                },
+                &mut last,
+            )
+            .unwrap_err();
+    }
+    assert_eq!(resyncs(&last), [(pane, TombstoneReason::Other)]);
 }

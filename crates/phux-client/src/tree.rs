@@ -9,6 +9,7 @@
 
 use std::collections::VecDeque;
 
+use phux_client_core::session::KernelStatus;
 use phux_protocol::caps::ServerFeatureExt;
 use phux_protocol::ids::{GroupId, ResourceId};
 use phux_protocol::wire::frame::{
@@ -88,9 +89,6 @@ const REQUEST_DETACH: u32 = 5;
 
 /// How often a stream with a pending deadline is checked for a stall.
 const STALL_POLL: std::time::Duration = std::time::Duration::from_secs(1);
-/// Re-attaches a stalled stream gets before the follow fails; a delivered
-/// document resets the count.
-const MAX_STALL_REATTACHES: u32 = 3;
 
 /// One document of a tree, at the sequence it carries. `seq` is `0` and
 /// `bytes` empty before the producer's first publish.
@@ -422,7 +420,7 @@ pub async fn snapshot(conn: &mut Connection, tree: &ResourceId) -> Result<Docume
 /// # Errors
 ///
 /// The refusal, a connection failure, or a stream still stalled after
-/// three re-attaches in a row.
+/// every re-attach the kernel allows (three in a row, with backoff).
 pub async fn follow(
     conn: &mut Connection,
     tree: &ResourceId,
@@ -465,28 +463,26 @@ async fn next_frame(
     Some(conn.recv().await)
 }
 
-/// A stalled stream is attached again for a fresh cut, a bounded number of
-/// times in a row.
+/// A stalled stream is attached again for a fresh cut, until the kernel's
+/// re-attach budget runs out.
 async fn reattach_if_stalled(
     conn: &mut Connection,
     tree: &ResourceId,
     reader: &mut Reader,
-    reattaches: &mut u32,
     pending: &mut VecDeque<FrameKind>,
 ) -> Result<(), TreeError> {
-    if !reader.stalled() {
-        return Ok(());
-    }
-    *reattaches += 1;
-    if *reattaches > MAX_STALL_REATTACHES {
-        return Err(AttachError::Protocol(format!(
-            "document stream {tree} stalled: no recut after {MAX_STALL_REATTACHES} re-attaches"
+    match reader.stalled() {
+        None => Ok(()),
+        Some(KernelStatus::DocumentStalled { attempt, .. }) => {
+            tracing::warn!(%tree, attempt, "document stream stalled; attaching again");
+            pending.extend(attach_document(conn, tree).await?);
+            Ok(())
+        }
+        Some(status) => Err(AttachError::Protocol(format!(
+            "document stream {tree} stalled and every re-attach failed: {status:?}"
         ))
-        .into());
+        .into()),
     }
-    tracing::warn!(%tree, attempt = *reattaches, "document stream stalled; attaching again");
-    pending.extend(attach_document(conn, tree).await?);
-    Ok(())
 }
 
 async fn follow_until(
@@ -506,20 +502,19 @@ async fn follow_until(
         .await?;
     }
     let mut reader = Reader::new(tree.clone());
-    let mut reattaches = 0;
+    reader.await_first_cut();
     let end = loop {
         let frame = match next_frame(conn, &mut pending, &reader).await {
             Some(Ok(frame)) => frame,
             Some(Err(AttachError::Disconnected)) => break FollowEnd::Disconnected,
             Some(Err(err)) => return Err(err.into()),
             None => {
-                reattach_if_stalled(conn, tree, &mut reader, &mut reattaches, &mut pending).await?;
+                reattach_if_stalled(conn, tree, &mut reader, &mut pending).await?;
                 continue;
             }
         };
         match reader.absorb(frame)? {
             Absorbed::Document(document) => {
-                reattaches = 0;
                 if !sink(document) {
                     break FollowEnd::Stopped;
                 }
@@ -527,7 +522,7 @@ async fn follow_until(
             Absorbed::Closed => break FollowEnd::Closed,
             Absorbed::Nothing => {}
         }
-        reattach_if_stalled(conn, tree, &mut reader, &mut reattaches, &mut pending).await?;
+        reattach_if_stalled(conn, tree, &mut reader, &mut pending).await?;
     };
     let _ = conn
         .send(&FrameKind::Command {

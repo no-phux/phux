@@ -98,6 +98,28 @@ pub enum KernelStatus {
         /// Protocol reason recorded in the local tombstone.
         reason: TombstoneReason,
     },
+    /// A document stream stalled: the cut in flight stopped arriving, or a
+    /// fenced generation was never recut (a relay that cannot deliver to a
+    /// viewer fences it without one). The host attaches this resource again
+    /// (`ATTACH_RESOURCE`) for a fresh cut; nothing else needs replacing.
+    /// The next stall waits longer, and a delivered document resets the count.
+    DocumentStalled {
+        /// The document resource.
+        terminal_id: ResourceId,
+        /// The fence's reason, or `Other` for a cut that stopped arriving.
+        reason: TombstoneReason,
+        /// Consecutive stalls, from 1, without a document delivered.
+        attempt: u32,
+    },
+    /// A document stream stalled through every re-attach the kernel asks
+    /// for. Its last document stays display-only; nothing more is asked for
+    /// unless a recut arrives anyway.
+    DocumentLost {
+        /// The document resource.
+        terminal_id: ResourceId,
+        /// The last stall's reason.
+        reason: TombstoneReason,
+    },
     /// Progressive history loading and cache status.
     History {
         /// Exact published generation.

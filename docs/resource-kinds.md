@@ -215,7 +215,9 @@ A whole-document stream takes no `FRAME_ACK`. Each viewer gets the newest
 document, so a slow viewer skips only intermediate documents
 ([protocol](./protocol.md#commands-events-resources)). A federation hub
 that cannot deliver to a viewer fences its generation without a recut, so a
-client that sees no recut within 30 seconds attaches the document again.
+client that sees no recut within 30 seconds attaches that document again,
+waiting longer each time. After three re-attaches with no document between
+them, it reports the document lost; the connection is never replaced.
 
 ## Producers
 

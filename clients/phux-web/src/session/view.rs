@@ -240,64 +240,40 @@ impl Connection {
             self.failed = true;
             return (outcome, false);
         }
-        match result {
-            Ok(()) => (outcome, true),
+        let applied = match result {
+            Ok(()) => true,
             // A frame off the current generations is dropped; the view stays.
-            Err(error) if error.is_benign_generation() => (outcome, false),
+            Err(error) if error.is_benign_generation() => false,
             Err(error) => {
                 self.failed = true;
                 outcome.fatal = Some(error.to_string());
-                (outcome, false)
+                return (outcome, false);
+            }
+        };
+        // An update may report a stall before the first expiry tick.
+        if let Some(recovered) = self.recover_streams() {
+            outcome.send.extend(recovered.send);
+            outcome.render |= recovered.render;
+            outcome.panes |= recovered.panes;
+            if recovered.fatal.is_some() {
+                outcome.fatal = recovered.fatal;
+                return (outcome, false);
             }
         }
+        (outcome, applied)
     }
 
-    /// Retire expired staging and report document recuts that never began.
-    /// A stalled document or agent stream loses only its tile, and a failed
-    /// new split never disconnects its siblings; any other stall does.
+    /// Retire expired staging and report stalled documents, recovered as
+    /// [`Self::recover_streams`] says.
     pub fn expire_bootstrap_staging(&mut self) -> Outcome {
         let Some(kernel) = self.kernel.as_mut() else {
             self.effects.clear();
             return Outcome::default();
         };
-        let expired = kernel.expire_bootstrap_staging(browser_monotonic_ms(), &mut self.effects);
-        if expired == 0 {
-            self.effects.clear();
-            return Outcome::default();
-        }
-        let stalled: Vec<ResourceId> = self
-            .effects
-            .as_slice()
-            .iter()
-            .filter_map(|effect| match effect {
-                KernelEffect::Status(KernelStatus::ResyncRequired { terminal_id, .. }) => {
-                    Some(terminal_id.clone())
-                }
-                _ => None,
-            })
-            .collect();
+        kernel.expire_bootstrap_staging(browser_monotonic_ms(), &mut self.effects);
+        let outcome = self.recover_streams().unwrap_or_default();
         self.effects.clear();
-        let split = self
-            .pending_split
-            .as_ref()
-            .and_then(|pending| pending.resource.clone());
-        let mut split_stalled = false;
-        for id in &stalled {
-            if self.is_document(id) || self.is_agent_session(id) {
-                self.lose_document(id);
-            } else if Some(id) == split.as_ref() {
-                split_stalled = true;
-            } else {
-                return self.protocol_failure("bootstrap staging timed out");
-            }
-        }
-        if split_stalled {
-            return self.pane_refusal("New pane bootstrap timed out. The other panes are still available; try splitting again.".to_owned());
-        }
-        Outcome {
-            render: true,
-            ..Outcome::default()
-        }
+        outcome
     }
 
     pub(super) fn protocol_failure(&mut self, message: &str) -> Outcome {

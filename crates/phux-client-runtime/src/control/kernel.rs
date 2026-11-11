@@ -264,6 +264,25 @@ impl ControlPlane {
                 terminal_id,
                 reason,
             }),
+            KernelStatus::DocumentStalled {
+                terminal_id,
+                reason,
+                attempt,
+            } => {
+                self.reattach_document(&terminal_id);
+                self.push_event(Event::DocumentStalled {
+                    terminal_id,
+                    reason,
+                    attempt,
+                });
+            }
+            KernelStatus::DocumentLost {
+                terminal_id,
+                reason,
+            } => self.push_event(Event::DocumentLost {
+                terminal_id,
+                reason,
+            }),
             KernelStatus::History { key, status } => self.push_event(Event::History {
                 terminal_id: key.terminal_id,
                 status,

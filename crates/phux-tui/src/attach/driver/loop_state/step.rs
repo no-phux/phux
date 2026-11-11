@@ -306,16 +306,16 @@ impl super::SessionLoop {
             .min()
     }
 
-    /// A stalled bootstrap cut or a recut that never began asks for a fresh
-    /// bootstrap, as a resync the kernel reports on a frame does; then a due
-    /// satellite probe runs.
+    /// A stalled Terminal or agent cut asks for a fresh bootstrap, as a
+    /// resync the kernel reports on a frame does; then a due satellite probe
+    /// runs. A stalled document never costs the session a rebootstrap: this
+    /// client streams none, so one can only come from an older server.
     async fn on_probe_due(&mut self, conn: &mut Connection) -> Result<Step, AttachError> {
         let mirror = &mut self.mirror;
-        if mirror
+        mirror
             .engine_kernel
-            .expire_bootstrap_staging_now(&mut mirror.kernel_effects)
-            > 0
-        {
+            .expire_bootstrap_staging_now(&mut mirror.kernel_effects);
+        if crate::attach::server_frame::emitted_resync_required(&mirror.kernel_effects) {
             self.request_rebootstrap(conn).await?;
         }
         if self

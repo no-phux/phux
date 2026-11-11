@@ -239,8 +239,8 @@ fn frame_attach_participants(frame: &FrameKind) -> Vec<ResourceId> {
     attach_participants(snapshot)
 }
 
-/// Did the kernel emit a typed resync-required status alongside its error?
-fn emitted_resync_required(effects: &KernelEffectBuffer) -> bool {
+/// Did the kernel emit a typed resync-required status?
+pub(in crate::attach) fn emitted_resync_required(effects: &KernelEffectBuffer) -> bool {
     effects.as_slice().iter().any(|effect| {
         matches!(
             effect,
@@ -369,9 +369,12 @@ fn collect_route_effects(route: &mut KernelRoute, effects: &KernelEffectBuffer) 
             ) => {
                 tracing::debug!(?status, "session kernel status (no TUI consumer yet)");
             }
-            // A resync means the replica diverged: worth a warning.
+            // A resync means the replica diverged, and a document stall is
+            // recovered only where documents are streamed: worth a warning.
             KernelEffect::Status(
-                status @ phux_client_core::session::KernelStatus::ResyncRequired { .. },
+                status @ (phux_client_core::session::KernelStatus::ResyncRequired { .. }
+                | phux_client_core::session::KernelStatus::DocumentStalled { .. }
+                | phux_client_core::session::KernelStatus::DocumentLost { .. }),
             ) => {
                 tracing::warn!(?status, "session kernel status");
             }

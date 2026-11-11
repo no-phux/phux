@@ -344,6 +344,26 @@ pub enum Event {
         /// The tombstone reason.
         reason: TombstoneReason,
     },
+    /// A document's stream stalled (a cut stopped arriving, or a fence was
+    /// never recut). Only that document is recovered: with automatic
+    /// lifecycle the runtime attaches it again, and a sans-IO consumer
+    /// sends `ATTACH_RESOURCE` itself. Its last document stays shown.
+    DocumentStalled {
+        /// The document resource.
+        terminal_id: ResourceId,
+        /// The fence's reason, or `Other` for a cut that stopped arriving.
+        reason: TombstoneReason,
+        /// Consecutive stalls, from 1, without a document delivered.
+        attempt: u32,
+    },
+    /// A document's stream stalled through every re-attach; its last
+    /// document is all there is until it is attached again.
+    DocumentLost {
+        /// The document resource.
+        terminal_id: ResourceId,
+        /// The last stall's reason.
+        reason: TombstoneReason,
+    },
     /// One committed `AgentSession` publication, in commit order.
     ///
     /// `publication` is an [`Arc`] the runtime retains until an accepting

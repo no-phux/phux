@@ -339,6 +339,18 @@ impl ControlPlane {
         StreamRecovery::Reconnect
     }
 
+    /// Attach a stalled document again for a fresh cut: only that resource
+    /// is replaced, never the connection.
+    pub(super) fn reattach_document(&mut self, terminal_id: &ResourceId) {
+        if !self.options.automatic_lifecycle
+            || !self.handshake_ready
+            || self.attach_request_for_terminal(terminal_id).is_some()
+        {
+            return;
+        }
+        self.queue_terminal_attach(terminal_id);
+    }
+
     pub(super) fn attach_request_for_terminal(&self, terminal_id: &ResourceId) -> Option<u32> {
         self.pending.iter().find_map(|(request_id, pending)| {
             matches!(pending, Pending::AttachTerminal(id) if id == terminal_id)

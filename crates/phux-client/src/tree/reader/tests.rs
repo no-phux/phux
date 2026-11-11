@@ -136,7 +136,7 @@ fn a_tombstoned_generation_is_dropped_until_the_recut_lands() {
         Absorbed::Nothing
     ));
     assert!(reader.has_deadline(), "the recut is awaited");
-    assert!(!reader.stalled());
+    assert!(reader.stalled().is_none());
     assert!(matches!(
         reader.absorb(output(1, 4)).unwrap(),
         Absorbed::Nothing

@@ -157,3 +157,28 @@ fn a_frame_off_the_current_generations_is_dropped_not_fatal() {
         "a live frame at or behind the last is still a protocol fault"
     );
 }
+
+#[test]
+fn a_stalled_document_never_rebootstraps_the_session() {
+    let tree = tid(3);
+    let mut h = H::new();
+    document(
+        &mut h,
+        &tree,
+        phux_protocol::BootstrapStreamProfile::AccessibilityTreeJsonV1,
+    );
+    // A run of frames off the current generation is a stall, recovered (if
+    // at all) per resource: never by replacing the whole session.
+    for seq in 3..100 {
+        let outcome = h
+            .try_send(FrameKind::ResourceOutput {
+                terminal_id: tree.clone(),
+                stream_id: stream(),
+                bootstrap_id: phux_protocol::BootstrapId::new(9).expect("bootstrap"),
+                seq,
+                bytes: bytes::Bytes::from_static(b"{}"),
+            })
+            .expect("dropped, not fatal");
+        assert!(!outcome.resync_required, "frame {seq}");
+    }
+}

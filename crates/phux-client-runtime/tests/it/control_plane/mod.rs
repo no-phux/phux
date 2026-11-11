@@ -37,6 +37,7 @@ mod agent_sessions;
 mod approvals;
 mod batching;
 mod checkout;
+mod document_stalls;
 mod geometry;
 mod global_metadata;
 #[cfg(feature = "engine")]
