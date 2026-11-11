@@ -18,9 +18,11 @@ mod lifecycle;
 mod metadata_mutation;
 mod metadata_read;
 pub(in crate::runtime) mod metadata_subscriptions;
+mod move_resource;
 pub(in crate::runtime) mod plumbing;
 pub(in crate::runtime) mod resource_frames;
 mod session_create;
+mod streams;
 mod unsupported;
 mod writer;
 
@@ -28,8 +30,6 @@ pub mod pane_events;
 pub mod pane_exit;
 pub mod socket;
 
-pub(crate) use crate::runtime::apps::terminal::agent_state::spawn_agent_state_drain;
-pub(crate) use crate::runtime::apps::terminal::terminal_streams::abort_output_pumps;
 pub(super) use commands::{Route, route};
 #[cfg(test)]
 pub(super) use dispatch::handle_client;
@@ -41,6 +41,7 @@ pub(crate) use metadata_subscriptions::broadcast_event;
 pub(crate) use pane_events::{PaneEvents, ensure_event_pump, reap_pane_journaling_close};
 pub(super) use pane_exit::journal_pane_closed;
 pub(crate) use pane_exit::spawn_resource_exit_watcher;
+pub(crate) use plumbing::abort_output_pumps;
 pub(super) use session_create::detach_clients_of_killed_session;
 pub(crate) use socket::{handle_existing_socket, prepare_socket_dir, secure_socket_file};
 

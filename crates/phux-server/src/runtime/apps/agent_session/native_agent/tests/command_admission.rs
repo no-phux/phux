@@ -238,7 +238,7 @@ async fn human_permission_and_parent_input_lease_gate_native_commands() {
                 .disposition,
                 NativeDisposition::Queued
             );
-            let raw = crate::runtime::commands::handle_route_input(
+            let raw = crate::runtime::apps::terminal::commands::handle_route_input(
                 &fx.state,
                 fx.owner,
                 &fx.parent_wire,

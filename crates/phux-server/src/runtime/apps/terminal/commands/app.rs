@@ -14,7 +14,7 @@ use super::*;
 use crate::resource::ResourceKind;
 use crate::runtime::apps::{
     FrameAdmission, KindResume, NO_TERMINAL_PROFILE, ResourceApp, ResourceFrame, ResourceLaunch,
-    ResourceSpawn, StreamBootstrap, UpgradeCut,
+    ResourceSpawn, RunningLane, SessionSeed, StreamBootstrap, UpgradeCut,
 };
 use crate::runtime::connections::dispatch::FrameFlow;
 use crate::runtime::operation_dedupe::OperationClaim;
@@ -206,6 +206,58 @@ impl ResourceApp for TerminalApp {
         // A Terminal relaunch is the organization path's.
         None
     }
+
+    fn start(&self, state: &SharedState) -> std::io::Result<Option<RunningLane>> {
+        let lane = super::super::input_lane::start(state)?;
+        // Off the runtime thread: a large upload directory is a walk.
+        let upload_env = state.with(crate::state::ServerState::server_env);
+        drop(tokio::task::spawn_blocking(move || {
+            super::super::upload::sweep_stale_partials_at_startup(&upload_env);
+        }));
+        Ok(Some(lane))
+    }
+
+    fn bootstrap_capabilities(
+        &self,
+        state: &SharedState,
+    ) -> Option<phux_protocol::caps::BootstrapCapabilities> {
+        Some(super::super::bootstrap_capabilities(state))
+    }
+
+    fn seed_session<'a>(
+        &'a self,
+        seed: SessionSeed<'a>,
+    ) -> Result<LocalBoxFuture<'a, Option<String>>, SessionSeed<'a>> {
+        // The one kind that runs without a producer seeds a session.
+        Ok(super::super::attach::resolve_create_if_missing(seed).boxed_local())
+    }
+
+    fn viewport_resize(&self, state: &SharedState, client: ClientId, viewport: &ViewportInfo) {
+        handle_viewport_resize(state, client, viewport);
+    }
+
+    fn client_activity(&self, state: &SharedState, client: ClientId) {
+        handle_client_activity(state, client);
+    }
+
+    fn command_refused(
+        &self,
+        _s: &crate::state::ServerState,
+        _client: ClientId,
+        _command: &Command,
+        _result: &CommandResult,
+    ) {
+    }
+
+    fn keep_standing(
+        &self,
+        state: &SharedState,
+        source: &crate::runtime::MirrorSource,
+        root_token: &CancellationToken,
+    ) -> bool {
+        super::super::standing::install(state, source, root_token);
+        true
+    }
 }
 
 /// The Terminal facet of a handle `app_for` routed here. A miss means the
@@ -282,7 +334,10 @@ async fn serve(
         state, client_id, ..
     } = ctx;
     let client_id = *client_id;
-    let input_lane = ctx.input_lane.as_ref();
+    let input_lane = ctx
+        .input_lane
+        .as_ref()
+        .and_then(super::super::input_lane::handle_of);
 
     match command {
         Command::Transcribe {

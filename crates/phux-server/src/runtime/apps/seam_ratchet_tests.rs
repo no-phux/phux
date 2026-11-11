@@ -87,12 +87,78 @@ fn document_engine(path: &str, source: &str) -> usize {
     tokens_outside(source, &TOKENS)
 }
 
-/// The Terminal app's modules, named from outside it.
+/// The Terminal app's modules, named from outside it: through `apps::` or
+/// `super::`, as a bare `terminal::` path (how `apps/mod.rs` re-exports them
+/// and how a `{terminal::…}` brace reaches them), or by any name a `use … as`
+/// in the same file gives a Terminal app path.
 fn terminal_app_paths(path: &str, source: &str) -> usize {
     if app_of(path) == Some("terminal") {
         return 0;
     }
-    tokens_outside(source, &["apps::terminal::", "super::terminal::"])
+    let source = without_inline_tests(source);
+    let code = code_lines(&source);
+    let aliased: usize = terminal_aliases(&code)
+        .iter()
+        .map(|alias| word_uses(&code, alias))
+        .sum();
+    count(&source, &["apps::terminal::", "super::terminal::"])
+        + word_uses(&code, "terminal::")
+        + aliased
+}
+
+/// `source` without its comment lines.
+fn code_lines(source: &str) -> String {
+    source
+        .lines()
+        .filter(|line| !line.trim_start().starts_with("//"))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// Whether `at` in `code` starts a word: no identifier character or path
+/// separator leads it.
+fn starts_word(code: &str, at: usize) -> bool {
+    !code[..at]
+        .chars()
+        .next_back()
+        .is_some_and(|c| c.is_alphanumeric() || c == '_' || c == ':')
+}
+
+/// Uses of `name` as a whole word or path head, not its own `as` binding.
+fn word_uses(code: &str, name: &str) -> usize {
+    let is_ident = |c: char| c.is_alphanumeric() || c == '_';
+    let open_ended = !name.ends_with(is_ident);
+    code.match_indices(name)
+        .filter(|(at, _)| starts_word(code, *at) && !code[..*at].ends_with(" as "))
+        .filter(|(at, _)| open_ended || !code[at + name.len()..].starts_with(is_ident))
+        .count()
+}
+
+/// The names `use … as X` statements in `code` give Terminal app paths,
+/// other than `terminal`, which the bare path count already sees.
+fn terminal_aliases(code: &str) -> Vec<String> {
+    code.split(';')
+        .filter_map(|statement| {
+            let at = statement
+                .match_indices("use ")
+                .find(|(at, _)| starts_word(statement, *at))?
+                .0;
+            Some(&statement[at..])
+        })
+        .filter(|import| {
+            import.contains("apps::terminal")
+                || import.contains("super::terminal")
+                || word_uses(import, "terminal::") > 0
+        })
+        .flat_map(|import| {
+            import.split(" as ").skip(1).map(|rest| {
+                rest.chars()
+                    .take_while(|c| c.is_alphanumeric() || *c == '_')
+                    .collect::<String>()
+            })
+        })
+        .filter(|alias| !alias.is_empty() && alias != "terminal")
+        .collect()
 }
 
 /// An app routing through the host's app table instead of serving its kind.
@@ -129,11 +195,7 @@ fn core_kind_branches(path: &str, source: &str) -> usize {
     tokens_outside(source, &["ResourceKind::"])
 }
 
-const INPUT_LANE: &str = "the connection's Terminal input lane (phux-rbz0y.14)";
-const STREAMS: &str = "Terminal streams and detector on the connection (phux-rbz0y.14)";
-const STANDING: &str = "standing mirrors run in Terminal panes (phux-rbz0y.14)";
 const LAUNCH: &str = "a Terminal launch command (phux-rbz0y.7)";
-const CONFORMANCE: &str = "test-only conformance fixture drives a Terminal";
 const KIND_SPEC: &str = "per-kind rule not yet on KindSpec (phux-rbz0y.7)";
 
 const SCANS: [Scan; 6] = [
@@ -141,59 +203,25 @@ const SCANS: [Scan; 6] = [
         name: "document engine outside its app",
         krate: "phux-server",
         matches: document_engine,
-        baseline: &[(
-            "runtime/dispatch_guard.rs",
-            1,
-            "document input audit from the host guard (phux-rbz0y.14)",
-        )],
+        baseline: &[],
     },
     Scan {
         name: "Terminal app modules named from outside it",
         krate: "phux-server",
         matches: terminal_app_paths,
         baseline: &[
-            ("connector.rs", 1, INPUT_LANE),
-            ("runtime/actor_conformance.rs", 1, CONFORMANCE),
             (
                 "runtime/apps/agent_session/native_agent/launch.rs",
-                5,
+                10,
                 "the native agent host runs in a Terminal (phux-rbz0y.7)",
             ),
             (
-                "runtime/commands.rs",
-                5,
-                "Terminal commands re-exported to the host (phux-rbz0y.14)",
+                "runtime/apps/mod.rs",
+                1,
+                "permanent: app_for, the one kind-to-app match",
             ),
             ("runtime/commands/lifecycle.rs", 1, LAUNCH),
             ("runtime/config.rs", 1, LAUNCH),
-            ("runtime/connections/commands.rs", 2, INPUT_LANE),
-            ("runtime/connections/dispatch.rs", 2, STREAMS),
-            ("runtime/connections/frames.rs", 3, STREAMS),
-            ("runtime/connections/lifecycle.rs", 1, INPUT_LANE),
-            ("runtime/connections/mod.rs", 2, STREAMS),
-            ("runtime/connections/plumbing.rs", 1, STREAMS),
-            ("runtime/connections/resource_frames.rs", 2, STREAMS),
-            ("runtime/delegation.rs", 1, INPUT_LANE),
-            ("runtime/delegation/sockets.rs", 1, INPUT_LANE),
-            (
-                "runtime/download.rs",
-                1,
-                "file digests live in the Terminal upload module (phux-rbz0y.14)",
-            ),
-            ("runtime/ephemeral_listener.rs", 1, INPUT_LANE),
-            ("runtime/listeners/mod.rs", 1, INPUT_LANE),
-            ("runtime/mod.rs", 1, STANDING),
-            ("runtime/revocation_conformance.rs", 2, CONFORMANCE),
-            (
-                "runtime/revocation_conformance/in_flight.rs",
-                1,
-                CONFORMANCE,
-            ),
-            ("runtime/scope_matrix.rs", 1, INPUT_LANE),
-            ("runtime/scope_matrix/guard.rs", 1, INPUT_LANE),
-            ("runtime/server/mod.rs", 2, STANDING),
-            ("runtime/server/serve.rs", 2, STANDING),
-            ("runtime/services.rs", 1, INPUT_LANE),
             ("runtime/startup.rs", 2, LAUNCH),
         ],
     },
@@ -336,6 +364,20 @@ fn the_scans_skip_inline_tests_and_their_own_app() {
         terminal_app_paths("runtime/x.rs", "// apps::terminal::y"),
         0
     );
+    let reexport = "pub(crate) use terminal::attach::x;\nuse phux_terminal::y;\n";
+    assert_eq!(terminal_app_paths("runtime/apps/mod.rs", reexport), 1);
+    let braced = "use crate::runtime::apps::{terminal::a, document};\n";
+    assert_eq!(terminal_app_paths("runtime/x.rs", braced), 1);
+    assert_eq!(
+        terminal_app_paths("runtime/x.rs", "crate::runtime::apps::terminal::z"),
+        1
+    );
+    let aliased = "use crate::runtime::apps::terminal::{commands as terminal, launch as tl};\n\
+                   fn f(c: tl::Cmd) { terminal::run(tl::go(c)); refuse(); }\n";
+    assert_eq!(terminal_app_paths("runtime/x.rs", aliased), 4);
+    let renamed =
+        "use crate::runtime::apps::terminal::launch::Cmd as Launch;\nfn f(_: Launch) {}\n";
+    assert_eq!(terminal_app_paths("runtime/x.rs", renamed), 2);
     assert_eq!(app_internals_in_state("state/documents.rs", ""), 1);
     assert_eq!(app_internals_in_state("state/leases.rs", ""), 0);
 }

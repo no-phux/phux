@@ -1,17 +1,16 @@
 //! `MOVE_RESOURCE` handling.
-#![allow(
-    clippy::wildcard_imports,
-    reason = "the split attach modules share the parent attach namespace"
-)]
 
-use super::*;
+use phux_protocol::wire::frame::{DetachReason, FrameKind, MoveError, MoveResult};
+use tracing::debug;
+
+use crate::state::{ClientId, Outbound, SharedState};
 
 /// Handle `MOVE_RESOURCE` (ADR-0056): translate into a `ResourceMove`
 /// commit that moves `terminal` into the session holding `owner_terminal`,
 /// attributed to the caller; an ephemeral source it empties is deleted in
 /// the same commit. The `ResourceId` is stable, so subscriptions survive;
 /// layout is the caller's concern. Local-only.
-pub(crate) async fn handle_move_terminal(
+pub(super) async fn handle_move_resource(
     state: &SharedState,
     client_id: ClientId,
     request_id: u32,
@@ -54,10 +53,7 @@ pub(crate) async fn handle_move_terminal(
                     message: "the session this attach was rooted in was reaped".to_owned(),
                 }))
                 .await;
-            crate::runtime::connections::detach_and_release_consumer_state(
-                &detached_state,
-                detached_client,
-            );
+            super::detach_and_release_consumer_state(&detached_state, detached_client);
         });
     }
 }

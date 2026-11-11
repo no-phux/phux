@@ -41,7 +41,7 @@ use super::revocation::Watcher;
 use super::test_support::{Feed, Wire, hello, owner_peer, workload_identity};
 use crate::auth::{AuthenticatedCredential, ConnectionIdentity};
 use crate::policy::{ConnectionGrant, GrantFuture, PolicyEngine, PolicyError, ScopedPolicy};
-use crate::runtime::apps::terminal::input_lane::InputLaneHandle;
+use crate::runtime::apps::InputLane;
 use crate::runtime::connections::handle_client;
 use crate::state::{ClientId, ServerState, SharedState};
 use crate::workload::{ReloadingWorkloadRegistry, WorkloadRegistry};
@@ -139,9 +139,9 @@ impl Fixture {
         credential_id: String,
         engine: Arc<dyn PolicyEngine>,
     ) -> Self {
-        let state = crate::runtime::apps::terminal::test_support::terminal_state();
+        let state = crate::runtime::test_support::terminal_state();
         let root = CancellationToken::new();
-        let alpha_core = super::commands::seed_session_with_actor(
+        let alpha_core = crate::runtime::test_support::seed_session_with_actor(
             &state,
             "alpha",
             phux_config::ScrollbackLimits::default(),
@@ -170,7 +170,7 @@ impl Fixture {
     }
 
     /// Start a connection stamped with `identity`, without its HELLO.
-    fn connect(&self, identity: ConnectionIdentity, lane: Option<InputLaneHandle>) -> Connection {
+    fn connect(&self, identity: ConnectionIdentity, lane: Option<InputLane>) -> Connection {
         let client = self.state.with_mut(ServerState::new_client_id);
         let transport = identity.peer.transport;
         self.state
@@ -203,7 +203,7 @@ impl Fixture {
         self.workload_with_lane(None).await
     }
 
-    async fn workload_with_lane(&self, lane: Option<InputLaneHandle>) -> Connection {
+    async fn workload_with_lane(&self, lane: Option<InputLane>) -> Connection {
         let connection = self.connect(workload_identity(&self.credential_id, &["*@global"]), lane);
         connection.hello().await;
         connection

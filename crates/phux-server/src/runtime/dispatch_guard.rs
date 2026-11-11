@@ -201,24 +201,7 @@ pub(super) async fn guard_command(
                     ),
                 }
             };
-            if let Command::SendDocumentInput {
-                terminal_id,
-                intent,
-                on_behalf_of,
-                ..
-            } = command
-            {
-                state.with(|s| {
-                    crate::runtime::apps::document::audit::record(
-                        s,
-                        client_id,
-                        on_behalf_of.as_ref(),
-                        terminal_id,
-                        intent,
-                        &result,
-                    );
-                });
-            }
+            state.with(|s| crate::runtime::apps::command_refused(s, client_id, command, &result));
             let _ = out_tx
                 .send(Outbound::Frame(FrameKind::CommandResult {
                     request_id,

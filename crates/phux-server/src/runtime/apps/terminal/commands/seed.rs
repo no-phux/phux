@@ -116,7 +116,7 @@ pub(crate) fn seed_session_with_actor_as(
 }
 
 /// Seed a persistent session with a PTY-backed pane running `cmd`.
-pub fn seed_session_with_pty(
+pub(crate) fn seed_session_with_pty(
     state: &SharedState,
     name: &str,
     cmd: phux_terminal_api::launch::LaunchCommand,
@@ -136,7 +136,7 @@ pub fn seed_session_with_pty(
 
 /// Palette-seeded variant used when a client's attach creates the session,
 /// with the session's `lifetime`.
-pub fn seed_session_with_pty_and_colors(
+pub(crate) fn seed_session_with_pty_and_colors(
     state: &SharedState,
     name: &str,
     cmd: phux_terminal_api::launch::LaunchCommand,

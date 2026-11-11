@@ -59,10 +59,10 @@ mod scope_matrix;
 mod test_support;
 mod workload_auth;
 
-pub use apps::terminal::standing::{MirrorSource, Slot as MirrorSlot, StandingEntries};
-pub use commands::*;
+pub(crate) use commands::*;
 pub(crate) use connections::*;
 pub use process_env::ServerEnv;
+pub use standing::{MirrorSource, Slot as MirrorSlot, StandingEntries};
 
 /// Timeout for the "is the socket still live?" liveness probe used when an
 /// existing socket file is encountered during bind.
@@ -74,6 +74,7 @@ mod posture;
 mod server;
 mod services;
 pub(crate) mod spawn_reply;
+mod standing;
 mod startup;
 
 pub use config::{

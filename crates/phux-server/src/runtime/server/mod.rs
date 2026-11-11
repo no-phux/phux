@@ -45,7 +45,7 @@ pub struct ServerRuntime {
     /// Where a config-reload doorbell re-reads `[[uplink]]`.
     uplink_source: Option<crate::uplink::UplinkSource>,
     /// Where the standing-mirror supervisor reads `[[mirrors]]`.
-    mirror_source: Option<crate::runtime::apps::terminal::standing::MirrorSource>,
+    mirror_source: Option<crate::runtime::standing::MirrorSource>,
     /// Overlay-address source for the auto-bound listener (ADR-0081). Never
     /// called on the startup path; see [`crate::runtime::listeners::serve_auto_overlay_listeners`].
     overlay_detect: fn() -> Vec<std::net::IpAddr>,
@@ -252,10 +252,7 @@ impl ServerRuntime {
     /// Keep the standing mirrors `source` names running, re-reading it on
     /// each config-reload doorbell (`docs/resource-kinds.md#standing-mirrors`).
     #[must_use]
-    pub fn standing_mirrors(
-        mut self,
-        source: crate::runtime::apps::terminal::standing::MirrorSource,
-    ) -> Self {
+    pub fn standing_mirrors(mut self, source: crate::runtime::standing::MirrorSource) -> Self {
         self.mirror_source = Some(source);
         self
     }

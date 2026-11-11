@@ -87,26 +87,6 @@ pub(in crate::runtime) fn local_terminal(
     }
 }
 
-/// The command result of a pane actor's `Result<(), String>` reply; a
-/// refusal carries `refusal_code`.
-pub(in crate::runtime) fn actor_reply(
-    reply: Result<Result<(), String>, oneshot::error::RecvError>,
-    refusal_code: ErrorCode,
-    verb: &str,
-) -> CommandResult {
-    match reply {
-        Ok(Ok(())) => CommandResult::Ok,
-        Ok(Err(message)) => CommandResult::Error {
-            code: refusal_code,
-            message,
-        },
-        Err(_) => CommandResult::Error {
-            code: ErrorCode::InternalError,
-            message: format!("pane actor dropped {verb} reply"),
-        },
-    }
-}
-
 /// A queued signal that failed replaces the success its key was committed
 /// with, so a retry answers the failure (L1 §5.1.1).
 pub(in crate::runtime) fn record_signal_failure(

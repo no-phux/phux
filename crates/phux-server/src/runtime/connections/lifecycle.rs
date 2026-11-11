@@ -1,7 +1,7 @@
 use super::dispatch::handle_client;
 use crate::hooks::HookEvent;
 use crate::runtime::ServerError;
-use crate::runtime::apps::terminal::input_lane::InputLaneHandle;
+use crate::runtime::apps::InputLane;
 use crate::state::{ClientId, Outbound, ServerState, SharedState};
 use crate::transport::{AcceptErrorDisposition, Incoming, WS_REJECTION_WARN_INTERVAL};
 use phux_protocol::PROTOCOL_VERSION;
@@ -201,7 +201,7 @@ pub(crate) async fn accept_loop<L: Incoming>(
     state: SharedState,
     root_token: CancellationToken,
     // ADR-0044 input lane; `None` routes input inline.
-    input_lane: Option<InputLaneHandle>,
+    input_lane: Option<InputLane>,
 ) -> Result<(), ServerError> {
     let mut clients: JoinSet<()> = JoinSet::new();
     let cap = ConnectionCap::new(listener.max_connections());

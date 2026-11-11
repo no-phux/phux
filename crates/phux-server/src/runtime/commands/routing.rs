@@ -73,7 +73,7 @@ pub(crate) struct CommandContext {
     /// offered none; a Terminal stream it binds is refused.
     pub(crate) profile: Option<BootstrapProfile>,
     pub(crate) limits: BootstrapLimits,
-    pub(crate) input_lane: Option<InputLaneHandle>,
+    pub(crate) input_lane: Option<crate::runtime::apps::InputLane>,
     /// This connection's cancellation.
     pub(crate) token: CancellationToken,
     pub(crate) root_token: CancellationToken,

@@ -1,5 +1,6 @@
 use super::binding::NativeBinding;
 use super::controller::{denied, json, refusal};
+use crate::runtime::apps::terminal::{commands as terminal, launch as terminal_launch};
 use crate::runtime::commands::CommandContext;
 use crate::state::SharedState;
 use phux_agent_session::session::AgentSessionActor;
@@ -57,7 +58,7 @@ struct NativeSpawnTarget {
 }
 
 struct PreparedNativeHost {
-    command: crate::runtime::apps::terminal::launch::LaunchCommand,
+    command: terminal_launch::LaunchCommand,
     launch: phux_core::TerminalLaunch,
     recipe: SpawnNativeAgent,
     public_spec: String,
@@ -104,7 +105,7 @@ fn spawn_transaction(
             return Err(error);
         }
     };
-    crate::runtime::apps::terminal::launch::bind_native_host(
+    terminal_launch::bind_native_host(
         &mut command,
         &delegation.socket_path,
         &resources.agent_wire.to_string(),
@@ -274,7 +275,7 @@ fn prepare_native_host(
     // Host-only startup carries the real local runtime configuration. The
     // portable saved recipe carries no bootstrap destination or SDK credentials.
     let startup = serde_json::to_string(spec).map_err(|error| refusal(error.to_string()))?;
-    let command = crate::runtime::apps::terminal::launch::native_host_command(
+    let command = terminal_launch::native_host_command(
         &executable,
         spec.cwd.as_deref(),
         &spec.env,
@@ -286,7 +287,7 @@ fn prepare_native_host(
     recipe.guardian_expected = None;
     recipe.env.clear();
     let public_spec = serde_json::to_string(&recipe).map_err(|error| refusal(error.to_string()))?;
-    let mut launch = crate::runtime::commands::launch_of(Some(&command));
+    let mut launch = terminal::launch_of(Some(&command));
     launch
         .env
         .push((NATIVE_HOST_SPEC_ENV.into(), public_spec.clone()));
@@ -337,7 +338,7 @@ fn create_native_resources(
     spec: &SpawnNativeAgent,
     target: &NativeSpawnTarget,
     launch: phux_core::TerminalLaunch,
-    command: &mut crate::runtime::apps::terminal::launch::LaunchCommand,
+    command: &mut terminal_launch::LaunchCommand,
     public_spec: &str,
     operation: Option<phux_protocol::ids::OperationId>,
 ) -> Result<NativeSpawnResources, CommandResult> {
@@ -379,7 +380,7 @@ fn create_native_resources(
                     return Err(CommandResult::Refused(crate::org_wire::refusal(&error)));
                 }
             };
-        let parent_wire = crate::runtime::commands::register_pty_command(s, parent, command);
+        let parent_wire = terminal::register_pty_command(s, parent, command);
         let agent_wire = s.intern_resource_wire(agent);
         s.metadata_set(
             &phux_protocol::wire::frame::Scope::Resource(parent_wire.clone()),
@@ -493,17 +494,17 @@ fn install_native_session(
 fn launch_native_guardian(
     ctx: &CommandContext,
     resources: &NativeSpawnResources,
-    command: crate::runtime::apps::terminal::launch::LaunchCommand,
+    command: terminal_launch::LaunchCommand,
     operation: Option<phux_protocol::ids::OperationId>,
     reused: bool,
     credential: &str,
 ) -> Result<(), CommandResult> {
     let state = &ctx.state;
-    let launched = crate::runtime::commands::launch_pane_actor_with_failure_policy(
+    let launched = terminal::launch_pane_actor_with_failure_policy(
         state,
         resources.parent,
         Some(command),
-        crate::runtime::commands::DEFAULT_SPAWN_DIMS,
+        terminal::DEFAULT_SPAWN_DIMS,
         state.with(crate::state::ServerState::scrollback_limits),
         &ctx.root_token,
         None,

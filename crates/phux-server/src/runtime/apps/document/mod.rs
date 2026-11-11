@@ -27,6 +27,7 @@ use crate::state::{ClientId, ServerState, SharedState};
 mod attach;
 pub(crate) mod audit;
 mod input;
+mod kinds;
 mod mirror;
 mod spawn;
 pub(crate) mod upgrade;
@@ -53,6 +54,9 @@ pub(crate) trait DocumentApi: DocumentKind {
     /// The target a record of this kind was opened on; `None` for a
     /// record of another kind.
     fn launch_target(launch: &phux_core::LaunchSpec) -> Option<&str>;
+    /// Whether this kind's app logs a refused `SEND_DOCUMENT_INPUT`. One
+    /// does, for every kind: a refusal can precede resolving its target.
+    const AUDITS_REFUSED_INPUT: bool = false;
     /// Create the registry record under `parent`, running, named `name`;
     /// a tree or surface is named for what it observes.
     fn create(
@@ -64,13 +68,6 @@ pub(crate) trait DocumentApi: DocumentKind {
     ) -> Result<phux_core::ids::ResourceId, phux_core::Refusal>;
 }
 
-/// What a tree or surface observes (`--app Safari`, a page title), as its
-/// record name, so every client's tab reads it. A target a name may not
-/// carry (a control character) leaves the resource unnamed.
-fn target_name(target: &str) -> Option<String> {
-    (!target.trim().is_empty() && !target.chars().any(char::is_control)).then(|| target.to_owned())
-}
-
 /// `handle` carrying the control class its producer declared, which the host
 /// reads as [`ServerState::resource_control`]; none controls nothing.
 fn with_control(
@@ -80,125 +77,6 @@ fn with_control(
     match control {
         Some(class) => handle.with_companion(class),
         None => handle,
-    }
-}
-
-impl DocumentApi for TreeDocument {
-    fn validate_bootstrap(_target: &str, bytes: &[u8]) -> Result<(), String> {
-        serde_json::from_slice::<serde::de::IgnoredAny>(bytes)
-            .map(|_| ())
-            .map_err(|error| format!("the document is not JSON: {error}"))
-    }
-
-    const PROFILE: BootstrapStreamProfile = BootstrapStreamProfile::AccessibilityTreeJsonV1;
-    const WIRE_KIND: phux_protocol::ids::ResourceKind =
-        phux_protocol::ids::ResourceKind::AccessibilityTree;
-    const LABEL: &'static str = "accessibility tree";
-
-    fn launch_target(launch: &phux_core::LaunchSpec) -> Option<&str> {
-        match launch {
-            phux_core::LaunchSpec::Tree(tree) => Some(&tree.target),
-            _ => None,
-        }
-    }
-
-    fn create(
-        state: &mut ServerState,
-        parent: phux_core::ids::ResourceId,
-        target: &str,
-        _name: Option<&str>,
-        actor: &phux_core::actor::Actor,
-    ) -> Result<phux_core::ids::ResourceId, phux_core::Refusal> {
-        state.create_child(
-            parent,
-            phux_core::NewResource::child(
-                phux_core::LaunchSpec::Tree(phux_core::resource::TreeLaunch {
-                    target: target.to_owned(),
-                }),
-                target_name(target),
-            ),
-            actor,
-        )
-    }
-}
-
-impl DocumentApi for SurfaceDocument {
-    fn validate_bootstrap(_target: &str, bytes: &[u8]) -> Result<(), String> {
-        phux_tree::image_size(bytes).map(|_| ())
-    }
-
-    const PROFILE: BootstrapStreamProfile = BootstrapStreamProfile::PixelSurfacePngV1;
-    const WIRE_KIND: phux_protocol::ids::ResourceKind =
-        phux_protocol::ids::ResourceKind::PixelSurface;
-    const LABEL: &'static str = "pixel surface";
-
-    fn launch_target(launch: &phux_core::LaunchSpec) -> Option<&str> {
-        match launch {
-            phux_core::LaunchSpec::Surface(surface) => Some(&surface.target),
-            _ => None,
-        }
-    }
-
-    fn create(
-        state: &mut ServerState,
-        parent: phux_core::ids::ResourceId,
-        target: &str,
-        _name: Option<&str>,
-        actor: &phux_core::actor::Actor,
-    ) -> Result<phux_core::ids::ResourceId, phux_core::Refusal> {
-        state.create_child(
-            parent,
-            phux_core::NewResource::child(
-                phux_core::LaunchSpec::Surface(phux_core::resource::SurfaceLaunch {
-                    target: target.to_owned(),
-                }),
-                target_name(target),
-            ),
-            actor,
-        )
-    }
-}
-
-/// A typed document's `target` is its content type, which every viewer's
-/// bootstrap names before the newest document.
-impl DocumentApi for TypedDocument {
-    fn validate_bootstrap(content_type: &str, bytes: &[u8]) -> Result<(), String> {
-        <Self as DocumentKind>::validate(content_type, bytes)
-    }
-
-    fn bootstrap_payload(content_type: &str, document: Option<&Bytes>) -> Bytes {
-        let document = document.map_or(&[][..], |bytes| &bytes[..]);
-        phux_protocol::wire::frame::typed_document::encode_bootstrap(content_type, document).into()
-    }
-
-    const PROFILE: BootstrapStreamProfile = BootstrapStreamProfile::DocumentTypedV1;
-    const WIRE_KIND: phux_protocol::ids::ResourceKind = phux_protocol::ids::ResourceKind::Document;
-    const LABEL: &'static str = "document";
-
-    fn launch_target(launch: &phux_core::LaunchSpec) -> Option<&str> {
-        match launch {
-            phux_core::LaunchSpec::Document(document) => Some(&document.content_type),
-            _ => None,
-        }
-    }
-
-    fn create(
-        state: &mut ServerState,
-        parent: phux_core::ids::ResourceId,
-        content_type: &str,
-        name: Option<&str>,
-        actor: &phux_core::actor::Actor,
-    ) -> Result<phux_core::ids::ResourceId, phux_core::Refusal> {
-        state.create_child(
-            parent,
-            phux_core::NewResource::child(
-                phux_core::LaunchSpec::Document(phux_core::resource::DocumentLaunch {
-                    content_type: content_type.to_owned(),
-                }),
-                name.map(str::to_owned),
-            ),
-            actor,
-        )
     }
 }
 
@@ -348,6 +226,71 @@ impl<A: DocumentApi> ResourceApp for DocumentApp<A> {
 
     fn spawn<'a>(&'a self, spawn: ResourceSpawn<'a>) -> LocalBoxFuture<'a, ()> {
         spawn_document::<A>(spawn).boxed_local()
+    }
+
+    fn start(&self, _state: &SharedState) -> std::io::Result<Option<super::RunningLane>> {
+        Ok(None)
+    }
+
+    fn bootstrap_capabilities(
+        &self,
+        _state: &SharedState,
+    ) -> Option<phux_protocol::caps::BootstrapCapabilities> {
+        None
+    }
+
+    fn seed_session<'a>(
+        &'a self,
+        seed: super::SessionSeed<'a>,
+    ) -> Result<LocalBoxFuture<'a, Option<String>>, super::SessionSeed<'a>> {
+        // A document opens through its producer, never as a session's seed.
+        Err(seed)
+    }
+
+    fn viewport_resize(
+        &self,
+        _state: &SharedState,
+        _client: ClientId,
+        _viewport: &phux_protocol::wire::frame::ViewportInfo,
+    ) {
+        // A document takes its producer's size, never a viewer's.
+    }
+
+    fn client_activity(&self, _state: &SharedState, _client: ClientId) {}
+
+    fn command_refused(
+        &self,
+        s: &ServerState,
+        client: ClientId,
+        command: &Command,
+        result: &CommandResult,
+    ) {
+        if let Command::SendDocumentInput {
+            terminal_id,
+            intent,
+            on_behalf_of,
+            ..
+        } = command
+            && A::AUDITS_REFUSED_INPUT
+        {
+            audit::record(
+                s,
+                client,
+                on_behalf_of.as_ref(),
+                terminal_id,
+                intent,
+                result,
+            );
+        }
+    }
+
+    fn keep_standing(
+        &self,
+        _state: &SharedState,
+        _source: &crate::runtime::MirrorSource,
+        _root_token: &tokio_util::sync::CancellationToken,
+    ) -> bool {
+        false
     }
 
     fn command<'a>(

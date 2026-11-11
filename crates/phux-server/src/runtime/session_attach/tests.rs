@@ -183,7 +183,7 @@ fn parent(
 ) -> (phux_core::ids::SessionId, phux_core::ids::ResourceId) {
     if terminal {
         state.set_terminal_engine(std::sync::Arc::new(phux_terminal::TerminalEngine));
-        let id = crate::runtime::commands::seed_session_with_actor(
+        let id = crate::runtime::test_support::seed_session_with_actor(
             state,
             "target",
             phux_config::ScrollbackLimits::default(),

@@ -16,53 +16,9 @@ fn live_session_probe(
     std::rc::Rc::new(move || state.with(|s| s.has_live_agent_session_child(terminal)))
 }
 
-/// The command-result shape of a Terminal-only request aimed at a resource
-/// of another kind.
-pub(crate) fn wrong_resource_kind(error: WrongResourceKind) -> CommandResult {
-    CommandResult::Error {
-        code: ErrorCode::WrongResourceKind,
-        message: error.to_string(),
-    }
-}
-
-/// The `TERMINAL_NOT_FOUND` refusal for `terminal_id`.
-pub(in crate::runtime) fn terminal_not_found(
-    terminal_id: &phux_protocol::ids::ResourceId,
-) -> CommandResult {
-    CommandResult::Error {
-        code: ErrorCode::TerminalNotFound,
-        message: format!("no such terminal: {terminal_id}"),
-    }
-}
-
 /// The grid a pane is built at when its real geometry arrives later (an
 /// attaching viewport, or a spawn without `SPAWN_RESOURCE.initial_size`).
 pub(crate) const DEFAULT_SPAWN_DIMS: (u16, u16) = crate::state::HEADLESS_TERMINAL_DIMS;
-
-/// Who and what caused a pane's spawn, for its `pane_spawned` stamp
-/// (ADR-0123). `Default` is a server-driven spawn, such as a seed pane.
-#[derive(Debug, Clone, Copy, Default)]
-pub(crate) struct SpawnAttribution {
-    /// The connection that asked for the pane.
-    pub(crate) actor: Option<ClientId>,
-    /// The spawn's idempotency key (ADR-0126).
-    pub(crate) operation_id: Option<phux_protocol::ids::IdempotencyKey>,
-    /// Seconds the pane is retained after its process exits (ADR-0124);
-    /// `None` falls back to `defaults.retain-on-exit`.
-    pub(crate) retain_secs: Option<u32>,
-}
-
-/// Where a session's seed pane came from: its agent-session provenance and
-/// who asked for it (ADR-0123). `Default` is a server-driven seed.
-#[derive(Debug, Default)]
-pub(crate) struct SeedOrigin {
-    /// Opaque native agent-session provenance to install on the pane.
-    pub(crate) agent_session: Option<Vec<u8>>,
-    /// The seed pane's `pane_spawned` attribution.
-    pub(crate) attribution: SpawnAttribution,
-    /// The new session's lifetime; a named create is persistent.
-    pub(crate) lifetime: phux_core::SessionLifetime,
-}
 
 /// Journal a pane's `pane_spawned` (L1 §7.1) in the lock that registers its
 /// actor, so it always takes a lower `seq` than the pane's `pane_closed`

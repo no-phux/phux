@@ -1,6 +1,6 @@
 //! Assemble configured and automatically detected server accept loops.
 
-use crate::runtime::apps::terminal::input_lane;
+use crate::runtime::apps::InputLane;
 use crate::runtime::config::ServerError;
 use crate::runtime::connections::accept_loop;
 use crate::runtime::listeners::remote::{build_quic_listener_for, build_ws_listener};
@@ -54,13 +54,13 @@ impl ConfiguredListeners {
         uds: &'a crate::transport::UdsListener,
         state: &SharedState,
         root_token: &CancellationToken,
-        input_lane: &input_lane::InputLaneHandle,
+        input_lane: Option<&InputLane>,
     ) -> Vec<AcceptLoopFuture<'a>> {
         let mut accepts: Vec<AcceptLoopFuture<'a>> = vec![Box::pin(accept_loop(
             uds,
             state.clone(),
             root_token.clone(),
-            Some(input_lane.clone()),
+            input_lane.cloned(),
         ))];
         accepts.extend(self.remote.accept_loops(state, root_token, input_lane));
         accepts
@@ -107,7 +107,7 @@ impl RemoteListeners {
         &'a self,
         state: &SharedState,
         root_token: &CancellationToken,
-        input_lane: &input_lane::InputLaneHandle,
+        input_lane: Option<&InputLane>,
     ) -> Vec<AcceptLoopFuture<'a>> {
         let mut accepts: Vec<AcceptLoopFuture<'a>> = Vec::new();
         if let Some(ws) = &self.ws {
@@ -115,7 +115,7 @@ impl RemoteListeners {
                 ws,
                 state.clone(),
                 root_token.clone(),
-                Some(input_lane.clone()),
+                input_lane.cloned(),
             )));
         }
         if let Some(quic) = &self.quic {
@@ -123,7 +123,7 @@ impl RemoteListeners {
                 quic,
                 state.clone(),
                 root_token.clone(),
-                Some(input_lane.clone()),
+                input_lane.cloned(),
             )));
         }
         accepts
@@ -213,7 +213,7 @@ pub(in crate::runtime) async fn serve_auto_overlay_listeners(
     detect: fn() -> Vec<std::net::IpAddr>,
     state: SharedState,
     root_token: CancellationToken,
-    input_lane: input_lane::InputLaneHandle,
+    input_lane: Option<InputLane>,
 ) -> Result<(), ServerError> {
     let detected = tokio::select! {
         () = root_token.cancelled() => return Ok(()),
@@ -235,7 +235,7 @@ pub(in crate::runtime) async fn serve_auto_overlay_listeners(
         &state,
     )
     .await;
-    let accepts = remote.accept_loops(&state, &root_token, &input_lane);
+    let accepts = remote.accept_loops(&state, &root_token, input_lane.as_ref());
     if accepts.is_empty() {
         debug!("no auto-bound overlay listener; nothing detected or nothing to bind");
         root_token.cancelled().await;

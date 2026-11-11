@@ -6,26 +6,6 @@
 
 use super::*;
 
-/// Why an `ATTACH_RESOURCE` stage failed; [`AttachResourceSession::failed`]
-/// rolls the partial generation back exactly once.
-#[derive(Debug)]
-pub(crate) struct AttachResourceFailure {
-    /// Wire error code the caller receives.
-    pub(crate) code: ErrorCode,
-    /// Human-readable explanation attached to that code.
-    pub(crate) message: String,
-}
-
-impl AttachResourceFailure {
-    /// An internal fault with a fixed explanation — the dominant shape.
-    pub(in crate::runtime) fn internal(message: &str) -> Self {
-        Self {
-            code: ErrorCode::InternalError,
-            message: message.to_owned(),
-        }
-    }
-}
-
 /// The pump generation an attach established, plus the handshake artifacts
 /// its bootstrap publication still has to consume.
 pub(in crate::runtime) struct AttachResourceGeneration {

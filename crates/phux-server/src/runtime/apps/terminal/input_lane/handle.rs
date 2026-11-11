@@ -24,7 +24,7 @@ use super::{
 /// Cloneable handle a client task uses to hand input to the lane. Cloning is
 /// cheap (`mpsc::Sender` clone); every clone keeps the lane thread alive.
 #[derive(Clone, Debug)]
-pub struct InputLaneHandle {
+pub(crate) struct InputLaneHandle {
     pub(super) tx: mpsc::Sender<RoutedInput>,
     pub(super) admission: Arc<AcknowledgedAdmission>,
     pub(super) cache: SharedOperationCache,

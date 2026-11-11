@@ -9,7 +9,6 @@ use phux_protocol::wire::frame::{
 };
 use tokio::task::LocalSet;
 
-use crate::runtime::apps::terminal::input_lane::spawn_input_lane;
 use crate::runtime::test_support::hello;
 
 use super::{
@@ -63,7 +62,7 @@ async fn apply_input_on_the_input_lane_is_guarded() {
             };
 
             let refused = paired(&["observe@global"]);
-            let lane = spawn_input_lane(refused.state.clone()).unwrap();
+            let lane = crate::runtime::test_support::start_input_lane(&refused.state).unwrap();
             let outcome = exchange(
                 &refused.state,
                 script(&[hello("scope-matrix"), apply(refused.alpha.clone())]),
@@ -79,7 +78,7 @@ async fn apply_input_on_the_input_lane_is_guarded() {
             drop(lane);
 
             let admitted = paired(&["input@global"]);
-            let lane = spawn_input_lane(admitted.state.clone()).unwrap();
+            let lane = crate::runtime::test_support::start_input_lane(&admitted.state).unwrap();
             let outcome = exchange(
                 &admitted.state,
                 script(&[hello("scope-matrix"), apply(admitted.alpha.clone())]),

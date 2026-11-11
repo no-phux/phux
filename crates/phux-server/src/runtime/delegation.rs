@@ -43,7 +43,7 @@ use crate::auth::AuthenticatedCredential;
 use crate::auth::ConnectionIdentity;
 use crate::delegation::{DelegatedCredential, DelegationError, DelegationRequest};
 use crate::policy::Revocation;
-use crate::runtime::apps::terminal::input_lane::InputLaneHandle;
+use crate::runtime::apps::InputLane;
 use crate::state::{ClientId, SharedState};
 
 mod sockets;
@@ -80,7 +80,7 @@ pub fn delegate_agent(
     launcher: ClientId,
     session: SessionId,
     request: DelegationRequest,
-    input_lane: Option<InputLaneHandle>,
+    input_lane: Option<InputLane>,
     root_token: &CancellationToken,
 ) -> Result<DelegatedAgent, DelegationError> {
     let credential =
@@ -129,7 +129,7 @@ pub(super) fn handle_delegate_agent(
     operation: OperationId,
     session: &WireSessionKey,
     ttl_secs: u32,
-    input_lane: Option<&InputLaneHandle>,
+    input_lane: Option<&InputLane>,
     root_token: &CancellationToken,
 ) -> CommandResult {
     let key = crate::org_wire::core_session_key(session);

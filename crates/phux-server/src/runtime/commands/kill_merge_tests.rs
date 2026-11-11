@@ -1,9 +1,11 @@
 use super::*;
 use crate::hub::relay::{HubRelays, RelayHandle, RelayMailbox, RelayRequest};
+use crate::runtime::apps::terminal::commands::signal::{commit_signal, record_signal_failure};
 use crate::runtime::apps::terminal::test_support::ControlRequest;
 use crate::runtime::keyed_ops::{KeyedAdmission, admit};
 use phux_protocol::ids::{IdempotencyKey, ResourceId, SatelliteHost};
 use phux_protocol::wire::frame::CommandValue;
+use tokio::sync::oneshot;
 
 /// A hub whose satellite `up` has a live link, answered by the test, and
 /// whose satellite `down` has none.

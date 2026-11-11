@@ -14,8 +14,7 @@ use phux_protocol::caps::{
 };
 use phux_protocol::ids::{BootstrapId, GroupId, StreamId};
 use phux_protocol::wire::frame::{
-    AttachTarget, DetachReason, ErrorCode, FrameKind, MAX_AGENT_SESSION_RECORD_BYTES, MoveError,
-    MoveResult, SpawnError,
+    ErrorCode, FrameKind, MAX_AGENT_SESSION_RECORD_BYTES, SpawnError,
 };
 use std::ops::ControlFlow;
 use tokio::sync::oneshot;
@@ -24,16 +23,17 @@ use tokio_util::sync::CancellationToken;
 
 use tracing::{debug, trace, warn};
 
+use super::commands::seed::{
+    SpawnOwnership, seed_session_with_pty_and_colors, spawn_pane_with_pty_and_colors,
+};
 use crate::hub::relay::SatelliteSpawn;
 use crate::resource::ResourceHandle;
 #[cfg(test)]
 use crate::runtime::prepare_attach;
 use crate::runtime::pump::{self, PumpGeneration};
+use crate::runtime::send_error;
 use crate::runtime::spawn_reply::{dispatch_satellite_spawn, refuse_spawn, spawned_result};
 use crate::runtime::stream_id_from;
-use crate::runtime::{
-    SpawnOwnership, seed_session_with_pty_and_colors, send_error, spawn_pane_with_pty_and_colors,
-};
 use crate::state::{AttachSnapshotPane, ClientId, Outbound, SharedState};
 use phux_terminal_api::actor::{
     ConsumerAttachRequest, ConsumerDetachRequest, PwdRequest, ResizeRequest, ResizeSender,
@@ -43,7 +43,6 @@ use phux_terminal_api::actor::{
 mod bootstrap;
 mod bootstrap_queue;
 mod handle;
-mod move_terminal;
 mod output_pump;
 mod output_pump_resync;
 mod pane_capture;
@@ -64,7 +63,6 @@ use bootstrap::{BootstrapStagingBudget, SnapshotGate};
 use bootstrap_queue::GAP_RESYNC_QUEUE_WAIT;
 pub(crate) use bootstrap_queue::*;
 pub(crate) use handle::*;
-pub(crate) use move_terminal::*;
 pub(crate) use output_pump::*;
 use output_pump::{PaneResync, tombstone_reason_for};
 use pane_capture::PaneCaptureContext;

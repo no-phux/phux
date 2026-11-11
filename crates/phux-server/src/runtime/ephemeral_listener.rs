@@ -29,7 +29,7 @@ use tokio_util::sync::CancellationToken;
 use tracing::{info, warn};
 
 use crate::auth::{ConnectionIdentity, ListenerToken};
-use crate::runtime::apps::terminal::input_lane::InputLaneHandle;
+use crate::runtime::apps::InputLane;
 use crate::state::{ClientId, SharedState};
 use crate::transport::quic::{QuicAdmission, QuicBindError, QuicListener};
 use crate::transport::{AcceptErrorDisposition, FrameOrigin, FrameReader, Incoming};
@@ -83,7 +83,7 @@ pub(super) fn handle_open_listener(
     state: &SharedState,
     client_id: ClientId,
     request: OpenRequest,
-    input_lane: Option<&InputLaneHandle>,
+    input_lane: Option<&InputLane>,
     root_token: &CancellationToken,
 ) -> CommandResult {
     if let Some(refused) = door_refusal(state, client_id) {
@@ -308,7 +308,7 @@ fn spawn_listener(
     linger: Duration,
     state: SharedState,
     token: CancellationToken,
-    input_lane: Option<InputLaneHandle>,
+    input_lane: Option<InputLane>,
 ) {
     let (live_tx, live_rx) = watch::channel(0usize);
     let tracked = Tracked {
