@@ -317,22 +317,22 @@ fn attach_over_ssh_falls_back_when_the_host_cannot_bootstrap() {
     );
 }
 
-/// When UDP cannot reach the listener, the probe falls back rather than
-/// hanging on a dial that will never complete.
+/// When UDP cannot reach the listener, the local client attaches through
+/// the ssh stdio bridge instead of hanging on a dial that cannot complete.
 #[test]
 #[ignore = "spawns a PTY-backed binary; runs in the e2e lane"]
-fn attach_over_ssh_falls_back_when_udp_does_not_connect() {
+fn attach_over_ssh_rides_the_stdio_bridge_when_udp_does_not_connect() {
     // TEST-NET-1: never routed, so the probe dial cannot succeed.
     let home = Home::new(Remote::Current, "192.0.2.1");
-    let seen = home.run_until(&["attach", "--ssh", "me@box"], "FAKE SSH FALLBACK");
+    // The alt screen is the local TUI drawing: the bridge attached.
+    let seen = home.run_until(&["attach", "--ssh", "me@box"], "\u{1b}[?1049h");
     assert!(
         seen.contains("QUIC to 192.0.2.1:") && seen.contains("did not connect"),
         "the probe names what it tried: {seen}"
     );
-    assert!(
-        seen.contains("FAKE SSH FALLBACK: -t me@box phux attach"),
-        "{seen}"
-    );
+    assert!(seen.contains("attaching through ssh instead"), "{seen}");
+    assert!(seen.contains("\u{1b}[?1049h"), "the local TUI drew: {seen}");
+    assert!(!seen.contains("FAKE SSH FALLBACK"), "{seen}");
 }
 
 /// ssh itself failing is reported, not papered over with a fallback that

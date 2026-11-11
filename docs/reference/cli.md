@@ -1918,10 +1918,11 @@ Remote host:
                                   session is up; the session itself rides QUIC,
                                   so it roams and renders locally. Needs no
                                   pairing, service, or overlay network on the
-                                  host. Falls back to `ssh -t HOST phux attach`
-                                  when UDP cannot reach it. The host is anything
-                                  ssh accepts, including `ssh://user@host:port`
-                                  and aliases from `~/.ssh/config`.
+                                  host. When UDP cannot reach it, the local
+                                  client attaches through ssh itself. The host
+                                  is anything ssh accepts, including
+                                  `ssh://user@host:port` and aliases from
+                                  `~/.ssh/config`.
       --remote-phux <PATH>        The `phux` to run on the `--ssh` host, for
                                   when a non-interactive ssh shell's `PATH` does
                                   not find it (a Homebrew or Nix install).

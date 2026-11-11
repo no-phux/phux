@@ -40,6 +40,14 @@ pub enum Dial {
         /// The host-selected Linux phux executable.
         phux: PathBuf,
     },
+    /// The protocol over `ssh DESTINATION REMOTE_PHUX stdio-bridge`, for a
+    /// host UDP cannot reach. ssh authenticates it.
+    Ssh {
+        /// The ssh destination, passed to ssh verbatim.
+        destination: String,
+        /// The `phux` to run on the host.
+        remote_phux: String,
+    },
     /// Dial a QUIC listener; the plan owns its bearer token.
     Quic(QuicDial),
     /// Dial a WebSocket listener; the plan owns its bearer token.

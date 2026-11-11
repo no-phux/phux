@@ -31,6 +31,13 @@ pub enum Transport {
         /// The Linux phux executable selected by the host.
         phux: PathBuf,
     },
+    /// The protocol over `ssh DESTINATION REMOTE_PHUX stdio-bridge`.
+    Ssh {
+        /// The ssh destination, passed to ssh verbatim.
+        destination: String,
+        /// The `phux` to run on the host.
+        remote_phux: String,
+    },
     /// A `ws://` or `wss://` URL. Off loopback it needs the pin and token
     /// a registry entry carries; see [`Target::resolve`].
     Ws(String),
@@ -46,6 +53,7 @@ impl Transport {
         match self {
             Self::Uds(_) => "uds",
             Self::Wsl { .. } => "wsl",
+            Self::Ssh { .. } => "ssh",
             Self::Ws(_) => "ws",
             Self::Quic(_) => "quic",
         }
@@ -88,6 +96,18 @@ impl Target {
     pub fn wsl(socket: PathBuf, phux: PathBuf) -> Self {
         let mut target = Self::uds(socket.clone());
         target.transport = Transport::Wsl { socket, phux };
+        target
+    }
+
+    /// A host's own server, reached over `ssh DESTINATION REMOTE_PHUX
+    /// stdio-bridge`. ssh authenticates; no pin or token applies.
+    #[must_use]
+    pub fn ssh(destination: String, remote_phux: String) -> Self {
+        let mut target = Self::uds(destination.clone());
+        target.transport = Transport::Ssh {
+            destination,
+            remote_phux,
+        };
         target
     }
 
@@ -157,6 +177,13 @@ impl Target {
         match &self.transport {
             Transport::Uds(path) => Ok(Dial::Uds(path.clone())),
             Transport::Wsl { socket, phux } => wsl::plan(socket, phux),
+            Transport::Ssh {
+                destination,
+                remote_phux,
+            } => Ok(Dial::Ssh {
+                destination: destination.clone(),
+                remote_phux: remote_phux.clone(),
+            }),
             Transport::Ws(url) => {
                 let resolved = self.remote(url.clone(), Lane::Ws(url.clone()));
                 let token = match self.token.clone() {
@@ -178,7 +205,7 @@ impl Target {
     /// The registry entry a WebSocket or QUIC dial is planned from.
     pub(crate) fn resolved(&self) -> Option<Resolved> {
         match &self.transport {
-            Transport::Uds(_) | Transport::Wsl { .. } => None,
+            Transport::Uds(_) | Transport::Wsl { .. } | Transport::Ssh { .. } => None,
             Transport::Ws(url) => Some(self.remote(url.clone(), Lane::Ws(url.clone()))),
             Transport::Quic(authority) => {
                 Some(self.remote(format!("quic://{authority}"), Lane::Quic(authority.clone())))
@@ -295,6 +322,7 @@ enum ConnectionEnd {
 mod driver;
 mod establish;
 pub(crate) mod io;
+mod ssh;
 mod wsl;
 
 pub(crate) use establish::{DialFailure, establish};

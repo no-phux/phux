@@ -246,10 +246,9 @@ network changes and draws locally. The listener and its token live only in
 memory and go away shortly after you detach.
 
 The remote server's policy must allow the listener, and UDP must reach it.
-If it can't, phux says why and falls back to `ssh -t box phux attach`: the
-terminal UI runs on the remote machine and SSH carries its screen. An SSH
-login failure, or a remote machine without phux, is an error, not a
-fallback.
+If it can't, phux says why and keeps your local client, carried through
+`ssh` itself, jump hosts and keys included. It doesn't roam. An SSH login
+failure, or a remote machine without phux, is an error, not a fallback.
 
 `--udp-ports 60000-61000` keeps the listener in a range one firewall rule
 can cover.
@@ -447,8 +446,8 @@ the address.
 
 **`no answer within 5s; is UDP filtered?`** `phux host add` couldn't reach
 UDP 8788, so it registered an `ssh://` route instead. Attaching over it
-tries direct QUIC and falls back to `ssh -t` running the terminal UI
-there. Open the port, or use a relay.
+tries direct QUIC, then carries the client through `ssh`. Open the port,
+or use a relay, for one that roams.
 
 **The token was revoked or the server's certificate authority changed.**
 The error names the machine and says to run `phux host add NAME` again.
