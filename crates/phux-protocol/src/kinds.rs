@@ -152,6 +152,7 @@ pub fn frame_is_dangerous(frame: &FrameKind) -> bool {
 /// The catalog entry for `kind`, or `None` for a kind this build does not
 /// serve.
 #[must_use]
+#[inline]
 pub const fn kind_spec(kind: ResourceKind) -> Option<&'static KindSpec> {
     kind_spec_in(&KINDS, kind)
 }

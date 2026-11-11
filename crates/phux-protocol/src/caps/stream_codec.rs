@@ -72,6 +72,7 @@ impl BootstrapCodec {
 
     /// The codec's wire tag (a native codec's version byte follows it).
     #[must_use]
+    #[inline]
     pub const fn tag(self) -> u8 {
         match self {
             Self::SynthesizedVtV1 => Self::SYNTHESIZED_VT_V1_TAG,
@@ -158,6 +159,7 @@ pub enum BootstrapStreamProfile {
 impl BootstrapStreamProfile {
     /// The codec `BOOTSTRAP_BEGIN` names for this stream.
     #[must_use]
+    #[inline]
     pub const fn codec(self) -> BootstrapCodec {
         match self {
             Self::NativeState { codec } => BootstrapCodec::Native(codec),
@@ -196,6 +198,7 @@ impl BootstrapStreamProfile {
     /// The catalog row of the kind that streams this profile, or `None` for
     /// a codec this build does not know.
     #[must_use]
+    #[inline]
     pub const fn kind_spec(self) -> Option<&'static crate::kinds::KindSpec> {
         crate::kinds::codec_kind(self.codec().tag())
     }
@@ -203,6 +206,7 @@ impl BootstrapStreamProfile {
     /// The kind that streams this profile, or `None` for a codec this
     /// build does not know.
     #[must_use]
+    #[inline]
     pub const fn kind(self) -> Option<crate::ids::ResourceKind> {
         match self.kind_spec() {
             Some(spec) => Some(spec.kind),

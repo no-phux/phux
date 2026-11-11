@@ -251,6 +251,7 @@ impl ResourceKind {
     /// (`AccessibilityTree`, `PixelSurface`, `Document`): every stream frame
     /// is a newer whole document, and the newest one is the one to show.
     #[must_use]
+    #[inline]
     pub const fn is_document(self) -> bool {
         match crate::kinds::kind_spec(self) {
             Some(spec) => spec.stream.delivers(crate::kinds::Delivery::WholeDocument),
@@ -264,6 +265,7 @@ impl ResourceKind {
     /// a newer peer may have placed one and pruning it would lose that
     /// placement.
     #[must_use]
+    #[inline]
     pub const fn can_occupy_leaf(self) -> bool {
         match crate::kinds::kind_spec(self) {
             Some(spec) => spec.leaf,
@@ -275,6 +277,7 @@ impl ResourceKind {
     /// `agent_session`, `accessibility_tree`, `pixel_surface`, `document`),
     /// or `unknown`.
     #[must_use]
+    #[inline]
     pub const fn as_str(self) -> &'static str {
         match crate::kinds::kind_spec(self) {
             Some(spec) => spec.key,

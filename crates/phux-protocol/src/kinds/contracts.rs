@@ -71,6 +71,7 @@ pub struct StreamContract {
 impl StreamContract {
     /// Whether output is delivered as `delivery`.
     #[must_use]
+    #[inline]
     pub const fn delivers(&self, delivery: Delivery) -> bool {
         let mut index = 0;
         while index < self.delivery.len() {
@@ -113,6 +114,7 @@ impl StreamContract {
 
     /// The codec with wire tag `tag`, if this kind streams it.
     #[must_use]
+    #[inline]
     pub const fn codec(&self, tag: u8) -> Option<&'static StreamCodec> {
         let mut index = 0;
         while index < self.codecs.len() {
@@ -184,6 +186,7 @@ pub struct SpawnContract {
 }
 
 /// `a == b`, in a const context.
+#[inline]
 const fn same_kind(a: ResourceKind, b: ResourceKind) -> bool {
     a.as_wire() == b.as_wire()
         && matches!(a, ResourceKind::Unknown { .. }) == matches!(b, ResourceKind::Unknown { .. })
@@ -191,6 +194,7 @@ const fn same_kind(a: ResourceKind, b: ResourceKind) -> bool {
 
 /// The catalog row for `kind` in `catalog`.
 #[must_use]
+#[inline]
 pub const fn kind_spec_in(
     catalog: &'static [KindSpec],
     kind: ResourceKind,
@@ -207,6 +211,7 @@ pub const fn kind_spec_in(
 
 /// The row in `catalog` whose kind streams codec `tag`.
 #[must_use]
+#[inline]
 pub const fn codec_kind_in(catalog: &'static [KindSpec], tag: u8) -> Option<&'static KindSpec> {
     let mut index = 0;
     while index < catalog.len() {
@@ -221,6 +226,7 @@ pub const fn codec_kind_in(catalog: &'static [KindSpec], tag: u8) -> Option<&'st
 /// The row whose kind streams codec `tag`, or `None` for a codec this build
 /// does not allocate.
 #[must_use]
+#[inline]
 pub const fn codec_kind(tag: u8) -> Option<&'static KindSpec> {
     codec_kind_in(&KINDS, tag)
 }
