@@ -19,7 +19,11 @@
 #   (tools/src/release/publish-plan.ts). Every run reconciles every draft, so
 #   a run superseded while pending loses nothing.
 # - Only the CLI is GitHub Latest: the Homebrew tap and pre-manifest binaries
-#   resolve through it. Nothing publishes unsigned (ADR-0178).
+#   resolve through it. Nothing publishes unsigned (ADR-0178): artifact
+#   checksums and the stable.json manifest both get a .minisig.
+# - Each CLI release carries CycloneDX SBOMs for phux and phux-mcp, built
+#   from the tagged workspace by a pinned cargo-cyclonedx.
+# - lts.json is never written here: lts.yml promotes one release by hand.
 name: release
 
 on:
@@ -114,10 +118,39 @@ jobs:
       APPLE_NOTARY_KEY_ID: ${{ secrets.APPLE_NOTARY_KEY_ID }}
       APPLE_NOTARY_ISSUER_ID: ${{ secrets.APPLE_NOTARY_ISSUER_ID }}
 
+  # Named cli-* so the publish job's download picks it up beside the tarballs.
+  sbom:
+    name: sbom ${{ needs.plan.outputs.phux_tag }}
+    needs: plan
+    if: ${{ !cancelled() && needs.plan.result == 'success' && needs.plan.outputs.phux_tag != '' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.plan.outputs.phux_tag }}
+          persist-credentials: false
+      - name: CycloneDX SBOMs for phux and phux-mcp
+        env:
+          TAG: ${{ needs.plan.outputs.phux_tag }}
+        run: |
+          set -euo pipefail
+          cargo install cargo-cyclonedx --version 0.5.10 --locked
+          cargo cyclonedx --format json --spec-version 1.5 --target all --override-filename sbom -q
+          mkdir -p "$RUNNER_TEMP/sbom"
+          cp crates/phux/sbom.json "$RUNNER_TEMP/sbom/phux-${TAG}.cdx.json"
+          cp crates/phux-mcp/sbom.json "$RUNNER_TEMP/sbom/phux-mcp-${TAG}.cdx.json"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: cli-sbom
+          path: ${{ runner.temp }}/sbom/*.cdx.json
+          if-no-files-found: error
+          retention-days: 7
+
   cli:
     name: publish ${{ needs.plan.outputs.phux_tag }}
-    needs: [plan, cli-build]
-    if: ${{ !cancelled() && needs.cli-build.result == 'success' }}
+    needs: [plan, cli-build, sbom]
+    if: ${{ !cancelled() && needs.cli-build.result == 'success' && needs.sbom.result == 'success' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     permissions:
@@ -146,7 +179,13 @@ jobs:
           for target in aarch64-apple-darwin x86_64-unknown-linux-gnu aarch64-unknown-linux-gnu; do
             for suffix in "" .sha256 .sha256.minisig; do test -f "dist/phux-${TAG}-${target}.tar.gz${suffix}"; done
           done
-          gh release upload "$TAG" dist/phux-*.tar.gz dist/phux-*.tar.gz.sha256 dist/phux-*.tar.gz.sha256.minisig --clobber
+          # phux Server.app, installed beside the CLI on macOS.
+          for suffix in "" .sha256 .sha256.minisig; do
+            test -f "dist/phux-server-${TAG}-aarch64-apple-darwin.tar.gz${suffix}"
+          done
+          test -f "dist/phux-${TAG}.cdx.json" && test -f "dist/phux-mcp-${TAG}.cdx.json"
+          gh release upload "$TAG" dist/phux-*.tar.gz dist/phux-*.tar.gz.sha256 dist/phux-*.tar.gz.sha256.minisig \
+            dist/*.cdx.json --clobber
           gh release edit "$TAG" --draft=false --latest
 
   # npm trusted publishing trusts the entry workflow file, so the integration
@@ -186,6 +225,7 @@ jobs:
       - uses: ./.github/actions/setup-bun
       - env:
           GH_TOKEN: ${{ github.token }}
+          PHUX_MINISIGN_SECRET_KEY: ${{ secrets.PHUX_MINISIGN_SECRET_KEY }}
         run: bun tools/main.ts release-manifest stable --out "$RUNNER_TEMP/stable.json" --publish
 
   # After the CLI is public: mobile artifacts ride on the root release without

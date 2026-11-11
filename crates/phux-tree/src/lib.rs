@@ -16,6 +16,7 @@ use bytes::Bytes;
 use phux_core::ids::ResourceId;
 pub use phux_core::image::{ImageFormat, image_size};
 use phux_core::resource::ResourceKind;
+use phux_protocol::wire::frame::typed_document::is_textual;
 use phux_resource::{
     Delivery, LeaseChange, ResourceCore, ResourceCoreChannels, ResourceFacet, ResourceHandle,
     ResourceOps, ResourceOutput, WrongResourceKind,
@@ -93,10 +94,7 @@ impl DocumentKind for TypedDocument {
             }
         } else if essence == "application/json" {
             json(bytes)
-        } else if essence.starts_with("text/")
-            || essence.ends_with("+xml")
-            || essence.ends_with("+json")
-        {
+        } else if is_textual(&essence) {
             std::str::from_utf8(bytes)
                 .map(|_| ())
                 .map_err(|error| format!("a {essence} document is UTF-8: {error}"))
@@ -178,15 +176,10 @@ impl<K: DocumentKind> ResourceFacet for DocumentHandle<K> {
     const KIND: ResourceKind = K::KIND;
 }
 
-/// A document has no grid to size, no process to hand off and no input
-/// lease.
+/// A document has no grid to size and no input lease.
 impl<K: DocumentKind> ResourceOps for DocumentHandle<K> {
     fn resize(&self, _size: (u16, u16), _cell_px: Option<(u16, u16)>) -> bool {
         false
-    }
-
-    fn upgrade_sender(&self) -> Option<mpsc::Sender<phux_resource::handoff::UpgradeHandleRequest>> {
-        None
     }
 
     fn lease_changed(&self, _change: LeaseChange) -> Delivery {

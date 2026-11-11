@@ -1,4 +1,5 @@
-//! A surface whose producer declared a control class takes pane input.
+//! A surface whose producer declared a control class takes pane input,
+//! and trades clipboards with its host (Cmd+V, Cmd+C).
 
 use super::*;
 
@@ -42,24 +43,29 @@ fn a_controlled_surface_takes_a_click_and_keys_until_refused() {
     step(&mut rt);
     assert_eq!(rt.state.document_input_frame(&id(1)), Some([4, 2]));
     outbound(&client);
+    let board = rune::clipboard::memory();
+    board.set_text("from this machine");
+    rt.use_clipboard(&board);
     // 4x2 contain-fit in 400x100 is 200x100 from x = 100.
     rt.update(|d, _| {
         d.document_press(&id(1), [250.0, 75.0, 400.0, 100.0]);
         d.document_press(&id(1), [50.0, 50.0, 400.0, 100.0]);
+        // A press that barely moves is a click; one that moves is a drag.
+        d.document_release(&id(1), [250.0, 75.0], [252.0, 77.0], [400.0, 100.0]);
+        d.document_release(&id(1), [110.0, 10.0], [290.0, 90.0], [400.0, 100.0]);
     });
     for (key, mods) in [
         (Key::Text("h".into()), Mods::default()),
         (Key::Enter, Mods::default()),
-        (
-            Key::Command('c'),
-            Mods {
-                cmd: true,
-                ..Mods::default()
-            },
-        ),
     ] {
         rt.key(KeyEvent { key, mods });
     }
+    step(&mut rt);
+    // Copy and paste as the platform binds them (Cmd+C/V, Ctrl+Shift+C/V).
+    rt.update(|d, tx| {
+        d.shortcut(crate::keys::Shortcut::Copy, tx);
+        d.shortcut(crate::keys::Shortcut::Paste, tx);
+    });
     step(&mut rt);
     let sent: Vec<_> = outbound(&client)
         .into_iter()
@@ -76,14 +82,55 @@ fn a_controlled_surface_takes_a_click_and_keys_until_refused() {
         intents,
         [
             DocumentInput::Click { x: 3, y: 1 },
+            DocumentInput::Click { x: 3, y: 1 },
+            DocumentInput::Drag {
+                from: (0, 0),
+                to: (3, 1),
+            },
             DocumentInput::Type { text: "h".into() },
             DocumentInput::Key {
                 key: DocumentKey::Enter
             },
+            DocumentInput::CopyClipboard { reply: 0 },
+            DocumentInput::Paste {
+                text: "from this machine".into(),
+                chord: true,
+            },
         ],
-        "the letterbox press and the Cmd chord send nothing"
+        "the letterbox press sends nothing; copy and paste trade clipboards"
     );
-    for (request_id, _) in sent {
+    // The host's clipboard lands on this machine's.
+    let (copy, _) = sent[5].clone();
+    let (paste, _) = sent[6].clone();
+    client
+        .feed(FrameKind::CommandResult {
+            request_id: copy,
+            result: CommandResult::OkWith(CommandValue::Bytes(b"from the host".to_vec())),
+        })
+        .unwrap();
+    step(&mut rt);
+    assert_eq!(
+        board.text().as_deref().map(String::as_str),
+        Some("from the host")
+    );
+    // A paste the host could not press says why.
+    client
+        .feed(FrameKind::CommandResult {
+            request_id: paste,
+            result: CommandResult::Error {
+                code: ErrorCode::Unavailable,
+                message: "nothing here can press the paste chord".into(),
+            },
+        })
+        .unwrap();
+    step(&mut rt);
+    let notice = rt.state.notice.as_ref().expect("the paste failure is said");
+    assert!(
+        notice.text.contains("Could not paste on the host"),
+        "{}",
+        notice.text
+    );
+    for (request_id, _) in sent.into_iter().filter(|(id, _)| *id != copy) {
         client
             .feed(FrameKind::CommandResult {
                 request_id,

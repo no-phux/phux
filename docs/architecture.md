@@ -46,9 +46,11 @@ release.
 
 The wire is asymmetric. Server to client, terminal content is the raw VT
 byte stream from the PTY, forwarded as `RESOURCE_OUTPUT`, with a bootstrap
-sequence to bring a fresh replica up to date. Each rendering client runs
-its own libghostty replica and feeds it those bytes. Client to server, input
-is structured: key, mouse, focus, and paste events with libghostty's atoms,
+sequence to bring a fresh replica up to date. The TUI and Rune run
+their own libghostty replicas and feed them those bytes. The
+[native terminal client](./native-terminal.md) negotiates synthesized VT/raw
+and prints one resource stream directly to its host terminal emulator.
+Client to server, input is structured: key, mouse, focus, and paste events with libghostty's atoms,
 encoded to bytes by the server against the terminal's current modes. Both
 ends therefore agree on what a terminal is without either trusting the
 other's rendering.
@@ -93,7 +95,7 @@ Cargo manifests define the actual edges.
 | `phux-terminal-api` | engine-independent Terminal contracts: launch intent, factory, input and presentation ports, opaque captures and report types; no VT or PTY implementation |
 | `phux-server` | the daemon: hosts resources and serves them to clients; links no VT library and no PTY directly |
 | `phux-agent-host` | guardian process for native agent sessions over ACP |
-| `phux-tui` | the terminal UI: attach driver, ratatui chrome, overlays; the only crate that links ratatui |
+| `phux-tui` | the terminal UI: attach driver, ratatui chrome, overlays; also the native VT driver sharing terminal restoration; the only crate that links ratatui |
 | `phux-mcp` | the `phux-mcp` binary: MCP over stdio |
 | `phux-server-testkit` | fixtures for server wire tests; dev-only |
 | `phux` | the `phux` binary: argument parsing and dispatch |
@@ -210,7 +212,7 @@ ownership recommendation. No keeper bootload service exists today.
 
 | To change | Start at |
 | --- | --- |
-| server behavior | `phux-server/src/runtime/mod.rs` (accept, lifecycle), `runtime/connections/mod.rs` (`handle_client`, `dispatch`, HELLO), `state/mod.rs`, `resource/terminal/` |
+| server behavior | `phux-server/src/runtime/mod.rs` (accept, lifecycle), `runtime/connections/mod.rs` (`handle_client`, `dispatch`, HELLO), `state/mod.rs`, `runtime/apps/` (one app per kind) |
 | organization | `phux-core/src/apply.rs`, `phux-server/src/state/org.rs`, `org_store.rs`; [durability and execution](./organization.md) |
 | input handling | `phux-server/src/runtime/apps/terminal/input_lane/` |
 | TUI rendering | `phux-tui/src/attach/render.rs`, `attach/paint.rs`, `render/chrome`, `render/overlay` |
@@ -228,7 +230,10 @@ such as how a stream bootstraps. `state/` sits below the apps and never names
 them; what it asks of any resource is the required `ResourceOps` on its handle.
 A new kind does not compile until `app_for` names its app, and neither
 `ResourceApp` nor `ResourceOps` has a default method to inherit; a new kind
-also takes one `APPS` row, which a test holds to `app_for`. A surface that is
+also takes one `APP_KINDS` row, which a test holds to the catalog. A graceful
+upgrade goes through the apps too: at the cut each app writes the upgrade-blob
+fields its kind owns, and on resume it rebuilds them, in `APP_KINDS` order so
+a parent's kind comes first. A surface that is
 not every kind's, such as the `AgentParent` mailbox of a resource that hosts an
 agent, is a companion on the handle, typed by the crate that owns it, so the
 host can use it without naming an engine. The server's production dependency
@@ -236,7 +241,9 @@ graph contains no Terminal engine, libghostty or PTY implementation. The
 executable explicitly injects a `TerminalEngineFactory`; no built-in engine is
 selected by the host. The private Terminal app uses `phux-terminal-api` ports;
 native encoding, ordered PTY writes and capability adaptation stay engine-owned.
-`seam_tests.rs` and the lint lane's `build-features-check` enforce this separation. The host
+`seam_tests.rs` and the lint lane's `build-features-check` enforce this separation;
+`seam_ratchet_tests.rs` lists the kind references the host still makes, and
+that list only shrinks. The host
 holds a lossless OS-native `LaunchCommand`; deciding what a pane runs is the app's job.
 Organization launches also pass through the app: support is checked before
 commit, then the committed effect executes only through the recorded kind.
@@ -256,7 +263,7 @@ A document-only or agent-only session needs no Terminal codec; a mixed
 session refuses a missing Terminal codec before changing subscriptions or
 geometry. Viewport votes, terminal roles, colors and grid resizing remain
 Terminal-specific. Phux Rune renders document panes without Terminal
-views; see [resource kinds beyond terminals](./resource-kinds.md#authority).
+views; see [resource kinds beyond terminals](./resource-kinds.md#available-now).
 
 The runtime root exports the server interface. Its `server` module assembles
 startup using `startup`, `posture`, `services`, and `listeners`; configuration

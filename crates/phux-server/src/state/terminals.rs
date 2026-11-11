@@ -259,6 +259,12 @@ impl ServerState {
             .filter(|tx| !tx.is_closed())
     }
 
+    /// The connection that spawned (produces) `resource`, when a client did.
+    #[must_use]
+    pub fn resource_spawner(&self, resource: ResourceId) -> Option<ClientId> {
+        self.resources.spawner(resource)
+    }
+
     /// Record the control class a document's producer declared.
     pub fn set_document_control(
         &mut self,

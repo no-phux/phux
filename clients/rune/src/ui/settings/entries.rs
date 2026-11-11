@@ -10,38 +10,44 @@ use crate::desk::{Desk, SettingsCategory as Category};
 pub(super) enum Entry {
     Theme,
     TextSize,
+    Font,
     CopySelect,
     ConfirmClose,
     OptionMeta,
     Notifications,
     Hosts,
     Diagnostics,
+    GetStarted,
     Updates,
 }
 
 impl Entry {
-    const ALL: [Self; 9] = [
+    const ALL: [Self; 11] = [
         Self::Theme,
         Self::TextSize,
+        Self::Font,
         Self::CopySelect,
         Self::ConfirmClose,
         Self::OptionMeta,
         Self::Notifications,
         Self::Hosts,
         Self::Diagnostics,
+        Self::GetStarted,
         Self::Updates,
     ];
 
     const fn category(self) -> Category {
         match self {
             Self::Theme => Category::Appearance,
-            Self::TextSize | Self::CopySelect | Self::ConfirmClose | Self::OptionMeta => {
-                Category::Terminal
-            }
+            Self::TextSize
+            | Self::Font
+            | Self::CopySelect
+            | Self::ConfirmClose
+            | Self::OptionMeta => Category::Terminal,
             Self::Notifications => Category::Notifications,
             Self::Hosts => Category::RemoteHosts,
             Self::Diagnostics => Category::Developer,
-            Self::Updates => Category::About,
+            Self::GetStarted | Self::Updates => Category::About,
         }
     }
 
@@ -49,12 +55,14 @@ impl Entry {
         match self {
             Self::Theme => "Theme",
             Self::TextSize => "Text size",
+            Self::Font => "Font",
             Self::CopySelect => "Copy on select",
             Self::ConfirmClose => "Confirm before closing",
             Self::OptionMeta => "Option as Meta",
             Self::Notifications => "Notifications",
             Self::Hosts => "Machines",
             Self::Diagnostics => "Copy diagnostics",
+            Self::GetStarted => "Get started",
             Self::Updates => "Updates",
         }
     }
@@ -65,6 +73,7 @@ impl Entry {
                 "System, built-in and local themes. Preview live, Return to keep, Escape to restore."
             }
             Self::TextSize => "Terminal text from 8 to 32 points.",
+            Self::Font => "Terminal font. One that isn't installed shows the system's.",
             Self::CopySelect => "Finishing a selection puts it on the clipboard.",
             Self::ConfirmClose => {
                 "Ask before closing a terminal or tab that's still running something."
@@ -78,8 +87,11 @@ impl Entry {
                 "Connect to a remote host, add a machine or manage your existing machines."
             }
             Self::Diagnostics => "Copy local logs and app state. Nothing is sent anywhere.",
+            Self::GetStarted => {
+                "The look, the phux agent skill, permissions and your key bindings, step by step."
+            }
             Self::Updates => {
-                "Phux Rune version, Check now, Check automatically, Update phux with Phux Rune, server and protocol compatibility."
+                "Phux Rune version, Check now, Check automatically, Update phux with Phux Rune, phux release channel: Follow installed, Stable or Next, local installation, package manager, server and protocol compatibility."
             }
         }
     }
@@ -89,17 +101,25 @@ impl Entry {
         match self {
             Self::Theme => desk.settings.theme.map_or("System", |t| t.name).to_owned(),
             Self::TextSize => format!("{:.0} pt", desk.font_size),
+            Self::Font => match desk.font_family.as_str() {
+                "" => "System".to_owned(),
+                family => family.to_owned(),
+            },
             Self::CopySelect => on(desk.settings.copy_on_select),
             Self::ConfirmClose => on(desk.settings.confirm_close),
             Self::OptionMeta => on(desk.settings.option_as_meta),
             Self::Notifications => on(desk.settings.notifications),
             Self::Hosts => desk.machines.label().to_owned(),
             Self::Diagnostics => "Local only".to_owned(),
+            Self::GetStarted => String::new(),
             Self::Updates => format!(
-                "{} automatic {} manage phux {}",
+                "{} automatic {} manage phux {} channel {}",
                 crate::updates::VERSION,
                 on(desk.updater.automatic),
-                on(desk.updater.manage_phux)
+                on(desk.updater.manage_phux),
+                desk.updater
+                    .phux_channel
+                    .map_or("installed", |c| c.as_str())
             ),
         }
     }
@@ -121,13 +141,17 @@ impl Entry {
         match self {
             Self::Theme => "colors colours appearance palette",
             Self::TextSize => "font zoom typography",
+            Self::Font => "typeface family monospace",
             Self::CopySelect => "clipboard selection",
             Self::OptionMeta => "alt keyboard escape",
             Self::ConfirmClose => "confirmation closing safety",
             Self::Notifications => "alerts bell",
             Self::Hosts => "remote ssh connection",
             Self::Diagnostics => "logs debug troubleshooting",
-            Self::Updates => "upgrade version automatic",
+            Self::GetStarted => "onboarding welcome setup skill permissions migrate import",
+            Self::Updates => {
+                "upgrade version automatic release channel stable next preview install"
+            }
         }
     }
 
@@ -141,6 +165,13 @@ impl Entry {
                 ink,
             ),
             Self::TextSize => controls::stepper(desk, ink),
+            Self::Font => self.link(
+                "settings-font",
+                desk,
+                self.value(desk),
+                Desk::next_font,
+                ink,
+            ),
             Self::Hosts => self.link(
                 "settings-machines",
                 desk,
@@ -149,6 +180,13 @@ impl Entry {
                 ink,
             ),
             Self::Diagnostics => diagnostics(desk, ink),
+            Self::GetStarted => self.link(
+                "settings-get-started",
+                desk,
+                self.value(desk),
+                Desk::open_onboarding,
+                ink,
+            ),
             Self::Updates => el()
                 .w_full()
                 .padding(16.0)
@@ -212,11 +250,12 @@ impl Entry {
                     .truncate()
                     .a11y_hidden()
             }))
-            .child(
+            // Font cycles in place, so it has nowhere to point.
+            .children((!matches!(self, Self::Font)).then(|| {
                 rune::icon(&icons::CHEVRON_RIGHT, 14.0)
                     .color(ink.dim)
-                    .a11y_hidden(),
-            )
+                    .a11y_hidden()
+            }))
     }
 
     fn link_copy(self, desk: &Desk, value: &str, ink: &Ink) -> El {

@@ -3,6 +3,7 @@
 //! `phux_client_runtime::release::signature`, shared with Desktop's updater;
 //! this module maps a refusal onto [`UpdateError::Signature`].
 
+use phux_client_runtime::release::Channel;
 pub(crate) use phux_client_runtime::release::signature::RELEASE_KEYS;
 
 use super::UpdateError;
@@ -17,6 +18,40 @@ pub(crate) fn signed_digest(
 ) -> Result<String, UpdateError> {
     phux_client_runtime::release::signature::signed_digest(sidecar, minisig, archive, keys)
         .map_err(|err| UpdateError::Signature(err.to_string()))
+}
+
+/// Check `channel`'s manifest `body` against its signature, fetched by
+/// `signature`. An lts manifest fails closed. Stable and next only warn: their
+/// manifests were published unsigned before signing began, and the signed
+/// artifact checksum stays the gate for what is installed.
+pub(crate) fn trust_manifest(
+    channel: Channel,
+    body: &str,
+    signature: Result<String, UpdateError>,
+    keys: &[&str],
+) -> Result<(), UpdateError> {
+    let checked = signature
+        .map_err(|err| format!("its signature could not be fetched ({err})"))
+        .and_then(|minisig| {
+            phux_client_runtime::release::signature::verify_manifest(
+                body.as_bytes(),
+                minisig.as_bytes(),
+                keys,
+            )
+        });
+    match checked {
+        Ok(()) => Ok(()),
+        Err(why) if channel == Channel::Lts => Err(UpdateError::Signature(format!(
+            "the lts release manifest is not trusted: {why}"
+        ))),
+        Err(why) => {
+            tracing::warn!(
+                channel = channel.as_str(),
+                "release manifest unverified: {why}"
+            );
+            Ok(())
+        }
+    }
 }
 
 #[cfg(test)]

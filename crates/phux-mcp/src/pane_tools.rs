@@ -7,24 +7,23 @@ use std::path::Path;
 use phux_client::attach::connection::Connection;
 use phux_client::layout::SplitDir;
 use phux_client::selector::{self, Selector, format_terminal_id};
-use phux_client::signal::LeaseOutcome;
 use phux_client::spatial::{Direction, SpatialError, SpatialOp};
 use phux_client::spawn::{Placement, RollbackOutcome};
 use phux_client::state;
 use phux_protocol::caps::ServerFeature;
 use phux_protocol::ids::{GroupId, IdempotencyKey, ResourceId, SatelliteHost};
-use phux_protocol::wire::frame::{
-    FrameKind, SpawnError, SpawnResource, SpawnResult, TerminalSignal,
-};
+use phux_protocol::wire::frame::{FrameKind, SpawnError, SpawnResource, SpawnResult};
 use phux_protocol::wire::info::SessionSnapshot;
 use serde_json::{Value, json};
 
 use crate::cli_adapter::{bounded_string, bounded_strings, enum_string, ratio};
-use crate::cli_tools::optional_bool;
 use crate::tools::{
     ToolError, contract_error, incomplete_view_miss, parse_selector, socket_arg, strict_object,
     transport_error,
 };
+
+mod signal;
+pub(crate) use signal::signal;
 
 /// The split ratio the CLI defaults `--ratio` to.
 const DEFAULT_RATIO: f32 = 0.5;
@@ -321,88 +320,6 @@ fn spawn_document(result: SpawnResult) -> Result<Value, ToolError> {
         _ => Err(ToolError::new(phux_client::explain::unexpected_reply(
             "SPAWN_RESOURCE",
         ))),
-    }
-}
-
-// -----------------------------------------------------------------------------
-// signal
-// -----------------------------------------------------------------------------
-
-/// `phux_signal` — one `SIGNAL_TERMINAL` to the resolved pane's process
-/// group (ADR-0033), through [`phux_client::signal::deliver`].
-pub(crate) async fn signal(args: &Value) -> Result<Value, ToolError> {
-    strict_object(
-        args,
-        &["target", "signal", "confirm", "idempotency_key", "socket"],
-        &["target", "signal"],
-    )?;
-    let target = bounded_string(args, "target", true)?.unwrap_or_default();
-    let signal = enum_string(
-        args,
-        "signal",
-        &["interrupt", "freeze", "resume", "terminate", "kill"],
-        None,
-    )?;
-    // `confirm` was checked by the shared table (ADR-0128) before dispatch.
-    let _ = optional_bool(args, "confirm")?;
-    let key = bounded_string(args, "idempotency_key", false)?
-        .as_deref()
-        .map(idempotency_key)
-        .transpose()?;
-    let socket = socket_arg(args)?;
-    let selector = parse_selector(&target)?;
-    let mut notices = Vec::new();
-    let delivered = match phux_client::signal::deliver(
-        &socket,
-        &selector,
-        wire_signal(&signal),
-        key,
-        &mut notices,
-    )
-    .await
-    {
-        Ok(delivered) => delivered,
-        Err(err) => return Err(signal_error(&target, err)),
-    };
-    crate::tools::warn_partial_view("signal", &notices);
-    match delivered.outcome {
-        LeaseOutcome::Ok => Ok(json!({
-            "schema_version": 1,
-            "signaled": true,
-            "target": target,
-            "signal": signal,
-        })),
-        LeaseOutcome::Refused(message) => Err(ToolError::new(format!(
-            "signal refused for {target}: {message}"
-        ))),
-        LeaseOutcome::Unexpected(other) => Err(ToolError::new(format!(
-            "{target}: {}",
-            phux_client::explain::explain_unexpected("signal", &other)
-        ))),
-    }
-}
-
-fn signal_error(target: &str, err: phux_client::signal::SignalError) -> ToolError {
-    use phux_client::kill::KeyedError;
-    use phux_client::signal::SignalError;
-    match err {
-        SignalError::Miss { degradation } if degradation.is_complete() => {
-            ToolError::new("no such target")
-        }
-        SignalError::Miss { degradation } => incomplete_view_miss(target, degradation.notices()),
-        SignalError::Agent(err) => crate::tools::agent_resolve_error(&err),
-        SignalError::Keyed(KeyedError::Unsupported) => unsupported_keyed_signal(),
-        SignalError::Keyed(KeyedError::Attach(err)) => err.into(),
-    }
-}
-
-fn wire_signal(name: &str) -> TerminalSignal {
-    match name {
-        "interrupt" => TerminalSignal::Interrupt,
-        "freeze" => TerminalSignal::Freeze,
-        "resume" => TerminalSignal::Resume,
-        "terminate" => TerminalSignal::Terminate,
-        _ => TerminalSignal::Kill,
     }
 }
 

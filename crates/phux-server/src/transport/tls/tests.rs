@@ -103,6 +103,6 @@ fn m_tls_acceptor_and_quic_config_accept_a_workload_ca() {
     let ca_key = dir.path().join("workload-ca.key");
     crate::workload::ensure_ca(&ca, &ca_key).unwrap();
     let ca = crate::workload::authority_certificate(&ca).unwrap();
-    acceptor_from_pem_with_client_ca(&cert, &key, Some(&ca)).unwrap();
-    quic_server_config_with_client_ca(&cert, &key, Some(&ca), true).unwrap();
+    acceptor_from_pem_with_client_ca(&cert, &key, Some(&ca.clone().into())).unwrap();
+    quic_server_config_with_client_ca(&cert, &key, Some(&ca.clone().into()), true).unwrap();
 }

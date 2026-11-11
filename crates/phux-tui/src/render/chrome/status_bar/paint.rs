@@ -33,17 +33,24 @@ impl StatusBarPainter {
         badge_span(&chip, cols, 0).start.checked_sub(1)
     }
 
-    /// Columns the widgets compose into: all of them, less the key chip and
-    /// its gap while one is up, so a right-aligned widget
-    /// moves left of the chip whole instead of being cut under it. A bar
-    /// too narrow for the chip keeps every column.
+    /// Columns the widgets compose into: all of them, less the right-edge
+    /// chips and their gaps (the key chip, or the badge and attention hint
+    /// side by side), so a right-aligned widget moves left of the chips
+    /// whole instead of being cut under them. A bar too narrow for the
+    /// chips keeps every column.
     fn widget_cols(&self, cols: u16) -> u16 {
-        let Some(chip) = self.key_chip() else {
-            return cols;
+        let width = |chip: &str| {
+            u16::try_from(chip.chars().count())
+                .unwrap_or(u16::MAX)
+                .saturating_add(1)
         };
-        let reserve = u16::try_from(chip.chars().count())
-            .unwrap_or(u16::MAX)
-            .saturating_add(1);
+        let key = self.key_chip().map_or(0, |chip| width(&chip));
+        let offset = self.attention_offset();
+        let badges = self
+            .attention
+            .as_deref()
+            .map_or(offset, |hint| offset.saturating_add(width(hint)));
+        let reserve = key.max(badges);
         if reserve >= cols {
             cols
         } else {
@@ -119,6 +126,7 @@ impl StatusBarPainter {
         // The bar yields the sidebar's columns. Everything below
         // composes and hit-tests against this span, not the viewport — an
         // inset wider than the terminal leaves nothing to paint.
+        let terminal_cols = cols;
         let (x, cols) = inset.span(cols);
         if cols == 0 {
             return Ok(false);
@@ -137,7 +145,9 @@ impl StatusBarPainter {
         }
         let ctx = self.ctx_with_window_list(ctx);
         phux_client::perf::BAR_COMPOSES.add(1);
-        let mut new_row = self.bar.render(&ctx.as_widget(), self.widget_cols(cols));
+        let mut new_row = self
+            .bar
+            .render(&ctx.as_widget_in(terminal_cols), self.widget_cols(cols));
         mark_window_drop(&mut new_row, self.drop_at);
         if !self.needs_repaint(x, cols, rows, &new_row) {
             return Ok(false);
@@ -279,6 +289,7 @@ impl StatusBarPainter {
         if cols == 0 || rows == 0 {
             return None;
         }
+        let terminal_cols = cols;
         let (x, cols) = inset.span(cols);
         if cols == 0 {
             return None;
@@ -305,7 +316,9 @@ impl StatusBarPainter {
             last_exit: self.last_exit,
             ..*ctx
         };
-        let mut row = self.bar.render(&ctx.as_widget(), self.widget_cols(cols));
+        let mut row = self
+            .bar
+            .render(&ctx.as_widget_in(terminal_cols), self.widget_cols(cols));
         mark_window_drop(&mut row, self.drop_at);
         let mut buffer = Buffer::empty(Rect::new(0, 0, cols, 1));
         fill_buffer(&mut buffer, &row, cols, self.theme.surface, &self.theme);

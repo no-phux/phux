@@ -54,6 +54,12 @@ pub static ATTACH_CAPTURE_WALL: Histogram = Histogram::new();
 /// failures; excludes socket drain and native publication activation.
 pub static ATTACH_PUBLISH_WALL: Histogram = Histogram::new();
 
+// --- audit -----------------------------------------------------------------
+
+/// Audit records that could not be written (`docs/audit.md`); `phux doctor`
+/// warns while it is non-zero.
+pub static AUDIT_WRITE_FAILURES: Counter = Counter::new();
+
 // --- gauges, refreshed when a report is taken -----------------------------
 
 /// Connected clients.
@@ -81,6 +87,7 @@ pub static TABLE: &[Metric] = &[
     Metric::histogram("attach.handle", Unit::Micros, &ATTACH_HANDLE),
     Metric::histogram("attach.capture_wall", Unit::Micros, &ATTACH_CAPTURE_WALL),
     Metric::histogram("attach.publish_wall", Unit::Micros, &ATTACH_PUBLISH_WALL),
+    Metric::counter("audit.write_failures", Unit::Count, &AUDIT_WRITE_FAILURES),
     Metric::gauge("proc.clients", Unit::Count, &CLIENTS),
     Metric::gauge("proc.panes", Unit::Count, &PANES),
     Metric::gauge("proc.sessions", Unit::Count, &SESSIONS),

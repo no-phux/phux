@@ -13,7 +13,7 @@
 //!
 //! [ADR-0125]: https://github.com/no-phux/phux/blob/d21db2e345aeaff43a681b3a04dfd43f2cc082ca/docs/adr/0125-kind-catalog-is-generated-metadata.md
 
-use crate::caps::{ServerFeature, ServerFeatureExt};
+use crate::caps::{BootstrapCodec, ServerFeature, ServerFeatureExt};
 use crate::ids::{ResourceId, ResourceKind, SatelliteHost};
 use crate::wire::frame::{
     APPROVAL_DECIDE_KEY_PREFIX, APPROVAL_DENY, APPROVAL_KEY_PREFIX, EVENT_TAG_APPROVAL_DECIDED,
@@ -25,25 +25,26 @@ use crate::wire::frame::{
     COMMAND_TAG_CLOSE_TAB_RESOURCES, COMMAND_TAG_DETACH_CLIENTS, COMMAND_TAG_DETACH_RESOURCE,
     COMMAND_TAG_GET_FILE, COMMAND_TAG_GET_PERF, COMMAND_TAG_GET_SCREEN, COMMAND_TAG_GET_STATE,
     COMMAND_TAG_GET_TERMINAL_STATE, COMMAND_TAG_KILL_RESOURCE, COMMAND_TAG_KILL_RESOURCE_IF,
-    COMMAND_TAG_KILL_RESOURCES, COMMAND_TAG_OPEN_LISTENER, COMMAND_TAG_PERF_CONTROL,
-    COMMAND_TAG_PUBLISH_RESOURCE_STATE, COMMAND_TAG_PUT_FILE, COMMAND_TAG_RELEASE_INPUT,
-    COMMAND_TAG_REPORT_AGENT_STATE, COMMAND_TAG_REPORT_ASKED, COMMAND_TAG_ROUTE_INPUT,
-    COMMAND_TAG_SEND_DOCUMENT_INPUT, COMMAND_TAG_SERVICE_HTTP_CLOSE, COMMAND_TAG_SERVICE_HTTP_OPEN,
-    COMMAND_TAG_SERVICE_HTTP_READ, COMMAND_TAG_SHUTDOWN, COMMAND_TAG_SIGNAL_TERMINAL,
-    COMMAND_TAG_SUBSCRIBE_RESOURCE_EVENTS, COMMAND_TAG_TRANSCRIBE, COMMAND_TAG_UPGRADE,
-    CONFIG_RELOAD_KEY, Command, EVENT_TAG_ASKED, EVENT_TAG_BELL, EVENT_TAG_COMMAND_FINISHED,
-    EVENT_TAG_COMMAND_STARTED, EVENT_TAG_CWD_CHANGED, EVENT_TAG_DIRTY, EVENT_TAG_DOCUMENT_INPUT,
-    EVENT_TAG_IDLE, EVENT_TAG_INPUT_ACTIVITY, EVENT_TAG_JOURNAL_GAP, EVENT_TAG_RESOURCE_CLOSED,
-    EVENT_TAG_RESOURCE_SPAWNED, EVENT_TAG_TERMINAL_CONTROL, EVENT_TAG_TITLE_CHANGED, FrameKind,
-    RESOURCE_AGENT_KEY, RESOURCE_AGENT_SESSION_KEY, RESOURCE_LINK_KEY, RESOURCE_PANE_OCCUPANT_KEY,
-    RESOURCE_TAGS_KEY, SESSION_CREATE_KEY, SESSION_CREATE_RESULT_KEY,
-    SESSION_CREATE_RESULT_KEY_PREFIX, SESSION_KEEP_EMPTY_KEY, Scope, SpawnResource, StateScope,
-    TYPE_ATTACH, TYPE_COMMAND, TYPE_DELETE_METADATA, TYPE_DETACH, TYPE_FRAME_ACK,
-    TYPE_GET_METADATA, TYPE_HELLO, TYPE_HISTORY_REQUEST, TYPE_INPUT_FOCUS, TYPE_INPUT_KEY,
-    TYPE_INPUT_MOUSE, TYPE_INPUT_PASTE, TYPE_INPUT_TERMINAL_REPLY, TYPE_LIST_DIRECTORY,
-    TYPE_LIST_METADATA, TYPE_MOVE_RESOURCE, TYPE_PATH_QUERY, TYPE_PING, TYPE_RESIZE_TERMINAL,
-    TYPE_SET_METADATA, TYPE_SPAWN_RESOURCE, TYPE_SUBSCRIBE_EVENTS, TYPE_SUBSCRIBE_METADATA,
-    TYPE_VIEWPORT_RESIZE, WHOAMI_KEY, decode_session_keep_empty,
+    COMMAND_TAG_KILL_RESOURCES, COMMAND_TAG_MIRROR, COMMAND_TAG_MIRROR_PROVIDE,
+    COMMAND_TAG_OPEN_LISTENER, COMMAND_TAG_PERF_CONTROL, COMMAND_TAG_PUBLISH_RESOURCE_STATE,
+    COMMAND_TAG_PUT_FILE, COMMAND_TAG_RELEASE_INPUT, COMMAND_TAG_REPORT_AGENT_STATE,
+    COMMAND_TAG_REPORT_ASKED, COMMAND_TAG_ROUTE_INPUT, COMMAND_TAG_SEND_DOCUMENT_INPUT,
+    COMMAND_TAG_SERVICE_HTTP_CLOSE, COMMAND_TAG_SERVICE_HTTP_OPEN, COMMAND_TAG_SERVICE_HTTP_READ,
+    COMMAND_TAG_SHUTDOWN, COMMAND_TAG_SIGNAL_TERMINAL, COMMAND_TAG_SUBSCRIBE_RESOURCE_EVENTS,
+    COMMAND_TAG_TRANSCRIBE, COMMAND_TAG_UPGRADE, CONFIG_RELOAD_KEY, Command, EVENT_TAG_ASKED,
+    EVENT_TAG_BELL, EVENT_TAG_COMMAND_FINISHED, EVENT_TAG_COMMAND_STARTED, EVENT_TAG_CWD_CHANGED,
+    EVENT_TAG_DIRTY, EVENT_TAG_DOCUMENT_INPUT, EVENT_TAG_IDLE, EVENT_TAG_INPUT_ACTIVITY,
+    EVENT_TAG_JOURNAL_GAP, EVENT_TAG_RESOURCE_CLOSED, EVENT_TAG_RESOURCE_SPAWNED,
+    EVENT_TAG_TERMINAL_CONTROL, EVENT_TAG_TITLE_CHANGED, FrameKind, RESOURCE_AGENT_KEY,
+    RESOURCE_AGENT_SESSION_KEY, RESOURCE_LINK_KEY, RESOURCE_PANE_OCCUPANT_KEY, RESOURCE_TAGS_KEY,
+    SESSION_CREATE_KEY, SESSION_CREATE_RESULT_KEY, SESSION_CREATE_RESULT_KEY_PREFIX,
+    SESSION_KEEP_EMPTY_KEY, Scope, SpawnResource, StateScope, TYPE_ATTACH, TYPE_COMMAND,
+    TYPE_DELETE_METADATA, TYPE_DETACH, TYPE_FRAME_ACK, TYPE_GET_METADATA, TYPE_HELLO,
+    TYPE_HISTORY_REQUEST, TYPE_INPUT_FOCUS, TYPE_INPUT_KEY, TYPE_INPUT_MOUSE, TYPE_INPUT_PASTE,
+    TYPE_INPUT_TERMINAL_REPLY, TYPE_LIST_DIRECTORY, TYPE_LIST_METADATA, TYPE_MOVE_RESOURCE,
+    TYPE_PATH_QUERY, TYPE_PING, TYPE_RESIZE_TERMINAL, TYPE_SET_METADATA, TYPE_SPAWN_RESOURCE,
+    TYPE_SUBSCRIBE_EVENTS, TYPE_SUBSCRIBE_METADATA, TYPE_VIEWPORT_RESIZE, WHOAMI_KEY,
+    decode_session_keep_empty,
 };
 use crate::wire::frame::{
     COMMAND_TAG_ARRANGEMENT_GET, COMMAND_TAG_ARRANGEMENT_REPLACE, COMMAND_TAG_DELEGATE_AGENT,
@@ -66,6 +67,7 @@ include!("kinds/rules.rs");
 include!("kinds/classifiers.rs");
 include!("kinds/method_catalog.rs");
 include!("kinds/resource_catalog.rs");
+include!("kinds/contracts.rs");
 
 /// Every catalog method: server-level, then substrate, then each kind's
 /// facet in [`KINDS`] order.
@@ -150,10 +152,13 @@ pub fn frame_is_dangerous(frame: &FrameKind) -> bool {
 /// The catalog entry for `kind`, or `None` for a kind this build does not
 /// serve.
 #[must_use]
-pub fn kind_spec(kind: ResourceKind) -> Option<&'static KindSpec> {
-    KINDS.iter().find(|spec| spec.kind == kind)
+#[inline]
+pub const fn kind_spec(kind: ResourceKind) -> Option<&'static KindSpec> {
+    kind_spec_in(&KINDS, kind)
 }
 
+#[cfg(test)]
+mod contract_tests;
 #[cfg(test)]
 mod samples;
 
@@ -199,12 +204,12 @@ mod tests {
     fn agent_session_spawn_rows_follow_parent_and_host() {
         assert_eq!(
             row(&spawn(None, None, Some(agent(terminal())))),
-            F_SPAWN_AGENT_LOCAL.case
+            F_SPAWN_CHILD_LOCAL.case
         );
         let remote_parent = ResourceId::satellite("h", 7);
         assert_eq!(
             row(&spawn(Some("h"), None, Some(agent(remote_parent.clone())))),
-            F_SPAWN_AGENT_SATELLITE.case
+            F_SPAWN_CHILD_SATELLITE.case
         );
         // A local or different-host parent under a satellite spawn.
         assert_eq!(
@@ -220,6 +225,42 @@ mod tests {
             row(&spawn(None, Some(terminal()), Some(agent(terminal())))),
             F_UNCLASSIFIED.case
         );
+    }
+
+    /// Every served child kind lands on the parent rows, not default-deny,
+    /// so a scoped grant can open one beside a Terminal it may bind.
+    #[test]
+    fn every_served_child_kind_spawns_on_the_parent_rows() {
+        let remote_parent = ResourceId::satellite("h", 7);
+        for spec in KINDS.iter().filter(|spec| !spec.kind.is_terminal()) {
+            let child = |parent: ResourceId| SpawnResource {
+                kind: spec.kind,
+                ..agent(parent)
+            };
+            assert_eq!(
+                row(&spawn(None, None, Some(child(terminal())))),
+                F_SPAWN_CHILD_LOCAL.case,
+                "{}",
+                spec.name
+            );
+            assert_eq!(
+                row(&spawn(Some("h"), None, Some(child(remote_parent.clone())))),
+                F_SPAWN_CHILD_SATELLITE.case,
+                "{}",
+                spec.name
+            );
+            assert_eq!(
+                row(&spawn(None, Some(terminal()), Some(child(terminal())))),
+                F_UNCLASSIFIED.case,
+                "{}",
+                spec.name
+            );
+        }
+        let unknown = SpawnResource {
+            kind: ResourceKind::Unknown { tag: 9 },
+            ..agent(terminal())
+        };
+        assert_eq!(row(&spawn(None, None, Some(unknown))), F_UNCLASSIFIED.case);
     }
 
     #[test]

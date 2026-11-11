@@ -25,8 +25,10 @@ use crate::runtime::operation_dedupe::OperationClaim;
 use crate::state::{ClientId, ServerState, SharedState};
 
 mod attach;
+pub(crate) mod audit;
 mod input;
 mod spawn;
+pub(crate) mod upgrade;
 
 pub(crate) use attach::attach_document;
 pub(crate) use spawn::spawn_document;
@@ -47,6 +49,9 @@ pub(crate) trait DocumentApi: DocumentKind {
     const WIRE_KIND: phux_protocol::ids::ResourceKind;
     /// How a message names the kind, e.g. "accessibility tree".
     const LABEL: &'static str;
+    /// The target a record of this kind was opened on; `None` for a
+    /// record of another kind.
+    fn launch_target(launch: &phux_core::LaunchSpec) -> Option<&str>;
     /// Create the registry record under `parent`, running, named `name`;
     /// a tree or surface is named for what it observes.
     fn create(
@@ -77,6 +82,13 @@ impl DocumentApi for TreeDocument {
         phux_protocol::ids::ResourceKind::AccessibilityTree;
     const LABEL: &'static str = "accessibility tree";
 
+    fn launch_target(launch: &phux_core::LaunchSpec) -> Option<&str> {
+        match launch {
+            phux_core::LaunchSpec::Tree(tree) => Some(&tree.target),
+            _ => None,
+        }
+    }
+
     fn create(
         state: &mut ServerState,
         parent: phux_core::ids::ResourceId,
@@ -104,6 +116,13 @@ impl DocumentApi for SurfaceDocument {
     const WIRE_KIND: phux_protocol::ids::ResourceKind =
         phux_protocol::ids::ResourceKind::PixelSurface;
     const LABEL: &'static str = "pixel surface";
+
+    fn launch_target(launch: &phux_core::LaunchSpec) -> Option<&str> {
+        match launch {
+            phux_core::LaunchSpec::Surface(surface) => Some(&surface.target),
+            _ => None,
+        }
+    }
 
     fn create(
         state: &mut ServerState,
@@ -138,6 +157,13 @@ impl DocumentApi for TypedDocument {
     const PROFILE: BootstrapStreamProfile = BootstrapStreamProfile::DocumentTypedV1;
     const WIRE_KIND: phux_protocol::ids::ResourceKind = phux_protocol::ids::ResourceKind::Document;
     const LABEL: &'static str = "document";
+
+    fn launch_target(launch: &phux_core::LaunchSpec) -> Option<&str> {
+        match launch {
+            phux_core::LaunchSpec::Document(document) => Some(&document.content_type),
+            _ => None,
+        }
+    }
 
     fn create(
         state: &mut ServerState,
@@ -222,6 +248,14 @@ impl<A: DocumentApi> ResourceApp for DocumentApp<A> {
         Box::pin(std::future::ready(()))
     }
 
+    fn begin_upgrade(&self, _state: &SharedState) -> Option<Box<dyn super::UpgradeCut>> {
+        Some(upgrade::DocumentCut::<A>::begin())
+    }
+
+    fn resume(&self, _state: &SharedState) -> Box<dyn super::KindResume> {
+        upgrade::DocumentResume::<A>::begin()
+    }
+
     fn resumed(&self, _state: &SharedState) {}
 
     fn resource_exited<'a>(
@@ -263,7 +297,17 @@ impl<A: DocumentApi> ResourceApp for DocumentApp<A> {
                     terminal_id,
                     intent,
                     control,
-                } => input::relay::<A>(&ctx.state, &terminal_id, intent, control),
+                    on_behalf_of,
+                } => {
+                    let audited = intent.clone();
+                    let relayed = on_behalf_of.as_ref();
+                    let result =
+                        input::relay::<A>(ctx, &terminal_id, intent, control, relayed).await;
+                    ctx.state.with(|s| {
+                        audit::record(s, ctx.client_id, relayed, &terminal_id, &audited, &result);
+                    });
+                    result
+                }
                 _ => CommandResult::Error {
                     code: ErrorCode::InvalidCommand,
                     message: "command not supported by this server".to_owned(),

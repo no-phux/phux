@@ -68,6 +68,8 @@ impl Fixture {
                 expires_at: Some(delegation.credential.expires_at),
                 generation: 0,
                 registry_instance: None,
+                subject: None,
+                managed: None,
             });
             s.set_connection_identity(host, identity);
             s.set_connection_grant(

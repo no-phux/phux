@@ -225,6 +225,7 @@ const fn runtime_server_features_ext() -> ServerFeatureExtSet {
         ServerFeatureExt::Organization,
         ServerFeatureExt::CreatePlacement,
         ServerFeatureExt::ApiDescription,
+        ServerFeatureExt::DurableResourceInspection,
         ServerFeatureExt::SessionKill,
         ServerFeatureExt::NativeAgent,
         ServerFeatureExt::NativeAgentLaunch,
@@ -236,6 +237,8 @@ const fn runtime_server_features_ext() -> ServerFeatureExtSet {
         ServerFeatureExt::AccessibilityTree,
         ServerFeatureExt::PixelSurface,
         ServerFeatureExt::TypedDocument,
+        ServerFeatureExt::Mirrors,
+        ServerFeatureExt::PrivacyStatus,
     ])
 }
 

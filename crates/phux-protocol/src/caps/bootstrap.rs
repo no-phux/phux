@@ -124,54 +124,6 @@ impl EngineCodec {
         }
     }
 }
-/// Concrete encoding carried by one bootstrap stream (distinct from the
-/// negotiated [`BootstrapProfile`]).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-#[non_exhaustive]
-pub enum BootstrapCodec {
-    /// Protocol-defined synthesized VT replay grammar version 1.
-    SynthesizedVtV1,
-    /// Exact libghostty checkpoint grammar.
-    Native(EngineCodec),
-    /// Newline-delimited JSON agent-event records v1: the `AgentSession`
-    /// codec. Live output carries whole records and is always raw
-    /// (`FRAME_ACK` forbidden). Gated on `ServerFeature::ResourceKinds`.
-    AgentEventsJsonlV1,
-    /// One JSON document per message, the whole accessibility tree v1: the
-    /// `AccessibilityTree` codec. The bootstrap carries the newest snapshot
-    /// and every live message replaces it. Gated on
-    /// `ServerFeatureExt::AccessibilityTree`.
-    AccessibilityTreeJsonV1,
-    /// One PNG or JPEG image per message, told apart by its signature (the
-    /// name predates JPEG), the whole pixel surface v1: the
-    /// `PixelSurface` codec. The bootstrap carries the newest image and
-    /// every live message replaces it. Gated on
-    /// `ServerFeatureExt::PixelSurface`.
-    PixelSurfacePngV1,
-    /// A content-typed document v1: the `Document` codec. The bootstrap
-    /// payload is the resource's content type behind a one-byte length,
-    /// then the newest document; every live message is a whole document.
-    /// Gated on `ServerFeatureExt::TypedDocument`.
-    DocumentTypedV1,
-}
-
-impl BootstrapCodec {
-    /// Wire tag for synthesized VT v1.
-    pub const SYNTHESIZED_VT_V1_TAG: u8 = 0;
-    /// Wire tag for a native engine codec followed by its exact version byte.
-    pub const NATIVE_TAG: u8 = 1;
-    /// Wire tag for agent-event JSONL v1. Tag `2` is skipped so the tag
-    /// space never collides with the `EngineCodec` version byte that follows
-    /// [`Self::NATIVE_TAG`] in a hex dump.
-    pub const AGENT_EVENTS_JSONL_V1_TAG: u8 = 3;
-    /// Wire tag for accessibility-tree JSON v1.
-    pub const ACCESSIBILITY_TREE_JSON_V1_TAG: u8 = 4;
-    /// Wire tag for pixel-surface PNG v1.
-    pub const PIXEL_SURFACE_PNG_V1_TAG: u8 = 5;
-    /// Wire tag for typed document v1.
-    pub const DOCUMENT_TYPED_V1_TAG: u8 = 6;
-}
-
 /// Additive set of exact native engine codecs.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub struct EngineCodecSet(u64);
@@ -438,41 +390,6 @@ impl BootstrapProfile {
 /// Failure to select an explicit synchronization profile.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct CodecUnavailable;
-
-/// Per-stream profile repeated in `BOOTSTRAP_BEGIN`: the connection's
-/// [`BootstrapProfile`] for a Terminal stream, or the kind-fixed codec of
-/// another resource kind.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-#[non_exhaustive]
-pub enum BootstrapStreamProfile {
-    /// Exact native checkpoint followed by raw PTY bytes.
-    NativeState {
-        /// Exact native checkpoint grammar carried by the stream.
-        codec: EngineCodec,
-    },
-    /// Synthesized VT bootstrap followed by raw compatibility bytes.
-    SynthesizedVtRaw,
-    /// Synthesized VT bootstrap followed by `StateSync` bytes.
-    SynthesizedVtStateSync,
-    /// Full retained agent-event JSONL replacement, followed by raw live records.
-    AgentEventsJsonlV1,
-    /// Agent-event JSONL suffix appended after an already committed record.
-    /// The server advertises `AgentStreamResume` before accepting a cursor.
-    AgentEventsJsonlResumeV1 {
-        /// Last record already committed by the consumer.
-        after_seq: u64,
-    },
-    /// The newest whole accessibility tree as one JSON document, followed
-    /// by raw live replacements, each a whole document.
-    AccessibilityTreeJsonV1,
-    /// The newest whole pixel surface as one PNG or JPEG image, followed by raw
-    /// live replacements, each a whole image.
-    PixelSurfacePngV1,
-    /// The resource's content type and newest document in one bootstrap
-    /// ([`crate::wire::frame::typed_document`]), followed by raw live
-    /// replacements, each a whole document of that type.
-    DocumentTypedV1,
-}
 
 /// Select one explicit profile and the negotiated payload bounds.
 ///

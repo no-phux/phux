@@ -79,8 +79,17 @@ pub(super) fn view(desk: &Desk, p: &Ink, cx: &mut Cx<Desk>) -> El {
         (waiting > 0).then_some(needs),
     );
     sky = sky.orbits(&plan, p.separator);
-    for (planet, system) in planets.iter().zip(&plan.systems) {
-        sky = sky.beam(plan.core, system.centre, time, light, planet.online);
+    // Each machine in its own colour; amber while it needs you, dim offline.
+    let tints: Vec<Color> = planets
+        .iter()
+        .map(|planet| match planet {
+            _ if !planet.online => p.dim,
+            _ if planet.stars.iter().any(|star| star.mark.needs_you()) => needs,
+            _ => crate::host_color::on(&planet.name, p.bg),
+        })
+        .collect();
+    for ((planet, system), tint) in planets.iter().zip(&plan.systems).zip(&tints) {
+        sky = sky.beam(plan.core, system.centre, time, *tint, planet.online);
     }
     for (a, b) in galaxy::related(&kin) {
         sky = sky.kin(placed[a].2, placed[b].2, plan.core, time, p.accent);
@@ -100,9 +109,8 @@ pub(super) fn view(desk: &Desk, p: &Ink, cx: &mut Cx<Desk>) -> El {
             picked_at = Some(point);
         }
     }
-    for (planet, system) in planets.iter().zip(&plan.systems) {
-        let color = if planet.online { light } else { p.dim };
-        sky = sky.planet(system.centre, time, color, planet.online);
+    for ((planet, system), tint) in planets.iter().zip(&plan.systems).zip(&tints) {
+        sky = sky.planet(system.centre, time, *tint, planet.online);
     }
     for &(at, i, point) in &placed {
         let star = &planets[at].stars[i];
@@ -271,7 +279,7 @@ pub(super) fn view(desk: &Desk, p: &Ink, cx: &mut Cx<Desk>) -> El {
                 )
         }))
         .child(overlay::icon_button(
-            "✕",
+            &super::icons::CLOSE,
             "Close",
             "galaxy-close",
             p,

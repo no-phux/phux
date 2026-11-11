@@ -86,7 +86,7 @@ impl QuicListener {
         cert_path: &std::path::Path,
         key_path: &std::path::Path,
         tokens: Option<Arc<crate::auth::ReloadingTokenStore>>,
-        client_ca: Option<&rustls::pki_types::CertificateDer<'static>>,
+        client_ca: Option<&crate::workload::ClientRoots>,
         workload_registry: Option<Arc<crate::workload::ReloadingWorkloadRegistry>>,
         enrollment: Option<crate::workload::WorkloadPaths>,
     ) -> Result<Self, QuicBindError> {
@@ -116,7 +116,7 @@ impl QuicListener {
         key_path: &std::path::Path,
         admission: QuicAdmission,
         workload: Option<(
-            &rustls::pki_types::CertificateDer<'static>,
+            &crate::workload::ClientRoots,
             Arc<crate::workload::ReloadingWorkloadRegistry>,
         )>,
     ) -> Result<Self, QuicBindError> {

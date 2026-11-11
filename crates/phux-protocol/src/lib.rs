@@ -1,6 +1,6 @@
 //! Wire protocol for phux: framing, message catalog, version negotiation,
-//! capabilities, and the VT-bytes-out, structured-input-in shape of terminal
-//! traffic.
+//! capabilities, the resource kinds and their stream contracts, and the
+//! VT-bytes-out, structured-input-in shape of Terminal traffic.
 //!
 //! This crate is the specification. `docs/spec/wire-schema.json` in the
 //! repository is generated from it and test-pinned; `docs/protocol.md`
@@ -55,8 +55,8 @@ pub use caps::{
     EngineCodec, EngineCodecSet, EngineFeature, EngineFeatureSet, FILE_UPLOAD, ImageProtocol,
     ImageProtocolSet, KeyboardProtocol, KeyboardProtocolSet, Layer, LayerSet,
     MAX_BOOTSTRAP_CHUNK_BYTES, MAX_HISTORY_PAGE_BYTES, MOVE_RESOURCE, OutputMode, RESOURCE_KINDS,
-    ServerFeature, ServerFeatureExt, ServerFeatureExtSet, ServerFeatureSet, TERMINAL_REPLY,
-    TerminalColor, TerminalDefaultColors, select_bootstrap_profile,
+    ResourceKindSet, ServerFeature, ServerFeatureExt, ServerFeatureExtSet, ServerFeatureSet,
+    TERMINAL_REPLY, TerminalColor, TerminalDefaultColors, select_bootstrap_profile,
 };
 pub use ids::{
     ApprovalId, BootstrapId, ClientId, FileUploadId, FrameId, GroupId, IdempotencyKey,

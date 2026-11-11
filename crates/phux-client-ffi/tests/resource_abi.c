@@ -6,7 +6,10 @@
 
 _Static_assert(offsetof(PhuxResourceInfo, size) == 0, "resource info is size-versioned");
 _Static_assert(PHUX_CLIENT_EFFECT_AGENT_RECORDS == 4, "agent records is the fourth effect kind");
-_Static_assert(PHUX_RESOURCE_TERMINAL == 0 && PHUX_RESOURCE_AGENT_SESSION == 1,
+_Static_assert(PHUX_CLIENT_EFFECT_DOCUMENT == 5, "documents are the fifth effect kind");
+_Static_assert(PHUX_RESOURCE_TERMINAL == 0 && PHUX_RESOURCE_AGENT_SESSION == 1 &&
+               PHUX_RESOURCE_ACCESSIBILITY_TREE == 2 && PHUX_RESOURCE_PIXEL_SURFACE == 3 &&
+               PHUX_RESOURCE_DOCUMENT == 4,
                "resource kinds mirror the wire tags");
 _Static_assert(PHUX_CLIENT_AGENT_RECORDS_RETAINED == 1 && PHUX_CLIENT_AGENT_RECORDS_LIVE == 2 &&
                PHUX_CLIENT_AGENT_RECORDS_CLOSED == 3,

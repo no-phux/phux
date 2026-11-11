@@ -437,7 +437,10 @@ mod tests {
                 members: 2,
                 arrangement: None,
                 awaiting_organization: true,
+                project: None,
+                project_link: None,
             }],
+            resources: Vec::new(),
             panes: vec![PaneDescriptor {
                 terminal_id: ResourceId::satellite("box", 4),
                 session_id: 1,

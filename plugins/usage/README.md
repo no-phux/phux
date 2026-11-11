@@ -23,7 +23,7 @@ refreshed, or published. The published key holds plan names, percentages,
 reset times, and a 12-hex account fingerprint, never an email or token.
 Every client allowed `observe@global` on this server can read it: the owner
 socket and every paired device. The full table is in
-[plan usage](../../docs/agents.md#plan-usage).
+[plan usage](../../docs/troubleshooting.md#plan-usage).
 
 ## Turning it off
 

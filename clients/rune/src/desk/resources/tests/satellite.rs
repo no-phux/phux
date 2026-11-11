@@ -54,8 +54,9 @@ fn a_satellite_surface_on_a_hub_is_listed_shown_and_streamed() {
         .with_hosts(vec![phux_protocol::wire::info::HostInventory::reachable(
             "box".into(),
             vec![
+                // Members name every kind the session holds (#2158).
                 phux_protocol::wire::info::HostSessionInfo::new(SessionId::new(2), "lab")
-                    .with_members(vec![producer.clone()]),
+                    .with_members(vec![producer.clone(), surface.clone()]),
             ],
         )])
         .with_resources(vec![
@@ -65,7 +66,8 @@ fn a_satellite_surface_on_a_hub_is_listed_shown_and_streamed() {
             ResourceInfo::new(surface.clone(), WindowId::new(0), 0, 0)
                 .with_kind(ResourceKind::PixelSurface)
                 .with_parent(Some(producer))
-                .with_title(Some("display".to_owned())),
+                .with_title(Some("display".to_owned()))
+                .with_control(Some(phux_protocol::wire::frame::ControlClass::Display)),
         ]);
     client
         .feed(FrameKind::CommandResult {
@@ -84,6 +86,12 @@ fn a_satellite_surface_on_a_hub_is_listed_shown_and_streamed() {
     assert_eq!(hit.item.kind, "document");
     assert_eq!(hit.item.title, "display");
     assert!(hit.item.detail.starts_with("box · "), "{}", hit.item.detail);
+    // Its producer declared a control class through the hub's listing.
+    assert!(
+        hit.item.detail.ends_with("Live mirror"),
+        "{}",
+        hit.item.detail
+    );
 
     outbound(&client);
     rt.frame(1.0);
@@ -91,6 +99,10 @@ fn a_satellite_surface_on_a_hub_is_listed_shown_and_streamed() {
     assert!(texts.iter().any(|t| t == "box · lab"), "{texts:?}");
     assert!(rt.find("pane-box/@69").is_some(), "its terminal");
     assert!(rt.find("pane-box/@70").is_some(), "its mirror");
+    assert!(
+        !texts.iter().any(|t| t == "box/@70"),
+        "a document member is not also drawn as a terminal row: {texts:?}"
+    );
     assert!(rt.accessibility_action("pane-box/@70", Action::Click, None));
     step(&mut rt);
     let sent = outbound(&client);
@@ -118,9 +130,18 @@ fn a_satellite_surface_on_a_hub_is_listed_shown_and_streamed() {
         client.feed(frame).unwrap();
     }
     step(&mut rt);
-    assert_eq!(rt.state.shown.as_ref().unwrap().terminal, surface);
+    assert_eq!(rt.state.shown.as_ref().unwrap().resource, surface);
     let Body::Surface(image) = &rt.state.resources.entries[&surface].body else {
         panic!("the satellite's image reached the mirror");
     };
     assert_eq!(image.wait(), Ok([4, 2]));
+    step(&mut rt);
+    assert_eq!(rt.state.document_input_frame(&surface), Some([4, 2]));
+    rt.frame(1.0);
+    let texts: Vec<_> = rt.elements().into_iter().filter_map(|el| el.text).collect();
+    assert!(
+        texts.iter().any(|t| t.contains("Live mirror"))
+            && !texts.iter().any(|t| t.contains("Read-only")),
+        "{texts:?}"
+    );
 }

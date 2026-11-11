@@ -80,10 +80,9 @@ pub(crate) use pump_loop::*;
 use pump_loop::{GapCause, run_output_pump};
 pub(crate) use spawn::*;
 use spawn_plan::{
-    PaneSpawnPlan, build_spawn_command, forwarded_resource, log_spawn_request,
-    refuse_vanished_pane_handle, resolve_spawn_ownership, spawn_argv_builder,
-    spawn_pane_or_refusal, spawn_terminal_output_pump, subscribe_spawning_client,
-    usable_initial_size, validate_local_spawn,
+    PaneSpawnPlan, build_spawn_command, forwarded_resource, refuse_vanished_pane_handle,
+    resolve_spawn_ownership, spawn_argv_builder, spawn_pane_or_refusal, spawn_terminal_output_pump,
+    subscribe_spawning_client, usable_initial_size, validate_local_spawn,
 };
 use spawn_publication::SpawnPublication;
 pub(crate) use target::*;

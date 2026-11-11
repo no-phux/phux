@@ -1,17 +1,18 @@
 //! The link's HELLO exchange with a satellite, and validating its `HELLO_OK`.
 
 use super::{
-    BootstrapLimits, BootstrapProfile, BootstrapProfileKind, ClientCapabilities, FrameKind,
-    LINK_SEND_TIMEOUT, LinkConn, LinkReader, LinkWriter, NegotiatedBootstrap, PROTOCOL_VERSION,
-    send_bounded,
+    BootstrapCapabilities, BootstrapLimits, BootstrapProfile, BootstrapProfileKind,
+    ClientCapabilities, FrameKind, LINK_SEND_TIMEOUT, LinkConn, LinkReader, LinkWriter,
+    NegotiatedBootstrap, PROTOCOL_VERSION, send_bounded,
 };
 
 /// Complete the mandatory network-transport version handshake before the
 /// relay session can send commands.
 pub(super) async fn negotiate_link<C: LinkConn + LinkReader + LinkWriter>(
     conn: &mut C,
+    bootstrap: BootstrapCapabilities,
 ) -> Result<NegotiatedBootstrap, String> {
-    let offered = hub_link_capabilities();
+    let offered = hub_link_capabilities(bootstrap);
     let mut encoded = bytes::BytesMut::new();
     FrameKind::Hello {
         client_name: "phux-hub".to_owned(),
@@ -76,10 +77,17 @@ pub(super) async fn negotiate_link<C: LinkConn + LinkReader + LinkWriter>(
 
 /// What the hub offers a satellite: defaults plus L3 (for the relayed
 /// `LIST_DIRECTORY`) and the two mirrored agent-metadata keys (ADR-0136).
-pub(super) fn hub_link_capabilities() -> ClientCapabilities {
-    ClientCapabilities::default().with_layers(phux_protocol::caps::LayerSet::with(&[
-        phux_protocol::caps::Layer::L3,
-    ]))
+/// `bootstrap` is the hub's own Terminal offer, so the link selects the
+/// profile the hub selects for its downstream clients: the relay forwards
+/// Terminal bytes without transcoding, and a mismatch is `CODEC_UNAVAILABLE`.
+pub(super) fn hub_link_capabilities(bootstrap: BootstrapCapabilities) -> ClientCapabilities {
+    ClientCapabilities::default()
+        .with_bootstrap(bootstrap)
+        // The relay re-encodes every frame this build's codec reads.
+        .with_resource_kinds(phux_protocol::caps::ResourceKindSet::all())
+        .with_layers(phux_protocol::caps::LayerSet::with(&[
+            phux_protocol::caps::Layer::L3,
+        ]))
 }
 
 pub(super) fn validate_link_hello_ok(

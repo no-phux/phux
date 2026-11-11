@@ -61,7 +61,17 @@ serve() {
   tar -C "$TMP/pack" -czf "$SERVED/$ARCHIVE" "$STEM"
   feed "$(sha "$SERVED/$ARCHIVE")" "${1:-$VERSION}"
 }
+# DIGEST VERSION [none]: `none` drops the arm64 Linux target, as feeds from
+# before its builds do.
 feed() {
+  local arm digest
+  digest="$(printf 'd%.0s' {1..64})"
+  arm=",
+    \"aarch64-unknown-linux-gnu\": {
+      \"sha256\": \"$digest\",
+      \"size\": 7
+    }"
+  [[ "${3:-}" != none ]] || arm=""
   cat > "$SERVED/rune.json" <<EOF
 {
   "schema": 1,
@@ -76,7 +86,7 @@ feed() {
     "x86_64-unknown-linux-gnu": {
       "sha256": "$1",
       "size": 7
-    }
+    }$arm
   }
 }
 EOF
@@ -95,6 +105,9 @@ grep -Fxq "sha256: $(printf 'b%.0s' {1..64})" <<<"$out" || fail "macOS digest: $
 grep -Fxq 'product: rune' <<<"$out" || fail "macOS product: $out"
 out="$(installer --dry-run)"
 grep -Fxq "url: $BASE/rune-v$VERSION/$ARCHIVE" <<<"$out" || fail "Linux url: $out"
+out="$(PATH="$TMP/bin:/usr/bin:/bin" "$SH" "$ROOT/scripts/install.sh" --dry-run --os linux --arch arm64 --rune)"
+grep -Fxq "url: $BASE/rune-v$VERSION/phux-rune-$VERSION-linux-aarch64.tar.gz" <<<"$out" || fail "arm64 Linux url: $out"
+grep -Fxq "sha256: $(printf 'd%.0s' {1..64})" <<<"$out" || fail "arm64 Linux digest: $out"
 
 # --- an install ---------------------------------------------------------------
 installer >"$TMP/out" 2>"$TMP/err" || fail "install: $(cat "$TMP/err")"
@@ -207,10 +220,12 @@ refused 'unrelated' --applications-dir "$TMP/other"
 refused 'combine with --rune' --desktop --channel next
 refused 'combine with --rune' --channel next
 refused 'combine with --rune' --version 1.2.3
+# A feed from before arm64 Linux builds names no digest for it.
+feed "$(printf 'c%.0s' {1..64})" "$VERSION" none
 if PATH="$TMP/bin:/usr/bin:/bin" "$SH" "$ROOT/scripts/install.sh" --os linux --arch arm64 --rune >/dev/null 2>"$TMP/err"; then
   fail "installed for arm64 Linux"
 fi
-grep -Fq 'no Phux Rune build' "$TMP/err" || fail "arm64: $(cat "$TMP/err")"
+grep -Fq 'no Phux Rune digest for aarch64-unknown-linux-gnu' "$TMP/err" || fail "arm64: $(cat "$TMP/err")"
 
 # With no CLI anywhere the plan installs one first. The installer also looks
 # at fixed host paths (has_cli), so a machine with a Homebrew or system phux

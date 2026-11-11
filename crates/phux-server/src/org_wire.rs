@@ -142,8 +142,7 @@ pub const fn exec_state(s: phux_core::ExecState) -> frame::ExecState {
     }
 }
 
-/// An outcome on the wire. An observed exit with neither a status nor a
-/// signal reads as a zero status.
+/// An outcome on the wire. Absent exit evidence never implies success.
 #[must_use]
 pub const fn outcome(o: phux_core::Outcome) -> frame::Outcome {
     match o {
@@ -151,8 +150,37 @@ pub const fn outcome(o: phux_core::Outcome) -> frame::Outcome {
         phux_core::Outcome::Exit(exit) => match (exit.status, exit.signal) {
             (_, Some(signal)) => frame::Outcome::Signaled(signal),
             (Some(status), None) => frame::Outcome::Exited(status),
-            (None, None) => frame::Outcome::Exited(0),
+            (None, None) => frame::Outcome::Unobserved,
         },
+    }
+}
+
+/// One truthful execution projection for inventory and creation receipts.
+#[must_use]
+pub fn activation(a: &phux_core::Activation, pending: bool) -> frame::ActivationInfo {
+    frame::ActivationInfo::new(
+        activation_id(a.id),
+        wire::ServerInstance::new(*a.instance.as_bytes()),
+        exec_state(a.state),
+    )
+    .with_outcome(a.outcome.map(outcome))
+    .with_evidence(a.diagnostic.map(launch_diagnostic), pending)
+}
+
+const fn launch_diagnostic(d: phux_core::LaunchDiagnostic) -> phux_protocol::api::LaunchDiagnostic {
+    use phux_core::LaunchStage as C;
+    use phux_protocol::api::LaunchStage as W;
+    let stage = match d.stage {
+        C::Pty => W::Pty,
+        C::Spawn => W::Spawn,
+        C::Cwd => W::Cwd,
+        C::Exec => W::Exec,
+        C::Handshake => W::Handshake,
+        C::Engine => W::Engine,
+    };
+    phux_protocol::api::LaunchDiagnostic {
+        stage,
+        errno: d.errno,
     }
 }
 

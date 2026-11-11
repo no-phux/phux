@@ -529,6 +529,16 @@ pub(crate) const TOOLS: &[Row] = &[
         Touches::Wire(&[RESOLVE, "SEND_DOCUMENT_INPUT"]),
     ),
     cli(
+        "phux_click_element",
+        "agent tree click",
+        Touches::Wire(&[
+            RESOLVE,
+            "ATTACH_RESOURCE",
+            "DETACH_RESOURCE",
+            "SEND_DOCUMENT_INPUT",
+        ]),
+    ),
+    cli(
         "phux_app_open",
         "spawn",
         Touches::Wire(&[

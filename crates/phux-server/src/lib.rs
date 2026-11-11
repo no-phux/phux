@@ -10,6 +10,7 @@
 #![deny(missing_docs)]
 #![deny(rustdoc::private_intra_doc_links)]
 
+pub mod audit;
 pub mod auth;
 pub mod autosave;
 pub mod connector;

@@ -14,6 +14,10 @@ use phux_protocol::wire::frame::{ExecState, SessionLifetime};
 use phux_protocol::wire::info::{ResourceInfo, SessionSnapshot};
 
 use super::organization::OrganizationReplica;
+use crate::project_identity::{self, SessionProject};
+
+mod resource;
+pub use resource::ResourceDescriptor;
 
 /// One session in the server's graph.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -40,6 +44,10 @@ pub struct SessionDescriptor {
     pub arrangement: Option<ArrangementKey>,
     /// Whether it is imported work awaiting organization (Intake).
     pub awaiting_organization: bool,
+    /// Its repository identity, from its attributes (ADR-0168).
+    pub project: Option<SessionProject>,
+    /// Its explicit project link (`phux project link`), from its attributes.
+    pub project_link: Option<String>,
 }
 
 /// One Terminal-kind resource, denormalized with its session so a consumer
@@ -112,7 +120,8 @@ pub struct SatelliteSession {
     pub host: String,
     /// The session's name on the satellite.
     pub name: String,
-    /// Its terminals, satellite-tagged, in window order.
+    /// Its resources of every kind, satellite-tagged; Terminals in window
+    /// order.
     pub members: Vec<ResourceId>,
 }
 
@@ -121,6 +130,11 @@ pub struct SatelliteSession {
 pub struct Topology {
     /// Every session the server listed.
     pub sessions: Vec<SessionDescriptor>,
+    /// Every resource of every kind, in the server's order, as of the last
+    /// snapshot: a close removes one (from every view) and a Terminal's live
+    /// title replaces its listed one. `panes`, `agent_sessions` and
+    /// `documents` are views of it by kind.
+    pub resources: Vec<ResourceDescriptor>,
     /// Every Terminal-kind resource, in the server's order.
     pub panes: Vec<PaneDescriptor>,
     /// Every `AgentSession` resource.
@@ -173,6 +187,8 @@ impl Topology {
                 .unwrap_or(u32::MAX),
                 arrangement: None,
                 awaiting_organization: false,
+                project: project_identity::of_session(session),
+                project_link: project_identity::link_of_session(session).map(str::to_owned),
             })
             .collect();
         let panes = terminal_resources(snapshot)
@@ -217,10 +233,12 @@ impl Topology {
                 state: resource.agent.as_ref().map(|facet| facet.state.clone()),
             })
             .collect();
-        let documents = documents(snapshot);
+        let resources = resource::resources(snapshot);
+        let documents = resource::documents(&resources);
         let satellite_sessions = satellite_sessions(snapshot);
         Self {
             sessions,
+            resources,
             panes,
             agent_sessions,
             documents,
@@ -258,8 +276,12 @@ impl Topology {
                 session.members = record.members;
                 session.arrangement = record.arrangement;
                 session.awaiting_organization = record.awaiting_organization;
+                session.project = project_identity::of_attrs(&record.attrs);
+                session.project_link =
+                    project_identity::link_of_attrs(&record.attrs).map(str::to_owned);
             }
         }
+        resource::rehome(&mut self.resources, replica);
         for pane in &mut self.panes {
             if let Some(record) = replica.resource_by_live(&pane.terminal_id) {
                 if let Some(session) = replica.session(&record.session)
@@ -314,28 +336,6 @@ impl Topology {
             .find(|pane| pane.session_id == session_id)
             .map(|pane| &pane.terminal_id)
     }
-}
-
-/// The snapshot's document-kind resources.
-fn documents(snapshot: &SessionSnapshot) -> Vec<DocumentDescriptor> {
-    snapshot
-        .resources
-        .iter()
-        .filter(|resource| {
-            matches!(
-                resource.kind,
-                ResourceKind::AccessibilityTree
-                    | ResourceKind::PixelSurface
-                    | ResourceKind::Document
-            )
-        })
-        .map(|resource| DocumentDescriptor {
-            id: resource.id.clone(),
-            kind: resource.kind,
-            parent: resource.parent.clone(),
-            name: resource.title.clone(),
-        })
-        .collect()
 }
 
 /// A hub's satellite sessions, from its inventory rows.

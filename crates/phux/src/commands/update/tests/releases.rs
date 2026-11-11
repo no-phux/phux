@@ -380,3 +380,59 @@ fn a_stale_phux_earlier_on_path_is_named() {
     let path = std::env::join_paths([&stale, &ours]).unwrap();
     assert_eq!(super::super::shadowing_phux(&brew, &path), None);
 }
+
+/// `phux update --check --channel lts` against `fake`.
+fn check_lts(fake: &FakeReleases) -> Result<Outcome, UpdateError> {
+    run(
+        fake,
+        direct(Path::new("/home/ada/.local/bin/phux")),
+        Handoff::Skipped,
+        &UpdateOpts {
+            channel: Some(ChannelArg::Lts),
+            ..check()
+        },
+    )
+}
+
+/// An lts manifest is read only under a release-key signature over its exact
+/// bytes; stable still reads an unsigned manifest, with a warning.
+#[test]
+fn an_lts_manifest_is_read_only_when_signed() {
+    let mut fake = FakeReleases::new("v0.13.0");
+    fake.name(Channel::Lts, "9.9.9", &"c".repeat(40), UNUSED_DIGEST);
+    let body = fake.manifests["lts"].clone();
+    let url = shared::manifest_signature_url(Channel::Lts);
+
+    signature_refusal(
+        &check_lts(&fake).unwrap_err(),
+        "lts release manifest is not trusted",
+    );
+    fake.serve(
+        &url,
+        TestKey::new(RELEASE_SEED + 1)
+            .sign(body.as_bytes())
+            .into_bytes(),
+    );
+    signature_refusal(&check_lts(&fake).unwrap_err(), "does not trust");
+    fake.serve(&url, TestKey::new(RELEASE_SEED).sign(b"{}").into_bytes());
+    signature_refusal(&check_lts(&fake).unwrap_err(), "does not verify");
+
+    fake.serve(
+        &url,
+        TestKey::new(RELEASE_SEED)
+            .sign(body.as_bytes())
+            .into_bytes(),
+    );
+    let outcome = check_lts(&fake).unwrap();
+    assert_eq!(outcome.plan.channel, Channel::Lts);
+    assert_eq!(outcome.plan.latest_tag(), "v9.9.9");
+    assert!(outcome.plan.update_available);
+
+    let stable = run(
+        &fake,
+        direct(Path::new("/home/ada/.local/bin/phux")),
+        Handoff::Skipped,
+        &check(),
+    );
+    assert_eq!(stable.unwrap().action, Action::Checked);
+}

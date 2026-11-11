@@ -53,6 +53,12 @@ impl Pen {
         self.o = to([0.0, 0.0]);
     }
 
+    /// Paint through a camera of its own: screen is `world * z + o`.
+    pub fn view(&mut self, z: f32, o: Pt) {
+        self.z = z;
+        self.o = o;
+    }
+
     /// Paint in screen points.
     pub fn screen(&mut self) {
         self.z = 1.0;

@@ -19,7 +19,7 @@ use write_bounds::{ScriptConn, ScriptTransport};
 /// a different major is refused.
 #[test]
 fn link_admits_any_minor_and_patch_of_the_hubs_major() {
-    let offered = hub_link_capabilities();
+    let offered = hub_link_capabilities(phux_protocol::caps::BootstrapCapabilities::new());
     let admits = |major: u16, minor: u16, patch: u16| {
         validate_link_hello_ok(
             &offered,

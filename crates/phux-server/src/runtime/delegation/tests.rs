@@ -57,7 +57,7 @@ fn carried_by_old_image(dir: &Path) -> (DelegationBlob, PathBuf) {
     assert!(old.with_mut(|s| {
         s.attach_delegation_listener(&credential.id, path.clone(), fd, CancellationToken::new())
     }));
-    let empty = old.with(|s| s.assemble_upgrade_blob(0, &crate::state::UpgradeHandoffs::default()));
+    let empty = old.with(|s| s.assemble_upgrade_blob(0));
     let (blob, duplicates) = carry_delegations(&old, empty).unwrap();
     drop(listener);
     root.cancel();

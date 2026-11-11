@@ -52,17 +52,20 @@ pub mod layout_ops;
 pub mod native_agent;
 // Organization commands behind `ORGANIZATION` (`rm`, `relaunch`, `restore`,
 // `mv`, bulk move, undo, Intake resolve).
+pub mod mirror;
 pub mod org;
 pub mod organize;
 pub mod pane_move;
 pub mod perf;
+pub mod privacy;
 pub mod recovery;
 // Complete-intention terminal creation and connected-server API discovery.
 pub mod terminal;
 pub mod tree;
 // Project identity (ADR-0168): discovery, the stored document, grouping.
-pub mod project_groups;
-pub use phux_client_runtime::project_identity;
+pub use phux_client_runtime::{project_groups, project_identity, session_order};
+// Kind dispatch for the snapshot, wait and send-keys verbs.
+pub mod read;
 pub mod record;
 pub mod resize;
 pub mod resource;

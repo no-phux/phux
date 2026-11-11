@@ -1,6 +1,6 @@
 [package]
 name = "phux-rune"
-version = "0.1.1"
+version = "0.1.13"
 description = "The phux desktop client, built on the Rune UI framework."
 edition = "2024"
 publish = false
@@ -12,24 +12,34 @@ path = "src/main.rs"
 
 # Rune's wgpu/winit graph stays out of the main phux workspace's lock.
 [workspace]
+members = ["ios/bridge"]
+default-members = ["."]
 
 [dependencies]
 phux-client-core = { path = "../../crates/phux-client-core" }
 phux-client-runtime = { path = "../../crates/phux-client-runtime" }
+# The host palette and hash every client shares.
+phux-config-core = { path = "../../crates/phux-config-core" }
 phux-perf = { path = "../../crates/phux-perf" }
 phux-protocol = { path = "../../crates/phux-protocol" }
 # Rune has no releases; apps pin a `dev` revision (dev is fast-forward only).
-rune = { git = "https://github.com/anomalyco/rune", rev = "a7f276c3630f85a06a0230295da4d2bd172d8d3b" }
-rune-notify = { git = "https://github.com/anomalyco/rune", rev = "a7f276c3630f85a06a0230295da4d2bd172d8d3b" }
-rune-perf = { git = "https://github.com/anomalyco/rune", rev = "a7f276c3630f85a06a0230295da4d2bd172d8d3b" }
+rune = { git = "https://github.com/anomalyco/rune", rev = "0ea75abef0a6caa014067a88f89518b9a04cce2b" }
+rune-notify = { git = "https://github.com/anomalyco/rune", rev = "0ea75abef0a6caa014067a88f89518b9a04cce2b" }
+rune-perf = { git = "https://github.com/anomalyco/rune", rev = "0ea75abef0a6caa014067a88f89518b9a04cce2b" }
 # Never called directly: Rune's decoder guesses the format, so these
 # features (unified with Rune's png/jpeg) let typed documents draw GIF/WebP.
 image = { version = "0.25", default-features = false, features = ["gif", "webp"] }
+# Cuts the onboarding fox's 16-bit sprite strips into frames; already locked.
+png = "0.17"
+# Already in Rune's graph (resvg): paints the pitch's still background once per size.
+tiny-skia = { version = "0.11", default-features = false, features = ["std", "simd"] }
 serde_json = "1"
+serde = { version = "1", features = ["derive"] }
+url = "2"
 # The same digest the runtime uses, for a downloaded update.
 sha2 = "0.11"
 
-# The Dock count is the one call Rune doesn't wrap; same objc2 as Rune's.
+# The Dock count and System Settings' window, which Rune doesn't wrap; same objc2 as Rune's.
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = "0.6.5"
 objc2-foundation = { version = "0.3.2", features = ["NSString"] }

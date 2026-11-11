@@ -271,6 +271,7 @@ mod tests {
             "phux_document_type",
             "phux_document_key",
             "phux_document_scroll",
+            "phux_click_element",
         ] {
             let hints = annotation(tool);
             assert!(

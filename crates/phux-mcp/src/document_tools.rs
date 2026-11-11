@@ -6,6 +6,7 @@
 //! `phux agent tree follow --until` with a timeout that is a result, not an
 //! error. The input tools (`input`) drive a document as the snapshot shows it.
 
+mod element;
 mod input;
 
 pub(crate) mod apps;
@@ -32,6 +33,7 @@ const WAIT_MAX_SECS: u64 = 3600;
 pub(crate) fn schemas() -> Vec<Value> {
     let mut schemas = schemas_read();
     schemas.extend(input::schemas());
+    schemas.push(element::schema_entry());
     schemas
 }
 
@@ -75,6 +77,7 @@ pub(crate) fn owns(name: &str) -> bool {
         name,
         "phux_documents" | "phux_tree_snapshot" | "phux_tree_wait" | "phux_surface_snapshot"
     ) || input::owns(name)
+        || name == element::NAME
 }
 
 pub(crate) async fn call(name: &str, args: &Value) -> Result<Value, ToolError> {
@@ -97,6 +100,7 @@ pub(crate) async fn call(name: &str, args: &Value) -> Result<Value, ToolError> {
                 .map_err(|err| tree_error(&err))?;
             Ok(surface_json(&document))
         }
+        element::NAME => element::call(args).await,
         other => input::call(other, args).await,
     }
 }
@@ -200,6 +204,15 @@ async fn connect(args: &Value) -> Result<(Connection, ResourceId), ToolError> {
 fn tree_error(err: &TreeError) -> ToolError {
     ToolError::new(err.to_string())
 }
+
+#[cfg(test)]
+#[allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    reason = "tests"
+)]
+mod kind_dispatch_tests;
 
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used, reason = "tests")]

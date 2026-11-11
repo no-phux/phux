@@ -1,13 +1,14 @@
 //! Handshake, attach, and command response handling.
 
+use super::subscriptions::{Origin, barrier_resources};
 #[cfg(feature = "engine")]
 use std::sync::Arc;
 
 use super::{
     AttachTarget, BootstrapLimits, BootstrapProfile, Command, CommandResult, ControlError,
-    ControlPlane, DetachReason, EngineConfig, EngineEvent, EngineHandle, ErrorCode, Event,
-    FrameKind, HashSet, Pending, ResourceId, ResourceKind, ServerFeature, SessionSnapshot,
-    StateScope, Status, topology,
+    ControlPlane, EngineConfig, EngineEvent, EngineHandle, ErrorCode, Event, FrameKind, HashSet,
+    Pending, ResourceId, ResourceKind, ServerFeature, SessionSnapshot, StateScope, Status,
+    topology,
 };
 use crate::control::topology::View;
 use crate::handshake::HelloOk;
@@ -50,6 +51,10 @@ impl ControlPlane {
                 engine.reset_connection();
             }
             self.damaged.clear();
+            // What the old incarnation listed proves nothing about this one:
+            // kept, its absence reads as a close that would hide the Terminal
+            // that later takes the recycled id.
+            self.listings = crate::control::topology::Listings::default();
             // The new incarnation reuses resource ids, a Terminal's as
             // readily as an agent session's.
             self.end_agent_incarnation();
@@ -235,7 +240,8 @@ impl ControlPlane {
         let closed = self.listings.relist(View::Attach, snapshot);
         self.close_proven(closed)?;
         let (terminals, seen) = attached_terminals(snapshot)?;
-        self.attach_terminals = seen;
+        self.subscriptions
+            .replace(Origin::SessionAttach, ResourceKind::Terminal, seen);
         self.attached_session = Some(snapshot.focused_session.get());
         self.selected_session = self.attached_session;
         // Names are lookup hints, not identities: a rename may free the old
@@ -292,7 +298,7 @@ impl ControlPlane {
         snapshot: &SessionSnapshot,
         terminals: &[ResourceId],
     ) -> Result<(), ControlError> {
-        self.agent_streams.clear();
+        self.subscriptions.clear(Origin::AgentDeclared);
         let agent_sessions = snapshot.resources.iter().filter(|resource| {
             resource.kind == ResourceKind::AgentSession
                 && resource
@@ -309,7 +315,8 @@ impl ControlPlane {
                 native_id: facet.and_then(|facet| facet.native_id.clone()),
                 state: facet.map(|facet| facet.state.clone()),
             })?;
-            self.agent_streams.insert(resource.id.clone());
+            self.subscriptions
+                .insert(&resource.id, resource.kind, Origin::AgentDeclared);
         }
         Ok(())
     }
@@ -433,58 +440,14 @@ impl ControlPlane {
         }
         Ok(())
     }
-
-    pub(super) fn detached(
-        &mut self,
-        reason: Option<DetachReason>,
-        message: &str,
-    ) -> Result<(), ControlError> {
-        self.forget_roster_subscriptions();
-        // Revoked, expired, replaced or killed: the server ended this attach.
-        // Input sent before the socket closes would only reach a refusal.
-        self.attach_ended = true;
-        self.push_event(Event::Detached {
-            reason,
-            message: message.to_owned(),
-        });
-        // A `None` reason is unstated (an older server) and is never read
-        // as Requested.
-        if reason == Some(DetachReason::Requested) {
-            if self.detach_requested {
-                self.close();
-                return Err(ControlError::Closed);
-            }
-            return Ok(());
-        }
-        let detail = match (reason, message) {
-            (Some(reason), "") => reason.describe().to_owned(),
-            (Some(reason), extra) => format!("{}: {extra}", reason.describe()),
-            (None, "") => "the server ended the attach without saying why".to_owned(),
-            (None, extra) => extra.to_owned(),
-        };
-        self.error = Some(detail.clone());
-        // A refused HELLO ended with PROTOCOL_ERROR before workload-auth §7's
-        // AUTHENTICATION_FAILED was emitted; both stop retrying.
-        let fatal = matches!(
-            reason,
-            Some(DetachReason::ProtocolError | DetachReason::AuthenticationFailed)
-        );
-        if fatal && self.options.automatic_lifecycle {
-            return Err(ControlError::Refused(detail));
-        }
-        // Other endings: the server closes the socket itself, and the
-        // frames it sent ahead of the close still apply.
-        Ok(())
-    }
 }
 
 fn attached_terminals(
     snapshot: &SessionSnapshot,
 ) -> Result<(Vec<ResourceId>, HashSet<ResourceId>), ControlError> {
-    // Only the focused session's Terminal-kind resources take part in the
-    // attach barrier: the server bootstraps only that session, and an
-    // AgentSession paints nothing.
-    let terminals: Vec<ResourceId> = topology::terminal_resources(snapshot)
+    // Only the focused session's barrier kinds (Terminals) take part: the
+    // server bootstraps only that session.
+    let terminals: Vec<ResourceId> = barrier_resources(snapshot)
         .filter(|pane| topology::session_of(snapshot, pane) == Some(snapshot.focused_session))
         .map(|pane| pane.id.clone())
         .collect();

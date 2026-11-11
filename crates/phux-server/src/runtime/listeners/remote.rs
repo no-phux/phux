@@ -66,7 +66,7 @@ pub(in crate::runtime) async fn build_ws_listener(
     let acceptor = match crate::transport::tls::acceptor_from_pem_with_client_ca(
         &cert_path,
         &key_path,
-        workload.as_ref().map(|auth| &auth.ca),
+        workload.as_ref().map(|auth| &auth.roots),
     ) {
         Ok(acceptor) => acceptor,
         Err(err) => {
@@ -243,7 +243,7 @@ pub(in crate::runtime) fn build_quic_listener_for(
         }
     };
     let (workload_ca, workload_registry) =
-        workload_auth.map_or((None, None), |auth| (Some(auth.ca), Some(auth.registry)));
+        workload_auth.map_or((None, None), |auth| (Some(auth.roots), Some(auth.registry)));
     match crate::transport::quic::QuicListener::from_pem_with_client_ca_and_registry(
         addr,
         &cert_path,
@@ -348,7 +348,7 @@ pub(in crate::runtime) fn inner_tls_for(
         key,
         workload
             .as_ref()
-            .map(|auth| (&auth.ca, std::sync::Arc::clone(&auth.registry))),
+            .map(|auth| (&auth.roots, std::sync::Arc::clone(&auth.registry))),
         env.workload_paths(),
     ) {
         Ok(inner) => Some(std::sync::Arc::new(inner)),

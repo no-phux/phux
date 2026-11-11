@@ -1,7 +1,8 @@
 //! Input for the Linux surface mirror: a viewer's intents (`phux agent page
-//! click|type|key|scroll`) carried out on the desktop through command-line
-//! tools that speak the wlroots virtual-pointer and virtual-keyboard
-//! protocols, so no `unsafe` and no Wayland bindings.
+//! click|type|key|scroll`) carried out on the desktop. The wlroots
+//! virtual-pointer and virtual-keyboard protocols are spoken natively
+//! (`surface_wayland`) when the compositor offers them; otherwise through
+//! command-line tools:
 //!
 //! - Pointer: Hyprland places the cursor (`hyprctl dispatch movecursor`), in
 //!   layout coordinates, then `wlrctl pointer click` (or `ydotool click`)
@@ -58,21 +59,25 @@ impl Tools {
 pub(super) struct Place {
     pub(super) frame: Rect,
     pub(super) window: Option<String>,
+    /// Every output together, which the native pointer moves within.
+    pub(super) layout: Rect,
 }
 
 /// Carry out each intent on the desktop `target` shows, or with `dry_run`
-/// only log the commands. A failure is reported and skipped; it never ends
-/// the mirror.
+/// only log the commands. A failure is returned for the mirror to report;
+/// it never ends the mirror.
 pub(super) fn injector(
     target: &Target,
     dry_run: bool,
-) -> impl FnMut(&DocumentInput, (u32, u32)) + use<> {
+) -> impl FnMut(&DocumentInput, (u32, u32)) -> Result<(), String> + use<> {
     let env = session_env();
     let tools = Tools::detect();
+    let native = native_protocols(&env);
     if dry_run {
-        eprintln!("dry-run: input tools on PATH: {tools:?}");
+        eprintln!("dry-run: input tools on PATH: {tools:?}; native pointer, keyboard: {native:?}");
     }
     let injector = Injector {
+        native,
         hyprland: tools.hyprctl && env.iter().any(|(k, _)| *k == "HYPRLAND_INSTANCE_SIGNATURE"),
         target: target.clone(),
         env,
@@ -85,15 +90,61 @@ pub(super) fn injector(
             if dry_run {
                 eprintln!("dry-run: navigate {url:?} ignored: a desktop has no address");
             }
-            return;
+            return Ok(());
         }
-        if let Err(message) = injector.act(input, image) {
-            eprintln!("phux: input skipped: {message}");
-        }
+        injector.act(input, image)
     }
 }
 
+/// Window classes (`hyprctl` `class`, any case) that paste on Ctrl+Shift+V.
+const TERMINALS: [&str; 14] = [
+    "kitty",
+    "alacritty",
+    "foot",
+    "footclient",
+    "ghostty",
+    "com.mitchellh.ghostty",
+    "wezterm",
+    "org.wezfurlong.wezterm",
+    "xterm",
+    "konsole",
+    "org.kde.konsole",
+    "gnome-terminal",
+    "gnome-terminal-server",
+    "org.gnome.terminal",
+];
+
+/// Whether the window `hyprctl -j` describes is a terminal: `json` is
+/// `activewindow`'s object, or `clients`' array searched for `address`.
+pub(super) fn is_terminal(json: &str, address: Option<&str>) -> bool {
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(json.trim()) else {
+        return false;
+    };
+    let window = match (&value, address) {
+        (serde_json::Value::Array(all), Some(address)) => all
+            .iter()
+            .find(|w| w["address"].as_str() == Some(address))
+            .unwrap_or(&serde_json::Value::Null),
+        _ => &value,
+    };
+    let class = window["class"].as_str().unwrap_or_default();
+    TERMINALS.iter().any(|t| t.eq_ignore_ascii_case(class))
+}
+
+/// Whether the compositor offers the virtual pointer and keyboard.
+#[cfg(target_os = "linux")]
+fn native_protocols(env: &[(&str, String)]) -> (bool, bool) {
+    use super::surface_wayland::{KEYBOARD, POINTER, Session};
+    Session::connect(env).map_or((false, false), |s| (s.has(POINTER), s.has(KEYBOARD)))
+}
+
+#[cfg(not(target_os = "linux"))]
+const fn native_protocols(_env: &[(&str, String)]) -> (bool, bool) {
+    (false, false)
+}
+
 struct Injector {
+    native: (bool, bool),
     target: Target,
     env: Vec<(&'static str, String)>,
     tools: Tools,
@@ -105,6 +156,7 @@ impl Injector {
     /// Carry out (or log) one intent on an `image`-sized frame.
     fn act(&self, input: &DocumentInput, image: (u32, u32)) -> Result<(), String> {
         let Self {
+            native,
             target,
             env,
             tools,
@@ -113,7 +165,7 @@ impl Injector {
         } = self;
         let pointer = matches!(
             input,
-            DocumentInput::Click { .. } | DocumentInput::Scroll { .. }
+            DocumentInput::Click { .. } | DocumentInput::Scroll { .. } | DocumentInput::Drag { .. }
         );
         let place = if *hyprland && (pointer || matches!(target, Target::Window(_))) {
             Some(place(target, env)?)
@@ -128,7 +180,34 @@ impl Injector {
                 super::surface_grim::geometry(place.frame)
             );
         }
-        for argv in plan(input, image, place.as_ref(), *tools)? {
+        let chord = matches!(input, DocumentInput::Paste { chord: true, .. });
+        // A terminal pastes on Ctrl+Shift+V; the window that takes the
+        // chord is the target, or whatever has focus on a display.
+        let shift = chord && *hyprland && {
+            let window = place.as_ref().and_then(|p| p.window.as_deref());
+            let what = if window.is_some() {
+                "clients"
+            } else {
+                "activewindow"
+            };
+            hyprctl(what, env).is_ok_and(|json| is_terminal(&json, window))
+        };
+        let native = if pointer { native.0 } else { native.1 };
+        let (argvs, ops) = if native {
+            let focus = place.as_ref().and_then(|p| p.window.as_deref()).map(focus);
+            let ops = if chord {
+                vec![super::surface_wayland::paste_chord(shift)]
+            } else {
+                super::surface_wayland::ops(input, image, place.as_ref())?
+            };
+            (focus.into_iter().collect(), ops)
+        } else {
+            (
+                plan(input, image, place.as_ref(), *tools, shift)?,
+                Vec::new(),
+            )
+        };
+        for argv in argvs {
             if *dry_run {
                 eprintln!("dry-run: would run: {}", shown(&argv));
                 continue;
@@ -137,23 +216,46 @@ impl Injector {
             command.args(&argv[1..]).envs(env.iter().cloned());
             run(command, "the input tool did not finish")?;
         }
+        if *dry_run {
+            for op in &ops {
+                eprintln!("dry-run: would send natively: {op:?}");
+            }
+        } else if !ops.is_empty() {
+            #[cfg(target_os = "linux")]
+            super::surface_wayland::Session::connect(env)?.run(&ops)?;
+        }
         Ok(())
     }
+}
+
+/// The command that focuses window `address`.
+fn focus(address: &str) -> Vec<String> {
+    [
+        "hyprctl",
+        "dispatch",
+        "focuswindow",
+        &format!("address:{address}"),
+    ]
+    .map(str::to_owned)
+    .to_vec()
 }
 
 /// `target`'s rectangle now (a window may have moved since the frame).
 fn place(target: &Target, env: &[(&str, String)]) -> Result<Place, String> {
     let monitors = hyprctl("monitors", env)?;
+    let layout = monitors_rect(&monitors, None)?;
     match target {
         Target::Display(name) => Ok(Place {
             frame: monitors_rect(&monitors, name.as_deref())?,
             window: None,
+            layout,
         }),
         Target::Window(spec) => {
             let window = find_window(spec, &hyprctl("clients", env)?, &monitors)?;
             Ok(Place {
                 frame: window.rect,
                 window: Some(window.address),
+                layout,
             })
         }
     }
@@ -209,7 +311,11 @@ pub(super) fn monitors_rect(monitors: &str, name: Option<&str>) -> Result<Rect, 
     clippy::cast_possible_truncation,
     reason = "layout coordinates are far inside i64"
 )]
-fn to_layout(point: (u32, u32), image: (u32, u32), frame: Rect) -> Result<(i64, i64), String> {
+pub(super) fn to_layout(
+    point: (u32, u32),
+    image: (u32, u32),
+    frame: Rect,
+) -> Result<(i64, i64), String> {
     to_screen(image, frame, point.0, point.1)
         .map(|(x, y)| (x.floor() as i64, y.floor() as i64))
         .ok_or_else(|| "no frame has been published yet".to_owned())
@@ -221,17 +327,11 @@ pub(super) fn plan(
     image: (u32, u32),
     place: Option<&Place>,
     tools: Tools,
+    shift: bool,
 ) -> Result<Vec<Vec<String>>, String> {
     let argv = |words: &[&str]| words.iter().map(|&w| w.to_owned()).collect::<Vec<_>>();
     let mut out = Vec::new();
-    if let Some(address) = place.and_then(|p| p.window.as_deref()) {
-        out.push(argv(&[
-            "hyprctl",
-            "dispatch",
-            "focuswindow",
-            &format!("address:{address}"),
-        ]));
-    }
+    out.extend(place.and_then(|p| p.window.as_deref()).map(focus));
     let movecursor = |(x, y): (i64, i64)| {
         argv(&[
             "hyprctl",
@@ -242,7 +342,25 @@ pub(super) fn plan(
         ])
     };
     match input {
-        DocumentInput::Navigate { .. } => return Ok(Vec::new()),
+        // The clipboard itself is the mirror's (`clipboard`): only the
+        // paste chord is input.
+        DocumentInput::Navigate { .. }
+        | DocumentInput::CopyClipboard { .. }
+        | DocumentInput::ClipboardText { .. }
+        | DocumentInput::Activate { .. }
+        | DocumentInput::Paste { chord: false, .. } => return Ok(Vec::new()),
+        DocumentInput::Paste { chord: true, .. } => out.push(paste_argv(tools, shift)?),
+        DocumentInput::Drag { from, to } => {
+            let place =
+                place.ok_or("a drag needs Hyprland (hyprctl) to place the pointer; run under Hyprland")?;
+            if !tools.ydotool {
+                return Err("nothing here can drag: the compositor offers no virtual pointer; install ydotool with ydotoold running".into());
+            }
+            out.push(movecursor(to_layout(*from, image, place.frame)?));
+            out.push(argv(&["ydotool", "click", "0x40"]));
+            out.push(movecursor(to_layout(*to, image, place.frame)?));
+            out.push(argv(&["ydotool", "click", "0x80"]));
+        }
         DocumentInput::Click { x, y } => {
             let place =
                 place.ok_or("a click needs Hyprland (hyprctl) to place the pointer; run under Hyprland")?;
@@ -317,8 +435,21 @@ pub(super) fn plan(
     Ok(out)
 }
 
-/// The XKB keysym `wtype -k` names.
-const fn keysym(key: DocumentKey) -> &'static str {
+/// The command that presses the paste chord, Ctrl+V or with `shift`
+/// Ctrl+Shift+V.
+fn paste_argv(tools: Tools, shift: bool) -> Result<Vec<String>, String> {
+    let words: &[&str] = match (tools.wtype, tools.ydotool, shift) {
+        (true, _, false) => &["wtype", "-M", "ctrl", "v", "-m", "ctrl"],
+        (true, _, true) => &["wtype", "-M", "ctrl", "-M", "shift", "v", "-m", "shift", "-m", "ctrl"],
+        (false, true, false) => &["ydotool", "key", "29:1", "47:1", "47:0", "29:0"],
+        (false, true, true) => &["ydotool", "key", "29:1", "42:1", "47:1", "47:0", "42:0", "29:0"],
+        (false, false, _) => return Err("nothing here can press the paste chord: the compositor offers no virtual keyboard; install wtype, or ydotool with ydotoold running".into()),
+    };
+    Ok(words.iter().map(|&w| w.to_owned()).collect())
+}
+
+/// The XKB keysym `wtype -k` names, and the native keymap binds.
+pub(super) const fn keysym(key: DocumentKey) -> &'static str {
     match key {
         DocumentKey::Enter => "Return",
         DocumentKey::Tab => "Tab",
@@ -361,165 +492,5 @@ fn shown(argv: &[String]) -> String {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    /// A 4K panel at 2x left of a 1080p panel at 1x rotated upright, as
-    /// `hyprctl -j monitors` lists them.
-    const MONITORS: &str = r#"[
-        {"name":"DP-1","x":0,"y":0,"width":3840,"height":2160,"scale":2.0,"transform":0},
-        {"name":"HDMI-A-1","x":1920,"y":0,"width":1920,"height":1080,"scale":1.0,"transform":1}
-    ]"#;
-
-    const fn rect(x: f64, y: f64, w: f64, h: f64) -> Rect {
-        Rect { x, y, w, h }
-    }
-
-    #[test]
-    fn outputs_are_logical_rectangles_and_display_is_their_union() {
-        assert_eq!(
-            monitors_rect(MONITORS, Some("DP-1")),
-            Ok(rect(0.0, 0.0, 1920.0, 1080.0))
-        );
-        assert_eq!(
-            monitors_rect(MONITORS, Some("HDMI-A-1")),
-            Ok(rect(1920.0, 0.0, 1080.0, 1920.0))
-        );
-        assert_eq!(
-            monitors_rect(MONITORS, None),
-            Ok(rect(0.0, 0.0, 3000.0, 1920.0))
-        );
-        assert!(monitors_rect(MONITORS, Some("eDP-1")).is_err());
-    }
-
-    #[test]
-    fn image_pixels_map_to_layout_points_and_clamp_to_the_frame() {
-        // grim renders `display` at the highest scale: 6000x3840 for 3000x1920.
-        let all = rect(0.0, 0.0, 3000.0, 1920.0);
-        assert_eq!(to_layout((4000, 200), (6000, 3840), all), Ok((2000, 100)));
-        // The same layout under `--max-width 1500`: a quarter-size frame.
-        assert_eq!(to_layout((1000, 50), (1500, 960), all), Ok((2000, 100)));
-        // One output: its origin is added.
-        let hdmi = rect(1920.0, 0.0, 1080.0, 1920.0);
-        assert_eq!(to_layout((10, 20), (1080, 1920), hdmi), Ok((1930, 20)));
-        // A window at (12,34), captured natively on a 2x output.
-        let window = rect(12.0, 34.0, 800.0, 600.0);
-        assert_eq!(to_layout((100, 50), (1600, 1200), window), Ok((62, 59)));
-        // Outside the image lands on the far edge, still inside the window.
-        assert_eq!(
-            to_layout((9999, 9999), (1600, 1200), window),
-            Ok((811, 633))
-        );
-        assert!(to_layout((0, 0), (0, 0), window).is_err());
-    }
-
-    const ALL: Tools = Tools {
-        hyprctl: true,
-        wlrctl: true,
-        ydotool: true,
-        wtype: true,
-    };
-    const YDOTOOL: Tools = Tools {
-        hyprctl: true,
-        wlrctl: false,
-        ydotool: true,
-        wtype: false,
-    };
-
-    fn cmds(
-        input: &DocumentInput,
-        place: Option<&Place>,
-        tools: Tools,
-    ) -> Result<Vec<String>, String> {
-        plan(input, (1600, 1200), place, tools).map(|out| out.iter().map(|a| shown(a)).collect())
-    }
-
-    #[test]
-    fn a_window_click_focuses_moves_then_presses() {
-        let place = Place {
-            frame: rect(12.0, 34.0, 800.0, 600.0),
-            window: Some("0xa1".into()),
-        };
-        let click = DocumentInput::Click { x: 100, y: 50 };
-        assert_eq!(
-            cmds(&click, Some(&place), ALL).unwrap(),
-            [
-                "hyprctl dispatch focuswindow address:0xa1",
-                "hyprctl dispatch movecursor 62 59",
-                "wlrctl pointer click left",
-            ]
-        );
-        assert_eq!(
-            cmds(&click, Some(&place), YDOTOOL).unwrap()[2],
-            "ydotool click 0xC0"
-        );
-        let none = Tools {
-            hyprctl: true,
-            ..Tools::default()
-        };
-        assert!(
-            cmds(&click, Some(&place), none)
-                .unwrap_err()
-                .contains("install wlrctl")
-        );
-        assert!(cmds(&click, None, ALL).unwrap_err().contains("Hyprland"));
-    }
-
-    #[test]
-    fn keys_text_and_scroll_pick_the_first_tool_present() {
-        let display = Place {
-            frame: rect(0.0, 0.0, 800.0, 600.0),
-            window: None,
-        };
-        let enter = DocumentInput::Key {
-            key: DocumentKey::Enter,
-        };
-        assert_eq!(cmds(&enter, None, ALL).unwrap(), ["wtype -k Return"]);
-        assert_eq!(
-            cmds(&enter, None, YDOTOOL).unwrap(),
-            ["ydotool key 28:1 28:0"]
-        );
-        let wlrctl_only = Tools {
-            wlrctl: true,
-            ..Tools::default()
-        };
-        assert!(
-            cmds(&enter, None, wlrctl_only)
-                .unwrap_err()
-                .contains("install wtype")
-        );
-        let text = DocumentInput::Type {
-            text: "it's -x".into(),
-        };
-        assert_eq!(cmds(&text, None, ALL).unwrap(), [r"wtype -- 'it'\''s -x'"]);
-        assert_eq!(
-            cmds(&text, None, wlrctl_only).unwrap(),
-            [r"wlrctl keyboard type 'it'\''s -x'"]
-        );
-        // A 2x frame halves the delta; a display scrolls where the pointer is.
-        let scroll = DocumentInput::Scroll { dx: 0, dy: 200 };
-        assert_eq!(
-            cmds(&scroll, Some(&display), ALL).unwrap(),
-            ["wlrctl pointer scroll 100 0"]
-        );
-        assert_eq!(
-            cmds(&scroll, Some(&display), YDOTOOL).unwrap(),
-            ["ydotool mousemove --wheel -x 0 -y -2"]
-        );
-        let window = Place {
-            window: Some("0xb2".into()),
-            ..display
-        };
-        assert_eq!(
-            cmds(&scroll, Some(&window), ALL).unwrap()[1],
-            "hyprctl dispatch movecursor 400 300"
-        );
-        let nav = DocumentInput::Navigate {
-            url: "https://phux.sh/".into(),
-        };
-        assert_eq!(
-            cmds(&nav, Some(&window), ALL).unwrap(),
-            Vec::<String>::new()
-        );
-    }
-}
+#[path = "surface_grim_input_tests.rs"]
+mod tests;

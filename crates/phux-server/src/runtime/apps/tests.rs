@@ -3,15 +3,16 @@ use phux_protocol::kinds::{KINDS, command_kind};
 
 #[test]
 fn every_app_is_listed() {
+    // By kind, not by address: the apps are zero-sized, so every app
+    // reference may share one address.
     for spec in &KINDS {
         let kind = crate::id_bridge::core_kind(spec.kind).expect("a served kind");
         assert!(
-            APPS.iter()
-                .any(|app| std::ptr::addr_eq(*app, app_for(kind))),
+            APP_KINDS.contains(&kind),
             "{kind} has an app that APPS does not list"
         );
     }
-    assert_eq!(APPS.len(), KINDS.len(), "APPS lists an app twice");
+    assert_eq!(APP_KINDS.len(), KINDS.len(), "APPS lists an app twice");
 }
 
 #[test]
@@ -26,4 +27,28 @@ fn a_facet_command_routes_to_its_kind_and_a_host_command_to_none() {
     assert!(app_owning(&screen).is_some());
     assert_eq!(command_kind(&Command::DescribeApi), None);
     assert!(app_owning(&Command::DescribeApi).is_none());
+}
+
+/// An upgrade resume rebuilds in `APPS` order, and a child's rebuild finds
+/// its parent only if the parent's kind already ran.
+#[test]
+fn a_parent_kind_resumes_before_its_children() {
+    let kinds: Vec<ResourceKind> = KINDS
+        .iter()
+        .filter_map(|spec| crate::id_bridge::core_kind(spec.kind))
+        .collect();
+    let position = |kind| {
+        APP_KINDS
+            .iter()
+            .position(|listed| *listed == kind)
+            .expect("listed")
+    };
+    for child in kinds.iter().filter(|kind| kind.requires_parent()) {
+        for parent in kinds.iter().filter(|kind| kind.can_parent()) {
+            assert!(
+                position(*parent) < position(*child),
+                "{parent} must resume before {child}"
+            );
+        }
+    }
 }

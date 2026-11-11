@@ -82,6 +82,7 @@ resolve_rune() {
   matches "$build_sha256" '[0-9a-f]{64}' || die "the feed publishes no Phux Rune digest for ${target}"
   case "$target" in
     aarch64-apple-darwin) asset_name="phux-rune-${build_id}-macos-arm64.zip" ;;
+    aarch64-unknown-linux-gnu) asset_name="phux-rune-${build_id}-linux-aarch64.tar.gz" ;;
     *) asset_name="phux-rune-${build_id}-linux-x86_64.tar.gz" ;;
   esac
   asset_url="${RELEASES}/rune-v${build_id}/${asset_name}"
@@ -210,7 +211,7 @@ install_rune_linux() {
 # app updates itself from here on.
 install_rune() {
   case "$target" in
-    aarch64-apple-darwin | x86_64-unknown-linux-gnu) ;;
+    aarch64-apple-darwin | x86_64-unknown-linux-gnu | aarch64-unknown-linux-gnu) ;;
     *) die "no Phux Rune build for ${target}" ;;
   esac
   [ "$target" != aarch64-apple-darwin ] || [ "$dry_run" -eq 1 ] || [ "$(uname -s)" = Darwin ] \

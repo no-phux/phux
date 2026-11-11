@@ -17,6 +17,36 @@ In the terminal UI, the sidebar lists agents with their state, <kbd>C-a</kbd>
 the next pane whose agent is waiting for you (<kbd>C-a</kbd> <kbd>Q</kbd>
 jumps back).
 
+## Running many agents at once
+
+Run each agent in its own pane: one session per project, or several panes
+in one session. phux tracks every agent's state, so one command, or the
+sidebar, shows which agents are waiting on you.
+
+```sh
+phux new --json -s api -c ~/src/api -- claude
+phux new --json -s web -c ~/src/web -- codex
+phux agent list --state blocked
+```
+
+`--json` creates each session without attaching, so the script keeps
+going. `phux attach NAME` opens one when you're ready.
+
+To keep track of them:
+
+- `phux agent list --state blocked` lists the agents waiting on you.
+  In `phux ls`, sessions that need you come first.
+- `phux agent wait --any --until blocked --timeout 600` returns when any
+  local agent transitions into `blocked`.
+- In the TUI, the sidebar shows every agent's state. <kbd>C-a</kbd>
+  <kbd>a</kbd> filters it to `all`, `this` session, or `need`.
+  <kbd>C-a</kbd> <kbd>q</kbd> jumps to the next pane waiting for an
+  answer, and <kbd>C-a</kbd> <kbd>Q</kbd> jumps back.
+
+More: [starting agents](#starting-agents), [agent states](#agent-states),
+[the sidebar](./status-bar.md#the-sidebar),
+[when an agent is waiting](https://docs.phux.sh/agent-waiting).
+
 ## Agent states
 
 Every pane has an agent record: the agent's kind (`claude`, `codex`, `pi`,
@@ -114,6 +144,9 @@ phux skill             # everything
 `phux mcp --skill` prints the same guide for the MCP tools. Both are also
 installable as skills with `npx skills add no-phux/skills`.
 
+`phux skill setup` installs a `phux` skill stub and a Claude Code session
+hook for each installed agent ([Agent skill setup](./agent-skill.md)).
+
 ## MCP
 
 `phux mcp` serves phux as MCP tools over stdio. Register it the way your
@@ -129,6 +162,11 @@ with its input schema. Each tool mirrors one `phux` command and is marked
 read-only or destructive the same way the server treats it. Tools that kill,
 detach, send a destructive signal, or approve something require
 `confirm: true`.
+
+Other resources have tools too: `phux_documents` lists documents, trees
+and surfaces, `phux_tree_snapshot`, `phux_tree_wait` and
+`phux_surface_snapshot` read them, `phux_document_*` sends input, and
+`phux_app_open` runs an application ([parity](./reference/parity.md)).
 
 `phux_agent_list` accepts the same filters as the CLI: `states` is an
 optional array such as `["blocked", "done"]`, and `query` is optional text.
@@ -169,6 +207,10 @@ longer runs the agent you expected.
 phux launch --list                        # integrations you can launch
 phux launch claude-code -- --model opus   # extra arguments follow --
 ```
+
+`phux spawn --target PANE` (or `phux launch --target PANE`) places the new
+pane beside an existing one. `--split horizontal` puts it to the right;
+`--split vertical` puts it below.
 
 Launch commands come from plugins. The starter distribution includes them for
 the agents above; `phux config init --distro starter` turns it on.
@@ -270,69 +312,12 @@ message.
 
 ### Mail across a hub
 
-On a machine joined to a hub with `phux host join`, such as a
-[Minimal box](./remote.md#minimal-boxes), `phux mail`, `phux claim` and the
-MCP mail and claim tools use the hub's store instead of their own. Agents in
-boxes and on the hub then read the same mail and see the same claims, and the
-hub's agents' harnesses deliver mail from boxes like any other.
+On a machine joined to a hub with `phux host join`, mail and claims use the
+hub's store, so agents in boxes and on the hub share them. Addresses, what a
+box may do, and how claims compare paths are in
+[Mail across a hub](./hub-mail.md).
 
-Each side writes addresses as it would at home. For a box joined as
-`min-api`:
-
-| On the hub | In the box |
-| --- | --- |
-| `@749` | `hub/@749` |
-| `min-api/@3` | `@3` |
-| `min-web/@2`, another box | `min-web/@2` |
-
-```sh
-phux mail send hub/@749 -t fix-login -m 'tests pass in the box'   # in the box
-phux mail send min-api/@3 -t fix-login -m 'merge it'               # on the hub
-```
-
-**A box speaks only as itself.** The hub puts every sender, reader and
-claim holder a satellite names under that satellite's name, the one its
-credential was issued for. A box can't read, take or acknowledge the hub's
-mail, or renew or release the hub's claims. It can write to any address and
-list every claim. Mail and claims are all it reaches: it still opens no
-terminal on the hub.
-
-The satellite dials the hub's QUIC listener with the credential it joined
-with, so this needs nothing beyond the join. When the hub can't be reached,
-the command fails; it never falls back to the box's own store. Revoking the
-satellite's credential on the hub cuts it off. A hub that adds a machine
-with `phux host add --role satellite` dials that machine instead, and that
-machine keeps its own mail.
-
-Claims compare paths as each side writes them. A box usually sees the
-project at a different path from the hub, so its claims show up on the hub
-but don't conflict with the hub's own.
-
-## Plan usage
-
-`phux agent usage` prints the AI plan limits this machine can see: Claude
-Code's 5-hour and weekly windows, Codex's limits, and Grok Build's
-allowance, with how much is used and when each resets.
-
-It reads each vendor's own sign-in on this machine and sends it only to that
-vendor:
-
-| Vendor | Reads | Sends, and only to |
-| --- | --- | --- |
-| Claude Code | Keychain item `Claude Code-credentials`, else `~/.claude/.credentials.json`; `~/.claude.json` | The access token, to `api.anthropic.com` |
-| Codex | `~/.codex/sessions/**/rollout-*.jsonl` and `~/.codex/auth.json` | When those logs are over 10 minutes old: the access token and account id, to `chatgpt.com` |
-| Grok Build | `~/.grok/auth.json` | The session token and user id, to `cli-chat-proxy.grok.com` |
-
-Tokens are never refreshed, written, or logged, and travel only over HTTPS.
-An expired sign-in shows as `unavailable` until you use that agent again.
-Requests to one vendor are at least two minutes apart, with longer waits
-after a rate limit.
-
-The usage plugin, part of the starter distribution, runs
-`phux agent usage --publish` when a client attaches or an agent changes
-state. That shares the numbers with every client allowed to see the whole
-server, including paired devices such as a phone. It shares an anonymous
-account fingerprint, never an email or a token.
+Plan usage: see [troubleshooting](./troubleshooting.md#plan-usage).
 
 ## Agents without an integration
 
@@ -396,21 +381,19 @@ without `--yes` when there is none.
 list, read, and type into panes in its own session, but not create, kill,
 signal, or reorganize anything, and never more than you can. The key ends
 when the session is deleted or the server stops (an in-place
-`phux upgrade` keeps it). **This is not a
-sandbox.** Any program running as your user can still reach the server's
-main socket with full access.
+`phux upgrade` keeps it). Its connections report who minted it as
+`on_behalf_of` in `phux whoami --json` (`owner`, or the minting credential's
+id). **This is not a sandbox.** Any program running as your user can still
+reach the server's main socket with full access.
 
-**Held actions wait for you.** A device or automation key enrolled with
-`?signal` in its scope has its kills and signals held until a person decides:
+**On macOS, agents share the server's privacy grants.** Every program in a
+pane is charged to the phux server; `phux server permissions` lists what it
+holds ([macOS permissions](./install.md#macos-permissions)).
 
-```sh
-phux approvals          # what is waiting
-phux approve ID
-phux deny ID
-```
-
-Nothing on this machine's own socket is ever held. See
-[Remote machines](./remote.md#who-can-do-what) for keys and scopes.
+**Held actions wait for you.** A key enrolled with a held verb such as
+`?signal` waits for `phux approve ID` or `phux deny ID`; `phux approvals`
+lists them. This machine's own socket is never held. See
+[Held actions](./approvals.md).
 
 ## Complete terminal creation
 
@@ -438,13 +421,4 @@ says why it is command-line only.
 `whoami`, `mail send`, `mail read`, `mail ack`, `claim take`, `claim renew`,
 `claim release`, `claim list`.
 
-## Debugging
-
-- `phux agent explain @7` shows which evidence decided the state, and what
-  each rule saw.
-- `phux agent explain --file screen.txt --kind claude` tests rules against a
-  saved screen without a server.
-- `phux watch --json @7` shows the events, such as `agent_state` and
-  `asked`, as they arrive.
-- `phux agent log @7` prints an agent session's events.
-- `phux doctor` checks the Claude Code wrapper.
+Debugging agent state: see [troubleshooting](./troubleshooting.md#debugging).

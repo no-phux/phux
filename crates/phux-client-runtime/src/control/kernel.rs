@@ -1,9 +1,11 @@
 //! Engine outcomes and kernel effect processing.
 
+use super::subscriptions::Origin;
 use super::{
     ControlError, ControlPlane, EngineApplyError, EngineEvent, EngineHandle, EngineOutcome, Event,
     FrameKind, InputEvent, KernelEffect, KernelSend, KernelStatus, ResourceId, ServerFeature,
 };
+use phux_protocol::ids::ResourceKind;
 
 /// One engine batch handed out by [`ControlPlane::prepare_engine_apply`].
 pub(super) struct EngineApply {
@@ -94,13 +96,18 @@ impl ControlPlane {
                 terminals,
             } => {
                 self.active_attach_id = Some(*attach_id);
-                self.attach_terminals = terminals.iter().cloned().collect();
+                self.subscriptions.replace(
+                    Origin::SessionAttach,
+                    ResourceKind::Terminal,
+                    terminals.iter().cloned(),
+                );
             }
             EngineEvent::AttachReady { attach_id } if self.active_attach_id == Some(*attach_id) => {
                 self.attached_once = true;
             }
             EngineEvent::Closed { terminal_id, .. } => {
-                self.attach_terminals.remove(terminal_id);
+                self.subscriptions
+                    .remove(terminal_id, Origin::SessionAttach);
             }
             EngineEvent::AgentSessionDeclared { terminal_id, .. } => {
                 self.agent_delivery.admit(terminal_id);
@@ -240,12 +247,8 @@ impl ControlPlane {
                     if let Some(relabel) = self.relabel_in_flight(&key.terminal_id) {
                         relabel.title = Some(title.clone());
                     }
-                    if let Some(pane) = self
-                        .topology
-                        .as_mut()
-                        .and_then(|topology| topology.pane_mut(&key.terminal_id))
-                    {
-                        pane.title = Some(title.clone());
+                    if let Some(topology) = self.topology.as_mut() {
+                        topology.retitle(&key.terminal_id, &title);
                     }
                     self.push_event(Event::TitleChanged {
                         terminal_id: key.terminal_id,
@@ -286,6 +289,14 @@ impl ControlPlane {
                     reason,
                 });
             }
+            KernelStatus::Unsupported {
+                terminal_id,
+                codec_tag,
+            } => tracing::warn!(
+                %terminal_id,
+                codec_tag,
+                "the server streamed a resource in a codec this build cannot decode; ignoring it"
+            ),
             // Folded from the agent event itself, for every terminal the
             // subscription covers rather than only the kernel's.
             KernelStatus::Cwd { .. }

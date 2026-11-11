@@ -3,7 +3,7 @@ source: crates/phux-tui/src/attach/driver/tests.rs
 expression: all
 ---
  Agents            ├────────────────────────────────────────────────────────────
- all this need     │PANE-BASE
+ all·this·need     │PANE-BASE
    none running    │
                    │
                    │

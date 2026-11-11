@@ -10,7 +10,8 @@
 //! Viewers' input intents (`phux agent page click|type|key`, or any `SEND_DOCUMENT_INPUT`) are
 //! posted as input events on macOS (`surface_input`) and run through
 //! `hyprctl`, `wlrctl`, `wtype` or `ydotool` on Linux
-//! (`surface_grim_input`); `--dry-run-input` logs them instead.
+//! (`surface_grim_input`); `--dry-run-input` logs them instead. While input
+//! arrives the host shows who is in control (`surface_indicator`).
 //!
 //! On Linux, `grim` captures from a wlroots compositor (Hyprland, Sway); see
 //! `surface_grim`.
@@ -173,14 +174,16 @@ pub(super) fn run_mirror(args: MirrorArgs<'_>) -> ExitCode {
         } else {
             outln!("{resource}");
         }
-        let interval = Duration::from_millis(interval_ms.max(100));
+        let display = control == Some(phux_protocol::wire::frame::ControlClass::Display);
+        let indicator = super::surface_indicator::Indicator::new(display, dry_run_input);
+        let clipboard = super::clipboard::Clipboard::host(dry_run_input);
         publish_until_gone(
             &mut conn,
             &socket_path,
             &opened.resource,
-            (capture, act),
+            (capture, act, indicator, &clipboard),
             first,
-            interval,
+            Duration::from_millis(interval_ms.max(100)),
             json,
         )
         .await
@@ -202,9 +205,11 @@ async fn publish_until_gone(
     conn: &mut phux_client::attach::connection::Connection,
     socket: &std::path::Path,
     resource: &phux_protocol::ids::ResourceId,
-    (mut capture, mut act): (
+    (mut capture, mut act, mut indicator, clipboard): (
         impl FnMut() -> Result<Vec<u8>, String>,
-        impl FnMut(&phux_client::tree::DocumentInput, (u32, u32)),
+        impl FnMut(&phux_client::tree::DocumentInput, (u32, u32)) -> Result<(), String>,
+        super::surface_indicator::Indicator,
+        &super::clipboard::Clipboard,
     ),
     first: Vec<u8>,
     interval: std::time::Duration,
@@ -223,6 +228,7 @@ async fn publish_until_gone(
     let mut last = first;
     let mut misses: u32 = 0;
     let mut input = None;
+    let mut origin = super::surface_indicator::UNNAMED.to_owned();
     loop {
         match capture() {
             Ok(bytes) => {
@@ -251,17 +257,27 @@ async fn publish_until_gone(
         let idle = super::surface_cadence::backoff(interval, misses);
         loop {
             for intent in std::mem::take(&mut intents) {
-                if intent.resource == *resource {
-                    act(&intent.input, frame);
-                    input = Some(std::time::Instant::now());
+                if intent.resource != *resource {
+                    continue;
                 }
+                clipboard
+                    .carry_out(conn, &intent, &mut intents, |input| act(input, frame))
+                    .await;
+                input = Some(std::time::Instant::now());
+                indicator.input(&origin).await;
             }
+            indicator.tick().await;
             let next = super::surface_cadence::next_capture(captured, input, idle);
             tokio::select! {
                 _ = tokio::signal::ctrl_c() => return ExitCode::SUCCESS,
                 () = tokio::time::sleep_until(next.into()) => break,
                 received = conn.recv() => match received {
-                    Ok(received) => intents.extend(tree::intent(&received)),
+                    Ok(received) => {
+                        if let Some(by) = tree::activity(&received, resource) {
+                            origin = by.to_owned();
+                        }
+                        intents.extend(tree::intent(&received));
+                    }
                     Err(err) if err.is_transport_loss() => {
                         let Some(redialed) = redial::redial(socket).await else {
                             return report(json, &err.into());
@@ -292,7 +308,7 @@ fn refused(json: bool, message: &str) -> ExitCode {
 }
 
 #[cfg(target_os = "macos")]
-mod macos {
+pub(super) mod macos {
     use std::process::Command;
 
     use crate::commands::agent::tree::surface::Frames;
@@ -338,11 +354,17 @@ JSON.stringify(windows.map(w => ({ id: w.kCGWindowNumber, owner: w.kCGWindowOwne
     /// The first normal-layer on-screen window of `App`, or of `App:title`
     /// whose title contains `title`.
     fn window_by_name(spec: &str) -> Result<u32, String> {
+        pick_window(spec, &window_list()?)
+    }
+
+    /// The on-screen windows as `[{id, owner, name, layer}]` JSON. Without
+    /// Screen Recording access every `name` is empty.
+    pub(in crate::commands::agent::tree) fn window_list() -> Result<String, String> {
         let output = Command::new("osascript")
             .args(["-l", "JavaScript", "-e", WINDOW_LIST])
             .output()
             .map_err(|err| format!("could not list windows: {err}"))?;
-        pick_window(spec, &String::from_utf8_lossy(&output.stdout))
+        Ok(String::from_utf8_lossy(&output.stdout).into_owned())
     }
 
     pub(super) fn pick_window(spec: &str, listing: &str) -> Result<u32, String> {

@@ -125,6 +125,43 @@ next mutable call on the client. The low-level `phux_client_terminal_grid`
 and `phux_client_terminal_grid_metadata` are still there for a renderer that
 wants every cell.
 
+### Documents and non-terminal leaves
+
+An arrangement leaf, and a `phux_client_catalog_terminal_get` entry, is any
+resource but an `AgentSession`: a terminal, an accessibility tree, a pixel
+surface, a typed document, or a kind the header does not name. Read
+`resource_kind` before creating a terminal view; only a terminal has a grid.
+`unarranged_count` counts terminals only. Use the header and library from
+one build: a bridge older than `resource_kind` leaves it undefined.
+A read never prunes these leaves, so a write never loses another client's
+placement. A document kind delivers whole documents instead: attach it with
+`phux_client_queue_attach_resource`, then read `PHUX_CLIENT_EFFECT_DOCUMENT`
+effects. `bytes` holds the content type (`status_code` bytes long, empty for
+a tree or surface), then the document; show the last one delivered, not the
+highest `seq`. In Rust these
+are `Event::DocumentPublished` and `Topology::resources`
+([resource kinds](./resource-kinds.md)).
+
+## Documents, trees, and surfaces
+
+A session can hold resources that are not terminals
+([resource kinds](./resource-kinds.md#available-now)). Each arrives whole:
+the runtime emits `Event::DocumentPublished`, whose `DocumentPublication`
+carries the resource id, its kind, the publish sequence, the bytes (JSON
+for a tree, PNG or JPEG for a surface, the content type of a typed
+document) and that content type. Show the last one delivered, not the
+highest `seq`. The event is live-only, and there is no grid or replica to
+paint.
+
+UniFFI's `RemoteClient` projects the same event as
+`WireEvent::DocumentPublished`, with the document's `control` class
+(`page`, `window` or `display`). Offer input only when `control` is set:
+`send_document_input(resource_id, intent)` returns a request id that a
+`WireEvent::DocumentInputResult` settles, or `0` when nothing was sent.
+
+The C ABI delivers the same documents as `PHUX_CLIENT_EFFECT_DOCUMENT`
+effects ([above](#documents-and-non-terminal-leaves)).
+
 ## Runtime consumer contract
 
 Native Rust consumers normally use the runtime's **Fed** delivery: the

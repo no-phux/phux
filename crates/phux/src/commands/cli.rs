@@ -43,6 +43,9 @@ pub(crate) enum Command {
     #[usage(help_heading = "Sessions", display_order = 10)]
     Attach(AttachArgs),
 
+    #[usage(help_heading = "Sessions", display_order = 15)]
+    Native(super::native_terminal::NativeArgs),
+
     #[usage(help_heading = "Machines", display_order = 41)]
     Server(ServerArgs),
 
@@ -268,6 +271,9 @@ pub(crate) enum Command {
     #[usage(help_heading = "Maintain", display_order = 54)]
     Config(ConfigArgs),
 
+    #[usage(help_heading = "Maintain", display_order = 54)]
+    Migrate(MigrateArgs),
+
     #[usage(help_heading = "Maintain", display_order = 55)]
     Plugin(PluginArgs),
 
@@ -369,6 +375,9 @@ pub(crate) enum Command {
 
     #[usage(help_heading = "Maintain", display_order = 52)]
     Logs(LogsArgs),
+
+    #[usage(help_heading = "Maintain", display_order = 59)]
+    Audit(AuditArgs),
 
     #[usage(alias = "bug")]
     #[usage(help_heading = "Maintain", display_order = 53)]

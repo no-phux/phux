@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use phux_protocol::ids::{ResourceId, SessionId};
+use phux_protocol::ids::{ResourceId, ResourceKind, SessionId};
 use phux_protocol::wire::info::SessionSnapshot;
 
 use crate::layout::ArrangementDoc;
@@ -152,6 +152,35 @@ pub fn format_terminal_id(id: &ResourceId) -> String {
     match id {
         ResourceId::Local { id } => format!("@{id}"),
         ResourceId::Satellite { host, id } => format!("{}/@{id}", host.as_str()),
+    }
+}
+
+/// One resolved resource and the kind the snapshot lists it as, so a verb
+/// can dispatch on the kind ([`crate::read`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Resolved {
+    /// The resource.
+    pub id: ResourceId,
+    /// Its kind.
+    pub kind: ResourceKind,
+    /// The resource it is bound to, when the snapshot names one: an agent
+    /// session's or a document's pane.
+    pub parent: Option<ResourceId>,
+}
+
+impl Resolved {
+    /// `id` with the kind and parent `snapshot` lists for it. A resource the
+    /// snapshot does not list is taken as a Terminal, the kind every verb
+    /// assumed before kinds were dispatched, so the server's own answer
+    /// stands.
+    #[must_use]
+    pub fn in_snapshot(snapshot: &SessionSnapshot, id: ResourceId) -> Self {
+        let info = crate::resource::find(snapshot, &id);
+        Self {
+            kind: info.map_or(ResourceKind::Terminal, |info| info.kind),
+            parent: info.and_then(|info| info.parent.clone()),
+            id,
+        }
     }
 }
 

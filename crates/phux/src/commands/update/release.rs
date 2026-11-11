@@ -62,6 +62,10 @@ pub(crate) trait ReleaseSource: std::fmt::Debug {
     /// The body of `channel`'s release manifest.
     fn manifest(&self, channel: Channel) -> Result<String, UpdateError>;
 
+    /// The minisign signature over `channel`'s manifest
+    /// (`<channel>.json.minisig`).
+    fn manifest_signature(&self, channel: Channel) -> Result<String, UpdateError>;
+
     /// Download `url` into `dest`, replacing whatever is there.
     fn download(&self, url: &str, dest: &Path) -> Result<(), UpdateError>;
 }
@@ -84,6 +88,10 @@ impl ReleaseSource for NetworkReleaseSource {
             )),
             other => other,
         })
+    }
+
+    fn manifest_signature(&self, channel: Channel) -> Result<String, UpdateError> {
+        with_api_fallback(&release::manifest_signature_url(channel), get_manifest)
     }
 
     fn download(&self, url: &str, dest: &Path) -> Result<(), UpdateError> {

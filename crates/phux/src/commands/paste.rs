@@ -2,6 +2,7 @@ use std::io::Read;
 use std::path::PathBuf;
 use std::process::ExitCode;
 
+use phux_client::read::Verb;
 use phux_protocol::input::paste::PasteTrust;
 use phux_server::runtime::default_socket_path;
 
@@ -49,7 +50,8 @@ pub(crate) fn run_paste(
         Err(code) => return code,
     };
     rt.block_on(async move {
-        let pane = match resolve_target_for_input(&socket_path, &selector, "paste", json).await {
+        let pane = match resolve_target_for_input(&socket_path, &selector, Verb::Paste, json).await
+        {
             Ok(id) => id,
             Err(code) => return code,
         };

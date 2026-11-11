@@ -3,6 +3,7 @@
 use phux_client_runtime::Client;
 use phux_client_runtime::control::{Event, Observation};
 use phux_protocol::ids::ResourceId;
+use phux_protocol::wire::frame::DetachReason;
 use rune::Tx;
 
 use super::{Desk, NoticeKind, layout};
@@ -46,7 +47,7 @@ impl Desk {
     pub(super) fn on_screen(&self) -> Vec<ResourceId> {
         match &self.layout {
             Some(tree) => phux_client_core::layout::leaves(tree),
-            None => self.shown.iter().map(|s| s.terminal.clone()).collect(),
+            None => self.shown.iter().map(|s| s.resource.clone()).collect(),
         }
     }
 
@@ -79,6 +80,10 @@ impl Desk {
                 tx.copy(text.0);
                 false
             }
+            Event::CommandResult {
+                request_id,
+                ref result,
+            } if self.host_copied(request_id, result, tx) => true,
             other => self.apply_connection(client, other),
         }
     }
@@ -88,10 +93,10 @@ impl Desk {
             && self
                 .shown
                 .as_ref()
-                .is_some_and(|s| &s.terminal == id && s.view.is_some())
+                .is_some_and(|s| &s.resource == id && s.view.is_some())
     }
 
-    fn apply_connection(&mut self, client: &Client, event: Event) -> bool {
+    pub(super) fn apply_connection(&mut self, client: &Client, event: Event) -> bool {
         match event {
             Event::Exited {
                 terminal_id,
@@ -102,6 +107,12 @@ impl Desk {
                 self.retire_documents(client);
                 true
             }
+            // The server ended this attach and keeps the socket. Nothing is
+            // lost: `settle_home` picks another session on this connection.
+            Event::Detached {
+                reason: Some(DetachReason::SessionKilled),
+                ..
+            } => true,
             Event::Detached { reason, message } => {
                 let said = reason.map(|reason| reason.describe().to_owned());
                 self.link.ended = said.or((!message.is_empty()).then_some(message));
@@ -191,7 +202,7 @@ impl Desk {
         let pending_phone = self.phone.is_some()
             && self.shown.is_none()
             && self.wanted.as_ref().is_some_and(|(wanted, _)| wanted == id);
-        if self.shown.as_ref().is_some_and(|s| &s.terminal == id) || pending_phone {
+        if self.shown.as_ref().is_some_and(|s| &s.resource == id) || pending_phone {
             let next = self
                 .layout
                 .as_ref()

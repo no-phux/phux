@@ -13,7 +13,6 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 use std::time::Duration;
 
-use base64::Engine as _;
 use futures_util::{SinkExt as _, StreamExt as _};
 use phux_client::attach::connection::Connection;
 use phux_client::tree::{self, Kind};
@@ -23,7 +22,7 @@ use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
 use tokio::net::TcpStream;
 use tokio_tungstenite::tungstenite::Message;
 
-use super::page_input::{Viewport, cdp_calls};
+use super::page_input::{Incoming, Viewport, backend_node, cdp_calls, classify, mouse_click};
 use super::surface::Frames;
 use super::{dial, report, resolve};
 use crate::commands::{cli_runtime, json_err};
@@ -90,50 +89,6 @@ pub(super) fn pick_page(spec: &str, listing: &str) -> Result<Page, String> {
         })
         .find(|page| spec == "first" || page.title.contains(spec) || page.url.contains(spec))
         .ok_or_else(|| format!("no page matches {spec:?}"))
-}
-
-/// What one `DevTools` message means to the mirror.
-#[derive(Debug, PartialEq)]
-pub(super) enum Incoming {
-    /// A screencast frame: its PNG or JPEG, the session id to acknowledge,
-    /// and the viewport's CSS size from its metadata.
-    Frame {
-        image: Vec<u8>,
-        session: u64,
-        css: Option<(f64, f64)>,
-    },
-    /// The answer to `Accessibility.getFullAXTree`: the tree document.
-    Tree(Vec<u8>),
-    Other,
-}
-
-/// Classify one message; `tree_request` is the id of the last tree read.
-pub(super) fn classify(text: &str, tree_request: u64) -> Incoming {
-    let Ok(message) = serde_json::from_str::<serde_json::Value>(text) else {
-        return Incoming::Other;
-    };
-    if message["method"].as_str() == Some("Page.screencastFrame") {
-        let params = &message["params"];
-        let Some(image) = params["data"]
-            .as_str()
-            .and_then(|data| base64::engine::general_purpose::STANDARD.decode(data).ok())
-        else {
-            return Incoming::Other;
-        };
-        let metadata = &params["metadata"];
-        let css = metadata["deviceWidth"]
-            .as_f64()
-            .zip(metadata["deviceHeight"].as_f64());
-        return Incoming::Frame {
-            image,
-            session: params["sessionId"].as_u64().unwrap_or(0),
-            css,
-        };
-    }
-    if message["id"].as_u64() == Some(tree_request) && message["result"]["nodes"].is_array() {
-        return Incoming::Tree(serde_json::to_vec(&message["result"]).unwrap_or_default());
-    }
-    Incoming::Other
 }
 
 /// `GET /json` from the browser's `DevTools` server, by hand: one request,
@@ -228,7 +183,7 @@ pub(super) fn run_mirror(args: MirrorArgs<'_>) -> ExitCode {
         }
         let interval = Duration::from_millis(interval_ms.max(100));
         let ends = (&tree_res, &surface, found.ws.as_str());
-        match mirror(&mut conn, ends, screencast(frames), interval).await {
+        match mirror(&mut conn, &socket_path, ends, screencast(frames), interval).await {
             Ok(()) => ExitCode::SUCCESS,
             Err(Failure::Tree(err)) => report(json, &err),
             Err(Failure::Browser(message)) => json_err::emit(
@@ -321,9 +276,57 @@ impl Cdp {
             .await
     }
 
-    /// Carry out one viewer intent.
-    async fn act(&mut self, intent: &tree::Intent, view: Viewport) -> Result<(), Failure> {
+    /// Carry out every intent waiting; a copy is answered from the host
+    /// clipboard, not the page. Returns the last activation's box request.
+    async fn act_all(
+        &mut self,
+        conn: &mut Connection,
+        clipboard: &super::clipboard::Clipboard,
+        intents: &mut Vec<tree::Intent>,
+        (view, last_tree): (Viewport, Option<&[u8]>),
+    ) -> Result<Option<u64>, Failure> {
+        let mut box_request = None;
+        for intent in std::mem::take(intents) {
+            if !clipboard.answered(conn, &intent, intents).await {
+                box_request = self.act(&intent, view, last_tree).await?.or(box_request);
+                super::clipboard::Clipboard::answer_paste(conn, &intent, Ok(()), intents).await;
+            }
+        }
+        Ok(box_request)
+    }
+
+    /// Carry out one viewer intent. An activation scrolls the node's
+    /// element into view and asks for its box, whose answer (the returned
+    /// id) the mirror clicks; a node the last tree lacks is skipped.
+    async fn act(
+        &mut self,
+        intent: &tree::Intent,
+        view: Viewport,
+        last_tree: Option<&[u8]>,
+    ) -> Result<Option<u64>, Failure> {
+        if let tree::DocumentInput::Activate { node } = &intent.input {
+            let Some(backend) = last_tree.and_then(|tree| backend_node(tree, node)) else {
+                eprintln!("phux: activate skipped: node {node:?} has no DOM element");
+                return Ok(None);
+            };
+            let params = serde_json::json!({ "backendNodeId": backend });
+            self.call("DOM.scrollIntoViewIfNeeded", params.clone())
+                .await?;
+            return self.call("DOM.getBoxModel", params).await.map(Some);
+        }
         for (method, params) in cdp_calls(&intent.input, view) {
+            self.call(method, params).await?;
+        }
+        Ok(None)
+    }
+
+    /// Click an activated element's box centre, the answer `act` awaited.
+    async fn click_box(&mut self, centre: Option<(f64, f64)>) -> Result<(), Failure> {
+        let Some((x, y)) = centre else {
+            eprintln!("phux: activate skipped: the element has no box");
+            return Ok(());
+        };
+        for (method, params) in mouse_click(x, y) {
             self.call(method, params).await?;
         }
         Ok(())
@@ -334,13 +337,15 @@ impl Cdp {
 /// screencast frame goes to the surface and is acknowledged, the
 /// accessibility tree is read every `interval` and published when changed,
 /// and every input intent a viewer sends is carried out, then the tree is
-/// read again.
+/// read again. A lost connection (a server upgrade) is redialed and the
+/// last frame and tree published again, which re-adopts both resources.
 #[allow(
     clippy::future_not_send,
     reason = "the CLI runtime is single-threaded; the connection is not shared"
 )]
 async fn mirror(
     conn: &mut Connection,
+    socket: &std::path::Path,
     (tree_res, surface, ws_url): (&ResourceId, &ResourceId, &str),
     screencast: serde_json::Value,
     interval: Duration,
@@ -352,14 +357,19 @@ async fn mirror(
     cdp.call("Page.startScreencast", screencast).await?;
     let mut tree_request = cdp.read_tree().await?;
     let mut last_tree: Option<Vec<u8>> = None;
+    let mut last_frame: Option<Vec<u8>> = None;
     let mut tick = tokio::time::interval(interval);
     let mut view = Viewport::IDENTITY;
-    let mut intents = Vec::new();
+    let mut intents: Vec<tree::Intent> = Vec::new();
+    let clipboard = super::clipboard::Clipboard::host(false);
+    let mut box_request = None;
     loop {
         if !intents.is_empty() {
-            for intent in std::mem::take(&mut intents) {
-                cdp.act(&intent, view).await?;
-            }
+            let at = (view, last_tree.as_deref());
+            box_request = cdp
+                .act_all(conn, &clipboard, &mut intents, at)
+                .await?
+                .or(box_request);
             tree_request = cdp.read_tree().await?;
         }
         let message = tokio::select! {
@@ -371,7 +381,10 @@ async fn mirror(
             frame = conn.recv() => {
                 match frame {
                     Ok(frame) => intents.extend(tree::intent(&frame)),
-                    Err(phux_client::attach::AttachError::Disconnected) => return Ok(()),
+                    Err(err) if err.is_transport_loss() => {
+                        let last = [(surface, &last_frame), (tree_res, &last_tree)];
+                        readopt(conn, socket, err, last, &mut intents).await?;
+                    }
                     Err(err) => return Err(Failure::Tree(err.into())),
                 }
                 continue;
@@ -384,7 +397,7 @@ async fn mirror(
             Some(Ok(_)) => continue,
             Some(Err(err)) => return Err(Failure::Browser(err.to_string())),
         };
-        match classify(&text, tree_request) {
+        match classify(&text, tree_request, box_request) {
             Incoming::Frame {
                 image,
                 session,
@@ -393,7 +406,8 @@ async fn mirror(
                 if let (Ok((_, width, height)), Some(css)) = (tree::image_size(&image), css) {
                     view = Viewport::of((width, height), css);
                 }
-                tree::publish_collecting(conn, surface, image, &mut intents).await?;
+                super::redial::publish(conn, socket, surface, &image, &mut intents).await?;
+                last_frame = Some(image);
                 cdp.call(
                     "Page.screencastFrameAck",
                     serde_json::json!({ "sessionId": session }),
@@ -402,13 +416,41 @@ async fn mirror(
             }
             Incoming::Tree(bytes) => {
                 if last_tree.as_deref() != Some(bytes.as_slice()) {
-                    tree::publish_collecting(conn, tree_res, bytes.clone(), &mut intents).await?;
+                    super::redial::publish(conn, socket, tree_res, &bytes, &mut intents).await?;
                     last_tree = Some(bytes);
                 }
+            }
+            Incoming::BoxCentre(centre) => {
+                box_request = None;
+                cdp.click_box(centre).await?;
             }
             Incoming::Other => {}
         }
     }
+}
+
+/// Redial after `error` and publish each resource's last document again,
+/// which re-adopts it (`redial`).
+#[allow(
+    clippy::future_not_send,
+    reason = "the CLI runtime is single-threaded; the connection is not shared"
+)]
+async fn readopt(
+    conn: &mut Connection,
+    socket: &std::path::Path,
+    error: phux_client::attach::AttachError,
+    last: [(&ResourceId, &Option<Vec<u8>>); 2],
+    intents: &mut Vec<tree::Intent>,
+) -> Result<(), Failure> {
+    *conn = super::redial::redial(socket)
+        .await
+        .ok_or_else(|| Failure::Tree(error.into()))?;
+    for (resource, bytes) in last {
+        if let Some(bytes) = bytes {
+            super::redial::publish(conn, socket, resource, bytes, intents).await?;
+        }
+    }
+    Ok(())
 }
 
 /// `Page.startScreencast`'s parameters for `frames`.
@@ -443,101 +485,4 @@ fn own_pane() -> Option<ResourceId> {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use phux_protocol::wire::frame::SpawnResource;
-
-    const LISTING: &str = r#"[
-        {"type":"background_page","title":"ext","url":"chrome-extension://x","webSocketDebuggerUrl":"ws://127.0.0.1:9222/devtools/page/A"},
-        {"type":"page","title":"phux - terminal multiplexer","url":"https://phux.sh/","webSocketDebuggerUrl":"ws://127.0.0.1:9222/devtools/page/B"},
-        {"type":"page","title":"Docs","url":"https://phux.sh/docs","webSocketDebuggerUrl":"ws://127.0.0.1:9222/devtools/page/C"}
-    ]"#;
-
-    #[test]
-    fn browser_labels_fit_spawn_bounds_without_changing_source_identity() {
-        let mut page = Page {
-            title: "雪".repeat(50),
-            url: format!("https://example.test/{}", "a".repeat(250)),
-            ws: "ws://localhost/devtools/page/1".into(),
-        };
-        let original = page.clone();
-        assert_eq!(page_label(&page).len(), 120);
-        assert_eq!(page, original);
-        page.title.clear();
-        assert_eq!(page_label(&page).len(), 120);
-        page.url.clear();
-        assert_eq!(page_label(&page), "Browser page");
-        page.title = format!("{}雪", "a".repeat(119));
-        assert_eq!(page_label(&page), "a".repeat(119));
-        let label = page_label(&page);
-        for resource in [
-            SpawnResource::accessibility_tree(ResourceId::local(1), label),
-            SpawnResource::pixel_surface(ResourceId::local(1), label),
-        ] {
-            assert!(
-                resource.provider.unwrap().len()
-                    <= phux_protocol::wire::frame::MAX_RESOURCE_PROVIDER_BYTES
-            );
-        }
-    }
-
-    #[test]
-    fn a_page_is_picked_by_title_or_url_and_never_an_extension() {
-        assert!(pick_page("first", LISTING).unwrap().ws.ends_with("/B"));
-        assert_eq!(
-            pick_page("Docs", LISTING).unwrap().url,
-            "https://phux.sh/docs"
-        );
-        assert_eq!(pick_page("/docs", LISTING).unwrap().title, "Docs");
-        assert!(pick_page("ext", LISTING).is_err());
-    }
-
-    #[test]
-    fn a_body_is_complete_once_its_content_length_has_arrived() {
-        let raw = b"HTTP/1.1 200 OK\r\nContent-Length:5\r\n\r\n[1,2";
-        assert_eq!(http_body(raw), None);
-        assert_eq!(
-            http_body(b"HTTP/1.1 200 OK\r\nContent-Length:5\r\n\r\n[1,2]"),
-            Some("[1,2]")
-        );
-    }
-
-    #[test]
-    fn the_screencast_asks_for_the_frames_the_mirror_was_given() {
-        let png = Frames {
-            jpeg: None,
-            max_width: None,
-        };
-        assert_eq!(
-            screencast(png),
-            serde_json::json!({ "format": "png", "everyNthFrame": 1 })
-        );
-        let jpeg = Frames {
-            jpeg: Some(70),
-            max_width: Some(800),
-        };
-        assert_eq!(
-            screencast(jpeg),
-            serde_json::json!({ "format": "jpeg", "quality": 70, "maxWidth": 800, "everyNthFrame": 1 })
-        );
-    }
-
-    #[test]
-    fn a_screencast_frame_and_a_tree_answer_are_told_apart() {
-        let frame = r#"{"method":"Page.screencastFrame","params":{"data":"iVBORw0=","sessionId":7,"metadata":{"deviceWidth":800,"deviceHeight":600}}}"#;
-        assert_eq!(
-            classify(frame, 4),
-            Incoming::Frame {
-                image: vec![0x89, 0x50, 0x4e, 0x47, 0x0d],
-                session: 7,
-                css: Some((800.0, 600.0)),
-            }
-        );
-        let tree = r#"{"id":4,"result":{"nodes":[{"nodeId":"1","role":{"value":"RootWebArea"}}]}}"#;
-        assert!(
-            matches!(classify(tree, 4), Incoming::Tree(bytes) if bytes.starts_with(b"{\"nodes\""))
-        );
-        assert_eq!(classify(tree, 5), Incoming::Other);
-        assert_eq!(classify(r#"{"id":2,"result":{}}"#, 4), Incoming::Other);
-    }
-}
+mod tests;

@@ -53,7 +53,7 @@ a retry run the operation twice.
 The [server commit seam](../crates/phux-server/src/state/org.rs) separates
 `persist_command_from` from `mirror_persisted`; its
 `a_failed_store_write_refuses_and_leaves_memory_unchanged` test is the
-regression boundary. The per-socket [SQLite organization store](../crates/phux-server/src/org_store.rs)
+regression boundary. The per-socket [SQLite organization store](../crates/phux-server/src/org_store/mod.rs)
 uses WAL and full synchronization. It stores organization/launch intent,
 receipts and journal position, not PTY output, scrollback or a recoverable
 terminal process. Event payloads remain a bounded in-memory journal: a gap
@@ -76,8 +76,19 @@ not an assumed PID-kill or relaunch sequence.
 Ephemeral session). `Retain` keeps its outcome inspectable until purge or
 retention expiry. Exit is not close: purging a Terminal closes its bound
 AgentSession children; a retained parent can outlive its process.
+Executor lifecycle reports that encounter a refused store write stay pending
+in memory, ordered start-before-end and fenced by resource key, activation and
+instance. A bounded server-owned retry pass persists evidence, **never reruns
+the process**. Observations flag `persistence_pending` while displaying the last
+committed state. Removal/replacement retires stale reports. Hot handoff must
+flush them or refuse. Orderly shutdown makes one final attempt but still permits
+exit if the store is unavailable; any exit with undurable evidence can lose it.
+Restart can only reconcile the committed process identity, not recover a lost
+diagnostic.
+See [public durable inspection](./public-api.md#lost-replies-and-retry-scope).
+
 [Reconciliation](../crates/phux-server/src/reconcile.rs),
-[activation reports and policy tests](../crates/phux-server/src/state/org.rs)
+[activation reports and policy tests](../crates/phux-server/src/state/org/lifecycle.rs)
 and [core refusal rules](../crates/phux-core/src/apply.rs) own these decisions.
 
 ## Work and missions
@@ -180,3 +191,36 @@ The [archive resolver](../crates/phux/src/commands/archive.rs) and
 [live-session bridge tests](../crates/phux/src/commands/archive/bridge.rs)
 own this trust seam; [CLI reference](./reference/cli.md#phux-restore) owns the
 current restore/import options.
+
+## Execution evidence and durable inspection
+
+Organization activation records and creation receipts add optional TLVs:
+`LAUNCH_DIAGNOSTIC` (`47`, at most 128 bytes of JSON `{stage, errno}`) and
+`PERSISTENCE_PENDING` (`48`, boolean, absent means false). Diagnostic stages
+are `pty`, `spawn`, `cwd`, `exec`, `handshake`, `engine`; errno is an optional
+platform OS error, never the program's exit status. There is no command line,
+path or environment payload. Older clients skip these fields; old stored
+activations without a diagnostic remain readable. Unknown exit evidence
+projects as `Unobserved`, never fabricated exit zero.
+
+`features_ext.DURABLE_RESOURCE_INSPECTION` (`0x100000`) gates filter discriminant
+`4` on the existing `GET_ORGANIZATION`: the discriminant is followed by the
+16-byte durable resource key. It returns at most that one resource row, no
+session rows and no continuation cursor. The existing per-resource inventory
+filter uses current membership and authority even without an engine; hidden
+and missing records both yield an empty resource page. New clients check the
+bit before sending; older requests/filters are unchanged. CLI/MCP expose this
+through the existing resource inspection noun; its durable-key JSON document
+is schema 2, while live-engine inspection remains schema 1.
+
+[File transfer and checkout methods](./protocol-files.md) have their own page.
+
+### Where the code lives
+
+Terminal workflow code is split at ownership seams: `runtime/commands/`
+separates dispatch, pane construction, attachment generations, inventory,
+input and satellite forwarding; `runtime/organization/` separates pure command
+translation, execution effects, receipt projection and filtered record reads.
+`state/org/lifecycle.rs` owns bounded retries of executor evidence, not effects.
+The core apply module separates transaction assembly, session edits, placement
+and execution transitions. Public entry points and wire identities are unchanged.

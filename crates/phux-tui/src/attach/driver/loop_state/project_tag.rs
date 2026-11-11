@@ -1,5 +1,5 @@
-//! The one `phux.session.project/v1` tag, and the global metadata reads that
-//! travel with the sidebar sweep.
+//! The one `phux.session.project/v1` tag, the stored session order, and the
+//! global metadata reads that travel with the sidebar sweep.
 
 use super::{
     AttachError, Connection, FrameKind, FrameOutcome, RepaintAccumulator, Scope, apply_graph_rename,
@@ -22,7 +22,8 @@ impl super::SessionLoop {
         } else {
             &[SESSION_KEEP_EMPTY_KEY, SESSION_NAME_KEY]
         };
-        for key in [CONFIG_RELOAD_KEY, SESSION_PROJECT_KEY]
+        let order = phux_client::session_order::SESSION_ORDER_KEY;
+        for key in [CONFIG_RELOAD_KEY, SESSION_PROJECT_KEY, order]
             .into_iter()
             .chain(legacy.iter().copied())
         {
@@ -42,6 +43,7 @@ impl super::SessionLoop {
     ) -> Result<(), AttachError> {
         self.request_serving_host(conn).await?;
         self.request_project_tag(conn).await?;
+        self.request_session_order(conn).await?;
         self.request_host_inventory(conn).await
     }
 
@@ -66,10 +68,60 @@ impl super::SessionLoop {
         .await
     }
 
-    /// Serving-host and project-tag replies. `None` means this frame was one.
+    /// Read the stored session order. The subscribe only delivers later writes.
+    async fn request_session_order(&mut self, conn: &mut Connection) -> Result<(), AttachError> {
+        if self.peers.session_order_pending.is_some() {
+            return Ok(());
+        }
+        let request_id = self.take_request_id();
+        self.peers.session_order_pending = Some(request_id);
+        super::super::session_io::send_unless_peer_gone(
+            conn,
+            &FrameKind::GetMetadata {
+                request_id,
+                scope: Scope::Global,
+                key: phux_client::session_order::SESSION_ORDER_KEY.to_owned(),
+            },
+        )
+        .await
+    }
+
+    /// Serving-host, project-tag and session-order replies. `None` means
+    /// this frame was one.
     pub(super) fn take_sidebar_metadata(&mut self, frame: FrameKind) -> Option<FrameKind> {
         let frame = self.take_serving_host_reply(frame)?;
-        self.take_project_tag_reply(frame)
+        let frame = self.take_project_tag_reply(frame)?;
+        self.take_session_order_reply(frame)
+    }
+
+    fn take_session_order_reply(&mut self, frame: FrameKind) -> Option<FrameKind> {
+        match frame {
+            FrameKind::MetadataValue { request_id, value }
+                if self.peers.session_order_pending == Some(request_id) =>
+            {
+                self.peers.session_order_pending = None;
+                self.fold_session_order(phux_client::session_order::decode(value.as_deref()));
+                None
+            }
+            FrameKind::Error {
+                request_id: Some(request_id),
+                ..
+            } if self.peers.session_order_pending == Some(request_id) => {
+                self.peers.session_order_pending = None;
+                None
+            }
+            other => Some(other),
+        }
+    }
+
+    /// Adopt the stored session order; every session list redraws.
+    fn fold_session_order(&mut self, order: Vec<phux_protocol::ids::SessionKey>) {
+        if order == self.peers.session_order {
+            return;
+        }
+        self.peers.session_order = order;
+        self.peers.chrome_dirty = true;
+        self.session_picker_dirty = true;
     }
 
     fn take_serving_host_reply(&mut self, frame: FrameKind) -> Option<FrameKind> {
@@ -216,6 +268,10 @@ impl super::SessionLoop {
             self.note_chrome_change(repaint);
         }
         self.fold_project_tag_outcome(outcome);
+        if let Some(order) = outcome.session_order.take() {
+            self.fold_session_order(order);
+            self.note_chrome_change(repaint);
+        }
     }
 
     fn fold_project_tag_outcome(&mut self, outcome: &mut FrameOutcome) {

@@ -10,14 +10,17 @@ use subtle::ConstantTimeEq;
 use super::store::{self, FileRole};
 use super::{
     EnrolledFor, STORE_VERSION, WorkloadCredential, WorkloadError, credential_id, decode_lower_hex,
-    subject_public_key_info, validate_satellite_name, validate_scopes,
+    subject_public_key_info, validate_org_name, validate_satellite_name, validate_scopes,
+    validate_subject,
 };
 
 mod grants;
+mod managed;
 mod paired;
 mod registration;
 
 pub use grants::ScopeChange;
+pub use managed::ManagedSync;
 pub use paired::enrolled_scopes;
 
 /// Result of an explicit legacy paired-device permission repair.
@@ -59,6 +62,13 @@ struct RegistryRecord {
     /// registry with none stays readable by readers that predate it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     satellite: Option<String>,
+    /// The person or agent the key belongs to, when known.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    subject: Option<String>,
+    /// The organization that manages the record (`phux workload
+    /// sync-managed`); absent for every record this host enrolled itself.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    managed: Option<String>,
 }
 
 /// A validated snapshot of the workload-key registry.
@@ -270,6 +280,12 @@ fn credential_from_record(record: &RegistryRecord) -> Result<WorkloadCredential,
         }
         None => validate_scopes(&record.scopes)?,
     }
+    if let Some(subject) = &record.subject {
+        validate_subject(subject)?;
+    }
+    if let Some(org) = &record.managed {
+        validate_org_name(org)?;
+    }
     Ok(WorkloadCredential {
         id: record.id.clone(),
         public_key,
@@ -278,6 +294,8 @@ fn credential_from_record(record: &RegistryRecord) -> Result<WorkloadCredential,
         revoked_at: record.revoked_at,
         recorded_for: record.principal,
         satellite: record.satellite.clone(),
+        subject: record.subject.clone(),
+        managed: record.managed.clone(),
     })
 }
 

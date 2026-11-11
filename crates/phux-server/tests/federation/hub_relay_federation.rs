@@ -32,6 +32,8 @@ use tokio::task::JoinHandle;
 use tokio_tungstenite::tungstenite::Message;
 
 mod checkout;
+mod clients;
+use clients::hub_client;
 mod conditional_kill;
 mod consumer_filters;
 mod detach_fence;
@@ -293,7 +295,7 @@ impl Fed {
     }
 
     async fn hub(&self) -> UnixStream {
-        wait_for_socket(&self.hub_path(), STEP_DEADLINE).await
+        hub_client(&self.hub_path()).await
     }
 
     /// A hub client once its link to the satellite answers.
@@ -664,7 +666,7 @@ fn dead_and_unknown_satellites_fail_fast_with_typed_errors() {
             tmp.path().join("hub.sock"),
             vec![satellite_entry("sat", dead.port())],
         );
-        let mut hub = wait_for_socket(&tmp.path().join("hub.sock"), STEP_DEADLINE).await;
+        let mut hub = hub_client(&tmp.path().join("hub.sock")).await;
 
         let started = Instant::now();
         let result = get_screen_via_hub(&mut hub, 1, ResourceId::satellite("sat", 1)).await;
@@ -696,7 +698,7 @@ fn aggregated_list_merges_local_and_satellite_terminals_and_degrades() {
             Some("hub-session"),
         );
         let sat_id = ResourceId::satellite("sat", discover_satellite_pane(ws_port).await);
-        let mut hub = wait_for_socket(&tmp.path().join("hub.sock"), STEP_DEADLINE).await;
+        let mut hub = hub_client(&tmp.path().join("hub.sock")).await;
 
         let deadline = Instant::now() + STEP_DEADLINE;
         let mut request_id = 4000;
@@ -844,7 +846,7 @@ fn ssh_stub_link_relays_commands_end_to_end() {
         );
         // Discovery uses the satellite's WS listener; only the hub leg rides ssh.
         let sat_pane = discover_satellite_pane(ws_port).await;
-        let mut hub = wait_for_socket(&tmp.path().join("hub.sock"), STEP_DEADLINE).await;
+        let mut hub = hub_client(&tmp.path().join("hub.sock")).await;
         let result = get_screen_until_ok(&mut hub, sat_pane).await;
         assert!(
             matches!(result, CommandResult::OkWith(CommandValue::Json(ref json)) if json.contains("\"cols\"")),

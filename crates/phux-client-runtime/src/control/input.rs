@@ -1,5 +1,6 @@
 //! Raw and acknowledged input delivery.
 
+use super::subscriptions::{Origin, RIDES_SHARED_PUMP};
 use super::{
     ControlPlane, Event, FocusEvent, FrameKind, InputEvent, InputOperationId, KeyEvent,
     MAX_APPLY_INPUT_COMMAND_BODY, MouseEvent, PasteEvent, PasteTrust, Pending, ResourceId, Status,
@@ -7,6 +8,7 @@ use super::{
 };
 use phux_client_core::input_replay::validate_apply_input_batch;
 use phux_protocol::input::key::PhysicalKey;
+use phux_protocol::wire::frame::MAX_FRAME_LEN;
 
 /// Exact encoded `APPLY_INPUT` command-body overhead of a local
 /// [`paste_then_key`] batch beyond its text: the tag, operation id, local
@@ -15,6 +17,11 @@ use phux_protocol::input::key::PhysicalKey;
 const APPLY_LINE_OVERHEAD: usize = 54;
 /// The same overhead for a local single-[`paste`] batch.
 const APPLY_PASTE_OVERHEAD: usize = 34;
+
+/// The most one raw paste frame carries. Past the protocol's frame cap the
+/// server would drop the connection, so the frame is never built; the margin
+/// holds the frame's own fields.
+const MAX_RAW_PASTE: usize = MAX_FRAME_LEN as usize - 4096;
 
 /// One paste of `text`, the batch `apply_paste` and `apply_user_paste` send.
 fn paste(text: &str, trust: PasteTrust) -> Vec<InputEvent> {
@@ -66,7 +73,7 @@ impl ControlPlane {
         data: Vec<u8>,
         trust: PasteTrust,
     ) -> bool {
-        if self.delivery_fenced(terminal_id) {
+        if self.delivery_fenced(terminal_id) || data.len() > MAX_RAW_PASTE {
             return false;
         }
         self.queue_frame(&FrameKind::InputPaste {
@@ -197,6 +204,9 @@ impl ControlPlane {
                 return Some(self.begin_acknowledged_input(terminal_id, events));
             }
         }
+        if text.len() > MAX_RAW_PASTE {
+            return Some(self.refuse_acknowledged_input("the paste is larger than 16 MB"));
+        }
         if self.input_replay.must_order_after(terminal_id) {
             return Some(
                 self.refuse_acknowledged_input("an earlier paste to this terminal is unresolved"),
@@ -245,9 +255,8 @@ impl ControlPlane {
         {
             return false;
         }
-        self.attach_terminals.contains(terminal_id)
-            || self.own_spawns.contains(terminal_id)
-            || (self.terminal_attached.contains(terminal_id)
+        self.subscriptions.has_any(terminal_id, RIDES_SHARED_PUMP)
+            || (self.subscriptions.has(terminal_id, Origin::AttachResource)
                 && !self.pending.values().any(
                     |pending| matches!(pending, Pending::AttachTerminal(id) if id == terminal_id),
                 ))

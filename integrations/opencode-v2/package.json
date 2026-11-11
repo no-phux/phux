@@ -1,6 +1,6 @@
 {
   "name": "@phux/opencode",
-  "version": "0.8.0",
+  "version": "0.9.0",
   "description": "phux integration for OpenCode: terminal tools, agent status, and live panes in OpenCode Desktop.",
   "homepage": "https://docs.phux.sh/",
   "type": "module",
@@ -39,25 +39,25 @@
     "gates": "bun run typecheck && bun run compile && bun test"
   },
   "dependencies": {
-    "@opencode/plugin": "2.2.5"
+    "@opencode/plugin": "2.2.6"
   },
   "devDependencies": {
     "@opentui/core": "0.8.1",
     "@opentui/solid": "0.8.1",
     "@types/bun": "1.4.4",
-    "effect": "4.1.1",
-    "solid-js": "1.9.18",
+    "effect": "4.1.0",
+    "solid-js": "1.9.17",
     "typescript": "7.0.2",
     "vite": "8.3.5",
     "vite-plugin-solid": "2.11.15"
   },
   "peerDependencies": {
-    "solid-js": "1.9.18",
+    "solid-js": "1.9.17",
     "@opentui/core": "0.8.1",
     "@opentui/solid": "0.8.1"
   },
   "overrides": {
-    "effect": "4.1.1",
+    "effect": "4.1.0",
     "seroval": "1.7.6",
     "seroval-plugins": "1.7.6"
   },

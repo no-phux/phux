@@ -9,10 +9,12 @@ use std::collections::HashMap;
 use phux_protocol::wire::frame::TombstoneReason;
 use phux_protocol::{BootstrapId, BootstrapStreamProfile, ResourceId, StreamId};
 
+use super::super::staging_rules::{
+    chunk_admission, reject_retired, retire_for_codec_failure, staging_lifetime_exceeded,
+};
 use super::super::{
-    AgentSessionDeclaration, AgentStreamInfo, EffectBuffer, GenerationId, KernelEffect,
-    KernelError, KernelStatus, MAX_BOOTSTRAP_STAGING_LIFETIME_MS, ReplicaKey, TombstoneRecord,
-    generation_of, mismatch_error, retired_error,
+    AgentSessionDeclaration, AgentStreamInfo, EffectBuffer, GenerationId, KernelError, ReplicaKey,
+    TombstoneRecord, generation_of, mismatch_error,
 };
 use super::{
     AgentEventRecord, AgentLog, AgentPublication, AgentRecordMode, AgentSessionState,
@@ -153,9 +155,7 @@ impl AgentStream {
             stream_id,
             bootstrap_id,
         };
-        if self.retired.contains_key(&generation) {
-            return Err(retired_error(resource_id, generation));
-        }
+        self.reject_retired(resource_id, generation)?;
         if self.published_matches(generation) || self.staging_matches(generation) {
             return Err(KernelError::DuplicateGeneration {
                 terminal_id: resource_id.clone(),
@@ -518,11 +518,7 @@ impl AgentStream {
         resource_id: &ResourceId,
         generation: GenerationId,
     ) -> Result<(), KernelError<E>> {
-        if self.retired.contains_key(&generation) {
-            Err(retired_error(resource_id, generation))
-        } else {
-            Ok(())
-        }
+        reject_retired(&self.retired, resource_id, generation)
     }
 
     fn published_matches(&self, generation: GenerationId) -> bool {
@@ -550,48 +546,14 @@ impl AgentStream {
         if self.published_matches(generation) {
             self.published = None;
         }
-        self.retired.insert(
+        retire_for_codec_failure(
+            &mut self.retired,
+            resource_id,
             generation,
-            TombstoneRecord {
-                reason: TombstoneReason::CodecFailure,
-                last_valid_seq,
-            },
+            last_valid_seq,
+            effects,
         );
-        effects.push(KernelEffect::Status(KernelStatus::ResyncRequired {
-            terminal_id: resource_id.clone(),
-            stream_id: generation.stream_id,
-            bootstrap_id: generation.bootstrap_id,
-            reason: TombstoneReason::CodecFailure,
-        }));
     }
-}
-
-const fn chunk_admission<E>(
-    next_chunk_seq: Option<u32>,
-    chunk_seq: u32,
-    started_at_ms: u64,
-    now_ms: u64,
-    usage_allowed: bool,
-) -> Result<(), KernelError<E>> {
-    match next_chunk_seq {
-        None => Err(KernelError::ChunkSequenceExhausted),
-        Some(expected) if chunk_seq < expected => Err(KernelError::DuplicateChunk {
-            expected,
-            actual: chunk_seq,
-        }),
-        Some(expected) if chunk_seq > expected => Err(KernelError::ChunkGap {
-            expected,
-            actual: chunk_seq,
-        }),
-        Some(_) if !usage_allowed || staging_lifetime_exceeded(started_at_ms, now_ms) => {
-            Err(KernelError::BootstrapStagingLimitExceeded)
-        }
-        Some(_) => Ok(()),
-    }
-}
-
-const fn staging_lifetime_exceeded(started_at_ms: u64, now_ms: u64) -> bool {
-    now_ms.saturating_sub(started_at_ms) > MAX_BOOTSTRAP_STAGING_LIFETIME_MS
 }
 
 /// Agent envelopes carry the final record sequence, not a frame counter.

@@ -505,3 +505,31 @@ fn mobile_appearance_and_real_theme_palette_render_accept_and_cancel() {
         );
     }
 }
+
+#[test]
+fn typing_with_no_field_focused_starts_a_search() {
+    let mut rt = runtime((1100.0, 720.0), false);
+    rt.frame(0.0);
+    assert!(!rt.state.settings_ui.query.focused);
+    for c in ["c", "l", "i", "p"] {
+        rt.key(KeyEvent {
+            key: Key::Text(c.into()),
+            mods: Mods::default(),
+        });
+        rt.frame(0.0);
+    }
+    assert_eq!(rt.state.settings_ui.query.text, "clip");
+    assert!(rt.find("set-copy-select").is_some());
+    // A chord is a command, never the start of a search.
+    rt.state.settings_ui.query.clear();
+    rt.state.settings_ui.query.focused = false;
+    rt.key(KeyEvent {
+        key: Key::Text("q".into()),
+        mods: Mods {
+            ctrl: true,
+            ..Mods::default()
+        },
+    });
+    rt.frame(0.0);
+    assert!(rt.state.settings_ui.query.text.is_empty());
+}

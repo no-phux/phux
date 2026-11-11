@@ -9,6 +9,9 @@ use super::{
     sync_overlays_to_focused_pane,
 };
 
+mod delivery_fences;
+mod empty_state;
+
 impl super::SessionLoop {
     // ---- small shared projections -------------------------------------
 
@@ -80,6 +83,7 @@ impl super::SessionLoop {
             &self.mirror.session_name,
             self.viewport_dims,
             sidebar,
+            &self.mirror.leaves,
         );
         let scene = PaneScene {
             workspace: &self.mirror.workspace,
@@ -155,6 +159,7 @@ impl super::SessionLoop {
             &self.mirror.session_name,
             self.viewport_dims,
             sidebar,
+            &self.mirror.leaves,
         );
         let focus = self.mirror.paint_focus();
         let focused = focus.as_ref();
@@ -195,57 +200,6 @@ impl super::SessionLoop {
         })
     }
 
-    /// An attached session with nothing arranged paints its empty state: the
-    /// members still running with no view and the action that shows them
-    /// again, else an empty persistent session's new-window hint. An
-    /// ephemeral session with nothing running has already detached (R15).
-    pub(super) fn paint_empty_state<W: crate::attach::RenderSink>(
-        &mut self,
-        out: &mut W,
-        sidebar: Option<SidebarReservation>,
-        level: RepaintLevel,
-    ) -> Option<StatusBarPaint> {
-        if !self.mirror.workspace.groups.is_empty() || matches!(level, RepaintLevel::None) {
-            return None;
-        }
-        let running = self.mirror.unarranged_members().len();
-        let persistent =
-            self.mirror.lifetime == phux_protocol::wire::frame::SessionLifetime::Persistent;
-        if running == 0 && !persistent {
-            return None;
-        }
-        let action = if running > 0 {
-            "reopen-views"
-        } else {
-            "new-window"
-        };
-        let resolved = phux_config::keybind::ResolvedAction {
-            action: action.to_owned(),
-            args: std::collections::BTreeMap::new(),
-        };
-        let chord = crate::attach::action_registry::bound_chord_for(
-            self.settings.keybindings.as_ref(),
-            &resolved,
-        );
-        let lines = if running > 0 {
-            crate::attach::paint::unarranged_lines(running, chord.as_deref())
-        } else {
-            crate::attach::paint::empty_session_lines(chord.as_deref())
-        };
-        let mut chrome = ChromeCtx::new(
-            &mut self.settings,
-            &mut self.sidebar_painter,
-            &self.mirror.session_name,
-            self.viewport_dims,
-            sidebar,
-        );
-        Some(crate::attach::paint::paint_empty_session(
-            out,
-            &mut chrome,
-            &lines,
-        ))
-    }
-
     /// Paint the active overlay layer over the current pane composition.
     pub(super) fn paint_overlay<W: crate::attach::RenderSink>(
         &mut self,
@@ -277,6 +231,7 @@ impl super::SessionLoop {
             &self.mirror.session_name,
             self.viewport_dims,
             sidebar,
+            &self.mirror.leaves,
         );
         let focus = self.mirror.paint_focus();
         paint_active_overlay(
@@ -469,39 +424,6 @@ impl super::SessionLoop {
         }
     }
 
-    pub(super) fn clear_focused_delivery_fence_after_paint(&mut self) {
-        let Some(terminal_id) = self.mirror.focused_resource.clone() else {
-            return;
-        };
-        self.clear_delivery_fence_after_paint(&terminal_id);
-    }
-
-    pub(super) fn clear_visible_delivery_fences_after_paint(&mut self) {
-        let Some(layout) = self
-            .mirror
-            .workspace
-            .render_group(self.mirror.zoomed.as_ref())
-        else {
-            return;
-        };
-        let visible = layout
-            .tree
-            .as_ref()
-            .map_or_else(Vec::new, crate::layout::leaves);
-        for terminal_id in visible {
-            self.clear_delivery_fence_after_paint(&terminal_id);
-        }
-    }
-
-    pub(super) fn clear_delivery_fence_after_paint(&mut self, terminal_id: &ResourceId) {
-        if !self.delivery_fence_paint_pending.remove(terminal_id) {
-            return;
-        }
-        if let Some(journal) = self.input_replay.as_ref() {
-            journal.borrow_mut().clear_delivery_fence(terminal_id);
-        }
-    }
-
     /// Rebuild and repaint the session picker, if it is open.
     pub(super) fn refresh_session_picker<W: crate::attach::RenderSink>(
         &mut self,
@@ -680,6 +602,7 @@ impl super::SessionLoop {
             &self.mirror.session_name,
             self.viewport_dims,
             sidebar,
+            &self.mirror.leaves,
         );
         let painted = crate::attach::paint::close_frame_with_chrome(
             crate::attach::paint::FrameBlock::begin(out),

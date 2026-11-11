@@ -4,7 +4,7 @@ use rune::{
     Color, El, PointerPress, Span, TextStyle, Transition, col, el, rich, row, text, text_input,
 };
 
-use super::{CAPTION, Ink, LABEL, pressable};
+use super::{CAPTION, Ink, LABEL, icons, pressable};
 use crate::desk::{CONTEXT_MENU, Desk};
 use crate::keys::{self, Shortcut};
 use crate::palette::{Hit, Mode, Target};
@@ -22,7 +22,9 @@ pub fn view(desk: &Desk, ink: &Ink, top: f32) -> El {
     let hits = desk.palette_hits();
     let picked = desk.palette_picked.min(hits.len().saturating_sub(1));
     let mode = desk.palette_mode;
+    let phone = desk.phone.is_some();
     let prompt = match mode {
+        Mode::All if phone => "Search commands and terminals…",
         Mode::All => "Jump to a terminal, session, or action…",
         Mode::Mirror(source) => source.prompt(),
         Mode::Shortcuts => "Filter keyboard shortcuts…",
@@ -30,12 +32,13 @@ pub fn view(desk: &Desk, ink: &Ink, top: f32) -> El {
         Mode::Sessions => "Switch session, or name a new one…",
         Mode::Themes => "Preview a theme…",
         Mode::Paths => "Find a file or folder…",
+        Mode::Screens => "Filter displays and windows…",
     };
     let (open, glyph) = match mode {
-        Mode::Paths => ("insert", "/"),
-        Mode::Themes => ("keep", "◐"),
-        Mode::Sessions => ("switch", "◫"),
-        _ => ("open", "⌘"),
+        Mode::Paths => ("insert", &icons::FOLDER),
+        Mode::Themes => ("keep", &icons::PALETTE),
+        Mode::Sessions => ("switch", &icons::WINDOW),
+        _ => ("open", &icons::SEARCH),
     };
     let field = text_input(&desk.palette_query, TextStyle::new(16.0, 400.0).lh(24.0))
         .key("palette-query")
@@ -49,12 +52,13 @@ pub fn view(desk: &Desk, ink: &Ink, top: f32) -> El {
         .on_submit(|d: &mut Desk, tx| d.palette_run(None, tx));
     let mut results = col().key("palette-results").w_full().padding(6.0).gap(1.0);
     for (index, hit) in hits.iter().take(crate::palette::ROWS).enumerate() {
-        results = results.child(hit_row(hit, index, index == picked, ink));
+        results = results.child(hit_row(hit, index, index == picked, phone, ink));
     }
     let search = desk.paths.as_ref();
     let empty = match search {
         Some(s) if s.searching() => "Searching…",
         Some(s) if s.note.is_some() && hits.is_empty() => s.note.as_deref().unwrap_or_default(),
+        _ if mode == Mode::Screens && hits.is_empty() => desk.resources.screens.empty_text(),
         _ => "Nothing matches",
     };
     if hits.is_empty() {
@@ -97,11 +101,7 @@ pub fn view(desk: &Desk, ink: &Ink, top: f32) -> El {
                 .px(18.0)
                 .gap(12.0)
                 .items_center()
-                .child(
-                    text(glyph)
-                        .font(TextStyle::new(15.0, 500.0))
-                        .color(ink.accent),
-                )
+                .child(rune::icon(glyph, 16.0).color(ink.accent).a11y_hidden())
                 .child(field),
         )
         .child(el().w_full().h(1.0).fill(ink.separator))
@@ -116,8 +116,9 @@ pub fn view(desk: &Desk, ink: &Ink, top: f32) -> El {
                 })
                 .child(results),
         )
-        .child(el().w_full().h(1.0).fill(ink.separator))
-        .child(
+        // A phone taps its rows; the keys this footer teaches are a desktop's.
+        .children((!phone).then(|| el().w_full().h(1.0).fill(ink.separator)))
+        .children((!phone).then(|| {
             row()
                 .w_full()
                 .px(14.0)
@@ -125,8 +126,8 @@ pub fn view(desk: &Desk, ink: &Ink, top: f32) -> El {
                 .gap(14.0)
                 .child(hint("↑↓", "move", ink))
                 .child(hint("↩", open, ink))
-                .child(hint("esc", "close", ink)),
-        );
+                .child(hint("esc", "close", ink))
+        }));
     let scrim = el()
         .key("palette-scrim")
         .absolute(0.0, 0.0)
@@ -220,28 +221,25 @@ fn hint(keys: &'static str, what: &'static str, ink: &Ink) -> El {
     row()
         .gap(5.0)
         .items_center()
-        .child(
-            el().px(5.0)
-                .radius(4.0)
-                .fill(ink.separator)
-                .child(text(keys).font(CAPTION).color(ink.text)),
-        )
+        .child(super::keycap(keys, ink))
         .child(text(what).font(CAPTION).color(ink.dim))
 }
 
-fn kind_mark(kind: &str) -> &'static str {
+fn kind_mark(kind: &str) -> &'static rune::Icon {
     match kind {
-        "terminal" => "›_",
-        "session" => "◫",
-        "path" => "/",
-        _ => "⚡",
+        "terminal" => &icons::PROMPT,
+        "session" => &icons::WINDOW,
+        "path" => &icons::FOLDER,
+        _ => &icons::BOLT,
     }
 }
 
-/// What a row is: a glyph, or for a theme a swatch of its colours.
+/// What a row is: an icon, or for a theme a swatch of its colours.
 fn mark(hit: &Hit, ink: &Ink) -> El {
     let Target::Theme(id) = hit.item.target else {
-        return text(kind_mark(hit.item.kind)).font(CAPTION).color(ink.dim);
+        return rune::icon(kind_mark(hit.item.kind), 14.0)
+            .color(ink.dim)
+            .a11y_hidden();
     };
     let theme = id.and_then(crate::theme::find);
     let (fill, ring) = theme.map_or((ink.bg, ink.separator), |t| {
@@ -256,7 +254,7 @@ fn mark(hit: &Hit, ink: &Ink) -> El {
         .border(2.0, ring)
 }
 
-fn hit_row(hit: &Hit, index: usize, picked: bool, ink: &Ink) -> El {
+fn hit_row(hit: &Hit, index: usize, picked: bool, phone: bool, ink: &Ink) -> El {
     let title = &hit.item.title;
     // Matched characters in the accent, at their byte ranges.
     let spans = hit
@@ -271,7 +269,7 @@ fn hit_row(hit: &Hit, index: usize, picked: bool, ink: &Ink) -> El {
         .collect();
     pressable(format!("palette-row-{index}"), ink)
         .w_full()
-        .h(36.0)
+        .h(if phone { 44.0 } else { 36.0 })
         .px(12.0)
         .gap(10.0)
         .radius(8.0)
@@ -290,6 +288,13 @@ fn hit_row(hit: &Hit, index: usize, picked: bool, ink: &Ink) -> El {
                 .truncate(),
         )
         .child(el().grow(1.0))
+        .children(match &hit.item.target {
+            Target::Screen(host, _) => {
+                let host = host.as_deref().unwrap_or(crate::machines::LOCAL);
+                Some(crate::host_color::dot(host, 7.0, ink.raised))
+            }
+            _ => None,
+        })
         .child(
             text(hit.item.detail.clone())
                 .font(CAPTION)

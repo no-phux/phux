@@ -1,3 +1,20 @@
+import {
+  boolean,
+  integer,
+  nullableString,
+  numberInRange,
+  oneOf,
+  record,
+  type RecordValue,
+  SchemaValidationError,
+  string,
+  strings,
+} from "./validate.js";
+import { parseResources, type ResourceEntry } from "./resources.js";
+
+export { SchemaValidationError } from "./validate.js";
+export * from "./resources.js";
+
 export interface SessionSummary {
   readonly name: string;
   readonly windows: number;
@@ -5,10 +22,14 @@ export interface SessionSummary {
 }
 
 export interface SessionList {
-  readonly schema_version: 1 | 2 | 3;
+  readonly schema_version: 1 | 2 | 3 | 4;
   readonly sessions: readonly SessionSummary[];
-  /** Canonical selectors for every addressable terminal (v2/v3; empty for v1). */
+  /** Canonical selectors for every addressable terminal (v2+; empty for v1). */
   readonly terminals: readonly string[];
+  /** Every addressable resource of every kind (v3+; empty when absent). */
+  readonly resources: readonly ResourceEntry[];
+  /** One diagnostic per unreachable federation satellite; empty when absent. */
+  readonly unreachable: readonly string[];
 }
 
 export interface CursorState {
@@ -251,66 +272,10 @@ export interface AgentSessionCloseResult {
   readonly closed: true;
 }
 
-export class SchemaValidationError extends Error {
-  constructor(readonly path: string, expectation: string) {
-    super(`${path} must be ${expectation}`);
-    this.name = "SchemaValidationError";
-  }
-}
-
-type RecordValue = Record<string, unknown>;
-
-function record(value: unknown, path: string): RecordValue {
-  if (value === null || typeof value !== "object" || Array.isArray(value)) {
-    throw new SchemaValidationError(path, "an object");
-  }
-  return value as RecordValue;
-}
-
-function string(value: unknown, path: string): string {
-  if (typeof value !== "string") throw new SchemaValidationError(path, "a string");
-  return value;
-}
-
-function boolean(value: unknown, path: string): boolean {
-  if (typeof value !== "boolean") throw new SchemaValidationError(path, "a boolean");
-  return value;
-}
-
-function nullableString(value: unknown, path: string): string | null {
-  return value === null ? null : string(value, path);
-}
-
-function numberInRange(value: unknown, path: string, min: number, max: number): number {
-  if (typeof value !== "number" || !Number.isFinite(value) || value < min || value > max) {
-    throw new SchemaValidationError(path, `a number from ${min} through ${max}`);
-  }
-  return value;
-}
-
-function oneOf<const T extends readonly string[]>(value: unknown, path: string, values: T): T[number] {
-  if (typeof value !== "string" || !values.includes(value)) {
-    throw new SchemaValidationError(path, values.map((item) => JSON.stringify(item)).join(", "));
-  }
-  return value as T[number];
-}
-
-function integer(value: unknown, path: string, min: number, max = Number.MAX_SAFE_INTEGER): number {
-  if (!Number.isSafeInteger(value) || (value as number) < min || (value as number) > max) {
-    throw new SchemaValidationError(path, `an integer from ${min} through ${max}`);
-  }
-  return value as number;
-}
-
-function strings(value: unknown, path: string): string[] {
-  if (!Array.isArray(value)) throw new SchemaValidationError(path, "an array of strings");
-  return value.map((item, index) => string(item, `${path}[${index}]`));
-}
-
 export function parseSessionList(value: unknown): SessionList {
   const root = record(value, "$ (phux ls --json CLI shape)");
-  if (root.schema_version !== 1 && root.schema_version !== 2 && root.schema_version !== 3) {
-    throw new SchemaValidationError("$.schema_version", "a supported value (1, 2, or 3)");
+  if (root.schema_version !== 1 && root.schema_version !== 2 && root.schema_version !== 3 && root.schema_version !== 4) {
+    throw new SchemaValidationError("$.schema_version", "a supported value (1 through 4)");
   }
   const schema = root.schema_version;
   if (!Array.isArray(root.sessions)) {
@@ -326,12 +291,14 @@ export function parseSessionList(value: unknown): SessionList {
       attached: boolean(row.attached, `$.sessions[${index}].attached`),
     };
   });
-  // v3 preserves these v2 fields; resource/host inventories are additive to
-  // this summary projection (crates/phux-core/src/session_list.rs).
+  // v3/v4 preserve these v2 fields; v4 only adds per-session keys, and the
+  // resource inventory is additive (crates/phux-core/src/session_list.rs).
   const terminals = schema === 1 && root.terminals === undefined
     ? []
     : strings(root.terminals, "$.terminals");
-  return { schema_version: schema, sessions, terminals };
+  const resources = root.resources === undefined ? [] : parseResources(root.resources, "$.resources");
+  const unreachable = root.unreachable === undefined ? [] : strings(root.unreachable, "$.unreachable");
+  return { schema_version: schema, sessions, terminals, resources, unreachable };
 }
 
 function parseColor(value: unknown, path: string): CellColor {

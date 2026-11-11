@@ -67,9 +67,8 @@ fn dir() -> Option<PathBuf> {
 
 /// The theme in `dir`. `None` without its Ghostty config.
 fn read_in(dir: &Path) -> Option<Theme> {
-    let theme = parse(&std::fs::read_to_string(dir.join("ghostty.conf")).ok()?)?;
-    let accent = std::fs::read_to_string(dir.join("colors.toml"))
-        .ok()
+    let theme = parse(&super::read_config(&dir.join("ghostty.conf"))?)?;
+    let accent = super::read_config(&dir.join("colors.toml"))
         .and_then(|colors| {
             lines(&colors)
                 .filter(|(key, _)| *key == "accent")

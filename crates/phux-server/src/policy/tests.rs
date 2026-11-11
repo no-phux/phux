@@ -32,7 +32,7 @@ use phux_protocol::kinds::{
 use phux_protocol::policy::{PeerIdentity, TransportType};
 use phux_protocol::scope::{EffectiveScopeSet, TerminalScopeSet};
 use phux_protocol::wire::frame::{
-    AttachTarget, CONFIG_RELOAD_KEY, Command, FrameKind, InputMode, KillPrecondition,
+    AttachTarget, CONFIG_RELOAD_KEY, Command, ControlClass, FrameKind, InputMode, KillPrecondition,
     ListenerTransport, PerfOp, ReportedAgentState, SESSION_CREATE_KEY, SESSION_KEEP_EMPTY_KEY,
     Scope, SpawnResource, StateScope, TerminalSignal, ViewportInfo, WHOAMI_KEY,
     encode_session_keep_empty,
@@ -116,4 +116,6 @@ include!("tests/snapshots_events.rs");
 mod delegation;
 include!("tests/keyed_selectors.rs");
 include!("tests/control_input.rs");
+include!("tests/holds.rs");
 include!("tests/watch_documents.rs");
+include!("tests/child_spawn.rs");

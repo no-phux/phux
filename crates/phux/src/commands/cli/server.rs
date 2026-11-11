@@ -14,6 +14,9 @@ use usage::{Args, Subcommands};
 )]
 #[derive(Debug, Args)]
 pub(crate) struct ServerArgs {
+    #[usage(subcommand)]
+    pub(crate) action: Option<ServerAction>,
+
     /// Ensure the selected local socket accepts, then exit without a TUI.
     ///
     /// Reuses a live coordinator or starts one with the same session-name
@@ -50,7 +53,8 @@ pub(crate) struct ServerArgs {
 
     /// Start with no pre-seeded session. `phux new --empty` starts a
     /// server this way when none is running, so the only session is the
-    /// empty one it asked for.
+    /// empty one it asked for. With `--ensure`, a server it has to start
+    /// seeds nothing: the desktop app picks its own session.
     #[usage(long, hide, conflicts("--seed-command"))]
     pub(crate) no_seed: bool,
 
@@ -154,6 +158,31 @@ pub(crate) struct ServerArgs {
     /// the upgrade orchestrator's re-exec; never passed by hand.
     #[usage(long, hide, conflicts("--ensure"))]
     pub(crate) resume: Option<std::os::fd::RawFd>,
+}
+
+/// `phux server <action>`: questions for the running server.
+#[derive(Debug, Subcommands)]
+pub(crate) enum ServerAction {
+    /// Show the macOS privacy grants the running server holds.
+    ///
+    /// macOS charges every program in a pane to the server, so Full Disk
+    /// Access, Screen Recording and Accessibility are the server's to hold.
+    /// Lists each as `granted`, `denied` (or never asked), `not_determined`
+    /// or `unknown` (always, off macOS), plus the program macOS charges
+    /// them to (`responsible_path`). Probing never prompts. Asks over the
+    /// local socket only; does not start a server. `--json` prints
+    /// `{"executable", "responsible_path", "bundle", "permissions":
+    /// [{"service", "status"}]}`.
+    Permissions {
+        #[usage(flatten)]
+        json: JsonOpt,
+
+        /// Open SERVICE's pane in System Settings and print the path to
+        /// add there: the `phux Server` bundle through its `Current` link,
+        /// or the app macOS charges the server to. Works without a server.
+        #[usage(long, value_enum, value_name = "SERVICE")]
+        open: Option<crate::commands::server::PrivacyService>,
+    },
 }
 
 /// Run a standalone relay, or enroll a route with it

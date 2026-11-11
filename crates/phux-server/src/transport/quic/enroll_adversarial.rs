@@ -64,7 +64,7 @@ impl Paired {
             &self.cert,
             &self.key,
             None,
-            Some(&ca),
+            Some(&ca.clone().into()),
             Some(registry),
             enrollment.then(|| self.paths.clone()),
         )

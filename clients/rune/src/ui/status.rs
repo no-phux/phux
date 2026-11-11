@@ -6,11 +6,32 @@ use rune::{Color, El, Family, TextStyle, col, el, row, text};
 
 use super::{
     CAPTION, Ink, LABEL, LABEL_STRONG, TITLEBAR_H, button, icon_press, icons, keep_from_pane,
-    pressable, tabs,
+    pressable, tabs, tip,
 };
 use crate::desk::link::{Banner, Standing};
 use crate::desk::{Desk, Notice, NoticeKind, Pending};
+use crate::keys::Shortcut;
 use crate::launch::INSTALL;
+
+mod phone;
+
+/// The terminal's size in the title bar: quiet figures that keep their
+/// columns as the window is dragged.
+const GEOMETRY: TextStyle = TextStyle::new(10.5, 500.0)
+    .family(Family::SystemMono)
+    .features("tnum");
+
+/// The least height of something a thumb presses, in points.
+const TOUCH: f32 = 44.0;
+
+/// A button as this window is used: on a phone, tall enough to touch.
+fn touchable(desk: &Desk, button: El) -> El {
+    if desk.phone.is_some() {
+        button.min_h(TOUCH)
+    } else {
+        button
+    }
+}
 
 /// A notice's words, wrapping; with none it draws nothing.
 pub fn notice_line(notice: Option<&Notice>, p: &Ink) -> El {
@@ -34,8 +55,10 @@ pub fn notice_line(notice: Option<&Notice>, p: &Ink) -> El {
         .min_w(0.0)
 }
 
-/// What a held action would do, and the word for doing it.
-fn question(pending: &Pending) -> (String, &'static str) {
+/// What a held action would do, and the word for doing it. A keyboard is
+/// told its key; `touch` has none to name.
+fn question(pending: &Pending, touch: bool) -> (String, &'static str) {
+    let keyed = |bare: &'static str, keyed: &'static str| if touch { bare } else { keyed };
     match pending {
         Pending::Mirror(source, target) => (
             format!(
@@ -52,27 +75,27 @@ fn question(pending: &Pending) -> (String, &'static str) {
                 format!(
                     "This paste has {lines} line{plural} and would run as typed commands. Paste anyway?"
                 ),
-                "Paste (Return)",
+                keyed("Paste", "Paste (Return)"),
             )
         }
         Pending::Close(terminal) => (
             format!("Close {terminal}? Anything running in it ends."),
-            "Close (Return)",
+            keyed("Close", "Close (Return)"),
         ),
         Pending::CloseTab(terminals) if terminals.len() == 1 => (
             "Close this tab? Anything running in it ends.".to_owned(),
-            "Close (Return)",
+            keyed("Close", "Close (Return)"),
         ),
         Pending::CloseTab(terminals) => (
             format!(
                 "Close this tab and its {} terminals? Anything running in them ends.",
                 terminals.len()
             ),
-            "Close (Return)",
+            keyed("Close", "Close (Return)"),
         ),
         Pending::CloseSession(_, name) => (
             format!("End session {name} and everything running in it?"),
-            "End session (Return)",
+            keyed("End session", "End session (Return)"),
         ),
     }
 }
@@ -80,7 +103,10 @@ fn question(pending: &Pending) -> (String, &'static str) {
 /// The action waiting on Return or Escape, floating over the terminals so
 /// asking never resizes them.
 pub fn confirm_bar(desk: &Desk, p: &Ink) -> Option<El> {
-    let (message, verb) = question(desk.pending.as_ref()?);
+    let touch = desk.phone.is_some();
+    let (message, verb) = question(desk.pending.as_ref()?, touch);
+    let cancel = if touch { "Cancel" } else { "Cancel (Esc)" };
+    let press = |button: El| touchable(desk, button.grow(0.0).px(10.0));
     Some(
         row()
             .key("confirm-bar")
@@ -105,16 +131,13 @@ pub fn confirm_bar(desk: &Desk, p: &Ink) -> Option<El> {
                     .grow(1.0)
                     .min_w(0.0),
             )
-            .child(
-                button("Cancel (Esc)", "confirm-cancel", p, Desk::cancel_pending)
-                    .grow(0.0)
-                    .px(10.0),
-            )
-            .child(
-                button(verb, "confirm-ok", p, Desk::confirm_pending)
-                    .grow(0.0)
-                    .px(10.0),
-            ),
+            .child(press(button(
+                cancel,
+                "confirm-cancel",
+                p,
+                Desk::cancel_pending,
+            )))
+            .child(press(button(verb, "confirm-ok", p, Desk::confirm_pending))),
     )
 }
 
@@ -134,6 +157,16 @@ fn updates_can_fix(standing: &Standing, remote: bool) -> bool {
 
 /// What stands in for the terminal: the words, then what can be done.
 fn words(standing: &Standing, machine: &str, remote: bool) -> (&'static str, String) {
+    // Every use below is mid-sentence, where the local label reads lowercase.
+    let machine = if machine == crate::machines::LOCAL {
+        if cfg!(target_os = "macos") {
+            "this Mac"
+        } else {
+            "this computer"
+        }
+    } else {
+        machine
+    };
     match standing {
         Standing::Starting => ("Starting phux…", String::new()),
         Standing::NoCli => (
@@ -172,6 +205,14 @@ fn words(standing: &Standing, machine: &str, remote: bool) -> (&'static str, Str
             "No terminals",
             "This session is empty; start a terminal in it.".to_owned(),
         ),
+        Standing::Ended(1) => (
+            "The server restarted",
+            "It ended this session's terminal. Restore starts it again.".to_owned(),
+        ),
+        Standing::Ended(n) => (
+            "The server restarted",
+            format!("It ended this session's {n} terminals. Restore starts them again."),
+        ),
         Standing::Opening => ("Opening terminal…", String::new()),
     }
 }
@@ -201,8 +242,23 @@ fn action(label: &'static str, key: &'static str, p: &Ink, press: fn(&mut Desk))
     button(label, key, p, press).grow(0.0).px(12.0)
 }
 
-/// The one thing to do about `standing`, when there is one.
-fn remedy(standing: &Standing, remote: bool, p: &Ink) -> Option<El> {
+/// The title and detail for `standing`, in this window's voice: the phone
+/// app has its own for what a desktop would answer with a command.
+fn said(desk: &Desk, standing: &Standing) -> (String, String) {
+    let machine = desk.machines.label();
+    let on_phone = desk
+        .native
+        .as_ref()
+        .and_then(|_| phone::words(standing, machine, desk.unpaired()));
+    on_phone.unwrap_or_else(|| {
+        let (title, detail) = words(standing, machine, desk.machines.current.is_some());
+        (title.to_owned(), detail)
+    })
+}
+
+/// The one thing to do about `standing`, when there is one. `updates` is
+/// whether this computer's can fix it.
+fn remedy(standing: &Standing, updates: bool, p: &Ink) -> Option<El> {
     Some(match standing {
         Standing::Starting | Standing::Connecting(_) | Standing::Opening => return None,
         Standing::NoSessions => action("New session", "placeholder-session", p, Desk::new_session),
@@ -212,7 +268,8 @@ fn remedy(standing: &Standing, remote: bool, p: &Ink) -> Option<El> {
             p,
             Desk::new_terminal,
         ),
-        Standing::Incompatible(_) if updates_can_fix(standing, remote) => {
+        Standing::Ended(_) => action("Restore", "placeholder-restore", p, Desk::restore_session),
+        Standing::Incompatible(_) if updates => {
             action("Check for updates", "placeholder-update", p, |d| {
                 d.updater.check_now();
             })
@@ -230,31 +287,50 @@ fn retry(p: &Ink) -> El {
 
 pub fn placeholder(desk: &Desk, p: &Ink) -> El {
     let standing = desk.standing();
-    let remote = desk.machines.current.is_some();
-    let (title, detail) = words(&standing, desk.machines.label(), remote);
+    let native = desk.native.is_some();
+    let (title, detail) = said(desk, &standing);
+    // The phone app has no updater, and its other computers are in its host.
+    let updates = !native && updates_can_fix(&standing, desk.machines.current.is_some());
+    let repair = phone::repairs(desk, &standing);
+    let elsewhere = if native {
+        "Change computer…"
+    } else {
+        "Other machines…"
+    };
     let failed = matches!(
         standing,
         Standing::Unreachable(_) | Standing::Incompatible(_)
     );
     let color = if failed { p.danger } else { p.dim };
+    let actions = repair
+        .then(|| phone::pair_again("placeholder-pair", p))
+        .into_iter()
+        .chain(remedy(&standing, updates, p))
+        // Words under the phone's dial mean it has gone on long enough to
+        // act on.
+        .chain(phone::slow_dial(desk, &standing).then(|| retry(p)))
+        // A server updated from elsewhere never says so.
+        .chain(updates.then(|| retry(p)))
+        // Pairing again already goes where the phone's computers are.
+        .chain((!repair).then(|| {
+            action(
+                elsewhere,
+                "placeholder-machines",
+                p,
+                Desk::toggle_machines,
+            )
+        }));
     let buttons = row()
         .w_full()
         .center()
         .gap(8.0)
         .pt(6.0)
-        .children(remedy(&standing, remote, p))
-        // A server updated from elsewhere never says so.
-        .children(updates_can_fix(&standing, remote).then(|| retry(p)))
-        .child(action(
-            "Other machines…",
-            "placeholder-machines",
-            p,
-            Desk::toggle_machines,
-        ));
+        .children(actions.map(|button| touchable(desk, button)));
     col()
         .gap(6.0)
         .items_center()
         .max_w(520.0)
+        .px(if desk.phone.is_some() { 16.0 } else { 0.0 })
         .child(text(title).font(TextStyle::new(15.0, 600.0)).color(color))
         .child(text(detail).font(LABEL).color(p.dim).wrap())
         .children((standing == Standing::NoCli).then(|| install_line(p)))
@@ -268,18 +344,26 @@ pub fn banner(desk: &Desk, p: &Ink) -> Option<El> {
     let machine = desk.machines.label();
     let remote = desk.machines.current.is_some();
     let (lost, why) = match &banner {
-        Banner::Reconnecting(why) => (format!("Lost {machine}. Reconnecting…"), why.clone()),
-        Banner::Stuck(standing) => {
-            let (title, why) = words(standing, machine, remote);
-            (title.to_owned(), why)
-        }
+        // Short, so a narrow window still shows the state.
+        Banner::Reconnecting(why) => (format!("Reconnecting to {machine}…"), why.clone()),
+        Banner::Stuck(standing) => said(desk, standing),
     };
-    let update = matches!(&banner, Banner::Stuck(standing) if updates_can_fix(standing, remote));
-    // A held confirmation keeps the top of the stage.
-    let top = if desk.pending.is_some() { 96.0 } else { 44.0 };
+    // The phone app has no updater to check with.
+    let update = desk.native.is_none()
+        && matches!(&banner, Banner::Stuck(standing) if updates_can_fix(standing, remote));
+    let repair = matches!(&banner, Banner::Stuck(standing) if phone::repairs(desk, standing));
+    let actions = update
+        .then(|| {
+            action("Check for updates", "banner-update", p, |d| {
+                d.updater.check_now();
+            })
+        })
+        .into_iter()
+        .chain(repair.then(|| phone::pair_again("banner-pair", p)))
+        .chain([action("Retry", "banner-retry", p, Desk::reconnect)]);
     Some(
         col()
-            .absolute(0.0, top)
+            .absolute(0.0, phone::banner_top(desk))
             .w_full()
             .px(12.0)
             .items_center()
@@ -297,6 +381,7 @@ pub fn banner(desk: &Desk, p: &Ink) -> Option<El> {
                     .items_center()
                     .fill(p.raised)
                     .border(1.0, p.separator)
+                    .child(crate::host_color::dot(machine, 8.0, p.raised))
                     .child(
                         col()
                             .gap(2.0)
@@ -305,12 +390,7 @@ pub fn banner(desk: &Desk, p: &Ink) -> Option<El> {
                             .child(text(lost).font(LABEL_STRONG).color(p.text).truncate())
                             .child(text(why).font(CAPTION).color(p.dim).wrap()),
                     )
-                    .children(update.then(|| {
-                        action("Check for updates", "banner-update", p, |d| {
-                            d.updater.check_now();
-                        })
-                    }))
-                    .child(action("Retry", "banner-retry", p, Desk::reconnect)),
+                    .children(actions.map(|button| touchable(desk, button))),
             ),
     )
 }
@@ -337,12 +417,20 @@ fn place(desk: &Desk, p: &Ink) -> El {
     let title = title
         .strip_suffix(&format!(" — {session}"))
         .map_or(title.clone(), str::to_owned);
-    let terminal = (title != session && !title.is_empty())
-        .then(|| text(title).font(LABEL).color(p.dim).truncate());
+    // The terminal's title grows from nothing into what is left, so a narrow
+    // window cuts it before it cuts the session's name.
+    // With no terminal on screen the window title is the app's own name.
+    let terminal = (desk.shown.is_some() && title != session && !title.is_empty()).then(|| {
+        el().w(0.0)
+            .grow(1.0)
+            .min_w(0.0)
+            .child(text(title).font(LABEL).color(p.dim).truncate())
+    });
     row()
         .gap(7.0)
         .min_w(0.0)
         .shrink()
+        .grow(8.0)
         .items_center()
         .child(text(session).font(LABEL_STRONG).color(p.text).truncate())
         .children(terminal)
@@ -358,76 +446,76 @@ pub fn title_bar(desk: &Desk, p: &Ink, lights: f32) -> El {
         .and_then(|(client, shown)| client.acquire_view(shown.view?))
         .map(|frame| format!("{}×{}", frame.cols, frame.rows))
         .unwrap_or_default();
-    let folded = !desk.sidebar_open;
+    let folded = !desk.sidebar_shown();
+    let sidebar = icon_press(
+        &icons::SIDEBAR,
+        "Sidebar",
+        "sidebar-toggle",
+        p,
+        Desk::toggle_sidebar,
+    )
+    .expanded(desk.sidebar_shown());
+    let settings = icon_press(
+        &icons::SETTINGS,
+        "Settings",
+        "settings-button",
+        p,
+        Desk::toggle_settings,
+    );
+    // Where a ⌘-click goes, as a browser shows it: in the room the tabs
+    // leave, so pointing at a link never squeezes them.
+    let link = desk.pointer.hover.as_ref().map(|(_, link)| {
+        text(link.url.clone())
+            .font(CAPTION)
+            .color(p.accent)
+            .truncate()
+    });
+    // Everything between the sidebar's button and the window's own words:
+    // its width is the room the tabs are cut from.
+    let lane = row()
+        .key("titlebar-lane")
+        .grow(1.0)
+        .min_w(0.0)
+        .h_full()
+        .gap(8.0)
+        .items_center()
+        .on_layout(|d: &mut Desk, rect| d.tabs.room = rect[2])
+        .children(tabs::strip(desk, p).or_else(|| Some(place(desk, p))))
+        .child(
+            row()
+                .grow(1.0)
+                .min_w(0.0)
+                .justify_end()
+                .items_center()
+                .children(link),
+        );
     row()
         .key("titlebar")
         .w_full()
         .h(TITLEBAR_H)
         .pl(if folded { lights + 8.0 } else { 2.0 })
-        .pr(12.0)
+        .pr(10.0)
         .gap(8.0)
         .items_center()
         .window_drag()
-        .child(
-            icon_press(
-                &icons::SIDEBAR,
-                "Sidebar",
-                "sidebar-toggle",
-                p,
-                Desk::toggle_sidebar,
-            )
-            .expanded(desk.sidebar_open),
-        )
-        .children(tabs::strip(desk, p).or_else(|| Some(place(desk, p))))
-        .child(el().grow(1.0))
-        // Where a ⌘-click goes, as a browser shows it.
-        .children(desk.pointer.hover.as_ref().map(|(_, link)| {
-            text(link.url.clone())
-                .font(CAPTION)
-                .color(p.accent)
-                .truncate()
-        }))
+        .child(tip(sidebar, "Sidebar", Shortcut::ToggleSidebar))
+        .child(lane)
         .children(link_trouble(desk, p).map(|(word, color)| text(word).font(CAPTION).color(color)))
         .children(super::updates::pill(desk, p))
         .child(
             text(geometry)
-                .font(CAPTION.family(Family::SystemMono))
-                .color(p.dim),
+                .font(GEOMETRY)
+                .color(p.dim.alpha(0.8))
+                .a11y_hidden(),
+        )
+        .child(
+            row()
+                .gap(2.0)
+                .items_center()
+                .child(super::news::bell(desk, p))
+                .child(tip(settings, "Settings", Shortcut::Settings)),
         )
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use phux_protocol::ids::ResourceId;
-
-    #[test]
-    fn a_remote_servers_update_happens_on_that_machine() {
-        let behind =
-            Standing::Incompatible("server requires 12.x; update the phux server".to_owned());
-        assert!(updates_can_fix(&behind, false));
-        assert!(!updates_can_fix(&behind, true));
-        assert!(
-            words(&behind, "mini", true)
-                .1
-                .contains("`phux update` on mini")
-        );
-        assert!(!words(&behind, "here", false).1.contains("`phux update`"));
-        // The app is this computer's to update, wherever the server is.
-        let ahead = Standing::Incompatible("update the phux app/client".to_owned());
-        assert!(updates_can_fix(&ahead, true));
-    }
-
-    #[test]
-    fn a_held_tab_close_counts_its_terminals() {
-        let close = |n| Pending::CloseTab((0..n).map(ResourceId::local).collect());
-        assert_eq!(
-            question(&close(1)).0,
-            "Close this tab? Anything running in it ends."
-        );
-        assert_eq!(
-            question(&close(3)).0,
-            "Close this tab and its 3 terminals? Anything running in them ends."
-        );
-    }
-}
+mod tests;

@@ -1105,6 +1105,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "aa9a19cbb55df58761df49b23516a86d432839add4af60fc256da840f66ed35b"
 
 [[package]]
+name = "form_urlencoded"
+version = "1.2.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "cb4cb245038516f5f85277875cdaa4f7d2c9a0fa0468de06ed190163b1581fcf"
+dependencies = [
+ "percent-encoding",
+]
+
+[[package]]
 name = "futures-core"
 version = "0.3.34"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1459,6 +1468,27 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "913a7d294ad056474749152107309fdee3ec17d2482d1ab70fdc61a81c64b9a3"
 
 [[package]]
+name = "idna"
+version = "1.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3b0875f23caa03898994f6ddc501886a45c7d3d62d04d2d90788d47be1b1e4de"
+dependencies = [
+ "idna_adapter",
+ "smallvec",
+ "utf8_iter",
+]
+
+[[package]]
+name = "idna_adapter"
+version = "1.2.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "cb68373c0d6620ef8105e855e7745e18b0d00d3bdb07fb532e434244cdb9a714"
+dependencies = [
+ "icu_normalizer",
+ "icu_properties",
+]
+
+[[package]]
 name = "image"
 version = "0.25.10"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1626,7 +1656,7 @@ checksum = "65cd87c9a6d60536580b316ad985726104730a5151c99845f2490428ef91240a"
 [[package]]
 name = "libghostty-vt"
 version = "0.2.1"
-source = "git+https://github.com/phall1/libghostty-rs.git?rev=055e3d324a5c2bd0e46a53dbffa9659aba349961#055e3d324a5c2bd0e46a53dbffa9659aba349961"
+source = "git+https://github.com/phall1/libghostty-rs.git?rev=6eb19ee9d2a66d798a1ed995d0f2008ee46dcfb8#6eb19ee9d2a66d798a1ed995d0f2008ee46dcfb8"
 dependencies = [
  "bitflags 2.13.2",
  "int-enum",
@@ -1637,7 +1667,7 @@ dependencies = [
 [[package]]
 name = "libghostty-vt-sys"
 version = "0.2.1"
-source = "git+https://github.com/phall1/libghostty-rs.git?rev=055e3d324a5c2bd0e46a53dbffa9659aba349961#055e3d324a5c2bd0e46a53dbffa9659aba349961"
+source = "git+https://github.com/phall1/libghostty-rs.git?rev=6eb19ee9d2a66d798a1ed995d0f2008ee46dcfb8#6eb19ee9d2a66d798a1ed995d0f2008ee46dcfb8"
 
 [[package]]
 name = "libloading"
@@ -2555,7 +2585,7 @@ dependencies = [
 
 [[package]]
 name = "phux-client-core"
-version = "0.129.1"
+version = "0.138.0"
 dependencies = [
  "bytes",
  "ciborium",
@@ -2572,7 +2602,7 @@ dependencies = [
 
 [[package]]
 name = "phux-client-runtime"
-version = "0.129.1"
+version = "0.138.0"
 dependencies = [
  "bytes",
  "futures-util",
@@ -2600,7 +2630,7 @@ dependencies = [
 
 [[package]]
 name = "phux-config-core"
-version = "0.129.1"
+version = "0.138.0"
 dependencies = [
  "nix",
  "serde",
@@ -2611,7 +2641,7 @@ dependencies = [
 
 [[package]]
 name = "phux-core"
-version = "0.129.1"
+version = "0.138.0"
 dependencies = [
  "serde",
  "sha2",
@@ -2621,7 +2651,7 @@ dependencies = [
 
 [[package]]
 name = "phux-dial"
-version = "0.129.1"
+version = "0.138.0"
 dependencies = [
  "futures-util",
  "hex",
@@ -2638,7 +2668,7 @@ dependencies = [
 
 [[package]]
 name = "phux-perf"
-version = "0.129.1"
+version = "0.138.0"
 dependencies = [
  "libc",
  "nix",
@@ -2648,7 +2678,7 @@ dependencies = [
 
 [[package]]
 name = "phux-protocol"
-version = "0.129.1"
+version = "0.138.0"
 dependencies = [
  "bitflags 2.13.2",
  "bytes",
@@ -2664,20 +2694,33 @@ dependencies = [
 
 [[package]]
 name = "phux-rune"
-version = "0.1.1"
+version = "0.1.13"
 dependencies = [
  "image",
  "objc2 0.6.5",
  "objc2-foundation 0.3.2",
  "phux-client-core",
  "phux-client-runtime",
+ "phux-config-core",
  "phux-perf",
  "phux-protocol",
+ "png 0.17.16",
  "rune",
  "rune-notify",
  "rune-perf",
+ "serde",
  "serde_json",
  "sha2",
+ "tiny-skia",
+ "url",
+]
+
+[[package]]
+name = "phux-rune-ios"
+version = "0.1.0"
+dependencies = [
+ "phux-rune",
+ "serde_json",
 ]
 
 [[package]]
@@ -2851,7 +2894,7 @@ dependencies = [
 [[package]]
 name = "procwatch"
 version = "0.1.0"
-source = "git+https://github.com/anomalyco/rune?rev=a7f276c3630f85a06a0230295da4d2bd172d8d3b#a7f276c3630f85a06a0230295da4d2bd172d8d3b"
+source = "git+https://github.com/anomalyco/rune?rev=0ea75abef0a6caa014067a88f89518b9a04cce2b#0ea75abef0a6caa014067a88f89518b9a04cce2b"
 dependencies = [
  "libc",
 ]
@@ -2885,7 +2928,7 @@ dependencies = [
 
 [[package]]
 name = "quictun"
-version = "0.129.1"
+version = "0.138.0"
 dependencies = [
  "quinn",
  "rustls",
@@ -3155,7 +3198,7 @@ dependencies = [
 [[package]]
 name = "rune"
 version = "0.0.1"
-source = "git+https://github.com/anomalyco/rune?rev=a7f276c3630f85a06a0230295da4d2bd172d8d3b#a7f276c3630f85a06a0230295da4d2bd172d8d3b"
+source = "git+https://github.com/anomalyco/rune?rev=0ea75abef0a6caa014067a88f89518b9a04cce2b#0ea75abef0a6caa014067a88f89518b9a04cce2b"
 dependencies = [
  "accesskit",
  "accesskit_macos",
@@ -3170,6 +3213,8 @@ dependencies = [
  "fontique",
  "futures-util",
  "half",
+ "icu_properties",
+ "icu_segmenter",
  "image",
  "js-sys",
  "libc",
@@ -3203,6 +3248,7 @@ dependencies = [
  "rustc-hash 2.1.3",
  "serde",
  "serde_json",
+ "skrifa",
  "swash",
  "symphonia",
  "taffy",
@@ -3232,12 +3278,12 @@ dependencies = [
 [[package]]
 name = "rune-motion"
 version = "0.1.0"
-source = "git+https://github.com/anomalyco/rune?rev=a7f276c3630f85a06a0230295da4d2bd172d8d3b#a7f276c3630f85a06a0230295da4d2bd172d8d3b"
+source = "git+https://github.com/anomalyco/rune?rev=0ea75abef0a6caa014067a88f89518b9a04cce2b#0ea75abef0a6caa014067a88f89518b9a04cce2b"
 
 [[package]]
 name = "rune-notify"
 version = "0.0.1"
-source = "git+https://github.com/anomalyco/rune?rev=a7f276c3630f85a06a0230295da4d2bd172d8d3b#a7f276c3630f85a06a0230295da4d2bd172d8d3b"
+source = "git+https://github.com/anomalyco/rune?rev=0ea75abef0a6caa014067a88f89518b9a04cce2b#0ea75abef0a6caa014067a88f89518b9a04cce2b"
 dependencies = [
  "block2 0.5.1",
  "objc2 0.5.3",
@@ -3248,7 +3294,7 @@ dependencies = [
 [[package]]
 name = "rune-perf"
 version = "0.1.0"
-source = "git+https://github.com/anomalyco/rune?rev=a7f276c3630f85a06a0230295da4d2bd172d8d3b#a7f276c3630f85a06a0230295da4d2bd172d8d3b"
+source = "git+https://github.com/anomalyco/rune?rev=0ea75abef0a6caa014067a88f89518b9a04cce2b#0ea75abef0a6caa014067a88f89518b9a04cce2b"
 dependencies = [
  "procwatch",
  "serde_json",
@@ -3257,7 +3303,7 @@ dependencies = [
 [[package]]
 name = "rune-staging"
 version = "0.0.1"
-source = "git+https://github.com/anomalyco/rune?rev=a7f276c3630f85a06a0230295da4d2bd172d8d3b#a7f276c3630f85a06a0230295da4d2bd172d8d3b"
+source = "git+https://github.com/anomalyco/rune?rev=0ea75abef0a6caa014067a88f89518b9a04cce2b#0ea75abef0a6caa014067a88f89518b9a04cce2b"
 dependencies = [
  "wgpu",
 ]
@@ -3265,7 +3311,7 @@ dependencies = [
 [[package]]
 name = "rune-taffy"
 version = "0.0.1"
-source = "git+https://github.com/anomalyco/rune?rev=a7f276c3630f85a06a0230295da4d2bd172d8d3b#a7f276c3630f85a06a0230295da4d2bd172d8d3b"
+source = "git+https://github.com/anomalyco/rune?rev=0ea75abef0a6caa014067a88f89518b9a04cce2b#0ea75abef0a6caa014067a88f89518b9a04cce2b"
 dependencies = [
  "taffy",
 ]
@@ -4205,6 +4251,18 @@ name = "untrusted"
 version = "0.9.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8ecb6da28b8a351d773b68d5825ac39017e680750f980f3a1a85cd8dd28a47c1"
+
+[[package]]
+name = "url"
+version = "2.5.8"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ff67a8a4397373c3ef660812acab3268222035010ab8680ec4215f38ba3d0eed"
+dependencies = [
+ "form_urlencoded",
+ "idna",
+ "percent-encoding",
+ "serde",
+]
 
 [[package]]
 name = "usvg"

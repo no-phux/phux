@@ -149,6 +149,17 @@ impl Client {
         call.await
     }
 
+    /// Send one `MIRROR` to this server, or the satellite `host` names, and
+    /// wait for its JSON answer (`docs/resource-kinds.md#standing-mirrors`).
+    pub async fn mirror(
+        &self,
+        host: Option<String>,
+        op: phux_protocol::wire::frame::MirrorOp,
+    ) -> Result<serde_json::Value, crate::control::MirrorError> {
+        let call = self.inner.with(|control| control.mirror(host, op))?;
+        call.await
+    }
+
     /// Close `exchange`, ending a read in flight. Idempotent.
     pub async fn service_http_close(&self, exchange: u64) -> Result<(), ServiceHttpError> {
         let call = self

@@ -363,7 +363,7 @@ fn window_phase() {
         replica.terminal.clone(),
     ));
     desk.shown = Some(Shown {
-        terminal: replica.terminal.clone(),
+        resource: replica.terminal.clone(),
         view: Some(replica.views[0]),
     });
     let mut runtime = Runtime::new(desk, crate::ui::view, SIZE, Env::new(true, SCALE));
@@ -385,14 +385,22 @@ const ALONE: &str = "RUNE_BUDGET_ALONE";
 
 /// A real connected terminal behind the native controls, without a server.
 pub(crate) fn input_fixture() -> (Arc<Client>, Runtime<Desk>) {
-    let replica = Replica::new(120, 40, 1);
+    input_fixture_showing("")
+}
+
+/// [`input_fixture`] with `output` already printed in the terminal.
+pub(crate) fn input_fixture_showing(output: &str) -> (Arc<Client>, Runtime<Desk>) {
+    let mut replica = Replica::new(120, 40, 1);
+    if !output.is_empty() {
+        replica.feed(output.to_owned());
+    }
     let mut desk = Desk::new(&Resolved::offline("input"));
     desk.client = Some(Arc::clone(&replica.client));
     desk.layout = Some(phux_client_core::layout::LayoutNode::Leaf(
         replica.terminal.clone(),
     ));
     desk.shown = Some(Shown {
-        terminal: replica.terminal,
+        resource: replica.terminal,
         view: Some(replica.views[0]),
     });
     let mut rt = Runtime::new(desk, crate::ui::view, SIZE, Env::new(true, SCALE));

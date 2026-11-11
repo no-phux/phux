@@ -97,6 +97,35 @@ fn renewal_is_due_inside_the_window_expired_or_unreadable() {
     );
 }
 
+/// An organization's short-lived certificate (not rounded to a midnight,
+/// shorter than the renewal window) is admitted until its `notAfter` and
+/// warns only once it has expired: its issuer renews it.
+#[test]
+fn a_short_lived_certificate_warns_only_when_expired() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let now = chrono::Utc::now().timestamp();
+    let issue = |name: &str, from: i64, until: i64| {
+        let key = rcgen::KeyPair::generate().expect("key");
+        let mut params = rcgen::CertificateParams::new(vec!["client".to_owned()]).expect("params");
+        let at = |secs: i64| {
+            let secs = u64::try_from(secs).expect("after the epoch");
+            rcgen::date_time_ymd(1970, 1, 1) + std::time::Duration::from_secs(secs)
+        };
+        params.not_before = at(from);
+        params.not_after = at(until);
+        let path = dir.path().join(name);
+        std::fs::write(&path, params.self_signed(&key).expect("signed").pem()).expect("write");
+        path
+    };
+    let live = issue("live.pem", now - 60, now + 12 * 3600 + 7);
+    let gone = issue("gone.pem", now - 13 * 3600, now - 3600 + 7);
+
+    assert_eq!(admission_ends(&live), Some(now + 12 * 3600 + 7));
+    assert_eq!(renewal_due(&live, now), None);
+    let why = renewal_due(&gone, now).expect("expired");
+    assert!(why.starts_with("expired on "), "{why}");
+}
+
 /// The `enrollment.status` vocabulary is stable, and only a failure
 /// carries an error.
 #[test]

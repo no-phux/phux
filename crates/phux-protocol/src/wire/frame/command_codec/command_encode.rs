@@ -24,6 +24,7 @@ use super::{
 pub(in crate::wire) fn encode_command(command: &Command, enc: &mut Encoder<'_>) {
     match command {
         Command::DescribeApi => enc.write_u8(crate::wire::frame::COMMAND_TAG_DESCRIBE_API),
+        Command::PrivacyStatus => enc.write_u8(crate::wire::frame::COMMAND_TAG_PRIVACY_STATUS),
         Command::NativeAgent { request } => {
             enc.write_u8(crate::wire::frame::COMMAND_TAG_NATIVE_AGENT);
             enc.write_bytes(request.encoded());
@@ -238,6 +239,8 @@ pub(in crate::wire) fn encode_command(command: &Command, enc: &mut Encoder<'_>) 
             enc.write_bytes(&crate::checkout::encode_request(request));
         }
         Command::ServiceHttpOpen { request } => super::service_http::encode_open(request, enc),
+        Command::Mirror { host, op } => super::mirror::encode(host.as_deref(), op, enc),
+        Command::MirrorProvide { targets } => super::mirror::encode_provide(targets, enc),
         Command::ServiceHttpRead {
             exchange,
             max_bytes,
@@ -273,12 +276,18 @@ pub(in crate::wire) fn encode_command(command: &Command, enc: &mut Encoder<'_>) 
             terminal_id,
             intent,
             control,
+            on_behalf_of,
         } => {
             enc.write_u8(crate::wire::frame::COMMAND_TAG_SEND_DOCUMENT_INPUT);
             encode_terminal_id(terminal_id, enc);
             intent.encode(enc);
-            if let Some(control) = control {
-                enc.write_u8(control.bits());
+            match (control, on_behalf_of) {
+                (Some(control), _) => enc.write_u8(control.bits()),
+                (None, Some(_)) => enc.write_u8(crate::wire::frame::CONTROL_UNRESTRICTED),
+                (None, None) => {}
+            }
+            if let Some(on_behalf_of) = on_behalf_of {
+                on_behalf_of.encode(enc);
             }
         }
         org @ (Command::GetOrganization { .. }

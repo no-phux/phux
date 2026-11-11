@@ -361,6 +361,18 @@ pub(super) fn invalidate_all_fronts(panes: &mut HashMap<ResourceId, PaneSlot>) {
     }
 }
 
+/// Delete the kitty images of every pane `visible` rejects (see
+/// `TerminalRenderer::release_kitty`); a no-op for a pane that holds none.
+pub(super) fn release_hidden_kitty(
+    out: &mut impl std::io::Write,
+    panes: &mut HashMap<ResourceId, PaneSlot>,
+    visible: impl Fn(&ResourceId) -> bool,
+) {
+    for (_, slot) in panes.iter_mut().filter(|(id, _)| !visible(id)) {
+        let _ = slot.renderer.release_kitty(out);
+    }
+}
+
 /// Forget the rows the predictive overlay painted over: its guesses are
 /// healed only by a whole-row repaint, and a diff against the pre-guess
 /// front row would strand the underline.

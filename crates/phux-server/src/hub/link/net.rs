@@ -9,6 +9,8 @@ pub(crate) struct NetLinkTransport {
     pub(super) ssh_program: std::ffi::OsString,
     /// Where `inbound://` satellites' connections arrive (ADR-0182).
     pub(super) adopter: crate::hub::adopt::SatelliteAdopter,
+    /// The hub's own Terminal bootstrap offer, repeated in every link HELLO.
+    pub(super) bootstrap: phux_protocol::caps::BootstrapCapabilities,
 }
 
 impl NetLinkTransport {
@@ -23,7 +25,18 @@ impl NetLinkTransport {
         Self {
             ssh_program,
             adopter,
+            bootstrap: phux_protocol::caps::BootstrapCapabilities::new(),
         }
+    }
+
+    /// Offer satellites the hub's own Terminal profiles (see
+    /// [`super::negotiate::hub_link_capabilities`]).
+    pub(crate) const fn with_bootstrap(
+        mut self,
+        bootstrap: phux_protocol::caps::BootstrapCapabilities,
+    ) -> Self {
+        self.bootstrap = bootstrap;
+        self
     }
 }
 

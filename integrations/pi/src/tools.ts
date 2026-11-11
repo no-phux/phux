@@ -1,15 +1,28 @@
 import { Type } from "@earendil-works/pi-ai";
-import {
-  truncateTail,
-  type AgentToolResult,
-  type ExtensionAPI,
-  type Theme,
-} from "@earendil-works/pi-coding-agent";
-import { Text } from "@earendil-works/pi-tui";
+import type { AgentToolResult, ExtensionAPI } from "@earendil-works/pi-coding-agent";
 
 import { PhuxCli } from "./adapter.js";
+import { registerPhuxDocumentTools, registerPhuxListTool } from "./resource-tools.js";
 import type { ScreenState } from "./schemas.js";
 import { PhuxTargetStore, type PhuxTargetSelection } from "./target-store.js";
+import {
+  boundedResult,
+  callText,
+  execution,
+  renderSummary,
+  sanitizeRenderText,
+  toolResult,
+  type PhuxToolDetails,
+} from "./tool-support.js";
+
+export { PhuxListParams } from "./resource-tools.js";
+export {
+  boundedResult,
+  MAX_MODEL_BYTES,
+  MAX_MODEL_LINES,
+  sanitizeRenderText,
+  type PhuxToolDetails,
+} from "./tool-support.js";
 
 const TARGET = Type.Optional(Type.String({ minLength: 1, maxLength: 512, pattern: ".*\\S.*", description: "Explicit CLI selector or alias:name; otherwise use the selected /phux target" }));
 const REQUIRED_TARGET = Type.String({ minLength: 1, maxLength: 512, pattern: ".*\\S.*", description: "CLI selector, alias:name, or (where documented) group:name" });
@@ -27,7 +40,6 @@ const AGENT_UNTIL = Type.Optional(Type.Array(Type.Union([
 const NONEMPTY_ARGV = Type.Array(Type.String(), { minItems: 1, maxItems: 256 });
 const STRICT = { additionalProperties: false } as const;
 
-export const PhuxListParams = Type.Object({ local_timeout_ms: LOCAL_TIMEOUT }, STRICT);
 export const PhuxCreateParams = Type.Object({
   name: Type.String({ minLength: 1, pattern: ".*\\S.*", maxLength: 255 }),
   cwd: Type.Optional(Type.String({ minLength: 1, pattern: ".*\\S.*" })),
@@ -195,27 +207,6 @@ export const PhuxTargetsParams = Type.Union([
   Type.Object({ action: Type.Literal("remove_group"), name: TARGET_NAME }, STRICT),
 ]);
 
-export const MAX_MODEL_BYTES = 12 * 1024;
-export const MAX_MODEL_LINES = 200;
-const MODEL_TRUNCATION_NOTICE = `[Pi adapter truncated terminal output to the last ${String(MAX_MODEL_LINES)} lines within ${String(MAX_MODEL_BYTES)} bytes]`;
-const PHUX_TRUNCATION_NOTICE = "[phux reported that terminal output was already truncated]";
-
-export interface PhuxToolDetails {
-  readonly operation: "list" | "panes" | "create" | "spawn" | "launch" | "insert_pane" | "move_pane" | "swap_pane" | "snapshot" | "rendered_snapshot" | "send_keys" | "paste" | "run" | "wait" | "agent_prompt" | "agent_wait" | "resource_wait" | "status" | "runtime_info" | "kill" | "signal" | "tag" | "ask" | "watch" | "targets";
-  readonly summary: string;
-  readonly target?: string;
-  readonly selection?: PhuxTargetSelection;
-  readonly count?: number;
-  readonly exitCode?: number;
-  readonly durationMs?: number;
-  readonly outcome?: string;
-  readonly result?: Readonly<Record<string, unknown>>;
-  readonly warning?: string;
-  readonly rows?: number;
-  readonly cols?: number;
-  readonly modelOutputTruncated?: boolean;
-  readonly phuxOutputTruncated?: boolean;
-}
 
 /** Register bounded non-shell phux tools against the extension's shared target store. */
 export function registerPhuxTools(pi: ExtensionAPI, cli: PhuxCli, store: PhuxTargetStore, parentTerminalId?: string): void {
@@ -334,27 +325,7 @@ export function registerPhuxTools(pi: ExtensionAPI, cli: PhuxCli, store: PhuxTar
     renderResult: renderSummary,
   });
 
-  pi.registerTool({
-    name: "phux_list",
-    label: "phux list",
-    description: "List phux sessions. Output is compact and bounded; this never changes phux focus.",
-    promptSnippet: "List shared phux terminal sessions",
-    parameters: PhuxListParams,
-    async execute(_id, params, signal) {
-      const result = await cli.ls(execution(params, signal));
-      const lines = result.sessions.map((session) =>
-        `${session.name}\twindows=${String(session.windows)}\tattached=${String(session.attached)}`);
-      const output = boundedResult(`sessions=${String(result.sessions.length)}`, lines.join("\n") || "No phux sessions.");
-      return toolResult(output.text, {
-        operation: "list",
-        summary: `${String(result.sessions.length)} session(s)`,
-        count: result.sessions.length,
-        modelOutputTruncated: output.truncated,
-      });
-    },
-    renderCall: (_args, theme) => callText(theme, "list sessions"),
-    renderResult: renderSummary,
-  });
+  registerPhuxListTool(pi, cli);
 
   pi.registerTool({
     name: "phux_create",
@@ -809,16 +780,9 @@ export function registerPhuxTools(pi: ExtensionAPI, cli: PhuxCli, store: PhuxTar
     renderCall: (args, theme) => callText(theme, `targets ${args.action}`),
     renderResult: renderSummary,
   });
+  registerPhuxDocumentTools(pi, cli);
 }
 
-function execution(params: { readonly local_timeout_ms?: number }, signal: AbortSignal | undefined, defaultMs = 10_000) {
-  signal?.throwIfAborted();
-  const timeoutMs = params.local_timeout_ms ?? defaultMs;
-  if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 86_405_000) {
-    throw new RangeError("local_timeout_ms must be an integer from 1 through 86405000");
-  }
-  return { ...(signal === undefined ? {} : { signal }), timeoutMs };
-}
 
 function operationExecution(params: { readonly local_timeout_ms?: number; readonly timeout_seconds?: number }, signal: AbortSignal | undefined) {
   const phuxTimeoutSeconds = operationTimeout(params.timeout_seconds);
@@ -1008,57 +972,4 @@ function recordResult(
     ...(outcome === undefined ? {} : { outcome }),
     modelOutputTruncated: output.truncated,
   });
-}
-
-/** Bound only terminal body text so the result header and truncation notices remain visible. */
-export function boundedResult(
-  header: string,
-  body: string,
-  phuxTruncated = false,
-): { readonly text: string; readonly truncated: boolean } {
-  const reservedNotices = [MODEL_TRUNCATION_NOTICE, ...(phuxTruncated ? [PHUX_TRUNCATION_NOTICE] : [])];
-  const separators = 1 + reservedNotices.length;
-  const reservedBytes = Buffer.byteLength(header) +
-    reservedNotices.reduce((total, notice) => total + Buffer.byteLength(notice), 0) + separators;
-  const bodyResult = truncateTail(body, {
-    maxBytes: Math.max(0, MAX_MODEL_BYTES - reservedBytes),
-    maxLines: Math.max(0, MAX_MODEL_LINES - 1 - reservedNotices.length),
-  });
-  const notices = [
-    ...(bodyResult.truncated ? [MODEL_TRUNCATION_NOTICE] : []),
-    ...(phuxTruncated ? [PHUX_TRUNCATION_NOTICE] : []),
-  ];
-  return {
-    text: [header, ...(bodyResult.content.length === 0 ? [] : [bodyResult.content]), ...notices].join("\n"),
-    truncated: bodyResult.truncated,
-  };
-}
-
-function toolResult(text: string, details: PhuxToolDetails): AgentToolResult<PhuxToolDetails> {
-  return { content: [{ type: "text", text }], details };
-}
-
-export function sanitizeRenderText(text: string): string {
-  return text
-    .replace(/\x1B\][^\x07]*(?:\x07|\x1B\\)/g, "")
-    .replace(/(?:\x1B\[|\x9B)[0-?]*[ -/]*[@-~]/g, "")
-    .replace(/\x1B[@-_]/g, "")
-    .replace(/[\x00-\x1F\x7F-\x9F]/g, " ");
-}
-
-function callText(theme: Theme, text: string): Text {
-  const safe = sanitizeRenderText(`phux ${text}`);
-  return new Text(theme.fg("toolTitle", theme.bold(safe)), 0, 0);
-}
-
-function renderSummary(
-  result: AgentToolResult<PhuxToolDetails>,
-  _options: unknown,
-  theme: Theme,
-): Text {
-  const details = result.details;
-  if (details === undefined) return new Text(theme.fg("error", "phux tool failed"), 0, 0);
-  const suffix = details.modelOutputTruncated ? " (model output truncated)" : "";
-  const safe = sanitizeRenderText(`${details.summary}${suffix}`);
-  return new Text(theme.fg(details.exitCode === undefined || details.exitCode === 0 ? "success" : "warning", safe), 0, 0);
 }

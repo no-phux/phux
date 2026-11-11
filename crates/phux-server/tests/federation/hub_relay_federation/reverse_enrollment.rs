@@ -294,7 +294,7 @@ fn a_listenerless_satellite_enrolls_dials_out_and_is_adopted() {
         // through the link it dialed. Its terminals answer through the hub.
         let (sat_shutdown, sat_task) =
             spawn_uplinked_satellite(d.join("sat.sock"), joined.entry.clone());
-        let mut client = wait_for_socket(&d.join("hub.sock"), STEP_DEADLINE).await;
+        let mut client = hub_client(&d.join("hub.sock")).await;
         let cat = spawn_cat(&mut client, 100, Some("sat")).await;
         assert!(matches!(
             get_screen_via_hub(&mut client, 101, cat.clone()).await,
@@ -309,7 +309,7 @@ fn a_listenerless_satellite_enrolls_dials_out_and_is_adopted() {
         let port = hub.quic.port();
         hub.stop().await;
         let hub = PairedHub::boot(d, port).await;
-        let mut client = wait_for_socket(&d.join("hub.sock"), STEP_DEADLINE).await;
+        let mut client = hub_client(&d.join("hub.sock")).await;
         let again = spawn_cat(&mut client, 200, Some("sat")).await;
         assert!(matches!(
             get_screen_via_hub(&mut client, 201, again).await,

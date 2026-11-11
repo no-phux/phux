@@ -70,6 +70,36 @@ fn inventory_lists_satellite_sessions_without_renumbering() {
     );
 }
 
+/// A non-Terminal resource joins the session its `session` facet names;
+/// it sits in no window, and it is no pane.
+#[test]
+fn inventory_members_include_documents_their_session_names() {
+    let host = SatelliteHost::from("edge");
+    let mut sat = satellite_snapshot();
+    let in_session = |id, kind, session| {
+        let mut info = ResourceInfo::resource(ResourceId::local(id), kind);
+        info.session = Some(SessionId::new(session));
+        info
+    };
+    sat.resources.extend([
+        in_session(104, ResourceKind::AccessibilityTree, 1),
+        in_session(105, ResourceKind::PixelSurface, 1),
+        in_session(201, ResourceKind::Document, 2),
+    ]);
+    let row = satellite_host_inventory(&host, &sat);
+    let (build, logs) = (&row.sessions[0], &row.sessions[1]);
+    assert_eq!(
+        build.members,
+        [100, 101, 102, 104, 105].map(|id| ResourceId::satellite(host.clone(), id)),
+    );
+    assert_eq!(build.pane_count, 3, "documents are not panes");
+    assert_eq!(
+        logs.members,
+        [200, 201].map(|id| ResourceId::satellite(host.clone(), id))
+    );
+    assert_eq!(logs.pane_count, 1);
+}
+
 /// L1 §9.1: a satellite's window and client ids are its own. A merged
 /// row names no hub window (so `window:N` selectors never reach it) and
 /// no hub client: the input holder is the hub's lease-ledger holder or a

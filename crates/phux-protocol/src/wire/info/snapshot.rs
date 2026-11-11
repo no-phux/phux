@@ -26,9 +26,10 @@ pub struct HostSessionInfo {
     pub attached_client_count: u16,
     /// The session's remembered focused pane, re-tagged `SATELLITE`.
     pub active_resource: Option<ResourceId>,
-    /// The session's Terminals, re-tagged `SATELLITE`, so a client lists each
-    /// satellite pane under its session instead of on its own (#2051). Empty
-    /// from a hub that predates it: those clients fall back to flat rows.
+    /// The session's resources of every kind, re-tagged `SATELLITE`, so a
+    /// client lists each satellite resource under its session instead of on
+    /// its own (#2051). Empty from a hub that predates it: those clients fall
+    /// back to flat rows. Older hubs list only Terminals.
     pub members: Vec<ResourceId>,
 }
 

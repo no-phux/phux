@@ -92,7 +92,13 @@ fn take_stats(client: &Client, asked: &mut bool, stats: &mut Stats, now: f64) ->
 impl Desk {
     /// Open, drain and close watches. True when any machine's agents changed.
     pub(super) fn tick_fleet(&mut self) -> bool {
-        if !self.galaxy.open && !self.reef.open {
+        if !self.galaxy.open
+            && !self.reef.open
+            && !self.pitch.open
+            && !self.kitchen.open
+            && !self.pitlane.open
+            && !self.hive.open
+        {
             self.fleet.watches.clear();
             self.fleet.refused.clear();
             return false;
@@ -111,7 +117,8 @@ impl Desk {
                 }
             }
         }
-        let mut changed = self.take_own_stats();
+        self.watch_own_stats();
+        let mut changed = false;
         for watch in self.fleet.watches.values_mut() {
             let mut observation = watch.client.take_activity();
             if observation.status != watch.status {
@@ -139,10 +146,11 @@ impl Desk {
         changed
     }
 
-    /// This window's own connection's stats, asked for once per client.
-    fn take_own_stats(&mut self) -> bool {
+    /// This window's own connection's stats, asked for once per client;
+    /// [`Desk::take_globals`] drains them.
+    fn watch_own_stats(&mut self) {
         let Some(client) = self.client.clone() else {
-            return false;
+            return;
         };
         let fleet = &mut self.fleet;
         if !Weak::ptr_eq(&fleet.here_client, &Arc::downgrade(&client)) {
@@ -151,7 +159,6 @@ impl Desk {
             let _ = client.watch_global_metadata(creature::KEY.to_owned());
             fleet.here_client = Arc::downgrade(&client);
         }
-        take_stats(&client, &mut true, &mut fleet.here, self.clock)
     }
 
     /// Every machine but this window's that a window can dial: this computer

@@ -173,6 +173,7 @@ pub(crate) struct UpdateOpts {
 
     /// Release channel to follow. `stable` (also `latest`) is the default
     /// (`vX.Y.Z`). `next` tracks green `main` via the moving prerelease.
+    /// `lts` follows the promoted long-term-support release.
     #[usage(long, value_enum, value_name = "CHANNEL", conflicts("--rollback"))]
     pub(crate) channel: Option<ChannelArg>,
 

@@ -12,10 +12,6 @@ impl ResourceOps for StubFacet {
         false
     }
 
-    fn upgrade_sender(&self) -> Option<mpsc::Sender<handoff::UpgradeHandleRequest>> {
-        None
-    }
-
     fn lease_changed(&self, _: LeaseChange) -> Delivery {
         Box::pin(std::future::ready(()))
     }
@@ -41,10 +37,6 @@ impl ResourceFacet for OtherFacet {
 impl ResourceOps for OtherFacet {
     fn resize(&self, _: (u16, u16), _: Option<(u16, u16)>) -> bool {
         false
-    }
-
-    fn upgrade_sender(&self) -> Option<mpsc::Sender<handoff::UpgradeHandleRequest>> {
-        None
     }
 
     fn lease_changed(&self, _: LeaseChange) -> Delivery {

@@ -72,6 +72,15 @@ pub(crate) const RELAY_COMMAND_TIMEOUT: std::time::Duration = std::time::Duratio
 /// person is waiting on the picker.
 pub(crate) const RELAY_LIST_DEADLINE: std::time::Duration = std::time::Duration::from_secs(10);
 
+/// Whether a relayed stream of `kind` needs the connection's Terminal
+/// bootstrap profile, which the relay forwards without transcoding: its
+/// catalog stream contract says so, and so does a kind not yet looked up.
+pub(crate) fn stream_needs_terminal_profile(
+    kind: Option<phux_protocol::ids::ResourceKind>,
+) -> bool {
+    kind.is_none_or(phux_protocol::kinds::needs_terminal_profile)
+}
+
 /// A `DIRECTORY_LISTING` refusal for `path` (code `Other`, message naming
 /// the host).
 pub(crate) fn listing_refusal(path: &str, message: impl Into<String>) -> DirectoryListingError {

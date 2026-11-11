@@ -10,7 +10,9 @@
 use std::collections::HashMap;
 
 use phux_protocol::ids::ResourceId;
-use phux_protocol::wire::frame::{Command, CommandResult, ControlClass, DocumentInput, ErrorCode};
+use phux_protocol::wire::frame::{
+    Command, CommandResult, CommandValue, ControlClass, DocumentInput, ErrorCode,
+};
 use phux_protocol::wire::info::SessionSnapshot;
 
 /// Frame pixels per view point when a `frame`-pixel image is drawn
@@ -54,6 +56,18 @@ pub fn scroll(view: [f32; 2], frame: [u32; 2], content: [f32; 2]) -> Option<Docu
     let pixels = |delta: f32| (-delta * scale).round() as i32;
     let (dx, dy) = (pixels(content[0]), pixels(content[1]));
     (dx != 0 || dy != 0).then_some(DocumentInput::Scroll { dx, dy })
+}
+
+/// The host clipboard text a reply to [`DocumentInput::CopyClipboard`]
+/// carries; `None` for any other reply.
+#[must_use]
+pub fn copied_text(result: &CommandResult) -> Option<String> {
+    match result {
+        CommandResult::OkWith(CommandValue::Bytes(bytes)) => {
+            Some(String::from_utf8_lossy(bytes).into_owned())
+        }
+        _ => None,
+    }
 }
 
 /// Why a document stopped taking this client's input.
@@ -116,12 +130,24 @@ impl DocumentInputs {
             terminal_id: resource.clone(),
             intent,
             control: None,
+            on_behalf_of: None,
         }
     }
 
     /// Remember that `request_id` carried input to `resource`.
     pub fn sent(&mut self, request_id: u32, resource: ResourceId) {
         self.pending.insert(request_id, resource);
+    }
+
+    /// The host clipboard text `result` carries, when it answers a copy
+    /// this connection sent. Read it before [`Self::answer`] settles the
+    /// request.
+    #[must_use]
+    pub fn copied(&self, request_id: u32, result: &CommandResult) -> Option<String> {
+        self.pending
+            .contains_key(&request_id)
+            .then(|| copied_text(result))
+            .flatten()
     }
 
     /// Settle a reply. A missing grant or producer makes the document
@@ -260,5 +286,17 @@ mod tests {
         assert!(inputs.refused(&page).is_some());
         inputs.clear();
         assert!(!inputs.accepts(&page) && inputs.refused(&page).is_none());
+    }
+
+    #[test]
+    fn only_a_pending_copy_reply_carries_clipboard_text() {
+        let mut inputs = DocumentInputs::default();
+        let text = CommandResult::OkWith(CommandValue::Bytes(b"host".to_vec()));
+        assert_eq!(inputs.copied(5, &text), None, "not a send of ours");
+        inputs.sent(5, ResourceId::local(1));
+        assert_eq!(inputs.copied(5, &CommandResult::Ok), None);
+        assert_eq!(inputs.copied(5, &text).as_deref(), Some("host"));
+        assert_eq!(inputs.answer(5, &text), Ok(None));
+        assert_eq!(inputs.copied(5, &text), None, "settled");
     }
 }

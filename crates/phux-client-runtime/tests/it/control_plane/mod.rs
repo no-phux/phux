@@ -42,6 +42,7 @@ mod global_metadata;
 #[cfg(feature = "engine")]
 mod kitty;
 mod lifecycle;
+mod mirror;
 mod native_agent;
 mod newer_server;
 mod observation;

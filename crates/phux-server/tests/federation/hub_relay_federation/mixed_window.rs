@@ -282,11 +282,24 @@ async fn resize_and_snapshot(
         cell_px: None,
     };
     send_frame(hub, &resize).await;
+    await_screen(hub, request_id, id, Some((cols, rows)), text).await;
+}
+
+/// Poll `id`'s snapshot until it shows `text` (at `size`, when given).
+async fn await_screen(
+    hub: &mut UnixStream,
+    request_id: u32,
+    id: &ResourceId,
+    size: Option<(u16, u16)>,
+    text: char,
+) {
     let deadline = Instant::now() + STEP_DEADLINE;
     loop {
         let screen = screen(hub, request_id, id).await;
-        let sized = (screen["cols"].as_u64(), screen["rows"].as_u64())
-            == (Some(u64::from(cols)), Some(u64::from(rows)));
+        let sized = size.is_none_or(|(cols, rows)| {
+            (screen["cols"].as_u64(), screen["rows"].as_u64())
+                == (Some(u64::from(cols)), Some(u64::from(rows)))
+        });
         let shows_text = screen["lines"].as_array().is_some_and(|lines| {
             lines
                 .iter()
@@ -297,10 +310,24 @@ async fn resize_and_snapshot(
         }
         assert!(
             Instant::now() < deadline,
-            "{id:?} never showed {cols}x{rows} with {text:?}: {screen}"
+            "{id:?} never showed {size:?} with {text:?}: {screen}"
         );
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
+}
+
+/// Type after a resize: a native consumer's first output after a resize
+/// arrives inside the regenerated snapshot rather than as raw output, so
+/// read the echo from the screen.
+async fn type_and_see(
+    hub: &mut UnixStream,
+    request_id: u32,
+    id: &ResourceId,
+    c: char,
+    key: PhysicalKey,
+) {
+    send_key_and_enter(hub, id, c, key).await;
+    await_screen(hub, request_id, id, None, c).await;
 }
 
 async fn attach_local(hub: &mut UnixStream, id: &ResourceId) {
@@ -409,7 +436,7 @@ fn a_mixed_window_spans_two_satellites_and_survives_one_link_dropping() {
             ],
             Some("hub-session"),
         );
-        let mut hub = wait_for_socket(&tmp.path().join("hub.sock"), STEP_DEADLINE).await;
+        let mut hub = hub_client(&tmp.path().join("hub.sock")).await;
 
         let local = spawn_cat(&mut hub, 10, None).await;
         let a = spawn_cat(&mut hub, 11, Some("sat-a")).await;
@@ -428,8 +455,8 @@ fn a_mixed_window_spans_two_satellites_and_survives_one_link_dropping() {
 
         drop_link(&mut hub, &relay).await;
         assert_degraded(&mut hub, [&local, &a, &b], (key, &document)).await;
-        type_and_echo(&mut hub, &local, 'm', PhysicalKey::M).await;
-        type_and_echo(&mut hub, &a, 'z', PhysicalKey::Z).await;
+        type_and_see(&mut hub, 310, &local, 'm', PhysicalKey::M).await;
+        type_and_see(&mut hub, 311, &a, 'z', PhysicalKey::Z).await;
 
         relay.restore();
         let frames = attach_terminal_until_ok(&mut hub, &b).await;
@@ -441,7 +468,7 @@ fn a_mixed_window_spans_two_satellites_and_survives_one_link_dropping() {
             "the returning pane replays its snapshot at its size: {frames:?}"
         );
         resize_and_snapshot(&mut hub, 500, &b, (70, 20), 'y').await;
-        type_and_echo(&mut hub, &b, 'w', PhysicalKey::W).await;
+        type_and_see(&mut hub, 502, &b, 'w', PhysicalKey::W).await;
         assert_layout_intact(&mut hub, 501, key, &document).await;
 
         kill(&mut hub, 600, &local).await;

@@ -107,6 +107,9 @@ so its panes show up here as `mini/@7`.
 Several terminals and the desktop app can attach to the same remote session
 at once.
 
+Each machine has a colour on every client; `phux host color mini violet`
+picks one ([host colours](./clients.md#host-colours)).
+
 ## Who can connect
 
 A server's `[policy] mode` decides who can connect:
@@ -364,7 +367,7 @@ a box still can't reach your other panes.
 Agents in a box can still talk to yours. `phux mail` and `phux claim` in a
 box use this machine's store, in the box's name, so an agent there writes
 `phux mail send hub/@749 ...` and the agent in your pane `@749` gets it as
-mail from `min-NAME/@N` ([Mail across a hub](./agents.md#mail-across-a-hub)).
+mail from `min-NAME/@N` ([Mail across a hub](./hub-mail.md)).
 
 A box activated with `--no-loadouts` has no phux and is skipped. A
 `--network none` box, and an `--network own_ip` box whose egress rules don't
@@ -401,6 +404,32 @@ doesn't revoke anything on the server.
 
 [File locations](./reference/files.md) lists every credential file on both
 sides.
+
+### Managed by an organization
+
+An organization's control plane can manage credentials on a host instead of
+pairing each device. It hands the host one document, and the host replaces
+that organization's credentials with it:
+
+```sh
+phux workload sync-managed --org no-phux credentials.json
+```
+
+The document lists the organization's root certificates and, for each
+credential, a client certificate issued under one of them, its scopes (as
+`phux workload add-key --scope` takes them), `human` or `automation`, and
+optionally who it belongs to and when it expires. A certificate that
+doesn't chain to a listed root refuses the whole document. Credentials the
+host enrolled itself, or another organization manages, are never touched.
+A credential the document no longer lists is revoked: its live connections
+close, as with `phux workload revoke`.
+
+Under `paired`, a managed credential connects over QUIC without a pairing
+token; the organization's root and its entry in this host's registry are
+the authority. A certificate under that root with no registry entry is
+refused, and every other credential still needs its token. The roots apply
+at the next connection, without a restart. `phux workload list` shows who
+each credential belongs to and which organization manages it.
 
 ## Troubleshooting
 

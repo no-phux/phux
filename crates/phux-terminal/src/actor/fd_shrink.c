@@ -13,6 +13,8 @@
  */
 #define _GNU_SOURCE
 #include <errno.h>
+#include <fcntl.h>
+#include <stdint.h>
 #include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -26,11 +28,37 @@
 #include <sys/wait.h>
 #endif
 
+#ifdef __linux__
 static int hold_fd_table(void *arg) {
     (void)arg;
     for (;;) {
         pause();
     }
+}
+
+#endif
+
+/* fd 3 is explicitly duplicated by posix_spawn, never an inherited upgrade fd.
+ * Ready + EOF means exec closed it; ready + stage + big-endian errno is failure.
+ * Only fixed-size evidence crosses this channel; no argv/environment text. */
+static void status_write(const unsigned char *bytes, size_t size) {
+    while (size > 0) {
+        ssize_t n = write(3, bytes, size);
+        if (n < 0 && errno == EINTR) continue;
+        if (n <= 0) _exit(127);
+        bytes += n;
+        size -= (size_t)n;
+    }
+}
+
+static void launch_failed(unsigned char stage) {
+    uint32_t error = (uint32_t)errno;
+    const unsigned char bytes[] = {
+        stage, (unsigned char)(error >> 24), (unsigned char)(error >> 16),
+        (unsigned char)(error >> 8), (unsigned char)error,
+    };
+    status_write(bytes, sizeof(bytes));
+    _exit(127);
 }
 
 static void reset_signals(void) {
@@ -57,7 +85,7 @@ static void shrink_linux_fd_table(void) {
 #ifdef SYS_close_range
     /* Ignore failure: kernels without the syscall still have the fds
      * portable-pty or CLOEXEC already closed. */
-    (void)syscall(SYS_close_range, 3, ~0U, 0);
+    (void)syscall(SYS_close_range, 4, ~0U, 0);
 #endif
     sibling = clone(hold_fd_table, stack + sizeof(stack), CLONE_FILES | SIGCHLD, 0);
     if (sibling < 0) {
@@ -83,21 +111,24 @@ static void apply_spawn_dir(void) {
         return;
     }
     if (chdir(cwd) != 0) {
-        _exit(127);
+        launch_failed(1);
     }
     unsetenv("PHUX_FD_SHRINK_CWD");
 }
 
 int main(int argc, char **argv) {
+    const unsigned char ready = 0xa5;
+    status_write(&ready, 1);
+    if (fcntl(3, F_SETFD, FD_CLOEXEC) < 0) launch_failed(3);
     if (argc < 3 || strcmp(argv[1], "--") != 0 || argv[2][0] == '\0') {
-        _exit(127);
+        errno = EINVAL;
+        launch_failed(2);
     }
     shrink_linux_fd_table();
     reset_signals();
-    /* Already a session leader (portable-pty pre_exec) makes this EPERM. */
-    (void)setsid();
-    (void)ioctl(0, TIOCSCTTY, 0);
+    if (setsid() < 0) launch_failed(3);
+    if (ioctl(0, TIOCSCTTY, 0) < 0) launch_failed(3);
     apply_spawn_dir();
     execvp(argv[2], &argv[2]);
-    _exit(127);
+    launch_failed(2);
 }

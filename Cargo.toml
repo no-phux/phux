@@ -10,7 +10,7 @@ default-members = ["crates/phux", "crates/phux-mcp"]
 exclude = ["clients", ".claude"]
 
 [workspace.package]
-version = "0.129.1"
+version = "0.138.0"
 edition = "2024"
 rust-version = "1.99"
 license = "Apache-2.0"
@@ -128,7 +128,7 @@ toml_edit = "0.25"
 # Report the full config key path, not an ambiguous leaf name.
 serde_path_to_error = "0.1"
 # Pinned terminal engine; protocol's default features stay pure Rust.
-libghostty-vt = { version = "0.2", git = "https://github.com/phall1/libghostty-rs.git", rev = "055e3d324a5c2bd0e46a53dbffa9659aba349961", default-features = false }
+libghostty-vt = { version = "0.2", git = "https://github.com/phall1/libghostty-rs.git", rev = "6eb19ee9d2a66d798a1ed995d0f2008ee46dcfb8", default-features = false }
 # Kitty graphics replay decodes f=100 PNG images.
 png = "0.18"
 # Use ring rather than aws-lc-rs/cmake. Omit log to avoid tracing/log unification.

@@ -156,6 +156,16 @@ impl ServerState {
             return;
         };
         let wire = self.intern_resource_wire(terminal);
+        crate::audit::emit(
+            crate::audit::Kind::InputLease,
+            actor.map_or_else(crate::audit::AuditActor::server, |actor| {
+                self.audit_actor(actor)
+            }),
+            if holder.is_some() { "take" } else { "give" },
+            Some(crate::audit::terminal_selector(&wire)),
+            crate::audit::Outcome::Allowed,
+            serde_json::json!({ "epoch": epoch.get(), "client": actor.map(|actor| actor.0) }),
+        );
         let holder = holder.map(|holder| self.clients.actor_ref(holder));
         let record = super::EventRecord::new(
             Some(wire),

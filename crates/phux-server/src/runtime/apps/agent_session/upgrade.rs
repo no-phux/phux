@@ -4,6 +4,7 @@
 //! the sessions; a successful re-exec replaces the process instead.
 
 use std::collections::{HashMap, HashSet};
+use std::os::fd::RawFd;
 use std::time::Duration;
 
 use futures_util::FutureExt as _;
@@ -15,10 +16,12 @@ use tokio::sync::{mpsc, oneshot};
 use tokio_util::sync::CancellationToken;
 
 use crate::resource::ResourceHandle;
-use crate::runtime::apps::StreamUpgrade;
-use crate::state::upgrade_blob::RebuiltSession;
+use crate::runtime::apps::{KindResume, UpgradeCut};
+use crate::runtime::connections::pane_events::PaneEvents;
+use crate::runtime::upgrade::UpgradeError;
+use crate::state::upgrade_blob::{KindRebuild, Missing, RebuildError, ResumeCx, live_pane_wires};
 use crate::state::{ServerState, SharedState};
-use crate::upgrade::blob::{AgentSessionBlob, AgentStreamCut};
+use crate::upgrade::blob::{AgentSessionBlob, AgentStreamCut, StateBlob};
 use phux_agent_session::session::{AgentSessionActor, AgentSessionBootstrap, BootstrapRequest};
 
 pub(crate) const AGENT_ROLLBACK_TIMEOUT: Duration = Duration::from_secs(2);
@@ -56,14 +59,16 @@ impl Drop for NativeBrokerSeal {
 /// Everything one upgrade holds of this kind. Field order is drop order: the
 /// streams reopen before the broker does.
 pub(crate) struct AgentSessionUpgrade {
+    cuts: HashMap<ResourceId, AgentStreamCut>,
     seal: AgentSessionSeal,
     _broker: Option<NativeBrokerSeal>,
 }
 
 /// Seal the native broker for an upgrade, or `None` when one already did.
-pub(crate) fn begin(state: &SharedState) -> Option<Box<dyn StreamUpgrade>> {
+pub(crate) fn begin(state: &SharedState) -> Option<Box<dyn UpgradeCut>> {
     let broker = NativeBrokerSeal::new(state)?;
     Some(Box::new(AgentSessionUpgrade {
+        cuts: HashMap::new(),
         seal: AgentSessionSeal::default(),
         _broker: Some(broker),
     }))
@@ -72,48 +77,123 @@ pub(crate) fn begin(state: &SharedState) -> Option<Box<dyn StreamUpgrade>> {
 impl AgentSessionUpgrade {
     /// An upgrade already holding `seal`, with no broker behind it.
     #[cfg(test)]
-    pub(crate) fn holding(seal: AgentSessionSeal) -> Box<dyn StreamUpgrade> {
+    pub(crate) fn holding(seal: AgentSessionSeal) -> Box<dyn UpgradeCut> {
         Box::new(Self {
+            cuts: HashMap::new(),
             seal,
+            _broker: None,
+        })
+    }
+
+    /// An upgrade that already cut `cuts`, sealing nothing.
+    #[cfg(test)]
+    pub(crate) fn carrying(cuts: HashMap<ResourceId, AgentStreamCut>) -> Box<dyn UpgradeCut> {
+        Box::new(Self {
+            cuts,
+            seal: AgentSessionSeal::default(),
             _broker: None,
         })
     }
 }
 
-impl StreamUpgrade for AgentSessionUpgrade {
+impl UpgradeCut for AgentSessionUpgrade {
     fn cut<'a>(
         &'a mut self,
         state: &SharedState,
         deadline: Duration,
-    ) -> LocalBoxFuture<'a, HashMap<ResourceId, AgentStreamCut>> {
+    ) -> LocalBoxFuture<'a, Result<(), UpgradeError>> {
         let sessions = state.with(carried_sessions);
         async move {
             let (cuts, seal) = collect_agent_session_cuts(sessions, deadline).await;
+            self.cuts = cuts;
             self.seal = seal;
-            cuts
+            Ok(())
         }
         .boxed_local()
     }
 
-    fn uncarried(
-        &self,
-        s: &ServerState,
-        cuts: &HashMap<ResourceId, AgentStreamCut>,
-    ) -> Option<phux_protocol::ids::ResourceId> {
-        s.native_agents()
-            .bindings
-            .values()
-            .filter(|binding| !binding.closed)
-            .find(|binding| {
-                s.resource_from_wire(&binding.agent)
-                    .is_none_or(|id| !cuts.contains_key(&id))
-            })
-            .map(|binding| binding.agent.clone())
+    /// SDK-owned streams are part of a durable provider session, so unlike
+    /// attached streams they may never be dropped at an upgrade cut.
+    fn carry(&self, s: &ServerState, blob: &mut StateBlob) -> Result<(), UpgradeError> {
+        if let Some(agent) = uncarried(s, &self.cuts) {
+            return Err(UpgradeError::NativeAgentHandoff { agent });
+        }
+        carry_cuts(s, blob, &self.cuts);
+        Ok(())
+    }
+
+    fn inherited_fds(&self, _blob: &StateBlob) -> Vec<RawFd> {
+        Vec::new()
     }
 
     fn lift(&mut self) -> LocalBoxFuture<'_, ()> {
         self.seal.lift().boxed_local()
     }
+}
+
+/// A native agent that cannot be left behind but has no cut in `cuts`.
+fn uncarried(
+    s: &ServerState,
+    cuts: &HashMap<ResourceId, AgentStreamCut>,
+) -> Option<phux_protocol::ids::ResourceId> {
+    s.native_agents()
+        .bindings
+        .values()
+        .filter(|binding| !binding.closed)
+        .find(|binding| {
+            s.resource_from_wire(&binding.agent)
+                .is_none_or(|id| !cuts.contains_key(&id))
+        })
+        .map(|binding| binding.agent.clone())
+}
+
+/// Write `cuts` and the native controllers into `blob`. The controller
+/// ledgers change with SDK traffic, not organization shape, so they are
+/// captured here at the sealed cut, never in the tree's identity.
+pub(crate) fn carry_cuts(
+    s: &ServerState,
+    blob: &mut StateBlob,
+    cuts: &HashMap<ResourceId, AgentStreamCut>,
+) {
+    blob.agent_sessions = session_blobs(s, cuts, &live_pane_wires(blob));
+    blob.native_agents = s.native_agents().bindings.values().cloned().collect();
+}
+
+/// One [`AgentSessionBlob`] per cut whose session is still registered
+/// under a pane that crosses live, in wire-id order. A session that
+/// closed, or whose parent stopped crossing, since its cut is dropped.
+fn session_blobs(
+    s: &ServerState,
+    cuts: &HashMap<ResourceId, AgentStreamCut>,
+    live_panes: &HashSet<u32>,
+) -> Vec<AgentSessionBlob> {
+    let mut blobs: Vec<AgentSessionBlob> = cuts
+        .iter()
+        .filter_map(|(&id, cut)| {
+            let desc = s.registry().resource(id)?;
+            let facet = desc.agent.as_ref()?;
+            let parent_wire_id = s.resource_wire(desc.parent?)?;
+            if !live_panes.contains(&parent_wire_id) {
+                return None;
+            }
+            Some(AgentSessionBlob {
+                wire_id: s.resource_wire(id)?,
+                parent_wire_id,
+                provider: facet.provider.clone(),
+                native_id: facet.native_id.clone(),
+                state: facet.state.clone(),
+                base_seq: cut.base_seq,
+                dropped: cut.dropped,
+                ended: cut.ended,
+                records: cut.records.clone(),
+                key: Some(desc.key),
+                native_publications: cut.native_publications.clone(),
+                native_publication_high_water: cut.native_publication_high_water,
+            })
+        })
+        .collect();
+    blobs.sort_by_key(|blob| blob.wire_id);
+    blobs
 }
 
 /// The `AgentSession`s a re-exec carries, each with its bootstrap mailbox:
@@ -191,36 +271,84 @@ fn carried_cut(carried: &AgentSessionBlob) -> AgentSessionBootstrap {
     }
 }
 
-/// Rebuild one carried session and bind it to its parent, not yet running.
-pub(crate) fn rebuild(
-    carried: &AgentSessionBlob,
-    parent: ResourceId,
-    parent_handle: Option<&ResourceHandle>,
-    log_bytes: u32,
-    token: CancellationToken,
-) -> RebuiltSession {
-    let bundle = AgentSessionActor::restore(
-        parent,
-        &carried.provider,
-        carried.native_id.as_deref(),
-        token,
-        log_bytes,
-        carried_cut(carried),
-    );
-    let agent_parent = parent_handle
-        .and_then(|handle| handle.companion::<phux_agent_session::parent::AgentParent>());
-    if let (Some(agent_parent), Ok(session)) = (agent_parent, bundle.handle.agent_session()) {
+/// How a resume's log names this kind.
+const KIND: &str = "agent session";
+
+/// Rebuilds every carried session, then the native controllers.
+#[derive(Debug, Default)]
+pub(crate) struct AgentSessionResume;
+
+impl KindRebuild for AgentSessionResume {
+    /// Rebind every carried `AgentSession` to its record under its recorded
+    /// wire id, with an engine that continues the old stream: same record
+    /// counter, same retained tail, same `ended`. The parent's
+    /// `REPORT_AGENT_STATE` is re-bound to the stream (ADR-0103 §6). A
+    /// session whose parent pane or record did not cross is dropped.
+    fn rebuild(&mut self, cx: &mut ResumeCx<'_>) -> Result<(), RebuildError> {
+        let log_bytes = cx.state.agent_log_bytes();
+        let blob = cx.blob;
+        for carried in &blob.agent_sessions {
+            let (wire, parent_wire) = (carried.wire_id, carried.parent_wire_id);
+            let Some(parent) = cx.parent(parent_wire) else {
+                cx.skip(KIND, wire, parent_wire, Missing::Parent);
+                continue;
+            };
+            let Some(core) = cx.record(wire) else {
+                cx.skip(KIND, wire, parent_wire, Missing::Record);
+                continue;
+            };
+            if let Some(facet) = cx
+                .state
+                .registry_mut()
+                .resource_mut(core)
+                .and_then(|d| d.agent.as_mut())
+            {
+                facet.state.clone_from(&carried.state);
+            }
+            let token = CancellationToken::new();
+            let bundle = AgentSessionActor::restore(
+                parent,
+                &carried.provider,
+                carried.native_id.as_deref(),
+                token.clone(),
+                log_bytes,
+                carried_cut(carried),
+            );
+            bind_to_parent(cx.state.resource_handle(parent), &bundle.handle);
+            cx.spawn(
+                core,
+                carried.wire_id,
+                bundle.handle,
+                token,
+                bundle.actor.run(),
+                Some(bundle.exit_notify),
+            )?;
+        }
+        Ok(())
+    }
+
+    fn restore(&mut self, state: &mut ServerState, blob: &StateBlob) {
+        state.restore_native_agents(blob);
+    }
+}
+
+impl KindResume for AgentSessionResume {
+    fn start(&mut self, _state: &SharedState) -> Vec<(ResourceId, PaneEvents)> {
+        Vec::new()
+    }
+}
+
+/// Bind a rebuilt session's stream to its parent's agent reports.
+fn bind_to_parent(parent: Option<&ResourceHandle>, session: &ResourceHandle) {
+    let agent_parent =
+        parent.and_then(|handle| handle.companion::<phux_agent_session::parent::AgentParent>());
+    if let (Some(agent_parent), Ok(session)) = (agent_parent, session.agent_session()) {
         // The parent's mailbox is fresh, so this cannot be full.
         let _ = agent_parent.mailbox.try_send(
             phux_agent_session::parent::AgentParentRequest::BindSession {
                 append: session.append.clone(),
             },
         );
-    }
-    RebuiltSession {
-        handle: bundle.handle,
-        engine: Box::pin(bundle.actor.run()),
-        exit_notify: bundle.exit_notify,
     }
 }
 

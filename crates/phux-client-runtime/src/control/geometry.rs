@@ -1,5 +1,6 @@
 //! Resource geometry requests and non-resizing subscription intent.
 
+use super::subscriptions::Origin;
 use phux_protocol::wire::frame::TerminalRole;
 
 use super::{
@@ -69,9 +70,9 @@ impl ControlPlane {
             });
         }
         let foreign: Vec<_> = self
-            .terminal_attached
-            .iter()
-            .filter(|id| self.follows_global_geometry(id))
+            .subscriptions
+            .ids(Origin::AttachResource)
+            .filter(|id| self.kind_policy(id).votes_on_geometry && self.follows_global_geometry(id))
             .cloned()
             .collect();
         for terminal_id in foreign {

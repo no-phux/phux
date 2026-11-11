@@ -241,19 +241,31 @@ impl ServerState {
         self.clients.client_names.insert(client_id, name);
     }
 
+    /// The name `input_activity` gives `client`: its HELLO name, or
+    /// `client:<id>` when the name is missing.
+    #[must_use]
+    pub fn input_origin(&self, client: ClientId) -> String {
+        self.client_name(client)
+            .map_or_else(|| format!("client:{}", client.0), str::to_owned)
+    }
+
+    /// `client`'s `HELLO.client_name`, unless missing or empty.
+    #[must_use]
+    pub fn client_name(&self, client: ClientId) -> Option<&str> {
+        self.clients
+            .client_names
+            .get(&client)
+            .map(String::as_str)
+            .filter(|name| !name.is_empty())
+    }
+
     /// Offer an unjournaled `input_activity` for `terminal` to every
     /// subscriber except `sender`. The frame has no stamp, the journal is
     /// not touched, and a full mailbox drops the frame (there is no `seq`
     /// to owe as a `journal_gap`). `origin` is the HELLO name, or
     /// `client:<id>` when the name is missing.
     pub fn offer_input_activity(&mut self, terminal: &WireResourceId, sender: ClientId) {
-        let origin = self
-            .clients
-            .client_names
-            .get(&sender)
-            .filter(|name| !name.is_empty())
-            .cloned()
-            .unwrap_or_else(|| format!("client:{}", sender.0));
+        let origin = self.input_origin(sender);
         let subject = crate::policy::filter::EventSubject::at(self, Some(terminal), None);
         let frame = FrameKind::Event {
             terminal: Some(terminal.clone()),

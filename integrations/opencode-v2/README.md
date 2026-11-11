@@ -1,6 +1,6 @@
 # @phux/opencode
 
-OpenCode V2 plugin, tested against the public `@opencode/plugin@2.2.0` contract.
+OpenCode V2 plugin, tested against the public `@opencode/plugin@2.2.6` contract.
 OpenCode keeps its own shell, sessions, and permissions; phux supplies
 terminals only where a terminal is the point.
 
@@ -65,11 +65,15 @@ bun run compile
 OpenCode loads bundled `index.js` for server tools, `tui.js` for the terminal
 companion, and `dist/gui-experimental.cjs` for the desktop UI, not TypeScript
 sources. The bundles include phux's shared runtime; the TUI entrypoint is
-universal-compiled against OpenTUI 0.7.0 and Solid 1.9.12, and the desktop
+universal-compiled against OpenTUI 0.8.1 and Solid 1.9.17, and the desktop
 bundle is built with the SDK's Vite preset (`vite build --watch` reloads it in
 open windows while you work).
 Install the declared peers before loading a checkout; merely having `tui.js`
-on disk does not mean its runtime dependencies are available.
+on disk does not mean its runtime dependencies are available. OpenCode supplies
+the TUI's shared OpenTUI and Solid runtime. Keep the declared peers compatible
+with the host: a private older OpenTUI can fail during import with a duplicate
+`OPENTUI_FORCE_UNICODE` registration. The package test loads the host runtime
+before the installed TUI to cover this failure mode.
 Artifacts are checked in and Git installs require no build lifecycle hooks;
 the compiled OpenCode installer cannot run npm Git preparation.
 Configure OpenCode V2 with an absolute package directory:
@@ -144,11 +148,17 @@ with a native permission action for each tool name:
 - Terminal control: `phux_run`, `phux_send_keys`, `phux_paste`.
 - Observation: `phux_snapshot`, `phux_wait`.
 - Agent control: `phux_agent_prompt`, `phux_agent_wait`, `phux_resource_wait`.
+- Documents: `phux_documents` lists accessibility trees, pixel surfaces, and
+  typed documents; `phux_tree_snapshot` and `phux_tree_wait` read a tree's
+  JSON; `phux_surface_snapshot` returns a surface's frame as an image file part.
+  The terminal tools act on a terminal only: pointed at a document resource,
+  `phux_snapshot`, `phux_wait`, `phux_send_keys`, and `phux_paste` fail with
+  `wrong_resource_kind`, naming the tool that reads it.
 - Diagnostics: `phux_status`.
 
 The shared runtime's `phux_create`, `phux_list`, and `phux_runtime_info` are not
 registered here. Creating a named session per task left sessions behind, and the
-other two duplicate `phux_panes` and `phux_status`.
+other two duplicate `phux_panes`, `phux_documents`, and `phux_status`.
 
 A pane from `phux_spawn` belongs to the OpenCode session that spawned it. It
 becomes that session's default target and carries the `opencode-owned` tag. Each

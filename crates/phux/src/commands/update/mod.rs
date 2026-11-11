@@ -11,6 +11,8 @@
 //! * The download's digest must equal that signed digest, and the channel
 //!   manifest's when it names the build, before anything is unpacked; a
 //!   mismatch installs nothing.
+//! * The channel manifest's own signature is checked when it is read: an
+//!   lts manifest without a valid one is refused; stable and next only warn.
 //! * Nothing downloaded is executed to decide whether to install it; the
 //!   archive is data, validated before and after unpacking.
 //! * Replacement is atomic and permission-preserving (see [`apply`]).
@@ -26,6 +28,7 @@ pub(crate) mod channel;
 mod model;
 mod outcome;
 pub(crate) mod release;
+mod server_bundle;
 pub(crate) mod signature;
 pub(crate) mod source;
 
@@ -67,6 +70,11 @@ pub(crate) fn execute(opts: &UpdateOpts, env: &UpdateEnv<'_>) -> Result<Outcome,
     let published = env
         .releases
         .manifest(channel)
+        .and_then(|body| {
+            let minisig = env.releases.manifest_signature(channel);
+            signature::trust_manifest(channel, &body, minisig, env.release_keys)?;
+            Ok(body)
+        })
         .and_then(|body| release::published(&body, channel, host_target));
     let plan = plan(
         install,
@@ -97,10 +105,10 @@ pub(crate) fn execute(opts: &UpdateOpts, env: &UpdateEnv<'_>) -> Result<Outcome,
     })
 }
 
-/// Only a `--version` pin moves a stable install to an older release. The
-/// manifest is unsigned, so a host that rewrites it could otherwise name an
-/// older, genuinely signed release with a known flaw and roll every
-/// `phux update` back to it (ADR-0178).
+/// Only a `--version` pin moves a stable install to an older release. A
+/// signed manifest is still replayable, so a host that serves an old one
+/// could otherwise name an older, genuinely signed release with a known flaw
+/// and roll every `phux update` back to it (ADR-0178).
 fn refuse_unpinned_downgrade(plan: &Plan, pinned: bool) -> Result<(), UpdateError> {
     if pinned || plan.update_available {
         return Ok(());
@@ -172,6 +180,20 @@ fn install_release(
 
     let replaced = apply::replace_binaries(&bin_dir, &staged, &plan.current.to_string())?;
     channel::persist(&bin_dir, plan.channel)?;
+    // Before the handoff, so the server re-execs through the new bundle. A
+    // failure leaves the server on the CLI binary, which still works.
+    if let (Some(root), Build::Stable(_)) = (&env.server_bundle, &plan.target)
+        && let Err(err) = server_bundle::install(
+            env.releases,
+            env.release_keys,
+            &artifact,
+            &plan.target.tag(),
+            root,
+        )
+        && !opts.json
+    {
+        warn!("phux Server.app was not updated ({err}); the server runs from the CLI binary");
+    }
     let handoff = if opts.no_restart {
         Handoff::Skipped
     } else {
@@ -229,7 +251,7 @@ fn signed_digest(
 /// published since.
 pub(crate) fn own_build() -> Result<Build, UpdateError> {
     match channel::of_build() {
-        Channel::Stable => Ok(Build::Stable(release::current_version()?)),
+        Channel::Stable | Channel::Lts => Ok(Build::Stable(release::current_version()?)),
         Channel::Next => {
             let sha = channel::build_sha().ok_or_else(|| {
                 UpdateError::Install(
@@ -309,6 +331,13 @@ fn rollback(
         })?
         .to_path_buf();
     let restored = apply::rollback(&bin_dir)?;
+    // The bundle follows the binaries back when it still holds that release.
+    if let Some(root) = &env.server_bundle {
+        let release = format!("v{}", restored.version);
+        if root.join("Versions").join(&release).is_dir() {
+            let _ = server_bundle::point_current(root, &release);
+        }
+    }
     let target = Version::parse(&restored.version).unwrap_or(current);
     let plan = Plan {
         install,
@@ -383,6 +412,8 @@ pub(crate) fn run_update(opts: &UpdateOpts, socket: Option<PathBuf>) -> ExitCode
         handoff: &handoff,
         install,
         release_keys: signature::RELEASE_KEYS,
+        server_bundle: phux_config::server_bundle::root()
+            .filter(|_| !phux_config::instance::is_dev_build()),
     };
 
     match execute(opts, &env) {

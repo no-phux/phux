@@ -7,13 +7,14 @@ use std::time::Instant;
 
 use phux_client_core::session::DocumentPublication;
 use phux_client_runtime::Client;
-use phux_protocol::ids::{ResourceId, ResourceKey, ResourceKind};
+use phux_protocol::ids::{ResourceId, ResourceKey};
 use phux_protocol::wire::frame::ResourceRecord;
 
 use super::Desk;
 
 mod input;
 mod satellite;
+mod screens;
 mod selection;
 mod startup;
 mod subscriptions;
@@ -41,6 +42,12 @@ pub struct Resources {
     closed: HashMap<ResourceId, ResourceRecord>,
     /// Which documents take pane input, and the sends awaiting a reply.
     pub(super) input: phux_client_core::document_input::DocumentInputs,
+    /// The copy from a host clipboard awaiting its reply.
+    pub(super) copying: Option<u32>,
+    /// The paste in flight to a host, whose failure is worth a notice.
+    pub(super) pasting: Option<u32>,
+    /// The screen and window picker.
+    pub screens: screens::Screens,
 }
 
 struct PendingDocument {
@@ -66,13 +73,6 @@ pub enum Body {
     /// Source text: accessibility JSON or a typed text document.
     Tree(String),
     Surface(rune::Image),
-}
-
-pub const fn document_kind(kind: ResourceKind) -> bool {
-    matches!(
-        kind,
-        ResourceKind::AccessibilityTree | ResourceKind::PixelSurface | ResourceKind::Document
-    )
 }
 
 impl Resources {
@@ -112,37 +112,9 @@ impl Document {
         {
             return false;
         }
-        let content_type = publication.content_type.as_deref().unwrap_or_default();
-        self.detail = publication.content_type.clone();
-        if publication.kind == ResourceKind::PixelSurface {
-            self.publish_surface(&publication.bytes, images, decodes);
-        } else if publication.kind == ResourceKind::Document && typed::image(content_type) {
-            self.publish_image(&publication.bytes, images, decodes);
-        } else if publication.kind == ResourceKind::Document && !publication.bytes.is_empty() {
-            self.invalidate_surface();
-            let (body, detail) = typed::decode(content_type, &publication.bytes);
-            self.body = body;
-            self.detail = Some(detail);
-        } else {
-            self.body = decode(publication);
-        }
+        self.publish_content(publication, images, decodes);
         self.seq = Some(publication.seq);
         true
-    }
-}
-
-fn decode(publication: &DocumentPublication) -> Body {
-    if publication.bytes.is_empty() {
-        return Body::Empty;
-    }
-    match publication.kind {
-        ResourceKind::AccessibilityTree => {
-            match serde_json::from_slice::<serde_json::Value>(&publication.bytes) {
-                Ok(value) => Body::Tree(serde_json::to_string_pretty(&value).expect("JSON value")),
-                Err(error) => Body::Invalid(format!("Invalid JSON: {error}")),
-            }
-        }
-        _ => Body::Invalid("Unsupported document kind".to_owned()),
     }
 }
 
@@ -210,7 +182,7 @@ impl Desk {
         let key = org.session_by_live(phux_protocol::SessionId(session))?.key;
         let listed: Vec<_> = org
             .members(&key)
-            .filter(|r| document_kind(r.kind) && !self.resources.dismissed.contains(&r.key))
+            .filter(|r| r.kind.is_document() && !self.resources.dismissed.contains(&r.key))
             .filter(|r| !self.resources.execution_closed(r))
             .filter_map(|r| r.live.clone())
             .collect();
@@ -261,7 +233,7 @@ impl Desk {
         let key = self
             .shown
             .as_ref()
-            .and_then(|s| self.resources.entries.get(&s.terminal))
+            .and_then(|s| self.resources.entries.get(&s.resource))
             .map(|d| d.record.key);
         if key.is_some() {
             self.resources.returning = self.resources.returning.or(key);
@@ -281,7 +253,7 @@ impl Desk {
         next.resources.returning = self.resources.returning.or_else(|| {
             self.shown
                 .as_ref()
-                .and_then(|s| self.resources.entries.get(&s.terminal))
+                .and_then(|s| self.resources.entries.get(&s.resource))
                 .map(|d| d.record.key)
         });
         next.resources.dismissed = self.resources.dismissed.clone();
@@ -302,7 +274,7 @@ impl Desk {
         let live: Vec<_> = org
             .resources()
             .iter()
-            .filter(|r| document_kind(r.kind) && r.live.is_some())
+            .filter(|r| r.kind.is_document() && r.live.is_some())
             .cloned()
             .chain(satellites.filter_map(satellite::record))
             .collect();
@@ -375,7 +347,7 @@ impl Desk {
                 client
                     .organization()
                     .resource_by_live(id)
-                    .filter(|record| document_kind(record.kind))
+                    .filter(|record| record.kind.is_document())
                     .cloned()
             });
         let Some(record) = record else { return false };
@@ -393,7 +365,7 @@ impl Desk {
 
     fn retire_replaced_document(&mut self, client: &Client, live: &[ResourceRecord]) {
         let Some(shown) = &self.shown else { return };
-        let Some(old) = self.resources.entries.get(&shown.terminal) else {
+        let Some(old) = self.resources.entries.get(&shown.resource) else {
             return;
         };
         if live.iter().any(|r| same_execution(r, &old.record)) {
@@ -426,7 +398,7 @@ impl Desk {
             .shown
             .as_ref()
             .filter(|s| s.view.is_none())
-            .map(|s| s.terminal.clone())
+            .map(|s| s.resource.clone())
             .filter(|id| !self.is_document(id));
         let Some(gone) = gone else { return false };
         let next = self
@@ -458,7 +430,7 @@ impl Desk {
         if self
             .shown
             .as_ref()
-            .is_some_and(|s| ids.contains(&s.terminal))
+            .is_some_and(|s| ids.contains(&s.resource))
         {
             let next = self
                 .layout

@@ -49,7 +49,7 @@ herdr path to starter when the starter file is there.
   any client with `observe@global` (the owner and every paired device) can
   read. To turn it off, list the plugins you keep in `plugins = [...]`; see
   [its README](../../plugins/usage/README.md#turning-it-off) and
-  [plan usage](../../docs/agents.md#plan-usage).
+  [plan usage](../../docs/troubleshooting.md#plan-usage).
 - **Agent identity.** `phux launch claude-code` (or `codex` / `gemini-cli`)
   opens a self-identifying pane. The template's wrapper declares its name
   and kind, then clears only its own record on exit. `phux launch --list`

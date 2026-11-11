@@ -1,0 +1,194 @@
+//! `phux_snapshot`, `phux_wait`, `phux_send_keys` and the other
+//! Terminal-only tools check their target's kind against a real server: a
+//! Terminal reads as before, and a document is refused with
+//! `wrong_resource_kind` naming the tool that reads it, so the two readers
+//! stay read-only (they never attach).
+
+use phux_client::tree::Kind;
+use phux_server_testkit::{
+    SOCKET_CONNECT_DEADLINE, join_after_shutdown, run_local, spawn_server_with, wait_for_socket,
+};
+
+use super::*;
+
+/// A 1x1 PNG.
+const PNG: &[u8] = &[
+    0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0, 0, 0, 0x0d, 0x49, 0x48, 0x44, 0x52, 0, 0, 0,
+    1, 0, 0, 0, 1, 8, 6, 0, 0, 0, 0x1f, 0x15, 0xc4, 0x89, 0, 0, 0, 0x0d, 0x49, 0x44, 0x41, 0x54,
+    0x78, 0x9c, 0x63, 0x60, 0, 0, 0, 2, 0, 1, 0xe5, 0x27, 0xde, 0xfc, 0, 0, 0, 0, 0x49, 0x45, 0x4e,
+    0x44, 0xae, 0x42, 0x60, 0x82,
+];
+
+fn target(id: &ResourceId, socket: &std::path::Path, mut args: Value) -> Value {
+    args["target"] = json!(phux_client::selector::format_terminal_id(id));
+    args["socket"] = json!(socket);
+    args
+}
+
+async fn ok(tool: &str, args: &Value) -> Value {
+    let result = crate::tools::dispatch(tool, args)
+        .await
+        .unwrap_or_else(|err| panic!("{tool} {args}: {err}"));
+    crate::contract_tests::validate_output(tool, &result);
+    result
+}
+
+/// The refusal's `(code, remedy)`; every one exits 2.
+async fn refused(tool: &str, args: &Value) -> (String, String) {
+    let err = crate::tools::dispatch(tool, args)
+        .await
+        .expect_err("refused");
+    let doc = err.document();
+    assert_eq!(doc["exit_code"], 2, "{err}");
+    let field = |value: &Value| value.as_str().unwrap_or_default().to_owned();
+    (field(&doc["error"]["code"]), field(&doc["remedy"]))
+}
+
+#[test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "one fixture server, every kind and verb in turn"
+)]
+fn the_screen_verbs_dispatch_on_the_target_kind() {
+    run_local(async {
+        let dir = tempfile::tempdir().unwrap();
+        let socket = dir.path().join("kinds.sock");
+        let uploads = dir.path().join("uploads");
+        let upload_root = uploads.clone();
+        let (shutdown, server) = spawn_server_with(socket.clone(), Some("main"), |cfg| {
+            cfg.env.upload_dir = Some(upload_root);
+        });
+        drop(wait_for_socket(&socket, SOCKET_CONNECT_DEADLINE).await);
+        let view = phux_client::state::get_state(&socket).await.unwrap();
+        let pane = phux_client::resource::terminals(&view.into_snapshot_ignoring_degradation())
+            .next()
+            .unwrap()
+            .id
+            .clone();
+        let mut producer = Connection::connect(&socket).await.unwrap();
+        let tree_id = tree::open_kind(&mut producer, Kind::Tree, &pane, "smoke", None)
+            .await
+            .unwrap()
+            .resource;
+        let surface_id = tree::open_kind(&mut producer, Kind::Surface, &pane, "smoke", None)
+            .await
+            .unwrap()
+            .resource;
+        let notes = tree::open_document(&mut producer, &pane, "text/markdown", Some("notes"))
+            .await
+            .unwrap()
+            .resource;
+        let blob = tree::open_document(&mut producer, &pane, "application/octet-stream", None)
+            .await
+            .unwrap()
+            .resource;
+        for (id, bytes) in [
+            (&tree_id, br#"{"title":"hello"}"#.to_vec()),
+            (&surface_id, PNG.to_vec()),
+            (&notes, b"# hi\n## Done".to_vec()),
+            (&blob, vec![0, 1, 2]),
+        ] {
+            tree::publish(&mut producer, id, bytes).await.unwrap();
+        }
+        let none = || json!({});
+        let screen = ok("phux_snapshot", &target(&pane, &socket, none())).await;
+        assert!(screen["cols"].as_u64().is_some(), "a Terminal still reads");
+        let waited = target(&pane, &socket, json!({ "idle_ms": 50, "timeout_secs": 5 }));
+        assert_eq!(ok("phux_wait", &waited).await["outcome"], "met");
+
+        // Each document is refused for what reads or drives it. These are
+        // exact IDs, so the kind is read only after the server refuses.
+        let until = json!({ "until": "x", "timeout_secs": 1 });
+        let keys = json!({ "keys": ["Enter"] });
+        for (tool, id, extra, instead) in [
+            ("phux_snapshot", &tree_id, none(), "phux_tree_snapshot"),
+            (
+                "phux_snapshot",
+                &surface_id,
+                none(),
+                "phux_surface_snapshot",
+            ),
+            ("phux_snapshot", &notes, none(), "`phux snapshot @"),
+            ("phux_wait", &tree_id, until.clone(), "phux_tree_wait"),
+            ("phux_wait", &notes, until.clone(), "`phux wait @"),
+            (
+                "phux_wait",
+                &surface_id,
+                until.clone(),
+                "phux_surface_snapshot",
+            ),
+            (
+                "phux_send_keys",
+                &tree_id,
+                keys.clone(),
+                "phux_document_key",
+            ),
+            (
+                "phux_send_keys",
+                &surface_id,
+                keys.clone(),
+                "phux_document_key",
+            ),
+            ("phux_send_keys", &notes, keys.clone(), "takes no keys"),
+            ("phux_send_keys", &blob, keys.clone(), "takes no keys"),
+        ] {
+            let (code, remedy) = refused(tool, &target(id, &socket, extra.clone())).await;
+            assert_eq!(code, "wrong_resource_kind", "{tool} {id:?}");
+            assert!(remedy.contains(instead), "{tool} {id:?}: {remedy}");
+        }
+
+        // The other Terminal tools: exact IDs too, so each one's Terminal
+        // command goes first and the server's refusal names the kind.
+        let file = dir.path().join("upload.txt");
+        std::fs::write(&file, b"x").unwrap();
+        let paste = json!({ "text": "hi" });
+        let upload = json!({ "path": file });
+        let ask = json!({ "id": "q", "question": "ok?" });
+        let signal = json!({ "signal": "freeze" });
+        for (tool, id, extra, instead) in [
+            ("phux_paste", &tree_id, paste.clone(), "phux_document_type"),
+            ("phux_paste", &notes, paste.clone(), "takes no input"),
+            (
+                "phux_upload",
+                &tree_id,
+                upload.clone(),
+                "address a Terminal",
+            ),
+            ("phux_upload", &notes, upload.clone(), "address a Terminal"),
+            ("phux_ask", &tree_id, ask.clone(), "address a Terminal"),
+            ("phux_ask", &notes, ask.clone(), "address a Terminal"),
+            (
+                "phux_signal",
+                &tree_id,
+                signal.clone(),
+                "address a Terminal",
+            ),
+            ("phux_signal", &notes, signal.clone(), "address a Terminal"),
+        ] {
+            let (code, remedy) = refused(tool, &target(id, &socket, extra.clone())).await;
+            assert_eq!(code, "wrong_resource_kind", "{tool} {id:?}");
+            assert!(remedy.contains(instead), "{tool} {id:?}: {remedy}");
+        }
+        // A refused upload wrote nothing; a Terminal's lands in the same place.
+        let landed = || std::fs::read_dir(&uploads).map_or(0, Iterator::count);
+        assert_eq!(landed(), 0, "a refused upload left a file");
+        let uploaded = ok("phux_upload", &target(&pane, &socket, upload.clone())).await;
+        assert_eq!(uploaded["receipt"]["outcome"], "completed", "{uploaded}");
+        let path = uploaded["receipt"]["path"].as_str().unwrap();
+        let root = uploads.canonicalize().unwrap();
+        let landed_at = std::path::Path::new(path).canonicalize().unwrap();
+        assert!(
+            landed_at.starts_with(&root),
+            "{path} is outside {uploads:?}"
+        );
+        let pasted = ok(
+            "phux_paste",
+            &target(&pane, &socket, json!({ "text": "x" })),
+        )
+        .await;
+        assert_eq!(pasted["sent"], true, "a Terminal still takes a paste");
+
+        drop(producer);
+        join_after_shutdown(shutdown, server).await;
+    });
+}

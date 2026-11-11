@@ -24,10 +24,12 @@ phux stores the records
 [effects](../crates/phux-terminal/src/actor/effects.rs)).
 
 A rendering client feeds those VT bytes to its own libghostty terminal.
-The [phux-protocol README](../crates/phux-protocol/README.md) says a
+This is the Terminal kind's stream contract; other kinds declare their
+own ([decisions](./decisions.md)). The
+[phux-protocol README](../crates/phux-protocol/README.md) says a
 libghostty terminal on the client reproduces the server's screen
-exactly, and that client-to-server input is key, mouse, focus, and
-paste events built from libghostty's vocabulary. The server encodes
+exactly, and that a Terminal's client-to-server input is key, mouse,
+focus, and paste events built from libghostty's vocabulary. The server encodes
 those events for the PTY. Selection and text extraction belong to
 libghostty ([decisions](./decisions.md)).
 
@@ -179,6 +181,23 @@ adding bytes later does not repair it. Real lookahead is necessary.
 The optional `PHUX_CAPTURE` benchmark build compares the historical detached
 capture pin `0aa049ea7b9075edbd1b598f03290f278ab8a4cc`; it is not a current
 interface.
+
+## Upstream correctness backports
+
+Native and browser engines share the same 1.0 source revision and include the
+post-1.0 upstream fixes without switching to the development 1.1 interface:
+
+- [Partial resize backfill](https://github.com/ghostty-org/ghostty/commit/1b8b3f55bcc93d2685f7771948516af1222dcc46):
+  remap references to copied rows before destroying their old page, even
+  when a later row does not fit. Release the failed row's partial allocation.
+- [Combined row growth and column shrink](https://github.com/ghostty-org/ghostty/commit/321a32a42393ab12721d2308ffff8957ce6853ad):
+  adjust the cursor's active-area coordinates before reflow so scrollback
+  pulled into view is not pushed back out. Resolve the coordinate through a
+  tracked cursor reference so pruning an old page during row growth is not
+  mistaken for cursor movement.
+- [Render allocation recovery](https://github.com/ghostty-org/ghostty/commit/3e29fcd628a50757ad24988c721340e56f392485):
+  keep failed and unprocessed rows dirty until rebuilding succeeds, so a
+  later update retries rather than exposing partially initialized cells.
 
 ## What it does not do
 

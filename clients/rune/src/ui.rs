@@ -8,14 +8,21 @@ use crate::theme::{Marks, SELECTED_WASH, Selection, Theme, on_fill};
 
 mod documents;
 mod galaxy;
+mod hive;
 mod icons;
 mod inbox;
+mod kitchen;
 mod machines;
+mod news;
+mod onboarding;
 mod overlay;
 mod palette;
 mod panes;
 pub(crate) use panes::DIVIDER;
 mod phone;
+pub(crate) use phone::edge_color as phone_edge_color;
+mod pitch;
+mod pitlane;
 mod questions;
 mod reef;
 mod settings;
@@ -26,12 +33,12 @@ mod tabs;
 mod updates;
 
 /// The app chord's modifier as shown beside an action.
-pub(crate) const MOD: &str = if cfg!(target_os = "macos") {
+pub(crate) const MOD: &str = if cfg!(any(target_os = "macos", target_os = "ios")) {
     "⌘"
 } else {
     "Ctrl+Shift+"
 };
-const SIDEBAR_W: f32 = 236.0;
+pub(crate) const SIDEBAR_W: f32 = 236.0;
 /// The band the macOS traffic lights sit in when they draw over content.
 const TITLEBAR_H: f32 = 38.0;
 /// Space between the terminal area's edge and its grid.
@@ -59,6 +66,9 @@ pub(crate) struct Ink {
     pub(crate) current: Color,
     pub(crate) hover: Color,
     pub(crate) accent: Color,
+    /// The window's machine colour: what marks this window, its sessions and
+    /// its terminals. The accent until a window knows its machine.
+    pub(crate) host: Color,
     /// Text and marks on an accent fill.
     pub(crate) on_accent: Color,
     pub(crate) danger: Color,
@@ -91,6 +101,7 @@ fn ink(dark: bool, accent: Color, theme: Option<&Theme>) -> Ink {
             current: roles.text.alpha(0.1),
             hover: roles.text.alpha(0.07),
             accent: roles.accent,
+            host: roles.accent,
             on_accent: roles.on_accent,
             danger: roles.danger,
             edge: roles.edge,
@@ -117,6 +128,7 @@ fn ink(dark: bool, accent: Color, theme: Option<&Theme>) -> Ink {
         current: t.text.alpha(0.1),
         hover: t.hover,
         accent,
+        host: accent,
         on_accent: on_fill(accent),
         danger: Theme::system_danger(dark),
         edge: crate::theme::color(edge),
@@ -131,19 +143,27 @@ pub fn view(desk: &Desk, cx: &mut Cx<Desk>) -> El {
         return phone::view(desk, cx);
     }
     let p = ink(cx.system_dark(), cx.accent(), desk.settings.theme);
+    let p = Ink {
+        host: crate::host_color::on(desk.machines.label(), p.sidebar),
+        ..p
+    };
     // Native fields inherit a readable caret and selection in light themes too.
     cx.foreground(p.text);
+    cx.help_look(tooltip(&p, cx.system_dark()));
     // `titlebar_inset` is the traffic lights' width; zero when the system
     // draws its own titlebar.
     let lights = cx.titlebar_inset();
     let band = if lights > 0.0 { TITLEBAR_H } else { 12.0 };
+    if desk.bare.is_some() {
+        return bare(desk, &p, lights, band, cx);
+    }
     let main = row()
         .key("main")
         .w_full()
         .h_full()
         .child(
             el().key("sidebar-host")
-                .w(if desk.sidebar_open { SIDEBAR_W } else { 0.0 })
+                .w(if desk.sidebar_shown() { SIDEBAR_W } else { 0.0 })
                 .h_full()
                 .clip_rounded(0.0)
                 .motion(tok::motion::SNAPPY)
@@ -162,7 +182,7 @@ pub fn view(desk: &Desk, cx: &mut Cx<Desk>) -> El {
                         .w_full()
                         .min_w(0.0)
                         .min_h(0.0)
-                        .pl(if desk.sidebar_open { 0.0 } else { CARD_GAP })
+                        .pl(if desk.sidebar_shown() { 0.0 } else { CARD_GAP })
                         .pr(CARD_GAP)
                         .pb(CARD_GAP)
                         .child(
@@ -173,29 +193,131 @@ pub fn view(desk: &Desk, cx: &mut Cx<Desk>) -> El {
                                 .w_full()
                                 .min_w(0.0)
                                 .min_h(0.0)
-                                .child(panes::view(desk, &p, cx))
+                                .child(onboarding::stage(desk, &p, cx))
                                 .children(status::confirm_bar(desk, &p))
                                 .children(overlay::toast(desk, &p)),
                         ),
                 ),
         );
-    el().w_full()
+    // No root paste hook: it would read the clipboard before anything here
+    // saw the key. ⌘V and Edit ▸ Paste come to `Desk::key` instead, which
+    // answers to the modal and keeps the terminal asked for.
+    let root = el()
+        .w_full()
         .h_full()
         .fill(p.sidebar)
-        // No root paste hook: it would read the clipboard before anything
-        // here saw the key. ⌘V and Edit ▸ Paste come to `Desk::key` instead,
-        // which answers to the modal and keeps the terminal asked for.
+        .on_layout(|d: &mut Desk, rect| d.window_laid_out(rect[2]))
         .child(main)
-        .children(status::banner(desk, &p))
-        .children(updates::card(desk, &p, band))
-        .children(desk.inbox.open.then(|| inbox::view(desk, &p)))
-        .children(desk.galaxy.open.then(|| galaxy::view(desk, &p, cx)))
-        .children(desk.reef.open.then(|| reef::view(desk, &p, cx)))
-        .children(desk.settings_open.then(|| settings::view(desk, &p)))
-        .children(machines::sheet(desk, &p))
-        .children(tabs::rename_sheet(desk, &p))
-        .children(desk.palette_open.then(|| palette::view(desk, &p, 96.0)))
-        .children(desk.pointer.menu.map(|at| palette::context_menu(desk, at, &p)))
+        .child(crate::host_color::edge(desk.machines.label(), p.sidebar));
+    floating(root, desk, &p, band, cx)
+}
+
+/// A tooltip in the chrome's own colours, its chord in keycaps, on every
+/// platform: quick to follow the pointer along a row of buttons.
+fn tooltip(p: &Ink, dark: bool) -> rune::HelpLook {
+    rune::HelpLook::system(dark)
+        .fill(p.raised)
+        .ink(p.text)
+        .ring(1.0, p.text.alpha(0.14))
+        .radius(7.0)
+        .padding(8.0, 5.0)
+        .font(TextStyle::new(11.5, 500.0).lh(16.0))
+        .keycaps(
+            p.text.alpha(0.09),
+            p.dim,
+            TextStyle::new(10.5, 600.0).lh(11.0),
+            false,
+        )
+        .skip_delay(0.4)
+        .fade(0.12, 0.08, 0.96)
+}
+
+/// What floats over the window: banners, cards, sheets and menus.
+fn floating(root: El, desk: &Desk, p: &Ink, band: f32, cx: &mut Cx<Desk>) -> El {
+    root.children(status::banner(desk, p))
+        .children(updates::card(desk, p, band))
+        .children(desk.inbox.open.then(|| inbox::view(desk, p)))
+        .children(playground(desk, p, cx))
+        .children(desk.settings_open.then(|| settings::view(desk, p)))
+        .children(machines::sheet(desk, p))
+        .children(desk.news.open.then(|| news::view(desk, p)))
+        .children(tabs::rename_sheet(desk, p))
+        .children(desk.palette_open.then(|| palette::view(desk, p, 96.0)))
+        .children(
+            desk.pointer
+                .menu
+                .map(|at| palette::context_menu(desk, at, p)),
+        )
+}
+
+/// A playground view: whether it is open, how it draws, how it closes.
+type View = (bool, fn(&Desk, &Ink, &mut Cx<Desk>) -> El, fn(&mut Desk));
+
+/// The open playground view, if any, with the way out every one of them
+/// shows. A new view is one more row here.
+fn playground(desk: &Desk, p: &Ink, cx: &mut Cx<Desk>) -> Option<El> {
+    let views: [View; 6] = [
+        (desk.galaxy.open, galaxy::view, Desk::close_galaxy),
+        (desk.reef.open, reef::view, Desk::close_reef),
+        (desk.pitch.open, pitch::view, Desk::close_pitch),
+        (desk.kitchen.open, kitchen::view, Desk::close_kitchen),
+        (desk.pitlane.open, pitlane::view, Desk::close_pitlane),
+        (desk.hive.open, hive::view, Desk::close_hive),
+    ];
+    let (_, view, close) = views.into_iter().find(|v| v.0)?;
+    // A child of the view: the view is modal, so anything beside it is inert.
+    Some(view(desk, p, cx).child(esc_chip(p, close)))
+}
+
+/// A frosted key cap, top right in the titlebar band clear of every view's
+/// own chrome: `esc` closes this. Escape lets go of a pick first; a press
+/// here always closes.
+fn esc_chip(p: &Ink, close: fn(&mut Desk)) -> El {
+    pressable("playground-esc", p)
+        .pin(None, Some(9.0), Some(16.0), None)
+        .h(24.0)
+        .pl(4.0)
+        .pr(9.0)
+        .gap(6.0)
+        .items_center()
+        .radius(8.0)
+        .continuous_corners()
+        .backdrop_blur(FROST)
+        .fill(p.raised.alpha(0.72))
+        .border(1.0, p.text.alpha(0.14))
+        .shadow(4.0, 14.0, p.shade)
+        .hover(p.text.alpha(0.08))
+        .label("Close, Escape")
+        .on_press(close)
+        .child(keycap("esc", p))
+        .child(text("close").font(CAPTION).color(p.dim).a11y_hidden())
+}
+
+/// The bare window: the pane edge to edge under a band the traffic lights
+/// and a drag can use, with the same sheets over it.
+fn bare(desk: &Desk, p: &Ink, lights: f32, band_h: f32, cx: &mut Cx<Desk>) -> El {
+    let band = el()
+        .key("titlebar")
+        .w_full()
+        .h(if lights > 0.0 { TITLEBAR_H } else { 0.0 })
+        .window_drag();
+    let stage = col()
+        .key("stage")
+        .grow(1.0)
+        .w_full()
+        .min_w(0.0)
+        .min_h(0.0)
+        .child(panes::view(desk, p, cx))
+        .children(status::confirm_bar(desk, p))
+        .children(overlay::toast(desk, p));
+    let main = col().key("main").w_full().h_full().child(band).child(stage);
+    let root = el()
+        .w_full()
+        .h_full()
+        .fill(p.bg)
+        .child(main)
+        .child(crate::host_color::edge(desk.machines.label(), p.bg));
+    floating(root, desk, p, band_h, cx)
 }
 
 /// A modal sheet: scrim, header with a close button, scrolling body, footer.
@@ -228,7 +350,7 @@ impl Sheet {
             .child(el().grow(1.0))
             .children(aside)
             .child(overlay::icon_button(
-                "✕",
+                &icons::CLOSE,
                 "Close",
                 format!("{}-close", self.key),
                 p,
@@ -289,19 +411,55 @@ pub(crate) fn icon_press(
     press: impl Fn(&mut Desk) + 'static,
 ) -> El {
     pressable(key, p)
-        .size(24.0, 24.0)
-        .radius(6.0)
+        .size(26.0, 26.0)
+        .radius(7.0)
         .center()
         .label(name)
         .on_press(press)
-        .child(rune::icon(glyph, 14.0).color(p.dim))
+        .child(
+            rune::icon(glyph, 16.0)
+                .color(p.dim)
+                .group_color(p.text)
+                .a11y_hidden(),
+        )
+        .hover_group()
 }
 
-/// Something to press: the hover wash and the pointer. Key errors name the
-/// caller, not this.
+/// Something to press: a wash under the pointer that deepens while held, and
+/// the pointer. Key errors name the caller, not this.
 #[track_caller]
 pub(crate) fn pressable(key: impl Into<String>, p: &Ink) -> El {
-    el().key(key).hover(p.hover).cursor(rune::Cursor::Pointer)
+    el().key(key)
+        .hover(p.hover)
+        .press(p.hover)
+        .cursor(rune::Cursor::Pointer)
+}
+
+/// Where you are in the chrome: a row or tab lifted a shade off its ground,
+/// lit from the top as the terminal cards are.
+pub(crate) fn lifted(el: El, p: &Ink) -> El {
+    el.fill(p.current)
+        .border_gradient(1.0, p.text.alpha(0.14), p.text.alpha(0.03))
+}
+
+/// A key as the chrome draws one, wherever it names a chord.
+pub(crate) fn keycap(key: impl Into<String>, p: &Ink) -> El {
+    const KEY: TextStyle = TextStyle::new(10.5, 600.0);
+    el().h(16.0)
+        .min_w(16.0)
+        .px(4.0)
+        .radius(4.0)
+        .center()
+        .fill(p.text.alpha(0.07))
+        .border_gradient(1.0, p.text.alpha(0.2), p.text.alpha(0.1))
+        .child(text(key).font(KEY).color(p.dim).a11y_hidden())
+}
+
+/// A tooltip for `el`: what pressing it does, and the chord that does the
+/// same from the keyboard.
+pub(crate) fn tip(el: El, words: impl Into<String>, action: crate::keys::Shortcut) -> El {
+    let keys = crate::keys::command(action).map_or_else(Vec::new, |command| command.keycaps());
+    el.help(words).help_keys(keys)
 }
 
 pub(crate) fn button(label: &'static str, key: &'static str, p: &Ink, press: fn(&mut Desk)) -> El {
@@ -324,6 +482,31 @@ pub(crate) fn keep_from_pane(_: &mut Desk, _: &mut rune::Drag, _: &mut rune::Tx)
 mod tests {
     use super::*;
     use crate::theme::{DIM_BAR, TEXT_BAR, contrast};
+
+    #[test]
+    fn the_bare_window_drops_the_chrome_and_keeps_the_sheets() {
+        let mut desk = Desk::settings_test_fixture();
+        desk.settings_open = false;
+        let mut rt = rune::Runtime::new(desk, view, (900.0, 600.0), rune::Env::new(false, 1.0));
+        rt.frame(0.0);
+        assert!(rt.presented("sidebar-toggle").is_some());
+        rt.update(|d, _| d.bare = Some(crate::desk::bare::Bare::test("tui", "work")));
+        rt.frame(1.0);
+        assert!(rt.presented("sidebar-toggle").is_none(), "no title bar");
+        assert!(rt.presented("sidebar-host").is_none(), "no sidebar");
+        let stage = rt.presented("stage").expect("the pane").0;
+        assert!(stage[2] >= 900.0 - 0.5, "edge to edge: {stage:?}");
+        rt.update(|d, _| d.settings_open = true);
+        rt.frame(2.0);
+        assert!(
+            rt.presented("settings-close").is_some(),
+            "sheets still show"
+        );
+        // With nothing connected, the chord again simply leaves.
+        rt.update(|d, _| d.toggle_bare());
+        rt.frame(3.0);
+        assert!(rt.presented("sidebar-toggle").is_some());
+    }
 
     #[test]
     fn the_system_appearance_clears_the_bars_too() {

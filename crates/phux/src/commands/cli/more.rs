@@ -145,12 +145,90 @@ pub(crate) struct McpArgs {
             phux skill\n  \
             phux skill agent\n  \
             phux --skill=terminal\n  \
-            phux --skill=quick | pbcopy"
+            phux --skill=quick | pbcopy\n\n\
+            `phux skill setup` installs a small `phux` skill in each installed \
+            agent's skill directory that points the agent here, plus a Claude \
+            Code session hook; `status` reports it and `remove` takes it out."
 )]
 pub(crate) struct SkillArgs {
+    #[usage(subcommand)]
+    pub(crate) action: Option<SkillAction>,
+
     /// Amount and subject of guidance to print.
     #[usage(value_enum, default = "full", value_name = "SCOPE")]
     pub(crate) scope: crate::skill::SkillScope,
+}
+
+/// `phux skill <action>`: install, inspect, or remove the agent skill stub.
+#[derive(Debug, Subcommands)]
+pub(crate) enum SkillAction {
+    /// Teach every installed agent about phux
+    ///
+    /// Writes a stub skill named `phux` into each detected agent's user
+    /// skill directory: `~/.claude/skills` for Claude Code, and the shared
+    /// `~/.agents/skills` (written once) for Codex, `OpenCode` and pi. With
+    /// no agent detected, only `~/.agents/skills` is written. The stub tells
+    /// the agent to run `phux skill`, so the guide it reads always matches
+    /// the installed binary. For Claude Code it also merges one
+    /// `SessionStart` hook into `~/.claude/settings.json` that tells each new
+    /// session whether it runs inside a phux pane; the hook is skipped when
+    /// the `install-claude` shim or the phux Claude Code plugin already
+    /// registers phux hooks. A `phux` skill phux did not install is left
+    /// alone and reported as a conflict; a `using-phux` skill (from `npx
+    /// skills add no-phux/skills`) is reported as present. Running it again
+    /// updates a stale stub and reports the rest as up to date.
+    Setup {
+        /// Only this agent (repeatable). Default: every detected agent.
+        #[usage(long, value_enum, value_name = "AGENT")]
+        agent: Vec<crate::skill::setup::SkillAgent>,
+        /// Install into this repository (`.claude/skills`, `.agents/skills`,
+        /// `.claude/settings.json`) instead of the home directory.
+        #[usage(long)]
+        project: bool,
+        /// Report what would change and change nothing.
+        #[usage(long)]
+        dry_run: bool,
+        /// Write the stub over a `phux` skill phux did not install, or
+        /// beside a `using-phux` one.
+        #[usage(long)]
+        force: bool,
+        /// Print the per-agent result as JSON (`phux.skill-setup/v1`).
+        #[usage(long)]
+        json: bool,
+    },
+    /// Report each agent's skill stub and hook without changing anything
+    Status {
+        /// Only this agent (repeatable). Default: all four.
+        #[usage(long, value_enum, value_name = "AGENT")]
+        agent: Vec<crate::skill::setup::SkillAgent>,
+        /// Report the repository's skills instead of the home directory's.
+        #[usage(long)]
+        project: bool,
+        /// Print the per-agent result as JSON (`phux.skill-setup/v1`).
+        #[usage(long)]
+        json: bool,
+    },
+    /// Remove the skill stubs and hook `phux skill setup` installed
+    ///
+    /// Only files carrying phux's stub marker and the hook phux added are
+    /// removed; any other skill is left alone.
+    Remove {
+        /// Only this agent (repeatable). Default: all four.
+        #[usage(long, value_enum, value_name = "AGENT")]
+        agent: Vec<crate::skill::setup::SkillAgent>,
+        /// Remove from this repository instead of the home directory.
+        #[usage(long)]
+        project: bool,
+        /// Report what would change and change nothing.
+        #[usage(long)]
+        dry_run: bool,
+        /// Print the per-agent result as JSON (`phux.skill-setup/v1`).
+        #[usage(long)]
+        json: bool,
+    },
+    // Hidden: the Claude Code `SessionStart` hook `setup` installs.
+    #[usage(name = "session-start", hide)]
+    SessionStart {},
 }
 
 /// Regenerate the repository's generated reference pages (internal).

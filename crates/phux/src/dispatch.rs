@@ -30,6 +30,7 @@ pub(crate) fn dispatch(
 ) -> ExitCode {
     match command {
         Some(Command::Attach(args)) => attach::attach(args, socket),
+        Some(Command::Native(args)) => commands::native_terminal::run(args, socket),
         Some(Command::Server(args)) => machines::server(args, socket),
         Some(Command::Ls(args)) => sessions::ls(args, socket),
         Some(Command::Whoami(commands::WhoamiArgs { json, remote })) => {
@@ -167,6 +168,7 @@ pub(crate) fn dispatch(
         Some(Command::Config(commands::ConfigArgs { action })) => {
             commands::config::run_config(&action, socket)
         }
+        Some(Command::Migrate(args)) => commands::migrate::run(args, socket),
         Some(Command::Plugin(commands::PluginArgs { action })) => {
             commands::plugin::run_plugin(&action)
         }
@@ -192,7 +194,9 @@ pub(crate) fn dispatch(
         }
         // Returned above, before process-global setup.
         Some(Command::Mcp(..)) => ExitCode::FAILURE,
-        Some(Command::Skill(commands::SkillArgs { scope })) => skill::run(scope),
+        Some(Command::Skill(commands::SkillArgs { action, scope })) => {
+            skill::dispatch(action, scope, socket)
+        }
         Some(Command::Mission(commands::MissionArgs { action })) => {
             commands::mission::run(action, socket)
         }
@@ -220,6 +224,7 @@ pub(crate) fn dispatch(
             lines,
             json,
         })) => commands::logs::run_logs(server, client, pid, follow, lines, json),
+        Some(Command::Audit(commands::AuditArgs { action })) => commands::audit::run(action),
         Some(Command::Report(commands::ReportArgs { action, json })) => {
             commands::report::run_report(action, json.json)
         }

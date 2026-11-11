@@ -46,7 +46,8 @@ pub(crate) enum SurfaceAction {
     Snapshot {
         /// The surface.
         target: String,
-        /// Where the image goes; stdout when absent.
+        /// Where the image goes; stdout when absent, unless stdout is a
+        /// terminal.
         #[usage(long, value_name = "PATH")]
         out: Option<PathBuf>,
         #[usage(long)]
@@ -74,11 +75,25 @@ pub(crate) enum SurfaceAction {
         parent_pid: Option<u32>,
         #[usage(flatten)]
         frames: FrameOpts,
-        /// Log the input events viewers' intents would post (macOS) or the
-        /// commands they would run (Linux) instead; a refused capture
-        /// publishes a blank frame.
+        /// Log the input events viewers' intents would post (macOS), or the
+        /// Wayland requests and commands they would send (Linux), instead;
+        /// a refused capture publishes a blank frame.
         #[usage(long)]
         dry_run_input: bool,
+        #[usage(long)]
+        json: bool,
+    },
+    /// Run the `[[mirrors]]` entries as this process's children, each into
+    /// its `mirror-<target>` session, restarting any that exit. Rune runs
+    /// this on macOS, where the server's own children cannot hold Screen
+    /// Recording access; one runs per server.
+    Standing {
+        /// Exit once this process is gone, as the app that launched it passes its own.
+        #[usage(long, value_name = "PID")]
+        parent_pid: Option<u32>,
+    },
+    /// List the displays and windows `mirror` can name on this host.
+    Targets {
         #[usage(long)]
         json: bool,
     },
@@ -139,6 +154,11 @@ pub(crate) fn run_surface(action: &SurfaceAction, socket: Option<PathBuf>) -> Ex
                 Err(code) => code,
             }
         }
+        SurfaceAction::Standing { parent_pid } => {
+            super::parent_watch::exit_with(*parent_pid);
+            super::surface_standing::run_standing(socket)
+        }
+        SurfaceAction::Targets { json } => super::surface_targets::run_targets(*json),
         SurfaceAction::Follow {
             target,
             out,

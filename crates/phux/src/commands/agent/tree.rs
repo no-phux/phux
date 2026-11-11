@@ -7,6 +7,7 @@
 //! - `snapshot` prints the newest document and exits.
 //! - `follow` prints every document as it arrives; `--until TEXT` exits as
 //!   soon as a document contains `TEXT`, which is `phux wait` for an app.
+//! - `click` activates one node (`click`).
 
 use std::io::Read as _;
 use std::path::PathBuf;
@@ -24,7 +25,12 @@ const SCHEMA_VERSION: u8 = 1;
 
 mod app;
 mod app_launch;
+mod click;
+mod clipboard;
 mod doc;
+mod doc_folder;
+mod doc_notifications;
+mod doc_producer;
 mod mirror;
 #[cfg(any(target_os = "linux", test))]
 mod mirror_atspi;
@@ -32,7 +38,7 @@ mod page;
 mod page_input;
 mod page_mirror;
 mod parent_watch;
-#[cfg(any(target_os = "macos", target_os = "linux"))]
+mod print;
 mod redial;
 mod surface;
 #[cfg(any(target_os = "macos", target_os = "linux", test))]
@@ -41,12 +47,19 @@ mod surface_cadence;
 mod surface_grim;
 #[cfg(any(target_os = "linux", test))]
 mod surface_grim_input;
+#[cfg(any(target_os = "macos", target_os = "linux", test))]
+mod surface_indicator;
 mod surface_input;
 mod surface_mirror;
+mod surface_standing;
+mod surface_targets;
+#[cfg(any(target_os = "linux", test))]
+mod surface_wayland;
 
 pub(crate) use app::{AppAction, run_app};
 pub(crate) use doc::{DocAction, run_doc};
 pub(crate) use page::{PageAction, run_page};
+pub(crate) use print::print_document;
 pub(crate) use surface::SurfaceAction;
 pub(crate) use surface::run_surface;
 
@@ -72,7 +85,7 @@ pub(crate) enum TreeAction {
         #[usage(long)]
         json: bool,
     },
-    /// Print the tree's newest document.
+    /// Print the tree's newest document, control characters shown as signs.
     Snapshot {
         /// The tree.
         target: String,
@@ -102,6 +115,11 @@ pub(crate) enum TreeAction {
         parent_pid: Option<u32>,
         #[usage(long)]
         json: bool,
+    },
+    /// Activate one element by node, not pixel: `--node ID` or `--name TEXT`.
+    Click {
+        #[usage(flatten)]
+        args: click::ClickArgs,
     },
     /// Print every document as it arrives.
     Follow {
@@ -149,6 +167,7 @@ pub(super) fn run_tree(action: &TreeAction, socket: Option<PathBuf>) -> ExitCode
                 socket,
             })
         }
+        TreeAction::Click { args } => click::run_click(args, socket),
         TreeAction::Follow {
             target,
             until,
@@ -181,7 +200,6 @@ pub(super) async fn resolve(
 
 /// The pane a mirror binds to: `pane` when given, else the pane this process
 /// runs in (the injected `PHUX_TERMINAL_ID`), or report why there is none.
-#[cfg(any(target_os = "macos", target_os = "linux"))]
 pub(super) async fn mirror_pane(
     socket_path: &std::path::Path,
     pane: Option<&str>,
@@ -246,7 +264,7 @@ pub(super) async fn connect(
     Ok((conn, resource))
 }
 
-pub(super) fn report(json: bool, err: &TreeError) -> ExitCode {
+pub(crate) fn report(json: bool, err: &TreeError) -> ExitCode {
     let (code, hint) = match err {
         TreeError::Unsupported(_) => (
             json_err::codes::SERVER_TOO_OLD,
@@ -287,81 +305,6 @@ pub(super) struct Sink<'a> {
     pub(super) until: Option<&'a str>,
     /// Write each document to this file instead of stdout (surfaces).
     pub(super) out: Option<&'a std::path::Path>,
-}
-
-/// Deliver one document: a tree as text or JSON on stdout, a surface as
-/// bytes to `out` (or stdout) with a JSON line about it when asked.
-fn print_document(
-    kind: Kind,
-    json: bool,
-    out: Option<&std::path::Path>,
-    document: &Document,
-) -> ExitCode {
-    match kind {
-        Kind::Tree if json => {
-            let value: serde_json::Value = if document.bytes.is_empty() {
-                serde_json::Value::Null
-            } else {
-                serde_json::from_slice(&document.bytes).unwrap_or(serde_json::Value::Null)
-            };
-            outln!(
-                "{}",
-                serde_json::json!({
-                    "schema_version": SCHEMA_VERSION,
-                    "seq": document.seq,
-                    "document": value,
-                })
-            );
-        }
-        Kind::Tree => {
-            if !document.bytes.is_empty() {
-                outln!("{}", String::from_utf8_lossy(&document.bytes));
-            }
-        }
-        Kind::Surface | Kind::Document => {
-            if !document.bytes.is_empty() {
-                let written = out.map_or_else(
-                    || {
-                        // Flushed: stdout holds binary back until a newline byte.
-                        use std::io::Write as _;
-                        let mut stdout = std::io::stdout().lock();
-                        stdout
-                            .write_all(&document.bytes)
-                            .and_then(|()| stdout.flush())
-                    },
-                    |path| std::fs::write(path, &document.bytes),
-                );
-                if let Err(err) = written {
-                    return json_err::emit(
-                        json,
-                        &json_err::CliError::new(
-                            json_err::codes::USAGE_ERROR,
-                            format!("could not write the document: {err}"),
-                            "pass a writable `--out PATH`",
-                        ),
-                        EXIT_FAILURE,
-                    );
-                }
-            }
-            if json {
-                let size = image_size(&document.bytes).ok();
-                outln!(
-                    "{}",
-                    serde_json::json!({
-                        "schema_version": SCHEMA_VERSION,
-                        "seq": document.seq,
-                        "bytes": document.bytes.len(),
-                        "format": size.map(|s| s.0.name()),
-                        "width": size.map(|s| s.1),
-                        "height": size.map(|s| s.2),
-                        "content_type": document.content_type,
-                        "out": out.map(|p| p.display().to_string()),
-                    })
-                );
-            }
-        }
-    }
-    ExitCode::SUCCESS
 }
 
 pub(super) fn run_open(

@@ -46,7 +46,12 @@ impl Desk {
             (self.inbox.open, Modal::Inbox),
             (self.galaxy.open, Modal::Galaxy),
             (self.reef.open, Modal::Reef),
+            (self.pitch.open, Modal::Pitch),
+            (self.kitchen.open, Modal::Kitchen),
+            (self.pitlane.open, Modal::PitLane),
+            (self.hive.open, Modal::Hive),
             (self.machines.open, Modal::Machines),
+            (self.news.open, Modal::News),
             (self.settings_open, Modal::Settings),
             (self.tabs.renaming.is_some(), Modal::Rename),
             (self.palette_open, Modal::Palette),
@@ -55,6 +60,11 @@ impl Desk {
             (
                 self.phone.as_ref().is_some_and(|phone| phone.picker),
                 Modal::PhonePicker,
+            ),
+            // The migration's agent pane beside it takes typing.
+            (
+                self.onboarding.open && !self.onboarding.migrating(),
+                Modal::Onboarding,
             ),
             (self.find_query.focused, Modal::FindField),
         ]
@@ -71,6 +81,9 @@ impl Desk {
         let action = keys::shortcut(&event.key, event.mods, tx.physical_key());
         if let Some(modal) = self.modal() {
             self.modal_key(modal, event, action, tx);
+            return true;
+        }
+        if self.copy_mode_key(event, tx) {
             return true;
         }
         if self.native_text_shortcut(event) {
@@ -98,7 +111,9 @@ impl Desk {
         match modal {
             Modal::ContextMenu if escape => self.close_menu(),
             Modal::Rename if escape => self.cancel_rename(),
+            Modal::News if escape => self.close_news(),
             Modal::Inbox if self.inbox_key(event, tx) => {}
+            Modal::Onboarding if self.onboarding_key(event) => {}
             _ if self.navigation_sheet_key(modal, event) => {}
             Modal::Machines => {
                 self.machines_key(event, tx);
@@ -116,17 +131,6 @@ impl Desk {
                 }
             }
         }
-    }
-
-    fn navigation_sheet_key(&mut self, modal: Modal, event: &rune::KeyEvent) -> bool {
-        match (modal, &event.key) {
-            (Modal::Galaxy, rune::Key::Escape) => self.close_galaxy(),
-            (Modal::Galaxy, rune::Key::Enter) => self.open_picked(),
-            (Modal::Reef, rune::Key::Escape) => self.reef_escape(),
-            (Modal::Reef, rune::Key::Enter) => self.open_fish(),
-            _ => return false,
-        }
-        true
     }
 
     /// A command while `modal` has the keyboard, from a chord or a menu pick.
@@ -180,11 +184,13 @@ impl Desk {
     /// Ghostty does. Input the connection can't take now is said, not dropped
     /// quietly.
     pub(super) fn send_input(&mut self, send: impl FnOnce(&mut ControlPlane, &ResourceId) -> bool) {
+        self.stop_coast();
+        self.leave_copy_mode(false);
         let (Some(client), Some(shown)) = (self.client.clone(), &self.shown) else {
             return;
         };
         let Some(view) = shown.view else { return };
-        let terminal = shown.terminal.clone();
+        let terminal = shown.resource.clone();
         let frame = client.acquire_view(view);
         let behind = frame.as_ref().is_some_and(|f| !f.scrollbar.at_tail());
         let sent = client.with_control(|control| {
@@ -199,6 +205,7 @@ impl Desk {
         if !sent {
             return self.say(NoticeKind::Error, INPUT_PAUSED);
         }
+        self.nudge_typing(&client);
         if self.notice.as_ref().is_some_and(|n| n.text == INPUT_PAUSED) {
             self.notice = None;
         }
@@ -256,6 +263,10 @@ impl Desk {
             Shortcut::Inbox => self.toggle_inbox(),
             Shortcut::Galaxy => self.toggle_galaxy(),
             Shortcut::Reef => self.toggle_reef(),
+            Shortcut::Pitch => self.toggle_pitch(),
+            Shortcut::Kitchen => self.toggle_kitchen(),
+            Shortcut::PitLane => self.toggle_pitlane(),
+            Shortcut::Hive => self.toggle_hive(),
             Shortcut::Settings => self.toggle_settings(),
             Shortcut::ChangeTheme => self.open_themes(),
             Shortcut::SwitchSession => self.open_palette(crate::palette::Mode::Sessions),
@@ -271,6 +282,7 @@ impl Desk {
             Shortcut::ToggleFullScreen => tx.toggle_full_screen(),
             Shortcut::KeyboardShortcuts => self.show_shortcuts(),
             Shortcut::EssentialShortcuts => self.show_essentials(),
+            Shortcut::GetStarted => self.open_onboarding(),
             Shortcut::JumpToAttention => self.jump_to_attention(),
             Shortcut::SplitRight => self.split(SplitDir::Horizontal),
             Shortcut::SplitDown => self.split(SplitDir::Vertical),
@@ -287,6 +299,8 @@ impl Desk {
             Shortcut::FindNext => self.step_find(-1),
             Shortcut::FindPrevious => self.step_find(1),
             Shortcut::FindSelection => self.find_selection(),
+            Shortcut::CopyMode => self.toggle_copy_mode(),
+            Shortcut::Bare => self.toggle_bare(),
         }
     }
 
@@ -364,7 +378,7 @@ impl Desk {
     /// vouches for, after asking otherwise. Closing is not undoable, so
     /// "unknown" asks too.
     pub fn close_terminal(&mut self) {
-        let Some(terminal) = self.shown.as_ref().map(|s| s.terminal.clone()) else {
+        let Some(terminal) = self.shown.as_ref().map(|s| s.resource.clone()) else {
             return;
         };
         if self.is_document(&terminal) {
@@ -473,7 +487,7 @@ impl Desk {
     /// The view showing `terminal`, focused or not.
     pub(super) fn view_of(&self, terminal: &ResourceId) -> Option<ViewId> {
         match &self.shown {
-            Some(shown) if &shown.terminal == terminal => shown.view,
+            Some(shown) if &shown.resource == terminal => shown.view,
             _ => self.others.get(terminal).copied().flatten(),
         }
     }

@@ -19,7 +19,7 @@ pub(super) fn mixed_kind_snapshot(pane: &ResourceId, agent: &ResourceId) -> Sess
         ])
 }
 
-fn document(h: &mut H, id: &ResourceId, profile: phux_protocol::BootstrapStreamProfile) {
+pub(super) fn document(h: &mut H, id: &ResourceId, profile: phux_protocol::BootstrapStreamProfile) {
     h.send(FrameKind::BootstrapBegin {
         terminal_id: id.clone(),
         stream_id: stream(),

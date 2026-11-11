@@ -1,154 +1,185 @@
-# phux
+<p align="center">
+  <img src="./docs/assets/logo.png" alt="phux" width="240">
+</p>
 
-<img src="./docs/assets/logo.png" alt="Phux fox and wordmark" width="280">
+<p align="center">
+  Oh good, another terminal multiplexer for agents.<br>
+  This one gives a phux.
+</p>
 
-A terminal multiplexer whose server you can drive from code.
+<p align="center">
+  <a href="https://docs.phux.sh">Docs</a> ·
+  <a href="#install">Install</a> ·
+  <a href="https://phux.sh">Try it in a browser</a> ·
+  <a href="https://discord.gg/dUv5rzdHp">Discord</a>
+</p>
 
-phux keeps your shells running in a background server and shows them in a
-terminal UI, like tmux. Commands expose panes, input, snapshots, and agent
-state with JSON output and exit codes. The server tracks which panes run
-a coding agent and whether it is waiting on you. Another machine is one
-`phux host add me@mini` away, with no account.
+![The phux terminal UI: three coding agents in the sidebar, an editor, a test run and a server log in one session](./docs/assets/workspace.webp)
 
-[Docs](./docs/README.md) · [Help](#help) · [Releases](https://github.com/no-phux/phux/releases) ·
-[![CI](https://github.com/no-phux/phux/actions/workflows/ci.yml/badge.svg)](https://github.com/no-phux/phux/actions/workflows/ci.yml)
+phux keeps your shells running in a background server, the way tmux does.
+The server also knows which panes run a coding agent, and whether each one is
+working, idle, or waiting on you. Everything the terminal UI does, a command
+can do too, with JSON output and exit codes.
+
+It runs on your machines. There is no account and no hosted service.
 
 ## Install
 
-### CLI and terminal UI
-
 ```sh
 curl -fsSL https://phux.sh/install | sh
+phux
 ```
 
-Or install with Homebrew in one command. On Homebrew 6 and later that name trusts only the `phux` formula:
+`Ctrl-A` `d` detaches. Your shells keep running; `phux` brings you back to
+them. Homebrew works too: `brew install no-phux/tap/phux`.
+
+macOS on Apple silicon, Linux on x86_64 or arm64, and Windows through WSL 2.
+[Every install option](./docs/install.md), including the
+[desktop app](./clients/rune/README.md).
+
+## One server, every screen
+
+The server owns the terminals. Anything that connects is a client, and they
+all show the same sessions at once. The capture at the top is the terminal
+UI, which is `phux` in the terminal you already use. These are the others:
+
+**Desktop.** [Phux Rune](./clients/rune/README.md), for macOS and Linux.
+
+![Phux Rune, the desktop app, showing the same sessions as the terminal UI](./docs/assets/desktop.webp)
+
+<table>
+  <tr>
+    <td width="70%"><b>Embedded in a web page.</b> The browser client, live on <a href="https://phux.sh">phux.sh</a>.</td>
+    <td width="30%"><b>Phone.</b> The same client, in a phone's browser.</td>
+  </tr>
+  <tr>
+    <td><img src="./docs/assets/web.webp" alt="Two phux panes embedded in a web page"></td>
+    <td><img src="./docs/assets/phone.webp" alt="A phux shell in a phone browser, with a key bar under the terminal"></td>
+  </tr>
+</table>
+
+And headless: every command in the sections below works with no screen
+attached, which is how scripts and agents use it.
+
+The browser client is an experiment that a server does not serve by default,
+and native phone apps are not out yet. [Clients](./docs/clients.md) has what
+each one can and cannot do, and [Embed phux](./docs/embedding.md) covers
+putting a terminal in your own app.
+
+## See which agent needs you
+
+Start Claude Code, Codex, OpenCode, pi, or any other agent in a pane. From
+any shell:
+
+```console
+$ phux ls
+web: needs you (1 agent waiting)
+api: 1 running
+infra: 1 running
+
+$ phux agent list --json | jq -r '.agents[] | "\(.terminal) \(.agent.kind) \(.state)"'
+@1 claude working
+@2 codex blocked
+@3 opencode idle
+```
+
+The sidebar shows the same thing, and `Ctrl-A` `q` jumps to the next agent
+that is waiting. To be told instead of looking:
 
 ```sh
-brew install no-phux/tap/phux
+phux agent wait --any --until blocked --timeout 600
 ```
 
-Run `phux` after installing. [First agent](./docs/getting-started.md#first-agent) is install, start, run Claude Code, Codex, OpenCode, or pi, and read `phux agent list`.
+[Coding agents](./docs/agents.md) covers how the state is detected and the
+integrations for each agent.
 
-### Desktop app
+## Drive a terminal from code
 
-[Phux Rune](./clients/rune/README.md) is the desktop app, for Apple
-silicon macOS and x86_64 Linux:
+No terminal UI needs to be attached. Create a pane, run a command in it, and
+get the output and the exit code back:
+
+```console
+$ phux new --json -s api -- sh
+{
+  "schema_version": 1,
+  "session": "api",
+  "terminal_id": 1
+}
+
+$ phux run @1 'ls /nope'
+ls: cannot access '/nope': No such file or directory
+exit=2 (152ms)
+
+$ echo $?
+2
+```
+
+`snapshot` reads a screen, `send-keys` types into it, `wait` blocks until
+text appears or the pane goes quiet, and `watch --json` streams events. The
+same operations are an MCP server (`phux mcp`), so an agent can use the
+terminals you can see, and the documents, accessibility trees and screen
+surfaces phux hosts ([resource kinds](./docs/resource-kinds.md)).
+
+[Scripting](./docs/scripting.md) ·
+[MCP](./docs/agents.md#mcp) ·
+[Build on phux](./docs/building.md)
+
+## Reach another machine
 
 ```sh
-curl -fsSL https://phux.sh/install | sh -s -- --rune
+phux host add me@mini
+phux attach mini
 ```
 
-It installs the CLI too when none is found, and updates itself. Windows has no
-native desktop app; use the WSL CLI and terminal UI.
+`host add` sets the other machine up over the SSH access you already have.
+After that its sessions and agents show up next to the local ones.
+[Remote machines](./docs/remote.md) has the details, including Tailscale.
 
-### Platform support
-
-| Platform | CLI / server / terminal UI | Desktop |
-| --- | --- | --- |
-| macOS, Apple silicon | macOS 11+ | macOS 14+ |
-| Linux | x86_64 or arm64, glibc | x86_64, glibc 2.39, Vulkan |
-| Windows | [WSL 2 and PowerShell launchers](./docs/install.md#windows-wsl) | None |
-
-[Other installation options](./docs/install.md). No Intel Mac or musl builds.
-
-## Use
-
-```sh
-phux                      # start the server, attach; Ctrl-A is the prefix, Ctrl-A d detaches
-phux ls                   # what is running
-```
-
-From a POSIX shell, with `jq` installed, create a **new shell pane** and drive
-only that pane. No terminal UI needs to be attached:
-
-```sh
-(
-  set -eu
-  session="phux-demo-$$"
-  created=$(phux new --json -s "$session" -- sh)
-  pane="@$(printf '%s\n' "$created" | jq -er .terminal_id)"
-  phux run --timeout 10 "$pane" 'printf "hello from phux\n"'
-  phux snapshot "$pane"
-  printf 'The shell is still running. From a terminal: phux attach %s\n' "$session"
-)
-```
-
-`run` returns the command's output and exit status. Detaching or closing a
-client leaves the shell running; attach to the printed session to take over.
-
-![phux terminal UI tour](./docs/assets/tour.gif)
-
-*Recorded with phux. [Reproduce the capture](./scripts/record-readme.sh).*
-
-[Getting started](./docs/getting-started.md) ·
-[using phux as an agent](./docs/agent-quickstart.md) ·
-[driving terminals from scripts](./docs/scripting.md) ·
-[coding agents](./docs/agents.md) ·
-[build on phux](./docs/building.md) ·
-[remote machines](./docs/remote.md)
-
-## Common tasks
-
-- [How do I know when Claude Code or Codex is waiting for me?](https://docs.phux.sh/agent-waiting)
-- [How do I run a command in a pane and get its output and exit code?](https://docs.phux.sh/pane-command)
-- [How do I give my agent a terminal over MCP?](https://docs.phux.sh/terminal-mcp)
-- [How do I reach my coding agents over Tailscale and SSH?](https://docs.phux.sh/tailscale)
-- [How do I bring my tmux keys to phux?](https://docs.phux.sh/tmux-import)
-- [How does a program report its status with OSC 7501?](https://docs.phux.sh/program-protocol)
-- [How do I build a program that drives a phux server, or reports status into a pane?](https://docs.phux.sh/building)
-
-### Find your workflow
-
-| Want to… | Start here |
-| --- | --- |
-| Find an agent across machines | [`phux agent list`](./docs/agents.md), or the [Phux Rune command palette](./clients/rune/README.md#what-it-does) |
-| Run agents in isolated worktrees | [Missions](./docs/organization.md#work-and-missions) |
-| Work on another machine | [Remote machines](./docs/remote.md) |
-| Script a terminal or expose agent tools | [Scripting](./docs/scripting.md) · [MCP](./docs/agents.md#mcp) |
-| See agent plan usage and limits | [Plan usage](./docs/agents.md#plan-usage) |
-
-## For agents
-
-Install phux and drive a session from code with
-[Using phux as an agent](./docs/agent-quickstart.md).
-
-phux knows which pane runs which agent and whether it is working, idle, or
-blocked on you. Agents reach phux through plugins for Claude Code, pi, Oh
-My Pi, OpenCode, and Grok, through the bundled MCP server (`phux mcp`), or
-through the CLI. To hand the manual to your agent:
+## Hand it to your agent
 
 ```text
 Run `phux skill` and follow it to work with my phux terminals.
 ```
 
-For an opt-in fleet setup, [Crew](./distros/crew/README.md) is the bundled
-agent distro, with isolated homes, mission commands and
-[distro switching](./docs/distros.md). It does not add a multi-host task
-coordinator or autonomous delegation authority.
+`phux skill` prints the guide built into the binary you have installed, so it
+always matches your version. There are plugins for Claude Code, pi, Oh My Pi,
+OpenCode, and Grok. [Using phux as an agent](./docs/agent-quickstart.md) is
+the path from install to a driven session.
 
-## Status
+## Where things stand
 
-The core product is the persistent server, CLI and terminal UI. Remote
-hosts, agent integrations, MCP, plugins and distros are maintained features
-you can opt into; none is required for a local shell session.
+The server, the CLI and the terminal UI are the core, and they are what most
+people use every day. [Phux Rune](./clients/rune/README.md), the desktop app
+for macOS and Linux, is newer and rougher. The browser client is an
+experiment and phone apps are not out yet. Remote hosts, agent integrations,
+MCP, plugins and [distros](./docs/distros.md) are opt-in; a local shell
+session needs none of them.
 
-The desktop app is a maintained, separately versioned client for macOS,
-Linux and Windows; it is newer and rougher than the terminal UI. The browser
-client is experimental and unshipped. Phone apps are in progress elsewhere,
-not available downloads. [Clients](./docs/clients.md) covers their limits.
-The wire protocol is `1.x`; any 1.x client works with any 1.x server. See
-[protocol](./docs/protocol.md).
+The wire protocol is `1.x`: any 1.x client works with any 1.x server.
+[Clients](./docs/clients.md) and [protocol](./docs/protocol.md) have the
+limits.
 
-## Contributing
+## More
 
-[CONTRIBUTING.md](./CONTRIBUTING.md), then [development](./docs/development.md).
-phux is picky about new surface area; ask before building a feature.
+| | |
+| --- | --- |
+| New here | [Getting started](./docs/getting-started.md) · [Concepts](./docs/concepts.md) · [Coming from tmux](./docs/tmux-import.md) |
+| Agents | [Know when one is waiting](https://docs.phux.sh/agent-waiting) · [Give an agent a terminal over MCP](https://docs.phux.sh/terminal-mcp) · [Missions in isolated worktrees](./docs/organization.md#work-and-missions) |
+| Building | [Report status from any program](./docs/any-program-status.md) · [OSC 7501](https://docs.phux.sh/program-protocol) · [Native terminal windows](./docs/native-terminal.md) |
+| Everything | [All docs](./docs/README.md) · [Releases](https://github.com/no-phux/phux/releases) |
 
 ## Help
 
-- **Troubleshooting:** run `phux doctor`, then see [common fixes](./docs/troubleshooting.md) or [Phux Rune diagnostics](./clients/rune/README.md#what-it-does).
-- **Questions:** [Discord](https://discord.gg/dUv5rzdHp).
-- **Bugs and proposals:** [GitHub issues](https://github.com/no-phux/phux/issues); [what to include](./docs/troubleshooting.md#reporting-a-bug).
+Run `phux doctor` first, then see [common fixes](./docs/troubleshooting.md).
+Questions go to [Discord](https://discord.gg/dUv5rzdHp). Bugs and proposals
+go to [GitHub issues](https://github.com/no-phux/phux/issues);
+[what to include](./docs/troubleshooting.md#reporting-a-bug).
+
+## Contributing
+
+[CONTRIBUTING.md](./CONTRIBUTING.md), then
+[development](./docs/development.md). phux is picky about new surface area;
+ask before building a feature.
 
 ## License
 

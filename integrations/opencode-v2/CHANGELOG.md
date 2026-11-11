@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.9.0](https://github.com/no-phux/phux/compare/opencode-plugin-v0.8.1...opencode-plugin-v0.9.0) (2026-11-10)
+
+
+### Features
+
+* **integrations:** list and read every resource kind ([#2160](https://github.com/no-phux/phux/issues/2160)) ([4edc3bd](https://github.com/no-phux/phux/commit/4edc3bdfa4de57c0dffcc49fa99950a1a4c724f7))
+
+## [0.8.1](https://github.com/no-phux/phux/compare/opencode-plugin-v0.8.0...opencode-plugin-v0.8.1) (2026-11-09)
+
+
+### Bug Fixes
+
+* **opencode:** match the shared 2.2.6 host runtime ([#2124](https://github.com/no-phux/phux/issues/2124)) ([d222d32](https://github.com/no-phux/phux/commit/d222d3228888e94e9d18a42684e3af553fa956f7))
+
 ## [0.8.0](https://github.com/no-phux/phux/compare/opencode-plugin-v0.7.1...opencode-plugin-v0.8.0) (2026-10-30)
 
 

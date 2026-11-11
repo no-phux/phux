@@ -1,6 +1,7 @@
 //! The runtime's own `AgentSession` subscriptions: following the catalog,
 //! admitting delivery, and releasing streams when their parent closes.
 
+use crate::control::subscriptions::Origin;
 use phux_protocol::caps::ServerFeatureExt;
 use phux_protocol::wire::frame::{CloseReason, Command, FrameKind};
 use phux_protocol::wire::info::{ResourceInfo, SessionSnapshot};
@@ -60,8 +61,8 @@ impl ControlPlane {
         &self,
         terminal_id: &ResourceId,
     ) -> AgentSessionInfo {
-        self.agent_subscriptions
-            .get(terminal_id)
+        self.subscriptions
+            .follow(terminal_id)
             .map(|subscription| subscription.info.clone())
             .unwrap_or_default()
     }
@@ -89,7 +90,7 @@ impl ControlPlane {
         let omitted = self.agent_delivery.ids_absent(&listed);
         for id in &omitted {
             let _ = self.agent_delivery.retire(id);
-            self.agent_streams.remove(id);
+            self.subscriptions.remove(id, Origin::AgentDeclared);
             if let Some(engine) = &self.engine {
                 let _ = engine.detach(id.clone());
             }
@@ -127,8 +128,9 @@ impl ControlPlane {
             .cloned()
             .collect();
         let gone: Vec<ResourceId> = self
-            .agent_subscriptions
-            .keys()
+            .subscriptions
+            .followed()
+            .map(|(id, _)| id)
             .filter(|id| !self.agent_catalog.iter().any(|listed| &listed.id == *id))
             .cloned()
             .collect();
@@ -167,13 +169,13 @@ impl ControlPlane {
     fn follow_agent_session(&mut self, resource: ResourceInfo) -> Result<(), ControlError> {
         let epoch = self.connection_epoch;
         let subscribed = self
-            .agent_subscriptions
-            .get(&resource.id)
+            .subscriptions
+            .follow(&resource.id)
             .is_some_and(|subscription| subscription.connection == epoch);
         // A replacement ATTACH forgets the kernel declarations, not the
         // per-resource stream: declare again without re-subscribing.
-        if subscribed && self.agent_streams.contains(&resource.id) {
-            if let Some(subscription) = self.agent_subscriptions.get_mut(&resource.id) {
+        if subscribed && self.subscriptions.has(&resource.id, Origin::AgentDeclared) {
+            if let Some(subscription) = self.subscriptions.follow_mut(&resource.id) {
                 subscription.info = session_info(&resource);
             }
             return Ok(());
@@ -196,9 +198,13 @@ impl ControlPlane {
             native_id: info.native_id.clone(),
             state: resource.agent.as_ref().map(|facet| facet.state.clone()),
         })?;
-        self.agent_streams.insert(resource.id.clone());
-        self.agent_subscriptions.insert(
-            resource.id.clone(),
+        self.subscriptions.insert(
+            &resource.id,
+            ResourceKind::AgentSession,
+            Origin::AgentDeclared,
+        );
+        self.subscriptions.set_follow(
+            &resource.id,
             AgentSubscription {
                 info,
                 connection: epoch,
@@ -207,7 +213,7 @@ impl ControlPlane {
         if subscribed {
             return Ok(());
         }
-        self.retired_agents.remove(&resource.id);
+        self.subscriptions.set_ended(&resource.id, false);
         let request_id = self.next_request_id();
         self.pending
             .insert(request_id, Pending::AgentSubscription(resource.id.clone()));
@@ -225,11 +231,12 @@ impl ControlPlane {
 
     /// End one subscription: it is closed to the consumer exactly once.
     pub(in crate::control) fn end_agent_subscription(&mut self, terminal_id: &ResourceId) -> bool {
-        let Some(subscription) = self.agent_subscriptions.remove(terminal_id) else {
+        let Some(subscription) = self.subscriptions.take_follow(terminal_id) else {
             return false;
         };
-        self.agent_streams.remove(terminal_id);
-        self.retired_agents.insert(terminal_id.clone());
+        self.subscriptions
+            .remove(terminal_id, Origin::AgentDeclared);
+        self.subscriptions.set_ended(terminal_id, true);
         let stream = self.agent_delivery.retire(terminal_id);
         self.push_event(Event::AgentSessionClosed {
             terminal_id: terminal_id.clone(),
@@ -245,8 +252,8 @@ impl ControlPlane {
     pub(in crate::control) fn release_agents_of(&mut self, parent: &ResourceId) {
         let epoch = self.connection_epoch;
         let children: Vec<ResourceId> = self
-            .agent_subscriptions
-            .iter()
+            .subscriptions
+            .followed()
             .filter(|(_, subscription)| subscription.info.parent.as_ref() == Some(parent))
             .map(|(id, _)| id.clone())
             .collect();
@@ -257,8 +264,8 @@ impl ControlPlane {
 
     fn release_agent_subscription(&mut self, terminal_id: &ResourceId, epoch: u64) {
         if self
-            .agent_subscriptions
-            .get(terminal_id)
+            .subscriptions
+            .follow(terminal_id)
             .is_some_and(|subscription| subscription.connection == epoch)
         {
             let request_id = self.next_request_id();
@@ -286,8 +293,8 @@ impl ControlPlane {
             return;
         }
         let orphaned: Vec<_> = self
-            .agent_subscriptions
-            .iter()
+            .subscriptions
+            .followed()
             .filter(|(_, subscription)| {
                 !subscription
                     .info
@@ -314,13 +321,17 @@ impl ControlPlane {
     /// A new server incarnation: every followed session is gone, and its
     /// ids may now name anything.
     pub(in crate::control) fn end_agent_incarnation(&mut self) {
-        let ended: Vec<ResourceId> = self.agent_subscriptions.keys().cloned().collect();
+        let ended: Vec<ResourceId> = self
+            .subscriptions
+            .followed()
+            .map(|(id, _)| id.clone())
+            .collect();
         for terminal_id in ended {
             self.end_agent_subscription(&terminal_id);
         }
         self.discard_agent_delivery();
         self.agent_catalog.clear();
-        self.retired_agents.clear();
+        self.subscriptions.clear_ended();
     }
 
     /// A refused subscription releases the stream; the next topology read
@@ -333,10 +344,11 @@ impl ControlPlane {
         if !refused {
             return;
         }
-        if let Some(subscription) = self.agent_subscriptions.get_mut(terminal_id) {
+        if let Some(subscription) = self.subscriptions.follow_mut(terminal_id) {
             subscription.connection = 0;
         }
-        self.agent_streams.remove(terminal_id);
+        self.subscriptions
+            .remove(terminal_id, Origin::AgentDeclared);
         if let Some(engine) = &self.engine {
             let _ = engine.detach(terminal_id.clone());
         }

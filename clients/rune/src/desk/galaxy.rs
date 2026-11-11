@@ -82,6 +82,10 @@ impl Desk {
             return;
         }
         self.close_inbox();
+        self.close_pitch();
+        self.close_kitchen();
+        self.close_pitlane();
+        self.close_hive();
         self.settings_open = false;
         self.galaxy.open = true;
         self.galaxy.placed = false;

@@ -8,8 +8,8 @@ records explain history; [look them up deliberately](./architecture.md#historica
 
 **Process and runtime**
 
-- One server per user per profile; one current-thread runtime; a pane is a
-  `LocalSet` task that owns its `!Send` libghostty terminal.
+- One server per user per profile; one current-thread runtime; a Terminal
+  resource is a `LocalSet` task that owns its `!Send` libghostty terminal.
 - Hot upgrades re-exec and re-adopt live PTYs; cold restarts, crashes and
   reboots do not preserve PTYs. Records are not process recovery.
 - The upgrade blob's field names are a format. A candidate binary must parse
@@ -24,11 +24,12 @@ records explain history; [look them up deliberately](./architecture.md#historica
 
 **Wire**
 
-- Each kind declares its stream contract; the Terminal's is VT bytes from
-  server to client and structured input back, with libghostty on both
-  ends. The Terminal profile is negotiated per connection at `HELLO`, but
-  a connection that offers none is admitted: it consumes other kinds, and a
-  Terminal stream it binds is refused with `CODEC_UNAVAILABLE`.
+- Each kind declares its stream contract and spawn rule in its catalog row
+  (`KindSpec`); the Terminal's stream is VT bytes from server to client
+  and structured input back, with libghostty on both ends. The Terminal
+  profile is negotiated per connection at `HELLO`, but a connection that
+  offers none is admitted: it consumes other kinds, and a Terminal stream
+  it binds is refused with `CODEC_UNAVAILABLE`.
 - Stream and input frames (`INPUT_*`, `RESIZE_TERMINAL`, `FRAME_ACK`,
   `HISTORY_REQUEST`) reach the kind that owns their resource through its
   `ResourceApp`, as commands do. A kind owns no frame it did not opt into:
@@ -104,13 +105,17 @@ records explain history; [look them up deliberately](./architecture.md#historica
 - Clients pin the server's certificate authority at pairing and never learn
   one from a connection. Devices and satellites enroll with single-use
   tickets.
+- An organization-managed workload credential skips the pairing bearer: the
+  organization's CA and the host's registry entry are the authority. A root
+  only lets a certificate verify; the registry stays the only admission
+  authority, and `sync-managed` replaces only that organization's records.
 - Humans outrank agents on input leases. Scoped grants can be held for
   approval; the owner never is.
 - Plan usage is a plugin publishing a Global L3 key (`phux.usage/v1`), not a
   wire verb or server code: last-writer-wins host facts belong in metadata,
   and clients watch it with the generic `SUBSCRIBE_METADATA`. Declared
   producers and feeds (ADR-0177) remain the upgrade path if a fact outgrows
-  one key ([agents](./agents.md#plan-usage)).
+  one key ([plan usage](./troubleshooting.md#plan-usage)).
 
 **Substrate**
 

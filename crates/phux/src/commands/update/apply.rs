@@ -198,7 +198,7 @@ fn validate_extracted(staged: &Path, stage: &str) -> Result<(), UpdateError> {
 }
 
 /// Run `tar` with `args`.
-fn tar(args: &[&str]) -> Result<String, UpdateError> {
+pub(crate) fn tar(args: &[&str]) -> Result<String, UpdateError> {
     let output = Command::new("tar")
         .args(args)
         .output()

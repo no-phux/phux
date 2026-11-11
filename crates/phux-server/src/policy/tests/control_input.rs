@@ -23,6 +23,7 @@ fn input_to(document: &WireResourceId) -> Command {
         terminal_id: document.clone(),
         intent: phux_protocol::wire::frame::DocumentInput::Click { x: 1, y: 1 },
         control: None,
+        on_behalf_of: None,
     }
 }
 
@@ -86,9 +87,46 @@ fn document_input_needs_a_control_grant_never_a_terminal_one() {
         assert!(!admits(grant, &plain), "{grant:?} reached a document with no control class");
     }
 
+    // A relayed identity is informational: naming the owner widens nothing.
+    let mut relayed = input_to(&display);
+    if let Command::SendDocumentInput { on_behalf_of, .. } = &mut relayed {
+        *on_behalf_of = Some(phux_protocol::wire::frame::OnBehalfOf {
+            credential: "owner".to_owned(),
+            name: "Rune".to_owned(),
+        });
+    }
+    assert!(!admits_command(&world, &scoped(&[crate::workload::PAIRED_DEVICE_SCOPE]), relayed));
+
     // The owner socket reaches every one of them.
     for target in [&display, &window, &page, &plain, &satellite_window] {
         assert!(admits_command(&world, &ConnectionGrant::owner(), input_to(target)));
+    }
+}
+
+#[test]
+fn the_clipboard_needs_the_same_control_grant_as_any_input() {
+    use phux_protocol::wire::frame::ControlClass::Display;
+    use phux_protocol::wire::frame::DocumentInput;
+    let mut world = world();
+    let display = document(&mut world, Some(Display));
+    let clipboard = [
+        DocumentInput::CopyClipboard { reply: 0 },
+        DocumentInput::Paste { text: "x".into(), chord: true },
+        DocumentInput::ClipboardText { reply: 1, text: Ok("x".into()) },
+    ];
+    for intent in clipboard {
+        let command = || Command::SendDocumentInput {
+            terminal_id: display.clone(),
+            intent: intent.clone(),
+            control: None,
+            on_behalf_of: None,
+        };
+        let terminal_scope = format!("*@terminal:{}", local_id(&world.alpha));
+        for grant in [&[][..], &["observe@display"], &["*@host"], &[&terminal_scope]] {
+            assert!(!admits_command(&world, &scoped(grant), command()), "{grant:?} reached {intent:?}");
+        }
+        assert!(!admits_command(&world, &scoped(&["input@window"]), command()), "a display is not a window");
+        assert!(admits_command(&world, &scoped(&["input@display"]), command()));
     }
 }
 
@@ -112,4 +150,59 @@ fn a_hub_stamps_exactly_the_satellite_classes_the_grant_names() {
     );
     world.state.set_connection_grant(CLIENT, ConnectionGrant::owner());
     assert_eq!(super::filter::satellite_input_classes(&world.state, CLIENT, "powerhouse-1"), None);
+}
+
+fn mirror(host: Option<&str>, op: phux_protocol::wire::frame::MirrorOp) -> Command {
+    Command::Mirror {
+        host: host.map(str::to_owned),
+        op,
+    }
+}
+
+#[test]
+fn mirrors_need_an_observe_grant_of_the_target_class() {
+    use phux_protocol::wire::frame::MirrorOp::{Start, Stop, Targets};
+    let world = world();
+    let admits = |scopes: &[&str], command: Command| admits_command(&world, &scoped(scopes), command);
+    let start = |target: &str| Start {
+        target: target.to_owned(),
+        jpeg: false,
+    };
+    // Listing shows window titles; a display target needs `display`.
+    assert!(admits(&["observe@window"], mirror(None, Targets)));
+    assert!(admits(&["observe@window"], mirror(None, start("firefox:Docs"))));
+    assert!(!admits(&["observe@window"], mirror(None, start("display:HDMI-A-1"))));
+    assert!(admits(&["observe@display"], mirror(None, start("display"))));
+    assert!(!admits(&["observe@display"], mirror(None, Targets)));
+    assert!(admits(
+        &["observe@display"],
+        mirror(None, Stop {
+            target: "display".to_owned()
+        })
+    ));
+    // A satellite's screens need a grant naming that host.
+    let sat = Some("powerhouse-1");
+    assert!(admits(&["observe@window:powerhouse-1"], mirror(sat, Targets)));
+    assert!(!admits(&["observe@window:powerhouse-1"], mirror(None, Targets)));
+    assert!(!admits(&["observe@window"], mirror(sat, Targets)));
+    // No broader grant reaches a screen, and only the owner reports targets.
+    for grant in [&["*@host"][..], &["*@host:powerhouse-1"], &[crate::workload::PAIRED_DEVICE_SCOPE]] {
+        assert!(!admits(grant, mirror(None, Targets)));
+        assert!(!admits(grant, mirror(sat, start("display"))));
+    }
+    let provide = Command::MirrorProvide {
+        targets: "[]".to_owned(),
+    };
+    assert!(!admits(&["observe@window", "observe@display"], provide));
+}
+
+/// The `MIRROR` rows: only a control grant (`mirrors_need_...` above)
+/// reaches them, so the §6 table sees them refused.
+fn mirror_rows() -> Vec<Row> {
+    let provide = Command::MirrorProvide {
+        targets: "[]".to_owned(),
+    };
+    [mirror(None, phux_protocol::wire::frame::MirrorOp::Targets), provide]
+        .map(|op| row(command(op), &[], &[&["*@global"]]))
+        .into()
 }

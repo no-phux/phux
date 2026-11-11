@@ -43,8 +43,19 @@ mod lease_table;
 mod leases;
 mod legacy_snapshot;
 mod lifecycle;
+
+static ACTIVATION_REPORT_WAKE: tokio::sync::Notify = tokio::sync::Notify::const_new();
+
+pub(crate) fn notify_activation_reports() {
+    ACTIVATION_REPORT_WAKE.notify_one();
+}
+
+pub(crate) async fn activation_reports_woken() {
+    ACTIVATION_REPORT_WAKE.notified().await;
+}
 mod lifecycle_state;
 mod metadata;
+pub(crate) mod mirror_demand;
 pub(crate) mod native_agent;
 mod org;
 mod plugin_startup;
@@ -99,7 +110,6 @@ use resource_table::ResourceTable;
 use session_table::SessionTable;
 pub use terminals::ResourceRegistrationError;
 pub use upgrade_blob::RebuildError;
-pub(crate) use upgrade_blob::UpgradeHandoffs;
 
 /// The single static Group every `Scope::Group` metadata op lands in; the
 /// TUI's layout key needs one (ADR-0019).
@@ -198,6 +208,11 @@ pub struct ServerState {
     /// `[[startup]]` supervisor. `None` until the accept loop's neighbor
     /// task is installed, and on servers that were not given a catalog.
     plugin_startup: Option<crate::plugin_startup::StartupHandle>,
+    /// Rung on a config reload to re-read `[[mirrors]]`; `None` until the
+    /// standing-mirror supervisor is installed.
+    standing_mirrors: Option<std::sync::Arc<tokio::sync::Notify>>,
+    /// The mirrors wanted beside `[[mirrors]]`, and Rune's macOS runner.
+    mirror_demand: crate::state::mirror_demand::Demand,
     /// Who wrote each `phux.push/v1/<device>` grant, and what was last
     /// pushed to it (ADR-0155).
     push_grants: crate::push::PushGrants,

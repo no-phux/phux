@@ -59,7 +59,9 @@ pub(crate) fn maybe_auto_spawn_server(
     quiet: bool,
     login_shell: bool,
 ) -> std::io::Result<()> {
-    let current_exe = std::env::current_exe()?;
+    // On macOS the installed `phux Server.app` runs instead when it holds this
+    // build, so privacy grants stay on one stable program.
+    let current_exe = phux_config::server_bundle::server_executable(std::env::current_exe()?);
     let log_path = phux_server::telemetry::server_log_path();
 
     // The banner names the log; suppressed under `--json`.

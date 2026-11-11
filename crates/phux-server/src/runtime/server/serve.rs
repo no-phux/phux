@@ -154,6 +154,7 @@ impl ServerRuntime {
         let startup_socket = socket_path.clone();
         let satellite_source = self.satellite_source.clone();
         let uplink_source = self.uplink_source.clone();
+        let mirror_source = self.mirror_source.clone();
         let uplink_socket = socket_path.clone();
         // Input routing runs on its own OS thread (ADR-0044) so keystrokes
         // are not queued behind output broadcast; its `Drop` joins it.
@@ -167,6 +168,7 @@ impl ServerRuntime {
             .run_until(async move {
                 spawn_shutdown_folder(shutdown, &state, &root_token);
                 arm_idle_exit(&state, exit_after_idle, &root_token);
+                crate::runtime::services::spawn_activation_report_retry(&state, &root_token);
                 install_hook_dispatcher(&state, hook_catalog, hook_socket_path);
                 state.with_mut(|s| {
                     s.arm_hub_reload(satellite_source.clone(), root_token.clone());
@@ -291,6 +293,11 @@ impl ServerRuntime {
                     root_token.clone(),
                     input_lane_handle.clone(),
                 )));
+                crate::runtime::apps::terminal::standing::install(
+                    &state,
+                    mirror_source,
+                    &root_token,
+                );
                 let startup_task = plugin_startup.map(|cfg| {
                     crate::plugin_startup::install(&state, *cfg, startup_socket, root_token.clone())
                 });

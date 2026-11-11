@@ -19,6 +19,7 @@ use super::org::{
 mod args;
 mod document_input;
 mod event;
+mod mirror;
 #[macro_use]
 mod organization;
 #[macro_use]
@@ -30,9 +31,11 @@ pub use args::{
     ResourceEventType, StateScope, TerminalSignal,
 };
 pub use document_input::{
-    ControlClass, ControlClasses, DocumentInput, DocumentKey, MAX_DOCUMENT_INPUT_TEXT,
+    CONTROL_UNRESTRICTED, ControlClass, ControlClasses, DocumentInput, DocumentKey,
+    MAX_CLIPBOARD_TEXT, MAX_DOCUMENT_INPUT_TEXT, MAX_ON_BEHALF_OF, OnBehalfOf,
 };
 pub use event::{AgentEvent, ApprovalOutcome, ControlAction, ResourceLifecycle};
+pub use mirror::{MAX_MIRROR_TARGET, MAX_MIRROR_TARGETS, MirrorOp};
 
 /// Declares [`Command`] around the variant list the family macros build.
 macro_rules! command_enum {

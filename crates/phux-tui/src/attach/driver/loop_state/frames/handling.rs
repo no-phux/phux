@@ -120,10 +120,11 @@ impl super::super::SessionLoop {
             return false;
         }
         let mut next_focus = self.mirror.focused_resource.clone();
+        let members = self.mirror.reopenable_members(self.peers.focused_session);
         let changed = crate::attach::input_dispatch::apply_deferred_arrangement_edits(
             &mut self.deferred_arrangement_edits,
             &mut self.mirror.workspace,
-            &self.mirror.members,
+            &members,
             &self.mirror.panes,
             &mut self.mirror.zoomed,
             &mut next_focus,

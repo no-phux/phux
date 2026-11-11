@@ -61,19 +61,23 @@ static F_SPAWN_OWNED: Rule = Rule::verbs(
 );
 static F_SPAWN_SATELLITE_OWNED: Rule =
     Rule::deny("`SPAWN_RESOURCE { satellite: Some, owner_terminal: Some }`");
-static F_SPAWN_AGENT_LOCAL: Rule = Rule::verbs(
-    "`SPAWN_RESOURCE { kind: AGENT_SESSION, satellite: None, parent: Some }`",
+static F_SPAWN_CHILD_LOCAL: Rule = Rule::verbs(
+    "`SPAWN_RESOURCE { kind: served non-TERMINAL, satellite: None, parent: Some }`",
     &[Verb::Create, Verb::Bind],
     Subject::ParentTerminalGroup,
 );
-static F_SPAWN_AGENT_SATELLITE: Rule = Rule::verbs(
-    "`SPAWN_RESOURCE { kind: AGENT_SESSION, satellite: Some(H), parent: Some(Satellite { H, .. }) }`",
+static F_SPAWN_CHILD_SATELLITE: Rule = Rule::verbs(
+    "`SPAWN_RESOURCE { kind: served non-TERMINAL, satellite: Some(H), parent: Some(Satellite { H, .. }) }`",
     &[Verb::Create, Verb::Bind],
     Subject::SatelliteHostAndParent,
 );
 static F_SPAWN_KIND_MISMATCH: Rule = Rule::deny(
     "`SPAWN_RESOURCE { kind: not TERMINAL, parent: None }` or `{ kind: TERMINAL, parent: Some }`",
 );
+// Declaring a control class (page, window, display) claims what viewers'
+// `input@CLASS` grants then reach: only the owner socket opens one
+// (`docs/authority.md`).
+static F_SPAWN_MACHINE_CONTROL: Rule = Rule::deny("`SPAWN_RESOURCE { control: Some }`");
 static F_RESIZE_TERMINAL: Rule =
     Rule::verbs("`RESIZE_TERMINAL`", &[Verb::Bind], Subject::NamedTerminal);
 static F_MOVE_RESOURCE: Rule = Rule::verbs(
@@ -163,7 +167,7 @@ static F_UNCLASSIFIED: Rule =
 ///
 /// [`classify_frame`] returns one of these rows for every decoded frame. It
 /// never returns the `COMMAND` row: the nested command decides.
-pub static FRAME_RULES: [&Rule; 40] = [
+pub static FRAME_RULES: [&Rule; 41] = [
     &F_HELLO,
     &F_PING,
     &F_DETACH,
@@ -179,9 +183,10 @@ pub static FRAME_RULES: [&Rule; 40] = [
     &F_SPAWN_LOCAL,
     &F_SPAWN_OWNED,
     &F_SPAWN_SATELLITE_OWNED,
-    &F_SPAWN_AGENT_LOCAL,
-    &F_SPAWN_AGENT_SATELLITE,
+    &F_SPAWN_CHILD_LOCAL,
+    &F_SPAWN_CHILD_SATELLITE,
     &F_SPAWN_KIND_MISMATCH,
+    &F_SPAWN_MACHINE_CONTROL,
     &F_RESIZE_TERMINAL,
     &F_MOVE_RESOURCE,
     &F_SUBSCRIBE_EVENTS_ONE,
@@ -429,12 +434,29 @@ static C_DELEGATION: Rule = Rule::verbs(
     &[Verb::Terminate],
     GLOBAL_OWNER_UDS,
 );
+// Listing, starting or stopping a host's mirrors shows its screen: a
+// control selector of the class the target falls in (`window`, or
+// `display` for `display[:OUTPUT]`; listing is `window`), as for the
+// documents it opens. Rune's macOS runner reports from the owner socket.
+static C_MIRROR: Rule = Rule::verbs("`MIRROR`", &[Verb::Observe], Subject::ControlledDocument);
+static C_MIRROR_PROVIDE: Rule = Rule::verbs(
+    "`MIRROR_PROVIDE`",
+    &[Verb::Observe],
+    GLOBAL_OWNER_UDS,
+);
+// Which grants the host's server holds says what its panes can read: owner,
+// Unix socket only.
+static C_PRIVACY_STATUS: Rule = Rule::verbs(
+    "`PRIVACY_STATUS`",
+    &[Verb::Inventory],
+    GLOBAL_OWNER_UDS,
+);
 static C_UNCLASSIFIED: Rule = Rule::deny("Unknown, retired, or otherwise unclassified command tag");
 
 /// The nested-command table of workload-auth §6, in spec row order.
 ///
 /// [`classify_command`] returns one of these rows for every decoded command.
-pub static COMMAND_RULES: [&Rule; 56] = [
+pub static COMMAND_RULES: [&Rule; 59] = [
     &C_SPAWN,
     &C_ATTACH_RESOURCE,
     &C_DETACH_RESOURCE,
@@ -468,6 +490,9 @@ pub static COMMAND_RULES: [&Rule; 56] = [
     &C_APPEND_RESOURCE_OUTPUT,
     &C_PUBLISH_RESOURCE_STATE,
     &C_SEND_DOCUMENT_INPUT,
+    &C_MIRROR,
+    &C_MIRROR_PROVIDE,
+    &C_PRIVACY_STATUS,
     &C_NATIVE_SPAWN,
     &C_NATIVE_LIST,
     &C_NATIVE_LAUNCH,

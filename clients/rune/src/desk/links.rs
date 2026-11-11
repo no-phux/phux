@@ -1,5 +1,6 @@
 //! ⌘-click (Ctrl-click elsewhere) opens a link; holding ⌘ over one
-//! underlines it and shows where it goes.
+//! underlines it and shows where it goes. A phone has no ⌘: there a tap that
+//! lifts where it landed opens the link (`phone/touch.rs`).
 
 use std::sync::{Arc, Mutex};
 
@@ -19,6 +20,8 @@ pub struct Pointer {
     last: Option<(ResourceId, f32, f32)>,
     /// A ⌘-press opened a link; its drag and release go nowhere else.
     opened: bool,
+    /// A phone finger came down on a link: its pane, the link, and where.
+    tap: Option<(ResourceId, String, f32, f32)>,
     /// ⌘ as the last pointer or modifier event left it.
     cmd: bool,
     /// Why the last opener gave up, from the thread waiting on it.
@@ -161,6 +164,10 @@ impl Desk {
         tx: &mut Tx,
     ) -> bool {
         if phase != Phase::Down {
+            if let Some(url) = self.tapped(terminal, phase, x, y) {
+                self.open_link(terminal, &url, tx);
+                return true;
+            }
             let opened = self.pointer.opened;
             if phase == Phase::Up {
                 self.pointer.opened = false;
@@ -169,12 +176,46 @@ impl Desk {
         }
         // A new press; a release lost to another app ends the old one.
         self.pointer.opened = false;
+        self.pointer.tap = None;
+        if self.phone.is_some() && !cmd {
+            let link = self.link_at(terminal, x, y);
+            self.pointer.tap = link.map(|link| (terminal.clone(), link.url, x, y));
+            return false;
+        }
         let Some(link) = cmd.then(|| self.link_at(terminal, x, y)).flatten() else {
             return false;
         };
         self.open_link(terminal, &link.url, tx);
         self.pointer.opened = true;
         true
+    }
+}
+
+impl Desk {
+    /// The finger's gesture became something other than a tap.
+    pub(super) fn forget_link_tap(&mut self) {
+        self.pointer.tap = None;
+    }
+}
+
+/// How far a finger may travel, in points, and still be a tap.
+const TAP_SLOP: f32 = 8.0;
+
+impl Desk {
+    /// The link a phone tap just lifted from: the finger stayed within
+    /// [`TAP_SLOP`] of where it landed on it. Travelling further makes the
+    /// gesture a scroll.
+    fn tapped(&mut self, terminal: &ResourceId, phase: Phase, x: f32, y: f32) -> Option<String> {
+        let (on, _, x0, y0) = self.pointer.tap.as_ref()?;
+        let still = on == terminal && (x - x0).hypot(y - y0) <= TAP_SLOP;
+        if phase != Phase::Up {
+            if !still {
+                self.pointer.tap = None;
+            }
+            return None;
+        }
+        let (_, url, _, _) = self.pointer.tap.take()?;
+        still.then_some(url)
     }
 }
 
@@ -197,6 +238,28 @@ mod tests {
         assert!(links::refusal(file, desk.remote(&satellite)).is_some());
         desk.machines.current = Some("mini".to_owned());
         assert!(links::refusal(file, desk.remote(&local)).is_some());
+    }
+
+    #[test]
+    fn a_phone_tap_opens_its_link_and_a_drag_does_not() {
+        let mut desk = desk();
+        let pane = ResourceId::local(1);
+        let url = "https://phux.sh".to_owned();
+        let land =
+            |desk: &mut Desk| desk.pointer.tap = Some((pane.clone(), url.clone(), 40.0, 20.0));
+
+        land(&mut desk);
+        assert_eq!(desk.tapped(&pane, Phase::Move, 43.0, 22.0), None);
+        assert_eq!(desk.tapped(&pane, Phase::Up, 44.0, 23.0), Some(url.clone()));
+        assert_eq!(desk.tapped(&pane, Phase::Up, 44.0, 23.0), None, "once");
+
+        land(&mut desk);
+        assert_eq!(desk.tapped(&pane, Phase::Move, 80.0, 20.0), None);
+        assert_eq!(desk.tapped(&pane, Phase::Up, 40.0, 20.0), None, "a drag");
+
+        land(&mut desk);
+        let other = ResourceId::local(2);
+        assert_eq!(desk.tapped(&other, Phase::Up, 40.0, 20.0), None);
     }
 
     #[test]

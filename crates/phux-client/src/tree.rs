@@ -7,18 +7,22 @@
 //! surface's are PNG or JPEG images; a typed document's are of the content type it
 //! was opened with.
 
-use phux_protocol::caps::{BootstrapStreamProfile, ServerFeatureExt};
+use phux_protocol::caps::ServerFeatureExt;
 use phux_protocol::ids::{GroupId, ResourceId};
 use phux_protocol::wire::frame::{
-    AgentEvent, Command, CommandResult, CommandValue, ControlClass, ErrorCode, FrameKind,
-    SpawnError, SpawnResource, SpawnResult,
+    Command, CommandResult, CommandValue, ControlClass, ErrorCode, FrameKind, SpawnError,
+    SpawnResource, SpawnResult,
 };
 
 use crate::attach::AttachError;
 use crate::attach::connection::{Answer, Connection};
 
+pub mod element;
 mod input;
-pub use input::{DocumentInput, DocumentKey, Intent, intent, send_input};
+mod reader;
+pub use input::{
+    DocumentInput, DocumentKey, Intent, activity, answer_copy, copy_clipboard, intent, send_input,
+};
 
 /// Which document kind a call is about.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -63,6 +67,8 @@ impl Kind {
 }
 
 pub use phux_core::image::{ImageFormat, image_size};
+
+use reader::{Absorbed, Reader};
 
 /// The width and height a PNG's `IHDR` names, when `bytes` is one.
 #[must_use]
@@ -470,106 +476,6 @@ async fn follow_until(
         .await;
     conn.unbind_terminal(tree);
     Ok(end)
-}
-
-enum Absorbed {
-    Document(Document),
-    Closed,
-    Nothing,
-}
-
-/// Folds a tree's frames into documents: a bootstrap's chunks make one, and
-/// every live `RESOURCE_OUTPUT` is one. A tombstone starts a replacement
-/// generation; its bootstrap carries the newest document.
-struct Reader {
-    tree: ResourceId,
-    base_seq: u64,
-    buffer: Vec<u8>,
-    /// Whether the bootstrap is typed, and the content type it named.
-    typed: bool,
-    content_type: Option<String>,
-}
-
-impl Reader {
-    const fn new(tree: ResourceId) -> Self {
-        Self {
-            tree,
-            base_seq: 0,
-            buffer: Vec::new(),
-            typed: false,
-            content_type: None,
-        }
-    }
-
-    /// The bootstrap's document, split from its content type when typed.
-    fn ready(&mut self) -> Result<Document, TreeError> {
-        let buffer = std::mem::take(&mut self.buffer);
-        if !self.typed {
-            return Ok(self.document(self.base_seq, buffer));
-        }
-        let (content_type, bytes) =
-            phux_protocol::wire::frame::typed_document::split_bootstrap(&buffer).ok_or_else(
-                || AttachError::Protocol("a typed bootstrap without a content type".to_owned()),
-            )?;
-        self.content_type = Some(content_type.to_owned());
-        Ok(self.document(self.base_seq, bytes.to_vec()))
-    }
-
-    fn document(&self, seq: u64, bytes: Vec<u8>) -> Document {
-        Document {
-            seq,
-            bytes,
-            content_type: self.content_type.clone(),
-        }
-    }
-
-    fn absorb(&mut self, frame: FrameKind) -> Result<Absorbed, TreeError> {
-        Ok(match frame {
-            FrameKind::BootstrapBegin {
-                terminal_id,
-                base_seq,
-                profile,
-                ..
-            } if terminal_id == self.tree => {
-                self.typed = profile == BootstrapStreamProfile::DocumentTypedV1;
-                self.base_seq = base_seq;
-                self.buffer.clear();
-                Absorbed::Nothing
-            }
-            FrameKind::BootstrapChunk {
-                terminal_id,
-                payload,
-                ..
-            } if terminal_id == self.tree => {
-                self.buffer.extend_from_slice(&payload);
-                Absorbed::Nothing
-            }
-            FrameKind::BootstrapReady { terminal_id, .. } if terminal_id == self.tree => {
-                Absorbed::Document(self.ready()?)
-            }
-            FrameKind::ResourceOutput {
-                terminal_id,
-                seq,
-                bytes,
-                ..
-            } if terminal_id == self.tree => Absorbed::Document(self.document(seq, bytes.to_vec())),
-            FrameKind::ResourceClosed {
-                terminal_id: terminal,
-                ..
-            }
-            | FrameKind::Event {
-                terminal: Some(terminal),
-                event: AgentEvent::ResourceClosed { .. },
-                ..
-            } if terminal == self.tree => Absorbed::Closed,
-            FrameKind::Error {
-                request_id: Some(_),
-                message,
-                ..
-            } => return Err(TreeError::Refused(message)),
-            _ => Absorbed::Nothing,
-        })
-    }
 }
 
 #[cfg(test)]

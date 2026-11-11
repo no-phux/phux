@@ -7,8 +7,8 @@ frame and field and is generated from the codec, so it cannot be stale.
 
 If you are writing a client in Rust, use `phux-client-core` and
 `phux-client-runtime` rather than this. If you are writing one in another
-language, [`clients/phux-web`](../clients/phux-web) is a complete
-non-native implementation to read alongside.
+language, [`clients/phux-web`](../clients/phux-web) is a non-native
+Terminal client to read alongside.
 
 If you only need agent status or to wait on a screen, you don't need the protocol: use `phux agent list --json` or `phux wait --until/--regex/--idle`.
 
@@ -59,7 +59,8 @@ more, and never for a frame that settles a request.
 
 1. The client sends `HELLO` (`0x01`): its name, protocol
    `major.minor.patch`, and `ClientCapabilities` (color support, image and
-   keyboard protocols, which bootstrap profiles it can consume, compression).
+   keyboard protocols, which bootstrap profiles and
+   [resource kinds](./compatibility.md) it can consume, compression).
 2. The server checks the client's major against its own. Any minor or
    patch is admitted; another major gets `ERROR` with
    `VERSION_INCOMPATIBLE` and a close.
@@ -104,15 +105,15 @@ prints the running server's.
 ## Attach and output
 
 `ATTACH` (`0x02`) names a session or pane and the client's viewport. The
-server answers `ATTACHED` (`0x81`), then for each pane streams a bootstrap
-(`BOOTSTRAP_BEGIN`, `BOOTSTRAP_CHUNK`..., `BOOTSTRAP_READY`) that brings the
-client's replica up to the current screen, then `ATTACH_READY` (`0x83`).
-From there, `RESOURCE_OUTPUT` (`0x90`) frames carry each pane's bytes with
-a per-stream sequence number. For a terminal, the bytes are the PTY's VT
-output, and the client feeds them to its own emulator. `RESOURCE_CLOSED`
-ends a stream. `DETACH` (`0x03`) gets `DETACHED`.
+server answers `ATTACHED` (`0x81`), then streams a bootstrap
+(`BOOTSTRAP_BEGIN`, `BOOTSTRAP_CHUNK`..., `BOOTSTRAP_READY`) in its kind's
+codec for each Terminal and document, then `ATTACH_READY` (`0x83`). From
+there, `RESOURCE_OUTPUT` (`0x90`) frames carry each resource's payload with
+a per-stream sequence number: a Terminal's VT output for the client's own
+emulator, or a whole newer document. `RESOURCE_CLOSED` ends a stream.
+`DETACH` (`0x03`) gets `DETACHED`.
 
-Which bootstrap you get depends on the profile the server selected:
+A Terminal's bootstrap follows the selected profile:
 
 - **Native state**: a libghostty checkpoint, for clients that run
   libghostty themselves. Exact, and the only profile that supports history
@@ -121,9 +122,6 @@ Which bootstrap you get depends on the profile the server selected:
   raw PTY bytes. Works with any emulator.
 - **Synthesized VT, state sync**: the server keeps a per-client reference
   screen and sends deltas against it, acknowledged with `FRAME_ACK`.
-
-Native codecs are exact contracts, not version ranges; see
-[snapshot compatibility](./libghostty.md#snapshot-compatibility).
 
 A fresh successful `SPAWN_RESOURCE` subscribes its connection to the new
 Terminal, even without a session `ATTACH`: output and terminal-scoped
@@ -159,14 +157,12 @@ Normal reliable StateSync advances its server reference on emit: an ACK is
 not proof of a paint or application consumption, nor a lossy-delivery promise.
 
 Native history is a bounded, pull-based lease on immutable encoded snapshot
-storage, not durable scrollback. Encoding is eager; delivery is not. Follow the
-engine cursor and authenticate each page before requesting its successor.
-The final page must authenticate the engine's `FINISH`; no row-count guess
-or protocol cursor alone substitutes for it, and trailing bytes after
-`FINISH` are rejected.
+storage, not durable scrollback ([snapshot compatibility](./libghostty.md#snapshot-compatibility)).
+Follow the engine cursor and authenticate each page before requesting its
+successor; the final page must authenticate `FINISH` with no trailing bytes.
 A rejected page/request and an invalidated cursor are distinct outcomes;
 a history tombstone invalidates that history, not the live replica or input.
-Source pruning cannot invalidate the stored bytes. History decode failure
+Source pruning cannot invalidate the stored bytes, and history decode failure
 must not retire a healthy live generation.
 The [kernel](../crates/phux-client-core/src/session.rs), its
 [generation/ACK/history tests](../crates/phux-client-core/src/session/tests.rs)
@@ -189,7 +185,9 @@ Without the capability, use the single-stream path.
 
 ## Input
 
-Input is structured. `INPUT_KEY` (`0x10`) carries a key event in
+Input is per kind; a document takes `SEND_DOCUMENT_INPUT`
+([below](#commands-events-resources)). For a Terminal,
+`INPUT_KEY` (`0x10`) carries a key event in
 libghostty's vocabulary: action, physical key, modifiers, text,
 unshifted codepoint. `INPUT_MOUSE`, `INPUT_FOCUS`, `INPUT_PASTE`, and
 `VIEWPORT_RESIZE` (`0x20`) likewise. The server encodes them to bytes for
@@ -256,7 +254,7 @@ enable it. Older servers do not advertise the bit; clients check before
 sending. Reports remain schema 1, with optional `rss_bytes` and `alloc`
 JSON fields that old readers ignore.
 
-Panes are **resources** with a **kind**: `Terminal`, `AgentSession`,
+Every resource has a **kind**: `Terminal` (a pane), `AgentSession`,
 `AccessibilityTree`, `PixelSurface` or `Document` so far, each with its own
 methods and events. A client
 tolerates kinds it does not know. The kind catalog in `phux-protocol::kinds`
@@ -267,16 +265,15 @@ An `AccessibilityTree` (wire tag 2, gated on `features_ext.ACCESSIBILITY_TREE`)
 and a `PixelSurface` (wire tag 3, gated on `features_ext.PIXEL_SURFACE`)
 are replicated documents: a producer running in the parent Terminal
 replaces the whole document with the substrate's `PUBLISH_RESOURCE_STATE`
-(at most 4 MiB; one JSON document for a tree, one PNG or JPEG image (told apart by
-signature) for a surface,
-whose size is the surface's geometry), and the engine keeps the newest. A
-viewer's `ATTACH_RESOURCE` bootstraps it under the kind's codec
-(`AccessibilityTreeJsonV1`, `PixelSurfacePngV1`), `0 x 0`, with the newest
-document in the chunks and its sequence as `base_seq`; each later document
-arrives as one `RESOURCE_OUTPUT`. A viewer the broadcast laps is tombstoned
-(`OUTBOUND_GAP`) and recut from the newest document, so the only thing a
-slow viewer skips is intermediate documents. The stream takes no input, no
-acknowledgement and no history request.
+(at most 4 MiB; a JSON document for a tree, a PNG or JPEG told apart by
+signature for a surface, sized to the surface's geometry), and the engine
+keeps the newest. A viewer's `ATTACH_RESOURCE` bootstraps it under the
+kind's codec (`AccessibilityTreeJsonV1`, `PixelSurfacePngV1`), `0 x 0`,
+with the newest document in the chunks and its sequence as `base_seq`; each
+later document arrives as one `RESOURCE_OUTPUT`. A viewer the broadcast
+laps is tombstoned (`OUTBOUND_GAP`) and recut from the newest document, so
+a slow viewer skips only intermediate documents. The stream takes no
+input, acknowledgement or history request.
 
 A `Document` (wire tag 4, `features_ext.TYPED_DOCUMENT`) is one for any
 format: `SPAWN_RESOURCE` names its MIME content type in `provider` and an
@@ -285,15 +282,19 @@ carries the content type ahead of the document
 ([typed documents](./resource-kinds.md#typed-documents)).
 
 Input for a document goes to its producer, not into the stream:
-`SEND_DOCUMENT_INPUT` (command tag `0x48`) names a document resource and one
-typed intent (navigate to a URL, click at a point in the surface image's
-pixels, insert text, press a named key, or scroll). The server relays it,
+`SEND_DOCUMENT_INPUT` (command tag `0x48`) names a document and one typed
+intent (navigate to a URL, click at a point in the surface image's
+pixels, insert text, press a named key, scroll, or activate an accessibility
+node by its id). The server relays it,
 unread, as an unstamped `document_input` event (tag `0x20`) on the
 connection that spawned the document, and answers `OK` once queued;
 `NOT_PRODUCER` when that connection is gone, `OVERFLOW` when its mailbox is
 full. Nobody else sees the event and it is never journaled. Only the owner
 socket or a control grant reaches it; the class fields and the hub's stamp
 are in [resource kinds](./resource-kinds.md#authority).
+
+`MIRROR` (tag `0x4a`, `MIRRORS`) lists, starts or stops a host's screen
+mirrors ([picker](./applications.md#picking-a-screen-or-window)).
 
 `GET_METADATA` / `SET_METADATA` / `SUBSCRIBE_METADATA` (`0x50`-`0x54`)
 attach small keyed values to resources. Some keys are plain storage; some
@@ -302,10 +303,10 @@ are read by the server (`phux.agent/v1` is the agent record).
 `phux.tui.layout/v1` is a legacy layout adapter, not a competing source of
 membership or arrangement authority. See [organization](./organization.md).
 
-An `AgentSession` has an immutable, one-level parent that hosts agents;
-today that is a Terminal. Purging the
-parent closes its children atomically; closing a child never kills its
-parent. Process exit under Retain is not purge: see
+An `AgentSession` or document has an immutable, one-level parent that
+runs its producer; today a Terminal. Purging the parent closes its children
+atomically; closing a child never kills its parent. Process exit under
+Retain is not purge: see
 [activations and exit policy](./organization.md#activations-and-reconciliation).
 
 ### Complete terminal creation and discovery

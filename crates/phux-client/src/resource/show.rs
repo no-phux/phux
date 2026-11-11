@@ -17,6 +17,9 @@ use crate::attach::connection::Connection;
 use crate::selector::format_terminal_id;
 use crate::state::Degradation;
 
+mod durable;
+pub use durable::{show_key, show_key_on};
+
 /// `schema_version` of the `resource show --json` document.
 pub const SHOW_SCHEMA_VERSION: u32 = 1;
 

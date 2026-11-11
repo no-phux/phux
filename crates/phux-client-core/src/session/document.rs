@@ -17,8 +17,8 @@ impl<E: EngineDocumentAdapter> SessionKernel<E> {
         max_rows: usize,
     ) -> Result<EngineHistoryProjection, KernelError<E::Error>> {
         let replica = self
-            .terminals
-            .get_mut(terminal_id)
+            .lanes
+            .terminal_mut(terminal_id)
             .and_then(|state| state.published.as_mut())
             .ok_or_else(|| KernelError::UnknownTerminal(terminal_id.clone()))?;
         replica.history.reproject(width);
@@ -55,8 +55,8 @@ impl<E: EngineDocumentAdapter> SessionKernel<E> {
         point: DocumentPoint,
     ) -> Result<DocumentAnchorId, KernelError<E::Error>> {
         let replica = self
-            .terminals
-            .get_mut(terminal_id)
+            .lanes
+            .terminal_mut(terminal_id)
             .and_then(|state| state.published.as_mut())
             .ok_or_else(|| KernelError::UnknownTerminal(terminal_id.clone()))?;
         replica.history.ensure_anchor_capacity(1)?;
@@ -78,8 +78,8 @@ impl<E: EngineDocumentAdapter> SessionKernel<E> {
         space: DocumentSpace,
     ) -> Result<Option<DocumentPoint>, KernelError<E::Error>> {
         let replica = self
-            .terminals
-            .get(terminal_id)
+            .lanes
+            .terminal(terminal_id)
             .and_then(|state| state.published.as_ref())
             .ok_or_else(|| KernelError::UnknownTerminal(terminal_id.clone()))?;
         self.adapter
@@ -94,8 +94,8 @@ impl<E: EngineDocumentAdapter> SessionKernel<E> {
         anchor: DocumentAnchorId,
     ) -> Result<(), KernelError<E::Error>> {
         let replica = self
-            .terminals
-            .get_mut(terminal_id)
+            .lanes
+            .terminal_mut(terminal_id)
             .and_then(|state| state.published.as_mut())
             .ok_or_else(|| KernelError::UnknownTerminal(terminal_id.clone()))?;
         if self
@@ -118,8 +118,8 @@ impl<E: EngineDocumentAdapter> SessionKernel<E> {
         terminal_id: &ResourceId,
     ) -> Result<(), KernelError<E::Error>> {
         let replica = self
-            .terminals
-            .get_mut(terminal_id)
+            .lanes
+            .terminal_mut(terminal_id)
             .and_then(|state| state.published.as_mut())
             .ok_or_else(|| KernelError::UnknownTerminal(terminal_id.clone()))?;
         replica.history.follow_tail();
@@ -133,8 +133,8 @@ impl<E: EngineDocumentAdapter> SessionKernel<E> {
         anchor: DocumentAnchorId,
     ) -> Result<(), KernelError<E::Error>> {
         let replica = self
-            .terminals
-            .get_mut(terminal_id)
+            .lanes
+            .terminal_mut(terminal_id)
             .and_then(|state| state.published.as_mut())
             .ok_or_else(|| KernelError::UnknownTerminal(terminal_id.clone()))?;
         self.adapter
@@ -156,8 +156,8 @@ impl<E: EngineDocumentAdapter> SessionKernel<E> {
         max_matches: usize,
     ) -> Result<LoadedHistorySearch, KernelError<E::Error>> {
         let replica = self
-            .terminals
-            .get_mut(terminal_id)
+            .lanes
+            .terminal_mut(terminal_id)
             .and_then(|state| state.published.as_mut())
             .ok_or_else(|| KernelError::UnknownTerminal(terminal_id.clone()))?;
         let limit = max_matches.min(replica.history.remaining_anchor_capacity() / 2);
@@ -201,8 +201,8 @@ impl<E: EngineDocumentAdapter> SessionKernel<E> {
         selection: EngineDocumentSelection,
     ) -> Result<Option<String>, KernelError<E::Error>> {
         let replica = self
-            .terminals
-            .get(terminal_id)
+            .lanes
+            .terminal(terminal_id)
             .and_then(|state| state.published.as_ref())
             .ok_or_else(|| KernelError::UnknownTerminal(terminal_id.clone()))?;
         self.adapter
@@ -219,8 +219,8 @@ impl<E: EngineDocumentAdapter> SessionKernel<E> {
         max_bytes: usize,
     ) -> Result<crate::engine::BoundedSelectionText, KernelError<E::Error>> {
         let replica = self
-            .terminals
-            .get(terminal_id)
+            .lanes
+            .terminal(terminal_id)
             .and_then(|state| state.published.as_ref())
             .ok_or_else(|| KernelError::UnknownTerminal(terminal_id.clone()))?;
         self.adapter

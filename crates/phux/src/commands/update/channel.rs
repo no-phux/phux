@@ -21,6 +21,8 @@ pub(crate) enum ChannelArg {
     Stable,
     /// The moving prerelease of green `main`.
     Next,
+    /// The promoted long-term-support release, named by `channels/lts.json`.
+    Lts,
 }
 
 impl From<ChannelArg> for Channel {
@@ -28,6 +30,7 @@ impl From<ChannelArg> for Channel {
         match arg {
             ChannelArg::Stable => Self::Stable,
             ChannelArg::Next => Self::Next,
+            ChannelArg::Lts => Self::Lts,
         }
     }
 }
@@ -63,7 +66,7 @@ pub(crate) fn installed(install: &Install, version: Version) -> Build {
         .and_then(read_file)
         .unwrap_or_else(of_build)
     {
-        Channel::Stable => Build::Stable(version),
+        Channel::Stable | Channel::Lts => Build::Stable(version),
         Channel::Next => Build::Next(build_sha().unwrap_or_default().to_owned()),
     }
 }
@@ -88,7 +91,7 @@ pub(crate) fn display(version: &str, channel: Channel, sha: Option<&str>) -> Str
     match (channel, sha) {
         (Channel::Next, Some(sha)) => format!("{version}+next.{}", &sha[..sha.len().min(7)]),
         (Channel::Next, None) => format!("{version}+next"),
-        (Channel::Stable, _) => version.to_owned(),
+        (Channel::Stable | Channel::Lts, _) => version.to_owned(),
     }
 }
 
@@ -113,6 +116,8 @@ mod tests {
         assert_eq!(read_file(dir.path()), Some(Channel::Next));
         assert_eq!(resolve(None, &install), Channel::Next);
         assert_eq!(resolve(Some(Channel::Stable), &install), Channel::Stable);
+        persist(dir.path(), Channel::Lts).unwrap();
+        assert_eq!(resolve(None, &install), Channel::Lts);
     }
 
     #[test]

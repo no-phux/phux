@@ -169,3 +169,51 @@ pub(crate) fn state_sync_outcome(bytes: &[u8]) -> ConsumerAttachOutcome {
         }),
     }
 }
+
+/// Every kind's resume, with each pane rebuilt through `build` and never
+/// wired.
+pub(crate) fn resumes_with<B>(build: B) -> Vec<Box<dyn crate::runtime::apps::KindResume>>
+where
+    B: FnMut(
+            crate::resource::ResourceId,
+            &crate::upgrade::blob::PaneBlob,
+            phux_config::ScrollbackLimits,
+        )
+            -> Result<super::upgrade::RebuiltPane<()>, crate::state::upgrade_blob::RebuildError>
+        + 'static,
+{
+    let mut resumes = crate::runtime::apps::upgrade::resumes(&crate::state::SharedState::new());
+    let terminal = crate::runtime::apps::APP_KINDS
+        .iter()
+        .position(|kind| *kind == ResourceKind::Terminal)
+        .expect("the Terminal app is listed");
+    resumes[terminal] = Box::new(super::upgrade::TerminalResume::new(build));
+    resumes
+}
+
+/// Rebuild `blob` into `state` through every kind, panes rebuilt by
+/// `build` and never wired.
+pub(crate) fn rebuild_with<B>(
+    state: &mut crate::state::ServerState,
+    blob: &crate::upgrade::blob::StateBlob,
+    build: B,
+) -> Result<crate::state::upgrade_blob::RebuiltTree, crate::state::upgrade_blob::RebuildError>
+where
+    B: FnMut(
+            crate::resource::ResourceId,
+            &crate::upgrade::blob::PaneBlob,
+            phux_config::ScrollbackLimits,
+        )
+            -> Result<super::upgrade::RebuiltPane<()>, crate::state::upgrade_blob::RebuildError>
+        + 'static,
+{
+    crate::runtime::apps::upgrade::rebuild(state, blob, &mut resumes_with(build))
+}
+
+/// Rebuild `blob` into `state` through every kind, with unwired panes.
+pub(crate) fn rebuild_unwired(
+    state: &mut crate::state::ServerState,
+    blob: &crate::upgrade::blob::StateBlob,
+) -> Result<crate::state::upgrade_blob::RebuiltTree, crate::state::upgrade_blob::RebuildError> {
+    rebuild_with(state, blob, super::upgrade::unwired)
+}

@@ -257,6 +257,17 @@ impl ConnectionGrant {
 /// The principal name of a scoped grant minted with no credential id.
 pub const WORKLOAD_PRINCIPAL: &str = "workload";
 
+/// `principal` as records and logs spell it: `owner`, `system`, or the
+/// credential id (`sha256:...`, `delegated:...`).
+#[must_use]
+pub fn principal_name(principal: &PrincipalId) -> &str {
+    match principal {
+        PrincipalId::Owner => "owner",
+        PrincipalId::System => "system",
+        PrincipalId::Credential(id) => id,
+    }
+}
+
 /// Whether `selector` covers every resource of the session `group`.
 fn contains_session(selector: &Selector, group: GroupPoint) -> bool {
     matches!(selector, Selector::Global | Selector::HostLocal) || group.is_in(selector)

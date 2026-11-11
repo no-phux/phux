@@ -90,7 +90,7 @@ toml.workspace = true
 # readiness rather than on a blocking-pool thread (phux-l96p.4) -- it must not
 # set `O_NONBLOCK` on fd 0, whose open file description belongs to the parent
 # shell.
-rustix = { version = "1.1", default-features = false, features = ["std", "termios", "fs", "event", "alloc"] }
+rustix = { version = "1.1", default-features = false, features = ["std", "termios", "fs", "event", "alloc", "process"] }
 # Async I/O for the attach loop (phux-9gw.3). The workspace tokio dep enables
 # `net`, `io-util`, `signal`, `macros`, `rt`; the loop also needs `io-std`
 # for `tokio::io::stdout()` -- enabled here so headless consumers of

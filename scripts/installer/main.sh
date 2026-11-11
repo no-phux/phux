@@ -51,8 +51,8 @@ if [ "$rune" -eq 1 ]; then
 fi
 case "$channel" in
   latest) channel=stable ;;
-  stable | next) ;;
-  *) die "--channel must be stable, latest, or next" ;;
+  stable | next | lts) ;;
+  *) die "--channel must be stable, latest, next, or lts" ;;
 esac
 if [ -n "$pin" ]; then
   if [ "$channel" = next ]; then
@@ -60,7 +60,7 @@ if [ -n "$pin" ]; then
       || die "on the next channel, pin a build with --revision <40-character commit>"
   else
     [ "$pinned_flag" = --version ] && matches "$pin" "$SEMVER" \
-      || die "on the stable channel, pin a release with --version X.Y.Z"
+      || die "on the $channel channel, pin a release with --version X.Y.Z"
   fi
 fi
 [ -z "$pin_sha256" ] || { [ -n "$pin" ] && matches "$pin_sha256" '[0-9a-f]{64}'; } \

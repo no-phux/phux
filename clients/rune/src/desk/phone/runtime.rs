@@ -8,6 +8,7 @@ use rune::{Runtime, TouchPhase};
 use super::*;
 
 mod settings;
+mod sheets;
 
 fn fixture() -> (std::sync::Arc<Client>, Runtime<Desk>) {
     let (client, mut rt) = crate::grid::budget::input_fixture();
@@ -29,6 +30,50 @@ fn tap(rt: &mut Runtime<Desk>, key: &str, at: f64) {
     settle(rt);
     rt.touch(1, TouchPhase::Ended, x, y, at + 0.05);
     settle(rt);
+}
+
+/// A phone has no ⌘: a tap that lifts where it landed opens the URL under it,
+/// while a drag across the same URL selects and opens nothing. Driven as the
+/// pane's drag handler drives it, in grid points over a real frame.
+#[test]
+fn a_tap_on_a_url_opens_it_and_a_drag_across_it_does_not() {
+    let (_client, mut rt) =
+        crate::grid::budget::input_fixture_showing("\x1b[2J\x1b[Hsee https://phux.sh/docs now");
+    rt.state.phone = Some(Phone::default());
+    rt.state.prefs = Prefs::memory();
+    rt.set_viewport((393.0, 852.0), 2.0);
+    settle(&mut rt);
+    let id = rt
+        .state
+        .shown
+        .as_ref()
+        .expect("a terminal")
+        .resource
+        .clone();
+    let m = rt.state.metrics();
+    let cell = |col: f32| (m.cell_w * (col + 0.5), m.cell_h * 0.5);
+    let press = |rt: &mut Runtime<Desk>, from: (f32, f32), to: (f32, f32)| {
+        for (phase, (x, y)) in [(Phase::Down, from), (Phase::Move, to), (Phase::Up, to)] {
+            rt.update(|d, tx| {
+                d.press_link(&id, phase, x, y, false, tx);
+            });
+        }
+        settle(rt);
+        rt.take_url_requests()
+    };
+    let on_url = cell(8.0);
+    assert_eq!(press(&mut rt, on_url, on_url), ["https://phux.sh/docs"]);
+    assert!(
+        press(&mut rt, on_url, cell(24.0)).is_empty(),
+        "a drag selects"
+    );
+    assert!(
+        press(&mut rt, cell(1.0), cell(1.0)).is_empty(),
+        "plain text"
+    );
+    // Outside the phone form a plain press is a selection, as it always was.
+    rt.state.phone = None;
+    assert!(press(&mut rt, on_url, on_url).is_empty(), "desktop wants ⌘");
 }
 
 fn no_terminal_input(client: &Client) {

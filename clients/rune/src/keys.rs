@@ -8,6 +8,8 @@ use phux_protocol::input::key::{KeyAction, KeyEvent, ModSet, PhysicalKey};
 use rune::{Key, Mods, PhysicalKeyCode};
 
 mod commands;
+#[cfg(all(test, not(target_os = "macos")))]
+mod linux_tests;
 pub use commands::{COMMANDS, Command, ESSENTIALS, command};
 use commands::{Cap, Chord};
 
@@ -52,11 +54,21 @@ pub enum Shortcut {
     FindNext,
     FindPrevious,
     FindSelection,
+    /// A keyboard cursor over the pane, to select and copy with vi keys.
+    CopyMode,
     Inbox,
     /// The fleet as a galaxy: machines, their agents, and how they relate.
     Galaxy,
     /// The fleet as a reef: machines as reefs, agents as fish.
     Reef,
+    /// The fleet as football training: machines as squads, agents as players.
+    Pitch,
+    /// The fleet as a kitchen: machines as lines, agents as chefs.
+    Kitchen,
+    /// The fleet as a pit lane: machines as garages, agents as race cars.
+    PitLane,
+    /// The fleet as beehives: machines as comb frames, agents as bees.
+    Hive,
     Settings,
     /// The themes, previewed live as the highlight moves.
     ChangeTheme,
@@ -78,9 +90,13 @@ pub enum Shortcut {
     KeyboardShortcuts,
     /// The handful of keys worth learning first, with the full list one row away.
     EssentialShortcuts,
+    /// First-run onboarding, from the top.
+    GetStarted,
     SelectAll,
     PromptUp,
     PromptDown,
+    /// One pane, the terminal UI in it, and none of the window's chrome.
+    Bare,
 }
 
 impl Shortcut {
@@ -92,6 +108,10 @@ impl Shortcut {
             Self::Inbox
                 | Self::Galaxy
                 | Self::Reef
+                | Self::Pitch
+                | Self::Kitchen
+                | Self::PitLane
+                | Self::Hive
                 | Self::Settings
                 | Self::ChangeTheme
                 | Self::ZoomIn
@@ -250,7 +270,7 @@ pub fn shortcut(key: &Key, mods: Mods, physical: Option<PhysicalKeyCode>) -> Opt
     commands::action_of(Chord {
         cap,
         // Rune's `cmd` is Ctrl off macOS, which the table names as Ctrl.
-        command: if cfg!(target_os = "macos") {
+        command: if cfg!(any(target_os = "macos", target_os = "ios")) {
             mods.cmd
         } else {
             mods.logo
@@ -332,7 +352,7 @@ pub fn typed(
         }
         // Off macOS a Ctrl chord arrives as `Command`; it is terminal input
         // unless `shortcut` claimed it.
-        Key::Command(c) if !cfg!(target_os = "macos") => {
+        Key::Command(c) if !cfg!(any(target_os = "macos", target_os = "ios")) => {
             let (key, ch) = chord(physical, Some(base.unwrap_or(*c)))?;
             Some(Typed::Key(atom(key, set, Some(ch))))
         }
@@ -343,7 +363,7 @@ pub fn typed(
 /// macOS Option types layout characters (å, ∑), as Ghostty's default does,
 /// unless the person turned on Option as Meta; elsewhere Alt is Meta.
 const fn alt_is_meta(mods: Mods, option_as_meta: bool) -> bool {
-    mods.alt && (option_as_meta || !cfg!(target_os = "macos"))
+    mods.alt && (option_as_meta || !cfg!(any(target_os = "macos", target_os = "ios")))
 }
 
 #[cfg(test)]

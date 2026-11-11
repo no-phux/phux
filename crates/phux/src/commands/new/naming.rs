@@ -53,7 +53,7 @@ pub(super) fn report_invalid_session_name(
 
 /// The session names already on the server, for duplicate rejection and
 /// auto-suffixing. No server (or no answer) means none.
-pub(super) fn existing_session_names(
+pub(crate) fn existing_session_names(
     rt: &tokio::runtime::Runtime,
     target: &ServerTarget,
 ) -> Vec<String> {

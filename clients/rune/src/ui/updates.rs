@@ -1,6 +1,8 @@
 //! Updates on screen: a corner card that never takes the keyboard, the
 //! status-line pill that reopens it, and the section in settings.
 
+mod phux;
+
 use rune::{Color, El, TextStyle, Transition, col, el, row, text};
 
 use super::settings::{primary, secondary, section, toggle};
@@ -149,7 +151,11 @@ pub fn card(desk: &Desk, ink: &Ink, top: f32) -> Option<El> {
                     el().key("update-dismiss")
                         .cursor(rune::Cursor::Pointer)
                         .on_press(|d: &mut Desk| d.updater.dismiss())
-                        .child(text("✕").font(CAPTION).color(ink.dim)),
+                        .child(
+                            rune::icon(&super::icons::CLOSE, 12.0)
+                                .color(ink.dim)
+                                .a11y_hidden(),
+                        ),
                 ),
         )
         .child(lines(desk, ink, CAPTION))
@@ -175,14 +181,25 @@ pub fn pill(desk: &Desk, ink: &Ink) -> Option<El> {
     let updater = &desk.updater;
     let due = updater.action().is_some() || !matches!(updater.work, Work::Idle | Work::Checking);
     (due && !updater.card_open()).then(|| {
-        el().key("update-pill")
-            .cursor(rune::Cursor::Pointer)
+        super::pressable("update-pill", ink)
+            .h(20.0)
+            .px(8.0)
+            .radius(10.0)
+            .center()
+            .fill(ink.accent.alpha(0.16))
             .on_press(|d: &mut Desk| d.updater.reopen())
             .child(text("Update ready").font(CAPTION).color(ink.accent))
     })
 }
 
 pub fn settings(desk: &Desk, ink: &Ink) -> El {
+    if desk.native.is_some() {
+        return col().w_full().gap(8.0)
+            .child(section("Updates", ink))
+            .child(text(format!("Phux Rune {VERSION}")).font(primary(desk, LABEL)).color(ink.text))
+            .child(text("Native iOS builds update through their distribution channel. This app never installs a desktop binary or starts a local server.")
+                .font(secondary(desk, CAPTION)).color(ink.dim).wrap());
+    }
     let updater = &desk.updater;
     // The containing phone card already supplies its row gutter.
     let toggle_inset = if desk.phone.is_some() { 0.0 } else { 16.0 };
@@ -254,21 +271,7 @@ pub fn settings(desk: &Desk, ink: &Ink) -> El {
         )
         .px(toggle_inset),
     );
-    if updater.can_manage_phux() {
-        section = section.child(
-            toggle(
-                desk,
-                "set-update-phux",
-                "Update phux with Phux Rune",
-                "Installs the CLI and hands the live server off; sessions keep running.",
-                updater.manage_phux,
-                Desk::toggle_update_phux,
-                ink,
-            )
-            .px(toggle_inset),
-        );
-    }
-    section
+    section.child(phux::settings(desk, ink, toggle_inset))
 }
 
 /// Failures and compatibility warnings stay in view even when search hides

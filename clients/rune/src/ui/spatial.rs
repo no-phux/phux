@@ -16,14 +16,24 @@ const MAP_W: f32 = 96.0;
 const MAP_H: f32 = 64.0;
 const TOUCH: f32 = 44.0;
 
+fn controls_ink(desk: &Desk, ink: &Ink) -> Ink {
+    let ground = desk
+        .client
+        .as_ref()
+        .zip(desk.shown.as_ref())
+        .and_then(|(client, shown)| client.acquire_view(shown.view?))
+        .map_or(ink.bg, |frame| crate::grid::background(&frame));
+    super::phone::ground_ink(ground, ink.accent, desk.settings.theme)
+}
+
 pub fn view(desk: &Desk, phone: &Phone, ink: &Ink, area: El) -> El {
     let Some(shown) = desk.shown.as_ref() else {
         return area;
     };
-    let fallback = phux_client_core::layout::LayoutNode::Leaf(shown.terminal.clone());
+    let fallback = phux_client_core::layout::LayoutNode::Leaf(shown.resource.clone());
     let tree = phone.tree.as_ref().unwrap_or(&fallback);
     let all = spatial::rects(tree);
-    let Some((_, focus)) = all.iter().find(|(id, _)| id == &shown.terminal) else {
+    let Some((_, focus)) = all.iter().find(|(id, _)| id == &shown.resource) else {
         return area;
     };
     let content = canvas(desk, phone, &all, *focus, ink);
@@ -49,32 +59,30 @@ pub fn view(desk: &Desk, phone: &Phone, ink: &Ink, area: El) -> El {
             .h_full()
             .min_h(0.0)
             .child(viewport)
-            .child(toolbar(desk, all.len() > 1, ink)),
+            .child(toolbar(desk, all.len() > 1, &controls_ink(desk, ink))),
     );
     if desk.phone_picker_visible() {
-        stage = stage.child(picker(desk, &all, &shown.terminal, ink));
+        stage = stage.child(picker(desk, &all, &shown.resource, ink));
     }
     stage
 }
 
+/// Move and Panes, only when there is somewhere to go. A lone terminal
+/// keeps the whole stage: its finger scrolls it directly.
 fn toolbar(desk: &Desk, several: bool, ink: &Ink) -> El {
-    let terminal = desk
-        .shown
-        .as_ref()
-        .is_some_and(|s| !desk.is_document(&s.terminal));
-    if !several && !terminal {
+    if !several {
         return el().key("phone-navigation-toolbar").h(0.0);
     }
-    let mut tools = row()
+    let tools = row()
         .key("phone-navigation-toolbar")
         .w_full()
         .h(TOUCH)
         .min_h(TOUCH)
         .gap(2.0)
         .radius(TOUCH / 2.0)
-        .preserve_focus_on_press(true);
-    if several {
-        tools = tools.child(handle(ink)).child(
+        .preserve_focus_on_press(true)
+        .child(handle(ink))
+        .child(
             quiet_control(
                 "phone-pane-picker",
                 "Choose pane by name or direction",
@@ -82,12 +90,7 @@ fn toolbar(desk: &Desk, several: bool, ink: &Ink) -> El {
                 ink,
             )
             .on_press(Desk::phone_picker),
-        );
-    }
-    if terminal {
-        tools = tools.child(history(ink));
-    }
-    let tools = tools
+        )
         .continuous_corners()
         .gradient(ink.text.alpha(0.06), ink.text.alpha(0.02))
         .border_gradient(1.0, ink.text.alpha(0.16), ink.text.alpha(0.04));
@@ -121,7 +124,7 @@ fn canvas(desk: &Desk, phone: &Phone, all: &[(ResourceId, Rect)], focus: Rect, i
         })
         .motion(tok::motion::SNAPPY);
     for (id, rect) in all {
-        let focused = desk.shown.as_ref().is_some_and(|s| &s.terminal == id);
+        let focused = desk.shown.as_ref().is_some_and(|s| &s.resource == id);
         if fallback && !focused {
             continue;
         }
@@ -177,17 +180,6 @@ fn handle(ink: &Ink) -> El {
     .on_drag(|d: &mut Desk, drag, _| d.phone_navigate(drag, false))
 }
 
-fn history(ink: &Ink) -> El {
-    quiet_control(
-        "phone-history",
-        "Scroll focused pane: drag up or down",
-        "↕  Scroll",
-        ink,
-    )
-    .cursor(Cursor::Grab)
-    .on_drag(|d: &mut Desk, drag, _| d.phone_history(drag))
-}
-
 /// Inline top-bar tile, not an overlay over terminal text. It replaces the
 /// redundant More button only when this active group has several panes.
 pub(super) fn minimap(desk: &Desk, ink: &Ink) -> Option<El> {
@@ -196,7 +188,7 @@ pub(super) fn minimap(desk: &Desk, ink: &Ink) -> Option<El> {
     if all.len() < 2 {
         return None;
     }
-    let map = map(&all, &desk.shown.as_ref()?.terminal, ink);
+    let map = map(&all, &desk.shown.as_ref()?.resource, ink);
     Some(if desk.modal().is_some() {
         map.inert()
     } else {

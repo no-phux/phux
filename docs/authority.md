@@ -18,6 +18,14 @@ surface mirror display[:OUTPUT]`), or none. Plain `phux agent tree open`,
 CLASS` says otherwise. `phux ls --json`, `phux resource show --json` and MCP
 `phux_documents` report it as `control`.
 
+Only the owner socket opens a document that declares a class, `page`
+included: the class decides which viewers' `input@CLASS` grants reach its
+producer. A scoped grant opens a tree, surface or document with no class
+beside a Terminal it may bind (`CREATE` on its Group, `BIND` on it), as it
+opens an agent session, and only over the Unix socket or localhost, the
+connections that may publish to it. A delegated agent holds no `CREATE`,
+so it opens none.
+
 ## Watching
 
 Attaching to a window or display, its snapshots (`phux agent surface
@@ -68,12 +76,31 @@ relied on it, even when a broader grant remains.
 | `input@resource:KEY` | That one document, if it has a class |
 | `global`, `host`, `host:NAME`, `group`, `session`, `terminal` grants, or a grant on the parent pane | Nothing |
 
-A document with no class takes input only from the owner socket. A hub
+`?input@CLASS` (or `?input@CLASS:HOST`) holds each such input for approval
+instead ([Held actions](./approvals.md)). A document with no class takes input
+only from the owner socket. A hub
 authorizes input to a satellite's document with the `CLASS:HOST` forms and
 stamps the classes it allowed on the relayed command; the satellite, which
 knows the document's class, refuses one outside them, and checks the hub's
 own link credential as usual. Removing a control grant ends live
 connections that relied on it, even when a broader grant remains.
+
+## Relayed identity
+
+When a hub relays document input to a satellite, it also says who sent it:
+the sender's credential id on the hub (`owner` for the hub's own socket)
+and its client name. The satellite uses that for the control notice
+("phux: iPhone is controlling this display") and its input log line
+(`via hub sha256:HUB, on behalf of sha256:PHONE ("iPhone")`), instead of
+naming the hub.
+
+The satellite believes this only from its owner socket (an `ssh://` or
+uplink hub) or a credential holding every verb on `global`, the
+full-control ceiling `phux host add` pairs a hub with. From anything
+narrower, such as an automation key, it is ignored. The log always names
+the link's own credential next to the claim. The relayed identity is never
+used to authorize: the satellite still checks the hub's link credential,
+and the hub checks the sender's grants.
 
 ## Paired devices
 
@@ -90,16 +117,37 @@ details.
 The class is `SPAWN_RESOURCE` field 18 and `RESOURCE_STATE` field 6 (`page`
 1, `window` 2, `display` 3; absent is none), and the hub's input stamp is one
 trailing byte on `SEND_DOCUMENT_INPUT`, bit `1 << class` per class allowed.
-An older server ignores both, and an older satellite then judges the hub's
-link alone. Watching adds nothing to the wire.
+The relayed identity follows it as two strings (credential, then name, each
+at most 255 bytes); when the hub allowed every class, the byte is `0xff`.
+An older server ignores all of these, and an older satellite then judges
+the hub's link alone. Watching adds nothing to the wire.
 
 ## In Rune
 
 Rune's panes send input too. A surface whose document declares
 a class takes a click at the frame pixel under the pointer (contain-fit, so
-a press in the letterbox bars sends nothing), the wheel as `Scroll` in frame
+a press in the letterbox bars sends nothing), a press that moves 4 points or
+more as `Drag` from where it went down to where it came up (selecting text),
+the wheel as `Scroll` in frame
 pixels (positive `dy` scrolls the page down), and, while focused, printable
 keys as `Type` and Enter, Tab, Backspace, Escape and the arrows as `Key`;
 Cmd and Ctrl chords stay the app's. A document with no class, or one whose
 send was refused for a missing grant or producer, is a view-only mirror: it
 captures neither pointer nor keys, and the refusal is said once.
+
+## The clipboard
+
+A paste and a copy are input too, under the same grant. `Paste` puts text
+(up to 1 MiB) on the host clipboard (`pbcopy`, or `wl-copy` from
+wl-clipboard on Wayland; a missing tool is an error, never typing) and
+presses Cmd+V or Ctrl+V (Ctrl+Shift+V when Hyprland's focused window is a
+terminal such as kitty, foot, Alacritty, Ghostty or WezTerm; on Linux through
+the virtual keyboard, else `wtype` or `ydotool`); a page inserts the text
+instead. The server holds a paste up to 3 s for the producer's outcome, so a
+chord that could not be pressed is an error the viewer sees; an older
+producer never answers, and the paste then succeeds. `CopyClipboard`
+returns the host clipboard's text, at most 1 MiB, to the viewer that asked
+and no one else: the server holds the command open until the producer
+answers. From the CLI, `phux agent page paste|copy`; in Rune, Cmd+V and
+Cmd+C (Ctrl+Shift+V and Ctrl+Shift+C on Linux) over a surface pane; on a
+phone, the paste and copy buttons beside the keyboard.

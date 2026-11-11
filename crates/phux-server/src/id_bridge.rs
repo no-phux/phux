@@ -205,6 +205,16 @@ pub const fn core_kind(
     }
 }
 
+/// Whether a client whose `HELLO` advertised `caps` decodes `kind`: the
+/// server streams it no other (`docs/compatibility.md`).
+#[must_use]
+pub const fn client_decodes(
+    caps: &phux_protocol::caps::ClientCapabilities,
+    kind: phux_core::resource::ResourceKind,
+) -> bool {
+    caps.resource_kinds.contains(wire_kind(kind))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

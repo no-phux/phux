@@ -42,8 +42,8 @@ use std::time::Duration;
 use phux_dial::{CertTrust, QuicDial, WsDial, WsTarget};
 use phux_protocol::PROTOCOL_VERSION;
 use phux_protocol::caps::{
-    BootstrapLimits, BootstrapProfile, BootstrapProfileKind, ClientCapabilities,
-    ServerFeatureExtSet,
+    BootstrapCapabilities, BootstrapLimits, BootstrapProfile, BootstrapProfileKind,
+    ClientCapabilities, ServerFeatureExtSet,
 };
 use phux_protocol::ids::SatelliteHost;
 use phux_protocol::wire::frame::FrameKind;
@@ -208,12 +208,14 @@ impl HubLinks {
         cancel: &CancellationToken,
         ssh_program: std::ffi::OsString,
         adopter: super::adopt::SatelliteAdopter,
+        bootstrap: BootstrapCapabilities,
     ) -> Self {
         Self {
             statuses: HubLinkStatuses::default(),
             relays,
             cancel: cancel.clone(),
-            transport: NetLinkTransport::new(ssh_program, adopter.clone()),
+            transport: NetLinkTransport::new(ssh_program, adopter.clone())
+                .with_bootstrap(bootstrap),
             links: BTreeMap::new(),
             adopter,
         }

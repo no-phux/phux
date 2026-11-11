@@ -126,13 +126,19 @@ Scroll a pane's history with the mouse wheel. For keyboard selection, press <kbd
 
 | Keys                                          | Does                                                    |
 | --------------------------------------------- | ------------------------------------------------------- |
-| arrow keys                                    | move the cursor; at the edge, scroll                    |
+| <kbd>h</kbd> <kbd>j</kbd> <kbd>k</kbd> <kbd>l</kbd>, arrow keys | move the cursor; at the edge, scroll  |
+| <kbd>w</kbd> <kbd>b</kbd> <kbd>e</kbd>        | next word, word start, word end (within the line)       |
+| <kbd>0</kbd> <kbd>^</kbd> <kbd>$</kbd>        | line start, first text, last text                       |
+| <kbd>g</kbd>, <kbd>G</kbd>                    | oldest line, newest line                                |
+| <kbd>H</kbd> <kbd>M</kbd> <kbd>L</kbd>        | top, middle, bottom of the screen                       |
+| <kbd>C-u</kbd> <kbd>C-d</kbd>, <kbd>C-b</kbd> <kbd>C-f</kbd>, <kbd>PageUp</kbd> <kbd>PageDown</kbd> | scroll half a page, a page |
+| <kbd>v</kbd>, <kbd>V</kbd>, <kbd>C-v</kbd>    | select by character, line, or block; moving extends it  |
 | <kbd>Shift</kbd>+arrows                       | extend the selection                                    |
-| <kbd>PageUp</kbd>, <kbd>PageDown</kbd>        | scroll a page                                           |
 | <kbd>Tab</kbd>                                | switch between character, line, and block selection     |
 | <kbd>/</kbd>, <kbd>?</kbd>                    | search down, up; <kbd>n</kbd> and <kbd>N</kbd> repeat   |
-| <kbd>Enter</kbd>                              | copy the selection and leave                            |
-| <kbd>w</kbd>, <kbd>v</kbd>, <kbd>A</kbd>      | copy the word, the line, or everything, and leave       |
+| <kbd>y</kbd>, <kbd>Enter</kbd>                | copy the selection and leave; with nothing selected, <kbd>y</kbd> copies the word |
+| <kbd>Y</kbd>, <kbd>A</kbd>                    | copy the line, or everything, and leave                 |
+| <kbd>q</kbd>, <kbd>Esc</kbd>                  | leave                                                   |
 | <kbd>]</kbd>                                  | copy the last command's output and leave                |
 | <kbd>Esc</kbd>                                | leave without copying                                   |
 
@@ -158,10 +164,12 @@ When an agent is waiting on you, <kbd>C-a</kbd> <kbd>q</kbd> jumps to it and <kb
 
 ## Coming from tmux
 
-Already have tmux configured the way you like? Run
-`phux config import-tmux` to preview a native config layer and a report of
-what carries over. See [Bring your tmux keys to phux](./tmux-import.md)
-before applying it.
+Already have tmux, zellij, Ghostty or herdr configured the way you like?
+Run `phux migrate` and your coding agent moves your key bindings into your
+phux config, checks it and reports what carried over. See [Migrate your
+config with your agent](./migrate.md). Without an agent,
+`phux config import-tmux` previews a native config layer from a running
+tmux; see [Bring your tmux keys to phux](./tmux-import.md) before applying it.
 
 Most keys match tmux, with <kbd>C-a</kbd> where tmux uses <kbd>C-b</kbd>. What's different:
 
@@ -176,7 +184,7 @@ Most keys match tmux, with <kbd>C-a</kbd> where tmux uses <kbd>C-b</kbd>. What's
 | <kbd>(</kbd> <kbd>)</kbd> previous, next session | <kbd>P</kbd> <kbd>N</kbd>; <kbd>)</kbd> is the last session         |
 | <kbd>q</kbd> shows pane numbers             | <kbd>q</kbd> jumps to the next pane that needs you                     |
 | `send-prefix` sends the prefix through      | press the prefix twice: <kbd>C-a</kbd> <kbd>C-a</kbd> sends <kbd>C-a</kbd> to the program. Any key with no binding after the prefix goes to the program |
-| copy mode with vi or emacs keys             | arrow keys; <kbd>Enter</kbd> copies to the system clipboard            |
+| copy mode with vi or emacs keys             | vi keys and arrows; <kbd>y</kbd> or <kbd>Enter</kbd> copies to the system clipboard |
 | `tmux source-file ~/.tmux.conf`             | `phux config reload`                                                   |
 | `tmux capture-pane -p`                      | `phux snapshot`                                                        |
 | `tmux kill-server`                          | `phux kill --server`                                                   |

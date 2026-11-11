@@ -221,3 +221,7 @@ core-graphics = { version = "0.24", features = ["highsierra"] }
 # Rust (MIT) and runs on the tokio already here; the `atspi` crate is a layer
 # of generated proxies over it that a handful of method calls do not need.
 zbus = { version = "6.2", default-features = false, features = ["tokio"] }
+# `net`: the surface mirror's native Wayland input hands the compositor its
+# keymap fd over `SCM_RIGHTS` (`sendmsg`). The same rustix as above; a feature,
+# not a crate, so no row enters Cargo.lock.
+rustix = { version = "1.1", default-features = false, features = ["net"] }

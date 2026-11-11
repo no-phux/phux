@@ -6,6 +6,8 @@ use super::{
     sync_agent_meta_subscriptions, unexplained_unreachable_notices,
 };
 
+mod graph;
+
 impl super::SessionLoop {
     /// ADR-0040: keep every live pane's `phux.agent/v1` watch in step with the
     /// pane set.
@@ -128,7 +130,9 @@ impl super::SessionLoop {
                 if sessions_changed || self.snapshot_graph_changed(snapshot) {
                     self.peers.sweep_pending = true;
                 }
-                self.adopt_snapshot_graph(snapshot);
+                if self.adopt_snapshot_graph(snapshot) && !self.overlays.is_active() {
+                    repaint.raise_full();
+                }
                 self.peers.chrome_dirty = true;
                 self.session_picker_dirty = true;
                 &self.peers.hosts
@@ -164,60 +168,6 @@ impl super::SessionLoop {
             || (!snapshot.resources.is_empty() && self.peers.resources != snapshot.resources)
     }
 
-    /// Cache windows/resources from a snapshot when it actually carries them.
-    pub(super) fn adopt_snapshot_graph(
-        &mut self,
-        snapshot: &phux_protocol::wire::info::SessionSnapshot,
-    ) {
-        if !snapshot.windows.is_empty() {
-            self.peers.windows.clone_from(&snapshot.windows);
-        }
-        if !snapshot.resources.is_empty() {
-            self.peers.resources.clone_from(&snapshot.resources);
-            self.refresh_members();
-        }
-        if let Some(info) = snapshot
-            .sessions
-            .iter()
-            .find(|session| Some(session.id) == self.peers.focused_session)
-        {
-            self.mirror.lifetime = crate::attach::session_mirror::session_lifetime(info);
-        }
-    }
-
-    /// Recompute the attached session's members from the cached graph.
-    pub(super) fn refresh_members(&mut self) {
-        let Some(session) = self.peers.focused_session else {
-            return;
-        };
-        self.mirror.members = crate::attach::sidebar_zones::session_terminal_ids(
-            &self.peers.resources,
-            &self.peers.windows,
-            session,
-        )
-        .into_iter()
-        .collect();
-    }
-
-    /// Fold windows/resources carried on an ATTACHED outcome.
-    pub(super) fn fold_inventory(
-        &mut self,
-        inventory: Option<(
-            Vec<phux_protocol::wire::info::WindowInfo>,
-            Vec<phux_protocol::wire::info::ResourceInfo>,
-        )>,
-    ) {
-        let Some((windows, resources)) = inventory else {
-            return;
-        };
-        if !windows.is_empty() {
-            self.peers.windows = windows;
-        }
-        if !resources.is_empty() {
-            self.peers.resources = resources;
-        }
-    }
-
     /// The `GET_STATE` barrier after a local rename: the snapshot is
     /// authoritative, so a refused write leaves the current name in place.
     pub(super) fn confirm_session_rename(
@@ -231,7 +181,9 @@ impl super::SessionLoop {
                     return;
                 };
                 self.adopt_listed_sessions(&snapshot.sessions);
-                self.adopt_snapshot_graph(snapshot);
+                if self.adopt_snapshot_graph(snapshot) && !self.overlays.is_active() {
+                    repaint.raise_full();
+                }
                 if let Some(id) = pending.session_id.or(self.peers.focused_session) {
                     let roster: Vec<_> = snapshot
                         .sessions

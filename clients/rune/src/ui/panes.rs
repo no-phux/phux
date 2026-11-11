@@ -40,11 +40,66 @@ pub fn view(desk: &Desk, ink: &Ink, cx: &mut Cx<Desk>) -> El {
         return super::spatial::view(desk, phone, ink, area);
     }
     let several = matches!(tree, LayoutNode::Split { .. });
-    area.child(node(desk, &tree, &mut Vec::new(), several, ink))
+    let floor = pane_floor(desk, &tree);
+    area.child(node(desk, &tree, &mut Vec::new(), several, floor, ink))
         .children(perf::hud(ink.dim))
 }
 
-fn node(desk: &Desk, tree: &LayoutNode, path: &mut SplitPath, several: bool, ink: &Ink) -> El {
+/// The fewest cells a pane is squeezed to while its window has room: a
+/// prompt and a short command. Deep splits halve a pane at every level, so
+/// without a floor the eighth split of a spiral draws one or two columns.
+const MIN_CELLS: [f32; 2] = [20.0, 4.0];
+
+/// The least room `tree` takes along each axis when every pane has `leaf`.
+fn least(tree: &LayoutNode, leaf: [f32; 2]) -> [f32; 2] {
+    match tree {
+        LayoutNode::Leaf(_) => leaf,
+        LayoutNode::Split {
+            dir, left, right, ..
+        } => {
+            let (a, b) = (least(left, leaf), least(right, leaf));
+            if *dir == SplitDir::Horizontal {
+                [a[0] + b[0] + DIVIDER, a[1].max(b[1])]
+            } else {
+                [a[0].max(b[0]), a[1] + b[1] + DIVIDER]
+            }
+        }
+    }
+}
+
+/// Each pane's floor in points: [`MIN_CELLS`] and its card's padding,
+/// shrunk on an axis where the whole tree couldn't keep it, so the split
+/// gives way before it ever overflows its window.
+pub(super) fn pane_floor(desk: &Desk, tree: &LayoutNode) -> [f32; 2] {
+    let Some(area) = desk.split_area() else {
+        return [0.0; 2];
+    };
+    let metrics = desk.metrics();
+    let leaf = [
+        MIN_CELLS[0] * metrics.cell_w + 2.0 * PAD,
+        MIN_CELLS[1] * metrics.cell_h + 2.0 * PAD,
+    ];
+    let (gutters, full) = (least(tree, [0.0; 2]), least(tree, leaf));
+    let fit = |axis: usize| {
+        let room = area[axis] - gutters[axis];
+        let need = full[axis] - gutters[axis];
+        if need > 0.0 {
+            (room / need).clamp(0.0, 1.0)
+        } else {
+            1.0
+        }
+    };
+    [leaf[0] * fit(0), leaf[1] * fit(1)]
+}
+
+fn node(
+    desk: &Desk,
+    tree: &LayoutNode,
+    path: &mut SplitPath,
+    several: bool,
+    floor: [f32; 2],
+    ink: &Ink,
+) -> El {
     let (dir, ratio, left, right) = match tree {
         LayoutNode::Leaf(id) => return pane(desk, id, several, ink),
         LayoutNode::Split {
@@ -57,12 +112,17 @@ fn node(desk: &Desk, tree: &LayoutNode, path: &mut SplitPath, several: bool, ink
     let horizontal = dir == SplitDir::Horizontal;
     let here = path.clone();
     path.push(false);
-    let first = node(desk, left, path, several, ink);
+    let first = node(desk, left, path, several, floor, ink);
     path.pop();
     path.push(true);
-    let second = node(desk, right, path, several, ink);
+    let second = node(desk, right, path, several, floor, ink);
     path.pop();
-    let share = |el: El, grow: f32| el.grow(grow.max(0.01)).min_w(0.0).min_h(0.0);
+    // Each side keeps its share unless that would squeeze a pane in it under
+    // the floor; then the other side gives up the difference.
+    let share = |el: El, grow: f32, side: &LayoutNode| {
+        let [w, h] = least(side, floor);
+        el.grow(grow.max(0.01)).min_w(w).min_h(h)
+    };
     let container = if horizontal { row() } else { col() };
     let measured = here.clone();
     container
@@ -73,9 +133,13 @@ fn node(desk: &Desk, tree: &LayoutNode, path: &mut SplitPath, several: bool, ink
         .h_full()
         .min_w(0.0)
         .min_h(0.0)
-        .child(share(el().w_full().h_full().child(first), ratio))
+        .child(share(el().w_full().h_full().child(first), ratio, left))
         .child(divider(here, horizontal, ratio, ink))
-        .child(share(el().w_full().h_full().child(second), 1.0 - ratio))
+        .child(share(
+            el().w_full().h_full().child(second),
+            1.0 - ratio,
+            right,
+        ))
 }
 
 /// A divider: the clear gutter between two cards, with a grip that shows
@@ -116,15 +180,16 @@ fn divider(path: SplitPath, horizontal: bool, ratio: f32, ink: &Ink) -> El {
         })
         .child(
             grip.radius(GRIP.0 / 2.0)
-                .fill(ink.accent)
+                .fill(ink.host)
                 .group_opacity(0.0, 0.85)
                 .inert(),
         )
 }
 
-/// How a card is lit: the keyboard's, among several, glows in the accent.
+/// How a card is lit: the keyboard's, among several, glows in the window's
+/// machine colour.
 #[derive(Clone, Copy, PartialEq, Eq)]
-enum Lit {
+pub(super) enum Lit {
     Resting,
     Focused,
 }
@@ -132,10 +197,10 @@ enum Lit {
 /// A floating glass card around `content`: rounded, lifted off the window by
 /// its shadow, and edged with a top-lit hairline rim. `content` is clipped to
 /// the corners; the rim draws over it and never takes the pointer.
-fn card(content: El, ground: Color, lit: Lit, ink: &Ink) -> El {
+pub(super) fn card(content: El, ground: Color, lit: Lit, ink: &Ink) -> El {
     let (top, bottom) = match lit {
         Lit::Resting => (ink.text.alpha(0.16), ink.text.alpha(0.05)),
-        Lit::Focused => (ink.accent.alpha(0.8), ink.accent.alpha(0.35)),
+        Lit::Focused => (ink.host.alpha(0.8), ink.host.alpha(0.35)),
     };
     let lifted = el()
         .w_full()
@@ -147,7 +212,7 @@ fn card(content: El, ground: Color, lit: Lit, ink: &Ink) -> El {
         .shadow(10.0, 30.0, ink.shade);
     let lifted = match lit {
         Lit::Resting => lifted,
-        Lit::Focused => lifted.shadow(0.0, 22.0, ink.accent.alpha(0.22)),
+        Lit::Focused => lifted.shadow(0.0, 22.0, ink.host.alpha(0.22)),
     };
     lifted
         .child(
@@ -177,7 +242,7 @@ fn float(id: &ResourceId, card: El) -> El {
 }
 
 pub(super) fn pane(desk: &Desk, id: &ResourceId, several: bool, ink: &Ink) -> El {
-    let focused = desk.shown.as_ref().is_some_and(|s| &s.terminal == id);
+    let focused = desk.shown.as_ref().is_some_and(|s| &s.resource == id);
     if desk.is_document(id) {
         let lit = if focused && several {
             Lit::Focused
@@ -193,7 +258,7 @@ pub(super) fn pane(desk: &Desk, id: &ResourceId, several: bool, ink: &Ink) -> El
 }
 
 fn terminal_pane(desk: &Desk, id: &ResourceId, several: bool, ink: &Ink) -> El {
-    let focused = desk.shown.as_ref().is_some_and(|s| &s.terminal == id);
+    let focused = desk.shown.as_ref().is_some_and(|s| &s.resource == id);
     let view = if focused {
         desk.shown.as_ref().and_then(|s| s.view)
     } else {
@@ -290,7 +355,7 @@ fn terminal_layer(
 
 /// Only terminal cards install terminal mouse, drop, and history handlers.
 fn terminal_input(host: El, desk: &Desk, id: &ResourceId) -> El {
-    if desk.phone.is_some() && !desk.shown.as_ref().is_some_and(|s| &s.terminal == id) {
+    if desk.phone.is_some() && !desk.shown.as_ref().is_some_and(|s| &s.resource == id) {
         return host.inert();
     }
     let (wheel, press, moved, left, dropped, menu) = (
@@ -339,9 +404,24 @@ fn terminal_input(host: El, desk: &Desk, id: &ResourceId) -> El {
     .on_drag(move |d: &mut Desk, drag, tx| {
         // Drag points include the padding; the grid starts inside it.
         let (x, y, mods) = (drag.x - PAD, drag.y - PAD, tx.mods());
+        // A phone's finger scrolls, holds to select and taps (`phone/touch.rs`).
+        if d.phone.is_some() && tx.button() == PointerButton::Primary {
+            let step = Press {
+                phase: drag.phase,
+                x,
+                y,
+                clicks: drag.clicks,
+                mods,
+                button: PointerButton::Primary,
+            };
+            let travel = [drag.dx, drag.dy];
+            return d.phone_touch(&press, &step, travel, drag.cancelled(), tx);
+        }
         // Only the primary button opens links; the rest are the program's.
         let cmd = mods.cmd && tx.button() == PointerButton::Primary;
-        if !d.press_link(&press, drag.phase, x, y, cmd, tx) {
+        // A phone opens links by its finger's tap alone: any other button
+        // there is the program's, press and release both.
+        if d.phone.is_some() || !d.press_link(&press, drag.phase, x, y, cmd, tx) {
             let step = Press {
                 phase: drag.phase,
                 x,
@@ -356,4 +436,37 @@ fn terminal_input(host: El, desk: &Desk, id: &ResourceId) -> El {
             }
         }
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn leaf(n: u32) -> LayoutNode {
+        LayoutNode::Leaf(ResourceId::local(n))
+    }
+
+    fn split(dir: SplitDir, left: LayoutNode, right: LayoutNode) -> LayoutNode {
+        LayoutNode::Split {
+            dir,
+            ratio: 0.5,
+            left: Box::new(left),
+            right: Box::new(right),
+        }
+    }
+
+    #[test]
+    fn a_split_needs_both_sides_and_its_gutter() {
+        // [1 | [2 / 3]]: two panes across, two stacked on the right.
+        let tree = split(
+            SplitDir::Horizontal,
+            leaf(1),
+            split(SplitDir::Vertical, leaf(2), leaf(3)),
+        );
+        assert_eq!(
+            least(&tree, [100.0, 40.0]),
+            [200.0 + DIVIDER, 80.0 + DIVIDER]
+        );
+        assert_eq!(least(&tree, [0.0; 2]), [DIVIDER, DIVIDER], "gutters alone");
+    }
 }

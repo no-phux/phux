@@ -15,10 +15,10 @@ use crate::creature;
 use crate::desk::Desk;
 use crate::reef::{Mood, Pt, Reef, TILE};
 
-mod drift;
+pub(super) mod drift;
 mod fish;
 mod forms;
-mod pen;
+pub(super) mod pen;
 mod scene;
 
 use pen::Pen;
@@ -31,6 +31,8 @@ pub(super) struct Label {
     /// The amber count a buoy shows of agents needing you.
     pub badge: Option<usize>,
     pub amber: bool,
+    /// A buoy's machine, whose colour leads the pill.
+    pub host: Option<String>,
 }
 
 const AMBER: [f32; 3] = [255.0, 181.0, 71.0];
@@ -182,7 +184,7 @@ fn caustics(desk: &Desk, r: &Reef) -> Vec<El> {
 }
 
 /// A label pill centred on `at`, kept inside the view.
-fn pill(l: &Label, at: Pt, w: f32) -> El {
+pub(super) fn pill(l: &Label, at: Pt, w: f32) -> El {
     // ponytail: an estimated width keeps a pill inside the view; measure the
     // text if pills ever clip at the edges.
     let est =
@@ -200,6 +202,7 @@ fn pill(l: &Label, at: Pt, w: f32) -> El {
             rgba([228.0, 245.0, 247.0], 1.0),
         )
     };
+    let host = (l.host.as_deref()).map(|host| crate::host_color::dot(host, 7.0, fill.alpha(1.0)));
     row()
         .absolute(x - 160.0, at[1] - 9.5)
         .w(320.0)
@@ -212,6 +215,7 @@ fn pill(l: &Label, at: Pt, w: f32) -> El {
                 .radius(9.5)
                 .items_center()
                 .fill(fill)
+                .children(host)
                 .child(text(l.text.clone()).font(CAPTION).color(ink))
                 .children(l.badge.map(|n| {
                     el().size(14.0, 14.0)
@@ -296,7 +300,7 @@ fn readout(r: &Reef, waiting: usize, p: &Ink) -> El {
         }))
         .children(picked)
         .child(overlay::icon_button(
-            "✕",
+            &super::icons::CLOSE,
             "Close",
             "reef-close",
             p,

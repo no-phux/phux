@@ -189,7 +189,7 @@ pub enum ScreenReply {
     },
 }
 
-pub use phux_resource::handoff::{ProcessHandoff, UpgradeHandleRequest};
+pub use crate::handoff::{ProcessHandoff, UpgradeHandleRequest};
 
 /// Request the pane's live cwd from the kernel.
 ///
@@ -283,12 +283,6 @@ impl phux_resource::ResourceOps for TerminalHandle {
                 resync_for: None,
             })
             .is_ok()
-    }
-
-    fn upgrade_sender(
-        &self,
-    ) -> Option<tokio::sync::mpsc::Sender<phux_resource::handoff::UpgradeHandleRequest>> {
-        Some(self.upgrade.clone())
     }
 
     fn lease_changed(&self, change: phux_resource::LeaseChange) -> phux_resource::Delivery {

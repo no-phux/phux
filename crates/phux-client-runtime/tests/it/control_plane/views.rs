@@ -90,6 +90,31 @@ fn inventory(plane: &mut ControlPlane, snapshot: SessionSnapshot) -> Vec<Event> 
     plane.take_events()
 }
 
+/// A restarted server's first listing omits what the old one listed, then a
+/// relaunched pane takes the recycled id. That pane must show.
+#[test]
+fn a_new_incarnation_can_list_an_id_its_predecessor_listed() {
+    let mut plane = ControlPlane::new(ControlOptions::default());
+    plane.connection_opened();
+    let _ = plane.take_outbound();
+    plane.feed(hello_ok(PROTOCOL_VERSION.patch)).unwrap();
+    inventory(&mut plane, with_terminals(&[terminal()]));
+
+    plane.connection_lost(None);
+    plane.connection_opened();
+    let _ = plane.take_outbound();
+    let mut hello = hello_ok(PROTOCOL_VERSION.patch);
+    if let FrameKind::HelloOk { server_id, .. } = &mut hello {
+        server_id.fill(0xCD);
+    }
+    plane.feed(hello).unwrap();
+    inventory(&mut plane, with_terminals(&[]));
+    inventory(&mut plane, with_terminals(&[terminal()]));
+
+    let topology = plane.topology().unwrap();
+    assert!(topology.panes.iter().any(|p| p.terminal_id == terminal()));
+}
+
 #[test]
 fn a_narrower_inventory_hides_an_observed_pane_without_closing_it() {
     let (mut plane, attach_id) = negotiated();

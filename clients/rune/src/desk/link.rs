@@ -10,7 +10,6 @@ use std::sync::mpsc::{Receiver, Sender, channel};
 use std::time::{Duration, Instant};
 
 use phux_client_runtime::control::Status;
-use phux_client_runtime::reconnect::is_fatal_refusal_detail;
 use phux_client_runtime::{Client, Target};
 use phux_protocol::ids::SessionKey;
 use rune::Tx;
@@ -19,6 +18,8 @@ use super::{Desk, NoticeKind, sessions};
 use crate::launch::Resolved;
 use crate::machines::LOCAL;
 
+mod replacement;
+mod resume;
 mod standing;
 
 pub use standing::{Banner, Standing};
@@ -81,6 +82,8 @@ pub struct Link {
     /// The local server was just handed off: until then, a protocol refusal
     /// may be the old one on its way out.
     handoff_until: Option<Instant>,
+    /// When typing last probed the link, on the app clock.
+    nudged: Option<f64>,
 }
 
 impl Default for Link {
@@ -104,6 +107,7 @@ impl Default for Link {
             moved: None,
             server: 0,
             handoff_until: None,
+            nudged: None,
         }
     }
 }
@@ -158,6 +162,11 @@ impl Desk {
     /// the updater without it.
     pub fn listen(&mut self, waker: rune::Waker) {
         self.resources.images = Some(rune::ImageCache::new(waker.clone()));
+        if self.native.is_some() {
+            self.watch(waker);
+            self.dial();
+            return;
+        }
         self.machines.listen(waker.clone());
         crate::theme::watch_omarchy(waker.clone());
         self.watch(waker);
@@ -183,6 +192,9 @@ impl Desk {
     /// this computer's server is found on a worker first.
     pub(super) fn dial(&mut self) {
         self.error = None;
+        if let Some(target) = self.native.as_ref().map(|n| n.target.clone()) {
+            return self.connect(target);
+        }
         let Some(machine) = self.machines.current.clone() else {
             return self.dial_local();
         };
@@ -255,6 +267,9 @@ impl Desk {
 
     /// Start the updater once it knows which CLI and server it manages.
     pub(super) fn start_updater(&mut self) {
+        if self.native.is_some() {
+            return;
+        }
         if std::mem::replace(&mut self.link.updater_started, true) {
             return;
         }
@@ -282,6 +297,7 @@ impl Desk {
         // A failed search says nothing about where the server is.
         if let Ok(socket) = &found.socket {
             self.updater.target = found.phux.clone().zip(Some(socket.clone()));
+            crate::standing::follow(found.phux.as_ref(), socket);
             self.launch.socket = found.socket.clone();
         }
         self.updater
@@ -352,66 +368,14 @@ impl Desk {
         self.dial();
     }
 
-    /// Take down what the old connection knew; what the window itself holds
-    /// stays, so a background retry doesn't close the sheet you're in.
-    fn renew(&mut self) {
-        let mut next = Desk::open(&self.launch, self.machines.current.clone());
-        self.carry_into(&mut next);
-        std::mem::swap(&mut next.inbox, &mut self.inbox);
-        std::mem::swap(&mut next.activities, &mut self.activities);
-        std::mem::swap(&mut next.palette_query, &mut self.palette_query);
-        next.pending = self.pending.take();
-        next.notice = self.notice.take();
-        next.palette_open = self.palette_open;
-        next.palette_picked = self.palette_picked;
-        // A path search belongs to the old connection.
-        next.palette_mode = match self.palette_mode {
-            crate::palette::Mode::Paths => crate::palette::Mode::All,
-            mode => mode,
-        };
-        next.theme_before = self.theme_before;
-        next.settings.theme = self.settings.theme;
-        next.settings_open = self.settings_open;
-        std::mem::swap(&mut next.settings_ui, &mut self.settings_ui);
-        next.phone = self.phone.take();
-        next.sidebar_open = self.sidebar_open;
-        next.wanted = self
-            .shown
-            .as_ref()
-            .filter(|s| s.view.is_some())
-            .map(|shown| (shown.terminal.clone(), Instant::now()));
-        self.carry_document_focus(&mut next);
-        *self = next;
-    }
-
-    /// What survives any replacement of this window's connection.
-    pub(super) fn carry_into(&mut self, next: &mut Desk) {
-        std::mem::swap(&mut next.updater, &mut self.updater);
-        std::mem::swap(&mut next.machines, &mut self.machines);
-        std::mem::swap(&mut next.link, &mut self.link);
-        std::mem::swap(&mut next.pointer.failed, &mut self.pointer.failed);
-        next.generation = self.generation + 1;
-        next.clock = self.clock;
-        next.focused = self.focused;
-        next.waker = self.waker.clone();
-        self.resources.carry_images(&mut next.resources);
-        next.resources.images = next.resources.images.take().or_else(|| {
-            next.waker
-                .as_ref()
-                .map(|waker| rune::ImageCache::new(waker.clone()))
-        });
-    }
-
     /// Whether the connection is working: anything else waits on this module.
-    fn link_is_up(&self) -> bool {
+    pub(super) fn link_is_up(&self) -> bool {
         self.client.is_some() && self.status == Status::Attached && self.link.ended.is_none()
     }
 
     /// Retrying can't change this answer: someone has to act first.
     fn stuck(&self) -> bool {
-        self.link.incompatible.is_some()
-            || self.status == Status::Closed
-            || self.error.as_deref().is_some_and(is_fatal_refusal_detail)
+        self.link.incompatible.is_some() || self.status == Status::Closed || self.unpaired()
     }
 
     /// A connection opened. Only a server's first replays news: after that
@@ -421,7 +385,7 @@ impl Desk {
             self.inbox.relist = true;
         } else {
             self.inbox.alerts.connected();
-            self.offer_tour();
+            self.first_run();
         }
     }
 
@@ -532,6 +496,3 @@ pub(super) fn seeded(client: &Client, unavailable: Option<u64>) -> bool {
 
 #[cfg(test)]
 mod tests;
-
-#[cfg(test)]
-mod settings_reconnect;

@@ -38,7 +38,7 @@ pub use enforce::{
     resolve_attach_session,
 };
 pub use engine::{GrantFuture, PolicyEngine, PolicyError, ScopedPolicy};
-pub use grant::{Authority, ConnectionGrant, GroupPoint, WORKLOAD_PRINCIPAL};
+pub use grant::{Authority, ConnectionGrant, GroupPoint, WORKLOAD_PRINCIPAL, principal_name};
 pub use hold::Admission;
 pub use posture::{PolicyPosture, PostureError, PostureInputs, ResumeFallback};
 
@@ -55,13 +55,20 @@ pub(crate) fn batch_terminals(
     }
 }
 
-/// Every Terminal a held command names (ADR-0128).
+/// Every Terminal (or document, for held document input) a held command
+/// names (ADR-0128).
 pub(crate) fn held_terminals(
     command: &phux_protocol::wire::frame::Command,
 ) -> impl Iterator<Item = &phux_protocol::ids::ResourceId> {
+    use phux_protocol::wire::frame::Command;
+    let document = match command {
+        Command::SendDocumentInput { terminal_id, .. } => Some(terminal_id),
+        _ => None,
+    };
     batch_terminals(command)
         .iter()
         .chain(enforce::named_terminal(Request::Command(command)))
+        .chain(document)
 }
 
 /// The tracing target every authorization decision logs under.

@@ -31,10 +31,12 @@ usage() {
 Usage: curl -fsSL https://phux.sh/install | sh -s -- [options]
 
 Installs phux and phux-mcp. With --rune, installs Phux Rune, the desktop
-app (Apple silicon macOS 14+, or x86_64 GNU/Linux), and the CLI only when
-none is found.
+app (Apple silicon macOS 14+, or x86_64 or arm64 GNU/Linux), and the CLI
+only when none is found.
 
-  --channel <stable|latest|next>  Release channel (default: stable, or $PHUX_CHANNEL).
+  --channel <stable|latest|next|lts>
+                                  Release channel (default: stable, or $PHUX_CHANNEL).
+                                  lts is the promoted long-term-support release.
   --version <X.Y.Z>               Pin a stable release (vX.Y.Z also accepted).
   --revision <sha>                Pin a next build by its 40-character commit.
   --sha256 <hex>                  Expected digest of a pinned artifact, instead of its sidecar.
@@ -51,8 +53,8 @@ none is found.
   --dry-run                       Print what would be downloaded and where it would go.
   --help                          Show this help.
 
-With minisign on PATH, the release checksum's signature is verified against
-the phux release keys. Set PHUX_REQUIRE_SIGNATURE=1 to refuse to install
+With minisign on PATH, the release checksum's signature, and the channel
+manifest's (required on lts), are verified against the phux release keys. Set PHUX_REQUIRE_SIGNATURE=1 to refuse to install
 without that check (0, the default, falls back to the SHA-256 alone).
 EOF
 }
@@ -214,6 +216,21 @@ load_manifest() {
   [ "$(manifest_value "$2" schema_version)" = 1 ] \
     || die "the $1 release manifest has an unsupported schema; update this installer"
   [ "$(manifest_value "$2" channel)" = "$1" ] || die "the $1 release manifest names another channel"
+  verify_manifest_signature "$1" "${2}.json"
+}
+
+# With minisign on PATH, CHANNEL's manifest RAW must carry a release-key
+# signature (channels/CHANNEL.json.minisig). lts refuses without one; stable
+# and next only warn, since their older manifests were published unsigned.
+# Without minisign, verify_signature applies PHUX_REQUIRE_SIGNATURE later.
+verify_manifest_signature() {
+  command -v minisign >/dev/null 2>&1 || return 0
+  if download "${RELEASES}/channels/$1.json.minisig" "${2}.minisig" 2>/dev/null \
+    && signed_by_release_key "$2" "${2}.minisig"; then
+    return 0
+  fi
+  [ "$1" != lts ] || die "the lts release manifest is not signed by a phux release key; nothing was installed"
+  phux_message warn "the $1 release manifest is not signed by a phux release key; relying on the signed checksum"
 }
 
 # Set build_id (version on stable, commit on next) and build_sha256 for
@@ -241,7 +258,7 @@ resolve() {
 # asset_url and sidecar_url for PRODUCT's build_id on TARGET.
 name_asset() {
   case "$1/$channel" in
-    phux/stable) release="v${build_id}" asset_stem="phux-v${build_id}-$2" ext=tar.gz ;;
+    phux/stable | phux/lts) release="v${build_id}" asset_stem="phux-v${build_id}-$2" ext=tar.gz ;;
     phux/next) release=next asset_stem="phux-next.${build_id}-$2" ext=tar.gz ;;
   esac
   asset_name="${asset_stem}.${ext}"
@@ -454,6 +471,61 @@ install_cli() {
   unpack_cli
   publish_cli
   phux_message ok "installed phux ${build_id} for ${target} to ${install_dir}"
+  if [ "$target" = aarch64-apple-darwin ] && [ "$channel" != next ]; then
+    # Best effort, in a subshell so a failure cannot undo the CLI install.
+    (install_server_app) || phux_message warn "phux Server.app was not installed; the server runs from ${install_dir}/phux"
+  fi
+}
+
+# --- phux Server.app (macOS) -------------------------------------------------
+
+# Install the release's signed phux Server.app beside the CLI, into
+# ~/Library/Application Support/sh.phux/Server/Versions/v<version>, point
+# Versions/Current at it, and keep only the release Current named before.
+# The server starts through Versions/Current so macOS privacy grants survive
+# updates (docs/install.md#macos-permissions); phux update does the same.
+install_server_app() {
+  [ -n "${HOME:-}" ] || die "HOME is not set"
+  release="v${build_id}"
+  asset_stem="phux-server-${release}-${target}"
+  asset_name="${asset_stem}.tar.gz"
+  asset_url="${RELEASES}/${release}/${asset_name}"
+  sidecar_url="${asset_url}.sha256"
+  build_sha256=""
+  fetch_verified
+  tar -tzf "${work}/${asset_name}" > "${work}/server-members" || die "could not read ${asset_name}"
+  while IFS= read -r member; do
+    case "$member" in
+      "$asset_stem" | "$asset_stem/" | "$asset_stem/phux Server.app/"*) ;;
+      *) die "unexpected archive member: $member" ;;
+    esac
+    case "/$member/" in */../* | */./*) die "unexpected archive member: $member" ;; esac
+  done < "${work}/server-members"
+  server_root="$HOME/Library/Application Support/sh.phux/Server"
+  mkdir -p "$server_root/Versions"
+  stage="$(mktemp -d "$server_root/.incoming.XXXXXX")"
+  trap 'rm -rf "$stage"' EXIT
+  tar -xzf "${work}/${asset_name}" -C "$stage"
+  app="$stage/$asset_stem/phux Server.app"
+  [ -f "$app/Contents/MacOS/phux" ] || die "${asset_name} has no Contents/MacOS/phux"
+  [ -z "$(find "$stage" -type l -print -quit)" ] || die "${asset_name} contains a symlink"
+  versions="$server_root/Versions"
+  # A release already present stays: a running server may be executing it.
+  if [ ! -e "$versions/$release/phux Server.app" ]; then
+    rm -rf "${versions:?}/$release"
+    mkdir "$versions/$release"
+    mv "$app" "$versions/$release/phux Server.app"
+  fi
+  previous="$(readlink "$versions/Current" 2>/dev/null || true)"
+  # -n replaces the link itself, not an entry inside the directory it names.
+  ln -sfn "$release" "$versions/Current"
+  for entry in "$versions"/*; do
+    case "${entry##*/}" in
+      Current | "$release" | "$previous") ;;
+      *) rm -rf "$entry" ;;
+    esac
+  done
+  phux_message ok "installed phux Server.app ${build_id} to ${versions}/Current"
 }
 
 # --- Phux Rune ---------------------------------------------------------------
@@ -539,6 +611,7 @@ resolve_rune() {
   matches "$build_sha256" '[0-9a-f]{64}' || die "the feed publishes no Phux Rune digest for ${target}"
   case "$target" in
     aarch64-apple-darwin) asset_name="phux-rune-${build_id}-macos-arm64.zip" ;;
+    aarch64-unknown-linux-gnu) asset_name="phux-rune-${build_id}-linux-aarch64.tar.gz" ;;
     *) asset_name="phux-rune-${build_id}-linux-x86_64.tar.gz" ;;
   esac
   asset_url="${RELEASES}/rune-v${build_id}/${asset_name}"
@@ -667,7 +740,7 @@ install_rune_linux() {
 # app updates itself from here on.
 install_rune() {
   case "$target" in
-    aarch64-apple-darwin | x86_64-unknown-linux-gnu) ;;
+    aarch64-apple-darwin | x86_64-unknown-linux-gnu | aarch64-unknown-linux-gnu) ;;
     *) die "no Phux Rune build for ${target}" ;;
   esac
   [ "$target" != aarch64-apple-darwin ] || [ "$dry_run" -eq 1 ] || [ "$(uname -s)" = Darwin ] \
@@ -740,8 +813,8 @@ if [ "$rune" -eq 1 ]; then
 fi
 case "$channel" in
   latest) channel=stable ;;
-  stable | next) ;;
-  *) die "--channel must be stable, latest, or next" ;;
+  stable | next | lts) ;;
+  *) die "--channel must be stable, latest, next, or lts" ;;
 esac
 if [ -n "$pin" ]; then
   if [ "$channel" = next ]; then
@@ -749,7 +822,7 @@ if [ -n "$pin" ]; then
       || die "on the next channel, pin a build with --revision <40-character commit>"
   else
     [ "$pinned_flag" = --version ] && matches "$pin" "$SEMVER" \
-      || die "on the stable channel, pin a release with --version X.Y.Z"
+      || die "on the $channel channel, pin a release with --version X.Y.Z"
   fi
 fi
 [ -z "$pin_sha256" ] || { [ -n "$pin" ] && matches "$pin_sha256" '[0-9a-f]{64}'; } \

@@ -27,8 +27,18 @@ const TARGET: &str = if cfg!(target_os = "macos") {
     "aarch64-apple-darwin"
 } else if cfg!(target_arch = "x86_64") {
     "x86_64-unknown-linux-gnu"
+} else if cfg!(target_arch = "aarch64") {
+    "aarch64-unknown-linux-gnu"
 } else {
     "unsupported"
+};
+/// The tail of this build's release archive name (scripts/package.sh).
+const PLATFORM: &str = if cfg!(target_os = "macos") {
+    "macos-arm64.zip"
+} else if cfg!(target_arch = "aarch64") {
+    "linux-aarch64.tar.gz"
+} else {
+    "linux-x86_64.tar.gz"
 };
 
 /// `X.Y.Z` or `X.Y.Z-alpha.N`; a release sorts after its alphas, and nothing
@@ -75,12 +85,7 @@ impl Release {
     }
 
     fn archive(&self) -> String {
-        let platform = if cfg!(target_os = "macos") {
-            "macos-arm64.zip"
-        } else {
-            "linux-x86_64.tar.gz"
-        };
-        format!("phux-rune-{}-{platform}", self.version)
+        format!("phux-rune-{}-{PLATFORM}", self.version)
     }
 
     fn url(&self) -> String {
@@ -247,6 +252,14 @@ mod tests {
         ));
     }
 
+    /// The feed the release writes names this build's archive as we do.
+    #[test]
+    fn the_release_feed_publishes_this_target() {
+        let feed = include_str!("../scripts/feed.py");
+        let line = format!(r#""{TARGET}": "{PLATFORM}","#);
+        assert!(feed.contains(&line), "feed.py ARCHIVES lacks {line}");
+    }
+
     #[test]
     fn feed_refuses_what_it_cannot_trust() {
         let sha = "a".repeat(64);
@@ -286,6 +299,19 @@ mod tests {
                 .unwrap_err()
                 .contains("Applications")
         );
+    }
+
+    /// Off macOS a release archive marks its directory; a build tree has no mark.
+    #[test]
+    #[cfg(not(target_os = "macos"))]
+    fn only_the_marked_linux_layout_updates() {
+        let dir = std::env::temp_dir().join(format!("rune-layout-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let executable = dir.join(EXECUTABLE);
+        assert!(installation(&executable).is_err());
+        std::fs::write(dir.join(LINUX_MARKER), "").unwrap();
+        assert_eq!(installation(&executable), Ok(dir.clone()));
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]

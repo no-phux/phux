@@ -443,6 +443,7 @@ fn rows(world: &mut World) -> Vec<Row> {
         on_global(command(Command::DetachClients { session: None }), "signal"),
         // Owner-socket rows: no remote grant reaches them.
         denied(command(Command::Shutdown)),
+        denied(command(Command::PrivacyStatus)),
         denied(command(Command::OpenListener {
             transport: ListenerTransport::Quic,
             port_range: None,
@@ -455,6 +456,7 @@ fn rows(world: &mut World) -> Vec<Row> {
             terminal_id: t.clone(),
             intent: phux_protocol::wire::frame::DocumentInput::Click { x: 1, y: 1 },
             control: None,
+            on_behalf_of: None,
         })),
         on_global(command(Command::GetPerf { reset: false }), "observe"),
         on_global(command(Command::GetPerf { reset: true }), "observe,bind"),
@@ -578,5 +580,7 @@ fn rows(world: &mut World) -> Vec<Row> {
             &[&[&s("create,bind,input", &gb)], &[&s("create,bind", &ga)]],
         ),
     ]);
+    rows.extend(mirror_rows());
+    rows.extend(child_spawn_rows(world));
     rows
 }
