@@ -1,5 +1,6 @@
 //! Handshake, attach, and command response handling.
 
+use super::subscriptions::{Origin, barrier_resources};
 #[cfg(feature = "engine")]
 use std::sync::Arc;
 
@@ -235,7 +236,8 @@ impl ControlPlane {
         let closed = self.listings.relist(View::Attach, snapshot);
         self.close_proven(closed)?;
         let (terminals, seen) = attached_terminals(snapshot)?;
-        self.attach_terminals = seen;
+        self.subscriptions
+            .replace(Origin::SessionAttach, ResourceKind::Terminal, seen);
         self.attached_session = Some(snapshot.focused_session.get());
         self.selected_session = self.attached_session;
         // Names are lookup hints, not identities: a rename may free the old
@@ -292,7 +294,7 @@ impl ControlPlane {
         snapshot: &SessionSnapshot,
         terminals: &[ResourceId],
     ) -> Result<(), ControlError> {
-        self.agent_streams.clear();
+        self.subscriptions.clear(Origin::AgentDeclared);
         let agent_sessions = snapshot.resources.iter().filter(|resource| {
             resource.kind == ResourceKind::AgentSession
                 && resource
@@ -309,7 +311,8 @@ impl ControlPlane {
                 native_id: facet.and_then(|facet| facet.native_id.clone()),
                 state: facet.map(|facet| facet.state.clone()),
             })?;
-            self.agent_streams.insert(resource.id.clone());
+            self.subscriptions
+                .insert(&resource.id, resource.kind, Origin::AgentDeclared);
         }
         Ok(())
     }
@@ -481,10 +484,9 @@ impl ControlPlane {
 fn attached_terminals(
     snapshot: &SessionSnapshot,
 ) -> Result<(Vec<ResourceId>, HashSet<ResourceId>), ControlError> {
-    // Only the focused session's Terminal-kind resources take part in the
-    // attach barrier: the server bootstraps only that session, and an
-    // AgentSession paints nothing.
-    let terminals: Vec<ResourceId> = topology::terminal_resources(snapshot)
+    // Only the focused session's barrier kinds (Terminals) take part: the
+    // server bootstraps only that session.
+    let terminals: Vec<ResourceId> = barrier_resources(snapshot)
         .filter(|pane| topology::session_of(snapshot, pane) == Some(snapshot.focused_session))
         .map(|pane| pane.id.clone())
         .collect();

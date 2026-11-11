@@ -1,41 +1,27 @@
-//! Engine-effect translation, generation retirement, closure, and frontend actions.
+//! Engine-effect translation, closure, and frontend actions.
 
+use super::lane::ResourceLane;
 use super::{
-    AgentEvent, BootstrapId, CloseReason, ClosedReplica, ControlAction, EffectBuffer,
-    EngineAdapter, EngineDamage, EngineEffect, GenerationId, InputEligibility, InputEvent,
-    KernelAction, KernelDamage, KernelDamageKind, KernelEffect, KernelError, KernelJob, KernelSend,
-    KernelStatus, ReplicaKey, ResourceId, SessionKernel, StreamId, TombstoneRecord, generation_of,
+    AgentEvent, CloseReason, ClosedReplica, ControlAction, EffectBuffer, EngineAdapter,
+    EngineDamage, EngineEffect, EngineEffectBuffer, InputEligibility, InputEvent, KernelAction,
+    KernelDamage, KernelDamageKind, KernelEffect, KernelError, KernelJob, KernelSend, KernelStatus,
+    ReplicaKey, ResourceId, SessionKernel,
 };
 
-impl<E: EngineAdapter> SessionKernel<E> {
-    pub(super) fn buffer_bootstrap_effects(
-        &mut self,
-        terminal_id: &ResourceId,
-        generation: GenerationId,
-    ) {
-        let mut captured = std::mem::take(&mut self.engine_effects);
-        let staging = self
-            .terminals
-            .get_mut(terminal_id)
-            .and_then(|state| state.staging.as_mut())
-            .filter(|staging| generation_of(&staging.key) == generation);
-        if let Some(staging) = staging {
-            for effect in captured.drain() {
-                match effect {
-                    // Bootstrap is replay into staging; publication supplies
-                    // damage.
-                    EngineEffect::Damage(_) => {}
-                    effect @ (EngineEffect::Status(_) | EngineEffect::Job(_)) => {
-                        staging.pending_effects.push(effect);
-                    }
-                }
-            }
-        } else {
-            captured.clear();
-        }
-        self.engine_effects = captured;
+/// Translate everything the engine just produced into kernel effects,
+/// keeping the buffer allocation for the next apply.
+pub(super) fn drain_engine_effects<E: EngineAdapter>(
+    engine_effects: &mut EngineEffectBuffer,
+    replica_key: &ReplicaKey,
+    damage_allowed: bool,
+    effects: &mut EffectBuffer,
+) {
+    for effect in engine_effects.drain() {
+        SessionKernel::<E>::translate_engine_effect(replica_key, effect, damage_allowed, effects);
     }
+}
 
+impl<E: EngineAdapter> SessionKernel<E> {
     pub(super) fn translate_engine_effect(
         key: &ReplicaKey,
         effect: EngineEffect,
@@ -70,39 +56,6 @@ impl<E: EngineAdapter> SessionKernel<E> {
         }
     }
 
-    pub(super) fn tombstone_generation(
-        &mut self,
-        terminal_id: &ResourceId,
-        stream_id: StreamId,
-        bootstrap_id: BootstrapId,
-        record: TombstoneRecord,
-    ) {
-        let generation = GenerationId {
-            stream_id,
-            bootstrap_id,
-        };
-        if let Some(stream) = self.agents.get_mut(terminal_id) {
-            stream.note_external_tombstone(generation, record);
-            return;
-        }
-        let state = self.terminals.entry(terminal_id.clone()).or_default();
-        state.retired.entry(generation).or_insert(record);
-        if state
-            .staging
-            .as_ref()
-            .is_some_and(|staging| generation_of(&staging.key) == generation)
-        {
-            state.staging = None;
-        }
-        let froze_published = state
-            .published
-            .as_ref()
-            .is_some_and(|replica| generation_of(&replica.key) == generation);
-        if froze_published {
-            self.mark_attach_unresolved(terminal_id, false);
-        }
-    }
-
     pub(super) fn terminal_closed(
         &mut self,
         terminal_id: &ResourceId,
@@ -113,23 +66,24 @@ impl<E: EngineAdapter> SessionKernel<E> {
     ) {
         self.perf_echo.forget(terminal_id);
         self.lift_refusal(terminal_id);
+        let lane = self.lanes.remove(terminal_id);
         // Only tracked Terminals get a process-exit status: agent sessions report
         // via `AgentSessionStatus`, and a forgotten id has nothing new to say.
-        let was_tracked_terminal = self.terminals.contains_key(terminal_id);
-        self.documents.remove(terminal_id);
-        if let Some(stream) = self.agents.remove(terminal_id)
-            && let Some(mut view) = stream.native_view().cloned()
-        {
-            view.connected = false;
-            view.questions.clear();
-            view.turn_id = None;
-            self.closed_native_views.insert(terminal_id.clone(), view);
-        }
+        let was_tracked_terminal = matches!(lane, Some(ResourceLane::Terminal(_)));
         let damage_blocked = self.attach_blocks(terminal_id);
-        let published = self
-            .terminals
-            .remove(terminal_id)
-            .and_then(|mut state| state.published.take());
+        let published = match lane {
+            Some(ResourceLane::Terminal(state)) => state.published,
+            Some(ResourceLane::Agent(stream)) => {
+                if let Some(mut view) = stream.native_view().cloned() {
+                    view.connected = false;
+                    view.questions.clear();
+                    view.turn_id = None;
+                    self.closed_native_views.insert(terminal_id.clone(), view);
+                }
+                None
+            }
+            Some(ResourceLane::Document(_)) | None => None,
+        };
         let had_published = published.is_some();
         if self.retain_replica_on_close.remove(terminal_id)
             && let Some(replica) = published

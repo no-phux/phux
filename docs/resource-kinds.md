@@ -301,8 +301,10 @@ Each gap below holds on current `main`:
 - **The kind catalog.** `KindSpec` does not own a kind's input
   vocabulary, and a new kind still adds a `ResourceKind` variant and its
   app (`phux-rbz0y.7`).
-- **The client kernel.** It keeps one hard-coded lane per kind (terminals,
-  agents, documents) (`phux-rbz0y.8`).
+- **Runtime publication.** The client kernel keeps one lane per resource
+  behind a single dispatch, and the runtime keeps one subscription per
+  resource with a per-kind policy, but the published-frame table holds
+  grids only: documents still arrive as events (`phux-rbz0y.21`).
 - **Clients.** The terminal UI shows a non-terminal pane as a placeholder
   tile, not its content ([clients](./clients.md)).
 
