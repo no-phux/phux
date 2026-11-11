@@ -160,6 +160,8 @@ A kind supplies:
 
 - its state and a codec for it (VT bytes, a record, a whole document);
 - the frames and commands it owns, through its `ResourceApp`;
+- what of it crosses `phux upgrade`, which the same app writes into the
+  upgrade blob at the cut and rebuilds on resume;
 - its row in the kind catalog (`KindSpec`): gate, methods, events,
   metadata keys, and two contracts:
   - its stream: the codec tags it streams with their feature gates, its
@@ -303,9 +305,6 @@ Each gap below holds on current `main`:
   agents, documents) (`phux-rbz0y.8`).
 - **Clients.** The terminal UI shows a non-terminal pane as a placeholder
   tile, not its content ([clients](./clients.md)).
-- **Upgrade.** Terminals, agent sessions and documents cross `phux upgrade`
-  through separate paths in the upgrade blob, not through `ResourceApp`
-  (`phux-rbz0y.13`).
 
 ## History
 

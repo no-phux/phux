@@ -5,6 +5,7 @@ pub mod actor;
 pub mod agent_detect;
 pub mod factory;
 pub mod grid;
+pub mod handoff;
 pub mod input;
 pub mod launch;
 pub mod mailbox;

@@ -52,10 +52,8 @@ async fn pane_actor_failure_does_not_install_a_partial_tree() {
                 vec![no_pty_pane(3, 2), bad],
             );
             validate_upgrade_blob(&handoff).expect("topology is complete");
-            match state.rebuild_from_blob(
-                &handoff,
-                crate::runtime::apps::terminal::upgrade::unwired,
-                crate::runtime::apps::rebuild_session,
+            match crate::runtime::apps::terminal::test_support::rebuild_unwired(
+                &mut state, &handoff,
             ) {
                 Err(RebuildError::Actor(_)) => {}
                 other => panic!("expected actor rebuild failure, got {other:?}"),
@@ -93,9 +91,10 @@ async fn wrong_kind_rebuild_rolls_back_prior_panes_without_running_the_rejected_
             );
             let rejected_ran = std::rc::Rc::new(std::cell::Cell::new(false));
             let ran = rejected_ran.clone();
-            let result = state.rebuild_from_blob(
+            let result = crate::runtime::apps::terminal::test_support::rebuild_with(
+                &mut state,
                 &handoff,
-                |core, pane, scrollback| {
+                move |core, pane, scrollback| {
                     let mut rebuilt =
                         crate::runtime::apps::terminal::upgrade::unwired(core, pane, scrollback)?;
                     if pane.wire_id == 4 {
@@ -112,7 +111,6 @@ async fn wrong_kind_rebuild_rolls_back_prior_panes_without_running_the_rejected_
                     }
                     Ok(rebuilt)
                 },
-                crate::runtime::apps::rebuild_session,
             );
             assert!(matches!(result, Err(RebuildError::Registration(_))));
             tokio::task::yield_now().await;
@@ -165,12 +163,7 @@ async fn upgrade_carries_group_and_global_metadata() {
         let bytes = blob.to_bytes().expect("serialize");
         let blob = StateBlob::from_bytes(&bytes).expect("deserialize");
         let mut fresh = ServerState::new();
-        fresh
-            .rebuild_from_blob(
-                &blob,
-                crate::runtime::apps::terminal::upgrade::unwired,
-                crate::runtime::apps::rebuild_session,
-            )
+        crate::runtime::apps::terminal::test_support::rebuild_unwired(&mut fresh, &blob)
             .expect("rebuild");
 
         assert_eq!(fresh.metadata.get(&group, &layout), Some(b"tree".to_vec()));
@@ -205,12 +198,7 @@ async fn a_pre_record_import_is_written_to_sqlite_with_the_migration_receipt() {
                 vec![window(2, 1, vec![3])],
                 vec![no_pty_pane(3, 2)],
             );
-            state
-                .rebuild_from_blob(
-                    &handoff,
-                    crate::runtime::apps::terminal::upgrade::unwired,
-                    crate::runtime::apps::rebuild_session,
-                )
+            crate::runtime::apps::terminal::test_support::rebuild_unwired(&mut state, &handoff)
                 .expect("import");
             assert_eq!(
                 session_names(&state),
@@ -340,12 +328,7 @@ async fn a_populated_sqlite_store_wins_a_hot_upgrade_merge() {
             let (blob, kept_key, kept_revision) = blob_that_disagrees_with_the_store(&path).await;
             let mut resumed = ServerState::new();
             install_loaded_sqlite(&mut resumed, &path);
-            resumed
-                .rebuild_from_blob(
-                    &blob,
-                    crate::runtime::apps::terminal::upgrade::unwired,
-                    crate::runtime::apps::rebuild_session,
-                )
+            crate::runtime::apps::terminal::test_support::rebuild_unwired(&mut resumed, &blob)
                 .expect("merge");
             let kept = resumed.session_by_name("kept").expect("store name");
             assert_eq!(kept.key, kept_key);

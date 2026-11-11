@@ -137,23 +137,17 @@ const CODEC: &str = "the Terminal codec gate at a host boundary (phux-rbz0y.7)";
 const CONFORMANCE: &str = "test-only conformance fixture drives a Terminal";
 const KIND_SPEC: &str = "per-kind rule not yet on KindSpec (phux-rbz0y.7)";
 const SLOTS: &str = "per-app ServerState slot (phux-rbz0y.14)";
-const UPGRADE: &str = "upgrade carries the kind by hand (phux-rbz0y.13)";
 
 const SCANS: [Scan; 6] = [
     Scan {
         name: "document engine outside its app",
         krate: "phux-server",
         matches: document_engine,
-        baseline: &[
-            (
-                "runtime/dispatch_guard.rs",
-                1,
-                "document input audit from the host guard (phux-rbz0y.14)",
-            ),
-            ("runtime/upgrade/handoff.rs", 2, UPGRADE),
-            ("runtime/upgrade/mod.rs", 1, UPGRADE),
-            ("state/upgrade_blob/documents.rs", 6, UPGRADE),
-        ],
+        baseline: &[(
+            "runtime/dispatch_guard.rs",
+            1,
+            "document input audit from the host guard (phux-rbz0y.14)",
+        )],
     },
     Scan {
         name: "Terminal app modules named from outside it",
@@ -213,11 +207,7 @@ const SCANS: [Scan; 6] = [
                 "session attach stages Terminal panes itself (phux-rbz0y.14)",
             ),
             ("runtime/session_attach/prepare.rs", 1, CODEC),
-            (
-                "runtime/startup.rs",
-                3,
-                "Terminal seed launch and upgrade wiring (phux-rbz0y.13)",
-            ),
+            ("runtime/startup.rs", 2, LAUNCH),
         ],
     },
     Scan {
@@ -254,7 +244,11 @@ const SCANS: [Scan; 6] = [
             ),
             ("state/org/creation_bounds.rs", 1, LAUNCH),
             ("state/session_table.rs", 2, KIND_SPEC),
-            ("state/upgrade_blob/import.rs", 2, UPGRADE),
+            (
+                "state/upgrade_blob/import.rs",
+                2,
+                "permanent: a pre-record blob's frozen panes and agent sessions import as those kinds",
+            ),
         ],
     },
     Scan {
@@ -268,7 +262,6 @@ const SCANS: [Scan; 6] = [
             ("state/native_agent.rs", 1, SLOTS),
             ("state/native_agent/validate.rs", 1, SLOTS),
             ("state/terminals.rs", 1, SLOTS),
-            ("state/upgrade_blob/documents.rs", 1, UPGRADE),
         ],
     },
     Scan {
