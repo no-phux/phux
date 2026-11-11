@@ -415,6 +415,7 @@ impl Desk {
         self.clock = clock;
         self.follow_font(tx);
         self.machines.tick_glances(clock, tx);
+        self.follow_path(tx);
         let updated = self.pump_updates(tx)
             | self.finish_document_images()
             | self.pump_machines()

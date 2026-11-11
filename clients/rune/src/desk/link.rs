@@ -18,6 +18,7 @@ use super::{Desk, NoticeKind, sessions};
 use crate::launch::Resolved;
 use crate::machines::LOCAL;
 
+mod path;
 mod replacement;
 mod resume;
 mod standing;
@@ -45,6 +46,8 @@ const INCOMPATIBLE: &str = "VersionIncompatible";
 type Found = (u64, Resolved);
 
 pub struct Link {
+    /// The network path a remote attach rides, watched for a move.
+    path: path::Path,
     /// Bumped by each search for the server: only the latest answer counts.
     attempt: u64,
     found: (Sender<Found>, Receiver<Found>),
@@ -89,6 +92,7 @@ pub struct Link {
 impl Default for Link {
     fn default() -> Self {
         Self {
+            path: path::Path::default(),
             attempt: 0,
             found: channel(),
             finding: false,
