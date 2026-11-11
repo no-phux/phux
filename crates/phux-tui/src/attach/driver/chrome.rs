@@ -91,42 +91,6 @@ fn format_attention_hint(asking: usize) -> Option<String> {
     }
 }
 
-/// An empty peer bundle for unit tests that exercise the chrome refresh
-/// without any cross-session state.
-#[cfg(test)]
-fn no_peers() -> crate::attach::sidebar_zones::PeerInputs<'static> {
-    use std::sync::LazyLock;
-    static SESSIONS: &[phux_protocol::wire::info::SessionInfo] = &[];
-    static LAYOUTS: LazyLock<HashMap<phux_protocol::ids::SessionId, ArrangementDoc>> =
-        LazyLock::new(HashMap::new);
-    static AGENTS: LazyLock<HashMap<ResourceId, AgentRecord>> = LazyLock::new(HashMap::new);
-    static ATTENTION: LazyLock<std::collections::HashSet<ResourceId>> =
-        LazyLock::new(std::collections::HashSet::new);
-    static TAGS: LazyLock<std::collections::HashMap<phux_protocol::ids::SessionId, String>> =
-        LazyLock::new(std::collections::HashMap::new);
-    static COLLAPSED: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
-    static WINDOWS: &[phux_protocol::wire::info::WindowInfo] = &[];
-    static RESOURCES: &[phux_protocol::wire::info::ResourceInfo] = &[];
-    static REVIEW: LazyLock<ReviewIndex> = LazyLock::new(ReviewIndex::new);
-    crate::attach::sidebar_zones::PeerInputs {
-        serving_host: None,
-        origin: None,
-        remote_hosts: &[],
-        hosts: &[],
-        sessions: SESSIONS,
-        focused_session: None,
-        windows: WINDOWS,
-        resources: RESOURCES,
-        foreign_layouts: &LAYOUTS,
-        foreign_agents: &AGENTS,
-        foreign_attention: &ATTENTION,
-        project_tags: &TAGS,
-        session_order: &[],
-        collapsed_projects: &COLLAPSED,
-        review: &REVIEW,
-    }
-}
-
 /// Refresh all chrome inputs from one coherent view: window tabs, supervisory
 /// badges, agent rows and host-qualified session navigation. Returns whether
 /// any painter input changed, so unchanged metadata bursts need no paint, and
@@ -525,7 +489,10 @@ mod tests {
     use super::*;
     use crate::attach::pane_state::{clear_attention_on_input, published_test_state};
 
+    mod no_peers;
     mod window_infos;
+
+    use no_peers::no_peers;
 
     /// ADR-0124: a retained exited pane keeps its replica, gets an exit
     /// badge, and refuses input.
