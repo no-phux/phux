@@ -171,7 +171,7 @@ impl Desk {
             .machines
             .hosts
             .iter()
-            .filter(|host| !host.ssh_only && Some(&host.name) != current.as_ref())
+            .filter(|host| !host.ssh_only && !host.paused && Some(&host.name) != current.as_ref())
             .map(|host| Some(host.name.clone()));
         local.into_iter().chain(remotes).collect()
     }

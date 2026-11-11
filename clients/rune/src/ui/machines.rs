@@ -165,8 +165,15 @@ fn machine(host: &Host, desk: &Desk, ink: &Ink) -> El {
     let current = desk.machines.current.as_ref() == Some(&host.name);
     let label = text(name.clone()).font(LABEL).color(ink.text).truncate();
     let held = name.clone();
-    row_shell(format!("machine-{name}"), ink)
-        .on_press(move |d: &mut Desk| d.switch_machine(Some(held.clone())))
+    let (paused, pausing) = (host.paused, name.clone());
+    let shell = row_shell(format!("machine-{name}"), ink);
+    // A paused machine is not dialed, so its row opens nothing.
+    let shell = if paused {
+        shell
+    } else {
+        shell.on_press(move |d: &mut Desk| d.switch_machine(Some(held.clone())))
+    };
+    shell
         .child(color_button(&name, ink))
         .child(label)
         .child(el().grow(1.0))
@@ -174,6 +181,13 @@ fn machine(host: &Host, desk: &Desk, ink: &Ink) -> El {
             host.ssh_only
                 .then(|| text("over ssh").font(CAPTION).color(ink.dim)),
         )
+        .children(paused.then(|| text("paused").font(CAPTION).color(ink.dim)))
+        .child(chip(
+            if paused { "Resume" } else { "Pause" },
+            format!("machine-pause-{name}"),
+            ink,
+            move |d: &mut Desk| d.pause_machine(pausing.clone(), !paused),
+        ))
         .children(
             current
                 .then(|| current_state(desk, ink))

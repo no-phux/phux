@@ -287,3 +287,12 @@ fn unreadable_token_names_the_path_and_never_the_bytes() {
     assert!(err.contains("/nonexistent/phux/token"), "{err}");
     assert_eq!(read_token(None), Ok(None));
 }
+
+#[test]
+fn a_paused_entry_is_not_resolved() {
+    let mut paused = entry("mini", "quic://mini:8788");
+    paused.paused = true;
+    let target = RemoteTarget::parse("mini").expect("target");
+    let refusal = resolve_entry(&paused, &target).expect_err("paused");
+    assert!(refusal.contains("phux host enable mini"), "{refusal}");
+}

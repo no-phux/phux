@@ -2770,10 +2770,11 @@ Commands:
   add       Add a machine so `phux attach NAME` reaches it.
   attach    Attach to a registered remote host (same as `phux attach NAME`).
   color     Set the colour a host is drawn in, or go back to its automatic one.
-  disable   Disable a satellite without forgetting it; a running hub drops its
-            link.
+  disable   Disable a satellite without forgetting it (a running hub drops its
+            link), or pause a remote: it stays registered and nothing dials it.
   discover  List the machines on this computer's Tailscale network.
-  enable    Enable a satellite; a running local hub dials it now.
+  enable    Enable a satellite (a running local hub dials it now), or resume a
+            paused remote.
   join      Join a hub as a satellite with the code `phux host ticket` printed.
   ls        List registered machines from both registries. [aliases: list]
   minimal   Make Minimal boxes join this hub as satellites.
@@ -2944,12 +2945,13 @@ Global flags:
 ## `phux host disable`
 
 ```text
-Disable a satellite without forgetting it; a running hub drops its link.
+Disable a satellite without forgetting it (a running hub drops its link), or
+pause a remote: it stays registered and nothing dials it.
 
 Usage: phux host disable [--json] <NAME>
 
 Arguments:
-  <NAME>  Registered satellite name.
+  <NAME>  Registered host name.
 
 Flags:
       --json           Emit stable, versioned JSON on stdout instead of the
@@ -2991,12 +2993,13 @@ Global flags:
 ## `phux host enable`
 
 ```text
-Enable a satellite; a running local hub dials it now.
+Enable a satellite (a running local hub dials it now), or resume a paused
+remote.
 
 Usage: phux host enable [--json] <NAME>
 
 Arguments:
-  <NAME>  Registered satellite name.
+  <NAME>  Registered host name.
 
 Flags:
       --json           Emit stable, versioned JSON on stdout instead of the

@@ -494,6 +494,12 @@ pub fn resolve(raw: &str, config_path: Option<&Path>) -> Result<Resolved, String
 /// identity ([`entry_identity`]), or a TLS server name that is not a DNS
 /// name ([`validate_tls_server_name`]).
 pub fn resolve_entry(entry: &RemoteConfigEntry, target: &RemoteTarget) -> Result<Resolved, String> {
+    if entry.paused {
+        return Err(format!(
+            "{0} is paused; run `phux host enable {0}` to use it again",
+            entry.name
+        ));
+    }
     let (endpoint, mut transport) = classify(&entry.endpoint, target)?;
     if let (Transport::Ssh { remote_phux, .. }, Some(named)) = (&mut transport, &entry.remote_phux)
     {

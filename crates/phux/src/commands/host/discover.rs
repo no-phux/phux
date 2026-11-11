@@ -222,6 +222,7 @@ mod tests {
             client_cert: None,
             client_key: None,
             color: None,
+            paused: false,
         }
     }
 

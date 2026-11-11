@@ -46,7 +46,8 @@ impl HostRow {
             name: entry.name,
             role: HostRole::Remote,
             endpoint: entry.endpoint,
-            enabled: None,
+            // A remote has a state only once it is paused.
+            enabled: entry.paused.then_some(false),
             token_file: entry.token_file,
             cert_fingerprint: entry.cert_fingerprint,
             tls_server_name: entry.tls_server_name,
@@ -200,6 +201,7 @@ pub(super) fn render_table(rows: &[HostRow]) -> String {
         let state = match row.enabled {
             None => "-",
             Some(true) => "enabled",
+            Some(false) if row.role == HostRole::Remote => "paused",
             Some(false) => "disabled",
         };
         let auth = auth_display(

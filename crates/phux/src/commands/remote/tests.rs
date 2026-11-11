@@ -18,6 +18,7 @@ fn entry_with_token(path: Option<PathBuf>) -> RemoteEntry {
         client_cert: None,
         client_key: None,
         color: None,
+        paused: false,
     }
 }
 

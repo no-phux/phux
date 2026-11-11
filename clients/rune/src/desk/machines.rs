@@ -22,6 +22,7 @@ enum Done {
     Step(String),
     Added(Result<(), String>),
     Removed(String, Result<(), String>),
+    Paused(String, Result<(), String>),
     Recolored(String, Result<(), String>),
     /// Another machine's sessions; `None` is this computer.
     Glanced(Option<String>, Result<Vec<Glance>, String>),
@@ -140,7 +141,8 @@ impl Machines {
         let Some(phux) = self.phux.clone() else {
             return;
         };
-        if !self.peeking.insert(host.clone()) {
+        let paused = |known: &Host| known.paused && Some(&known.name) == host.as_ref();
+        if self.hosts.iter().any(paused) || !self.peeking.insert(host.clone()) {
             return;
         }
         self.glanced.insert(host.clone(), clock);
@@ -195,6 +197,16 @@ impl Machines {
         self.worker(move |send| {
             let result = machines::remove(&phux, &name);
             send(Done::Removed(name, result));
+        });
+    }
+
+    fn pause(&mut self, name: String, paused: bool) {
+        let Some(phux) = self.phux.clone() else {
+            return;
+        };
+        self.worker(move |send| {
+            let result = machines::pause(&phux, &name, paused);
+            send(Done::Paused(name, result));
         });
     }
 
@@ -303,6 +315,16 @@ impl Desk {
         self.machines.recolor(name, id);
     }
 
+    /// Pause `name` or resume it. Like a removal, the window leaves a
+    /// machine it is about to stop dialing.
+    pub fn pause_machine(&mut self, name: String, paused: bool) {
+        if paused && self.machines.current.as_ref() == Some(&name) {
+            self.switch_machine(None);
+            self.machines.open = true;
+        }
+        self.machines.pause(name, paused);
+    }
+
     pub fn remove_machine(&mut self, name: String) {
         if self.machines.current.as_ref() == Some(&name) {
             self.switch_machine(None);
@@ -390,6 +412,12 @@ impl Desk {
                     self.machines.peeking.remove(&host);
                     self.machines.glances.insert(host, sessions);
                 }
+                Done::Paused(name, result) => {
+                    if let Err(error) = result {
+                        self.machines.error = Some(format!("{name} not changed: {error}"));
+                    }
+                    self.machines.refresh();
+                }
                 Done::Removed(name, result) => {
                     if let Err(error) = result {
                         self.machines.error = Some(format!("{name} not removed: {error}"));
@@ -441,6 +469,7 @@ mod tests {
             name: name.to_owned(),
             ssh: None,
             ssh_only: false,
+            paused: false,
         };
         let mut list = Machines::new(None, None);
         list.hosts = vec![host("a"), host("b")];
@@ -481,6 +510,7 @@ mod tests {
                 name: name.to_owned(),
                 ssh: None,
                 ssh_only: false,
+                paused: false,
             }];
             Done::Listed(refresh, Ok(hosts), Vec::new())
         };

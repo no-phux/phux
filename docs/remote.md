@@ -399,7 +399,7 @@ let in, without a restart. It doesn't stop any program running in a pane.
 Revoke a credential with these commands, not by editing files.
 
 Removing a machine from your list (`phux host rm`) only forgets it here. It
-doesn't revoke anything on the server.
+doesn't revoke anything on the server. `phux host disable` pauses one.
 
 [File locations](./reference/files.md) lists every credential file on both
 sides.

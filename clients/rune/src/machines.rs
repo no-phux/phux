@@ -43,6 +43,8 @@ pub struct Host {
     pub ssh: Option<String>,
     /// Its only route is ssh: a window dials it through `ssh`, on demand.
     pub ssh_only: bool,
+    /// Kept in the registry, but nothing dials it until it is resumed.
+    pub paused: bool,
 }
 
 /// A tailnet machine phux can run on that isn't registered yet.
@@ -100,6 +102,7 @@ fn parse_hosts(value: &Value) -> Vec<Host> {
                 ssh_only: host["endpoint"]
                     .as_str()
                     .is_some_and(|endpoint| endpoint.trim().starts_with("ssh://")),
+                paused: host["enabled"] == false,
             })
         })
         .take(MAX_ROWS)
@@ -196,6 +199,12 @@ pub fn sessions(phux: &Path, host: Option<&str>) -> Result<Vec<Glance>, String> 
 }
 
 /// Take `name` out of the registry. Its sessions keep running over there.
+/// Pause `name`, or resume it: `phux host disable` and `enable`.
+pub fn pause(phux: &Path, name: &str, paused: bool) -> Result<(), String> {
+    let verb = if paused { "disable" } else { "enable" };
+    run_for(phux, &["host", verb, name], LIST_TIMEOUT).map(|_| ())
+}
+
 pub fn remove(phux: &Path, name: &str) -> Result<(), String> {
     run_for(
         phux,
@@ -312,12 +321,13 @@ mod tests {
     fn an_ssh_route_is_marked() {
         let doc = json!({ "hosts": [
             { "name": "a", "role": "remote", "endpoint": "quic://a:8788", "ssh": "me@a" },
-            { "name": "b", "role": "remote", "endpoint": "ssh://me@b" },
+            { "name": "b", "role": "remote", "endpoint": "ssh://me@b", "enabled": false },
         ]});
         let hosts = parse_hosts(&doc);
         assert!(!hosts[0].ssh_only);
         assert_eq!(hosts[0].ssh.as_deref(), Some("me@a"));
         assert!(hosts[1].ssh_only);
+        assert!(hosts[1].paused && !hosts[0].paused);
     }
 
     fn peer(ssh_host: &str) -> Peer {
@@ -344,6 +354,7 @@ mod tests {
             name: name.to_owned(),
             ssh: ssh.map(str::to_owned),
             ssh_only: false,
+            paused: false,
         }
     }
 

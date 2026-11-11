@@ -88,7 +88,13 @@ pub(super) fn other_machines(desk: &Desk, ink: &Ink) -> El {
         .hosts
         .iter()
         .filter(|host| machines.current.as_ref() != Some(&host.name))
-        .map(|host| (Some(host.name.clone()), host.name.as_str(), !host.ssh_only));
+        .map(|host| {
+            (
+                Some(host.name.clone()),
+                host.name.as_str(),
+                !host.ssh_only && !host.paused,
+            )
+        });
     let mut list = col().w_full().gap(1.0).px(8.0).pt(10.0);
     for (host, label, dial) in local.into_iter().chain(remotes) {
         let open = machines.expanded.contains(&host);
