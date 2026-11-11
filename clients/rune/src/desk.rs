@@ -212,6 +212,12 @@ pub struct Desk {
     /// Bumped by every frame change of the shown terminal, so the view runs.
     pub generation: u64,
     pub font_size: f32,
+    /// The terminal font family; empty is the default.
+    pub font_family: String,
+    /// `font_family` is not behind Rune's mono slot yet.
+    font_due: bool,
+    /// `rune::text::font_epoch` when the panes were last fitted.
+    font_epoch: u64,
     /// The window's device pixels per point, as the last view build saw it.
     pub scale: Cell<f32>,
     /// Each pane's grid area in points, from its last layout.
@@ -345,6 +351,7 @@ impl Desk {
             .map_or(grid::DEFAULT_FONT_SIZE, |s| {
                 s.clamp(grid::MIN_FONT_SIZE, grid::MAX_FONT_SIZE)
             });
+        let font_family: String = prefs.get("font_family").unwrap_or_default();
         let sidebar_open = prefs.get("sidebar_open").unwrap_or(true);
         let settings = settings::Settings::load(&prefs);
         Self {
@@ -404,6 +411,9 @@ impl Desk {
             receipts: events::Receipts::default(),
             generation: 0,
             font_size,
+            font_due: !font_family.is_empty(),
+            font_family,
+            font_epoch: rune::text::font_epoch(),
             scale: Cell::new(2.0),
             areas: HashMap::new(),
             fitted: HashMap::new(),
@@ -440,6 +450,7 @@ impl Desk {
     /// Drain the runtime once. True when anything on screen may have changed.
     pub fn poll(&mut self, clock: f64, tx: &mut Tx) -> bool {
         self.clock = clock;
+        self.follow_font(tx);
         self.machines.tick_glances(clock, tx);
         let updated = self.pump_updates(tx)
             | self.finish_document_images()

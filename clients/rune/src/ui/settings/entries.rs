@@ -10,6 +10,7 @@ use crate::desk::{Desk, SettingsCategory as Category};
 pub(super) enum Entry {
     Theme,
     TextSize,
+    Font,
     CopySelect,
     ConfirmClose,
     OptionMeta,
@@ -21,9 +22,10 @@ pub(super) enum Entry {
 }
 
 impl Entry {
-    const ALL: [Self; 10] = [
+    const ALL: [Self; 11] = [
         Self::Theme,
         Self::TextSize,
+        Self::Font,
         Self::CopySelect,
         Self::ConfirmClose,
         Self::OptionMeta,
@@ -37,9 +39,11 @@ impl Entry {
     const fn category(self) -> Category {
         match self {
             Self::Theme => Category::Appearance,
-            Self::TextSize | Self::CopySelect | Self::ConfirmClose | Self::OptionMeta => {
-                Category::Terminal
-            }
+            Self::TextSize
+            | Self::Font
+            | Self::CopySelect
+            | Self::ConfirmClose
+            | Self::OptionMeta => Category::Terminal,
             Self::Notifications => Category::Notifications,
             Self::Hosts => Category::RemoteHosts,
             Self::Diagnostics => Category::Developer,
@@ -51,6 +55,7 @@ impl Entry {
         match self {
             Self::Theme => "Theme",
             Self::TextSize => "Text size",
+            Self::Font => "Font",
             Self::CopySelect => "Copy on select",
             Self::ConfirmClose => "Confirm before closing",
             Self::OptionMeta => "Option as Meta",
@@ -68,6 +73,7 @@ impl Entry {
                 "System, built-in and local themes. Preview live, Return to keep, Escape to restore."
             }
             Self::TextSize => "Terminal text from 8 to 32 points.",
+            Self::Font => "Terminal font. One that isn't installed shows the system's.",
             Self::CopySelect => "Finishing a selection puts it on the clipboard.",
             Self::ConfirmClose => {
                 "Ask before closing a terminal or tab that's still running something."
@@ -95,6 +101,10 @@ impl Entry {
         match self {
             Self::Theme => desk.settings.theme.map_or("System", |t| t.name).to_owned(),
             Self::TextSize => format!("{:.0} pt", desk.font_size),
+            Self::Font => match desk.font_family.as_str() {
+                "" => "System".to_owned(),
+                family => family.to_owned(),
+            },
             Self::CopySelect => on(desk.settings.copy_on_select),
             Self::ConfirmClose => on(desk.settings.confirm_close),
             Self::OptionMeta => on(desk.settings.option_as_meta),
@@ -131,6 +141,7 @@ impl Entry {
         match self {
             Self::Theme => "colors colours appearance palette",
             Self::TextSize => "font zoom typography",
+            Self::Font => "typeface family monospace",
             Self::CopySelect => "clipboard selection",
             Self::OptionMeta => "alt keyboard escape",
             Self::ConfirmClose => "confirmation closing safety",
@@ -154,6 +165,13 @@ impl Entry {
                 ink,
             ),
             Self::TextSize => controls::stepper(desk, ink),
+            Self::Font => self.link(
+                "settings-font",
+                desk,
+                self.value(desk),
+                Desk::next_font,
+                ink,
+            ),
             Self::Hosts => self.link(
                 "settings-machines",
                 desk,

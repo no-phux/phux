@@ -98,6 +98,31 @@ impl Desk {
         self.fit();
     }
 
+    /// Step to the next family in `grid::FONT_CHOICES`; one from prefs
+    /// that isn't listed steps to the default.
+    pub fn next_font(&mut self) {
+        let at = grid::FONT_CHOICES
+            .iter()
+            .position(|f| *f == self.font_family);
+        let next = at.map_or(0, |i| (i + 1) % grid::FONT_CHOICES.len());
+        self.font_family = grid::FONT_CHOICES[next].to_owned();
+        let _ = self.prefs.set("font_family", &self.font_family);
+        self.font_due = true;
+    }
+
+    /// Put a chosen family behind the mono slot, then refit the panes once
+    /// Rune measures in it (the frame after).
+    pub(super) fn follow_font(&mut self, tx: &mut Tx) {
+        if std::mem::take(&mut self.font_due) {
+            tx.set_font_families(grid::FAMILIES.0, grid::mono_family(&self.font_family));
+            tx.wake_after(std::time::Duration::ZERO);
+        }
+        let epoch = rune::text::font_epoch();
+        if std::mem::replace(&mut self.font_epoch, epoch) != epoch {
+            self.fit();
+        }
+    }
+
     pub fn toggle_sidebar(&mut self) {
         self.sidebar_open = !self.sidebar_open;
         let _ = self.prefs.set("sidebar_open", &self.sidebar_open);
@@ -281,6 +306,7 @@ impl Desk {
         desk.settings = Settings::load(&desk.prefs);
         desk.updater = super::updates::Updater::new(&desk.prefs, &resolved);
         desk.font_size = grid::DEFAULT_FONT_SIZE;
+        desk.font_family = String::new();
         desk.settings_open = true;
         desk
     }

@@ -148,7 +148,10 @@ session (or `--session NAME`). It never creates a session on its own.
   descriptions, categories and current values across all sections, including
   useful aliases such as **font**, **zoom**, and **colours**. **Theme**
   opens the existing live-preview palette; Return keeps a choice and Escape
-  restores the old theme, both returning to Settings. Text size, notifications,
+  restores the old theme, both returning to Settings. **Font** steps through
+  the system monospace, the bundled JetBrains Mono and two the platform ships;
+  `font_family` in Rune's prefs can name any installed family, and one that
+  isn't installed shows the system's. Font, text size, notifications,
   Option as Meta (macOS), copy on select, and close confirmation are remembered
   immediately. Diagnostics stays available in development builds; update errors
   and protocol warnings remain visible during search. A program's own OSC
@@ -210,7 +213,7 @@ each line; the window asks first (Return pastes, Esc cancels).
 
 - One window. Tabs can't be dragged to reorder yet, and the server has no
   call to rename a single terminal.
-- No Kitty images or font choice; the only custom themes are Ghostty's and Omarchy's. Find covers the history the
+- No Kitty images; the only custom themes are Ghostty's and Omarchy's. Find covers the history the
   window has loaded, not the server's whole scrollback.
 - A question raised through a hook before the window connected has no text
   to show (the server keeps only that one is pending); its card opens the
