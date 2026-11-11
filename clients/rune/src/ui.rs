@@ -38,7 +38,7 @@ pub(crate) const MOD: &str = if cfg!(any(target_os = "macos", target_os = "ios")
 } else {
     "Ctrl+Shift+"
 };
-const SIDEBAR_W: f32 = 236.0;
+pub(crate) const SIDEBAR_W: f32 = 236.0;
 /// The band the macOS traffic lights sit in when they draw over content.
 const TITLEBAR_H: f32 = 38.0;
 /// Space between the terminal area's edge and its grid.
@@ -162,7 +162,7 @@ pub fn view(desk: &Desk, cx: &mut Cx<Desk>) -> El {
         .h_full()
         .child(
             el().key("sidebar-host")
-                .w(if desk.sidebar_open { SIDEBAR_W } else { 0.0 })
+                .w(if desk.sidebar_shown() { SIDEBAR_W } else { 0.0 })
                 .h_full()
                 .clip_rounded(0.0)
                 .motion(tok::motion::SNAPPY)
@@ -181,7 +181,7 @@ pub fn view(desk: &Desk, cx: &mut Cx<Desk>) -> El {
                         .w_full()
                         .min_w(0.0)
                         .min_h(0.0)
-                        .pl(if desk.sidebar_open { 0.0 } else { CARD_GAP })
+                        .pl(if desk.sidebar_shown() { 0.0 } else { CARD_GAP })
                         .pr(CARD_GAP)
                         .pb(CARD_GAP)
                         .child(
@@ -205,6 +205,7 @@ pub fn view(desk: &Desk, cx: &mut Cx<Desk>) -> El {
         .w_full()
         .h_full()
         .fill(p.sidebar)
+        .on_layout(|d: &mut Desk, rect| d.window_laid_out(rect[2]))
         .child(main)
         .child(crate::host_color::edge(desk.machines.label(), p.sidebar));
     floating(root, desk, &p, band, cx)

@@ -201,10 +201,15 @@ fn top_bar(desk: &Desk, p: &Ink) -> El {
         .selected_session_name()
         .unwrap_or_else(|| "phux".to_owned());
     let full = desk.window_title();
-    let title = full
-        .strip_suffix(&format!(" — {session}"))
-        .unwrap_or(full)
-        .to_owned();
+    // With no terminal on screen the window title is only the app's name:
+    // the capsule names the computer instead.
+    let title = if desk.shown.is_some() {
+        full.strip_suffix(&format!(" — {session}"))
+            .unwrap_or(full)
+            .to_owned()
+    } else {
+        desk.machines.label().to_owned()
+    };
     let tile = el()
         .size(30.0, 30.0)
         .radius(8.0)
@@ -397,7 +402,9 @@ fn strip(phone: &Phone, native_field: bool, p: &Ink) -> El {
             .gap(2.0)
             .radius(ROUND / 2.0)
             .items_center()
-            .scroll_x(),
+            .scroll_x()
+            // Keys past the edge fade out instead of being cut in half.
+            .scroll_edge_fade(20.0),
         p,
     )
     .child(send("esc", "Escape", Key::Escape))

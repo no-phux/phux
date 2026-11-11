@@ -32,6 +32,43 @@ impl Desk {
         self.open_wanted(&client);
     }
 
+    /// The selected session's terminals a server restart ended, which
+    /// `phux restore` would relaunch: the keys to relaunch them by.
+    pub fn ended_by_restart(&self) -> Vec<phux_protocol::ids::ResourceKey> {
+        use phux_protocol::ResourceKind;
+        use phux_protocol::wire::frame::{ExecState, Outcome};
+        let Some(client) = &self.client else {
+            return Vec::new();
+        };
+        let Some(key) = client.selected_session().and_then(|id| {
+            let topology = self.topology.as_ref()?;
+            topology.sessions.iter().find(|s| s.id == id)?.key
+        }) else {
+            return Vec::new();
+        };
+        client
+            .organization()
+            .members(&key)
+            .filter(|r| r.kind == ResourceKind::Terminal && r.live.is_none())
+            .filter(|r| {
+                r.activation.as_ref().is_some_and(|a| {
+                    a.state == ExecState::Completed && a.outcome == Some(Outcome::Unobserved)
+                })
+            })
+            .map(|r| r.key)
+            .collect()
+    }
+
+    /// Relaunch what a server restart ended in the selected session.
+    pub fn restore_session(&mut self) {
+        let Some(client) = &self.client else { return };
+        for key in self.ended_by_restart() {
+            if let Err(error) = client.relaunch_resource(key) {
+                self.error = Some(format!("Couldn't restore a terminal: {error}"));
+            }
+        }
+    }
+
     pub fn selected_session_name(&self) -> Option<String> {
         let id = self.client.as_ref()?.selected_session()?;
         let topology = self.topology.as_ref()?;

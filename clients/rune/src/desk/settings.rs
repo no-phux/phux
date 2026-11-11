@@ -99,8 +99,48 @@ impl Desk {
     }
 
     pub fn toggle_sidebar(&mut self) {
-        self.sidebar_open = !self.sidebar_open;
+        // A narrow window folds the sidebar on its own; the toggle peeks
+        // without overwriting the preference a wider window restores.
+        if self.sidebar_narrow() {
+            self.sidebar_peek = !self.sidebar_peek;
+            return;
+        }
+        self.set_sidebar_open(!self.sidebar_open);
+    }
+
+    /// The saved preference, which a wide enough window shows.
+    pub fn set_sidebar_open(&mut self, open: bool) {
+        self.sidebar_open = open;
         let _ = self.prefs.set("sidebar_open", &self.sidebar_open);
+    }
+
+    /// Whether the window is too narrow for the sidebar beside a usable
+    /// terminal. Unknown (before the first layout) counts as wide.
+    pub fn sidebar_narrow(&self) -> bool {
+        const MIN_STAGE: f32 = 420.0;
+        self.window_w > 0.0 && self.window_w < crate::ui::SIDEBAR_W + MIN_STAGE
+    }
+
+    /// Whether the sidebar is drawn.
+    pub fn sidebar_shown(&self) -> bool {
+        if self.sidebar_narrow() {
+            self.sidebar_peek
+        } else {
+            self.sidebar_open
+        }
+    }
+
+    /// The root's layout: learn the window width, and post a frame when it
+    /// crosses the narrow line, since on_layout runs after poll.
+    pub fn window_laid_out(&mut self, width: f32) {
+        let was = self.sidebar_narrow();
+        self.window_w = width;
+        if was != self.sidebar_narrow() {
+            self.sidebar_peek = false;
+            if let Some(waker) = &self.waker {
+                waker();
+            }
+        }
     }
 
     pub fn toggle_settings(&mut self) {
