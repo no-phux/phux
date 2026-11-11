@@ -34,6 +34,7 @@ impl Group {
             "signal-terminal",
             "toggle-zoom",
             "focus-direction",
+            "popup",
         ];
         if action.ends_with("-pane") || PANE.contains(&action) {
             Self::Pane

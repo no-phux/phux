@@ -21,10 +21,12 @@ mod modes;
 mod panes;
 mod placeholders;
 mod plugins;
+mod popup;
 mod sessions;
 mod spawn;
 mod views;
 mod windows;
+pub(in crate::attach) use popup::popup;
 mod worktree;
 
 pub(in crate::attach) use modes::{enter_mode, exit_mode};

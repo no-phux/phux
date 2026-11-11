@@ -93,6 +93,16 @@ impl PromptOverlay {
         }
     }
 
+    /// The `popup` prompt; committing runs the command in a floating pane.
+    #[must_use]
+    pub fn popup(theme: &Theme) -> Self {
+        Self {
+            verb: "run",
+            placeholder: "a command",
+            ..Self::new("Popup", "popup", "command", "", theme)
+        }
+    }
+
     /// The `new-worktree` prompt; committing creates the worktree and
     /// switches to its session.
     #[must_use]

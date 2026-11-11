@@ -57,6 +57,7 @@ pub const ACTION_NAMES: &[&str] = &[
     "toggle-project-group",
     "new-session",
     "new-worktree",
+    "popup",
     "last-session",
     "next-session",
     "previous-session",
