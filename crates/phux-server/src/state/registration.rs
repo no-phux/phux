@@ -132,6 +132,13 @@ impl ServerState {
         Ok(wire)
     }
 
+    /// Shutdown: cancel every engine and hand back all engine futures, so
+    /// the caller can let each finish its teardown before the `LocalSet`
+    /// drops.
+    pub(crate) fn retire_engines(&mut self) -> tokio::task::JoinSet<()> {
+        self.resources.retire_engines()
+    }
+
     /// Cancel every output pump of `terminal`: a killed Terminal's process
     /// outlives its close (the hangup grace), and nothing it prints then may
     /// follow its `RESOURCE_CLOSED`.

@@ -6,13 +6,19 @@
 //! No sleeps: every assertion is a read sent after the kill's reply, which
 //! the in-order frame loop answers from the committed state.
 
+use std::path::Path;
+use std::time::Duration;
+
 use phux_protocol::ids::{ResourceId, ServerInstance};
 use phux_protocol::wire::frame::{
     AgentEvent, CloseReason, Command, CommandResult, FrameKind, KillConditions, KillPrecondition,
     SpawnResource, SpawnResult, StateScope,
 };
 use phux_protocol::wire::info::SessionSnapshot;
-use phux_server_testkit::{Spawn, attach_by_name, command, send_frame, spawn_resource};
+use phux_server_testkit::{
+    Spawn, WIRE_RECV_TIMEOUT, attach_by_name, command, hangup_proof_script, send_frame,
+    spawn_resource,
+};
 use tokio::net::UnixStream;
 
 use crate::common::{Server, create, find, session, state, subscribe, wait_frame};
@@ -20,17 +26,15 @@ use crate::common::{Server, create, find, session, state, subscribe, wait_frame}
 const ANCHOR: &str = "anchor";
 
 /// Survives the hangup, so only the grace's `SIGKILL` ends it.
-const HANGUP_PROOF: &str = "trap '' HUP; while :; do sleep 1; done";
-
 fn hangup_proof() -> Spawn {
-    Spawn::command(&["/bin/sh", "-c", HANGUP_PROOF])
+    Spawn::command(&["/bin/sh", "-c", &hangup_proof_script()])
 }
 
 /// Create session `name` seeded with a hangup-proof pane; return the pane.
 async fn doomed_session(stream: &mut UnixStream, request_id: u32, name: &str) -> ResourceId {
     let body = serde_json::json!({
         "name": name,
-        "command": ["/bin/sh", "-c", HANGUP_PROOF],
+        "command": ["/bin/sh", "-c", hangup_proof_script()],
     });
     let result = create(stream, request_id, body).await;
     let id = result["terminal_id"].as_u64().expect("a seeded create");
@@ -47,6 +51,47 @@ async fn doomed_pane(stream: &mut UnixStream, request_id: u32) -> (ResourceId, S
         SpawnResult::OkBound { id, instance } => (id, instance),
         other => panic!("spawn failed: {other:?}"),
     }
+}
+
+/// Spawn a hangup-proof pane that records its pid; return the pane and pid.
+async fn recorded_pane(
+    stream: &mut UnixStream,
+    request_id: u32,
+    pid_file: &Path,
+) -> (ResourceId, i32) {
+    let script = format!(
+        "echo $$ > '{}'; {}",
+        pid_file.display(),
+        hangup_proof_script()
+    );
+    let pane = match spawn_resource(
+        stream,
+        request_id,
+        Spawn::command(&["/bin/sh", "-c", &script]),
+    )
+    .await
+    {
+        SpawnResult::Ok(id) => id,
+        other => panic!("spawn failed: {other:?}"),
+    };
+    let deadline = tokio::time::Instant::now() + WIRE_RECV_TIMEOUT;
+    loop {
+        let recorded = std::fs::read_to_string(pid_file).unwrap_or_default();
+        if let Ok(pid) = recorded.trim().parse() {
+            return (pane, pid);
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "{} never written",
+            pid_file.display()
+        );
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+}
+
+/// Whether `pid` still exists (a zombie counts: nothing reaped it).
+fn exists(pid: i32) -> bool {
+    nix::sys::signal::kill(nix::unistd::Pid::from_raw(pid), None).is_ok()
 }
 
 /// `pane` is in no resource list and no window of `snapshot`.
@@ -225,5 +270,35 @@ fn a_kill_journals_its_close_before_the_reply_and_closes_subscribers_once() {
 
         drop((killer, watcher));
         server.stop().await;
+    });
+}
+
+/// A server stop finishes every engine's teardown, so no hangup-proof child
+/// outlives the server: neither one killed just before the stop (its reply
+/// precedes the grace) nor one still live.
+#[test]
+fn a_server_stop_reaps_killed_and_live_hangup_proof_panes() {
+    phux_server_testkit::run_local(async {
+        let server = Server::pty(Some(ANCHOR));
+        let mut client = server.connect().await;
+        let (killed, killed_pid) =
+            recorded_pane(&mut client, 1, &server.tmp.path().join("killed.pid")).await;
+        let (_live, live_pid) =
+            recorded_pane(&mut client, 2, &server.tmp.path().join("live.pid")).await;
+
+        let kill = Command::KillResource {
+            terminal_id: killed,
+            operation_id: None,
+        };
+        assert_eq!(command(&mut client, 3, kill).await, CommandResult::Ok);
+        drop(client);
+        server.stop().await;
+
+        for (what, pid) in [("killed", killed_pid), ("live", live_pid)] {
+            assert!(
+                !exists(pid),
+                "the {what} pane's child {pid} outlived the server"
+            );
+        }
     });
 }

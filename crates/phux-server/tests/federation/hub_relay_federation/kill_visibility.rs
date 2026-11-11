@@ -5,9 +5,7 @@
 //! by the satellite's full pane-kill grace.
 
 use super::*;
-use phux_server_testkit::command;
-
-const HANGUP_PROOF: &str = "trap '' HUP; while :; do sleep 1; done";
+use phux_server_testkit::{command, hangup_proof_script};
 
 fn lists(result: &CommandResult, pane: &ResourceId) -> bool {
     let CommandResult::OkWith(CommandValue::State(snapshot)) = result else {
@@ -27,7 +25,10 @@ fn a_relayed_kill_reply_is_the_satellites_committed_teardown() {
 
         let mut panes = Vec::new();
         for request_id in [8100, 8101] {
-            let spawn = on_satellite("sat", Spawn::command(&["/bin/sh", "-c", HANGUP_PROOF]));
+            let spawn = on_satellite(
+                "sat",
+                Spawn::command(&["/bin/sh", "-c", &hangup_proof_script()]),
+            );
             let SpawnResult::Ok(pane) = spawn_resource(&mut hub, request_id, spawn).await else {
                 panic!("satellite spawn failed");
             };
@@ -57,5 +58,7 @@ fn a_relayed_kill_reply_is_the_satellites_committed_teardown() {
             !lists(&after_all, &panes[1]),
             "KILL_RESOURCES: {after_all:?}"
         );
+        drop(hub);
+        fed.shutdown().await;
     });
 }
