@@ -1,6 +1,6 @@
 //! Start server-owned background work and fold it into graceful shutdown.
 
-use crate::runtime::apps::terminal::input_lane;
+use crate::runtime::apps::InputLane;
 use crate::runtime::listeners::remote::connector_inner_tls;
 use crate::state::SharedState;
 use std::future::Future;
@@ -192,7 +192,7 @@ pub(in crate::runtime) fn spawn_connector_supervisors(
     specs: Vec<crate::connector::ConnectorSpec>,
     consumer_tokens: Option<&std::sync::Arc<crate::auth::ReloadingTokenStore>>,
     state: &SharedState,
-    input_lane: &input_lane::InputLaneHandle,
+    input_lane: Option<&InputLane>,
     root_token: &CancellationToken,
 ) {
     let Some(tokens) = consumer_tokens else {

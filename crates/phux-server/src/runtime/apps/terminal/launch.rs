@@ -87,6 +87,43 @@ pub(crate) fn seed_pane_command(
     cmd
 }
 
+/// Seed the new session `name` with a pane running `command` (else the
+/// shell) in `cwd` with `env`; headless when the server runs without PTYs.
+pub(crate) fn seed_named_session(
+    state: &SharedState,
+    name: &str,
+    command: Option<Vec<String>>,
+    cwd: Option<&str>,
+    env: std::collections::BTreeMap<String, String>,
+    origin: crate::runtime::commands::SeedOrigin,
+    root_token: &tokio_util::sync::CancellationToken,
+) -> Result<phux_core::ids::ResourceId, String> {
+    let (with_pty, scrollback) =
+        state.with(|s| (s.attach_create_seeds_pty(), s.scrollback_limits()));
+    let seed_cmd = with_pty.then(|| named_session_command(state, name, command, cwd, env));
+    super::commands::seed::seed_session(state, name, seed_cmd, scrollback, root_token, None, origin)
+        .map_err(|err| err.to_string())
+}
+
+/// A fresh start's pre-seeded session `name`: its pane runs `configured`
+/// (else the shell), or no process at all without PTYs.
+pub(crate) fn seed_initial_session(
+    state: &SharedState,
+    name: &str,
+    with_pty: bool,
+    configured: Option<LaunchCommand>,
+    scrollback: phux_config::ScrollbackLimits,
+    root_token: &tokio_util::sync::CancellationToken,
+) -> Result<(), String> {
+    let seeded = if with_pty {
+        let command = seed_pane_command(state, configured);
+        super::commands::seed::seed_session_with_pty(state, name, command, scrollback, root_token)
+    } else {
+        super::commands::seed::seed_session_with_actor(state, name, scrollback, root_token)
+    };
+    seeded.map(|_| ()).map_err(|err| err.to_string())
+}
+
 /// The command a Terminal launch spec runs: its argv, else the default
 /// shell, in its cwd, with its environment and the server's `TERM`.
 pub(crate) fn spec_command(s: &ServerState, launch: &phux_core::TerminalLaunch) -> LaunchCommand {
@@ -137,7 +174,7 @@ pub(crate) fn execute(launch: super::super::ResourceLaunch<'_>) -> Result<(), St
         scrollback,
         root_token,
         None,
-        super::commands::SpawnAttribution::default(),
+        crate::runtime::commands::SpawnAttribution::default(),
         true,
     )
     .map(|_| ())

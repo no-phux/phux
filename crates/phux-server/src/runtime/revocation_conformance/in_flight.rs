@@ -10,7 +10,6 @@ use tokio::sync::mpsc;
 use super::{Fixture, acquire, local, settle, subscribe_metadata};
 use crate::hub::relay::{HubRelays, RelayHandle, RelayRequest, Unsubscribe};
 use crate::policy::Revocation;
-use crate::runtime::apps::terminal::input_lane::spawn_input_lane;
 use crate::runtime::revocation::revoke_connection;
 use crate::runtime::test_support::{hello, workload_identity};
 use crate::state::EventRecord;
@@ -183,7 +182,7 @@ async fn revoking_mid_subscribe_stops_an_in_flight_replay() {
 async fn revoking_mid_input_drops_the_pending_apply_input_receipt() {
     local(async {
         let fx = Fixture::paired(&["*@global"]);
-        let lane = spawn_input_lane(fx.state.clone()).unwrap();
+        let lane = crate::runtime::test_support::start_input_lane(&fx.state).unwrap();
         let agent = fx.workload_with_lane(Some(lane.handle())).await;
         agent.attach(1).await;
 

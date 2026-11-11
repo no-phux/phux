@@ -102,9 +102,9 @@ impl Drop for Fixture {
 
 impl Fixture {
     fn new() -> Self {
-        let state = crate::runtime::apps::terminal::test_support::terminal_state();
+        let state = crate::runtime::test_support::terminal_state();
         let root = CancellationToken::new();
-        let alpha_core = super::commands::seed_session_with_actor(
+        let alpha_core = crate::runtime::test_support::seed_session_with_actor(
             &state,
             "alpha",
             phux_config::ScrollbackLimits::default(),

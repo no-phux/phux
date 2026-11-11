@@ -8,17 +8,6 @@ use super::*;
 use crate::runtime::connections::resource_frames::attached_input_resource;
 use phux_terminal_api::actor::TerminalResource as _;
 
-/// A `SessionSnapshot` describing a server with no sessions: empty lists,
-/// sentinel focus ids. Used by `GET_STATE` when the registry is empty.
-pub(crate) const fn empty_session_snapshot() -> phux_protocol::wire::info::SessionSnapshot {
-    use phux_protocol::ids::{ResourceId, SessionId, WindowId};
-    phux_protocol::wire::info::SessionSnapshot::new(
-        SessionId::new(0),
-        WindowId::new(0),
-        ResourceId::local(0),
-    )
-}
-
 /// Record a session-attached client's viewport vote and recompute every
 /// subscribed Terminal in that session under the server's geometry policy.
 pub(crate) fn handle_viewport_resize(

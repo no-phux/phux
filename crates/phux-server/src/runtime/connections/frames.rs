@@ -1,18 +1,14 @@
 mod metadata;
 
 use super::commands::{CommandDispatch, CommandDispatchOutcome};
-use super::dispatch::{ConnectionEnding, FrameDispatch, FrameFlow};
+use super::dispatch::{ConnectionEnding, FrameDispatch, FrameFlow, direction_invalid};
 use super::hello::{HelloRequest, negotiate_hello};
+use super::move_resource::handle_move_resource;
 use super::plumbing::{
     AttachIdVerdict, ConnectionClose, classify_attach_id, detach_on_request, reply_pong,
 };
 use crate::runtime::apps::ResourceFrame;
 use crate::runtime::apps::spawn::SpawnRequest;
-use crate::runtime::apps::terminal::attach::handle_move_terminal;
-use crate::runtime::apps::terminal::commands::handle_viewport_resize;
-use crate::runtime::apps::terminal::terminal_streams::{
-    AttachFrame, direction_invalid, is_input_frame, is_metadata_frame, is_stream_frame,
-};
 use crate::runtime::session_attach::handle_attach;
 use crate::transport::FrameReader;
 use phux_protocol::ids::ResourceId as WireResourceId;
@@ -192,14 +188,13 @@ impl<R: FrameReader> FrameDispatch<'_, R> {
             state: self.state,
             client_id: self.client_id,
             out_tx: &self.plumbing.out_tx,
-            input_lane: self.input_lane,
+            lane: self.lane,
             token: self.token,
             root_token: self.root_token,
             selection,
             command_tasks: self.command_tasks,
             input_receipts: self.input_receipts,
             input_receipt_slots: self.input_receipt_slots,
-            input_credits: self.input_credits,
             held_commands: self.held_commands,
             service_http: self.service_http,
         })
@@ -230,17 +225,16 @@ impl<R: FrameReader> FrameDispatch<'_, R> {
                 rows = viewport.rows,
                 "VIEWPORT_RESIZE"
             );
-            handle_viewport_resize(self.state, self.client_id, &viewport);
+            crate::runtime::apps::viewport_resize(self.state, self.client_id, &viewport);
             return FrameFlow::Continue(());
         }
         let ctx = ResourceFrame {
             state: self.state,
             client_id: self.client_id,
             token: self.token,
-            input_lane: self.input_lane,
+            lane: self.lane,
             plumbing: self.plumbing,
             negotiated: *self.negotiated,
-            input_credits: self.input_credits,
         };
         super::resource_frames::serve(ctx, frame).await
     }
@@ -292,7 +286,7 @@ impl<R: FrameReader> FrameDispatch<'_, R> {
                 terminal,
                 owner_terminal,
             } => {
-                handle_move_terminal(
+                handle_move_resource(
                     state,
                     client_id,
                     request_id,
@@ -358,6 +352,52 @@ impl<R: FrameReader> FrameDispatch<'_, R> {
         .await;
         FrameFlow::Continue(())
     }
+}
+
+/// The fields of one `ATTACH` frame.
+struct AttachFrame {
+    attach_id: u32,
+    target: phux_protocol::wire::frame::AttachTarget,
+    viewport: phux_protocol::wire::frame::ViewportInfo,
+    request_scrollback: bool,
+    scrollback_limit_lines: u32,
+    role_policy: Option<phux_protocol::wire::frame::RolePolicy>,
+}
+
+/// `INPUT_*` frames: routed to the Terminal's input path.
+const fn is_input_frame(frame: &FrameKind) -> bool {
+    matches!(
+        frame,
+        FrameKind::InputKey { .. }
+            | FrameKind::InputMouse { .. }
+            | FrameKind::InputFocus { .. }
+            | FrameKind::InputPaste { .. }
+            | FrameKind::InputTerminalReply { .. }
+    )
+}
+
+/// Frames about an attached Terminal's size or content stream.
+const fn is_stream_frame(frame: &FrameKind) -> bool {
+    matches!(
+        frame,
+        FrameKind::ViewportResize { .. }
+            | FrameKind::ResizeTerminal { .. }
+            | FrameKind::FrameAck { .. }
+            | FrameKind::HistoryRequest { .. }
+    )
+}
+
+/// L3 metadata and event-subscription frames.
+const fn is_metadata_frame(frame: &FrameKind) -> bool {
+    matches!(
+        frame,
+        FrameKind::GetMetadata { .. }
+            | FrameKind::SetMetadata { .. }
+            | FrameKind::DeleteMetadata { .. }
+            | FrameKind::ListMetadata { .. }
+            | FrameKind::SubscribeMetadata { .. }
+            | FrameKind::SubscribeEvents { .. }
+    )
 }
 
 /// The resource a stream or input frame is about; `None` for one that

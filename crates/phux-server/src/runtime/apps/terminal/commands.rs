@@ -22,6 +22,7 @@ use tokio::sync::oneshot;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, trace, warn};
 
+use super::agent_state::spawn_agent_state_drain;
 use crate::resource::{ResourceHandle, WrongResourceKind};
 use crate::runtime::apps::terminal::input_lane::InputLaneHandle;
 #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
@@ -33,7 +34,7 @@ use crate::runtime::commands::attach_terminal::native_checkpoint_profile;
 use crate::runtime::commands::*;
 use crate::runtime::connections::PaneEvents;
 use crate::runtime::pump;
-use crate::runtime::{spawn_agent_state_drain, spawn_resource_exit_watcher};
+use crate::runtime::spawn_resource_exit_watcher;
 use crate::state::RoleEffects;
 use crate::state::{
     ClientId, Outbound, RelayRoute, Resolved, ResolvedOwned, ServerInterceptedKey, SharedState,
@@ -44,6 +45,7 @@ use phux_terminal_api::actor::{
     ConsumerAckRequest, ControlRequest, ResizeRequest, ScreenReply, ScreenRequest, TerminalHandle,
 };
 
+mod agent_reports;
 mod app;
 pub(crate) mod attach_resource;
 mod attach_resource_pump;
@@ -56,6 +58,7 @@ pub(crate) mod signal;
 pub(crate) mod spawn;
 pub(crate) mod terminal_input;
 
+use agent_reports::{handle_report_agent_state, handle_report_asked};
 pub(crate) use input_lease::*;
 pub(crate) use input_route::*;
 pub(crate) use resize::*;
@@ -69,5 +72,7 @@ pub(crate) use attach_resource::*;
 use attach_resource::{
     AttachResourceGeneration, AttachResourcePumpChannels, AttachResourceSession,
 };
-use seed::{seed_session, spawn_cwd_of, stamp_spawn_cwd};
+use seed::{
+    AGENT_STATE_SINK_CAPACITY, EVENT_SINK_CAPACITY, seed_session, spawn_cwd_of, stamp_spawn_cwd,
+};
 use spawn::{exit_policy_for, spawn_actor};

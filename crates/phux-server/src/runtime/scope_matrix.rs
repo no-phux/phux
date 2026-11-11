@@ -30,7 +30,7 @@ use tokio_util::sync::CancellationToken;
 use super::test_support::{Feed, Wire, encode, workload_identity};
 use crate::auth::AuthenticatedCredential;
 use crate::policy::{ConnectionGrant, GrantFuture, PolicyEngine, PolicyError, ScopedPolicy};
-use crate::runtime::apps::terminal::input_lane::InputLaneHandle;
+use crate::runtime::apps::InputLane;
 use crate::runtime::connections::handle_client;
 use crate::state::{ClientId, SharedState};
 use crate::workload::{ReloadingWorkloadRegistry, WorkloadRegistry};
@@ -271,7 +271,7 @@ fn is_permission_denied(result: Option<&CommandResult>) -> bool {
 async fn exchange(
     state: &SharedState,
     frames: Vec<BytesMut>,
-    lane: Option<InputLaneHandle>,
+    lane: Option<InputLane>,
     done: impl Fn(&[FrameKind]) -> bool,
 ) -> Outcome {
     let wire = Wire::default();

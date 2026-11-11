@@ -12,35 +12,25 @@ use phux_protocol::wire::frame::{
     AgentEvent, Command, CommandResult, CommandValue, ControlAction, DetachReason, ErrorCode,
     FrameKind, InputMode, ResourceLifecycle, StateScope,
 };
-use tokio::sync::oneshot;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, trace, warn};
 
 use crate::resource::ResourceHandle;
-use crate::runtime::apps::terminal::input_lane::InputLaneHandle;
 use crate::runtime::pump;
 use crate::state::RoleEffects;
-use crate::state::{
-    ClientId, Outbound, RelayRoute, ResolvedOwned, ServerInterceptedKey, SharedState,
-};
-use phux_agent_session::asked::{AskedPayload, AskedSource};
+use crate::state::{ClientId, Outbound, RelayRoute, ServerInterceptedKey, SharedState};
 
-mod agent_reports;
 pub(crate) mod attach_terminal;
 mod dispatch;
 mod kill;
 mod lifecycle;
+mod resource_events;
+mod results;
 mod routing;
 mod satellite;
 pub(crate) mod satellite_lease;
 mod state_query;
 
-#[cfg(test)]
-use crate::runtime::apps::terminal::commands::input_lease::spawn_input_lease_expiry;
-pub use crate::runtime::apps::terminal::commands::seed::*;
-use crate::runtime::apps::terminal::commands::signal::{actor_reply, local_terminal};
-pub(crate) use crate::runtime::apps::terminal::commands::*;
-pub(crate) use agent_reports::*;
 pub(crate) use attach_terminal::*;
 use attach_terminal::{
     handle_attach_terminal, invalid_agent_cursor, refuse_invalid_role_policy,
@@ -51,6 +41,8 @@ pub(crate) use kill::*;
 use kill::{handle_kill_resource_if, handle_kill_terminal, kill_attribution};
 pub(crate) use lifecycle::*;
 use lifecycle::{handle_shutdown, handle_upgrade};
+pub(crate) use resource_events::*;
+pub(crate) use results::*;
 use routing::send_result;
 pub(crate) use routing::*;
 pub(in crate::runtime) use satellite::*;
@@ -61,8 +53,6 @@ use satellite_lease::{
     SatelliteLeaseTarget, relay_satellite_acquire_input, relay_satellite_attach,
     relay_satellite_release_input, relay_satellite_route_input,
 };
-#[cfg(test)]
-use signal::{commit_signal, record_signal_failure};
 pub(crate) use state_query::*;
 #[cfg(test)]
 use state_query::{merge_satellite_resources, satellite_host_inventory};

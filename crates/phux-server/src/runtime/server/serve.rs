@@ -1,7 +1,6 @@
 //! Assemble startup in order, drive the listeners, and unwind graceful shutdown.
 
 use super::{ListeningHook, ServerRuntime};
-use crate::runtime::apps::terminal::{input_lane, upload};
 use crate::runtime::config::ServerError;
 #[cfg(feature = "webtransport")]
 use crate::runtime::connections::accept_loop;
@@ -158,8 +157,10 @@ impl ServerRuntime {
         let uplink_socket = socket_path.clone();
         // Input routing runs on its own OS thread (ADR-0044) so keystrokes
         // are not queued behind output broadcast; its `Drop` joins it.
-        let input_lane = input_lane::spawn_input_lane(state.clone())?;
-        let input_lane_handle = input_lane.handle();
+        let input_lane = crate::runtime::apps::start(&state)?;
+        let input_lane_handle = input_lane
+            .as_ref()
+            .map(crate::runtime::apps::RunningLane::handle);
         let local = LocalSet::new();
         // Parent of every per-client and per-pane token; `shutdown` is
         // folded into it.
@@ -183,17 +184,11 @@ impl ServerRuntime {
                 });
                 // Live revocation (workload-auth §7).
                 revocation::spawn_revocation_watcher(&state, &root_token);
-                // Off the runtime thread: a large upload directory is a
-                // directory walk.
-                let upload_env = state.with(crate::state::ServerState::server_env);
-                drop(tokio::task::spawn_blocking(move || {
-                    upload::sweep_stale_partials_at_startup(&upload_env);
-                }));
                 spawn_connector_supervisors(
                     connector_specs,
                     connector_consumer_tokens.as_ref(),
                     &state,
-                    &input_lane_handle,
+                    input_lane_handle.as_ref(),
                     &root_token,
                 );
 
@@ -224,7 +219,7 @@ impl ServerRuntime {
                     delegation::resume_delegations(
                         &state,
                         &blob.delegations,
-                        Some(&input_lane_handle),
+                        input_lane_handle.as_ref(),
                         &root_token,
                     );
                 }
@@ -274,15 +269,19 @@ impl ServerRuntime {
                 let auto_overlay_gate =
                     auto_overlay_allowed(auto_overlay_ports, &state, mode_unset);
 
-                let mut accepts =
-                    configured.accept_loops(&listener, &state, &root_token, &input_lane_handle);
+                let mut accepts = configured.accept_loops(
+                    &listener,
+                    &state,
+                    &root_token,
+                    input_lane_handle.as_ref(),
+                );
                 #[cfg(feature = "webtransport")]
                 if let Some(wt) = &webtransport_listener {
                     accepts.push(Box::pin(accept_loop(
                         wt,
                         state.clone(),
                         root_token.clone(),
-                        Some(input_lane_handle.clone()),
+                        input_lane_handle.clone(),
                     )));
                 }
                 accepts.push(Box::pin(serve_auto_overlay_listeners(
@@ -293,11 +292,7 @@ impl ServerRuntime {
                     root_token.clone(),
                     input_lane_handle.clone(),
                 )));
-                crate::runtime::apps::terminal::standing::install(
-                    &state,
-                    mirror_source,
-                    &root_token,
-                );
+                crate::runtime::apps::keep_standing(&state, mirror_source, &root_token);
                 let startup_task = plugin_startup.map(|cfg| {
                     crate::plugin_startup::install(&state, *cfg, startup_socket, root_token.clone())
                 });
@@ -314,8 +309,8 @@ impl ServerRuntime {
             })
             .await;
 
-        // Drop the LocalSet first: its tasks may hold `InputLaneHandle`
-        // clones, and `InputLane::drop` joins a thread that only exits once
+        // Drop the LocalSet first: its tasks may hold `InputLane` clones,
+        // and dropping the running lane joins a thread that only exits once
         // every handle is gone. The reverse order deadlocks.
         drop(local);
         drop(input_lane);

@@ -5,6 +5,7 @@
 )]
 
 use super::*;
+use phux_protocol::wire::frame::AttachTarget;
 
 /// A Terminal handle with every channel closed (no actor behind it).
 fn detached_handle(facet: phux_terminal::actor::TerminalHandle) -> crate::resource::ResourceHandle {

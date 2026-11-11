@@ -306,19 +306,10 @@ fn unguarded_upload_dir(env: &crate::runtime::ServerEnv) -> Result<PathBuf, Stri
         })
 }
 
-pub(in crate::runtime) fn digest_reader(
+fn digest_reader(
     reader: &mut impl Read,
 ) -> Result<sha2::digest::Output<Sha256>, (ErrorCode, String)> {
-    let mut digest = Sha256::new();
-    let mut buffer = [0; 16 * 1024];
-    loop {
-        let count = reader.read(&mut buffer).map_err(io_error)?;
-        if count == 0 {
-            break;
-        }
-        digest.update(&buffer[..count]);
-    }
-    Ok(digest.finalize())
+    crate::runtime::download::sha256_of(reader).map_err(io_error)
 }
 
 fn path_string(path: &Path) -> Result<String, (ErrorCode, String)> {

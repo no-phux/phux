@@ -25,7 +25,7 @@ use tracing::{debug, info, warn};
 
 use crate::hub::link::Backoff;
 use crate::runtime::accept_loop;
-use crate::runtime::apps::terminal::input_lane::InputLaneHandle;
+use crate::runtime::apps::InputLane;
 use crate::state::SharedState;
 use crate::transport::Incoming;
 use crate::transport::inner_tls::{InnerAccepted, InnerIo, InnerTls, TLS_HANDSHAKE};
@@ -454,7 +454,7 @@ pub(crate) fn spawn_connectors(
     consumer_tokens: &Arc<crate::auth::ReloadingTokenStore>,
     inner: &Arc<InnerTls>,
     state: &SharedState,
-    input_lane: &InputLaneHandle,
+    input_lane: Option<&InputLane>,
     root_token: &CancellationToken,
 ) {
     for spec in specs {
@@ -463,7 +463,7 @@ pub(crate) fn spawn_connectors(
             inner: Arc::clone(inner),
         };
         let state = state.clone();
-        let input_lane = input_lane.clone();
+        let input_lane = input_lane.cloned();
         let cancel = root_token.child_token();
         tokio::task::spawn_local(supervise(spec, bridge, state, input_lane, cancel));
     }
@@ -483,7 +483,7 @@ async fn supervise(
     spec: ConnectorSpec,
     bridge: Bridge,
     state: SharedState,
-    input_lane: InputLaneHandle,
+    input_lane: Option<InputLane>,
     cancel: CancellationToken,
 ) {
     let mut backoff = Backoff::new(BACKOFF_BASE, BACKOFF_CAP);
@@ -525,13 +525,8 @@ async fn supervise(
                 // Keep the endpoint driver and connector-initiated stream 0
                 // alive and silent while bridged consumer streams are served.
                 let _control = (endpoint, control_send, control_recv);
-                match accept_loop(
-                    &incoming,
-                    state.clone(),
-                    cancel.clone(),
-                    Some(input_lane.clone()),
-                )
-                .await
+                match accept_loop(&incoming, state.clone(), cancel.clone(), input_lane.clone())
+                    .await
                 {
                     Ok(()) => return,
                     Err(error) => (

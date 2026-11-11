@@ -2,14 +2,14 @@ use super::commands::{MAX_PENDING_INPUT_RECEIPTS, admit_frame};
 use super::hello::NegotiatedConnection;
 use super::hello::framing_violation_close;
 use super::plumbing::{ClientPlumbing, ConnectionClose};
-use crate::runtime::apps::terminal::input_lane::{InputCredits, InputLaneHandle};
-use crate::runtime::apps::terminal::terminal_streams::handle_stream_event;
+use super::streams::handle_stream_event;
+use crate::runtime::apps::{ConnectionLane, InputLane};
 use crate::state::{ClientId, SharedState};
 use crate::transport::quic::QuicStreamEvent;
 use crate::transport::{FrameReader, FrameWriter};
 use bytes::BytesMut;
 use phux_protocol::policy::TransportType;
-use phux_protocol::wire::frame::{DetachReason, ErrorCode};
+use phux_protocol::wire::frame::{DetachReason, ErrorCode, FrameKind};
 use std::collections::HashSet;
 use std::io;
 use tokio::task::JoinSet;
@@ -32,7 +32,7 @@ pub(in crate::runtime) async fn handle_client<R, W>(
     client_id: ClientId,
     token: CancellationToken,
     root_token: CancellationToken,
-    input_lane: Option<InputLaneHandle>,
+    input_lane: Option<InputLane>,
     transport: TransportType,
     route_supports_quic_streams: bool,
 ) -> io::Result<()>
@@ -57,7 +57,7 @@ where
     let service_http = crate::runtime::service_http::Exchanges::default();
     let input_receipt_slots =
         std::sync::Arc::new(tokio::sync::Semaphore::new(MAX_PENDING_INPUT_RECEIPTS));
-    let mut input_credits = InputCredits::default();
+    let mut lane = input_lane.as_ref().map(InputLane::connect);
     let mut used_attach_ids = HashSet::new();
     // Written once by HELLO; a duplicate HELLO is fatal.
     let mut negotiated: Option<NegotiatedConnection> = None;
@@ -124,7 +124,7 @@ where
             client_id,
             token: &token,
             root_token: &root_token,
-            input_lane: input_lane.as_ref(),
+            lane: lane.as_mut(),
             transport,
             route_supports_quic_streams,
             plumbing: &mut plumbing,
@@ -134,7 +134,6 @@ where
             command_tasks: &mut command_tasks,
             input_receipts: &mut input_receipts,
             input_receipt_slots: &input_receipt_slots,
-            input_credits: &mut input_credits,
             held_commands: &mut held_commands,
             service_http: &service_http,
         };
@@ -235,7 +234,9 @@ pub(in crate::runtime) struct FrameDispatch<'a, R> {
     pub(in crate::runtime) client_id: ClientId,
     pub(in crate::runtime) token: &'a CancellationToken,
     pub(super) root_token: &'a CancellationToken,
-    pub(in crate::runtime) input_lane: Option<&'a InputLaneHandle>,
+    /// This connection's place on the input lane (ADR-0044), with its
+    /// pane input credits (ADR-0144).
+    pub(in crate::runtime) lane: Option<&'a mut ConnectionLane>,
     pub(super) transport: TransportType,
     pub(super) route_supports_quic_streams: bool,
     pub(in crate::runtime) plumbing: &'a mut ClientPlumbing,
@@ -245,12 +246,22 @@ pub(in crate::runtime) struct FrameDispatch<'a, R> {
     pub(super) command_tasks: &'a mut crate::runtime::command_tasks::CommandTasks,
     pub(super) input_receipts: &'a mut JoinSet<()>,
     pub(super) input_receipt_slots: &'a std::sync::Arc<tokio::sync::Semaphore>,
-    pub(in crate::runtime) input_credits: &'a mut InputCredits,
     pub(super) held_commands: &'a mut JoinSet<()>,
     pub(super) service_http: &'a crate::runtime::service_http::Exchanges,
 }
 
 pub(crate) type FrameFlow = std::ops::ControlFlow<ConnectionEnding>;
+
+/// A frame kind a client may not send in the negotiated phase: close.
+pub(in crate::runtime) fn direction_invalid(client_id: ClientId, other: &FrameKind) -> FrameFlow {
+    warn!(?client_id, kind = ?other, "direction-invalid client frame; closing");
+    FrameFlow::Break(ConnectionEnding::Violation(ConnectionClose {
+        attached_reason: Some("direction-invalid frame"),
+        detach_reason: DetachReason::ProtocolError,
+        code: ErrorCode::InvalidCommand,
+        message: format!("frame is not valid from a client in the negotiated phase: {other:?}"),
+    }))
+}
 
 async fn dispatch_stream_event(
     event: Option<QuicStreamEvent>,

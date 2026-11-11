@@ -200,7 +200,7 @@ pub(crate) trait PaneStart {
     fn start(self, state: &SharedState, wire: &WireResourceId) -> Option<PaneEvents>;
 }
 
-impl PaneStart for crate::runtime::PaneWiring {
+impl PaneStart for super::commands::PaneWiring {
     fn start(self, state: &SharedState, wire: &WireResourceId) -> Option<PaneEvents> {
         Some(Self::start(self, state, wire))
     }
@@ -403,7 +403,7 @@ fn wired(
     ResourceId,
     &PaneBlob,
     phux_config::ScrollbackLimits,
-) -> Result<RebuiltPane<crate::runtime::PaneWiring>, RebuildError>
+) -> Result<RebuiltPane<super::commands::PaneWiring>, RebuildError>
 + 'static {
     let engine = state.terminal_engine();
     move |core, p, scrollback| {
@@ -438,7 +438,7 @@ fn wired(
             token: bundle.token,
             engine: bundle.run,
             exit_notify: bundle.exit_notify,
-            wired: crate::runtime::PaneWiring::new(
+            wired: super::commands::PaneWiring::new(
                 bundle.events,
                 bundle.agent_state,
                 bundle.program_status,

@@ -18,7 +18,6 @@ pub(crate) mod input_lane;
 pub(crate) mod launch;
 pub(crate) mod program_status;
 pub(crate) mod standing;
-pub(crate) mod terminal_streams;
 #[cfg(test)]
 pub(crate) mod test_support;
 pub(crate) mod upgrade;

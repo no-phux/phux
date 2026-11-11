@@ -252,4 +252,52 @@ impl ResourceApp for AgentSessionApp {
     ) -> Option<CommandResult> {
         native_agent::claim_relaunch(ctx, operation, resource, expected)
     }
+
+    fn start(&self, _state: &SharedState) -> std::io::Result<Option<super::RunningLane>> {
+        Ok(None)
+    }
+
+    fn bootstrap_capabilities(
+        &self,
+        _state: &SharedState,
+    ) -> Option<phux_protocol::caps::BootstrapCapabilities> {
+        None
+    }
+
+    fn seed_session<'a>(
+        &'a self,
+        seed: super::SessionSeed<'a>,
+    ) -> Result<LocalBoxFuture<'a, Option<String>>, super::SessionSeed<'a>> {
+        // An agent session runs under its producer, never as a session's seed.
+        Err(seed)
+    }
+
+    fn viewport_resize(
+        &self,
+        _state: &SharedState,
+        _client: ClientId,
+        _viewport: &phux_protocol::wire::frame::ViewportInfo,
+    ) {
+        // A record stream has no grid to size.
+    }
+
+    fn client_activity(&self, _state: &SharedState, _client: ClientId) {}
+
+    fn command_refused(
+        &self,
+        _s: &crate::state::ServerState,
+        _client: ClientId,
+        _command: &Command,
+        _result: &CommandResult,
+    ) {
+    }
+
+    fn keep_standing(
+        &self,
+        _state: &SharedState,
+        _source: &crate::runtime::MirrorSource,
+        _root_token: &tokio_util::sync::CancellationToken,
+    ) -> bool {
+        false
+    }
 }

@@ -15,14 +15,15 @@ use super::pump::initial_bootstrap_id;
 use super::{apps, send_error, stream_id_from};
 use crate::resource::ResourceHandle;
 use crate::state::{AttachSnapshotPane, ClientId, Outbound, SharedState};
-use apps::resolve_attach_target;
 use prepare::{is_same_session_reattach, prepare_attach_or_refuse};
 use publication::AttachPublication;
 use staging::{CaptureFailure, SessionStaging};
+use target::resolve_attach_target;
 
 pub(crate) mod prepare;
 mod publication;
 pub(crate) mod staging;
+mod target;
 #[cfg(test)]
 mod tests;
 

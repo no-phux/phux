@@ -156,15 +156,9 @@ pub(crate) fn create_named_session(
         return Err(format!("session {name:?} already exists"));
     }
 
-    let (with_pty, scrollback) =
-        state.with(|s| (s.attach_create_seeds_pty(), s.scrollback_limits()));
-
-    let seed_cmd = with_pty.then(|| {
-        crate::runtime::apps::terminal::launch::named_session_command(
-            state, name, command, cwd, env,
-        )
-    });
-    match seed_session(state, name, seed_cmd, scrollback, root_token, None, origin) {
+    match crate::runtime::apps::terminal::launch::seed_named_session(
+        state, name, command, cwd, env, origin, root_token,
+    ) {
         Ok(core_terminal) => {
             // A headless create arms the last-session self-exit like an attach.
             let wire = state.with_mut(|s| {

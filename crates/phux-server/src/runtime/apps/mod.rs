@@ -15,104 +15,34 @@
 )]
 
 use futures_util::future::LocalBoxFuture;
-use phux_protocol::caps::{BootstrapLimits, BootstrapProfile, ClientCapabilities};
-use phux_protocol::ids::{
-    OperationId, ResourceId as WireResourceId, ResourceKey, Revision, StreamId,
-};
-use phux_protocol::wire::frame::{Command, CommandResult, FrameKind};
+use phux_protocol::caps::BootstrapCapabilities;
+use phux_protocol::ids::{OperationId, ResourceId as WireResourceId, ResourceKey, Revision};
+use phux_protocol::wire::frame::{Command, CommandResult, FrameKind, ViewportInfo};
 use tokio_util::sync::CancellationToken;
 
 use super::commands::{AttachResourceFailure, CommandContext};
 use super::connections::dispatch::FrameFlow;
-use super::connections::hello::NegotiatedConnection;
-use super::connections::plumbing::ClientPlumbing;
 use super::operation_dedupe::OperationClaim;
+use super::standing::MirrorSource;
 use crate::resource::{ResourceHandle, ResourceKind};
-use crate::state::{ClientId, Outbound, SharedState};
+use crate::state::{ClientId, ServerState, SharedState};
 
 pub(crate) mod agent_session;
 pub(crate) mod agent_tracking;
+mod context;
 pub(crate) mod document;
+pub(crate) mod lane;
 pub(crate) mod mirror_demand;
 pub(crate) mod spawn;
 pub(crate) mod terminal;
 pub(crate) mod upgrade;
 
+pub(crate) use context::{
+    FrameAdmission, ResourceFrame, ResourceLaunch, SessionSeed, StreamBootstrap,
+};
+pub(crate) use lane::{ConnectionLane, InputLane, RunningLane};
 pub(crate) use spawn::ResourceSpawn;
 pub(crate) use upgrade::{KindResume, UpgradeCut};
-
-use terminal::input_lane::{InputCredits, InputLaneHandle};
-
-/// One client's stream onto one resource, ready to bootstrap.
-#[derive(Debug, Clone, Copy)]
-pub(crate) struct StreamBootstrap<'a> {
-    /// Server state.
-    pub(crate) state: &'a SharedState,
-    /// The attaching connection.
-    pub(crate) client_id: ClientId,
-    /// The resource's wire id.
-    pub(crate) wire: &'a phux_protocol::ids::ResourceId,
-    /// The resource.
-    pub(crate) core: phux_core::ids::ResourceId,
-    /// Its engine handle.
-    pub(crate) handle: &'a ResourceHandle,
-    /// Where the stream's frames go.
-    pub(crate) content_tx: &'a tokio::sync::mpsc::Sender<Outbound>,
-    /// The wire stream.
-    pub(crate) stream_id: StreamId,
-    /// What the client negotiated.
-    pub(crate) client_caps: ClientCapabilities,
-    /// The negotiated Terminal bootstrap profile; `None` on a connection
-    /// that offered none, which a Terminal refuses and other kinds ignore.
-    pub(crate) profile: Option<BootstrapProfile>,
-    /// The negotiated bootstrap limits.
-    pub(crate) limits: BootstrapLimits,
-    /// The connection's cancellation.
-    pub(crate) connection_token: &'a CancellationToken,
-    /// A replay cursor, for kinds that resume from one.
-    pub(crate) after_seq: Option<u64>,
-}
-
-/// One already-committed launch effect. The app must execute this exact
-/// resource activation, never substitute another kind's default launch.
-#[derive(Clone, Copy)]
-pub(crate) struct ResourceLaunch<'a> {
-    pub(crate) state: &'a SharedState,
-    pub(crate) resource: phux_core::ids::ResourceId,
-    pub(crate) spec: &'a phux_core::LaunchSpec,
-    pub(crate) root_token: &'a CancellationToken,
-}
-
-/// One client's stream or input frame about a resource, with what the
-/// connection it arrived on lends the app to serve it.
-pub(crate) struct ResourceFrame<'a> {
-    /// Server state.
-    pub(crate) state: &'a SharedState,
-    /// The sending connection.
-    pub(crate) client_id: ClientId,
-    /// The connection's cancellation.
-    pub(crate) token: &'a CancellationToken,
-    /// The connection's input lane, when it has one.
-    pub(crate) input_lane: Option<&'a InputLaneHandle>,
-    /// The connection's mailboxes: control, and a bound stream per resource.
-    pub(crate) plumbing: &'a ClientPlumbing,
-    /// What `HELLO` negotiated, once it has.
-    pub(crate) negotiated: Option<NegotiatedConnection>,
-    /// The connection's pane input credits.
-    pub(crate) input_credits: &'a mut InputCredits,
-}
-
-/// The host-side check an app needs before it sees a local frame. These
-/// distinctions preserve the wire's input, hint, and refusal semantics.
-#[derive(Clone, Copy)]
-pub(crate) enum FrameAdmission {
-    /// No attachment is needed (e.g. exact resize or an in-band refusal).
-    Unrestricted,
-    /// Only a live subscriber may receive this frame's answer.
-    Subscription,
-    /// Attached input also respects retained exits, guardians, and leases.
-    AttachedInput,
-}
 
 /// What the host asks of the app serving a kind.
 pub(crate) trait ResourceApp: Sync {
@@ -266,6 +196,47 @@ pub(crate) trait ResourceApp: Sync {
 
     /// This kind's tables of the `GET_PERF` report, its engine's included.
     fn metrics(&self, state: &SharedState) -> Vec<&'static [phux_perf::Metric]>;
+
+    /// The server is starting: start what this kind runs for its lifetime,
+    /// and return the server's input lane (ADR-0044) if this kind runs it.
+    fn start(&self, state: &SharedState) -> std::io::Result<Option<RunningLane>>;
+
+    /// The native bootstrap profiles this kind lets `HELLO` offer, if any.
+    fn bootstrap_capabilities(&self, state: &SharedState) -> Option<BootstrapCapabilities>;
+
+    /// Serve a session `ATTACH`'s `CreateIfMissing` with this kind's default
+    /// resource, if this kind seeds sessions; `Err` hands `seed` back. The
+    /// future yields the session's name, or `None` once a refusal is sent.
+    fn seed_session<'a>(
+        &'a self,
+        seed: SessionSeed<'a>,
+    ) -> Result<LocalBoxFuture<'a, Option<String>>, SessionSeed<'a>>;
+
+    /// A connection's `VIEWPORT_RESIZE`: its size vote for every resource
+    /// of this kind it is attached to.
+    fn viewport_resize(&self, state: &SharedState, client: ClientId, viewport: &ViewportInfo);
+
+    /// A connection used one of its views, with structured input to any
+    /// resource, local or not.
+    fn client_activity(&self, state: &SharedState, client: ClientId);
+
+    /// The command guard refused `command` with `result`.
+    fn command_refused(
+        &self,
+        s: &ServerState,
+        client: ClientId,
+        command: &Command,
+        result: &CommandResult,
+    );
+
+    /// Keep the standing mirrors and producers `source` names running, if
+    /// this kind runs them; says whether it does.
+    fn keep_standing(
+        &self,
+        state: &SharedState,
+        source: &MirrorSource,
+        root_token: &CancellationToken,
+    ) -> bool;
 }
 
 /// The refusal a stream that needs the connection's Terminal bootstrap
@@ -341,9 +312,75 @@ pub(crate) async fn refresh_for_attach(state: &SharedState) {
     }
 }
 
-/// Resolve a session `ATTACH` target. `CreateIfMissing` seeds the new
-/// session with a Terminal, the one kind that runs without a producer.
-pub(crate) use terminal::attach::resolve_attach_target;
+/// Seed `seed`'s session with the default resource of the app that seeds
+/// sessions; `None` when no app does.
+pub(crate) fn seed_session(seed: SessionSeed<'_>) -> Option<LocalBoxFuture<'_, Option<String>>> {
+    let mut seed = seed;
+    for app in APPS {
+        match app.seed_session(seed) {
+            Ok(seeding) => return Some(seeding),
+            Err(declined) => seed = declined,
+        }
+    }
+    None
+}
+
+/// Start every app for the server's lifetime; the server's input lane, when
+/// an app runs one.
+pub(crate) fn start(state: &SharedState) -> std::io::Result<Option<RunningLane>> {
+    let mut input_lane = None;
+    for app in APPS {
+        if let Some(lane) = app.start(state)? {
+            debug_assert!(input_lane.is_none(), "the server runs one input lane");
+            input_lane.get_or_insert(lane);
+        }
+    }
+    Ok(input_lane)
+}
+
+/// Tell every app a connection's `VIEWPORT_RESIZE`.
+pub(crate) fn viewport_resize(state: &SharedState, client: ClientId, viewport: &ViewportInfo) {
+    for app in APPS {
+        app.viewport_resize(state, client, viewport);
+    }
+}
+
+/// Tell every app a connection used one of its views.
+pub(crate) fn client_activity(state: &SharedState, client: ClientId) {
+    for app in APPS {
+        app.client_activity(state, client);
+    }
+}
+
+/// Tell every app the command guard refused `command`.
+pub(crate) fn command_refused(
+    s: &ServerState,
+    client: ClientId,
+    command: &Command,
+    result: &CommandResult,
+) {
+    for app in APPS {
+        app.command_refused(s, client, command, result);
+    }
+}
+
+/// Keep the standing entries `source` names running, in the app that runs
+/// them.
+pub(crate) fn keep_standing(
+    state: &SharedState,
+    source: Option<MirrorSource>,
+    root_token: &CancellationToken,
+) {
+    let Some(source) = source else {
+        return;
+    };
+    if !APPS
+        .iter()
+        .any(|app| app.keep_standing(state, &source, root_token))
+    {
+        tracing::warn!("no app runs standing mirrors; [[mirrors]] and [[producers]] are ignored");
+    }
+}
 
 /// Tell every app the tree came back from an upgrade blob.
 pub(crate) fn resumed(state: &SharedState) {
@@ -390,10 +427,10 @@ pub(crate) fn metric_tables(state: &SharedState) -> Vec<&'static [phux_perf::Met
 }
 
 /// The native bootstrap profiles this server can offer at HELLO.
-pub(crate) fn bootstrap_capabilities(
-    state: &SharedState,
-) -> phux_protocol::caps::BootstrapCapabilities {
-    terminal::bootstrap_capabilities(state)
+pub(crate) fn bootstrap_capabilities(state: &SharedState) -> BootstrapCapabilities {
+    APPS.iter()
+        .find_map(|app| app.bootstrap_capabilities(state))
+        .unwrap_or_default()
 }
 
 /// The app that owns `command` in the catalog; `None` for a host command.

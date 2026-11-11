@@ -30,6 +30,7 @@ mod acknowledged;
 mod credit;
 mod encode;
 mod handle;
+mod host;
 mod lane;
 mod process;
 mod receipt;
@@ -51,6 +52,7 @@ use self::encode::{
 };
 pub(crate) use self::handle::InputLaneHandle;
 pub(crate) use self::handle::arm_pane_lane;
+pub(crate) use self::host::{handle_of, parts_of, start};
 pub(crate) use self::lane::spawn_input_lane;
 use self::process::{
     acknowledged_not_written, acknowledged_resource_exhausted, invalid_command,
@@ -58,7 +60,7 @@ use self::process::{
 };
 pub(crate) use self::receipt::InputReceipt;
 use self::receipt::{ReceiptFailure, ready_receipt, waiting_receipt};
-use crate::runtime::{
+use super::commands::{
     terminal_input_from_event, with_attached_input_destination, with_route_input_destination,
 };
 use crate::state::{ClientId, SharedState};

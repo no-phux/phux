@@ -86,7 +86,7 @@ fn read_chunk(path: &Path, offset: u64, max_bytes: u32) -> Result<FileChunk, (Er
         u64::try_from(data.len()).map_err(|_| io_error(std::io::Error::other("chunk too long")))?;
     let sha256 = if offset.saturating_add(read) >= size {
         file.seek(SeekFrom::Start(0)).map_err(io_error)?;
-        Some(crate::runtime::apps::terminal::upload::digest_reader(&mut file)?.into())
+        Some(sha256_of(&mut file).map_err(io_error)?.into())
     } else {
         None
     };
@@ -105,6 +105,23 @@ fn open_error(err: std::io::Error) -> (ErrorCode, String) {
         ),
         _ => io_error(err),
     }
+}
+
+/// The SHA-256 of everything `reader` yields.
+pub(in crate::runtime) fn sha256_of(
+    reader: &mut impl Read,
+) -> std::io::Result<sha2::digest::Output<sha2::Sha256>> {
+    use sha2::Digest as _;
+    let mut digest = sha2::Sha256::new();
+    let mut buffer = [0; 16 * 1024];
+    loop {
+        let count = reader.read(&mut buffer)?;
+        if count == 0 {
+            break;
+        }
+        digest.update(&buffer[..count]);
+    }
+    Ok(digest.finalize())
 }
 
 #[allow(

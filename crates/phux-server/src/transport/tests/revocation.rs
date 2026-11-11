@@ -17,7 +17,7 @@ async fn bearer_revoke_now_terminates_live_sessions() {
                 s.set_policy_engine(std::sync::Arc::new(crate::policy::OwnerForAll));
             });
             let root_token = CancellationToken::new();
-            crate::runtime::commands::seed_session_with_actor(
+            crate::runtime::apps::terminal::commands::seed::seed_session_with_actor(
                 &state,
                 "authenticated",
                 phux_config::ScrollbackLimits::default(),

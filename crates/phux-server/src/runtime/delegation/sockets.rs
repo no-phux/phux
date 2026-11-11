@@ -13,7 +13,7 @@ use tracing::{debug, info, warn};
 use super::stamp;
 use crate::auth::{AuthenticatedCredential, ConnectionIdentity};
 use crate::delegation::DelegatedCredential;
-use crate::runtime::apps::terminal::input_lane::InputLaneHandle;
+use crate::runtime::apps::InputLane;
 use crate::state::SharedState;
 use crate::transport::{Incoming, UdsListener};
 use crate::upgrade::blob::{DelegationBlob, StateBlob};
@@ -87,7 +87,7 @@ pub(in crate::runtime) fn carry_delegations(
 pub(in crate::runtime) fn resume_delegations(
     state: &SharedState,
     carried: &[DelegationBlob],
-    input_lane: Option<&InputLaneHandle>,
+    input_lane: Option<&InputLane>,
     root_token: &CancellationToken,
 ) -> usize {
     let server_socket = state.with(|s| s.server_socket_path().map(Path::to_path_buf));
@@ -130,7 +130,7 @@ fn serve_carried(
     state: &SharedState,
     blob: &DelegationBlob,
     credential: DelegatedCredential,
-    input_lane: Option<&InputLaneHandle>,
+    input_lane: Option<&InputLane>,
     root_token: &CancellationToken,
 ) -> bool {
     let socket_path = state
@@ -259,7 +259,7 @@ pub(super) fn spawn_listener(
     credential: DelegatedCredential,
     state: SharedState,
     close: CancellationToken,
-    input_lane: Option<InputLaneHandle>,
+    input_lane: Option<InputLane>,
 ) {
     let listener = DelegatedListener {
         inner: listener,

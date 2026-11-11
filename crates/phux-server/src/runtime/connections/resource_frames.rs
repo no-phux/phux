@@ -11,9 +11,8 @@ pub(in crate::runtime) use input::attached_input_resource;
 use phux_protocol::caps::{BootstrapProfile, EngineCodec};
 use phux_protocol::wire::frame::{ErrorCode, FrameKind, HistoryTombstoneReason};
 
-use super::dispatch::FrameFlow;
+use super::dispatch::{FrameFlow, direction_invalid};
 use super::frames::frame_resource;
-use crate::runtime::apps::terminal::terminal_streams::direction_invalid;
 use crate::runtime::apps::{FrameAdmission, ResourceFrame, app_for};
 use crate::state::{Outbound, ResolvedOwned};
 
@@ -53,7 +52,7 @@ pub(super) async fn serve(ctx: ResourceFrame<'_>, frame: FrameKind) -> FrameFlow
     }
 }
 
-/// Structured Terminal input changes the active view independently of delivery
+/// Structured input changes the active view independently of delivery
 /// admission. Remote and unknown ids retain the same activity accounting.
 fn note_activity(ctx: &ResourceFrame<'_>, frame: &FrameKind) {
     use phux_protocol::input::{focus::FocusEvent, mouse::MouseAction};
@@ -64,7 +63,7 @@ fn note_activity(ctx: &ResourceFrame<'_>, frame: &FrameKind) {
         _ => false,
     };
     if used {
-        crate::runtime::apps::terminal::commands::handle_client_activity(ctx.state, ctx.client_id);
+        crate::runtime::apps::client_activity(ctx.state, ctx.client_id);
     }
 }
 

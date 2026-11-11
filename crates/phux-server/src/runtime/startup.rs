@@ -4,7 +4,7 @@ use crate::runtime::config::{ServerConfig, ServerError, validate_socket_path_len
 use crate::runtime::connections::{
     handle_existing_socket, prepare_socket_dir, secure_socket_file, spawn_resource_exit_watcher,
 };
-use crate::runtime::{ServerEnv, resume, seed_session_with_actor, seed_session_with_pty, upgrade};
+use crate::runtime::{ServerEnv, resume, upgrade};
 use crate::state::SharedState;
 use crate::upgrade::blob::StateBlob;
 use std::os::fd::RawFd;
@@ -251,17 +251,14 @@ pub(in crate::runtime) fn seed_initial_session(
     scrollback: phux_config::ScrollbackLimits,
     root_token: &CancellationToken,
 ) {
-    let seeded = if seed_with_pty {
-        seed_session_with_pty(
-            state,
-            name,
-            crate::runtime::apps::terminal::launch::seed_pane_command(state, seed_command),
-            scrollback,
-            root_token,
-        )
-    } else {
-        seed_session_with_actor(state, name, scrollback, root_token)
-    };
+    let seeded = crate::runtime::apps::terminal::launch::seed_initial_session(
+        state,
+        name,
+        seed_with_pty,
+        seed_command,
+        scrollback,
+        root_token,
+    );
     if let Err(err) = seeded {
         warn!(
             session = name,

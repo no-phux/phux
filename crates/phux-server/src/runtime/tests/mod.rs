@@ -1,8 +1,14 @@
 use super::*;
 use crate::runtime::apps::terminal::attach::handle_attach;
+use crate::runtime::apps::terminal::commands::seed::*;
+use crate::runtime::apps::terminal::commands::{
+    handle_client_activity, handle_terminal_input, handle_terminal_reply, handle_terminal_resize,
+    handle_viewport_resize,
+};
 use crate::runtime::apps::terminal::test_support::{
     StubRx, TerminalInput, seeded_terminal, snapshot_bytes, state_sync_outcome, stub_terminal,
 };
+use crate::runtime::committed_close;
 use crate::runtime::config::{
     MAX_SOCKET_PATH_LEN, ServerConfig, ServerError, validate_socket_path_len,
 };
@@ -12,10 +18,6 @@ use crate::runtime::listeners::{auto_overlay_gate_open, resolve_auto_overlay_ip}
 use crate::runtime::posture::{install_policy_posture, startup_policy};
 use crate::runtime::server::ServerRuntime;
 use crate::runtime::startup::{mirror_config_into_state, open_org_store, resume_session_tree};
-use crate::runtime::{
-    committed_close, handle_terminal_input, handle_terminal_reply, handle_terminal_resize,
-    handle_viewport_resize,
-};
 use crate::state::{ClientId, Outbound, SharedState};
 use phux_protocol::caps::ClientCapabilities;
 use phux_protocol::wire::frame::{AttachTarget, ErrorCode, FrameKind, ViewportInfo};

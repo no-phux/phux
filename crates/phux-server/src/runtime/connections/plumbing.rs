@@ -4,7 +4,6 @@ use super::lifecycle::{
 };
 use super::writer::{RevocationWatch, writer_task};
 use crate::policy::Goodbye;
-use crate::runtime::apps::terminal::terminal_streams::abort_output_pumps;
 use crate::state::{ClientId, DEFAULT_CLIENT_MAILBOX, Outbound, SharedState};
 use crate::transport::FrameWriter;
 use crate::transport::quic::QuicWriter;
@@ -20,6 +19,25 @@ use tokio::sync::mpsc;
 use tokio::task::JoinSet;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, info, trace, warn};
+
+/// Abort every per-attach output pump and wait for them to end.
+pub(crate) async fn abort_output_pumps(
+    output_pumps: &mut JoinSet<()>,
+    client_id: ClientId,
+    reason: &'static str,
+) {
+    if output_pumps.is_empty() {
+        return;
+    }
+    debug!(
+        ?client_id,
+        pump_count = output_pumps.len(),
+        reason,
+        "aborting per-attach output pumps",
+    );
+    output_pumps.abort_all();
+    while output_pumps.join_next().await.is_some() {}
+}
 
 /// The typed SPEC §5 framing violation inside a transport read error, if
 /// any: every reader keeps the [`FramingError`] as the `io::Error` source.

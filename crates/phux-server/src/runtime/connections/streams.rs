@@ -1,10 +1,11 @@
-use crate::runtime::apps::terminal::input_lane::{InputLaneHandle, RoutedInput};
-use crate::runtime::connections::dispatch::{ConnectionEnding, FrameFlow};
-use crate::runtime::connections::hello::NegotiatedConnection;
-use crate::runtime::connections::plumbing::{ClientPlumbing, ConnectionClose};
+//! QUIC Terminal streams (docs/protocol.md#quic-stream-routing): binding a
+//! client-opened stream to a resource it is subscribed to, bootstrapping it,
+//! and tearing it down when it ends or fails.
+
+use super::hello::NegotiatedConnection;
+use super::plumbing::ClientPlumbing;
 use crate::runtime::{
-    bootstrap_attach_terminal, handle_detach_terminal, handle_terminal_input,
-    subscribe_attach_terminal,
+    bootstrap_attach_terminal, handle_detach_terminal, subscribe_attach_terminal,
 };
 use crate::state::{ClientId, SharedState};
 use crate::transport::quic::{
@@ -12,68 +13,9 @@ use crate::transport::quic::{
 };
 use phux_dial::window::SendWindow;
 use phux_protocol::ids::{ResourceId as WireResourceId, StreamId};
-use phux_protocol::wire::frame::{DetachReason, ErrorCode, FrameKind};
-use phux_terminal_api::TerminalInput;
-use tokio::task::JoinSet;
+use phux_protocol::wire::frame::ErrorCode;
 use tokio_util::sync::CancellationToken;
-use tracing::{debug, warn};
-
-/// A frame kind a client may not send in the negotiated phase: close.
-pub(in crate::runtime) fn direction_invalid(client_id: ClientId, other: &FrameKind) -> FrameFlow {
-    warn!(?client_id, kind = ?other, "direction-invalid client frame; closing");
-    FrameFlow::Break(ConnectionEnding::Violation(ConnectionClose {
-        attached_reason: Some("direction-invalid frame"),
-        detach_reason: DetachReason::ProtocolError,
-        code: ErrorCode::InvalidCommand,
-        message: format!("frame is not valid from a client in the negotiated phase: {other:?}"),
-    }))
-}
-
-/// The fields of one `ATTACH` frame.
-pub(in crate::runtime) struct AttachFrame {
-    pub(in crate::runtime) attach_id: u32,
-    pub(in crate::runtime) target: phux_protocol::wire::frame::AttachTarget,
-    pub(in crate::runtime) viewport: phux_protocol::wire::frame::ViewportInfo,
-    pub(in crate::runtime) request_scrollback: bool,
-    pub(in crate::runtime) scrollback_limit_lines: u32,
-    pub(in crate::runtime) role_policy: Option<phux_protocol::wire::frame::RolePolicy>,
-}
-
-/// `INPUT_*` frames: routed to the Terminal's input path.
-pub(in crate::runtime) const fn is_input_frame(frame: &FrameKind) -> bool {
-    matches!(
-        frame,
-        FrameKind::InputKey { .. }
-            | FrameKind::InputMouse { .. }
-            | FrameKind::InputFocus { .. }
-            | FrameKind::InputPaste { .. }
-            | FrameKind::InputTerminalReply { .. }
-    )
-}
-
-/// Frames about an attached Terminal's size or content stream.
-pub(in crate::runtime) const fn is_stream_frame(frame: &FrameKind) -> bool {
-    matches!(
-        frame,
-        FrameKind::ViewportResize { .. }
-            | FrameKind::ResizeTerminal { .. }
-            | FrameKind::FrameAck { .. }
-            | FrameKind::HistoryRequest { .. }
-    )
-}
-
-/// L3 metadata and event-subscription frames.
-pub(in crate::runtime) const fn is_metadata_frame(frame: &FrameKind) -> bool {
-    matches!(
-        frame,
-        FrameKind::GetMetadata { .. }
-            | FrameKind::SetMetadata { .. }
-            | FrameKind::DeleteMetadata { .. }
-            | FrameKind::ListMetadata { .. }
-            | FrameKind::SubscribeMetadata { .. }
-            | FrameKind::SubscribeEvents { .. }
-    )
-}
+use tracing::debug;
 
 /// Handle one QUIC Terminal-stream event (docs/protocol.md#quic-stream-routing). `Bound` binds and
 /// bootstraps the stream; `Ended` detaches as `DETACH_RESOURCE` would,
@@ -319,93 +261,4 @@ async fn teardown_terminal_stream(
 ) {
     handle_detach_terminal(state, client_id, terminal_id).await;
     plumbing.drop_stream_binding(terminal_id).await;
-}
-
-/// Write one legacy printable key on the receive task when the PTY writer
-/// is idle. `true` means the event was consumed (written or refused).
-fn try_inline_key(
-    state: &SharedState,
-    client_id: ClientId,
-    terminal_id: &WireResourceId,
-    input: &TerminalInput,
-) -> bool {
-    if !phux_perf::echo_hop::fast_path_enabled() {
-        return false;
-    }
-    if !matches!(input, TerminalInput::Key(_)) {
-        return false;
-    }
-    let result = crate::runtime::with_attached_input_destination(
-        state,
-        client_id,
-        terminal_id,
-        "INPUT_KEY",
-        |destination| destination.handle.ordered_input.try_inline(input),
-    );
-    matches!(
-        result,
-        Some(
-            phux_terminal_api::input::DirectWrite::Wrote
-                | phux_terminal_api::input::DirectWrite::Handled
-        )
-    )
-}
-
-/// Route one decoded `INPUT_*` event: a local pane id goes to the input lane
-/// (ADR-0044) when there is one, spending `credit` (ADR-0144); satellite ids
-/// and the no-lane path use the inline [`handle_terminal_input`] with the
-/// same gates.
-pub(in crate::runtime) async fn route_client_input(
-    state: &SharedState,
-    input_lane: Option<&InputLaneHandle>,
-    client_id: ClientId,
-    terminal_id: WireResourceId,
-    input: TerminalInput,
-    credit: Option<phux_terminal_api::actor::InputCredit>,
-) {
-    phux_perf::echo_hop::record("server_recv");
-    if try_inline_key(state, client_id, &terminal_id, &input) {
-        return;
-    }
-    let frame_label = match &input {
-        TerminalInput::Key(_) => "INPUT_KEY",
-        TerminalInput::Mouse(_) => "INPUT_MOUSE",
-        TerminalInput::Focus(_) => "INPUT_FOCUS",
-        TerminalInput::Paste(_) => "INPUT_PASTE",
-    };
-    if let Some(lane) = input_lane
-        && terminal_id.is_local()
-    {
-        // Arm before the send. `pending` is still zero while this key sits
-        // in the lane thread; the next printable would otherwise write the
-        // PTY ahead of it. `ROUTE_INPUT` and `APPLY_INPUT` arm in the lane
-        // admission, so every source for the pane shares this count.
-        let ahead = crate::runtime::apps::terminal::input_lane::arm_pane_lane(state, &terminal_id);
-        lane.route(
-            RoutedInput::attached(client_id, terminal_id, input, frame_label)
-                .with_credit(credit)
-                .with_lane_ahead(ahead),
-        )
-        .await;
-        return;
-    }
-    handle_terminal_input(state, client_id, &terminal_id, input, frame_label);
-}
-
-pub(crate) async fn abort_output_pumps(
-    output_pumps: &mut JoinSet<()>,
-    client_id: ClientId,
-    reason: &'static str,
-) {
-    if output_pumps.is_empty() {
-        return;
-    }
-    debug!(
-        ?client_id,
-        pump_count = output_pumps.len(),
-        reason,
-        "aborting per-attach output pumps",
-    );
-    output_pumps.abort_all();
-    while output_pumps.join_next().await.is_some() {}
 }

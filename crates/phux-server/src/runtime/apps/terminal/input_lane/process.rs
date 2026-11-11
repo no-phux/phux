@@ -21,7 +21,7 @@ use super::{
 /// actor was replaced since `encoded_for` (the bytes belong to the old one).
 fn redeliver(
     encoded_for: &TerminalHandle,
-    current: &crate::runtime::InputDestination,
+    current: &super::super::commands::InputDestination,
     bytes: Option<phux_terminal_api::input::PreparedInput>,
     _input: &TerminalInput,
     credit: Option<InputCredit>,
@@ -183,7 +183,7 @@ pub(super) fn acknowledged_not_written(message: &str) -> CommandResult {
 /// An acknowledged batch that passed every pre-handoff gate: authority, dedupe
 /// binding, paste safety, and encoding.
 struct PreparedBatch {
-    destination: crate::runtime::InputDestination,
+    destination: super::super::commands::InputDestination,
     input: phux_terminal_api::input::PreparedInput,
 }
 

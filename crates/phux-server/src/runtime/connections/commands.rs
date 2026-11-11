@@ -3,7 +3,7 @@ use super::hello::{
     before_hello_close, decode_client_frame, is_pre_hello_type, reject_frame_before_hello,
 };
 use super::plumbing::ConnectionClose;
-use crate::runtime::apps::terminal::input_lane::{InputCredits, InputLaneHandle, InputStalled};
+use crate::runtime::apps::{ConnectionLane, InputLane};
 use crate::state::{ClientId, Outbound, SharedState};
 use crate::transport::FrameOrigin;
 use bytes::BytesMut;
@@ -21,7 +21,7 @@ fn spawn_input_receipt(
     slot: tokio::sync::OwnedSemaphorePermit,
     out_tx: mpsc::Sender<Outbound>,
     request_id: u32,
-    receipt: crate::runtime::apps::terminal::input_lane::InputReceipt,
+    receipt: futures_util::future::LocalBoxFuture<'static, CommandResult>,
 ) {
     receipts.spawn_local(async move {
         let _slot = slot;
@@ -131,7 +131,7 @@ pub(super) fn validate_dispatch_frame(
 /// Where an admitted command is dispatched.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(in crate::runtime) enum Route {
-    /// The input lane: acknowledged or routed input to a local Terminal.
+    /// The input lane (ADR-0044), for the commands it carries.
     InputLane,
     /// The connection's bulk worker, retaining this many payload bytes.
     Bulk(usize),
@@ -147,13 +147,8 @@ pub(in crate::runtime) enum Route {
 
 /// The route an admitted command takes. An approved held command asks the
 /// same question (ADR-0128), so it routes as it would have unheld.
-pub(in crate::runtime) fn route(command: &Command, has_input_lane: bool) -> Route {
-    let local_input = matches!(
-        command,
-        Command::ApplyInput { terminal_id, .. } | Command::RouteInput { terminal_id, .. }
-            if matches!(terminal_id, WireResourceId::Local { .. })
-    );
-    if has_input_lane && local_input {
+pub(in crate::runtime) fn route(command: &Command, input_lane: Option<&InputLane>) -> Route {
+    if input_lane.is_some_and(|lane| lane.rides(command)) {
         return Route::InputLane;
     }
     // A copy or paste waits on the producer's clipboard, and a mirror
@@ -181,15 +176,15 @@ pub(super) struct CommandDispatch<'a> {
     pub(in crate::runtime) state: &'a SharedState,
     pub(in crate::runtime) client_id: ClientId,
     pub(in crate::runtime) out_tx: &'a mpsc::Sender<Outbound>,
-    pub(in crate::runtime) input_lane: Option<&'a InputLaneHandle>,
+    /// This connection's place on the input lane, with its pane input
+    /// credits (ADR-0144).
+    pub(in crate::runtime) lane: Option<&'a mut ConnectionLane>,
     pub(in crate::runtime) token: &'a CancellationToken,
     pub(super) root_token: &'a CancellationToken,
     pub(super) selection: NegotiatedConnection,
     pub(super) command_tasks: &'a mut crate::runtime::command_tasks::CommandTasks,
     pub(super) input_receipts: &'a mut JoinSet<()>,
     pub(super) input_receipt_slots: &'a std::sync::Arc<tokio::sync::Semaphore>,
-    /// This connection's pane input credits (ADR-0144).
-    pub(in crate::runtime) input_credits: &'a mut InputCredits,
     /// The waiters of this connection's held commands (ADR-0128). Aborted
     /// with the connection, which withdraws their approvals.
     pub(super) held_commands: &'a mut JoinSet<()>,
@@ -242,23 +237,23 @@ impl CommandDispatch<'_> {
             })
             .flatten();
 
-        match (route(&command, self.input_lane.is_some()), self.input_lane) {
-            (Route::InputLane, Some(lane)) => {
+        match route(&command, self.lane.as_deref().map(ConnectionLane::lane)) {
+            Route::InputLane => {
                 crate::runtime::commands::note_local_use(self.state, self.client_id, &command);
-                self.submit_input(lane, request_id, command).await;
+                self.submit_input(request_id, command).await;
                 return None;
             }
-            (Route::Bulk(retained), _) => {
+            Route::Bulk(retained) => {
                 self.submit_bulk(request_id, command, retained, command_started)
                     .await;
                 return None;
             }
-            (Route::Detached, _) => {
+            Route::Detached => {
                 self.submit_detached(request_id, command, command_started)
                     .await;
                 return None;
             }
-            (Route::ServiceHttp, _) => {
+            Route::ServiceHttp => {
                 crate::runtime::service_http::submit(
                     self.context(),
                     self.service_http,
@@ -268,7 +263,7 @@ impl CommandDispatch<'_> {
                 .await;
                 return None;
             }
-            _ => {}
+            Route::Handler => {}
         }
         run_handler(&self.context(), request_id, command, command_started).await;
         detached_stream
@@ -284,7 +279,7 @@ impl CommandDispatch<'_> {
             client_caps: self.selection.client_caps,
             profile: self.selection.profile,
             limits: self.selection.limits,
-            input_lane: self.input_lane.cloned(),
+            input_lane: self.lane.as_deref().map(|lane| lane.lane().clone()),
             token: self.token.clone(),
             root_token: self.root_token.clone(),
             defer_subscription: self.selection.quic_streams(),
@@ -303,7 +298,10 @@ impl CommandDispatch<'_> {
         .await;
     }
 
-    async fn submit_input(&mut self, lane: &InputLaneHandle, request_id: u32, command: Command) {
+    async fn submit_input(&mut self, request_id: u32, command: Command) {
+        let Some(lane) = self.lane.as_deref_mut() else {
+            return;
+        };
         let Ok(slot) = self.input_receipt_slots.clone().try_acquire_owned() else {
             let _ = self
                 .out_tx
@@ -317,33 +315,18 @@ impl CommandDispatch<'_> {
                 .await;
             return;
         };
-        let receipt = match command {
-            Command::ApplyInput {
-                operation_id,
-                terminal_id,
-                events,
-            } => lane.begin_apply(
-                self.state,
-                self.client_id,
-                operation_id,
-                terminal_id,
-                events,
-            ),
-            Command::RouteInput { terminal_id, event } => {
-                // Same FIFO and the same wait as `INPUT_*` (ADR-0144).
-                let Ok(credit) = self.input_credits.acquire(self.state, &terminal_id).await else {
-                    let _ = self
-                        .out_tx
-                        .send(Outbound::Frame(FrameKind::CommandResult {
-                            request_id,
-                            result: InputStalled::result(&terminal_id),
-                        }))
-                        .await;
-                    return;
-                };
-                lane.begin_route(self.state, self.client_id, terminal_id, event, credit)
+        let receipt = match lane.begin(self.state, self.client_id, command).await {
+            Ok(receipt) => receipt,
+            Err(result) => {
+                let _ = self
+                    .out_tx
+                    .send(Outbound::Frame(FrameKind::CommandResult {
+                        request_id,
+                        result,
+                    }))
+                    .await;
+                return;
             }
-            _ => unreachable!("guarded input command"),
         };
         spawn_input_receipt(
             self.input_receipts,

@@ -22,7 +22,7 @@ const PATIENCE: Duration = Duration::from_secs(5);
 /// owner connected as [`LAUNCHER`].
 fn server(dir: &Path, root: &CancellationToken) -> (SharedState, SessionId) {
     let state = crate::runtime::apps::terminal::test_support::terminal_state();
-    let pane = super::super::commands::seed_session_with_actor(
+    let pane = crate::runtime::test_support::seed_session_with_actor(
         &state,
         "alpha",
         phux_config::ScrollbackLimits::default(),

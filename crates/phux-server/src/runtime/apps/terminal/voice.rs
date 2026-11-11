@@ -19,8 +19,8 @@ use phux_protocol::input::paste::{PasteEvent, PasteTrust};
 use phux_protocol::wire::frame::{CommandResult, CommandValue, ErrorCode};
 use tracing::{debug, warn};
 
-use crate::runtime::apps::terminal::input_lane::InputLaneHandle;
-use crate::runtime::commands::handle_route_input;
+use super::commands::handle_route_input;
+use super::input_lane::InputLaneHandle;
 use crate::state::{ClientId, ServerState, SharedState};
 
 /// Largest transcript the server will paste, in bytes. A transcriber that
