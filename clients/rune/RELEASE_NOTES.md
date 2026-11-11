@@ -1,3 +1,3 @@
-**Phux Rune 0.1.12**: 1 change since 0.1.11.
+**Phux Rune 0.1.13**: 1 change since 0.1.12.
 
-- Colour-code hosts (#2198)
+- Settle phone viewport changes before resizing terminals (#2205)
