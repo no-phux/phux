@@ -47,6 +47,7 @@ mod frames;
 mod pane_replies;
 mod panes;
 mod path_query;
+mod recovery;
 mod resources;
 mod view;
 

@@ -4,11 +4,15 @@
 //! chunks and every live frame is a whole newer document, each handed on as
 //! a [`KernelEffect::Document`]. The lane keeps the same rails as the agent
 //! lane: exact generation identity, contiguous `chunk_seq`, staging counted
-//! against the connection-wide ceilings and lifetime, and retirement.
+//! against the connection-wide ceilings and staging clock, and retirement.
+//!
+//! A stream that stalls is recovered on its own ([`stall`]): the rest of
+//! the connection carries on.
 
 use std::collections::HashMap;
 
 mod lane;
+mod stall;
 
 pub use lane::DocumentLane;
 
@@ -16,13 +20,13 @@ use super::lane::{
     AttachSignal, BeginFrame, ChunkFrame, KindLane, LaneCx, LaneRails, OutputFrame, ReadyFrame,
 };
 use super::staging_rules::{
-    chunk_admission, fence_replaced, reject_retired, retire_for_codec_failure,
-    staging_lifetime_exceeded,
+    StagingClock, chunk_admission, fence_replaced, reject_retired, retire_for_codec_failure,
 };
 use super::{
     DocumentPublication, EffectBuffer, EngineAdapter, GenerationId, KernelEffect, KernelError,
-    ResourceId, ResourceKind, TombstoneRecord, mismatch_error,
+    KernelStatus, ResourceId, ResourceKind, TombstoneRecord, mismatch_error,
 };
+use stall::RecutWatch;
 
 struct DocumentCut {
     generation: GenerationId,
@@ -30,28 +34,34 @@ struct DocumentCut {
     next_chunk_seq: Option<u32>,
     buffer: Vec<u8>,
     accepted_chunks: usize,
-    started_at_ms: u64,
+    clock: StagingClock,
 }
 
 /// Kernel state for one document resource: the cut in flight and the fence.
 pub(super) struct DocumentStream {
-    kind: ResourceKind,
+    /// Named by the first bootstrap; a headless reader may see a fence first.
+    kind: Option<ResourceKind>,
     /// A typed document's content type, from its bootstrap.
     content_type: Option<String>,
     /// The published generation and the last document it delivered.
     published: Option<(GenerationId, u64)>,
     staging: Option<DocumentCut>,
     retired: HashMap<GenerationId, TombstoneRecord>,
+    recut_watch: Option<RecutWatch>,
+    /// Consecutive stalls since a document was last delivered.
+    stalls: u32,
 }
 
 impl DocumentStream {
-    pub(super) fn new(kind: ResourceKind) -> Self {
+    pub(super) fn new(kind: Option<ResourceKind>) -> Self {
         Self {
             kind,
             content_type: None,
             published: None,
             staging: None,
             retired: HashMap::new(),
+            recut_watch: None,
+            stalls: 0,
         }
     }
 
@@ -64,7 +74,9 @@ impl DocumentStream {
 
     pub(super) fn expired_staging(&self, now_ms: u64) -> Option<GenerationId> {
         let cut = self.staging.as_ref()?;
-        staging_lifetime_exceeded(cut.started_at_ms, now_ms).then_some(cut.generation)
+        cut.clock
+            .expired(cut.buffer.len(), now_ms)
+            .then_some(cut.generation)
     }
 
     pub(super) fn retire_for_limit(
@@ -92,13 +104,14 @@ impl DocumentStream {
                 bootstrap_id: generation.bootstrap_id,
             });
         }
+        self.recut_watch = None;
         let replaced = self.staging.replace(DocumentCut {
             generation,
             base_seq,
             next_chunk_seq: Some(0),
             buffer: Vec::new(),
             accepted_chunks: 0,
-            started_at_ms,
+            clock: StagingClock::start(started_at_ms),
         });
         if let Some(old) = replaced {
             fence_replaced(&mut self.retired, old.generation, old.base_seq);
@@ -129,7 +142,8 @@ impl DocumentStream {
         let admission = chunk_admission(
             cut.next_chunk_seq,
             chunk_seq,
-            cut.started_at_ms,
+            cut.clock,
+            cut.buffer.len().saturating_add(payload.len()),
             now_ms,
             usage_allowed,
         );
@@ -141,6 +155,7 @@ impl DocumentStream {
         cut.buffer.extend_from_slice(payload);
         cut.next_chunk_seq = chunk_seq.checked_add(1);
         cut.accepted_chunks += 1;
+        cut.clock.progress(now_ms);
         Ok(())
     }
 
@@ -153,18 +168,21 @@ impl DocumentStream {
         effects: &mut EffectBuffer,
     ) -> Result<DocumentPublication, KernelError<E>> {
         self.reject_retired(resource_id, generation)?;
+        let kind = self
+            .kind
+            .ok_or_else(|| mismatch_error(resource_id, generation))?;
         let cut = self
             .staging
             .take_if(|cut| cut.generation == generation)
             .ok_or_else(|| mismatch_error(resource_id, generation))?;
-        if staging_lifetime_exceeded(cut.started_at_ms, now_ms) {
+        if cut.clock.expired(cut.buffer.len(), now_ms) {
             self.retire_generation(resource_id, generation, cut.base_seq, effects);
             return Err(KernelError::BootstrapStagingLimitExceeded);
         }
         let mut bytes = cut.buffer;
         // Every typed cut names its own content type first; an earlier
         // cut's never stands in for a missing one.
-        if self.kind == ResourceKind::Document {
+        if kind == ResourceKind::Document {
             let Some((content_type, document)) =
                 phux_protocol::wire::frame::typed_document::split_bootstrap(&bytes)
             else {
@@ -177,7 +195,8 @@ impl DocumentStream {
         if let Some((old, last_seq)) = self.published.replace((generation, cut.base_seq)) {
             fence_replaced(&mut self.retired, old, last_seq);
         }
-        Ok(self.publication(resource_id, cut.base_seq, bytes))
+        self.stalls = 0;
+        Ok(self.publication(resource_id, kind, cut.base_seq, bytes))
     }
 
     /// Each live frame is a whole newer document, so a skipped sequence loses
@@ -190,6 +209,9 @@ impl DocumentStream {
         payload: &[u8],
     ) -> Result<DocumentPublication, KernelError<E>> {
         self.reject_retired(resource_id, generation)?;
+        let kind = self
+            .kind
+            .ok_or_else(|| mismatch_error(resource_id, generation))?;
         let last_seq = self
             .published
             .as_mut()
@@ -205,15 +227,8 @@ impl DocumentStream {
             });
         }
         *last_seq = seq;
-        Ok(self.publication(resource_id, seq, payload.to_vec()))
-    }
-
-    /// Record an external tombstone; staging for that generation is dropped.
-    fn note_external_tombstone(&mut self, generation: GenerationId, record: TombstoneRecord) {
-        self.retired.entry(generation).or_insert(record);
-        if self.staging_matches(generation) {
-            self.staging = None;
-        }
+        self.stalls = 0;
+        Ok(self.publication(resource_id, kind, seq, payload.to_vec()))
     }
 
     /// A cut in a codec this build cannot decode replaces the stream: the
@@ -221,6 +236,7 @@ impl DocumentStream {
     /// fenced, so their late frames stay fenced once a known bootstrap lifts
     /// the refusal.
     pub(super) fn fence_for_unknown_codec(&mut self, generation: GenerationId, base_seq: u64) {
+        self.recut_watch = None;
         if let Some(cut) = self.staging.take() {
             fence_replaced(&mut self.retired, cut.generation, cut.base_seq);
         }
@@ -233,12 +249,13 @@ impl DocumentStream {
     fn publication(
         &self,
         resource_id: &ResourceId,
+        kind: ResourceKind,
         seq: u64,
         bytes: Vec<u8>,
     ) -> DocumentPublication {
         DocumentPublication {
             resource_id: resource_id.clone(),
-            kind: self.kind,
+            kind,
             seq,
             bytes,
             content_type: self.content_type.clone(),
@@ -290,8 +307,13 @@ impl DocumentStream {
 impl LaneRails for DocumentStream {
     /// A lapped viewer is fenced and recut: the fenced generation refuses
     /// late frames, and the recut's READY carries the newest document.
-    fn on_tombstone(&mut self, generation: GenerationId, record: TombstoneRecord) -> AttachSignal {
-        self.note_external_tombstone(generation, record);
+    fn on_tombstone(
+        &mut self,
+        generation: GenerationId,
+        record: TombstoneRecord,
+        now_ms: u64,
+    ) -> AttachSignal {
+        self.note_external_tombstone(generation, record, now_ms);
         AttachSignal::Unchanged
     }
 
@@ -301,6 +323,14 @@ impl LaneRails for DocumentStream {
 
     fn expired_staging(&self, now_ms: u64) -> Option<GenerationId> {
         Self::expired_staging(self, now_ms)
+    }
+
+    fn take_stall(&mut self, resource_id: &ResourceId, now_ms: u64) -> Option<KernelStatus> {
+        Self::take_stall(self, resource_id, now_ms)
+    }
+
+    fn deadline_ms(&self) -> Option<u64> {
+        Self::deadline_ms(self)
     }
 
     fn retire_for_limit(

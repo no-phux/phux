@@ -15,8 +15,7 @@ use super::{
     AgentStreamInfo, EffectBuffer, HistoryRejectionReason, HistoryUnavailableReason,
     InputBlockReason, InputEligibility, KernelAction, KernelDamage, KernelDamageKind, KernelEffect,
     KernelError, KernelInput, KernelJob, KernelSend, KernelStatus, MAX_BOOTSTRAP_STAGING_BYTES,
-    MAX_BOOTSTRAP_STAGING_CHUNKS, MAX_BOOTSTRAP_STAGING_LIFETIME_MS, SessionKernel,
-    TombstoneRecord,
+    MAX_BOOTSTRAP_STAGING_CHUNKS, MAX_BOOTSTRAP_STAGING_IDLE_MS, SessionKernel, TombstoneRecord,
 };
 use crate::engine::{
     BootstrapProgress, CanonicalGeometry, EngineAdapter, EngineDamage, EngineEffect,
@@ -706,7 +705,7 @@ fn bootstrap_staging_lifetime_is_checked_before_adapter_input() {
     begin(&mut kernel, &id, stream_id, bootstrap_id, 9, &mut effects);
     let error = kernel
         .update_at(
-            MAX_BOOTSTRAP_STAGING_LIFETIME_MS + 1,
+            MAX_BOOTSTRAP_STAGING_IDLE_MS + 1,
             chunk(&id, stream_id, bootstrap_id, 0, b"not-applied"),
             &mut effects,
         )
@@ -725,7 +724,7 @@ fn bootstrap_staging_lifetime_is_checked_at_protocol_ready() {
     begin(&mut kernel, &id, stream_id, bootstrap_id, 11, &mut effects);
     let error = kernel
         .update_at(
-            MAX_BOOTSTRAP_STAGING_LIFETIME_MS + 1,
+            MAX_BOOTSTRAP_STAGING_IDLE_MS + 1,
             ready(&id, stream_id, bootstrap_id, None),
             &mut effects,
         )
@@ -1054,12 +1053,12 @@ fn silent_bootstrap_staging_expires_on_driver_tick() {
     );
 
     assert_eq!(
-        kernel.expire_bootstrap_staging(MAX_BOOTSTRAP_STAGING_LIFETIME_MS, &mut effects),
+        kernel.expire_bootstrap_staging(MAX_BOOTSTRAP_STAGING_IDLE_MS, &mut effects),
         0,
         "the exact lifetime remains valid"
     );
     assert_eq!(
-        kernel.expire_bootstrap_staging(MAX_BOOTSTRAP_STAGING_LIFETIME_MS + 1, &mut effects),
+        kernel.expire_bootstrap_staging(MAX_BOOTSTRAP_STAGING_IDLE_MS + 1, &mut effects),
         2
     );
     assert!(kernel.staging(&first).is_none());

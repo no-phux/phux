@@ -14,7 +14,12 @@ use super::{
 };
 
 impl LaneRails for AgentStream {
-    fn on_tombstone(&mut self, generation: GenerationId, record: TombstoneRecord) -> AttachSignal {
+    fn on_tombstone(
+        &mut self,
+        generation: GenerationId,
+        record: TombstoneRecord,
+        _now_ms: u64,
+    ) -> AttachSignal {
         self.note_external_tombstone(generation, record);
         AttachSignal::Unchanged
     }
@@ -24,7 +29,13 @@ impl LaneRails for AgentStream {
     }
 
     fn expired_staging(&self, now_ms: u64) -> Option<GenerationId> {
-        Self::expired_staging(self, now_ms)
+        let (generation, clock, staged_bytes) = self.staging_clock()?;
+        clock.expired(staged_bytes, now_ms).then_some(generation)
+    }
+
+    fn deadline_ms(&self) -> Option<u64> {
+        let (_, clock, staged_bytes) = self.staging_clock()?;
+        Some(clock.deadline_ms(staged_bytes))
     }
 
     fn retire_for_limit(

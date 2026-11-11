@@ -14,6 +14,7 @@ use super::kernel_rig::RigAdapter;
 use super::{DocumentPublication, EffectBuffer, KernelEffect, KernelInput, SessionKernel};
 use crate::engine::CanonicalGeometry;
 
+mod deadlines;
 mod rails;
 
 fn surface() -> ResourceId {

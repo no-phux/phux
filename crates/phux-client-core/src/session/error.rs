@@ -241,3 +241,21 @@ pub enum KernelError<E> {
     #[error("agent session stream failed: {0}")]
     AgentRecord(#[from] AgentRecordError),
 }
+
+impl<E> KernelError<E> {
+    /// Whether the refusal only names a generation this stream is not on: a
+    /// late frame of a retired generation, a frame of one never staged or
+    /// published, or a begin repeating a live one (a restarted satellite
+    /// behind a live hub link can reissue identities). The frame is
+    /// dropped; the connection and current view stay valid. Every other
+    /// refusal means the peer broke the stream contract.
+    #[must_use]
+    pub const fn is_benign_generation(&self) -> bool {
+        matches!(
+            self,
+            Self::GenerationMismatch { .. }
+                | Self::RetiredGeneration { .. }
+                | Self::DuplicateGeneration { .. }
+        )
+    }
+}

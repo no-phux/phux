@@ -6,7 +6,7 @@
 use std::convert::Infallible;
 use std::time::Instant;
 
-use phux_client_core::session::{DocumentLane, DocumentPublication, KernelError};
+use phux_client_core::session::{DocumentLane, DocumentPublication, KernelError, KernelStatus};
 use phux_protocol::ids::ResourceId;
 use phux_protocol::wire::frame::{AgentEvent, FrameKind};
 
@@ -21,7 +21,7 @@ pub(super) enum Absorbed {
 
 /// A bootstrap's chunks make one document, and every live `RESOURCE_OUTPUT`
 /// is one. A tombstone fences its generation; the recut's bootstrap carries
-/// the newest document.
+/// the newest document, and a recut that never begins is a stall.
 pub(super) struct Reader {
     tree: ResourceId,
     lane: DocumentLane,
@@ -92,7 +92,7 @@ impl Reader {
                 last_valid_seq,
             } if terminal_id == self.tree => {
                 self.lane
-                    .tombstone(stream_id, bootstrap_id, reason, last_valid_seq);
+                    .tombstone(stream_id, bootstrap_id, reason, last_valid_seq, now_ms);
                 Ok(Absorbed::Nothing)
             }
             FrameKind::ResourceClosed {
@@ -114,10 +114,30 @@ impl Reader {
         result.or_else(|error| self.refused(&error))
     }
 
-    /// A late frame of a fenced generation is dropped, as an attached client
+    /// The resource was just attached: its first cut is awaited.
+    pub(super) fn await_first_cut(&mut self) {
+        let now_ms = self.now_ms();
+        self.lane.await_first_cut(now_ms);
+    }
+
+    /// Whether a cut in flight or an awaited recut must be watched for a
+    /// stall even while no frame arrives.
+    pub(super) fn has_deadline(&self) -> bool {
+        self.lane.has_deadline()
+    }
+
+    /// The stall due now, if any: a cut stopped arriving, a fence (a relay
+    /// that dropped this viewer) was never followed by a recut, or frames
+    /// keep naming a generation that is not current.
+    pub(super) fn stalled(&mut self) -> Option<KernelStatus> {
+        let now_ms = self.now_ms();
+        self.lane.stalled(now_ms)
+    }
+
+    /// A frame off the current generations is dropped, as an attached client
     /// drops it; any other refusal means the stream broke its contract.
     fn refused(&self, error: &KernelError<Infallible>) -> Result<Absorbed, TreeError> {
-        if matches!(error, KernelError::RetiredGeneration { .. }) {
+        if error.is_benign_generation() {
             return Ok(Absorbed::Nothing);
         }
         Err(AttachError::Protocol(format!("document stream {}: {error}", self.tree)).into())

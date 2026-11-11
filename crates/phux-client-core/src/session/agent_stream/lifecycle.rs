@@ -10,7 +10,7 @@ use phux_protocol::wire::frame::TombstoneReason;
 use phux_protocol::{BootstrapId, BootstrapStreamProfile, ResourceId, StreamId};
 
 use super::super::staging_rules::{
-    chunk_admission, reject_retired, retire_for_codec_failure, staging_lifetime_exceeded,
+    StagingClock, chunk_admission, reject_retired, retire_for_codec_failure,
 };
 use super::super::{
     AgentSessionDeclaration, AgentStreamInfo, EffectBuffer, GenerationId, KernelError, ReplicaKey,
@@ -20,6 +20,8 @@ use super::{
     AgentEventRecord, AgentLog, AgentPublication, AgentRecordMode, AgentSessionState,
     AgentSessionStatus, BootstrapRecordDecoder, parse_records,
 };
+
+mod staging;
 
 struct AgentGeneration {
     key: ReplicaKey,
@@ -34,7 +36,7 @@ struct AgentStaging {
     records: Vec<AgentEventRecord>,
     accepted_bytes: usize,
     accepted_chunks: usize,
-    started_at_ms: u64,
+    clock: StagingClock,
     decoder: BootstrapRecordDecoder,
 }
 
@@ -94,28 +96,6 @@ impl AgentStream {
             bootstrap_id: published.key.bootstrap_id,
             last_seq: published.last_seq,
         })
-    }
-
-    /// Bytes and chunks accepted by the open staging generation.
-    pub(in crate::session) fn staged_accounting(&self) -> Option<(usize, usize)> {
-        self.staging
-            .as_ref()
-            .map(|staging| (staging.accepted_bytes, staging.accepted_chunks))
-    }
-
-    pub(in crate::session) fn expired_staging(&self, now_ms: u64) -> Option<GenerationId> {
-        let staging = self.staging.as_ref()?;
-        staging_lifetime_exceeded(staging.started_at_ms, now_ms)
-            .then(|| generation_of(&staging.key))
-    }
-
-    /// Staged record count while a generation is open.
-    ///
-    /// `None` after commit, retirement, or before begin. Session tests use
-    /// this to observe that a split line is not decoded before its LF.
-    #[cfg(test)]
-    pub(in crate::session) fn staged_record_count(&self) -> Option<usize> {
-        self.staging.as_ref().map(|staging| staging.records.len())
     }
 
     pub(in crate::session) fn declare(&mut self, declaration: &AgentSessionDeclaration<'_>) {
@@ -207,7 +187,8 @@ impl AgentStream {
         let admission = chunk_admission(
             staging.next_chunk_seq,
             chunk_seq,
-            staging.started_at_ms,
+            staging.clock,
+            staging.accepted_bytes.saturating_add(payload.len()),
             now_ms,
             usage_allowed,
         );
@@ -221,6 +202,7 @@ impl AgentStream {
                 staging.next_chunk_seq = chunk_seq.checked_add(1);
                 staging.accepted_bytes += payload.len();
                 staging.accepted_chunks += 1;
+                staging.clock.progress(now_ms);
                 Ok(())
             }
             Err(error) => {
@@ -333,41 +315,6 @@ impl AgentStream {
         }
     }
 
-    fn open_staging(
-        &mut self,
-        resource_id: &ResourceId,
-        stream_id: StreamId,
-        bootstrap_id: BootstrapId,
-        profile: BootstrapStreamProfile,
-        base_seq: u64,
-        started_at_ms: u64,
-    ) {
-        let replaced = self.staging.replace(AgentStaging {
-            key: ReplicaKey {
-                terminal_id: resource_id.clone(),
-                stream_id,
-                bootstrap_id,
-                profile,
-            },
-            base_seq,
-            next_chunk_seq: Some(0),
-            records: Vec::new(),
-            accepted_bytes: 0,
-            accepted_chunks: 0,
-            started_at_ms,
-            decoder: BootstrapRecordDecoder::default(),
-        });
-        if let Some(old) = replaced {
-            self.retired.insert(
-                generation_of(&old.key),
-                TombstoneRecord {
-                    reason: TombstoneReason::ExplicitReattach,
-                    last_valid_seq: old.base_seq,
-                },
-            );
-        }
-    }
-
     /// Resume anchor, record continuity, and staging lifetime for one READY cut.
     fn ready_continuity<E>(
         &self,
@@ -375,7 +322,7 @@ impl AgentStream {
         staging: &AgentStaging,
         now_ms: u64,
     ) -> Result<(), KernelError<E>> {
-        if staging_lifetime_exceeded(staging.started_at_ms, now_ms) {
+        if staging.clock.expired(staging.accepted_bytes, now_ms) {
             return Err(KernelError::BootstrapStagingLimitExceeded);
         }
         let expected = if let BootstrapStreamProfile::AgentEventsJsonlResumeV1 { after_seq } =

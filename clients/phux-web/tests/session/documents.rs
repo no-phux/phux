@@ -496,3 +496,54 @@ async fn a_declared_image_without_its_signature_is_its_type_and_size() {
     assert!(document.image.is_empty(), "nothing for an image decoder");
     assert_eq!(document.notice().as_deref(), Some("image/png · 6 bytes"));
 }
+
+#[wasm_bindgen_test]
+async fn a_stalled_document_is_attached_again_then_lost_without_failing() {
+    let mut session = attached_to(vec![resource(
+        2,
+        ResourceKind::PixelSurface,
+        Some("display"),
+    )])
+    .await;
+    publish(
+        &mut session,
+        2,
+        1,
+        BootstrapStreamProfile::PixelSurfacePngV1,
+        PNG,
+    );
+    let mut seq = 5;
+    let mut mis_tagged_run = |session: &mut Connection| {
+        let mut sent = Vec::new();
+        for _ in 0..64 {
+            seq += 1;
+            let outcome = session.on_frame(FrameKind::ResourceOutput {
+                terminal_id: ResourceId::local(2),
+                stream_id: stream(1),
+                bootstrap_id: bootstrap(9),
+                seq,
+                bytes: Bytes::from_static(b"mis-tagged"),
+            });
+            assert!(outcome.fatal.is_none(), "{:?}", outcome.fatal);
+            sent.extend(outcome.send);
+        }
+        sent.iter()
+            .filter(|frame| {
+                matches!(
+                    decode_one(frame),
+                    FrameKind::Command {
+                        command: Command::AttachResource { .. },
+                        ..
+                    }
+                )
+            })
+            .count()
+    };
+    for _ in 0..3 {
+        assert_eq!(mis_tagged_run(&mut session), 1, "attached again");
+        assert!(!session.document(&ResourceId::local(2)).unwrap().lost);
+    }
+    assert_eq!(mis_tagged_run(&mut session), 0);
+    assert!(session.document(&ResourceId::local(2)).unwrap().lost);
+    assert!(!session.is_failed());
+}

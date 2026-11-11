@@ -14,7 +14,7 @@ use phux_protocol::{BootstrapProfile, BootstrapStreamProfile, ResourceId, Resour
 
 use super::{
     AgentStream, CanonicalGeometry, DocumentStream, EffectBuffer, EngineAdapter,
-    EngineEffectBuffer, GenerationId, HistoryCacheConfig, KernelError, TerminalState,
+    EngineEffectBuffer, GenerationId, HistoryCacheConfig, KernelError, KernelStatus, TerminalState,
     TombstoneRecord, document_kind, is_agent_profile,
 };
 use crate::perf::EchoProbe;
@@ -133,14 +133,39 @@ pub(super) enum StreamFrame<'a> {
     Output(OutputFrame<'a>),
 }
 
+impl StreamFrame<'_> {
+    /// The generation the frame names.
+    pub(super) const fn generation(&self) -> GenerationId {
+        match self {
+            Self::Begin(frame) => frame.generation,
+            Self::Chunk(frame) => frame.generation,
+            Self::Ready(frame) => frame.generation,
+            Self::Output(frame) => frame.generation,
+        }
+    }
+}
+
 /// The rails every lane keeps alike: the generation fence and staging.
 pub(super) trait LaneRails {
-    /// Record an external tombstone; staging for that generation is dropped.
-    fn on_tombstone(&mut self, generation: GenerationId, record: TombstoneRecord) -> AttachSignal;
+    /// Record an external tombstone at `now_ms`; staging for that
+    /// generation is dropped.
+    fn on_tombstone(
+        &mut self,
+        generation: GenerationId,
+        record: TombstoneRecord,
+        now_ms: u64,
+    ) -> AttachSignal;
     /// Bytes and chunks accepted by the open staging generation.
     fn staged_accounting(&self) -> Option<(usize, usize)>;
-    /// The staging generation past the hard lifetime, if any.
+    /// The staging generation its clock has expired, if any.
     fn expired_staging(&self, now_ms: u64) -> Option<GenerationId>;
+    /// A stall due at `now_ms` that this lane recovers on its own (a
+    /// document's), reported once.
+    fn take_stall(&mut self, _resource_id: &ResourceId, _now_ms: u64) -> Option<KernelStatus> {
+        None
+    }
+    /// The first millisecond a staging cut or an awaited recut is overdue.
+    fn deadline_ms(&self) -> Option<u64>;
     /// Fence `generation` for exceeding a staging limit and ask for a recut.
     fn retire_for_limit(
         &mut self,
@@ -205,7 +230,7 @@ impl<R> ResourceLane<R> {
         match kind {
             LaneKind::Terminal => Self::Terminal(TerminalState::default()),
             LaneKind::Agent => Self::Agent(AgentStream::new()),
-            LaneKind::Document(kind) => Self::Document(DocumentStream::new(kind)),
+            LaneKind::Document(kind) => Self::Document(DocumentStream::new(Some(kind))),
         }
     }
 
@@ -220,8 +245,13 @@ impl<R> ResourceLane<R> {
 }
 
 impl<R> LaneRails for ResourceLane<R> {
-    fn on_tombstone(&mut self, generation: GenerationId, record: TombstoneRecord) -> AttachSignal {
-        each_lane!(self, lane => lane.on_tombstone(generation, record))
+    fn on_tombstone(
+        &mut self,
+        generation: GenerationId,
+        record: TombstoneRecord,
+        now_ms: u64,
+    ) -> AttachSignal {
+        each_lane!(self, lane => lane.on_tombstone(generation, record, now_ms))
     }
 
     fn staged_accounting(&self) -> Option<(usize, usize)> {
@@ -230,6 +260,14 @@ impl<R> LaneRails for ResourceLane<R> {
 
     fn expired_staging(&self, now_ms: u64) -> Option<GenerationId> {
         each_lane!(self, lane => lane.expired_staging(now_ms))
+    }
+
+    fn take_stall(&mut self, resource_id: &ResourceId, now_ms: u64) -> Option<KernelStatus> {
+        each_lane!(self, lane => lane.take_stall(resource_id, now_ms))
+    }
+
+    fn deadline_ms(&self) -> Option<u64> {
+        each_lane!(self, lane => lane.deadline_ms())
     }
 
     fn retire_for_limit(
@@ -319,8 +357,8 @@ impl<R> LaneRegistry<R> {
         self.lanes.remove(resource_id)
     }
 
-    pub(super) fn iter(&self) -> impl Iterator<Item = (&ResourceId, &ResourceLane<R>)> {
-        self.lanes.iter()
+    pub(super) fn iter_mut(&mut self) -> impl Iterator<Item = (&ResourceId, &mut ResourceLane<R>)> {
+        self.lanes.iter_mut()
     }
 
     pub(super) fn values(&self) -> impl Iterator<Item = &ResourceLane<R>> {

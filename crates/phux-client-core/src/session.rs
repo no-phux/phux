@@ -29,12 +29,18 @@ use crate::history::{
 const MAX_BOOTSTRAP_STAGING_BYTES: usize = 64 * 1024 * 1024;
 /// Hard connection-wide ceiling for bootstrap chunks accepted before READY.
 const MAX_BOOTSTRAP_STAGING_CHUNKS: usize = 4_096;
-/// A peer must complete one bootstrap generation within this interval.
-const MAX_BOOTSTRAP_STAGING_LIFETIME_MS: u64 = 30_000;
+/// A staging generation that receives no chunk for this long has stalled;
+/// a fenced document whose recut has not begun by then has too.
+const MAX_BOOTSTRAP_STAGING_IDLE_MS: u64 = 30_000;
+/// The slowest average rate a staging generation may arrive at once the idle
+/// window has passed: its age may not exceed that window plus the time its
+/// staged bytes take at this rate.
+const MIN_BOOTSTRAP_STAGING_BYTES_PER_SEC: u64 = 32 * 1024;
 
 mod agent_lane;
 mod attach;
 mod bootstrap;
+mod deadlines;
 mod document;
 mod document_stream;
 mod effects;
@@ -51,8 +57,9 @@ mod terminal_lane;
 mod unsupported;
 mod update;
 
-use lane::{LaneRails, LaneRegistry};
+use lane::LaneRegistry;
 use lifecycle::drain_engine_effects;
+use staging_rules::StagingClock;
 use terminal_lane::TerminalState;
 
 pub use document_stream::DocumentLane;
@@ -95,7 +102,7 @@ struct Staging<R> {
     pending_effects: Vec<EngineEffect>,
     accepted_bytes: usize,
     accepted_chunks: usize,
-    started_at_ms: u64,
+    clock: StagingClock,
 }
 
 fn retained_engine_effect_bytes(capacity: usize, effects: &[EngineEffect]) -> usize {
@@ -222,6 +229,20 @@ pub struct SessionKernel<E: EngineAdapter> {
     perf_echo: crate::perf::EchoProbe,
     /// Caller-supplied monotonic time, selected by [`Self::update_at`].
     injected_now_ms: Option<u64>,
+    /// Earliest a lane's staging or awaited recut can be overdue; updates
+    /// read the clock only while one is pending and scan lanes only once due.
+    next_deadline_ms: Option<u64>,
+    /// The host calls the deadline tick, so updates leave deadlines to it.
+    host_ticks: bool,
+    /// One clock read serves a whole update.
+    clock_frozen: bool,
+    frozen_now_ms: std::cell::Cell<Option<u64>>,
+    /// Consecutive frames dropped off the current generations, per resource.
+    benign_drops: HashMap<ResourceId, u32>,
+    #[cfg(test)]
+    clock_reads: std::cell::Cell<u32>,
+    #[cfg(test)]
+    deadline_sweeps: u32,
     /// Native default clock. Web hosts inject their own monotonic time because
     /// `std::time::Instant::now` panics on `wasm32-unknown-unknown`.
     #[cfg(not(target_arch = "wasm32"))]
@@ -280,6 +301,15 @@ impl<E: EngineAdapter> SessionKernel<E> {
             history_config,
             perf_echo: crate::perf::EchoProbe::default(),
             injected_now_ms: None,
+            next_deadline_ms: None,
+            host_ticks: false,
+            clock_frozen: false,
+            frozen_now_ms: std::cell::Cell::new(None),
+            benign_drops: HashMap::new(),
+            #[cfg(test)]
+            clock_reads: std::cell::Cell::new(0),
+            #[cfg(test)]
+            deadline_sweeps: 0,
             #[cfg(not(target_arch = "wasm32"))]
             monotonic_origin: Instant::now(),
         }
@@ -297,51 +327,31 @@ impl<E: EngineAdapter> SessionKernel<E> {
         input: KernelInput<'_>,
         effects: &mut EffectBuffer,
     ) -> Result<(), KernelError<E::Error>> {
-        self.injected_now_ms = Some(
-            self.injected_now_ms
-                .map_or(now_ms, |previous| previous.max(now_ms)),
-        );
+        self.inject_now(now_ms);
         self.update(input, effects)
     }
 
-    /// Retire every incomplete bootstrap older than the hard staging lifetime.
-    ///
-    /// A synchronous kernel cannot observe a silent peer by itself. Drivers
-    /// should call this from their existing connection timer using the same
-    /// monotonic millisecond source passed to [`Self::update_at`].
-    pub fn expire_bootstrap_staging(&mut self, now_ms: u64, effects: &mut EffectBuffer) -> usize {
+    fn inject_now(&mut self, now_ms: u64) {
         self.injected_now_ms = Some(
             self.injected_now_ms
                 .map_or(now_ms, |previous| previous.max(now_ms)),
         );
-        effects.clear();
-        let now_ms = self.monotonic_now_ms();
-        let expired: Vec<_> = self
-            .lanes
-            .iter()
-            .filter_map(|(terminal_id, lane)| {
-                lane.expired_staging(now_ms)
-                    .map(|generation| (terminal_id.clone(), generation))
-            })
-            .collect();
-        for (terminal_id, generation) in &expired {
-            self.retire_staging_limit(terminal_id, *generation, effects);
-        }
-        expired.len()
     }
 
     fn monotonic_now_ms(&self) -> u64 {
-        if let Some(now_ms) = self.injected_now_ms {
+        if let Some(now_ms) = self.injected_now_ms.or_else(|| self.frozen_now_ms.get()) {
             return now_ms;
         }
+        #[cfg(test)]
+        self.clock_reads.set(self.clock_reads.get() + 1);
         #[cfg(not(target_arch = "wasm32"))]
-        {
-            u64::try_from(self.monotonic_origin.elapsed().as_millis()).unwrap_or(u64::MAX)
-        }
+        let now_ms = u64::try_from(self.monotonic_origin.elapsed().as_millis()).unwrap_or(u64::MAX);
         #[cfg(target_arch = "wasm32")]
-        {
-            0
+        let now_ms = 0;
+        if self.clock_frozen {
+            self.frozen_now_ms.set(Some(now_ms));
         }
+        now_ms
     }
 
     /// The immutable profile selected for this connection.

@@ -11,7 +11,7 @@ use phux_protocol::{BootstrapProfile, ResourceId};
 use super::lane::{
     AttachSignal, BeginFrame, ChunkFrame, KindLane, LaneCx, LaneRails, OutputFrame, ReadyFrame,
 };
-use super::staging_rules::{retire_for_codec_failure, staging_lifetime_exceeded};
+use super::staging_rules::retire_for_codec_failure;
 use super::{
     EffectBuffer, EngineAdapter, GenerationId, KernelError, Replica, Staging, TombstoneRecord,
     generation_of, profile_matches, retained_engine_effect_bytes,
@@ -69,7 +69,12 @@ impl<R> TerminalState<R> {
 }
 
 impl<R> LaneRails for TerminalState<R> {
-    fn on_tombstone(&mut self, generation: GenerationId, record: TombstoneRecord) -> AttachSignal {
+    fn on_tombstone(
+        &mut self,
+        generation: GenerationId,
+        record: TombstoneRecord,
+        _now_ms: u64,
+    ) -> AttachSignal {
         self.retired.entry(generation).or_insert(record);
         if self.staging_matches(generation) {
             self.staging = None;
@@ -91,8 +96,15 @@ impl<R> LaneRails for TerminalState<R> {
 
     fn expired_staging(&self, now_ms: u64) -> Option<GenerationId> {
         let staging = self.staging.as_ref()?;
-        staging_lifetime_exceeded(staging.started_at_ms, now_ms)
+        staging
+            .clock
+            .expired(staging.accepted_bytes, now_ms)
             .then(|| generation_of(&staging.key))
+    }
+
+    fn deadline_ms(&self) -> Option<u64> {
+        let staging = self.staging.as_ref()?;
+        Some(staging.clock.deadline_ms(staging.accepted_bytes))
     }
 
     fn retire_for_limit(

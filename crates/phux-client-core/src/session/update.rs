@@ -18,14 +18,28 @@ impl<E: EngineAdapter> SessionKernel<E> {
     /// An adapter error retires the possibly mutated generation before
     /// returning and leaves a [`KernelStatus::ResyncRequired`] effect in the
     /// buffer. The host must execute effects even when this method returns an
-    /// error.
-    #[allow(clippy::too_many_lines)]
+    /// error. The kernel reads its clock at most once per update, and live
+    /// output reads it only while a deadline is pending.
     pub fn update(
         &mut self,
         input: KernelInput<'_>,
         effects: &mut EffectBuffer,
     ) -> Result<(), KernelError<E::Error>> {
+        self.clock_frozen = true;
+        let result = self.apply_input(input, effects);
+        self.clock_frozen = false;
+        self.frozen_now_ms.set(None);
+        result
+    }
+
+    #[allow(clippy::too_many_lines)]
+    fn apply_input(
+        &mut self,
+        input: KernelInput<'_>,
+        effects: &mut EffectBuffer,
+    ) -> Result<(), KernelError<E::Error>> {
         effects.clear();
+        self.check_deadlines(&input, effects);
         if self.is_refused_stream_frame(&input) {
             return Ok(());
         }
@@ -129,7 +143,9 @@ impl<E: EngineAdapter> SessionKernel<E> {
                 reason,
                 last_valid_seq,
             } => {
-                let signal = self.lanes.fence_slot(terminal_id).on_tombstone(
+                let now_ms = self.monotonic_now_ms();
+                let lane = self.lanes.fence_slot(terminal_id);
+                let signal = lane.on_tombstone(
                     GenerationId {
                         stream_id,
                         bootstrap_id,
@@ -138,7 +154,10 @@ impl<E: EngineAdapter> SessionKernel<E> {
                         reason,
                         last_valid_seq,
                     },
+                    now_ms,
                 );
+                let deadline_ms = lane.deadline_ms();
+                self.watch_deadline(deadline_ms);
                 self.apply_attach_signal(terminal_id, signal);
                 Ok(())
             }
@@ -283,7 +302,10 @@ impl<E: EngineAdapter> SessionKernel<E> {
             StreamFrame::Output(output) => lane.on_output(&mut cx, output, effects),
         };
         let signal = cx.attach;
+        let deadline_ms = opens.and_then(|_| lane.deadline_ms());
+        self.watch_deadline(deadline_ms);
         self.apply_attach_signal(terminal_id, signal);
+        self.tally_benign(terminal_id, frame.generation(), &result, effects);
         result?;
         if let StreamFrame::Chunk(chunk) = &frame
             && self.bootstrap_retained_bytes() > MAX_BOOTSTRAP_STAGING_BYTES

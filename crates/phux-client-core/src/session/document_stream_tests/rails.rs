@@ -7,7 +7,7 @@ use phux_protocol::{BootstrapId, BootstrapProfile, BootstrapStreamProfile, Resou
 use super::super::kernel_rig::RigAdapter;
 use super::super::{
     EffectBuffer, KernelEffect, KernelError, KernelInput, KernelStatus,
-    MAX_BOOTSTRAP_STAGING_BYTES, MAX_BOOTSTRAP_STAGING_CHUNKS, MAX_BOOTSTRAP_STAGING_LIFETIME_MS,
+    MAX_BOOTSTRAP_STAGING_BYTES, MAX_BOOTSTRAP_STAGING_CHUNKS, MAX_BOOTSTRAP_STAGING_IDLE_MS,
     SessionKernel,
 };
 use super::{documents, generation, stream, surface};
@@ -188,17 +188,25 @@ fn document_and_terminal_staging_share_the_connection_ceilings() {
 }
 
 #[test]
-fn silent_document_staging_expires_on_tick_and_at_ready() {
+fn silent_document_staging_stalls_on_tick_and_expires_at_ready() {
     let mut kernel = kernel();
     let mut effects = EffectBuffer::new();
     begin(&mut kernel, first(), &mut effects).unwrap();
-    let lifetime = MAX_BOOTSTRAP_STAGING_LIFETIME_MS;
+    let lifetime = MAX_BOOTSTRAP_STAGING_IDLE_MS;
     assert_eq!(kernel.expire_bootstrap_staging(lifetime, &mut effects), 0);
     assert_eq!(
         kernel.expire_bootstrap_staging(lifetime + 1, &mut effects),
         1
     );
-    assert!(resync_required(&effects));
+    // The tick reports a stalled document for its own re-attach.
+    assert!(!resync_required(&effects));
+    assert!(matches!(
+        effects.as_slice(),
+        [KernelEffect::Status(KernelStatus::DocumentStalled {
+            attempt: 1,
+            ..
+        })]
+    ));
     assert!(matches!(
         chunk(&mut kernel, &surface(), first(), 0, b"late", &mut effects),
         Err(KernelError::RetiredGeneration { .. })
@@ -382,4 +390,21 @@ fn every_typed_cut_names_its_own_content_type() {
     ));
     assert!(resync_required(&effects));
     assert!(documents(&effects).is_empty());
+}
+
+#[test]
+fn only_a_frame_off_the_current_generations_is_benign() {
+    let mut kernel = kernel();
+    let mut effects = EffectBuffer::new();
+    let id = surface();
+    begin(&mut kernel, first(), &mut effects).unwrap();
+    let duplicate = begin(&mut kernel, first(), &mut effects).unwrap_err();
+    assert!(duplicate.is_benign_generation(), "{duplicate}");
+    let gap = chunk(&mut kernel, &id, first(), 1, b"gap", &mut effects).unwrap_err();
+    assert!(!gap.is_benign_generation(), "{gap}");
+    // The broken cut is fenced; a generation never staged was never live.
+    for ids in [first(), (stream(), generation(9))] {
+        let late = ready(&mut kernel, 0, ids, &mut effects).unwrap_err();
+        assert!(late.is_benign_generation(), "{late}");
+    }
 }

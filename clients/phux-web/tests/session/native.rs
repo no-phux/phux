@@ -294,9 +294,10 @@ async fn wire_round_trip_rejects_wrong_generation_without_duplicate_apply() {
     wrong.encode(&mut encoded);
     let (decoded, rest) = FrameKind::decode(&encoded).expect("decode output");
     assert!(rest.is_empty());
+    // A frame off the published generation is dropped, not fatal.
     let outcome = session.on_frame(decoded);
-    assert!(outcome.fatal.is_some());
-    assert!(session.is_failed());
+    assert!(outcome.fatal.is_none());
+    assert!(!session.is_failed());
     let row: String = session.grid().cells[..10]
         .iter()
         .map(|cell| cell.ch)

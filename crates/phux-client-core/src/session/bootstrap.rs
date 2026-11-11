@@ -3,8 +3,7 @@
 
 use super::lane::{BeginFrame, ChunkFrame, LaneCx, LaneRails, ReadyFrame};
 use super::staging_rules::{
-    chunk_admission, fence_replaced, reject_retired, retire_for_codec_failure,
-    staging_lifetime_exceeded,
+    StagingClock, chunk_admission, fence_replaced, reject_retired, retire_for_codec_failure,
 };
 use super::{
     EffectBuffer, EngineAdapter, EngineEffect, EngineEffectBuffer, HistoryCursor, KernelError,
@@ -60,7 +59,7 @@ impl<R> TerminalState<R> {
             pending_effects: Vec::new(),
             accepted_bytes: 0,
             accepted_chunks: 0,
-            started_at_ms: cx.now_ms,
+            clock: StagingClock::start(cx.now_ms),
         }) {
             fence_replaced(
                 &mut self.retired,
@@ -124,7 +123,8 @@ impl<R> TerminalState<R> {
         let admission = chunk_admission(
             staging.next_chunk_seq,
             frame.chunk_seq,
-            staging.started_at_ms,
+            staging.clock,
+            staging.accepted_bytes.saturating_add(frame.payload.len()),
             cx.now_ms,
             frame.usage_allowed,
         );
@@ -170,6 +170,7 @@ impl<R> TerminalState<R> {
             .checked_add(1)
             .ok_or(KernelError::BootstrapStagingLimitExceeded)?;
         staging.engine_ready |= progress.is_ready();
+        staging.clock.progress(cx.now_ms);
         Self::buffer_bootstrap_effects(staging, cx.engine_effects);
         Ok(())
     }
@@ -191,7 +192,7 @@ impl<R> TerminalState<R> {
         if staging.protocol_ready {
             return Err(KernelError::DuplicateProtocolReady);
         }
-        if staging_lifetime_exceeded(staging.started_at_ms, cx.now_ms) {
+        if staging.clock.expired(staging.accepted_bytes, cx.now_ms) {
             self.retire_for_limit(terminal_id, generation, effects);
             return Err(KernelError::BootstrapStagingLimitExceeded);
         }
