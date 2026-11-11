@@ -141,6 +141,20 @@ records explain history; [look them up deliberately](./architecture.md#historica
 - No homegrown selection or search engine beyond find-in-scrollback:
   selection and extraction belong to libghostty.
 - No homegrown crypto: TLS, SSH, and Unix permissions.
+- No second peer-to-peer transport (Iroh or similar) embedded in the client
+  runtime for now. The paths phux has already cover "no VPN, no account, no
+  open port": a direct QUIC or WebSocket endpoint, the protocol over ssh, and
+  a relay the server dials out to that sees only ciphertext
+  ([remote](./remote.md#relays)). What a dial-by-key transport would add is
+  hole punching, so two machines behind NAT talk directly instead of through
+  a relay, and a choice of relay regions. What it would cost is a second
+  trust model beside the pairing token and certificate pin: phux would own
+  node-key pairing, rotation and lost-device revocation in every client as
+  well as today's, and still depend on someone's relays for the connections
+  that cannot be punched. Revisit when relayed sessions are
+  measurably slow or relay traffic is a real cost; the question then is
+  hole punching for the existing QUIC path, with the existing credentials,
+  before a second stack.
 - No tmux behavior "for compatibility" where phux has a reason to differ.
 
 **Release**
