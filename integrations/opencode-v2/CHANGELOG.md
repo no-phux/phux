@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.9.1](https://github.com/no-phux/phux/compare/opencode-plugin-v0.9.0...opencode-plugin-v0.9.1) (2026-11-11)
+
+
+### Bug Fixes
+
+* **integrations:** refuse non-terminal targets in the terminal tools ([#2176](https://github.com/no-phux/phux/issues/2176)) ([6b6a633](https://github.com/no-phux/phux/commit/6b6a6332be997d778e9ff43c2b427230e256ebad))
+
 ## [0.9.0](https://github.com/no-phux/phux/compare/opencode-plugin-v0.8.1...opencode-plugin-v0.9.0) (2026-11-10)
 
 

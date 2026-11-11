@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.7.1](https://github.com/no-phux/phux/compare/claude-plugin-v0.7.0...claude-plugin-v0.7.1) (2026-11-11)
+
+
+### Bug Fixes
+
+* **pi:** read npm 12's pack report so the release can package ([#2206](https://github.com/no-phux/phux/issues/2206)) ([57db471](https://github.com/no-phux/phux/commit/57db471be68c31324ea9fb932f83071c317e0aab))
+
 ## [0.7.0](https://github.com/no-phux/phux/compare/claude-plugin-v0.6.1...claude-plugin-v0.7.0) (2026-10-22)
 
 
