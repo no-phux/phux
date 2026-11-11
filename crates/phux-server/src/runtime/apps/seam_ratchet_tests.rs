@@ -133,7 +133,6 @@ const INPUT_LANE: &str = "the connection's Terminal input lane (phux-rbz0y.14)";
 const STREAMS: &str = "Terminal streams and detector on the connection (phux-rbz0y.14)";
 const STANDING: &str = "standing mirrors run in Terminal panes (phux-rbz0y.14)";
 const LAUNCH: &str = "a Terminal launch command (phux-rbz0y.7)";
-const CODEC: &str = "the Terminal codec gate at a host boundary (phux-rbz0y.7)";
 const CONFORMANCE: &str = "test-only conformance fixture drives a Terminal";
 const KIND_SPEC: &str = "per-kind rule not yet on KindSpec (phux-rbz0y.7)";
 
@@ -160,23 +159,18 @@ const SCANS: [Scan; 6] = [
                 5,
                 "the native agent host runs in a Terminal (phux-rbz0y.7)",
             ),
-            ("runtime/apps/spawn.rs", 1, CODEC),
             (
                 "runtime/commands.rs",
                 5,
                 "Terminal commands re-exported to the host (phux-rbz0y.14)",
             ),
-            ("runtime/commands/dispatch.rs", 2, STANDING),
             ("runtime/commands/lifecycle.rs", 1, LAUNCH),
-            ("runtime/commands/satellite_lease.rs", 1, CODEC),
             ("runtime/config.rs", 1, LAUNCH),
             ("runtime/connections/commands.rs", 2, INPUT_LANE),
             ("runtime/connections/dispatch.rs", 2, STREAMS),
             ("runtime/connections/frames.rs", 3, STREAMS),
             ("runtime/connections/lifecycle.rs", 1, INPUT_LANE),
-            ("runtime/connections/metadata_mutation.rs", 1, STANDING),
             ("runtime/connections/mod.rs", 2, STREAMS),
-            ("runtime/connections/pane_exit.rs", 1, STREAMS),
             ("runtime/connections/plumbing.rs", 1, STREAMS),
             ("runtime/connections/resource_frames.rs", 2, STREAMS),
             ("runtime/delegation.rs", 1, INPUT_LANE),
@@ -200,12 +194,6 @@ const SCANS: [Scan; 6] = [
             ("runtime/server/mod.rs", 2, STANDING),
             ("runtime/server/serve.rs", 2, STANDING),
             ("runtime/services.rs", 1, INPUT_LANE),
-            (
-                "runtime/session_attach/mod.rs",
-                2,
-                "session attach stages Terminal panes itself (phux-rbz0y.14)",
-            ),
-            ("runtime/session_attach/prepare.rs", 1, CODEC),
             ("runtime/startup.rs", 2, LAUNCH),
         ],
     },

@@ -289,15 +289,6 @@ pub static SERVER_METHODS: &[MethodSpec] = &[
             wire_name: ServerFeatureExt::PathQuery.wire_name(),
         })
     ),
-    // A host's screen mirrors: list, start, stop; Rune's macOS runner
-    // reports its targets and learns its mirrors through MIRROR_PROVIDE.
-    method!("MIRROR", Carrier::Command(COMMAND_TAG_MIRROR), [C_MIRROR], MIRRORS),
-    method!(
-        "MIRROR_PROVIDE",
-        Carrier::Command(COMMAND_TAG_MIRROR_PROVIDE),
-        [C_MIRROR_PROVIDE],
-        MIRRORS
-    ),
     method!(
         "GET_FILE",
         Carrier::Command(COMMAND_TAG_GET_FILE),

@@ -68,12 +68,7 @@ pub(crate) const fn bootstrap_stream_profile(
     }
 }
 
-pub(crate) const fn initial_bootstrap_id() -> BootstrapId {
-    match BootstrapId::new(1) {
-        Some(id) => id,
-        None => unreachable!(),
-    }
-}
+pub(in crate::runtime) use crate::runtime::pump::initial_bootstrap_id;
 
 pub(crate) const fn next_bootstrap_id(id: BootstrapId) -> BootstrapId {
     let raw = match id.get().checked_add(1) {

@@ -64,7 +64,7 @@ pub(crate) use signal::*;
 pub(crate) use spawn::*;
 pub(crate) use terminal_input::*;
 
-pub(crate) use app::{NO_TERMINAL_PROFILE, TerminalApp};
+pub(crate) use app::TerminalApp;
 pub(crate) use attach_resource::*;
 use attach_resource::{
     AttachResourceGeneration, AttachResourcePumpChannels, AttachResourceSession,

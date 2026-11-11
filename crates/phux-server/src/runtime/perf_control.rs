@@ -16,7 +16,7 @@ const PROCESS_NAME: &str = "phux server";
 
 /// Handle one `PERF_CONTROL`.
 pub(super) async fn handle(state: &crate::state::SharedState, op: PerfOp) -> CommandResult {
-    let tables = crate::perf::engine_tables(state);
+    let tables = crate::perf::tables(state);
     match op {
         PerfOp::TraceStart => trace_start(tables),
         PerfOp::TraceStop => trace_stop(tables).await,

@@ -17,10 +17,8 @@ pub(crate) async fn apply_session_role(
     was_subscribed: bool,
 ) {
     let changes: Vec<_> = state.with_mut(|s| {
-        s.set_attached_viewer(client_id, role.is_viewer());
         panes
             .iter()
-            .filter(|pane| pane.handle.kind == crate::resource::ResourceKind::Terminal)
             .map(|pane| {
                 let effects = s.apply_attach_role(
                     client_id,

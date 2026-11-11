@@ -29,8 +29,6 @@ Addressed to the server or the connection rather than to one resource.
 | `COMMAND` | frame `0x31` | nested | yes | none | shipped |
 | `LIST_DIRECTORY` | frame `0x55` | INVENTORY | no | `list_directory` | shipped |
 | `PATH_QUERY` | frame `0x56` | INVENTORY | no | `path_query` (features_ext) | shipped |
-| `MIRROR` | command `0x4a` | OBSERVE (control grant or owner socket) | no | `mirrors` (features_ext) | shipped |
-| `MIRROR_PROVIDE` | command `0x4b` | OBSERVE (owner socket only) | no | `mirrors` (features_ext) | shipped |
 | `GET_FILE` | command `0x3b` | INPUT | yes | `file_download` (features_ext) | shipped |
 | `SERVICE_HTTP_OPEN` | command `0x3d` | INPUT | yes | `host_service_http` (features_ext) | shipped |
 | `SERVICE_HTTP_READ` | command `0x3e` | INPUT | yes | `host_service_http` (features_ext) | shipped |
@@ -230,6 +228,8 @@ The kind's facet.
 
 | Method | Carrier | Requires | Mutating | Gate | Status |
 |---|---|---|---|---|---|
+| `MIRROR` | command `0x4a` | OBSERVE (control grant or owner socket) | no | `mirrors` (features_ext) | shipped |
+| `MIRROR_PROVIDE` | command `0x4b` | OBSERVE (owner socket only) | no | `mirrors` (features_ext) | shipped |
 
 ### Events
 

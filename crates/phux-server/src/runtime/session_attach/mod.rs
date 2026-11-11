@@ -11,13 +11,11 @@ use phux_protocol::wire::frame::{AttachTarget, ErrorCode, FrameKind, RolePolicy,
 use tokio::task::JoinSet;
 use tokio_util::sync::CancellationToken;
 
+use super::pump::initial_bootstrap_id;
 use super::{apps, send_error, stream_id_from};
+use crate::resource::ResourceHandle;
 use crate::state::{AttachSnapshotPane, ClientId, Outbound, SharedState};
-use apps::terminal::attach::{
-    apply_attach_viewport, apply_client_default_colors, apply_session_role,
-    detach_prior_state_sync_consumers, fail_aggregate_attach_prepublication, initial_bootstrap_id,
-    refresh_registry_cwds, resolve_attach_target,
-};
+use apps::resolve_attach_target;
 use prepare::{is_same_session_reattach, prepare_attach_or_refuse};
 use publication::AttachPublication;
 use staging::{CaptureFailure, SessionStaging};
@@ -27,6 +25,16 @@ mod publication;
 pub(crate) mod staging;
 #[cfg(test)]
 mod tests;
+
+/// One session `ATTACH`, as the apps see it around staging.
+#[derive(Clone, Copy)]
+pub(crate) struct SessionAttach<'a> {
+    pub(crate) state: &'a SharedState,
+    pub(crate) client_id: ClientId,
+    pub(crate) client_caps: ClientCapabilities,
+    /// The client re-attaches the session it already had.
+    pub(crate) same_session: bool,
+}
 
 /// The immutable generation and remaining resource ceilings lent to an app.
 #[derive(Clone)]
@@ -127,29 +135,92 @@ fn attach_refusal(
         ));
     }
     if requires_terminal_profile(state, pinned) && profile.is_none() {
-        return Some((
-            ErrorCode::CodecUnavailable,
-            apps::terminal::commands::NO_TERMINAL_PROFILE,
-        ));
+        return Some((ErrorCode::CodecUnavailable, apps::NO_TERMINAL_PROFILE));
     }
     None
 }
 
-async fn fence_previous(
-    state: &SharedState,
-    client: ClientId,
+/// Fence the client's earlier streams of `panes`, then let each kind's app
+/// fence its own consumers and apply the client's presentation and viewport.
+async fn prepare_panes(
+    attach: SessionAttach<'_>,
     panes: &[AttachSnapshotPane],
-    caps: ClientCapabilities,
-    same_session: bool,
+    viewport: ViewportInfo,
 ) {
     // Single-resource pumps are not owned by the aggregate JoinSet. Fence all
     // prior paths, not just Terminal ticks, before staging their replacements.
     for pane in panes {
-        super::pump::stop_output(state, client, pane.terminal_id).await;
+        super::pump::stop_output(attach.state, attach.client_id, pane.terminal_id).await;
     }
-    if same_session {
-        detach_prior_state_sync_consumers(panes, super::wire_client(client), caps).await;
+    let by_kind = apps::by_kind(panes, |pane| pane.handle.kind);
+    for (app, of_kind) in &by_kind {
+        app.prepare_attach(attach, of_kind).await;
     }
+    if viewport.cols == 0 || viewport.rows == 0 {
+        return;
+    }
+    attach.state.with_mut(|s| {
+        s.set_client_viewport(attach.client_id, viewport);
+        for (app, of_kind) in &by_kind {
+            app.attach_viewport(s, of_kind, viewport);
+        }
+    });
+}
+
+/// Record the declared role, then let each kind's app apply it.
+async fn apply_role(attach: SessionAttach<'_>, panes: &[AttachSnapshotPane], role: RolePolicy) {
+    attach
+        .state
+        .with_mut(|s| s.set_attached_viewer(attach.client_id, role.is_viewer()));
+    for (app, of_kind) in apps::by_kind(panes, |pane| pane.handle.kind) {
+        app.after_attach(attach, &of_kind, role).await;
+    }
+}
+
+/// Roll back a session `ATTACH` that failed before publication: stop every
+/// staged and committed pump, let each kind release its consumers, drop the
+/// client's consumer state, then end the connection with a fatal error.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "single rollback boundary deliberately receives every staged and committed resource so cancellation, producer detach, pump abortion, and the fatal sentinel remain strictly ordered"
+)]
+async fn fail_prepublication(
+    state: &SharedState,
+    client_id: ClientId,
+    attach_id: u32,
+    out_tx: &tokio::sync::mpsc::Sender<Outbound>,
+    connection_token: &CancellationToken,
+    staged_handles: &[ResourceHandle],
+    staged_pumps: &mut JoinSet<()>,
+    committed_pumps: &mut JoinSet<()>,
+    reason: &str,
+) {
+    staged_pumps.abort_all();
+    while staged_pumps.join_next().await.is_some() {}
+    super::connections::abort_output_pumps(committed_pumps, client_id, "failed ATTACH").await;
+    for (app, of_kind) in apps::by_kind(staged_handles, |handle| handle.kind) {
+        app.abort_attach(client_id, &of_kind).await;
+    }
+    super::connections::detach_and_release_consumer_state(state, client_id);
+
+    // The writer closes right after this terminal ERROR, discarding anything
+    // a surviving producer races in behind it.
+    let deadline = std::time::Duration::from_secs(1);
+    if !matches!(
+        tokio::time::timeout(
+            deadline,
+            out_tx.send(Outbound::FatalError {
+                request_id: None,
+                code: ErrorCode::CodecUnavailable,
+                message: format!("ATTACH {attach_id} failed before publication: {reason}"),
+            }),
+        )
+        .await,
+        Ok(Ok(()))
+    ) {
+        tracing::warn!(client = ?client_id, attach_id, "failed to enqueue terminal ATTACH error");
+    }
+    connection_token.cancel();
 }
 
 #[allow(
@@ -198,7 +269,7 @@ pub(crate) async fn handle_attach(
     else {
         return false;
     };
-    refresh_registry_cwds(state).await;
+    apps::refresh_for_attach(state).await;
     let same_session = is_same_session_reattach(state, client_id, session);
     let Some((snapshot, initial_client_id, panes, closed, _publication_guard)) =
         prepare_attach_or_refuse(
@@ -214,9 +285,13 @@ pub(crate) async fn handle_attach(
     else {
         return false;
     };
-    fence_previous(state, client_id, &panes, client_caps, same_session).await;
-    apply_client_default_colors(&panes, client_caps.default_colors).await;
-    apply_attach_viewport(state, client_id, &panes, viewport);
+    let attach = SessionAttach {
+        state,
+        client_id,
+        client_caps,
+        same_session,
+    };
+    prepare_panes(attach, &panes, viewport).await;
     let publication = AttachPublication {
         state,
         out_tx,
@@ -259,7 +334,7 @@ pub(crate) async fn handle_attach(
     };
     crate::perf::ATTACH_CAPTURE_WALL.record_elapsed(started);
     if let Err(reason) = result {
-        fail_aggregate_attach_prepublication(
+        fail_prepublication(
             state,
             client_id,
             attach_id,
@@ -284,7 +359,7 @@ pub(crate) async fn handle_attach(
         .await;
     crate::perf::ATTACH_PUBLISH_WALL.record_elapsed(started);
     if published {
-        apply_session_role(state, client_id, &panes, role, same_session).await;
+        apply_role(attach, &panes, role).await;
         let _ = release.send(true);
     }
     published

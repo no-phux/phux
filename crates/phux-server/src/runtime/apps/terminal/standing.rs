@@ -35,9 +35,6 @@ use crate::runtime::apps::terminal::commands::seed::{
 use crate::runtime::apps::terminal::commands::{SeedOrigin, SpawnAttribution};
 use crate::state::SharedState;
 
-mod demand;
-pub(crate) use demand::{handle, provide};
-
 /// What the supervisor keeps: `[[mirrors]]` and `[[producers]]`.
 pub type StandingEntries = (Vec<MirrorConfigEntry>, Vec<ProducerConfigEntry>);
 

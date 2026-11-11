@@ -255,15 +255,17 @@ before allocating a wire identity, replacing a handle, or spawning the actor.
 Stream and input frames reach their resource's app through
 `ResourceApp::frame`, after host authorization, connection/subscription gates
 and satellite routing. `runtime/session_attach` owns aggregate capture,
-accounting and publication. Apps stage bounded bootstraps under the same
+accounting and publication, and names no kind: each present kind's app
+fences, sizes and roles its own resources through its attach hooks.
+Apps stage bounded bootstraps under the same
 generation, with live output and lifecycle closes held behind the aggregate
 barrier. The AgentSession app retains catalog membership but defers its stream
 to cursor-bearing `ATTACH_RESOURCE`: session `ATTACH` has no per-agent cursor
 and must not replace committed history with an unsolicited full cut.
 A document-only or agent-only session needs no Terminal codec; a mixed
 session refuses a missing Terminal codec before changing subscriptions or
-geometry. Viewport votes, terminal roles, colors and grid resizing remain
-Terminal-specific. Phux Rune renders document panes without Terminal
+geometry. Viewport votes, roles, colors and grid sizes are the Terminal's.
+Phux Rune renders document panes without Terminal
 views; see [resource kinds beyond terminals](./resource-kinds.md#available-now).
 
 The runtime root exports the server interface. Its `server` module assembles

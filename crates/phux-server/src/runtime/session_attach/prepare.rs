@@ -137,7 +137,7 @@ pub(super) async fn prepare_attach_or_refuse(
         ),
         AttachError::TerminalProfileUnavailable => (
             ErrorCode::CodecUnavailable,
-            apps::terminal::commands::NO_TERMINAL_PROFILE.to_owned(),
+            apps::NO_TERMINAL_PROFILE.to_owned(),
         ),
     };
     send_error(out, code, &message).await;

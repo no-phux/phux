@@ -27,6 +27,7 @@ use crate::state::{ClientId, ServerState, SharedState};
 mod attach;
 pub(crate) mod audit;
 mod input;
+mod mirror;
 mod spawn;
 pub(crate) mod upgrade;
 
@@ -233,6 +234,46 @@ impl<A: DocumentApi> ResourceApp for DocumentApp<A> {
         attach::stage_session::<A>(capture, staging, pane).boxed_local()
     }
 
+    fn refresh_for_attach<'a>(&'a self, _state: &'a SharedState) -> LocalBoxFuture<'a, ()> {
+        Box::pin(std::future::ready(()))
+    }
+
+    fn prepare_attach<'a>(
+        &'a self,
+        _attach: crate::runtime::session_attach::SessionAttach<'a>,
+        _panes: &'a [crate::state::AttachSnapshotPane],
+    ) -> LocalBoxFuture<'a, ()> {
+        Box::pin(std::future::ready(()))
+    }
+
+    fn attach_viewport(
+        &self,
+        _s: &mut crate::state::ServerState,
+        _panes: &[crate::state::AttachSnapshotPane],
+        _viewport: phux_protocol::wire::frame::ViewportInfo,
+    ) {
+        // A document takes its producer's size, never a viewer's.
+    }
+
+    fn after_attach<'a>(
+        &'a self,
+        _attach: crate::runtime::session_attach::SessionAttach<'a>,
+        _panes: &'a [crate::state::AttachSnapshotPane],
+        _role: phux_protocol::wire::frame::RolePolicy,
+    ) -> LocalBoxFuture<'a, ()> {
+        // Only a Terminal has an input role to take.
+        Box::pin(std::future::ready(()))
+    }
+
+    fn abort_attach<'a>(
+        &'a self,
+        _client: ClientId,
+        _handles: &'a [ResourceHandle],
+    ) -> LocalBoxFuture<'a, ()> {
+        // A document keeps no per-consumer state in its engine.
+        Box::pin(std::future::ready(()))
+    }
+
     fn defers_stream_bootstrap(&self) -> bool {
         false
     }
@@ -248,8 +289,8 @@ impl<A: DocumentApi> ResourceApp for DocumentApp<A> {
         })
     }
 
-    fn metrics(&self) -> &'static [phux_perf::Metric] {
-        &[]
+    fn metrics(&self, _state: &SharedState) -> Vec<&'static [phux_perf::Metric]> {
+        Vec::new()
     }
 
     fn release_consumer(&self, _handle: &ResourceHandle, _client: ClientId) {
@@ -282,6 +323,15 @@ impl<A: DocumentApi> ResourceApp for DocumentApp<A> {
         _resource: phux_core::ids::ResourceId,
     ) -> LocalBoxFuture<'a, ()> {
         Box::pin(std::future::ready(()))
+    }
+
+    fn exit_retained(
+        &self,
+        _s: &mut ServerState,
+        _wire: &phux_protocol::ids::ResourceId,
+    ) -> Option<crate::hooks::HookEvent> {
+        // A document is removed on exit; nothing of it outlives its process.
+        None
     }
 
     fn claim_relaunch(
@@ -326,6 +376,9 @@ impl<A: DocumentApi> ResourceApp for DocumentApp<A> {
                     });
                     result
                 }
+                // The catalog gives these to the `PixelSurface` row alone.
+                Command::Mirror { op, .. } => mirror::handle(&ctx.state, op).await,
+                Command::MirrorProvide { targets } => mirror::provide(&ctx.state, &targets),
                 _ => CommandResult::Error {
                     code: ErrorCode::InvalidCommand,
                     message: "command not supported by this server".to_owned(),

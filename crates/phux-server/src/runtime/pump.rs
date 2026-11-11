@@ -14,6 +14,14 @@ use tokio::sync::mpsc::error::TrySendError;
 use crate::resource::{ResourceOutput, ResyncAudience, ResyncTarget};
 use crate::state::Outbound;
 
+/// The first bootstrap generation of a stream, for every kind.
+pub(super) const fn initial_bootstrap_id() -> BootstrapId {
+    match BootstrapId::new(1) {
+        Some(id) => id,
+        None => unreachable!(),
+    }
+}
+
 /// Outcome of offering one live frame to a consumer mailbox without parking.
 pub(super) enum MailboxForward {
     /// The frame is on the mailbox.
