@@ -337,3 +337,30 @@ fn viewport_row_cells_reads_one_codepoint_per_cell() {
         ]
     );
 }
+
+/// A full-screen program (an editor, an agent's interface) draws on the
+/// alternate screen, which has no scrollback of its own. Copy mode reads
+/// what that screen shows, and the shell's lines come back when it exits.
+#[test]
+fn alternate_screen_copies_what_the_program_shows() {
+    let mut t = fresh(20, 3);
+    t.vt_write(b"shell line\r\n");
+    t.vt_write(b"\x1b[?1049h\x1b[H\x1b[2Jeditor text\r\nsecond row");
+
+    assert_eq!(
+        extract_selection_text(&t, rect_req(0, 0, 1, 9)).as_deref(),
+        Some("editor text\nsecond row")
+    );
+    assert_eq!(
+        extract_selection_text(&t, grab_req(SelectionGrab::Word, 0, 1)).as_deref(),
+        Some("editor")
+    );
+    let all = extract_selection_text(&t, grab_req(SelectionGrab::All, 0, 0)).unwrap_or_default();
+    assert!(!all.contains("shell line"), "{all:?}");
+
+    t.vt_write(b"\x1b[?1049l");
+    assert_eq!(
+        extract_selection_text(&t, rect_req(0, 0, 0, 9)).as_deref(),
+        Some("shell line")
+    );
+}
