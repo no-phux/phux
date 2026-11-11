@@ -130,11 +130,13 @@ mod tests {
     fn every_stream_profile_encodes_its_pinned_codec_bytes() {
         use BootstrapStreamProfile as P;
         let v2 = EngineCodec::LibghosttyCheckpointV2;
+        let pre1 = EngineCodec::LibghosttyPre1SnapshotV1;
         let snapshot = EngineCodec::LibghosttySnapshotV1;
         let raw = OutputMode::Raw;
-        let cases: [(P, &[u8], OutputMode, Option<u64>); 10] = [
+        let cases: [(P, &[u8], OutputMode, Option<u64>); 11] = [
             (P::NativeState { codec: v2 }, &[1, 2], raw, None),
-            (P::NativeState { codec: snapshot }, &[1, 4], raw, None),
+            (P::NativeState { codec: pre1 }, &[1, 4], raw, None),
+            (P::NativeState { codec: snapshot }, &[1, 5], raw, None),
             (P::SynthesizedVtRaw, &[0], raw, None),
             (P::SynthesizedVtStateSync, &[0], OutputMode::StateSync, None),
             (P::AgentEventsJsonlV1, &[3], raw, None),
