@@ -41,7 +41,7 @@ which-key-delay-ms = 400
 # Show or hide the sidebar.
 "b" = "toggle-sidebar"
 
-# Copy mode: scroll back, search, select, and copy. Arrows move, Enter
+# Copy mode: scroll back, search, select, and copy. Vi keys and arrows move, y
 # copies, Esc leaves.
 "[" = "copy-mode"
 

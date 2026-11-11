@@ -95,9 +95,9 @@ fn copy_mode_status_reads_as_a_sentence() {
 #[test]
 fn copy_mode_legend_degrades_with_width() {
     let full = strip_text(one_cell(), None, 90);
-    assert!(full.contains("⏎ copy · w word · v line · / find · tab block · esc"));
+    assert!(full.contains("y copy · v select · V line · / find · tab block · esc"));
     let mid = strip_text(one_cell(), None, 61);
-    assert!(mid.contains("⏎ copy") && mid.contains("esc") && !mid.contains("w word"));
+    assert!(mid.contains("⏎ copy") && mid.contains("esc") && !mid.contains("v select"));
     let narrow = strip_text(one_cell(), None, 30);
     assert!(!narrow.contains("⏎ copy"));
     assert_eq!(crate::render::display_width(&narrow), 30);
