@@ -87,8 +87,9 @@ impl Client {
         self.inner.publication.acquire(terminal_id)
     }
 
-    /// The newest whole document a document resource published, read on
-    /// [`crate::control::Event::DocumentPublished`].
+    /// The newest whole document a document resource published, whatever
+    /// wake announced it. A wake consumer reads with
+    /// [`Self::acquire_document_at`] instead.
     #[cfg(feature = "engine")]
     #[must_use]
     pub fn acquire_document(
@@ -96,6 +97,21 @@ impl Client {
         resource_id: &ResourceId,
     ) -> Option<Arc<crate::publication::DocumentPublication>> {
         self.inner.publication.acquire_document(resource_id)
+    }
+
+    /// The document an [`crate::control::Event::DocumentPublished`] wake for
+    /// `generation` announced; `None` once the slot is gone or moved on, in
+    /// which case a newer wake follows.
+    #[cfg(feature = "engine")]
+    #[must_use]
+    pub fn acquire_document_at(
+        &self,
+        resource_id: &ResourceId,
+        generation: u64,
+    ) -> Option<Arc<crate::publication::DocumentPublication>> {
+        self.inner
+            .publication
+            .acquire_document_at(resource_id, generation)
     }
 
     /// The generation of the terminal's current frame.

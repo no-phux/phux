@@ -217,8 +217,8 @@ document, so a slow viewer skips only intermediate documents
 
 In the client runtime, a grid and a whole document publish through one
 table: one slot per resource with one generation counter, newest wins, and
-the slot retires when the resource closes, is released, or the server
-restarts. A log is the exception: an `AgentSession`'s records stay on their
+the slot retires when the resource closes, is detached or released, the
+server restarts, or a reconnect rebuilds the engine. A log is the exception: an `AgentSession`'s records stay on their
 own ordered, acknowledged queue, because every record counts
 ([embedding](./embedding.md#documents-trees-and-surfaces)).
 

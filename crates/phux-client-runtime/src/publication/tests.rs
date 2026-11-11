@@ -94,11 +94,20 @@ fn a_document_slot_shares_the_generation_and_never_reads_as_a_grid() {
         table.acquire_published(&tree),
         Some(Published::Document(document)) if document.seq == 2
     ));
+    // A wake reads only its own generation: the stale one finds nothing.
+    assert!(table.acquire_document_at(&tree, 1).is_none());
+    assert_eq!(table.acquire_document_at(&tree, 2).expect("current").seq, 2);
+    assert!(
+        table
+            .acquire_document_at(&ResourceId::local(3), 1)
+            .is_none()
+    );
     // A document is never deferred, so an acquire never asks for a catch-up.
     assert!(!table.stale(&FrameKey::Default(tree.clone())));
 
     table.remove(&tree);
     assert!(table.acquire_document(&tree).is_none());
+    assert!(table.acquire_document_at(&tree, 2).is_none());
     assert_eq!(handle.generation(), 2);
     assert_eq!(first.bytes, b"{}");
 }

@@ -99,6 +99,7 @@ fn parity_verbs_refuse_offline_and_project_their_replies() {
 
     let mut projected = Vec::new();
     remote.project_event(
+        None,
         Event::TerminalsClosed {
             request_id: 9,
             error: Some("refused".into()),
@@ -255,6 +256,7 @@ fn agent_declarations_lower_once_and_absence_clears_the_existing_badge() {
     let value = Some(br#"{"name":"agent","state":"blocked"}"#.to_vec());
     let mut projected = Vec::new();
     remote.project_event(
+        None,
         Event::AgentMetadata {
             terminal_id: terminal_id.clone(),
             value: value.clone(),
@@ -264,6 +266,7 @@ fn agent_declarations_lower_once_and_absence_clears_the_existing_badge() {
     // Raw extension delivery remains available to the C ABI, but cannot
     // reintroduce duplicate or stale badge handling in this encoder.
     remote.project_event(
+        None,
         Event::Frame(Box::new(FrameKind::MetadataChanged {
             scope: Scope::Resource(terminal_id.clone()),
             key: RESOURCE_AGENT_KEY.into(),
@@ -273,6 +276,7 @@ fn agent_declarations_lower_once_and_absence_clears_the_existing_badge() {
         &mut projected,
     );
     remote.project_event(
+        None,
         Event::AgentMetadata {
             terminal_id,
             value: None,
@@ -304,14 +308,17 @@ fn a_publication_keeps_lifecycle_boundaries_in_order_and_take_events_omits_them(
             asked: false,
         },
     ];
-    let published = remote.publication(Observation {
-        connection_epoch: 2,
-        events: events.clone(),
-        events_dropped: true,
-        status: phux_client_runtime::control::Status::Attached,
-        last_error: Some("reset".into()),
-        topology: None,
-    });
+    let published = remote.publication(
+        None,
+        Observation {
+            connection_epoch: 2,
+            events: events.clone(),
+            events_dropped: true,
+            status: phux_client_runtime::control::Status::Attached,
+            last_error: Some("reset".into()),
+            topology: None,
+        },
+    );
     assert_eq!(
         published,
         WirePublication {
@@ -341,7 +348,7 @@ fn a_publication_keeps_lifecycle_boundaries_in_order_and_take_events_omits_them(
     // The established drain keeps its vocabulary.
     let mut legacy = Vec::new();
     for event in events {
-        remote.project_event(event, &mut legacy);
+        remote.project_event(None, event, &mut legacy);
     }
     assert!(!legacy.iter().any(|event| matches!(
         event,
@@ -383,7 +390,7 @@ fn asked_levels_lower_after_their_announcement_in_order() {
             asked: false,
         },
     ] {
-        remote.project_event(event, &mut projected);
+        remote.project_event(None, event, &mut projected);
     }
     assert_eq!(
         projected,
@@ -412,6 +419,7 @@ fn background_work_reaches_bindings() {
     let remote = RemoteClient::new("unused".into(), 80, 24, None, None);
     let mut projected = Vec::new();
     remote.project_event(
+        None,
         Event::BackgroundWork {
             terminal_id: ResourceId::local(7),
             running: true,
@@ -436,13 +444,13 @@ fn project_published(
     let client = phux_client_runtime::Runtime::embedded(
         phux_client_runtime::control::ControlOptions::default(),
     );
-    *remote.client.lock().unwrap() = Some(client.clone());
     let resource_id = document.resource_id.clone();
     let generation = client
         .publication()
         .publish_document_for_testing(Arc::new(document));
     let mut projected = Vec::new();
     remote.project_event(
+        Some(&client),
         Event::DocumentPublished {
             resource_id,
             generation,

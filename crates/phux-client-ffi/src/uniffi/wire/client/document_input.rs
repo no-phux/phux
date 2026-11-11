@@ -99,11 +99,18 @@ impl RemoteClient {
     /// settle input replies; any other event comes back unchanged.
     pub(super) fn project_document(
         &self,
+        client: Option<&Client>,
         event: Event,
         projected: &mut Vec<WireEvent>,
     ) -> Option<Event> {
-        if let Event::DocumentPublished { resource_id, .. } = &event {
-            self.project_published_document(resource_id, projected);
+        if let Event::DocumentPublished {
+            resource_id,
+            generation,
+        } = &event
+        {
+            if let Some(client) = client {
+                self.project_published_document(client, resource_id, *generation, projected);
+            }
             return None;
         }
         let mut state = self.document_input.lock().unwrap();
@@ -125,13 +132,17 @@ impl RemoteClient {
         None
     }
 
-    /// The resource's newest document, read from the runtime's publication
-    /// table; nothing once its slot is gone (closed, detached, replaced).
-    fn project_published_document(&self, resource_id: &ResourceId, projected: &mut Vec<WireEvent>) {
-        let Some(publication) = self
-            .runtime_client()
-            .and_then(|client| client.acquire_document(resource_id))
-        else {
+    /// The document the wake for `generation` announced, read from the
+    /// runtime's publication table; nothing for a stale wake (a newer one
+    /// follows) or a retired slot, so no document is copied twice.
+    fn project_published_document(
+        &self,
+        client: &Client,
+        resource_id: &ResourceId,
+        generation: u64,
+        projected: &mut Vec<WireEvent>,
+    ) {
+        let Some(publication) = client.acquire_document_at(resource_id, generation) else {
             return;
         };
         let control = self

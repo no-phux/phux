@@ -409,3 +409,38 @@ fn dragging_a_secondary_json_selection_also_focuses_its_resource() {
     rt.frame(0.0);
     assert!(outbound(&client).is_empty());
 }
+
+#[test]
+fn a_stale_document_wake_reads_nothing_and_the_newer_wake_applies() {
+    let (client, mut rt) = fixture(
+        &[record(1, ResourceKind::AccessibilityTree)],
+        &doc(LayoutNode::Leaf(id(1))),
+    );
+    publish(&client, 1, ResourceKind::AccessibilityTree, b"{\"cut\":0}");
+    step(&mut rt);
+    client
+        .feed(FrameKind::ResourceOutput {
+            terminal_id: id(1),
+            stream_id: StreamId::new(1).unwrap(),
+            bootstrap_id: BootstrapId::new(1).unwrap(),
+            seq: 1,
+            bytes: b"{\"live\":1}".to_vec().into(),
+        })
+        .unwrap();
+    // The cut's wake, drained after the slot moved on: it must not read the
+    // live document, whose own wake follows.
+    let stale = phux_client_runtime::control::Event::DocumentPublished {
+        resource_id: id(1),
+        generation: 1,
+    };
+    let mut applied = true;
+    rt.update(|d, tx| applied = d.apply(&client, stale, tx));
+    assert!(!applied, "a stale wake changes nothing");
+    assert!(
+        matches!(&rt.state.resources.entries[&id(1)].body, Body::Tree(json) if json.contains("cut"))
+    );
+    step(&mut rt);
+    assert!(
+        matches!(&rt.state.resources.entries[&id(1)].body, Body::Tree(json) if json.contains("live"))
+    );
+}

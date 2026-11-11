@@ -147,15 +147,31 @@ impl Slot {
             .clone()
     }
 
+    /// What is published with the generation stamped on it, read under the
+    /// one lock a publish stamps both under.
+    fn current_stamped(&self) -> Option<(u64, Published)> {
+        let frame = self.frame.read().unwrap_or_else(PoisonError::into_inner);
+        let stamped = frame
+            .clone()
+            .map(|published| (self.generation.load(Ordering::Acquire), published));
+        drop(frame);
+        stamped
+    }
+
     /// The consumer half of the read/stale handshake. `read` is raised after
     /// the frame is loaded, so a publish landing in between leaves `read`
     /// set on a frame nobody saw: the owner then publishes once more instead
     /// of deferring, the safe direction. `read` before `stale` pairs with
     /// the owner's `stale` before `read` in [`Self::defer`]: under `SeqCst`
     /// at least one side sees the other, so no deferral goes unanswered.
+    /// A document is whole and never paced: it is handed back as it is, and
+    /// is not a grid acquire in `perf`.
     fn acquire(&self) -> Option<Published> {
-        crate::perf::ACQUIRED.incr();
         let frame = self.current();
+        if matches!(frame, Some(Published::Document(_))) {
+            return frame;
+        }
+        crate::perf::ACQUIRED.incr();
         self.read.store(true, Ordering::SeqCst);
         if !self.stale.swap(false, Ordering::SeqCst) {
             return frame;
@@ -247,6 +263,23 @@ impl Publication {
     pub fn acquire_document(&self, resource: &ResourceId) -> Option<Arc<DocumentPublication>> {
         self.acquire_published(resource)
             .and_then(Published::into_document)
+    }
+
+    /// The document an `Event::DocumentPublished` wake for `generation`
+    /// announced, or `None` when the slot is gone or has moved on. A slot
+    /// that moved on raises a newer wake, so a consumer that reads only
+    /// through this never copies one document twice.
+    #[must_use]
+    pub fn acquire_document_at(
+        &self,
+        resource: &ResourceId,
+        generation: u64,
+    ) -> Option<Arc<DocumentPublication>> {
+        let slot = self.slot_arc(&FrameKey::Default(resource.clone()))?;
+        let (current, published) = slot.current_stamped()?;
+        (current == generation)
+            .then_some(published)?
+            .into_document()
     }
 
     /// The generation of `terminal`'s current frame; `None` for a terminal
@@ -408,11 +441,15 @@ impl Publication {
         // raises `read` after this, never before it.
         slot.read.store(false, Ordering::SeqCst);
         slot.stale.store(false, Ordering::SeqCst);
+        // The generation is stamped under the frame lock, so a stamped read
+        // never pairs a frame with another publish's generation.
         let previous = {
             let mut current = slot.frame.write().unwrap_or_else(PoisonError::into_inner);
-            current.replace(published)
+            let previous = current.replace(published);
+            slot.generation.store(generation, Ordering::Release);
+            drop(current);
+            previous
         };
-        slot.generation.store(generation, Ordering::Release);
         (generation, previous)
     }
 

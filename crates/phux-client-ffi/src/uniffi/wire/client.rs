@@ -17,6 +17,7 @@ use agent_control::project_agent_control;
 mod agent_records;
 mod document_input;
 mod organization;
+mod publication;
 #[cfg(test)]
 mod quic_live;
 mod search;
@@ -360,7 +361,7 @@ impl RemoteClient {
         };
         let mut projected = Vec::new();
         for event in client.take_events() {
-            self.project_event(event, &mut projected);
+            self.project_event(Some(&client), event, &mut projected);
         }
         projected
     }
@@ -380,7 +381,7 @@ impl RemoteClient {
                 topology: None,
             };
         };
-        self.publication(client.take_observation())
+        self.publication(Some(&client), client.take_observation())
     }
 
     pub fn take_input_deliveries(&self) -> Vec<WireInputDelivery> {
@@ -1047,32 +1048,6 @@ impl RemoteClient {
         });
     }
 
-    fn publication(&self, observation: Observation) -> WirePublication {
-        let mut events = Vec::new();
-        for event in observation.events {
-            match event {
-                Event::ConnectionLost { message } => {
-                    events.push(WireEvent::ConnectionLost { message });
-                }
-                Event::ConnectionOpened { connection_epoch } => {
-                    events.push(WireEvent::ConnectionOpened { connection_epoch });
-                }
-                event => self.project_event(event, &mut events),
-            }
-        }
-        WirePublication {
-            connection_epoch: observation.connection_epoch,
-            events,
-            events_dropped: observation.events_dropped,
-            status: status::connection(Some(observation.status)).into(),
-            last_error: observation.last_error,
-            topology: observation.topology.map(|graph| {
-                let replica = self.runtime_client().map(|client| client.organization());
-                topology::session_graph(graph, replica.as_ref()).into()
-            }),
-        }
-    }
-
     /// Lower one runtime event.
     ///
     /// The two classifiers run first: whatever they recognize is a product
@@ -1080,7 +1055,7 @@ impl RemoteClient {
     /// lowers it. What is left is either bridge-local state (the damage
     /// bookkeeping) or a fact with no Swift
     /// vocabulary.
-    fn project_event(&self, event: Event, projected: &mut Vec<WireEvent>) {
+    fn project_event(&self, client: Option<&Client>, event: Event, projected: &mut Vec<WireEvent>) {
         let event = match event::terminal_signal(event) {
             Ok(signal) => return projected.extend(Option::<WireEvent>::from(signal)),
             Err(event) => event,
@@ -1092,7 +1067,7 @@ impl RemoteClient {
         let Some(event) = project_agent_control(event, projected) else {
             return;
         };
-        let Some(event) = self.project_document(event, projected) else {
+        let Some(event) = self.project_document(client, event, projected) else {
             return;
         };
         match event {

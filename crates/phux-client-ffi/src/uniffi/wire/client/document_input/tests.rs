@@ -26,6 +26,7 @@ fn remote() -> (Arc<RemoteClient>, Client) {
         ]);
     let mut projected = Vec::new();
     remote.project_event(
+        None,
         Event::TopologySnapshot {
             attach_id: None,
             snapshot,
@@ -50,6 +51,7 @@ fn published(remote: &RemoteClient, client: &Client, resource: u32) -> Option<St
             }));
     let mut projected = Vec::new();
     remote.project_event(
+        Some(client),
         Event::DocumentPublished {
             resource_id,
             generation,
@@ -199,7 +201,11 @@ fn replies_settle_as_outcomes_and_others_pass_through() {
         let resource_id = id::encode(&ResourceId::local(resource));
         let request_id = remote.send_document_input(resource_id.clone(), click());
         let mut projected = Vec::new();
-        remote.project_event(Event::CommandResult { request_id, result }, &mut projected);
+        remote.project_event(
+            None,
+            Event::CommandResult { request_id, result },
+            &mut projected,
+        );
         assert_eq!(
             projected,
             [WireEvent::DocumentInputResult {
@@ -211,6 +217,7 @@ fn replies_settle_as_outcomes_and_others_pass_through() {
     }
     let mut projected = Vec::new();
     remote.project_event(
+        None,
         Event::CommandResult {
             request_id: 4242,
             result: CommandResult::Ok,
@@ -243,4 +250,160 @@ fn the_mapping_helpers_are_the_cores() {
     );
     assert_eq!(document_scroll(100.0, 50.0, 200, 100, 0.1, 0.2), None);
     assert_eq!(document_scroll(0.0, 50.0, 200, 100, 0.0, 10.0), None);
+}
+
+#[test]
+fn a_stale_wake_projects_nothing_and_the_newer_one_projects_once() {
+    let (remote, client) = remote();
+    let publish = |seq| {
+        client
+            .publication()
+            .publish_document_for_testing(Arc::new(DocumentPublication {
+                resource_id: ResourceId::local(PAGE),
+                kind: ResourceKind::PixelSurface,
+                seq,
+                bytes: b"png".to_vec(),
+                content_type: None,
+            }))
+    };
+    let stale = publish(1);
+    let current = publish(2);
+    let mut projected = Vec::new();
+    for generation in [stale, current] {
+        remote.project_event(
+            Some(&client),
+            Event::DocumentPublished {
+                resource_id: ResourceId::local(PAGE),
+                generation,
+            },
+            &mut projected,
+        );
+    }
+    let [WireEvent::DocumentPublished { seq: 2, .. }] = projected.as_slice() else {
+        panic!("expected the current document once: {projected:?}");
+    };
+}
+
+/// A sans-IO runtime attached to `main` with a bootstrapped terminal and an
+/// accessibility tree whose bootstrap wake is still undrained.
+fn attached_tree() -> (Arc<RemoteClient>, Client, ResourceId) {
+    use phux_protocol::caps::{
+        BootstrapLimits, BootstrapProfile, BootstrapStreamProfile, ServerCapabilities,
+    };
+    use phux_protocol::ids::{BootstrapId, ClientId, StreamId};
+    use phux_protocol::wire::frame::AttachTarget;
+    use phux_protocol::wire::info::{SessionInfo, WindowInfo};
+
+    let client = Runtime::embedded(ControlOptions {
+        attach: Some(AttachTarget::ByName("main".into())),
+        viewport: (20, 4),
+        ..ControlOptions::default()
+    });
+    client.with_control(phux_client_runtime::control::ControlPlane::connection_opened);
+    let _ = client.take_outbound();
+    client
+        .feed(FrameKind::HelloOk {
+            protocol_major: phux_protocol::PROTOCOL_VERSION.major,
+            protocol_minor: phux_protocol::PROTOCOL_VERSION.minor,
+            protocol_patch: phux_protocol::PROTOCOL_VERSION.patch,
+            server_caps: ServerCapabilities::new(),
+            server_id: vec![0xAB; 16],
+            selected_profile: Some(BootstrapProfile::SynthesizedVtRaw),
+            bootstrap_limits: BootstrapLimits::default(),
+        })
+        .expect("HELLO_OK");
+    let attach_id = client
+        .take_outbound()
+        .iter()
+        .find_map(|bytes| match FrameKind::decode(bytes).expect("decodes").0 {
+            FrameKind::Attach { attach_id, .. } => Some(attach_id),
+            _ => None,
+        })
+        .expect("ATTACH queued");
+    let (session, window) = (SessionId::new(1), WindowId::new(1));
+    let (terminal, tree) = (ResourceId::local(7), ResourceId::local(PLAIN));
+    let snapshot = SessionSnapshot::new(session, window, terminal.clone())
+        .with_sessions(vec![SessionInfo::new(session, "main")])
+        .with_windows(vec![WindowInfo::new(window, session, "shell")])
+        .with_resources(vec![
+            ResourceInfo::new(terminal.clone(), window, 20, 4),
+            ResourceInfo::resource(tree.clone(), ResourceKind::AccessibilityTree)
+                .with_session(Some(session)),
+        ]);
+    client
+        .feed(FrameKind::Attached {
+            attach_id,
+            snapshot,
+            initial_client_id: ClientId::new(1),
+        })
+        .expect("ATTACHED");
+    for (id, profile, cols, rows) in [
+        (&terminal, BootstrapStreamProfile::SynthesizedVtRaw, 20, 4),
+        (&tree, BootstrapStreamProfile::AccessibilityTreeJsonV1, 0, 0),
+    ] {
+        let stream_id = StreamId::new(u64::from(id.local_id().expect("local"))).expect("stream");
+        let bootstrap_id = BootstrapId::new(1).expect("bootstrap");
+        for frame in [
+            FrameKind::BootstrapBegin {
+                terminal_id: id.clone(),
+                stream_id,
+                bootstrap_id,
+                profile,
+                cols,
+                rows,
+                base_seq: 0,
+            },
+            FrameKind::BootstrapChunk {
+                terminal_id: id.clone(),
+                stream_id,
+                bootstrap_id,
+                chunk_seq: 0,
+                payload: b"{}".to_vec().into(),
+            },
+            FrameKind::BootstrapReady {
+                terminal_id: id.clone(),
+                stream_id,
+                bootstrap_id,
+                history_cursor: None,
+            },
+        ] {
+            client.feed(frame).expect("bootstrap");
+        }
+    }
+    client
+        .feed(FrameKind::AttachReady { attach_id })
+        .expect("ATTACH_READY");
+    let remote = RemoteClient::new("unused".into(), 20, 4, None, None);
+    *remote.client.lock().unwrap() = Some(client.clone());
+    (remote, client, tree)
+}
+
+fn documents(remote: &RemoteClient) -> usize {
+    remote
+        .take_events()
+        .iter()
+        .filter(|event| matches!(event, WireEvent::DocumentPublished { .. }))
+        .count()
+}
+
+#[test]
+fn an_undrained_wake_projects_once_and_never_after_close_or_detach() {
+    let (remote, _, _) = attached_tree();
+    assert_eq!(documents(&remote), 1, "the bootstrap cut");
+    assert_eq!(documents(&remote), 0, "never twice");
+
+    let (remote, client, tree) = attached_tree();
+    client
+        .feed(FrameKind::ResourceClosed {
+            terminal_id: tree,
+            exit_status: None,
+            reason: phux_protocol::wire::frame::CloseReason::Exited,
+            signal: None,
+        })
+        .expect("RESOURCE_CLOSED");
+    assert_eq!(documents(&remote), 0, "closed");
+
+    let (remote, client, tree) = attached_tree();
+    assert!(client.with_control(|plane| plane.release_terminal(&tree)));
+    assert_eq!(documents(&remote), 0, "detached");
 }

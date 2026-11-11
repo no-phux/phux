@@ -280,7 +280,10 @@ impl Client {
             Event::AgentPublication { publication, .. } => {
                 self.agent_publication_effect(publication);
             }
-            Event::DocumentPublished { resource_id, .. } => self.document_effect(&resource_id),
+            Event::DocumentPublished {
+                resource_id,
+                generation,
+            } => self.document_effect(&resource_id, generation),
             Event::AgentSessionClosed {
                 terminal_id,
                 stream,

@@ -139,7 +139,7 @@ placement. A document kind delivers whole documents instead: attach it with
 effects. `bytes` holds the content type (`status_code` bytes long, empty for
 a tree or surface), then the document; show the last one delivered, not the
 highest `seq`. In Rust these
-are `Event::DocumentPublished` with `Client::acquire_document`, and
+are `Event::DocumentPublished` with `Client::acquire_document_at`, and
 `Topology::resources` ([resource kinds](./resource-kinds.md)).
 
 ## Documents, trees, and surfaces
@@ -148,18 +148,31 @@ A session can hold resources that are not terminals
 ([resource kinds](./resource-kinds.md#available-now)). Each arrives whole,
 and the runtime publishes it in the same table as a terminal's grid: one
 slot per resource, newest wins. `Event::DocumentPublished` names the
-resource and the generation it woke for; read the document with
-`Client::acquire_document` (or `Publication::acquire_document`). Its
-`DocumentPublication` carries the resource id, its kind, the publish
-sequence, the bytes (JSON for a tree, PNG or JPEG for a surface, the content
-type of a typed document) and that content type. Show the last one read,
-not the highest `seq`. At most one wake waits undrained per resource, and
-it is never dropped by the queue cap; the slot may already hold a newer
-document, and reads `None` once the resource closed, was released, or the
-server restarted. A document you hold stays intact. It is live-only, and
-there is no grid or replica to paint. Agent records are the exception to
-the slot model: a log, delivered in order through `Event::AgentPublication`
+resource and the slot generation it announces; read the document with
+`Client::acquire_document_at(resource_id, generation)` (or
+`Publication::acquire_document_at`). That returns `None` when the slot has
+moved on, and a newer wake then follows, so a consumer that reads only
+through it never copies one document twice; `acquire_document` reads the
+newest regardless. Its `DocumentPublication` carries the resource id, its
+kind, the publish sequence, the bytes (JSON for a tree, PNG or JPEG for a
+surface, the content type of a typed document) and that content type. Show
+the last one read, not the highest `seq`.
+
+At most one wake waits undrained per resource, and the queue cap never
+drops it. A slot retires, and a drain drops its undrained wake, when the
+resource closes, is detached or released, the server restarts as a new
+incarnation, or a reconnect to the same incarnation rebuilds the engine
+(new bootstrap limits or history policy); the re-attach publishes again. A
+document you hold stays intact. It is live-only, and there is no grid or
+replica to paint. Agent records are the exception to the slot model: a
+log, delivered in order through `Event::AgentPublication`
 ([below](#runtime-consumer-contract)).
+
+The C ABI and UniFFI copy each document they deliver out of the slot, so
+an attached document lives twice while delivered: once in the slot and
+once in the staged effect or `WireEvent` bytes. A build without the
+`engine` feature has no publication table: it drops documents, logging a
+warning, as it publishes no grids.
 
 UniFFI's `RemoteClient` projects the same event as
 `WireEvent::DocumentPublished`, with the document's `control` class

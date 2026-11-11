@@ -365,15 +365,18 @@ pub enum Event {
     /// `PixelSurface` or typed `Document`, or a newer publish of it.
     ///
     /// A wake, not a payload: read the document with
-    /// `Publication::acquire_document` (`Client::acquire_document`), which
-    /// returns the newest one, or `None` once the resource closed, detached
-    /// or the connection was replaced. At most one waits undrained per
-    /// resource. Live-only: nothing is journaled.
+    /// `Client::acquire_document_at(resource_id, generation)`
+    /// (`Publication::acquire_document_at`). That returns `None` once the
+    /// slot moved on, and a newer wake then follows, so reading only through
+    /// it never copies one document twice. At most one wake waits undrained
+    /// per resource, the queue cap never drops it, and a drain drops a wake
+    /// whose slot moved on or retired (close, detach, release, incarnation
+    /// reset, engine rebuild). Live-only: nothing is journaled.
     DocumentPublished {
         /// The document resource.
         resource_id: ResourceId,
-        /// The publication generation the wake was raised for; the slot may
-        /// already hold a newer one.
+        /// The slot's publication generation this wake announces. It counts
+        /// per slot, so it restarts when a retired resource publishes again.
         generation: u64,
     },
     /// An `AgentSession` stream the runtime subscribed

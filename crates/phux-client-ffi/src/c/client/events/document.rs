@@ -5,15 +5,16 @@ use super::{Client, OwnedEffect};
 use crate::c::types::EFFECT_DOCUMENT;
 
 impl Client {
-    /// Stage `resource`'s newest published document: `detail` is its wire
-    /// kind tag, `seq` its publish sequence, `status_code` the length of the
-    /// content type that `bytes` starts with (0 for a tree or surface), and
-    /// the rest of `bytes` the document. Live-only, and the last delivered
-    /// wins (not the highest `seq`), so it supersedes a staged one of the
-    /// same resource instead of queueing behind it. A resource whose slot is
-    /// already gone (closed, detached, replaced) stages nothing.
-    pub(super) fn document_effect(&mut self, resource: &ResourceId) {
-        let Some(publication) = self.runtime.acquire_document(resource) else {
+    /// Stage the document a wake for `generation` announced: `detail` is
+    /// its wire kind tag, `seq` its publish sequence, `status_code` the
+    /// length of the content type that `bytes` starts with (0 for a tree or
+    /// surface), and the rest of `bytes` the document. Live-only, and the
+    /// last delivered wins (not the highest `seq`), so it supersedes a staged
+    /// one of the same resource instead of queueing behind it. A stale wake
+    /// (a newer one follows) or a retired slot stages nothing, so no
+    /// document is copied twice.
+    pub(super) fn document_effect(&mut self, resource: &ResourceId, generation: u64) {
+        let Some(publication) = self.runtime.acquire_document_at(resource, generation) else {
             return;
         };
         self.owned_effects.retain(|effect| {

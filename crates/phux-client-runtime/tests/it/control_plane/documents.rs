@@ -149,7 +149,7 @@ fn a_document_publishes_into_its_slot_and_wakes_once_per_resource() {
 }
 
 #[test]
-fn closing_a_document_retires_its_slot() {
+fn closing_a_document_retires_its_slot_and_its_undrained_wake() {
     let client = attached_with_tree();
     let slot = client.slot(&tree()).expect("published");
     client
@@ -168,16 +168,21 @@ fn closing_a_document_retires_its_slot() {
         "a held handle keeps its last generation"
     );
     assert!(
+        document_wakes(&client).is_empty(),
+        "the wake could read nothing"
+    );
+    assert!(
         client.acquire(&terminal()).is_some(),
         "only the document's slot"
     );
 }
 
 #[test]
-fn releasing_a_document_retires_its_slot() {
+fn releasing_a_document_retires_its_slot_and_its_undrained_wake() {
     let client = attached_with_tree();
     assert!(client.with_control(|plane| plane.release_terminal(&tree())));
     assert!(client.acquire_document(&tree()).is_none());
+    assert!(document_wakes(&client).is_empty());
     assert!(
         client.acquire(&terminal()).is_some(),
         "only the document's slot"

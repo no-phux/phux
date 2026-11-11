@@ -173,9 +173,9 @@ impl ControlPlane {
             }
             // The owner thread publishes documents into the publication
             // table; without the engine there is no table to read.
-            KernelEffect::Document(publication) => tracing::debug!(
+            KernelEffect::Document(publication) => tracing::warn!(
                 resource = %publication.resource_id,
-                "document dropped: this build publishes no resources"
+                "document dropped: built without the `engine` feature, which publishes no resources"
             ),
         }
     }
@@ -183,7 +183,7 @@ impl ControlPlane {
     /// Wake the consumer for a newly published document. At most one wake
     /// per resource waits undrained, at the newest position: the slot holds
     /// only the newest document, so an older wake would read the same one.
-    fn note_document(&mut self, resource_id: ResourceId, generation: u64) {
+    pub(super) fn note_document(&mut self, resource_id: ResourceId, generation: u64) {
         self.events.retain(|event| {
             !matches!(event, Event::DocumentPublished { resource_id: queued, .. } if *queued == resource_id)
         });
