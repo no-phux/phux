@@ -96,6 +96,7 @@ A session is a named workspace, usually one per project. Each holds its own tabs
 | Keys                                                       | Does                         |
 | ---------------------------------------------------------- | ---------------------------- |
 | <kbd>C-a</kbd> <kbd>C</kbd>                                | new session                  |
+| <kbd>C-a</kbd> <kbd>T</kbd>                                | new git worktree and session |
 | <kbd>C-a</kbd> <kbd>s</kbd>                                | pick a session               |
 | <kbd>C-a</kbd> <kbd>N</kbd>, <kbd>C-a</kbd> <kbd>P</kbd>   | next, previous session       |
 | <kbd>C-a</kbd> <kbd>)</kbd>                                | the session you were in before |

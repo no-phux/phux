@@ -93,6 +93,17 @@ impl PromptOverlay {
         }
     }
 
+    /// The `new-worktree` prompt; committing creates the worktree and
+    /// switches to its session.
+    #[must_use]
+    pub fn new_worktree(theme: &Theme) -> Self {
+        Self {
+            verb: "create",
+            placeholder: "a branch name",
+            ..Self::new("New worktree", "new-worktree", "branch", "", theme)
+        }
+    }
+
     fn committed_action(&self) -> ResolvedAction {
         let mut args = BTreeMap::new();
         args.insert(

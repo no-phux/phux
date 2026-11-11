@@ -340,6 +340,17 @@ pub(super) const PALETTE_ROWS: &[ActionSpec] = &[
         run: run::new_session,
     },
     ActionSpec {
+        name: "new-worktree",
+        description: "Create a git worktree for a new branch and switch to its session",
+        params: "`branch?` (bare opens an interactive prompt); `cwd?` picks the repository",
+        palette: Palette::Row {
+            title: "New worktree…",
+            category: Category::Session,
+            args: &[],
+        },
+        run: run::new_worktree,
+    },
+    ActionSpec {
         name: "last-session",
         description: "Switch back to the previous session",
         params: "",

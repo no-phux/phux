@@ -25,6 +25,7 @@ mod sessions;
 mod spawn;
 mod views;
 mod windows;
+mod worktree;
 
 pub(in crate::attach) use modes::{enter_mode, exit_mode};
 pub(in crate::attach) use panes::{
@@ -49,6 +50,7 @@ pub(in crate::attach) use windows::{
     close_view, kill_window, move_window, next_window, previous_window, rename_window,
     reopen_views, select_window,
 };
+pub(in crate::attach) use worktree::new_worktree;
 
 /// Everything a handler may read or change for one action: the action, the
 /// lent driver state, the focused pane, the read-only pane slots (lent apart

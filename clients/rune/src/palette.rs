@@ -30,6 +30,8 @@ pub enum Target {
     Theme(Option<&'static str>),
     /// A session to create, by the name typed.
     NewSession(String),
+    /// A git worktree to create, by the branch typed.
+    NewWorktree(String),
     /// An absolute path on the pane's host, to insert at its prompt.
     Path(String),
 }
@@ -236,6 +238,17 @@ pub fn new_session_item(topology: Option<&Topology>, query: &str) -> Option<Item
         detail: "create".to_owned(),
         kind: "action",
         target: Target::NewSession(name.to_owned()),
+    })
+}
+
+/// A row creating a worktree, and its session, for the branch `query` names.
+pub fn new_worktree_item(query: &str) -> Option<Item> {
+    let branch = query.trim();
+    (!branch.is_empty() && !branch.contains(char::is_whitespace)).then(|| Item {
+        title: format!("New Worktree \u{201c}{branch}\u{201d}"),
+        detail: "branch and session".to_owned(),
+        kind: "action",
+        target: Target::NewWorktree(branch.to_owned()),
     })
 }
 
@@ -456,6 +469,9 @@ mod tests {
         let item = new_session_item(None, " api ").expect("offered");
         assert_eq!(item.target, Target::NewSession("api".to_owned()));
         assert!(new_session_item(None, "  ").is_none());
+        let item = new_worktree_item(" feat/api ").expect("offered");
+        assert_eq!(item.target, Target::NewWorktree("feat/api".to_owned()));
+        assert!(new_worktree_item("two words").is_none());
     }
 
     #[test]

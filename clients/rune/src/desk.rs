@@ -56,6 +56,7 @@ mod shown;
 mod splits;
 mod tabs;
 pub mod updates;
+mod worktree;
 
 pub use layout::SplitPath;
 pub use notice::{Notice, NoticeKind};
