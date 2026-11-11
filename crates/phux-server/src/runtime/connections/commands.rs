@@ -240,7 +240,8 @@ impl CommandDispatch<'_> {
         match route(&command, self.lane.as_deref().map(ConnectionLane::lane)) {
             Route::InputLane => {
                 crate::runtime::commands::note_local_use(self.state, self.client_id, &command);
-                self.submit_input(request_id, command).await;
+                self.submit_input(request_id, command, command_started)
+                    .await;
                 return None;
             }
             Route::Bulk(retained) => {
@@ -298,8 +299,16 @@ impl CommandDispatch<'_> {
         .await;
     }
 
-    async fn submit_input(&mut self, request_id: u32, command: Command) {
+    async fn submit_input(
+        &mut self,
+        request_id: u32,
+        command: Command,
+        command_started: std::time::Instant,
+    ) {
         let Some(lane) = self.lane.as_deref_mut() else {
+            // `route` sends nothing here without a lane; should it, the
+            // handler still answers the command.
+            run_handler(&self.context(), request_id, command, command_started).await;
             return;
         };
         let Ok(slot) = self.input_receipt_slots.clone().try_acquire_owned() else {

@@ -88,33 +88,77 @@ fn document_engine(path: &str, source: &str) -> usize {
 }
 
 /// The Terminal app's modules, named from outside it: through `apps::` or
-/// `super::`, or as a bare `terminal::` path, which is how `apps/mod.rs`
-/// re-exports them and how a `{terminal::…}` brace or an alias reaches them.
+/// `super::`, as a bare `terminal::` path (how `apps/mod.rs` re-exports them
+/// and how a `{terminal::…}` brace reaches them), or by any name a `use … as`
+/// in the same file gives a Terminal app path.
 fn terminal_app_paths(path: &str, source: &str) -> usize {
     if app_of(path) == Some("terminal") {
         return 0;
     }
     let source = without_inline_tests(source);
-    count(&source, &["apps::terminal::", "super::terminal::"]) + bare_terminal_paths(&source)
+    let code = code_lines(&source);
+    let aliased: usize = terminal_aliases(&code)
+        .iter()
+        .map(|alias| word_uses(&code, alias))
+        .sum();
+    count(&source, &["apps::terminal::", "super::terminal::"])
+        + word_uses(&code, "terminal::")
+        + aliased
 }
 
-/// `terminal::` paths not led by another segment (`apps::terminal::`) or
-/// another name (`phux_terminal::`).
-fn bare_terminal_paths(source: &str) -> usize {
+/// `source` without its comment lines.
+fn code_lines(source: &str) -> String {
     source
         .lines()
         .filter(|line| !line.trim_start().starts_with("//"))
-        .map(|line| {
-            line.match_indices("terminal::")
-                .filter(|(at, _)| {
-                    !line[..*at]
-                        .chars()
-                        .next_back()
-                        .is_some_and(|c| c.is_alphanumeric() || c == '_' || c == ':')
-                })
-                .count()
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// Whether `at` in `code` starts a word: no identifier character or path
+/// separator leads it.
+fn starts_word(code: &str, at: usize) -> bool {
+    !code[..at]
+        .chars()
+        .next_back()
+        .is_some_and(|c| c.is_alphanumeric() || c == '_' || c == ':')
+}
+
+/// Uses of `name` as a whole word or path head, not its own `as` binding.
+fn word_uses(code: &str, name: &str) -> usize {
+    let is_ident = |c: char| c.is_alphanumeric() || c == '_';
+    let open_ended = !name.ends_with(is_ident);
+    code.match_indices(name)
+        .filter(|(at, _)| starts_word(code, *at) && !code[..*at].ends_with(" as "))
+        .filter(|(at, _)| open_ended || !code[at + name.len()..].starts_with(is_ident))
+        .count()
+}
+
+/// The names `use … as X` statements in `code` give Terminal app paths,
+/// other than `terminal`, which the bare path count already sees.
+fn terminal_aliases(code: &str) -> Vec<String> {
+    code.split(';')
+        .filter_map(|statement| {
+            let at = statement
+                .match_indices("use ")
+                .find(|(at, _)| starts_word(statement, *at))?
+                .0;
+            Some(&statement[at..])
         })
-        .sum()
+        .filter(|import| {
+            import.contains("apps::terminal")
+                || import.contains("super::terminal")
+                || word_uses(import, "terminal::") > 0
+        })
+        .flat_map(|import| {
+            import.split(" as ").skip(1).map(|rest| {
+                rest.chars()
+                    .take_while(|c| c.is_alphanumeric() || *c == '_')
+                    .collect::<String>()
+            })
+        })
+        .filter(|alias| !alias.is_empty() && alias != "terminal")
+        .collect()
 }
 
 /// An app routing through the host's app table instead of serving its kind.
@@ -168,7 +212,7 @@ const SCANS: [Scan; 6] = [
         baseline: &[
             (
                 "runtime/apps/agent_session/native_agent/launch.rs",
-                5,
+                10,
                 "the native agent host runs in a Terminal (phux-rbz0y.7)",
             ),
             (
@@ -328,6 +372,12 @@ fn the_scans_skip_inline_tests_and_their_own_app() {
         terminal_app_paths("runtime/x.rs", "crate::runtime::apps::terminal::z"),
         1
     );
+    let aliased = "use crate::runtime::apps::terminal::{commands as terminal, launch as tl};\n\
+                   fn f(c: tl::Cmd) { terminal::run(tl::go(c)); refuse(); }\n";
+    assert_eq!(terminal_app_paths("runtime/x.rs", aliased), 4);
+    let renamed =
+        "use crate::runtime::apps::terminal::launch::Cmd as Launch;\nfn f(_: Launch) {}\n";
+    assert_eq!(terminal_app_paths("runtime/x.rs", renamed), 2);
     assert_eq!(app_internals_in_state("state/documents.rs", ""), 1);
     assert_eq!(app_internals_in_state("state/leases.rs", ""), 0);
 }

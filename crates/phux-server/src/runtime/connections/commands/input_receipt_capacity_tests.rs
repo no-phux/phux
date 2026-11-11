@@ -59,6 +59,7 @@ async fn receipt_refusal_precedes_operation_cache_admission() {
                     terminal_id: WireResourceId::local(1),
                     events: vec![paste(b"original")],
                 },
+                std::time::Instant::now(),
             )
             .await;
             assert!(matches!(
