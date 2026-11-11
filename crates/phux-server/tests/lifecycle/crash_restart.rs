@@ -187,13 +187,15 @@ fn restarted_projections_refuse_wire_relaunch_without_starting_a_default_shell()
         let (_, parent) = state.seed_session("work");
         let actor = Actor::owner();
         let agent = state
-            .create_agent_session(
+            .create_child(
                 parent,
-                &phux_core::resource::AgentFacet {
-                    provider: "test-producer".into(),
-                    native_id: None,
-                    state: None,
-                },
+                phux_core::NewResource::child(
+                    phux_core::LaunchSpec::Agent(phux_core::resource::AgentLaunch {
+                        provider: "test-producer".into(),
+                        native_id: None,
+                    }),
+                    None,
+                ),
                 &actor,
             )
             .unwrap();

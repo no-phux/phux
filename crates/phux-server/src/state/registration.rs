@@ -265,25 +265,18 @@ impl ServerState {
         self.resources.spawner(resource)
     }
 
-    /// Record the control class a document's producer declared.
-    pub fn set_document_control(
-        &mut self,
-        document: ResourceId,
-        control: Option<phux_protocol::wire::frame::ControlClass>,
-    ) {
-        match control {
-            Some(class) => self.document_controls.insert(document, class),
-            None => self.document_controls.remove(&document),
-        };
-    }
-
-    /// What input to `document` controls; `None` when it controls nothing.
+    /// What input to `resource` controls, as its producer declared at spawn
+    /// with a [`ControlClass`](phux_protocol::wire::frame::ControlClass)
+    /// companion (`docs/resource-kinds.md#authority`); `None` when it
+    /// controls nothing.
     #[must_use]
-    pub fn document_control(
+    pub fn resource_control(
         &self,
-        document: ResourceId,
+        resource: ResourceId,
     ) -> Option<phux_protocol::wire::frame::ControlClass> {
-        self.document_controls.get(&document).copied()
+        self.resource_handle(resource)?
+            .companion::<phux_protocol::wire::frame::ControlClass>()
+            .copied()
     }
 
     /// Record that `client` spawned `terminal` (ADR-0109), before anything

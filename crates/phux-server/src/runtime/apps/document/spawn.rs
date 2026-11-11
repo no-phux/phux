@@ -77,6 +77,7 @@ pub(crate) async fn spawn_document<A: DocumentApi>(spawn: ResourceSpawn<'_>) {
 
     let token = root_token.child_token();
     let bundle = DocumentActor::<A>::build(core_parent, target, token.clone());
+    let handle = super::with_control(bundle.handle.clone(), resource.control);
     let registered = state.with_mut(|s| {
         let Some(parent_handle) = s.resource_handle(core_parent) else {
             return Err(SpawnError::ParentNotFound);
@@ -95,7 +96,7 @@ pub(crate) async fn spawn_document<A: DocumentApi>(spawn: ResourceSpawn<'_>) {
                 _ => SpawnError::ParentKindMismatch,
             })?;
         let wire = s
-            .spawn_resource_actor(core, bundle.handle.clone(), token, bundle.actor.run())
+            .spawn_resource_actor(core, handle, token, bundle.actor.run())
             .map_err(|error| {
                 s.reap_resource(core);
                 SpawnError::SpawnFailed(error.to_string())
@@ -113,7 +114,6 @@ pub(crate) async fn spawn_document<A: DocumentApi>(spawn: ResourceSpawn<'_>) {
         let _ = s.record_and_fanout(announcement);
         crate::runtime::idempotent_create::bind_spawned(s, resource.idempotency_key, &wire);
         s.record_spawn(core, client_id);
-        s.set_document_control(core, resource.control);
         s.subscribe_resource(client_id, core, Some(out_tx.clone()));
         s.mark_if_viewer_session(client_id, &wire);
         Ok((core, wire))

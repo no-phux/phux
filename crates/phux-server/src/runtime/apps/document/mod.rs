@@ -70,6 +70,18 @@ fn target_name(target: &str) -> Option<String> {
     (!target.trim().is_empty() && !target.chars().any(char::is_control)).then(|| target.to_owned())
 }
 
+/// `handle` carrying the control class its producer declared, which the host
+/// reads as [`ServerState::resource_control`]; none controls nothing.
+fn with_control(
+    handle: ResourceHandle,
+    control: Option<phux_protocol::wire::frame::ControlClass>,
+) -> ResourceHandle {
+    match control {
+        Some(class) => handle.with_companion(class),
+        None => handle,
+    }
+}
+
 impl DocumentApi for TreeDocument {
     fn validate_bootstrap(_target: &str, bytes: &[u8]) -> Result<(), String> {
         serde_json::from_slice::<serde::de::IgnoredAny>(bytes)
@@ -96,12 +108,14 @@ impl DocumentApi for TreeDocument {
         _name: Option<&str>,
         actor: &phux_core::actor::Actor,
     ) -> Result<phux_core::ids::ResourceId, phux_core::Refusal> {
-        state.create_named_document(
+        state.create_child(
             parent,
-            phux_core::LaunchSpec::Tree(phux_core::resource::TreeLaunch {
-                target: target.to_owned(),
-            }),
-            target_name(target),
+            phux_core::NewResource::child(
+                phux_core::LaunchSpec::Tree(phux_core::resource::TreeLaunch {
+                    target: target.to_owned(),
+                }),
+                target_name(target),
+            ),
             actor,
         )
     }
@@ -131,12 +145,14 @@ impl DocumentApi for SurfaceDocument {
         _name: Option<&str>,
         actor: &phux_core::actor::Actor,
     ) -> Result<phux_core::ids::ResourceId, phux_core::Refusal> {
-        state.create_named_document(
+        state.create_child(
             parent,
-            phux_core::LaunchSpec::Surface(phux_core::resource::SurfaceLaunch {
-                target: target.to_owned(),
-            }),
-            target_name(target),
+            phux_core::NewResource::child(
+                phux_core::LaunchSpec::Surface(phux_core::resource::SurfaceLaunch {
+                    target: target.to_owned(),
+                }),
+                target_name(target),
+            ),
             actor,
         )
     }
@@ -172,12 +188,14 @@ impl DocumentApi for TypedDocument {
         name: Option<&str>,
         actor: &phux_core::actor::Actor,
     ) -> Result<phux_core::ids::ResourceId, phux_core::Refusal> {
-        state.create_named_document(
+        state.create_child(
             parent,
-            phux_core::LaunchSpec::Document(phux_core::resource::DocumentLaunch {
-                content_type: content_type.to_owned(),
-            }),
-            name.map(str::to_owned),
+            phux_core::NewResource::child(
+                phux_core::LaunchSpec::Document(phux_core::resource::DocumentLaunch {
+                    content_type: content_type.to_owned(),
+                }),
+                name.map(str::to_owned),
+            ),
             actor,
         )
     }

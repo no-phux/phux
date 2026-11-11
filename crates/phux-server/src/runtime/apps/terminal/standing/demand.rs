@@ -116,7 +116,7 @@ async fn start(state: &SharedState, target: String, jpeg: bool) -> CommandResult
         Ok(name) => name,
         Err(refused) => return refused,
     };
-    super::request_reload(state);
+    state.request_standing_reload();
     let deadline = Instant::now() + SURFACE_WAIT;
     let surface = loop {
         if let Some(id) = state.with_mut(|s| surface_in(s, &name)) {
@@ -153,7 +153,7 @@ fn stop(state: &SharedState, target: &str) -> CommandResult {
             format!("no mirror of {target:?} was started"),
         ),
         Ok(true) => {
-            super::request_reload(state);
+            state.request_standing_reload();
             json(&serde_json::json!({ "session": name }))
         }
     }

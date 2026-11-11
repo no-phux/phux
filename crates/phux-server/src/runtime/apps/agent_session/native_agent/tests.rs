@@ -5,6 +5,8 @@
     clippy::unwrap_used,
     reason = "isolated broker regressions"
 )]
+use super::binding::NativeBinding;
+use super::binding::fingerprint;
 use super::closure::*;
 use super::controller::*;
 use super::publication::*;
@@ -12,8 +14,6 @@ use super::source_dispatch::*;
 use crate::runtime::commands::CommandContext;
 use crate::state::ClientId;
 use crate::state::SharedState;
-use crate::state::native_agent::NativeBinding;
-use crate::state::native_agent::fingerprint;
 use bytes::Bytes;
 use phux_agent_session::session::AgentSessionActor;
 use phux_protocol::ids::ResourceId;

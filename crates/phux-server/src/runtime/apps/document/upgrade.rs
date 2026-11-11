@@ -14,13 +14,12 @@ use futures_util::FutureExt as _;
 use futures_util::future::LocalBoxFuture;
 use futures_util::stream::{FuturesUnordered, StreamExt as _};
 use phux_core::ids::ResourceId;
-use phux_protocol::ids::ResourceId as WireResourceId;
 use phux_protocol::wire::frame::ControlClass;
 use phux_tree::{DocumentActor, DocumentResource as _, SnapshotRequest};
 use tokio::sync::{mpsc, oneshot};
 use tokio_util::sync::CancellationToken;
 
-use super::DocumentApi;
+use super::{DocumentApi, with_control};
 use crate::runtime::apps::{KindResume, UpgradeCut};
 use crate::runtime::connections::pane_events::PaneEvents;
 use crate::runtime::upgrade::UpgradeError;
@@ -135,7 +134,7 @@ fn document_blobs(
                 wire_id: s.resource_wire(id)?,
                 parent_wire_id,
                 key: desc.key,
-                control: s.document_control(id).map(ControlClass::to_u8),
+                control: s.resource_control(id).map(ControlClass::to_u8),
                 document: document
                     .as_ref()
                     .map(|bytes| base64::engine::general_purpose::STANDARD.encode(bytes)),
@@ -144,19 +143,14 @@ fn document_blobs(
         .collect()
 }
 
-/// Rebuilds every carried `A` document, then its control class.
+/// Rebuilds every carried `A` document with its control class.
 pub(crate) struct DocumentResume<A> {
-    /// Each rebuilt document's wire id and carried control byte.
-    controls: Vec<(u32, Option<u8>)>,
     kind: PhantomData<A>,
 }
 
 impl<A: DocumentApi> DocumentResume<A> {
     pub(crate) fn begin() -> Box<dyn KindResume> {
-        Box::new(Self {
-            controls: Vec::new(),
-            kind: PhantomData,
-        })
+        Box::new(Self { kind: PhantomData })
     }
 }
 
@@ -196,27 +190,24 @@ impl<A: DocumentApi> KindRebuild for DocumentResume<A> {
             });
             let token = CancellationToken::new();
             let bundle = DocumentActor::<A>::build(parent, &target, token.clone());
+            let handle = with_control(
+                bundle.handle,
+                carried.control.and_then(ControlClass::from_u8),
+            );
             cx.spawn(
                 core,
                 carried.wire_id,
-                bundle.handle,
+                handle,
                 token,
                 bundle.actor.seeded(document).run(),
                 Some(bundle.exit_notify),
             )?;
-            self.controls.push((carried.wire_id, carried.control));
         }
         Ok(())
     }
 
-    /// Reinstate each rebuilt document's control class.
-    fn restore(&mut self, state: &mut ServerState, _blob: &StateBlob) {
-        for (wire, control) in self.controls.drain(..) {
-            if let Some(core) = state.resource_from_wire(&WireResourceId::local(wire)) {
-                state.set_document_control(core, control.and_then(ControlClass::from_u8));
-            }
-        }
-    }
+    /// The control class crossed on each rebuilt handle; nothing is left.
+    fn restore(&mut self, _state: &mut ServerState, _blob: &StateBlob) {}
 }
 
 impl<A: DocumentApi> KindResume for DocumentResume<A> {

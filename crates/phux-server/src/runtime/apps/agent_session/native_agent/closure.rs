@@ -1,9 +1,9 @@
+use super::binding::NativeBinding;
+use super::binding::fingerprint;
 use super::controller::{authenticated_host_binding, refusal};
 use super::publication::sync_ask_inventory;
 use crate::runtime::commands::CommandContext;
 use crate::state::SharedState;
-use crate::state::native_agent::NativeBinding;
-use crate::state::native_agent::fingerprint;
 use bytes::Bytes;
 use phux_protocol::ids::ResourceId;
 use phux_protocol::native_agent::NATIVE_SCHEMA;

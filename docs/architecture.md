@@ -227,18 +227,17 @@ A resource kind is an app. The host reaches one through `ResourceApp` in
 `phux-server/src/runtime/apps/`: `app_owning` routes a facet command by the
 same catalog rows authorization uses, and `app_for` answers per-kind questions
 such as how a stream bootstraps. `state/` sits below the apps and never names
-them; what it asks of any resource is its lifecycle, the required
-`ResourceOps` on its handle.
+them: it asks any resource only for its lifecycle (`ResourceOps`), and holds
+each app's own state in a typed slot it cannot read (`state/app_slots.rs`).
 A new kind does not compile until `app_for` names its app, and neither
 `ResourceApp` nor `ResourceOps` has a default method to inherit; a new kind
 also takes one `APP_KINDS` row, which a test holds to the catalog. A graceful
 upgrade goes through the apps too: at the cut each app writes the upgrade-blob
 fields its kind owns, and on resume it rebuilds them, in `APP_KINDS` order so
-a parent's kind comes first. A surface that is not every kind's (a size in
-cells, an input lease, a live record stream, the `AgentParent` mailbox of a
-resource that hosts an agent) is a companion on the handle, typed by the crate
-that owns it, so the host can use it without naming an engine, and a kind
-without it stubs nothing. The server's production dependency
+a parent's kind comes first. A surface only some kinds offer (a size in
+cells, an input lease, a live record stream, an `AgentParent` mailbox) is a
+companion on the handle, typed by the crate that owns it, so the host uses
+it without naming an engine. The server's production dependency
 graph contains no Terminal engine, libghostty or PTY implementation. The
 executable explicitly injects a `TerminalEngineFactory`; no built-in engine is
 selected by the host. The private Terminal app uses `phux-terminal-api` ports;

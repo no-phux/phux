@@ -15,9 +15,9 @@ use std::collections::{BTreeMap, HashSet};
 
 use phux_core::ids::{ResourceId, SessionId};
 use phux_core::{
-    Actor, AgentLaunch, Applied, Command, Committed, ExecState, ExitOutcome, ExitPolicy, FreshKeys,
-    InstanceId, LaunchSpec, NewResource, Op, OperationId, Org, Outcome, PrincipalId, ProcIdentity,
-    Refusal, ResourceKey, ResourceKind, SessionLifetime, Stamp, TerminalLaunch,
+    Actor, Applied, Command, Committed, ExecState, ExitOutcome, ExitPolicy, FreshKeys, InstanceId,
+    LaunchSpec, NewResource, Op, OperationId, Org, Outcome, PrincipalId, ProcIdentity, Refusal,
+    ResourceKey, SessionLifetime, Stamp, TerminalLaunch,
 };
 
 use super::{ClientId, ServerState};

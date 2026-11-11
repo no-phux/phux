@@ -1,5 +1,6 @@
 //! Native launch transaction and exclusive authenticated controller broker.
 
+pub(crate) mod binding;
 mod closure;
 mod controller;
 mod integrations;

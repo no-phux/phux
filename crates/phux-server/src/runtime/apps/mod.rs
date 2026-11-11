@@ -31,7 +31,9 @@ use crate::resource::{ResourceHandle, ResourceKind};
 use crate::state::{ClientId, Outbound, SharedState};
 
 pub(crate) mod agent_session;
+pub(crate) mod agent_tracking;
 pub(crate) mod document;
+pub(crate) mod mirror_demand;
 pub(crate) mod spawn;
 pub(crate) mod terminal;
 pub(crate) mod upgrade;

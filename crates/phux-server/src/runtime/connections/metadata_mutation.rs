@@ -255,7 +255,7 @@ pub(super) fn handle_set_metadata(
         crate::hub::reload_satellites(state);
         crate::uplink::reload_uplinks(state);
         crate::plugin_startup::request_reload(state);
-        crate::runtime::apps::terminal::standing::request_reload(state);
+        state.request_standing_reload();
     }
 }
 

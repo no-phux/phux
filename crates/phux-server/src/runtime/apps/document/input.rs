@@ -86,7 +86,7 @@ pub(super) async fn relay<A: DocumentApi>(
             handle,
             producer,
             spawner,
-            s.document_control(core),
+            s.resource_control(core),
             origin,
         ))
     });

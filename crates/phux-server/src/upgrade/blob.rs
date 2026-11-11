@@ -33,6 +33,9 @@ use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
+mod native;
+pub use native::{NativeBinding, NativeOperation, NativePublication};
+
 /// The blob shape version. Bump on any incompatible change; add new fields
 /// with `#[serde(default)]` instead when the change is additive.
 pub const BLOB_VERSION: u32 = 1;
@@ -97,7 +100,7 @@ pub struct StateBlob {
     pub delegations: Vec<DelegationBlob>,
     /// Exclusive native controllers, operation ledger and publication receipts.
     #[serde(default)]
-    pub native_agents: Vec<crate::state::native_agent::NativeBinding>,
+    pub native_agents: Vec<NativeBinding>,
     /// Every document resource (tree, surface, typed document) whose parent
     /// pane crosses live, so a producer that redials re-adopts the same id.
     /// Additive: an older blob carries none.

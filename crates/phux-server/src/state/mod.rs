@@ -20,8 +20,7 @@ use std::sync::{Arc, Mutex, MutexGuard};
 
 use phux_protocol::ids::GroupId;
 
-mod agent;
-mod agent_tracking;
+mod app_slots;
 mod approvals;
 mod bindings;
 mod client;
@@ -55,12 +54,11 @@ pub(crate) async fn activation_reports_woken() {
 }
 mod lifecycle_state;
 mod metadata;
-pub(crate) mod mirror_demand;
-pub(crate) mod native_agent;
 mod org;
 mod plugin_startup;
 mod policy;
 mod reap;
+mod registration;
 mod remote_listeners;
 mod resolve;
 mod resource_table;
@@ -70,12 +68,11 @@ mod satellite_spawns;
 mod session_table;
 mod sessions;
 mod snapshot;
-mod terminals;
 pub(crate) mod upgrade_blob;
 mod viewport;
 mod wire_ids;
 
-use agent_tracking::AgentState;
+pub(crate) use app_slots::AppSlot;
 pub use approvals::{Decision, HoldRefusal, OpenedApproval, PendingApproval};
 pub use client::{AttachError, AttachSnapshotPane, AttachedClient, ClientId};
 use client_table::ClientTable;
@@ -105,10 +102,10 @@ pub use metadata::{
 };
 pub(crate) use org::ensure_arrangements;
 pub use org::{OrgCommit, OsKeys, Reconciled, TerminalTarget, fresh_org, now_stamp};
+pub use registration::ResourceRegistrationError;
 pub(crate) use resolve::{RelayRoute, Resolved, ResolvedOwned};
 use resource_table::ResourceTable;
 use session_table::SessionTable;
-pub use terminals::ResourceRegistrationError;
 pub use upgrade_blob::RebuildError;
 
 /// The single static Group every `Scope::Group` metadata op lands in; the
@@ -161,8 +158,6 @@ pub struct CloseAttribution {
 /// Single owner of all server-side state; share it as [`SharedState`].
 #[derive(Debug)]
 pub struct ServerState {
-    /// Explicit composition; empty host-only state has no Terminal engine.
-    terminal_engine: Option<Arc<dyn phux_terminal_api::TerminalEngineFactory>>,
     /// The organization registry plus per-session ledgers (last touch,
     /// frozen roots, last cwd); see [`session_table`].
     sessions: SessionTable,
@@ -191,9 +186,6 @@ pub struct ServerState {
     pub idspace: IdSpace,
     /// Per-scope L3 metadata store (SPEC §7.4); values are opaque.
     metadata: MetadataStore,
-    /// Agent tracking: the asked detector (ADR-0046 §D) and the record
-    /// arbiter (§E); see [`agent_tracking`].
-    agent: AgentState,
     /// Boot-time configuration, set before the accept loops start and never
     /// changed; see [`config`].
     config: ServerConfig,
@@ -211,8 +203,6 @@ pub struct ServerState {
     /// Rung on a config reload to re-read `[[mirrors]]`; `None` until the
     /// standing-mirror supervisor is installed.
     standing_mirrors: Option<std::sync::Arc<tokio::sync::Notify>>,
-    /// The mirrors wanted beside `[[mirrors]]`, and Rune's macOS runner.
-    mirror_demand: crate::state::mirror_demand::Demand,
     /// Who wrote each `phux.push/v1/<device>` grant, and what was last
     /// pushed to it (ADR-0155).
     push_grants: crate::push::PushGrants,
@@ -246,14 +236,9 @@ pub struct ServerState {
     operation_dedupe: crate::runtime::operation_dedupe::OperationDedupe,
     /// Held `SIGNAL` actions awaiting a decision (ADR-0128).
     approvals: approvals::ApprovalTable,
-    /// Dedicated controller state and exclusive SDK stream authority.
-    native_agents: native_agent::NativeAgents,
-    /// Each live document's control class, as its producer declared it at
-    /// spawn (`docs/resource-kinds.md#authority`); absent is none.
-    document_controls: std::collections::HashMap<
-        phux_core::ids::ResourceId,
-        phux_protocol::wire::frame::ControlClass,
-    >,
+    /// Each app's own state, which the host holds without knowing its
+    /// type; see [`app_slots`].
+    app_slots: app_slots::AppSlots,
 }
 
 impl Default for ServerState {
@@ -319,16 +304,6 @@ impl Drop for ClearBorrowed {
 }
 
 impl SharedState {
-    /// Supply the Terminal engine for this state, before creating resources.
-    pub fn set_terminal_engine(&self, engine: Arc<dyn phux_terminal_api::TerminalEngineFactory>) {
-        self.with_mut(|state| state.terminal_engine = Some(engine));
-    }
-
-    pub(crate) fn terminal_engine(
-        &self,
-    ) -> Option<Arc<dyn phux_terminal_api::TerminalEngineFactory>> {
-        self.with(|state| state.terminal_engine.clone())
-    }
     /// Wrap a fresh [`ServerState`].
     #[must_use]
     pub fn new() -> Self {

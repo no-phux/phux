@@ -70,13 +70,6 @@ const BACKOFF_CAP: Duration = Duration::from_secs(60);
 /// What a macOS mirror session's pane runs while Rune mirrors into it.
 const MACOS_HOLDER: &str = "echo 'Rune keeps this mirror: macOS gives Screen Recording to the app that captures. Keep Rune open.'; exec tail -f /dev/null";
 
-/// Ring the supervisor's reload doorbell (`phux config reload`).
-pub(crate) fn request_reload(state: &SharedState) {
-    if let Some(reload) = state.with(|s| s.standing_mirrors().cloned()) {
-        reload.notify_one();
-    }
-}
-
 /// Start the supervisor for `source` on the current `LocalSet`.
 pub(crate) fn install(
     state: &SharedState,
