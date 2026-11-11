@@ -43,9 +43,10 @@ It needs macOS 14 on Apple silicon, or x86_64 or arm64 Linux with glibc 2.39
 
 **Wayland is checked on one compositor.** Every build is opened on a headless
 sway and used there: typing (non-ASCII included), paste and copy through the
-Wayland clipboard, and fractional scaling (1.25 and 1.5). Not checked: input
-methods, GNOME and KDE, and middle-click paste, which is not there (a selection
-does not set the primary selection). The clipboard uses the data-control
+Wayland clipboard, Chinese composed through an input method (fcitx5 pinyin),
+and fractional scaling (1.25 and 1.5). Not checked: other input methods and
+dead keys, GNOME and KDE. There is no middle-click paste: a selection does not
+set the primary selection. The clipboard uses the data-control
 protocol that wlroots compositors, Hyprland and KDE offer. On a compositor
 with XWayland, unsetting `WAYLAND_DISPLAY` for the app runs it on X11.
 
@@ -230,8 +231,8 @@ each line; the window asks first (Return pastes, Esc cancels).
 - A GIF with no loop extension loops in a typed document instead of
   playing once: `image` reads it as an infinite loop, and Rune trusts it.
 - No DMG yet; the ZIP is the macOS download.
-- On Wayland, input methods are unchecked and there is no middle-click paste;
-  see [Install](#install).
+- On Wayland there is no middle-click paste, and only sway is checked; see
+  [Install](#install).
 - The update check draws off-screen, so a build that only fails when opening a
   real window can still install.
 - On macOS, while a server update is due, quitting leaves the app as it was

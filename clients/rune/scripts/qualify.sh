@@ -133,7 +133,8 @@ if [[ "$(uname -s)" == Linux ]]; then
         wait "$weston_pid" 2>/dev/null || true
         [[ "$code" == 124 ]] || fail "the Wayland window exited $code: $(cat "$scratch/wayland.log")"
     fi
-    # And is used there: typing, the clipboard both ways, fractional scaling.
+    # And is used there: typing, the clipboard both ways, an input method,
+    # fractional scaling.
     if command -v sway >/dev/null && command -v wtype >/dev/null \
         && command -v wl-copy >/dev/null && command -v grim >/dev/null; then
         bash "$repo/clients/rune/scripts/qualify-wayland.sh" "$binary" "$phux" "$socket" "$scratch"

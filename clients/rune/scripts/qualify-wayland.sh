@@ -7,7 +7,9 @@
 #   clients/rune/scripts/qualify-wayland.sh BINARY PHUX SOCKET SCRATCH
 #
 # SOCKET is a running same-source server. Needs sway, wtype, wl-clipboard,
-# grim, jq and python3. Leaves wayland-*.png and wayland-*.log in SCRATCH.
+# grim, jq and python3; with fcitx5 and its pinyin addon it also composes
+# Chinese through an input method. Leaves wayland-*.png and wayland-*.log in
+# SCRATCH.
 set -euo pipefail
 
 binary="${1:?usage: qualify-wayland.sh BINARY PHUX SOCKET SCRATCH}"
@@ -150,4 +152,39 @@ for scale in 1.5 1.25 1; do
     until_true "typing stopped working at scale $scale" shows "^│scale-$scale"
     "${wl[@]}" grim "$scratch/wayland-scale-$scale.png"
 done
-echo "qualify: wayland: window, typing, clipboard and scaling hold on sway $(sway --version | awk '{print $3}')"
+# An input method: pinyin through fcitx5, composed and committed as text.
+# The app has to start after the input method, so it is opened again.
+ime=""
+if command -v fcitx5 >/dev/null && command -v dbus-run-session >/dev/null \
+    && [[ -e /usr/share/fcitx5/addon/pinyin.conf ]]; then
+    kill "$app_pid" 2>/dev/null || true
+    wait "$app_pid" 2>/dev/null || true
+    app_pid=""
+    ime_session="$session-ime"
+    mkdir -p "$scratch/home/.config/fcitx5"
+    printf '%s\n' '[Groups/0]' 'Name=Default' 'Default Layout=us' 'DefaultIM=pinyin' '' \
+        '[Groups/0/Items/0]' 'Name=keyboard-us' 'Layout=' '' \
+        '[Groups/0/Items/1]' 'Name=pinyin' 'Layout=' '' \
+        '[GroupOrder]' '0=Default' >"$scratch/home/.config/fcitx5/profile"
+    "${clean[@]}" "$phux" --socket "$socket" new --json -s "$ime_session" -- \
+        /usr/bin/env LANG=C.UTF-8 PS1='$ ' bash --norc >/dev/null
+    # One bus for the input method and its switch; the app only needs Wayland.
+    # Control goes first here, not Shift: Shift alone switches pinyin to English.
+    cat >"$scratch/ime.sh" <<'IME'
+fcitx5 -d >"$1/wayland-fcitx5.log" 2>&1
+sleep 3
+"$2" --socket "$3" --session "$4" >"$1/wayland-ime-app.log" 2>&1 &
+app=$!
+sleep 6
+fcitx5-remote -o
+wtype -k Control_L -s 500 'nihao' -s 800 '1' -s 500 -k Return
+sleep 2
+kill "$app" 2>/dev/null
+IME
+    "${wl[@]}" dbus-run-session -- bash "$scratch/ime.sh" "$scratch" "$binary" "$socket" "$ime_session" \
+        || fail "the input method run failed: $(cat "$scratch/wayland-fcitx5.log")"
+    text="$("${clean[@]}" "$phux" --socket "$socket" snapshot "$ime_session" 2>/dev/null || true)"
+    grep -q '^│\$ 你好' <<<"$text" || fail "pinyin for 你好 did not reach the terminal: $(head -4 <<<"$text")"
+    ime=", an input method"
+fi
+echo "qualify: wayland: window, typing, clipboard${ime} and scaling hold on sway $(sway --version | awk '{print $3}')"
