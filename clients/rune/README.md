@@ -220,6 +220,8 @@ each line; the window asks first (Return pastes, Esc cancels).
   before a ⌘-click.
 - Screen readers get Settings, the buttons and notices, but terminal text,
   the palette's results, tabs and sidebar rows don't read well yet.
+- A GIF with no loop extension loops in a typed document instead of
+  playing once: `image` reads it as an infinite loop, and Rune trusts it.
 - No DMG yet; the ZIP is the macOS download.
 - Wayland is not qualified; see [Install](#install).
 - The update check draws off-screen, so a build that only fails when opening a
