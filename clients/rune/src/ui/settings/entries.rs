@@ -250,11 +250,12 @@ impl Entry {
                     .truncate()
                     .a11y_hidden()
             }))
-            .child(
+            // Font cycles in place, so it has nowhere to point.
+            .children((!matches!(self, Self::Font)).then(|| {
                 rune::icon(&icons::CHEVRON_RIGHT, 14.0)
                     .color(ink.dim)
-                    .a11y_hidden(),
-            )
+                    .a11y_hidden()
+            }))
     }
 
     fn link_copy(self, desk: &Desk, value: &str, ink: &Ink) -> El {
