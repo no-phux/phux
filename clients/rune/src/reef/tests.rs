@@ -51,7 +51,7 @@ fn marks_become_the_four_moods() {
     assert_eq!(Mood::of(Mark::Working), Mood::Working);
     assert_eq!(Mood::of(Mark::Running), Mood::Working);
     assert_eq!(Mood::of(Mark::Idle), Mood::Idle);
-    assert_eq!(Mood::of(Mark::Background), Mood::Idle);
+    assert_eq!(Mood::of(Mark::Background), Mood::Working);
     assert_eq!(Mood::of(Mark::None), Mood::Idle);
 }
 
