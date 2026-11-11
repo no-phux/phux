@@ -262,8 +262,8 @@ fn emitted_history_unavailable(effects: &KernelEffectBuffer) -> bool {
 }
 
 /// Fold the kernel's `update` result and statuses into the route's verdict.
-/// A resync, a retired generation, and a recovered history failure are
-/// non-fatal; anything else rejects the frame.
+/// A resync, a frame off the current generations, and a recovered history
+/// failure are non-fatal; anything else rejects the frame.
 fn classify_kernel_result<E>(
     result: &Result<(), phux_client_core::session::KernelError<E>>,
     frame: &FrameKind,
@@ -276,10 +276,9 @@ where
     let recovered_history_failure = result.is_err()
         && matches!(frame, FrameKind::HistoryPage { .. })
         && emitted_history_unavailable(effects);
-    let ignored = matches!(
-        result,
-        Err(phux_client_core::session::KernelError::RetiredGeneration { .. })
-    );
+    let ignored = result
+        .as_ref()
+        .is_err_and(phux_client_core::session::KernelError::is_benign_generation);
     let degraded = resync_required || ignored || recovered_history_failure;
     let failed = match result {
         Ok(()) => None,

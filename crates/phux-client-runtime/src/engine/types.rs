@@ -152,8 +152,9 @@ impl EngineEvent {
 /// A kernel refusal classified by protocol semantics rather than display text.
 #[derive(Debug, PartialEq, Eq, thiserror::Error)]
 pub enum EngineApplyError {
-    /// A stale, retired, or duplicate generation. The frame is rejected but
-    /// the connection and current replica remain valid.
+    /// A stale, retired, or duplicate generation
+    /// ([`KernelError::is_benign_generation`]). The frame is rejected but the
+    /// connection and current replica remain valid.
     #[error("{0}")]
     InvalidState(String),
     /// Any other kernel refusal means the peer violated the active session
@@ -164,14 +165,8 @@ pub enum EngineApplyError {
 
 impl EngineApplyError {
     pub(super) fn from_kernel<E: std::fmt::Display>(error: &KernelError<E>) -> Self {
-        let invalid_state = matches!(
-            error,
-            KernelError::GenerationMismatch { .. }
-                | KernelError::RetiredGeneration { .. }
-                | KernelError::DuplicateGeneration { .. }
-        );
         let message = error.to_string();
-        if invalid_state {
+        if error.is_benign_generation() {
             Self::InvalidState(message)
         } else {
             Self::Protocol(message)

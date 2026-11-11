@@ -118,3 +118,42 @@ fn document_only_session_is_read_only_without_a_fake_terminal_slot() {
     assert!(h.leaves().is_empty());
     assert!(h.out.is_empty());
 }
+
+#[test]
+fn a_frame_off_the_current_generations_is_dropped_not_fatal() {
+    // A restarted satellite behind a live hub link can reissue identities.
+    let tree = tid(3);
+    let mut h = H::new();
+    document(
+        &mut h,
+        &tree,
+        phux_protocol::BootstrapStreamProfile::AccessibilityTreeJsonV1,
+    );
+    let foreign = FrameKind::ResourceOutput {
+        terminal_id: tree.clone(),
+        stream_id: stream(),
+        bootstrap_id: phux_protocol::BootstrapId::new(9).expect("bootstrap"),
+        seq: 3,
+        bytes: bytes::Bytes::from_static(b"{}"),
+    };
+    let dropped = h
+        .try_send(foreign)
+        .expect("a mismatched generation is dropped");
+    assert!(!dropped.resync_required);
+    let duplicate = h
+        .try_send(FrameKind::BootstrapBegin {
+            terminal_id: tree.clone(),
+            stream_id: stream(),
+            bootstrap_id: bootstrap(),
+            profile: phux_protocol::BootstrapStreamProfile::AccessibilityTreeJsonV1,
+            cols: 0,
+            rows: 0,
+            base_seq: 1,
+        })
+        .expect("a duplicate generation is dropped");
+    assert!(!duplicate.resync_required);
+    assert!(
+        h.try_send(output_frame(&tree, 2, b"{}")).is_err(),
+        "a live frame at or behind the last is still a protocol fault"
+    );
+}

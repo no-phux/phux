@@ -82,10 +82,10 @@ fn published() -> Reader {
 }
 
 #[test]
-fn chunks_out_of_order_or_of_another_generation_end_the_read() {
+fn chunks_out_of_order_end_the_read_and_another_generations_are_dropped() {
     assert!(begun().absorb(chunk(1, 1, b"x")).is_err(), "a gap");
     assert!(
-        begun().absorb(chunk(2, 0, b"x")).is_err(),
+        matches!(begun().absorb(chunk(2, 0, b"x")), Ok(Absorbed::Nothing)),
         "another bootstrap"
     );
     let mut reader = begun();
@@ -103,13 +103,13 @@ fn staging_past_the_chunk_ceiling_ends_the_read() {
 }
 
 #[test]
-fn stale_or_foreign_live_documents_end_the_read() {
+fn stale_live_documents_end_the_read_and_foreign_ones_are_dropped() {
     assert!(
         published().absorb(output(1, 3)).is_err(),
         "not newer than the cut"
     );
     assert!(
-        published().absorb(output(2, 4)).is_err(),
+        matches!(published().absorb(output(2, 4)), Ok(Absorbed::Nothing)),
         "another bootstrap"
     );
     let mut reader = published();

@@ -242,6 +242,8 @@ impl Connection {
         }
         match result {
             Ok(()) => (outcome, true),
+            // A frame off the current generations is dropped; the view stays.
+            Err(error) if error.is_benign_generation() => (outcome, false),
             Err(error) => {
                 self.failed = true;
                 outcome.fatal = Some(error.to_string());

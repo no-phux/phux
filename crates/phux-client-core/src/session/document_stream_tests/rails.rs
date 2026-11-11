@@ -383,3 +383,20 @@ fn every_typed_cut_names_its_own_content_type() {
     assert!(resync_required(&effects));
     assert!(documents(&effects).is_empty());
 }
+
+#[test]
+fn only_a_frame_off_the_current_generations_is_benign() {
+    let mut kernel = kernel();
+    let mut effects = EffectBuffer::new();
+    let id = surface();
+    begin(&mut kernel, first(), &mut effects).unwrap();
+    let duplicate = begin(&mut kernel, first(), &mut effects).unwrap_err();
+    assert!(duplicate.is_benign_generation(), "{duplicate}");
+    let gap = chunk(&mut kernel, &id, first(), 1, b"gap", &mut effects).unwrap_err();
+    assert!(!gap.is_benign_generation(), "{gap}");
+    // The broken cut is fenced; a generation never staged was never live.
+    for ids in [first(), (stream(), generation(9))] {
+        let late = ready(&mut kernel, 0, ids, &mut effects).unwrap_err();
+        assert!(late.is_benign_generation(), "{late}");
+    }
+}

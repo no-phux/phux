@@ -114,10 +114,10 @@ impl Reader {
         result.or_else(|error| self.refused(&error))
     }
 
-    /// A late frame of a fenced generation is dropped, as an attached client
+    /// A frame off the current generations is dropped, as an attached client
     /// drops it; any other refusal means the stream broke its contract.
     fn refused(&self, error: &KernelError<Infallible>) -> Result<Absorbed, TreeError> {
-        if matches!(error, KernelError::RetiredGeneration { .. }) {
+        if error.is_benign_generation() {
             return Ok(Absorbed::Nothing);
         }
         Err(AttachError::Protocol(format!("document stream {}: {error}", self.tree)).into())
