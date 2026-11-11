@@ -86,6 +86,7 @@ fn fail_launch(
             activation,
             state: phux_core::ExecState::Failed,
             outcome: phux_core::Outcome::Exit(phux_core::ExitOutcome::UNKNOWN),
+            diagnostic: None,
         }) {
             warn!(?resource, ?activation, %refusal, "failed launch outcome was not recorded");
         }

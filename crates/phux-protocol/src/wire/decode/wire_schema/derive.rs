@@ -56,28 +56,49 @@ pub(super) fn decodes(bytes: &[u8]) -> bool {
 }
 
 /// `module -> [(CONST_NAME, id)]` parsed from `wire/field.rs`.
-pub(super) fn field_modules() -> BTreeMap<&'static str, Vec<(&'static str, u32)>> {
-    let mut out: BTreeMap<&str, Vec<(&str, u32)>> = BTreeMap::new();
+pub(super) fn field_modules() -> BTreeMap<String, Vec<(String, u32)>> {
+    let mut out = BTreeMap::<String, Vec<(String, u32)>>::new();
     let mut current = None;
     for line in FIELD_RS.lines() {
         if let Some(name) = line.strip_prefix("pub mod ") {
-            let name = name.trim_end_matches(" {");
-            out.entry(name).or_default();
-            current = Some(name);
+            if let Some(name) = name.strip_suffix(';') {
+                out.insert(name.to_owned(), external_constants(name));
+            } else {
+                let name = name.trim_end_matches(" {").to_owned();
+                out.entry(name.clone()).or_default();
+                current = Some(name);
+            }
         } else if line == "}" {
             current = None;
-        } else if let Some(decl) = line.trim().strip_prefix("pub const ") {
-            let module = current.expect("field constants live inside a module");
-            let (name, id) = decl
-                .strip_suffix(';')
-                .and_then(|decl| decl.split_once(": u32 = "))
-                .unwrap_or_else(|| panic!("unparsed field constant: {line}"));
-            out.entry(module)
-                .or_default()
-                .push((name, id.parse().unwrap()));
+        } else if let Some(constant) = field_constant(line) {
+            let module = current
+                .as_ref()
+                .expect("field constants live inside a module");
+            out.get_mut(module).unwrap().push(constant);
         }
     }
     out
+}
+
+fn external_constants(module: &str) -> Vec<(String, u32)> {
+    // Namespace declarations remain the registry; follow the actual module
+    // file rather than maintaining a second list for split field tables.
+    let root = std::path::PathBuf::from(std::env::var_os("CARGO_MANIFEST_DIR").unwrap());
+    let path = root.join("src/wire/field").join(format!("{module}.rs"));
+    std::fs::read_to_string(&path)
+        .unwrap_or_else(|error| panic!("{}: {error}", path.display()))
+        .lines()
+        .filter_map(field_constant)
+        .collect()
+}
+
+fn field_constant(line: &str) -> Option<(String, u32)> {
+    let decl = line.trim().strip_prefix("pub const ")?;
+    let (name, id) = decl
+        .strip_suffix(';')
+        .and_then(|decl| decl.split_once(": u32 = "))
+        .unwrap_or_else(|| panic!("unparsed field constant: {line}"));
+    Some((name.to_owned(), id.parse().unwrap()))
 }
 
 /// What the samples of one frame show about one field.
@@ -151,7 +172,7 @@ pub(super) fn derive(current: &Schema) -> Schema {
 pub(super) fn derive_frame(
     type_byte: u8,
     samples: &[&Sample],
-    modules: &BTreeMap<&str, Vec<(&str, u32)>>,
+    modules: &BTreeMap<String, Vec<(String, u32)>>,
     current: &Schema,
 ) -> FrameEntry {
     let name = samples[0].name;
@@ -173,7 +194,8 @@ pub(super) fn derive_frame(
     let declared = current.frames.iter().find(|frame| frame.name == name);
     let fields = consts
         .iter()
-        .map(|&(field, id)| {
+        .map(|(field, id)| {
+            let id = *id;
             let seen = observed.get(&id).unwrap_or_else(|| {
                 panic!("{name}.{field} (id {id}) appears in no sample; add one that sets it")
             });

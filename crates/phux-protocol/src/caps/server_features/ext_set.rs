@@ -22,7 +22,8 @@ impl ServerFeatureExtSet {
         | ServerFeatureExt::PixelSurface as u32
         | ServerFeatureExt::TypedDocument as u32
         | ServerFeatureExt::Mirrors as u32
-        | ServerFeatureExt::PrivacyStatus as u32;
+        | ServerFeatureExt::PrivacyStatus as u32
+        | ServerFeatureExt::DurableResourceInspection as u32;
 
     /// Known extended features in this set, in bit order.
     pub fn iter(self) -> impl Iterator<Item = ServerFeatureExt> {

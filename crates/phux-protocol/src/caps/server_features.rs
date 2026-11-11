@@ -398,6 +398,8 @@ pub enum ServerFeatureExt {
     /// The server answers the local-only `PRIVACY_STATUS`: the macOS
     /// privacy grants it holds.
     PrivacyStatus = 0x0008_0000,
+    /// Read a durable resource record and its current activation without a live engine.
+    DurableResourceInspection = 0x0010_0000,
 }
 
 impl ServerFeatureExt {
@@ -423,6 +425,7 @@ impl ServerFeatureExt {
         Self::TypedDocument,
         Self::Mirrors,
         Self::PrivacyStatus,
+        Self::DurableResourceInspection,
     ];
 
     /// The `docs/protocol.md#handshake` constant, e.g. `"PATH_QUERY"`.
@@ -449,6 +452,7 @@ impl ServerFeatureExt {
             Self::TypedDocument => "TYPED_DOCUMENT",
             Self::Mirrors => "MIRRORS",
             Self::PrivacyStatus => "PRIVACY_STATUS",
+            Self::DurableResourceInspection => "DURABLE_RESOURCE_INSPECTION",
         }
     }
 

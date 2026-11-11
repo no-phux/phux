@@ -333,6 +333,10 @@ fn reassemble_unchanged_tree(
         // Without this, anything new since the capture would be missing
         // from both blobs and look unchanged.
         s.intern_upgrade_wires();
+        s.retry_activation_reports();
+        if s.has_pending_activation_reports() {
+            return Err(UpgradeError::TreeChanged);
+        }
         if s.assemble_upgrade_blob(listener_fd) != *tree_identity {
             return Err(UpgradeError::TreeChanged);
         }

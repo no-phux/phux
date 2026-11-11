@@ -5,6 +5,9 @@ mod common;
 mod runner;
 use serde_json::{Value, json};
 
+#[path = "terminal_api/hardening.rs"]
+mod hardening;
+
 #[test]
 fn cli_describes_creates_and_recovers_without_caller_rollback() {
     let server = common::ServerGuard::start("terminal-api");
