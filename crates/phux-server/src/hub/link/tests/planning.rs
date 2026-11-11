@@ -13,6 +13,7 @@ pub(super) fn entry(
         target: crate::hub::parse_endpoint(endpoint).expect("valid endpoint"),
         token_file: token_file.map(PathBuf::from),
         cert_fingerprint: cert_fingerprint.map(str::to_owned),
+        client_identity: None,
     }
 }
 
@@ -31,6 +32,7 @@ fn quic_plan_keeps_host_port_and_pins_routable() {
             port: 8788,
             trust: CertTrust::Pinned("AB:CD".to_owned()),
             token_file: Some(PathBuf::from("/secrets/devbox.token")),
+            identity: None,
         }
     );
 }
@@ -49,6 +51,7 @@ fn wss_plan_keeps_url_and_pins_routable() {
             url: "wss://sandbox:8787/phux".to_owned(),
             trust: CertTrust::Pinned("ab:cd".to_owned()),
             token_file: Some(PathBuf::from("/secrets/sandbox.token")),
+            identity: None,
         }
     );
 }
@@ -285,4 +288,25 @@ fn backoff_never_overflows_at_large_failure_counts() {
     for _ in 0..10_000 {
         assert!(backoff.next_delay() <= Duration::from_secs(30));
     }
+}
+
+#[test]
+fn a_paired_satellite_plan_presents_its_client_certificate() {
+    let mut paired = entry(
+        "quic://devbox:8788",
+        Some("/secrets/devbox.token"),
+        Some("AB:CD"),
+    );
+    let identity = (
+        PathBuf::from("/state/devbox.pem"),
+        PathBuf::from("/state/devbox.key"),
+    );
+    paired.client_identity = Some(identity.clone());
+    let DialSpec::Quic {
+        identity: planned, ..
+    } = plan_link(&paired).expect("dialable")
+    else {
+        panic!("expected a QUIC plan");
+    };
+    assert_eq!(planned, Some(identity));
 }

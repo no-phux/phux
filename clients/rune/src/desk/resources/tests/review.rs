@@ -100,7 +100,7 @@ fn one_observation_with_old_and_new_publications_uses_latest_incarnation_only() 
             matches!(&document.body, Body::Tree(json) if json.contains("latest") && !json.contains("old"))
         );
         step(&mut rt);
-        assert_eq!(rt.state.shown.as_ref().unwrap().terminal, id(1));
+        assert_eq!(rt.state.shown.as_ref().unwrap().resource, id(1));
     }
 }
 
@@ -218,7 +218,7 @@ fn open_foreign(client: &Client, rt: &mut Runtime<Desk>) -> u32 {
     let (request, target, role) = &subscriptions[0];
     assert_eq!(target, &id(2));
     assert_eq!(*role, Some(phux_protocol::wire::frame::RolePolicy::VIEWER));
-    assert_eq!(rt.state.shown.as_ref().unwrap().terminal, id(2));
+    assert_eq!(rt.state.shown.as_ref().unwrap().resource, id(2));
     assert!(rt.state.shown.as_ref().unwrap().view.is_none());
     *request
 }
@@ -324,7 +324,7 @@ fn native_json_selection_and_copy_shortcuts_copy_plain_text_without_remote_input
     rt.pointer_up(rect[0] + 5.0, rect[1] + 5.0);
     rt.frame(0.0);
     assert_eq!(
-        rt.state.shown.as_ref().unwrap().terminal,
+        rt.state.shown.as_ref().unwrap().resource,
         id(2),
         "selecting a secondary JSON pane gives it keyboard focus"
     );
@@ -400,7 +400,7 @@ fn dragging_a_secondary_json_selection_also_focuses_its_resource() {
         rt.selected_text().is_some(),
         "a real native text drag selected characters"
     );
-    assert_eq!(rt.state.shown.as_ref().unwrap().terminal, id(2));
+    assert_eq!(rt.state.shown.as_ref().unwrap().resource, id(2));
     rt.pointer_up(rect[0] + 100.0, rect[1] + 20.0);
     rt.frame(0.0);
     assert!(outbound(&client).is_empty());

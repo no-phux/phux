@@ -9,14 +9,22 @@
 //! Both spellings are strict: the §5 canonical bytes (unsorted, duplicate,
 //! unknown-bit, zero-verb, non-minimal, truncated, or trailing images are
 //! refused, never normalized) and the registry grammar
-//! `"<verb>[,<verb>...]@<selector>"`. The grammar may hold `?signal` for
-//! approval (ADR-0128); a hold is server-local and never in the canonical
-//! image.
+//! `"<verb>[,<verb>...]@<selector>"`. The grammar may hold `?signal`,
+//! `?terminate`, or (on a control selector only) `?input` for approval
+//! (ADR-0128); a hold is server-local and never in the canonical image. A
+//! build that predates a hold marker refuses the whole scope string, so an
+//! older server never grants the verb un-held.
 //!
 //! The scope schema is versioned ([`ScopeSchema`]). Schema v2 adds
 //! `ORGANIZE` and `TERMINATE`; a v1 grant decodes with `SIGNAL` implying
 //! `TERMINATE` and `CREATE` implying `ORGANIZE`, so no stored grant loses
 //! the authority it had and none gains a legacy operation.
+//!
+//! The control selectors (`page`, `window`, `display`, each optionally
+//! `:<host>`) name documents by what their input controls. Only they and
+//! `resource:<key>` reach `SEND_DOCUMENT_INPUT`: control is never inherited
+//! from a broader selector. They need no schema bump: the schema versions
+//! the verb bits, and an older build refuses an unknown selector tag.
 //!
 //! Nothing here consults server state: the server passes a containment
 //! predicate to [`EffectiveScopeSet::admits`].
@@ -89,6 +97,7 @@ const TAG_GROUP: u8 = 0x02;
 const TAG_TERMINAL: u8 = 0x03;
 const TAG_SESSION: u8 = 0x04;
 const TAG_RESOURCE: u8 = 0x05;
+const TAG_CONTROL: u8 = 0x06;
 const SUB_LOCAL: u8 = 0x00;
 const SUB_SATELLITE: u8 = 0x01;
 
@@ -110,8 +119,11 @@ const ALL_VERBS: &str = "*";
 /// The prefix that marks a verb as held for approval (ADR-0128).
 const HELD_PREFIX: char = '?';
 
-/// The only verb a grant may hold: approvals are held `SIGNAL` actions.
-const HOLDABLE: Verbs = Verbs::of(&[Verb::Signal]);
+/// The verbs a grant may hold: every row needing them is a command, whose
+/// result can wait for a decision. `INPUT` only on a control selector
+/// ([`Selector::Control`]): there it reaches only `SEND_DOCUMENT_INPUT`, while
+/// anywhere else it would also refuse every keystroke frame.
+const HOLDABLE: Verbs = Verbs::of(&[Verb::Signal, Verb::Terminate, Verb::Input]);
 
 // -----------------------------------------------------------------------------
 // Errors.
@@ -130,10 +142,11 @@ pub enum ScopeError {
     /// A selector's declared length exceeds its canonical encoding.
     #[error("scope selector length is not minimal")]
     NonMinimalSelector,
-    /// A selector tag outside `0x00..=0x05`.
+    /// A selector tag outside `0x00..=0x06`.
     #[error("scope selector tag is unknown")]
     UnknownSelectorTag,
-    /// A Host or Terminal subtype outside `LOCAL` / `SATELLITE`.
+    /// A Host, Terminal, or control subtype outside `LOCAL` / `SATELLITE`,
+    /// or a control class this build does not know.
     #[error("scope selector subtype is unknown")]
     UnknownSubtype,
     /// A satellite host that is empty, too long, not UTF-8, or carries a
@@ -177,18 +190,19 @@ pub enum ScopeGrammarError {
     /// A verb outside the closed set of the record's schema (v1 has no
     /// `organize` or `terminate`).
     #[error(
-        "a scope names a verb outside inventory|observe|create|bind|input|signal|?signal|organize|terminate|*"
+        "a scope names a verb outside inventory|observe|create|bind|input|signal|organize|terminate|*, each optionally held with `?`"
     )]
     UnknownVerb,
-    /// `?` on a verb other than `signal`: only `SIGNAL` actions are held.
-    #[error("a scope may hold only `?signal`")]
+    /// `?` on a verb other than `signal` or `terminate`, or `?input` on a
+    /// selector other than `page`, `window`, or `display`.
+    #[error("a scope may hold only `?signal`, `?terminate`, or `?input` on page|window|display")]
     UnholdableVerb,
     /// A verb listed twice, or `*` combined with named verbs.
     #[error("a scope repeats a verb or combines `*` with named verbs")]
     RedundantVerb,
     /// A selector outside the closed set.
     #[error(
-        "a scope names a selector outside global|host|host:<name>|group:<id>|terminal:<id>|terminal:<host>/<id>|session:<key>|resource:<key>"
+        "a scope names a selector outside global|host|host:<name>|group:<id>|terminal:<id>|terminal:<host>/<id>|session:<key>|resource:<key>|page|window|display|page:<host>|window:<host>|display:<host>"
     )]
     UnknownSelector,
     /// A host that is empty, too long, or carries a control character.

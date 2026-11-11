@@ -24,10 +24,12 @@ phux stores the records
 [effects](../crates/phux-terminal/src/actor/effects.rs)).
 
 A rendering client feeds those VT bytes to its own libghostty terminal.
-The [phux-protocol README](../crates/phux-protocol/README.md) says a
+This is the Terminal kind's stream contract; other kinds declare their
+own ([decisions](./decisions.md)). The
+[phux-protocol README](../crates/phux-protocol/README.md) says a
 libghostty terminal on the client reproduces the server's screen
-exactly, and that client-to-server input is key, mouse, focus, and
-paste events built from libghostty's vocabulary. The server encodes
+exactly, and that a Terminal's client-to-server input is key, mouse,
+focus, and paste events built from libghostty's vocabulary. The server encodes
 those events for the PTY. Selection and text extraction belong to
 libghostty ([decisions](./decisions.md)).
 
@@ -38,9 +40,39 @@ writes VT bytes, and reads the styled grid.
 Embedding runs this replica in the app's process
 ([embed phux](./embedding.md)).
 
-Builds download a prebuilt `libghostty-vt.a` for a pinned Ghostty
-commit, or compile it from source with Zig
+Builds use a pinned Ghostty commit, compiling it from source with Zig when
+no matching prebuilt `libghostty-vt.a` is published
 ([development](./development.md#libghostty-vt)).
+
+## Upstream correctness backports
+
+The shipping engine keeps its existing snapshot contract and Zig toolchain.
+Native and browser engines include the same upstream fixes without switching
+to the development libghostty-vt 1.1 interface:
+
+- [Partial resize backfill](https://github.com/ghostty-org/ghostty/commit/1b8b3f55bcc93d2685f7771948516af1222dcc46):
+  remap references to copied rows before destroying their old page, even
+  when a later row does not fit. Release the failed row's partial allocation.
+- [Combined row growth and column shrink](https://github.com/ghostty-org/ghostty/commit/321a32a42393ab12721d2308ffff8957ce6853ad):
+  adjust the cursor's active-area coordinates before reflow so scrollback
+  pulled into view is not pushed back out. Resolve the coordinate through a
+  tracked cursor reference so pruning an old page during row growth is not
+  mistaken for cursor movement.
+- [Render allocation recovery](https://github.com/ghostty-org/ghostty/commit/3e29fcd628a50757ad24988c721340e56f392485):
+  keep failed and unprocessed rows dirty until rebuilding succeeds, so a
+  later update retries rather than exposing partially initialized cells.
+
+The native and WASM resize regressions both failed on the previous pins:
+growing a 5x2 terminal to 4x4 showed only `3C` instead of restoring
+`1A`, `2B`, and `3C`. Tests also check that subsequent output lands on the
+correct cursor row. Upstream engine tests cover partial backfill and render
+allocation failure.
+An additional engine regression forces row growth to evict history at the
+byte limit and checks cursor preservation with and without a caller-supplied
+tracked reference.
+The browser retains its existing 32-bit-safe terminal-identity implementation;
+native and WASM source revisions therefore differ, but the three corrected
+terminal modules are identical.
 
 ## What it does not do
 

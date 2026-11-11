@@ -225,7 +225,7 @@ proptest! {
     #[test]
     fn roundtrip_spawn_unknown_kind(
         request_id in any::<u32>(),
-        tag in 4_u8..=u8::MAX,
+        tag in 5_u8..=u8::MAX,
         parent in proptest::option::of(arb_terminal_id()),
         cwd in proptest::option::of(".{0,32}"),
     ) {
@@ -245,7 +245,7 @@ proptest! {
                 parent,
                 provider: None,
                 native_id: None,
-                bind_instance: false, idempotency_key: None, retain_secs: None,
+                bind_instance: false, idempotency_key: None, retain_secs: None, control: None,
             })),
         });
     }
@@ -293,4 +293,73 @@ proptest! {
             resource: bind.then(|| Box::new(SpawnResource::default().with_bind_instance(true))),
         });
     }
+}
+
+fn spawn_document(resource: SpawnResource) -> FrameKind {
+    FrameKind::SpawnResource {
+        request_id: 9,
+        group: GroupId::new(1),
+        command: None,
+        cwd: None,
+        env: None,
+        term: None,
+        satellite: None,
+        owner_terminal: None,
+        agent_session: None,
+        initial_size: None,
+        resource: Some(Box::new(resource)),
+    }
+}
+
+/// A `Document` names its content type (field 13, up to 255 bytes) and an
+/// optional name (field 14); a content type that is not `type/subtype`, or
+/// a missing one, fails the frame.
+#[test]
+fn a_typed_document_spawn_round_trips_and_refuses_a_bad_content_type() {
+    let parent = ResourceId::local(1);
+    for (content_type, name) in [
+        ("text/markdown", Some("notes".to_owned())),
+        ("image/png", None),
+        ("text/plain; charset=utf-8", None),
+    ] {
+        assert_round_trip(&spawn_document(SpawnResource::document(
+            parent.clone(),
+            content_type,
+            name,
+        )));
+    }
+    let long = format!("application/{}", "x".repeat(200));
+    assert_round_trip(&spawn_document(SpawnResource::document(
+        parent.clone(),
+        long.clone(),
+        None,
+    )));
+    // Every other kind keeps the 120-byte provider bound.
+    let tree = SpawnResource::accessibility_tree(parent.clone(), long);
+    assert!(crate::common::decode(&crate::common::encode(&spawn_document(tree))).is_err());
+    for bad in ["markdown", "text/", "text/mark down"] {
+        let frame = spawn_document(SpawnResource::document(parent.clone(), bad, None));
+        assert!(
+            crate::common::decode(&crate::common::encode(&frame)).is_err(),
+            "{bad}"
+        );
+    }
+    let missing = SpawnResource {
+        provider: None,
+        ..SpawnResource::document(parent, "text/plain", None)
+    };
+    assert!(crate::common::decode(&crate::common::encode(&spawn_document(missing))).is_err());
+}
+
+#[test]
+fn a_typed_document_bootstrap_profile_round_trips() {
+    assert_round_trip(&FrameKind::BootstrapBegin {
+        terminal_id: ResourceId::local(7),
+        stream_id: phux_protocol::ids::StreamId::new(1).unwrap(),
+        bootstrap_id: phux_protocol::ids::BootstrapId::new(2).unwrap(),
+        profile: phux_protocol::caps::BootstrapStreamProfile::DocumentTypedV1,
+        cols: 0,
+        rows: 0,
+        base_seq: 3,
+    });
 }

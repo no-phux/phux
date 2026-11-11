@@ -1,5 +1,5 @@
 #!/bin/sh
-# Install phux, and with --desktop Phux Desktop, from a verified release
+# Install phux, and with --rune Phux Rune, from a verified release
 # (ADR-0176). Served verbatim at https://phux.sh/install. POSIX sh: Debian and
 # Ubuntu pipe it to dash, which rejects `set -o pipefail` and `printf %q`.
 set -eu
@@ -29,31 +29,31 @@ usage() {
   cat <<'EOF'
 Usage: curl -fsSL https://phux.sh/install | sh -s -- [options]
 
-Installs phux and phux-mcp. With --desktop, also installs Phux Desktop
-(Apple silicon macOS 26+, or x86_64/arm64 GNU/Linux), installing
-the CLI only when none is found. --rune does the same for Phux Rune.
+Installs phux and phux-mcp. With --rune, installs Phux Rune, the desktop
+app (Apple silicon macOS 14+, or x86_64 or arm64 GNU/Linux), and the CLI
+only when none is found.
 
-  --channel <stable|latest|next>  Release channel (default: stable, or $PHUX_CHANNEL).
+  --channel <stable|latest|next|lts>
+                                  Release channel (default: stable, or $PHUX_CHANNEL).
+                                  lts is the promoted long-term-support release.
   --version <X.Y.Z>               Pin a stable release (vX.Y.Z also accepted).
   --revision <sha>                Pin a next build by its 40-character commit.
   --sha256 <hex>                  Expected digest of a pinned artifact, instead of its sidecar.
-  --install-dir <dir>             Where phux, phux-mcp and the phux-desktop launcher go
+  --install-dir <dir>             Where phux, phux-mcp and the phux-rune launcher go
                                   (default: $PHUX_INSTALL_DIR, or ~/.local/bin).
   --no-modify-path                Leave the shell profile alone (also $PHUX_NO_MODIFY_PATH=1).
-  --desktop                       Install Phux Desktop.
-  --rune                          Install Phux Rune (Apple silicon macOS 14+, or x86_64
-                                  GNU/Linux), from its own feed; takes no channel or pin.
+  --rune                          Install Phux Rune from its own feed; takes no channel or pin.
+  --desktop                       The same as --rune (the GPUI desktop is retired).
   --applications-dir <dir>        Desktop destination (default: /Applications if writable,
                                   else ~/Applications on macOS; $XDG_DATA_HOME or
                                   ~/.local/share on Linux; also $PHUX_DESKTOP_APPLICATIONS_DIR).
-  --stage-dir <absolute dir>      Verify and stage Phux.app on macOS; install nothing.
   --os <darwin|linux>, --arch <arm64|x86_64>
                                   Override platform detection.
   --dry-run                       Print what would be downloaded and where it would go.
   --help                          Show this help.
 
-With minisign on PATH, the release checksum's signature is verified against
-the phux release keys. Set PHUX_REQUIRE_SIGNATURE=1 to refuse to install
+With minisign on PATH, the release checksum's signature, and the channel
+manifest's (required on lts), are verified against the phux release keys. Set PHUX_REQUIRE_SIGNATURE=1 to refuse to install
 without that check (0, the default, falls back to the SHA-256 alone).
 EOF
 }
@@ -77,21 +77,67 @@ SEMVER='(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)'
 
 # --- downloads and digests ---------------------------------------------------
 
-# A stalled transfer (under 1 KiB/s for a minute) aborts instead of hanging.
-download() {
+# GitHub's releases/download sometimes answers one asset with a 5xx for hours
+# while its API still serves the same bytes, so a release file that fails is
+# fetched once more through the API. Digests and signatures are checked as
+# before, so the second source adds no trust.
+API_RELEASES=https://api.github.com/repos/no-phux/phux/releases
+
+# Fetch URL into FILE, sending the header ACCEPT when given. A stalled
+# transfer (under 1 KiB/s for a minute) aborts instead of hanging.
+fetch_to() {
   if command -v curl >/dev/null 2>&1; then
-    # Only Desktop's archive transfer opts into a meter. Sidecars and signatures
-    # stay silent; curl's unknown-length animation carries no percentage.
-    if [ "${3:-}" = archive ] && [ "${PHUX_DESKTOP_PROGRESS:-0}" = 1 ]; then
-      curl -fSL --progress-bar --proto =https --connect-timeout 10 --speed-limit 1024 --speed-time 60 "$1" -o "$2"
+    if [ -n "${3:-}" ]; then
+      curl -fsSL --proto =https --connect-timeout 10 --speed-limit 1024 --speed-time 60 --retry 2 \
+        -H "$3" "$1" -o "$2"
     else
-      curl -fsSL --proto =https --connect-timeout 10 --speed-limit 1024 --speed-time 60 "$1" -o "$2"
+      curl -fsSL --proto =https --connect-timeout 10 --speed-limit 1024 --speed-time 60 --retry 2 \
+        "$1" -o "$2"
     fi
   elif command -v wget >/dev/null 2>&1; then
-    wget -q --timeout=60 --tries=2 -O "$2" "$1"
+    if [ -n "${3:-}" ]; then
+      wget -q --timeout=60 --tries=2 --header="$3" -O "$2" "$1"
+    else
+      wget -q --timeout=60 --tries=2 -O "$2" "$1"
+    fi
   else
     die "curl or wget is required to download a release"
   fi
+}
+
+download() {
+  fetch_to "$1" "$2" || download_from_api "$1" "$2"
+}
+
+# The API's copy of the release asset at URL, into FILE.
+download_from_api() {
+  phux_message info "GitHub did not serve ${1##*/}; fetching it through the GitHub API"
+  api_url="$(api_asset_url "$1" "${2}.release")" || return 1
+  fetch_to "$api_url" "$2" 'Accept: application/octet-stream'
+}
+
+# Print the API URL that downloads the release asset at URL, looking its
+# release up into the scratch file LOOKUP. Only a numeric asset of this
+# repository's releases qualifies.
+api_asset_url() {
+  api_path="${1#"${RELEASES}/"}"
+  [ "$api_path" != "$1" ] || return 1
+  api_tag="${api_path%%/*}"
+  api_name="${api_path#*/}"
+  matches "$api_tag" '[A-Za-z0-9][A-Za-z0-9._+-]*' || return 1
+  matches "$api_name" '[A-Za-z0-9][A-Za-z0-9._+-]*' || return 1
+  fetch_to "${API_RELEASES}/tags/${api_tag}" "$2" 'Accept: application/vnd.github+json' || return 1
+  tr ',{}[]' '\n\n\n\n\n' < "$2" | LC_ALL=C awk -v name="$api_name" -v prefix="${API_RELEASES}/assets/" '
+    { sub(/^[ \t]+/, ""); sub(/[ \t]+$/, "") }
+    index($0, "\"url\":") == 1 { url = $0; sub(/^"url": *"/, "", url); sub(/"$/, "", url); next }
+    index($0, "\"name\":") == 1 {
+      asset = $0; sub(/^"name": *"/, "", asset); sub(/"$/, "", asset)
+      if (asset == name && index(url, prefix) == 1 && substr(url, length(prefix) + 1) ~ /^[0-9]+$/) {
+        print url; found = 1; exit
+      }
+    }
+    END { exit !found }
+  '
 }
 
 sha256_of() {
@@ -152,7 +198,8 @@ fetch_manifest() {
   url="${RELEASES}/channels/$1.json"
   raw="${2}.json"
   if command -v curl >/dev/null 2>&1; then
-    curl -fsSL --proto =https --connect-timeout 10 --max-time 30 --max-filesize 1048576 "$url" -o "$raw" \
+    { curl -fsSL --proto =https --connect-timeout 10 --max-time 30 --max-filesize 1048576 --retry 2 \
+      "$url" -o "$raw" || download_from_api "$url" "$raw"; } \
       || die "could not download the $1 release manifest ($url); retry, or pin a release"
   else
     download "$url" "$raw" || die "could not download the $1 release manifest ($url)"
@@ -168,6 +215,21 @@ load_manifest() {
   [ "$(manifest_value "$2" schema_version)" = 1 ] \
     || die "the $1 release manifest has an unsupported schema; update this installer"
   [ "$(manifest_value "$2" channel)" = "$1" ] || die "the $1 release manifest names another channel"
+  verify_manifest_signature "$1" "${2}.json"
+}
+
+# With minisign on PATH, CHANNEL's manifest RAW must carry a release-key
+# signature (channels/CHANNEL.json.minisig). lts refuses without one; stable
+# and next only warn, since their older manifests were published unsigned.
+# Without minisign, verify_signature applies PHUX_REQUIRE_SIGNATURE later.
+verify_manifest_signature() {
+  command -v minisign >/dev/null 2>&1 || return 0
+  if download "${RELEASES}/channels/$1.json.minisig" "${2}.minisig" 2>/dev/null \
+    && signed_by_release_key "$2" "${2}.minisig"; then
+    return 0
+  fi
+  [ "$1" != lts ] || die "the lts release manifest is not signed by a phux release key; nothing was installed"
+  phux_message warn "the $1 release manifest is not signed by a phux release key; relying on the signed checksum"
 }
 
 # Set build_id (version on stable, commit on next) and build_sha256 for
@@ -194,22 +256,13 @@ resolve() {
 # The one naming rule (ADR-0176 decision 1). Sets asset_stem, asset_name,
 # asset_url and sidecar_url for PRODUCT's build_id on TARGET.
 name_asset() {
-  case "$2" in
-    aarch64-apple-darwin) desktop_platform=macos-arm64 desktop_ext=zip ;;
-    x86_64-unknown-linux-gnu) desktop_platform=linux-x64 desktop_ext=tar.gz ;;
-    aarch64-unknown-linux-gnu) desktop_platform=linux-arm64 desktop_ext=tar.gz ;;
-  esac
   case "$1/$channel" in
-    phux/stable) release="v${build_id}" asset_stem="phux-v${build_id}-$2" ext=tar.gz ;;
+    phux/stable | phux/lts) release="v${build_id}" asset_stem="phux-v${build_id}-$2" ext=tar.gz ;;
     phux/next) release=next asset_stem="phux-next.${build_id}-$2" ext=tar.gz ;;
-    desktop/stable) release="desktop-v${build_id}" asset_stem="phux-desktop-${build_id}-${desktop_platform}" ext="$desktop_ext" ;;
-    desktop/next) release=next asset_stem="phux-desktop-next.${build_id}-${desktop_platform}" ext="$desktop_ext" ;;
   esac
   asset_name="${asset_stem}.${ext}"
   asset_url="${RELEASES}/${release}/${asset_name}"
   sidecar_url="${asset_url}.sha256"
-  # Stable desktop releases older than the sidecar carry only SHA256SUMS.
-  [ "$1/$channel" != desktop/stable ] || sidecar_url="${RELEASES}/${release}/SHA256SUMS"
 }
 
 # Whether a release key signed SIDECAR with SIGNATURE. -H accepts only the
@@ -252,11 +305,8 @@ verify_signature() {
 
 # Download PRODUCT's asset for TARGET into the work directory and verify it.
 fetch_verified() {
-  download "$asset_url" "${work}/${asset_name}" archive \
+  download "$asset_url" "${work}/${asset_name}" \
     || die "could not download ${asset_name}; nothing was installed"
-  if [ "${PHUX_DESKTOP_PROGRESS:-0}" = 1 ]; then
-    printf '\nphux-update: verifying\n' >&2
-  fi
   verify_signature
   if [ -z "$build_sha256" ]; then
     download "$sidecar_url" "${work}/sidecar" \

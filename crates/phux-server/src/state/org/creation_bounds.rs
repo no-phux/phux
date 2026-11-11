@@ -115,7 +115,7 @@ fn sqlite_reopens_every_accepted_near_limit_arrangement_and_receipt() {
     let replace = state.commit_system(Op::ArrangementReplace {
         owner: phux_core::ArrangementOwner::Session(session),
         expected: arrangement.revision,
-        groups: arrangement.groups.clone(),
+        groups: arrangement.groups,
     });
     if replace.is_err() {
         assert_eq!(state.org(), &before);
@@ -124,7 +124,8 @@ fn sqlite_reopens_every_accepted_near_limit_arrangement_and_receipt() {
     let target = state.registry().session_key(target).unwrap();
     let before_move = state.org().clone();
     // A flat membership command can still carry a deeply nested inverse.
-    // It must not bypass the receipt decoder check or poison the next load.
+    // The store reads back whatever the wire bounds admitted, so it commits
+    // and the next load still decodes it.
     let moved = state.commit_system(Op::ResourceMove {
         resource,
         from: session,
@@ -132,9 +133,15 @@ fn sqlite_reopens_every_accepted_near_limit_arrangement_and_receipt() {
         to: target,
         to_expected: state.org().session(&target).unwrap().revision,
     });
-    assert!(matches!(moved, Err(Refusal::StoreFailure { .. })));
-    assert_eq!(state.org(), &before_move);
+    assert!(moved.is_ok(), "{moved:?}");
+    assert_ne!(state.org(), &before_move);
     let resources = state.org().resources().count();
+    let groups = state
+        .org()
+        .arrangement(&arrangement_key)
+        .unwrap()
+        .groups
+        .clone();
     drop(state);
     let loaded = SqliteOrgStore::open(&path)
         .unwrap()
@@ -149,7 +156,7 @@ fn sqlite_reopens_every_accepted_near_limit_arrangement_and_receipt() {
             .find(|record| record.key == arrangement_key)
             .unwrap()
             .groups,
-        arrangement.groups
+        groups
     );
 }
 

@@ -69,6 +69,15 @@ printf '[missing](./missing.md)\n' >"$repo/docs/guide.md"
 expect_fail 'missing.md does not exist' --only=links
 printf '[anchor](./Parent/Leaf.md#missing)\n' >"$repo/docs/guide.md"
 expect_fail 'has no heading #missing' --only=links
+# An early anchor on a page with more headings than a pipe holds: the lookup
+# reads every anchor, so the writer is never cut off and failed by pipefail.
+{
+    printf '# Early\n'
+    for i in $(seq 1 6000); do printf '## Heading %s with padding\n' "$i"; done
+} >"$repo/docs/Parent/Long.md"
+printf '[early](./Parent/Long.md#early)\n' >"$repo/docs/guide.md"
+expect_pass --only=links
+rm "$repo/docs/Parent/Long.md"
 printf '```sh\nphux gone\n```\n' >"$repo/docs/guide.md"
 expect_fail '`phux gone` is not a command' --only=commands
 printf '```sh\nphux agent gone\n```\n' >"$repo/docs/guide.md"
@@ -83,7 +92,7 @@ printf '\n## Crates\n\nA prose mention of `phux-fixture` is not an inventory row
 expect_fail 'crates/phux-fixture is not in the crate table' --only=crates
 printf '\n| Crate | Role |\n|---|---|\n| `phux-fixture` | Fixture |\n' >>"$repo/docs/architecture.md"
 expect_pass --only=crates
-printf '\nThe standalone client workspace includes `phux-gpui`.\n' >>"$repo/docs/architecture.md"
+printf '\nThe standalone client workspace includes `phux-rune`.\n' >>"$repo/docs/architecture.md"
 expect_pass --only=crates
 printf '\n| `phux-missing` | Stale root crate |\n' >>"$repo/docs/architecture.md"
 expect_fail 'phux-missing is not a crate in this tree' --only=crates

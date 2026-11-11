@@ -91,6 +91,7 @@ impl RelaySession {
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
             catalog.kinds.clear();
+            catalog.controls.clear();
             catalog.terminal_profile = Some(self.bootstrap_profile);
         }
         self.resource_kinds = Some(resource_kinds);

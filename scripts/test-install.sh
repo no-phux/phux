@@ -13,8 +13,10 @@ GOLDEN="$ROOT/scripts/fixtures/release-manifest"
 BASE=https://github.com/no-phux/phux/releases/download
 TARGET=x86_64-unknown-linux-gnu
 export HOME="$TMP/home" SHELL=/bin/zsh
+# A fresh HOME has no mise trust records; tools on PATH that are mise shims
+# would refuse this checkout's config without this.
+export MISE_TRUSTED_CONFIG_PATHS="$ROOT"
 unset ZDOTDIR XDG_CONFIG_HOME PHUX_NO_MODIFY_PATH PHUX_CHANNEL PHUX_INSTALL_DIR
-unset PHUX_DESKTOP_PROGRESS
 mkdir -p "$HOME" "$TMP/bin" "$TMP/served"
 export SERVED="$TMP/served" CALLS="$TMP/calls" METER_CALLS="$TMP/meter-calls"
 
@@ -29,6 +31,7 @@ done
 printf '%s\n' "$url" >> "$CALLS"
 printf '%s %s\n' "$meter" "$url" >> "$METER_CALLS"
 [ "${FAIL_NETWORK:-0}" = 0 ] || exit 22
+case "${FAIL_DIRECT:-0}:$url" in 1:https://github.com/*) exit 22 ;; esac
 [ -f "$SERVED/${url##*/}" ] || exit 22
 if [ -n "$out" ] && [ "$out" != - ]; then cp "$SERVED/${url##*/}" "$out"; else cat "$SERVED/${url##*/}"; fi
 if [ "$meter" = 1 ]; then printf '\r#### 50.0%%\r######## 100.0%%\r' >&2; fi
@@ -37,7 +40,7 @@ chmod 755 "$TMP/bin/curl"
 
 fail() { echo "FAIL: $*" >&2; exit 1; }
 installer() { PATH="$TMP/bin:${TEST_PATH:-/usr/bin:/bin}" "$SH" "$ROOT/scripts/install.sh" "$@"; }
-serve_golden() { cp "$GOLDEN/stable.json" "$GOLDEN/next.json" "$SERVED/"; }
+serve_golden() { cp "$GOLDEN/stable.json" "$GOLDEN/next.json" "$GOLDEN/lts.json" "$SERVED/"; }
 # Rewrite a served manifest with a jq filter.
 mutate() {
   jq --indent 2 "$2" "$SERVED/$1.json" >"$SERVED/$1.json.new"
@@ -64,6 +67,12 @@ grep -Fxq "sha256: $(printf '2%.0s' {1..64})" <<<"$(installer --dry-run --os lin
 sha_a="$(printf 'a%.0s' {1..40})"
 grep -Fxq "url: $BASE/next/phux-next.$sha_a-aarch64-apple-darwin.tar.gz" <<<"$(plan --channel next)" || fail "next url"
 grep -Fxq 'channel: next' <<<"$(PHUX_CHANNEL=next plan)" || fail "PHUX_CHANNEL"
+# lts names a stable release through its own manifest.
+grep -Fxq "url: $BASE/v9.8.7/phux-v9.8.7-aarch64-apple-darwin.tar.gz" <<<"$(plan --channel lts)" || fail "lts url"
+grep -Fxq 'channel: lts' <<<"$(PHUX_CHANNEL=lts plan)" || fail "PHUX_CHANNEL=lts"
+grep -Fxq "sidecar: $BASE/v1.2.3/phux-v1.2.3-aarch64-apple-darwin.tar.gz.sha256" \
+  <<<"$(FAIL_NETWORK=1 plan --channel lts --version 1.2.3)" || fail "lts pin"
+refused 'must be stable, latest, next, or lts' --dry-run --channel nightly
 
 # A pin reads no manifest and is verified against its sidecar.
 for pin in 1.2.3 v1.2.3; do
@@ -88,7 +97,7 @@ refuse_manifest() {
 }
 refuse_manifest stable '.schema_version = 2' 'unsupported schema'
 refuse_manifest stable '.channel = "next"' 'names another channel'
-refuse_manifest stable 'del(.products.phux)' 'no phux release is published'
+refuse_manifest stable '.products |= with_entries(.key = "other")' 'no phux release is published'
 refuse_manifest stable 'del(.products.phux.artifacts["aarch64-apple-darwin"])' 'no phux digest for aarch64-apple-darwin'
 refuse_manifest stable '.products.phux.artifacts["aarch64-apple-darwin"].sha256 = ("F" * 64)' 'no phux digest'
 refuse_manifest stable '.products.phux.version = "09.8.7"' 'invalid phux version'
@@ -152,18 +161,6 @@ grep -Fxq 'phux v9.8.7' "$TMP/stable/phux" && grep -Fxq stable "$TMP/stable/.phu
 if grep -Fq .sha256 "$CALLS"; then fail "a manifest install fetched a sidecar"; fi
 if grep -Eq '^1 ' "$METER_CALLS" || grep -Fq 'phux-update: verifying' "$TMP/err"; then fail "progress must be opt-in"; fi
 
-# Desktop staging opts into only the archive meter, not metadata downloads.
-# Exercise the shared fetch path with a pin so it also reads a checksum sidecar.
-: > "$METER_CALLS"
-PHUX_DESKTOP_PROGRESS=1 install_to "$TMP/progress" --version 9.8.7 >"$TMP/out" 2>"$TMP/err"
-grep -Fxq "1 $BASE/v9.8.7/phux-v9.8.7-$TARGET.tar.gz" "$METER_CALLS" || fail "archive has no meter"
-grep -Fxq "0 $BASE/v9.8.7/phux-v9.8.7-$TARGET.tar.gz.sha256" "$METER_CALLS" || fail "sidecar has a meter"
-grep -Fq '100.0%' "$TMP/err" || fail "archive progress not forwarded"
-grep -Fxq 'phux-update: verifying' "$TMP/err" || fail "missing verification phase"
-meter_log="$(tr '\r' '\n' < "$TMP/err")"
-[[ $(grep -n '100.0%' <<<"$meter_log" | cut -d: -f1) -lt $(grep -n 'phux-update: verifying' <<<"$meter_log" | cut -d: -f1) ]] \
-  || fail "verification preceded transfer completion"
-
 install_to "$TMP/next" --channel next >/dev/null 2>&1
 grep -Fxq "phux next.$sha_a" "$TMP/next/phux" && grep -Fxq next "$TMP/next/.phux-channel" || fail "next install"
 
@@ -182,6 +179,26 @@ refused "could not download $archive; nothing was installed" \
   --os linux --arch x86_64 --install-dir "$TMP/assetless"
 mv "$TMP/held.tar.gz" "$SERVED/$archive"
 [[ ! -e $TMP/sidecarless/phux && ! -e $TMP/assetless/phux ]] || fail "a failed download installed"
+
+# When releases/download fails, the same manifest and asset come from the
+# GitHub API instead: only this repository's numeric assets, pretty or compact.
+api=https://api.github.com/repos/no-phux/phux/releases/assets
+jq -n --arg api "$api" '{url: "https://api.github.com/repos/no-phux/phux/releases/1", name: "channels",
+  assets: [{url: "\($api)/102", name: "stable.json", uploader: {url: "https://api.github.com/users/x"}}]}' \
+  > "$SERVED/channels"
+jq -nc --arg api "$api" --arg archive "$archive" \
+  '{assets: [{url: "https://evil.example/assets/100", name: $archive}, {url: "\($api)/101", name: $archive}]}' \
+  > "$SERVED/v9.8.7"
+cp "$SERVED/stable.json" "$SERVED/102"
+cp "$SERVED/$archive" "$SERVED/101"
+: > "$CALLS"
+FAIL_DIRECT=1 install_to "$TMP/api" >/dev/null 2>"$TMP/err" || fail "api fallback install: $(cat "$TMP/err")"
+grep -Fxq 'phux v9.8.7' "$TMP/api/phux" || fail "api fallback files"
+grep -Fxq "$api/101" "$CALLS" && grep -Fxq "$api/102" "$CALLS" || fail "api fallback calls: $(cat "$CALLS")"
+rm "$SERVED/101"
+FAIL_DIRECT=1 refused "could not download $archive; nothing was installed" \
+  --os linux --arch x86_64 --install-dir "$TMP/api-missing"
+rm "$SERVED/channels" "$SERVED/v9.8.7" "$SERVED/102"
 
 # A digest the archive does not match installs nothing.
 mutate stable ".products.phux.artifacts[\"$TARGET\"].sha256 = (\"0\" * 64)"
@@ -208,6 +225,15 @@ printf 'signature\n' > "$SERVED/$archive.sha256.minisig"
 TEST_PATH="$SIG_PATH" install_to "$TMP/signed" >/dev/null 2>"$TMP/err" || fail "signed install: $(cat "$TMP/err")"
 grep -Fq "$archive.sha256.minisig" "$CALLS" || fail "a signed install must fetch the signature"
 grep -Fq "minisign -V -H -q -P RWTJVmT0UFkQn2Zw" "$CALLS" || fail "the signature is checked, prehashed only, against the release key"
+# The manifest's own signature: stable only warns without one, lts refuses.
+grep -Fq 'the stable release manifest is not signed' "$TMP/err" || fail "an unsigned stable manifest warns"
+lts_plan() { TEST_PATH="$SIG_PATH" refused "$1" --dry-run --os darwin --arch arm64 --channel lts; }
+lts_plan 'the lts release manifest is not signed by a phux release key'
+printf 'signature\n' > "$SERVED/lts.json.minisig"
+TEST_PATH="$SIG_PATH" plan --channel lts >/dev/null 2>"$TMP/err" || fail "a signed lts manifest: $(cat "$TMP/err")"
+grep -Fq 'lts.json.minisig' "$CALLS" || fail "the lts manifest signature is fetched"
+MINISIGN_STATUS=1 lts_plan 'the lts release manifest is not signed by a phux release key'
+rm "$SERVED/lts.json.minisig"
 MINISIGN_STATUS=1 TEST_PATH="$SIG_PATH" refused 'is not signed by a phux release key' \
   --os linux --arch x86_64 --install-dir "$TMP/badsig"
 mutate stable ".products.phux.artifacts[\"$TARGET\"].sha256 = (\"0\" * 64)"
@@ -250,6 +276,17 @@ if [[ -n $real ]]; then
   fi
   printf '%s  %s\n' "$digest_stable" "$archive" > "$SERVED/$archive.sha256"
   rm "$SERVED/$archive.sha256.minisig"
+  # A real manifest signature vouches for exactly those bytes.
+  minisign -S -s "$TMP/keys/test.key" -m "$SERVED/lts.json" -x "$SERVED/lts.json.minisig" </dev/null >/dev/null
+  PATH="$TMP/bin:$TMP/real-sig-bin:/usr/bin:/bin" "$SH" "$TMP/install-testkey.sh" \
+    --dry-run --os darwin --arch arm64 --channel lts >/dev/null 2>"$TMP/err" \
+    || fail "a real manifest signature: $(cat "$TMP/err")"
+  mutate lts '.generated_at = "2027-01-01T00:00:00Z"'
+  if PATH="$TMP/bin:$TMP/real-sig-bin:/usr/bin:/bin" "$SH" "$TMP/install-testkey.sh" \
+    --dry-run --os darwin --arch arm64 --channel lts >/dev/null 2>&1; then
+    fail "a tampered lts manifest passed a real signature check"
+  fi
+  rm "$SERVED/lts.json.minisig"
 fi
 
 no_leftovers() {
@@ -312,10 +349,10 @@ PHUX_NO_MODIFY_PATH=1 install_to "$off" >/dev/null 2>&1
 install_to "$off" --no-modify-path >/dev/null 2>&1
 [[ ! -e $HOME/.zshrc ]] || fail "an opted-out install edited the profile"
 
-# The website's install-desktop shim runs the installer with --desktop.
+# The website's install-desktop shim runs the installer with --rune.
 printf '#!/bin/sh\necho "args: $*"\n' > "$SERVED/install"
 out="$(PATH="$TMP/bin:/usr/bin:/bin" "$SH" "$ROOT/scripts/install-desktop.sh" --channel next)"
-[[ $out == 'args: --desktop --channel next' ]] || fail "shim: $out"
+[[ $out == 'args: --rune --channel next' ]] || fail "shim: $out"
 rm "$SERVED/install"
 if PATH="$TMP/bin:/usr/bin:/bin" "$SH" "$ROOT/scripts/install-desktop.sh" 2>"$TMP/err"; then fail "shim ran without an installer"; fi
 grep -Fq 'could not download' "$TMP/err" || fail "shim failure message"

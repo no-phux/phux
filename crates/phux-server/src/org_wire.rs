@@ -276,7 +276,9 @@ pub fn core_launch(
             }))
         }
         // A tree names its application at SPAWN_RESOURCE, not in a launch.
-        phux_core::ResourceKind::AccessibilityTree | phux_core::ResourceKind::PixelSurface => None,
+        phux_core::ResourceKind::AccessibilityTree
+        | phux_core::ResourceKind::PixelSurface
+        | phux_core::ResourceKind::Document => None,
     }
 }
 

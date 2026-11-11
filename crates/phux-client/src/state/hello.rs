@@ -76,7 +76,8 @@ async fn raw_hello(conn: &mut Connection) -> Result<FrameKind, AttachError> {
         protocol_major: phux_protocol::PROTOCOL_VERSION.major,
         protocol_minor: phux_protocol::PROTOCOL_VERSION.minor,
         protocol_patch: phux_protocol::PROTOCOL_VERSION.patch,
-        client_caps: ClientCapabilities::default(),
+        client_caps: ClientCapabilities::default()
+            .with_resource_kinds(phux_client_core::session::KERNEL_RESOURCE_KINDS),
     })
     .await?;
     match conn.recv().await? {

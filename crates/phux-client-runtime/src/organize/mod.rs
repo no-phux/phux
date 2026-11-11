@@ -7,7 +7,7 @@
 //! [`plan_or_fallback`] plans over [`Facts`] with it, falling back to
 //! repository matching when Jev fails; [`save_journal`] / [`load_journal`]
 //! keep the last run for undo. Everything here blocks: call it from a
-//! blocking thread (`spawn_blocking`, a GPUI background task).
+//! blocking thread (`spawn_blocking`, a UI toolkit's background task).
 //!
 //! The request goes through `curl` with the key and body on its stdin, so
 //! neither appears in a process listing, and the binary carries no HTTP or

@@ -278,13 +278,17 @@ mod path;
 mod payload;
 mod role;
 mod status;
+pub mod typed_document;
 mod whoami;
 
 pub use command::{
-    AgentEvent, ApprovalOutcome, Command, CommandResult, CommandValue, ControlAction, FileChunk,
+    AgentEvent, ApprovalOutcome, CONTROL_UNRESTRICTED, Command, CommandResult, CommandValue,
+    ControlAction, ControlClass, ControlClasses, DocumentInput, DocumentKey, FileChunk,
     FileUploadAck, GET_SCREEN_FORMAT_SELECTOR_MASK, GET_SCREEN_FORMAT_UNWRAP, InputMode,
-    KillConditions, KillPrecondition, ListenerTransport, PerfOp, ReportedAgentState,
-    ResourceEventType, ResourceLifecycle, StateScope, TerminalSignal,
+    KillConditions, KillPrecondition, ListenerTransport, MAX_CLIPBOARD_TEXT,
+    MAX_DOCUMENT_INPUT_TEXT, MAX_MIRROR_TARGET, MAX_MIRROR_TARGETS, MAX_ON_BEHALF_OF, MirrorOp,
+    OnBehalfOf, PerfOp, ReportedAgentState, ResourceEventType, ResourceLifecycle, StateScope,
+    TerminalSignal,
 };
 pub use directory::{
     DirectoryEntry, DirectoryErrorCode, DirectoryListing, DirectoryListingError,

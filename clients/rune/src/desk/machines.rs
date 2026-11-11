@@ -22,6 +22,7 @@ enum Done {
     Step(String),
     Added(Result<(), String>),
     Removed(String, Result<(), String>),
+    Recolored(String, Result<(), String>),
     /// Another machine's sessions; `None` is this computer.
     Glanced(Option<String>, Result<Vec<Glance>, String>),
 }
@@ -42,6 +43,8 @@ pub struct Machines {
     pub outcome: Option<Result<String, String>>,
     /// The row asking whether to really remove its machine.
     pub removing: Option<String>,
+    /// The row whose colour swatches are out; [`machines::LOCAL`] is this one.
+    pub picking: Option<String>,
     /// The other machines whose sessions the sidebar shows; `None` is this computer.
     pub expanded: HashSet<Option<String>>,
     /// The sidebar hides this window's own sessions under its machine.
@@ -80,6 +83,7 @@ impl Machines {
             error: None,
             outcome: None,
             removing: None,
+            picking: None,
             expanded: HashSet::new(),
             folded: false,
             glances: HashMap::new(),
@@ -194,6 +198,19 @@ impl Machines {
         });
     }
 
+    /// Recolour `name` now, and have the CLI write it: `id` is a palette id
+    /// or `auto`.
+    fn recolor(&mut self, name: String, id: &'static str) {
+        let Some(phux) = self.phux.clone() else {
+            return;
+        };
+        crate::host_color::pick(&name, id);
+        self.worker(move |send| {
+            let result = machines::recolor(&phux, &name, id);
+            send(Done::Recolored(name, result));
+        });
+    }
+
     /// The host a finished add registered, whatever it was named. Only the
     /// refresh after that add answers it; any other list is just a list.
     fn take_added(&mut self, refresh: u64) -> Option<String> {
@@ -223,6 +240,10 @@ impl Desk {
     }
 
     pub fn toggle_machines(&mut self) {
+        if let Some(native) = &mut self.native {
+            native.connection_requested = true;
+            return;
+        }
         self.machines.open = !self.machines.open;
         if self.machines.open {
             self.close_settings();
@@ -270,6 +291,16 @@ impl Desk {
     /// stay on a machine it no longer knows, so that one goes home first.
     pub fn ask_remove(&mut self, name: Option<String>) {
         self.machines.removing = name;
+    }
+
+    /// Open `name`'s colour swatches, or close them.
+    pub fn pick_color(&mut self, name: Option<String>) {
+        self.machines.picking = name.filter(|name| self.machines.picking.as_ref() != Some(name));
+    }
+
+    pub fn recolor_machine(&mut self, name: String, id: &'static str) {
+        self.machines.picking = None;
+        self.machines.recolor(name, id);
     }
 
     pub fn remove_machine(&mut self, name: String) {
@@ -362,6 +393,12 @@ impl Desk {
                 Done::Removed(name, result) => {
                     if let Err(error) = result {
                         self.machines.error = Some(format!("{name} not removed: {error}"));
+                    }
+                    self.machines.refresh();
+                }
+                Done::Recolored(name, result) => {
+                    if let Err(error) = result {
+                        self.machines.error = Some(format!("{name}'s colour not saved: {error}"));
                     }
                     self.machines.refresh();
                 }

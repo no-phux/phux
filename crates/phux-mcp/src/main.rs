@@ -32,6 +32,7 @@ mod contract_tests;
 mod contracts;
 mod coord_tools;
 mod diagnostic_tools;
+mod document_tools;
 #[cfg(test)]
 mod goldens;
 mod jsonrpc;
@@ -57,6 +58,7 @@ use serde_json::{Value, json};
 use tokio::io::{AsyncBufRead, AsyncBufReadExt, AsyncWrite, AsyncWriteExt, BufReader, BufWriter};
 use tokio::task::{AbortHandle, JoinSet};
 
+use contracts::tool_content;
 use jsonrpc::{
     INTERNAL_ERROR, INVALID_REQUEST, METHOD_NOT_FOUND, PARSE_ERROR, REQUEST_CANCELLED, Request,
 };
@@ -444,23 +446,6 @@ async fn handle_tools_call_with(
         Ok(value) => jsonrpc::success(id, tool_content(&value, false)),
         Err(error) => jsonrpc::success(id, tool_content(&error.document(), true)),
     }
-}
-
-/// Object-valued structured content and its equivalent JSON text fallback,
-/// with tool failures marked by `isError`.
-fn tool_content(value: &Value, is_error: bool) -> Value {
-    let document = if value.is_object() {
-        value.clone()
-    } else {
-        json!({ "result": value })
-    };
-    let text = serde_json::to_string_pretty(&document)
-        .unwrap_or_else(|err| format!("<failed to serialize result: {err}>"));
-    json!({
-        "content": [ { "type": "text", "text": text } ],
-        "structuredContent": document,
-        "isError": is_error,
-    })
 }
 
 #[cfg(test)]

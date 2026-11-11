@@ -137,9 +137,13 @@ pub fn command_rule(command: &Command) -> &'static Rule {
         Command::PerfControl { .. } => &C_PERF_CONTROL,
         Command::AppendResourceOutput { .. } => &C_APPEND_RESOURCE_OUTPUT,
         Command::PublishResourceState { .. } => &C_PUBLISH_RESOURCE_STATE,
+        Command::SendDocumentInput { .. } => &C_SEND_DOCUMENT_INPUT,
+        Command::Mirror { .. } => &C_MIRROR,
+        Command::MirrorProvide { .. } => &C_MIRROR_PROVIDE,
         Command::Transcribe { .. } => &C_TRANSCRIBE,
         Command::GetOrganization { .. } => &C_GET_ORGANIZATION,
         Command::DescribeApi => &C_API_DESCRIBE,
+        Command::PrivacyStatus => &C_PRIVACY_STATUS,
         Command::GetCreation { .. } => &C_GET_CREATION,
         Command::SessionCreate { .. } => &C_SESSION_CREATE,
         Command::SessionRename { .. }
@@ -170,35 +174,71 @@ fn attach_rule(target: &AttachTarget) -> &'static Rule {
 
 /// The spawn rows. A kind that contradicts its binding is refused first, so
 /// the decoder's `SPAWN_FAILED` never runs; a Terminal is then placed by its
-/// satellite and owner fields, and an agent session by its parent.
+/// satellite and owner fields, and every other served kind by its parent.
 fn spawn_rule(
+    satellite: Option<&SatelliteHost>,
+    owned: bool,
+    resource: Option<&SpawnResource>,
+) -> &'static Rule {
+    spawn_rule_in(&KINDS, satellite, owned, resource)
+}
+
+/// [`spawn_rule`] under `catalog`.
+fn spawn_rule_in(
+    catalog: &'static [KindSpec],
     satellite: Option<&SatelliteHost>,
     owned: bool,
     resource: Option<&SpawnResource>,
 ) -> &'static Rule {
     let kind = resource.map_or(ResourceKind::Terminal, |spawn| spawn.kind);
     let parent = resource.and_then(|spawn| spawn.parent.as_ref());
-    if kind_contradicts_binding(kind, parent) {
+    if kind_contradicts_binding(catalog, kind, parent) {
         return &F_SPAWN_KIND_MISMATCH;
+    }
+    if resource.is_some_and(|spawn| spawn.control.is_some()) {
+        return &F_SPAWN_MACHINE_CONTROL;
     }
     match parent {
         None => terminal_spawn_rule(satellite.is_some(), owned),
-        Some(parent) if is_unowned_agent_session(kind, owned) => {
-            agent_session_spawn_rule(satellite, parent)
+        Some(parent) if is_unowned_scoped_child(catalog, kind, owned) => {
+            child_spawn_rule(satellite, parent)
         }
-        // An unknown child kind, or an agent session that also names an
-        // owner Terminal: no row covers it.
+        // A kind that has not opted into the parent rows (an unknown one
+        // included), or a child that also names an owner Terminal: no row
+        // covers it, so it starts denied.
         Some(_) => &F_UNCLASSIFIED,
     }
 }
 
-/// A Terminal has no parent and every other kind has one (L1 §1.2).
-const fn kind_contradicts_binding(kind: ResourceKind, parent: Option<&ResourceId>) -> bool {
-    kind.is_terminal() == parent.is_some()
+/// A kind's catalog spawn contract says whether it has a parent (L1 §1.2);
+/// a kind this build does not serve is not a Terminal, so it would.
+const fn kind_contradicts_binding(
+    catalog: &'static [KindSpec],
+    kind: ResourceKind,
+    parent: Option<&ResourceId>,
+) -> bool {
+    matches!(parent_rule_in(catalog, kind), ParentRule::Required) != parent.is_some()
 }
 
-const fn is_unowned_agent_session(kind: ResourceKind, owned: bool) -> bool {
-    matches!(kind, ResourceKind::AgentSession) && !owned
+/// A served child kind whose contract opts into the parent rows
+/// ([`SpawnContract::scoped_child`]), with no owner Terminal.
+const fn is_unowned_scoped_child(
+    catalog: &'static [KindSpec],
+    kind: ResourceKind,
+    owned: bool,
+) -> bool {
+    !owned
+        && matches!(
+            kind_spec_in(catalog, kind),
+            Some(KindSpec {
+                spawn: SpawnContract {
+                    parent: ParentRule::Required,
+                    scoped_child: true,
+                    ..
+                },
+                ..
+            })
+        )
 }
 
 fn terminal_spawn_rule(remote: bool, owned: bool) -> &'static Rule {
@@ -210,17 +250,17 @@ fn terminal_spawn_rule(remote: bool, owned: bool) -> &'static Rule {
     }
 }
 
-/// A remote agent session must name a parent on the same satellite; a local
-/// or different-host parent is default-deny.
-fn agent_session_spawn_rule(
+/// A remote child must name a parent on the same satellite; a local or
+/// different-host parent is default-deny.
+fn child_spawn_rule(
     satellite: Option<&SatelliteHost>,
     parent: &ResourceId,
 ) -> &'static Rule {
     let Some(host) = satellite else {
-        return &F_SPAWN_AGENT_LOCAL;
+        return &F_SPAWN_CHILD_LOCAL;
     };
     if parent_lives_on(parent, host) {
-        &F_SPAWN_AGENT_SATELLITE
+        &F_SPAWN_CHILD_SATELLITE
     } else {
         &F_UNCLASSIFIED
     }

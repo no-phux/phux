@@ -16,8 +16,8 @@ mod tests_install;
 mod tests_stream;
 mod wrapper;
 
+pub(crate) use install::{atomic_write, installed_shim_path, installed_shim_schema};
 use install::{install_claude, uninstall_claude};
-pub(crate) use install::{installed_shim_path, installed_shim_schema};
 
 const BLOCK_BEGIN: &str = "# >>> phux agent shims >>>";
 const BLOCK_END: &str = "# <<< phux agent shims <<<";

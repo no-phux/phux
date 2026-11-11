@@ -6,11 +6,11 @@ default-members = ["crates/phux", "crates/phux-mcp"]
 # Browser and desktop clients have separate workspaces and toolchains.
 # `.claude` holds agent worktrees. Without it, Cargo's cached-root lookup
 # adopts this checkout as the workspace of a nested worktree's out-of-tree
-# path dependencies (the desktop host's GPUI checkout) and fails inheritance.
+# path dependencies and fails inheritance.
 exclude = ["clients", ".claude"]
 
 [workspace.package]
-version = "0.123.0"
+version = "0.138.0"
 edition = "2024"
 rust-version = "1.99"
 license = "Apache-2.0"
@@ -128,7 +128,7 @@ toml_edit = "0.25"
 # Report the full config key path, not an ambiguous leaf name.
 serde_path_to_error = "0.1"
 # Pinned terminal engine; protocol's default features stay pure Rust.
-libghostty-vt = { version = "0.2", git = "https://github.com/phall1/libghostty-rs.git", rev = "9b06bf34eb996fb3580e834e440cef7d38862975", default-features = false }
+libghostty-vt = { version = "0.2", git = "https://github.com/phall1/libghostty-rs.git", rev = "cbd88f63c064f7829c8b91e111fe2b9675884798", default-features = false }
 # Kitty graphics replay decodes f=100 PNG images.
 png = "0.18"
 # Use ring rather than aws-lc-rs/cmake. Omit log to avoid tracing/log unification.

@@ -156,7 +156,18 @@ pub(in crate::runtime) fn route(command: &Command, has_input_lane: bool) -> Rout
     if has_input_lane && local_input {
         return Route::InputLane;
     }
-    if matches!(command, Command::Checkout { .. }) {
+    // A copy or paste waits on the producer's clipboard, and a mirror
+    // start for its surface; nothing else on the connection should wait.
+    if matches!(
+        command,
+        Command::Checkout { .. }
+            | Command::Mirror { .. }
+            | Command::SendDocumentInput {
+                intent: phux_protocol::wire::frame::DocumentInput::CopyClipboard { .. }
+                    | phux_protocol::wire::frame::DocumentInput::Paste { .. },
+                ..
+            }
+    ) {
         return Route::Detached;
     }
     if crate::runtime::service_http::is_service_http(command) {

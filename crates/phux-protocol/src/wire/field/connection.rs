@@ -21,6 +21,9 @@ pub mod hello {
     pub const SSH_ORIGIN: u32 = 9;
     /// Client can demultiplex QUIC stream-per-Terminal; absent = false.
     pub const QUIC_STREAMS: u32 = 10;
+    /// Resource kinds the client decodes (`u64`, bit `1 << kind tag`);
+    /// absent = `ResourceKindSet::LEGACY`.
+    pub const RESOURCE_KINDS: u32 = 11;
 }
 
 /// `HELLO_OK` body fields (`docs/protocol.md#handshake`).

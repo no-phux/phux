@@ -337,7 +337,7 @@
           # and macOS keeps Apple's default linker (already the fast path).
           ++ pkgs.lib.optionals pkgs.stdenv.hostPlatform.isLinux [
             pkgs.mold
-            # GPUI's X11/Wayland backends, font system and Vulkan renderer.
+            # Phux Rune's X11/Wayland backends, font system and Vulkan renderer.
             pkgs.fontconfig
             pkgs.freetype
             pkgs.libxkbcommon

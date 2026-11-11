@@ -1,6 +1,6 @@
 //! The `Maintain` verbs that inspect and update this install.
 
-use crate::commands::{JsonOpt, report::ReportAction, update};
+use crate::commands::{JsonOpt, audit::AuditAction, report::ReportAction, update};
 use usage::Args;
 
 /// Report the running server: pid, uptime, clients
@@ -183,4 +183,18 @@ pub(crate) struct ReportArgs {
     pub(crate) action: Option<ReportAction>,
     #[usage(flatten)]
     pub(crate) json: JsonOpt,
+}
+
+/// Read and verify this host's signed audit log
+///
+/// The server appends one signed, hash-chained `phux.audit/v1` record per
+/// connection, authorization decision, approval, credential change, file
+/// transfer and input lease to `audit/audit.jsonl` in the state directory.
+/// `tail` prints the newest records (`-f` follows); `verify` checks the
+/// chain and every signature and names the first bad record. Both read the
+/// files directly, so they work with no server running.
+#[derive(Debug, Args)]
+pub(crate) struct AuditArgs {
+    #[usage(subcommand)]
+    pub(crate) action: AuditAction,
 }

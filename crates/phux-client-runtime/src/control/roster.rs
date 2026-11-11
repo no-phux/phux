@@ -78,6 +78,15 @@ impl RosterKey {
         }
     }
 
+    /// Whether a hub serves this key for a satellite pane. A hub mirrors
+    /// the agent declaration and the asked flag (ADR-0136); the occupant
+    /// record stays on the satellite's own server, and the hub answers a
+    /// subscription to it with an `UNSUPPORTED_SATELLITE_ROUTE` push that a
+    /// consumer would surface as a refused request on every connect.
+    const fn federates(self) -> bool {
+        !matches!(self, Self::Occupant)
+    }
+
     fn from_wire(key: &str) -> Option<Self> {
         Self::ALL
             .into_iter()
@@ -159,12 +168,12 @@ impl ControlPlane {
             return;
         };
         for (terminal_id, relabel) in relabels {
+            if let Some(title) = &relabel.title {
+                topology.retitle(&terminal_id, title);
+            }
             let Some(pane) = topology.pane_mut(&terminal_id) else {
                 continue;
             };
-            if relabel.title.is_some() {
-                pane.title = relabel.title;
-            }
             if relabel.cwd.is_some() {
                 pane.cwd = relabel.cwd;
             }
@@ -202,7 +211,11 @@ impl ControlPlane {
             if !self.roster.subscribed.insert(terminal_id.clone()) && !resync {
                 continue;
             }
-            for key in RosterKey::ALL {
+            let local = terminal_id.is_local();
+            for key in RosterKey::ALL
+                .into_iter()
+                .filter(|key| local || key.federates())
+            {
                 self.queue_frame(&FrameKind::SubscribeMetadata {
                     scope: Scope::Resource(terminal_id.clone()),
                     key: key.wire().to_owned(),

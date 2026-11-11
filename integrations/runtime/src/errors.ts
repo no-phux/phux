@@ -5,7 +5,8 @@ export type PhuxErrorCode =
   | "timeout"
   | "output_limit"
   | "malformed_json"
-  | "invalid_response";
+  | "invalid_response"
+  | "wrong_resource_kind";
 
 export interface PhuxErrorDetails {
   readonly argv?: readonly string[];
@@ -13,6 +14,7 @@ export interface PhuxErrorDetails {
   readonly stderr?: string;
   readonly cause?: unknown;
   readonly cliError?: Readonly<Record<string, unknown>>;
+  readonly resourceKind?: string;
 }
 
 /** A stable, actionable error surface independent of the process host. */
@@ -22,6 +24,8 @@ export class PhuxError extends Error {
   readonly exitCode: number | null | undefined;
   readonly stderr: string | undefined;
   readonly cliError: Readonly<Record<string, unknown>> | undefined;
+  /** For `wrong_resource_kind`: the `phux ls --json` kind named, when the CLI said which. */
+  readonly resourceKind: string | undefined;
 
   constructor(code: PhuxErrorCode, message: string, details: PhuxErrorDetails = {}) {
     super(message, details.cause === undefined ? undefined : { cause: details.cause });
@@ -31,5 +35,6 @@ export class PhuxError extends Error {
     this.exitCode = details.exitCode;
     this.stderr = details.stderr;
     this.cliError = details.cliError;
+    this.resourceKind = details.resourceKind;
   }
 }

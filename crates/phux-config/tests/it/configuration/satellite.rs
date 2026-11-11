@@ -33,6 +33,8 @@ cert-fingerprint = "AB:CD:EF:01"
                 enabled: true,
                 token_file: None,
                 cert_fingerprint: None,
+                client_cert: None,
+                client_key: None,
             },
             SatelliteConfigEntry {
                 name: "lab".to_owned(),
@@ -40,6 +42,8 @@ cert-fingerprint = "AB:CD:EF:01"
                 enabled: false,
                 token_file: Some(PathBuf::from("/secrets/lab-token")),
                 cert_fingerprint: Some("AB:CD:EF:01".to_owned()),
+                client_cert: None,
+                client_key: None,
             },
         ]
     );

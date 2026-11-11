@@ -1,16 +1,18 @@
-use super::{RebuildError, UpgradeHandoffs, WireResourceId, validate_upgrade_blob};
+use super::{RebuildError, WireResourceId, validate_upgrade_blob};
 use crate::runtime::apps::agent_session::upgrade::{
-    carried_sessions, request_agent_session_cut, stream_cut,
+    carried_sessions, carry_cuts, request_agent_session_cut, stream_cut,
 };
 use crate::runtime::apps::terminal::test_support::{
     ScreenReply, ScreenRequest, TerminalResource as _, seeded_terminal,
+};
+use crate::runtime::apps::terminal::upgrade::{
+    TerminalResume, carry_handoffs, pane_senders, request_pane_handoff,
 };
 use crate::state::ServerState;
 use crate::upgrade::blob::{
     AgentSessionBlob, BLOB_VERSION, Counters, LayoutBlob, PaneBlob, SessionBlob, SplitDirBlob,
     StateBlob, WindowBlob,
 };
-use phux_core::ids::ResourceId;
 use std::os::fd::RawFd;
 use std::path::PathBuf;
 
@@ -109,19 +111,16 @@ async fn rebuild_from_blob_round_trips_the_tree() {
         let mut fresh = ServerState::new();
         // phux-1x9s.6: every pane's actor passes through the runtime's
         // wiring before it runs, as a fresh spawn's does.
-        let rebuilt = fresh
-            .rebuild_from_blob(
-                &blob,
-                |core, pane, scrollback| {
-                    crate::runtime::apps::terminal::upgrade::rebuild_pane(
-                        core,
-                        pane,
-                        scrollback,
-                        |pane, actor| (pane, actor.has_pty()),
-                    )
-                },
-                crate::runtime::apps::rebuild_session,
+        let mut terminal = TerminalResume::new(|core, pane, scrollback| {
+            crate::runtime::apps::terminal::upgrade::rebuild_pane(
+                core,
+                pane,
+                scrollback,
+                |pane, actor| (pane, actor.has_pty()),
             )
+        });
+        let rebuilt = fresh
+            .rebuild_from_blob(&blob, &mut [&mut terminal])
             .expect("rebuild");
         assert_eq!(
             rebuilt.exit_watchers.len(),
@@ -129,13 +128,13 @@ async fn rebuild_from_blob_round_trips_the_tree() {
             "every rebuilt pane must return an exit receiver for the runtime watcher"
         );
         assert_eq!(
-            rebuilt.wired_panes.len(),
+            terminal.wired.len(),
             blob.panes.len(),
             "every rebuilt pane must be wired before its actor runs"
         );
         assert!(
-            rebuilt
-                .wired_panes
+            terminal
+                .wired
                 .iter()
                 .all(|(pane, (wired, _))| pane == wired),
             "the wiring sees the pane it is handed back for"
@@ -188,12 +187,7 @@ async fn the_instance_token_survives_an_upgrade_and_only_an_upgrade() {
             token,
             "a cold start mints a new token"
         );
-        upgraded
-            .rebuild_from_blob(
-                &blob,
-                crate::runtime::apps::terminal::upgrade::unwired,
-                crate::runtime::apps::rebuild_session,
-            )
+        crate::runtime::apps::terminal::test_support::rebuild_unwired(&mut upgraded, &blob)
             .expect("rebuild");
         assert_eq!(upgraded.idspace.instance(), token, "an upgrade keeps it");
 
@@ -201,12 +195,7 @@ async fn the_instance_token_survives_an_upgrade_and_only_an_upgrade() {
         legacy.counters.server_instance = None;
         let mut from_legacy = ServerState::new();
         let fresh = from_legacy.idspace.instance();
-        from_legacy
-            .rebuild_from_blob(
-                &legacy,
-                crate::runtime::apps::terminal::upgrade::unwired,
-                crate::runtime::apps::rebuild_session,
-            )
+        crate::runtime::apps::terminal::test_support::rebuild_unwired(&mut from_legacy, &legacy)
             .expect("rebuild");
         assert_eq!(
             from_legacy.idspace.instance(),
@@ -245,20 +234,11 @@ async fn upgrade_twice(user_title: Option<&str>, seed: &[u8]) -> ServerState {
 
     let blob = state.build_upgrade_blob(7).await;
     let mut once = ServerState::new();
-    once.rebuild_from_blob(
-        &blob,
-        crate::runtime::apps::terminal::upgrade::unwired,
-        crate::runtime::apps::rebuild_session,
-    )
-    .expect("first rebuild");
+    crate::runtime::apps::terminal::test_support::rebuild_unwired(&mut once, &blob)
+        .expect("first rebuild");
     let blob = once.build_upgrade_blob(7).await;
     let mut twice = ServerState::new();
-    twice
-        .rebuild_from_blob(
-            &blob,
-            crate::runtime::apps::terminal::upgrade::unwired,
-            crate::runtime::apps::rebuild_session,
-        )
+    crate::runtime::apps::terminal::test_support::rebuild_unwired(&mut twice, &blob)
         .expect("second rebuild");
     twice
 }
@@ -351,15 +331,6 @@ async fn an_upgrade_keeps_the_user_title_beside_the_program_title() {
     .await;
 }
 
-/// A replayed title cannot break out of its `OSC 2`.
-#[test]
-fn the_replayed_title_drops_control_characters() {
-    assert_eq!(
-        super::osc_title_sequence("a\x07b\x1b]0;c"),
-        b"\x1b]2;ab]0;c\x1b\\".to_vec()
-    );
-}
-
 mod merge;
 mod validation;
 
@@ -374,24 +345,23 @@ impl ServerState {
     )]
     pub(crate) async fn build_upgrade_blob(&mut self, listener_fd: RawFd) -> StateBlob {
         self.intern_upgrade_wires();
-        let mut handoffs = UpgradeHandoffs::default();
-        let tids: Vec<ResourceId> = self
-            .upgrade_handles()
-            .into_iter()
-            .map(|(tid, _)| tid)
-            .collect();
-        for tid in tids {
-            if let Some(handoff) = self.request_pane_handoff(tid).await {
-                handoffs.panes.insert(tid, handoff);
+        let mut handoffs = std::collections::HashMap::new();
+        for (tid, upgrade) in pane_senders(self) {
+            if let Ok(handoff) = request_pane_handoff(tid, &upgrade).await {
+                handoffs.insert(tid, handoff);
             }
         }
+        let mut cuts = std::collections::HashMap::new();
         for (session, bootstrap) in carried_sessions(self) {
             // Not sealed: this walk re-execs nothing, so the old image
             // must keep accepting appends.
             if let Some(cut) = request_agent_session_cut(&bootstrap, false).await {
-                handoffs.agent_sessions.insert(session, stream_cut(cut));
+                cuts.insert(session, stream_cut(cut));
             }
         }
-        self.with_upgrade_metadata(self.assemble_upgrade_blob(listener_fd, &handoffs))
+        let mut blob = self.with_upgrade_metadata(self.assemble_upgrade_blob(listener_fd));
+        carry_handoffs(self, &mut blob, &handoffs);
+        carry_cuts(self, &mut blob, &cuts);
+        blob
     }
 }

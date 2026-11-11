@@ -62,25 +62,25 @@ pub(crate) trait ReleaseSource: std::fmt::Debug {
     /// The body of `channel`'s release manifest.
     fn manifest(&self, channel: Channel) -> Result<String, UpdateError>;
 
+    /// The minisign signature over `channel`'s manifest
+    /// (`<channel>.json.minisig`).
+    fn manifest_signature(&self, channel: Channel) -> Result<String, UpdateError>;
+
     /// Download `url` into `dest`, replacing whatever is there.
     fn download(&self, url: &str, dest: &Path) -> Result<(), UpdateError>;
 }
 
 /// The real [`ReleaseSource`]: `curl`, or `wget` where curl is absent. The
-/// digest verified afterwards is the trust anchor, not the fetcher.
+/// digest verified afterwards is the trust anchor, not the fetcher. Each file
+/// that `releases/download` will not serve is fetched once more through
+/// GitHub's API ([`release::API_RELEASES`]).
 #[derive(Debug, Clone, Copy, Default)]
 pub(crate) struct NetworkReleaseSource;
 
 impl ReleaseSource for NetworkReleaseSource {
     fn manifest(&self, channel: Channel) -> Result<String, UpdateError> {
         let url = release::manifest_url(channel);
-        let curl: Vec<&str> = MANIFEST_CURL_ARGS
-            .iter()
-            .copied()
-            .chain([url.as_str()])
-            .collect();
-        fetch(&curl, &["-q", "--timeout=30", "--tries=2", "-O", "-", &url]).map_err(|err| match err
-        {
+        with_api_fallback(&url, get_manifest).map_err(|err| match err {
             UpdateError::Fetch(detail) if detail.contains("404") => UpdateError::Fetch(format!(
                 "the {} release manifest is not available ({url}); it is replaced in place \
                  when a release publishes, so retry in a minute",
@@ -90,36 +90,114 @@ impl ReleaseSource for NetworkReleaseSource {
         })
     }
 
+    fn manifest_signature(&self, channel: Channel) -> Result<String, UpdateError> {
+        with_api_fallback(&release::manifest_signature_url(channel), get_manifest)
+    }
+
     fn download(&self, url: &str, dest: &Path) -> Result<(), UpdateError> {
         let dest = dest.to_string_lossy();
-        // A transfer stalled under 1 KiB/s for a minute aborts; a slow one that
-        // keeps moving finishes.
-        let curl = [
-            "-fsSL",
-            "--proto",
-            "=https",
-            "--connect-timeout",
-            "10",
-            "--speed-limit",
-            "1024",
-            "--speed-time",
-            "60",
-            url,
-            "-o",
-            &dest,
-        ];
-        fetch(
-            &curl,
-            &["-q", "--timeout=60", "--tries=2", "-O", &dest, url],
-        )
+        with_api_fallback(url, |url, accept| {
+            // A transfer stalled under 1 KiB/s for a minute aborts; a slow one
+            // that keeps moving finishes.
+            let curl = [
+                "-fsSL",
+                "--proto",
+                "=https",
+                "--connect-timeout",
+                "10",
+                "--speed-limit",
+                "1024",
+                "--speed-time",
+                "60",
+                "--retry",
+                "2",
+            ];
+            let wget = ["-q", "--timeout=60", "--tries=2", "-O", &dest];
+            fetch(
+                &with_header(&curl, accept, &[url, "-o", &dest]),
+                &with_wget_header(&wget, accept, url),
+            )
+        })
         .map(drop)
     }
 }
 
+/// `curl`/`wget` for one manifest-sized file, sending `accept` when given.
+fn get_manifest(url: &str, accept: Option<&str>) -> Result<String, UpdateError> {
+    fetch(
+        &with_header(&MANIFEST_CURL_ARGS, accept, &[url]),
+        &with_wget_header(&["-q", "--timeout=30", "--tries=2", "-O", "-"], accept, url),
+    )
+}
+
+/// Run `attempt` against `url`; when that fails and `url` is a release asset,
+/// look the asset up through the API and attempt its API URL instead. The
+/// first error is the one reported if the API cannot serve it either.
+fn with_api_fallback(
+    url: &str,
+    attempt: impl Fn(&str, Option<&str>) -> Result<String, UpdateError>,
+) -> Result<String, UpdateError> {
+    let first = match attempt(url, None) {
+        Ok(body) => return Ok(body),
+        Err(err) => err,
+    };
+    let Some(api) = api_asset(url) else {
+        return Err(first);
+    };
+    attempt(&api, Some(release::API_ASSET_ACCEPT)).map_err(|_| first)
+}
+
+/// The API URL serving the release asset at `url`, if the API lists one.
+fn api_asset(url: &str) -> Option<String> {
+    let (lookup, name) = release::api_release_lookup(url)?;
+    let curl = [
+        "-fsSL",
+        "--proto",
+        "=https",
+        "--connect-timeout",
+        "10",
+        "--max-time",
+        "30",
+        "--max-filesize",
+        "16777216",
+        "--retry",
+        "2",
+    ];
+    let accept = Some(release::API_JSON_ACCEPT);
+    let wget = ["-q", "--timeout=30", "--tries=2", "-O", "-"];
+    let body = fetch(
+        &with_header(&curl, accept, &[&lookup]),
+        &with_wget_header(&wget, accept, &lookup),
+    )
+    .ok()?;
+    release::api_asset_url(&body, &name)
+}
+
+/// `args`, then `-H accept` when given, then `tail`.
+fn with_header<'a>(args: &[&'a str], accept: Option<&'a str>, tail: &[&'a str]) -> Vec<&'a str> {
+    let header = accept.into_iter().flat_map(|accept| ["-H", accept]);
+    args.iter()
+        .copied()
+        .chain(header)
+        .chain(tail.iter().copied())
+        .collect()
+}
+
+/// wget `args`, then `--header=accept` when given, then `url`.
+fn with_wget_header(args: &[&str], accept: Option<&str>, url: &str) -> Vec<String> {
+    let header = accept.map(|accept| format!("--header={accept}"));
+    args.iter()
+        .map(|arg| (*arg).to_owned())
+        .chain(header)
+        .chain([url.to_owned()])
+        .collect()
+}
+
 /// Run curl with `curl` arguments, or wget with `wget` arguments when curl is
 /// not installed, returning stdout.
-fn fetch(curl: &[&str], wget: &[&str]) -> Result<String, UpdateError> {
-    for (program, args) in [("curl", curl), ("wget", wget)] {
+fn fetch(curl: &[&str], wget: &[String]) -> Result<String, UpdateError> {
+    let wget: Vec<&str> = wget.iter().map(String::as_str).collect();
+    for (program, args) in [("curl", curl), ("wget", wget.as_slice())] {
         match Command::new(program).args(args).output() {
             Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
             Err(err) => {

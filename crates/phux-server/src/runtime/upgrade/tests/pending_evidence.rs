@@ -13,16 +13,15 @@ fn pending_executor_evidence_blocks_the_handoff_cut_until_persisted() {
         s.set_org_store(Box::new(store));
         s.activation_ended(pane, phux_core::ExitOutcome::UNKNOWN, true);
     });
-    let handoffs = UpgradeHandoffs::default();
-    let tree = state.with(|s| s.assemble_upgrade_blob(3, &handoffs));
+    let tree = state.with(|s| s.assemble_upgrade_blob(3));
     assert!(matches!(
-        reassemble_unchanged_tree(&state, 3, 3, &tree, &handoffs),
+        reassemble_unchanged_tree(&state, 3, 3, &tree, &[]),
         Err(UpgradeError::TreeChanged)
     ));
     assert!(state.with(crate::state::ServerState::has_pending_activation_reports));
     failing.store(false, std::sync::atomic::Ordering::Relaxed);
     state.with_mut(crate::state::ServerState::retry_activation_reports);
-    let tree = state.with(|s| s.assemble_upgrade_blob(3, &handoffs));
-    assert!(reassemble_unchanged_tree(&state, 3, 3, &tree, &handoffs).is_ok());
+    let tree = state.with(|s| s.assemble_upgrade_blob(3));
+    assert!(reassemble_unchanged_tree(&state, 3, 3, &tree, &[]).is_ok());
     assert!(!state.with(crate::state::ServerState::has_pending_activation_reports));
 }

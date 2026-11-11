@@ -185,15 +185,26 @@ pub struct EventSpec {
 }
 
 /// One resource kind and its facet (L1 §1.1): the methods, events, and
-/// resource-scoped metadata keys only that kind answers.
+/// resource-scoped metadata keys only that kind answers, and the contracts
+/// its stream and its spawn keep.
 #[derive(Debug, Clone, Copy)]
 pub struct KindSpec {
     /// The kind.
     pub kind: ResourceKind,
     /// The spec's name for the kind, e.g. `TERMINAL`.
     pub name: &'static str,
+    /// The lower-case stable name, e.g. `agent_session`
+    /// ([`ResourceKind::as_str`]).
+    pub key: &'static str,
     /// The feature bit that says the server serves this kind, if any.
     pub gate: Option<FeatureGate>,
+    /// Whether a resource of this kind can occupy an arrangement leaf
+    /// ([`ResourceKind::can_occupy_leaf`]).
+    pub leaf: bool,
+    /// Its bootstrap stream.
+    pub stream: StreamContract,
+    /// Its `SPAWN_RESOURCE` field rules.
+    pub spawn: SpawnContract,
     /// The facet methods.
     pub methods: &'static [MethodSpec],
     /// The facet events.
@@ -230,6 +241,12 @@ const fn dangerous(method: MethodSpec) -> MethodSpec {
     }
 }
 
+/// The gate on `MIRROR` and `MIRROR_PROVIDE`.
+const MIRRORS: Option<FeatureGate> = Some(FeatureGate::FeaturesExt {
+    mask: ServerFeatureExt::Mirrors.mask(),
+    wire_name: ServerFeatureExt::Mirrors.wire_name(),
+});
+
 /// Methods addressed to the server or the connection, not to one resource.
 ///
 /// These are the handshake, session attach, server lifecycle, telemetry,
@@ -240,6 +257,9 @@ pub static SERVER_METHODS: &[MethodSpec] = &[
         Some(FeatureGate::FeaturesExt { mask: ServerFeatureExt::ApiDescription.mask(), wire_name: ServerFeatureExt::ApiDescription.wire_name() })),
     method!("DESCRIBE_API", Carrier::Command(crate::wire::frame::COMMAND_TAG_DESCRIBE_API), [C_API_DESCRIBE],
         Some(FeatureGate::FeaturesExt { mask: ServerFeatureExt::ApiDescription.mask(), wire_name: ServerFeatureExt::ApiDescription.wire_name() })),
+    // The macOS privacy grants the server holds; owner socket only.
+    method!("PRIVACY_STATUS", Carrier::Command(crate::wire::frame::COMMAND_TAG_PRIVACY_STATUS), [C_PRIVACY_STATUS],
+        Some(FeatureGate::FeaturesExt { mask: ServerFeatureExt::PrivacyStatus.mask(), wire_name: ServerFeatureExt::PrivacyStatus.wire_name() })),
     method!("HELLO", Carrier::Frame(TYPE_HELLO), [F_HELLO]),
     method!("PING", Carrier::Frame(TYPE_PING), [F_PING]),
     method!(
@@ -268,6 +288,15 @@ pub static SERVER_METHODS: &[MethodSpec] = &[
             mask: ServerFeatureExt::PathQuery.mask(),
             wire_name: ServerFeatureExt::PathQuery.wire_name(),
         })
+    ),
+    // A host's screen mirrors: list, start, stop; Rune's macOS runner
+    // reports its targets and learns its mirrors through MIRROR_PROVIDE.
+    method!("MIRROR", Carrier::Command(COMMAND_TAG_MIRROR), [C_MIRROR], MIRRORS),
+    method!(
+        "MIRROR_PROVIDE",
+        Carrier::Command(COMMAND_TAG_MIRROR_PROVIDE),
+        [C_MIRROR_PROVIDE],
+        MIRRORS
     ),
     method!(
         "GET_FILE",

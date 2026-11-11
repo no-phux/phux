@@ -118,7 +118,7 @@ pub(super) async fn relay_satellite_attach(
     let local = phux_protocol::ids::ResourceId::local(target.terminal);
     let wire = phux_protocol::ids::ResourceId::satellite(target.host.clone(), target.terminal);
     // Known kinds avoid inventory work. Unknown full attaches need kind only
-    // when the Terminal profiles differ; cursors always require AgentSession.
+    // when the Terminal profiles differ; a cursor needs a kind that resumes.
     let cursor = matches!(
         command,
         Command::AttachResource {
@@ -130,16 +130,26 @@ pub(super) async fn relay_satellite_attach(
     let needs_kind_for_profile = ctx
         .profile
         .is_none_or(|profile| relay.needs_kind_for_profile(profile));
-    if kind.is_none() && (cursor || needs_kind_for_profile) {
+    let kinds = ctx.client_caps.resource_kinds;
+    let narrowed = !kinds.includes(phux_protocol::caps::ResourceKindSet::all());
+    if kind.is_none() && (cursor || needs_kind_for_profile || narrowed) {
         kind = Some(match relay.resource_kind(target.terminal).await {
             Ok(kind) => kind,
             Err(refusal) => return refusal,
         });
     }
-    if cursor && kind != Some(phux_protocol::ids::ResourceKind::AgentSession) {
+    if let Some(kind) = kind
+        && !kinds.contains(kind)
+    {
+        return super::dispatch::undecodable_kind(kind);
+    }
+    let resumes = kind
+        .and_then(phux_protocol::kinds::kind_spec)
+        .is_some_and(|spec| spec.stream.resume.is_some());
+    if cursor && !resumes {
         return invalid_agent_cursor();
     }
-    if ctx.profile.is_none() && kind == Some(phux_protocol::ids::ResourceKind::Terminal) {
+    if ctx.profile.is_none() && crate::hub::relay::stream_needs_terminal_profile(kind) {
         return CommandResult::Error {
             code: ErrorCode::CodecUnavailable,
             message: crate::runtime::apps::terminal::commands::NO_TERMINAL_PROFILE.to_owned(),

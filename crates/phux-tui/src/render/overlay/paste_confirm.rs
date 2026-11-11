@@ -55,7 +55,7 @@ impl RenderOverlay for PasteConfirmOverlay {
         let text = Style::default().fg(self.theme.text);
         let lines = vec![Line::styled(self.message.clone(), text)];
         Modal::new(&self.theme, "Paste?".to_owned(), lines)
-            .footer("", "⏎ paste · esc cancel")
+            .footer("", "⏎ paste · esc")
             .render_into(Self::modal_area(area, self.breakpoints), buf);
     }
 

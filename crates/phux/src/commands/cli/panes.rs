@@ -64,6 +64,28 @@ pub(crate) struct SpawnArgs {
     #[usage(long = "idempotency-key", value_name = "HEX32")]
     pub(crate) idempotency_key: Option<String>,
 
+    /// Run an application in the new pane instead of a command: launched,
+    /// mirrored into documents under the pane, and quit when the pane is
+    /// killed (`phux agent app run NAME`). A macOS app name, a Linux
+    /// command or `.desktop` id, or with `--browser` the browser.
+    #[usage(long, value_name = "NAME", conflicts("--satellite"))]
+    pub(crate) app: Option<String>,
+
+    /// With `--app`, launch that browser on URL (default `about:blank`) with
+    /// a fresh profile and mirror the page.
+    #[usage(
+        long,
+        value_name = "URL",
+        num_args = 0..=1,
+        default_missing = "about:blank",
+        requires("--app")
+    )]
+    pub(crate) browser: Option<String>,
+
+    /// With `--browser`, run it with no window on screen.
+    #[usage(long, requires("--browser"))]
+    pub(crate) headless: bool,
+
     #[usage(flatten)]
     pub(crate) json: JsonOpt,
 

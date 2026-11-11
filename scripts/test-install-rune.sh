@@ -52,6 +52,8 @@ pack() {
   printf '%s\n' "$VERSION" > "$dir/phux-rune.release"
   printf 'license\n' > "$dir/LICENSE"
   printf 'notice\n' > "$dir/NOTICE"
+  printf 'ofl\n' > "$dir/Inter-OFL.txt"
+  printf 'ofl\n' > "$dir/JetBrainsMono-OFL.txt"
   cp "$ROOT/clients/rune/packaging/sh.phux.rune.desktop" "$dir/"
   printf 'png' > "$dir/sh.phux.rune.png"
 }
@@ -59,7 +61,17 @@ serve() {
   tar -C "$TMP/pack" -czf "$SERVED/$ARCHIVE" "$STEM"
   feed "$(sha "$SERVED/$ARCHIVE")" "${1:-$VERSION}"
 }
+# DIGEST VERSION [none]: `none` drops the arm64 Linux target, as feeds from
+# before its builds do.
 feed() {
+  local arm digest
+  digest="$(printf 'd%.0s' {1..64})"
+  arm=",
+    \"aarch64-unknown-linux-gnu\": {
+      \"sha256\": \"$digest\",
+      \"size\": 7
+    }"
+  [[ "${3:-}" != none ]] || arm=""
   cat > "$SERVED/rune.json" <<EOF
 {
   "schema": 1,
@@ -74,7 +86,7 @@ feed() {
     "x86_64-unknown-linux-gnu": {
       "sha256": "$1",
       "size": 7
-    }
+    }$arm
   }
 }
 EOF
@@ -93,12 +105,15 @@ grep -Fxq "sha256: $(printf 'b%.0s' {1..64})" <<<"$out" || fail "macOS digest: $
 grep -Fxq 'product: rune' <<<"$out" || fail "macOS product: $out"
 out="$(installer --dry-run)"
 grep -Fxq "url: $BASE/rune-v$VERSION/$ARCHIVE" <<<"$out" || fail "Linux url: $out"
+out="$(PATH="$TMP/bin:/usr/bin:/bin" "$SH" "$ROOT/scripts/install.sh" --dry-run --os linux --arch arm64 --rune)"
+grep -Fxq "url: $BASE/rune-v$VERSION/phux-rune-$VERSION-linux-aarch64.tar.gz" <<<"$out" || fail "arm64 Linux url: $out"
+grep -Fxq "sha256: $(printf 'd%.0s' {1..64})" <<<"$out" || fail "arm64 Linux digest: $out"
 
 # --- an install ---------------------------------------------------------------
 installer >"$TMP/out" 2>"$TMP/err" || fail "install: $(cat "$TMP/err")"
 bundle="$XDG_DATA_HOME/phux-rune"
 grep -q first "$bundle/phux-rune" || fail "binary not installed"
-for file in phux-rune.release LICENSE NOTICE; do
+for file in phux-rune.release LICENSE NOTICE Inter-OFL.txt JetBrainsMono-OFL.txt; do
   [[ -f "$bundle/$file" ]] || fail "$file not installed"
 done
 grep -Fq 'without its release signature' "$TMP/err" || fail "an unsigned install must say so"
@@ -115,6 +130,12 @@ serve
 installer >/dev/null 2>"$TMP/err" || fail "update: $(cat "$TMP/err")"
 grep -q second "$bundle/phux-rune" || fail "not updated"
 [[ -z "$(find "$XDG_DATA_HOME" -name '.phux-desktop-install*')" ]] || fail "install litter"
+
+# --desktop, the retired GPUI desktop's flag, installs Phux Rune.
+PATH="$TMP/bin:/usr/bin:/bin" "$SH" "$ROOT/scripts/install.sh" --os linux --arch x86_64 --desktop \
+  >/dev/null 2>"$TMP/err" || fail "--desktop: $(cat "$TMP/err")"
+grep -Fq 'installing Phux Rune' "$TMP/err" || fail "--desktop notice: $(cat "$TMP/err")"
+grep -Fq 'installed Phux Rune' "$TMP/err" || fail "--desktop did not install Phux Rune"
 
 # --- refusals, with the install untouched ------------------------------------
 pack third
@@ -196,17 +217,25 @@ mkdir -p "$TMP/other/phux-rune"
 pack third
 serve
 refused 'unrelated' --applications-dir "$TMP/other"
-refused 'combine with --rune' --desktop
+refused 'combine with --rune' --desktop --channel next
 refused 'combine with --rune' --channel next
 refused 'combine with --rune' --version 1.2.3
+# A feed from before arm64 Linux builds names no digest for it.
+feed "$(printf 'c%.0s' {1..64})" "$VERSION" none
 if PATH="$TMP/bin:/usr/bin:/bin" "$SH" "$ROOT/scripts/install.sh" --os linux --arch arm64 --rune >/dev/null 2>"$TMP/err"; then
   fail "installed for arm64 Linux"
 fi
-grep -Fq 'no Phux Rune build' "$TMP/err" || fail "arm64: $(cat "$TMP/err")"
+grep -Fq 'no Phux Rune digest for aarch64-unknown-linux-gnu' "$TMP/err" || fail "arm64: $(cat "$TMP/err")"
 
-# With no CLI anywhere the plan installs one first.
+# With no CLI anywhere the plan installs one first. The installer also looks
+# at fixed host paths (has_cli), so a machine with a Homebrew or system phux
+# has a CLI here and this case cannot be staged on it.
 rm "$HOME/.local/bin/phux"
-if ! command -v phux >/dev/null 2>&1 || [[ "$(command -v phux)" != /usr/bin/* ]]; then
+host_cli=""
+for candidate in /opt/homebrew/bin/phux /usr/local/bin/phux /usr/bin/phux; do
+  [ ! -x "$candidate" ] || host_cli="$candidate"
+done
+if [ -z "$host_cli" ]; then
   cp "$ROOT/scripts/fixtures/release-manifest/stable.json" "$SERVED/stable.json"
   out="$(PATH="$TMP/bin:/usr/bin:/bin" "$SH" "$ROOT/scripts/install.sh" --dry-run --os linux --arch x86_64 --rune 2>/dev/null)"
   grep -Fxq 'product: phux' <<<"$out" || fail "no CLI plan: $out"

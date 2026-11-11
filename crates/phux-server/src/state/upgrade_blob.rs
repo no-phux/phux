@@ -1,21 +1,22 @@
-//! The graceful-upgrade state blob's producer and consumer (ADR-0032):
-//! [`ServerState::assemble_upgrade_blob`] walks the live tree into a
-//! [`StateBlob`](crate::upgrade::blob::StateBlob) from the handoffs
-//! `runtime::upgrade` collected (`build_upgrade_blob` is a test helper), and
-//! [`ServerState::rebuild_from_blob`] reconstructs the tree from one in the
-//! re-exec'd image.
+//! The graceful-upgrade state blob's tree (ADR-0032):
+//! [`ServerState::assemble_upgrade_blob`] walks the live sessions, windows and
+//! panes into a [`StateBlob`](crate::upgrade::blob::StateBlob), and
+//! [`ServerState::rebuild_from_blob`] reconstructs that tree in the re-exec'd
+//! image. What a kind's engines carry is its app's: each app writes its own
+//! part of the blob at the cut and rebuilds it through a [`KindRebuild`]
+//! (`runtime::apps`), so this module names no engine.
 //!
 //! The blob carries the organization records ([`OrgBlob`]) and, for each
-//! carried session, pane, and agent session, its wire id and record key, so
-//! the resumed image rebinds the same records to new handles under the same
-//! wire ids. Windows are synthesized (one per session with live panes) for
-//! older readers. A blob without records, from an image that predates them,
-//! is imported: its sessions become records marked awaiting organization,
-//! each window becomes a group of the session's arrangement, and each live
-//! pane becomes a resource bound to its running process as activation 1.
+//! carried session and resource, its wire id and record key, so the resumed
+//! image rebinds the same records to new handles under the same wire ids.
+//! Windows are synthesized (one per session with live panes) for older
+//! readers. A blob without records, from an image that predates them, is
+//! imported: its sessions become records marked awaiting organization, each
+//! window becomes a group of the session's arrangement, and each live pane
+//! becomes a resource bound to its running process as activation 1.
 
 use std::collections::{HashMap, HashSet};
-use std::os::fd::{AsRawFd, RawFd};
+use std::os::fd::RawFd;
 use std::path::PathBuf;
 
 use phux_core::ids::{ResourceId, SessionId};
@@ -30,52 +31,13 @@ use phux_protocol::ids::{
     ResourceId as WireResourceId, SessionId as WireSessionId, WindowId as WireWindowId,
 };
 use tokio::sync::oneshot;
-use tokio_util::sync::CancellationToken;
 
 use super::ServerState;
 use crate::resource::ResourceHandle;
-use crate::resource::handoff::ProcessHandoff;
-#[cfg(test)]
-use crate::resource::handoff::UpgradeHandleRequest;
 use crate::upgrade::blob::{
-    AgentSessionBlob, AgentStreamCut, BLOB_VERSION, Counters, LayoutBlob, MetadataBlob, OrgBlob,
-    PaneBlob, RetainedExitBlob, SessionBlob, SplitDirBlob, StateBlob, WindowBlob,
+    BLOB_VERSION, Counters, LayoutBlob, MetadataBlob, OrgBlob, PaneBlob, RetainedExitBlob,
+    SessionBlob, SplitDirBlob, StateBlob, WindowBlob,
 };
-
-/// What the reversible half of an upgrade collected from live engines: each
-/// carried pane's PTY handoff and each carried agent session's stream cut.
-#[derive(Debug, Default)]
-pub(crate) struct UpgradeHandoffs {
-    /// PTY handoff + replay snapshot per carried pane.
-    pub(crate) panes: HashMap<ResourceId, ProcessHandoff>,
-    /// Record-stream cut per carried `AgentSession`. A session without one
-    /// is not carried.
-    pub(crate) agent_sessions: HashMap<ResourceId, AgentStreamCut>,
-}
-
-/// One pane an app rebuilt around its inherited state, ready to register.
-pub(crate) struct RebuiltPane<W> {
-    /// The engine's handle.
-    pub(crate) handle: ResourceHandle,
-    /// The engine's cancellation token.
-    pub(crate) token: tokio_util::sync::CancellationToken,
-    /// The engine, not yet running.
-    pub(crate) engine: std::pin::Pin<Box<dyn std::future::Future<Output = ()>>>,
-    /// Fires when the engine's child exits.
-    pub(crate) exit_notify: Option<tokio::sync::oneshot::Receiver<phux_core::ExitOutcome>>,
-    /// What the caller's wiring returned.
-    pub(crate) wired: W,
-}
-
-/// One agent session its app rebuilt from the blob, ready to register.
-pub(crate) struct RebuiltSession {
-    /// The engine's handle.
-    pub(crate) handle: ResourceHandle,
-    /// The engine, not yet running.
-    pub(crate) engine: std::pin::Pin<Box<dyn std::future::Future<Output = ()>>>,
-    /// Fires when the session ends.
-    pub(crate) exit_notify: oneshot::Receiver<phux_core::ExitOutcome>,
-}
 
 /// Errors rebuilding a [`ServerState`] from a [`StateBlob`].
 #[derive(Debug, thiserror::Error)]
@@ -89,7 +51,7 @@ pub enum RebuildError {
     /// The store refused the carried or imported records.
     #[error("organization store: {0}")]
     Store(#[from] crate::org_store::StoreError),
-    /// A pane's actor could not be rebuilt around its adopted PTY.
+    /// An engine could not be rebuilt around what its app carried.
     #[error("actor rebuild: {0}")]
     Actor(#[source] Box<dyn std::error::Error + Send + Sync>),
     /// The blob references a wire id that no earlier entity defined (e.g. a
@@ -131,9 +93,6 @@ impl ServerState {
                 value: value.to_vec(),
             })
             .collect();
-        // Controller ledgers change with SDK traffic, not organization shape.
-        // Capture them at the sealed cut, never in the tree-identity comparison.
-        blob.native_agents = self.native_agents.bindings.values().cloned().collect();
         blob
     }
 
@@ -179,13 +138,12 @@ impl ServerState {
         self.lifecycle.upgrade_context()
     }
 
-    /// The handles of exactly the panes whose PTY a re-exec carries: live
-    /// Terminals with wire ids (the same walk as
-    /// [`Self::assemble_upgrade_blob`]). Everything else in the resource
-    /// table is left alone: an `AgentSession` has no PTY and no upgrade
-    /// mailbox (its app carries it across), and a
-    /// retained pane's PTY does not cross (ADR-0124 §6). Asking those would
-    /// only let an engine with nothing to hand off abort the upgrade.
+    /// The live tree panes a re-exec carries, with their handles: Terminal
+    /// members with wire ids, in the walk [`Self::assemble_upgrade_blob`]
+    /// makes ([`Self::carried_panes`]), less retained panes, whose PTY does
+    /// not cross (ADR-0124 §6). The Terminal app asks exactly these for a
+    /// handoff; other kinds cross through their own apps. Names every handle
+    /// that outlived its registry entry on the way.
     pub(crate) fn upgrade_handles(&self) -> Vec<(ResourceId, ResourceHandle)> {
         let carried = self.carried_panes();
         self.warn_orphan_resource_handles();
@@ -207,11 +165,7 @@ impl ServerState {
             .filter(|sid| self.session_wire(*sid).is_some())
             .flat_map(|sid| self.legacy_panes_of(sid))
             .filter(|tid| self.resource_wire(*tid).is_some() && self.retained_exit(*tid).is_none())
-            .filter_map(|tid| {
-                self.resource_handle(tid)
-                    .filter(|handle| handle.ops().upgrade_sender().is_some())
-                    .map(|handle| (tid, handle.clone()))
-            })
+            .filter_map(|tid| Some((tid, self.resource_handle(tid)?.clone())))
             .collect()
     }
 
@@ -230,42 +184,32 @@ impl ServerState {
     }
 }
 
-/// Build one [`PaneBlob`], preferring the actor's live values and falling back
-/// to the descriptor when there is no handoff.
+/// One [`PaneBlob`] from the registry alone. The pane's engine state (its
+/// PTY, live size, replay) is its app's to add at the cut.
 fn pane_blob(
     wire_id: u32,
     window_wire_id: u32,
     desc: &TerminalFacet,
     term: &str,
-    handoff: Option<&ProcessHandoff>,
     retained_exit: Option<RetainedExitBlob>,
     retain_secs: Option<u32>,
 ) -> PaneBlob {
-    let (cols, rows) = handoff.as_ref().map_or(desc.dims, |h| (h.cols, h.rows));
     PaneBlob {
         wire_id,
         window_wire_id,
-        cols,
-        rows,
-        cell_px: handoff.as_ref().and_then(|h| h.cell_px),
-        cwd: handoff
-            .as_ref()
-            .and_then(|h| h.cwd.as_deref())
-            .map_or_else(|| desc.cwd.clone(), PathBuf::from),
+        cols: desc.dims.0,
+        rows: desc.dims.1,
+        cell_px: None,
+        cwd: desc.cwd.clone(),
         // The user-set title only: the program's OSC title is engine state
         // and rides separately, so an upgrade never promotes it to a name.
         title: desc.title.clone(),
-        osc_title: handoff.as_ref().and_then(|h| h.osc_title.clone()),
+        osc_title: None,
         term: term.to_owned(),
-        child_pid: handoff.as_ref().and_then(|h| h.child_pid),
-        master_fd: handoff.and_then(|h| h.master_fd.as_ref().map(AsRawFd::as_raw_fd)),
-        vt_replay_bytes: handoff
-            .as_ref()
-            .map(|h| h.vt_replay_bytes.clone())
-            .unwrap_or_default(),
-        scrollback_bytes: handoff
-            .map(|h| h.scrollback_bytes.clone())
-            .unwrap_or_default(),
+        child_pid: None,
+        master_fd: None,
+        vt_replay_bytes: Vec::new(),
+        scrollback_bytes: Vec::new(),
         retained_exit,
         retain_secs,
         key: None,
@@ -282,44 +226,31 @@ const fn exit_blob(facet: phux_protocol::wire::info::ExitFacet) -> RetainedExitB
     }
 }
 
-/// The exit facet a resumed image restores from the blob.
-const fn exit_facet(blob: RetainedExitBlob) -> phux_protocol::wire::info::ExitFacet {
-    phux_protocol::wire::info::ExitFacet::new(blob.exited_at_ms, blob.retained_until_ms)
-        .with_exit_status(blob.exit_status)
-        .with_signal(blob.signal)
+/// The wire id of every resource `blob` carries. They share one id space.
+pub(crate) fn resource_wires(blob: &StateBlob) -> impl Iterator<Item = u32> + '_ {
+    blob.panes
+        .iter()
+        .map(|p| p.wire_id)
+        .chain(blob.agent_sessions.iter().map(|a| a.wire_id))
+        .chain(blob.documents.iter().map(|d| d.wire_id))
 }
 
-/// Each rebuilt resource's (pane or agent session) core id and the one-shot
-/// exit receiver the runtime restores its lifecycle watcher from.
-type PaneExitWatchers = Vec<(
+/// The panes `blob` carries live. Any other carried resource's parent is
+/// one: a retained pane's children do not cross.
+pub(crate) fn live_pane_wires(blob: &StateBlob) -> HashSet<u32> {
+    blob.panes
+        .iter()
+        .filter(|pane| pane.retained_exit.is_none())
+        .map(|pane| pane.wire_id)
+        .collect()
+}
+
+/// Each rebuilt resource's core id and the one-shot exit receiver the
+/// runtime restores its lifecycle watcher from.
+pub(crate) type ExitWatchers = Vec<(
     ResourceId,
     oneshot::Receiver<phux_core::process::ExitOutcome>,
 )>;
-
-/// Concatenate a pane's scrollback then viewport replay — the order a client
-/// applies them, so seeding a fresh `Terminal` reproduces the same grid —
-/// then the program's OSC title as an `OSC 2`, so the rebuilt engine reports
-/// the title the program set rather than none.
-pub(crate) fn pane_seed(p: &PaneBlob) -> Vec<u8> {
-    let mut seed = Vec::with_capacity(p.scrollback_bytes.len() + p.vt_replay_bytes.len());
-    seed.extend_from_slice(&p.scrollback_bytes);
-    seed.extend_from_slice(&p.vt_replay_bytes);
-    if let Some(title) = p.osc_title.as_deref() {
-        seed.extend_from_slice(&osc_title_sequence(title));
-    }
-    seed
-}
-
-/// `OSC 2 ; title ST`, with control characters dropped so a title can
-/// neither terminate the sequence early nor smuggle another one in.
-fn osc_title_sequence(title: &str) -> Vec<u8> {
-    let clean: String = title.chars().filter(|c| !c.is_control()).collect();
-    let mut seq = Vec::with_capacity(clean.len() + 6);
-    seq.extend_from_slice(b"\x1b]2;");
-    seq.extend_from_slice(clean.as_bytes());
-    seq.extend_from_slice(b"\x1b\\");
-    seq
-}
 
 #[cfg(test)]
 mod tests;
@@ -327,6 +258,7 @@ mod tests;
 mod assemble;
 mod import;
 mod rebuild;
+mod resume;
 mod validate;
 
 #[allow(
@@ -346,11 +278,12 @@ use import::*;
     clippy::wildcard_imports,
     reason = "re-export for siblings"
 )]
-pub(crate) use rebuild::dry_run_records;
+use rebuild::*;
 #[allow(
     unused_imports,
     clippy::wildcard_imports,
     reason = "re-export for siblings"
 )]
-use rebuild::*;
+pub(crate) use rebuild::{RebuiltTree, dry_run_records};
+pub(crate) use resume::{KindRebuild, Missing, ResumeCx};
 pub(crate) use validate::validate_upgrade_blob;

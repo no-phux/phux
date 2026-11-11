@@ -18,14 +18,27 @@ fn sweep_args(tool: &str) -> Value {
         "phux_api_describe" | "phux_ls" | "phux_spawn" | "phux_agent_clear" | "phux_approvals" => {
             json!({})
         }
-        "phux_snapshot" | "phux_resource_methods" | "phux_resource_show" => {
+        "phux_snapshot"
+        | "phux_resource_methods"
+        | "phux_resource_show"
+        | "phux_tree_snapshot"
+        | "phux_surface_snapshot" => {
             json!({ "target": "@1" })
         }
         "phux_wait" | "phux_watch" | "phux_resource_wait" => {
             json!({ "target": "@1", "timeout_secs": 1 })
         }
+        "phux_tree_wait" => json!({ "target": "@1", "until": "x", "timeout_secs": 1 }),
+        "phux_documents" => json!({}),
+        "phux_document_navigate" => json!({ "target": "@1", "url": "about:blank" }),
+        "phux_document_click" => json!({ "target": "@1", "x": 1, "y": 1 }),
+        "phux_document_key" => json!({ "target": "@1", "key": "Enter" }),
+        "phux_document_scroll" => json!({ "target": "@1", "dx": 0, "dy": 1 }),
+        "phux_click_element" => json!({ "target": "@1", "node": "0" }),
+        "phux_app_open" => json!({ "name": "chrome", "browser": true, "headless": true }),
+        "phux_app_close" => json!({ "pane": "@1", "confirm": true }),
         "phux_send_keys" => json!({ "target": "@1", "keys": ["x"] }),
-        "phux_paste" => json!({ "target": "@1", "text": "x" }),
+        "phux_paste" | "phux_document_type" => json!({ "target": "@1", "text": "x" }),
         "phux_upload" => json!({ "target": "@1", "path": "local.bin" }),
         "phux_kill" | "phux_rm" => json!({ "target": "@1", "confirm": true }),
         "phux_detach" => json!({ "confirm": true }),

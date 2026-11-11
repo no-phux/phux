@@ -80,6 +80,16 @@ pub(in crate::wire) fn decode_agent_event(
         EVENT_TAG_INPUT_ACTIVITY => AgentEvent::InputActivity {
             origin: body_dec.read_str()?.to_owned(),
         },
+        // An intent this build cannot read stays opaque.
+        crate::wire::frame::EVENT_TAG_DOCUMENT_INPUT => {
+            crate::wire::frame::DocumentInput::decode(&mut body_dec).map_or_else(
+                |_| AgentEvent::Unknown {
+                    tag,
+                    body: body.to_vec(),
+                },
+                |intent| AgentEvent::DocumentInput { intent },
+            )
+        }
 
         // An organization event whose body is malformed or names an unknown
         // enum value is kept opaque rather than failing the frame.

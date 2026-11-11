@@ -1,4 +1,4 @@
-//! A document stream (`AccessibilityTree`, `PixelSurface`) is no replica:
+//! A document stream (`AccessibilityTree`, `PixelSurface`, `Document`) is no replica:
 //! the bootstrap cut arrives in chunks and lands whole at READY, and every
 //! live frame is a newer whole document. Each reaches the consumer as one
 //! [`KernelEffect::Document`].
@@ -13,6 +13,8 @@ use phux_protocol::{
 use super::kernel_rig::RigAdapter;
 use super::{DocumentPublication, EffectBuffer, KernelEffect, KernelInput, SessionKernel};
 use crate::engine::CanonicalGeometry;
+
+mod rails;
 
 fn surface() -> ResourceId {
     ResourceId::local(9)
@@ -151,5 +153,67 @@ fn a_tree_profile_on_a_surface_is_a_kind_mismatch() {
                 &mut effects,
             )
             .is_err()
+    );
+}
+
+#[test]
+fn a_typed_document_names_its_content_type_at_ready_and_on_every_live_frame() {
+    let mut kernel = SessionKernel::new(RigAdapter::default(), BootstrapProfile::SynthesizedVtRaw);
+    let mut effects = EffectBuffer::new();
+    let id = surface();
+    let payload =
+        phux_protocol::wire::frame::typed_document::encode_bootstrap("text/markdown", b"# hi");
+    let inputs = [
+        KernelInput::BootstrapBegin {
+            terminal_id: &id,
+            stream_id: stream(),
+            bootstrap_id: generation(1),
+            profile: BootstrapStreamProfile::DocumentTypedV1,
+            geometry: CanonicalGeometry { cols: 0, rows: 0 },
+            base_seq: 4,
+        },
+        KernelInput::BootstrapChunk {
+            terminal_id: &id,
+            stream_id: stream(),
+            bootstrap_id: generation(1),
+            chunk_seq: 0,
+            payload: &payload,
+        },
+        KernelInput::BootstrapReady {
+            terminal_id: &id,
+            stream_id: stream(),
+            bootstrap_id: generation(1),
+            history_cursor: None,
+        },
+    ];
+    for input in inputs {
+        kernel.update(input, &mut effects).unwrap();
+    }
+    let cut = documents(&effects);
+    assert_eq!(cut[0].kind, ResourceKind::Document);
+    assert_eq!(
+        (
+            cut[0].seq,
+            cut[0].bytes.as_slice(),
+            cut[0].content_type.as_deref()
+        ),
+        (4, b"# hi" as &[u8], Some("text/markdown"))
+    );
+    kernel
+        .update(
+            KernelInput::ResourceOutput {
+                terminal_id: &id,
+                stream_id: stream(),
+                bootstrap_id: generation(1),
+                seq: 5,
+                payload: b"# two",
+            },
+            &mut effects,
+        )
+        .unwrap();
+    let live = documents(&effects);
+    assert_eq!(
+        (live[0].bytes.as_slice(), live[0].content_type.as_deref()),
+        (b"# two" as &[u8], Some("text/markdown"))
     );
 }

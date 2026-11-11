@@ -11,6 +11,13 @@ macro_rules! supervisory_commands {
     /// Connected-server public workflow description and nested schemas.
     /// Requires `features_ext.API_DESCRIPTION`; support is not authorization.
     DescribeApi,
+    /// The macOS privacy grants the server process holds, probed without
+    /// ever prompting (`docs/install.md#macos-permissions`). **Local only**:
+    /// refused off the Unix socket. Answered `OkWith(Json {"executable",
+    /// "responsible_path", "permissions": [{"service", "status"}]})`.
+    /// Gated on
+    /// [`ServerFeatureExt::PrivacyStatus`](crate::caps::ServerFeatureExt::PrivacyStatus).
+    PrivacyStatus,
     /// Dedicated SDK-owned `AgentSession` broker request. The wire body is
     /// length-prefixed JSON bounded by `MAX_NATIVE_PAYLOAD_BYTES`; controller
     /// requests additionally require exclusive binding proof and generation.
@@ -296,13 +303,56 @@ macro_rules! supervisory_commands {
     /// most [`MAX_PUBLISH_BYTES`](super::MAX_PUBLISH_BYTES). Viewers get the
     /// newest state; a slow viewer skips intermediate ones. Refused with
     /// [`ErrorCode::WrongResourceKind`], [`ErrorCode::NotProducer`] or
-    /// [`ErrorCode::RecordInvalid`] (nothing published). Gated on
-    /// [`ServerFeatureExt::AccessibilityTree`](crate::caps::ServerFeatureExt::AccessibilityTree).
+    /// [`ErrorCode::RecordInvalid`] (nothing published). Serves
+    /// `AccessibilityTree`, `PixelSurface` and `Document`. The method has no
+    /// gate of its own: a client checks the bit of the kind it publishes to,
+    /// [`ServerFeatureExt::AccessibilityTree`](crate::caps::ServerFeatureExt::AccessibilityTree),
+    /// [`ServerFeatureExt::PixelSurface`](crate::caps::ServerFeatureExt::PixelSurface)
+    /// or [`ServerFeatureExt::TypedDocument`](crate::caps::ServerFeatureExt::TypedDocument).
     PublishResourceState {
         /// The producer-fed resource whose state this replaces.
         terminal_id: ResourceId,
         /// One complete document under the resource's codec.
         bytes: Vec<u8>,
+    },
+    /// Relay one typed input intent to the connection producing a document
+    /// resource, as an unjournaled `document_input` event. Refused with
+    /// [`ErrorCode::WrongResourceKind`] for a non-document, and
+    /// [`ErrorCode::NotProducer`] when no producer is connected. The owner
+    /// socket, or a grant naming the document's control class
+    /// (`docs/resource-kinds.md#authority`).
+    SendDocumentInput {
+        /// The document (a page's tree or surface) whose producer acts.
+        terminal_id: ResourceId,
+        /// What to do.
+        intent: super::DocumentInput,
+        /// The classes a relaying hub authorized (a trailing byte, absent =
+        /// no restriction): a document of another class refuses the input.
+        /// Only ever narrows what the receiver's own policy admits.
+        control: Option<super::ControlClasses>,
+        /// Who a relaying hub sends it for, after the class byte (absent =
+        /// the connection itself). Shown and logged, never authorized by.
+        on_behalf_of: Option<super::OnBehalfOf>,
+    },
+    /// A host's screen mirrors: list what it can mirror, start or stop one
+    /// in its `mirror-<target>` session, on this server or the named
+    /// satellite (`docs/resource-kinds.md#standing-mirrors`). Gated on
+    /// [`ServerFeatureExt::Mirrors`](crate::caps::ServerFeatureExt::Mirrors).
+    Mirror {
+        /// A satellite of the serving hub whose screens are meant; `None`
+        /// for the serving server's own.
+        host: Option<String>,
+        /// What to do.
+        op: super::MirrorOp,
+    },
+    /// From the runner Rune keeps on macOS (`phux agent surface
+    /// standing`), owner socket only: this host's capture targets as the
+    /// JSON array `MIRROR` `Targets` answers with. Answered
+    /// `OkWith(Json {"mirrors": [{"session", "args"}]})`, the mirrors to
+    /// run. Gated on `MIRRORS`.
+    MirrorProvide {
+        /// The targets, a JSON array.
+        targets: String,
     },
     /// Kill one resource only if every precondition holds, checked and
     /// applied atomically (`docs/protocol.md`, ADR-0109); otherwise

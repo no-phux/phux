@@ -42,6 +42,9 @@ pub(super) enum FileRole {
     CaPrivateKey,
     /// `<state-dir>/enrollment-tickets` (hashes only, still owner-only).
     Tickets,
+    /// `<state-dir>/workload-org-roots/<org>.pem` (public, still owner-only:
+    /// whoever can change it decides who connects).
+    OrgRoots,
 }
 
 impl FileRole {
@@ -51,6 +54,7 @@ impl FileRole {
             Self::CaCertificate => "CA certificate",
             Self::CaPrivateKey => "CA private key",
             Self::Tickets => "enrollment tickets",
+            Self::OrgRoots => "organization roots",
         }
     }
 
@@ -59,7 +63,7 @@ impl FileRole {
     const fn forbidden_mode_bits(self) -> u32 {
         match self {
             Self::CaCertificate => 0o022,
-            Self::Registry | Self::CaPrivateKey | Self::Tickets => 0o077,
+            Self::Registry | Self::CaPrivateKey | Self::Tickets | Self::OrgRoots => 0o077,
         }
     }
 }

@@ -10,12 +10,15 @@
 use std::io;
 use std::net::IpAddr;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, PoisonError};
 
 use phux_dial::cert;
 use rustls::ServerConfig;
 use rustls::pki_types::{CertificateDer, ServerName};
+use rustls::server::danger::ClientCertVerifier;
 use tokio_rustls::TlsAcceptor;
+
+use crate::workload::ClientRoots;
 
 /// Errors from loading TLS material or building the acceptor.
 #[derive(Debug, thiserror::Error)]
@@ -275,11 +278,11 @@ pub fn acceptor_from_pem(cert_path: &Path, key_path: &Path) -> Result<TlsAccepto
 }
 
 /// A WebSocket TLS acceptor that, with `client_ca`, verifies client
-/// certificates against the workload CA and requires one in the handshake.
+/// certificates against those roots and requires one in the handshake.
 pub(crate) fn acceptor_from_pem_with_client_ca(
     cert_path: &Path,
     key_path: &Path,
-    client_ca: Option<&CertificateDer<'static>>,
+    client_ca: Option<&ClientRoots>,
 ) -> Result<TlsAcceptor, TlsError> {
     let auth = client_ca.map_or(ClientAuth::None, ClientAuth::Required);
     Ok(TlsAcceptor::from(Arc::new(server_config(
@@ -302,7 +305,7 @@ pub(crate) fn acceptor_from_pem_with_client_ca(
 pub(crate) fn quic_server_config_with_client_ca(
     cert_path: &Path,
     key_path: &Path,
-    client_ca: Option<&CertificateDer<'static>>,
+    client_ca: Option<&ClientRoots>,
     enrollment: bool,
 ) -> Result<ServerConfig, TlsError> {
     use phux_protocol::policy::{COORD_ALPN, ENROLL_ALPN, SATELLITE_ALPN};
@@ -324,7 +327,7 @@ pub(crate) fn quic_server_config_with_client_ca(
 pub(crate) fn inner_server_config(
     cert_path: &Path,
     key_path: &Path,
-    client_ca: Option<&CertificateDer<'static>>,
+    client_ca: Option<&ClientRoots>,
 ) -> Result<ServerConfig, TlsError> {
     let auth = client_ca.map_or(ClientAuth::None, ClientAuth::Requested);
     server_config(
@@ -352,10 +355,10 @@ enum ClientAuth<'a> {
     /// No `CertificateRequest`.
     None,
     /// Asked for, verified when presented, and required by the handshake.
-    Required(&'a CertificateDer<'static>),
+    Required(&'a ClientRoots),
     /// Asked for and verified when presented; the listener decides after the
     /// handshake what a certificate-less connection may do.
-    Requested(&'a CertificateDer<'static>),
+    Requested(&'a ClientRoots),
 }
 
 /// One rustls server config over the shared cert material. QUIC forbids
@@ -378,11 +381,11 @@ fn server_config(
     }
     .map_err(TlsError::Rustls)?;
     let mut config = match client_auth {
-        ClientAuth::Required(ca) => builder
-            .with_client_cert_verifier(client_verifier(ca)?)
+        ClientAuth::Required(roots) => builder
+            .with_client_cert_verifier(WorkloadVerifier::new(roots, false)?)
             .with_single_cert(certs, key)?,
-        ClientAuth::Requested(ca) => builder
-            .with_client_cert_verifier(optional_client_verifier(ca)?)
+        ClientAuth::Requested(roots) => builder
+            .with_client_cert_verifier(WorkloadVerifier::new(roots, true)?)
             .with_single_cert(certs, key)?,
         ClientAuth::None => builder.with_no_client_auth().with_single_cert(certs, key)?,
     };
@@ -395,25 +398,118 @@ fn server_config(
 /// so enrollment accepts exactly what the handshake accepts.
 pub(crate) fn client_verifier(
     ca: &CertificateDer<'static>,
-) -> Result<Arc<dyn rustls::server::danger::ClientCertVerifier>, TlsError> {
-    let mut roots = rustls::RootCertStore::empty();
-    roots.add(ca.clone()).map_err(TlsError::Rustls)?;
-    rustls::server::WebPkiClientVerifier::builder(Arc::new(roots))
-        .build()
-        .map_err(|error| TlsError::ClientVerifier(error.to_string()))
+) -> Result<Arc<dyn ClientCertVerifier>, TlsError> {
+    roots_verifier(std::slice::from_ref(ca), false)
 }
 
-/// [`client_verifier`] that lets the handshake finish without a certificate.
-/// A presented certificate must still chain to the CA.
-fn optional_client_verifier(
-    ca: &CertificateDer<'static>,
-) -> Result<Arc<dyn rustls::server::danger::ClientCertVerifier>, TlsError> {
-    let mut roots = rustls::RootCertStore::empty();
-    roots.add(ca.clone()).map_err(TlsError::Rustls)?;
-    rustls::server::WebPkiClientVerifier::builder(Arc::new(roots))
-        .allow_unauthenticated()
-        .build()
-        .map_err(|error| TlsError::ClientVerifier(error.to_string()))
+/// A webpki client-certificate verifier over `roots`; `optional` lets the
+/// handshake finish without a certificate, though a presented one must
+/// still chain to a root.
+pub(crate) fn roots_verifier(
+    roots: &[CertificateDer<'static>],
+    optional: bool,
+) -> Result<Arc<dyn ClientCertVerifier>, TlsError> {
+    let mut store = rustls::RootCertStore::empty();
+    for root in roots {
+        store.add(root.clone()).map_err(TlsError::Rustls)?;
+    }
+    let builder = rustls::server::WebPkiClientVerifier::builder(Arc::new(store));
+    if optional {
+        builder.allow_unauthenticated()
+    } else {
+        builder
+    }
+    .build()
+    .map_err(|error| TlsError::ClientVerifier(error.to_string()))
+}
+
+/// A listener's client-certificate verifier: [`roots_verifier`] over the
+/// host CA and the organization roots as they are at each handshake, rebuilt
+/// when they change (`docs/remote.md#managed-by-an-organization`). It names
+/// no root in its `CertificateRequest`: phux clients present their one
+/// identity regardless, and the set changes under a running listener.
+#[derive(Debug)]
+struct WorkloadVerifier {
+    roots: ClientRoots,
+    optional: bool,
+    built: Mutex<Built>,
+}
+
+/// The roots a [`WorkloadVerifier`] last built from, and what it built.
+type Built = (Arc<[CertificateDer<'static>]>, Arc<dyn ClientCertVerifier>);
+
+impl WorkloadVerifier {
+    fn new(roots: &ClientRoots, optional: bool) -> Result<Arc<Self>, TlsError> {
+        let current = roots.current();
+        let verifier = roots_verifier(&current, optional)?;
+        Ok(Arc::new(Self {
+            roots: roots.clone(),
+            optional,
+            built: Mutex::new((current, verifier)),
+        }))
+    }
+
+    /// The verifier for the roots as they are now. A set that fails to
+    /// build keeps the last one, with a warning.
+    fn current(&self) -> Arc<dyn ClientCertVerifier> {
+        let roots = self.roots.current();
+        let mut built = self.built.lock().unwrap_or_else(PoisonError::into_inner);
+        if !Arc::ptr_eq(&built.0, &roots) {
+            match roots_verifier(&roots, self.optional) {
+                Ok(verifier) => *built = (roots, verifier),
+                Err(error) => {
+                    tracing::warn!(%error, "workload client roots changed but do not verify; keeping the previous set");
+                }
+            }
+        }
+        Arc::clone(&built.1)
+    }
+
+    fn built(&self) -> Arc<dyn ClientCertVerifier> {
+        Arc::clone(&self.built.lock().unwrap_or_else(PoisonError::into_inner).1)
+    }
+}
+
+impl ClientCertVerifier for WorkloadVerifier {
+    fn client_auth_mandatory(&self) -> bool {
+        !self.optional
+    }
+
+    fn root_hint_subjects(&self) -> &[rustls::DistinguishedName] {
+        &[]
+    }
+
+    fn verify_client_cert(
+        &self,
+        end_entity: &CertificateDer<'_>,
+        intermediates: &[CertificateDer<'_>],
+        now: rustls::pki_types::UnixTime,
+    ) -> Result<rustls::server::danger::ClientCertVerified, rustls::Error> {
+        self.current()
+            .verify_client_cert(end_entity, intermediates, now)
+    }
+
+    fn verify_tls12_signature(
+        &self,
+        message: &[u8],
+        cert: &CertificateDer<'_>,
+        dss: &rustls::DigitallySignedStruct,
+    ) -> Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
+        self.built().verify_tls12_signature(message, cert, dss)
+    }
+
+    fn verify_tls13_signature(
+        &self,
+        message: &[u8],
+        cert: &CertificateDer<'_>,
+        dss: &rustls::DigitallySignedStruct,
+    ) -> Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
+        self.built().verify_tls13_signature(message, cert, dss)
+    }
+
+    fn supported_verify_schemes(&self) -> Vec<rustls::SignatureScheme> {
+        self.built().supported_verify_schemes()
+    }
 }
 
 /// SHA-256 fingerprint of the leaf certificate as uppercase colon-separated

@@ -57,10 +57,14 @@ const fn command_variant(command: &Command) -> usize {
         Command::DescribeApi => 52,
         Command::GetCreation { .. } => 53,
         Command::PublishResourceState { .. } => 54,
+        Command::SendDocumentInput { .. } => 55,
+        Command::Mirror { .. } => 56,
+        Command::MirrorProvide { .. } => 57,
+        Command::PrivacyStatus => 58,
     }
 }
 
-const COMMAND_VARIANTS: usize = 55;
+const COMMAND_VARIANTS: usize = 59;
 
 fn operation() -> IdempotencyKey {
     IdempotencyKey::new([3; 16]).unwrap()
@@ -516,6 +520,7 @@ fn command_samples() -> Vec<(Command, &'static Rule)> {
             &C_AGENT_REPORT,
         ),
         (Command::DescribeApi, &C_API_DESCRIBE),
+        (Command::PrivacyStatus, &C_PRIVACY_STATUS),
         (Command::GetCreation { operation: operation(), session: session_key() }, &C_GET_CREATION),
         (Command::GetPerf { reset: false }, &C_GET_PERF),
         (Command::GetPerf { reset: true }, &C_GET_PERF_RESET),
@@ -545,6 +550,31 @@ fn command_samples() -> Vec<(Command, &'static Rule)> {
                 bytes: b"{}".to_vec(),
             },
             &C_PUBLISH_RESOURCE_STATE,
+        ),
+        (
+            Command::SendDocumentInput {
+                terminal_id: terminal(),
+                intent: crate::wire::frame::DocumentInput::Click { x: 1, y: 2 },
+                control: None,
+                on_behalf_of: None,
+            },
+            &C_SEND_DOCUMENT_INPUT,
+        ),
+        (
+            Command::Mirror {
+                host: None,
+                op: crate::wire::frame::MirrorOp::Start {
+                    target: "display".to_owned(),
+                    jpeg: false,
+                },
+            },
+            &C_MIRROR,
+        ),
+        (
+            Command::MirrorProvide {
+                targets: "[]".to_owned(),
+            },
+            &C_MIRROR_PROVIDE,
         ),
         (
             Command::KillResourceIf {

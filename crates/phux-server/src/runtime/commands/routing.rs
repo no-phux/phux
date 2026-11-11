@@ -32,7 +32,18 @@ pub(crate) const fn command_kind(command: &Command) -> &'static str {
         Command::PerfControl { .. } => "perf_control",
         Command::Transcribe { .. } => "transcribe",
         Command::AppendResourceOutput { .. } => "append_resource_output",
+        Command::Mirror { .. } => "mirror",
+        Command::MirrorProvide { .. } => "mirror_provide",
         _ => "other",
+    }
+}
+
+/// The satellite a host-named command (`GET_FILE`, `MIRROR`) is for, taken
+/// out so the satellite reads it as its own.
+pub(crate) const fn take_named_host(command: &mut Command) -> Option<String> {
+    match command {
+        Command::GetFile { host, .. } | Command::Mirror { host, .. } => host.take(),
+        _ => None,
     }
 }
 
@@ -169,13 +180,11 @@ async fn route_command(
         return None;
     }
 
-    // GET_FILE names its host by name, not through a Terminal id: a named
-    // satellite reads its own filesystem, and the link refuses one that
-    // does not advertise FILE_DOWNLOAD.
+    // GET_FILE and MIRROR name their host by name, not through a Terminal
+    // id: a named satellite reads its own filesystem or screens, and the
+    // link refuses one that does not advertise the method.
     let mut command = command;
-    if let Command::GetFile { host, .. } = &mut command
-        && let Some(host) = host.take()
-    {
+    if let Some(host) = take_named_host(&mut command) {
         let host = phux_protocol::ids::SatelliteHost::new(host);
         handle_satellite_command(ctx, request_id, &host, command).await;
         return None;
@@ -217,6 +226,31 @@ async fn route_command(
     // ADR-0109: a verb that drives or reads a resource another connection
     // spawned counts as attaching it; noted before the verb runs.
     note_local_use(state, client_id, &command);
+
+    // Only the satellite knows a document's control class: stamp the
+    // classes this hub's guard lets the caller control there, so it refuses
+    // a document of any other (`docs/resource-kinds.md#authority`).
+    // It also names who it relays for, so the satellite's control indicator
+    // and audit log show the device, not this hub (`docs/authority.md`).
+    if let Command::SendDocumentInput {
+        terminal_id,
+        control,
+        on_behalf_of,
+        ..
+    } = &mut command
+        && let Some((host, _)) = crate::hub::relay::satellite_route(terminal_id)
+    {
+        let (allowed, relayed) = state.with(|s| {
+            (
+                crate::policy::filter::satellite_input_classes(s, client_id, host.as_str()),
+                s.relayed_for(client_id),
+            )
+        });
+        if let Some(allowed) = allowed {
+            *control = Some(control.map_or(allowed, |asked| asked.intersect(allowed)));
+        }
+        *on_behalf_of = Some(relayed);
+    }
 
     // ADR-0007 §4: a satellite-owned target never touches local dispatch.
     if let Some((sat_host, local_command)) = crate::hub::relay::route_to_satellite(&command) {

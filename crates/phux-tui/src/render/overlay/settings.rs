@@ -67,7 +67,7 @@ const SETTINGS_KEYS: [&str; 3] = [
     "⏎ edit · esc",
 ];
 /// The legend while the value editor is open.
-const EDITOR_KEYS: &str = "⏎ save · esc cancel";
+const EDITOR_KEYS: &str = "⏎ save · esc";
 /// The longest browsing legend that leaves `status` its room in a modal
 /// `modal_width` cells wide, else the shortest.
 fn settings_legend(modal_width: u16, status: &str) -> &'static str {

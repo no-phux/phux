@@ -11,6 +11,10 @@ const PIXEL_SURFACE: FeatureGate = FeatureGate::FeaturesExt {
     mask: ServerFeatureExt::PixelSurface.mask(),
     wire_name: ServerFeatureExt::PixelSurface.wire_name(),
 };
+const TYPED_DOCUMENT: FeatureGate = FeatureGate::FeaturesExt {
+    mask: ServerFeatureExt::TypedDocument.mask(),
+    wire_name: ServerFeatureExt::TypedDocument.wire_name(),
+};
 
 /// The substrate every kind shares (L1 §1.1): spawn and close, the output
 /// subscription, kill, events, inventory, and the resource's L3 scope.
@@ -23,9 +27,10 @@ pub static SUBSTRATE_METHODS: &[MethodSpec] = &[
             F_SPAWN_LOCAL,
             F_SPAWN_OWNED,
             F_SPAWN_SATELLITE_OWNED,
-            F_SPAWN_AGENT_LOCAL,
-            F_SPAWN_AGENT_SATELLITE,
+            F_SPAWN_CHILD_LOCAL,
+            F_SPAWN_CHILD_SATELLITE,
             F_SPAWN_KIND_MISMATCH,
+            F_SPAWN_MACHINE_CONTROL,
             F_UNCLASSIFIED,
         ]
     ),
@@ -123,6 +128,12 @@ pub static SUBSTRATE_METHODS: &[MethodSpec] = &[
         Carrier::Command(COMMAND_TAG_PUBLISH_RESOURCE_STATE),
         [C_PUBLISH_RESOURCE_STATE]
     ),
+    // A viewer's input intent for a document, relayed to its producer.
+    method!(
+        "SEND_DOCUMENT_INPUT",
+        Carrier::Command(COMMAND_TAG_SEND_DOCUMENT_INPUT),
+        [C_SEND_DOCUMENT_INPUT]
+    ),
 ];
 
 /// Events about the server or one subscription rather than one resource.
@@ -215,14 +226,54 @@ pub static SUBSTRATE_EVENTS: &[EventSpec] = &[
         name: "source_gap",
         tag: EVENT_TAG_SOURCE_GAP,
     },
+    EventSpec {
+        name: "document_input",
+        tag: EVENT_TAG_DOCUMENT_INPUT,
+    },
 ];
 
 /// Every resource kind this build serves, in wire-tag order.
-pub static KINDS: [KindSpec; 4] = [
+pub static KINDS: [KindSpec; 5] = [
     KindSpec {
         kind: ResourceKind::Terminal,
         name: "TERMINAL",
+        key: "terminal",
         gate: None,
+        leaf: true,
+        stream: StreamContract {
+            codecs: &[
+                StreamCodec {
+                    tag: BootstrapCodec::SYNTHESIZED_VT_V1_TAG,
+                    name: "SYNTHESIZED_VT_V1",
+                    gate: None,
+                },
+                StreamCodec {
+                    tag: BootstrapCodec::NATIVE_TAG,
+                    name: "NATIVE",
+                    gate: None,
+                },
+            ],
+            delivery: &[Delivery::Raw, Delivery::Replicated],
+            geometry: Geometry::Cells,
+            resume: None,
+            needs_terminal_profile: true,
+        },
+        spawn: SpawnContract {
+            parent: ParentRule::Forbidden,
+            provider: SpawnFacet {
+                presence: Presence::Forbidden,
+                meaning: "nothing: a Terminal runs its command",
+                max_bytes: crate::wire::frame::MAX_RESOURCE_PROVIDER_BYTES,
+            },
+            native_id: SpawnFacet {
+                presence: Presence::Forbidden,
+                meaning: "nothing",
+                max_bytes: crate::wire::frame::MAX_RESOURCE_NATIVE_ID_BYTES,
+            },
+            forbidden: &[spawn_field::CONTROL],
+            validate: None,
+            scoped_child: false,
+        },
         methods: &[
             method!("INPUT_KEY", Carrier::Frame(TYPE_INPUT_KEY), [F_INPUT]),
             method!("INPUT_PASTE", Carrier::Frame(TYPE_INPUT_PASTE), [F_INPUT]),
@@ -381,7 +432,31 @@ pub static KINDS: [KindSpec; 4] = [
     KindSpec {
         kind: ResourceKind::AgentSession,
         name: "AGENT_SESSION",
+        key: "agent_session",
         gate: Some(FeatureGate::Features(ServerFeature::ResourceKinds)),
+        // A record stream bound to its parent Terminal, never laid out.
+        leaf: false,
+        stream: StreamContract {
+            codecs: &[StreamCodec {
+                tag: BootstrapCodec::AGENT_EVENTS_JSONL_V1_TAG,
+                name: "AGENT_EVENTS_JSONL_V1",
+                gate: Some(FeatureGate::Features(ServerFeature::ResourceKinds)),
+            }],
+            delivery: &[Delivery::Log],
+            geometry: Geometry::None,
+            resume: Some(FeatureGate::FeaturesExt {
+                mask: ServerFeatureExt::AgentStreamResume.mask(),
+                wire_name: ServerFeatureExt::AgentStreamResume.wire_name(),
+            }),
+            needs_terminal_profile: false,
+        },
+        spawn: projection_spawn(
+            named_producer("the agent provider, e.g. claude"),
+            "the provider's own session id",
+            &AGENT_SESSION_REFUSED_FIELDS,
+            None,
+            true,
+        ),
         methods: &[
             method!(
                 "APPEND_RESOURCE_OUTPUT",
@@ -411,7 +486,24 @@ pub static KINDS: [KindSpec; 4] = [
     KindSpec {
         kind: ResourceKind::AccessibilityTree,
         name: "ACCESSIBILITY_TREE",
+        key: "accessibility_tree",
         gate: Some(ACCESSIBILITY_TREE),
+        leaf: true,
+        stream: whole_document_stream(
+            &[StreamCodec {
+                tag: BootstrapCodec::ACCESSIBILITY_TREE_JSON_V1_TAG,
+                name: "ACCESSIBILITY_TREE_JSON_V1",
+                gate: Some(ACCESSIBILITY_TREE),
+            }],
+            Geometry::None,
+        ),
+        spawn: projection_spawn(
+            named_producer("the application the tree observes"),
+            "the document's name",
+            &PROJECTION_LAUNCH_FIELDS,
+            None,
+            true,
+        ),
         // Fed through the substrate's `PUBLISH_RESOURCE_STATE`.
         methods: &[],
         events: &[],
@@ -420,7 +512,54 @@ pub static KINDS: [KindSpec; 4] = [
     KindSpec {
         kind: ResourceKind::PixelSurface,
         name: "PIXEL_SURFACE",
+        key: "pixel_surface",
         gate: Some(PIXEL_SURFACE),
+        leaf: true,
+        stream: whole_document_stream(
+            &[StreamCodec {
+                tag: BootstrapCodec::PIXEL_SURFACE_PNG_V1_TAG,
+                name: "PIXEL_SURFACE_PNG_V1",
+                gate: Some(PIXEL_SURFACE),
+            }],
+            Geometry::Pixels,
+        ),
+        spawn: projection_spawn(
+            named_producer("the window or display the surface shows"),
+            "the document's name",
+            &PROJECTION_LAUNCH_FIELDS,
+            None,
+            true,
+        ),
+        // Fed through the substrate's `PUBLISH_RESOURCE_STATE`.
+        methods: &[],
+        events: &[],
+        metadata_keys: &[],
+    },
+    KindSpec {
+        kind: ResourceKind::Document,
+        name: "DOCUMENT",
+        key: "document",
+        gate: Some(TYPED_DOCUMENT),
+        leaf: true,
+        stream: whole_document_stream(
+            &[StreamCodec {
+                tag: BootstrapCodec::DOCUMENT_TYPED_V1_TAG,
+                name: "DOCUMENT_TYPED_V1",
+                gate: Some(TYPED_DOCUMENT),
+            }],
+            Geometry::None,
+        ),
+        spawn: projection_spawn(
+            SpawnFacet {
+                presence: Presence::Required,
+                meaning: "the content type, a MIME type",
+                max_bytes: crate::wire::frame::typed_document::MAX_CONTENT_TYPE_BYTES,
+            },
+            "the document's name",
+            &PROJECTION_LAUNCH_FIELDS,
+            Some(validate_document_spawn),
+            true,
+        ),
         // Fed through the substrate's `PUBLISH_RESOURCE_STATE`.
         methods: &[],
         events: &[],

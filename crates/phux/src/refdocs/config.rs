@@ -84,7 +84,8 @@ const SECTIONS: &[Section] = &[
         key: "satellites",
         header: "[[satellites]]",
         summary: "Federation satellites a hub routes to: name, endpoint, \
-                  token-file path, and certificate pin.",
+                  token-file path, certificate pin, and the client \
+                  certificate a paired satellite requires.",
     },
     Section {
         key: "connector",
@@ -100,10 +101,30 @@ const SECTIONS: &[Section] = &[
                   CA pin, and the enrolled identity's paths.",
     },
     Section {
+        key: "mirrors",
+        header: "[[mirrors]]",
+        summary: "Displays and windows the server keeps mirrored, each in \
+                  its own `mirror-*` session, restarted with backoff and \
+                  live-reloaded (Linux; macOS skips them).",
+    },
+    Section {
+        key: "producers",
+        header: "[[producers]]",
+        summary: "Commands kept running as document producers, each in its \
+                  own `producer-*` session, like `[[mirrors]]`.",
+    },
+    Section {
         key: "remote",
         header: "[[remote]]",
         summary: "Remote phux servers this machine attaches to, written by \
-                  `phux host add` and resolved by `phux attach <name>`.",
+                  `phux host add` and resolved by `phux attach <name>`; \
+                  `color` overrides a host's automatic colour.",
+    },
+    Section {
+        key: "host",
+        header: "[host]",
+        summary: "This machine as clients draw it: `color` overrides its \
+                  automatic colour (`phux host color --local`).",
     },
     Section {
         key: "projects",
@@ -351,6 +372,8 @@ mod tests {
             enabled: true,
             token_file: Some(PathBuf::from("/tokens/devbox.token")),
             cert_fingerprint: Some("AB:CD".to_owned()),
+            client_cert: None,
+            client_key: None,
         }];
         config.connector = vec![ConnectorConfigEntry {
             relay: "relay.example:4433".to_owned(),
@@ -379,7 +402,9 @@ mod tests {
             remote_phux: None,
             client_cert: Some(PathBuf::from("/state/remotes/mini.client.pem")),
             client_key: Some(PathBuf::from("/state/remotes/mini.client.key")),
+            color: Some("violet".to_owned()),
         }];
+        config.host.color = Some("sky".to_owned());
         config
             .theme
             .slots

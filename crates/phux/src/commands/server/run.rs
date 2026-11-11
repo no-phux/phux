@@ -383,6 +383,7 @@ pub(crate) fn run_server(
     };
 
     log_startup(&socket_path);
+    let _audit = phux_server::audit::Recording::start();
 
     // Printed once the sockets are bound, so a failed start never claims
     // to be listening.
@@ -407,24 +408,7 @@ pub(crate) fn run_server(
     if let Some(autosave) = autosave {
         server = server.autosave(autosave);
     }
-    // The config-reload doorbell re-reads `[[satellites]]`. A server that
-    // booted with `--hub` redials the diff. One that did not still grows
-    // the links when enrollment adds the first satellite (phux-lpn7.3),
-    // without restarting panes.
-    server = server.hub_reload(phux_server::SatelliteSource::new(|| {
-        config_loader::load()
-            .map(|config| config.satellites)
-            .map_err(|err| err.to_string())
-    }));
-    // Satellite uplinks (ADR-0182): `phux host join` writes `[[uplink]]` and
-    // rings the doorbell, which starts the new uplink without a restart.
-    server = server
-        .uplinks(uplinks)
-        .uplink_reload(phux_server::uplink::UplinkSource::new(|| {
-            config_loader::load()
-                .map(|config| config.uplink)
-                .map_err(|err| err.to_string())
-        }));
+    server = with_config_reload(server, uplinks);
     // Hub mode (ADR-0007): the runtime validates the satellite registry
     // before it accepts clients.
     if hub {
@@ -441,6 +425,38 @@ pub(crate) fn run_server(
     // Marks the whole server's keystroke path interactive (ADR-0096).
     phux_server::perf::mark_started();
     report_shutdown(rt.block_on(async move { server.run_async(shutdown_signal()).await }))
+}
+
+/// Hand the runtime what each config-reload doorbell re-reads.
+fn with_config_reload(
+    server: phux_server::ServerRuntime,
+    uplinks: Vec<phux_config::UplinkConfigEntry>,
+) -> phux_server::ServerRuntime {
+    // The config-reload doorbell re-reads `[[satellites]]`. A server that
+    // booted with `--hub` redials the diff. One that did not still grows
+    // the links when enrollment adds the first satellite (phux-lpn7.3),
+    // without restarting panes.
+    let server = server.hub_reload(phux_server::SatelliteSource::new(|| {
+        config_loader::load()
+            .map(|config| config.satellites)
+            .map_err(|err| err.to_string())
+    }));
+    // Satellite uplinks (ADR-0182): `phux host join` writes `[[uplink]]` and
+    // rings the doorbell, which starts the new uplink without a restart.
+    let server = server
+        .uplinks(uplinks)
+        .uplink_reload(phux_server::uplink::UplinkSource::new(|| {
+            config_loader::load()
+                .map(|config| config.uplink)
+                .map_err(|err| err.to_string())
+        }));
+    // Standing mirrors and producers: the config-reload doorbell re-reads
+    // `[[mirrors]]` and `[[producers]]`.
+    server.standing_mirrors(phux_server::runtime::MirrorSource::new(|| {
+        config_loader::load()
+            .map(|config| (config.mirrors, config.producers))
+            .map_err(|err| err.to_string())
+    }))
 }
 
 /// Resolve on SIGINT or SIGTERM. Both cancel the runtime's root token, the

@@ -249,6 +249,43 @@ impl ServerState {
         self.resources.unsubscribe(client, terminal);
     }
 
+    /// The mailbox of the connection that spawned `resource`, a document's
+    /// producer, while it is connected; `None` once it is gone.
+    #[must_use]
+    pub fn resource_producer(&self, resource: ResourceId) -> Option<mpsc::Sender<Outbound>> {
+        self.resources
+            .spawner(resource)
+            .and_then(|client| self.client_mailbox(client))
+            .filter(|tx| !tx.is_closed())
+    }
+
+    /// The connection that spawned (produces) `resource`, when a client did.
+    #[must_use]
+    pub fn resource_spawner(&self, resource: ResourceId) -> Option<ClientId> {
+        self.resources.spawner(resource)
+    }
+
+    /// Record the control class a document's producer declared.
+    pub fn set_document_control(
+        &mut self,
+        document: ResourceId,
+        control: Option<phux_protocol::wire::frame::ControlClass>,
+    ) {
+        match control {
+            Some(class) => self.document_controls.insert(document, class),
+            None => self.document_controls.remove(&document),
+        };
+    }
+
+    /// What input to `document` controls; `None` when it controls nothing.
+    #[must_use]
+    pub fn document_control(
+        &self,
+        document: ResourceId,
+    ) -> Option<phux_protocol::wire::frame::ControlClass> {
+        self.document_controls.get(&document).copied()
+    }
+
     /// Record that `client` spawned `terminal` (ADR-0109), before anything
     /// subscribes to it.
     pub fn record_spawn(&mut self, terminal: ResourceId, client: ClientId) {

@@ -49,6 +49,8 @@ mod fd_shrink;
 mod hangup;
 mod io;
 mod native;
+#[cfg(target_os = "linux")]
+mod pane_scope;
 mod park;
 mod process_facet;
 pub mod program_status;

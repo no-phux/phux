@@ -1,12 +1,15 @@
-//! Input dispatch and `AgentSession` stream handling.
+//! Input dispatch: every stream frame reaches its lane through one function.
 
 #[cfg(doc)]
 use super::KernelStatus;
+use super::lane::{
+    AttachSignal, BeginFrame, ChunkFrame, KindLane, LaneCx, LaneKind, LaneRails, OutputFrame,
+    ReadyFrame, ResourceLane, StreamFrame,
+};
 use super::{
-    AgentSessionDeclaration, AgentStream, BootstrapId, BootstrapStreamProfile, DocumentPublication,
-    EffectBuffer, EngineAdapter, GenerationId, HistoryPageInput, KernelEffect, KernelError,
-    KernelInput, ResourceId, ResourceKind, SessionKernel, StreamId, TombstoneRecord, document_kind,
-    is_agent_profile,
+    AgentSessionDeclaration, BootstrapStreamProfile, EffectBuffer, EngineAdapter, GenerationId,
+    HistoryPageInput, KernelEffect, KernelError, KernelInput, MAX_BOOTSTRAP_STAGING_BYTES,
+    ResourceId, ResourceKind, SessionKernel, TombstoneRecord,
 };
 
 impl<E: EngineAdapter> SessionKernel<E> {
@@ -23,7 +26,27 @@ impl<E: EngineAdapter> SessionKernel<E> {
         effects: &mut EffectBuffer,
     ) -> Result<(), KernelError<E::Error>> {
         effects.clear();
+        if self.is_refused_stream_frame(&input) {
+            return Ok(());
+        }
         match input {
+            KernelInput::BootstrapBegin {
+                terminal_id,
+                stream_id,
+                bootstrap_id,
+                profile: BootstrapStreamProfile::Unknown { codec_tag },
+                base_seq,
+                ..
+            } => self.refuse_unknown_codec(
+                terminal_id,
+                GenerationId {
+                    stream_id,
+                    bootstrap_id,
+                },
+                codec_tag,
+                base_seq,
+                effects,
+            ),
             KernelInput::AttachStarted {
                 attach_id,
                 terminals,
@@ -37,82 +60,17 @@ impl<E: EngineAdapter> SessionKernel<E> {
                 geometry,
                 base_seq,
             } => {
-                if let Some(kind) = document_kind(profile) {
-                    self.expect_kind(terminal_id, kind)?;
-                    let staging = self.documents.entry(terminal_id.clone()).or_default();
-                    staging.kind = Some(kind);
-                    staging.base_seq = base_seq;
-                    staging.buffer.clear();
-                    return Ok(());
-                }
-                if is_agent_profile(profile) {
-                    self.agent_bootstrap_begin(
-                        terminal_id,
+                self.lift_refusal(terminal_id);
+                let frame = BeginFrame {
+                    generation: GenerationId {
                         stream_id,
                         bootstrap_id,
-                        profile,
-                        base_seq,
-                    )
-                } else {
-                    self.expect_kind(terminal_id, ResourceKind::Terminal)?;
-                    self.bootstrap_begin(
-                        terminal_id,
-                        stream_id,
-                        bootstrap_id,
-                        profile,
-                        geometry,
-                        base_seq,
-                        effects,
-                    )
-                }
-            }
-            KernelInput::BootstrapChunk {
-                terminal_id,
-                payload,
-                ..
-            } if self.documents.contains_key(terminal_id) => {
-                if let Some(staging) = self.documents.get_mut(terminal_id) {
-                    staging.buffer.extend_from_slice(payload);
-                }
-                Ok(())
-            }
-            KernelInput::BootstrapReady { terminal_id, .. }
-                if self.documents.contains_key(terminal_id) =>
-            {
-                if let Some(staging) = self.documents.get_mut(terminal_id)
-                    && let Some(kind) = staging.kind
-                {
-                    effects.push(KernelEffect::Document(DocumentPublication {
-                        resource_id: terminal_id.clone(),
-                        kind,
-                        seq: staging.base_seq,
-                        bytes: std::mem::take(&mut staging.buffer),
-                    }));
-                }
-                Ok(())
-            }
-            KernelInput::ResourceOutput {
-                terminal_id,
-                seq,
-                payload,
-                ..
-            } if self.documents.contains_key(terminal_id) => {
-                if let Some(kind) = self.documents.get(terminal_id).and_then(|s| s.kind) {
-                    effects.push(KernelEffect::Document(DocumentPublication {
-                        resource_id: terminal_id.clone(),
-                        kind,
-                        seq,
-                        bytes: payload.to_vec(),
-                    }));
-                }
-                Ok(())
-            }
-            // A lapped viewer is fenced and recut; the recut's READY carries
-            // the newest document, so the tombstone itself changes nothing.
-            KernelInput::Tombstone { terminal_id, .. }
-                if self.documents.contains_key(terminal_id) =>
-            {
-                Ok(())
+                    },
+                    profile,
+                    geometry,
+                    base_seq,
+                };
+                self.stream_frame(terminal_id, StreamFrame::Begin(frame), effects)
             }
             KernelInput::BootstrapChunk {
                 terminal_id,
@@ -121,25 +79,16 @@ impl<E: EngineAdapter> SessionKernel<E> {
                 chunk_seq,
                 payload,
             } => {
-                if self.agents.contains_key(terminal_id) {
-                    self.agent_bootstrap_chunk(
-                        terminal_id,
+                let frame = ChunkFrame {
+                    generation: GenerationId {
                         stream_id,
                         bootstrap_id,
-                        chunk_seq,
-                        payload,
-                        effects,
-                    )
-                } else {
-                    self.bootstrap_chunk(
-                        terminal_id,
-                        stream_id,
-                        bootstrap_id,
-                        chunk_seq,
-                        payload,
-                        effects,
-                    )
-                }
+                    },
+                    chunk_seq,
+                    payload,
+                    usage_allowed: false,
+                };
+                self.stream_frame(terminal_id, StreamFrame::Chunk(frame), effects)
             }
             KernelInput::BootstrapReady {
                 terminal_id,
@@ -147,17 +96,51 @@ impl<E: EngineAdapter> SessionKernel<E> {
                 bootstrap_id,
                 history_cursor,
             } => {
-                if self.agents.contains_key(terminal_id) {
-                    self.agent_bootstrap_ready(terminal_id, stream_id, bootstrap_id, effects)
-                } else {
-                    self.bootstrap_ready(
-                        terminal_id,
+                let frame = ReadyFrame {
+                    generation: GenerationId {
                         stream_id,
                         bootstrap_id,
-                        history_cursor,
-                        effects,
-                    )
-                }
+                    },
+                    history_cursor,
+                };
+                self.stream_frame(terminal_id, StreamFrame::Ready(frame), effects)
+            }
+            KernelInput::ResourceOutput {
+                terminal_id,
+                stream_id,
+                bootstrap_id,
+                seq,
+                payload,
+            } => {
+                let frame = OutputFrame {
+                    generation: GenerationId {
+                        stream_id,
+                        bootstrap_id,
+                    },
+                    seq,
+                    payload,
+                };
+                self.stream_frame(terminal_id, StreamFrame::Output(frame), effects)
+            }
+            KernelInput::Tombstone {
+                terminal_id,
+                stream_id,
+                bootstrap_id,
+                reason,
+                last_valid_seq,
+            } => {
+                let signal = self.lanes.fence_slot(terminal_id).on_tombstone(
+                    GenerationId {
+                        stream_id,
+                        bootstrap_id,
+                    },
+                    TombstoneRecord {
+                        reason,
+                        last_valid_seq,
+                    },
+                );
+                self.apply_attach_signal(terminal_id, signal);
+                Ok(())
             }
             KernelInput::HistoryPage {
                 terminal_id,
@@ -215,46 +198,6 @@ impl<E: EngineAdapter> SessionKernel<E> {
                 required_rows,
                 effects,
             ),
-            KernelInput::ResourceOutput {
-                terminal_id,
-                stream_id,
-                bootstrap_id,
-                seq,
-                payload,
-            } if self.agents.contains_key(terminal_id) => {
-                self.agent_output(terminal_id, stream_id, bootstrap_id, seq, payload, effects)
-            }
-            KernelInput::ResourceOutput {
-                terminal_id,
-                stream_id,
-                bootstrap_id,
-                seq,
-                payload,
-            } => {
-                crate::perf::OUTPUT_FRAMES.incr();
-                crate::perf::OUTPUT_BYTES.add_len(payload.len());
-                self.perf_echo.observe(terminal_id);
-                let _timed = crate::perf::apply_timer();
-                self.terminal_output(terminal_id, stream_id, bootstrap_id, seq, payload, effects)
-            }
-            KernelInput::Tombstone {
-                terminal_id,
-                stream_id,
-                bootstrap_id,
-                reason,
-                last_valid_seq,
-            } => {
-                self.tombstone_generation(
-                    terminal_id,
-                    stream_id,
-                    bootstrap_id,
-                    TombstoneRecord {
-                        reason,
-                        last_valid_seq,
-                    },
-                );
-                Ok(())
-            }
             KernelInput::ResourceClosed {
                 terminal_id,
                 exit_status,
@@ -266,7 +209,7 @@ impl<E: EngineAdapter> SessionKernel<E> {
             }
             KernelInput::Event { terminal_id, event } => {
                 // Untracked or already-closed terminals get no status.
-                if self.terminals.contains_key(terminal_id)
+                if self.lanes.terminal(terminal_id).is_some()
                     && !self.closed.contains(terminal_id)
                     && let Some(status) = self.status_for_agent_event(terminal_id, event)
                 {
@@ -278,6 +221,121 @@ impl<E: EngineAdapter> SessionKernel<E> {
                 self.agent_session_declared(&declaration)
             }
             KernelInput::Action(action) => self.action(&action, effects),
+        }
+    }
+
+    /// The one route from a stream frame to its resource's lane. A begin
+    /// opens (or keeps) the lane its profile names; every other frame needs
+    /// a lane already. Connection-wide rails run here, around the lane: the
+    /// closed set, the staging ceilings, and the ATTACH barrier.
+    fn stream_frame(
+        &mut self,
+        terminal_id: &ResourceId,
+        mut frame: StreamFrame<'_>,
+        effects: &mut EffectBuffer,
+    ) -> Result<(), KernelError<E::Error>> {
+        self.ensure_open(terminal_id)?;
+        let opens = match &mut frame {
+            StreamFrame::Begin(begin) => {
+                let kind = LaneKind::of_profile(begin.profile);
+                self.expect_kind(terminal_id, kind.resource_kind())?;
+                kind.admit_begin(self.selected_profile, begin)?;
+                Some(kind)
+            }
+            StreamFrame::Chunk(chunk) => {
+                chunk.usage_allowed = self
+                    .next_bootstrap_staging_usage(chunk.payload.len())
+                    .is_some();
+                None
+            }
+            StreamFrame::Ready(_) | StreamFrame::Output(_) => None,
+        };
+        // Live output reads no clock, and only a publishing frame can damage.
+        let now_ms = if matches!(frame, StreamFrame::Output(_)) {
+            0
+        } else {
+            self.monotonic_now_ms()
+        };
+        let attach_blocks = matches!(frame, StreamFrame::Ready(_) | StreamFrame::Output(_))
+            && self.attach_blocks(terminal_id);
+        // One lookup per frame: a begin's `open` is its lane.
+        let lane = match opens {
+            Some(kind) => self.lanes.open(terminal_id, kind),
+            None => self
+                .lanes
+                .get_mut(terminal_id)
+                .ok_or_else(|| KernelError::UnknownTerminal(terminal_id.clone()))?,
+        };
+        let mut cx = LaneCx {
+            resource_id: terminal_id,
+            adapter: &mut self.adapter,
+            engine_effects: &mut self.engine_effects,
+            history_config: self.history_config,
+            perf_echo: &self.perf_echo,
+            now_ms,
+            attach_blocks,
+            attach: AttachSignal::Unchanged,
+        };
+        let result = match &frame {
+            StreamFrame::Begin(begin) => lane.on_begin(&mut cx, begin, effects),
+            StreamFrame::Chunk(chunk) => lane.on_chunk(&mut cx, chunk, effects),
+            StreamFrame::Ready(ready) => lane.on_ready(&mut cx, ready, effects),
+            StreamFrame::Output(output) => lane.on_output(&mut cx, output, effects),
+        };
+        let signal = cx.attach;
+        self.apply_attach_signal(terminal_id, signal);
+        result?;
+        if let StreamFrame::Chunk(chunk) = &frame
+            && self.bootstrap_retained_bytes() > MAX_BOOTSTRAP_STAGING_BYTES
+        {
+            self.retire_staging_limit(terminal_id, chunk.generation, effects);
+            return Err(KernelError::BootstrapStagingLimitExceeded);
+        }
+        Ok(())
+    }
+
+    fn apply_attach_signal(&mut self, terminal_id: &ResourceId, signal: AttachSignal) {
+        match signal {
+            AttachSignal::Unchanged => {}
+            AttachSignal::Resolved => self.mark_attach_resolved(terminal_id),
+            AttachSignal::Unresolved { pending_removal } => {
+                self.mark_attach_unresolved(terminal_id, pending_removal);
+            }
+        }
+    }
+
+    /// Every lane's accepted staging plus one more chunk of `payload_len`,
+    /// if that fits the connection-wide ceilings.
+    pub(super) fn next_bootstrap_staging_usage(
+        &self,
+        payload_len: usize,
+    ) -> Option<(usize, usize)> {
+        let mut bytes = payload_len;
+        let mut chunks = 1_usize;
+        for (accepted_bytes, accepted_chunks) in
+            self.lanes.values().filter_map(LaneRails::staged_accounting)
+        {
+            bytes = bytes.checked_add(accepted_bytes)?;
+            chunks = chunks.checked_add(accepted_chunks)?;
+        }
+        super::staging_rules::within_staging_ceilings(bytes, chunks).then_some((bytes, chunks))
+    }
+
+    /// Staged bytes every lane retains, engine state included.
+    fn bootstrap_retained_bytes(&self) -> usize {
+        self.lanes.values().fold(0_usize, |total, lane| {
+            total.saturating_add(lane.retained_staging_bytes(&self.adapter))
+        })
+    }
+
+    pub(super) fn retire_staging_limit(
+        &mut self,
+        terminal_id: &ResourceId,
+        generation: GenerationId,
+        effects: &mut EffectBuffer,
+    ) {
+        if let Some(lane) = self.lanes.get_mut(terminal_id) {
+            lane.retire_for_limit(terminal_id, generation, effects);
         }
     }
 
@@ -309,110 +367,9 @@ impl<E: EngineAdapter> SessionKernel<E> {
         let terminal_id = declaration.terminal_id;
         self.ensure_open(terminal_id)?;
         self.expect_kind(terminal_id, ResourceKind::AgentSession)?;
-        self.agents
-            .entry(terminal_id.clone())
-            .or_insert_with(AgentStream::new)
-            .declare(declaration);
-        Ok(())
-    }
-
-    fn agent_bootstrap_begin(
-        &mut self,
-        terminal_id: &ResourceId,
-        stream_id: StreamId,
-        bootstrap_id: BootstrapId,
-        profile: BootstrapStreamProfile,
-        base_seq: u64,
-    ) -> Result<(), KernelError<E::Error>> {
-        self.ensure_open(terminal_id)?;
-        self.expect_kind(terminal_id, ResourceKind::AgentSession)?;
-        let now_ms = self.monotonic_now_ms();
-        self.agents
-            .entry(terminal_id.clone())
-            .or_insert_with(AgentStream::new)
-            .begin(
-                terminal_id,
-                stream_id,
-                bootstrap_id,
-                profile,
-                base_seq,
-                now_ms,
-            )
-    }
-
-    fn agent_bootstrap_chunk(
-        &mut self,
-        terminal_id: &ResourceId,
-        stream_id: StreamId,
-        bootstrap_id: BootstrapId,
-        chunk_seq: u32,
-        payload: &[u8],
-        effects: &mut EffectBuffer,
-    ) -> Result<(), KernelError<E::Error>> {
-        self.ensure_open(terminal_id)?;
-        let generation = GenerationId {
-            stream_id,
-            bootstrap_id,
-        };
-        let usage_allowed = self.next_bootstrap_staging_usage(payload.len()).is_some();
-        let now_ms = self.monotonic_now_ms();
-        self.agents
-            .get_mut(terminal_id)
-            .ok_or_else(|| KernelError::UnknownTerminal(terminal_id.clone()))?
-            .accept_chunk(
-                terminal_id,
-                generation,
-                chunk_seq,
-                payload,
-                usage_allowed,
-                now_ms,
-                effects,
-            )
-    }
-
-    fn agent_bootstrap_ready(
-        &mut self,
-        terminal_id: &ResourceId,
-        stream_id: StreamId,
-        bootstrap_id: BootstrapId,
-        effects: &mut EffectBuffer,
-    ) -> Result<(), KernelError<E::Error>> {
-        self.ensure_open(terminal_id)?;
-        let generation = GenerationId {
-            stream_id,
-            bootstrap_id,
-        };
-        let now_ms = self.monotonic_now_ms();
-        let publication = self
-            .agents
-            .get_mut(terminal_id)
-            .ok_or_else(|| KernelError::UnknownTerminal(terminal_id.clone()))?
-            .commit_ready(terminal_id, generation, now_ms, effects)?;
-        effects.push(KernelEffect::AgentPublication(publication));
-        self.mark_attach_resolved(terminal_id);
-        Ok(())
-    }
-
-    fn agent_output(
-        &mut self,
-        terminal_id: &ResourceId,
-        stream_id: StreamId,
-        bootstrap_id: BootstrapId,
-        seq: u64,
-        payload: &[u8],
-        effects: &mut EffectBuffer,
-    ) -> Result<(), KernelError<E::Error>> {
-        self.ensure_open(terminal_id)?;
-        let generation = GenerationId {
-            stream_id,
-            bootstrap_id,
-        };
-        let publication = self
-            .agents
-            .get_mut(terminal_id)
-            .ok_or_else(|| KernelError::UnknownTerminal(terminal_id.clone()))?
-            .commit_live(terminal_id, generation, seq, payload, effects)?;
-        effects.push(KernelEffect::AgentPublication(publication));
+        if let ResourceLane::Agent(stream) = self.lanes.open(terminal_id, LaneKind::Agent) {
+            stream.declare(declaration);
+        }
         Ok(())
     }
 }

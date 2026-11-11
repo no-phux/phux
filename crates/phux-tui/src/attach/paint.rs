@@ -18,130 +18,8 @@ use crate::render::chrome::status_bar::{
     BarInset, ComposePolicy, Position, StatusBarPainter, make_context,
 };
 
-use super::render::SyncOutput;
-
-/// Hide the cursor for the duration of a composited frame, so it never skates
-/// across a half-painted grid on a terminal that ignores mode 2026.
-const CURSOR_HIDE: &[u8] = b"\x1b[?25l";
-
-/// One composited frame: a DEC 2026 block that swallows the flushes of
-/// everything painted inside it and ships once, as one write and one flush.
-///
-/// A `Write` wrapper, so each painter keeps the flushes it needs standalone.
-/// The block's depth is taken in [`Self::begin`], before any painter runs,
-/// so the pane renderer's own [`SyncOutput`] nests instead of closing the
-/// frame early. The prologue is buffered and shipped by [`Self::end`] only if
-/// a painter wrote something, so an idle frame costs zero bytes and no
-/// writer-thread wake. The buffer comes from a thread-local pool.
-pub(super) struct FrameBlock<'a, W: Write> {
-    inner: &'a mut W,
-    /// The frame's bytes, including the block prologue and epilogue.
-    /// `mem::take`n from the thread-local pool at `begin` and returned at
-    /// `end`.
-    body: Vec<u8>,
-    /// The nestable DEC 2026 guard. Held for the frame's whole life so the
-    /// per-pane renderer's own guard nests inside it. `None` only if the
-    /// scratch buffer somehow refused a write, which a `Vec` cannot.
-    sync: Option<SyncOutput>,
-    /// Whether any painter has emitted through the `Write` impl. The
-    /// prologue and epilogue are written directly to `body`, so this counts
-    /// painter output only.
-    painted: bool,
-}
-
-thread_local! {
-    /// Scratch buffer reused across composited frames (the paint path is one
-    /// thread; a nested frame just takes a fresh buffer).
-    static FRAME_BODY: std::cell::RefCell<Vec<u8>> =
-        const { std::cell::RefCell::new(Vec::new()) };
-}
-
-impl<'a, W: Write> FrameBlock<'a, W> {
-    /// Begin a composited frame on `inner`: the block opens now, but nothing
-    /// reaches `inner` until [`Self::end`].
-    pub(super) fn begin(inner: &'a mut W) -> Self {
-        let mut body = FRAME_BODY.with(|pool| {
-            pool.try_borrow_mut()
-                .map(|mut pool| std::mem::take(&mut *pool))
-                .unwrap_or_default()
-        });
-        body.clear();
-        // Infallible: the sink is a `Vec`. `ok()` keeps the guard optional so
-        // a future fallible sink degrades to "no block" rather than panicking.
-        let sync = SyncOutput::begin(&mut body).ok();
-        let _ = body.write_all(CURSOR_HIDE);
-        Self {
-            inner,
-            body,
-            sync,
-            painted: false,
-        }
-    }
-
-    /// Whether any painter inside this frame has emitted a byte (an unchanged
-    /// frame needs no cursor tail).
-    pub(super) const fn opened(&self) -> bool {
-        self.painted
-    }
-
-    /// Close the block and ship it: `?2026l`, one write, one flush. A frame in
-    /// which nothing was written closes to a no-op.
-    pub(super) fn end(mut self) -> std::io::Result<()> {
-        if let Some(sync) = self.sync.take() {
-            let _ = sync.end(&mut self.body);
-        }
-        let shipped = if self.painted {
-            phux_client::perf::PAINTS.add(1);
-            let _timed = phux_client::perf::PAINT_SUBMIT.timer();
-            self.inner
-                .write_all(&self.body)
-                .and_then(|()| self.inner.flush())
-        } else {
-            Ok(())
-        };
-        // Return the buffer to the pool whatever the sink did.
-        let body = std::mem::take(&mut self.body);
-        FRAME_BODY.with(|pool| {
-            if let Ok(mut pool) = pool.try_borrow_mut() {
-                *pool = body;
-            }
-        });
-        shipped
-    }
-}
-
-impl<W: Write> Drop for FrameBlock<'_, W> {
-    /// Release the sync-output depth if `end` was never reached.
-    fn drop(&mut self) {
-        self.sync = None;
-    }
-}
-
-impl<W: Write> Write for FrameBlock<'_, W> {
-    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-        if buf.is_empty() {
-            return Ok(0);
-        }
-        self.painted = true;
-        self.body.extend_from_slice(buf);
-        Ok(buf.len())
-    }
-
-    fn write_all(&mut self, buf: &[u8]) -> std::io::Result<()> {
-        if buf.is_empty() {
-            return Ok(());
-        }
-        self.painted = true;
-        self.body.extend_from_slice(buf);
-        Ok(())
-    }
-
-    /// Swallowed. The whole point: painters inside a composited frame must
-    /// not each ship their partial work to the terminal.
-    fn flush(&mut self) -> std::io::Result<()> {
-        Ok(())
-    }
-}
+mod frame_block;
+pub(super) use frame_block::FrameBlock;
 
 /// Memoized pane tiling for the hot path.
 ///
@@ -444,64 +322,10 @@ pub(super) fn paint_pane_rows_in_place<W: super::RenderSink>(
     StatusBarPaint::NotPublished
 }
 
-/// The empty state's title line.
-pub(super) const EMPTY_SESSION_TITLE: &str = "Empty session";
-/// The empty state's explanation line.
-pub(super) const EMPTY_SESSION_BODY: &str = "Open a new tab to start a terminal.";
-/// The not-arranged state's explanation line.
-pub(super) const UNARRANGED_BODY: &str = "Hidden panes keep their terminals running.";
-
-/// The lines a persistent session with no members shows. The hint names the
-/// chord bound to `new-window`, or the command palette when no chord is
-/// bound.
-pub(super) fn empty_session_lines(new_window_chord: Option<&str>) -> [String; 3] {
-    let hint = new_window_chord.map_or_else(
-        || "Run New tab from the command palette.".to_owned(),
-        |chord| format!("{chord}  new tab"),
-    );
-    [
-        EMPTY_SESSION_TITLE.to_owned(),
-        EMPTY_SESSION_BODY.to_owned(),
-        hint,
-    ]
-}
-
-/// The lines a session shows when `running` members have no view (R15). The
-/// hint names the chord bound to `reopen-views`, or the command palette when
-/// no chord is bound.
-pub(super) fn unarranged_lines(running: usize, reopen_chord: Option<&str>) -> [String; 3] {
-    let hint = reopen_chord.map_or_else(
-        || "Run reopen-views from the command palette.".to_owned(),
-        |chord| format!("{chord}  reopen views"),
-    );
-    [
-        format!("{running} running, not arranged"),
-        UNARRANGED_BODY.to_owned(),
-        hint,
-    ]
-}
-
-/// Paint a session with nothing arranged: the chrome as usual and the
-/// empty-state lines ([`empty_session_lines`] or [`unarranged_lines`])
-/// centered in the content area. One
-/// frame block like [`paint_full_frame`]; the cursor ends parked and hidden
-/// at the content origin, since there is no pane to own it.
-pub(super) fn paint_empty_session<W: super::RenderSink>(
-    out: &mut W,
-    chrome: &mut ChromeCtx<'_>,
-    lines: &[String],
-) -> StatusBarPaint {
-    let mut block = FrameBlock::begin(out);
-    let content = chrome.content_layout().rect;
-    let origin = Some((content.x, content.y));
-    let _ = block.write_all(b"\x1b[2J\x1b[H");
-    write_centered_lines(&mut block, content, lines);
-    // No grid is drawn here, so the strip's rule has nothing to tee into.
-    repaint_sidebar_strip(&mut block, chrome, &[]);
-    let painted = paint_bar_after_pane(&mut block, chrome, None, origin, true);
-    let composed = end_of_frame_cursor(&mut block, None, origin).is_ok();
-    seal_frame(block, painted, composed, chrome.status_bar.as_deref_mut())
-}
+mod empty_state;
+pub(super) use empty_state::{
+    empty_session_lines, paint_empty_session, unarranged_lines, write_centered_lines,
+};
 
 /// Force the sidebar strip to re-emit after a clear wiped its columns, its
 /// rule teed at `junctions`. A no-op without a reservation or a painter.
@@ -513,20 +337,6 @@ fn repaint_sidebar_strip<W: Write>(out: &mut W, chrome: &mut ChromeCtx<'_>, junc
     painter.set_rule(sidebar_rule(res.edge));
     painter.set_junctions(junctions);
     let _ = painter.paint(out, sidebar_rect(chrome.viewport, res));
-}
-
-/// Write `lines` centered in `rect`, each clipped to the rect's width.
-fn write_centered_lines<W: Write>(out: &mut W, rect: crate::layout::Rect, lines: &[String]) {
-    let count = u16::try_from(lines.len()).unwrap_or(u16::MAX);
-    let top = rect.y.saturating_add(rect.h.saturating_sub(count) / 2);
-    let bottom = rect.y.saturating_add(rect.h);
-    for (row, line) in (top..bottom).zip(lines) {
-        let text: String = line.chars().take(usize::from(rect.w)).collect();
-        let width = u16::try_from(text.chars().count()).unwrap_or(rect.w);
-        let col = rect.x.saturating_add(rect.w.saturating_sub(width) / 2);
-        let _ = super::render::write_cup(out, row, col);
-        let _ = out.write_all(text.as_bytes());
-    }
 }
 
 /// Ship a composited frame and reconcile the bar cache with what actually
@@ -591,6 +401,10 @@ fn paint_full_frame_into<W: Write>(
     // on the in-place path so a pane that was hidden (its cells overwritten by
     // another pane) repaints from scratch.
     super::pane_state::invalidate_all_fronts(panes);
+    // A pane this view no longer shows takes its kitty images with it.
+    super::pane_state::release_hidden_kitty(out, panes, |id| {
+        multi.rects.contains_key(id) || Some(id) == focused_resource
+    });
     // Non-focused panes first, then chrome; the focused pane paints LAST so
     // it owns final cursor placement.
     for (id, rect) in &multi.rects {
@@ -611,6 +425,8 @@ fn paint_full_frame_into<W: Write>(
             );
         }
     }
+    let leaves = super::surface_leaf::SurfaceLeaves::new(kernel, chrome.leaves);
+    super::surface_leaf::paint_placeholders(out, &multi.rects, leaves);
     let panes_ref = &*panes;
     let _ = crate::render::chrome::dividers::render_dividers(
         out,
@@ -1135,6 +951,10 @@ pub(super) fn bar_inset(outer: (u16, u16), sidebar: Option<SidebarReservation>) 
 
 #[cfg(test)]
 #[allow(clippy::expect_used, clippy::unwrap_used, reason = "tests")]
+mod kitty_tests;
+
+#[cfg(test)]
+#[allow(clippy::expect_used, clippy::unwrap_used, reason = "tests")]
 mod tests {
     use super::*;
     use crate::attach::pane_state::published_test_state;
@@ -1217,39 +1037,6 @@ mod tests {
             ]
         );
         assert!(unarranged_lines(1, None)[2].contains("command palette"));
-    }
-
-    /// The empty state says what happened and names the `new-window` chord
-    /// (or the palette), with no pane owning the cursor.
-    #[test]
-    fn empty_session_state_names_the_new_window_action() {
-        let lines = empty_session_lines(Some("C-a c"));
-        assert_eq!(
-            lines[..3],
-            [
-                "Empty session",
-                "Open a new tab to start a terminal.",
-                "C-a c  new tab"
-            ]
-        );
-        assert!(empty_session_lines(None)[2].contains("command palette"));
-        let mut out: Vec<u8> = Vec::new();
-        let theme = Theme::default();
-        let mut chrome = ChromeCtx {
-            viewport: (80, 24),
-            sidebar: None,
-            status_bar: None,
-            sidebar_painter: None,
-            session_name: "parked",
-            theme: &theme,
-        };
-        let _ = paint_empty_session(&mut out, &mut chrome, &lines);
-        let text = String::from_utf8_lossy(&out);
-        assert!(
-            lines.iter().all(|line| text.contains(line.as_str())),
-            "{text:?}"
-        );
-        assert!(text.contains("\x1b[?25l"));
     }
 
     /// An unchanged layout tiles once however often it is read, and every
@@ -1496,6 +1283,7 @@ mod tests {
             sidebar_painter: strip,
             session_name: "demo",
             theme: &theme,
+            leaves: &crate::attach::surface_leaf::LeafBook::default(),
         };
         paint_full_frame(
             out,
@@ -1678,6 +1466,7 @@ mod tests {
             sidebar_painter: None,
             session_name: "demo",
             theme: &theme,
+            leaves: &crate::attach::surface_leaf::LeafBook::default(),
         };
         paint_bar_after_pane(&mut out, &mut chrome, cursor, fallback, clobbered);
         String::from_utf8_lossy(&out).into_owned()
@@ -1737,6 +1526,7 @@ mod tests {
             sidebar_painter: Some(strip),
             session_name: "demo",
             theme: &theme,
+            leaves: &crate::attach::surface_leaf::LeafBook::default(),
         };
         let (kernel, _effects, _panes) = published_test_state(&[]);
         paint_chrome_in_place(

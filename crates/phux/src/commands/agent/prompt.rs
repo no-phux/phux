@@ -24,6 +24,7 @@ use std::time::{Duration, Instant};
 use phux_client::agent_meta::AgentRecord;
 use phux_client::agent_prompt::{PromptError, PromptOutcome, PromptWait, Refusal, prompt_agent};
 use phux_client::attach::AttachError;
+use phux_client::read::Verb;
 use phux_protocol::ids::InputOperationId;
 use phux_server::runtime::default_socket_path;
 
@@ -118,11 +119,12 @@ pub(super) fn run_agent_prompt(
     let text = text.to_owned();
 
     rt.block_on(async move {
-        let pane =
-            match resolve_target_for_input(&socket_path, &selector, "agent prompt", json).await {
-                Ok(id) => id,
-                Err(code) => return code,
-            };
+        let pane = match resolve_target_for_input(&socket_path, &selector, Verb::AgentPrompt, json)
+            .await
+        {
+            Ok(id) => id,
+            Err(code) => return code,
+        };
         let label = phux_client::selector::format_terminal_id(&pane);
         // ADR-0076 point 4: the same identity comparison `agent send-keys` does.
         let verify = |record: &AgentRecord| {

@@ -11,7 +11,8 @@
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 #[non_exhaustive]
 pub enum Layer {
-    /// Terminal substrate. Always implemented; always implied.
+    /// Resource substrate: attach, streams, input, and resource lifecycle
+    /// for every kind. Always implemented; always implied.
     L1 = 0x01,
     /// Collection lifecycle (OPTIONAL). SPEC §7.3 / §11.L2.
     L2 = 0x02,
@@ -176,7 +177,9 @@ define_server_features! {
     /// The server serves `AgentSession` resources as well as Terminals
     /// (spawn fields, `APPEND_RESOURCE_OUTPUT`, the JSONL codec, close
     /// reasons, snapshot facets). All shapes are skip-by-length additive; the
-    /// bit tells a client the kind it asked for is the kind it got.
+    /// bit tells a client the kind it asked for is the kind it got. The
+    /// document kinds have their own bits in [`ServerFeatureExt`]
+    /// (`ACCESSIBILITY_TREE`, `PIXEL_SURFACE`, `TYPED_DOCUMENT`).
     ResourceKinds = RESOURCE_KINDS = 0x0000_4000,
     /// The server answers `LIST_DIRECTORY` for its own host
     /// (`docs/protocol.md#commands-events-resources`). A client MUST see the bit first: a 1.x
@@ -209,8 +212,9 @@ define_server_features! {
     /// bit before sending the command.
     ConditionalKill = CONDITIONAL_KILL = 0x0020_0000,
     /// The connection may use QUIC multi-stream (ADR-0115): one control
-    /// stream plus one client-opened bidi stream per attached Terminal. A
-    /// client MUST NOT open a second QUIC stream without it. QUIC-only.
+    /// stream plus one client-opened bidi stream per attached Terminal;
+    /// every other kind stays on the control stream. A client MUST NOT open
+    /// a second QUIC stream without it. QUIC-only.
     QuicStreams = QUIC_STREAMS = 0x0040_0000,
     /// The server accepts `OPEN_LISTENER` on its Unix socket (ADR-0120). A
     /// client MUST see the bit before sending the command.
@@ -237,7 +241,8 @@ define_server_features! {
     /// with `INCARNATION_CHANGED` fencing. A client MUST see the bit before
     /// retrying a keyed command blind.
     KeyedSignal = KEYED_SIGNAL = 0x2000_0000,
-    /// The server holds `?signal` commands for approval (ADR-0128). A client
+    /// The server holds commands a scope marks held (`?signal`, and since
+    /// `?terminate` and `?input@CLASS`) for approval (ADR-0128). A client
     /// MUST see the bit before writing a decision: an older server stores the
     /// decide key as an ordinary value.
     Approvals = APPROVALS = 0x4000_0000,
@@ -384,8 +389,17 @@ pub enum ServerFeatureExt {
     /// The server serves the `PixelSurface` resource kind: a producer-fed,
     /// replicated image of a window or display.
     PixelSurface = 0x0001_0000,
+    /// The server serves the `Document` resource kind: a producer-fed,
+    /// replicated document whose content type is fixed when it is opened.
+    TypedDocument = 0x0002_0000,
+    /// The server answers `MIRROR`: it lists the displays and windows it
+    /// can mirror and starts or stops a mirror of one on demand.
+    Mirrors = 0x0004_0000,
+    /// The server answers the local-only `PRIVACY_STATUS`: the macOS
+    /// privacy grants it holds.
+    PrivacyStatus = 0x0008_0000,
     /// Read a durable resource record and its current activation without a live engine.
-    DurableResourceInspection = 0x0002_0000,
+    DurableResourceInspection = 0x0010_0000,
 }
 
 impl ServerFeatureExt {
@@ -408,6 +422,9 @@ impl ServerFeatureExt {
         Self::ApiDescription,
         Self::AccessibilityTree,
         Self::PixelSurface,
+        Self::TypedDocument,
+        Self::Mirrors,
+        Self::PrivacyStatus,
         Self::DurableResourceInspection,
     ];
 
@@ -432,6 +449,9 @@ impl ServerFeatureExt {
             Self::ApiDescription => "API_DESCRIPTION",
             Self::AccessibilityTree => "ACCESSIBILITY_TREE",
             Self::PixelSurface => "PIXEL_SURFACE",
+            Self::TypedDocument => "TYPED_DOCUMENT",
+            Self::Mirrors => "MIRRORS",
+            Self::PrivacyStatus => "PRIVACY_STATUS",
             Self::DurableResourceInspection => "DURABLE_RESOURCE_INSPECTION",
         }
     }

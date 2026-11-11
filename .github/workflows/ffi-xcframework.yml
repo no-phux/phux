@@ -7,8 +7,8 @@
 # Both carry the engine for iOS devices, the arm64 simulator, and arm64 macOS.
 #
 # Release Please owns tags, draft releases and notes. This workflow only adds
-# verified assets to an existing release, the same contract release.yml and
-# desktop-release.yml follow, and release.yml dispatches it once each root
+# verified assets to an existing release, the same contract release.yml
+# follows, and release.yml dispatches it once each root
 # release is public. It never gates the draft's publication: the CLI tarballs
 # are the release contract; the xcframework is the mobile pin's input.
 #
@@ -252,3 +252,31 @@ jobs:
           (cd "$existing" && shasum -a 256 -c "${STEM}.xcframework.zip.sha256")
           (cd "$existing" && shasum -a 256 -c "${MOBILE_STEM}.xcframework.zip.sha256")
           echo "attached ${STEM} and ${MOBILE_STEM} to ${RELEASE_TAG}"
+
+  # phux-mobile pins the newest main commit that published both mobile
+  # archives. Tell it one just landed instead of leaving it to its six-hour
+  # poll. Best effort: the poll still catches a missed event, so a failed
+  # dispatch must not mark main red.
+  notify-mobile:
+    needs: build
+    if: github.event_name == 'push' && needs.build.result == 'success'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    continue-on-error: true
+    permissions: {}
+    steps:
+      - uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        id: mobile
+        with:
+          client-id: ${{ vars.RELEASE_APP_ID }}
+          private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
+          owner: no-phux
+          repositories: phux-mobile
+          permission-contents: write
+      - name: Tell phux-mobile an archive landed
+        env:
+          GH_TOKEN: ${{ steps.mobile.outputs.token }}
+          SHA: ${{ github.sha }}
+        run: >-
+          gh api repos/no-phux/phux-mobile/dispatches
+          -f event_type=phux-ffi-published -f "client_payload[sha]=$SHA"

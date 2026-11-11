@@ -10,9 +10,7 @@
 //! third cut away, which joins doubles to doubles and singles without a table
 //! of special cases.
 //!
-//! All of it is integer device pixels, for any toolkit. The GPUI painter
-//! keeps its own copy (`phux-gpui`'s `terminal/paint/boxes.rs`) until it
-//! adopts this one.
+//! All of it is integer device pixels, for any toolkit.
 
 #![allow(
     clippy::cast_possible_truncation,

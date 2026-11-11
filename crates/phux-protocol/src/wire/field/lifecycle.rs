@@ -25,8 +25,10 @@ pub mod spawn_terminal {
     pub const INITIAL_SIZE: u32 = 10;
     /// Optional `ResourceKind` tag (`u8`); absent = `Terminal`.
     ///
-    /// `AgentSession` requires `PARENT` and `PROVIDER` and forbids fields 3-6,
-    /// 8, and 10; `Terminal` forbids fields 12-14.
+    /// Which other fields the kind requires or forbids is its catalog
+    /// spawn contract (`kinds::KindSpec::spawn`): a Terminal forbids fields
+    /// 12-14 and 18, and every other kind requires `PARENT` and `PROVIDER`
+    /// and forbids fields 3-6, 8, 10 and 16.
     pub const KIND: u32 = 11;
     /// Optional parent resource (positional `ResourceId`).
     pub const PARENT: u32 = 12;
@@ -41,6 +43,9 @@ pub mod spawn_terminal {
     pub const RETAIN_SECS: u32 = 16;
     /// Optional 16-byte non-zero idempotency key (ADR-0126).
     pub const IDEMPOTENCY_KEY: u32 = 17;
+    /// Optional `ControlClass` (`u8`) of a document; absent = none. An
+    /// unknown class reads as none.
+    pub const CONTROL: u32 = 18;
 }
 
 /// `RESOURCE_SPAWNED` body fields (`docs/protocol.md#commands-events-resources`).
@@ -200,4 +205,9 @@ pub mod resource_state {
     pub const INPUT_HOLDER: u32 = 3;
     /// `ClientId` (`u32`) of one `VIEWER` (ADR-0127); repeated.
     pub const VIEWER: u32 = 4;
+    /// A document's producer connection: `1` connected, `0` gone; absent =
+    /// not a document or not reported.
+    pub const PRODUCER: u32 = 5;
+    /// A document's `ControlClass` (`u8`); absent = none or not reported.
+    pub const CONTROL: u32 = 6;
 }

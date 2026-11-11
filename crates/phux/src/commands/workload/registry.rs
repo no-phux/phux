@@ -1,14 +1,19 @@
 //! The authority and registry verbs of `phux workload`: `authority
-//! [--init|--rotate]`, `list`, `repair-paired`, and `revoke`.
+//! [--init|--rotate]`, `list`, `repair-paired`, `grant`, `ungrant`,
+//! `revoke`, and `sync-managed`.
 
-use std::path::PathBuf;
+use std::io::Read;
+use std::path::{Path, PathBuf};
 
 use chrono::Utc;
+use phux_protocol::kinds::Verb;
+use phux_protocol::scope::{ScopeGrant, Selector};
+use phux_protocol::wire::frame::ControlClass;
 use phux_server::workload::{self, WorkloadCredential, WorkloadPaths, WorkloadRegistry};
 use serde_json::json;
 
 use super::{Report, cli_error, timestamp};
-use crate::commands::json_err::CliError;
+use crate::commands::json_err::{CliError, codes};
 use crate::commands::update::apply::hex_lower;
 
 pub(super) fn authority(paths: &WorkloadPaths, init: bool) -> Result<Report, CliError> {
@@ -151,6 +156,12 @@ fn credential_lines(credential: &WorkloadCredential, now: i64, public_keys: bool
         format!("  principal: {}", credential.enrolled_for().as_str()),
         format!("  expires: {expires}"),
     ];
+    if let Some(subject) = &credential.subject {
+        lines.push(format!("  subject: {subject}"));
+    }
+    if let Some(org) = &credential.managed {
+        lines.push(format!("  managed by: {org}"));
+    }
     if let Some(revoked_at) = credential.revoked_at {
         lines.push(format!("  revoked: {}", timestamp(revoked_at)));
     }
@@ -175,6 +186,8 @@ fn credential_document(
         "principal": credential.enrolled_for().as_str(),
         "expires_at": credential.expires_at,
         "revoked_at": credential.revoked_at,
+        "subject": credential.subject,
+        "managed": credential.managed,
     });
     if public_keys {
         document["public_key"] = json!(hex_lower(&credential.public_key));
@@ -210,6 +223,124 @@ pub(super) fn repair_paired(
         ],
         payload: None,
     })
+}
+
+/// `phux workload grant|ungrant`: add or remove one scope, and say what the
+/// grant lets the device do.
+pub(super) fn change_scope(
+    paths: &WorkloadPaths,
+    credential_id: &str,
+    scope: &str,
+    add: bool,
+) -> Result<Report, CliError> {
+    let change = WorkloadRegistry::change_scope(&paths.registry, credential_id, scope, add)
+        .map_err(|error| cli_error(&error))?;
+    // `change_scope` refused a scope that does not parse.
+    let meaning = ScopeGrant::parse(scope)
+        .map(|grant| grant_meaning(&grant))
+        .unwrap_or_default();
+    let (done, unchanged) = if add {
+        ("Granted", "already holds")
+    } else {
+        ("Removed", "does not hold")
+    };
+    let mut prose = vec![if change.updated {
+        format!(
+            "{done} {scope} for {credential_id} (registry generation {}).",
+            change.generation
+        )
+    } else {
+        format!("{credential_id} {unchanged} {scope}; nothing changed.")
+    }];
+    prose.push(format!(
+        "  {}{meaning}",
+        if add { "" } else { "no longer " }
+    ));
+    prose.push(format!("  scopes now: {}", change.scopes.join(" ")));
+    if change.updated {
+        prose.push(if add {
+            "The device gets it at its next connection; no re-pair or server restart is needed."
+                .to_owned()
+        } else {
+            "A running server ends the device's connections that relied on it; it reconnects with what remains."
+                .to_owned()
+        });
+    }
+    Ok(Report {
+        document: json!({
+            "schema_version": 1,
+            "operation": if add { "grant" } else { "ungrant" },
+            "credential_id": credential_id,
+            "scope": scope,
+            "meaning": meaning,
+            "updated": change.updated,
+            "scopes": change.scopes,
+            "registry_generation": change.generation,
+        }),
+        prose,
+        payload: None,
+    })
+}
+
+/// One sentence saying what `grant` lets a device do.
+fn grant_meaning(grant: &ScopeGrant) -> String {
+    let verbs: Vec<&str> = grant
+        .verbs
+        .iter()
+        .map(phux_protocol::scope::verb_name)
+        .collect();
+    let control = grant.verbs.contains(Verb::Input);
+    let watch = grant.verbs.contains(Verb::Observe);
+    let reach = match &grant.selector {
+        Selector::Control(class, host) => {
+            let place = host.as_ref().map_or_else(
+                || "this machine".to_owned(),
+                |h| format!("satellite {}", h.as_str()),
+            );
+            let what = match class {
+                ControlClass::Page => "every mirrored browser page",
+                ControlClass::Window => "every mirrored application window",
+                ControlClass::Display => {
+                    "every mirrored display (a display shows every application on that screen)"
+                }
+            };
+            let and = match (watch, control) {
+                (true, true) => "; it can watch them and click, type, scroll and navigate there",
+                (false, true) => "; it can click, type, scroll and navigate there",
+                (true, false) if *class == ControlClass::Page => {
+                    "; a page is also watched through its terminal"
+                }
+                (true, false) => "; it can watch them, and controls nothing without input",
+                (false, false) => "; without observe or input it reaches nothing there",
+            };
+            let relay = if host.is_some() {
+                " (the satellite must also grant this hub's credential the same class)"
+            } else {
+                ""
+            };
+            format!("{what} on {place}{and}{relay}")
+        }
+        Selector::Resource(key) => format!(
+            "the one resource {key}{}",
+            match (watch, control) {
+                (_, true) =>
+                    ", and watch or control it if it is a mirrored page, window or display",
+                (true, false) => ", and watch it if it is a mirrored window or display",
+                (false, false) => "",
+            }
+        ),
+        other => format!(
+            "{} ({other}); no window or display, and no input to any mirror: those need a class grant",
+            match other {
+                Selector::Global => "every session, terminal and satellite",
+                Selector::HostLocal => "every session and terminal on this machine",
+                Selector::HostSatellite(_) => "every terminal on that satellite",
+                Selector::Session(_) => "that session and its terminals",
+                _ => "those terminals",
+            }
+        ),
+    };
+    format!("lets the device {} on {reach}", verbs.join("+"))
 }
 
 pub(super) fn revoke(paths: &WorkloadPaths, credential_id: &str) -> Result<Report, CliError> {
@@ -268,6 +399,55 @@ fn revoke_ticket(paths: &WorkloadPaths, ticket_id: &str) -> Result<Report, CliEr
             "newly_revoked": newly_revoked,
         }),
         prose,
+        payload: None,
+    })
+}
+
+/// Largest `sync-managed` document read: the registry's own file bound.
+const MAX_MANAGED_DOCUMENT: u64 = 4 * 1024 * 1024;
+
+/// `phux workload sync-managed`: replace organization `org`'s credentials
+/// with the document in `file` (stdin for `-` or none).
+pub(super) fn sync_managed(
+    paths: &WorkloadPaths,
+    org: &str,
+    file: Option<&Path>,
+) -> Result<Report, CliError> {
+    let mut document = Vec::new();
+    let read = match file.filter(|path| *path != Path::new("-")) {
+        // The path is not echoed, as for `add-key --file`.
+        Some(path) => std::fs::File::open(path)
+            .and_then(|file| file.take(MAX_MANAGED_DOCUMENT).read_to_end(&mut document)),
+        None => std::io::stdin()
+            .lock()
+            .take(MAX_MANAGED_DOCUMENT)
+            .read_to_end(&mut document),
+    };
+    read.map_err(|error| {
+        CliError::new(
+            codes::WORKLOAD,
+            format!("cannot read the managed credentials document: {error}"),
+            "",
+        )
+    })?;
+    let outcome = WorkloadRegistry::sync_managed(&paths.registry, org, &document)
+        .map_err(|error| cli_error(&error))?;
+    Ok(Report {
+        document: json!({
+            "schema_version": 1,
+            "operation": "sync-managed",
+            "org": org,
+            "added": outcome.added,
+            "updated": outcome.updated,
+            "removed": outcome.removed,
+            "unchanged": outcome.unchanged,
+            "registry_generation": outcome.generation,
+            "restart_required": false,
+        }),
+        prose: vec![format!(
+            "{org}: {} added, {} updated, {} removed, {} unchanged (registry generation {}).",
+            outcome.added, outcome.updated, outcome.removed, outcome.unchanged, outcome.generation
+        )],
         payload: None,
     })
 }

@@ -118,6 +118,7 @@ impl ReloadingWorkloadRegistry {
     /// [`Self::load`], reading the file through `read`.
     pub(super) fn load_with(path: PathBuf, read: Box<ReadSnapshot>) -> Result<Self, WorkloadError> {
         let (observed, snapshot) = read(&path)?;
+        crate::audit::registry_loaded(&path, &snapshot);
         Ok(Self {
             path,
             read,
@@ -215,6 +216,9 @@ impl ReloadingWorkloadRegistry {
     ) -> RegistryObservation {
         let mut cached = self.lock();
         if probe > cached.probe {
+            if !broken {
+                crate::audit::registry_loaded(&self.path, &snapshot);
+            }
             *cached = Cached {
                 observed,
                 snapshot,

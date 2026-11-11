@@ -1,33 +1,29 @@
 //! Bootstrap flow per relayed generation: profile checks, chunk acceptance, and identity validation.
 
 use super::{
-    BootstrapId, BootstrapProfile, BootstrapStreamProfile, MAX_RELAY_GENERATION_BYTES,
-    MAX_RELAY_GENERATION_FRAMES, RelayBootstrapFlow, RelaySession, ServerFeatureExt, StreamId,
-    charge_bytes, charge_frame, ensure_chunk_identity, ensure_chunk_sequence,
+    BootstrapId, BootstrapStreamProfile, MAX_RELAY_GENERATION_BYTES, MAX_RELAY_GENERATION_FRAMES,
+    RelayBootstrapFlow, RelaySession, StreamId, charge_bytes, charge_frame, ensure_chunk_identity,
+    ensure_chunk_sequence,
 };
 
 impl RelaySession {
-    pub(super) const fn expected_stream_profile(&self) -> Option<BootstrapStreamProfile> {
-        match self.bootstrap_profile {
-            BootstrapProfile::NativeState { codec, .. } => {
-                Some(BootstrapStreamProfile::NativeState { codec })
-            }
-            BootstrapProfile::SynthesizedVtRaw => Some(BootstrapStreamProfile::SynthesizedVtRaw),
-            BootstrapProfile::SynthesizedVtStateSync => {
-                Some(BootstrapStreamProfile::SynthesizedVtStateSync)
-            }
-            _ => None,
-        }
-    }
-
+    /// Whether the satellite may send a stream of `profile`: a Terminal
+    /// stream in the link's own profile, which the relay forwards without
+    /// transcoding, or another catalog kind's codec (phux-phiio.3) the
+    /// satellite advertises, with a cursor only where it advertises resume.
     pub(super) fn accepts_stream_profile(&self, profile: BootstrapStreamProfile) -> bool {
-        match profile {
-            BootstrapStreamProfile::AgentEventsJsonlV1 => true,
-            BootstrapStreamProfile::AgentEventsJsonlResumeV1 { .. } => self
-                .satellite_features_ext
-                .contains(ServerFeatureExt::AgentStreamResume),
-            _ => Some(profile) == self.expected_stream_profile(),
+        let Some(spec) = profile.kind_spec() else {
+            return false;
+        };
+        if spec.stream.needs_terminal_profile {
+            return profile == self.bootstrap_profile.terminal_stream();
         }
+        spec.stream.admits(
+            profile.codec().tag(),
+            profile.resume_after_seq().is_some(),
+            self.satellite_features,
+            self.satellite_features_ext,
+        )
     }
 
     pub(super) fn begin_bootstrap_flow(

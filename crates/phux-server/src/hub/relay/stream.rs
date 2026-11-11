@@ -344,11 +344,11 @@ impl RelaySession {
             return;
         };
         if let Some(catalog) = &self.resource_kinds {
-            catalog
+            let mut catalog = catalog
                 .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .kinds
-                .remove(&id);
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            catalog.kinds.remove(&id);
+            catalog.controls.remove(&id);
         }
         if let Some(subscribers) = self.subscribers.get_mut(&id) {
             for subscriber in subscribers {

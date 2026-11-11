@@ -14,6 +14,10 @@ use phux_protocol::wire::frame::{ExecState, SessionLifetime};
 use phux_protocol::wire::info::{ResourceInfo, SessionSnapshot};
 
 use super::organization::OrganizationReplica;
+use crate::project_identity::{self, SessionProject};
+
+mod resource;
+pub use resource::ResourceDescriptor;
 
 /// One session in the server's graph.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -40,6 +44,10 @@ pub struct SessionDescriptor {
     pub arrangement: Option<ArrangementKey>,
     /// Whether it is imported work awaiting organization (Intake).
     pub awaiting_organization: bool,
+    /// Its repository identity, from its attributes (ADR-0168).
+    pub project: Option<SessionProject>,
+    /// Its explicit project link (`phux project link`), from its attributes.
+    pub project_link: Option<String>,
 }
 
 /// One Terminal-kind resource, denormalized with its session so a consumer
@@ -89,15 +97,52 @@ pub struct AgentSessionDescriptor {
     pub state: Option<String>,
 }
 
+/// One document-kind resource: a tree, surface, or typed document.
+///
+/// A hub's satellite documents have no organization record on the hub, so
+/// the snapshot's listing is the only way a client finds them.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DocumentDescriptor {
+    /// The resource.
+    pub id: ResourceId,
+    /// Which document kind.
+    pub kind: ResourceKind,
+    /// The pane its producer runs in.
+    pub parent: Option<ResourceId>,
+    /// Its display name, if declared.
+    pub name: Option<String>,
+}
+
+/// One session on a hub's reachable satellite, with its terminals.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SatelliteSession {
+    /// The satellite's name on the hub.
+    pub host: String,
+    /// The session's name on the satellite.
+    pub name: String,
+    /// Its resources of every kind, satellite-tagged; Terminals in window
+    /// order.
+    pub members: Vec<ResourceId>,
+}
+
 /// The session/pane graph.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Topology {
     /// Every session the server listed.
     pub sessions: Vec<SessionDescriptor>,
+    /// Every resource of every kind, in the server's order, as of the last
+    /// snapshot: a close removes one (from every view) and a Terminal's live
+    /// title replaces its listed one. `panes`, `agent_sessions` and
+    /// `documents` are views of it by kind.
+    pub resources: Vec<ResourceDescriptor>,
     /// Every Terminal-kind resource, in the server's order.
     pub panes: Vec<PaneDescriptor>,
     /// Every `AgentSession` resource.
     pub agent_sessions: Vec<AgentSessionDescriptor>,
+    /// Every document-kind resource, in the server's order.
+    pub documents: Vec<DocumentDescriptor>,
+    /// A hub's satellite sessions, from its inventory; none elsewhere.
+    pub satellite_sessions: Vec<SatelliteSession>,
     /// The focused session.
     pub focused_session: u32,
     /// The focused terminal.
@@ -142,6 +187,8 @@ impl Topology {
                 .unwrap_or(u32::MAX),
                 arrangement: None,
                 awaiting_organization: false,
+                project: project_identity::of_session(session),
+                project_link: project_identity::link_of_session(session).map(str::to_owned),
             })
             .collect();
         let panes = terminal_resources(snapshot)
@@ -186,10 +233,16 @@ impl Topology {
                 state: resource.agent.as_ref().map(|facet| facet.state.clone()),
             })
             .collect();
+        let resources = resource::resources(snapshot);
+        let documents = resource::documents(&resources);
+        let satellite_sessions = satellite_sessions(snapshot);
         Self {
             sessions,
+            resources,
             panes,
             agent_sessions,
+            documents,
+            satellite_sessions,
             focused_session: snapshot.focused_session.get(),
             focused_pane: snapshot.focused_resource.clone(),
             authority: None,
@@ -223,8 +276,12 @@ impl Topology {
                 session.members = record.members;
                 session.arrangement = record.arrangement;
                 session.awaiting_organization = record.awaiting_organization;
+                session.project = project_identity::of_attrs(&record.attrs);
+                session.project_link =
+                    project_identity::link_of_attrs(&record.attrs).map(str::to_owned);
             }
         }
+        resource::rehome(&mut self.resources, replica);
         for pane in &mut self.panes {
             if let Some(record) = replica.resource_by_live(&pane.terminal_id) {
                 if let Some(session) = replica.session(&record.session)
@@ -279,6 +336,21 @@ impl Topology {
             .find(|pane| pane.session_id == session_id)
             .map(|pane| &pane.terminal_id)
     }
+}
+
+/// A hub's satellite sessions, from its inventory rows.
+fn satellite_sessions(snapshot: &SessionSnapshot) -> Vec<SatelliteSession> {
+    snapshot
+        .hosts()
+        .iter()
+        .flat_map(|host| {
+            host.sessions.iter().map(|session| SatelliteSession {
+                host: host.host.as_str().to_owned(),
+                name: session.name.clone(),
+                members: session.members.clone(),
+            })
+        })
+        .collect()
 }
 
 /// The session a snapshot resource belongs to: its `session` facet, or from

@@ -50,13 +50,12 @@ A binary run from `target/` uses the `dev` profile and its own socket.
 [build from source](./install.md#build-from-source).
 
 On Windows, the CLI, server, and terminal UI run under WSL 2 only.
-PowerShell launchers call into that WSL install. Desktop 0.50.0 and later
-also publish a native Windows x64 app, backed by the WSL server, not a
-native Windows CLI/server. See
+PowerShell launchers call into that WSL install. There is no native
+Windows CLI, server, or desktop app. See
 [Windows (WSL)](./install.md#windows-wsl) and
 [requirements](./install.md#requirements).
 
-The desktop app (Phux) is separate. The CLI is what scripts drive. See
+The desktop app (Phux Rune) is separate. The CLI is what scripts drive. See
 [desktop app](./install.md#desktop-app).
 
 ```sh
@@ -231,6 +230,32 @@ and return once phux has seen it: `phux agent start NAME --kind KIND
 --target @N`. A kind with no detection manifest is refused. `phux launch
 --list` lists integrations from enabled plugins.
 
+## Drive an application
+
+`phux spawn --app NAME` launches an application in a new pane and
+mirrors it into documents under that pane; killing the pane quits it.
+A browser is the cheapest: its page is a tree and a surface.
+
+```sh
+doc=$(phux spawn --json --app chrome --browser https://example.com --headless)
+pane="@$(printf '%s\n' "$doc" | jq -r .terminal_id)"
+tree=$(printf '%s\n' "$doc" | jq -r '.documents[] | select(.kind == "accessibility_tree") | .id')
+surface=$(printf '%s\n' "$doc" | jq -r '.documents[] | select(.kind == "pixel_surface") | .id')
+phux agent surface snapshot "$surface" --out page.png
+phux agent page click "$surface" 120 80
+phux agent page type "$surface" 'hello'
+phux agent tree follow "$tree" --until 'hello' --timeout 10
+phux kill --yes "$pane"
+```
+
+`documents` lists what opened within 20 s; list later ones with
+`phux ls --json` (`resources` whose `parent` is the pane) or MCP
+`phux_documents`. Over MCP the same loop is `phux_app_open`,
+`phux_surface_snapshot`, `phux_document_click` and `phux_document_type`,
+`phux_tree_wait`, and `phux_app_close`.
+A macOS app name or a Linux command launches that app instead; see
+[applications](./resource-kinds.md#applications).
+
 ## Call phux from a program
 
 Pass `--json` on commands whose `--help` lists it. The document carries
@@ -278,7 +303,9 @@ phux runtime-info --json
 ```
 
 `phux skill` prints the guide compiled into that binary. `runtime-info`
-prints the protocol and capabilities of that binary.
+prints the protocol and capabilities of that binary. `phux skill setup`
+installs a short skill in each installed agent's skill directory that
+points it at `phux skill`; see [Agent skill setup](./agent-skill.md).
 
 ## Run without a terminal
 

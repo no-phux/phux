@@ -20,6 +20,7 @@ unshipped experiment, and phone apps are not available yet. See
 
 - [Configuration file](./config.md): where the file lives, how it layers over the defaults, and when a change takes effect.
 - [Key bindings](./keys.md): change the prefix, rebind or unbind keys, and see what's in effect.
+- [Migrate your config](./migrate.md): your coding agent moves your tmux, zellij, Ghostty or herdr keys into phux.
 - [Themes](./themes.md): install, pick, and write colour themes.
 - [Status bar and sidebar](./status-bar.md): what the bar and the sidebar show, and how to change it.
 - [Hooks](./hooks.md): run a command when something happens.
@@ -36,6 +37,8 @@ unshipped experiment, and phone apps are not available yet. See
 - [Driving terminals from scripts](./scripting.md): snapshot, send keys, run, wait, with JSON output and exit codes.
 - [Runnable examples](../examples/README.md): small programs for learning the CLI and integrations.
 - [Coding agents](./agents.md): see which agent needs you, connect your agent's host, and use the MCP server.
+- [Mail across a hub](./hub-mail.md): shared mail and path claims between a hub and the machines joined to it.
+- [Agent skill setup](./agent-skill.md): `phux skill setup` teaches every installed agent about phux.
 - [ACP sessions](./acp.md): run an agent through the Agent Client Protocol, and answer its permission requests yourself.
 
 ## Build on phux
@@ -51,17 +54,16 @@ unshipped experiment, and phone apps are not available yet. See
 ## Machines and clients
 
 - [Remote machines](./remote.md): reach another machine's server with `phux host add`, and link machines together.
-- [Clients](./clients.md): the terminal UI, the desktop app, the browser client, and phones.
-- [Desktop Quick Capture](./desktop-capture.md): start an agent from a thought without leaving what you're doing.
-- [Desktop Changes panel](./desktop-changes.md): review, stage, and commit the focused checkout.
-- [Desktop Reviews](./desktop-reviews.md): review, comment on, and merge your open GitHub pull requests.
-- [Desktop agent panes](./desktop-panes.md): how the desktop app shows agent panes.
+- [Audit log](./audit.md): the signed record of connections, decisions, approvals, and credential changes, and how to check it.
+- [Native terminal windows](./native-terminal.md): one server-owned shell per emulator window, without TUI chrome.
+- [Organizations](./enterprise.md): managed credentials, the audit log, held actions, and what the paid team service adds.
+- [Clients](./clients.md): the terminal UI, the desktop app (Phux Rune), the browser client, and phones.
 
 ## Help
 
 - [Troubleshooting](./troubleshooting.md): what to run first, and the failures people hit.
 - [Supported platforms](./install.md#requirements) and [desktop installation](./install.md#desktop-app): choose the right download.
-- [Desktop first launch and recovery](../clients/desktop/README.md#first-launch-and-recovery): bundled runtime, retry, and startup failures.
+- [Phux Rune diagnostics](../clients/rune/README.md#what-it-does): the desktop app's logs, crash entries, and **Copy diagnostics**.
 - [Report a bug](./troubleshooting.md#reporting-a-bug): gather diagnostics and remove private information before sharing.
 - [Discord](https://discord.gg/dUv5rzdHp): questions and setup help.
 - [GitHub issues](https://github.com/no-phux/phux/issues): reproducible bugs and feature proposals.
@@ -89,12 +91,16 @@ Generated from the `phux` binary, so they match the code these docs describe.
 - [Decisions](./decisions.md): the constraints the code keeps, and why.
 - [Organization](./organization.md): how the server owns sessions and their contents.
 - [Substrate](./substrate.md): how people, hosts, and agents fit together.
-- [Resource kinds beyond terminals](./resource-kinds.md): the design for accessibility-tree, pixel and browser resources, and the order it lands in.
+- [Resource kinds beyond terminals](./resource-kinds.md): accessibility-tree, pixel-surface and typed-document resources, what is not done yet, and how they were built.
+- [Mirror formats and platforms](./mirrors.md): surface frame formats, the Linux tree and surface mirrors, and the notice shown while input arrives.
+- [Held actions](./approvals.md): which actions a key's scope can hold for approval, and who may decide them.
+- [Authority over pages, windows, and displays](./authority.md): who may watch or control a mirrored page, window, or display, and why no terminal grant does.
+- [Applications as resources](./applications.md): `phux spawn --app`, launching an app with its mirrors and quitting it with its pane.
 - [Server protocol](./protocol.md): framing, handshake, capabilities, and changing the wire.
 - [File transfer and checkout](./protocol-files.md): the commands that move files and inspect a checkout.
 - [Host services](./host-services.md): HTTP to a host service (OpenCode) over the phux connection.
 - [Compatibility](./compatibility.md): what an older or newer peer sees.
-- [Embed phux](./embedding.md): put a phux terminal in your own app with `phux-gpui`, `phux-client-runtime`, or `phux-client-ffi`.
+- [Embed phux](./embedding.md): put a phux terminal in your own app with `phux-client-runtime` or `phux-client-ffi`.
 - [Development](./development.md): set up, build, and run the checks.
 - [Releasing](./releasing.md): what ships, and how.
 

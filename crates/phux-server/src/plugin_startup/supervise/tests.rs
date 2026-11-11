@@ -76,7 +76,7 @@ fn empty_catalog_arms_no_timer() {
 /// the watch stores `fired` before it notifies.
 ///
 /// Virtual time stays put until the deferred wait has actually happened.
-/// Advancing first, before `/bin/true` has exited, jumps the clock with
+/// Advancing first, before the sidecar has exited, jumps the clock with
 /// no fallback armed yet, and the later one-second sleep is then still
 /// in the future.
 #[test]
@@ -114,7 +114,9 @@ fn fired_watch_is_polled_again_when_the_first_wait_misses() {
             plugin_name: "Plug".to_owned(),
             plugin_version: "0.1.0".to_owned(),
             startup_id: "web".to_owned(),
-            command: vec!["/bin/true".to_owned()],
+            // Alive long enough to arm the watch: macOS kqueue refuses
+            // EVFILT_PROC for a process that has already exited.
+            command: vec!["/bin/sleep".to_owned(), "0.2".to_owned()],
             plugin_root: root_dir,
             manifest_hash: 1,
         });

@@ -20,10 +20,8 @@ mod tests;
 pub(crate) use create::create_session_via_metadata;
 pub(crate) use empty::ensure_local_unseeded_server;
 use empty::{run_new_empty_attached, run_new_empty_json};
-use naming::{
-    choose_session_name, existing_session_names, report_invalid_session_name,
-    requested_session_name,
-};
+use naming::{choose_session_name, report_invalid_session_name, requested_session_name};
+pub(crate) use naming::{existing_session_names, unique_session_name};
 
 /// `phux new` — create a *new* session and attach to it.
 ///

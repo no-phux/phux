@@ -19,6 +19,12 @@ use phux_protocol::ids::ResourceId;
 use crate::desk::{NoticeKind, Pending, Shown};
 use crate::launch::{self, Options};
 
+mod phone;
+
+/// A refused token as the QUIC lane renders it (`dial::dial_message`).
+const QUIC_REFUSED: &str =
+    "mini refused the pairing token (unauthorized); re-pair it with `phux host add mini`";
+
 fn desk() -> Desk {
     let options = Options {
         socket: Some(PathBuf::from("/nowhere/phux.sock")),
@@ -48,8 +54,11 @@ fn pane(id: u32, session: u32, cwd: Option<&str>) -> PaneDescriptor {
 fn topology(panes: Vec<PaneDescriptor>) -> Topology {
     Topology {
         sessions: Vec::new(),
+        resources: Vec::new(),
         panes,
         agent_sessions: Vec::new(),
+        documents: Vec::new(),
+        satellite_sessions: Vec::new(),
         focused_session: 0,
         focused_pane: ResourceId::local(0),
         authority: None,
@@ -94,7 +103,7 @@ fn new_work_starts_in_the_focused_panes_directory() {
     assert_eq!(desk.focused_cwd(), None);
     desk.topology = Some(topology(vec![pane(1, 1, Some("/there")), pane(2, 1, None)]));
     let shown = |id| super::super::Shown {
-        terminal: ResourceId::local(id),
+        resource: ResourceId::local(id),
         view: phux_client_runtime::ViewId::from_raw(1),
     };
     desk.shown = Some(shown(1));
@@ -143,6 +152,11 @@ fn nothing_retries_what_retrying_cant_change() {
     assert!(!desk.stuck());
     desk.error = Some("websocket: 401".to_owned());
     assert!(desk.stuck());
+    // The QUIC lane's refusal is as final as the WebSocket's.
+    desk.error = Some(QUIC_REFUSED.to_owned());
+    assert!(desk.stuck());
+    desk.error = Some("mini did not answer (timed out)".to_owned());
+    assert!(!desk.stuck());
     desk.error = None;
     desk.failed_with("server error VersionIncompatible: server speaks 12");
     assert!(desk.stuck());
@@ -170,7 +184,7 @@ fn the_runtime_renders_a_protocol_refusal_as_this_reads_it() {
 fn stale(client: Arc<Client>) -> Desk {
     let mut desk = desk();
     desk.shown = Some(Shown {
-        terminal: ResourceId::local(1),
+        resource: ResourceId::local(1),
         view: phux_client_runtime::ViewId::from_raw(1),
     });
     desk.client = Some(client);
@@ -200,11 +214,34 @@ fn a_stale_window_says_when_it_has_stopped_trying() {
     );
     desk.link.ended = None;
     desk.status = Status::Failed;
-    desk.error = Some("websocket: 401".to_owned());
-    assert!(matches!(
-        desk.banner(),
-        Some(Banner::Stuck(Standing::Unreachable(_)))
-    ));
+    for refusal in ["websocket: 401", QUIC_REFUSED] {
+        desk.error = Some(refusal.to_owned());
+        let Some(Banner::Stuck(Standing::Unreachable(why))) = desk.banner() else {
+            panic!("{refusal} keeps retrying");
+        };
+        assert!(why.contains("Set it up again"), "{why}");
+    }
+}
+
+#[test]
+fn a_killed_session_leaves_the_link_up_for_the_next_one() {
+    use phux_client_runtime::control::Event;
+    use phux_protocol::wire::frame::DetachReason;
+    let client = embedded();
+    let mut desk = desk();
+    desk.client = Some(client.clone());
+    desk.status = Status::Attached;
+    let ended = |reason| Event::Detached {
+        reason: Some(reason),
+        message: "the session this attach was rooted in was killed".to_owned(),
+    };
+    desk.apply_connection(&client, ended(DetachReason::SessionKilled));
+    assert!(
+        desk.link_is_up(),
+        "the socket stays open and nothing retries"
+    );
+    desk.apply_connection(&client, ended(DetachReason::AuthorizationRevoked));
+    assert!(!desk.link_is_up(), "this one really did end the connection");
 }
 
 /// Counts the wakes a client delivers.
@@ -431,6 +468,7 @@ fn transport_errors_read_as_words() {
         "No answer from the machine."
     );
     assert!(plainly("websocket: 401 pairing token refused").contains("Set it up again"));
+    assert!(plainly(QUIC_REFUSED).contains("Set it up again"));
     assert_eq!(plainly("something new"), "something new");
 }
 

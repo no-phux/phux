@@ -62,6 +62,7 @@ impl WorkloadRegistry {
         if let Some(expires_at) = expires_at {
             validate_expiry(expires_at)?;
         }
+        let scopes = super::paired::enrolled_scopes(scopes, enrolled_for);
         let id = credential_id(public_key);
         store::with_lock(path, |held| {
             let mut registry = Self::load(path)?;
@@ -90,6 +91,8 @@ impl WorkloadRegistry {
                 revoked_at: None,
                 recorded_for: enrolled_for,
                 satellite: None,
+                subject: None,
+                managed: None,
             });
             registry.commit(path, held)?;
             Ok(RegisteredCredential {
@@ -141,6 +144,8 @@ impl WorkloadRegistry {
                 revoked_at: None,
                 recorded_for: Some(EnrolledFor::Automation),
                 satellite: Some(name.to_owned()),
+                subject: None,
+                managed: None,
             });
             registry.commit(path, held)?;
             Ok(RegisteredCredential {
@@ -238,6 +243,8 @@ impl WorkloadRegistry {
                 revoked_at: credential.revoked_at,
                 principal: credential.recorded_for,
                 satellite: credential.satellite.clone(),
+                subject: credential.subject.clone(),
+                managed: credential.managed.clone(),
             })
             .collect();
         let mut bytes = serde_json::to_vec_pretty(&RegistryFile {

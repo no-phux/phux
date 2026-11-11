@@ -150,3 +150,67 @@ fn native_field_ink_follows_live_themes_in_both_forms() {
         }
     }
 }
+
+#[test]
+fn native_field_context_menu_edits_only_its_find_field_in_both_forms() {
+    for phone in [false, true] {
+        let (client, mut rt) = crate::grid::budget::input_fixture();
+        rt.state.prefs = rune::prefs::Prefs::memory();
+        rt.state.phone = phone.then(crate::desk::phone::Phone::default);
+        rt.set_viewport(
+            if phone {
+                (393.0, 852.0)
+            } else {
+                (1100.0, 720.0)
+            },
+            2.0,
+        );
+        let board = rune::clipboard::memory();
+        board.set_text("clipboard sentinel");
+        rt.use_clipboard(&board);
+        rt.update(|d, tx| {
+            tx.instant();
+            d.open_find();
+            d.find_query = rune::TextEdit::new("field sentinel");
+            d.find_query.focused = true;
+        });
+        rt.frame(0.0);
+        // Phone stage measurement retargets its camera after the first
+        // frame; advance its spring before hit-testing the Find field.
+        for _ in 0..120 {
+            rt.frame(1.0 / 60.0);
+        }
+        let (x, y) = rt.find("find-query").expect("find field");
+        rt.pointer_down(x, y);
+        rt.pointer_up(x, y);
+        rt.frame(0.0);
+        rt.update(|d, _| d.find_query.set_selection(0, d.find_query.text.len()));
+        rt.frame(0.0);
+        let _ = client.take_outbound();
+        rt.secondary_down(x, y);
+        rt.secondary_up(x, y);
+        rt.frame(0.0);
+        let menu = rt.popup_menu().expect("native field menu");
+        assert!(menu.find("copy").expect("Copy").is_enabled());
+        assert!(menu.find("paste").is_some());
+        assert!(rt.state.pointer.menu.is_none(), "not the terminal's menu");
+        rt.resolve_popup(Some("copy")).expect("copy the field");
+        rt.frame(0.0);
+        assert_eq!(
+            board.text().as_deref().map(String::as_str),
+            Some("field sentinel")
+        );
+
+        rt.secondary_down(x, y);
+        rt.secondary_up(x, y);
+        rt.frame(0.0);
+        rt.resolve_popup(Some("cut")).expect("cut the field");
+        rt.frame(0.0);
+        assert!(rt.state.find_query.text.is_empty());
+        assert!(rt.state.find_query.focused);
+        assert!(
+            client.take_outbound().is_empty(),
+            "menu sent terminal input"
+        );
+    }
+}

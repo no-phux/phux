@@ -347,6 +347,13 @@ pub enum AgentEvent {
         /// Factual stage or outcome explanation.
         detail: Option<String>,
     },
+    /// A viewer's input intent for the envelope's document, sent only to
+    /// the connection producing it (`SEND_DOCUMENT_INPUT`). Unjournaled:
+    /// the `EVENT` stamp is absent and no other subscriber sees it.
+    DocumentInput {
+        /// What the viewer asked for.
+        intent: super::DocumentInput,
+    },
     /// An event tag this build does not know, body kept verbatim. Produced
     /// only by the decoder.
     Unknown {

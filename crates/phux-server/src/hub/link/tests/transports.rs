@@ -40,6 +40,7 @@ async fn net_link_preserves_satellite_extended_features_from_hello_ok() {
         url: format!("ws://127.0.0.1:{port}"),
         trust: CertTrust::SkipVerify,
         token_file: None,
+        identity: None,
     };
     let conn = NetLinkTransport::new("ssh".into(), crate::hub::adopt::SatelliteAdopter::default())
         .connect(&SatelliteHost::new("sat"), &spec, None)
@@ -50,6 +51,76 @@ async fn net_link_preserves_satellite_extended_features_from_hello_ok() {
             .unwrap()
             .contains(phux_protocol::caps::ServerFeatureExt::PathQuery)
     );
+    server.await.unwrap();
+}
+
+/// The link offers the hub's own Terminal profiles, so a native satellite
+/// selects the same `NativeState` the hub selects for a native downstream
+/// client, and the relay admits that client's satellite attach.
+#[tokio::test]
+async fn net_link_selects_the_profile_the_hub_selects_for_native_clients() {
+    use phux_protocol::caps::{
+        BootstrapCapabilities, ClientCapabilities, EngineCodec, EngineFeatureSet,
+        select_bootstrap_profile,
+    };
+    let native = BootstrapCapabilities::new().with_native(
+        EngineCodec::LibghosttySnapshotV1,
+        EngineFeatureSet::required_native(),
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind loopback");
+    let port = listener.local_addr().unwrap().port();
+    let server = tokio::spawn(async move {
+        let (tcp, _) = listener.accept().await.unwrap();
+        let mut ws = tokio_tungstenite::accept_async(tcp).await.unwrap();
+        let tokio_tungstenite::tungstenite::Message::Binary(hello) =
+            futures_util::StreamExt::next(&mut ws)
+                .await
+                .unwrap()
+                .unwrap()
+        else {
+            panic!("expected binary HELLO");
+        };
+        let FrameKind::Hello { client_caps, .. } = FrameKind::decode(&hello).unwrap().0 else {
+            panic!("expected HELLO");
+        };
+        // Select exactly as a native satellite's HELLO handler does.
+        let (profile, limits) = select_bootstrap_profile(&client_caps, &native).unwrap();
+        let mut encoded = bytes::BytesMut::new();
+        FrameKind::HelloOk {
+            protocol_major: PROTOCOL_VERSION.major,
+            protocol_minor: PROTOCOL_VERSION.minor,
+            protocol_patch: PROTOCOL_VERSION.patch,
+            server_caps: phux_protocol::caps::ServerCapabilities::default(),
+            server_id: vec![0; 16],
+            selected_profile: Some(profile),
+            bootstrap_limits: limits,
+        }
+        .encode(&mut encoded);
+        futures_util::SinkExt::send(
+            &mut ws,
+            tokio_tungstenite::tungstenite::Message::Binary(encoded.to_vec().into()),
+        )
+        .await
+        .unwrap();
+    });
+    let spec = DialSpec::Ws {
+        url: format!("ws://127.0.0.1:{port}"),
+        trust: CertTrust::SkipVerify,
+        token_file: None,
+        identity: None,
+    };
+    let conn = NetLinkTransport::new("ssh".into(), crate::hub::adopt::SatelliteAdopter::default())
+        .with_bootstrap(native)
+        .connect(&SatelliteHost::new("sat"), &spec, None)
+        .await
+        .unwrap();
+    let downstream = ClientCapabilities::new().with_bootstrap(native);
+    let (hub_selects, hub_limits) = select_bootstrap_profile(&downstream, &native).unwrap();
+    assert!(matches!(hub_selects, BootstrapProfile::NativeState { .. }));
+    assert_eq!(conn.bootstrap_profile().unwrap(), hub_selects);
+    assert_eq!(conn.bootstrap_limits().unwrap(), hub_limits);
     server.await.unwrap();
 }
 
@@ -173,6 +244,7 @@ async fn ssh_transport_spawns_the_planned_argv_and_treats_exit_as_a_drop() {
             let transport = NetLinkTransport {
                 ssh_program: stub.into(),
                 adopter: crate::hub::adopt::SatelliteAdopter::default(),
+                bootstrap: phux_protocol::caps::BootstrapCapabilities::new(),
             };
             let statuses = HubLinkStatuses::default();
             let cancel = CancellationToken::new();
@@ -228,6 +300,7 @@ async fn ssh_transport_drains_stderr_past_the_pipe_buffer_without_stalling() {
             let transport = NetLinkTransport {
                 ssh_program: stub.into(),
                 adopter: crate::hub::adopt::SatelliteAdopter::default(),
+                bootstrap: phux_protocol::caps::BootstrapCapabilities::new(),
             };
             let statuses = HubLinkStatuses::default();
             let cancel = CancellationToken::new();
@@ -271,6 +344,7 @@ async fn ssh_transport_holds_a_live_child_as_connected() {
             let transport = NetLinkTransport {
                 ssh_program: stub.into(),
                 adopter: crate::hub::adopt::SatelliteAdopter::default(),
+                bootstrap: phux_protocol::caps::BootstrapCapabilities::new(),
             };
             let statuses = HubLinkStatuses::default();
             let cancel = CancellationToken::new();
@@ -303,6 +377,7 @@ async fn ssh_transport_missing_program_is_a_failed_attempt_not_a_panic() {
             let transport = NetLinkTransport {
                 ssh_program: "/nonexistent/phux-test-no-such-ssh".into(),
                 adopter: crate::hub::adopt::SatelliteAdopter::default(),
+                bootstrap: phux_protocol::caps::BootstrapCapabilities::new(),
             };
             let statuses = HubLinkStatuses::default();
             let cancel = CancellationToken::new();

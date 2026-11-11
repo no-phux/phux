@@ -1,5 +1,6 @@
 //! ATTACH inventory: membership, release, and readiness tracking.
 
+use super::lane::LaneKind;
 use super::{
     AttachParticipant, AttachState, EffectBuffer, EngineAdapter, KernelDamage, KernelDamageKind,
     KernelEffect, KernelError, KernelSend, ResourceId, ResourceKind, SessionKernel,
@@ -80,11 +81,10 @@ impl<E: EngineAdapter> SessionKernel<E> {
         }) {
             return false;
         }
-        self.terminals.remove(terminal_id);
+        self.lanes.remove(terminal_id);
         self.closed_replicas.remove(terminal_id);
         self.retain_replica_on_close.remove(terminal_id);
-        self.agents.remove(terminal_id);
-        self.documents.remove(terminal_id);
+        self.lift_refusal(terminal_id);
         self.closed_native_views.remove(terminal_id);
         self.kinds.remove(terminal_id);
         self.closed.remove(terminal_id);
@@ -94,16 +94,26 @@ impl<E: EngineAdapter> SessionKernel<E> {
     }
 
     /// Forget what only the previous server incarnation could mean: every
-    /// `AgentSession` resource, open or closed, and every closed resource's
-    /// tombstone, as [`Self::release_terminal`] forgets one. A new
-    /// incarnation may reuse those ids for a resource of any kind.
+    /// `AgentSession` and document resource, open or closed, every closed
+    /// resource's tombstone, and every refused unknown-codec stream, as
+    /// [`Self::release_terminal`] forgets one. A new incarnation may reuse
+    /// those ids for a resource of any kind.
     pub fn release_incarnation(&mut self) {
         let stale: Vec<ResourceId> = self
             .kinds
             .iter()
-            .filter(|(_, kind)| **kind == ResourceKind::AgentSession)
+            .filter(|(_, kind)| {
+                matches!(
+                    kind,
+                    ResourceKind::AgentSession
+                        | ResourceKind::AccessibilityTree
+                        | ResourceKind::PixelSurface
+                        | ResourceKind::Document
+                )
+            })
             .map(|(terminal_id, _)| terminal_id.clone())
             .chain(self.closed.iter().cloned())
+            .chain(self.unsupported.iter().cloned())
             .collect();
         for terminal_id in stale {
             let _ = self.release_terminal(&terminal_id);
@@ -134,9 +144,9 @@ impl<E: EngineAdapter> SessionKernel<E> {
         for terminal_id in terminal_ids {
             self.expect_kind(terminal_id, ResourceKind::Terminal)?;
         }
-        self.terminals.reserve(terminal_ids.len());
+        self.lanes.reserve(terminal_ids.len());
         for terminal_id in terminal_ids {
-            self.terminals.entry(terminal_id.clone()).or_default();
+            self.lanes.open(terminal_id, LaneKind::Terminal);
         }
 
         let attach = self.attach.get_or_insert_with(|| AttachState {
@@ -209,8 +219,8 @@ impl<E: EngineAdapter> SessionKernel<E> {
                 continue;
             }
             if self
-                .terminals
-                .get(&participant.terminal_id)
+                .lanes
+                .terminal(&participant.terminal_id)
                 .and_then(|state| state.published.as_ref())
                 .is_some()
             {

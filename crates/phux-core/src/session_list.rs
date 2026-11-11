@@ -114,8 +114,12 @@ pub struct ResourceJson {
     /// Canonical selector (`@N` / `host/@N`).
     pub id: String,
     /// Resource kind: `terminal`, `agent_session`, `accessibility_tree`,
-    /// `pixel_surface`, or `unknown`.
+    /// `pixel_surface`, `document`, or `unknown`.
     pub kind: String,
+    /// The resource's name: a document's label (`--app`, `--window`,
+    /// `--name`, a page title) or a pane's user-set title; omitted when unset.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
     /// Canonical selector of the parent, or `null` for a root (emitted, not
     /// omitted).
     #[serde(default)]
@@ -127,6 +131,15 @@ pub struct ResourceJson {
     /// How a retained resource's process ended; `null` while it runs.
     #[serde(default)]
     pub exit: Option<ResourceExitJson>,
+    /// A document's producer: `connected` or `gone`; omitted for another
+    /// kind or from an older server.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub producer: Option<String>,
+    /// What input to a document controls: `page`, `window`, or `display`;
+    /// omitted for a document that controls nothing, another kind, or an
+    /// older server.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub control: Option<String>,
     /// The resource record's full 26-character persistent key, the text a
     /// workload `resource:<key>` scope names; `null` when no organization
     /// record executes as this resource.
@@ -321,6 +334,7 @@ mod tests {
             ResourceJson {
                 id: "@7".to_owned(),
                 kind: "terminal".to_owned(),
+                name: None,
                 parent: None,
                 lifecycle: "exited".to_owned(),
                 exit: Some(ResourceExitJson {
@@ -330,14 +344,19 @@ mod tests {
                     exited_at_ms: 10,
                     retained_until_ms: 20,
                 }),
+                producer: None,
+                control: None,
                 key: Some("0123456789ABCDEFGHJKMNPQRT".to_owned()),
             },
             ResourceJson {
                 id: "@9".to_owned(),
                 kind: "agent_session".to_owned(),
+                name: None,
                 parent: Some("@7".to_owned()),
                 lifecycle: "running".to_owned(),
                 exit: None,
+                producer: None,
+                control: None,
                 key: None,
             },
         ])

@@ -42,3 +42,23 @@ fn continuum_plugin_loads() -> Result<(), Box<dyn std::error::Error>> {
     );
     Ok(())
 }
+
+#[test]
+fn agent_stats_plugin_hooks_real_server_events() -> Result<(), Box<dyn std::error::Error>> {
+    let manifest = std::path::PathBuf::from(
+        std::env::var_os("CARGO_MANIFEST_DIR").expect("the test runner sets CARGO_MANIFEST_DIR"),
+    )
+    .join("../../plugins/agent-stats/phux-plugin.toml");
+    let loaded = plugin::load_plugin_manifest(&manifest)?;
+    assert_eq!(loaded.id, "com.phux.agent-stats");
+    let hooks: Vec<&str> = loaded.events.iter().map(|e| e.on.as_str()).collect();
+    assert_eq!(
+        hooks,
+        ["agent-state-changed", "pane-exit", "client-attached"]
+    );
+    for on in hooks {
+        assert!(phux_config::vocab::HOOK_EVENTS.contains(&on), "{on}");
+    }
+    assert!(loaded.plugin_root.join("scripts/publish.sh").is_file());
+    Ok(())
+}

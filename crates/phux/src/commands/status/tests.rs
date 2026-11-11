@@ -167,8 +167,8 @@ fn not_running_document_is_pinned() {
     assert_eq!(doc.as_object().map(serde_json::Map::len), Some(5));
 }
 
-/// `build_report` name-sorts sessions and splits satellite Terminals out
-/// of the pane list, and carries the degradation notices through.
+/// `build_report` name-sorts sessions and splits satellite Terminals (not
+/// their documents) out of the pane list, and carries the degradation notices through.
 #[test]
 fn build_report_sorts_and_splits() {
     let snapshot = SessionSnapshot::new(SessionId::new(1), WindowId::new(1), ResourceId::local(1))
@@ -181,6 +181,14 @@ fn build_report_sorts_and_splits() {
                 80,
                 24,
             ),
+            // A satellite's surface is a document, not a terminal.
+            ResourceInfo::new(
+                ResourceId::satellite("build-box", 2),
+                WindowId::new(1),
+                0,
+                0,
+            )
+            .with_kind(phux_protocol::ResourceKind::PixelSurface),
         ]);
     let degradation = Degradation::from_interleaved(&[FrameKind::Error {
         request_id: None,

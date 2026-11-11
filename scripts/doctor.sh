@@ -123,17 +123,8 @@ node_tools() {
 
 desktop_tools() {
     if ! check_desktop_toolchain; then
-        fail 'desktop toolchain selection' 'Choose one environment; see docs/development.md#gpui-desktop'
+        fail 'desktop toolchain selection' 'Choose one environment; see docs/development.md#rune-desktop'
         return
-    fi
-    if [[ "$(uname -s)" == Darwin ]]; then
-        # --check never downloads a component; builds/setup repair missing Metal.
-        # shellcheck source=scripts/lib/macos-desktop.sh
-        source "$DEV_ROOT/scripts/lib/macos-desktop.sh"
-        if ! prepare_macos_desktop --check; then
-            fail 'macOS desktop toolchain' 'bash scripts/setup-macos-desktop.sh; see docs/development.md#gpui-desktop'
-            return
-        fi
     fi
     native_tools
     node_tools
@@ -144,18 +135,17 @@ desktop_tools() {
         fail "Bun $expected (found: ${actual:-none})" 'mise install; use the repository Bun pin'
     fi
     case "$(uname -s)/$(uname -m)" in
-        Linux/x86_64|Linux/aarch64) linux_desktop_tools; return ;;
+        Linux/x86_64|Linux/aarch64) linux_desktop_tools ;;
         Darwin/arm64) ;;
-        *) fail 'unsupported desktop platform' 'Use Apple-silicon macOS or x86-64/ARM64 Linux'; return ;;
+        *) fail 'unsupported desktop platform' 'Use Apple-silicon macOS or x86-64/ARM64 Linux' ;;
     esac
-    ok 'Metal compiler executes (macOS 26 deployment target)'
 }
 
 linux_desktop_tools() {
     local library
     for library in fontconfig freetype2 xkbcommon xkbcommon-x11 wayland-client x11 xcb; do
         if pkg-config --exists "$library"; then ok "$library"; else
-            fail "$library development libraries" 'Install the Linux desktop packages in docs/development.md#gpui-desktop; or use nix develop'
+            fail "$library development libraries" 'Install the Linux desktop packages in docs/development.md#rune-desktop; or use nix develop'
         fi
     done
     if [[ -n "${DISPLAY:-}${WAYLAND_DISPLAY:-}" ]]; then ok 'graphical session'; else

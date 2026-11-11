@@ -11,6 +11,7 @@ mod runner;
 
 mod attach_roles_e2e;
 mod fleet_sidebar_e2e;
+mod native_e2e;
 mod plugin_surfaces_e2e;
 mod quic_restore_e2e;
 mod resize_e2e;

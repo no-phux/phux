@@ -33,19 +33,25 @@ impl Tx<'_> {
             ),
             None => None,
         };
-        // A projection's parent supervises its producer, which runs in a
-        // terminal (docs/resource-kinds.md).
-        if matches!(
-            spec.kind,
-            ResourceKind::AgentSession
-                | ResourceKind::AccessibilityTree
-                | ResourceKind::PixelSurface
-        ) && parent_kind != Some(ResourceKind::Terminal)
-        {
-            return Err(Refusal::invalid(
-                "parent",
-                "an agent conversation, an accessibility tree or a pixel surface binds to a terminal",
-            ));
+        // Only the structure is checked here: a kind that binds to a parent
+        // has one that exists and can supervise a producer. Whether that
+        // parent is fit is its app's check at spawn.
+        if spec.kind.requires_parent() {
+            match parent_kind {
+                None => {
+                    return Err(Refusal::invalid(
+                        "parent",
+                        format!("{} needs a parent", spec.kind),
+                    ));
+                }
+                Some(kind) if !kind.can_parent() => {
+                    return Err(Refusal::invalid(
+                        "parent",
+                        format!("{kind} cannot supervise a producer"),
+                    ));
+                }
+                Some(_) => {}
+            }
         }
         Ok(())
     }

@@ -26,6 +26,8 @@ use wasm_bindgen_test::wasm_bindgen_test;
 mod agents;
 #[path = "session/bootstrap.rs"]
 mod bootstrap;
+#[path = "session/documents.rs"]
+mod documents;
 #[path = "session/handshake.rs"]
 mod handshake;
 #[path = "session/native.rs"]

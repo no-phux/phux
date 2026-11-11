@@ -5,6 +5,8 @@ export class PhuxError extends Error {
     exitCode;
     stderr;
     cliError;
+    /** For `wrong_resource_kind`: the `phux ls --json` kind named, when the CLI said which. */
+    resourceKind;
     constructor(code, message, details = {}) {
         super(message, details.cause === undefined ? undefined : { cause: details.cause });
         this.name = "PhuxError";
@@ -13,5 +15,6 @@ export class PhuxError extends Error {
         this.exitCode = details.exitCode;
         this.stderr = details.stderr;
         this.cliError = details.cliError;
+        this.resourceKind = details.resourceKind;
     }
 }

@@ -26,6 +26,8 @@ path = "src/main.rs"
 # or the native replica engine; `bun tools/main.ts build-features-check` still pins
 # that no `ratatui` reaches this graph. Protocol server conversions still use
 # libghostty.
+# The surface tools return PNGs as base64 MCP image content.
+base64.workspace = true
 phux-client.workspace = true
 phux-client-runtime.workspace = true
 phux-config.workspace = true

@@ -26,6 +26,11 @@ pub struct HostSessionInfo {
     pub attached_client_count: u16,
     /// The session's remembered focused pane, re-tagged `SATELLITE`.
     pub active_resource: Option<ResourceId>,
+    /// The session's resources of every kind, re-tagged `SATELLITE`, so a
+    /// client lists each satellite resource under its session instead of on
+    /// its own (#2051). Empty from a hub that predates it: those clients fall
+    /// back to flat rows. Older hubs list only Terminals.
+    pub members: Vec<ResourceId>,
 }
 
 impl HostSessionInfo {
@@ -40,6 +45,7 @@ impl HostSessionInfo {
             pane_count: 0,
             attached_client_count: 0,
             active_resource: None,
+            members: Vec::new(),
         }
     }
 
@@ -75,6 +81,13 @@ impl HostSessionInfo {
     #[must_use]
     pub fn with_active_resource(mut self, active_resource: Option<ResourceId>) -> Self {
         self.active_resource = active_resource;
+        self
+    }
+
+    /// Builder setter for [`Self::members`].
+    #[must_use]
+    pub fn with_members(mut self, members: Vec<ResourceId>) -> Self {
+        self.members = members;
         self
     }
 }
@@ -224,6 +237,19 @@ impl SessionSnapshot {
         self.trail
             .as_ref()
             .map_or(&[], |trail| trail.hosts.as_ref())
+    }
+
+    /// The satellite session that lists `terminal` as a member, so a client
+    /// shows the pane under it rather than as its own row (#2051). `None`
+    /// for a local id, or when the hub predates member lists.
+    #[must_use]
+    pub fn host_session_of(&self, terminal: &ResourceId) -> Option<&HostSessionInfo> {
+        let host = terminal.host()?;
+        self.hosts()
+            .iter()
+            .filter(|row| &row.host == host)
+            .flat_map(|row| &row.sessions)
+            .find(|session| session.members.contains(terminal))
     }
 
     /// Builder setter for the hosts inventory.

@@ -50,6 +50,76 @@ impl ServerState {
         self.clients.authenticated_credential(client_id)
     }
 
+    /// `client` as the input log names it: its credential id, `owner` on
+    /// the owner's socket, else `anonymous`.
+    #[must_use]
+    pub fn input_sender(&self, client: ClientId) -> String {
+        if let Some(credential) = self.authenticated_credential(client) {
+            return credential.id.clone();
+        }
+        let owner = self
+            .peer_identity(client)
+            .is_some_and(|peer| peer.transport == phux_protocol::policy::TransportType::UnixSocket);
+        if owner { "owner" } else { "anonymous" }.to_owned()
+    }
+
+    /// What a hub stamps on document input it relays for `client`
+    /// (`docs/authority.md#relayed-identity`): [`Self::input_sender`] and
+    /// its `HELLO` name, each cut to `MAX_ON_BEHALF_OF` bytes.
+    #[must_use]
+    pub fn relayed_for(&self, client: ClientId) -> phux_protocol::wire::frame::OnBehalfOf {
+        let cut = |text: &str| {
+            let mut end = text.len().min(phux_protocol::wire::frame::MAX_ON_BEHALF_OF);
+            while !text.is_char_boundary(end) {
+                end -= 1;
+            }
+            text[..end].to_owned()
+        };
+        phux_protocol::wire::frame::OnBehalfOf {
+            credential: cut(&self.input_sender(client)),
+            name: cut(self.client_name(client).unwrap_or_default()),
+        }
+    }
+
+    /// The audit actor for `client_id`; the server itself when unknown.
+    #[must_use]
+    pub fn audit_actor(&self, client_id: ClientId) -> crate::audit::AuditActor {
+        let mut actor = self
+            .clients
+            .connection_identity(client_id)
+            .map_or_else(crate::audit::AuditActor::server, crate::audit::audit_actor);
+        actor.on_behalf_of = self
+            .connection_grant(client_id)
+            .and_then(crate::policy::ConnectionGrant::on_behalf_of)
+            .map(|principal| crate::policy::principal_name(principal).to_owned());
+        actor
+    }
+
+    /// Audit `client_id`'s connection opening or closing.
+    pub fn audit_connection(&self, client_id: ClientId, kind: crate::audit::Kind) {
+        if !crate::audit::enabled() {
+            return;
+        }
+        let peer = self.peer_identity(client_id);
+        crate::audit::emit(
+            kind,
+            self.audit_actor(client_id),
+            if kind == crate::audit::Kind::ConnectionOpen {
+                "open"
+            } else {
+                "close"
+            },
+            None,
+            crate::audit::Outcome::Allowed,
+            serde_json::json!({
+                "client": client_id.0,
+                "uid": peer.map(|peer| peer.uid),
+                "pid": peer.and_then(|peer| peer.pid),
+                "source": peer.and_then(|peer| peer.source_addr).map(|addr| addr.to_string()),
+            }),
+        );
+    }
+
     /// Record the ssh origin a same-uid bridge announced (already checked).
     pub fn set_ssh_origin(
         &mut self,

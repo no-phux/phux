@@ -97,6 +97,12 @@ pub struct AuthenticatedCredential {
     /// The admitting registry file's instance id (workload credentials);
     /// key generation-derived state on `(registry_instance, generation)`.
     pub registry_instance: Option<String>,
+    /// The person or agent a workload credential's key belongs to, when its
+    /// record names one.
+    pub subject: Option<String>,
+    /// The organization managing the admitting workload record, if any
+    /// (`docs/remote.md#managed-by-an-organization`).
+    pub managed: Option<String>,
 }
 
 /// Transport identity plus the credential attestation from establishment

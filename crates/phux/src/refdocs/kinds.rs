@@ -132,6 +132,11 @@ fn push_events(body: &mut String, heading: &str, events: &[EventSpec]) {
     }
 }
 
+/// Escape `|` for use inside a markdown table cell.
+fn cell(text: &str) -> String {
+    text.replace('|', "\\|")
+}
+
 fn push_rules(body: &mut String, heading: &str, intro: &str, rules: &[&Rule]) {
     let _ = write!(
         body,
@@ -141,7 +146,7 @@ fn push_rules(body: &mut String, heading: &str, intro: &str, rules: &[&Rule]) {
         let _ = writeln!(
             body,
             "| {} | {} | `{:?}` |",
-            rule.case,
+            cell(rule.case),
             rule.requirement_label(),
             rule.subject,
         );
@@ -173,6 +178,13 @@ fn requires(method: &MethodSpec) -> String {
     if method.owner_uds_only() {
         label.push_str(" (owner socket only)");
     }
+    if method
+        .rules
+        .iter()
+        .any(|rule| rule.subject == phux_protocol::kinds::Subject::ControlledDocument)
+    {
+        label.push_str(" (control grant or owner socket)");
+    }
     label
 }
 
@@ -191,7 +203,7 @@ mod tests {
     use phux_protocol::caps::ServerFeature;
     use phux_protocol::kinds::{self, COMMAND_RULES, FRAME_RULES, FeatureGate};
 
-    use super::{gate, page};
+    use super::{cell, gate, page};
 
     /// A gate names its caps word, so an extended feature is not "none".
     #[test]
@@ -208,6 +220,12 @@ mod tests {
         assert_eq!(gate(Some(ext)), "`path_query` (features_ext)");
     }
 
+    /// A `|` inside a case cannot split its table row.
+    #[test]
+    fn a_pipe_in_a_cell_is_escaped() {
+        assert_eq!(cell("`{ a: X | Y }`"), "`{ a: X \\| Y }`");
+    }
+
     /// Every catalog method and every classification row appears on the page.
     #[test]
     fn kinds_page_lists_every_method_and_rule() {
@@ -221,7 +239,11 @@ mod tests {
         }
         for rule in FRAME_RULES.iter().chain(COMMAND_RULES.iter()) {
             assert!(
-                body.contains(&format!("| {} | {} |", rule.case, rule.requirement_label())),
+                body.contains(&format!(
+                    "| {} | {} |",
+                    cell(rule.case),
+                    rule.requirement_label()
+                )),
                 "kinds.md has no row for rule {}",
                 rule.case
             );

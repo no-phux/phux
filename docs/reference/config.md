@@ -22,10 +22,13 @@ The configuration surface of `~/.config/phux/config.toml`. The loader layers you
 | `[notifications]` | Agent notifications the TUI posts when an agent blocks or finishes: delivery mode (terminal OSC, system, bell, off), the OSC dialect, per-event toggles, focus suppression, and sound. |
 | `[[hooks.<event>]]` | Event hooks: per event name, an array of `when` predicates each paired with an action to run on match. |
 | `[[plugins]]` | Declarative plugin manifests composed into this config; each entry names a `phux-plugin.toml` path and an enabled flag. |
-| `[[satellites]]` | Federation satellites a hub routes to: name, endpoint, token-file path, and certificate pin. |
+| `[[satellites]]` | Federation satellites a hub routes to: name, endpoint, token-file path, certificate pin, and the client certificate a paired satellite requires. |
 | `[[connector]]` | Outbound relay links this server supervises: relay endpoint, token-file path, and certificate pin. |
 | `[[uplink]]` | Hubs this server dials out to as a satellite, written by `phux host join`: satellite name, hub endpoint, the hub's CA pin, and the enrolled identity's paths. |
-| `[[remote]]` | Remote phux servers this machine attaches to, written by `phux host add` and resolved by `phux attach <name>`. |
+| `[[mirrors]]` | Displays and windows the server keeps mirrored, each in its own `mirror-*` session, restarted with backoff and live-reloaded (Linux; macOS skips them). |
+| `[[producers]]` | Commands kept running as document producers, each in its own `producer-*` session, like `[[mirrors]]`. |
+| `[[remote]]` | Remote phux servers this machine attaches to, written by `phux host add` and resolved by `phux attach <name>`; `color` overrides a host's automatic colour. |
+| `[host]` | This machine as clients draw it: `color` overrides its automatic colour (`phux host color --local`). |
 | `[[projects]]` | Named projects `phux project open <name>` resolves: a checkout path and an optional out-of-repo recipe. |
 | `[theme]` | Free-form color slots (`slot = "color"`) consumed by the renderer. |
 | `[experimental]` | Opt-in unstable knobs; anything here may change or disappear without notice. |
@@ -239,7 +242,7 @@ which-key-delay-ms = 400
 # Show or hide the sidebar.
 "b" = "toggle-sidebar"
 
-# Copy mode: scroll back, search, select, and copy. Arrows move, Enter
+# Copy mode: scroll back, search, select, and copy. Vi keys and arrows move, y
 # copies, Esc leaves.
 "[" = "copy-mode"
 
@@ -440,6 +443,10 @@ exclusive = true
 # enabled = true
 # token-file = "/home/me/.local/state/phux/satellites/devbox.token"
 # cert-fingerprint = "AB:CD:..."
+# # A satellite in `paired` mode also wants the hub's enrolled client
+# # certificate, the same pair a [[remote]] entry records:
+# client-cert = "/home/me/.local/state/phux/satellites/devbox.client.pem"
+# client-key = "/home/me/.local/state/phux/satellites/devbox.client.key"
 
 # Outbound connectors let this server reach consumers through a self-hosted
 # relay without accepting inbound traffic. Each link is supervised
@@ -465,6 +472,31 @@ exclusive = true
 # ca-fingerprint = "sha256:..."
 # client-cert = "/home/me/.local/state/phux/uplinks/uplink.sandbox.0123456789abcdef.pem"
 # client-key = "/home/me/.local/state/phux/uplinks/uplink.sandbox.0123456789abcdef.key"
+
+# Standing mirrors: displays and windows this server keeps mirrored, so
+# every client finds the host's screens without anyone running `phux agent
+# surface mirror` by hand. Each entry runs that mirror in its own session
+# (`mirror-display`, `mirror-display-hdmi-a-1`), restarted with backoff
+# when it exits and recreated after a restart; `phux config reload` adds
+# and removes them. On macOS the server cannot hold Screen Recording
+# access, so Rune runs the mirrors into those sessions while it is open.
+# An older server refuses a config with this table, so upgrade it first.
+#
+# [[mirrors]]
+# target = "display"          # or "display:OUTPUT", "App", "App:title"
+# format = "jpeg"             # png (default) or jpeg
+# quality = 70                # 1-100, jpeg only
+# max-width = 1920
+# interval-ms = 1000
+
+# Standing producers: any command this server keeps running as a document
+# producer (`docs/applications.md#standing-producers`), in its own session
+# `producer-<name>`, restarted and reloaded like the mirrors above. A first
+# word `phux` is this server's own binary.
+#
+# [[producers]]
+# name = "downloads"
+# command = ["phux", "agent", "doc", "folder", "/home/me/Downloads"]
 
 # Remote phux servers this machine attaches TO: `phux attach
 # mini` resolves the endpoint, certificate pin, and token recorded here, so
@@ -566,7 +598,7 @@ left = [
 center = []
 # The right slot changes shape with the terminal, via the universal
 # `min-cols` / `max-cols` options every widget accepts (they gate on the
-# width of the whole bar, not on the widget's own share).
+# terminal's width, not the bar's or the widget's own share).
 #
 # Wide enough for ambient context (>64 columns): session name and clock.
 # Narrower than that, those columns are worth more as an affordance: the

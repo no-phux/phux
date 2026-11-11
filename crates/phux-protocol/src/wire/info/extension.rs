@@ -91,6 +91,12 @@ pub(super) fn encode_resource_state(info: &ResourceInfo, enc: &mut Encoder<'_>) 
             encode_client_id(*viewer, e);
         });
     }
+    if let Some(connected) = info.producer_connected {
+        enc.write_field(field::resource_state::PRODUCER, &[u8::from(connected)]);
+    }
+    if let Some(control) = info.control {
+        enc.write_field(field::resource_state::CONTROL, &[control.to_u8()]);
+    }
 }
 
 /// `ExitFacet`, positional: `exit_status: optional<i32> || signal:
@@ -222,6 +228,8 @@ pub(super) fn apply_resource_state(
     let mut exit = None;
     let mut input_holder = None;
     let mut viewers = Vec::new();
+    let mut producer_connected = None;
+    let mut control = None;
     while let Some((field_id, v)) = dec.read_field()? {
         let mut v = Decoder::new(v);
         match field_id {
@@ -231,6 +239,10 @@ pub(super) fn apply_resource_state(
             }
             field::resource_state::EXIT => exit = Some(decode_exit_facet(&mut v)?),
             field::resource_state::INPUT_HOLDER => input_holder = Some(decode_client_id(&mut v)?),
+            field::resource_state::PRODUCER => producer_connected = Some(v.read_u8()? != 0),
+            field::resource_state::CONTROL => {
+                control = crate::wire::frame::ControlClass::from_u8(v.read_u8()?);
+            }
             _ => {}
         }
     }
@@ -239,6 +251,8 @@ pub(super) fn apply_resource_state(
         info.exit = exit;
         info.input_holder = input_holder;
         info.viewers = viewers;
+        info.producer_connected = producer_connected;
+        info.control = control;
     }
     Ok(())
 }

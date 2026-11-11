@@ -5,8 +5,14 @@ use std::sync::{Arc, Barrier};
 
 use super::*;
 
+#[path = "tests/grants.rs"]
+mod grants;
+#[path = "tests/managed.rs"]
+mod managed;
 #[path = "tests/paired.rs"]
 mod paired;
+#[path = "tests/watch.rs"]
+mod watch;
 
 /// The CA key's file name: no diagnostic may print it.
 const KEY_FILE: &str = "authority-secret-location.key";

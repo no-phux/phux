@@ -158,12 +158,14 @@ pub struct SpawnResource {
     /// application an accessibility tree observes (field 13; at most
     /// [`MAX_RESOURCE_PROVIDER_BYTES`](super::MAX_RESOURCE_PROVIDER_BYTES)
     /// bytes, non-empty), or the window or display a pixel surface
-    /// captures. Required for `AgentSession`, `AccessibilityTree` and
-    /// `PixelSurface`.
+    /// captures, or a document's content type (at most
+    /// [`MAX_CONTENT_TYPE_BYTES`](super::typed_document::MAX_CONTENT_TYPE_BYTES)).
+    /// Required for `AgentSession`, `AccessibilityTree`, `PixelSurface` and
+    /// `Document`.
     pub provider: Option<String>,
     /// Opaque provider-native session id (field 14; at most
     /// [`MAX_RESOURCE_NATIVE_ID_BYTES`](super::MAX_RESOURCE_NATIVE_ID_BYTES)
-    /// bytes, non-empty).
+    /// bytes, non-empty), or a document's optional name.
     pub native_id: Option<String>,
     /// Bind the new resource to the server's instance token (field 15,
     /// ADR-0109), answered with [`SpawnResult::OkBound`] by a server
@@ -177,6 +179,10 @@ pub struct SpawnResource {
     /// [`SpawnResult::Replayed`]. Needs
     /// [`ServerFeature::SpawnIdempotency`](crate::caps::ServerFeature::SpawnIdempotency).
     pub idempotency_key: Option<IdempotencyKey>,
+    /// What input to a document controls (field 18,
+    /// `docs/resource-kinds.md#authority`); `None` takes input from the
+    /// owner socket only. An older server ignores it, which is `None`.
+    pub control: Option<super::ControlClass>,
 }
 
 impl SpawnResource {
@@ -216,6 +222,23 @@ impl SpawnResource {
         }
     }
 
+    /// A document of `content_type` under `parent`, the Terminal its
+    /// producer runs in, optionally named.
+    #[must_use]
+    pub fn document(
+        parent: ResourceId,
+        content_type: impl Into<String>,
+        name: Option<String>,
+    ) -> Self {
+        Self {
+            kind: ResourceKind::Document,
+            parent: Some(parent),
+            provider: Some(content_type.into()),
+            native_id: name,
+            ..Self::default()
+        }
+    }
+
     /// Builder setter for [`Self::retain_secs`].
     #[must_use]
     pub const fn with_retain_secs(mut self, retain_secs: Option<u32>) -> Self {
@@ -237,6 +260,13 @@ impl SpawnResource {
         self
     }
 
+    /// Builder setter for [`Self::control`].
+    #[must_use]
+    pub const fn with_control(mut self, control: Option<super::ControlClass>) -> Self {
+        self.control = control;
+        self
+    }
+
     /// Builder setter for [`Self::bind_instance`].
     #[must_use]
     pub const fn with_bind_instance(mut self, bind_instance: bool) -> Self {
@@ -255,6 +285,7 @@ impl SpawnResource {
             && !self.bind_instance
             && self.retain_secs.is_none()
             && self.idempotency_key.is_none()
+            && self.control.is_none()
     }
 }
 

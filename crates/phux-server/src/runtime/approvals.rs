@@ -208,9 +208,9 @@ async fn run_approved(ctx: &CommandContext, request_id: u32, command: Command) {
         .await;
         return;
     }
-    // Held commands are SIGNAL-class, which never route to the input lane
-    // or the bulk worker: the shared route says the handler, as it would
-    // for the same command unheld.
+    // Holdable commands (SIGNAL, TERMINATE, document INPUT) never route to
+    // the input lane or the bulk worker: the shared route says the handler,
+    // as it would for the same command unheld.
     debug_assert_eq!(
         crate::runtime::connections::route(&command, ctx.input_lane.is_some()),
         crate::runtime::connections::Route::Handler

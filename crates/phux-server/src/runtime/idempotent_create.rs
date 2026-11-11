@@ -21,16 +21,16 @@ use tokio_util::sync::CancellationToken;
 use super::operation_dedupe::{
     Admission, CachedOutcome, Claim, OperationClaim, OperationDomain, OperationKey, join_nothing,
 };
-use crate::runtime::apps::terminal::attach::{SpawnRequest, handle_spawn_terminal};
+use crate::runtime::apps::spawn::{SpawnConnection, SpawnRequest, dispatch_spawn};
 use crate::state::{ClientId, Outbound, ServerState, SharedState};
 
 /// Handle `SPAWN_RESOURCE`, honoring its idempotency key (field 17).
 ///
 /// An unkeyed spawn, and a satellite-addressed one, goes straight to
-/// [`handle_spawn_terminal`].
+/// [`dispatch_spawn`], which hands it to the requested kind's app.
 #[allow(
     clippy::too_many_arguments,
-    reason = "the handle_spawn_terminal argument list, passed through unchanged"
+    reason = "the connection's spawn context, passed through unchanged"
 )]
 pub(crate) async fn handle_spawn_resource(
     state: &SharedState,
@@ -58,18 +58,20 @@ pub(crate) async fn handle_spawn_resource(
             return;
         }
     };
-    handle_spawn_terminal(
+    dispatch_spawn(
         state,
         client_id,
         request_id,
         request,
-        out_tx,
-        bootstrap_profile,
-        bootstrap_limits,
-        root_token,
-        connection_token,
-        output_pumps,
-        defer_subscription,
+        SpawnConnection {
+            out_tx,
+            profile: bootstrap_profile,
+            limits: bootstrap_limits,
+            root_token,
+            connection_token,
+            output_pumps,
+            defer_subscription,
+        },
     )
     .await;
     // The spawn bound its key when it registered the resource, or bound
@@ -277,6 +279,7 @@ mod tests {
                 phux_protocol::wire::frame::SpawnResource::default()
                     .with_idempotency_key(IdempotencyKey::new([4; 16])),
             )),
+            decodes: phux_protocol::caps::ResourceKindSet::LEGACY,
         }
     }
 

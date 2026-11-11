@@ -7,41 +7,31 @@
 )]
 use super::*;
 
-/// What the pane pass produces: the wire-id -> core-id map, each rebuilt
-/// pane's exit receiver, and what the caller's wiring returned for each pane.
-pub(in crate::state) struct RebuiltPanes<W> {
-    pub(in crate::state) core_ids: HashMap<u32, ResourceId>,
-    pub(in crate::state) exit_watchers: PaneExitWatchers,
-    pub(in crate::state) wired: Vec<(ResourceId, W)>,
-}
-
-/// A committed rebuild: every resource's exit receiver, and each pane's
-/// wiring (see [`ServerState::rebuild_from_blob`]).
+/// A committed rebuild: every rebuilt resource's exit receiver (see
+/// [`ServerState::rebuild_from_blob`]).
 #[derive(Debug)]
-pub(crate) struct RebuiltTree<W> {
-    /// Each rebuilt resource's (pane or agent session) exit receiver.
-    pub(crate) exit_watchers: PaneExitWatchers,
-    /// Each rebuilt pane's core id and what `wire_pane` returned for it.
-    pub(crate) wired_panes: Vec<(ResourceId, W)>,
+pub(crate) struct RebuiltTree {
+    /// Each rebuilt resource's exit receiver.
+    pub(crate) exit_watchers: ExitWatchers,
 }
 
 /// The records a blob names, by wire id, after they are merged with the
 /// store's.
 pub(in crate::state) struct Keyed {
     pub(in crate::state) sessions: HashMap<u32, SessionKey>,
+    /// The tree's panes, which the windows and layouts name.
     pub(in crate::state) panes: HashMap<u32, ResourceKey>,
-    pub(in crate::state) agent_sessions: HashMap<u32, ResourceKey>,
+    /// Every other carried resource.
+    pub(in crate::state) resources: HashMap<u32, ResourceKey>,
 }
 
 impl ServerState {
     /// Rebuild the tree from a [`StateBlob`] in the re-exec'd image
     /// (ADR-0032): merge the carried records with the store's (or import a
-    /// pre-record tree), recreate handles under their wire ids, restore
-    /// allocators and ledgers, and spawn actors that re-adopt PTYs (or
-    /// replay snapshots), then rebind carried agent sessions to their panes.
-    /// `wire_pane` runs on each pane's actor before it starts, so the runtime
-    /// installs the same sinks a fresh spawn gets. Returns each rebuilt
-    /// resource's exit receiver and each pane's wiring.
+    /// pre-record tree), restore allocators and ledgers, then let each of
+    /// `kinds` rebuild the engines its app carried, in order, so a parent's
+    /// app runs before its children's. Returns each rebuilt resource's exit
+    /// receiver.
     ///
     /// Transactional: built on a fresh state and committed only on full
     /// success; the store is written only once the tree is built. Runs
@@ -51,26 +41,11 @@ impl ServerState {
     ///
     /// [`RebuildError`] for bad topology, records, store, or actor
     /// failures, or dangling wire ids.
-    #[allow(
-        clippy::type_complexity,
-        reason = "the runtime immediately consumes each rebuilt pane id and its one-shot exit receiver"
-    )]
-    pub(crate) fn rebuild_from_blob<W>(
+    pub(crate) fn rebuild_from_blob(
         &mut self,
         blob: &StateBlob,
-        build_pane: impl FnMut(
-            ResourceId,
-            &PaneBlob,
-            phux_config::ScrollbackLimits,
-        ) -> Result<RebuiltPane<W>, RebuildError>,
-        build_session: impl FnMut(
-            &AgentSessionBlob,
-            ResourceId,
-            Option<&ResourceHandle>,
-            u32,
-            CancellationToken,
-        ) -> RebuiltSession,
-    ) -> Result<RebuiltTree<W>, RebuildError> {
+        kinds: &mut [&mut dyn KindRebuild],
+    ) -> Result<RebuiltTree, RebuildError> {
         validate_upgrade_blob(blob)?;
         let mut fresh = Self::new();
         fresh.config.scrollback = self.config.scrollback;
@@ -85,8 +60,11 @@ impl ServerState {
             imported,
             arranged_now,
         } = fresh.rebuild_records(self.org(), self.org.loaded, blob)?;
-        let mut panes = fresh.rebuild_panes(blob, &keyed, build_pane)?;
-        fresh.rebuild_agent_sessions(blob, &keyed, &mut panes, build_session)?;
+        let mut cx = ResumeCx::new(&mut fresh, blob, &keyed);
+        for kind in kinds.iter_mut() {
+            kind.rebuild(&mut cx)?;
+        }
+        let exit_watchers = cx.finish();
         if imported {
             self.org.store.import(
                 fresh.org(),
@@ -100,11 +78,10 @@ impl ServerState {
         }
         self.commit_rebuilt_tree(fresh);
         self.restore_upgrade_metadata(blob);
-        self.restore_native_agents(blob);
-        Ok(RebuiltTree {
-            exit_watchers: panes.exit_watchers,
-            wired_panes: panes.wired,
-        })
+        for kind in kinds.iter_mut() {
+            kind.restore(self, blob);
+        }
+        Ok(RebuiltTree { exit_watchers })
     }
 
     /// Install the blob's organization records in this fresh server and bind
@@ -177,134 +154,6 @@ impl ServerState {
             if let Some(root) = &s.root {
                 self.sessions.bind_root(core, root.clone());
             }
-        }
-        Ok(())
-    }
-
-    /// Bind every carried pane's wire id to its record's new handle and
-    /// spawn the actor that re-adopts its PTY.
-    pub(in crate::state) fn rebuild_panes<W>(
-        &mut self,
-        blob: &StateBlob,
-        keyed: &Keyed,
-        mut build_pane: impl FnMut(
-            ResourceId,
-            &PaneBlob,
-            phux_config::ScrollbackLimits,
-        ) -> Result<RebuiltPane<W>, RebuildError>,
-    ) -> Result<RebuiltPanes<W>, RebuildError> {
-        let scrollback = self.config.scrollback;
-        let mut panes = RebuiltPanes {
-            core_ids: HashMap::new(),
-            exit_watchers: Vec::with_capacity(blob.panes.len()),
-            wired: Vec::with_capacity(blob.panes.len()),
-        };
-        for p in &blob.panes {
-            let core = keyed
-                .panes
-                .get(&p.wire_id)
-                .and_then(|key| self.sessions.registry.resource_id(key))
-                .ok_or(RebuildError::DanglingRef {
-                    kind: "pane record",
-                    id: p.wire_id,
-                })?;
-            if let Some(desc) = self.sessions.registry.terminal_mut(core) {
-                desc.dims = (p.cols, p.rows);
-                desc.cwd.clone_from(&p.cwd);
-                desc.title.clone_from(&p.title);
-                // The engine is seeded with this title without emitting a
-                // change, so the registry takes it from the blob directly.
-                desc.program_title.clone_from(&p.osc_title);
-            }
-
-            let RebuiltPane {
-                handle,
-                token,
-                engine,
-                exit_notify,
-                wired,
-            } = build_pane(core, p, scrollback)?;
-            // Pre-bind so the spawn's intern returns the blob's id.
-            self.idspace
-                .bind_resource(core, WireResourceId::local(p.wire_id));
-            panes.wired.push((core, wired));
-            self.spawn_resource_actor(core, handle, token, engine)?;
-            // ADR-0124: what the old image knew about this pane's retention.
-            if let Some(secs) = p.retain_secs {
-                self.note_retain_request(core, secs);
-            }
-            if let Some(exit) = p.retained_exit {
-                self.restore_retained_exit(core, exit_facet(exit));
-            }
-            if let Some(exit_notify) = exit_notify {
-                panes.exit_watchers.push((core, exit_notify));
-            }
-            panes.core_ids.insert(p.wire_id, core);
-        }
-        Ok(panes)
-    }
-
-    /// Rebind every carried `AgentSession` to its record under its recorded
-    /// wire id, with an engine that continues the old stream: same record
-    /// counter, same retained tail, same `ended`. The parent's
-    /// `REPORT_AGENT_STATE` is re-bound to the stream (ADR-0103 §6). A
-    /// session whose parent pane is not in the blob is dropped; losing one
-    /// session must not cost the whole tree.
-    pub(in crate::state) fn rebuild_agent_sessions<W>(
-        &mut self,
-        blob: &StateBlob,
-        keyed: &Keyed,
-        panes: &mut RebuiltPanes<W>,
-        mut build_session: impl FnMut(
-            &AgentSessionBlob,
-            ResourceId,
-            Option<&ResourceHandle>,
-            u32,
-            CancellationToken,
-        ) -> RebuiltSession,
-    ) -> Result<(), RebuildError> {
-        let log_bytes = self.config.agent_log_bytes;
-        for carried in &blob.agent_sessions {
-            let Some(&parent) = panes.core_ids.get(&carried.parent_wire_id) else {
-                tracing::warn!(
-                    session = carried.wire_id,
-                    parent = carried.parent_wire_id,
-                    "resume: agent session's parent pane did not cross; dropped"
-                );
-                continue;
-            };
-            let Some(core) = keyed
-                .agent_sessions
-                .get(&carried.wire_id)
-                .and_then(|key| self.sessions.registry.resource_id(key))
-            else {
-                tracing::warn!(
-                    session = carried.wire_id,
-                    "resume: agent session has no record; dropped"
-                );
-                continue;
-            };
-            if let Some(facet) = self
-                .sessions
-                .registry
-                .resource_mut(core)
-                .and_then(|d| d.agent.as_mut())
-            {
-                facet.state.clone_from(&carried.state);
-            }
-            let token = CancellationToken::new();
-            let rebuilt = build_session(
-                carried,
-                parent,
-                self.resource_handle(parent),
-                log_bytes,
-                token.clone(),
-            );
-            // Pre-bind so the registration's intern returns the blob's id.
-            self.idspace
-                .bind_resource(core, WireResourceId::local(carried.wire_id));
-            self.spawn_resource_actor(core, rebuilt.handle, token, rebuilt.engine)?;
-            panes.exit_watchers.push((core, rebuilt.exit_notify));
         }
         Ok(())
     }

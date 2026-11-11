@@ -126,7 +126,7 @@ fn build_report(
     let satellite_terminals = snapshot
         .resources
         .iter()
-        .filter(|pane| pane.id.host().is_some())
+        .filter(|pane| pane.id.host().is_some() && pane.kind.is_terminal())
         .map(|pane| phux_client::selector::format_terminal_id(&pane.id))
         .collect();
     StatusReport {

@@ -2,10 +2,11 @@
 
 use super::reader::Reader;
 use super::{
-    MAX_HOST_BYTES, SUB_LOCAL, SUB_SATELLITE, ScopeError, ScopeGrammarError, TAG_GLOBAL, TAG_GROUP,
-    TAG_HOST, TAG_RESOURCE, TAG_SESSION, TAG_TERMINAL,
+    MAX_HOST_BYTES, SUB_LOCAL, SUB_SATELLITE, ScopeError, ScopeGrammarError, TAG_CONTROL,
+    TAG_GLOBAL, TAG_GROUP, TAG_HOST, TAG_RESOURCE, TAG_SESSION, TAG_TERMINAL,
 };
 use crate::ids::{ResourceKey, SessionKey};
+use crate::wire::frame::ControlClass;
 use std::fmt;
 
 // -----------------------------------------------------------------------------
@@ -64,6 +65,10 @@ pub enum Selector {
     /// One local resource record, by its persistent key: whichever
     /// activation of it is current.
     Resource(ResourceKey),
+    /// Every document of one control class on the serving host (`None`)
+    /// or one satellite: `page`, `window:<host>`, and so on. The only
+    /// selectors besides `resource:` that reach document input.
+    Control(ControlClass, Option<Host>),
 }
 
 impl Selector {
@@ -105,6 +110,16 @@ impl Selector {
                 out.push(TAG_RESOURCE);
                 out.extend_from_slice(key.as_bytes());
             }
+            Self::Control(class, host) => {
+                out.extend_from_slice(&[TAG_CONTROL, class.to_u8()]);
+                match host {
+                    None => out.push(SUB_LOCAL),
+                    Some(host) => {
+                        out.push(SUB_SATELLITE);
+                        write_host(out, host);
+                    }
+                }
+            }
         }
     }
 
@@ -124,6 +139,7 @@ impl Selector {
             TAG_TERMINAL => decode_terminal_selector(&mut reader)?,
             TAG_SESSION => Self::Session(reader.key(SessionKey::new)?),
             TAG_RESOURCE => Self::Resource(reader.key(ResourceKey::new)?),
+            TAG_CONTROL => decode_control_selector(&mut reader)?,
             _ => return Err(ScopeError::UnknownSelectorTag),
         };
         if !reader.is_empty() {
@@ -134,7 +150,8 @@ impl Selector {
 
     /// Parse the registry spelling: `global`, `host`, `host:<name>`,
     /// `group:<u32>`, `terminal:<u32>`, `terminal:<host>/<u32>`,
-    /// `session:<key>`, or `resource:<key>`.
+    /// `session:<key>`, `resource:<key>`, or a control class (`page`,
+    /// `window`, `display`) alone or as `<class>:<host>`.
     ///
     /// # Errors
     ///
@@ -144,6 +161,14 @@ impl Selector {
             "global" => return Ok(Self::Global),
             "host" => return Ok(Self::HostLocal),
             _ => {}
+        }
+        if let Some(class) = ControlClass::parse(text) {
+            return Ok(Self::Control(class, None));
+        }
+        if let Some((class, name)) = text.split_once(':')
+            && let Some(class) = ControlClass::parse(class)
+        {
+            return parse_host(name).map(|host| Self::Control(class, Some(host)));
         }
         match text.split_once(':') {
             Some(("host", name)) => parse_host(name).map(Self::HostSatellite),
@@ -156,7 +181,7 @@ impl Selector {
     }
 
     /// A short, identity-free name for the selector's kind (`global`,
-    /// `host`, `group`, `terminal`, `session`, `resource`), for diagnostics
+    /// `host`, `group`, `terminal`, `session`, `resource`, `control`), for diagnostics
     /// that must not name a subject.
     #[must_use]
     pub const fn kind_name(&self) -> &'static str {
@@ -167,6 +192,7 @@ impl Selector {
             Self::TerminalLocal(_) | Self::TerminalSatellite(..) => "terminal",
             Self::Session(_) => "session",
             Self::Resource(_) => "resource",
+            Self::Control(..) => "control",
         }
     }
 
@@ -213,7 +239,11 @@ fn overlaps_one_way(outer: &Selector, inner: &Selector) -> bool {
             Selector::TerminalLocal(_) | Selector::Resource(_),
         )
         | (Selector::Session(_), Selector::Group(_))
-        | (Selector::Resource(_), Selector::TerminalLocal(_)) => true,
+        | (Selector::Resource(_), Selector::TerminalLocal(_))
+        | (Selector::HostLocal | Selector::Resource(_), Selector::Control(_, None)) => true,
+        (Selector::HostSatellite(host), Selector::Control(_, Some(control_host))) => {
+            host == control_host
+        }
         (Selector::HostSatellite(host), Selector::TerminalSatellite(terminal_host, _)) => {
             host == terminal_host
         }
@@ -232,6 +262,8 @@ impl fmt::Display for Selector {
             Self::TerminalSatellite(host, id) => write!(f, "terminal:{}/{id}", host.as_str()),
             Self::Session(key) => write!(f, "session:{key}"),
             Self::Resource(key) => write!(f, "resource:{key}"),
+            Self::Control(class, None) => f.write_str(class.name()),
+            Self::Control(class, Some(host)) => write!(f, "{}:{}", class.name(), host.as_str()),
         }
     }
 }
@@ -259,6 +291,15 @@ fn decode_terminal_selector(reader: &mut Reader<'_>) -> Result<Selector, ScopeEr
             let host = reader.host()?;
             Ok(Selector::TerminalSatellite(host, reader.u32()?))
         }
+        _ => Err(ScopeError::UnknownSubtype),
+    }
+}
+
+fn decode_control_selector(reader: &mut Reader<'_>) -> Result<Selector, ScopeError> {
+    let class = ControlClass::from_u8(reader.u8()?).ok_or(ScopeError::UnknownSubtype)?;
+    match reader.u8()? {
+        SUB_LOCAL => Ok(Selector::Control(class, None)),
+        SUB_SATELLITE => Ok(Selector::Control(class, Some(reader.host()?))),
         _ => Err(ScopeError::UnknownSubtype),
     }
 }

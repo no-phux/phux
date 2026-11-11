@@ -121,9 +121,17 @@ pub(in crate::attach) fn report_bug(
     match crate::report::write_bundle(&draft) {
         Ok(written) => {
             effects.clipboard = Some(written.dir.display().to_string());
+            // Shown as well as copied: a terminal without OSC 52 drops the
+            // copy, and the path is the only way back to the bundle.
+            let shown = std::env::var_os("HOME")
+                .and_then(|home| written.dir.strip_prefix(home).ok())
+                .map_or_else(
+                    || written.dir.display().to_string(),
+                    |rest| format!("~/{}", rest.display()),
+                );
             ctx.overlays.push(Box::new(ToastOverlay::passthrough(
                 "Bug report",
-                vec!["Saved; path copied.".to_owned()],
+                vec!["Saved; path copied:".to_owned(), shown],
                 ctx.theme,
             )));
         }
@@ -167,9 +175,14 @@ pub(in crate::attach) fn push_copy_mode(
         ctx,
         focused,
         panes,
+        effects,
         ..
     }: ActionCall<'_, '_>,
 ) {
+    // A placeholder has no grid to select from.
+    if super::placeholders::refuse_on_placeholder(ctx, effects, focused, "copy-mode") {
+        return;
+    }
     let pane_rect = focused_pane_rect(ctx, focused);
     let (row, col) = focused
         .and_then(|id| panes.get(id))
@@ -182,6 +195,12 @@ pub(in crate::attach) fn push_copy_mode(
         pane_rect.h,
     ));
     ctx.overlays.push(overlay);
+    if let Some(top) = focused
+        .and_then(|id| published_terminal(ctx.engine_kernel, id))
+        .and_then(crate::attach::copy::viewport_screen_top)
+    {
+        ctx.overlays.set_copy_viewport_top(top);
+    }
 }
 
 /// ADR-0058: the keyboard route to the pane menu (the only one when the app
@@ -218,6 +237,7 @@ pub(in crate::attach) fn push_window_picker(
             .then(|| ctx.peers.terminal_counts())
             .as_ref(),
         ctx.peers.focused_session,
+        ctx.peers.session_order,
     );
     if items.iter().all(SelectItem::is_header) {
         effects.bell = true;
@@ -267,6 +287,7 @@ pub(in crate::attach) fn push_agent_fleet(
             agents: ctx.peers.foreign_agents,
             terminals: &ctx.peers.terminal_counts(),
         },
+        ctx.peers.session_order,
     );
     items.extend(crate::attach::fleet::satellite_agent_items(
         ctx.peers.foreign_agents,
@@ -278,7 +299,7 @@ pub(in crate::attach) fn push_agent_fleet(
         return;
     }
     ctx.overlays.push(Box::new(
-        SelectList::new("Fleet", items, ctx.theme)
+        SelectList::new("Agents", items, ctx.theme)
             .with_live_key(crate::attach::fleet::FLEET_LIVE_KEY),
     ));
 }

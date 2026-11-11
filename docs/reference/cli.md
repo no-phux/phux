@@ -26,6 +26,7 @@ Sessions:
   ls            List sessions [aliases: list]
   kill          Kill a session, group, pane, or the server
   detach        Detach clients from a session
+  native        Run one terminal in a native emulator window
   rename        Rename a session or a pane
   project       Open a project session from a trusted recipe [aliases: p]
   rm            Remove a stopped pane, or delete an empty session
@@ -35,7 +36,7 @@ Sessions:
 
 Panes:
   spawn         Create a pane without attaching
-  snapshot      Read a pane's screen as text or JSON
+  snapshot      Read a pane's screen, or a document, as text or JSON
   send-keys     Send keys to a pane
   paste         Paste text into a pane
   run           Run a command in a pane and capture its exit code
@@ -79,10 +80,12 @@ Maintain:
   logs          Show where the logs live, or tail one
   report        Capture or list local bug reports [aliases: bug]
   config        Inspect, scaffold, and reload the config file
+  migrate       Have your coding agent bring your terminal keys into phux
   plugin        Manage plugin manifests in the config
   update        Update phux, keeping sessions alive
   upgrade       Hot-swap the running server to the installed binary
   channel       Show or switch the release channel
+  audit         Read and verify this host's signed audit log
   theme         Install, list, and select colour themes
   omarchy       Fit phux into an Omarchy desktop
 
@@ -131,7 +134,14 @@ Usage: phux agent <SUBCOMMAND>
 
 Commands:
   answer            Answer a pane's pending agent question by validated choice.
+  app               An application as resources: launched, mirrored from its own
+                    pane, and quit with it. `phux spawn --app` is the short
+                    form.
   clear             Clear a pane's declared agent identity.
+  doc               A typed document is a pane's child resource that a producer
+                    feeds with whole documents of the content type it was opened
+                    with (Markdown, SVG, CSV, JSON, PNG...). Needs
+                    `TYPED_DOCUMENT`.
   emit              Append one record to a pane's agent session.
   explain           Explain the evidence behind one pane's state.
   install-claude    Make plain `claude` launch inside phux and declare its
@@ -157,10 +167,12 @@ Commands:
   show              Show inferred state for one pane.
   start             Start an agent INSIDE an existing shell pane, and return
                     when it is ready for input.
+  stats             Show each pane's agent work: tasks finished and time spent
+                    working.
   surface           A pixel surface is a pane's child resource that a producer
-                    feeds with PNG images of a window or display; `snapshot`
-                    writes the newest and `follow` every one. Needs a server
-                    that advertises `PIXEL_SURFACE`.
+                    feeds with PNG or JPEG images of a window or display;
+                    `snapshot` writes the newest and `follow` every one. Needs a
+                    server that advertises `PIXEL_SURFACE`.
   tree              An accessibility tree is a pane's child resource that a
                     producer feeds with whole documents of an application's
                     accessibility tree; `snapshot` reads the newest and `follow
@@ -223,6 +235,68 @@ Global flags:
       --socket <PATH>   Server socket to dial (default: `$PHUX_SOCKET`)
 ```
 
+## `phux agent app`
+
+```text
+An application as resources: launched, mirrored from its own pane, and quit with
+it. `phux spawn --app` is the short form.
+
+Usage: phux agent app <SUBCOMMAND>
+
+Commands:
+  run   Launch an application and mirror it into this pane until it quits;
+        killing the pane quits the app. `phux spawn --app` runs this in a new
+        pane.
+  help  Print this message or the help of the given subcommand(s)
+
+Flags:
+  -h, --help           Print help
+
+Global flags:
+      --socket <PATH>  Server socket to dial (default: `$PHUX_SOCKET`)
+```
+
+## `phux agent app run`
+
+```text
+Launch an application and mirror it into this pane until it quits; killing the
+pane quits the app. `phux spawn --app` runs this in a new pane.
+
+Usage: phux agent app run [FLAGS] <NAME> [ARGS]…
+
+Arguments:
+  <NAME>   The application: its name on macOS (`TextEdit`), a command or a
+           `.desktop` id on Linux; with `--browser`, the browser (`chrome`,
+           `chromium`, or a path).
+  [ARGS]…  Arguments for the application; they follow `--`.
+
+Flags:
+      --browser [URL]     Launch the browser NAME with a fresh profile and a
+                          debugging port, open URL (default `about:blank`), and
+                          mirror the page.
+      --headless          Run the browser with no window on screen.
+      --interval <MS>     Milliseconds between captures and tree reads (each
+                          mirror's default when absent).
+      --format <FORMAT>   Frame encoding: jpeg by default for a page mirror, png
+                          for a window or display mirror. JPEG frames are
+                          several times smaller; viewers older than JPEG support
+                          (desktop before 0.57.0, Rune before 0.1.0-alpha.17)
+                          show them as invalid.
+                          [possible values: png, jpeg]
+      --quality <Q>       JPEG quality, 1 to 100 (default 70).
+      --max-width <PX>    Scale frames down to at most this many pixels wide.
+      --dry-run           Print what would be launched and exit, launching
+                          nothing.
+      --pane <PANE>       The pane the documents bind to; this process's own
+                          pane when absent.
+      --parent-pid <PID>  Quit the app and exit once this process is gone, as
+                          the app that launched the helper passes its own.
+  -h, --help              Print help
+
+Global flags:
+      --socket <PATH>     Server socket to dial (default: `$PHUX_SOCKET`)
+```
+
 ## `phux agent clear`
 
 ```text
@@ -241,6 +315,177 @@ Flags:
       --json           Print the confirmed `{schema_version, action, terminal,
                        record}` document; failures are one JSON error line on
                        stderr.
+  -h, --help           Print help
+
+Global flags:
+      --socket <PATH>  Server socket to dial (default: `$PHUX_SOCKET`)
+```
+
+## `phux agent doc`
+
+```text
+A typed document is a pane's child resource that a producer feeds with whole
+documents of the content type it was opened with (Markdown, SVG, CSV, JSON,
+PNG...). Needs `TYPED_DOCUMENT`.
+
+Usage: phux agent doc <SUBCOMMAND>
+
+Commands:
+  folder         Keep a directory listed as a Markdown document, refreshed on
+                 change; a `navigate` intent opens a subdirectory.
+  follow         Write every document as it arrives.
+  notifications  Keep this host's desktop notifications as a Markdown document
+                 (Linux, freedesktop Notifications on the session bus).
+  open           Open a document under the pane its producer runs in.
+  publish        Replace the document from a file, or stdin.
+  serve          Produce a document over a pipe until stdin ends: each stdin
+                 line `{"text": ...}` or `{"base64": ...}` replaces it; stdout
+                 prints an `opened` line, then one `input` line per viewer
+                 intent.
+  snapshot       Write the newest document to a file, or stdout: text with
+                 control characters shown as signs, binary only into a pipe.
+  help           Print this message or the help of the given subcommand(s)
+
+Flags:
+  -h, --help           Print help
+
+Global flags:
+      --socket <PATH>  Server socket to dial (default: `$PHUX_SOCKET`)
+```
+
+## `phux agent doc folder`
+
+```text
+Keep a directory listed as a Markdown document, refreshed on change; a
+`navigate` intent opens a subdirectory.
+
+Usage: phux agent doc folder [FLAGS] <PATH>
+
+Arguments:
+  <PATH>  The directory.
+
+Flags:
+      --name <NAME>      A name for the document; the directory's name when
+                         absent.
+      --pane <PANE>      The parent pane; this process's own pane when absent.
+      --interval <SECS>  Seconds between rereads (default 2).
+  -h, --help             Print help
+
+Global flags:
+      --socket <PATH>    Server socket to dial (default: `$PHUX_SOCKET`)
+```
+
+## `phux agent doc follow`
+
+```text
+Write every document as it arrives.
+
+Usage: phux agent doc follow [FLAGS] <TARGET>
+
+Arguments:
+  <TARGET>  The document resource.
+
+Flags:
+      --out <PATH>      Where each document goes, replacing the file; stdout
+                        when absent.
+      --timeout <SECS>  Give up after this many seconds.
+      --json
+  -h, --help            Print help
+
+Global flags:
+      --socket <PATH>   Server socket to dial (default: `$PHUX_SOCKET`)
+```
+
+## `phux agent doc notifications`
+
+```text
+Keep this host's desktop notifications as a Markdown document (Linux,
+freedesktop Notifications on the session bus).
+
+Usage: phux agent doc notifications [FLAGS]
+
+Flags:
+      --name <NAME>    A name for the document (default `notifications`).
+      --pane <PANE>    The parent pane; this process's own pane when absent.
+      --keep <N>       How many to keep, newest first (default 50).
+  -h, --help           Print help
+
+Global flags:
+      --socket <PATH>  Server socket to dial (default: `$PHUX_SOCKET`)
+```
+
+## `phux agent doc open`
+
+```text
+Open a document under the pane its producer runs in.
+
+Usage: phux agent doc open <FLAGS> <TARGET>
+
+Arguments:
+  <TARGET>  The parent pane.
+
+Flags:
+      --type <MIME>    The content type, a MIME type such as `text/markdown`.
+      --name <NAME>    A name for the document.
+      --json
+  -h, --help           Print help
+
+Global flags:
+      --socket <PATH>  Server socket to dial (default: `$PHUX_SOCKET`)
+```
+
+## `phux agent doc publish`
+
+```text
+Replace the document from a file, or stdin.
+
+Usage: phux agent doc publish [--file <PATH>] [--json] <TARGET>
+
+Arguments:
+  <TARGET>  The document resource.
+
+Flags:
+      --file <PATH>    The document; stdin when absent.
+      --json
+  -h, --help           Print help
+
+Global flags:
+      --socket <PATH>  Server socket to dial (default: `$PHUX_SOCKET`)
+```
+
+## `phux agent doc serve`
+
+```text
+Produce a document over a pipe until stdin ends: each stdin line `{"text": ...}`
+or `{"base64": ...}` replaces it; stdout prints an `opened` line, then one
+`input` line per viewer intent.
+
+Usage: phux agent doc serve <FLAGS>
+
+Flags:
+      --type <MIME>    The content type, a MIME type such as `text/markdown`.
+      --name <NAME>    A name for the document.
+      --pane <PANE>    The parent pane; this process's own pane when absent.
+  -h, --help           Print help
+
+Global flags:
+      --socket <PATH>  Server socket to dial (default: `$PHUX_SOCKET`)
+```
+
+## `phux agent doc snapshot`
+
+```text
+Write the newest document to a file, or stdout: text with control characters
+shown as signs, binary only into a pipe.
+
+Usage: phux agent doc snapshot [--out <PATH>] [--json] <TARGET>
+
+Arguments:
+  <TARGET>  The document resource.
+
+Flags:
+      --out <PATH>     Where the document goes; stdout when absent.
+      --json
   -h, --help           Print help
 
 Global flags:
@@ -435,10 +680,103 @@ browser started with `--remote-debugging-port`.
 Usage: phux agent page <SUBCOMMAND>
 
 Commands:
-  mirror  Mirror a browser page into a tree and a surface until Ctrl-C.
-  help    Print this message or the help of the given subcommand(s)
+  click     Click a mirrored page at a point of its surface image, in image
+            pixels.
+  copy      Print the host clipboard's text, read by a mirrored page's or
+            screen's producer.
+  drag      Drag across a mirrored page or screen with the left button, from one
+            point of its surface image to another: selects text.
+  key       Press one key in a mirrored page: Enter, Tab, Backspace, Escape, or
+            an arrow.
+  mirror    Mirror a browser page into a tree and a surface until Ctrl-C.
+  navigate  Load a URL in a mirrored page.
+  paste     Paste text into a mirrored page or screen: a window or display puts
+            it on the host clipboard and presses the paste chord.
+  scroll    Scroll a mirrored page or screen by a delta in surface image pixels.
+  type      Type text into a mirrored page's focused field.
+  help      Print this message or the help of the given subcommand(s)
 
 Flags:
+  -h, --help           Print help
+
+Global flags:
+      --socket <PATH>  Server socket to dial (default: `$PHUX_SOCKET`)
+```
+
+## `phux agent page click`
+
+```text
+Click a mirrored page at a point of its surface image, in image pixels.
+
+Usage: phux agent page click [--json] <ARGS>…
+
+Arguments:
+  <TARGET>  The page's surface or tree.
+  <X>       Pixels from the image's left edge.
+  <Y>       Pixels from the image's top edge.
+
+Flags:
+      --json
+  -h, --help           Print help
+
+Global flags:
+      --socket <PATH>  Server socket to dial (default: `$PHUX_SOCKET`)
+```
+
+## `phux agent page copy`
+
+```text
+Print the host clipboard's text, read by a mirrored page's or screen's producer.
+
+Usage: phux agent page copy [--json] <TARGET>
+
+Arguments:
+  <TARGET>  The document's surface or tree.
+
+Flags:
+      --json
+  -h, --help           Print help
+
+Global flags:
+      --socket <PATH>  Server socket to dial (default: `$PHUX_SOCKET`)
+```
+
+## `phux agent page drag`
+
+```text
+Drag across a mirrored page or screen with the left button, from one point of
+its surface image to another: selects text.
+
+Usage: phux agent page drag [--json] <ARGS>…
+
+Arguments:
+  <TARGET>  The document's surface or tree.
+  <X1>      Where the press lands: pixels from the image's left edge.
+  <Y1>      Where the press lands: pixels from the image's top edge.
+  <X2>      Where the release lands: pixels from the image's left edge.
+  <Y2>      Where the release lands: pixels from the image's top edge.
+
+Flags:
+      --json
+  -h, --help           Print help
+
+Global flags:
+      --socket <PATH>  Server socket to dial (default: `$PHUX_SOCKET`)
+```
+
+## `phux agent page key`
+
+```text
+Press one key in a mirrored page: Enter, Tab, Backspace, Escape, or an arrow.
+
+Usage: phux agent page key [--json] <TARGET> <KEY>
+
+Arguments:
+  <TARGET>  The page's surface or tree.
+  <KEY>     The key, e.g. `Enter` or `ArrowDown`.
+
+Flags:
+      --json
   -h, --help           Print help
 
 Global flags:
@@ -456,11 +794,99 @@ Arguments:
   <PAGE>  A fragment of the page's title or URL, or `first`.
 
 Flags:
-      --port <PORT>    The browser's debugging port (default 9222).
-      --pane <PANE>    The pane the documents bind to; this process's own pane
-                       when absent.
-      --interval <MS>  Milliseconds between accessibility-tree reads (default
-                       1000).
+      --port <PORT>       The browser's debugging port (default 9222).
+      --pane <PANE>       The pane the documents bind to; this process's own
+                          pane when absent.
+      --interval <MS>     Milliseconds between accessibility-tree reads (default
+                          1000).
+      --parent-pid <PID>  Exit once this process is gone, as the app that
+                          launched the mirror passes its own.
+      --format <FORMAT>   Frame encoding: jpeg by default for a page mirror, png
+                          for a window or display mirror. JPEG frames are
+                          several times smaller; viewers older than JPEG support
+                          (desktop before 0.57.0, Rune before 0.1.0-alpha.17)
+                          show them as invalid.
+                          [possible values: png, jpeg]
+      --quality <Q>       JPEG quality, 1 to 100 (default 70).
+      --max-width <PX>    Scale frames down to at most this many pixels wide.
+      --json
+  -h, --help              Print help
+
+Global flags:
+      --socket <PATH>     Server socket to dial (default: `$PHUX_SOCKET`)
+```
+
+## `phux agent page navigate`
+
+```text
+Load a URL in a mirrored page.
+
+Usage: phux agent page navigate [--json] <TARGET> <URL>
+
+Arguments:
+  <TARGET>  The page's surface or tree.
+  <URL>     The URL to load.
+
+Flags:
+      --json
+  -h, --help           Print help
+
+Global flags:
+      --socket <PATH>  Server socket to dial (default: `$PHUX_SOCKET`)
+```
+
+## `phux agent page paste`
+
+```text
+Paste text into a mirrored page or screen: a window or display puts it on the
+host clipboard and presses the paste chord.
+
+Usage: phux agent page paste [--json] <TARGET> <TEXT>
+
+Arguments:
+  <TARGET>  The document's surface or tree.
+  <TEXT>    The text to paste.
+
+Flags:
+      --json
+  -h, --help           Print help
+
+Global flags:
+      --socket <PATH>  Server socket to dial (default: `$PHUX_SOCKET`)
+```
+
+## `phux agent page scroll`
+
+```text
+Scroll a mirrored page or screen by a delta in surface image pixels.
+
+Usage: phux agent page scroll [--json] <ARGS>…
+
+Arguments:
+  <TARGET>  The document's surface or tree.
+  <DX>      Horizontal pixels; positive scrolls right.
+  <DY>      Vertical pixels; positive scrolls down.
+
+Flags:
+      --json
+  -h, --help           Print help
+
+Global flags:
+      --socket <PATH>  Server socket to dial (default: `$PHUX_SOCKET`)
+```
+
+## `phux agent page type`
+
+```text
+Type text into a mirrored page's focused field.
+
+Usage: phux agent page type [--json] <TARGET> <TEXT>
+
+Arguments:
+  <TARGET>  The page's surface or tree.
+  <TEXT>    The text to insert.
+
+Flags:
       --json
   -h, --help           Print help
 
@@ -774,22 +1200,46 @@ Global flags:
       --socket <PATH>     Server socket to dial (default: `$PHUX_SOCKET`)
 ```
 
+## `phux agent stats`
+
+```text
+Show each pane's agent work: tasks finished and time spent working.
+
+Prints the `phux.agent-stats/v1` document. `--publish` records the hook event in
+the environment, then writes that Global key; the agent-stats plugin runs it
+from its hooks.
+
+Usage: phux agent stats [--publish]
+
+Flags:
+      --publish        Record the hook event and write the key.
+  -h, --help           Print help
+
+Global flags:
+      --socket <PATH>  Server socket to dial (default: `$PHUX_SOCKET`)
+```
+
 ## `phux agent surface`
 
 ```text
-A pixel surface is a pane's child resource that a producer feeds with PNG images
-of a window or display; `snapshot` writes the newest and `follow` every one.
-Needs a server that advertises `PIXEL_SURFACE`.
+A pixel surface is a pane's child resource that a producer feeds with PNG or
+JPEG images of a window or display; `snapshot` writes the newest and `follow`
+every one. Needs a server that advertises `PIXEL_SURFACE`.
 
 Usage: phux agent surface <SUBCOMMAND>
 
 Commands:
   follow    Write every image as it arrives, each replacing the file.
-  mirror    Mirror a macOS window, or the main display, into a surface until
-            Ctrl-C.
+  mirror    Mirror a window or a display into a surface until Ctrl-C: macOS, or
+            Linux on a wlroots compositor (Hyprland, Sway) through `grim`.
   open      Open a surface under the pane its producer runs in.
-  publish   Replace the surface's image from a PNG file, or stdin.
+  publish   Replace the surface's image from a PNG or JPEG file, or stdin.
   snapshot  Write the surface's newest image to a file.
+  standing  Run the `[[mirrors]]` entries as this process's children, each into
+            its `mirror-<target>` session, restarting any that exit. Rune runs
+            this on macOS, where the server's own children cannot hold Screen
+            Recording access; one runs per server.
+  targets   List the displays and windows `mirror` can name on this host.
   help      Print this message or the help of the given subcommand(s)
 
 Flags:
@@ -810,7 +1260,7 @@ Arguments:
   <TARGET>  The surface.
 
 Flags:
-      --out <PATH>      Where each PNG goes; stdout when absent.
+      --out <PATH>      Where each image goes; stdout when absent.
       --timeout <SECS>  Give up after this many seconds.
       --json
   -h, --help            Print help
@@ -822,24 +1272,42 @@ Global flags:
 ## `phux agent surface mirror`
 
 ```text
-Mirror a macOS window, or the main display, into a surface until Ctrl-C.
+Mirror a window or a display into a surface until Ctrl-C: macOS, or Linux on a
+wlroots compositor (Hyprland, Sway) through `grim`.
 
 Usage: phux agent surface mirror [FLAGS] <WINDOW>
 
 Arguments:
-  <WINDOW>  The window as `App` or `App:title`, or `display` for the main
-            display.
+  <WINDOW>  The window as `App` or `App:title` (on Linux, a Hyprland class), or
+            `display`: the main display on macOS, every output on Linux, where
+            `display:OUTPUT` names one.
 
 Flags:
-      --window-id <ID>  The CoreGraphics window id, instead of a name.
-      --pane <PANE>     The pane the surface binds to; this process's own pane
-                        when absent.
-      --interval <MS>   Milliseconds between captures (default 1000).
+      --window-id <ID>    The CoreGraphics window id, instead of a name (macOS).
+      --pane <PANE>       The pane the surface binds to; this process's own pane
+                          when absent.
+      --interval <MS>     Milliseconds between captures while no input arrives
+                          (default 1000). After input it captures 50ms later,
+                          then every 150ms for 2s.
+      --parent-pid <PID>  Exit once this process is gone, as the app that
+                          launched the mirror passes its own.
+      --format <FORMAT>   Frame encoding: jpeg by default for a page mirror, png
+                          for a window or display mirror. JPEG frames are
+                          several times smaller; viewers older than JPEG support
+                          (desktop before 0.57.0, Rune before 0.1.0-alpha.17)
+                          show them as invalid.
+                          [possible values: png, jpeg]
+      --quality <Q>       JPEG quality, 1 to 100 (default 70).
+      --max-width <PX>    Scale frames down to at most this many pixels wide.
+      --dry-run-input     Log the input events viewers' intents would post
+                          (macOS), or the Wayland requests and commands they
+                          would send (Linux), instead; a refused capture
+                          publishes a blank frame.
       --json
-  -h, --help            Print help
+  -h, --help              Print help
 
 Global flags:
-      --socket <PATH>   Server socket to dial (default: `$PHUX_SOCKET`)
+      --socket <PATH>     Server socket to dial (default: `$PHUX_SOCKET`)
 ```
 
 ## `phux agent surface open`
@@ -847,13 +1315,18 @@ Global flags:
 ```text
 Open a surface under the pane its producer runs in.
 
-Usage: phux agent surface open <--window <WINDOW>> [--json] <TARGET>
+Usage: phux agent surface open <FLAGS> <TARGET>
 
 Arguments:
   <TARGET>  The parent pane.
 
 Flags:
       --window <WINDOW>  The window or display the surface mirrors.
+      --control <CLASS>  What input to the surface controls: `page`, `window`,
+                         or `display`. Only a device granted that control class
+                         can send it input; without this flag only the owner
+                         socket can.
+                         [possible values: page, window, display]
       --json
   -h, --help             Print help
 
@@ -864,7 +1337,7 @@ Global flags:
 ## `phux agent surface publish`
 
 ```text
-Replace the surface's image from a PNG file, or stdin.
+Replace the surface's image from a PNG or JPEG file, or stdin.
 
 Usage: phux agent surface publish [--file <PATH>] [--json] <TARGET>
 
@@ -872,7 +1345,7 @@ Arguments:
   <TARGET>  The surface.
 
 Flags:
-      --file <PATH>    The PNG; stdin when absent.
+      --file <PATH>    The PNG or JPEG; stdin when absent.
       --json
   -h, --help           Print help
 
@@ -891,7 +1364,42 @@ Arguments:
   <TARGET>  The surface.
 
 Flags:
-      --out <PATH>     Where the PNG goes; stdout when absent.
+      --out <PATH>     Where the image goes; stdout when absent, unless stdout
+                       is a terminal.
+      --json
+  -h, --help           Print help
+
+Global flags:
+      --socket <PATH>  Server socket to dial (default: `$PHUX_SOCKET`)
+```
+
+## `phux agent surface standing`
+
+```text
+Run the `[[mirrors]]` entries as this process's children, each into its
+`mirror-<target>` session, restarting any that exit. Rune runs this on macOS,
+where the server's own children cannot hold Screen Recording access; one runs
+per server.
+
+Usage: phux agent surface standing [--parent-pid <PID>]
+
+Flags:
+      --parent-pid <PID>  Exit once this process is gone, as the app that
+                          launched it passes its own.
+  -h, --help              Print help
+
+Global flags:
+      --socket <PATH>     Server socket to dial (default: `$PHUX_SOCKET`)
+```
+
+## `phux agent surface targets`
+
+```text
+List the displays and windows `mirror` can name on this host.
+
+Usage: phux agent surface targets [--json]
+
+Flags:
       --json
   -h, --help           Print help
 
@@ -910,11 +1418,14 @@ newest and `follow --until TEXT` waits on it. Needs a server that advertises
 Usage: phux agent tree <SUBCOMMAND>
 
 Commands:
+  click     Activate one element by node, not pixel: `--node ID` or `--name
+            TEXT`.
   follow    Print every document as it arrives.
-  mirror    Mirror a running macOS application into a tree, until Ctrl-C.
+  mirror    Mirror a running application into a tree, until Ctrl-C: macOS
+            Accessibility, or AT-SPI on Linux.
   open      Open a tree under the pane its producer runs in.
   publish   Replace the tree's document from a file, or stdin.
-  snapshot  Print the tree's newest document.
+  snapshot  Print the tree's newest document, control characters shown as signs.
   help      Print this message or the help of the given subcommand(s)
 
 Flags:
@@ -922,6 +1433,34 @@ Flags:
 
 Global flags:
       --socket <PATH>  Server socket to dial (default: `$PHUX_SOCKET`)
+```
+
+## `phux agent tree click`
+
+```text
+Activate one element by node, not pixel: `--node ID` or `--name TEXT`.
+
+Usage: phux agent tree click [FLAGS] <TARGET>
+
+Arguments:
+  <TARGET>  The tree.
+
+Flags:
+      --node <ID>          The node's `id`, as the tree document gives it.
+      --name <TEXT>        The node whose name (title or description) is TEXT,
+                           ignoring case; an exact name beats a substring.
+      --role <ROLE>        With `--name`, only nodes of this role (`AXButton`,
+                           `push button`).
+      --pixel              Click the node's centre on the window surface beside
+                           the tree, skipping the producer's semantic action.
+      --wait-until <TEXT>  After the click, wait until a tree document contains
+                           this text.
+      --timeout <SECS>     Give up waiting after this many seconds.
+      --json
+  -h, --help               Print help
+
+Global flags:
+      --socket <PATH>      Server socket to dial (default: `$PHUX_SOCKET`)
 ```
 
 ## `phux agent tree follow`
@@ -947,24 +1486,28 @@ Global flags:
 ## `phux agent tree mirror`
 
 ```text
-Mirror a running macOS application into a tree, until Ctrl-C.
+Mirror a running application into a tree, until Ctrl-C: macOS Accessibility, or
+AT-SPI on Linux.
 
 Usage: phux agent tree mirror [FLAGS] <APP>
 
 Arguments:
-  <APP>  The application's process name, e.g. `Safari`.
+  <APP>  The application: its process name on macOS (`Safari`), its AT-SPI name
+         on Linux.
 
 Flags:
-      --pid <PID>      The application's process id, instead of its name.
-      --pane <PANE>    The pane the tree binds to; this process's own pane when
-                       absent.
-      --interval <MS>  Milliseconds between reads (default 500).
-      --depth <N>      Deepest nesting to read (default 24).
+      --pid <PID>         The application's process id, instead of its name.
+      --pane <PANE>       The pane the tree binds to; this process's own pane
+                          when absent.
+      --interval <MS>     Milliseconds between reads (default 500).
+      --depth <N>         Deepest nesting to read (default 24).
+      --parent-pid <PID>  Exit once this process is gone, as the app that
+                          launched the mirror passes its own.
       --json
-  -h, --help           Print help
+  -h, --help              Print help
 
 Global flags:
-      --socket <PATH>  Server socket to dial (default: `$PHUX_SOCKET`)
+      --socket <PATH>     Server socket to dial (default: `$PHUX_SOCKET`)
 ```
 
 ## `phux agent tree open`
@@ -1008,7 +1551,7 @@ Global flags:
 ## `phux agent tree snapshot`
 
 ```text
-Print the tree's newest document.
+Print the tree's newest document, control characters shown as signs.
 
 Usage: phux agent tree snapshot [--json] <TARGET>
 
@@ -1121,10 +1664,12 @@ Global flags:
 ```text
 List actions held for approval
 
-A workload whose grant holds `?signal` has its kills, signals, and forced
-detaches held by the server until someone holding un-held `signal` on the same
-subject approves or denies them. This lists what is waiting: the id, who asked,
-the held method, its subjects, and the time left before it expires.
+A workload whose grant holds `?signal`, `?terminate`, or `?input` on a page,
+window, or display class has those actions (kills and signals, session and pane
+ends, document input) held by the server until someone holding the same verbs
+un-held on the same subject approves or denies them. This lists what is waiting:
+the id, who asked, the held method, its subjects, and the time left before it
+expires.
 
 Usage: phux approvals [--json]
 
@@ -1407,6 +1952,70 @@ Global flags:
                                   `$PHUX_SOCKET`)
 ```
 
+## `phux audit`
+
+```text
+Read and verify this host's signed audit log
+
+The server appends one signed, hash-chained `phux.audit/v1` record per
+connection, authorization decision, approval, credential change, file transfer
+and input lease to `audit/audit.jsonl` in the state directory. `tail` prints the
+newest records (`-f` follows); `verify` checks the chain and every signature and
+names the first bad record. Both read the files directly, so they work with no
+server running.
+
+Usage: phux audit <SUBCOMMAND>
+
+Commands:
+  tail    Print the newest records, oldest first.
+  verify  Check the hash chain and every signature; exits 1 at the first bad
+          record and names its seq.
+  help    Print this message or the help of the given subcommand(s)
+
+Flags:
+  -h, --help           Print help
+
+Global flags:
+      --socket <PATH>  Server socket to dial (default: `$PHUX_SOCKET`)
+```
+
+## `phux audit tail`
+
+```text
+Print the newest records, oldest first.
+
+Usage: phux audit tail [FLAGS]
+
+Flags:
+  -n, --lines <NUM>      How many records to print; 20 when omitted.
+  -f, --follow           Keep printing records as the server appends them.
+      --since-seq <SEQ>  Only records with this seq or later.
+      --json             Print each record as its stored JSON line instead of a
+                         summary.
+  -h, --help             Print help
+
+Global flags:
+      --socket <PATH>    Server socket to dial (default: `$PHUX_SOCKET`)
+```
+
+## `phux audit verify`
+
+```text
+Check the hash chain and every signature; exits 1 at the first bad record and
+names its seq.
+
+Usage: phux audit verify [--json]
+
+Flags:
+      --json           Emit stable, versioned JSON on stdout instead of the
+                       human view. On failure, stdout stays empty and stderr
+                       carries one JSON error object.
+  -h, --help           Print help
+
+Global flags:
+      --socket <PATH>  Server socket to dial (default: `$PHUX_SOCKET`)
+```
+
 ## `phux channel`
 
 ```text
@@ -1427,7 +2036,7 @@ Usage: phux channel [--json] [CHANNEL]
 Arguments:
   [CHANNEL]  Channel to follow. Omit to report the current rail without changing
              it.
-             [possible values: stable, next]
+             [possible values: stable, next, lts]
 
 Flags:
       --json           Emit stable, versioned JSON on stdout instead of the
@@ -1778,7 +2387,8 @@ Reads global options and key tables from an already running tmux, without
 sourcing files or changing either server. By default, prints TOML on stdout and
 a fidelity report on stderr. Unsupported bindings are never executed or silently
 replaced with a different phux action. This configures the terminal UI; desktop
-shortcuts are separate.
+shortcuts are separate. To have your coding agent migrate from your config files
+instead, run `phux migrate`.
 
 Usage: phux config import-tmux [FLAGS]
 
@@ -2127,6 +2737,7 @@ Usage: phux host <SUBCOMMAND>
 Commands:
   add       Add a machine so `phux attach NAME` reaches it.
   attach    Attach to a registered remote host (same as `phux attach NAME`).
+  color     Set the colour a host is drawn in, or go back to its automatic one.
   disable   Disable a satellite without forgetting it; a running hub drops its
             link.
   discover  List the machines on this computer's Tailscale network.
@@ -2265,6 +2876,33 @@ Arguments:
   <NAME>  Registered remote name.
 
 Flags:
+  -h, --help           Print help
+
+Global flags:
+      --socket <PATH>  Server socket to dial (default: `$PHUX_SOCKET`)
+```
+
+## `phux host color`
+
+```text
+Set the colour a host is drawn in, or go back to its automatic one.
+
+Every client hashes a host's name to one of eight palette colours; this
+overrides that for a `[[remote]]` entry, or for this machine with `--local`
+(`[host] color`). `auto` removes the override.
+
+Usage: phux host color [--local] [--json] <[NAME] COLOR>…
+
+Arguments:
+  <[NAME] COLOR>…  `NAME COLOR` for a registered remote, or `COLOR` alone with
+                   `--local`. COLOR is a palette id (blue, violet, magenta, sky,
+                   coral, olive, slate, copper, green, navy) or `auto`.
+
+Flags:
+      --local          Colour this machine instead of a registered remote.
+      --json           Emit stable, versioned JSON on stdout instead of the
+                       human view. On failure, stdout stays empty and stderr
+                       carries one JSON error object.
   -h, --help           Print help
 
 Global flags:
@@ -3161,6 +3799,46 @@ Global flags:
       --socket <PATH>  Server socket to dial (default: `$PHUX_SOCKET`)
 ```
 
+## `phux migrate`
+
+```text
+Have your coding agent bring your terminal keys into phux
+
+Reads your tmux, zellij, Ghostty and herdr configs, translates every key binding
+it can into phux config lines, and starts your agent (claude, codex or opencode)
+with a strict prompt: write those lines into `phux config path`, run `phux
+config check` and `phux config reload`, and report what migrated, what replaced
+a phux default, which sources conflicted and what could not migrate. Inside a
+phux pane the agent opens in a split to the right; elsewhere in a new session
+named `migrate`.
+
+`--print` prints the prompt instead, for any other agent. With nothing to
+migrate it says so and exits 0.
+
+Examples:
+phux migrate
+phux migrate --agent codex --source tmux
+phux migrate --print | pbcopy
+
+Usage: phux migrate [FLAGS]
+
+Flags:
+      --agent <AGENT>    The agent to start. Default: the one installed, or ask
+                         when there are several.
+                         [possible values: claude, codex, opencode]
+      --print            Print the prompt and exit; start nothing.
+      --source <SOURCE>  Read only this source (repeatable). Default: every
+                         source found.
+                         [possible values: tmux, zellij, ghostty, herdr]
+      --json             Emit one JSON document: the sources found, the agent,
+                         the config path and what was launched (with `--print`,
+                         the prompt too).
+  -h, --help             Print help
+
+Global flags:
+      --socket <PATH>    Server socket to dial (default: `$PHUX_SOCKET`)
+```
+
 ## `phux mission`
 
 ```text
@@ -3429,6 +4107,67 @@ Flags:
 
 Global flags:
       --socket <PATH>     Server socket to dial (default: `$PHUX_SOCKET`)
+```
+
+## `phux native`
+
+```text
+Run one terminal in a native emulator window
+
+Ctrl-] detaches; the server-owned process survives.
+
+Usage: phux native <SUBCOMMAND>
+
+Commands:
+  attach  Reattach an exact local terminal; never selects a focused pane.
+  create  Create a distinct terminal in a shared persistent session and display
+          it.
+  help    Print this message or the help of the given subcommand(s)
+
+Flags:
+  -h, --help           Print help
+
+Global flags:
+      --socket <PATH>  Server socket to dial (default: `$PHUX_SOCKET`)
+```
+
+## `phux native attach`
+
+```text
+Reattach an exact local terminal; never selects a focused pane.
+
+Usage: phux native attach <TARGET>
+
+Arguments:
+  <TARGET>  Exact terminal address, as printed by `phux ls omarchy` (for example
+            @3).
+
+Flags:
+  -h, --help           Print help
+
+Global flags:
+      --socket <PATH>  Server socket to dial (default: `$PHUX_SOCKET`)
+```
+
+## `phux native create`
+
+```text
+Create a distinct terminal in a shared persistent session and display it.
+
+Usage: phux native create [-s --session <SESSION>] [-c --cwd <CWD>] [COMMAND]…
+
+Arguments:
+  [COMMAND]…  Program and arguments; omitted selects the server's shell.
+
+Flags:
+  -s, --session <SESSION>  Shared session, created persistently if missing.
+                           (default: omarchy)
+  -c, --cwd <CWD>          Working directory (defaults to this client's current
+                           directory).
+  -h, --help               Print help
+
+Global flags:
+      --socket <PATH>      Server socket to dial (default: `$PHUX_SOCKET`)
 ```
 
 ## `phux new`
@@ -3930,17 +4669,10 @@ Does not start a server.
 `phux perf trace` records a span trace of the server for Perfetto; `phux perf
 alloc on|off` switches its heap accounting.
 
-`--desktop` reads a phux desktop running in dev mode (`PHUX_DEV=1`, or Developer
-mode in its Settings) instead: its frame rate, frame build times, jank, CPU,
-memory, heap and every desktop histogram. `phux perf trace --desktop` records
-the desktop and the server onto one timeline; `phux perf hud on|off` shows the
-desktop's in-window HUD.
-
 Usage: phux perf [FLAGS] [SUBCOMMAND]
 
 Commands:
   alloc  Switch the server's heap accounting on or off
-  hud    Show or hide the dev-mode desktop's performance HUD
   trace  Record a span trace of the server and save it as Chrome trace JSON
   help   Print this message or the help of the given subcommand(s)
 
@@ -3948,8 +4680,6 @@ Flags:
       --json           Emit stable, versioned JSON on stdout instead of the
                        human view. On failure, stdout stays empty and stderr
                        carries one JSON error object.
-      --desktop        Read the dev-mode phux desktop serving this socket, not
-                       the server.
       --watch <SECS>   Poll every SECS seconds and print each interval as a
                        delta.
       --reset          Zero the server's metrics after each snapshot.
@@ -3968,32 +4698,7 @@ Heap figures appear in `phux perf` while accounting is on. A server started with
 `PHUX_DEV=1` starts with it on. A server binary without the counting allocator
 answers `installed: false` and reports no heap.
 
-Usage: phux perf alloc [--desktop] [--json] <STATE>
-
-Arguments:
-  <STATE>  `on` or `off`.
-           [possible values: on, off]
-
-Flags:
-      --desktop        Switch the dev-mode desktop's heap accounting instead.
-      --json           Emit stable, versioned JSON on stdout instead of the
-                       human view. On failure, stdout stays empty and stderr
-                       carries one JSON error object.
-  -h, --help           Print help
-
-Global flags:
-      --socket <PATH>  Server socket to dial (default: `$PHUX_SOCKET`)
-```
-
-## `phux perf hud`
-
-```text
-Show or hide the dev-mode desktop's performance HUD
-
-The HUD sits in each window's corner: frame rate, frame build time, jank, CPU,
-memory, heap, and the server's CPU and memory.
-
-Usage: phux perf hud [--json] <STATE>
+Usage: phux perf alloc [--json] <STATE>
 
 Arguments:
   <STATE>  `on` or `off`.
@@ -4025,8 +4730,6 @@ Flags:
       --seconds <SECS>  Seconds to record.
                         (default: 5)
   -o, --out <PATH>      Copy the trace here as well.
-      --desktop         Trace the dev-mode desktop and the server onto one
-                        timeline.
       --json            Emit stable, versioned JSON on stdout instead of the
                         human view. On failure, stdout stays empty and stderr
                         carries one JSON error object.
@@ -5277,7 +5980,11 @@ Run a server in the foreground
 Binds a Unix domain socket, pre-seeds a session whose initial pane spawns the
 user's `$SHELL` inside a real PTY, and serves `ATTACH` requests until Ctrl-C.
 
-Usage: phux server [FLAGS]
+Usage: phux server [FLAGS] [SUBCOMMAND]
+
+Commands:
+  permissions  Show the macOS privacy grants the running server holds.
+  help         Print this message or the help of the given subcommand(s)
 
 Flags:
       --ensure                    Ensure the selected local socket accepts, then
@@ -5379,6 +6086,37 @@ Flags:
 Global flags:
       --socket <PATH>             Server socket to dial (default:
                                   `$PHUX_SOCKET`)
+```
+
+## `phux server permissions`
+
+```text
+Show the macOS privacy grants the running server holds.
+
+macOS charges every program in a pane to the server, so Full Disk Access, Screen
+Recording and Accessibility are the server's to hold. Lists each as `granted`,
+`denied` (or never asked), `not_determined` or `unknown` (always, off macOS),
+plus the program macOS charges them to (`responsible_path`). Probing never
+prompts. Asks over the local socket only; does not start a server. `--json`
+prints `{"executable", "responsible_path", "bundle", "permissions": [{"service",
+"status"}]}`.
+
+Usage: phux server permissions [--json] [--open <SERVICE>]
+
+Flags:
+      --json            Emit stable, versioned JSON on stdout instead of the
+                        human view. On failure, stdout stays empty and stderr
+                        carries one JSON error object.
+      --open <SERVICE>  Open SERVICE's pane in System Settings and print the
+                        path to add there: the `phux Server` bundle through its
+                        `Current` link, or the app macOS charges the server to.
+                        Works without a server.
+                        [possible values: full-disk-access, screen-recording,
+                        accessibility]
+  -h, --help            Print help
+
+Global flags:
+      --socket <PATH>   Server socket to dial (default: `$PHUX_SOCKET`)
 ```
 
 ## `phux service`
@@ -5612,7 +6350,17 @@ phux skill agent
 phux --skill=terminal
 phux --skill=quick | pbcopy
 
-Usage: phux skill [SCOPE]
+`phux skill setup` installs a small `phux` skill in each installed agent's skill
+directory that points the agent here, plus a Claude Code session hook; `status`
+reports it and `remove` takes it out.
+
+Usage: phux skill [SCOPE] [SUBCOMMAND]
+
+Commands:
+  remove  Remove the skill stubs and hook `phux skill setup` installed
+  setup   Teach every installed agent about phux
+  status  Report each agent's skill stub and hook without changing anything
+  help    Print this message or the help of the given subcommand(s)
 
 Arguments:
   [SCOPE]  Amount and subject of guidance to print.
@@ -5620,6 +6368,88 @@ Arguments:
            (default: full)
 
 Flags:
+  -h, --help           Print help
+
+Global flags:
+      --socket <PATH>  Server socket to dial (default: `$PHUX_SOCKET`)
+```
+
+## `phux skill remove`
+
+```text
+Remove the skill stubs and hook `phux skill setup` installed
+
+Only files carrying phux's stub marker and the hook phux added are removed; any
+other skill is left alone.
+
+Usage: phux skill remove [FLAGS]
+
+Flags:
+      --agent <AGENT>  Only this agent (repeatable). Default: all four.
+                       [possible values: claude, codex, opencode, pi]
+      --project        Remove from this repository instead of the home
+                       directory.
+      --dry-run        Report what would change and change nothing.
+      --json           Print the per-agent result as JSON
+                       (`phux.skill-setup/v1`).
+  -h, --help           Print help
+
+Global flags:
+      --socket <PATH>  Server socket to dial (default: `$PHUX_SOCKET`)
+```
+
+## `phux skill setup`
+
+```text
+Teach every installed agent about phux
+
+Writes a stub skill named `phux` into each detected agent's user skill
+directory: `~/.claude/skills` for Claude Code, and the shared `~/.agents/skills`
+(written once) for Codex, `OpenCode` and pi. With no agent detected, only
+`~/.agents/skills` is written. The stub tells the agent to run `phux skill`, so
+the guide it reads always matches the installed binary. For Claude Code it also
+merges one `SessionStart` hook into `~/.claude/settings.json` that tells each
+new session whether it runs inside a phux pane; the hook is skipped when the
+`install-claude` shim or the phux Claude Code plugin already registers phux
+hooks. A `phux` skill phux did not install is left alone and reported as a
+conflict; a `using-phux` skill (from `npx skills add no-phux/skills`) is
+reported as present. Running it again updates a stale stub and reports the rest
+as up to date.
+
+Usage: phux skill setup [FLAGS]
+
+Flags:
+      --agent <AGENT>  Only this agent (repeatable). Default: every detected
+                       agent.
+                       [possible values: claude, codex, opencode, pi]
+      --project        Install into this repository (`.claude/skills`,
+                       `.agents/skills`, `.claude/settings.json`) instead of the
+                       home directory.
+      --dry-run        Report what would change and change nothing.
+      --force          Write the stub over a `phux` skill phux did not install,
+                       or beside a `using-phux` one.
+      --json           Print the per-agent result as JSON
+                       (`phux.skill-setup/v1`).
+  -h, --help           Print help
+
+Global flags:
+      --socket <PATH>  Server socket to dial (default: `$PHUX_SOCKET`)
+```
+
+## `phux skill status`
+
+```text
+Report each agent's skill stub and hook without changing anything
+
+Usage: phux skill status [FLAGS]
+
+Flags:
+      --agent <AGENT>  Only this agent (repeatable). Default: all four.
+                       [possible values: claude, codex, opencode, pi]
+      --project        Report the repository's skills instead of the home
+                       directory's.
+      --json           Print the per-agent result as JSON
+                       (`phux.skill-setup/v1`).
   -h, --help           Print help
 
 Global flags:
@@ -5638,6 +6468,12 @@ against a pane another client is using.
 
 TARGET is a selector (see the top-level help); omit it for the
 most-recently-focused session.
+
+A TARGET that names a document resource by `@N` or `^key` is read by its kind:
+an accessibility tree prints its JSON, as `phux agent tree snapshot` does; a
+typed document prints its content when it is text, and otherwise its size and
+type; a pixel surface needs `--out FILE`. A document read attaches as an
+observer while it reads. The screen flags apply to a terminal only.
 
 Usage: phux snapshot [FLAGS] [TARGET]
 
@@ -5689,6 +6525,10 @@ Flags:
                         document with the `rendered` field populated. Mutually
                         exclusive with `--cells` and `--rendered`.
                         [possible values: html, vt]
+      --out <FILE>      Write a document resource's content to this file, as
+                        `phux agent surface|doc snapshot --out` does; a pixel
+                        surface needs it. A terminal refuses it: its screen
+                        prints on stdout.
       --cols <COLS>     Composited viewport width for `--rendered` (no TTY to
                         measure).
                         (default: 80)
@@ -5749,6 +6589,17 @@ Flags:
                                  answers the first pane instead of spawning
                                  another. Draw one key per spawn and reuse it on
                                  retry.
+      --app <NAME>               Run an application in the new pane instead of a
+                                 command: launched, mirrored into documents
+                                 under the pane, and quit when the pane is
+                                 killed (`phux agent app run NAME`). A macOS app
+                                 name, a Linux command or `.desktop` id, or with
+                                 `--browser` the browser.
+      --browser [URL]            With `--app`, launch that browser on URL
+                                 (default `about:blank`) with a fresh profile
+                                 and mirror the page.
+      --headless                 With `--browser`, run it with no window on
+                                 screen.
       --json                     Emit stable, versioned JSON on stdout instead
                                  of the human view. On failure, stdout stays
                                  empty and stderr carries one JSON error object.
@@ -6181,8 +7032,9 @@ Flags:
                               omit this when following `--channel next`.
       --channel <CHANNEL>     Release channel to follow. `stable` (also
                               `latest`) is the default (`vX.Y.Z`). `next` tracks
-                              green `main` via the moving prerelease.
-                              [possible values: stable, next]
+                              green `main` via the moving prerelease. `lts`
+                              follows the promoted long-term-support release.
+                              [possible values: stable, next, lts]
       --rollback              Restore the binaries saved by the previous `phux
                               update`.
       --no-restart            Replace the binaries but do not ask a running
@@ -6298,6 +7150,13 @@ the top-level help); omit it for the most-recently-focused session.
 Matching is against the lines as WRITTEN: rows the terminal soft-wrapped at its
 right edge are joined first, so text that straddles a wrap is found rather than
 silently never matching.
+
+A TARGET that names an accessibility tree or a text document by `@N` or `^key`
+waits on its text instead, as each document arrives: `--until` matches a
+substring of the whole document, and `--regex` one line of it. `--tail`,
+`--output-only` and `--idle` apply to a terminal only; a document wait needs
+`--until` or `--regex`, and a binary document or a surface is refused (exit 2).
+A document that closes before it matches exits 1.
 
 Flags may come before or after TARGET; a bare `--tail` reads the next word as N,
 so spell N out when TARGET follows it.
@@ -6477,11 +7336,16 @@ Usage: phux workload [--json] <SUBCOMMAND>
 Commands:
   add-key        Enroll a client certificate, or sign a CSR into one.
   authority      Print the workload CA fingerprint.
+  grant          Add one scope grant to an enrolled credential, without
+                 re-pairing.
   list           List enrolled credentials.
   repair-paired  Restore full control to a device enrolled with the old pairing
                  ceiling.
   revoke         Revoke a credential: new connections are refused and live ones
                  end.
+  sync-managed   Replace an organization's managed credentials with one
+                 document.
+  ungrant        Remove one scope grant from an enrolled credential.
   help           Print this message or the help of the given subcommand(s)
 
 Flags:
@@ -6517,7 +7381,14 @@ Flags:
                                  26-character key, the `key` of a `phux ls
                                  --json` row; session and Terminal ids restart
                                  with the server, so group:ID and terminal:ID
-                                 are refused). Repeatable; at least one is
+                                 are refused), or a control class: page, window,
+                                 display, alone or as CLASS:HOST, the only
+                                 selectors besides resource:KEY that let input
+                                 reach a mirrored page, window or display, or
+                                 let observe watch a mirrored window or display.
+                                 A human device enrolled with the full-control
+                                 pairing ceiling also gets observe@display and
+                                 observe@window. Repeatable; at least one is
                                  required.
       --expires-in <SECONDS>     Seconds until the credential expires (at most
                                  20 years).
@@ -6570,6 +7441,33 @@ Flags:
                        every workload credential re-enroll; the replaced files
                        are kept beside the new ones as `*.retired-<unix>`.
                        Restart the server to present it.
+  -h, --help           Print help
+
+Global flags:
+      --socket <PATH>  Server socket to dial (default: `$PHUX_SOCKET`)
+      --json           Emit the result as JSON on stdout.
+```
+
+## `phux workload grant`
+
+```text
+Add one scope grant to an enrolled credential, without re-pairing.
+
+The scope is `<verb>[,<verb>...]@<selector>`, as `add-key --scope` takes it,
+plus the control selectors `page`, `window`, `display` and `page:HOST`,
+`window:HOST`, `display:HOST`: `input@display` lets the device type and click on
+this machine's mirrored screens, and `observe@display` lets it watch them, which
+no terminal grant does. Prints what the grant lets the device do. The device
+gets it at its next connection.
+
+Usage: phux workload grant <CREDENTIAL_ID> <VERBS@SELECTOR>
+
+Arguments:
+  <CREDENTIAL_ID>   The credential's `sha256:...` id from `phux workload list`.
+  <VERBS@SELECTOR>  The grant, e.g. `observe@display` or
+                    `input@window:powerhouse-1`.
+
+Flags:
   -h, --help           Print help
 
 Global flags:
@@ -6633,6 +7531,58 @@ Arguments:
   <CREDENTIAL_ID>  Credential id (`sha256:...`) printed by `add-key` or `list`,
                    or an unspent enrollment ticket (`t-...`) printed by `phux
                    pair --enroll` or `phux host ticket`.
+
+Flags:
+  -h, --help           Print help
+
+Global flags:
+      --socket <PATH>  Server socket to dial (default: `$PHUX_SOCKET`)
+      --json           Emit the result as JSON on stdout.
+```
+
+## `phux workload sync-managed`
+
+```text
+Replace an organization's managed credentials with one document.
+
+Reads `{"v":1,"org":NAME,"roots":[PEM CA...],"credentials":[...]}` from FILE, or
+stdin when FILE is `-` or omitted. Each credential is a PEM `certificate` that
+chains to one of `roots`, `scopes` as `add-key --scope` takes them, a
+`principal` (`human` or `automation`), and an optional `subject` and RFC 3339
+`expires_at` (clamped to the certificate's expiry). Every credential this
+organization managed before is replaced; others are untouched. A removed
+credential's live connections end. A managed credential connects without a
+pairing token, so only feed this a document from a control plane you trust.
+
+Usage: phux workload sync-managed <--org <NAME>> [FILE]
+
+Arguments:
+  [FILE]  The document, or `-` for stdin (the default).
+
+Flags:
+      --org <NAME>     The organization: 1 to 63 of a-z, 0-9, and `-`; must
+                       match the document's `org`.
+  -h, --help           Print help
+
+Global flags:
+      --socket <PATH>  Server socket to dial (default: `$PHUX_SOCKET`)
+      --json           Emit the result as JSON on stdout.
+```
+
+## `phux workload ungrant`
+
+```text
+Remove one scope grant from an enrolled credential.
+
+Removes every scope equal to the one given. A running server ends the device's
+live connections that relied on it; the device reconnects with what remains. The
+last scope cannot be removed: revoke the credential instead.
+
+Usage: phux workload ungrant <CREDENTIAL_ID> <VERBS@SELECTOR>
+
+Arguments:
+  <CREDENTIAL_ID>   The credential's `sha256:...` id from `phux workload list`.
+  <VERBS@SELECTOR>  The grant to remove, as `phux workload list` prints it.
 
 Flags:
   -h, --help           Print help

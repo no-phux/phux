@@ -15,10 +15,11 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
+use phux_client_runtime::release::API_ASSET_ACCEPT;
 use phux_client_runtime::release::signature::{RELEASE_KEYS, signed_digest};
 use sha2::{Digest, Sha256};
 
-use super::{APP, CURL, EXECUTABLE, Release, fetch};
+use super::{APP, CURL, EXECUTABLE, Release, api_url, fetch};
 use crate::diag;
 
 const STAGING: &str = ".phux-rune-update";
@@ -108,13 +109,47 @@ fn check_digest(path: &Path, expected: &str) -> Result<(), String> {
     }
 }
 
-/// Reports the file's real size against the published one as curl writes it.
+/// The release archive into `to`, through GitHub's API when
+/// `releases/download` will not serve it.
 fn download(release: &Release, to: &Path, report: &dyn Fn(Progress)) -> Result<(), String> {
-    let mut child = Command::new(CURL)
-        .args(["-fsSL", "--proto", "=https", "--connect-timeout", "10"])
-        .args(["--max-time", "900", "--max-filesize", MAX_ARCHIVE, "-o"])
+    let url = release.url();
+    let first = match transfer(&url, None, release.size, to, report) {
+        Ok(()) => return Ok(()),
+        Err(error) => error,
+    };
+    let Some(api) = api_url(&url) else {
+        return Err(first);
+    };
+    transfer(&api, Some(API_ASSET_ACCEPT), release.size, to, report).map_err(|_| first)
+}
+
+/// Reports the file's real size against the published `size` as curl writes it.
+fn transfer(
+    url: &str,
+    accept: Option<&str>,
+    size: u64,
+    to: &Path,
+    report: &dyn Fn(Progress),
+) -> Result<(), String> {
+    let mut command = Command::new(CURL);
+    command
+        .args([
+            "-fsSL",
+            "--proto",
+            "=https",
+            "--connect-timeout",
+            "10",
+            "--retry",
+            "2",
+        ])
+        .args(["--max-time", "900", "--max-filesize", MAX_ARCHIVE]);
+    if let Some(accept) = accept {
+        command.args(["-H", accept]);
+    }
+    let mut child = command
+        .arg("-o")
         .arg(to)
-        .arg(release.url())
+        .arg(url)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::piped())
@@ -128,7 +163,7 @@ fn download(release: &Release, to: &Path, report: &dyn Fn(Progress)) -> Result<(
             Err(error) => return Err(failed("Waiting for curl", error)),
         }
         let bytes = fs::metadata(to).map_or(0, |meta| meta.len());
-        let percent = (bytes.saturating_mul(100) / release.size).min(100) as u8;
+        let percent = (bytes.saturating_mul(100) / size).min(100) as u8;
         if shown != Some(percent) {
             shown = Some(percent);
             report(Progress::Downloading(percent));

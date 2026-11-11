@@ -1,10 +1,10 @@
 name: Cache warm
 
 # Pull requests restore Rust caches but never save them (a PR entry is
-# restorable only from that PR, and it evicts main's). The desktop lane never
-# runs on a main push, and the Rune lane only when Rune changes, so their
-# caches are saved here: the lanes themselves, run on main once a day. An
-# unchanged key restores exactly and saves nothing.
+# restorable only from that PR, and it evicts main's). The Rune lane runs on a
+# main push only when Rune changes, so its cache is saved here: the lane
+# itself, run on main once a day. An unchanged key restores exactly and saves
+# nothing.
 on:
   schedule:
     - cron: "17 6 * * *"
@@ -18,10 +18,6 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  desktop:
-    if: github.ref == 'refs/heads/main'
-    uses: ./.github/workflows/desktop-lane.yml
-
   rune:
     if: github.ref == 'refs/heads/main'
     uses: ./.github/workflows/rune-build.yml

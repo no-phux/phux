@@ -4,13 +4,17 @@
 use phux_agent_session::session::AgentSessionResource as _;
 use std::os::fd::AsRawFd;
 
-use super::super::handoff::*;
 use super::super::validate::*;
 use super::super::*;
 pub(super) use crate::runtime::apps::agent_session::upgrade::{
     AgentSessionSeal, AgentSessionUpgrade, carried_sessions, collect_agent_session_cuts,
 };
+pub(super) use crate::runtime::apps::terminal::upgrade::{
+    TerminalCut, collect_pane_handoffs, pane_senders, request_pane_handoff,
+};
 use phux_agent_session::session::AgentSessionBootstrap;
+pub(super) use phux_terminal_api::handoff::{ProcessHandoff, UpgradeHandleRequest};
+pub(super) use tokio::sync::mpsc;
 use tokio::sync::oneshot;
 
 pub(super) fn args_as_strings(flags: RuntimeFlags) -> Vec<String> {
@@ -53,6 +57,8 @@ pub(super) fn satellite(name: &str, endpoint: &str) -> phux_config::SatelliteCon
         enabled: true,
         token_file: None,
         cert_fingerprint: None,
+        client_cert: None,
+        client_key: None,
     }
 }
 
@@ -138,8 +144,7 @@ pub(super) fn unexecutable_plan(
         _blob_file: blob_file,
         _listener_fd: dup_listener(listener.as_raw_fd()).unwrap(),
         _delegated_listeners: Vec::new(),
-        _handoffs: HashMap::new(),
-        streams: AgentSessionUpgrade::holding(seal),
+        cuts: vec![AgentSessionUpgrade::holding(seal)],
     };
     (plan, listener, original)
 }
@@ -225,7 +230,7 @@ pub(super) async fn capture_blob(state: &SharedState) -> (StateBlob, AgentSessio
     let context = capture_upgrade_context(state).unwrap();
     let sessions = state.with(carried_sessions);
     assert_eq!(sessions.len(), 1, "only the live pane's session is cut");
-    let panes = collect_pane_handoffs(context.pane_senders, Duration::from_secs(2))
+    let panes = collect_pane_handoffs(state.with(pane_senders), Duration::from_secs(2))
         .await
         .unwrap();
     let (agent_sessions, seal) = collect_agent_session_cuts(sessions, Duration::from_secs(2)).await;
@@ -234,10 +239,10 @@ pub(super) async fn capture_blob(state: &SharedState) -> (StateBlob, AgentSessio
         context.listener_fd,
         context.listener_fd,
         &context.tree_identity,
-        &UpgradeHandoffs {
-            panes,
-            agent_sessions,
-        },
+        &[
+            TerminalCut::holding(panes),
+            AgentSessionUpgrade::carrying(agent_sessions),
+        ],
     )
     .expect("a busy agent session does not make the tree look changed");
     (blob, seal)

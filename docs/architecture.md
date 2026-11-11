@@ -46,9 +46,11 @@ release.
 
 The wire is asymmetric. Server to client, terminal content is the raw VT
 byte stream from the PTY, forwarded as `RESOURCE_OUTPUT`, with a bootstrap
-sequence to bring a fresh replica up to date. Each rendering client runs
-its own libghostty replica and feeds it those bytes. Client to server, input
-is structured: key, mouse, focus, and paste events with libghostty's atoms,
+sequence to bring a fresh replica up to date. The TUI and Rune run
+their own libghostty replicas and feed them those bytes. The
+[native terminal client](./native-terminal.md) negotiates synthesized VT/raw
+and prints one resource stream directly to its host terminal emulator.
+Client to server, input is structured: key, mouse, focus, and paste events with libghostty's atoms,
 encoded to bytes by the server against the terminal's current modes. Both
 ends therefore agree on what a terminal is without either trusting the
 other's rendering.
@@ -68,7 +70,7 @@ Cargo manifests define the actual edges.
 | `phux-core` | domain records: sessions, resources, arrangements, and the pure `apply()` that organizes them; no I/O |
 | `phux-config-core` | config file location, `extends` layering, `[[remote]]`, `[organize]`, profile and socket paths |
 | `phux-perf` | lock-free histograms and counters behind `GET_PERF` and `phux perf` |
-| `phux-git` | the user's own `git` (and `gh`) for a checkout: status, diffs, history, branches, files, staging, and GitHub pull request review; shared by the desktop Changes panel, desktop Reviews and `CHECKOUT` |
+| `phux-git` | the user's own `git` (and `gh`) for a checkout: status, diffs, history, branches, files, staging, and GitHub pull request review; behind the server's `CHECKOUT` methods |
 | `phux-agent-rules` | agent detection manifests: regions, rules, `phux agent explain` |
 | `phux-crash` | fatal-signal handler that restores the terminal before re-raising |
 | `portable-pty-adopt` | rebuild portable-pty handles from inherited fds after `execve` |
@@ -88,12 +90,12 @@ Cargo manifests define the actual edges.
 | `phux-client-ffi` | the one binding crate: a projection with a C ABI encoder and a UniFFI encoder |
 | `phux-resource` | the kind-neutral substrate: output stream, lifecycle, opaque facets and companions, and per-consumer replicated-state delivery; names no kind's concepts (`tests/substrate_boundary.rs` enforces it) |
 | `phux-agent-session` | the `AgentSession` record-stream engine, the `phux.agent/v1` state, asked, and record authority, and the mailbox of a resource that hosts an agent |
-| `phux-tree` | the replicated-document engine behind `AccessibilityTree` (JSON) and `PixelSurface` (PNG): one document a producer replaces whole, and the newest for every viewer |
+| `phux-tree` | the replicated-document engine behind `AccessibilityTree`, `PixelSurface` and `Document`: one document a producer replaces whole, and the newest for every viewer |
 | `phux-terminal` | the Terminal kind: PTY child, libghostty engine actor, grid and replay, input encoding, native checkpoints, agent detection; never depends on the host |
 | `phux-terminal-api` | engine-independent Terminal contracts: launch intent, factory, input and presentation ports, opaque captures and report types; no VT or PTY implementation |
 | `phux-server` | the daemon: hosts resources and serves them to clients; links no VT library and no PTY directly |
 | `phux-agent-host` | guardian process for native agent sessions over ACP |
-| `phux-tui` | the terminal UI: attach driver, ratatui chrome, overlays; the only crate that links ratatui |
+| `phux-tui` | the terminal UI: attach driver, ratatui chrome, overlays; also the native VT driver sharing terminal restoration; the only crate that links ratatui |
 | `phux-mcp` | the `phux-mcp` binary: MCP over stdio |
 | `phux-server-testkit` | fixtures for server wire tests; dev-only |
 | `phux` | the `phux` binary: argument parsing and dispatch |
@@ -104,8 +106,8 @@ core generational keys are not wire ids; wire ids are monotonically allocated
 and retired, not recycled within an incarnation. Where both are in scope, import the protocol type
 with a `Wire` prefix (`use phux_protocol::ids::ResourceId as WireResourceId`).
 
-Outside the root workspace: `clients/desktop/native` (the desktop and
-`phux-gpui` workspace), `clients/phux-web` (browser client), `clients/phux-vt-web`
+Outside the root workspace: `clients/rune` (Phux Rune, the desktop client,
+with its own workspace and lock), `clients/phux-web` (browser client), `clients/phux-vt-web`
 (driver for libghostty compiled to wasm). `integrations/` holds the npm
 packages for agent hosts; they run the `phux` CLI and never speak the wire.
 
@@ -128,39 +130,32 @@ and the FFI bindings all sit on the runtime; the browser client sits on the
 core alone and does its own I/O in the page.
 
 The TUI paints pane interiors from libghostty through a cell-diffed front
-buffer and paints chrome with ratatui in disjoint regions. The desktop app
-uses `clients/desktop/native/phux-gpui`, the embeddable GPUI terminal view.
+buffer and paints chrome with ratatui in disjoint regions. Phux Rune paints the
+runtime's draw list with the [Rune](https://github.com/anomalyco/rune) UI
+framework.
 The [runtime consumer contract](./embedding.md#runtime-consumer-contract)
 owns epochs, delivery acceptance and callback retirement. The runtime's
 `draw::DrawList` shares colour, face, cursor, block and
-decoration rules across GPUI and the C ABI's `c/draw_list.rs`; other
+decoration rules across Phux Rune and the C ABI's `c/draw_list.rs`; other
 toolkits paint that same list. See [embedding](./embedding.md). `phux-client-ffi` derives one binding
 vocabulary and encodes it twice: `extern "C"` for native embedders, UniFFI
 for Swift and Kotlin.
-
-The [pane identity seam](./desktop-panes.md)
-keeps the same classification across cards, tabs, and navigator rows. The
-[Changes panel seam](./desktop-changes.md) keeps
-local Git work off the UI thread and rejects results for a stale folder.
 
 ## Layout stability
 
 A click, a selection, a hover or a scroll never resizes or moves other UI
 unless the resize is the point, such as dragging the sidebar edge or a split.
-Tab peeking deliberately translates the workspace under its live thumbnail shelf;
-it retains the full layout allocation and clips the bottom, never resizing a PTY.
 Chrome keeps the size its style names. Something that appears on interaction
 either has space held for it or floats over the content:
 
-- A cached chrome slot (titlebar, sidebar, overlays) is a layout leaf with no
-  measured content, so `chrome_slot` makes it refuse to shrink. Fixed boxes in
-  a flex row take `flex_shrink_0`.
+- Chrome slots (titlebar, sidebar, overlays) and fixed boxes in a flex row
+  refuse to shrink.
 - A label that changes on click is laid out in a slot sized by its widest
   label. A hint shown only on the highlighted row stays laid out, invisible,
   on the others.
 - Controls depend on the mode, never on the highlighted row. Open details
   keep their height when the highlighted row has none.
-- The desktop navigator's host filter and per-session disclosure are independent
+- The desktop sidebar's host filter and per-session disclosure are independent
   of selection. Every session keeps its pane rows and count when inactive;
   sidebar tabs have a fixed-height scrollable shelf outside the session tree.
   Before switching authorities, retain the leaving connection's inventory so a
@@ -168,16 +163,13 @@ either has space held for it or floats over the content:
   layout adoption seeds display preferences; navigation restores destination
   tabs/splits without replacing the current window's display preferences.
 
-Regression tests assert bounds are identical across the interaction, for
-example `switching_tabs_never_resizes_the_chrome` and
-`moving_the_highlight_never_resizes_the_palette`.
+Regression tests assert bounds are identical across the interaction.
 
 ## Frames, wakes, and input
 
 The runtime owns client orchestration; the [renderer contract](./embedding.md#frames-wakes-and-input)
-owns drain/invalidation and unknown-input recovery. Phux Desktop requires
-visible, unclipped drawable presentation before clearing an unknown-input
-fence. The unpatched embedding lane does not provide that product guarantee.
+owns drain/invalidation and unknown-input recovery: a client clears an
+unknown-input fence only after a visible, unclipped presentation.
 
 ## Agents, authority, work
 
@@ -220,7 +212,7 @@ ownership recommendation. No keeper bootload service exists today.
 
 | To change | Start at |
 | --- | --- |
-| server behavior | `phux-server/src/runtime/mod.rs` (accept, lifecycle), `runtime/connections/mod.rs` (`handle_client`, `dispatch`, HELLO), `state/mod.rs`, `resource/terminal/` |
+| server behavior | `phux-server/src/runtime/mod.rs` (accept, lifecycle), `runtime/connections/mod.rs` (`handle_client`, `dispatch`, HELLO), `state/mod.rs`, `runtime/apps/` (one app per kind) |
 | organization | `phux-core/src/apply.rs`, `phux-server/src/state/org.rs`, `org_store.rs`; [durability and execution](./organization.md) |
 | input handling | `phux-server/src/runtime/apps/terminal/input_lane/` |
 | TUI rendering | `phux-tui/src/attach/render.rs`, `attach/paint.rs`, `render/chrome`, `render/overlay` |
@@ -238,7 +230,10 @@ such as how a stream bootstraps. `state/` sits below the apps and never names
 them; what it asks of any resource is the required `ResourceOps` on its handle.
 A new kind does not compile until `app_for` names its app, and neither
 `ResourceApp` nor `ResourceOps` has a default method to inherit; a new kind
-also takes one `APPS` row, which a test holds to `app_for`. A surface that is
+also takes one `APP_KINDS` row, which a test holds to the catalog. A graceful
+upgrade goes through the apps too: at the cut each app writes the upgrade-blob
+fields its kind owns, and on resume it rebuilds them, in `APP_KINDS` order so
+a parent's kind comes first. A surface that is
 not every kind's, such as the `AgentParent` mailbox of a resource that hosts an
 agent, is a companion on the handle, typed by the crate that owns it, so the
 host can use it without naming an engine. The server's production dependency
@@ -246,7 +241,9 @@ graph contains no Terminal engine, libghostty or PTY implementation. The
 executable explicitly injects a `TerminalEngineFactory`; no built-in engine is
 selected by the host. The private Terminal app uses `phux-terminal-api` ports;
 native encoding, ordered PTY writes and capability adaptation stay engine-owned.
-`seam_tests.rs` and the lint lane's `build-features-check` enforce this separation. The host
+`seam_tests.rs` and the lint lane's `build-features-check` enforce this separation;
+`seam_ratchet_tests.rs` lists the kind references the host still makes, and
+that list only shrinks. The host
 holds a lossless OS-native `LaunchCommand`; deciding what a pane runs is the app's job.
 Organization launches also pass through the app: support is checked before
 commit, then the committed effect executes only through the recorded kind.
@@ -265,8 +262,8 @@ and must not replace committed history with an unsolicited full cut.
 A document-only or agent-only session needs no Terminal codec; a mixed
 session refuses a missing Terminal codec before changing subscriptions or
 geometry. Viewport votes, terminal roles, colors and grid resizing remain
-Terminal-specific. Desktop and Rune render read-only document panes without
-Terminal views; see [resource kinds beyond terminals](./resource-kinds.md).
+Terminal-specific. Phux Rune renders document panes without Terminal
+views; see [resource kinds beyond terminals](./resource-kinds.md#available-now).
 
 The runtime root exports the server interface. Its `server` module assembles
 startup using `startup`, `posture`, `services`, and `listeners`; configuration

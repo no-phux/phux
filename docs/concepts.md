@@ -1,19 +1,20 @@
 # Concepts
 
-The handful of ideas the rest of the docs assume: a server that owns your terminals, the sessions, tabs, and panes inside it, the clients that show them, how commands name things, and what survives a restart.
+The handful of ideas the rest of the docs assume: a server that owns your terminals and the other resources it hosts, the sessions, tabs, and panes inside it, the clients that show them, how commands name things, and what survives a restart.
 
 ```text
 server ── session "api" ── tab 0 ── pane @1  (your shell)
    │                     │        └─ pane @2  (cargo watch)
    │                     └─ tab 1 ── pane @3  (claude)
-   └──── session "notes" ─ tab 0 ── pane @4
+   └──── session "notes" ─ tab 0 ── pane @4  (a window mirror)
+                                  └─ pane @5  (its pixel surface)
 
 clients: terminal UI, desktop app, browser, phone, every `phux` command
 ```
 
 ## Server
 
-The server is the background process that owns every terminal: the programs running in them and what's on each screen. Each user on a machine has one.
+The server is the background process that owns every terminal (the programs running in them and what's on each screen) and every other [resource](#resources) it hosts. Each user on a machine has one.
 
 `phux` and `phux new` start the server if it isn't running. Commands that only read, such as `phux ls`, say there's no server instead of starting one. The server stops by itself once nothing is running in it and no client is attached.
 
@@ -27,7 +28,7 @@ A build from a phux checkout runs a separate server, with its own socket and sta
 
 ## Sessions, tabs, and panes
 
-A **pane** is one terminal: one program (usually your shell) and its screen. A **tab** holds one or more panes, split side by side or stacked. A **session** is a named workspace that holds tabs, usually one per project.
+A **pane** is usually one terminal: one program (usually your shell) and its screen. A pane can also show a document instead ([Resources](#resources)). A **tab** holds one or more panes, split side by side or stacked. A **session** is a named workspace that holds tabs, usually one per project.
 
 ```sh
 phux new api      # a session named "api"
@@ -39,6 +40,14 @@ phux ls           # every session, and which ones need you
 A pane closes when its program exits. To keep a finished pane's last screen and exit status around for a while, set `retain-on-exit = true` under `[defaults]` in your [config file](./config.md).
 
 **A tab has three names.** The UI says "tab". Actions in the config file keep tmux's word "window" (`new-window`, `next-window`). Targets and `--help` text say "group". All three mean the same thing.
+
+## Resources
+
+Everything the server hosts is a **resource** with a **kind**. A **terminal** is a program and its screen. An **agent session** is a coding agent's conversation, kept under the terminal its agent runs in. The other kinds are documents a producer publishes: an **accessibility tree** is an application's interface as JSON, a **pixel surface** is a window, display, or browser page as images, and a **typed document** is any content type, such as Markdown, JSON, or an image.
+
+A **mirror** is the producer that keeps a tree or surface current: `phux agent tree mirror`, `phux agent surface mirror`, `phux agent page mirror`, or a [standing mirror](./resource-kinds.md#standing-mirrors) the server keeps running. It runs in a pane of its own, and its documents belong to that pane. A document can sit in a tab's layout beside terminals; Phux Rune draws it, the terminal UI does not yet. Input to a document goes to its producer, not to a program's keyboard.
+
+`phux ls --json` lists every resource with its kind and parent. [Resource kinds beyond terminals](./resource-kinds.md) has the details.
 
 ## Clients
 

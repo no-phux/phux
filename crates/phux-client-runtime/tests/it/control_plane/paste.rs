@@ -33,6 +33,18 @@ fn pastes(frames: &[Vec<u8>]) -> Vec<(bool, PasteEvent)> {
 }
 
 #[test]
+fn a_paste_past_the_frame_cap_is_refused_and_never_sent() {
+    let mut plane = acknowledging();
+    let text = "x".repeat(17 << 20);
+    let refused = plane.apply_user_paste(&terminal(), &text).expect("receipt");
+    assert!(pastes(&plane.take_outbound()).is_empty());
+    assert!(plane.take_events().iter().any(|event| matches!(event,
+        Event::InputDelivery { delivery_id, message, .. }
+            if *delivery_id == refused && message.contains("16 MB")
+    )));
+}
+
+#[test]
 fn a_user_paste_is_trusted_so_multiline_text_is_not_refused() {
     let mut plane = acknowledging();
     let delivery = plane.apply_user_paste(&terminal(), "echo a\necho b\n");

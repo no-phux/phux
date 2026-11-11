@@ -27,6 +27,7 @@ mod headless;
 mod loop_exit;
 mod loop_state;
 mod main_loop;
+pub mod native;
 mod orphans;
 mod overlay_paint;
 mod session_io;

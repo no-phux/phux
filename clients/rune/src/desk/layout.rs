@@ -33,7 +33,7 @@ impl Desk {
             .find(|s| s.id == selected)?;
         let key = session.key?;
         if let Some((_, _, mut doc, _)) = client.organization().arrangement_document(&key) {
-            let shown = self.shown.as_ref().map(|s| &s.terminal);
+            let shown = self.shown.as_ref().map(|s| &s.resource);
             super::tabs::focus_group(&mut doc, shown);
             return Some((key, doc));
         }
@@ -52,13 +52,13 @@ impl Desk {
         if self.splits_waiting() {
             return true;
         }
-        match (&self.layout, &self.shown) {
+        match (self.navigation_tree(), &self.shown) {
             (Some(tree), Some(shown)) => {
                 let on_screen = leaves(tree);
-                !on_screen.contains(&shown.terminal)
+                !on_screen.contains(&shown.resource)
                     || on_screen
                         .iter()
-                        .any(|id| id != &shown.terminal && !self.others.contains_key(id))
+                        .any(|id| id != &shown.resource && !self.others.contains_key(id))
             }
             (None, None) => false,
             _ => true,
@@ -68,25 +68,39 @@ impl Desk {
     /// Recompute what the terminal area shows: the arrangement's active
     /// group when it holds the focused pane, else the focused pane alone.
     pub(super) fn refresh_layout(&mut self, client: &Client) -> bool {
-        let Some(shown) = self.shown.as_ref().map(|s| s.terminal.clone()) else {
+        let Some(shown) = self.shown.as_ref().map(|s| s.resource.clone()) else {
             let listed = self.listed_resources();
             self.sync_tabs(client, &listed);
             let changed = self.layout.take().is_some();
+            if let Some(phone) = self.phone.as_mut() {
+                phone.reconcile(None, None);
+            }
             return changed | self.sync_views(client);
         };
         self.place_pending_splits(client);
         let listed = self.listed_resources();
-        let tree = self
-            .arrangement(client)
+        let arrangement = self.arrangement(client);
+        let context = arrangement
+            .as_ref()
+            .and_then(|(session, doc)| Some((*session, doc.groups.get(doc.active)?.id)));
+        let tree = arrangement
             .and_then(|(_, doc)| doc.active_group().and_then(|g| g.tree.clone()))
             // A leaf whose terminal is gone draws nothing; the server owns
             // the stored tree, so it is pruned here, never written.
             .and_then(|tree| prune(tree, &listed, &shown))
             .filter(|tree| leaves(tree).contains(&shown));
         self.sync_tabs(client, &listed);
-        // A phone shows one terminal at a time; its tabs and the session
-        // switcher reach the rest.
-        let tree = if self.phone.is_some() { None } else { tree };
+        // Retain the full group for the camera and its views. Activity and
+        // sizing still see only the focused leaf, not everything we paint.
+        let tree = if let Some(phone) = self.phone.as_mut() {
+            phone.reconcile(
+                tree.or_else(|| Some(LayoutNode::Leaf(shown.clone()))),
+                context,
+            );
+            None
+        } else {
+            tree
+        };
         let tree = match (&self.zoomed, tree) {
             (Some(zoomed), Some(tree)) if leaves(&tree).contains(zoomed) => {
                 LayoutNode::Leaf(zoomed.clone())
@@ -109,10 +123,11 @@ impl Desk {
         changed | self.sync_views(client)
     }
 
-    /// Open a view for every pane on screen and close the ones that left.
+    /// Open views for the active layout (the full phone group), closing the
+    /// ones that left it. Retaining a view does not make its pane seen.
     fn sync_views(&mut self, client: &Client) -> bool {
-        let wanted: Vec<ResourceId> = self.layout.as_ref().map(leaves).unwrap_or_default();
-        let shown = self.shown.as_ref().map(|s| s.terminal.clone());
+        let wanted: Vec<ResourceId> = self.navigation_tree().map(leaves).unwrap_or_default();
+        let shown = self.shown.as_ref().map(|s| s.resource.clone());
         let mut changed = false;
         self.others.retain(|id, view| {
             let keep = wanted.contains(id) && Some(id) != shown.as_ref();
@@ -141,22 +156,30 @@ impl Desk {
         changed
     }
 
-    /// Move the keyboard to a pane already on screen, keeping its view.
+    /// Move the keyboard to a pane in the active layout, keeping its view.
     pub fn focus_pane(&mut self, id: &ResourceId) {
-        if self.shown.as_ref().is_some_and(|s| &s.terminal == id) {
+        if self.shown.as_ref().is_some_and(|s| &s.resource == id) {
+            self.resources.returning = None;
             return;
         }
         let Some(view) = self.others.remove(id) else {
             return;
         };
+        self.resources.returning = None;
         if let Some(old) = self.shown.take() {
-            self.others.insert(old.terminal, old.view);
+            self.others.insert(old.resource, old.view);
         }
         self.activities.seen(id);
         self.shown = Some(super::Shown {
-            terminal: id.clone(),
+            resource: id.clone(),
             view,
         });
+        if let Some(phone) = self.phone.as_mut() {
+            phone.reset_navigation();
+            self.layout = Some(LayoutNode::Leaf(id.clone()));
+            // Never propose a retained sibling's previous offscreen size.
+            self.areas.remove(id);
+        }
         self.painted.replace(None);
         self.preedit = None;
         self.generation += 1;
@@ -164,19 +187,32 @@ impl Desk {
 
     /// Focus the pane beside the focused one.
     pub fn focus_toward(&mut self, direction: Direction) {
-        let (Some(tree), Some(shown)) = (&self.layout, &self.shown) else {
+        let (Some(tree), Some(shown)) = (self.navigation_tree(), &self.shown) else {
             return;
         };
-        if let Some(next) = focus_direction(tree, &shown.terminal, direction) {
+        let next = if self.phone.is_some() {
+            super::phone::spatial::toward(tree, &shown.resource, direction)
+        } else {
+            focus_direction(tree, &shown.resource, direction)
+        };
+        if let Some(next) = next {
             self.focus_pane(&next);
         }
+    }
+
+    /// The phone retains its full group while `layout` stays a single leaf.
+    pub(super) fn navigation_tree(&self) -> Option<&LayoutNode> {
+        self.phone
+            .as_ref()
+            .and_then(|phone| phone.tree.as_ref())
+            .or(self.layout.as_ref())
     }
 
     /// Show the focused pane alone, or the whole group again.
     pub fn toggle_zoom(&mut self) {
         self.zoomed = match (&self.zoomed, &self.shown) {
             (Some(_), _) | (None, None) => None,
-            (None, Some(shown)) => Some(shown.terminal.clone()),
+            (None, Some(shown)) => Some(shown.resource.clone()),
         };
         if let Some(client) = self.client.clone() {
             self.refresh_layout(&client);
@@ -186,6 +222,11 @@ impl Desk {
     /// A split's container moved or resized.
     pub fn split_laid_out(&mut self, path: SplitPath, size: [f32; 2]) {
         self.split_sizes.insert(path, size);
+    }
+
+    /// The whole split tree's size from its last layout, once it has one.
+    pub fn split_area(&self) -> Option<[f32; 2]> {
+        self.split_sizes.get(&Vec::new()).copied()
     }
 
     /// The length a divider at `path` travels along.

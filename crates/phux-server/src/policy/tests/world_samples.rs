@@ -307,6 +307,7 @@ fn samples(world: &World, agent: &WireResourceId) -> Vec<FrameKind> {
                 orphan
             }),
         ),
+        spawn(None, None, Some(controlled_surface(&t, ControlClass::Display))),
         FrameKind::ResizeTerminal {
             terminal_id: t.clone(),
             cols: 80,
@@ -410,6 +411,7 @@ fn samples(world: &World, agent: &WireResourceId) -> Vec<FrameKind> {
             ids: vec![t.clone()],
         }),
         command(Command::DescribeApi),
+        command(Command::PrivacyStatus),
         command(Command::GetState {
             scope: StateScope::Server,
         }),
@@ -483,6 +485,19 @@ fn samples(world: &World, agent: &WireResourceId) -> Vec<FrameKind> {
         command(Command::PublishResourceState {
             terminal_id: t.clone(),
             bytes: b"{}".to_vec(),
+        }),
+        command(Command::SendDocumentInput {
+            terminal_id: t.clone(),
+            intent: phux_protocol::wire::frame::DocumentInput::Click { x: 1, y: 1 },
+            control: None,
+            on_behalf_of: None,
+        }),
+        command(Command::Mirror {
+            host: None,
+            op: phux_protocol::wire::frame::MirrorOp::Targets,
+        }),
+        command(Command::MirrorProvide {
+            targets: "[]".to_owned(),
         }),
     ]
     .into_iter()

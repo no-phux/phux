@@ -6,6 +6,29 @@ use phux_terminal::grid::{ConsumerReference, SCROLLBACK_ALL, SnapshotSynthesizer
 
 use super::common::{fresh, render_grid};
 
+/// Growing rows must pull history into view even when columns shrink in the
+/// same request. Upstream Ghostty regression #15141.
+#[test]
+fn combined_row_growth_and_column_shrink_preserves_scrollback() {
+    let mut combined = fresh(5, 2);
+    let mut separate = fresh(5, 2);
+    combined.vt_write(b"1A\r\n2B\r\n3C\r\n");
+    separate.vt_write(b"1A\r\n2B\r\n3C\r\n");
+
+    combined.resize(4, 4, 8, 16).unwrap();
+    separate.resize(5, 4, 8, 16).unwrap();
+    separate.resize(4, 4, 8, 16).unwrap();
+
+    let expected = ["1A", "2B", "3C", ""];
+    assert_eq!(render_grid(&separate), expected);
+    assert_eq!(render_grid(&combined), expected);
+    assert_eq!(combined.scrollback_rows().unwrap(), 0);
+
+    // The cursor must move with the restored rows, not overwrite old output.
+    combined.vt_write(b"OK");
+    assert_eq!(render_grid(&combined), ["1A", "2B", "3C", "OK"]);
+}
+
 /// Mirror primed from `synthesize`, fed each reference diff, must equal the
 /// source after every step: churn, alt-screen enter/leave, grow resize, and
 /// sparse edits across distant rows.

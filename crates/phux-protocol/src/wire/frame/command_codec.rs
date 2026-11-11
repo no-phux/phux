@@ -48,6 +48,7 @@ mod command_decode;
 mod command_encode;
 mod event_decode;
 mod event_encode;
+mod mirror;
 mod result;
 mod service_http;
 

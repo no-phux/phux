@@ -2,7 +2,7 @@ import { afterEach, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { canonicalLicenses, type Crate, renderNotices } from "../../desktop/scripts/notices.ts";
+import { canonicalLicenses, type Crate, renderNotices } from "./third-party.ts";
 import { runeNoticeReader } from "./notice-texts.ts";
 
 const dirs: string[] = [];
@@ -25,7 +25,7 @@ test("all pinned Rune crates retain the workspace copyright and local notices", 
   const { root, crate } = fixture();
   const license = canonicalLicenses().MIT.replace("{holders}", "2026 Anomaly");
   writeFileSync(join(root, "LICENSE"), license);
-  const crates = [crate("rune"), crate("rune-motion"), crate("rune-mac")];
+  const crates = [crate("rune"), crate("rune-motion"), crate("rune-notify")];
   writeFileSync(join(crates[1]!.dir, "NOTICE"), "A crate-local notice");
   const read = runeNoticeReader(crates, canonicalLicenses());
   for (const entry of crates) expect(read(entry).get("workspace/LICENSE")).toBe(license);

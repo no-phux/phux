@@ -85,6 +85,7 @@ fn log_watch_failure(pid: i32, err: Option<&dyn std::fmt::Display>) {
     }
 }
 
+#[cfg(target_os = "linux")]
 fn set_nonblock(fd: i32) -> Option<()> {
     // SAFETY: `fd` is a descriptor this function just opened. `F_GETFL` /
     // `F_SETFL` only change its blocking mode.
@@ -136,7 +137,9 @@ fn arm_fd(pid: i32) -> Option<OwnedFd> {
     if kq < 0 {
         return None;
     }
-    if set_cloexec(kq).is_none() || set_nonblock(kq).is_none() {
+    // No O_NONBLOCK: XNU answers F_SETFL on a kqueue with ENOTTY, and the
+    // watch only awaits readiness; it never reads the queue.
+    if set_cloexec(kq).is_none() {
         unsafe { libc::close(kq) };
         return None;
     }

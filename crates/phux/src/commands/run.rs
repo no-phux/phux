@@ -5,6 +5,7 @@ use std::time::Duration;
 use phux_client::agent_meta::ShellAvailability;
 use phux_client::attach::AttachError;
 use phux_client::deadline::Deadline;
+use phux_client::read::Verb;
 use phux_client::run::{RunOutcome, Submission};
 use phux_server::runtime::default_socket_path;
 
@@ -59,7 +60,7 @@ pub(crate) fn run_run(
             .run(resolve_target_for_input(
                 &socket_path,
                 &selector,
-                "run",
+                Verb::Run,
                 json,
             ))
             .await

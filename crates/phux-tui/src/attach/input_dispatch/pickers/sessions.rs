@@ -13,16 +13,18 @@ use crate::render::overlay::SelectItem;
 use super::super::args::{switch_host_action, switch_session_args};
 use super::{new_session_item, window_holding};
 
-/// Per-session counts a session picker row reads.
+/// Per-session facts a session picker row reads and sorts by.
 #[derive(Debug, Default)]
 pub(in crate::attach::input_dispatch) struct SessionCounts {
     /// Panes of each session that want a person.
     pub needs_you: std::collections::HashMap<phux_protocol::ids::SessionId, usize>,
+    /// The stored session order (`phux.session-order/v1`), first on top.
+    pub order: Vec<phux_protocol::ids::SessionKey>,
 }
 
 /// Session picker rows, read at a glance (`docs/clients.md#terminal-ui`):
 /// `focused` first (committing it is a silent no-op), then the sessions
-/// with panes that need you, then the rest by name. Each commits
+/// with panes that need you, then the stored session order, then name. Each commits
 /// `switch-session { name }`.
 pub(in crate::attach::input_dispatch) fn session_picker_items(
     sessions: &[phux_protocol::wire::info::SessionInfo],
@@ -37,8 +39,8 @@ pub(in crate::attach::input_dispatch) fn session_picker_items(
         .collect()
 }
 
-/// Focused session first, then sessions with panes that need you, then name.
-/// Equal names keep their input order.
+/// Focused session first, then sessions with panes that need you, then the
+/// stored order, then name. Equal names keep their input order.
 fn session_picker_order(
     focused: Option<SessionId>,
     counts: &SessionCounts,
@@ -46,11 +48,15 @@ fn session_picker_order(
     right: &phux_protocol::wire::info::SessionInfo,
 ) -> std::cmp::Ordering {
     let needs = |id: SessionId| counts.needs_you.get(&id).copied().unwrap_or(0);
+    let rank = |s: &phux_protocol::wire::info::SessionInfo| {
+        phux_client::session_order::rank(&counts.order, s.key)
+    };
     let left_current = Some(left.id) == focused;
     let right_current = Some(right.id) == focused;
     right_current
         .cmp(&left_current)
         .then_with(|| (needs(left.id) == 0).cmp(&(needs(right.id) == 0)))
+        .then_with(|| rank(left).cmp(&rank(right)))
         .then_with(|| left.name.cmp(&right.name))
 }
 
@@ -96,6 +102,7 @@ pub(in crate::attach) fn session_picker_rows(
     };
     let counts = SessionCounts {
         needs_you: crate::attach::sidebar_zones::peer_needs_you(peers),
+        order: peers.session_order.to_vec(),
     };
     let machines = peers.other_machines();
     let grouped = peers

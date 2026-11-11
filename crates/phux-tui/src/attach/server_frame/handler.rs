@@ -3,7 +3,6 @@
 
 use std::collections::{HashMap, HashSet};
 
-use phux_protocol::ResourceKind;
 use phux_protocol::ids::{ResourceId, SessionId, SessionKey};
 use phux_protocol::wire::frame::{FrameKind, SessionLifetime};
 
@@ -11,7 +10,7 @@ use crate::attach::actions::{self, PendingSplit, PendingWindow};
 use crate::attach::outcome::AttachError;
 use crate::attach::paint::SidebarReservation;
 use crate::attach::pane_state::{AttachKernel, PaneSlot};
-use crate::layout::{self, ArrangementDoc};
+use crate::layout::ArrangementDoc;
 use crate::predict::PredictionState;
 use crate::render::chrome::status_bar::StatusBarPainter;
 
@@ -19,6 +18,7 @@ use super::engine_route::{KernelRoute, is_terminal, route_engine_frame};
 use super::index::{AgentMetaIndex, note_agent_change};
 use super::outcome::{FrameOutcome, frame_kind_label, input_authority_notice, pane_label};
 use crate::attach::session_mirror::SessionMirror;
+use crate::attach::surface_leaf::{LeafBook, SurfaceLeaves};
 
 mod attached;
 mod closed;
@@ -114,6 +114,8 @@ struct FrameCtx<'a, W: crate::attach::RenderSink> {
     pending_resource_ops: &'a mut HashMap<u32, ResourceId>,
     // ADR-0040 `phux.agent/v1` index, read when composing window labels.
     agent_meta: &'a mut AgentMetaIndex,
+    // Non-Terminal resources the server's graph named.
+    leaves: &'a mut LeafBook,
     // An overlay is on top: mirrors keep ingesting, stdout paints are
     // suppressed; the driver repaints on dismiss.
     overlay_active: bool,
@@ -127,24 +129,24 @@ struct FrameCtx<'a, W: crate::attach::RenderSink> {
 
 impl<W: crate::attach::RenderSink> FrameCtx<'_, W> {
     /// Known non-Terminal resources never acquire a VT slot or a TTY output
-    /// path. Unknown ids still take the strict Terminal validation path.
+    /// path; as layout leaves they tile a placeholder. Unknown ids still take
+    /// the strict Terminal validation path.
     fn is_non_terminal(&self, terminal_id: &ResourceId) -> bool {
-        !self.may_be_layout_leaf(terminal_id)
+        self.surface_leaves().contains(terminal_id)
     }
 
-    /// Whether a layout leaf may name `terminal_id`: anything the kernel does
-    /// not know to be a non-terminal kind. Peer ids it cannot classify pass.
-    fn may_be_layout_leaf(&self, terminal_id: &ResourceId) -> bool {
-        !matches!(
-            self.engine_kernel.resource_kind(terminal_id),
-            Some(kind) if kind != ResourceKind::Terminal
-        )
+    /// Whether this client already streams `terminal_id` as a non-Terminal
+    /// (an agent record or a document bootstrap): its lifecycle is no peer's
+    /// pane-set change.
+    fn holds_stream_of(&self, terminal_id: &ResourceId) -> bool {
+        self.engine_kernel
+            .resource_kind(terminal_id)
+            .is_some_and(|kind| kind != phux_protocol::ResourceKind::Terminal)
     }
 
-    /// Decode one of OUR layout envelopes, refusing any leaf that names a
-    /// known non-terminal resource.
-    fn decode_own_layout(&self, bytes: &[u8]) -> Result<ArrangementDoc, layout::LayoutDecodeError> {
-        ArrangementDoc::decode_cbor_checked(bytes, &|leaf| self.may_be_layout_leaf(leaf))
+    /// The graph's and the kernel's word on which leaves are not Terminals.
+    const fn surface_leaves(&self) -> SurfaceLeaves<'_> {
+        SurfaceLeaves::new(self.engine_kernel, self.leaves)
     }
 }
 
@@ -184,6 +186,8 @@ pub(in crate::attach) fn handle_server_frame<W: crate::attach::RenderSink>(
         expected_closes,
         pending_resource_ops,
         agent_meta,
+        leaves,
+        kitty_heal: _,
     } = mirror;
     let FrameEnv {
         focused_session,
@@ -238,6 +242,7 @@ pub(in crate::attach) fn handle_server_frame<W: crate::attach::RenderSink>(
         expected_closes,
         pending_resource_ops,
         agent_meta,
+        leaves,
         overlay_active,
         defer_paint,
         frame_span: &frame_span,

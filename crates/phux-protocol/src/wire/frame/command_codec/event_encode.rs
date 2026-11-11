@@ -119,6 +119,10 @@ pub(in crate::wire) fn encode_agent_event(event: &AgentEvent, enc: &mut Encoder<
                 body_enc.write_str(origin);
                 EVENT_TAG_INPUT_ACTIVITY
             }
+            AgentEvent::DocumentInput { intent } => {
+                intent.encode(&mut body_enc);
+                crate::wire::frame::EVENT_TAG_DOCUMENT_INPUT
+            }
             org @ (AgentEvent::SessionCreated { .. }
             | AgentEvent::SessionRenamed { .. }
             | AgentEvent::SessionProjectSet { .. }

@@ -1,13 +1,13 @@
 //! Command line, the installed CLI, and the server socket.
 //!
 //! The client starts or reuses the server through `phux server --ensure`,
-//! then asks the CLI which socket that server listens on, the same way the
-//! GPUI desktop does. Those calls can block for seconds, so [`resolve`] only
+//! then asks the CLI which socket that server listens on. Those calls can block for seconds, so [`resolve`] only
 //! reads flags and the disk; [`Resolved::ensured`] runs on a worker.
 
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
 pub const USAGE: &str = "usage: phux-rune [--socket PATH] [--session NAME] [--phux PATH] [--phone]";
@@ -66,6 +66,7 @@ pub struct Resolved {
     pinned: Option<PathBuf>,
     /// `--phux`, kept for searching again.
     named_phux: Option<PathBuf>,
+    embedded: bool,
 }
 
 impl Resolved {
@@ -79,13 +80,14 @@ impl Resolved {
             aimed: true,
             pinned: None,
             named_phux: None,
+            embedded: false,
         }
     }
 
     /// `--socket` alone means "that server, as it is": only a CLI named
     /// beside it may start one there.
     pub const fn can_ensure(&self) -> bool {
-        self.pinned.is_none() || self.named_phux.is_some()
+        !self.embedded && (self.pinned.is_none() || self.named_phux.is_some())
     }
 
     /// Whether the window has nothing to run `phux server --ensure` with.
@@ -95,6 +97,9 @@ impl Resolved {
 
     /// Search for the CLI again, then start or reuse the server. Blocks.
     pub fn ensured(mut self) -> Self {
+        if self.embedded {
+            return self;
+        }
         let phux = locate(self.named_phux.as_deref());
         self.phux = phux.as_ref().ok().cloned();
         if self.can_ensure() {
@@ -102,6 +107,20 @@ impl Resolved {
             self.socket = phux.and_then(|phux| ensure_server(&phux, pinned));
         }
         self
+    }
+
+    /// A platform embedder supplies its remote target directly, without a
+    /// local CLI, process spawning, registry discovery or self-update.
+    pub fn embedded(session: Option<String>) -> Self {
+        Self {
+            socket: Err("Native mobile connects directly to a remote host.".into()),
+            session,
+            phux: None,
+            aimed: true,
+            pinned: None,
+            named_phux: None,
+            embedded: true,
+        }
     }
 }
 
@@ -135,6 +154,7 @@ pub fn resolve(options: &Options) -> Resolved {
         aimed,
         pinned,
         named_phux: options.phux.clone(),
+        embedded: false,
     }
 }
 
@@ -172,6 +192,12 @@ fn locate(explicit: Option<&Path>) -> Result<PathBuf, String> {
 /// How long a CLI call may take before the window shows the failure.
 const CLI_TIMEOUT: Duration = Duration::from_secs(30);
 
+/// The most a CLI answer may print.
+const MAX_OUTPUT: u64 = 16 << 20;
+
+/// How long a finished CLI's pipes get to reach their end.
+const DRAIN_GRACE: Duration = Duration::from_secs(1);
+
 fn run(phux: &Path, args: &[&str]) -> Result<Vec<u8>, String> {
     run_for(phux, args, CLI_TIMEOUT)
 }
@@ -185,15 +211,18 @@ pub fn run_for(phux: &Path, args: &[&str], timeout: Duration) -> Result<Vec<u8>,
         .spawn()
         .map_err(|error| format!("could not run {}: {error}", phux.display()))?;
     // Drain both pipes on threads so a chatty CLI can't block on a full pipe
-    // while this waits for it.
+    // while this waits for it. Past the limit the pipe closes, and the writer
+    // gets SIGPIPE instead of this window's memory.
     let drain = |pipe: Option<Box<dyn Read + Send>>| {
+        let (done, bytes) = mpsc::channel();
         std::thread::spawn(move || {
             let mut bytes = Vec::new();
-            if let Some(mut pipe) = pipe {
-                let _ = pipe.read_to_end(&mut bytes);
+            if let Some(pipe) = pipe {
+                let _ = pipe.take(MAX_OUTPUT + 1).read_to_end(&mut bytes);
             }
-            bytes
-        })
+            let _ = done.send(bytes);
+        });
+        bytes
     };
     let stdout = drain(
         child
@@ -224,8 +253,17 @@ pub fn run_for(phux: &Path, args: &[&str], timeout: Duration) -> Result<Vec<u8>,
             Err(error) => return Err(format!("waiting for {}: {error}", phux.display())),
         }
     };
-    let stdout = stdout.join().unwrap_or_default();
-    let stderr = stderr.join().unwrap_or_default();
+    // A daemon the CLI left behind (an ssh master, say) can hold a pipe open
+    // long after the CLI is gone, so its end of file can't be waited for.
+    let stdout = stdout.recv_timeout(DRAIN_GRACE).unwrap_or_default();
+    let stderr = stderr.recv_timeout(DRAIN_GRACE).unwrap_or_default();
+    if stdout.len() as u64 > MAX_OUTPUT {
+        return Err(format!(
+            "`phux {}` printed more than {} MB.",
+            args.join(" "),
+            MAX_OUTPUT >> 20
+        ));
+    }
     if status.success() {
         Ok(stdout)
     } else {
@@ -247,7 +285,15 @@ fn ensure_server(phux: &Path, socket: Option<&Path>) -> Result<PathBuf, String> 
         ];
     }
     let call = |args: &[&'static str]| run(phux, &[at.as_slice(), args].concat());
-    call(&["server", "--ensure"])?;
+    // The window picks its own session (README: it never creates one), so a
+    // server started here seeds none. A CLI older than `--no-seed` refuses
+    // the word; it seeds as it always did.
+    if let Err(error) = call(&["server", "--ensure", "--no-seed"]) {
+        if !error.contains("unexpected argument '--no-seed'") {
+            return Err(error);
+        }
+        call(&["server", "--ensure"])?;
+    }
     let status: serde_json::Value = serde_json::from_slice(&call(&["status", "--json"])?)
         .map_err(|error| format!("`phux status --json` printed no JSON: {error}"))?;
     status["socket"]
@@ -303,6 +349,7 @@ mod tests {
             aimed: false,
             pinned: socket.map(PathBuf::from),
             named_phux: phux.filter(|_| socket.is_some()).map(PathBuf::from),
+            embedded: false,
         }
     }
 
@@ -343,6 +390,36 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
+    fn ensure_asks_for_no_seed_and_falls_back_on_an_older_cli() {
+        let dir = std::env::temp_dir().join(format!("phux-rune-seed-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let log = dir.join("calls");
+        let phux = dir.join("phux");
+        // An older CLI: `--no-seed` is an unknown argument; `status` answers.
+        std::fs::write(
+            &phux,
+            format!(
+                "#!/bin/sh\necho \"$*\" >> {log}\ncase \"$*\" in\n*--no-seed*) echo \"error: unexpected argument '--no-seed' found\" >&2; exit 2;;\n*status*) printf '{{\"socket\":\"/tmp/s\"}}';;\nesac\n",
+                log = log.display()
+            ),
+        )
+        .unwrap();
+        Command::new("/bin/chmod")
+            .arg("+x")
+            .arg(&phux)
+            .status()
+            .unwrap();
+        let found = ensure_server(&phux, Some(Path::new("/tmp/s"))).expect("ensured");
+        assert_eq!(found, PathBuf::from("/tmp/s"));
+        let calls = std::fs::read_to_string(&log).unwrap();
+        let lines: Vec<&str> = calls.lines().collect();
+        assert_eq!(lines[0], "--socket /tmp/s server --ensure --no-seed");
+        assert_eq!(lines[1], "--socket /tmp/s server --ensure");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(unix)]
+    #[test]
     fn a_failed_ensure_keeps_aiming_at_the_named_socket() {
         let dir = std::env::temp_dir().join(format!("phux-rune-pinned-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
@@ -374,5 +451,21 @@ mod tests {
         assert_eq!(run(sh, &["-c", "printf ok"]).expect("runs"), b"ok");
         let error = run(sh, &["-c", "echo nope >&2; exit 3"]).expect_err("fails");
         assert!(error.contains("nope"), "{error}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn endless_output_fails_instead_of_filling_memory() {
+        let error = run(Path::new("/bin/sh"), &["-c", "exec cat /dev/zero"]).expect_err("capped");
+        assert!(error.contains("more than"), "{error}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_daemon_holding_the_pipes_doesnt_hang_the_call() {
+        let started = Instant::now();
+        let out = run(Path::new("/bin/sh"), &["-c", "sleep 30 & exit 0"]).expect("finishes");
+        assert!(out.is_empty());
+        assert!(started.elapsed() < Duration::from_secs(10));
     }
 }

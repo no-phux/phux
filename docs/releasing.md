@@ -1,6 +1,6 @@
 # Releasing
 
-`release.yml` and `next.yml` do the releasing. This page says what the pieces are and which
+`release.yml` and `next.yml` do the releasing; `lts.yml` promotes. This page says what the pieces are and which
 buttons exist. The workflows under
 [`.github/workflows`](../.github/workflows) are the reference; each one
 explains itself at the top.
@@ -10,49 +10,61 @@ explains itself at the top.
 | Product                                                      | Tag                                          | From                                     |
 | ------------------------------------------------------------ | -------------------------------------------- | ---------------------------------------- |
 | `phux` + `phux-mcp` (macOS arm64, Linux x86_64, Linux arm64) | `vX.Y.Z`                                     | `release.yml` → `build-cli.yml`          |
-| Phux Desktop (macOS arm64, Linux x64/arm64, Windows x64)     | `desktop-vX.Y.Z`                             | `desktop-release.yml`                    |
 | mobile FFI (xcframework, Android)                            | attached to `vX.Y.Z`                         | `ffi-xcframework.yml`, `ffi-android.yml` |
 | `@phux/pi`, `@phux/opencode`, `@phux/omp` on npm             | `<component>-vX.Y.Z`                         | `agent-integration-release.yml`          |
 | Claude and Grok plugins                                      | `claude-plugin-vX.Y.Z`, `grok-plugin-vX.Y.Z` | same; GitHub release only                |
 | `phux-protocol` on crates.io                                 | `vX.Y.Z`                                     | `just publish-protocol`, by hand         |
-| Phux Rune (macOS arm64, Linux x86_64) and its feed `rune.json` in `channels` | `rune-vX.Y.Z-alpha.N`, `rune-vX.Y.Z` | `rune-client.yml` → `rune-build.yml` |
+| Phux Rune (macOS arm64, Linux x86_64, Linux arm64) and its feed `rune.json` in `channels` | `rune-vX.Y.Z-alpha.N`, `rune-vX.Y.Z` | `rune-client.yml` → `rune-build.yml` |
 | `next` prerelease                                            | moving `next` tag                            | `next.yml`                               |
-| channel manifests `stable.json`, `next.json`                 | the `channels` release                       | `bun tools/main.ts release-manifest`     |
+| CycloneDX SBOMs `phux-vX.Y.Z.cdx.json`, `phux-mcp-vX.Y.Z.cdx.json` | attached to `vX.Y.Z`                    | `release.yml` (`sbom` job)               |
+| channel manifests `stable.json`, `next.json`, `lts.json`, each with a `.minisig` | the `channels` release   | `bun tools/main.ts release-manifest`     |
 
 Linux CLI builds link against glibc 2.35 (built in an `ubuntu:22.04`
-container). The desktop does not inherit that promise. Stable macOS desktop
-releases require Developer ID signing and Apple notarization; next and local
-builds remain ad-hoc signed. Only CLI releases are GitHub's
-"Latest". The Homebrew tap discovers stable `vX.Y.Z` CLI and
-`desktop-vX.Y.Z` desktop releases independently every fifteen minutes,
-verifies artifact checksums, and renders the formula and macOS DMG cask.
-Upstream tap credentials or dispatches are not required. The CLI formula
-body comes from [`scripts/gen-formula.sh`](../scripts/gen-formula.sh); the
-tap copies that script and re-renders. The formula license is Apache-2.0,
-matching `LICENSE` and the workspace `Cargo.toml`. The desktop cask
-renderer lives in the tap and installs the signed, notarized DMG.
-`release.yml` does not push the tap.
+container). Phux Rune does not inherit that promise ([Floors](#phux-rune)).
+Only CLI releases are GitHub's "Latest". The Homebrew tap discovers stable
+`vX.Y.Z` CLI releases every fifteen minutes, verifies artifact checksums,
+and renders the formula. Upstream tap credentials or dispatches are not
+required. The CLI formula body comes from
+[`scripts/gen-formula.sh`](../scripts/gen-formula.sh); the tap copies that
+script and re-renders. The formula license is Apache-2.0, matching `LICENSE`
+and the workspace `Cargo.toml`. `release.yml` does not push the tap.
+
+The GPUI desktop (`desktop-vX.Y.Z`, last 0.62.0) is retired and no longer
+released; its source is the `desktop-v0.62.0` tag.
 
 ## Stable
 
 1. Conventional commits land on `main`. Release Please keeps one draft
-   release PR for the root (CLI and integrations) and one for the desktop.
-   Each is one commit carrying the version bump, changelog, and every
-   lockfile entry the bump moves. Nothing merges it automatically.
-2. A maintainer marks the release PR ready and squash-merges it once `ci`
-   is green. That creates the tag and a private draft release. The PRs
-   are independent: merge either, both, in any order.
+   release PR for the root (CLI and integrations). It is one commit carrying the version bump, changelog, and every
+   lockfile entry the bump moves.
+2. Every two hours `phux-auto-release.yml` marks the release PR ready, which
+   runs `ci`, and turns on squash auto-merge, so it merges once `ci` is green.
+   That creates the tag and a private draft release. A maintainer can still
+   merge it sooner by hand; `PHUX_AUTO_RELEASE=false` stops the automation.
 3. `release.yml` runs after a successful push `ci` on `main`, daily,
    or by dispatch. It picks every draft whose exact tagged commit has a successful push
    `ci` on `main` (not another commit's green status), builds the assets from the tag using the harness on `main`,
    attaches them, signs the checksums, and flips the draft public. A CLI
    release needs all three targets or it stays a draft.
-4. It then rebuilds `stable.json`, dispatches the mobile FFI builds, and
+4. It then rebuilds and signs `stable.json`, dispatches the mobile FFI builds, and
    dispatches the website repository to rebuild phux.sh, and reports the
    CLI release to Linear from the `announce` job.
 
 Because the harness comes from `main`, a release-infrastructure fix applies
 to an older tag on the next `release` run.
+
+Each CLI release also carries a CycloneDX 1.5 SBOM for `phux` and one for
+`phux-mcp`, generated from the tagged workspace for every target
+(`--target all`) by `cargo-cyclonedx` 0.5.10, pinned in `release.yml`. A
+release without both stays a draft. They are not minisign-signed; GitHub
+records each asset's SHA-256.
+
+## LTS
+
+`lts` is a channel for installs that want fewer, vetted updates:
+`channels/lts.json` names one stable release that passed the soak gate and a
+maintainer promoted with `lts.yml`. Policy, the soak gate, promotion and
+backports are in [the LTS runbook](./runbooks/lts.md).
 
 ## Next
 
@@ -62,9 +74,19 @@ Each product rebuilds only when its inputs changed since the commit
 
 ## Phux Rune
 
-Rune releases are cut by hand and never go through Release Please. Versions
-run `alpha.N`, then `0.1.0`. There is no beta tag: clients read only those two
-forms, so a beta in the feed would strand every one of them on a failed check.
+Rune releases never go through Release Please. `rune-auto-release.yml` cuts
+them on its own: every two hours it opens and auto-merges the next patch bump
+when feat/fix/perf commits touched `clients/rune` since the last tag, with notes
+generated from those subjects, and tags the merged bump after its push `ci`
+goes green (`clients/rune/scripts/release.py`). Set the repository variable
+`RUNE_AUTO_RELEASE=false` to stop it. To ship hand-written notes, merge your
+own bump first: the train then only tags it. Versions ran `0.1.0-alpha.N` to
+alpha.23, then `0.1.0`; the train now bumps the patch (`0.1.1`, `0.1.2`, ...).
+Clients read only `X.Y.Z` and `X.Y.Z-alpha.N`, so a beta in the feed would
+strand every one of them on a failed check, and a prerelease after `0.1.0`
+would sort below it.
+
+By hand:
 
 1. On a branch, set `version` in `clients/rune/Cargo.toml`, run
    `cargo update --workspace` in `clients/rune` so `Cargo.lock` records it
@@ -109,7 +131,7 @@ a crash there still ships.
    taken the bad version stop being offered it. Do this first.
 
    ```sh
-   good=0.1.0-alpha.N
+   good=0.1.N
    dir="$(mktemp -d)"
    gh release download "rune-v$good" --repo no-phux/phux --dir "$dir" \
      --pattern '*.zip' --pattern '*.tar.gz' --pattern '*.sha256'
@@ -137,6 +159,8 @@ Restart now, quit-install and the server handoff, before calling it good.
 | You want to                     | Run                                                                          |
 | ------------------------------- | ---------------------------------------------------------------------------- |
 | finish or rebuild a stuck draft | `gh workflow run release.yml -f tag=<tag>` (empty tag: every ready draft)    |
+| soak a release candidate        | `gh workflow run soak.yml -f ref=<tag>`                                      |
+| promote a release to lts        | `gh workflow run lts.yml -f tag=<tag>` (needs a passing soak)                |
 | rebuild next                    | `gh workflow run next.yml`                                                   |
 | see what is stuck               | `just release-drift`                                                         |
 | publish `phux-protocol`         | `just publish-protocol-dry`, then `just publish-protocol` from the tag       |
@@ -145,7 +169,7 @@ Restart now, quit-install and the server handoff, before calling it good.
 
 ## Versioning
 
-The workspace has one version, inherited by every crate; the desktop and
+The workspace has one version, inherited by every crate; Phux Rune and
 each integration version independently. Release Please writes versions from
 the commit log, and `scripts/check-release-version.sh` fails a build whose
 tag disagrees with Cargo. Do not edit a version by hand.
@@ -153,11 +177,8 @@ tag disagrees with Cargo. Do not edit a version by hand.
 Pre-1.0: `fix:` bumps the patch, `feat:` bumps the minor, and a breaking
 change also bumps the minor.
 
-There are two Release Please trains, each a config and manifest pair:
-`release-please-config.json` with `.release-please-manifest.json` for the
-root and integrations, and `release-please-config.desktop.json` with
-`.release-please-manifest.desktop.json` for the desktop. They share no file,
-so merging one release PR never conflicts the other.
+Release Please reads `release-please-config.json` with
+`.release-please-manifest.json`, for the root and integrations.
 
 The root train rewrites `Cargo.toml` and the workspace crates' entries in
 every `Cargo.lock` in the same commit, through `toml` extra-files whose
@@ -168,11 +189,18 @@ regenerates them, and the tools tests fail until it has.
 
 ## Signing and verification
 
-Every CLI and desktop checksum is signed with minisign by
+Every CLI and Phux Rune checksum, and each channel manifest
+(`<channel>.json.minisig`), is signed with minisign by
 `scripts/ci/sign-release.sh`, using the `PHUX_MINISIGN_SECRET_KEY` secret,
 and the signature is checked against the public keys compiled into
 `scripts/install.sh` and `phux update` before anything is attached. A
 missing secret fails the release rather than shipping unsigned.
+
+`phux update` and the installer (with `minisign` on `PATH`) check the
+manifest signature when they read a channel. On `lts` a missing or invalid
+signature refuses. On `stable` and `next` it only warns, because their
+manifests were published unsigned before signing began; the signed artifact
+checksum stays the gate there.
 
 Release binaries use rustup and the pinned Zig tarballs, never Nix, so no
 `/nix/store` path leaks into them. `scripts/build-release-binaries.sh`
@@ -181,40 +209,12 @@ binaries may link; `scripts/pack-release.sh` is the only writer of the
 tarball layout, which `phux update` and the installer both refuse to
 unpack if it changes.
 
-The desktop is qualified before upload: `smoke-app.ts` on macOS, and
-`smoke-linux.ts` under Xvfb and lavapipe on Linux, against an isolated
-server built from the same checkout.
-
-Windows builds with MSVC and the pinned GPUI Direct3D/DirectWrite backend.
-Windows is mandatory from Desktop 0.50.0 onward and on next; older stable
-desktop releases retain their original macOS/Linux target set.
-`windows-desktop.yml` packages the executable with the app-local CRT and
-licenses, installs it per user, and requires native-window OCR, real keyboard
-input, clipboard, PTY resize, reconnect and crash/relaunch against the
-same-source WSL coordinator. Diagnostic build artifacts are not qualified
-release artifacts. A failed GUI run blocks checksum signing and publication.
-Hosted D3D/software-adapter evidence is not real-GPU qualification. The
-installer verifies minisign-signed checksums; that is not Authenticode signing
-or a claim of SmartScreen reputation. A native Windows coordinator is not shipped.
-
-For GUI harness iteration without rebuilding MSVC, dispatch **Windows WSL**
-with `desktop-build-run` and `desktop-build-sha` from a retained Windows build.
-Use its logged `PHUX_BUILD_SHA` (a PR merge revision can differ from its head).
-This diagnostic records both product and harness revisions and cannot hand
-assets to publication. The normal same-source Windows Desktop gate is still required.
-
 ### macOS desktop signing
 
-Stable macOS releases contain a drag-to-Applications **DMG** and an updater
-**ZIP** of the same stapled `Phux.app`. Both receive SHA-256 sidecars and
-minisign signatures; the channel manifest continues to name the ZIP so
-existing installers and automatic updates keep working. Linux is unchanged.
-The DMG's `Phux.app` bundles the phux CLI and server. It does not replace an
-existing CLI or restart running sessions. Linux desktop archives do not
-include the CLI. macOS 26.0 on Apple silicon is the desktop minimum; the
-standalone CLI's Mach-O floor stays at macOS 11.0. Both the bundle's minimum
-version and each executable's Mach-O deployment floor are checked before
-publication; a newer build host must not raise either one.
+Phux Rune's macOS releases ship a ZIP of `Phux Rune.app`, Developer ID signed
+with the hardened runtime, Apple-notarized and stapled. The ZIP gets a
+SHA-256 sidecar and a minisign signature like every other asset. Linux
+archives are not Apple-signed. Pull-request and local builds are ad-hoc signed.
 
 The standalone CLI's macOS archive carries `phux` and `phux-mcp` signed with
 the same Developer ID (hardened runtime) and notarized, so the macOS
@@ -223,7 +223,8 @@ allowlist entry. A bare executable cannot hold a stapled ticket; Gatekeeper
 checks it online. `next` builds stay ad hoc.
 
 The Apple credentials are separate from minisign. Configure these repository
-Actions secrets before marking a release PR ready:
+Actions secrets before marking a release PR ready (the CLI) or pushing a
+`rune-v*` tag:
 
 | Secret | Value |
 | --- | --- |
@@ -246,29 +247,13 @@ from files/stdin rather than putting private material in command arguments
 or chat. Do not commit P12/P8 files or notarization credentials.
 
 `scripts/ci/sign-macos-desktop.sh --check-config` checks required settings
-before an expensive stable build. Missing credentials fail closed: stable
-publication never silently falls back to ad-hoc signing. The script imports
-the P12 into a temporary keychain, signs with hardened runtime and a secure
-timestamp, waits for Apple's `Accepted` result, staples/validates the app,
-and creates the ZIP and DMG. It then signs, notarizes, and staples the DMG.
-Temporary keys and keychain are removed even on failure. No JIT or sandbox
-exceptions are needed for the native GPUI executable.
-
-The workflow checks Gatekeeper acceptance of both the copied app and image,
-mounts the image read-only, and smoke-tests its copied app on an isolated
-same-checkout server. It checksums only the final stapled bytes, uploads and
-downloads them again, and signs all five desktop checksum sidecars (two
-macOS, two Linux, one Windows) before making the draft public. Apple submission receipts
-and runtime evidence are retained as Actions artifacts. A failure leaves the
-release in draft. The `next` channel remains the existing ad-hoc ZIP path.
-
-For local packaging, `just desktop-dmg` creates
-`clients/desktop/dist/Phux.dmg` without installing anything or accessing
-Apple credentials. Remove that task-owned output before rebuilding; the
-packager refuses to overwrite an existing image. This is a development
-artifact, not evidence of notarization. Stable macOS apps and DMGs are
-Developer ID signed, Apple-notarized, and stapled. Local ad-hoc tests cannot
-prove those Apple checks.
+before an expensive build. Missing credentials fail closed: a release never
+silently falls back to ad-hoc signing. The script imports the P12 into a
+temporary keychain, signs with hardened runtime and a secure timestamp, waits
+for Apple's `Accepted` result, staples and validates the app, and writes the
+ZIP. Temporary keys and keychain are removed even on failure. `rune-build.yml`
+then checks the stapled ticket and Gatekeeper's acceptance of the unpacked
+download before checksumming the final bytes.
 
 ## Release-key custody and rotation
 
@@ -290,9 +275,10 @@ For an authorized rotation:
    next leaks, replace next through a release signed by the safe current.
 
 Clients too old to trust either remaining key need an externally trusted
-reinstall after missed rotations. Signed checksum sidecars authenticate
-artifacts, not freshness: the channel manifest is unsigned, and a next-channel
-rollback to an older validly signed build remains possible. These are trust
+reinstall after missed rotations. Signatures authenticate artifacts and
+manifests, not freshness: an old, validly signed manifest can be replayed,
+and a next-channel rollback to an older validly signed build remains
+possible (stable and lts refuse an unpinned downgrade). These are trust
 limitations, not permission to skip signature verification.
 
 ## npm and crates.io
@@ -310,6 +296,6 @@ other crate is `publish = false`.
 | Secret                                                    | Used by                                                                                                |
 | --------------------------------------------------------- | ------------------------------------------------------------------------------------------------------ |
 | Release App (`RELEASE_APP_ID`, `RELEASE_APP_PRIVATE_KEY`) | `release.yml`: release PRs and website dispatch; App pushes trigger `ci`, unlike `GITHUB_TOKEN` pushes |
-| `PHUX_MINISIGN_SECRET_KEY`                                | signing in the release workflows                                                                       |
+| `PHUX_MINISIGN_SECRET_KEY`                                | signing artifacts and channel manifests in `release.yml`, `next.yml`, `lts.yml`, and `rune-client.yml` |
 | `CARGO_REGISTRY_TOKEN`                                    | manual operator Cargo publication, not a workflow                                                      |
 | `LINEAR_RELEASE_ACCESS_KEY`                               | `release.yml` announce job                                                                             |

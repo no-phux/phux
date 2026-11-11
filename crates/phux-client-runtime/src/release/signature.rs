@@ -5,7 +5,7 @@
 //! `<asset>.sha256.minisig` beside it. Clients embed the public keys they
 //! accept, so a host that can rewrite release assets but does not hold the
 //! signing key cannot produce a checksum this verifier accepts. `phux update`
-//! and Desktop's updater both verify here; `scripts/install.sh` embeds the
+//! and Phux Rune's updater both verify here; `scripts/install.sh` embeds the
 //! same keys.
 
 use minisign_verify::{Error as MinisignError, PublicKey, Signature};
@@ -80,6 +80,20 @@ pub fn signed_digest(
     }
 }
 
+/// Whether one of `keys` signed this exact channel manifest body
+/// (`<channel>.json.minisig`). The body names its channel and the parser
+/// checks it, so a signed manifest for one channel cannot pose as another.
+///
+/// # Errors
+///
+/// Why the signature does not vouch for `body`, in the user's terms.
+pub fn verify_manifest(body: &[u8], minisig: &[u8], keys: &[&str]) -> Result<(), String> {
+    let text = std::str::from_utf8(minisig).map_err(|_| "its signature is not text".to_owned())?;
+    let signature =
+        Signature::decode(text).map_err(|err| format!("its signature is malformed ({err})"))?;
+    verify(body, &signature, keys)
+}
+
 /// Whether one of `keys` made `signature` over `message`.
 fn verify(message: &[u8], signature: &Signature, keys: &[&str]) -> Result<(), String> {
     let mut wrong_key = true;
@@ -105,7 +119,7 @@ fn verify(message: &[u8], signature: &Signature, keys: &[&str]) -> Result<(), St
 #[cfg(test)]
 #[allow(clippy::unwrap_used, reason = "tests")]
 mod tests {
-    use super::{RELEASE_KEYS, signed_digest};
+    use super::{RELEASE_KEYS, signed_digest, verify_manifest};
 
     const ARCHIVE: &str = "phux-v9.9.9-aarch64-apple-darwin.tar.gz";
 
@@ -144,5 +158,20 @@ mod tests {
         let err = signed_digest(signed.as_bytes(), sig.as_bytes(), "other.zip", RELEASE_KEYS)
             .unwrap_err();
         assert!(err.to_string().contains("does not name it"), "{err}");
+    }
+
+    /// A real signature verifies a manifest body only when it is those bytes.
+    #[test]
+    fn a_manifest_signature_vouches_only_for_its_body() {
+        let sig = include_str!("testdata/release-key-check.sha256.minisig");
+        let body = sidecar(&"0".repeat(64));
+        assert_eq!(
+            verify_manifest(body.as_bytes(), sig.as_bytes(), RELEASE_KEYS),
+            Ok(())
+        );
+        let err = verify_manifest(b"{}", sig.as_bytes(), RELEASE_KEYS).unwrap_err();
+        assert!(err.contains("does not verify"), "{err}");
+        let err = verify_manifest(body.as_bytes(), b"junk", RELEASE_KEYS).unwrap_err();
+        assert!(err.contains("malformed"), "{err}");
     }
 }

@@ -102,7 +102,9 @@ use {
 /// the default bootstrap profile.
 #[must_use]
 pub const fn control_caps() -> ClientCapabilities {
-    ClientCapabilities::new().with_layers(LayerSet::with(&[Layer::L3]))
+    ClientCapabilities::new()
+        .with_layers(LayerSet::with(&[Layer::L3]))
+        .with_resource_kinds(phux_client_core::session::KERNEL_RESOURCE_KINDS)
 }
 
 /// A connection that attaches to nothing, never redials, and lives as long

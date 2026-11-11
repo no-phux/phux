@@ -19,7 +19,11 @@ impl LinkTransport for NetLinkTransport {
         let result: Result<NetLinkConn, String> = match spec {
             DialSpec::Inbound => self.adopt_inbound(host).await,
             DialSpec::Quic {
-                host, port, trust, ..
+                host,
+                port,
+                trust,
+                identity,
+                ..
             } => {
                 let bare = host.trim_matches(['[', ']']);
                 let addr = tokio::net::lookup_host((bare, *port))
@@ -37,7 +41,7 @@ impl LinkTransport for NetLinkTransport {
                     server_name: bare.to_owned(),
                     token,
                     trust: trust.clone(),
-                    identity: None,
+                    identity: identity.as_ref().map(pem_identity),
                     inner: None,
                 };
                 let (endpoint, connection, send, recv) = phux_dial::quic::dial(&dial)
@@ -52,13 +56,18 @@ impl LinkTransport for NetLinkTransport {
                     negotiated: None,
                 })
             }
-            DialSpec::Ws { url, trust, .. } => {
+            DialSpec::Ws {
+                url,
+                trust,
+                identity,
+                ..
+            } => {
                 let dial = WsDial {
                     url: url.clone(),
                     token,
                     trust: trust.clone(),
                     tls_server_name: None,
-                    identity: None,
+                    identity: identity.as_ref().map(pem_identity),
                 };
                 let ws = phux_dial::ws::dial(&dial)
                     .await
@@ -104,7 +113,7 @@ impl LinkTransport for NetLinkTransport {
 
         // HELLO/profile negotiation is mandatory on every transport,
         // including the SSH bridge.
-        let selection = negotiate_link(&mut conn).await?;
+        let selection = negotiate_link(&mut conn, self.bootstrap).await?;
         conn.install_negotiated(selection)?;
         Ok(conn)
     }
@@ -230,5 +239,16 @@ impl LinkWriter for NetLinkConn {
                 .map_err(|err| format!("keepalive ping to satellite: {err}"))
             }
         }
+    }
+}
+
+/// The enrolled client certificate a `paired` satellite requires, as the
+/// dialers take it.
+fn pem_identity(
+    (certificate, private_key): &(std::path::PathBuf, std::path::PathBuf),
+) -> phux_dial::TlsClientIdentity {
+    phux_dial::TlsClientIdentity::PemFiles {
+        certificate: certificate.clone(),
+        private_key: private_key.clone(),
     }
 }

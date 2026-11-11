@@ -218,11 +218,26 @@ impl ServerState {
                 )
                 .with_native_id(facet.native_id.clone())
             });
+            let producer = matches!(
+                descriptor.kind,
+                ResourceKind::AccessibilityTree
+                    | ResourceKind::PixelSurface
+                    | ResourceKind::Document
+            )
+            .then(|| self.resource_producer(id).is_some());
+            let name = self
+                .sessions
+                .registry
+                .record(id)
+                .and_then(|r| r.name.clone());
             panes.push(
                 ResourceInfo::resource(wire, crate::id_bridge::wire_kind(descriptor.kind))
+                    .with_title(name)
                     .with_parent(parent)
                     .with_agent(agent)
-                    .with_session(session),
+                    .with_session(session)
+                    .with_producer_connected(producer)
+                    .with_control(self.document_control(id)),
             );
         }
         panes

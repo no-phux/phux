@@ -53,7 +53,7 @@ was in your panes. Read it, and remove anything private, before you share
 it. phux never logs what you type or paste, and its log files are readable
 only by you.
 
-Desktop's palette has **Copy Diagnostics**; [log locations](../clients/desktop/README.md#what-it-does).
+In Phux Rune, **Copy diagnostics** in Settings copies its logs and state; [log locations](../clients/rune/README.md#what-it-does).
 File [an issue](https://github.com/no-phux/phux/issues) with your OS/CPU,
 CLI and desktop versions, install method, reproduction steps, and actual error.
 
@@ -149,6 +149,17 @@ behind the state: which source won and what it saw. If the screen rules for
 an agent misfire, override them in `~/.config/phux/agent-rules/`. See
 [Coding agents](./agents.md#agent-states).
 
+## Debugging
+
+- `phux agent explain @7` shows which evidence decided the state, and what
+  each rule saw.
+- `phux agent explain --file screen.txt --kind claude` tests rules against a
+  saved screen without a server.
+- `phux watch --json @7` shows the events, such as `agent_state` and
+  `asked`, as they arrive.
+- `phux agent log @7` prints an agent session's events.
+- `phux doctor` checks the Claude Code wrapper.
+
 ## Lag
 
 `phux perf --watch 1` prints the server's timings every second, so a stall
@@ -161,14 +172,10 @@ To see where the time goes, record a trace and open the file it prints in
 <https://ui.perfetto.dev>:
 
 ```sh
-phux perf trace --seconds 5     # the server
-phux perf trace --desktop       # the desktop app and the server, on one timeline
+phux perf trace --seconds 5
 ```
 
-Start either process with `PHUX_DEV=1` to add memory figures, or turn on
-**Settings > Developer > Developer mode** in the desktop app. A desktop app in
-Developer mode also shows a frame-rate overlay, and `phux perf --desktop`
-reads it. Agents get the same numbers from the `phux_perf` and
+Start the server with `PHUX_DEV=1` to add memory figures. Agents get the same numbers from the `phux_perf` and
 `phux_perf_trace` MCP tools.
 
 ## After a crash or reboot
@@ -224,3 +231,30 @@ Some upgrades can't be undone by installing the old binary:
 Every command exits 0 on success, 1 on failure, and 2 on a usage error or
 a refused request. [Shell scripting](./scripting.md#exit-codes) lists the
 rest, and [Exit codes](./reference/exit-codes.md) has the full reference.
+
+## Plan usage
+
+`phux agent usage` prints the AI plan limits this machine can see: Claude
+Code's 5-hour and weekly windows, Codex's limits, and Grok Build's
+allowance, with how much is used and when each resets.
+
+It reads each vendor's own sign-in on this machine and sends it only to that
+vendor:
+
+| Vendor | Reads | Sends, and only to |
+| --- | --- | --- |
+| Claude Code | Keychain item `Claude Code-credentials`, else `~/.claude/.credentials.json`; `~/.claude.json` | The access token, to `api.anthropic.com` |
+| Codex | `~/.codex/sessions/**/rollout-*.jsonl` and `~/.codex/auth.json` | When those logs are over 10 minutes old: the access token and account id, to `chatgpt.com` |
+| Grok Build | `~/.grok/auth.json` | The session token and user id, to `cli-chat-proxy.grok.com` |
+
+Tokens are never refreshed, written, or logged, and travel only over HTTPS.
+An expired sign-in shows as `unavailable` until you use that agent again.
+Requests to one vendor are at least two minutes apart, with longer waits
+after a rate limit.
+
+The usage plugin, part of the starter distribution, runs
+`phux agent usage --publish` when a client attaches or an agent changes
+state. That shares the numbers with every client allowed to see the whole
+server, including paired devices such as a phone. It shares an anonymous
+account fingerprint, never an email or a token.
+

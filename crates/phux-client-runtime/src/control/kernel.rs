@@ -1,9 +1,18 @@
 //! Engine outcomes and kernel effect processing.
 
+use super::subscriptions::Origin;
 use super::{
-    ControlError, ControlPlane, EngineApplyError, EngineEvent, EngineOutcome, Event, FrameKind,
-    InputEvent, KernelEffect, KernelSend, KernelStatus, ResourceId, ServerFeature,
+    ControlError, ControlPlane, EngineApplyError, EngineEvent, EngineHandle, EngineOutcome, Event,
+    FrameKind, InputEvent, KernelEffect, KernelSend, KernelStatus, ResourceId, ServerFeature,
 };
+use phux_protocol::ids::ResourceKind;
+
+/// One engine batch handed out by [`ControlPlane::prepare_engine_apply`].
+pub(super) struct EngineApply {
+    pub(super) engine: EngineHandle,
+    pub(super) events: Vec<EngineEvent>,
+    pub(super) geometry: Vec<(usize, ResourceId, bool)>,
+}
 
 impl ControlPlane {
     // ----- the kernel --------------------------------------------------
@@ -24,6 +33,22 @@ impl ControlPlane {
         if events.is_empty() {
             return Ok(());
         }
+        let EngineApply {
+            engine,
+            events,
+            geometry,
+        } = self.prepare_engine_apply(events)?;
+        let outcomes = engine.apply_batch(events);
+        self.complete_engine_apply(geometry, outcomes)
+    }
+
+    /// The control-plane half before an engine batch: note what the events
+    /// announce and hand back what the owner thread must apply. The caller
+    /// may release the control lock for the round trip itself.
+    pub(super) fn prepare_engine_apply(
+        &mut self,
+        events: Vec<EngineEvent>,
+    ) -> Result<EngineApply, ControlError> {
         let Some(engine) = self.engine.clone() else {
             return Err(ControlError::Protocol(
                 "stateful frame arrived before the session kernel was initialized".to_owned(),
@@ -33,9 +58,20 @@ impl ControlPlane {
             self.note_engine_event(event);
         }
         let geometry = super::geometry::bootstrap_changes(&events);
-        let outcomes = engine
-            .apply_batch(events)
-            .map_err(|error| ControlError::Protocol(error.to_string()))?;
+        Ok(EngineApply {
+            engine,
+            events,
+            geometry,
+        })
+    }
+
+    /// The control-plane half after an engine batch.
+    pub(super) fn complete_engine_apply(
+        &mut self,
+        geometry: Vec<(usize, ResourceId, bool)>,
+        outcomes: Result<Vec<EngineOutcome>, crate::engine::EngineError>,
+    ) -> Result<(), ControlError> {
+        let outcomes = outcomes.map_err(|error| ControlError::Protocol(error.to_string()))?;
         self.note_geometry_bootstraps(geometry, &outcomes);
         self.process_engine_outcomes(outcomes)
     }
@@ -60,13 +96,18 @@ impl ControlPlane {
                 terminals,
             } => {
                 self.active_attach_id = Some(*attach_id);
-                self.attach_terminals = terminals.iter().cloned().collect();
+                self.subscriptions.replace(
+                    Origin::SessionAttach,
+                    ResourceKind::Terminal,
+                    terminals.iter().cloned(),
+                );
             }
             EngineEvent::AttachReady { attach_id } if self.active_attach_id == Some(*attach_id) => {
                 self.attached_once = true;
             }
             EngineEvent::Closed { terminal_id, .. } => {
-                self.attach_terminals.remove(terminal_id);
+                self.subscriptions
+                    .remove(terminal_id, Origin::SessionAttach);
             }
             EngineEvent::AgentSessionDeclared { terminal_id, .. } => {
                 self.agent_delivery.admit(terminal_id);
@@ -206,12 +247,8 @@ impl ControlPlane {
                     if let Some(relabel) = self.relabel_in_flight(&key.terminal_id) {
                         relabel.title = Some(title.clone());
                     }
-                    if let Some(pane) = self
-                        .topology
-                        .as_mut()
-                        .and_then(|topology| topology.pane_mut(&key.terminal_id))
-                    {
-                        pane.title = Some(title.clone());
+                    if let Some(topology) = self.topology.as_mut() {
+                        topology.retitle(&key.terminal_id, &title);
                     }
                     self.push_event(Event::TitleChanged {
                         terminal_id: key.terminal_id,
@@ -252,6 +289,14 @@ impl ControlPlane {
                     reason,
                 });
             }
+            KernelStatus::Unsupported {
+                terminal_id,
+                codec_tag,
+            } => tracing::warn!(
+                %terminal_id,
+                codec_tag,
+                "the server streamed a resource in a codec this build cannot decode; ignoring it"
+            ),
             // Folded from the agent event itself, for every terminal the
             // subscription covers rather than only the kernel's.
             KernelStatus::Cwd { .. }

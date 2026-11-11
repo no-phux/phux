@@ -203,7 +203,7 @@ path or environment payload. Older clients skip these fields; old stored
 activations without a diagnostic remain readable. Unknown exit evidence
 projects as `Unobserved`, never fabricated exit zero.
 
-`features_ext.DURABLE_RESOURCE_INSPECTION` (`0x20000`) gates filter discriminant
+`features_ext.DURABLE_RESOURCE_INSPECTION` (`0x100000`) gates filter discriminant
 `4` on the existing `GET_ORGANIZATION`: the discriminant is followed by the
 16-byte durable resource key. It returns at most that one resource row, no
 session rows and no continuation cursor. The existing per-resource inventory

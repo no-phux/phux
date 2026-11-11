@@ -1231,6 +1231,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "34aa73646ffb006b8f5147f3dc182bd4bcb190227ce861fc4a4844bf8e3cb2c0"
 
 [[package]]
+name = "endi"
+version = "1.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "66b7e2430c6dff6a955451e2cfc438f09cea1965a9d6f87f7e3b90decc014099"
+
+[[package]]
 name = "equivalent"
 version = "1.0.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2244,7 +2250,7 @@ checksum = "65cd87c9a6d60536580b316ad985726104730a5151c99845f2490428ef91240a"
 [[package]]
 name = "libghostty-vt"
 version = "0.2.1"
-source = "git+https://github.com/phall1/libghostty-rs.git?rev=9b06bf34eb996fb3580e834e440cef7d38862975#9b06bf34eb996fb3580e834e440cef7d38862975"
+source = "git+https://github.com/phall1/libghostty-rs.git?rev=cbd88f63c064f7829c8b91e111fe2b9675884798#cbd88f63c064f7829c8b91e111fe2b9675884798"
 dependencies = [
  "bitflags 2.13.2",
  "int-enum",
@@ -2255,7 +2261,7 @@ dependencies = [
 [[package]]
 name = "libghostty-vt-sys"
 version = "0.2.1"
-source = "git+https://github.com/phall1/libghostty-rs.git?rev=9b06bf34eb996fb3580e834e440cef7d38862975#9b06bf34eb996fb3580e834e440cef7d38862975"
+source = "git+https://github.com/phall1/libghostty-rs.git?rev=cbd88f63c064f7829c8b91e111fe2b9675884798#cbd88f63c064f7829c8b91e111fe2b9675884798"
 
 [[package]]
 name = "libm"
@@ -2687,6 +2693,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "ordered-stream"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9aa2b01e1d916879f73a53d01d1d6cee68adbb31d6d9177a8cfce093cced1d50"
+dependencies = [
+ "futures-core",
+ "pin-project-lite",
+]
+
+[[package]]
 name = "outref"
 version = "0.5.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2919,7 +2935,7 @@ dependencies = [
 
 [[package]]
 name = "phux"
-version = "0.123.0"
+version = "0.138.0"
 dependencies = [
  "accessibility",
  "accessibility-sys",
@@ -2929,6 +2945,7 @@ dependencies = [
  "bytes",
  "chrono",
  "core-foundation",
+ "core-graphics",
  "dhat",
  "futures-util",
  "jsonschema",
@@ -2974,11 +2991,12 @@ dependencies = [
  "tracing-subscriber",
  "usage-rs",
  "uuid",
+ "zbus",
 ]
 
 [[package]]
 name = "phux-agent-host"
-version = "0.123.0"
+version = "0.138.0"
 dependencies = [
  "agent-client-protocol",
  "parking_lot 0.13.0",
@@ -2994,7 +3012,7 @@ dependencies = [
 
 [[package]]
 name = "phux-agent-rules"
-version = "0.123.0"
+version = "0.138.0"
 dependencies = [
  "regex",
  "serde",
@@ -3005,7 +3023,7 @@ dependencies = [
 
 [[package]]
 name = "phux-agent-session"
-version = "0.123.0"
+version = "0.138.0"
 dependencies = [
  "bytes",
  "phux-agent-rules",
@@ -3022,7 +3040,7 @@ dependencies = [
 
 [[package]]
 name = "phux-client"
-version = "0.123.0"
+version = "0.138.0"
 dependencies = [
  "bytes",
  "futures-util",
@@ -3055,7 +3073,7 @@ dependencies = [
 
 [[package]]
 name = "phux-client-core"
-version = "0.123.0"
+version = "0.138.0"
 dependencies = [
  "ciborium",
  "criterion",
@@ -3075,7 +3093,7 @@ dependencies = [
 
 [[package]]
 name = "phux-client-ffi"
-version = "0.123.0"
+version = "0.138.0"
 dependencies = [
  "bytes",
  "futures-util",
@@ -3101,7 +3119,7 @@ dependencies = [
 
 [[package]]
 name = "phux-client-runtime"
-version = "0.123.0"
+version = "0.138.0"
 dependencies = [
  "bytes",
  "futures-util",
@@ -3133,7 +3151,7 @@ dependencies = [
 
 [[package]]
 name = "phux-config"
-version = "0.123.0"
+version = "0.138.0"
 dependencies = [
  "chrono",
  "insta",
@@ -3154,7 +3172,7 @@ dependencies = [
 
 [[package]]
 name = "phux-config-core"
-version = "0.123.0"
+version = "0.138.0"
 dependencies = [
  "nix 0.31.3",
  "serde",
@@ -3166,7 +3184,7 @@ dependencies = [
 
 [[package]]
 name = "phux-core"
-version = "0.123.0"
+version = "0.138.0"
 dependencies = [
  "phux-frozen",
  "proptest",
@@ -3179,7 +3197,7 @@ dependencies = [
 
 [[package]]
 name = "phux-crash"
-version = "0.123.0"
+version = "0.138.0"
 dependencies = [
  "libc",
  "tempfile",
@@ -3188,7 +3206,7 @@ dependencies = [
 
 [[package]]
 name = "phux-dial"
-version = "0.123.0"
+version = "0.138.0"
 dependencies = [
  "futures-util",
  "hex",
@@ -3208,7 +3226,7 @@ dependencies = [
 
 [[package]]
 name = "phux-frozen"
-version = "0.123.0"
+version = "0.138.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -3217,7 +3235,7 @@ dependencies = [
 
 [[package]]
 name = "phux-git"
-version = "0.123.0"
+version = "0.138.0"
 dependencies = [
  "libc",
  "memchr",
@@ -3227,8 +3245,9 @@ dependencies = [
 
 [[package]]
 name = "phux-mcp"
-version = "0.123.0"
+version = "0.138.0"
 dependencies = [
+ "base64 0.23.1",
  "jsonschema",
  "phux-client",
  "phux-client-runtime",
@@ -3246,7 +3265,7 @@ dependencies = [
 
 [[package]]
 name = "phux-mission"
-version = "0.123.0"
+version = "0.138.0"
 dependencies = [
  "phux-work",
  "serde",
@@ -3254,7 +3273,7 @@ dependencies = [
 
 [[package]]
 name = "phux-perf"
-version = "0.123.0"
+version = "0.138.0"
 dependencies = [
  "libc",
  "nix 0.31.3",
@@ -3264,7 +3283,7 @@ dependencies = [
 
 [[package]]
 name = "phux-plugin"
-version = "0.123.0"
+version = "0.138.0"
 dependencies = [
  "phux-config",
  "phux-frozen",
@@ -3277,7 +3296,7 @@ dependencies = [
 
 [[package]]
 name = "phux-protocol"
-version = "0.123.0"
+version = "0.138.0"
 dependencies = [
  "bitflags 2.13.2",
  "bytes",
@@ -3296,7 +3315,7 @@ dependencies = [
 
 [[package]]
 name = "phux-record"
-version = "0.123.0"
+version = "0.138.0"
 dependencies = [
  "gif",
  "libghostty-vt",
@@ -3309,7 +3328,7 @@ dependencies = [
 
 [[package]]
 name = "phux-relay"
-version = "0.123.0"
+version = "0.138.0"
 dependencies = [
  "phux-dial",
  "phux-protocol",
@@ -3321,7 +3340,7 @@ dependencies = [
 
 [[package]]
 name = "phux-resource"
-version = "0.123.0"
+version = "0.138.0"
 dependencies = [
  "bytes",
  "libc",
@@ -3338,7 +3357,7 @@ dependencies = [
 
 [[package]]
 name = "phux-server"
-version = "0.123.0"
+version = "0.138.0"
 dependencies = [
  "base64 0.23.1",
  "bytes",
@@ -3378,6 +3397,7 @@ dependencies = [
  "portable-pty",
  "quinn",
  "rcgen",
+ "ring",
  "rusqlite",
  "rustix",
  "rustls",
@@ -3403,7 +3423,7 @@ dependencies = [
 
 [[package]]
 name = "phux-server-testkit"
-version = "0.123.0"
+version = "0.138.0"
 dependencies = [
  "bytes",
  "libghostty-vt",
@@ -3421,7 +3441,7 @@ dependencies = [
 
 [[package]]
 name = "phux-terminal"
-version = "0.123.0"
+version = "0.138.0"
 dependencies = [
  "base64 0.23.1",
  "bytes",
@@ -3458,7 +3478,7 @@ dependencies = [
 
 [[package]]
 name = "phux-terminal-api"
-version = "0.123.0"
+version = "0.138.0"
 dependencies = [
  "bytes",
  "phux-agent-rules",
@@ -3478,10 +3498,11 @@ dependencies = [
 
 [[package]]
 name = "phux-tree"
-version = "0.123.0"
+version = "0.138.0"
 dependencies = [
  "bytes",
  "phux-core",
+ "phux-protocol",
  "phux-resource",
  "serde_json",
  "tokio",
@@ -3490,7 +3511,7 @@ dependencies = [
 
 [[package]]
 name = "phux-tui"
-version = "0.123.0"
+version = "0.138.0"
 dependencies = [
  "bytes",
  "insta",
@@ -3522,7 +3543,7 @@ dependencies = [
 
 [[package]]
 name = "phux-usage"
-version = "0.123.0"
+version = "0.138.0"
 dependencies = [
  "base64 0.23.1",
  "chrono",
@@ -3535,7 +3556,7 @@ dependencies = [
 
 [[package]]
 name = "phux-work"
-version = "0.123.0"
+version = "0.138.0"
 dependencies = [
  "chrono",
  "getrandom 0.4.3",
@@ -3637,7 +3658,7 @@ dependencies = [
 
 [[package]]
 name = "portable-pty-adopt"
-version = "0.123.0"
+version = "0.138.0"
 dependencies = [
  "anyhow",
  "libc",
@@ -3785,7 +3806,7 @@ checksum = "a1d01941d82fa2ab50be1e79e6714289dd7cde78eba4c074bc5a4374f650dfe0"
 
 [[package]]
 name = "quictun"
-version = "0.123.0"
+version = "0.138.0"
 dependencies = [
  "base64 0.23.1",
  "getrandom 0.4.3",
@@ -4462,6 +4483,17 @@ dependencies = [
  "itoa",
  "serde",
  "serde_core",
+]
+
+[[package]]
+name = "serde_repr"
+version = "0.1.21"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8d3b1629de253c70a0508c3899572da79ca359fdab27c7920ff00406df418906"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 3.0.9",
 ]
 
 [[package]]
@@ -5337,6 +5369,17 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2896d95c02a80c6d6a5d6e953d479f5ddf2dfdb6a244441010e373ac0fb88971"
 
 [[package]]
+name = "uds_windows"
+version = "1.2.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f2f6fb2847f6742cd76af783a2a2c49e9375d0a111c7bef6f71cd9e738c72d6e"
+dependencies = [
+ "memoffset",
+ "tempfile",
+ "windows-sys 0.61.2",
+]
+
+[[package]]
 name = "unarray"
 version = "0.1.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5599,6 +5642,7 @@ dependencies = [
  "atomic",
  "getrandom 0.4.3",
  "js-sys",
+ "serde_core",
  "wasm-bindgen",
 ]
 
@@ -6128,6 +6172,68 @@ dependencies = [
 ]
 
 [[package]]
+name = "zbus"
+version = "6.2.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0ddb2961d9587ef9f24ad14cde1c3bc4c5edc9f1525932a8cffdd5bd98886eb9"
+dependencies = [
+ "async-trait",
+ "bitflags 2.13.2",
+ "endi",
+ "futures-core",
+ "hex",
+ "libc",
+ "ordered-stream",
+ "rustix",
+ "serde",
+ "serde_repr",
+ "socket2",
+ "tokio",
+ "uds_windows",
+ "uuid",
+ "windows-sys 0.61.2",
+ "winnow",
+ "zbus_macros",
+ "zbus_utils",
+ "zcheapstr",
+ "zruntime",
+]
+
+[[package]]
+name = "zbus_macros"
+version = "6.2.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "083b38add47c340fc12ec560124fb1d9c23acb584f7021099f85ec6587a03c54"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 3.0.9",
+ "zbus_utils",
+]
+
+[[package]]
+name = "zbus_utils"
+version = "6.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "af55e52da295311b368c45bcae221f020e28e97a2420360170ce389218e76ec7"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "serde",
+ "syn 3.0.9",
+ "winnow",
+]
+
+[[package]]
+name = "zcheapstr"
+version = "1.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "939f186d9ecebe044315a5cb6d6f78568bbc21152adc954d5a0c2f58bdbc9920"
+dependencies = [
+ "serde",
+]
+
+[[package]]
 name = "zerocopy"
 version = "0.8.63"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6218,3 +6324,13 @@ name = "zmij"
 version = "1.0.23"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "29666d0abbfad1e3dc4dcf6144730dd3a3ab225bbbdac83319345b1b44ccfc1b"
+
+[[package]]
+name = "zruntime"
+version = "0.2.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "23ef5ed7d628cdf0af82f93dfe03330a8e37383bf7422a1d3d6eb72326680be5"
+dependencies = [
+ "futures-core",
+ "futures-io",
+]

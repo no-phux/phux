@@ -19,11 +19,10 @@ use crate::state::{ClientId, SharedState};
 use phux_agent_session::session::AgentSessionActor;
 /// Validate parent ownership and fitness in the same state borrow that
 /// registers the child, before allocating any resource or publishing its
-/// identity. A parent is fit when it hosts agents, which its handle says by
-/// carrying an [`AgentParent`](phux_agent_session::parent::AgentParent)
-/// companion; no kind is named here. The parent supervises the producer and
-/// carries the activation the producer is checked against
-/// (`verify_guardian_process`).
+/// identity. A parent is fit when it
+/// [supervises producers](crate::runtime::apps::spawn::supervises_producers);
+/// no kind is named here. The parent carries the activation the producer is
+/// checked against (`verify_guardian_process`).
 fn validate_agent_parent(
     state: &crate::state::ServerState,
     parent: phux_core::ids::ResourceId,
@@ -36,10 +35,7 @@ fn validate_agent_parent(
     let Some(handle) = state.resource_handle(parent) else {
         return Err(SpawnError::ParentNotFound);
     };
-    if handle
-        .companion::<phux_agent_session::parent::AgentParent>()
-        .is_none()
-    {
+    if !crate::runtime::apps::spawn::supervises_producers(handle) {
         return Err(SpawnError::ParentKindMismatch);
     }
     Ok(())
@@ -86,6 +82,8 @@ pub(super) async fn spawn_agent_session(spawn: ResourceSpawn<'_>) {
         root_token,
         limits: bootstrap_limits,
         connection_token,
+        decodes,
+        ..
     } = spawn;
     let Some(provider) = resource.provider.as_deref().filter(|p| !p.is_empty()) else {
         refuse_spawn(
@@ -202,19 +200,22 @@ pub(super) async fn spawn_agent_session(spawn: ResourceSpawn<'_>) {
         }))
         .await;
     // The subscription alone forwards nothing: run the (empty) bootstrap and
-    // live pump the `ATTACH_RESOURCE` path runs.
-    let _ = attach_agent_session(
-        state,
-        client_id,
-        &wire_session,
-        core_session,
-        &bundle.handle,
-        out_tx,
-        bootstrap_limits,
-        connection_token,
-        None,
-    )
-    .await;
+    // live pump the `ATTACH_RESOURCE` path runs. One whose `HELLO` does not
+    // list the kind stays its producer, streamed nothing.
+    if decodes.contains(phux_protocol::ids::ResourceKind::AgentSession) {
+        let _ = attach_agent_session(
+            state,
+            client_id,
+            &wire_session,
+            core_session,
+            &bundle.handle,
+            out_tx,
+            bootstrap_limits,
+            connection_token,
+            None,
+        )
+        .await;
+    }
     debug!(
         ?client_id,
         request_id,

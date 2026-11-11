@@ -220,11 +220,12 @@ pub(crate) struct ClaimArgs {
 
 /// List actions held for approval
 ///
-/// A workload whose grant holds `?signal` has its kills, signals, and
-/// forced detaches held by the server until someone holding un-held
-/// `signal` on the same subject approves or denies them. This lists what
-/// is waiting: the id, who asked, the held method, its subjects, and the
-/// time left before it expires.
+/// A workload whose grant holds `?signal`, `?terminate`, or `?input` on a
+/// page, window, or display class has those actions (kills and signals,
+/// session and pane ends, document input) held by the server until someone
+/// holding the same verbs un-held on the same subject approves or denies
+/// them. This lists what is waiting: the id, who asked, the held method, its
+/// subjects, and the time left before it expires.
 #[derive(Debug, Args)]
 pub(crate) struct ApprovalsArgs {
     #[usage(flatten)]

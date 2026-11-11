@@ -451,17 +451,13 @@ pub(crate) const TOOLS: &[Row] = &[
     residue(
         "phux_perf",
         "perf",
-        "the report document and the dev-mode desktop's socket discovery are the CLI command's",
-        // `source: desktop` reads the desktop's dev socket, which is not a
-        // catalog method, and sends the server nothing.
+        "the report document is the CLI command's",
         Touches::Wire(&[PERF_READ]),
     ),
     residue(
         "phux_perf_trace",
         "perf trace",
-        "the capture window, the trace file, and the merged desktop timeline are the CLI \
-         command's",
-        // `source: desktop` asks the desktop, which sends `PERF_CONTROL` itself.
+        "the capture window and the trace file are the CLI command's",
         Touches::Wire(&["PERF_CONTROL"]),
     ),
     cli(
@@ -478,6 +474,85 @@ pub(crate) const TOOLS: &[Row] = &[
         "phux_resource_methods",
         "resource methods",
         Touches::Wire(&[RESOLVE]),
+    ),
+    Row {
+        name: "phux_documents",
+        surface: Surface::AutomationOnly(
+            "the document-kind subset of `phux ls --json`'s `resources`, with each one's name",
+        ),
+        exec: Exec::InProcess,
+        touches: Touches::Wire(&[RESOLVE]),
+    },
+    cli(
+        "phux_tree_snapshot",
+        "agent tree snapshot",
+        Touches::Wire(&[RESOLVE, "ATTACH_RESOURCE", "DETACH_RESOURCE"]),
+    ),
+    cli(
+        "phux_tree_wait",
+        "agent tree follow",
+        Touches::Wire(&[
+            RESOLVE,
+            "ATTACH_RESOURCE",
+            "SUBSCRIBE_EVENTS",
+            "DETACH_RESOURCE",
+        ]),
+    ),
+    cli(
+        "phux_surface_snapshot",
+        "agent surface snapshot",
+        Touches::Wire(&[RESOLVE, "ATTACH_RESOURCE", "DETACH_RESOURCE"]),
+    ),
+    cli(
+        "phux_document_navigate",
+        "agent page navigate",
+        Touches::Wire(&[RESOLVE, "SEND_DOCUMENT_INPUT"]),
+    ),
+    cli(
+        "phux_document_click",
+        "agent page click",
+        Touches::Wire(&[RESOLVE, "SEND_DOCUMENT_INPUT"]),
+    ),
+    cli(
+        "phux_document_type",
+        "agent page type",
+        Touches::Wire(&[RESOLVE, "SEND_DOCUMENT_INPUT"]),
+    ),
+    cli(
+        "phux_document_key",
+        "agent page key",
+        Touches::Wire(&[RESOLVE, "SEND_DOCUMENT_INPUT"]),
+    ),
+    cli(
+        "phux_document_scroll",
+        "agent page scroll",
+        Touches::Wire(&[RESOLVE, "SEND_DOCUMENT_INPUT"]),
+    ),
+    cli(
+        "phux_click_element",
+        "agent tree click",
+        Touches::Wire(&[
+            RESOLVE,
+            "ATTACH_RESOURCE",
+            "DETACH_RESOURCE",
+            "SEND_DOCUMENT_INPUT",
+        ]),
+    ),
+    cli(
+        "phux_app_open",
+        "spawn",
+        Touches::Wire(&[
+            RESOLVE,
+            "SPAWN_RESOURCE",
+            METADATA_WRITE,
+            "GET_METADATA",
+            "KILL_RESOURCE",
+        ]),
+    ),
+    cli(
+        "phux_app_close",
+        "kill",
+        Touches::Wire(&[RESOLVE, "KILL_RESOURCES", "KILL_RESOURCE"]),
     ),
     cli(
         "phux_approvals",

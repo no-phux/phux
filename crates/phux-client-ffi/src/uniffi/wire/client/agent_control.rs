@@ -1,4 +1,4 @@
-//! Agent controls, agent records and whole documents, projected for bindings.
+//! Agent controls and agent records, projected for bindings.
 use super::*;
 
 /// Project human-facing agent controls, returning any unhandled event unchanged.
@@ -46,6 +46,33 @@ pub(super) fn project_agent_control(event: Event, projected: &mut Vec<WireEvent>
             .into(),
             detail,
         },
+        Event::AgentPublication {
+            publication,
+            session,
+        } => {
+            let batch = crate::projection::agent_records::project(&publication)?;
+            let kind = match batch.mode {
+                phux_client_core::session::agent_stream::AgentRecordMode::Replace => {
+                    AgentRecordsKind::Retained
+                }
+                phux_client_core::session::agent_stream::AgentRecordMode::Append => {
+                    AgentRecordsKind::Live
+                }
+            };
+            let id = &publication.resource_id;
+            agent_records(id, session, kind, batch.seq, batch.jsonl)
+        }
+        Event::AgentSessionClosed {
+            terminal_id,
+            session,
+            ..
+        } => agent_records(
+            &terminal_id,
+            session,
+            AgentRecordsKind::Closed,
+            0,
+            String::new(),
+        ),
         event => return Some(event),
     };
     projected.push(event);
@@ -53,7 +80,7 @@ pub(super) fn project_agent_control(event: Event, projected: &mut Vec<WireEvent>
 }
 
 /// Lower one agent session's records, or its end, to the foreign event.
-pub(super) fn agent_records(
+fn agent_records(
     terminal_id: &ResourceId,
     session: phux_client_runtime::control::AgentSessionInfo,
     kind: AgentRecordsKind,
@@ -68,17 +95,5 @@ pub(super) fn agent_records(
         kind,
         seq,
         jsonl,
-    }
-}
-
-/// A whole document (an `AccessibilityTree` or `PixelSurface`) as published.
-pub(super) fn document(
-    publication: &phux_client_runtime::control::DocumentPublication,
-) -> WireEvent {
-    WireEvent::DocumentPublished {
-        resource_id: id::encode(&publication.resource_id),
-        kind: crate::projection::topology::kind_word(publication.kind),
-        seq: publication.seq,
-        bytes: publication.bytes.clone(),
     }
 }

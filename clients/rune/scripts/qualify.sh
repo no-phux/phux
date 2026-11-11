@@ -8,7 +8,8 @@
 #
 # PHUX is a dev build (target/debug/phux). Checks the notices, what the binary
 # links, its version, and that a headless frame shows the session in the
-# desktop and phone forms; on Linux it also opens a real window under Xvfb.
+# desktop and phone forms; on Linux it also opens a real window under Xvfb,
+# and under a headless weston (Wayland) where weston is installed.
 set -euo pipefail
 
 archive="${1:?usage: qualify.sh ARCHIVE PHUX [EVIDENCE_DIR]}"
@@ -68,7 +69,7 @@ case "$archive" in
 *) fail "not a release archive: $archive" ;;
 esac
 
-for name in LICENSE NOTICE THIRD-PARTY-NOTICES.txt; do
+for name in LICENSE NOTICE THIRD-PARTY-NOTICES.txt Inter-OFL.txt JetBrainsMono-OFL.txt; do
     [[ -s "$notices/$name" ]] || fail "the archive has no $name"
 done
 
@@ -93,7 +94,7 @@ done
 snap="$scratch/launch.png"
 tree="$scratch/launch.json"
 "${clean[@]}" "$binary" --socket "$socket" --session "$marker" \
-    --snap "$snap" --tree "$tree" --at 3 --size 1100x720
+    --snap "$snap" --tree "$tree" --realtime --at 3 --size 1100x720
 [[ -s "$snap" ]] || fail "no frame was drawn"
 grep -q "$marker" "$tree" || fail "the window never showed session $marker"
 
@@ -101,7 +102,7 @@ grep -q "$marker" "$tree" || fail "the window never showed session $marker"
 phone_snap="$scratch/phone.png"
 phone_tree="$scratch/phone.json"
 "${clean[@]}" "$binary" --phone --socket "$socket" --session "$marker" \
-    --snap "$phone_snap" --tree "$phone_tree" --at 3 --size 393x852
+    --snap "$phone_snap" --tree "$phone_tree" --realtime --at 3 --size 393x852
 [[ -s "$phone_snap" ]] || fail "the phone form drew no frame"
 grep -q "$marker" "$phone_tree" || fail "the phone form never showed session $marker"
 
@@ -113,5 +114,22 @@ if [[ "$(uname -s)" == Linux ]]; then
     "${clean[@]}" xvfb-run -a timeout 10 "$binary" --socket "$socket" --session "$marker" \
         >"$scratch/window.log" 2>&1 || code=$?
     [[ "$code" == 124 ]] || fail "the window exited $code: $(cat "$scratch/window.log")"
+    # Wayland is what a Linux desktop (Omarchy's Hyprland) gives Rune, so the
+    # window opens there too: a headless weston, with no X display in reach.
+    if command -v weston >/dev/null; then
+        runtime="$scratch/wl"
+        mkdir -m 700 "$runtime"
+        XDG_RUNTIME_DIR="$runtime" weston --backend=headless --socket=qualify --idle-time=0 \
+            >"$scratch/weston.log" 2>&1 &
+        weston_pid=$!
+        for _ in $(seq 50); do [[ -S "$runtime/qualify" ]] && break; sleep 0.1; done
+        [[ -S "$runtime/qualify" ]] || fail "weston never listened: $(cat "$scratch/weston.log")"
+        code=0
+        "${clean[@]}" XDG_RUNTIME_DIR="$runtime" WAYLAND_DISPLAY=qualify timeout 10 "$binary" \
+            --socket "$socket" --session "$marker" >"$scratch/wayland.log" 2>&1 || code=$?
+        kill "$weston_pid" 2>/dev/null || true
+        wait "$weston_pid" 2>/dev/null || true
+        [[ "$code" == 124 ]] || fail "the Wayland window exited $code: $(cat "$scratch/wayland.log")"
+    fi
 fi
 echo "qualify: $(basename "$archive") launched"

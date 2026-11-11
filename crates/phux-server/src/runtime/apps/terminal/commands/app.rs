@@ -13,7 +13,8 @@ use phux_terminal_api::actor::TerminalResource as _;
 use super::*;
 use crate::resource::ResourceKind;
 use crate::runtime::apps::{
-    FrameAdmission, ResourceApp, ResourceFrame, ResourceLaunch, ResourceSpawn, StreamBootstrap,
+    FrameAdmission, KindResume, ResourceApp, ResourceFrame, ResourceLaunch, ResourceSpawn,
+    StreamBootstrap, UpgradeCut,
 };
 use crate::runtime::connections::dispatch::FrameFlow;
 use crate::runtime::operation_dedupe::OperationClaim;
@@ -109,19 +110,15 @@ impl ResourceApp for TerminalApp {
     }
 
     fn spawn<'a>(&'a self, spawn: ResourceSpawn<'a>) -> LocalBoxFuture<'a, ()> {
-        // A Terminal spawn needs the whole `SpawnRequest` (argv, cwd, size,
-        // owner), so `handle_spawn_terminal` serves it before dispatching here; a
-        // spawn that reaches this arm is a host bug, refused rather than
-        // started without its launch.
-        error!(
-            request_id = spawn.request_id,
-            "a Terminal SPAWN_RESOURCE reached the app without its request"
-        );
-        Box::pin(crate::runtime::spawn_reply::refuse_spawn(
-            spawn.out_tx,
-            spawn.request_id,
-            SpawnError::UnsupportedKind,
-        ))
+        super::super::attach::handle_spawn_terminal(spawn).boxed_local()
+    }
+
+    fn begin_upgrade(&self, _state: &SharedState) -> Option<Box<dyn UpgradeCut>> {
+        Some(Box::<super::super::upgrade::TerminalCut>::default())
+    }
+
+    fn resume(&self, state: &SharedState) -> Box<dyn KindResume> {
+        super::super::upgrade::resume(state)
     }
 
     fn resumed(&self, _state: &SharedState) {

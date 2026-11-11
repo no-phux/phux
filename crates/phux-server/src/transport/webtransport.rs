@@ -139,6 +139,7 @@ impl WtListener {
         let credential = match admit_connect(&payload, tokens.as_deref()) {
             Ok(credential) => credential,
             Err(reason) => {
+                crate::audit::refused(crate::audit::Transport::Quic, remote.ip(), "token");
                 if let Some(suppressed) = refusals.due() {
                     warn!(%remote, suppressed, "webtransport consumer refused: {reason}");
                 } else {
@@ -258,6 +259,7 @@ async fn settle_stream(
             None
         }
         Some(inner) if !inner.admits_plain() => {
+            crate::audit::refused(crate::audit::Transport::Quic, remote.ip(), "certificate");
             if let Some(suppressed) = refusals.due() {
                 warn!(%remote, suppressed, "webtransport consumer refused: no workload certificate under paired");
             } else {

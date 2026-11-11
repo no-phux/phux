@@ -7,6 +7,7 @@
 //! - `snapshot` prints the newest document and exits.
 //! - `follow` prints every document as it arrives; `--until TEXT` exits as
 //!   soon as a document contains `TEXT`, which is `phux wait` for an app.
+//! - `click` activates one node (`click`).
 
 use std::io::Read as _;
 use std::path::PathBuf;
@@ -14,7 +15,7 @@ use std::process::ExitCode;
 use std::time::Duration;
 
 use phux_client::attach::connection::Connection;
-use phux_client::tree::{self, Document, FollowEnd, Kind, TreeError};
+use phux_client::tree::{self, Document, FollowEnd, Kind, TreeError, image_size};
 use phux_server::runtime::default_socket_path;
 
 use crate::commands::{cli_runtime, json_err, parse_selector, resolve_target};
@@ -22,13 +23,43 @@ use crate::exit_codes::{EXIT_FAILURE, EXIT_USAGE};
 
 const SCHEMA_VERSION: u8 = 1;
 
+mod app;
+mod app_launch;
+mod click;
+mod clipboard;
+mod doc;
+mod doc_folder;
+mod doc_notifications;
+mod doc_producer;
 mod mirror;
+#[cfg(any(target_os = "linux", test))]
+mod mirror_atspi;
 mod page;
+mod page_input;
 mod page_mirror;
+mod parent_watch;
+mod print;
+mod redial;
 mod surface;
+#[cfg(any(target_os = "macos", target_os = "linux", test))]
+mod surface_cadence;
+#[cfg(any(target_os = "linux", test))]
+mod surface_grim;
+#[cfg(any(target_os = "linux", test))]
+mod surface_grim_input;
+#[cfg(any(target_os = "macos", target_os = "linux", test))]
+mod surface_indicator;
+mod surface_input;
 mod surface_mirror;
+mod surface_standing;
+mod surface_targets;
+#[cfg(any(target_os = "linux", test))]
+mod surface_wayland;
 
+pub(crate) use app::{AppAction, run_app};
+pub(crate) use doc::{DocAction, run_doc};
 pub(crate) use page::{PageAction, run_page};
+pub(crate) use print::print_document;
 pub(crate) use surface::SurfaceAction;
 pub(crate) use surface::run_surface;
 
@@ -54,16 +85,18 @@ pub(crate) enum TreeAction {
         #[usage(long)]
         json: bool,
     },
-    /// Print the tree's newest document.
+    /// Print the tree's newest document, control characters shown as signs.
     Snapshot {
         /// The tree.
         target: String,
         #[usage(long)]
         json: bool,
     },
-    /// Mirror a running macOS application into a tree, until Ctrl-C.
+    /// Mirror a running application into a tree, until Ctrl-C: macOS
+    /// Accessibility, or AT-SPI on Linux.
     Mirror {
-        /// The application's process name, e.g. `Safari`.
+        /// The application: its process name on macOS (`Safari`), its AT-SPI
+        /// name on Linux.
         app: String,
         /// The application's process id, instead of its name.
         #[usage(long, value_name = "PID")]
@@ -77,8 +110,16 @@ pub(crate) enum TreeAction {
         /// Deepest nesting to read (default 24).
         #[usage(long, value_name = "N")]
         depth: Option<usize>,
+        /// Exit once this process is gone, as the app that launched the mirror passes its own.
+        #[usage(long, value_name = "PID")]
+        parent_pid: Option<u32>,
         #[usage(long)]
         json: bool,
+    },
+    /// Activate one element by node, not pixel: `--node ID` or `--name TEXT`.
+    Click {
+        #[usage(flatten)]
+        args: click::ClickArgs,
     },
     /// Print every document as it arrives.
     Follow {
@@ -97,7 +138,9 @@ pub(crate) enum TreeAction {
 
 pub(super) fn run_tree(action: &TreeAction, socket: Option<PathBuf>) -> ExitCode {
     match action {
-        TreeAction::Open { target, app, json } => run_open(Kind::Tree, target, app, *json, socket),
+        TreeAction::Open { target, app, json } => {
+            run_open(Kind::Tree, target, app, None, *json, socket)
+        }
         TreeAction::Publish { target, file, json } => {
             run_publish(Kind::Tree, target, file.as_deref(), *json, socket)
         }
@@ -110,16 +153,21 @@ pub(super) fn run_tree(action: &TreeAction, socket: Option<PathBuf>) -> ExitCode
             pane,
             interval,
             depth,
+            parent_pid,
             json,
-        } => mirror::run_mirror(mirror::MirrorArgs {
-            app,
-            pid: *pid,
-            pane: pane.as_deref(),
-            interval_ms: interval.unwrap_or(500),
-            depth: depth.unwrap_or(24),
-            json: *json,
-            socket,
-        }),
+        } => {
+            parent_watch::exit_with(*parent_pid);
+            mirror::run_mirror(mirror::MirrorArgs {
+                app,
+                pid: *pid,
+                pane: pane.as_deref(),
+                interval_ms: interval.unwrap_or(500),
+                depth: depth.unwrap_or(24),
+                json: *json,
+                socket,
+            })
+        }
+        TreeAction::Click { args } => click::run_click(args, socket),
         TreeAction::Follow {
             target,
             until,
@@ -150,12 +198,40 @@ pub(super) async fn resolve(
     resolve_target(socket_path, &selector, verb, json).await
 }
 
+/// The pane a mirror binds to: `pane` when given, else the pane this process
+/// runs in (the injected `PHUX_TERMINAL_ID`), or report why there is none.
+pub(super) async fn mirror_pane(
+    socket_path: &std::path::Path,
+    pane: Option<&str>,
+    verb: &str,
+    json: bool,
+) -> Result<phux_protocol::ids::ResourceId, ExitCode> {
+    if let Some(target) = pane {
+        return resolve(socket_path, target, verb, json).await;
+    }
+    std::env::var("PHUX_TERMINAL_ID")
+        .ok()
+        .and_then(|raw| raw.parse::<u32>().ok())
+        .map(phux_protocol::ids::ResourceId::local)
+        .ok_or_else(|| {
+            json_err::emit(
+                json,
+                &json_err::CliError::new(
+                    json_err::codes::USAGE_ERROR,
+                    "not running in a phux pane and no `--pane` given",
+                    "run the mirror inside a pane, or pass `--pane @N`",
+                ),
+                EXIT_USAGE,
+            )
+        })
+}
+
 /// Connect, or report why not.
 pub(super) async fn dial(
     socket_path: &std::path::Path,
     json: bool,
 ) -> Result<Connection, ExitCode> {
-    Connection::connect(socket_path).await.map_err(|err| {
+    connect_socket(socket_path).await.map_err(|err| {
         json_err::emit(
             json,
             &json_err::CliError::new(
@@ -168,8 +244,15 @@ pub(super) async fn dial(
     })
 }
 
+/// This lane's one wire connection; a mirror redials through it too.
+async fn connect_socket(
+    socket_path: &std::path::Path,
+) -> Result<Connection, phux_client::attach::AttachError> {
+    Connection::connect(socket_path).await
+}
+
 /// Resolve `target` and connect, or report why not.
-async fn connect(
+pub(super) async fn connect(
     target: &str,
     verb: &str,
     json: bool,
@@ -181,11 +264,11 @@ async fn connect(
     Ok((conn, resource))
 }
 
-pub(super) fn report(json: bool, err: &TreeError) -> ExitCode {
+pub(crate) fn report(json: bool, err: &TreeError) -> ExitCode {
     let (code, hint) = match err {
-        TreeError::Unsupported => (
+        TreeError::Unsupported(_) => (
             json_err::codes::SERVER_TOO_OLD,
-            "update the phux server; it does not serve accessibility trees",
+            "update the phux server to one that serves this resource kind",
         ),
         TreeError::WrongKind { .. }
         | TreeError::ParentNotFound { .. }
@@ -193,10 +276,17 @@ pub(super) fn report(json: bool, err: &TreeError) -> ExitCode {
             json_err::codes::NO_SUCH_TARGET,
             "name a tree by its @N id; `open` names the pane the producer runs in",
         ),
-        TreeError::Invalid(_) => (json_err::codes::RECORD_INVALID, "publish one JSON document"),
+        TreeError::Invalid(_) => (
+            json_err::codes::RECORD_INVALID,
+            "publish one document of the resource's kind or content type",
+        ),
         TreeError::NotProducer(_) => (
             json_err::codes::WORKLOAD,
             "publish from the local owner connection",
+        ),
+        TreeError::NoProducer(_) => (
+            json_err::codes::WORKLOAD,
+            "keep `phux agent page mirror` running for the page",
         ),
         TreeError::Refused(_) => (json_err::codes::WORKLOAD, "see the message"),
         TreeError::Protocol(_) => (json_err::codes::TRANSPORT, "retry"),
@@ -217,89 +307,11 @@ pub(super) struct Sink<'a> {
     pub(super) out: Option<&'a std::path::Path>,
 }
 
-/// The width and height a PNG's `IHDR` names, when `bytes` starts like one.
-fn png_size(bytes: &[u8]) -> Option<(u32, u32)> {
-    if bytes.len() < 24 || !bytes.starts_with(b"\x89PNG\r\n\x1a\n") || &bytes[12..16] != b"IHDR" {
-        return None;
-    }
-    let be =
-        |at: usize| u32::from_be_bytes([bytes[at], bytes[at + 1], bytes[at + 2], bytes[at + 3]]);
-    Some((be(16), be(20)))
-}
-
-/// Deliver one document: a tree as text or JSON on stdout, a surface as
-/// bytes to `out` (or stdout) with a JSON line about it when asked.
-fn print_document(
-    kind: Kind,
-    json: bool,
-    out: Option<&std::path::Path>,
-    document: &Document,
-) -> ExitCode {
-    match kind {
-        Kind::Tree if json => {
-            let value: serde_json::Value = if document.bytes.is_empty() {
-                serde_json::Value::Null
-            } else {
-                serde_json::from_slice(&document.bytes).unwrap_or(serde_json::Value::Null)
-            };
-            outln!(
-                "{}",
-                serde_json::json!({
-                    "schema_version": SCHEMA_VERSION,
-                    "seq": document.seq,
-                    "document": value,
-                })
-            );
-        }
-        Kind::Tree => {
-            if !document.bytes.is_empty() {
-                outln!("{}", String::from_utf8_lossy(&document.bytes));
-            }
-        }
-        Kind::Surface => {
-            if !document.bytes.is_empty() {
-                let written = out.map_or_else(
-                    || {
-                        use std::io::Write as _;
-                        std::io::stdout().write_all(&document.bytes)
-                    },
-                    |path| std::fs::write(path, &document.bytes),
-                );
-                if let Err(err) = written {
-                    return json_err::emit(
-                        json,
-                        &json_err::CliError::new(
-                            json_err::codes::USAGE_ERROR,
-                            format!("could not write the image: {err}"),
-                            "pass a writable `--out PATH`",
-                        ),
-                        EXIT_FAILURE,
-                    );
-                }
-            }
-            if json {
-                let size = png_size(&document.bytes);
-                outln!(
-                    "{}",
-                    serde_json::json!({
-                        "schema_version": SCHEMA_VERSION,
-                        "seq": document.seq,
-                        "bytes": document.bytes.len(),
-                        "width": size.map(|s| s.0),
-                        "height": size.map(|s| s.1),
-                        "out": out.map(|p| p.display().to_string()),
-                    })
-                );
-            }
-        }
-    }
-    ExitCode::SUCCESS
-}
-
 pub(super) fn run_open(
     kind: Kind,
     target: &str,
     app: &str,
+    control: Option<phux_protocol::wire::frame::ControlClass>,
     json: bool,
     socket: Option<PathBuf>,
 ) -> ExitCode {
@@ -323,7 +335,7 @@ pub(super) fn run_open(
             Ok(pair) => pair,
             Err(code) => return code,
         };
-        match tree::open_kind(&mut conn, kind, &parent, app).await {
+        match tree::open_kind(&mut conn, kind, &parent, app, control).await {
             Ok(opened) => {
                 let resource = phux_client::selector::format_terminal_id(&opened.resource);
                 if json {
@@ -334,6 +346,7 @@ pub(super) fn run_open(
                             "resource": resource,
                             "parent": phux_client::selector::format_terminal_id(&opened.parent),
                             "app": app,
+                            "control": control.map(phux_protocol::wire::frame::ControlClass::name),
                         })
                     );
                 } else {
@@ -373,9 +386,9 @@ pub(super) fn run_publish(
         Kind::Tree => serde_json::from_slice::<serde_json::Value>(&bytes)
             .map(|_| ())
             .map_err(|err| format!("the document is not JSON: {err}")),
-        Kind::Surface => png_size(&bytes)
-            .map(|_| ())
-            .ok_or_else(|| "the document is not a PNG".to_owned()),
+        Kind::Surface => image_size(&bytes).map(|_| ()),
+        // The server checks a typed document against its content type.
+        Kind::Document => Ok(()),
     };
     if let Err(message) = shape {
         return json_err::emit(
@@ -383,7 +396,7 @@ pub(super) fn run_publish(
             &json_err::CliError::new(
                 json_err::codes::RECORD_INVALID,
                 message,
-                "publish one JSON document to a tree, one PNG image to a surface",
+                "publish one JSON document to a tree, one PNG or JPEG image to a surface",
             ),
             EXIT_USAGE,
         );

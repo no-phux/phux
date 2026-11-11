@@ -1,10 +1,10 @@
 # Embed phux
 
-Embed phux in your own app with one of three crates. A GPUI app adds the
-`phux-gpui` view. Another Rust toolkit uses `phux-client-runtime` and
-paints its `draw::DrawList`. A Swift, C or other native app links
-`phux-client-ffi` and paints `phux_client_terminal_draw_list`.
-All three run phux's libghostty replica in your process and share one set of
+Embed phux in your own app with one of two crates. A Rust toolkit uses
+`phux-client-runtime` and paints its `draw::DrawList`; the in-repo example is
+[Phux Rune](../clients/rune/README.md), the desktop client. A Swift, C or other
+native app links `phux-client-ffi` and paints `phux_client_terminal_draw_list`.
+Both run phux's libghostty replica in your process and share one set of
 paint rules ([ADR-0189](https://github.com/no-phux/phux/blob/3cd9ddac22075c1b3db2674e2edc4e00c91d67f4/docs/adr/0189-the-terminal-view-is-a-crate-and-paint-rules-are-shared.md)).
 None of these crates is on crates.io yet; depend on them by path or git.
 
@@ -14,8 +14,7 @@ None of these crates is on crates.io yet; depend on them by path or git.
 
 | Your app                                               | Depend on                  | You write                                                     |
 | ------------------------------------------------------ | -------------------------- | ------------------------------------------------------------- |
-| GPUI (gpui-fast 0.1.12)                                 | `phux-gpui`                | Wake GPUI from the runtime and place the view.                |
-| Another Rust UI (egui, iced, Slint, a custom renderer) | `phux-client-runtime`      | Map cells to pixels and draw the [draw list](#the-draw-list). |
+| A Rust UI (Rune, egui, iced, Slint, a custom renderer)  | `phux-client-runtime`      | Map cells to pixels and draw the [draw list](#the-draw-list). |
 | Swift, Objective-C, C, C++, Zig                        | `phux-client-ffi` (C ABI)  | Connect, poll on wake, paint the C draw list.                  |
 | A phone app                                            | `phux-client-ffi` (UniFFI) | See [phones](./clients.md#phones).                            |
 
@@ -23,39 +22,7 @@ Every route starts the same way: open a client, attach a session, and create a
 view of one terminal. phux does the rest of the terminal: the replica,
 reconnect, acknowledged input, history, selection and search.
 
-## GPUI
-
-[`clients/desktop/native/phux-gpui`](../clients/desktop/native/phux-gpui/README.md)
-is the terminal view the phux desktop is built on. `examples/embed.rs` is a
-whole app in one file:
-
-Use an explicit disposable server socket and a non-production profile, not
-an inherited pane socket. From the repository root, first run
-`just desktop-source` to materialize the workspace's pinned GPUI sources.
-The example opens a window; run it only in an authorized graphical session.
-That server must already have a session named `embed-test` containing a
-terminal; substitute its actual session name in the final argument if different.
-
-```sh
-# /tmp/phux-embed-test.sock must belong to your disposable test server.
-unset "${!PHUX_WS_@}" # Bash: clear inherited WebSocket credentials/TLS settings
-export PHUX_PROFILE=embed-test
-export PHUX_SOCKET=/tmp/phux-embed-test.sock
-cargo run --locked --manifest-path clients/desktop/native/Cargo.toml \
-  -p phux-gpui --example embed -- "$PHUX_SOCKET" embed-test
-```
-
-`Terminal::new` does not own or destroy its runtime `ViewId`. When closing
-a view on a shared `Client`, the host calls `client.destroy_view(view)`;
-dropping the GPUI entity alone leaves that view registered. Sibling views
-and their shared client remain alive.
-
-It builds on the published gpui-fast. Its `patched-gpui` feature adds retained
-glyph sprites, drawable-presented receipts, macOS key repeat and exact image-source
-sampling. Phux Desktop enables it; the contract below distinguishes the product
-guarantee from the unpatched compatibility lane.
-
-### Frames, wakes, and input
+## Frames, wakes, and input
 
 One listener and one event drain exist per runtime client. Drain, then
 invalidate affected terminals. A removed slot clears stale presentation even
@@ -63,13 +30,11 @@ when its generation equals the cached number. Never publish a cached frame as
 evidence of recovery.
 
 Raw-send success is a local queue result, not delivery. Unknown delivery is
-terminal-wide. In Phux Desktop (the `patched-gpui` product build),
-`acknowledge_projection` runs only from the drawable-presented callback on
-a visible, unclipped terminal. Paint and `on_next_frame` do not clear its
-fence; a late callback must not clear a newer fence. Unpatched embedders
-use a weaker next-frame-start receipt, not presentation proof; that lane
-does not meet this product guarantee. See the
-[feature qualification](../clients/desktop/native/phux-gpui/PRESENTATION.md).
+terminal-wide. Clear its fence (`acknowledge_projection_if`) only once the
+frame carrying that fence has been presented on a visible, unclipped
+terminal; building or painting a frame is not presentation, and a late
+receipt must not clear a newer fence. Phux Rune does this in
+`clients/rune/src/desk/frame.rs`.
 
 ## Any Rust toolkit
 
@@ -98,7 +63,7 @@ fn draw(client: &Client, view: ViewId, theme: &Theme<Rgb>) -> Option<DrawList<Rg
 
 `Theme<C>` is generic over your colour type: give it a `fn(Rgb) -> C` and
 optional theme colours, and the list arrives in your colours. Send input
-through `Client::with_control` the way `phux-gpui`'s `input` module does, and
+through `Client::with_control` the way Phux Rune's `desk/input.rs` does, and
 resize the terminal from the view that owns its size.
 
 ### Inline images
@@ -113,21 +78,24 @@ options.control.image_protocols = phux_protocol::caps::ImageProtocolSet::with(&[
 ]);
 ```
 
-`phux-gpui` paints the image planes automatically; its embedding example opts in.
-Other renderers consume `GridFrame.images` alongside the text draw list. Each
+Renderers consume `GridFrame.images` alongside the text draw list. Each
 placement borrows immutable, shared RGBA pixels through an `Arc<ImageData>`,
 with signed cell-space geometry, pixel-space source/crop rectangles and a signed
 z-order. Apply `sample_source` to texture filtering independently of the visible
 `source` slice, so Unicode placeholder cells do not introduce sampling seams.
-Follow the [painter layering contract](../clients/desktop/native/phux-gpui/PAINTER.md#kitty-graphics).
+Layer them by z-order: planes below `z = -1073741824` paint beneath
+non-default cell backgrounds, other negative planes beneath glyphs, and
+nonnegative planes above text. An explicitly set background masks the lowest
+plane even if its RGB equals the theme default. Placeholder glyphs and their
+decorations do not paint, but their backgrounds still do. Clamp filtering to
+the original source crop so fractional sizes do not bleed neighbouring pixels.
 Report actual cell pixels through `Client::resize_terminal_with_cell` so native
 image sizes and offsets match the renderer.
 
 Kitty consumers negotiate synthesized Raw/StateSync bootstrap: native GHOSTSNP
 does not include the engine's image/placement registry. Synthesized replay
 includes unplaced payloads and virtual prototypes for later live placements.
-External file/shared-memory media stay disabled. See
-[desktop compatibility limits](./clients.md#desktop). The C/Swift draw-list ABI
+External file/shared-memory media stay disabled. The C/Swift draw-list ABI
 is still text-only; no image fields were added to it.
 
 ## C and Swift
@@ -155,6 +123,43 @@ output arrives and paint the records it lends, which stay valid until your
 next mutable call on the client. The low-level `phux_client_terminal_grid`
 and `phux_client_terminal_grid_metadata` are still there for a renderer that
 wants every cell.
+
+### Documents and non-terminal leaves
+
+An arrangement leaf, and a `phux_client_catalog_terminal_get` entry, is any
+resource but an `AgentSession`: a terminal, an accessibility tree, a pixel
+surface, a typed document, or a kind the header does not name. Read
+`resource_kind` before creating a terminal view; only a terminal has a grid.
+`unarranged_count` counts terminals only. Use the header and library from
+one build: a bridge older than `resource_kind` leaves it undefined.
+A read never prunes these leaves, so a write never loses another client's
+placement. A document kind delivers whole documents instead: attach it with
+`phux_client_queue_attach_resource`, then read `PHUX_CLIENT_EFFECT_DOCUMENT`
+effects. `bytes` holds the content type (`status_code` bytes long, empty for
+a tree or surface), then the document; show the last one delivered, not the
+highest `seq`. In Rust these
+are `Event::DocumentPublished` and `Topology::resources`
+([resource kinds](./resource-kinds.md)).
+
+## Documents, trees, and surfaces
+
+A session can hold resources that are not terminals
+([resource kinds](./resource-kinds.md#available-now)). Each arrives whole:
+the runtime emits `Event::DocumentPublished`, whose `DocumentPublication`
+carries the resource id, its kind, the publish sequence, the bytes (JSON
+for a tree, PNG or JPEG for a surface, the content type of a typed
+document) and that content type. Show the last one delivered, not the
+highest `seq`. The event is live-only, and there is no grid or replica to
+paint.
+
+UniFFI's `RemoteClient` projects the same event as
+`WireEvent::DocumentPublished`, with the document's `control` class
+(`page`, `window` or `display`). Offer input only when `control` is set:
+`send_document_input(resource_id, intent)` returns a request id that a
+`WireEvent::DocumentInputResult` settles, or `0` when nothing was sent.
+
+The C ABI delivers the same documents as `PHUX_CLIENT_EFFECT_DOCUMENT`
+effects ([above](#documents-and-non-terminal-leaves)).
 
 ## Runtime consumer contract
 
@@ -197,9 +202,8 @@ until explicit `accept_agent_publication` (C: `phux_client_effect_clear`), unles
 a newer full retained cut supersedes earlier same-resource publications.
 Resume appends preserve their unaccepted prefix. Remaining unaccepted
 publications replay after replacement once catalog/attach are ready.
-This acceptance is also not the drawable-presented receipt that
-clears an unknown-input fence; see
-[GPUI presentation](../clients/desktop/native/phux-gpui/PRESENTATION.md).
+This acceptance is also not the presentation receipt that clears an
+unknown-input fence; see [Frames, wakes, and input](#frames-wakes-and-input).
 
 The [runtime API](../crates/phux-client-runtime/src/runtime.rs),
 [publication delivery seam](../crates/phux-client-runtime/src/control/agent_delivery.rs),

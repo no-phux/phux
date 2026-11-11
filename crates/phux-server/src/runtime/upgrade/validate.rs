@@ -45,7 +45,17 @@ impl PinnedExecutable {
         let mut source = std::fs::File::open(path)?;
         let mode = source.metadata()?.permissions().mode();
         let dir = tempfile::Builder::new().prefix("phux-upgrade-").tempdir()?;
-        let pinned = dir.path().join("phux");
+        let pinned = match enclosing_app(path) {
+            // A bundle's executable is signed together with its Info.plist and
+            // sealed resources: copied out alone, macOS kills it on exec with
+            // SIGKILL ("invalid Info.plist"). Snapshot the bundle around it.
+            Some(app) => {
+                let copy = dir.path().join(app.file_name().unwrap_or_default());
+                copy_bundle(app, &copy, path)?;
+                copy.join(path.strip_prefix(app).unwrap_or(path))
+            }
+            None => dir.path().join("phux"),
+        };
         let mut target = std::fs::OpenOptions::new()
             .create_new(true)
             .write(true)
@@ -74,6 +84,34 @@ impl PinnedExecutable {
             ))
         }
     }
+}
+
+/// The `.app` holding `exe` when it is a bundle's `Contents/MacOS` executable.
+fn enclosing_app(exe: &Path) -> Option<&Path> {
+    let macos = exe.parent().filter(|dir| dir.ends_with("Contents/MacOS"))?;
+    let app = macos.parent()?.parent()?;
+    app.extension()
+        .is_some_and(|ext| ext == "app")
+        .then_some(app)
+}
+
+/// Copy the bundle `src` to `dst`, all but `exe`, which the caller copies
+/// from the inode it already opened.
+fn copy_bundle(src: &Path, dst: &Path, exe: &Path) -> std::io::Result<()> {
+    std::fs::create_dir(dst)?;
+    for entry in std::fs::read_dir(src)? {
+        let entry = entry?;
+        let (from, to) = (entry.path(), dst.join(entry.file_name()));
+        let kind = entry.file_type()?;
+        if kind.is_dir() {
+            copy_bundle(&from, &to, exe)?;
+        } else if kind.is_symlink() {
+            std::os::unix::fs::symlink(std::fs::read_link(&from)?, &to)?;
+        } else if from != exe {
+            std::fs::copy(&from, &to)?;
+        }
+    }
+    Ok(())
 }
 
 /// Remove the private executable snapshot after a successful re-exec. Unix
@@ -109,6 +147,10 @@ pub(super) fn pin_validated_executable(
         .map_or_else(phux_config::instance::running_executable, |path| {
             Ok(phux_config::instance::without_deleted_suffix(path))
         })?;
+    // On macOS re-exec through the server bundle's `Current` path when it holds
+    // the installed build, never a version directory or a CLI binary, so the
+    // privacy grants given to `phux Server` keep applying.
+    let source_exe = phux_config::server_bundle::server_executable(source_exe);
     let executable = PinnedExecutable::open(&source_exe)?;
     validate_binary(&executable.path)?;
     Ok(executable)
@@ -162,19 +204,19 @@ impl InheritedUpgradeEnv {
 }
 
 /// Everything the re-exec'd image must inherit needs `FD_CLOEXEC` cleared: the
-/// blob, the listener, every pane master, and every delegated socket.
+/// blob, the listener, every descriptor a kind's cut carries (a Terminal's
+/// PTY master), and every delegated socket.
 pub(super) fn clear_inherited_cloexec(
     blob_fd: RawFd,
     listener_fd: RawFd,
     blob: &StateBlob,
+    cuts: &[Box<dyn crate::runtime::apps::UpgradeCut>],
 ) -> Result<FdFlagsGuard, UpgradeError> {
     let mut fd_flags = FdFlagsGuard::new();
     fd_flags.clear_cloexec(blob_fd)?;
     fd_flags.clear_cloexec(listener_fd)?;
-    for pane in &blob.panes {
-        if let Some(master_fd) = pane.master_fd {
-            fd_flags.clear_cloexec(master_fd)?;
-        }
+    for fd in cuts.iter().flat_map(|cut| cut.inherited_fds(blob)) {
+        fd_flags.clear_cloexec(fd)?;
     }
     for delegation in &blob.delegations {
         fd_flags.clear_cloexec(delegation::carried_fd(delegation))?;

@@ -77,6 +77,15 @@ where
 /// Poll for a connection and complete the HELLO handshake. Tests of HELLO
 /// itself use [`wait_for_raw_socket`].
 pub async fn wait_for_socket(path: &Path, deadline: Duration) -> UnixStream {
+    wait_for_socket_with(path, deadline, |caps| caps).await
+}
+
+/// [`wait_for_socket`] with the default HELLO caps adjusted by `caps`.
+pub async fn wait_for_socket_with(
+    path: &Path,
+    deadline: Duration,
+    caps: impl FnOnce(ClientCapabilities) -> ClientCapabilities,
+) -> UnixStream {
     let mut stream = wait_for_raw_socket(path, deadline).await;
     send_frame(
         &mut stream,
@@ -85,9 +94,11 @@ pub async fn wait_for_socket(path: &Path, deadline: Duration) -> UnixStream {
             protocol_major: PROTOCOL_VERSION.major,
             protocol_minor: PROTOCOL_VERSION.minor,
             protocol_patch: PROTOCOL_VERSION.patch,
-            client_caps: ClientCapabilities::new()
-                .with_color_support(ColorSupport::TrueColor)
-                .with_layers(LayerSet::all()),
+            client_caps: caps(
+                ClientCapabilities::new()
+                    .with_color_support(ColorSupport::TrueColor)
+                    .with_layers(LayerSet::all()),
+            ),
         },
     )
     .await;

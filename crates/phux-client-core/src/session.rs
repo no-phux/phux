@@ -12,6 +12,7 @@ use phux_protocol::{
 };
 
 use agent_stream::{AgentLog, AgentPublication, AgentRecordError, AgentSessionState, AgentStream};
+use document_stream::DocumentStream;
 
 use crate::engine::{
     BootstrapProgress, CanonicalGeometry, DocumentPoint, DocumentSpace, EngineAdapter,
@@ -31,19 +32,30 @@ const MAX_BOOTSTRAP_STAGING_CHUNKS: usize = 4_096;
 /// A peer must complete one bootstrap generation within this interval.
 const MAX_BOOTSTRAP_STAGING_LIFETIME_MS: u64 = 30_000;
 
+mod agent_lane;
 mod attach;
 mod bootstrap;
 mod document;
+mod document_stream;
 mod effects;
 mod error;
 mod history_pages;
 mod kernel_input;
+mod lane;
 mod lifecycle;
 mod output;
 mod queries;
 mod replicas;
+mod staging_rules;
+mod terminal_lane;
+mod unsupported;
 mod update;
 
+use lane::{LaneRails, LaneRegistry};
+use lifecycle::drain_engine_effects;
+use terminal_lane::TerminalState;
+
+pub use document_stream::DocumentLane;
 pub use effects::{
     DocumentPublication, EffectBuffer, KernelDamage, KernelDamageKind, KernelEffect, KernelJob,
     KernelSend, KernelStatus, TombstoneRecord,
@@ -86,10 +98,6 @@ struct Staging<R> {
     started_at_ms: u64,
 }
 
-const fn staging_expired<R>(staging: &Staging<R>, now_ms: u64) -> bool {
-    now_ms.saturating_sub(staging.started_at_ms) > MAX_BOOTSTRAP_STAGING_LIFETIME_MS
-}
-
 fn retained_engine_effect_bytes(capacity: usize, effects: &[EngineEffect]) -> usize {
     let allocation = capacity.saturating_mul(std::mem::size_of::<EngineEffect>());
     effects.iter().fold(allocation, |total, effect| {
@@ -102,22 +110,6 @@ fn retained_engine_effect_bytes(capacity: usize, effects: &[EngineEffect]) -> us
         };
         total.saturating_add(owned)
     })
-}
-
-struct TerminalState<R> {
-    published: Option<Replica<R>>,
-    staging: Option<Staging<R>>,
-    retired: HashMap<GenerationId, TombstoneRecord>,
-}
-
-impl<R> Default for TerminalState<R> {
-    fn default() -> Self {
-        Self {
-            published: None,
-            staging: None,
-            retired: HashMap::new(),
-        }
-    }
 }
 
 /// Why one history page did not reach the cache. `error` is `None` when
@@ -205,18 +197,18 @@ struct AttachState {
 pub struct SessionKernel<E: EngineAdapter> {
     adapter: E,
     selected_profile: BootstrapProfile,
-    terminals: HashMap<ResourceId, TerminalState<E::Replica>>,
+    /// Every streamed resource's lane: Terminal replicas, `AgentSession`
+    /// record streams, and document cuts.
+    lanes: LaneRegistry<E::Replica>,
     /// Final published generations awaiting optional frontend transfer.
     closed_replicas: HashMap<ResourceId, ClosedReplica<E>>,
     /// Terminals whose next close should retain the published generation.
     retain_replica_on_close: HashSet<ResourceId>,
     /// Kind per resource; survives closure, released with the resource.
     kinds: HashMap<ResourceId, ResourceKind>,
-    /// Document resources (trees, surfaces) and the bootstrap cut each is
-    /// staging; the kernel keeps no document, only the cut in flight.
-    documents: HashMap<ResourceId, DocumentStaging>,
-    /// `AgentSession` resources: record streams without replicas.
-    agents: HashMap<ResourceId, AgentStream>,
+    /// Resources whose stream codec this build does not know; their stream
+    /// frames are ignored until a known `BOOTSTRAP_BEGIN` or a close.
+    unsupported: HashSet<ResourceId>,
     /// Last controller views for closed native sources, readable but unavailable.
     closed_native_views: HashMap<ResourceId, phux_protocol::native_agent::NativeView>,
     closed: HashSet<ResourceId>,
@@ -240,13 +232,13 @@ impl<E: EngineAdapter> std::fmt::Debug for SessionKernel<E> {
         formatter
             .debug_struct("SessionKernel")
             .field("selected_profile", &self.selected_profile)
-            .field("terminal_count", &self.terminals.len())
+            .field("lane_count", &self.lanes.len())
             .field("closed_replica_count", &self.closed_replicas.len())
             .field(
                 "retain_replica_on_close_count",
                 &self.retain_replica_on_close.len(),
             )
-            .field("agent_session_count", &self.agents.len())
+            .field("agent_session_count", &self.lanes.agent_count())
             .field("closed_terminal_count", &self.closed.len())
             .field("exit_reported_count", &self.exit_reported.len())
             .field(
@@ -275,12 +267,11 @@ impl<E: EngineAdapter> SessionKernel<E> {
         Self {
             adapter,
             selected_profile,
-            terminals: HashMap::new(),
+            lanes: LaneRegistry::default(),
             closed_replicas: HashMap::new(),
             retain_replica_on_close: HashSet::new(),
             kinds: HashMap::new(),
-            documents: HashMap::new(),
-            agents: HashMap::new(),
+            unsupported: HashSet::new(),
             closed_native_views: HashMap::new(),
             closed: HashSet::new(),
             exit_reported: HashSet::new(),
@@ -326,19 +317,12 @@ impl<E: EngineAdapter> SessionKernel<E> {
         effects.clear();
         let now_ms = self.monotonic_now_ms();
         let expired: Vec<_> = self
-            .terminals
+            .lanes
             .iter()
-            .filter_map(|(terminal_id, state)| {
-                state.staging.as_ref().and_then(|staging| {
-                    staging_expired(staging, now_ms)
-                        .then(|| (terminal_id.clone(), generation_of(&staging.key)))
-                })
-            })
-            .chain(self.agents.iter().filter_map(|(terminal_id, stream)| {
-                stream
-                    .expired_staging(now_ms)
+            .filter_map(|(terminal_id, lane)| {
+                lane.expired_staging(now_ms)
                     .map(|generation| (terminal_id.clone(), generation))
-            }))
+            })
             .collect();
         for (terminal_id, generation) in &expired {
             self.retire_staging_limit(terminal_id, *generation, effects);
@@ -416,35 +400,61 @@ fn retired_error<E>(terminal_id: &ResourceId, generation: GenerationId) -> Kerne
     }
 }
 
-/// Whether a stream profile names the `AgentSession` record codec. Such a
-/// stream is legal under every connection profile: it carries no engine
-/// checkpoint and no VT, so profile negotiation does not constrain it.
-const fn is_agent_profile(profile: BootstrapStreamProfile) -> bool {
-    matches!(
-        profile,
-        BootstrapStreamProfile::AgentEventsJsonlV1
-            | BootstrapStreamProfile::AgentEventsJsonlResumeV1 { .. }
-    )
+/// The resource kinds this kernel decodes, for a host's `HELLO`.
+///
+/// A kind gains its bit here with its decoder; a host that draws fewer
+/// kinds lists fewer in `RESOURCE_KINDS`.
+pub const KERNEL_RESOURCE_KINDS: phux_protocol::caps::ResourceKindSet =
+    phux_protocol::caps::ResourceKindSet::with(&[
+        ResourceKind::Terminal,
+        ResourceKind::AgentSession,
+        ResourceKind::AccessibilityTree,
+        ResourceKind::PixelSurface,
+        ResourceKind::Document,
+    ]);
+
+/// The kernel lane a stream joins, as its codec's catalog stream contract
+/// says. Classified once per `BOOTSTRAP_BEGIN`: one catalog lookup, on the
+/// resync hot path.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum StreamLane {
+    /// Whole documents of this kind. The kernel models no replica for one:
+    /// a bootstrap is the document in chunks and every live frame is a whole
+    /// newer document, each handed on as a [`KernelEffect::Document`].
+    Document(ResourceKind),
+    /// A record log, the `AgentSession` lane's. Such a stream is legal under
+    /// every connection profile: it carries no engine checkpoint and no VT,
+    /// so profile negotiation does not constrain it.
+    Agent,
+    /// Anything else: the Terminal replica, which checks the profile.
+    Terminal,
 }
 
-/// The document kind a stream profile carries, if it is a document codec.
-/// The kernel models no replica for one: a bootstrap is the document in
-/// chunks and every live frame is a whole newer document, each handed on as
-/// a [`KernelEffect::Document`].
-const fn document_kind(profile: BootstrapStreamProfile) -> Option<ResourceKind> {
-    match profile {
-        BootstrapStreamProfile::AccessibilityTreeJsonV1 => Some(ResourceKind::AccessibilityTree),
-        BootstrapStreamProfile::PixelSurfacePngV1 => Some(ResourceKind::PixelSurface),
-        _ => None,
+const fn stream_lane(profile: BootstrapStreamProfile) -> StreamLane {
+    use phux_protocol::kinds::Delivery;
+    let Some(spec) = profile.kind_spec() else {
+        return StreamLane::Terminal;
+    };
+    if spec.stream.delivers(Delivery::WholeDocument) {
+        StreamLane::Document(spec.kind)
+    } else if spec.stream.delivers(Delivery::Log) {
+        StreamLane::Agent
+    } else {
+        StreamLane::Terminal
     }
 }
 
-/// The bootstrap cut of one document, gathered chunk by chunk until READY.
-#[derive(Debug, Default)]
-struct DocumentStaging {
-    kind: Option<ResourceKind>,
-    base_seq: u64,
-    buffer: Vec<u8>,
+/// Whether a stream profile names a record-log codec ([`StreamLane::Agent`]).
+const fn is_agent_profile(profile: BootstrapStreamProfile) -> bool {
+    matches!(stream_lane(profile), StreamLane::Agent)
+}
+
+/// The document kind a stream profile carries ([`StreamLane::Document`]).
+const fn document_kind(profile: BootstrapStreamProfile) -> Option<ResourceKind> {
+    match stream_lane(profile) {
+        StreamLane::Document(kind) => Some(kind),
+        StreamLane::Agent | StreamLane::Terminal => None,
+    }
 }
 
 const fn profile_matches(selected: BootstrapProfile, incoming: BootstrapStreamProfile) -> bool {
@@ -480,3 +490,6 @@ mod property_tests;
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod unsupported_tests;

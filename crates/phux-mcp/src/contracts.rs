@@ -2,6 +2,29 @@
 use crate::tools::ToolError;
 use serde_json::{Value, json};
 
+/// Object-valued structured content and its equivalent JSON text fallback,
+/// with tool failures marked by `isError`.
+pub(crate) fn tool_content(value: &Value, is_error: bool) -> Value {
+    let mut document = if value.is_object() {
+        value.clone()
+    } else {
+        json!({ "result": value })
+    };
+    // An image travels as its own content block, never inside the JSON.
+    let image = document
+        .as_object_mut()
+        .and_then(|object| object.remove(crate::document_tools::IMAGE_CONTENT_KEY));
+    let text = serde_json::to_string_pretty(&document)
+        .unwrap_or_else(|err| format!("<failed to serialize result: {err}>"));
+    let mut content = vec![json!({ "type": "text", "text": text })];
+    content.extend(image);
+    json!({
+        "content": content,
+        "structuredContent": document,
+        "isError": is_error,
+    })
+}
+
 pub(crate) fn operation_status_schema() -> Value {
     crate::cli_tools::schema(
         "phux_operation_status",

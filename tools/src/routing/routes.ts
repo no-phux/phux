@@ -6,20 +6,12 @@
 import { pathClosure, type BuildRoot } from "../lib/cargo.ts";
 import { ROOT } from "../lib/repo.ts";
 
-export const SURFACES = [
-  "phux",
-  "web",
-  "web_engine",
-  "integrations",
-  "native",
-  "desktop",
-  "rune",
-] as const;
+export const SURFACES = ["phux", "web", "web_engine", "integrations", "native", "rune"] as const;
 export type Surface = (typeof SURFACES)[number];
 export type Route = readonly [pattern: string, surfaces: readonly Surface[]];
 
 const SHARED: Surface[] = ["phux", "web", "native"];
-const ZIG: Surface[] = ["native", "web_engine", "desktop"];
+const ZIG: Surface[] = ["native", "web_engine"];
 
 /**
  * Documentation that code or a guard reads: Rust tests byte-compare the spec,
@@ -33,6 +25,8 @@ const DOC_INPUTS: Record<string, Surface[]> = {
   "docs/spec/wire-schema.json": ["phux"],
   "docs/{reference,assets}/**": ["phux"],
   "docs/agents.md": ["phux"],
+  // examples_e2e runs this page's automation example.
+  "docs/scripting.md": ["phux"],
   "CHANGELOG.md": [],
 };
 
@@ -68,22 +62,17 @@ const ROUTES: Record<string, Surface[]> = {
   ".github/actions/**": [...SURFACES],
   "scripts/ci/setup-linux-release-userspace.sh": [],
   "scripts/ci/prune-build-cache.sh": [],
-  "scripts/ci/publish-desktop-release.sh": [],
   // The separate Windows WSL workflow exercises PowerShell and real WSL;
   // these distribution scripts do not change the Unix Rust build.
   "scripts/{install-windows,test-install-windows,test-windows-wsl}.ps1": [],
   "scripts/test-windows-mcp.py": [],
   "scripts/test-windows-terminal.py": [],
-  // Native Windows distribution contracts have their own hosted GUI workflow.
-  "scripts/{install-desktop-windows,test-install-desktop-windows,install-zig-windows}.ps1": [],
-  "scripts/test-windows-bridge-{teardown.ps1,fixture.py}": [],
   // Tools code runs in the lanes whose builds import it.
   "tools/**": [],
   // Passive maintainer task exports/configuration are not product inputs.
   ".beads/**": [],
-  "tools/{main.ts,package.json}": ["web", "desktop"],
-  "tools/src/lib/**": ["web", "desktop"],
-  "tools/src/desktop/**": ["desktop"],
+  "tools/{main.ts,package.json}": ["web"],
+  "tools/src/lib/**": ["web"],
   "tools/src/web/**": ["web"],
   "tools/src/integrations/**": ["integrations"],
   "tools/src/cargo/build-features.ts": ["phux"],
@@ -93,54 +82,34 @@ const ROUTES: Record<string, Surface[]> = {
   // The Rune client has its own workspace, lock and lane (rune-build.yml).
   "clients/rune/**": ["rune"],
   ".github/workflows/rune-build.yml": ["rune"],
-  ".github/workflows/desktop-lane.yml": ["desktop"],
   "just/rune.just": ["rune"],
   // What that lane packages and qualifies with, outside its tree.
   "scripts/check-binary-portability.sh": ["rune"],
-  "clients/desktop/native/src/diag/redact.rs": ["rune"],
-  "clients/desktop/scripts/notices.ts": ["desktop", "rune"],
-  "clients/desktop/packaging/licenses/**": ["desktop", "rune"],
   "clients/phux-vt-web/vendor/**": ["web", "web_engine"],
   "scripts/build-vt-wasm.sh": ["web", "web_engine"],
   "scripts/{prepare,smoke,test}-vt-wasm.mjs": ["web", "web_engine"],
   "{integrations,.claude-plugin,.grok-plugin}/**": ["integrations"],
   "scripts/ci/agent-integrations.sh": ["integrations"],
   ".release-please-manifest.json": ["integrations"],
-  // The native desktop is a separate workspace. Keep its tests and packages,
-  // not unrelated root/browser/integration builds. Other desktop files can be
-  // root CLI inputs (e.g. phux-protocol), so they still fail closed.
-  "clients/desktop/native/**": ["desktop"],
-  "clients/desktop/packaging/AppIcon.svg": ["desktop"],
-  "clients/desktop/packaging/AppIcon.png": ["desktop", "rune"],
-  "clients/desktop/packaging/brand-profile{,s}.json": ["desktop"],
-  "clients/desktop/scripts/brand.ts": ["desktop"],
-  "clients/desktop/scripts/package-{app,dmg}.ts": ["desktop"],
-  "clients/desktop/scripts/dmg-*.{py,swift}": ["desktop"],
-  "clients/desktop/packaging/dmg-requirements.txt": ["desktop"],
-  "clients/desktop/tests/tooling/{package-dmg.test.ts,verify-dmg.py,verify-dmg.swift}": ["desktop"],
-  "clients/desktop/scripts/*windows*": ["desktop"],
-  "just/desktop.just": ["desktop"],
   "just/web.just": ["web"],
-  // Root crates reach the web and desktop lanes only through Cargo (see
+  // Root crates reach the web and Rune lanes only through Cargo (see
   // LANE_BUILDS).
   "crates/**": ["phux"],
   "crates/**/{Cargo.toml,Cargo.lock,build.rs,*.ld,*.lds,*.c,*.h}": ["native"],
   // Golden release manifests are include_str! inputs of the updaters' tests.
-  "scripts/fixtures/release-manifest/**": ["phux", "desktop"],
+  "scripts/fixtures/release-manifest/**": ["phux"],
   // Path crates inherit `workspace = true` keys from the root manifest, and
-  // the desktop build reads the root toolchain and Cargo config. Its lock is
-  // its own, so the root Cargo.lock stays off the desktop lane.
-  "{Cargo.toml,rust-toolchain.toml}": [...SHARED, "desktop", "rune"],
-  ".cargo/**": [...SHARED, "desktop", "rune"],
+  // the Rune build reads the root toolchain and Cargo config. Its lock is
+  // its own, so the root Cargo.lock stays off the Rune lane.
+  "{Cargo.toml,rust-toolchain.toml}": [...SHARED, "rune"],
+  ".cargo/**": [...SHARED, "rune"],
   "Cargo.lock": SHARED,
   "flake.{nix,lock}": ["phux", "web"],
-  // The native lane; the desktop lane provisions with setup-rust.sh too.
+  // The native lane; the Rune lane provisions with setup-rust.sh too.
   "just/setup.just": ["native"],
   "scripts/{doctor,test-dev-setup,native-smoke}.sh": ["native"],
-  "scripts/setup-rust.sh": ["native", "desktop", "rune"],
-  "scripts/{setup,test}-macos-desktop.sh": ["native", "desktop"],
-  "scripts/lib/macos-desktop.sh": ["native", "desktop"],
-  // How the native, web-engine and desktop lanes get libghostty's Zig; the Nix
+  "scripts/setup-rust.sh": ["native", "rune"],
+  // How the native and web-engine lanes get libghostty's Zig; the Nix
   // lanes use flake.nix's compiler.
   ".config/zig-toolchain.json": [...SHARED, ...ZIG],
   "scripts/install-zig.sh": [...ZIG, "rune"],
@@ -151,8 +120,7 @@ const ROUTES: Record<string, Surface[]> = {
   // The root justfile is imports and `default`.
   justfile: [],
   "just/{perf,release,mutation}.just": [],
-  "release-please-config{,.desktop}.json": [],
-  ".release-please-manifest.desktop.json": [],
+  "release-please-config.json": [],
   "scripts/check-*": [],
   // Lint lane only for a generator-only diff (classify skips the unit pool).
   // plugin-index.yml runs the generator tests. A phux-config change still
@@ -184,7 +152,6 @@ export const LANE_BUILDS: readonly [Surface, readonly BuildRoot[]][] = [
       { dir: "crates/phux", dev: false },
     ],
   ],
-  ["desktop", [{ dir: "clients/desktop/native", dev: true }]],
   ["rune", [{ dir: "clients/rune", dev: true }]],
 ];
 

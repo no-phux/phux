@@ -29,3 +29,5 @@ include!("loop_state_tests/input_effects.rs");
 include!("loop_state_tests/view_switch.rs");
 include!("loop_state_tests/arrangement_recovery.rs");
 include!("loop_state_tests/newer_server.rs");
+include!("loop_state_tests/surface_leaves.rs");
+include!("loop_state_tests/kitty_heal.rs");

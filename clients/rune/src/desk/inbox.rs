@@ -47,15 +47,25 @@ pub struct Inbox {
     pub relist: bool,
     /// The times the open cards show, to redraw when one moves.
     pub clocks: Vec<String>,
+    /// ACP agents' questions, answered over the protocol.
+    pub questions: super::questions::Questions,
 }
 
 impl Desk {
     pub fn inbox_items(&self) -> Vec<Item> {
-        inbox::items(
+        let mut items = inbox::items(
             self.topology.as_ref(),
             &self.activities,
             &self.inbox.approvals,
-        )
+        );
+        for item in &mut items {
+            if let Item::Terminal(waiting) = item
+                && waiting.ask.is_none()
+            {
+                waiting.ask = self.inbox.questions.ask(&waiting.terminal);
+            }
+        }
+        items
     }
 
     /// The picked row's place in `items`.
@@ -117,7 +127,10 @@ impl Desk {
     pub fn inbox_key(&mut self, event: &KeyEvent, tx: &mut Tx) -> bool {
         let items = self.inbox_items();
         let (count, at) = (items.len(), self.picked_index(&items).unwrap_or(0));
-        let chord = decision_chord(&event.mods, cfg!(target_os = "macos")) && !tx.key_repeat();
+        let chord = decision_chord(
+            &event.mods,
+            cfg!(any(target_os = "macos", target_os = "ios")),
+        ) && !tx.key_repeat();
         match event.key {
             Key::Escape => {
                 self.close_inbox();
@@ -201,7 +214,7 @@ impl Desk {
         let Some(topology) = &self.topology else {
             return;
         };
-        let shown = self.shown.as_ref().map(|s| &s.terminal);
+        let shown = self.shown.as_ref().map(|s| &s.resource);
         let next = inbox::next_jump(&topology.panes, &self.activities, shown)
             .map(|p| (p.terminal_id.clone(), p.session_name.clone()));
         if let Some((terminal, session)) = next {
@@ -223,6 +236,24 @@ impl Desk {
     /// Answers and decisions coming back, and the held set changing.
     pub(super) fn inbox_event(&mut self, client: &Client, event: &Event) -> bool {
         match event {
+            Event::NativeAgentResult {
+                operation_id,
+                disposition,
+                detail,
+                ..
+            } => {
+                let questions = &mut self.inbox.questions;
+                questions.receipt(*operation_id, *disposition, detail.as_deref())
+            }
+            Event::AgentPublication { .. }
+            | Event::AgentSessionClosed { .. }
+            | Event::TopologyChanged
+            | Event::StatusChanged(_) => {
+                let lost = matches!(event, Event::StatusChanged(s) if *s != Status::Attached);
+                let unknown = lost && self.inbox.questions.disconnected();
+                self.inbox.questions.refresh(client, self.topology.as_ref());
+                unknown | !matches!(event, Event::TopologyChanged | Event::StatusChanged(_))
+            }
             Event::ApprovalsChanged => {
                 self.inbox.approvals = client.approvals();
                 true

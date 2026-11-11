@@ -20,7 +20,7 @@ mod send_keys;
 mod session;
 pub(crate) mod shim;
 mod start;
-mod tree;
+pub(crate) mod tree;
 mod wait;
 
 use std::path::{Path, PathBuf};
@@ -181,13 +181,18 @@ pub(crate) fn run_agent(action: &AgentAction, socket: Option<PathBuf>) -> ExitCo
         } => resource_session::run_log(target, *follow, *tail, *json, socket),
         AgentAction::Tree { action } => tree::run_tree(action, socket),
         AgentAction::Surface { action } => tree::run_surface(action, socket),
+        AgentAction::Doc { action } => tree::run_doc(action, socket),
         AgentAction::Page { action } => tree::run_page(action, socket),
+        AgentAction::App { action } => tree::run_app(action, socket),
         AgentAction::Wait {
             target,
-            any,
-            until,
-            timeout,
-            json,
+            flags:
+                action_flags::WaitFlags {
+                    any,
+                    until,
+                    timeout,
+                    json,
+                },
         } => wait::run_agent_wait(target.as_deref(), *any, until, *timeout, *json, socket),
         AgentAction::Prompt {
             target,
@@ -241,6 +246,7 @@ pub(crate) fn run_agent(action: &AgentAction, socket: Option<PathBuf>) -> ExitCo
                     refresh,
                 },
         } => crate::commands::plan_usage::run_usage(*json, *publish, *refresh, socket),
+        AgentAction::Stats { publish } => crate::commands::agent_stats::run_stats(*publish, socket),
         AgentAction::HookPayload => hook_payload::run(),
         AgentAction::HookTranscript => hook_transcript::run(),
     }

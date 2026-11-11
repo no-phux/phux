@@ -55,6 +55,7 @@ pub(crate) async fn activation_reports_woken() {
 }
 mod lifecycle_state;
 mod metadata;
+pub(crate) mod mirror_demand;
 pub(crate) mod native_agent;
 mod org;
 mod plugin_startup;
@@ -109,7 +110,6 @@ use resource_table::ResourceTable;
 use session_table::SessionTable;
 pub use terminals::ResourceRegistrationError;
 pub use upgrade_blob::RebuildError;
-pub(crate) use upgrade_blob::UpgradeHandoffs;
 
 /// The single static Group every `Scope::Group` metadata op lands in; the
 /// TUI's layout key needs one (ADR-0019).
@@ -208,6 +208,11 @@ pub struct ServerState {
     /// `[[startup]]` supervisor. `None` until the accept loop's neighbor
     /// task is installed, and on servers that were not given a catalog.
     plugin_startup: Option<crate::plugin_startup::StartupHandle>,
+    /// Rung on a config reload to re-read `[[mirrors]]`; `None` until the
+    /// standing-mirror supervisor is installed.
+    standing_mirrors: Option<std::sync::Arc<tokio::sync::Notify>>,
+    /// The mirrors wanted beside `[[mirrors]]`, and Rune's macOS runner.
+    mirror_demand: crate::state::mirror_demand::Demand,
     /// Who wrote each `phux.push/v1/<device>` grant, and what was last
     /// pushed to it (ADR-0155).
     push_grants: crate::push::PushGrants,
@@ -243,6 +248,12 @@ pub struct ServerState {
     approvals: approvals::ApprovalTable,
     /// Dedicated controller state and exclusive SDK stream authority.
     native_agents: native_agent::NativeAgents,
+    /// Each live document's control class, as its producer declared it at
+    /// spawn (`docs/resource-kinds.md#authority`); absent is none.
+    document_controls: std::collections::HashMap<
+        phux_core::ids::ResourceId,
+        phux_protocol::wire::frame::ControlClass,
+    >,
 }
 
 impl Default for ServerState {

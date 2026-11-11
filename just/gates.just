@@ -49,7 +49,6 @@ guards: brand-check shellcheck tools-check docs-check install-surface-check
     bash examples/agents/tests/program-status-smoke.sh
     python3 -B scripts/test-agent-examples.py
     python3 -B -m unittest discover -s distros/crew -p 'test_*.py'
-    bun tools/main.ts desktop-host-lock
 
 
 # The `lint` lane. Clippy and rustdoc see all features; the compile checks
@@ -61,6 +60,7 @@ rust-lint: worktree-claim fmt-check lint doc deny
     cargo check --locked -p phux-client -p phux-mcp --all-targets --no-default-features --features phux-client/testkit
     cargo check --locked -p phux --no-default-features --bin phux
     cargo check --locked -p phux-tui --all-targets --no-default-features
+    bash scripts/check-ghostty-pin_test.sh
     bash scripts/check-ghostty-pin.sh
 
 

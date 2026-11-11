@@ -1,7 +1,6 @@
 //! Host telemetry: what building terminal panes costs the UI thread.
 //!
-//! The rows carry the names the GPUI host's `desktop.*` table uses, so the
-//! two clients read side by side. A pane renders once per view build
+//! A pane renders once per view build
 //! (`rune.render`): it acquires its frame (`rune.acquire`), prepares it
 //! (`rune.prepare`: reusing the whole pane when its frame didn't move,
 //! `rune.prepare_reused`, else keeping unchanged rows and rebuilding the

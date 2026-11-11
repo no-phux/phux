@@ -18,10 +18,14 @@ for installer in scripts/install.sh scripts/install-desktop.sh; do
 done
 
 # Clients discover releases from the channel manifest only (ADR-0176); the
-# GitHub API's unauthenticated budget is 60 requests an hour.
+# GitHub API's unauthenticated budget is 60 requests an hour. The one API use
+# is API_RELEASES: re-fetching an already-named asset that releases/download
+# failed to serve.
 for client in scripts/install.sh scripts/install-windows.ps1 crates/phux-client-runtime/src/release.rs \
-  crates/phux/src/commands/update clients/desktop/native/src/updates.rs; do
-  if grep -rEq 'api\.github\.com|releases/latest' "$client"; then
+  crates/phux/src/commands/update clients/rune/src/updates.rs; do
+  if grep -rhE 'api\.github\.com|releases/latest' "$client" \
+    | grep -vE '^(pub const API_RELEASES: &str = "|API_RELEASES=)https://api\.github\.com/repos/no-phux/phux/releases("|$)' \
+    | grep -q .; then
     fail "$client must read the channel manifest, not the GitHub release list"
   fi
 done
@@ -31,12 +35,10 @@ done
 bash scripts/check-product-skills-export.sh
 bash scripts/test-pack-release.sh
 bash scripts/test-install.sh
+bash scripts/test-install-server-app.sh
 bash scripts/test-gen-formula.sh
 bash scripts/test-install-rune.sh
 bash scripts/first-run-timing.sh --self-test
-# The macOS Desktop installer test skips itself off macOS 26+ arm64.
-bun test ./tools/src/install/desktop.e2e.ts
-bun test ./tools/src/install/desktop-linux.e2e.ts
 # Real Windows PowerShell 5.1/7 + WSL qualification lives in windows-wsl.yml.
 if command -v pwsh >/dev/null 2>&1; then
   pwsh -NoProfile -File scripts/test-install-windows.ps1

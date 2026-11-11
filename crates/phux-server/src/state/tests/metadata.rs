@@ -301,6 +301,8 @@ fn detach_keeps_negotiated_layers_and_peer_identity() {
                 expires_at: Some(chrono::Utc::now() + chrono::Duration::hours(1)),
                 generation: 7,
                 registry_instance: None,
+                subject: None,
+                managed: None,
             }),
         },
     );

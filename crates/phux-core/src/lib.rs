@@ -17,6 +17,7 @@ pub mod arrangement;
 pub mod command;
 pub mod host_list;
 pub mod ids;
+pub mod image;
 pub mod keys;
 pub mod org;
 pub mod process;

@@ -1,7 +1,7 @@
 //! The document apps: a producer-fed, replicated document whose newest
 //! version is what every viewer wants (`docs/resource-kinds.md`). One
-//! generic app serves every [`DocumentApi`]: the `AccessibilityTree` (JSON)
-//! and the `PixelSurface` (PNG).
+//! generic app serves every [`DocumentApi`]: the `AccessibilityTree` (JSON),
+//! the `PixelSurface` (PNG or JPEG) and the `Document` (any content type).
 
 use bytes::Bytes;
 use futures_util::FutureExt as _;
@@ -11,7 +11,7 @@ use phux_protocol::ids::{OperationId, ResourceKey, Revision};
 use phux_protocol::wire::frame::{Command, CommandResult, CommandValue, ErrorCode, FrameKind};
 use phux_tree::{
     DocumentKind, DocumentResource as _, PublishRejection, PublishRequest, SurfaceDocument,
-    TreeDocument,
+    TreeDocument, TypedDocument,
 };
 use tokio::sync::oneshot;
 
@@ -25,32 +25,53 @@ use crate::runtime::operation_dedupe::OperationClaim;
 use crate::state::{ClientId, ServerState, SharedState};
 
 mod attach;
+pub(crate) mod audit;
+mod input;
 mod spawn;
+pub(crate) mod upgrade;
 
 pub(crate) use attach::attach_document;
 pub(crate) use spawn::spawn_document;
 
 /// What the host needs from a document kind beyond its engine.
 pub(crate) trait DocumentApi: DocumentKind {
-    /// Validate a captured payload without constructing a second document.
-    fn validate_bootstrap(bytes: &[u8]) -> Result<(), String>;
+    /// Validate a captured payload of a resource opened on `target` without
+    /// constructing a second document.
+    fn validate_bootstrap(target: &str, bytes: &[u8]) -> Result<(), String>;
+    /// A viewer's bootstrap payload for the newest `document`: the document
+    /// itself unless the kind's codec frames it.
+    fn bootstrap_payload(_target: &str, document: Option<&Bytes>) -> Bytes {
+        document.cloned().unwrap_or_default()
+    }
     /// The stream profile a viewer's bootstrap names.
     const PROFILE: BootstrapStreamProfile;
     /// The kind on the wire.
     const WIRE_KIND: phux_protocol::ids::ResourceKind;
     /// How a message names the kind, e.g. "accessibility tree".
     const LABEL: &'static str;
-    /// Create the registry record under `parent`, running.
+    /// The target a record of this kind was opened on; `None` for a
+    /// record of another kind.
+    fn launch_target(launch: &phux_core::LaunchSpec) -> Option<&str>;
+    /// Create the registry record under `parent`, running, named `name`;
+    /// a tree or surface is named for what it observes.
     fn create(
         state: &mut ServerState,
         parent: phux_core::ids::ResourceId,
         target: &str,
+        name: Option<&str>,
         actor: &phux_core::actor::Actor,
     ) -> Result<phux_core::ids::ResourceId, phux_core::Refusal>;
 }
 
+/// What a tree or surface observes (`--app Safari`, a page title), as its
+/// record name, so every client's tab reads it. A target a name may not
+/// carry (a control character) leaves the resource unnamed.
+fn target_name(target: &str) -> Option<String> {
+    (!target.trim().is_empty() && !target.chars().any(char::is_control)).then(|| target.to_owned())
+}
+
 impl DocumentApi for TreeDocument {
-    fn validate_bootstrap(bytes: &[u8]) -> Result<(), String> {
+    fn validate_bootstrap(_target: &str, bytes: &[u8]) -> Result<(), String> {
         serde_json::from_slice::<serde::de::IgnoredAny>(bytes)
             .map(|_| ())
             .map_err(|error| format!("the document is not JSON: {error}"))
@@ -61,25 +82,34 @@ impl DocumentApi for TreeDocument {
         phux_protocol::ids::ResourceKind::AccessibilityTree;
     const LABEL: &'static str = "accessibility tree";
 
+    fn launch_target(launch: &phux_core::LaunchSpec) -> Option<&str> {
+        match launch {
+            phux_core::LaunchSpec::Tree(tree) => Some(&tree.target),
+            _ => None,
+        }
+    }
+
     fn create(
         state: &mut ServerState,
         parent: phux_core::ids::ResourceId,
         target: &str,
+        _name: Option<&str>,
         actor: &phux_core::actor::Actor,
     ) -> Result<phux_core::ids::ResourceId, phux_core::Refusal> {
-        state.create_document(
+        state.create_named_document(
             parent,
             phux_core::LaunchSpec::Tree(phux_core::resource::TreeLaunch {
                 target: target.to_owned(),
             }),
+            target_name(target),
             actor,
         )
     }
 }
 
 impl DocumentApi for SurfaceDocument {
-    fn validate_bootstrap(bytes: &[u8]) -> Result<(), String> {
-        phux_tree::png_size(bytes).map(|_| ())
+    fn validate_bootstrap(_target: &str, bytes: &[u8]) -> Result<(), String> {
+        phux_tree::image_size(bytes).map(|_| ())
     }
 
     const PROFILE: BootstrapStreamProfile = BootstrapStreamProfile::PixelSurfacePngV1;
@@ -87,17 +117,67 @@ impl DocumentApi for SurfaceDocument {
         phux_protocol::ids::ResourceKind::PixelSurface;
     const LABEL: &'static str = "pixel surface";
 
+    fn launch_target(launch: &phux_core::LaunchSpec) -> Option<&str> {
+        match launch {
+            phux_core::LaunchSpec::Surface(surface) => Some(&surface.target),
+            _ => None,
+        }
+    }
+
     fn create(
         state: &mut ServerState,
         parent: phux_core::ids::ResourceId,
         target: &str,
+        _name: Option<&str>,
         actor: &phux_core::actor::Actor,
     ) -> Result<phux_core::ids::ResourceId, phux_core::Refusal> {
-        state.create_document(
+        state.create_named_document(
             parent,
             phux_core::LaunchSpec::Surface(phux_core::resource::SurfaceLaunch {
                 target: target.to_owned(),
             }),
+            target_name(target),
+            actor,
+        )
+    }
+}
+
+/// A typed document's `target` is its content type, which every viewer's
+/// bootstrap names before the newest document.
+impl DocumentApi for TypedDocument {
+    fn validate_bootstrap(content_type: &str, bytes: &[u8]) -> Result<(), String> {
+        <Self as DocumentKind>::validate(content_type, bytes)
+    }
+
+    fn bootstrap_payload(content_type: &str, document: Option<&Bytes>) -> Bytes {
+        let document = document.map_or(&[][..], |bytes| &bytes[..]);
+        phux_protocol::wire::frame::typed_document::encode_bootstrap(content_type, document).into()
+    }
+
+    const PROFILE: BootstrapStreamProfile = BootstrapStreamProfile::DocumentTypedV1;
+    const WIRE_KIND: phux_protocol::ids::ResourceKind = phux_protocol::ids::ResourceKind::Document;
+    const LABEL: &'static str = "document";
+
+    fn launch_target(launch: &phux_core::LaunchSpec) -> Option<&str> {
+        match launch {
+            phux_core::LaunchSpec::Document(document) => Some(&document.content_type),
+            _ => None,
+        }
+    }
+
+    fn create(
+        state: &mut ServerState,
+        parent: phux_core::ids::ResourceId,
+        content_type: &str,
+        name: Option<&str>,
+        actor: &phux_core::actor::Actor,
+    ) -> Result<phux_core::ids::ResourceId, phux_core::Refusal> {
+        state.create_named_document(
+            parent,
+            phux_core::LaunchSpec::Document(phux_core::resource::DocumentLaunch {
+                content_type: content_type.to_owned(),
+            }),
+            name.map(str::to_owned),
             actor,
         )
     }
@@ -111,6 +191,8 @@ pub(crate) struct DocumentApp<A: DocumentApi>(std::marker::PhantomData<A>);
 pub(crate) static TREE_APP: DocumentApp<TreeDocument> = DocumentApp(std::marker::PhantomData);
 /// Serves [`ResourceKind::PixelSurface`].
 pub(crate) static SURFACE_APP: DocumentApp<SurfaceDocument> = DocumentApp(std::marker::PhantomData);
+/// Serves [`ResourceKind::Document`].
+pub(crate) static DOCUMENT_APP: DocumentApp<TypedDocument> = DocumentApp(std::marker::PhantomData);
 
 impl<A: DocumentApi> ResourceApp for DocumentApp<A> {
     fn supports_organization_launch(&self) -> bool {
@@ -166,6 +248,14 @@ impl<A: DocumentApi> ResourceApp for DocumentApp<A> {
         Box::pin(std::future::ready(()))
     }
 
+    fn begin_upgrade(&self, _state: &SharedState) -> Option<Box<dyn super::UpgradeCut>> {
+        Some(upgrade::DocumentCut::<A>::begin())
+    }
+
+    fn resume(&self, _state: &SharedState) -> Box<dyn super::KindResume> {
+        upgrade::DocumentResume::<A>::begin()
+    }
+
     fn resumed(&self, _state: &SharedState) {}
 
     fn resource_exited<'a>(
@@ -201,7 +291,22 @@ impl<A: DocumentApi> ResourceApp for DocumentApp<A> {
         async move {
             match command {
                 Command::PublishResourceState { terminal_id, bytes } => {
-                    publish::<A>(&ctx.state, ctx.client_id, &terminal_id, Bytes::from(bytes)).await
+                    publish::<A>(ctx, &terminal_id, Bytes::from(bytes)).await
+                }
+                Command::SendDocumentInput {
+                    terminal_id,
+                    intent,
+                    control,
+                    on_behalf_of,
+                } => {
+                    let audited = intent.clone();
+                    let relayed = on_behalf_of.as_ref();
+                    let result =
+                        input::relay::<A>(ctx, &terminal_id, intent, control, relayed).await;
+                    ctx.state.with(|s| {
+                        audit::record(s, ctx.client_id, relayed, &terminal_id, &audited, &result);
+                    });
+                    result
                 }
                 _ => CommandResult::Error {
                     code: ErrorCode::InvalidCommand,
@@ -278,22 +383,25 @@ impl<A: DocumentApi> ResourceApp for DocumentApp<A> {
 }
 
 /// `PUBLISH_RESOURCE_STATE`: a local owner connection replaces the
-/// document; the reply names the sequence the document carries.
+/// document; the reply names the sequence the document carries. A publish
+/// to a document whose producer is gone (it redialed after a server
+/// upgrade) makes this connection its producer again, so viewers' input
+/// reaches it.
 async fn publish<A: DocumentApi>(
-    state: &SharedState,
-    client_id: ClientId,
+    ctx: &CommandContext,
     terminal_id: &phux_protocol::ids::ResourceId,
     bytes: Bytes,
 ) -> CommandResult {
+    let (state, client_id) = (&ctx.state, ctx.client_id);
     if !state.with(|s| s.client_may_produce(client_id)) {
         return CommandResult::Error {
             code: ErrorCode::NotProducer,
             message: "publishing a resource's state requires a local owner connection".to_owned(),
         };
     }
-    let Some(handle) = state.with(|s| {
-        s.resource_from_wire(terminal_id)
-            .and_then(|core| s.resource_handle(core).cloned())
+    let Some((core, handle)) = state.with(|s| {
+        let core = s.resource_from_wire(terminal_id)?;
+        Some((core, s.resource_handle(core)?.clone()))
     }) else {
         return CommandResult::Error {
             code: ErrorCode::TerminalNotFound,
@@ -316,10 +424,18 @@ async fn publish<A: DocumentApi>(
         };
     }
     match rx.await {
-        Ok(Ok(published)) => CommandResult::OkWith(CommandValue::Json(format!(
-            "{{\"seq\":{},\"ts_ms\":{}}}",
-            published.seq, published.ts_ms
-        ))),
+        Ok(Ok(published)) => {
+            state.with_mut(|s| {
+                if s.resource_producer(core).is_none() {
+                    s.record_spawn(core, client_id);
+                    s.subscribe_resource(client_id, core, Some(ctx.out_tx.clone()));
+                }
+            });
+            CommandResult::OkWith(CommandValue::Json(format!(
+                "{{\"seq\":{},\"ts_ms\":{}}}",
+                published.seq, published.ts_ms
+            )))
+        }
         Ok(Err(PublishRejection::Invalid(error))) => CommandResult::Error {
             code: ErrorCode::RecordInvalid,
             message: error,

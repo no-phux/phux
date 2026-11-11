@@ -97,15 +97,23 @@ pub fn with_menus(app: App<Desk>) -> App<Desk> {
         item!(VIEW, ZoomOut),
         item!(VIEW, ZoomReset),
         item!(VIEW, Inbox),
+        item!(VIEW, Galaxy),
+        item!(VIEW, Reef),
+        item!(VIEW, Pitch),
+        item!(VIEW, Kitchen),
+        item!(VIEW, PitLane),
+        item!(VIEW, Hive),
         item!(VIEW, Palette),
         item!(VIEW, KeyboardShortcuts),
         item!(VIEW, EssentialShortcuts),
+        item!(Some("Help"), GetStarted),
         item!(TERMINAL, SplitRight),
         item!(TERMINAL, SplitDown),
         item!(TERMINAL, Find),
         item!(TERMINAL, FindNext),
         item!(TERMINAL, FindPrevious),
         item!(TERMINAL, FindSelection),
+        item!(TERMINAL, CopyMode),
         item!(TERMINAL, InsertPath),
         item!(TERMINAL, NextTab),
         item!(TERMINAL, PreviousTab),
@@ -164,9 +172,9 @@ impl Desk {
 
     /// The palette over everything else, listing `mode`.
     pub(super) fn open_palette(&mut self, mode: Mode) {
-        self.close_settings();
         self.close_inbox();
         self.close_palette();
+        self.close_settings();
         self.toggle_palette();
         self.palette_mode = mode;
     }
@@ -183,7 +191,7 @@ impl Desk {
 
     /// Paths under the focused pane's folder, searched on its host.
     pub(super) fn open_paths(&mut self) {
-        let Some(terminal) = self.shown.as_ref().map(|s| s.terminal.clone()) else {
+        let Some(terminal) = self.shown.as_ref().map(|s| s.resource.clone()) else {
             return;
         };
         let Some(origin) = self.focused_cwd() else {
@@ -286,6 +294,9 @@ impl Desk {
             self.settings.theme = before;
             self.apply_theme();
         }
+        if std::mem::take(&mut self.settings_ui.return_from_themes) {
+            self.settings_open = true;
+        }
     }
 
     /// The palette's rows for the current query, best first.
@@ -293,17 +304,35 @@ impl Desk {
         let topology = self.topology.as_ref();
         let query = &self.palette_query.text;
         match self.palette_mode {
+            Mode::All if self.phone.is_some() => {
+                let native = self.native.is_some();
+                let items = palette::phone::items(
+                    topology,
+                    self.reorder.order(),
+                    native,
+                    self.resource_items(),
+                );
+                palette::rank(items, query)
+            }
             Mode::All => {
                 let mut items = self.resource_items();
-                items.extend(palette::items(topology));
+                items.extend(palette::items(
+                    topology,
+                    &self.addressable(),
+                    self.reorder.order(),
+                ));
                 palette::rank(items, query)
             }
             Mode::Mirror(source) => self.mirror_items(source, query),
+            Mode::Screens => self.screen_hits(query),
             Mode::Shortcuts => palette::rank(palette::shortcut_items(), query),
             Mode::Essentials => palette::rank(palette::essential_items(), query),
             Mode::Themes => palette::rank(palette::theme_items(), query),
             Mode::Sessions => {
-                let mut hits = palette::rank(palette::session_items(topology), query);
+                let mut hits = palette::rank(
+                    palette::session_items(topology, self.reorder.order()),
+                    query,
+                );
                 let new = palette::new_session_item(topology, query);
                 hits.extend(new.map(|item| Hit {
                     item,
@@ -330,7 +359,7 @@ impl Desk {
     pub fn cursor_point(&self) -> Option<[f32; 2]> {
         let shown = self.shown.as_ref()?;
         let frame = self.client.as_ref()?.acquire_view(shown.view?)?;
-        let [x, y] = *self.origins.get(&shown.terminal)?;
+        let [x, y] = *self.origins.get(&shown.resource)?;
         let m = self.metrics();
         let (col, row) = (f32::from(frame.cursor.col), f32::from(frame.cursor.row));
         Some([x + col * m.cell_w, y + (row + 1.0) * m.cell_h])
@@ -393,6 +422,8 @@ impl Desk {
         match target {
             Target::Mirror(source) => self.open_palette(Mode::Mirror(source)),
             Target::StartMirror(source, target) => self.ask_mirror(source, target),
+            Target::Screens => self.open_screens(),
+            Target::Screen(host, target) => self.start_screen(host, target),
             Target::Terminal { id, session } => self.show(id, &session),
             Target::Session(name) => self.show_session(&name),
             Target::Action(action) => self.shortcut(action, tx),

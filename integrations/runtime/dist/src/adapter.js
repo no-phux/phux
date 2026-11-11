@@ -1,7 +1,10 @@
+import { retryUpgradeSeal } from "./agent-session.js";
+import { commandFailed, diagnosticSuffix, screenParser } from "./cli-failure.js";
 import { PhuxError } from "./errors.js";
 import { DEFAULT_MAX_OUTPUT_BYTES, nodeProcessRunner, } from "./runner.js";
-import { AGENT_EVENT_TYPES, isAgentEventType, parseAgentEmitResult, parseAgentRecord, parseAgentSessionOpenResult, parseAgentStateList, parseAskedEvent, parseCreateResult, parseInsertPaneResult, parseLaunchResult, parseMovePaneResult, parseRenderedFrame, parseRunResult, parseScreenState, parseSessionList, parseSpawnResult, parseSwapPaneResult, parseWatchEvent, parseAgentPromptResult, parseAgentWaitResult, parseResourceWaitResult, parseStatusResult, parseVersionedDocument, SchemaValidationError, } from "./schemas.js";
+import { AGENT_EVENT_TYPES, isAgentEventType, parseAgentEmitResult, parseAgentRecord, parseAgentSessionOpenResult, parseAgentStateList, parseAskedEvent, parseCreateResult, parseInsertPaneResult, parseLaunchResult, parseMovePaneResult, parseRenderedFrame, parseRunResult, parseSessionList, parseSpawnResult, parseSwapPaneResult, parseWatchEvent, parseAgentPromptResult, parseAgentWaitResult, parseResourceWaitResult, parseStatusResult, parseSurfaceFacts, parseTreeDocument, parseVersionedDocument, SchemaValidationError, } from "./schemas.js";
 export { AGENT_EVENT_TYPES, isAgentEventType } from "./schemas.js";
+export { AgentSessionEmitter, hasAgentSessionCli, isAgentSessionUnsupported, isUpgradeSealRefusal, UPGRADE_RETRY_BUDGET_MS, } from "./agent-session.js";
 export const MINIMUM_PHUX_VERSION = "0.1.0";
 const VERSION_PATTERN = /^phux\s+v?(\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?)$/;
 export class PhuxCli {
@@ -225,21 +228,7 @@ export class PhuxCli {
         const stdin = options.data === undefined ? undefined : wellFormedJson(options.data);
         args.push("--json");
         this.pushSocket(args);
-        // A graceful upgrade seals the stream from its cut until the re-exec and
-        // refuses appends in that window; nothing was appended, so retry it.
-        const started = Date.now();
-        for (let attempt = 0;; attempt += 1) {
-            try {
-                return await this.jsonCommand("agent emit", args, options, parseAgentEmitResult, stdin);
-            }
-            catch (error) {
-                const delay = Math.min(UPGRADE_RETRY_BASE_MS * 2 ** attempt, UPGRADE_RETRY_MAX_DELAY_MS);
-                if (!isUpgradeSealRefusal(error) || Date.now() - started + delay > UPGRADE_RETRY_BUDGET_MS) {
-                    throw error;
-                }
-                await sleep(delay, options.signal);
-            }
-        }
+        return retryUpgradeSeal(() => this.jsonCommand("agent emit", args, options, parseAgentEmitResult, stdin), options.signal);
     }
     /** Close a pane's AgentSession; the parent pane is untouched. */
     async agentSessionClose(target, options = {}) {
@@ -278,7 +267,7 @@ export class PhuxCli {
         this.pushSocket(args);
         if (options.target !== undefined)
             args.push(options.target);
-        return this.jsonCommand("snapshot", args, options, parseScreenState);
+        return this.jsonCommand("snapshot", args, options, screenParser("snapshot", options.target));
     }
     async wait(options = {}) {
         const args = ["wait", "--json"];
@@ -304,10 +293,11 @@ export class PhuxCli {
         if (options.target !== undefined)
             args.push(options.target);
         const result = await this.completed("wait", args, boundedExecution(options), true);
-        if (result.exitCode !== 0 && result.exitCode !== 124) {
+        // A document wait's timeout prints no screen (cli-failure.ts).
+        if (result.exitCode !== 0 && (result.exitCode !== 124 || result.stdout.trim() === "")) {
             throw commandFailed("wait", this.executable, args, result);
         }
-        const screen = parseJson("wait", this.executable, result.stdout, args, parseScreenState);
+        const screen = parseJson("wait", this.executable, result.stdout, args, screenParser("wait", options.target));
         return {
             outcome: result.exitCode === 124 ? "timed_out" : "satisfied",
             screen,
@@ -398,6 +388,37 @@ export class PhuxCli {
         this.pushSocket(args);
         args.push("--", target);
         return this.outcomeCommand("resource wait", args, boundedExecution(options), parseResourceWaitResult, (document) => document.outcome === "exited" ? 0 : document.outcome === "gone" ? 1 : 124);
+    }
+    /** The newest accessibility-tree document; `document` is null before the first publish. */
+    async treeSnapshot(target, options = {}) {
+        const args = this.withSocket(["agent", "tree", "snapshot", "--json"]);
+        args.push("--", target);
+        return this.jsonCommand("agent tree snapshot", args, options, parseTreeDocument);
+    }
+    /** `agent tree follow --until`: a CLI timeout or a closed tree is an outcome, not an error. */
+    async treeWait(target, until, options = {}) {
+        if (until.length === 0)
+            throw new TypeError("until must be non-empty");
+        const args = this.withSocket(["agent", "tree", "follow", "--json", `--until=${until}`, "--timeout", String(operationSeconds(options))]);
+        args.push("--", target);
+        try {
+            const document = await this.jsonCommand("agent tree follow", args, boundedExecution(options), parseTreeDocument);
+            return { ...document, outcome: "matched" };
+        }
+        catch (error) {
+            const outcome = treeWaitOutcome(error);
+            if (outcome === undefined)
+                throw error;
+            return { schema_version: 1, outcome };
+        }
+    }
+    /** The surface's newest frame is written to `out`; stdout carries only its facts. */
+    async surfaceSnapshot(target, out, options = {}) {
+        if (out.trim().length === 0)
+            throw new TypeError("out must be non-empty");
+        const args = this.withSocket(["agent", "surface", "snapshot", "--json", `--out=${out}`]);
+        args.push("--", target);
+        return this.jsonCommand("agent surface snapshot", args, options, parseSurfaceFacts);
     }
     async outcomeCommand(verb, args, options, parser, expectedExit) {
         const result = await this.completed(verb, args, options, true);
@@ -548,6 +569,20 @@ function operationSeconds(options) {
 function boundedExecution(options) {
     return { ...options, timeoutMs: options.timeoutMs ?? operationSeconds(options) * 1000 + 5000 };
 }
+/** `agent tree follow` reports both as a `workload` error (commands/agent/tree.rs `run_follow`). */
+function treeWaitOutcome(error) {
+    if (!(error instanceof PhuxError) || error.code !== "command_failed")
+        return undefined;
+    const detail = error.cliError?.["error"];
+    if (detail === null || typeof detail !== "object" || Array.isArray(detail))
+        return undefined;
+    const { code, message } = detail;
+    if (code !== "workload" || typeof message !== "string")
+        return undefined;
+    if (message.startsWith("no document matched within "))
+        return "timed_out";
+    return message.startsWith("the tree ended (Closed)") ? "closed" : undefined;
+}
 function pushUntil(args, states) {
     for (const state of states ?? []) {
         if (!["idle", "working", "blocked", "done"].includes(state))
@@ -632,28 +667,6 @@ function parseTagRows(stdout, verb, executable, args) {
 function invalidResponse(verb, executable, args, detail, cause) {
     return new PhuxError("invalid_response", `phux ${verb} JSON does not match its documented CLI shape: ${detail}`, { argv: [executable, ...args], cause });
 }
-function commandFailed(verb, executable, args, result) {
-    let cliError;
-    try {
-        const document = JSON.parse(result.stderr.trim());
-        if (document !== null && typeof document === "object" && !Array.isArray(document)) {
-            cliError = document;
-        }
-    }
-    catch {
-        // Non-JSON diagnostics from older binaries remain available as stderr.
-    }
-    return new PhuxError("command_failed", `phux ${verb} failed with exit code ${String(result.exitCode)}${diagnosticSuffix(result.stderr)}`, {
-        argv: [executable, ...args],
-        exitCode: result.exitCode,
-        stderr: result.stderr,
-        ...(cliError === undefined ? {} : { cliError }),
-    });
-}
-function diagnosticSuffix(stderr) {
-    const detail = stderr.trim();
-    return detail.length === 0 ? "" : `: ${detail}`;
-}
 function failureMessage(result) {
     return `phux --version exited ${String(result.exitCode)}${diagnosticSuffix(result.stderr)}`;
 }
@@ -737,170 +750,6 @@ function requireNonNegativeInteger(value, name) {
 function requirePositiveInteger(value, name) {
     if (!Number.isSafeInteger(value) || value < 1) {
         throw new RangeError(`${name} must be a positive safe integer`);
-    }
-}
-export function hasAgentSessionCli(cli) {
-    const candidate = cli;
-    return typeof candidate.agentSessionOpen === "function" &&
-        typeof candidate.agentEmit === "function" &&
-        typeof candidate.agentSessionClose === "function";
-}
-/** Total time `agentEmit` spends retrying an upgrade-sealed stream. */
-export const UPGRADE_RETRY_BUDGET_MS = 3000;
-const UPGRADE_RETRY_BASE_MS = 50;
-const UPGRADE_RETRY_MAX_DELAY_MS = 800;
-/**
- * True for exactly the refusal a graceful upgrade gives an append between
- * its cut of the stream and the re-exec (L1 §4.8): `overflow` whose
- * diagnostic says the server is upgrading. Nothing was appended, so the
- * same record is safe to resend; every other `overflow` is not retried.
- */
-export function isUpgradeSealRefusal(error) {
-    if (!(error instanceof PhuxError) || error.code !== "command_failed")
-        return false;
-    const detail = error.cliError?.["error"];
-    if (detail === null || typeof detail !== "object" || Array.isArray(detail))
-        return false;
-    const { code, message } = detail;
-    return code === "overflow" && typeof message === "string" && /server is upgrading/.test(message);
-}
-function sleep(ms, signal) {
-    return new Promise((resolve, reject) => {
-        if (signal?.aborted === true) {
-            reject(abortedRetry());
-            return;
-        }
-        const onAbort = () => {
-            clearTimeout(timer);
-            reject(abortedRetry());
-        };
-        const timer = setTimeout(() => {
-            signal?.removeEventListener("abort", onAbort);
-            resolve();
-        }, ms);
-        signal?.addEventListener("abort", onAbort, { once: true });
-    });
-}
-function abortedRetry() {
-    return new PhuxError("aborted", "phux agent emit was aborted while waiting out a server upgrade");
-}
-/**
- * True when `phux agent session open` is missing: an older binary without the
- * verb, or a server that refuses with `unsupported_server`. Emit must then
- * fail closed; identity-only `agent set` still runs.
- */
-export function isAgentSessionUnsupported(error) {
-    if (!(error instanceof PhuxError) || error.code !== "command_failed")
-        return false;
-    const haystack = `${error.message}\n${error.stderr ?? ""}`;
-    return /unsupported_server|unrecognized subcommand|invalid subcommand|unknown command|not a valid command/i
-        .test(haystack);
-}
-/**
- * Open once per pane, emit only after a successful open, close the session we
- * opened. A missing verb marks the emitter unavailable for the rest of its
- * life so later hooks do not retry a command the server does not have.
- */
-export class AgentSessionEmitter {
-    cli;
-    provider;
-    onError;
-    target = null;
-    nativeId = null;
-    resource = null;
-    unavailable = false;
-    constructor(cli, options) {
-        this.cli = cli !== null && hasAgentSessionCli(cli) ? cli : null;
-        this.provider = options.provider;
-        this.onError = options.onError ?? (() => { });
-        if (this.cli === null)
-            this.unavailable = true;
-        if (this.provider.trim().length === 0)
-            throw new TypeError("provider must be non-empty");
-    }
-    get isOpen() {
-        return this.resource !== null;
-    }
-    get isUnavailable() {
-        return this.unavailable;
-    }
-    /** Adopt only an identity the host verified against its own declaration. */
-    adopt(target, nativeId, identity) {
-        if (identity.parent !== target || identity.provider !== this.provider || identity.native_id !== nativeId) {
-            throw new Error("AgentSession identity does not match its hosting binding");
-        }
-        if (!/^(?:[^/\s]+\/)?@\d+$/.test(identity.resource) || identity.resource === target) {
-            throw new Error("AgentSession identity must name its exact child resource");
-        }
-        this.target = target;
-        this.nativeId = nativeId;
-        this.resource = identity.resource;
-    }
-    async bind(target, nativeId, options = {}) {
-        if (this.unavailable)
-            return;
-        if (target === this.target && this.isOpen && this.nativeId === nativeId)
-            return;
-        if (this.isOpen && (this.target !== target || this.nativeId !== nativeId)) {
-            await this.finish(options);
-        }
-        if (target === null)
-            return;
-        await this.open(target, nativeId, options);
-    }
-    async emit(type, data, options = {}) {
-        if (this.unavailable || this.resource === null || this.cli === null)
-            return;
-        try {
-            await this.cli.agentEmit(this.resource, type, {
-                ...options,
-                ...(data === undefined ? {} : { data }),
-            });
-        }
-        catch (error) {
-            this.onError(error);
-        }
-    }
-    async finish(options = {}) {
-        const resource = this.resource;
-        this.resource = null;
-        this.target = null;
-        this.nativeId = null;
-        if (this.unavailable || resource === null || this.cli === null)
-            return;
-        try {
-            await this.cli.agentEmit(resource, "session_end", options);
-        }
-        catch (error) {
-            this.onError(error);
-        }
-        try {
-            await this.cli.agentSessionClose(resource, options);
-        }
-        catch (error) {
-            this.onError(error);
-        }
-    }
-    async open(target, nativeId, options) {
-        if (this.cli === null)
-            return;
-        try {
-            const opened = await this.cli.agentSessionOpen(target, {
-                provider: this.provider,
-                nativeId,
-                ...options,
-            });
-            this.adopt(target, nativeId, opened);
-        }
-        catch (error) {
-            if (isAgentSessionUnsupported(error)) {
-                this.unavailable = true;
-                return;
-            }
-            this.onError(error);
-            return;
-        }
-        await this.emit("session_start", { provider: this.provider, native_id: nativeId }, options);
     }
 }
 const LONE_SURROGATE = /[\ud800-\udbff](?![\udc00-\udfff])|(?<![\ud800-\udbff])[\udc00-\udfff]/g;

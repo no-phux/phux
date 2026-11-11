@@ -1,6 +1,6 @@
 //! Payload writers for the bootstrap, history, bell, and error frames.
 
-use crate::caps::{BootstrapCodec, BootstrapStreamProfile, OutputMode};
+use crate::caps::BootstrapStreamProfile;
 use crate::ids::{BootstrapId, ResourceId, StreamId};
 use crate::wire::encode::Encoder;
 use crate::wire::field;
@@ -13,7 +13,7 @@ use super::{FrameKind, generation_fields, id_field, u8_field, u16_field, u32_fie
 
 impl FrameKind {
     /// Write the profile half of `BOOTSTRAP_BEGIN`: codec, geometry, cut,
-    /// and optional agent resume anchor. Native state always means raw,
+    /// and optional resume anchor. Native state always means raw,
     /// byte-identical PTY continuation.
     pub(super) fn encode_bootstrap_begin_profile(
         enc: &mut Encoder<'_>,
@@ -22,27 +22,7 @@ impl FrameKind {
         rows: u16,
         base_seq: u64,
     ) {
-        let (codec, output_mode) = match profile {
-            BootstrapStreamProfile::NativeState { codec } => {
-                (BootstrapCodec::Native(codec), OutputMode::Raw)
-            }
-            BootstrapStreamProfile::SynthesizedVtRaw => {
-                (BootstrapCodec::SynthesizedVtV1, OutputMode::Raw)
-            }
-            BootstrapStreamProfile::SynthesizedVtStateSync => {
-                (BootstrapCodec::SynthesizedVtV1, OutputMode::StateSync)
-            }
-            BootstrapStreamProfile::AgentEventsJsonlV1
-            | BootstrapStreamProfile::AgentEventsJsonlResumeV1 { .. } => {
-                (BootstrapCodec::AgentEventsJsonlV1, OutputMode::Raw)
-            }
-            BootstrapStreamProfile::AccessibilityTreeJsonV1 => {
-                (BootstrapCodec::AccessibilityTreeJsonV1, OutputMode::Raw)
-            }
-            BootstrapStreamProfile::PixelSurfacePngV1 => {
-                (BootstrapCodec::PixelSurfacePngV1, OutputMode::Raw)
-            }
-        };
+        let (codec, output_mode) = (profile.codec(), profile.output_mode());
         enc.write_field_with(field::bootstrap_begin::CODEC, |e| {
             encode_bootstrap_codec(codec, e);
         });
@@ -54,7 +34,7 @@ impl FrameKind {
             output_mode.as_wire(),
         );
         u64_field(enc, field::bootstrap_begin::BASE_SEQ, base_seq);
-        if let BootstrapStreamProfile::AgentEventsJsonlResumeV1 { after_seq } = profile {
+        if let Some(after_seq) = profile.resume_after_seq() {
             u64_field(enc, field::bootstrap_begin::RESUME_AFTER_SEQ, after_seq);
         }
     }

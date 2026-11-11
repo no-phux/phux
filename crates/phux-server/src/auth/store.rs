@@ -92,6 +92,8 @@ impl TokenStore {
                     expires_at: record.expires_at,
                     generation: record.generation,
                     registry_instance: None,
+                    subject: None,
+                    managed: None,
                 });
             }
         }

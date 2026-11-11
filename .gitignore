@@ -3,7 +3,7 @@ target/
 # out of `target/` to avoid clobbering a build. Same regenerable artifacts,
 # same reason to ignore them -- one had grown to 1.3G untracked.
 target-*/
-# Packaging output (pack-release.sh, desktop-package).
+# Packaging output (pack-release.sh).
 dist/
 # The OpenCode plugin's desktop bundle ships checked in, like its index.js.
 !integrations/opencode-v2/dist/

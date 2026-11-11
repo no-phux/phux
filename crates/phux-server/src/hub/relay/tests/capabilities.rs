@@ -17,6 +17,13 @@ fn ordinary_hub_admission_requires_each_commands_own_extended_bit() {
             ServerFeatureExt::FileDownload,
         ),
         (
+            Command::Mirror {
+                host: None,
+                op: phux_protocol::wire::frame::MirrorOp::Targets,
+            },
+            ServerFeatureExt::Mirrors,
+        ),
+        (
             Command::Checkout {
                 terminal_id: ResourceId::local(1),
                 request: CheckoutRequest::Status,
@@ -504,4 +511,32 @@ fn satellite_restart_between_attempts_yields_incarnation_changed_and_no_forward(
     assert!(after.pending.is_empty());
     let (wire, _rx) = send_keyed(&mut after, keyed_kill(6), ClientId(4));
     assert!(wire.is_some(), "a new id is new to the restarted satellite");
+}
+
+/// A hub relays `MIRROR` to the satellite its host names, with the host
+/// taken out so the satellite answers for its own screens.
+#[test]
+fn hub_relays_a_host_named_mirror_without_its_host() {
+    let mut command = Command::Mirror {
+        host: Some("powerhouse-1".to_owned()),
+        op: phux_protocol::wire::frame::MirrorOp::Start {
+            target: "display:DP-1".to_owned(),
+            jpeg: true,
+        },
+    };
+    let named = crate::runtime::commands::take_named_host(&mut command);
+    assert_eq!(named.as_deref(), Some("powerhouse-1"));
+    let mut session = RelaySession::new(host(), BootstrapLimits::default());
+    session.set_satellite_features_ext(ServerFeatureExtSet::with(&[ServerFeatureExt::Mirrors]));
+    let (reply, _rx) = oneshot::channel();
+    let wire = session.handle_request_checked(RelayRequest::Command {
+        command,
+        reply,
+        subscribe: None,
+    });
+    assert!(matches!(
+        forwarded(wire),
+        Command::Mirror { host: None, op: phux_protocol::wire::frame::MirrorOp::Start { ref target, jpeg: true } }
+            if target == "display:DP-1"
+    ));
 }

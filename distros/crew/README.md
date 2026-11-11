@@ -12,17 +12,17 @@ second scheduler.
 
 ## Get in
 
-Keep a phux source checkout on disk; Crew extends the sibling starter bundle.
 Use a phux build with `config distro` and native `mission` support, Python 3.9+
 and a supported agent already installed and signed in. Install its
 [phux integration](../../docs/agents.md#agent-setup) for lifecycle/mail delivery.
-
-From the checkout:
+Releases carry Crew inside the binary: when no distro directory has it,
+`phux config distro use crew` (or `list`) writes it, with the starter bundle
+and plugins it extends, under `~/.local/share/phux/` (or `$XDG_DATA_HOME/phux/`).
+No source checkout is needed.
 
 ```sh
-phux config distro use ./distros/crew/crew.toml
+phux config distro use crew
 phux config reload
-python3 distros/crew/crew.py doctor --agent opencode
 phux launch crew
 # Or choose another harness:
 phux launch crew -- --agent claude
@@ -77,7 +77,7 @@ as you. Never put a home inside a project or use a checkout as a home.
 
 Managed AGENTS.md and CLAUDE.md point to this bundle; they are never silently
 replaced if edited or pointed at a different checkout. Put personal edits in
-POLICY.md. Keep the source checkout at its current path (updates to its lead
+POLICY.md. Keep the bundle at its current path (updates to its lead
 contract apply next session), or use a new home when moving the bundle.
 The launcher starts a new agent conversation; it doesn't promise to resume a
 provider conversation. The lead reconstructs execution state from native
@@ -95,8 +95,8 @@ phux config reload
 ```
 
 Names resolve through `PHUX_DISTROS_DIR`, the XDG data directory and the build's
-source checkout. Use a full layer path when the installed binary doesn't know
-your checkout. Switching uses the managed distro slot, leaving personal
+source checkout. A copy phux wrote to the data directory is rewritten when the
+phux version changes; delete its `.phux-bundled` file to keep your own edits. Switching uses the managed distro slot, leaving personal
 overrides and unrelated layers alone. It validates before writing. `off`
 removes that slot, not your preferences. It does not kill panes, reset tasks,
 erase the Crew home or rewrite an active agent's instructions. To change the

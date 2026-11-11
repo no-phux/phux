@@ -29,7 +29,11 @@ fn state_with_host_inventory_round_trips() {
                     .with_active_resource(Some(ResourceId::satellite(
                         SatelliteHost::new("edge"),
                         9,
-                    ))),
+                    )))
+                    .with_members(vec![
+                        ResourceId::satellite(SatelliteHost::new("edge"), 9),
+                        ResourceId::satellite(SatelliteHost::new("edge"), 11),
+                    ]),
                 HostSessionInfo::new(SessionId::new(5), "logs"),
             ],
         ),
@@ -71,7 +75,7 @@ fn host_inventory_trails_the_facet_list_and_is_optional() {
     prefix.extend_from_slice(&1u32.to_be_bytes()); // focused_window
     prefix.extend_from_slice(&local_id_bytes(1)); // focused_resource
     prefix.extend_from_slice(&0u32.to_be_bytes()); // facets: zero rows
-    let host_rows = |extra: &[u8]| {
+    let host_rows = |members: &[u8], extra: &[u8]| {
         let mut session = Vec::new();
         session.extend_from_slice(&3u32.to_be_bytes()); // satellite-local id
         session.extend_from_slice(&5u32.to_be_bytes());
@@ -81,6 +85,7 @@ fn host_inventory_trails_the_facet_list_and_is_optional() {
         session.extend_from_slice(&3u16.to_be_bytes()); // panes
         session.extend_from_slice(&0u16.to_be_bytes()); // attached
         session.push(0); // no active resource
+        session.extend_from_slice(members); // absent from an older hub
         session.extend_from_slice(extra); // a newer server's additions
         let mut host = Vec::new();
         host.extend_from_slice(&4u32.to_be_bytes());
@@ -94,11 +99,11 @@ fn host_inventory_trails_the_facet_list_and_is_optional() {
         rows
     };
     let mut full = prefix.clone();
-    full.extend_from_slice(&host_rows(&[]));
-    // The same rows with bytes appended inside each record, as a newer
-    // server extending them would write.
+    full.extend_from_slice(&host_rows(&[], &[]));
+    // The same rows with an empty member list and bytes appended inside
+    // each record, as a newer server extending them would write.
     let mut extended = prefix.clone();
-    extended.extend_from_slice(&host_rows(&[0xEE, 0xFF, 0x01]));
+    extended.extend_from_slice(&host_rows(&0u32.to_be_bytes(), &[0xEE, 0xFF, 0x01]));
 
     let decode = |snap: &[u8]| {
         let mut fields = Vec::new();
@@ -122,6 +127,10 @@ fn host_inventory_trails_the_facet_list_and_is_optional() {
     assert_eq!(
         (row.sessions[0].window_count, row.sessions[0].pane_count),
         (2, 3)
+    );
+    assert!(
+        row.sessions[0].members.is_empty(),
+        "an older hub sends no members"
     );
     assert!(decode(&prefix).hosts().is_empty());
     assert_eq!(decode(&extended), with_hosts, "record tails are skipped");

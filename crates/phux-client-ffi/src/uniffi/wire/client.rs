@@ -12,9 +12,10 @@ use phux_client_runtime::control::{Observation, SpawnRequest};
 use crate::uniffi::engine;
 
 mod agent_control;
-use agent_control::{agent_records, project_agent_control};
+use agent_control::project_agent_control;
 #[cfg(test)]
 mod agent_records;
+mod document_input;
 mod organization;
 #[cfg(test)]
 mod quic_live;
@@ -177,6 +178,7 @@ pub struct RemoteClient {
     kills: Mutex<HashMap<phux_protocol::ids::OperationId, u64>>,
     /// The last id `kill_session` returned.
     last_kill: std::sync::atomic::AtomicU64,
+    document_input: Mutex<document_input::DocumentInputState>,
 }
 
 #[uniffi::export]
@@ -890,6 +892,7 @@ impl RemoteClient {
             receipts: Mutex::new(std::collections::VecDeque::new()),
             kills: Mutex::new(HashMap::new()),
             last_kill: std::sync::atomic::AtomicU64::new(0),
+            document_input: Mutex::default(),
         })
     }
 }
@@ -1089,6 +1092,9 @@ impl RemoteClient {
         let Some(event) = project_agent_control(event, projected) else {
             return;
         };
+        let Some(event) = self.project_document(event, projected) else {
+            return;
+        };
         match event {
             Event::TopologyChanged => {
                 projected.push(WireEvent::TopologyChanged);
@@ -1124,42 +1130,6 @@ impl RemoteClient {
             | Event::OrganizationOperation { .. }) => {
                 projected.extend(self.organization_event(event));
             }
-            Event::AgentPublication {
-                publication,
-                session,
-            } => {
-                if let Some(batch) = crate::projection::agent_records::project(&publication) {
-                    let kind = match batch.mode {
-                        phux_client_core::session::agent_stream::AgentRecordMode::Replace => {
-                            AgentRecordsKind::Retained
-                        }
-                        phux_client_core::session::agent_stream::AgentRecordMode::Append => {
-                            AgentRecordsKind::Live
-                        }
-                    };
-                    projected.push(agent_records(
-                        &publication.resource_id,
-                        session,
-                        kind,
-                        batch.seq,
-                        batch.jsonl,
-                    ));
-                }
-            }
-            Event::DocumentPublished { publication } => {
-                projected.push(agent_control::document(&publication));
-            }
-            Event::AgentSessionClosed {
-                terminal_id,
-                session,
-                ..
-            } => projected.push(agent_records(
-                &terminal_id,
-                session,
-                AgentRecordsKind::Closed,
-                0,
-                String::new(),
-            )),
             _ => {}
         }
     }

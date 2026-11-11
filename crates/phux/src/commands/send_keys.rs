@@ -2,6 +2,7 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use phux_client::attach::AttachError;
+use phux_client::read::Verb;
 use phux_client::recovery::{EffectCertainty, NextAction, Recovery, ScopeKind};
 use phux_protocol::ids::ResourceId;
 use phux_server::runtime::default_socket_path;
@@ -19,7 +20,9 @@ pub(crate) const RECEIPT_SCHEMA_VERSION: u8 = 1;
 /// is resolved client-side to a single pane (the selected one — the focused
 /// pane when the selector spans several), then the events route to exactly
 /// that pane by id, so this neither attaches nor resizes the live pane
-/// (phux-n95; see [`phux_client::send_keys::send_to`]).
+/// (phux-n95; see [`phux_client::send_keys::send_to`]). A non-Terminal
+/// target is refused by kind: a document takes typed intents through
+/// `phux agent page`, not keys.
 pub(crate) fn run_send_keys(
     target: &str,
     keys: &[String],
@@ -36,11 +39,12 @@ pub(crate) fn run_send_keys(
         Err(code) => return code,
     };
     rt.block_on(async move {
-        let pane = match resolve_target_for_input(&socket_path, &selector, "send-keys", json).await
-        {
-            Ok(id) => id,
-            Err(code) => return code,
-        };
+        // Keys reach a Terminal only; a document's input is typed intents.
+        let pane =
+            match resolve_target_for_input(&socket_path, &selector, Verb::SendKeys, json).await {
+                Ok(id) => id,
+                Err(code) => return code,
+            };
         match phux_client::send_keys::send_counted(&socket_path, &pane, keys).await {
             Ok(events) => report_receipt(json, &pane, events),
             Err(failure) => report_input_failure(
@@ -83,7 +87,7 @@ pub(crate) fn report_input_failure(
     if !json {
         return match err {
             AttachError::Io(_) => crate::commands::report_no_server(err, socket_path, verb),
-            AttachError::Refused(msg) => {
+            AttachError::Refused(msg) | AttachError::WrongResourceKind(msg) => {
                 error!("{verb} refused for '{target}': {msg} (try `phux ls`)");
                 ExitCode::FAILURE
             }

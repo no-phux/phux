@@ -72,6 +72,18 @@ Every tool the MCP adapter (`phux mcp`) serves, the `phux` verb it mirrors, and 
 | `phux_resource_show` | `phux resource show` | in-process | yes | no |
 | `phux_resource_wait` | `phux resource wait` | in-process | yes | no |
 | `phux_resource_methods` | `phux resource methods` | in-process | yes | no |
+| `phux_documents` | none (automation only) | in-process | yes | no |
+| `phux_tree_snapshot` | `phux agent tree snapshot` | in-process | no | no |
+| `phux_tree_wait` | `phux agent tree follow` | in-process | no | no |
+| `phux_surface_snapshot` | `phux agent surface snapshot` | in-process | no | no |
+| `phux_document_navigate` | `phux agent page navigate` | in-process | no | yes |
+| `phux_document_click` | `phux agent page click` | in-process | no | yes |
+| `phux_document_type` | `phux agent page type` | in-process | no | yes |
+| `phux_document_key` | `phux agent page key` | in-process | no | yes |
+| `phux_document_scroll` | `phux agent page scroll` | in-process | no | yes |
+| `phux_click_element` | `phux agent tree click` | in-process | no | yes |
+| `phux_app_open` | `phux spawn` | in-process | no | yes |
+| `phux_app_close` | `phux kill` | in-process | no | yes |
 | `phux_approvals` | `phux approvals` | in-process | yes | no |
 | `phux_approve` | `phux approve` | in-process | no | yes |
 
@@ -99,13 +111,14 @@ These tools still run the `phux` binary as a subprocess, bounded in time and out
 - `phux_status`: the status document (peer-credential pid, service state, log paths) is assembled by the CLI command.
 - `phux_doctor`: the health checks are the CLI's; a second copy could disagree with `phux doctor`.
 - `phux_whoami`: the `whoami` feature check and the refusal document are the CLI command's.
-- `phux_perf`: the report document and the dev-mode desktop's socket discovery are the CLI command's.
-- `phux_perf_trace`: the capture window, the trace file, and the merged desktop timeline are the CLI command's.
+- `phux_perf`: the report document is the CLI command's.
+- `phux_perf_trace`: the capture window and the trace file are the CLI command's.
 
 ## Automation-only tools
 
 - `phux_operation_status`: observe an adapter-scoped mutation without blocking on approval.
 - `phux_plugin_profile`: lists the profiles configured plugin manifests declare; `phux plugin list` and `phux config plugins` list the manifests, not their profiles.
+- `phux_documents`: the document-kind subset of `phux ls --json`'s `resources`, with each one's name.
 
 ## CLI verbs without a tool
 

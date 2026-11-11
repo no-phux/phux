@@ -127,26 +127,8 @@ pub(crate) enum AgentAction {
         /// pane.
         #[usage(conflicts("--any"))]
         target: Option<String>,
-        /// Wait for the first matching transition from any local agent in
-        /// the fleet instead of resolving one pane.
-        #[usage(long)]
-        any: bool,
-        /// Lifecycle state to wait for; repeat to OR several. Defaults to
-        /// `idle`, `blocked`, `done` — the three ways a turn ends.
-        /// `unknown` is not spellable: it is departure, not a state.
-        #[usage(
-            long,
-            value_name = "STATE",
-            choices("idle", "working", "blocked", "done")
-        )]
-        until: Vec<String>,
-        /// Give up after this many seconds and exit 124. Unbounded when
-        /// omitted, matching `phux wait` — always pass one in a script.
-        #[usage(long, value_name = "SECS")]
-        timeout: Option<u64>,
-        /// Emit the machine-readable result document instead of a line.
-        #[usage(long)]
-        json: bool,
+        #[usage(flatten)]
+        flags: super::action_flags::WaitFlags,
     },
     /// Hand an agent a turn's worth of work, with a delivery receipt.
     ///
@@ -301,12 +283,19 @@ pub(crate) enum AgentAction {
         action: super::tree::TreeAction,
     },
     /// A pixel surface is a pane's child resource that a producer feeds
-    /// with PNG images of a window or display; `snapshot` writes the newest
+    /// with PNG or JPEG images of a window or display; `snapshot` writes the newest
     /// and `follow` every one. Needs a server that advertises
     /// `PIXEL_SURFACE`.
     Surface {
         #[usage(subcommand)]
         action: super::tree::SurfaceAction,
+    },
+    /// A typed document is a pane's child resource that a producer feeds
+    /// with whole documents of the content type it was opened with
+    /// (Markdown, SVG, CSV, JSON, PNG...). Needs `TYPED_DOCUMENT`.
+    Doc {
+        #[usage(subcommand)]
+        action: super::tree::DocAction,
     },
     /// A browser page over the Chrome debugging protocol (CDP), as a tree (its
     /// accessibility tree) and a surface (its screencast) under one pane.
@@ -314,6 +303,12 @@ pub(crate) enum AgentAction {
     Page {
         #[usage(subcommand)]
         action: super::tree::PageAction,
+    },
+    /// An application as resources: launched, mirrored from its own pane,
+    /// and quit with it. `phux spawn --app` is the short form.
+    App {
+        #[usage(subcommand)]
+        action: super::tree::AppAction,
     },
     /// Append one record to a pane's agent session.
     ///
@@ -380,6 +375,16 @@ pub(crate) enum AgentAction {
     Usage {
         #[usage(flatten)]
         flags: UsageFlags,
+    },
+    /// Show each pane's agent work: tasks finished and time spent working.
+    ///
+    /// Prints the `phux.agent-stats/v1` document. `--publish` records the
+    /// hook event in the environment, then writes that Global key; the
+    /// agent-stats plugin runs it from its hooks.
+    Stats {
+        /// Record the hook event and write the key.
+        #[usage(long)]
+        publish: bool,
     },
     /// Internal: read one Claude Code hook payload from stdin and print the
     /// fields the generated shim splices into its `phux` calls, as one line

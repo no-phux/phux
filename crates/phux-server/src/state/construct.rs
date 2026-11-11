@@ -33,6 +33,8 @@ impl ServerState {
             uplinks: crate::uplink::Uplinks::default(),
             hook_dispatcher: None,
             plugin_startup: None,
+            standing_mirrors: None,
+            mirror_demand: crate::state::mirror_demand::Demand::default(),
             push_grants: crate::push::PushGrants::default(),
             // Mints this process's incarnation and starts the idle clock —
             // see `Lifecycle::new`.
@@ -45,6 +47,7 @@ impl ServerState {
             operation_dedupe: crate::runtime::operation_dedupe::OperationDedupe::default(),
             approvals: super::approvals::ApprovalTable::default(),
             native_agents: super::native_agent::NativeAgents::default(),
+            document_controls: std::collections::HashMap::new(),
         }
     }
 }

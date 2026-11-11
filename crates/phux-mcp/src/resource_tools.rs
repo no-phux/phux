@@ -144,7 +144,7 @@ async fn wait(args: &Value) -> Result<Value, ToolError> {
 
 /// The socket and the one resource `target` names. A direct id is taken as
 /// given (no lookup), like the CLI, so an exited resource can be named.
-async fn target(args: &Value) -> Result<(PathBuf, ResourceId), ToolError> {
+pub(crate) async fn target(args: &Value) -> Result<(PathBuf, ResourceId), ToolError> {
     let socket = socket_or_default(args);
     let selector = parse_selector(required_str(args, "target")?)?;
     if let Some(id) = selector.explicit_id() {

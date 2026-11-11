@@ -8,6 +8,10 @@ use super::Desk;
 use super::input::Modal;
 use crate::keys::{self, Typed};
 
+mod refit;
+pub mod spatial;
+pub mod touch;
+
 /// Points the arrow pad travels per arrow key it sends.
 const PAD_STEP: f32 = 16.0;
 
@@ -28,6 +32,20 @@ pub enum Soft {
 
 #[derive(Debug, Clone)]
 pub struct Phone {
+    /// The pruned active group, not the phone's single visible leaf.
+    pub tree: Option<phux_client_core::layout::LayoutNode>,
+    context: Option<(phux_protocol::ids::SessionKey, [u8; 16])>,
+    pub stage: [f32; 2],
+    pub travel: [f32; 2],
+    pub picker: bool,
+    navigation: Option<(phux_protocol::ids::ResourceId, bool)>,
+    /// The finger on the terminal, and the coast it left behind.
+    touch: Option<touch::Touch>,
+    fling: Option<touch::Fling>,
+    /// The changed grid waiting for the keyboard or sheet layout to settle.
+    refit: Option<refit::Refit>,
+    /// What a native host should play next (a haptic).
+    pub feedback: Option<touch::Feedback>,
     pub ctrl: bool,
     pub alt: bool,
     pub shift: bool,
@@ -43,6 +61,16 @@ pub struct Phone {
 impl Default for Phone {
     fn default() -> Self {
         Self {
+            tree: None,
+            context: None,
+            stage: [0.0; 2],
+            travel: [0.0; 2],
+            picker: false,
+            navigation: None,
+            touch: None,
+            fling: None,
+            refit: None,
+            feedback: None,
             ctrl: false,
             alt: false,
             shift: false,
@@ -55,6 +83,30 @@ impl Default for Phone {
 }
 
 impl Phone {
+    pub fn navigating(&self) -> bool {
+        self.navigation.is_some()
+    }
+
+    pub(super) fn reconcile(
+        &mut self,
+        tree: Option<phux_client_core::layout::LayoutNode>,
+        context: Option<(phux_protocol::ids::SessionKey, [u8; 16])>,
+    ) {
+        if self.tree != tree || self.context != context {
+            self.reset_navigation();
+            self.picker = false;
+            self.tree = tree;
+            self.context = context;
+        }
+    }
+
+    pub(super) fn reset_navigation(&mut self) {
+        self.navigation = None;
+        self.travel = [0.0; 2];
+        self.fling = None;
+        self.refit = None;
+    }
+
     pub const fn latched(&self, latch: Latch) -> bool {
         match latch {
             Latch::Ctrl => self.ctrl,
@@ -64,7 +116,7 @@ impl Phone {
     }
 
     /// Let go of every latch: each holds for one key, as a phone's shift does.
-    fn release(&mut self) {
+    pub(super) fn release(&mut self) {
         self.ctrl = false;
         self.alt = false;
         self.shift = false;
@@ -72,7 +124,7 @@ impl Phone {
     }
 
     /// `soft` as a field types it: a letter takes either shift.
-    fn for_field(&mut self, soft: Soft) -> Key {
+    pub(super) fn for_field(&mut self, soft: Soft) -> Key {
         let key = match soft {
             Soft::Char(c) if self.capital || self.shift => {
                 Key::Text(c.to_ascii_uppercase().to_string())
@@ -112,9 +164,11 @@ impl Phone {
 /// What a drawn key types into while something else has the keyboard.
 #[derive(Debug, Clone, Copy)]
 enum Field {
+    Settings,
     Palette,
     Find,
     Confirm,
+    PanePicker,
 }
 
 /// How many whole steps `travel` has crossed, toward its sign.
@@ -129,15 +183,30 @@ impl Desk {
     }
 
     /// A key from the drawn keyboard or the accessory bar, for whatever has
-    /// the keyboard: the palette's or find's field, the confirm bar, else
-    /// the terminal. A sheet the drawn keyboard can't type into yet gets
-    /// nothing, never the terminal behind it.
+    /// the keyboard: a field or modal first, else the terminal. Delivery is
+    /// synchronous, so closing a field cannot redirect a queued key behind it.
     pub fn soft(&mut self, soft: Soft, tx: &mut Tx) {
+        self.stop_coast();
+        if self.native.is_some() && super::native_input::accessory(self, &soft, tx) {
+            return;
+        }
         let field = match self.modal() {
             None => return self.soft_to_terminal(&soft),
             Some(Modal::Palette) => Field::Palette,
             Some(Modal::FindField) => Field::Find,
             Some(Modal::Confirm) => Field::Confirm,
+            Some(Modal::PhonePicker) => Field::PanePicker,
+            Some(Modal::Settings) => Field::Settings,
+            Some(Modal::Rename | Modal::Machines | Modal::Inbox) => {
+                super::native_input::accessory(self, &soft, tx);
+                return;
+            }
+            Some(Modal::News) => {
+                if matches!(soft, Soft::Key(Key::Escape)) {
+                    self.close_news();
+                }
+                return;
+            }
             Some(_) => return,
         };
         let Some(phone) = self.phone.as_mut() else {
@@ -151,8 +220,18 @@ impl Desk {
     }
 
     /// `event` as the field's own keys take it first, then as typing.
+    /// Keep this synchronous: `Tx::send_key` routes next frame, when the
+    /// field may have closed and its key would reach the terminal instead.
     fn soft_to_field(&mut self, field: Field, event: &KeyEvent, tx: &mut Tx) {
         let taken = match field {
+            Field::Settings => {
+                self.settings_soft(event, tx);
+                return;
+            }
+            Field::PanePicker => {
+                self.phone_picker_key(event);
+                return;
+            }
             Field::Confirm => {
                 self.confirm_key(event);
                 return;
@@ -194,6 +273,18 @@ impl Desk {
         });
     }
 
+    /// One tap for a control chord worth its own key (⌃C), terminal only.
+    pub fn soft_chord(&mut self, key: char, tx: &mut Tx) {
+        if self.modal().is_some() {
+            return;
+        }
+        if let Some(phone) = self.phone.as_mut() {
+            phone.release();
+            phone.ctrl = true;
+        }
+        self.soft(Soft::Char(key), tx);
+    }
+
     pub fn toggle_latch(&mut self, latch: Latch) {
         let Some(phone) = self.phone.as_mut() else {
             return;
@@ -218,9 +309,33 @@ impl Desk {
         }
     }
 
-    pub fn toggle_keyboard(&mut self) {
+    /// Settings owns its search keyboard without changing the terminal's choice.
+    pub fn phone_keyboard_visible(&self) -> bool {
+        if self.settings_open {
+            self.settings_search_focused()
+        } else {
+            self.phone.as_ref().is_some_and(|phone| phone.keyboard)
+        }
+    }
+
+    pub fn toggle_keyboard(&mut self, tx: &mut Tx) {
+        if self.settings_open {
+            self.blur_settings_search(tx);
+            return;
+        }
         if let Some(phone) = self.phone.as_mut() {
             phone.keyboard = !phone.keyboard;
+        }
+    }
+
+    /// Accessory commands follow the same modal policy as native key chords.
+    pub fn phone_commands(&mut self, tx: &mut Tx) {
+        if self.settings_open {
+            self.blur_settings_search(tx);
+        } else if let Some(modal) = self.modal() {
+            self.modal_command(modal, crate::keys::Shortcut::Palette, tx);
+        } else {
+            self.shortcut(crate::keys::Shortcut::Palette, tx);
         }
     }
 
@@ -247,6 +362,9 @@ impl Desk {
         }
     }
 }
+
+#[cfg(test)]
+mod runtime;
 
 #[cfg(test)]
 mod tests {
@@ -306,6 +424,8 @@ mod tests {
         runtime.frame(1.0 / 60.0);
         runtime.touch(1, TouchPhase::Ended, x, y, at + 0.05);
         runtime.frame(1.0 / 60.0);
+        // Flush the next frame too: no deferred input may outlive its field.
+        runtime.frame(1.0 / 60.0);
     }
 
     // The keyboard sits outside the palette's scrim; Rune counts what comes
@@ -317,6 +437,7 @@ mod tests {
         desk.prefs = Prefs::memory();
         desk.palette_open = true;
         let mut runtime = Runtime::new(desk, crate::ui::view, (393.0, 852.0), Env::new(true, 2.0));
+        runtime.on_key = Some(Desk::key);
         runtime.frame(0.0);
         tap(&mut runtime, "phone-latch-Shift", 0.1);
         tap(&mut runtime, "phone-cap-116", 0.3);

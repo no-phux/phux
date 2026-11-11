@@ -55,13 +55,49 @@ fn inventory_lists_satellite_sessions_without_renumbering() {
         Some(ResourceId::satellite(host.clone(), 102)),
         "the active window's active pane, re-tagged"
     );
+    assert_eq!(
+        build.members,
+        [100, 101, 102].map(|id| ResourceId::satellite(host.clone(), id)),
+        "every terminal of the session, re-tagged; the agent child is not one"
+    );
     let logs = &row.sessions[1];
     assert_eq!(logs.pane_count, 1);
+    assert_eq!(logs.members, [ResourceId::satellite(host.clone(), 200)]);
     assert_eq!(
         logs.active_resource,
         Some(ResourceId::satellite(host, 200)),
         "no remembered focus falls back to the first window's first terminal"
     );
+}
+
+/// A non-Terminal resource joins the session its `session` facet names;
+/// it sits in no window, and it is no pane.
+#[test]
+fn inventory_members_include_documents_their_session_names() {
+    let host = SatelliteHost::from("edge");
+    let mut sat = satellite_snapshot();
+    let in_session = |id, kind, session| {
+        let mut info = ResourceInfo::resource(ResourceId::local(id), kind);
+        info.session = Some(SessionId::new(session));
+        info
+    };
+    sat.resources.extend([
+        in_session(104, ResourceKind::AccessibilityTree, 1),
+        in_session(105, ResourceKind::PixelSurface, 1),
+        in_session(201, ResourceKind::Document, 2),
+    ]);
+    let row = satellite_host_inventory(&host, &sat);
+    let (build, logs) = (&row.sessions[0], &row.sessions[1]);
+    assert_eq!(
+        build.members,
+        [100, 101, 102, 104, 105].map(|id| ResourceId::satellite(host.clone(), id)),
+    );
+    assert_eq!(build.pane_count, 3, "documents are not panes");
+    assert_eq!(
+        logs.members,
+        [200, 201].map(|id| ResourceId::satellite(host.clone(), id))
+    );
+    assert_eq!(logs.pane_count, 1);
 }
 
 /// L1 §9.1: a satellite's window and client ids are its own. A merged
@@ -77,6 +113,8 @@ fn merged_satellite_rows_carry_no_satellite_window_or_client_ids() {
     let mut held = ResourceInfo::new(ResourceId::local(100), WindowId::new(1), 80, 24)
         .with_viewers(vec![WireClientId::new(2)]);
     held.input_holder = Some(WireClientId::new(3));
+    // Satellite-local session 1 is not the hub's session 1 (#2051).
+    held.session = Some(SessionId::new(1));
     let mut foreign = ResourceInfo::new(ResourceId::local(101), WindowId::new(1), 80, 24);
     foreign.input_holder = Some(WireClientId::new(3));
     let holders = std::collections::HashMap::from([(100, crate::state::ClientId(7))]);
@@ -87,6 +125,7 @@ fn merged_satellite_rows_carry_no_satellite_window_or_client_ids() {
     };
     for row in [held, foreign] {
         assert_eq!(row.window_id, WindowId::new(0), "no hub window owns it");
+        assert_eq!(row.session, None, "no hub session owns it");
     }
     assert_eq!(
         held.input_holder,

@@ -31,17 +31,45 @@ impl Desk {
     /// Read the clipboard for the terminal on screen now: the reply comes
     /// back later, and the keyboard may have moved on by then.
     pub(super) fn paste_clipboard(&mut self, tx: &mut Tx) {
+        if self.native.is_none() && self.paste_into_document(tx) {
+            return;
+        }
         if self.shown.as_ref().is_some_and(|s| s.view.is_none()) {
             return;
         }
         let Some(shown) = &self.shown else {
             return self.say(NoticeKind::Error, "No terminal to paste into.");
         };
-        let terminal = shown.terminal.clone();
+        let terminal = shown.resource.clone();
+        if let Some(native) = &mut self.native {
+            // The system owns a phone's pasteboard and asks its user first;
+            // the host answers through the input bridge's paste.
+            native.paste_requested = true;
+            return;
+        }
         let server = self.link.server;
         tx.read_clipboard(move |desk: &mut Self, content, _| {
             desk.paste_answered(&terminal, server, content);
         });
+    }
+
+    /// A native host's answer to `paste_requested`: its pasteboard's text,
+    /// under the same confirmation as any other paste.
+    pub fn paste_from_host(&mut self, text: &str) {
+        if !self.pastes_allowed() {
+            return self.say(NoticeKind::Error, "Nothing was pasted.");
+        }
+        if let Some(terminal) = self.shown.as_ref().map(|s| s.resource.clone()) {
+            self.paste(&terminal, text);
+        }
+    }
+
+    /// The host's pasteboard held more than a paste may carry.
+    pub fn paste_too_large(&mut self) {
+        self.say(
+            NoticeKind::Error,
+            "Clipboard too large to paste (over 1 MiB).",
+        );
     }
 
     /// The clipboard's reply to a paste asked for on `server`.
@@ -167,7 +195,7 @@ mod tests {
             phux_client_runtime::control::ControlOptions::default(),
         )));
         desk.shown = Some(crate::desk::Shown {
-            terminal: ResourceId::local(terminal),
+            resource: ResourceId::local(terminal),
             view: phux_client_runtime::ViewId::from_raw(1),
         });
     }

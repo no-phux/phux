@@ -104,9 +104,13 @@ async fn under_paired_only_an_inner_session_with_an_enrolled_certificate_is_admi
     let ca = crate::workload::authority_certificate(&paths.ca_cert).unwrap();
     let registry =
         Arc::new(crate::workload::ReloadingWorkloadRegistry::load(paths.registry.clone()).unwrap());
-    let inner =
-        super::super::inner_tls::InnerTls::new(&cert, &key, Some((&ca, registry)), paths.clone())
-            .unwrap();
+    let inner = super::super::inner_tls::InnerTls::new(
+        &cert,
+        &key,
+        Some((&ca.clone().into(), registry)),
+        paths.clone(),
+    )
+    .unwrap();
     let listener = WtListener::from_pem(
         "127.0.0.1:0".parse().unwrap(),
         &cert,

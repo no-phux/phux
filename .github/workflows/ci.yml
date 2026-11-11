@@ -44,7 +44,6 @@ jobs:
       icount: ${{ steps.plan.outputs.icount }}
       integrations: ${{ steps.plan.outputs.integrations }}
       web: ${{ steps.plan.outputs.web }}
-      desktop: ${{ steps.plan.outputs.desktop }}
       native: ${{ steps.plan.outputs.native }}
       rune: ${{ steps.plan.outputs.rune }}
       docs_only: ${{ steps.plan.outputs.docs_only }}
@@ -328,6 +327,9 @@ jobs:
         with:
           node-version: 26
       - uses: ./.github/actions/setup-bun
+      # The npm agent-integration-release.yml packs and publishes with, so a
+      # change that only breaks under it fails here instead of at release.
+      - run: npm install --global npm@12.2.1
       # `just agent-integrations-check`, without installing just.
       - run: bash scripts/ci/agent-integrations.sh
 
@@ -352,13 +354,6 @@ jobs:
           PHUX_WEB_ENGINE: ${{ needs.plan.outputs.web_engine == 'true' && '1' || '0' }}
           PHUX_TOOLCHAIN_DIR: ${{ runner.temp }}/phux-toolchains
         run: nix develop .#browser -c just web-check
-
-  # Pull requests only (plan.ts). The legs and their caches live in
-  # desktop-lane.yml, which cache-warm.yml also runs on main.
-  desktop:
-    needs: plan
-    if: needs.plan.outputs.desktop == 'true'
-    uses: ./.github/workflows/desktop-lane.yml
 
   # A clean contributor machine: rustup, the pinned Zig, no Nix, no cache.
   native:
@@ -390,7 +385,7 @@ jobs:
   # The required check. The ruleset matches this display name.
   ci:
     name: ci
-    needs: [plan, guards, lint, test-build, tests, e2e, ffi, icount, integrations, web, desktop, native, rune]
+    needs: [plan, guards, lint, test-build, tests, e2e, ffi, icount, integrations, web, native, rune]
     # Same draft exception as plan: release-please heads always reach this gate.
     if: always() && github.event.action != 'closed' && (startsWith(github.head_ref, 'release-please--') || github.event.pull_request.draft != true)
     runs-on: ubuntu-24.04
@@ -426,7 +421,7 @@ jobs:
   content:
     name: publish content
     needs: [plan, ci]
-    # always(): an implicit success() also requires the skipped desktop lane.
+    # always(): an implicit success() also requires every skipped lane.
     if: always() && github.event_name == 'push' && needs.plan.outputs.content == 'true' && needs.ci.result == 'success'
     uses: ./.github/workflows/publish-content.yml
     secrets:

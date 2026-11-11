@@ -41,6 +41,7 @@ use phux_protocol::{PROTOCOL_VERSION, ResourceKind, Version};
 use phux_vt_web::{Grid, NativeCodecError, NativeDecoder, Terminal, Vt};
 
 mod attach;
+mod documents;
 mod engine;
 mod frames;
 mod pane_replies;
@@ -51,6 +52,7 @@ mod view;
 
 pub use attach::AttachPreference;
 use attach::Discovery;
+pub use documents::WebDocument;
 use engine::WebEngine;
 
 const ATTACH_ID: u32 = 1;
@@ -102,6 +104,7 @@ pub fn client_caps(vt: &Vt) -> ClientCapabilities {
     ClientCapabilities::new()
         .with_image_protocols(ImageProtocolSet::new())
         .with_bootstrap(bootstrap)
+        .with_resource_kinds(WEB_RESOURCE_KINDS)
 }
 
 fn synthesized_bootstrap_caps() -> BootstrapCapabilities {
@@ -115,7 +118,20 @@ fn synthesized_client_caps() -> ClientCapabilities {
     ClientCapabilities::new()
         .with_image_protocols(ImageProtocolSet::new())
         .with_bootstrap(synthesized_bootstrap_caps())
+        .with_resource_kinds(WEB_RESOURCE_KINDS)
 }
+
+/// The web client draws terminals, agent badges, and every document kind
+/// it decodes (trees, surfaces and typed documents), so the server streams
+/// it those.
+const WEB_RESOURCE_KINDS: phux_protocol::caps::ResourceKindSet =
+    phux_protocol::caps::ResourceKindSet::with(&[
+        ResourceKind::Terminal,
+        ResourceKind::AgentSession,
+        ResourceKind::AccessibilityTree,
+        ResourceKind::PixelSurface,
+        ResourceKind::Document,
+    ]);
 
 /// Leads every failure message for a protocol-major refusal, so a redial
 /// loop that sees only the message can tell it from a transient loss.
@@ -191,6 +207,9 @@ pub struct Connection {
     cell_px: Option<(u16, u16)>,
     focused_terminal: Option<ResourceId>,
     terminal_order: Vec<ResourceId>,
+    /// Document resources: read-only tiles after the terminals.
+    documents: HashMap<ResourceId, WebDocument>,
+    document_order: Vec<ResourceId>,
     bootstrap_limits: Option<BootstrapLimits>,
     selected_profile: Option<BootstrapProfile>,
     /// The server's protocol from `HELLO_OK`: same major, any minor/patch.
@@ -259,6 +278,8 @@ impl Connection {
             cell_px: None,
             focused_terminal: None,
             terminal_order: Vec::new(),
+            documents: HashMap::new(),
+            document_order: Vec::new(),
             bootstrap_limits: None,
             selected_profile: None,
             server_protocol: None,

@@ -321,9 +321,9 @@ pub(super) fn checked_history_cursor(value: &[u8]) -> Result<bytes::Bytes, Decod
     Ok(bytes::Bytes::copy_from_slice(value))
 }
 
-/// Validate `BOOTSTRAP_BEGIN` dimensions: a Terminal stream needs a non-zero
-/// grid, and a gridless stream (agent events, an accessibility tree) must
-/// carry `0 x 0`.
+/// Validate `BOOTSTRAP_BEGIN` dimensions against the streaming kind's
+/// geometry: a cell grid is never `0 x 0`, and any other geometry (none, or
+/// pixels carried in the document) is exactly `0 x 0`.
 pub(super) fn checked_bootstrap_dimensions(
     profile: crate::caps::BootstrapStreamProfile,
     cols: Option<u16>,
@@ -331,14 +331,11 @@ pub(super) fn checked_bootstrap_dimensions(
 ) -> Result<(u16, u16), DecodeError> {
     let cols = req(cols)?;
     let rows = req(rows)?;
-    let gridless = matches!(
-        profile,
-        crate::caps::BootstrapStreamProfile::AgentEventsJsonlV1
-            | crate::caps::BootstrapStreamProfile::AgentEventsJsonlResumeV1 { .. }
-            | crate::caps::BootstrapStreamProfile::AccessibilityTreeJsonV1
-            | crate::caps::BootstrapStreamProfile::PixelSurfacePngV1
-    );
-    if gridless != (cols == 0 && rows == 0) {
+    // A newer codec decides for itself whether it has a grid.
+    let Some(spec) = profile.kind_spec() else {
+        return Ok((cols, rows));
+    };
+    if spec.stream.geometry.in_bootstrap() == (cols == 0 && rows == 0) {
         return Err(DecodeError::InvalidBootstrapProfile);
     }
     Ok((cols, rows))

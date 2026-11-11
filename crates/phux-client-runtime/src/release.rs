@@ -19,8 +19,9 @@ use serde_json::Value;
 pub const RELEASES: &str = "https://github.com/no-phux/phux/releases/download";
 
 /// `curl` arguments for fetching a manifest, before its URL: HTTPS only,
-/// bounded in time, and capped far above a manifest's few kilobytes.
-pub const MANIFEST_CURL_ARGS: [&str; 9] = [
+/// bounded in time, retried through a transient 5xx, and capped far above a
+/// manifest's few kilobytes.
+pub const MANIFEST_CURL_ARGS: [&str; 11] = [
     "-fsSL",
     "--proto",
     "=https",
@@ -30,7 +31,56 @@ pub const MANIFEST_CURL_ARGS: [&str; 9] = [
     "30",
     "--max-filesize",
     "1048576",
+    "--retry",
+    "2",
 ];
+
+/// GitHub's API for the same releases.
+///
+/// `releases/download` sometimes answers one asset with a 5xx for hours while the API still serves its bytes, so a
+/// client that fails there asks the API for the same asset
+/// ([`api_release_lookup`], then [`api_asset_url`] with [`API_ASSET_ACCEPT`]).
+/// The digest and signature checks are unchanged, so the second source adds
+/// no trust.
+pub const API_RELEASES: &str = "https://api.github.com/repos/no-phux/phux/releases";
+
+/// The `Accept` header that makes an API asset URL return the file itself.
+pub const API_ASSET_ACCEPT: &str = "Accept: application/octet-stream";
+
+/// The `Accept` header for an API release lookup.
+pub const API_JSON_ACCEPT: &str = "Accept: application/vnd.github+json";
+
+/// For an asset URL under [`RELEASES`], the API URL describing its release
+/// and the asset's name; `None` for anything else.
+#[must_use]
+pub fn api_release_lookup(url: &str) -> Option<(String, String)> {
+    let (tag, name) = url
+        .strip_prefix(RELEASES)?
+        .strip_prefix('/')?
+        .split_once('/')?;
+    let plain = |part: &str| {
+        !part.is_empty()
+            && !part.starts_with('.')
+            && part.bytes().all(|byte| {
+                byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'-' | b'_' | b'+')
+            })
+    };
+    (plain(tag) && plain(name)).then(|| (format!("{API_RELEASES}/tags/{tag}"), name.to_owned()))
+}
+
+/// In an API release lookup's body, the API URL that downloads asset `name`.
+/// Only a numeric asset of this repository's releases qualifies.
+#[must_use]
+pub fn api_asset_url(release: &str, name: &str) -> Option<String> {
+    let release: Value = serde_json::from_str(release).ok()?;
+    let url = release["assets"]
+        .as_array()?
+        .iter()
+        .find(|asset| asset["name"] == name)?["url"]
+        .as_str()?;
+    let id = url.strip_prefix(API_RELEASES)?.strip_prefix("/assets/")?;
+    (!id.is_empty() && id.bytes().all(|byte| byte.is_ascii_digit())).then(|| url.to_owned())
+}
 
 /// A release channel.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
@@ -40,6 +90,9 @@ pub enum Channel {
     Stable,
     /// The moving prerelease of green `main`.
     Next,
+    /// A numbered release a maintainer promoted for long-term support. Its
+    /// manifest must carry a valid signature (docs/runbooks/lts.md).
+    Lts,
 }
 
 impl Channel {
@@ -49,6 +102,7 @@ impl Channel {
         match self {
             Self::Stable => "stable",
             Self::Next => "next",
+            Self::Lts => "lts",
         }
     }
 
@@ -58,6 +112,7 @@ impl Channel {
         match text {
             "stable" | "latest" => Some(Self::Stable),
             "next" => Some(Self::Next),
+            "lts" => Some(Self::Lts),
             _ => None,
         }
     }
@@ -68,8 +123,6 @@ impl Channel {
 pub enum Product {
     /// `phux` and `phux-mcp`, one tarball per target.
     Phux,
-    /// The macOS app and Linux desktop, one archive per target.
-    Desktop,
 }
 
 impl Product {
@@ -78,7 +131,6 @@ impl Product {
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::Phux => "phux",
-            Self::Desktop => "desktop",
         }
     }
 }
@@ -112,7 +164,8 @@ impl fmt::Display for Version {
     }
 }
 
-/// One build on a channel: a stable version, or a commit on next.
+/// One build on a channel: a numbered release (stable or lts), or a commit on
+/// next.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Build {
     /// A stable release.
@@ -122,7 +175,8 @@ pub enum Build {
 }
 
 impl Build {
-    /// The channel this build is published on.
+    /// The channel whose assets this build is published as: an lts build is a
+    /// stable release.
     #[must_use]
     pub const fn channel(&self) -> Channel {
         match self {
@@ -179,11 +233,9 @@ impl Asset {
 }
 
 /// The asset `product` publishes for `build` on `target`: the one name
-/// derivation. Linux desktop archives use short architecture labels; macOS
-/// keeps its original Apple silicon name.
+/// derivation.
 #[must_use]
 pub fn asset(product: Product, build: &Build, target: &str) -> Asset {
-    let (desktop_platform, desktop_extension) = desktop_archive(target);
     let (release, stem, extension) = match (product, build) {
         (Product::Phux, Build::Stable(version)) => (
             format!("v{version}"),
@@ -195,35 +247,22 @@ pub fn asset(product: Product, build: &Build, target: &str) -> Asset {
             format!("phux-next.{sha}-{target}"),
             "tar.gz",
         ),
-        (Product::Desktop, Build::Stable(version)) => (
-            format!("desktop-v{version}"),
-            format!("phux-desktop-{version}-{desktop_platform}"),
-            desktop_extension,
-        ),
-        (Product::Desktop, Build::Next(sha)) => (
-            "next".to_owned(),
-            format!("phux-desktop-next.{sha}-{desktop_platform}"),
-            desktop_extension,
-        ),
     };
     let name = format!("{stem}.{extension}");
     let url = format!("{RELEASES}/{release}/{name}");
     Asset { stem, name, url }
 }
 
-fn desktop_archive(target: &str) -> (&'static str, &'static str) {
-    match target {
-        "x86_64-unknown-linux-gnu" => ("linux-x64", "tar.gz"),
-        "aarch64-unknown-linux-gnu" => ("linux-arm64", "tar.gz"),
-        "x86_64-pc-windows-msvc" => ("windows-x64", "zip"),
-        _ => ("macos-arm64", "zip"),
-    }
-}
-
 /// The URL of `channel`'s manifest.
 #[must_use]
 pub fn manifest_url(channel: Channel) -> String {
     format!("{RELEASES}/channels/{}.json", channel.as_str())
+}
+
+/// The URL of the minisign signature over `channel`'s manifest.
+#[must_use]
+pub fn manifest_signature_url(channel: Channel) -> String {
+    format!("{}.minisig", manifest_url(channel))
 }
 
 /// What a manifest publishes for one product on one target, validated.
@@ -300,7 +339,7 @@ pub fn parse(
             ))
         })?;
     let build = match channel {
-        Channel::Stable => Build::Stable(version),
+        Channel::Stable | Channel::Lts => Build::Stable(version),
         Channel::Next => Build::Next(sha.to_owned()),
     };
     Ok(Some(Entry {
@@ -337,10 +376,14 @@ fn canonical_number(field: &str) -> Option<u64> {
 #[cfg(test)]
 #[allow(clippy::unwrap_used, reason = "tests")]
 mod tests {
-    use super::{Build, Channel, Product, Version, asset, is_newer, manifest_url, parse};
+    use super::{
+        API_RELEASES, Build, Channel, Product, Version, api_asset_url, api_release_lookup, asset,
+        is_newer, manifest_url, parse,
+    };
 
     const STABLE: &str = include_str!("../../../scripts/fixtures/release-manifest/stable.json");
     const NEXT: &str = include_str!("../../../scripts/fixtures/release-manifest/next.json");
+    const LTS: &str = include_str!("../../../scripts/fixtures/release-manifest/lts.json");
     const LINUX: &str = "x86_64-unknown-linux-gnu";
 
     fn version(text: &str) -> Version {
@@ -369,6 +412,8 @@ mod tests {
     fn channels_and_manifest_urls() {
         assert_eq!(Channel::parse("latest"), Some(Channel::Stable));
         assert_eq!(Channel::parse("next"), Some(Channel::Next));
+        assert_eq!(Channel::parse("lts"), Some(Channel::Lts));
+        assert_eq!(Channel::Lts.as_str(), "lts");
         assert_eq!(Channel::parse("nightly"), None);
         assert_eq!(
             manifest_url(Channel::Next),
@@ -393,16 +438,6 @@ mod tests {
                 &next,
                 format!("next/phux-next.{sha}-x86_64-unknown-linux-gnu.tar.gz"),
             ),
-            (
-                Product::Desktop,
-                &stable,
-                "desktop-v1.2.3/phux-desktop-1.2.3-linux-x64.tar.gz".to_owned(),
-            ),
-            (
-                Product::Desktop,
-                &next,
-                format!("next/phux-desktop-next.{sha}-linux-x64.tar.gz"),
-            ),
         ];
         for (product, build, path) in rows {
             let asset = asset(product, build, LINUX);
@@ -421,53 +456,45 @@ mod tests {
     }
 
     #[test]
-    fn windows_desktop_assets_do_not_use_the_macos_fallback() {
-        let target = "x86_64-pc-windows-msvc";
-        let stable = asset(Product::Desktop, &Build::Stable(version("1.2.3")), target);
-        assert_eq!(stable.name, "phux-desktop-1.2.3-windows-x64.zip");
+    fn a_release_asset_maps_to_its_api_lookup() {
+        let asset = asset(Product::Phux, &Build::Next("a".repeat(40)), LINUX);
+        let (lookup, name) = api_release_lookup(&asset.url).unwrap();
+        assert_eq!(lookup, format!("{API_RELEASES}/tags/next"));
+        assert_eq!(name, asset.name);
         assert_eq!(
-            stable.signature_url(),
-            "https://github.com/no-phux/phux/releases/download/desktop-v1.2.3/phux-desktop-1.2.3-windows-x64.zip.sha256.minisig"
+            api_release_lookup(&manifest_url(Channel::Stable)),
+            Some((
+                format!("{API_RELEASES}/tags/channels"),
+                "stable.json".to_owned()
+            ))
         );
-        let sha = "b".repeat(40);
-        let next = asset(Product::Desktop, &Build::Next(sha.clone()), target);
-        assert_eq!(
-            next.name,
-            format!("phux-desktop-next.{sha}-windows-x64.zip")
-        );
+        for url in [
+            "https://evil.example/no-phux/phux/releases/download/next/x.tar.gz",
+            "https://github.com/no-phux/phux/releases/download/next",
+            "https://github.com/no-phux/phux/releases/download/next/",
+            "https://github.com/no-phux/phux/releases/download/../x/y",
+            "https://github.com/no-phux/phux/releases/download/next/a/b",
+            "https://github.com/no-phux/phux/releases/download/next/x?y=1",
+        ] {
+            assert_eq!(api_release_lookup(url), None, "{url}");
+        }
     }
 
     #[test]
-    fn desktop_archives_cover_every_published_target() {
-        let stable = Build::Stable(version("1.2.3"));
-        let next = Build::Next("b".repeat(40));
-        for (target, suffix) in [
-            ("aarch64-apple-darwin", "macos-arm64.zip"),
-            (LINUX, "linux-x64.tar.gz"),
-            ("aarch64-unknown-linux-gnu", "linux-arm64.tar.gz"),
-        ] {
-            for (build, identity) in [
-                (&stable, "1.2.3".to_owned()),
-                (&next, format!("next.{}", "b".repeat(40))),
-            ] {
-                let archive = asset(Product::Desktop, build, target);
-                assert_eq!(archive.name, format!("phux-desktop-{identity}-{suffix}"));
-                let body = match build.channel() {
-                    Channel::Stable => STABLE,
-                    Channel::Next => NEXT,
-                };
-                let entry = parse(body, build.channel(), Product::Desktop, target)
-                    .unwrap()
-                    .unwrap();
-                let document: serde_json::Value = serde_json::from_str(body).unwrap();
-                let recorded = &document["products"]["desktop"]["artifacts"][target];
-                assert_eq!(
-                    recorded["name"],
-                    asset(Product::Desktop, &entry.build, target).name
-                );
-                assert_eq!(entry.sha256.len(), 64);
-            }
+    fn only_this_repositorys_numeric_asset_is_downloaded_from_the_api() {
+        let api = format!("{API_RELEASES}/assets");
+        let body = format!(
+            r#"{{"assets":[
+                {{"name":"a.json","url":"{api}/11"}},
+                {{"name":"b.json","url":"https://evil.example/assets/12"}},
+                {{"name":"c.json","url":"{api}/13/../14"}}
+            ]}}"#
+        );
+        assert_eq!(api_asset_url(&body, "a.json"), Some(format!("{api}/11")));
+        for name in ["b.json", "c.json", "missing.json"] {
+            assert_eq!(api_asset_url(&body, name), None, "{name}");
         }
+        assert_eq!(api_asset_url("not json", "a.json"), None);
     }
 
     #[test]
@@ -484,22 +511,22 @@ mod tests {
 
     #[test]
     fn the_golden_manifests_parse() {
-        for (body, channel) in [(STABLE, Channel::Stable), (NEXT, Channel::Next)] {
+        for (body, channel, assets) in [
+            (STABLE, Channel::Stable, Channel::Stable),
+            (NEXT, Channel::Next, Channel::Next),
+            (LTS, Channel::Lts, Channel::Stable),
+        ] {
             let phux = parse(body, channel, Product::Phux, LINUX).unwrap().unwrap();
             assert_eq!(
                 (phux.version, phux.protocol.as_str()),
                 (version("9.8.7"), "0.9")
             );
             assert_eq!(phux.sha256, "2".repeat(64));
-            let desktop = parse(body, channel, Product::Desktop, "aarch64-apple-darwin")
-                .unwrap()
-                .unwrap();
-            assert_eq!(
-                (desktop.sha.as_str(), desktop.sha256.as_str()),
-                (&*"b".repeat(40), &*"d".repeat(64))
-            );
-            assert_eq!(desktop.build.channel(), channel);
+            assert_eq!(phux.build.channel(), assets);
         }
+        // An lts manifest is not a stable one, nor the reverse.
+        assert!(parse(LTS, Channel::Stable, Product::Phux, LINUX).is_err());
+        assert!(parse(STABLE, Channel::Lts, Product::Phux, LINUX).is_err());
         let next = parse(NEXT, Channel::Next, Product::Phux, LINUX)
             .unwrap()
             .unwrap();
@@ -537,10 +564,7 @@ mod tests {
     #[test]
     fn an_absent_product_is_unpublished_and_extra_members_are_ignored() {
         let empty = r#"{"schema_version": 1, "channel": "next", "products": {}}"#;
-        assert_eq!(
-            parse(empty, Channel::Next, Product::Desktop, LINUX),
-            Ok(None)
-        );
+        assert_eq!(parse(empty, Channel::Next, Product::Phux, LINUX), Ok(None));
         let additive = STABLE.replacen("\"protocol\"", "\"future\": \"x\",\n      \"protocol\"", 1);
         assert!(
             parse(&additive, Channel::Stable, Product::Phux, LINUX)

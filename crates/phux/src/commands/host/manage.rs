@@ -149,6 +149,9 @@ pub(super) fn run_show(name: &str, role: Option<HostRole>, json: bool) -> ExitCo
     if let Some(cert) = row.client_cert {
         outln!("  Client certificate: {}", cert.display());
     }
+    let color = phux_config::host_color::resolve(&row.name, row.color.as_deref());
+    let how = if color.overridden { "set" } else { "automatic" };
+    outln!("  Color: {} ({how})", color.id);
     ExitCode::SUCCESS
 }
 

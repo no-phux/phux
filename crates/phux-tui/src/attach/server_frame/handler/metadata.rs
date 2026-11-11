@@ -76,8 +76,8 @@ pub(super) fn handle_metadata_value<W: crate::attach::RenderSink>(
             ..FrameOutcome::default()
         });
     };
-    match ctx.decode_own_layout(&bytes) {
-        Ok(new_ws) if layout_names_only_absent_panes(&new_ws, ctx.panes) => {
+    match ArrangementDoc::decode_cbor(&bytes) {
+        Ok(new_ws) if layout_names_only_absent_panes(&new_ws, ctx.panes, ctx.surface_leaves()) => {
             tracing::debug!(
                 "persisted layout names only panes absent from the snapshot; discarding"
             );
@@ -160,6 +160,12 @@ pub(super) fn handle_metadata_changed<W: crate::attach::RenderSink>(
             value.as_deref(),
         ));
     }
+    if key == phux_client::session_order::SESSION_ORDER_KEY && matches!(scope, Scope::Global) {
+        return Ok(FrameOutcome {
+            session_order: Some(phux_client::session_order::decode(value.as_deref())),
+            ..FrameOutcome::default()
+        });
+    }
     let Some(LayoutKeyOwner::Session(key_session)) = layout_key_scope_session(scope, key) else {
         return Ok(FrameOutcome::default());
     };
@@ -182,7 +188,7 @@ pub(super) fn handle_metadata_changed<W: crate::attach::RenderSink>(
             ..FrameOutcome::default()
         });
     };
-    match ctx.decode_own_layout(&bytes) {
+    match ArrangementDoc::decode_cbor(&bytes) {
         Ok(new_ws) => {
             let attach_panes = adopt_workspace(ctx, new_ws);
             Ok(FrameOutcome {
@@ -277,7 +283,7 @@ fn adopt_workspace<W: crate::attach::RenderSink>(
     let reconciled =
         reconcile_loaded_workspace(incoming, ctx.workspace, ctx.focused_resource.as_ref());
     *ctx.workspace = reconciled;
-    let attach_panes = unknown_layout_leaves(ctx.workspace, ctx.panes);
+    let attach_panes = unknown_layout_leaves(ctx.workspace, ctx.panes, ctx.surface_leaves());
     *ctx.focused_resource = ctx.workspace.active_group().and_then(|ls| ls.focus.clone());
     attach_panes
 }

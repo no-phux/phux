@@ -324,6 +324,14 @@ pub struct ResourceInfo {
     /// `RESOURCE_SESSION`; `None` from a server that does not report it, in
     /// which case the join runs through [`Self::window_id`].
     pub session: Option<SessionId>,
+    /// Whether a document's producer (the connection that opened it) is
+    /// still connected; `None` for a non-document kind or from a server that
+    /// does not report it. Rides `RESOURCE_STATE`.
+    pub producer_connected: Option<bool>,
+    /// What input to a document controls; `None` for a document with no
+    /// control class, another kind, or a server that does not report it.
+    /// Rides `RESOURCE_STATE`.
+    pub control: Option<crate::wire::frame::ControlClass>,
 }
 
 impl ResourceInfo {
@@ -346,6 +354,8 @@ impl ResourceInfo {
             input_holder: None,
             viewers: Vec::new(),
             session: None,
+            producer_connected: None,
+            control: None,
         }
     }
 
@@ -376,6 +386,8 @@ impl ResourceInfo {
             input_holder: None,
             viewers: Vec::new(),
             session: None,
+            producer_connected: None,
+            control: None,
         }
     }
 
@@ -449,6 +461,20 @@ impl ResourceInfo {
         self
     }
 
+    /// Builder setter for [`Self::control`].
+    #[must_use]
+    pub const fn with_control(mut self, control: Option<crate::wire::frame::ControlClass>) -> Self {
+        self.control = control;
+        self
+    }
+
+    /// Builder setter for [`Self::producer_connected`].
+    #[must_use]
+    pub const fn with_producer_connected(mut self, producer_connected: Option<bool>) -> Self {
+        self.producer_connected = producer_connected;
+        self
+    }
+
     /// Whether the trailing resource facet list needs a row for this entry.
     pub(super) const fn has_resource_facets(&self) -> bool {
         !self.kind.is_terminal() || self.parent.is_some() || self.agent.is_some()
@@ -460,5 +486,7 @@ impl ResourceInfo {
             || self.exit.is_some()
             || self.input_holder.is_some()
             || !self.viewers.is_empty()
+            || self.producer_connected.is_some()
+            || self.control.is_some()
     }
 }

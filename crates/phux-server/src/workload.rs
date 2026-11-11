@@ -13,6 +13,7 @@ mod authority;
 mod client;
 mod enrollment;
 mod material;
+mod org_roots;
 mod registry;
 mod reload;
 mod server_identity;
@@ -27,10 +28,12 @@ pub use validate::*;
 
 pub use client::{
     ClientRequest, IssuedIdentity, remove_identity_files, remove_owned_file,
-    stored_certificate_expiry, stored_chain_authority, stored_credential_id,
+    stored_certificate_expiry, stored_certificate_validity, stored_chain_authority,
+    stored_credential_id,
 };
 
 pub use material::{ClientMaterial, MAX_MATERIAL_BYTES, MaterialError};
+pub use org_roots::{ClientRoots, org_roots_dir};
 pub use phux_protocol::scope::ScopeGrammarError;
 use phux_protocol::scope::TerminalScopeSet;
 pub use reload::{BrokenRegistry, RegistryObservation, ReloadingWorkloadRegistry};
@@ -143,6 +146,18 @@ pub enum WorkloadError {
     /// A supplied certificate does not verify against this authority.
     #[error("the certificate does not chain to this workload authority or is not currently valid")]
     NotIssuedByAuthority,
+    /// A `sync-managed` document is malformed or names another organization.
+    #[error("malformed managed credentials document: {0}")]
+    ManagedDocument(String),
+    /// A managed certificate does not verify against its organization's
+    /// roots. `index` is 1-based.
+    #[error(
+        "managed credential {index}: the certificate does not chain to the organization's roots or is not currently valid"
+    )]
+    NotIssuedByOrg {
+        /// Position of the credential in the document, counting from 1.
+        index: usize,
+    },
     /// The supplied enrollment material was refused.
     #[error(transparent)]
     Material(#[from] MaterialError),
@@ -218,6 +233,13 @@ impl WorkloadPaths {
 /// rather than `*`, which a far host's shell would glob.
 pub const PAIRED_DEVICE_SCOPE: &str =
     "inventory,observe,create,bind,input,signal,organize,terminate@global";
+
+/// The watch grants a person's device paired with full control also holds.
+///
+/// They reach every window and display on the host (`docs/authority.md`).
+/// Watching them is never inherited from [`PAIRED_DEVICE_SCOPE`], so pairing
+/// a human principal adds these; an automation key never gets them.
+pub const PAIRED_DEVICE_WATCH_SCOPES: [&str; 2] = ["observe@display", "observe@window"];
 
 /// The original pairing ceiling, retained only for legacy principal
 /// inference and an explicit owner-requested repair. Loading it never adds verbs.
@@ -307,6 +329,12 @@ pub struct WorkloadCredential {
     /// endpoint, and it carries no scope ceiling. `None` for every other
     /// credential.
     pub satellite: Option<String>,
+    /// The person or agent the key belongs to, when known.
+    pub subject: Option<String>,
+    /// The organization that manages this record
+    /// (`docs/remote.md#managed-by-an-organization`): admitted without a
+    /// pairing bearer, and replaced only by that organization's sync.
+    pub managed: Option<String>,
 }
 
 impl WorkloadCredential {
@@ -352,8 +380,76 @@ impl WorkloadCredential {
                 .and_then(|seconds| DateTime::from_timestamp(seconds, 0)),
             generation: registry.generation(),
             registry_instance: registry.instance_id().map(str::to_owned),
+            subject: self.subject.clone(),
+            managed: self.managed.clone(),
         }
     }
+}
+
+/// A test organization: its root, the leaves it issues, and the documents
+/// `sync-managed` reads.
+#[cfg(test)]
+pub(crate) struct TestOrg {
+    /// The organization's name, as documents and records carry it.
+    pub(crate) name: &'static str,
+    ca: rcgen::CertifiedIssuer<'static, rcgen::KeyPair>,
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, reason = "test support")]
+impl TestOrg {
+    /// A fresh organization with its own root.
+    pub(crate) fn new(name: &'static str) -> Self {
+        let mut params = rcgen::CertificateParams::new(Vec::<String>::new()).unwrap();
+        params
+            .distinguished_name
+            .push(rcgen::DnType::CommonName, format!("{name} root"));
+        params.is_ca = rcgen::IsCa::Ca(rcgen::BasicConstraints::Unconstrained);
+        params.key_usages = vec![
+            rcgen::KeyUsagePurpose::KeyCertSign,
+            rcgen::KeyUsagePurpose::DigitalSignature,
+        ];
+        let key = rcgen::KeyPair::generate().unwrap();
+        Self {
+            name,
+            ca: rcgen::CertifiedIssuer::self_signed(params, key).unwrap(),
+        }
+    }
+
+    /// A client leaf for `key`, issued by this organization, as PEM.
+    pub(crate) fn leaf(&self, key: &rcgen::KeyPair) -> String {
+        let mut params = rcgen::CertificateParams::new(vec!["device".to_owned()]).unwrap();
+        params.extended_key_usages = vec![rcgen::ExtendedKeyUsagePurpose::ClientAuth];
+        self.sign(&params, key)
+    }
+
+    /// `params` for `key`, signed by this organization's root, as PEM.
+    pub(crate) fn sign(&self, params: &rcgen::CertificateParams, key: &rcgen::KeyPair) -> String {
+        params.signed_by(key, &*self.ca).unwrap().pem()
+    }
+
+    /// The document listing `credentials` under this organization's root.
+    pub(crate) fn document(&self, credentials: &[serde_json::Value]) -> Vec<u8> {
+        serde_json::to_vec(&serde_json::json!({
+            "v": 1,
+            "org": self.name,
+            "roots": [self.ca.pem()],
+            "credentials": credentials,
+        }))
+        .unwrap()
+    }
+}
+
+/// One document entry: `leaf` with `scopes`, for a person, for an hour.
+#[cfg(test)]
+pub(crate) fn managed_entry(leaf: &str, scopes: &[&str]) -> serde_json::Value {
+    serde_json::json!({
+        "certificate": leaf,
+        "scopes": scopes,
+        "principal": "human",
+        "subject": "dev@example.com",
+        "expires_at": (Utc::now() + chrono::Duration::hours(1)).to_rfc3339(),
+    })
 }
 
 #[cfg(test)]

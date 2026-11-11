@@ -1,0 +1,2 @@
+[{"id":0,"name":"DP-1","description":"Dell Inc. DELL U2720Q 1234","make":"Dell Inc.","model":"DELL U2720Q","width":3840,"height":2160,"refreshRate":60.0,"x":0,"y":0,"activeWorkspace":{"id":1,"name":"1"},"specialWorkspace":{"id":0,"name":""},"scale":1.5,"focused":true},
+ {"id":1,"name":"HDMI-A-1","description":"LG Electronics LG TV","make":"LG Electronics","model":"LG TV","width":1920,"height":1080,"refreshRate":60.0,"x":2560,"y":0,"activeWorkspace":{"id":2,"name":"2"},"specialWorkspace":{"id":0,"name":""},"scale":1.0,"focused":false}]

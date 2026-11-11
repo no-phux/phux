@@ -1,14 +1,15 @@
 #!/usr/bin/env bash
-# Verify that the pinned libghostty-rs publishes a prebuilt libghostty-vt for
-# every target phux is developed on.
+# Verify that the pinned libghostty-rs publishes native archives, unless Cargo
+# explicitly requires source builds for this checkout.
 #
 # libghostty-vt-sys links a SHA-256-verified archive of its Ghostty commit,
 # downloaded from the libghostty-rs release named in its download.rs, and
 # falls back to a ~200 s Zig source build when its table has no entry for the
 # target. A pin bump onto a libghostty-rs rev whose release was never cut
 # would send every developer and CI lane back to Zig without failing anything,
-# so this check fails instead. Cargo.lock names the libghostty-rs rev; that
-# rev's download.rs names the archives.
+# so this check fails instead. A canonical source-build setting in Cargo's
+# [env] table deliberately opts out of archive downloads, not out of building
+# and testing the pinned engine. Cargo.lock names the binding revision.
 #
 # FAILURE POLICY: a reachable download.rs without an entry for a target, or a
 # listed archive the release does not serve, is a hard failure. An
@@ -43,6 +44,17 @@ source_line="$(awk '
 fork="${BASH_REMATCH[1]}"
 fork_rev="${BASH_REMATCH[3]}"
 
+# Match the actual forced build setting, not a comment, inherited shell
+# variable, or unrelated section. Removing it restores the archive requirement.
+if awk '
+  /^\[/ { in_env = ($0 == "[env]") }
+  in_env && /^LIBGHOSTTY_VT_SYS_FROM_SOURCE = [{] value = "1", force = true [}][[:space:]]*(#.*)?$/ { found = 1 }
+  END { exit !found }
+' "$ROOT/.cargo/config.toml"; then
+  phux_ok "check-ghostty-pin: ${fork}@${fork_rev:0:12} explicitly builds from source; no prebuilt archives claimed"
+  exit 0
+fi
+
 command -v curl >/dev/null 2>&1 || skip "curl not available"
 raw="https://raw.githubusercontent.com/${fork}/${fork_rev}/crates/libghostty-vt-sys"
 build_rs="$(curl -fsSL --max-time 30 "$raw/build.rs" 2>/dev/null)" || skip "could not fetch $raw/build.rs"
@@ -58,6 +70,22 @@ cpu="$(const PREBUILT_CPU <<<"$download_rs")"
   fail "could not read the Ghostty commit and prebuilt flavor from ${fork}@${fork_rev:0:12}"
 tag="ghostty-vt-${commit:0:12}-$(tr '[:upper:]' '[:lower:]' <<<"$optimize")-${cpu}"
 
+# Whether the release at $base/$tag lists ARCHIVE, per the GitHub API; an
+# unreachable API is an outage, so the check skips.
+release_json=""
+listed() {
+  if [ -z "$release_json" ]; then
+    [[ "$base" =~ ^https://github\.com/([^/]+/[^/]+)/releases/download$ ]] ||
+      skip "$base is not a GitHub release download base"
+    local api="https://api.github.com/repos/${BASH_REMATCH[1]}/releases/tags/$tag"
+    local auth=()
+    [ -z "${GH_TOKEN:-}" ] || auth=(-H "Authorization: Bearer $GH_TOKEN")
+    release_json="$(curl -fsSL --max-time 30 "${auth[@]}" "$api" 2>/dev/null)" ||
+      skip "GitHub did not serve $base/$tag and its API is unreachable"
+  fi
+  tr ',' '\n' <<<"$release_json" | grep -Eq "\"name\": ?\"$1\""
+}
+
 # rustfmt may split a table entry over lines; match it on one.
 table="$(tr -s '[:space:]' ' ' <<<"$download_rs")"
 for target in "${TARGETS[@]}"; do
@@ -66,8 +94,16 @@ for target in "${TARGETS[@]}"; do
     phux_hint "Run the prebuilt workflow in $fork and land its PREBUILT_ARCHIVES table before bumping the pin."
     exit 1
   }
-  url="$base/$tag/libghostty-vt-$target.tar.gz"
-  curl -fsSIL --max-time 30 -o /dev/null "$url" 2>/dev/null || fail "$url is not served"
+  archive="libghostty-vt-$target.tar.gz"
+  url="$base/$tag/$archive"
+  status="$(curl -sIL --max-time 30 -o /dev/null -w '%{http_code}' "$url" 2>/dev/null)" || status=000
+  case "$status" in
+    2??) continue ;;
+    4??) fail "$url is not served" ;;
+  esac
+  # releases/download can answer one asset with a 5xx for hours; the API
+  # still says whether the release has it.
+  listed "$archive" || fail "$url is not served (HTTP $status, and the release does not list it)"
 done
 
 phux_ok "check-ghostty-pin: ${fork}@${fork_rev:0:12} publishes $tag for ${#TARGETS[@]} targets"

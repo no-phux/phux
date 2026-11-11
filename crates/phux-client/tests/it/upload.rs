@@ -39,7 +39,16 @@ async fn recv(stream: &mut UnixStream) -> Option<FrameKind> {
     let mut header = [0; LENGTH_PREFIX_LEN];
     match stream.read_exact(&mut header).await {
         Ok(_) => {}
-        Err(error) if error.kind() == std::io::ErrorKind::UnexpectedEof => return None,
+        // The helper closes right after a terminal receipt; with bytes still
+        // unread, Linux turns that close into a reset rather than an EOF.
+        Err(error)
+            if matches!(
+                error.kind(),
+                std::io::ErrorKind::UnexpectedEof | std::io::ErrorKind::ConnectionReset
+            ) =>
+        {
+            return None;
+        }
         Err(error) => panic!("read frame: {error}"),
     }
     let mut encoded = framing::frame_buffer(header).unwrap();

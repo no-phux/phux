@@ -2,7 +2,9 @@
 //! `docs/remote.md#who-can-do-what` asks for: a correlated frame or
 //! command gets its correlated `PERMISSION_DENIED`; an uncorrelated one is
 //! dropped with at most one `ERROR` per second; the connection stays up. The
-//! reply names no subject and no rule.
+//! reply names no subject and no rule, except that a watch of a window or
+//! display the caller could otherwise see names the class grant it lacks
+//! (`docs/authority.md`).
 
 use phux_protocol::ids::ResourceId as WireResourceId;
 use phux_protocol::wire::frame::{
@@ -32,12 +34,119 @@ pub(super) async fn refuse_frame(
         .with(|s| crate::policy::authorize_frame(s, client_id, frame))
         .is_ok()
     {
+        audit_frame(state, client_id, frame, crate::audit::Outcome::Allowed);
         return false;
     }
+    // Audited when answered: correlated, or at most once a second for the
+    // uncorrelated rest, so denied keystrokes cannot flood the log.
     if let Some(reply) = frame_refusal(state, client_id, frame) {
+        audit_frame(state, client_id, frame, crate::audit::Outcome::Denied);
         let _ = out_tx.send(Outbound::Frame(reply)).await;
     }
     true
+}
+
+/// Audit a guarded frame: every refusal, and an admitted one only when it
+/// changes state and is not input or a resize.
+fn audit_frame(
+    state: &SharedState,
+    client_id: ClientId,
+    frame: &FrameKind,
+    outcome: crate::audit::Outcome,
+) {
+    use phux_protocol::kinds::{self, Verb};
+    if !crate::audit::enabled() {
+        return;
+    }
+    let method = kinds::frame_method(frame.type_byte());
+    let allowed = outcome == crate::audit::Outcome::Allowed;
+    let routine = method
+        .is_none_or(|method| !method.mutating() || method.verbs().contains(Verb::Input))
+        || matches!(frame, FrameKind::ResizeTerminal { .. });
+    if allowed && routine {
+        return;
+    }
+    let kind = if allowed {
+        crate::audit::Kind::Command
+    } else {
+        crate::audit::Kind::CommandRefused
+    };
+    let actor = state.with(|s| s.audit_actor(client_id));
+    crate::audit::emit(
+        kind,
+        actor,
+        method.map_or("FRAME", |method| method.name),
+        None,
+        outcome,
+        serde_json::json!({ "client": client_id.0 }),
+    );
+}
+
+/// Audit a guarded command. Input, input-lease (audited as `input.lease`),
+/// and producer output commands are not recorded when admitted; file
+/// transfers are recorded per chunk without their bytes.
+fn audit_command(
+    state: &SharedState,
+    client_id: ClientId,
+    command: &Command,
+    outcome: crate::audit::Outcome,
+) {
+    use crate::audit::{Kind, Outcome};
+    let denied = outcome == Outcome::Denied;
+    let routine = matches!(
+        command,
+        Command::ApplyInput { .. }
+            | Command::RouteInput { .. }
+            | Command::SendDocumentInput { .. }
+            | Command::AppendResourceOutput { .. }
+            | Command::AcquireInput { .. }
+            | Command::ReleaseInput { .. }
+    );
+    if (routine && !denied) || !crate::audit::enabled() {
+        return;
+    }
+    let mut target = crate::audit::command_target(command);
+    let mut detail = serde_json::json!({ "client": client_id.0 });
+    let kind = match command {
+        Command::GetFile {
+            host,
+            path,
+            offset,
+            max_bytes,
+        } => {
+            target = Some(
+                host.as_ref()
+                    .map_or_else(|| path.clone(), |host| format!("{host}:{path}")),
+            );
+            detail["offset"] = (*offset).into();
+            detail["max_bytes"] = (*max_bytes).into();
+            Kind::FileGet
+        }
+        Command::PutFile {
+            extension,
+            offset,
+            data,
+            final_chunk,
+            ..
+        } => {
+            detail["extension"] = extension.as_str().into();
+            detail["offset"] = (*offset).into();
+            detail["bytes"] = data.len().into();
+            detail["final"] = (*final_chunk).into();
+            Kind::FilePut
+        }
+        _ => Kind::Command,
+    };
+    let kind = if denied { Kind::CommandRefused } else { kind };
+    let actor = state.with(|s| s.audit_actor(client_id));
+    crate::audit::emit(
+        kind,
+        actor,
+        crate::audit::command_name(command),
+        target,
+        outcome,
+        detail,
+    );
 }
 
 /// What the command guard decided.
@@ -61,9 +170,14 @@ pub(super) async fn guard_command(
     out_tx: &tokio::sync::mpsc::Sender<Outbound>,
 ) -> Guarded {
     match state.with(|s| crate::policy::authorize_command(s, client_id, command)) {
-        Ok(crate::policy::Admission::Run) => return Guarded::Admitted,
+        Ok(crate::policy::Admission::Run) => {
+            audit_command(state, client_id, command, crate::audit::Outcome::Allowed);
+            return Guarded::Admitted;
+        }
+        // `open_approval` audits the hold.
         Ok(crate::policy::Admission::Hold) => return Guarded::Held,
         Err(denial) => {
+            audit_command(state, client_id, command, crate::audit::Outcome::Denied);
             // R08: an organization command is refused in its own shape,
             // naming a verb it lacked; every other command keeps the error.
             let result = if command.is_organization() {
@@ -77,9 +191,34 @@ pub(super) async fn guard_command(
             } else {
                 CommandResult::Error {
                     code: ErrorCode::PermissionDenied,
-                    message: DENIED.to_owned(),
+                    message: watch_class(denial).map_or_else(
+                        || DENIED.to_owned(),
+                        |class| {
+                            state.with(|s| {
+                                crate::policy::filter::watch_refusal(s, client_id, class, None)
+                            })
+                        },
+                    ),
                 }
             };
+            if let Command::SendDocumentInput {
+                terminal_id,
+                intent,
+                on_behalf_of,
+                ..
+            } = command
+            {
+                state.with(|s| {
+                    crate::runtime::apps::document::audit::record(
+                        s,
+                        client_id,
+                        on_behalf_of.as_ref(),
+                        terminal_id,
+                        intent,
+                        &result,
+                    );
+                });
+            }
             let _ = out_tx
                 .send(Outbound::Frame(FrameKind::CommandResult {
                     request_id,
@@ -89,6 +228,14 @@ pub(super) async fn guard_command(
         }
     }
     Guarded::Refused
+}
+
+/// The class a refused watch of a window or display names, if it was one.
+fn watch_class(denial: crate::policy::Denial) -> Option<phux_protocol::wire::frame::ControlClass> {
+    use phux_protocol::wire::frame::ControlClass;
+    ControlClass::ALL
+        .into_iter()
+        .find(|class| class.guards_observe() && class.name() == denial.subject)
 }
 
 /// Guard a QUIC Terminal-stream bind: `OBSERVE` on the bound Terminal.

@@ -54,6 +54,7 @@ pub fn kind_word(kind: ResourceKind) -> String {
         ResourceKind::AgentSession => "agent_session".to_owned(),
         ResourceKind::AccessibilityTree => "accessibility_tree".to_owned(),
         ResourceKind::PixelSurface => "pixel_surface".to_owned(),
+        ResourceKind::Document => "document".to_owned(),
         other => format!("kind-{}", other.as_wire()),
     }
 }
@@ -436,7 +437,10 @@ mod tests {
                 members: 2,
                 arrangement: None,
                 awaiting_organization: true,
+                project: None,
+                project_link: None,
             }],
+            resources: Vec::new(),
             panes: vec![PaneDescriptor {
                 terminal_id: ResourceId::satellite("box", 4),
                 session_id: 1,
@@ -459,6 +463,8 @@ mod tests {
                 native_id: None,
                 state: Some("working".to_owned()),
             }],
+            documents: Vec::new(),
+            satellite_sessions: Vec::new(),
             focused_session: 1,
             focused_pane: ResourceId::local(7),
             authority: None,

@@ -1,11 +1,10 @@
-//! The headless budget: the GPUI benchmark's phases and bytes, through a real
+//! The headless budget: a benchmark's phases and bytes, through a real
 //! runtime client and a real Rune view build, with no window and no server.
 //!
 //! Each tick feeds output, marks the view stale and runs one Rune frame. The
 //! counters are exact work budgets, so a scroll that rebuilds every row fails
 //! `cargo test`. Times are evidence, not budgets: `cargo test --release
-//! perf_budget -- --nocapture` prints one JSON line per phase, in the shape
-//! `clients/desktop/scripts/perf-budget.ts` reads.
+//! perf_budget -- --nocapture` prints one JSON line per phase.
 //!
 //! The counters are process-wide and other tests bump them, so `perf_budget`
 //! runs itself alone in a child process of this test binary.
@@ -364,7 +363,7 @@ fn window_phase() {
         replica.terminal.clone(),
     ));
     desk.shown = Some(Shown {
-        terminal: replica.terminal.clone(),
+        resource: replica.terminal.clone(),
         view: Some(replica.views[0]),
     });
     let mut runtime = Runtime::new(desk, crate::ui::view, SIZE, Env::new(true, SCALE));
@@ -386,14 +385,22 @@ const ALONE: &str = "RUNE_BUDGET_ALONE";
 
 /// A real connected terminal behind the native controls, without a server.
 pub(crate) fn input_fixture() -> (Arc<Client>, Runtime<Desk>) {
-    let replica = Replica::new(120, 40, 1);
+    input_fixture_showing("")
+}
+
+/// [`input_fixture`] with `output` already printed in the terminal.
+pub(crate) fn input_fixture_showing(output: &str) -> (Arc<Client>, Runtime<Desk>) {
+    let mut replica = Replica::new(120, 40, 1);
+    if !output.is_empty() {
+        replica.feed(output.to_owned());
+    }
     let mut desk = Desk::new(&Resolved::offline("input"));
     desk.client = Some(Arc::clone(&replica.client));
     desk.layout = Some(phux_client_core::layout::LayoutNode::Leaf(
         replica.terminal.clone(),
     ));
     desk.shown = Some(Shown {
-        terminal: replica.terminal,
+        resource: replica.terminal,
         view: Some(replica.views[0]),
     });
     let mut rt = Runtime::new(desk, crate::ui::view, SIZE, Env::new(true, SCALE));

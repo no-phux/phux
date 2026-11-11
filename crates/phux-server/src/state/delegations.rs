@@ -92,6 +92,7 @@ impl ServerState {
             group: id,
             verbs: request.verbs,
             on_behalf_of: grant.answering_principal().clone(),
+            // C1 hook: also keep the launcher's subject (`authenticated_credential(..).subject`).
             delegator: grant.principal().clone(),
             expires_at,
         };

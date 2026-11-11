@@ -44,6 +44,8 @@ pub struct ServerRuntime {
     uplinks: Vec<phux_config::UplinkConfigEntry>,
     /// Where a config-reload doorbell re-reads `[[uplink]]`.
     uplink_source: Option<crate::uplink::UplinkSource>,
+    /// Where the standing-mirror supervisor reads `[[mirrors]]`.
+    mirror_source: Option<crate::runtime::apps::terminal::standing::MirrorSource>,
     /// Overlay-address source for the auto-bound listener (ADR-0081). Never
     /// called on the startup path; see [`crate::runtime::listeners::serve_auto_overlay_listeners`].
     overlay_detect: fn() -> Vec<std::net::IpAddr>,
@@ -93,6 +95,7 @@ impl ServerRuntime {
             connect_override: None,
             uplinks: Vec::new(),
             uplink_source: None,
+            mirror_source: None,
             overlay_detect: phux_config::overlay::detect,
             autosave: None,
             on_listening: ListeningHook(None),
@@ -243,6 +246,17 @@ impl ServerRuntime {
     #[must_use]
     pub fn uplink_reload(mut self, source: crate::uplink::UplinkSource) -> Self {
         self.uplink_source = Some(source);
+        self
+    }
+
+    /// Keep the standing mirrors `source` names running, re-reading it on
+    /// each config-reload doorbell (`docs/resource-kinds.md#standing-mirrors`).
+    #[must_use]
+    pub fn standing_mirrors(
+        mut self,
+        source: crate::runtime::apps::terminal::standing::MirrorSource,
+    ) -> Self {
+        self.mirror_source = Some(source);
         self
     }
 

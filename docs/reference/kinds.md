@@ -20,6 +20,7 @@ Addressed to the server or the connection rather than to one resource.
 |---|---|---|---|---|---|
 | `GET_CREATION` | command `0x41` | INVENTORY | no | `api_description` (features_ext) | shipped |
 | `DESCRIBE_API` | command `0x40` | INVENTORY | no | `api_description` (features_ext) | shipped |
+| `PRIVACY_STATUS` | command `0x4c` | INVENTORY (owner socket only) | no | `privacy_status` (features_ext) | shipped |
 | `HELLO` | frame `0x01` | exempt: handshake | no | none | shipped |
 | `PING` | frame `0x7f` | exempt: liveness | no | none | shipped |
 | `ATTACH` | frame `0x02` | OBSERVE, CREATE, BIND | yes | none | shipped |
@@ -28,6 +29,8 @@ Addressed to the server or the connection rather than to one resource.
 | `COMMAND` | frame `0x31` | nested | yes | none | shipped |
 | `LIST_DIRECTORY` | frame `0x55` | INVENTORY | no | `list_directory` | shipped |
 | `PATH_QUERY` | frame `0x56` | INVENTORY | no | `path_query` (features_ext) | shipped |
+| `MIRROR` | command `0x4a` | OBSERVE (control grant or owner socket) | no | `mirrors` (features_ext) | shipped |
+| `MIRROR_PROVIDE` | command `0x4b` | OBSERVE (owner socket only) | no | `mirrors` (features_ext) | shipped |
 | `GET_FILE` | command `0x3b` | INPUT | yes | `file_download` (features_ext) | shipped |
 | `SERVICE_HTTP_OPEN` | command `0x3d` | INPUT | yes | `host_service_http` (features_ext) | shipped |
 | `SERVICE_HTTP_READ` | command `0x3e` | INPUT | yes | `host_service_http` (features_ext) | shipped |
@@ -108,6 +111,7 @@ Answered by every resource kind.
 | `LIST_METADATA` | frame `0x53` | INVENTORY | no | none | shipped |
 | `SUBSCRIBE_METADATA` | frame `0x54` | OBSERVE | no | none | shipped |
 | `PUBLISH_RESOURCE_STATE` | command `0x42` | BIND, INPUT | yes | none | shipped |
+| `SEND_DOCUMENT_INPUT` | command `0x48` | INPUT (control grant or owner socket) | yes | none | shipped |
 
 ## Substrate events
 
@@ -116,6 +120,7 @@ Answered by every resource kind.
 | `pane_spawned` | `0x04` |
 | `pane_closed` | `0x05` |
 | `source_gap` | `0x0c` |
+| `document_input` | `0x20` |
 
 ## Kind `TERMINAL`
 
@@ -234,6 +239,25 @@ None.
 
 None.
 
+## Kind `DOCUMENT`
+
+Wire tag `4`; gate: `typed_document` (features_ext).
+
+### Methods
+
+The kind's facet.
+
+| Method | Carrier | Requires | Mutating | Gate | Status |
+|---|---|---|---|---|---|
+
+### Events
+
+None.
+
+### Resource metadata keys
+
+None.
+
 ## Client frame classification
 
 Every client-originated frame lands on exactly one row.
@@ -255,9 +279,10 @@ Every client-originated frame lands on exactly one row.
 | `SPAWN_RESOURCE { satellite: None, owner_terminal: None }` | CREATE | `PayloadGroup` |
 | `SPAWN_RESOURCE { satellite: None, owner_terminal: Some }` | CREATE+BIND | `OwnerTerminalGroup` |
 | `SPAWN_RESOURCE { satellite: Some, owner_terminal: Some }` | deny | `None` |
-| `SPAWN_RESOURCE { kind: AGENT_SESSION, satellite: None, parent: Some }` | CREATE+BIND | `ParentTerminalGroup` |
-| `SPAWN_RESOURCE { kind: AGENT_SESSION, satellite: Some(H), parent: Some(Satellite { H, .. }) }` | CREATE+BIND | `SatelliteHostAndParent` |
+| `SPAWN_RESOURCE { kind: served non-TERMINAL, satellite: None, parent: Some }` | CREATE+BIND | `ParentTerminalGroup` |
+| `SPAWN_RESOURCE { kind: served non-TERMINAL, satellite: Some(H), parent: Some(Satellite { H, .. }) }` | CREATE+BIND | `SatelliteHostAndParent` |
 | `SPAWN_RESOURCE { kind: not TERMINAL, parent: None }` or `{ kind: TERMINAL, parent: Some }` | deny | `None` |
+| `SPAWN_RESOURCE { control: Some }` | deny | `None` |
 | `RESIZE_TERMINAL` | BIND | `NamedTerminal` |
 | `MOVE_RESOURCE` | BIND | `MovedAndOwnerTerminals` |
 | `SUBSCRIBE_EVENTS { terminal: Some }` | OBSERVE | `NamedTerminal` |
@@ -319,6 +344,10 @@ Every command nested in `COMMAND` lands on exactly one row; the envelope alone g
 | `PERF_CONTROL` | OBSERVE+BIND + owner-UDS transport | `Global { owner_uds_only: true }` |
 | `APPEND_RESOURCE_OUTPUT` | BIND+INPUT | `ParentOfNamed` |
 | `PUBLISH_RESOURCE_STATE` | BIND+INPUT | `ParentOfNamed` |
+| `SEND_DOCUMENT_INPUT` | INPUT on a control selector | `ControlledDocument` |
+| `MIRROR` | OBSERVE on a control selector | `ControlledDocument` |
+| `MIRROR_PROVIDE` | OBSERVE + owner-UDS transport | `Global { owner_uds_only: true }` |
+| `PRIVACY_STATUS` | INVENTORY + owner-UDS transport | `Global { owner_uds_only: true }` |
 | `NATIVE_AGENT { type: spawn }` | CREATE+BIND | `KeyedSession` |
 | `NATIVE_AGENT { type: list_integrations }` | INVENTORY | `OrganizationView` |
 | `NATIVE_AGENT { type: launch_integration }` | CREATE+BIND+INPUT | `KeyedSession` |

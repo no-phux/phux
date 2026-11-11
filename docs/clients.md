@@ -22,6 +22,14 @@ it. It draws panes with libghostty, the same terminal emulator the server
 uses, so what you see is what the server has. See
 [libghostty in phux](./libghostty.md).
 
+A session's arrangement can also hold a document, window mirror,
+accessibility tree, or agent pane that another client placed there
+([resource kinds](./resource-kinds.md)). The terminal UI shows each as a
+tile naming its kind and title; it can take focus, but typing there does
+nothing and the tile is never resized. Killing such a pane, or a tab
+holding one, only closes its view: the resource and its producer keep
+running, and `reopen-views` shows a hidden document again.
+
 [Getting started](./getting-started.md) covers this client.
 <kbd>C-a</kbd> <kbd>S</kbd> opens settings, which edit your config file;
 [when a change takes effect](./config.md#when-a-change-takes-effect)
@@ -31,95 +39,57 @@ explains when you see it.
 output; it is not a backup of the process. `phux play` plays one back in a
 new pane and never overwrites an existing one.
 
+## Native terminal windows
+
+`phux native create` displays a distinct terminal in a native emulator window,
+without the TUI sidebar, tabs, status bar, or pane layout. The default shared
+session is `omarchy`; the window manager tiles the windows.
+[Native terminal windows](./native-terminal.md) covers creation, reattachment,
+detach, and the client's current limits.
+
 ## Desktop
 
-The phux desktop is a native app for macOS 26.0 or later on Apple silicon,
-Linux on x86_64 or arm64 with Vulkan, and Windows x64 with a WSL 2 server.
-On macOS and Linux, install it with:
-
-```sh
-curl -fsSL https://phux.sh/install-desktop | sh
-```
-
-Windows: the CLI and server run in WSL 2, with PowerShell launchers. The
-[native x64 desktop](../clients/desktop/README.md#windows) uses Direct3D 11,
-Windows input/clipboard, and the same WSL coordinator. Windows x64 ZIPs ship
-from [Desktop 0.50.0](https://github.com/no-phux/phux/releases/tag/desktop-v0.50.0)
-onward; older desktop tags have no Windows download. WSLg is not needed.
-Updates are manual on Windows, and the local Changes panel and external
-Unix developer socket are unavailable there.
-
-It shows every session on this machine and on each machine you added with
-`phux host add` or the app's **Add Machine…**, grouped by machine or by
-repository. Add Machine lists the machines on your Tailscale network and
-installs phux on the one you pick ([Remote machines](./remote.md#machines-on-your-tailnet)). One window shows one
-session, and the sidebar switches between them. Agents that need you are
-marked where they are. <kbd>⌘P</kbd> opens a palette of sessions, actions,
-and settings. On macOS and Linux the app checks for updates and offers to
-install them on restart; Windows updates are manual.
-An update reopens the same windows, hosts, sessions, tabs and focused panes,
-bringing the foreground window back to the front.
-
-Each window keeps one live connection per machine, so switching back to a
-session you just left is instant. Machines you aren't looking at keep their
-data current without drawing anything. Disconnecting, forgetting a machine,
-or closing the window closes its connections.
-
-On macOS the app bundles the CLI/server. On Linux, install the CLI first
-or use the desktop installer, which supplies it when none is found.
-The app never creates sessions on its own or stops the server. Quitting detaches.
-
-Terminal panes and previews render inline Kitty graphics: PNG and raw RGB/RGBA,
-chunked transfers, classic placements and Unicode placeholders, cropping,
-transparency and z-order. Visible images survive attach and reconnect through
-synthesized terminal replay. File, temporary-file and shared-memory transfers are
-disabled; applications must send image bytes inline. Sixel, Kitty animations and
-relative placements are not supported. Image-number (`I=`) references are not
-preserved across a synthesized reattach; use explicit image IDs (`i=`).
-Classic placements outside the captured bootstrap viewport are not reconstructed;
-resident virtual prototypes remain available to Unicode placeholders in history.
-
-For `icat`, use `kitten icat --transfer-mode=stream image.png`
-([transfer modes](https://sw.kovidgoyal.net/kitty/kittens/icat/#cmdoption-kitty-kitten-icat-transfer-mode)).
-
-- [Quick Capture](./desktop-capture.md) turns a thought into a new agent
-  terminal.
-- The [Changes panel](./desktop-changes.md) reviews and stages Git changes
-  beside your panes.
-- [Reviews](./desktop-reviews.md) lists your open GitHub pull requests and
-  reviews, merges or checks out each one.
-- [Agent panes](./desktop-panes.md) explains how panes an agent drives look.
-
-The desktop app has its own version and release notes. The macOS app and
-DMG are Developer ID signed, Apple-notarized, and stapled. The desktop app
-requires macOS 26.0; the standalone CLI requires macOS 11.0. Expect rough
-edges: the terminal UI is ahead of the desktop.
-
-### Phux Rune
-
-[Phux Rune](../clients/rune/README.md) is an alpha desktop client built on the
-[Rune](https://github.com/anomalyco/rune) UI framework, beside the desktop app
-as a candidate replacement for its GPUI base. It shows every session and
-terminal with each agent's state, a command palette, and splits from the
-session's server-stored arrangement, the same layout the terminal UI shows,
-with find in history, ⌘-clickable links, an agent inbox with notifications,
-tabs, themes, and remote machines from the same registry as `phux host add`. It
-ships as `rune-v*` releases (Developer ID signed and notarized on macOS, plus
-a Linux tarball) for macOS 14 or later on Apple silicon and x86_64 Linux with
-Vulkan and glibc 2.39, updates itself from 0.1.0-alpha.6, and does not draw
-Kitty images yet. It installs beside the desktop app:
+The desktop app is [Phux Rune](../clients/rune/README.md), an alpha client
+built on the [Rune](https://github.com/anomalyco/rune) UI framework, for macOS
+14 or later on Apple silicon and x86_64 or arm64 Linux with Vulkan and glibc
+2.39:
 
 ```sh
 curl -fsSL https://phux.sh/install | sh -s -- --rune
 ```
+
+`--desktop` and `https://phux.sh/install-desktop` install the same app. It
+installs the CLI when none is found, starts or reuses the server, and updates
+itself. It never creates sessions on its own or stops the server; quitting
+detaches. Windows has no native desktop app: the CLI and server run in WSL 2,
+with PowerShell launchers.
+
+It shows every session and terminal with each agent's state, on this machine
+and on each machine you added with `phux host add` or **Add a machine**. It
+also draws documents, accessibility trees, and pixel surfaces as panes,
+sends input to a mirrored page, window, or display, and starts mirrors from
+its palette ([resource kinds](./resource-kinds.md#available-now)). It has
+a command palette, splits from the session's server-stored arrangement (the
+same layout the terminal UI shows), find in history, ⌘-clickable links, an
+agent inbox with notifications, tabs, and themes. It ships as `rune-v*`
+releases, Developer ID signed and notarized on macOS, and does not draw Kitty
+images yet. The same app has a phone form ([MOBILE.md](../clients/rune/MOBILE.md)).
+Expect rough edges: the terminal UI is ahead of the desktop.
+
+The previous GPUI desktop was retired after Desktop 0.62.0; its source is the
+`desktop-v0.62.0` tag (`git checkout desktop-v0.62.0 -- clients/desktop`).
 
 ## Browser
 
 A browser client exists in the phux repository. It draws a session on a
 canvas with libghostty compiled to WebAssembly, over WebTransport or
 WebSocket. It works, but it isn't shipped: nothing serves it, and the
-server's browser listeners are off by default. Use it as a starting point
-for putting a terminal in a web page.
+server's browser listeners are off by default. Documents, trees, and
+surfaces get read-only tiles beside the terminals: text and JSON as source,
+PNG, JPEG, GIF and WebP as images, anything else as its type and size. It
+shows at most four panes; a new terminal takes the last document's tile,
+which comes back when a pane closes. Use it as a starting point for putting
+a terminal in a web page.
 
 **A browser needs a client certificate to connect to a paired server.**
 Over WebSocket, install an enrolled client certificate in the browser.
@@ -131,6 +101,27 @@ it. A token alone never gets a browser in.
 iOS and Android apps are in progress and not available yet. `phux pair --qr`
 already prints the pairing code they will scan; see
 [pairing with a link](./remote.md#pairing-with-a-link).
+
+## Host colours
+
+Every client draws each machine in one of eight colours (blue, violet,
+magenta, sky, coral, olive, slate, copper), picked from a hash of its name,
+so `mini` looks the same on the desktop, on mobile, and in `phux host ls
+--json`. Two more, green and navy, are yours to pick but never assigned.
+Amber, mint, and red stay reserved for agent state, and a name is always
+shown beside the colour. Pick a colour yourself when two machines
+land on the same one:
+
+```sh
+phux host color mini violet      # [[remote]] color = "violet"
+phux host color --local sky      # this machine: [host] color = "sky"
+phux host color mini auto        # back to the hashed colour
+```
+
+`phux host ls --json` reports each host's resolved `color` (`id`, `hex`,
+and whether an `override` chose it) and this machine under `local`. The
+desktop's Machines sheet sets the same override, and a desktop window's
+sessions, tabs and focused terminal take its machine's colour.
 
 ## Your own
 

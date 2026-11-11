@@ -11,7 +11,6 @@ use std::collections::HashMap;
 use std::time::Duration;
 
 use phux_protocol::ids::{ApprovalId, ResourceId as WireResourceId};
-use phux_protocol::kinds::{self, Carrier};
 use phux_protocol::wire::frame::{
     ActorRef, AgentEvent, ApprovalOutcome, Command, Scope, TerminalSignal,
 };
@@ -172,6 +171,14 @@ impl ServerState {
             EventRecord::new(sole_terminal(command), AgentEvent::ApprovalRequested { id })
                 .with_actor(Some(requester)),
         );
+        crate::audit::emit(
+            crate::audit::Kind::ApprovalHeld,
+            self.audit_actor(requester),
+            crate::audit::command_name(command),
+            crate::audit::command_target(command),
+            crate::audit::Outcome::Held,
+            json!({ "id": id.to_string(), "client": requester.0 }),
+        );
         Ok(OpenedApproval { id, decision, ttl })
     }
 
@@ -240,6 +247,22 @@ impl ServerState {
                 AgentEvent::ApprovalDecided { id, outcome },
             )
             .with_actor(decider),
+        );
+        let (audited, ended) = match outcome {
+            ApprovalOutcome::Approved => (crate::audit::Outcome::Approved, "approved"),
+            ApprovalOutcome::Denied => (crate::audit::Outcome::Rejected, "denied"),
+            ApprovalOutcome::Expired => (crate::audit::Outcome::Rejected, "expired"),
+            ApprovalOutcome::Withdrawn => (crate::audit::Outcome::Rejected, "withdrawn"),
+        };
+        crate::audit::emit(
+            crate::audit::Kind::ApprovalDecided,
+            decider.map_or_else(crate::audit::AuditActor::server, |decider| {
+                self.audit_actor(decider)
+            }),
+            crate::audit::command_name(&pending.command),
+            crate::audit::command_target(&pending.command),
+            audited,
+            json!({ "id": id.to_string(), "ended": ended, "requester": pending.requester.0 }),
         );
         Some(pending)
     }
@@ -321,7 +344,7 @@ fn approval_record(
         "schema_version": 1,
         "id": id.to_string(),
         "requester": actor_json(requester),
-        "method": method_name(command),
+        "method": crate::audit::command_name(command),
         "subjects": subjects(command),
         "requested_at_ms": requested_at_ms,
         "expires_at_ms": requested_at_ms.saturating_add(ttl_ms),
@@ -344,27 +367,22 @@ fn actor_json(actor: &ActorRef) -> Value {
     Value::Object(out)
 }
 
-/// The catalog name of the held command, e.g. `KILL_RESOURCE`.
-fn method_name(command: &Command) -> &'static str {
-    let rule = kinds::command_rule(command);
-    kinds::methods()
-        .filter(|method| matches!(method.carrier, Carrier::Command(_)))
-        .find(|method| method.rules.iter().any(|row| std::ptr::eq(*row, rule)))
-        .map_or("COMMAND", |method| method.name)
-}
-
 /// The subjects the held command names, in the registry selector grammar
-/// (`terminal:3`, `terminal:<host>/3`, `global`), or `session:<name>` for a
-/// forced detach of one session.
+/// (`terminal:3`, `terminal:<host>/3`, `session:<key>`, `resource:<key>`,
+/// `global`), or `session:<name>` for a forced detach of one session.
 fn subjects(command: &Command) -> Vec<String> {
-    if let Command::DetachClients {
-        session: Some(name),
-    } = command
-    {
-        return vec![format!("session:{name}")];
+    match command {
+        Command::DetachClients {
+            session: Some(name),
+        } => return vec![format!("session:{name}")],
+        Command::SessionDelete { session, .. } | Command::SessionKill { session, .. } => {
+            return vec![format!("session:{session}")];
+        }
+        Command::ResourceRemove { resource, .. } => return vec![format!("resource:{resource}")],
+        _ => {}
     }
     let terminals: Vec<String> = crate::policy::held_terminals(command)
-        .map(terminal_selector)
+        .map(crate::audit::terminal_selector)
         .collect();
     if terminals.is_empty() {
         vec!["global".to_owned()]
@@ -378,13 +396,6 @@ fn sole_terminal(command: &Command) -> Option<WireResourceId> {
     let mut named = crate::policy::held_terminals(command);
     let first = named.next()?;
     named.next().is_none().then(|| first.clone())
-}
-
-fn terminal_selector(terminal: &WireResourceId) -> String {
-    match terminal {
-        WireResourceId::Local { id } => format!("terminal:{id}"),
-        WireResourceId::Satellite { host, id } => format!("terminal:{}/{id}", host.as_str()),
-    }
 }
 
 const fn signal_name(signal: TerminalSignal) -> &'static str {

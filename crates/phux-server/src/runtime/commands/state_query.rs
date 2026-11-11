@@ -253,6 +253,10 @@ pub(super) fn merge_satellite_resources(
         // ADR-0104: a parent retags by the same rule; a chained one drops.
         pane.parent = retag_satellite_resource_id(host, pane.parent.as_ref());
         pane.window_id = phux_protocol::WindowId::new(0);
+        // Satellite-local, so it collides with a hub session of the same id
+        // (both start at 1) and clients filed the pane under that hub
+        // session (#2051). Membership rides `HostSessionInfo::members`.
+        pane.session = None;
         pane.input_holder = pane.input_holder.map(|reported| {
             holder.map_or_else(|| foreign_client(reported), super::super::wire_client)
         });
@@ -277,32 +281,44 @@ pub(super) fn satellite_host_inventory(
     phux_protocol::wire::info::HostInventory::reachable(host.clone(), sessions)
 }
 
-/// One satellite session's inventory entry, with its pane count and its
+/// One satellite session's inventory entry, with its panes and its
 /// active pane derived from the satellite's own windows and resources.
 fn satellite_host_session(
     host: &phux_protocol::ids::SatelliteHost,
     sat: &phux_protocol::wire::info::SessionSnapshot,
     session: &phux_protocol::wire::info::SessionInfo,
 ) -> phux_protocol::wire::info::HostSessionInfo {
+    let (panes, members): (Vec<bool>, Vec<_>) = session_members(sat, session.id)
+        .into_iter()
+        .filter_map(|pane| {
+            retag_satellite_resource_id(host, Some(&pane.id))
+                .map(|id| (pane.kind.is_terminal(), id))
+        })
+        .unzip();
+    let panes = panes.into_iter().filter(|terminal| *terminal).count();
     phux_protocol::wire::info::HostSessionInfo::new(session.id, session.name.clone())
         .with_created_at_unix_secs(session.created_at_unix_secs)
         .with_window_count(session.window_count)
-        .with_pane_count(session_pane_count(sat, session.id))
+        .with_pane_count(u16::try_from(panes).unwrap_or(u16::MAX))
         .with_attached_client_count(session.attached_client_count)
         .with_active_resource(session_active_resource(host, sat, session))
+        .with_members(members)
 }
 
-/// Terminal-kind resources across a satellite session's windows.
-fn session_pane_count(
+/// A satellite session's resources, in the satellite's order: a Terminal
+/// by its window, any other kind by its `session` facet (else its window,
+/// from a satellite that does not report one).
+fn session_members(
     sat: &phux_protocol::wire::info::SessionSnapshot,
     session: phux_protocol::SessionId,
-) -> u16 {
-    let panes = sat
-        .resources
+) -> Vec<&phux_protocol::wire::info::ResourceInfo> {
+    sat.resources
         .iter()
-        .filter(|pane| pane.kind.is_terminal() && window_in_session(sat, pane.window_id, session))
-        .count();
-    u16::try_from(panes).unwrap_or(u16::MAX)
+        .filter(|pane| match pane.session {
+            Some(named) if !pane.kind.is_terminal() => named == session,
+            _ => window_in_session(sat, pane.window_id, session),
+        })
+        .collect()
 }
 
 fn window_in_session(

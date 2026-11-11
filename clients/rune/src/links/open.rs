@@ -1,4 +1,4 @@
-//! Whether a `file://` link may open here: GPUI's rules. Output is untrusted,
+//! Whether a `file://` link may open here. Output is untrusted,
 //! so a link naming another machine, an app or a program stays closed.
 
 use std::path::{Component, Path, PathBuf};

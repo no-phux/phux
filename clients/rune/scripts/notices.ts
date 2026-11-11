@@ -1,6 +1,6 @@
 /**
- * Print the third-party notice Phux Rune ships: the desktop's generator over
- * this workspace's Cargo graph, so both products list crates the same way.
+ * Print the third-party notice Phux Rune ships, over this workspace's Cargo
+ * graph.
  *
  * Usage: bun clients/rune/scripts/notices.ts TARGET > THIRD-PARTY-NOTICES.txt
  */
@@ -9,7 +9,7 @@ import {
   canonicalLicenses,
   renderNotices,
   shippedCrates,
-} from "../../desktop/scripts/notices.ts";
+} from "./third-party.ts";
 import { runeNoticeReader } from "./notice-texts.ts";
 
 const [target] = process.argv.slice(2);

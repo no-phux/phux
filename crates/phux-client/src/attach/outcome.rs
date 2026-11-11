@@ -59,6 +59,13 @@ pub enum AttachError {
     #[error("server refused the request: {0}")]
     Refused(String),
 
+    /// The server refused a facet command for the resource's kind
+    /// (`WRONG_RESOURCE_KIND`): a Terminal command sent to a document. Same
+    /// sentence as [`Self::Refused`]; the variant lets a caller name the verb
+    /// that does apply without reading the message text.
+    #[error("server refused the request: {0}")]
+    WrongResourceKind(String),
+
     /// The server answered `HELLO` (or `ATTACH`) with
     /// `ERROR { VERSION_INCOMPATIBLE }`. Same sentence as [`Self::Refused`];
     /// the variant is how a caller tells a live old server from a policy
@@ -103,6 +110,27 @@ pub const fn is_incompatible_protocol(err: &AttachError) -> bool {
 }
 
 impl AttachError {
+    /// A command's `ERROR` reply: [`Self::WrongResourceKind`] for
+    /// `WRONG_RESOURCE_KIND`, else [`Self::Refused`].
+    #[must_use]
+    pub fn refusal(code: phux_protocol::wire::frame::ErrorCode, message: String) -> Self {
+        if code == phux_protocol::wire::frame::ErrorCode::WrongResourceKind {
+            Self::WrongResourceKind(message)
+        } else {
+            Self::Refused(message)
+        }
+    }
+
+    /// Whether the connection was lost (or never made) rather than refused,
+    /// so redialing may succeed: a server upgrade closes every connection.
+    #[must_use]
+    pub const fn is_transport_loss(&self) -> bool {
+        matches!(
+            self,
+            Self::Io(_) | Self::Connect(_) | Self::Unreachable(_) | Self::Disconnected
+        )
+    }
+
     /// Whether this is a transport refusal no retry with the same credentials
     /// can change (a refused pairing token, ADR-0031). Applies the
     /// `phux-client-runtime::reconnect` rule to the flattened detail.

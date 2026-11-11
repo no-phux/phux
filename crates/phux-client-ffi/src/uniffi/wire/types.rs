@@ -11,11 +11,13 @@
 use super::*;
 
 mod agent_state;
+mod document_input;
 mod lowering;
 mod paths;
 mod wire_event;
 
 pub use agent_state::*;
+pub use document_input::*;
 pub use paths::*;
 pub use wire_event::*;
 

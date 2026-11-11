@@ -20,6 +20,9 @@ impl ServerFeatureExtSet {
         | ServerFeatureExt::ApiDescription as u32
         | ServerFeatureExt::AccessibilityTree as u32
         | ServerFeatureExt::PixelSurface as u32
+        | ServerFeatureExt::TypedDocument as u32
+        | ServerFeatureExt::Mirrors as u32
+        | ServerFeatureExt::PrivacyStatus as u32
         | ServerFeatureExt::DurableResourceInspection as u32;
 
     /// Known extended features in this set, in bit order.
