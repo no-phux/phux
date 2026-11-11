@@ -44,7 +44,7 @@ Nix provides it.
 
 The terminal engine is Ghostty's C library. What it does in a running phux,
 and what it does not, is [libghostty in phux](./libghostty.md). The 1.0
-migration pin builds from immutable source with Zig 0.17.0, cached outside
+migration pin builds from immutable source with Zig 0.17.1, cached outside
 any `target/` directory. Older compilers are incompatible with its build API.
 No prebuilt release is required to use this pin.
 

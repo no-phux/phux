@@ -273,7 +273,7 @@
           packages = [
             toolchain
             # libghostty-vt-sys's source build, its fallback when it cannot
-            # download the prebuilt archive, requires the exact Zig 0.17.0.
+            # download the prebuilt archive, requires the exact Zig 0.17.1.
             zigPinned
             pkgs.pkg-config
             # Developer ergonomics.
