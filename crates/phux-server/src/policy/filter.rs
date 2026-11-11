@@ -194,6 +194,21 @@ pub fn admits_global(s: &ServerState, client: ClientId, verb: Verb) -> bool {
     View::of(s.connection_grant(client)).admits(verb, &Point::Global)
 }
 
+/// Whether `client` may name who it relays a `SEND_DOCUMENT_INPUT` for.
+///
+/// See `docs/authority.md#relayed-identity`: the owner (an `ssh://` or uplink hub reaches the owner socket), or a grant
+/// holding every verb at Global, the full-control ceiling `phux host add`
+/// pairs a hub with. An automation key or a narrowed grant is not.
+#[must_use]
+pub fn vouches_for_relay(s: &ServerState, client: ClientId) -> bool {
+    let grant = s.connection_grant(client);
+    let view = View::of(grant);
+    grant.is_some()
+        && Verb::ALL
+            .iter()
+            .all(|verb| view.admits(*verb, &Point::Global))
+}
+
 /// Whether `client` may read satellite `host` with `verb`: a hub asks only
 /// the satellites the caller could see, so a refused one discloses nothing.
 #[must_use]

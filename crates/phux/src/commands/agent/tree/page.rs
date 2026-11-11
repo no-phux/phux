@@ -55,6 +55,25 @@ pub(crate) enum PageAction {
         #[usage(long)]
         json: bool,
     },
+    /// Drag across a mirrored page or screen with the left button, from one point of its surface image to another: selects text.
+    Drag {
+        /// The document's surface or tree.
+        target: String,
+        /// Where the press lands: pixels from the image's left edge.
+        #[usage(value_name = "X1")]
+        x1: u32,
+        /// Where the press lands: pixels from the image's top edge.
+        #[usage(value_name = "Y1")]
+        y1: u32,
+        /// Where the release lands: pixels from the image's left edge.
+        #[usage(value_name = "X2")]
+        x2: u32,
+        /// Where the release lands: pixels from the image's top edge.
+        #[usage(value_name = "Y2")]
+        y2: u32,
+        #[usage(long)]
+        json: bool,
+    },
     /// Type text into a mirrored page's focused field.
     Type {
         /// The page's surface or tree.
@@ -138,6 +157,22 @@ pub(crate) fn run_page(action: &PageAction, socket: Option<PathBuf>) -> ExitCode
         PageAction::Click { target, x, y, json } => {
             page_input::run_send(target, DocumentInput::Click { x: *x, y: *y }, *json, socket)
         }
+        PageAction::Drag {
+            target,
+            x1,
+            y1,
+            x2,
+            y2,
+            json,
+        } => page_input::run_send(
+            target,
+            DocumentInput::Drag {
+                from: (*x1, *y1),
+                to: (*x2, *y2),
+            },
+            *json,
+            socket,
+        ),
         PageAction::Type { target, text, json } => page_input::run_send(
             target,
             DocumentInput::Type { text: text.clone() },

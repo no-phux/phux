@@ -11,6 +11,13 @@ macro_rules! supervisory_commands {
     /// Connected-server public workflow description and nested schemas.
     /// Requires `features_ext.API_DESCRIPTION`; support is not authorization.
     DescribeApi,
+    /// The macOS privacy grants the server process holds, probed without
+    /// ever prompting (`docs/install.md#macos-permissions`). **Local only**:
+    /// refused off the Unix socket. Answered `OkWith(Json {"executable",
+    /// "responsible_path", "permissions": [{"service", "status"}]})`.
+    /// Gated on
+    /// [`ServerFeatureExt::PrivacyStatus`](crate::caps::ServerFeatureExt::PrivacyStatus).
+    PrivacyStatus,
     /// Dedicated SDK-owned `AgentSession` broker request. The wire body is
     /// length-prefixed JSON bounded by `MAX_NATIVE_PAYLOAD_BYTES`; controller
     /// requests additionally require exclusive binding proof and generation.
@@ -323,6 +330,9 @@ macro_rules! supervisory_commands {
         /// no restriction): a document of another class refuses the input.
         /// Only ever narrows what the receiver's own policy admits.
         control: Option<super::ControlClasses>,
+        /// Who a relaying hub sends it for, after the class byte (absent =
+        /// the connection itself). Shown and logged, never authorized by.
+        on_behalf_of: Option<super::OnBehalfOf>,
     },
     /// A host's screen mirrors: list what it can mirror, start or stop one
     /// in its `mirror-<target>` session, on this server or the named

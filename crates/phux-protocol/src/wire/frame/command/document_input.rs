@@ -174,6 +174,49 @@ impl ControlClasses {
     }
 }
 
+/// The byte a relaying hub writes in place of a [`ControlClasses`] stamp
+/// when it authorized every class (its owner socket) but still appends an
+/// [`OnBehalfOf`]. No real set has it: the classes use bits 1 to 3.
+pub const CONTROL_UNRESTRICTED: u8 = 0xff;
+
+/// Most UTF-8 bytes in each [`OnBehalfOf`] field.
+pub const MAX_ON_BEHALF_OF: usize = 255;
+
+/// Who a relaying hub sends a `SEND_DOCUMENT_INPUT` for
+/// (`docs/authority.md#relayed-identity`). Informational only: a satellite
+/// shows and logs it when the link may vouch for it, and never authorizes
+/// by it.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct OnBehalfOf {
+    /// The sender's credential id on the hub (`sha256:...`), `owner` for
+    /// the hub owner's socket, else `anonymous`.
+    pub credential: String,
+    /// The sender's `HELLO` client name; empty when it sent none.
+    pub name: String,
+}
+
+impl OnBehalfOf {
+    pub(crate) fn encode(&self, enc: &mut Encoder<'_>) {
+        enc.write_str(&self.credential);
+        enc.write_str(&self.name);
+    }
+
+    /// Decode, refusing a field over [`MAX_ON_BEHALF_OF`] bytes.
+    pub(crate) fn decode(dec: &mut Decoder<'_>) -> Result<Self, DecodeError> {
+        let mut field = || {
+            let text = dec.read_str()?;
+            if text.len() > MAX_ON_BEHALF_OF {
+                return Err(DecodeError::LengthOverflow);
+            }
+            Ok(text.to_owned())
+        };
+        Ok(Self {
+            credential: field()?,
+            name: field()?,
+        })
+    }
+}
+
 /// One input intent for the producer of a document resource. The server
 /// relays it without reading it; the producer maps it to its source (a
 /// browser page's `DevTools` input, for example).
@@ -241,6 +284,15 @@ pub enum DocumentInput {
         /// The node's id, at most [`MAX_DOCUMENT_INPUT_TEXT`] bytes.
         node: String,
     },
+    /// Press the left button at `from`, move to `to`, release there, in the
+    /// published surface image's own pixels: a text selection or a drag.
+    /// The producer moves through the points between.
+    Drag {
+        /// Where the press lands, `(x, y)`.
+        from: (u32, u32),
+        /// Where the release lands, `(x, y)`.
+        to: (u32, u32),
+    },
 }
 
 const NAVIGATE: u8 = 0;
@@ -252,6 +304,7 @@ const PASTE: u8 = 5;
 const COPY_CLIPBOARD: u8 = 6;
 const CLIPBOARD_TEXT: u8 = 7;
 const ACTIVATE: u8 = 8;
+const DRAG: u8 = 9;
 
 impl DocumentInput {
     pub(crate) fn encode(&self, enc: &mut Encoder<'_>) {
@@ -296,6 +349,12 @@ impl DocumentInput {
             Self::Activate { node } => {
                 enc.write_u8(ACTIVATE);
                 enc.write_str(node);
+            }
+            Self::Drag { from, to } => {
+                enc.write_u8(DRAG);
+                for v in [from.0, from.1, to.0, to.1] {
+                    enc.write_u32_be(v);
+                }
             }
         }
     }
@@ -349,6 +408,10 @@ impl DocumentInput {
                 }
             }
             ACTIVATE => Self::Activate { node: text(dec)? },
+            DRAG => Self::Drag {
+                from: (dec.read_u32_be()?, dec.read_u32_be()?),
+                to: (dec.read_u32_be()?, dec.read_u32_be()?),
+            },
             other => return Err(DecodeError::unknown_enum("DocumentInput", other)),
         })
     }
@@ -386,6 +449,10 @@ mod tests {
             DocumentInput::Activate {
                 node: "0.2.1".into(),
             },
+            DocumentInput::Drag {
+                from: (10, 20),
+                to: (300, 25),
+            },
         ];
         let encode = |intent: &DocumentInput| {
             let mut buf = bytes::BytesMut::new();
@@ -405,7 +472,8 @@ mod tests {
             chord: false,
         });
         assert!(DocumentInput::decode(&mut Decoder::new(&huge)).is_err());
-        assert!(DocumentInput::decode(&mut Decoder::new(&[9])).is_err());
+        assert!(DocumentInput::decode(&mut Decoder::new(&[10])).is_err());
+        assert!(DocumentInput::decode(&mut Decoder::new(&[9, 0, 0])).is_err());
         assert_eq!(DocumentKey::parse("escape"), Some(DocumentKey::Escape));
         assert_eq!(DocumentKey::parse("F1"), None);
     }
@@ -424,12 +492,27 @@ mod tests {
                 terminal_id: ResourceId::local(3),
                 intent: intent.clone(),
                 control,
+                on_behalf_of: None,
+            },
+        };
+        let relayed = |control| FrameKind::Command {
+            request_id: 8,
+            command: Command::SendDocumentInput {
+                terminal_id: ResourceId::local(3),
+                intent: intent.clone(),
+                control,
+                on_behalf_of: Some(OnBehalfOf {
+                    credential: "sha256:phone".to_owned(),
+                    name: "iPhone".to_owned(),
+                }),
             },
         };
         for frame in [
             send(None),
             send(Some(window)),
             send(Some(ControlClasses::EMPTY)),
+            relayed(None),
+            relayed(Some(window)),
             FrameKind::Event {
                 terminal: Some(ResourceId::local(3)),
                 event: AgentEvent::DocumentInput { intent },

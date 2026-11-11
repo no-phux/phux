@@ -8,6 +8,8 @@ use phux_protocol::input::key::{KeyAction, KeyEvent, ModSet, PhysicalKey};
 use rune::{Key, Mods, PhysicalKeyCode};
 
 mod commands;
+#[cfg(all(test, not(target_os = "macos")))]
+mod linux_tests;
 pub use commands::{COMMANDS, Command, ESSENTIALS, command};
 use commands::{Cap, Chord};
 
@@ -52,6 +54,8 @@ pub enum Shortcut {
     FindNext,
     FindPrevious,
     FindSelection,
+    /// A keyboard cursor over the pane, to select and copy with vi keys.
+    CopyMode,
     Inbox,
     /// The fleet as a galaxy: machines, their agents, and how they relate.
     Galaxy,
@@ -86,6 +90,8 @@ pub enum Shortcut {
     KeyboardShortcuts,
     /// The handful of keys worth learning first, with the full list one row away.
     EssentialShortcuts,
+    /// First-run onboarding, from the top.
+    GetStarted,
     SelectAll,
     PromptUp,
     PromptDown,

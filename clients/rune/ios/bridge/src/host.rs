@@ -28,7 +28,16 @@ struct Host {
     layer: LayerHost<State>,
     input: Input,
     frames: u64,
+    viewport: ((f32, f32), f32),
     poisoned: bool,
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn phux_rune_ios_prewarm() {
+    attempt(|| {
+        rune::embed::prewarm();
+        Ok(())
+    });
 }
 
 #[unsafe(no_mangle)]
@@ -37,6 +46,16 @@ pub unsafe extern "C" fn phux_rune_ios_validate(configuration: *const c_char) ->
         let configuration = unsafe { parse_configuration(configuration)? };
         configuration.validate_connection()?;
         string(json!({"valid":true}))
+    })
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn phux_rune_ios_pairing_import(invite: *const c_char) -> *mut c_char {
+    attempt(|| {
+        // Borrowed only for this call; the returned JSON is bridge-owned and
+        // released through phux_rune_ios_free, just like validation responses.
+        let invite = unsafe { text(invite)? };
+        string(mobile::parse_pairing_invite(invite)?)
     })
 }
 
@@ -133,6 +152,7 @@ pub unsafe extern "C" fn phux_rune_ios_create(
             layer,
             input: Input::default(),
             frames: 0,
+            viewport: ((width as f32, height as f32), scale as f32),
             poisoned: false,
         }))
         .cast())
@@ -160,9 +180,13 @@ pub unsafe extern "C" fn phux_rune_ios_resize(
         if ![width, height, scale].iter().all(|v| v.is_finite()) {
             return Err("Non-finite viewport.".into());
         }
-        unsafe { host(pointer)? }
-            .layer
-            .resize((width as f32, height as f32), scale as f32);
+        let host = unsafe { host(pointer)? };
+        let viewport = ((width as f32, height as f32), scale as f32);
+        if host.viewport != viewport {
+            mobile::viewport_changed(host.layer.runtime_mut());
+            host.viewport = viewport;
+        }
+        host.layer.resize(viewport.0, viewport.1);
         Ok(())
     });
 }
@@ -190,17 +214,12 @@ pub unsafe extern "C" fn phux_rune_ios_frame(pointer: *mut c_void) -> *mut c_cha
         }
         let reconciled = host.input.reconcile(host.layer.runtime_mut());
         let input = host.input.snapshot(host.layer.runtime());
-        let native = host
-            .layer
-            .runtime_mut()
-            .state
-            .native
-            .as_mut()
-            .ok_or("Missing native state.")?;
-        let connection_requested = std::mem::take(&mut native.connection_requested);
+        let requests = mobile::take_requests(host.layer.runtime_mut());
+        let ground = mobile::edge_srgb(host.layer.runtime());
         string(
             json!({"drew":frame.drew,"animating":frame.animating || reconciled,
-            "wake_after_secs":frame.wake_after_secs,"input":input,"connection_requested":connection_requested}),
+            "wake_after_secs":frame.wake_after_secs,"input":input,"requests":requests,
+            "ground":ground}),
         )
     })
 }
@@ -214,30 +233,16 @@ pub unsafe extern "C" fn phux_rune_ios_input(
         let host = unsafe { host(pointer)? };
         let operation = match unsafe { parse_input(operation) } {
             Ok(operation) => operation,
-            Err(error) => return input_response(host, false, None, Some(error)),
+            Err(error) => return input_response(host, false, Some(error)),
         };
-        // Only our explicit plain terminal-selection Copy may cross this
-        // interface. Do not turn arbitrary/secret Rune writes into UIPasteboard.
-        let copies = matches!(operation.action, phux_rune::mobile::Action::Copy);
-        if copies {
-            let _ = host.layer.runtime_mut().copy_request.take();
-        }
         // Invalid/stale edits are recoverable, not renderer failures. Return
         // the authoritative document before UIKit's next synchronous key.
+        // A copy this makes leaves with the next frame's requests.
         let (accepted, rejected) = match host.input.apply(host.layer.runtime_mut(), operation) {
             Ok(accepted) => (accepted, None),
             Err(_) => (false, Some("This input edit is not supported.".into())),
         };
-        let copied = if accepted && copies {
-            host.layer
-                .runtime_mut()
-                .copy_request
-                .take()
-                .map(|write| write.content().text().to_owned())
-        } else {
-            None
-        };
-        input_response(host, accepted, copied, rejected)
+        input_response(host, accepted, rejected)
     })
 }
 
@@ -250,7 +255,6 @@ unsafe fn parse_input(pointer: *const c_char) -> Result<Operation, String> {
 fn input_response(
     host: &mut Host,
     accepted: bool,
-    copied: Option<String>,
     error: Option<String>,
 ) -> Result<*mut c_char, String> {
     // Malformed/oversized input skips `apply`; retire its previous owner
@@ -258,7 +262,7 @@ fn input_response(
     host.input.reconcile(host.layer.runtime_mut());
     string(
         json!({"accepted":accepted,"input":host.input.snapshot(host.layer.runtime()),
-        "copied_text":copied,"error":error}),
+        "error":error}),
     )
 }
 
@@ -295,6 +299,32 @@ pub unsafe extern "C" fn phux_rune_ios_touch(
                 .runtime_mut()
                 .touch(identity, phase, x as f32, y as f32, seconds);
         }
+        Ok(())
+    });
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn phux_rune_ios_paste(pointer: *mut c_void, pasted: *const c_char) {
+    attempt(|| {
+        // Oversized or invalid text is refused aloud, not silently dropped.
+        let pasted = unsafe { text(pasted) }.ok();
+        mobile::paste(unsafe { host(pointer)? }.layer.runtime_mut(), pasted);
+        Ok(())
+    });
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn phux_rune_ios_path_changed(pointer: *mut c_void) {
+    attempt(|| {
+        mobile::path_changed(unsafe { host(pointer)? }.layer.runtime_mut());
+        Ok(())
+    });
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn phux_rune_ios_zoom(pointer: *mut c_void, larger: bool) {
+    attempt(|| {
+        mobile::zoom(unsafe { host(pointer)? }.layer.runtime_mut(), larger);
         Ok(())
     });
 }

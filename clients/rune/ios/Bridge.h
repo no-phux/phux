@@ -9,7 +9,12 @@
 // create takes ownership of context even on failure: release is called when
 // the last runtime waker retires. wake/release may run on a worker thread.
 typedef void (*PhuxRuneCallback)(void *context);
+// Warm the shared GPU device and renderer off the main thread; idempotent.
+void phux_rune_ios_prewarm(void);
 char *phux_rune_ios_validate(const char *configuration);
+// Parse a complete pairing link. Secrets remain transient; the result is
+// staged for explicit peer confirmation, not saved or dialed by this call.
+char *phux_rune_ios_pairing_import(const char *link);
 void *phux_rune_ios_create(void *layer, double width, double height, double scale,
                           bool dark, const char *configuration, void *context,
                           PhuxRuneCallback wake, PhuxRuneCallback release, void *identity);
@@ -36,6 +41,12 @@ char *phux_rune_ios_frame(void *host);
 char *phux_rune_ios_input(void *host, const char *operation);
 void phux_rune_ios_touch(void *host, uint64_t identity, uint32_t phase,
                          double x, double y, double seconds);
+// Answers a frame's `paste` request with the system pasteboard's text.
+void phux_rune_ios_paste(void *host, const char *text);
+// The network path changed: rebind the connection and probe it now.
+void phux_rune_ios_path_changed(void *host);
+// One step of terminal text size, from a pinch.
+void phux_rune_ios_zoom(void *host, bool larger);
 void phux_rune_ios_active(void *host, bool active);
 void phux_rune_ios_traits(void *host, bool dark, bool reduced_motion);
 char *phux_rune_ios_report(void *host, const char *marker);

@@ -12,13 +12,18 @@
 //! Screen Recording access (TCC), so the pane only holds the session and
 //! Rune runs the mirror into it (`phux agent surface standing`), which
 //! makes the TCC prompts Rune's.
+//!
+//! `[[producers]]` (`docs/applications.md#standing-producers`) rides the
+//! same loop: each entry's command runs in a `producer-<name>` session and
+//! is restarted, adopted and reloaded exactly like a mirror.
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use phux_config::MirrorConfigEntry;
 use phux_config::mirror::MIRROR_SESSION_PREFIX;
+use phux_config::producer::PRODUCER_SESSION_PREFIX;
+use phux_config::{MirrorConfigEntry, ProducerConfigEntry};
 use tokio::sync::Notify;
 use tokio_util::sync::CancellationToken;
 use tracing::{info, warn};
@@ -33,9 +38,12 @@ use crate::state::SharedState;
 mod demand;
 pub(crate) use demand::{handle, provide};
 
-/// How the supervisor reads `[[mirrors]]`, at start and on every reload.
+/// What the supervisor keeps: `[[mirrors]]` and `[[producers]]`.
+pub type StandingEntries = (Vec<MirrorConfigEntry>, Vec<ProducerConfigEntry>);
+
+/// How the supervisor reads its entries, at start and on every reload.
 #[derive(Clone)]
-pub struct MirrorSource(Arc<dyn Fn() -> Result<Vec<MirrorConfigEntry>, String> + Send + Sync>);
+pub struct MirrorSource(Arc<dyn Fn() -> Result<StandingEntries, String> + Send + Sync>);
 
 impl std::fmt::Debug for MirrorSource {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -47,9 +55,7 @@ impl MirrorSource {
     /// Wrap the function a start and a reload call. A reload error keeps
     /// the running mirrors.
     #[must_use]
-    pub fn new(
-        read: impl Fn() -> Result<Vec<MirrorConfigEntry>, String> + Send + Sync + 'static,
-    ) -> Self {
+    pub fn new(read: impl Fn() -> Result<StandingEntries, String> + Send + Sync + 'static) -> Self {
         Self(Arc::new(read))
     }
 }
@@ -91,12 +97,13 @@ async fn supervise(
     reload: Arc<Notify>,
     root_token: CancellationToken,
 ) {
-    let mut entries = read(&source, Vec::new());
+    let mut entries = read(&source, StandingEntries::default());
     let mut slots = BTreeMap::new();
     loop {
-        state.with_mut(|s| s.mirror_demand_mut().config.clone_from(&entries));
-        let wanted = state.with(|s| s.mirror_demand().wanted());
-        tick(&state, &wanted, &mut slots, Instant::now(), &root_token);
+        state.with_mut(|s| s.mirror_demand_mut().config.clone_from(&entries.0));
+        let mirrors = state.with(|s| s.mirror_demand().wanted());
+        let units = units(&mirrors, &entries.1);
+        tick(&state, units, &mut slots, Instant::now(), &root_token);
         tokio::select! {
             () = root_token.cancelled() => return,
             () = tokio::time::sleep(TICK) => {}
@@ -106,9 +113,9 @@ async fn supervise(
 }
 
 /// The entries `source` names, or `previous` when it cannot be read.
-fn read(source: &MirrorSource, previous: Vec<MirrorConfigEntry>) -> Vec<MirrorConfigEntry> {
+fn read(source: &MirrorSource, previous: StandingEntries) -> StandingEntries {
     match (source.0)() {
-        Ok(entries) if cfg!(target_os = "macos") && !entries.is_empty() => {
+        Ok(entries) if cfg!(target_os = "macos") && !entries.0.is_empty() => {
             info!(
                 "[[mirrors]]: a macOS server cannot hold Screen Recording access; Rune runs the mirrors into their sessions while it is open"
             );
@@ -177,35 +184,56 @@ impl Slot {
     }
 }
 
+/// Every standing session to keep, by name, with the argv it runs; a first
+/// word `phux` is this server's own binary.
+fn units(
+    mirrors: &[MirrorConfigEntry],
+    producers: &[ProducerConfigEntry],
+) -> BTreeMap<String, Vec<String>> {
+    let mirrors = mirrors.iter().map(|entry| {
+        let mut argv = vec!["phux".to_owned()];
+        argv.extend(entry.args());
+        (entry.session_name(), argv)
+    });
+    let producers = producers.iter().filter_map(|entry| {
+        if entry.command.first().is_none_or(String::is_empty) {
+            warn!(producer = %entry.name, "[[producers]] entry has no command; skipping it");
+            return None;
+        }
+        Some((entry.session_name(), entry.command.clone()))
+    });
+    let mut wanted = BTreeMap::new();
+    for (name, argv) in mirrors.chain(producers) {
+        if wanted.insert(name.clone(), argv).is_some() {
+            warn!(session = %name, "two standing entries name the same session; keeping the last");
+        }
+    }
+    wanted
+}
+
 fn tick(
     state: &SharedState,
-    entries: &[MirrorConfigEntry],
+    wanted: BTreeMap<String, Vec<String>>,
     slots: &mut BTreeMap<String, Slot>,
     now: Instant,
     root_token: &CancellationToken,
 ) {
-    let mut wanted = BTreeMap::new();
-    for entry in entries {
-        let name = entry.session_name();
-        if wanted.insert(name.clone(), entry).is_some() {
-            warn!(session = %name, "[[mirrors]] names the same session twice; keeping the last");
-        }
-    }
     let owned: Vec<String> = state.with(|s| {
         s.registry()
             .sessions()
             .map(|(_, session)| session.name.clone())
-            .filter(|name| name.starts_with(MIRROR_SESSION_PREFIX))
+            .filter(|name| {
+                name.starts_with(MIRROR_SESSION_PREFIX) || name.starts_with(PRODUCER_SESSION_PREFIX)
+            })
             .collect()
     });
     for name in owned.iter().filter(|name| !wanted.contains_key(*name)) {
-        info!(session = %name, "standing mirror removed from config; stopping it");
+        info!(session = %name, "standing session removed from config; stopping it");
         stop(state, name);
     }
     slots.retain(|name, _| wanted.contains_key(name));
-    for (name, entry) in wanted {
+    for (name, args) in wanted {
         let slot = slots.entry(name.clone()).or_default();
-        let args = entry.args();
         let mut alive = live(state, &name);
         if alive && slot.changed(&args) {
             info!(session = %name, "standing mirror changed; restarting it");
@@ -263,17 +291,19 @@ fn start(
     args: Vec<String>,
     root_token: &CancellationToken,
 ) -> Result<(), String> {
-    let command = if cfg!(target_os = "macos") {
+    let command = if cfg!(target_os = "macos") && name.starts_with(MIRROR_SESSION_PREFIX) {
         // `phux agent surface standing` (Rune's child) mirrors into this pane.
         drop(args);
         ["/bin/sh", "-c", MACOS_HOLDER].map(str::to_owned).into()
-    } else {
+    } else if args.first().is_some_and(|word| word == "phux") {
         let exe = state
             .with(crate::state::ServerState::native_host_executable)
             .map_err(|err| err.to_string())?;
         let mut command = vec![exe.to_string_lossy().into_owned()];
-        command.extend(args);
+        command.extend(args.into_iter().skip(1));
         command
+    } else {
+        args
     };
     let cmd = crate::runtime::apps::terminal::launch::named_session_command(
         state,
@@ -365,10 +395,11 @@ mod tests {
         assert!(slot.due(false, died + BACKOFF_BASE));
     }
 
-    /// A reload that adds an entry starts its session; one that drops it
-    /// closes the session.
+    /// A reload that adds entries starts their sessions, a `phux` producer
+    /// on the server's own binary and any other command as given; one that
+    /// drops them closes the sessions.
     #[tokio::test(flavor = "current_thread")]
-    async fn reload_adds_and_removes_a_standing_mirror() {
+    async fn reload_adds_and_removes_standing_mirrors_and_producers() {
         use std::os::unix::fs::PermissionsExt as _;
         let dir = tempfile::tempdir().expect("tempdir");
         let fake = dir.path().join("phux");
@@ -381,26 +412,41 @@ mod tests {
                 state.set_terminal_engine(Arc::new(phux_terminal::TerminalEngine));
                 state.with_mut(|s| s.set_native_host_executable(Some(fake)));
                 let token = CancellationToken::new();
-                let entry = MirrorConfigEntry {
+                let mirror = MirrorConfigEntry {
                     target: "display".to_owned(),
                     format: None,
                     quality: None,
                     max_width: None,
                     interval_ms: None,
                 };
+                let producer = |name: &str, command: &[&str]| ProducerConfigEntry {
+                    name: name.to_owned(),
+                    command: command.iter().map(|w| (*w).to_owned()).collect(),
+                };
+                let producers = [
+                    producer("feed", &["phux", "agent", "doc", "notifications"]),
+                    producer("Sleep", &["/bin/sh", "-c", "exec sleep 30"]),
+                    producer("empty", &[]),
+                ];
+                let names = ["mirror-display", "producer-feed", "producer-sleep"];
+                let wanted = units(&[mirror], &producers);
+                assert_eq!(wanted.keys().map(String::as_str).collect::<Vec<_>>(), names);
                 let mut slots = BTreeMap::new();
-                tick(&state, &[entry], &mut slots, Instant::now(), &token);
-                assert!(live(&state, "mirror-display"), "started");
-                tick(&state, &[], &mut slots, Instant::now(), &token);
+                tick(&state, wanted, &mut slots, Instant::now(), &token);
+                for name in names {
+                    assert!(live(&state, name), "{name} started");
+                }
+                tick(&state, BTreeMap::new(), &mut slots, Instant::now(), &token);
                 let mut gone = false;
                 for _ in 0..100 {
-                    gone = state.with(|s| s.find_session_by_name("mirror-display").is_none());
+                    gone =
+                        state.with(|s| names.iter().all(|n| s.find_session_by_name(n).is_none()));
                     if gone {
                         break;
                     }
                     tokio::time::sleep(Duration::from_millis(50)).await;
                 }
-                assert!(gone, "removed entry's session closes");
+                assert!(gone, "removed entries' sessions close");
                 token.cancel();
             })
             .await;

@@ -237,6 +237,7 @@ const fn runtime_server_features_ext() -> ServerFeatureExtSet {
         ServerFeatureExt::PixelSurface,
         ServerFeatureExt::TypedDocument,
         ServerFeatureExt::Mirrors,
+        ServerFeatureExt::PrivacyStatus,
     ])
 }
 

@@ -13,11 +13,14 @@ mod icons;
 mod inbox;
 mod kitchen;
 mod machines;
+mod news;
+mod onboarding;
 mod overlay;
 mod palette;
 mod panes;
 pub(crate) use panes::DIVIDER;
 mod phone;
+pub(crate) use phone::edge_color as phone_edge_color;
 mod pitch;
 mod pitlane;
 mod questions;
@@ -63,6 +66,9 @@ pub(crate) struct Ink {
     pub(crate) current: Color,
     pub(crate) hover: Color,
     pub(crate) accent: Color,
+    /// The window's machine colour: what marks this window, its sessions and
+    /// its terminals. The accent until a window knows its machine.
+    pub(crate) host: Color,
     /// Text and marks on an accent fill.
     pub(crate) on_accent: Color,
     pub(crate) danger: Color,
@@ -95,6 +101,7 @@ fn ink(dark: bool, accent: Color, theme: Option<&Theme>) -> Ink {
             current: roles.text.alpha(0.1),
             hover: roles.text.alpha(0.07),
             accent: roles.accent,
+            host: roles.accent,
             on_accent: roles.on_accent,
             danger: roles.danger,
             edge: roles.edge,
@@ -121,6 +128,7 @@ fn ink(dark: bool, accent: Color, theme: Option<&Theme>) -> Ink {
         current: t.text.alpha(0.1),
         hover: t.hover,
         accent,
+        host: accent,
         on_accent: on_fill(accent),
         danger: Theme::system_danger(dark),
         edge: crate::theme::color(edge),
@@ -135,6 +143,10 @@ pub fn view(desk: &Desk, cx: &mut Cx<Desk>) -> El {
         return phone::view(desk, cx);
     }
     let p = ink(cx.system_dark(), cx.accent(), desk.settings.theme);
+    let p = Ink {
+        host: crate::host_color::on(desk.machines.label(), p.sidebar),
+        ..p
+    };
     // Native fields inherit a readable caret and selection in light themes too.
     cx.foreground(p.text);
     // `titlebar_inset` is the traffic lights' width; zero when the system
@@ -180,7 +192,7 @@ pub fn view(desk: &Desk, cx: &mut Cx<Desk>) -> El {
                                 .w_full()
                                 .min_w(0.0)
                                 .min_h(0.0)
-                                .child(panes::view(desk, &p, cx))
+                                .child(onboarding::stage(desk, &p, cx))
                                 .children(status::confirm_bar(desk, &p))
                                 .children(overlay::toast(desk, &p)),
                         ),
@@ -189,7 +201,12 @@ pub fn view(desk: &Desk, cx: &mut Cx<Desk>) -> El {
     // No root paste hook: it would read the clipboard before anything here
     // saw the key. ⌘V and Edit ▸ Paste come to `Desk::key` instead, which
     // answers to the modal and keeps the terminal asked for.
-    let root = el().w_full().h_full().fill(p.sidebar).child(main);
+    let root = el()
+        .w_full()
+        .h_full()
+        .fill(p.sidebar)
+        .child(main)
+        .child(crate::host_color::edge(desk.machines.label(), p.sidebar));
     floating(root, desk, &p, band, cx)
 }
 
@@ -201,6 +218,7 @@ fn floating(root: El, desk: &Desk, p: &Ink, band: f32, cx: &mut Cx<Desk>) -> El 
         .children(playground(desk, p, cx))
         .children(desk.settings_open.then(|| settings::view(desk, p)))
         .children(machines::sheet(desk, p))
+        .children(desk.news.open.then(|| news::view(desk, p)))
         .children(tabs::rename_sheet(desk, p))
         .children(desk.palette_open.then(|| palette::view(desk, p, 96.0)))
         .children(
@@ -280,7 +298,12 @@ fn bare(desk: &Desk, p: &Ink, lights: f32, band_h: f32, cx: &mut Cx<Desk>) -> El
         .children(status::confirm_bar(desk, p))
         .children(overlay::toast(desk, p));
     let main = col().key("main").w_full().h_full().child(band).child(stage);
-    let root = el().w_full().h_full().fill(p.bg).child(main);
+    let root = el()
+        .w_full()
+        .h_full()
+        .fill(p.bg)
+        .child(main)
+        .child(crate::host_color::edge(desk.machines.label(), p.bg));
     floating(root, desk, p, band_h, cx)
 }
 

@@ -112,8 +112,8 @@ fn grounds(desk: &Desk, r: &PitLane) -> (rune::Shape, rune::Shape) {
     (cache.1.clone(), cache.2.clone())
 }
 
-/// A garage's board under it: the machine's name in its team colour, and
-/// the amber count of its agents that need you.
+/// A garage's board under it: the machine's name in its team colour, in
+/// whichever ink reads on it, and the amber count of its agents that need you.
 fn board(r: &PitLane, i: usize) -> El {
     let g = &r.garages[i];
     let waiting = r.waiting_in(i);
@@ -121,7 +121,7 @@ fn board(r: &PitLane, i: usize) -> El {
         (g.u0 + g.u1) / 2.0,
         0.43 + if r.portrait { 0.07 } else { 0.035 },
     );
-    let ink = rgba([12.0, 17.0, 24.0], 1.0);
+    let ink = crate::theme::on_fill(rgba(g.c, 1.0));
     row()
         .absolute(at[0] - 160.0, at[1] - PILL_H / 2.0)
         .w(320.0)

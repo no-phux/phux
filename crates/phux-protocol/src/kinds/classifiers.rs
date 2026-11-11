@@ -143,6 +143,7 @@ pub fn command_rule(command: &Command) -> &'static Rule {
         Command::Transcribe { .. } => &C_TRANSCRIBE,
         Command::GetOrganization { .. } => &C_GET_ORGANIZATION,
         Command::DescribeApi => &C_API_DESCRIBE,
+        Command::PrivacyStatus => &C_PRIVACY_STATUS,
         Command::GetCreation { .. } => &C_GET_CREATION,
         Command::SessionCreate { .. } => &C_SESSION_CREATE,
         Command::SessionRename { .. }

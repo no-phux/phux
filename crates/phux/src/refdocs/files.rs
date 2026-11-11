@@ -195,6 +195,16 @@ pub(crate) fn page() -> Page {
            seconds after the workspace changes, so a crash or power loss \
            leaves the latest layout. An archive that fails to \
            restore is copied to `workspace.json.unrestored` first.\n\n\
+         ## Server bundle (macOS)\n\n\
+         The install script and `phux update` keep the signed server app \
+         under `~/Library/Application Support/sh.phux/Server`: \
+         `Versions/<release>/phux Server.app` and `Versions/Current`, a \
+         symlink to the release in use. The previous release is kept for \
+         `phux update --rollback`; older ones are removed. Servers start \
+         through `Versions/Current` when it holds the same build as the \
+         CLI, so macOS privacy grants survive updates \
+         ([macOS permissions](../install.md#macos-permissions)). It is not \
+         profile-scoped: a development build never runs it.\n\n\
          ## Decided: not built\n\n\
          A `server.pid` file and a `journal/` directory of per-pane PTY \
          output for crash recovery are decided: not built. \
