@@ -40,6 +40,7 @@ fn every_holdable_command_routes_to_the_handler() {
             terminal_id: WireResourceId::local(3),
             intent: phux_protocol::wire::frame::DocumentInput::Click { x: 1, y: 1 },
             control: None,
+            on_behalf_of: None,
         },
     ] {
         for lane in [false, true] {

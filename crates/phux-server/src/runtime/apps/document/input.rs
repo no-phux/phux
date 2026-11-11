@@ -14,6 +14,7 @@ use std::time::Duration;
 
 use phux_protocol::wire::frame::{
     AgentEvent, CommandResult, CommandValue, ControlClasses, DocumentInput, ErrorCode, FrameKind,
+    OnBehalfOf,
 };
 use phux_tree::DocumentResource as _;
 use tokio::sync::oneshot;
@@ -66,19 +67,20 @@ impl Drop for Unwait {
 /// document; once it is gone the intent is refused, never held. `control`,
 /// stamped by a relaying hub, refuses a document of any other class.
 /// An `input_activity` naming the sender goes first, so the producer can
-/// show who is in control.
+/// show who is in control: through a hub, the device it relays for.
 pub(super) async fn relay<A: DocumentApi>(
     ctx: &CommandContext,
     terminal_id: &phux_protocol::ids::ResourceId,
     intent: DocumentInput,
     control: Option<ControlClasses>,
+    relayed: Option<&OnBehalfOf>,
 ) -> CommandResult {
     let found = ctx.state.with(|s| {
         let core = s.resource_from_wire(terminal_id)?;
         let handle = s.resource_handle(core)?.clone();
         let producer = s.resource_producer(core);
         let spawner = s.resource_spawner(core);
-        let origin = s.input_origin(ctx.client_id);
+        let origin = super::audit::origin(s, ctx.client_id, relayed);
         Some((
             core,
             handle,

@@ -330,6 +330,9 @@ macro_rules! supervisory_commands {
         /// no restriction): a document of another class refuses the input.
         /// Only ever narrows what the receiver's own policy admits.
         control: Option<super::ControlClasses>,
+        /// Who a relaying hub sends it for, after the class byte (absent =
+        /// the connection itself). Shown and logged, never authorized by.
+        on_behalf_of: Option<super::OnBehalfOf>,
     },
     /// A host's screen mirrors: list what it can mirror, start or stop one
     /// in its `mirror-<target>` session, on this server or the named

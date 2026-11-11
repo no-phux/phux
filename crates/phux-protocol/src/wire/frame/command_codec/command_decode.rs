@@ -111,9 +111,15 @@ pub(super) fn decode_resource_command(
             control: if dec.at_body_end() {
                 None
             } else {
-                Some(crate::wire::frame::ControlClasses::from_bits(
-                    dec.read_u8()?,
-                ))
+                match dec.read_u8()? {
+                    crate::wire::frame::CONTROL_UNRESTRICTED => None,
+                    bits => Some(crate::wire::frame::ControlClasses::from_bits(bits)),
+                }
+            },
+            on_behalf_of: if dec.at_body_end() {
+                None
+            } else {
+                Some(crate::wire::frame::OnBehalfOf::decode(dec)?)
             },
         },
         _ => return Ok(None),

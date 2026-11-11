@@ -44,6 +44,7 @@ fn a_viewer_intent_reaches_the_producer_and_is_refused_once_it_is_gone() {
             terminal_id: surface.clone(),
             intent,
             control: None,
+            on_behalf_of: None,
         };
         for (request_id, intent) in [
             (10, DocumentInput::Click { x: 40, y: 12 }),
@@ -79,6 +80,7 @@ fn a_viewer_intent_reaches_the_producer_and_is_refused_once_it_is_gone() {
                 terminal_id: parent,
                 intent: DocumentInput::Type { text: "x".into() },
                 control: None,
+                on_behalf_of: None,
             },
         )
         .await;
@@ -150,6 +152,7 @@ fn a_stamped_class_set_without_the_documents_class_is_refused() {
                     .iter()
                     .fold(ControlClasses::EMPTY, |set, class| set.with(*class)),
             ),
+            on_behalf_of: None,
         };
         let refused = command(&mut viewer, 9, stamped(&[ControlClass::Display])).await;
         assert!(
@@ -212,6 +215,7 @@ fn a_copy_waits_for_its_producer_and_reaches_only_the_viewer_that_asked() {
             terminal_id: surface.clone(),
             intent,
             control: None,
+            on_behalf_of: None,
         };
 
         // The viewer's token is not trusted: the server stamps its own.

@@ -174,6 +174,49 @@ impl ControlClasses {
     }
 }
 
+/// The byte a relaying hub writes in place of a [`ControlClasses`] stamp
+/// when it authorized every class (its owner socket) but still appends an
+/// [`OnBehalfOf`]. No real set has it: the classes use bits 1 to 3.
+pub const CONTROL_UNRESTRICTED: u8 = 0xff;
+
+/// Most UTF-8 bytes in each [`OnBehalfOf`] field.
+pub const MAX_ON_BEHALF_OF: usize = 255;
+
+/// Who a relaying hub sends a `SEND_DOCUMENT_INPUT` for
+/// (`docs/authority.md#relayed-identity`). Informational only: a satellite
+/// shows and logs it when the link may vouch for it, and never authorizes
+/// by it.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct OnBehalfOf {
+    /// The sender's credential id on the hub (`sha256:...`), `owner` for
+    /// the hub owner's socket, else `anonymous`.
+    pub credential: String,
+    /// The sender's `HELLO` client name; empty when it sent none.
+    pub name: String,
+}
+
+impl OnBehalfOf {
+    pub(crate) fn encode(&self, enc: &mut Encoder<'_>) {
+        enc.write_str(&self.credential);
+        enc.write_str(&self.name);
+    }
+
+    /// Decode, refusing a field over [`MAX_ON_BEHALF_OF`] bytes.
+    pub(crate) fn decode(dec: &mut Decoder<'_>) -> Result<Self, DecodeError> {
+        let mut field = || {
+            let text = dec.read_str()?;
+            if text.len() > MAX_ON_BEHALF_OF {
+                return Err(DecodeError::LengthOverflow);
+            }
+            Ok(text.to_owned())
+        };
+        Ok(Self {
+            credential: field()?,
+            name: field()?,
+        })
+    }
+}
+
 /// One input intent for the producer of a document resource. The server
 /// relays it without reading it; the producer maps it to its source (a
 /// browser page's `DevTools` input, for example).
@@ -449,12 +492,27 @@ mod tests {
                 terminal_id: ResourceId::local(3),
                 intent: intent.clone(),
                 control,
+                on_behalf_of: None,
+            },
+        };
+        let relayed = |control| FrameKind::Command {
+            request_id: 8,
+            command: Command::SendDocumentInput {
+                terminal_id: ResourceId::local(3),
+                intent: intent.clone(),
+                control,
+                on_behalf_of: Some(OnBehalfOf {
+                    credential: "sha256:phone".to_owned(),
+                    name: "iPhone".to_owned(),
+                }),
             },
         };
         for frame in [
             send(None),
             send(Some(window)),
             send(Some(ControlClasses::EMPTY)),
+            relayed(None),
+            relayed(Some(window)),
             FrameKind::Event {
                 terminal: Some(ResourceId::local(3)),
                 event: AgentEvent::DocumentInput { intent },
