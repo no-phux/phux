@@ -73,7 +73,7 @@ pub fn run_desktop() {
     let app = app
         .init(move || {
             let mut desk = Desk::new(&resolved).with_phone(phone);
-            desk.onboarding.window = Some(window);
+            desk.onboarding.dock.window = Some(window);
             desk
         })
         .chrome(Chrome {
