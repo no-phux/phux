@@ -59,7 +59,8 @@ session (or `--session NAME`). It never creates a session on its own.
 
 - **Getting started.** An installed app's first connection walks through
   five steps in the terminal area: **Welcome**; **Look** (colour scheme,
-  sidebar and themes, applied live); **Agents & permissions** (`phux skill
+  sidebar, themes and, on macOS, a Glass slider from solid to Liquid Glass
+  behind the window chrome, all applied live); **Agents & permissions** (`phux skill
   setup --json`, and on macOS a sheet that opens each privacy pane with
   `phux server permissions --open SERVICE`, offers the server's app to drag
   in, and polls until it is granted); **Bring your setup**, shown only with

@@ -259,3 +259,13 @@ fn a_notice_is_announced_and_an_error_at_once() {
         assert_eq!(find(&tree, "toast-close")["name"], "Dismiss");
     }
 }
+
+#[test]
+fn glass_is_saved_like_the_theme() {
+    let mut desk = Desk::settings_test_fixture();
+    desk.prefs = Prefs::memory();
+    desk.set_glass(40);
+    assert_eq!(super::Settings::load(&desk.prefs).glass, 40);
+    desk.set_glass(250);
+    assert_eq!(super::Settings::load(&desk.prefs).glass, 100, "clamped");
+}

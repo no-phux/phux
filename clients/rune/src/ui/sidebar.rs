@@ -490,7 +490,12 @@ pub fn view(desk: &Desk, ink: &Ink, inset: f32) -> El {
     col()
         .w(SIDEBAR_W)
         .h_full()
-        .fill(ink.sidebar)
+        // With glass on, the window's tinted glass shows through instead.
+        .fill(if desk.glass() > 0.0 {
+            Color::TRANSPARENT
+        } else {
+            ink.sidebar
+        })
         .child(el().w_full().h(inset).window_drag())
         .child(
             row()
