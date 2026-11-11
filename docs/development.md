@@ -343,8 +343,9 @@ mutation recipes. Regression tests still belong in the ordinary suite.
 
 ## Demos and recordings
 
-`bash scripts/record-readme.sh` records the README's real composited TUI
-using `target/debug/phux`, a private server, and an empty home. It needs
+`bash scripts/record-readme.sh` records `docs/assets/tour.gif`, a short
+composited TUI capture, using `target/debug/phux`, a private server, and an
+empty home. The README's screenshot is `docs/assets/workspace.webp`. It needs
 Python 3 for JSON processing, not a signed-in agent or an external renderer.
 `scripts/demo-setup.sh` stages a demo session and prints the runbook.
 `scripts/demo-record.sh` records `docs/assets/recording-demo.cast` and

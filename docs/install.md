@@ -25,15 +25,50 @@ The install script needs `curl` or `wget`, `tar`, and `sha256sum` or `shasum`.
 
 ## macOS permissions
 
-Full Disk Access is optional and only applies to file access. To let shells
-and agents reach protected folders, add the `phux` executable that runs the
-server (and **Phux Rune** if you use it) under **System Settings → Privacy &
-Security → Full Disk Access**, then restart the server; save its work first,
-because quitting the desktop does not stop shells or agents. macOS owns the
-approval; phux cannot grant access on your behalf. Grants on this Mac do not
-change permissions on a remote host. phux needs no Accessibility, Input
-Monitoring or Screen Recording; tools you run may request those separately.
-See Apple's [file access controls](https://support.apple.com/guide/security/controlling-app-access-to-files-secddd1d86a6/web).
+macOS charges every program in a pane to the phux server, so the server
+holds the Full Disk Access, Screen Recording and Accessibility grants for
+everything you run in phux. On macOS the install script and `phux update`
+keep a signed app, **phux Server**, at one path:
+
+```text
+~/Library/Application Support/sh.phux/Server/Versions/<release>/phux Server.app
+~/Library/Application Support/sh.phux/Server/Versions/Current -> <release>
+```
+
+Auto-start, `phux service install` and `phux upgrade` run the server
+through `Versions/Current`, so System Settings lists one **phux Server**
+row with an icon, and a grant survives updates. `~/.local/bin/phux` stays a
+plain CLI. The bundle is used only when it holds the same build as the CLI.
+Homebrew, Nix and source builds install no bundle; their server runs from
+their own binary.
+
+```sh
+phux server permissions                          # what the server holds
+phux server permissions --open full-disk-access  # open the pane, print what to add
+```
+
+Each grant reads `granted`, `denied` (this includes never asked),
+`not_determined` or `unknown`, and checking never shows a prompt.
+`--open` takes `full-disk-access`, `screen-recording` or `accessibility`.
+It opens that pane of **System Settings → Privacy & Security** and prints
+the app to switch on, or add with **+**. Restart the server afterwards. Save
+your work first: a restart ends the programs in panes. `phux doctor` shows
+the same three statuses and warns when the live server runs from somewhere
+other than the bundle.
+
+macOS charges a server to the app that started it, so a server auto-started
+from Terminal or Ghostty uses that terminal's grants. `phux server
+permissions` names that app on its `charged to` line. To have **phux
+Server** hold the grants itself, run the server under `phux service
+install`. Stable releases sign the bundle with phux's Developer ID, so a
+grant follows it from release to release. `next` builds are signed ad hoc,
+so macOS treats each one as a new app.
+
+Every grant is optional, and macOS owns the approval: phux cannot grant
+access on your behalf. Grants on this Mac do not change permissions on a
+remote host. phux itself needs none of them; they let the shells, agents
+and tools you run reach protected folders, the screen or other apps. See
+Apple's [file access controls](https://support.apple.com/guide/security/controlling-app-access-to-files-secddd1d86a6/web).
 
 ## Windows (WSL)
 
@@ -129,7 +164,7 @@ Windows Terminal, and WSLg is not required.
 curl -fsSL https://phux.sh/install | sh
 ```
 
-The script downloads the release for your platform, checks its SHA-256 before unpacking anything, and puts `phux` and `phux-mcp` in `~/.local/bin`. If that directory isn't on your `PATH`, it adds it to your shell profile.
+The script downloads the release for your platform, checks its SHA-256 before unpacking anything, and puts `phux` and `phux-mcp` in `~/.local/bin`. If that directory isn't on your `PATH`, it adds it to your shell profile. On macOS a stable release also installs [phux Server](#macos-permissions), checked the same way.
 
 Pass options after `sh -s --`:
 
@@ -217,7 +252,7 @@ phux update --check    # say whether there is one, and change nothing
 phux update --rollback # put the previous version back
 ```
 
-`phux update` downloads the new release, checks it, replaces both programs, and restarts the server in place. **Your panes keep running through an update**, and attached clients reconnect on their own.
+`phux update` downloads the new release, checks it, replaces both programs (and, on macOS, [phux Server](#macos-permissions)), and restarts the server in place. **Your panes keep running through an update**, and attached clients reconnect on their own.
 
 `phux upgrade` does only the restart: it moves the running server onto whatever `phux` is already installed, again without stopping your panes. Run it after updating some other way, such as `brew upgrade`.
 
@@ -280,6 +315,7 @@ phux service uninstall   # only if you ran phux service install
 phux kill --server       # ends every session
 rm ~/.local/bin/phux ~/.local/bin/phux-mcp
 rm -rf ~/.config/phux ~/.local/state/phux ~/.local/share/phux
+rm -rf ~/Library/Application\ Support/sh.phux   # macOS: phux Server
 ```
 
 If you installed the desktop app, also remove `Phux Rune.app` from `/Applications` or `~/Applications` on macOS, or `~/.local/share/phux-rune` and `~/.local/bin/phux-rune` on Linux. With Homebrew, run `brew uninstall phux` instead of the first `rm`. [File locations](./reference/files.md) lists every path phux writes, including where they move when `XDG_*` variables are set.

@@ -285,11 +285,18 @@ impl SatelliteSource {
     /// Re-read and validate the registry the way a `--hub` startup will,
     /// without touching any running link.
     ///
+    /// A file this image cannot read is not judged here: the reader is this
+    /// image's config parser, which rejects keys newer than itself (a
+    /// `[host]` table written by the CLI being upgraded to). The upgrade
+    /// target's own `phux config check` probe decides whether it parses.
+    ///
     /// # Errors
     ///
-    /// The read error, or the [`HubTableError`] startup would fail with.
+    /// The [`HubTableError`] startup would fail with.
     pub(crate) fn validate(&self) -> Result<(), String> {
-        let entries = self.read()?;
+        let Ok(entries) = self.read() else {
+            return Ok(());
+        };
         HubTable::from_registry(&entries)
             .map(drop)
             .map_err(|err| err.to_string())

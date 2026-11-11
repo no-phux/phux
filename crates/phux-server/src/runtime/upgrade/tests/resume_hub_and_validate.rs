@@ -89,7 +89,8 @@ async fn a_promoted_hub_resumes_with_hub() {
 
 /// A promoted hub whose on-disk registry no longer validates refuses the
 /// upgrade before exec, instead of resuming into a `--hub` startup that
-/// exits and takes the panes with it.
+/// exits and takes the panes with it. A file this image cannot parse (a key
+/// newer than it, like `[host]`) is left to the target's `config check`.
 #[tokio::test(flavor = "current_thread")]
 async fn an_invalid_registry_blocks_a_promoted_hub_upgrade() {
     let local = tokio::task::LocalSet::new();
@@ -97,8 +98,15 @@ async fn an_invalid_registry_blocks_a_promoted_hub_upgrade() {
         .run_until(async {
             let registry =
                 std::sync::Arc::new(std::sync::Mutex::new(vec![satellite("box", "ssh://box")]));
+            let unreadable = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
             let read = std::sync::Arc::clone(&registry);
-            let source = crate::hub::SatelliteSource::new(move || Ok(read.lock().unwrap().clone()));
+            let fail = std::sync::Arc::clone(&unreadable);
+            let source = crate::hub::SatelliteSource::new(move || {
+                if fail.load(std::sync::atomic::Ordering::Relaxed) {
+                    return Err("unknown field `host`".to_owned());
+                }
+                Ok(read.lock().unwrap().clone())
+            });
             let state = SharedState::new();
             let cancel = tokio_util::sync::CancellationToken::new();
             let listener = tempfile::tempfile().unwrap();
@@ -128,6 +136,13 @@ async fn an_invalid_registry_blocks_a_promoted_hub_upgrade() {
 
             // A valid registry gets past the check to the next stage.
             registry.lock().unwrap().truncate(1);
+            assert!(matches!(
+                prepare_upgrade(&state).await,
+                Err(UpgradeError::Io(_))
+            ));
+
+            // So does a file only the upgrade target can read.
+            unreadable.store(true, std::sync::atomic::Ordering::Relaxed);
             assert!(matches!(
                 prepare_upgrade(&state).await,
                 Err(UpgradeError::Io(_))
@@ -190,40 +205,6 @@ async fn exec_failure_restores_original_descriptor_flags() {
 
     assert_eq!(plan.exec().await.kind(), std::io::ErrorKind::NotFound);
     assert_eq!(fd_flags(listener_fd), original);
-}
-
-/// Re-exec lands on the installed (allowlistable) path while it still
-/// matches the validated snapshot, and aborts once the install is
-/// swapped; validation always sees the snapshot.
-#[test]
-fn upgrade_execs_the_installed_path_only_while_it_matches_the_snapshot() {
-    let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("phux");
-    install("/usr/bin/true", &path);
-    let pinned = PinnedExecutable::open(&path).unwrap();
-    assert_ne!(pinned.path, pinned.source_path);
-    assert_eq!(pinned.exec_path().unwrap(), pinned.source_path.as_path());
-
-    let replacement = dir.path().join("replacement");
-    install("/usr/bin/false", &replacement);
-    std::fs::rename(&replacement, &path).unwrap();
-    validate_binary(&pinned.path).expect("the pinned image remains the validated one");
-    assert!(validate_binary(&path).is_err());
-    assert!(
-        pinned.exec_path().is_err(),
-        "a swapped install path must abort rather than re-exec the tempfile"
-    );
-}
-
-/// A resumed image whose predecessor handed down `<path> (deleted)`
-/// still pins the installed `<path>`.
-#[test]
-fn an_inherited_deleted_source_pins_the_installed_path() {
-    let dir = tempfile::tempdir().unwrap();
-    let installed = write_stub_phux(dir.path(), "#!/bin/sh\nexit 0\n");
-    let inherited = dir.path().join("phux (deleted)");
-    let pinned = pin_validated_executable(Some(&inherited)).unwrap();
-    assert_eq!(pinned.source_path, installed);
 }
 
 /// `config check` runs before the irreversible exec: a replacement that

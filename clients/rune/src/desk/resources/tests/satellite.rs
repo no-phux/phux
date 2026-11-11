@@ -66,7 +66,8 @@ fn a_satellite_surface_on_a_hub_is_listed_shown_and_streamed() {
             ResourceInfo::new(surface.clone(), WindowId::new(0), 0, 0)
                 .with_kind(ResourceKind::PixelSurface)
                 .with_parent(Some(producer))
-                .with_title(Some("display".to_owned())),
+                .with_title(Some("display".to_owned()))
+                .with_control(Some(phux_protocol::wire::frame::ControlClass::Display)),
         ]);
     client
         .feed(FrameKind::CommandResult {
@@ -85,6 +86,12 @@ fn a_satellite_surface_on_a_hub_is_listed_shown_and_streamed() {
     assert_eq!(hit.item.kind, "document");
     assert_eq!(hit.item.title, "display");
     assert!(hit.item.detail.starts_with("box · "), "{}", hit.item.detail);
+    // Its producer declared a control class through the hub's listing.
+    assert!(
+        hit.item.detail.ends_with("Live mirror"),
+        "{}",
+        hit.item.detail
+    );
 
     outbound(&client);
     rt.frame(1.0);
@@ -128,4 +135,13 @@ fn a_satellite_surface_on_a_hub_is_listed_shown_and_streamed() {
         panic!("the satellite's image reached the mirror");
     };
     assert_eq!(image.wait(), Ok([4, 2]));
+    step(&mut rt);
+    assert_eq!(rt.state.document_input_frame(&surface), Some([4, 2]));
+    rt.frame(1.0);
+    let texts: Vec<_> = rt.elements().into_iter().filter_map(|el| el.text).collect();
+    assert!(
+        texts.iter().any(|t| t.contains("Live mirror"))
+            && !texts.iter().any(|t| t.contains("Read-only")),
+        "{texts:?}"
+    );
 }

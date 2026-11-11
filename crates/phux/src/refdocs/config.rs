@@ -108,10 +108,23 @@ const SECTIONS: &[Section] = &[
                   live-reloaded (Linux; macOS skips them).",
     },
     Section {
+        key: "producers",
+        header: "[[producers]]",
+        summary: "Commands kept running as document producers, each in its \
+                  own `producer-*` session, like `[[mirrors]]`.",
+    },
+    Section {
         key: "remote",
         header: "[[remote]]",
         summary: "Remote phux servers this machine attaches to, written by \
-                  `phux host add` and resolved by `phux attach <name>`.",
+                  `phux host add` and resolved by `phux attach <name>`; \
+                  `color` overrides a host's automatic colour.",
+    },
+    Section {
+        key: "host",
+        header: "[host]",
+        summary: "This machine as clients draw it: `color` overrides its \
+                  automatic colour (`phux host color --local`).",
     },
     Section {
         key: "projects",
@@ -389,7 +402,9 @@ mod tests {
             remote_phux: None,
             client_cert: Some(PathBuf::from("/state/remotes/mini.client.pem")),
             client_key: Some(PathBuf::from("/state/remotes/mini.client.key")),
+            color: Some("violet".to_owned()),
         }];
+        config.host.color = Some("sky".to_owned());
         config
             .theme
             .slots

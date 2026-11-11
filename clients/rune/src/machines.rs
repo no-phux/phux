@@ -140,7 +140,15 @@ fn json(phux: &Path, args: &[&str]) -> Result<Value, String> {
 }
 
 pub fn registered(phux: &Path) -> Result<Vec<Host>, String> {
-    Ok(parse_hosts(&json(phux, &["host", "ls", "--json"])?))
+    let doc = json(phux, &["host", "ls", "--json"])?;
+    crate::host_color::learn(&doc);
+    Ok(parse_hosts(&doc))
+}
+
+/// `phux host color`: `id` is a palette id or `auto`; [`LOCAL`] is this machine.
+pub fn recolor(phux: &Path, name: &str, id: &str) -> Result<(), String> {
+    let target = if name == LOCAL { "--local" } else { name };
+    run_for(phux, &["host", "color", target, id], LIST_TIMEOUT).map(|_| ())
 }
 
 /// Empty without Tailscale: discovery is a convenience, typing still works.

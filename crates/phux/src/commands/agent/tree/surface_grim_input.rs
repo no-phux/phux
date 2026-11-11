@@ -64,12 +64,12 @@ pub(super) struct Place {
 }
 
 /// Carry out each intent on the desktop `target` shows, or with `dry_run`
-/// only log the commands. A failure is reported and skipped; it never ends
-/// the mirror.
+/// only log the commands. A failure is returned for the mirror to report;
+/// it never ends the mirror.
 pub(super) fn injector(
     target: &Target,
     dry_run: bool,
-) -> impl FnMut(&DocumentInput, (u32, u32)) + use<> {
+) -> impl FnMut(&DocumentInput, (u32, u32)) -> Result<(), String> + use<> {
     let env = session_env();
     let tools = Tools::detect();
     let native = native_protocols(&env);
@@ -90,12 +90,45 @@ pub(super) fn injector(
             if dry_run {
                 eprintln!("dry-run: navigate {url:?} ignored: a desktop has no address");
             }
-            return;
+            return Ok(());
         }
-        if let Err(message) = injector.act(input, image) {
-            eprintln!("phux: input skipped: {message}");
-        }
+        injector.act(input, image)
     }
+}
+
+/// Window classes (`hyprctl` `class`, any case) that paste on Ctrl+Shift+V.
+const TERMINALS: [&str; 14] = [
+    "kitty",
+    "alacritty",
+    "foot",
+    "footclient",
+    "ghostty",
+    "com.mitchellh.ghostty",
+    "wezterm",
+    "org.wezfurlong.wezterm",
+    "xterm",
+    "konsole",
+    "org.kde.konsole",
+    "gnome-terminal",
+    "gnome-terminal-server",
+    "org.gnome.terminal",
+];
+
+/// Whether the window `hyprctl -j` describes is a terminal: `json` is
+/// `activewindow`'s object, or `clients`' array searched for `address`.
+pub(super) fn is_terminal(json: &str, address: Option<&str>) -> bool {
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(json.trim()) else {
+        return false;
+    };
+    let window = match (&value, address) {
+        (serde_json::Value::Array(all), Some(address)) => all
+            .iter()
+            .find(|w| w["address"].as_str() == Some(address))
+            .unwrap_or(&serde_json::Value::Null),
+        _ => &value,
+    };
+    let class = window["class"].as_str().unwrap_or_default();
+    TERMINALS.iter().any(|t| t.eq_ignore_ascii_case(class))
 }
 
 /// Whether the compositor offers the virtual pointer and keyboard.
@@ -132,7 +165,7 @@ impl Injector {
         } = self;
         let pointer = matches!(
             input,
-            DocumentInput::Click { .. } | DocumentInput::Scroll { .. }
+            DocumentInput::Click { .. } | DocumentInput::Scroll { .. } | DocumentInput::Drag { .. }
         );
         let place = if *hyprland && (pointer || matches!(target, Target::Window(_))) {
             Some(place(target, env)?)
@@ -147,19 +180,32 @@ impl Injector {
                 super::surface_grim::geometry(place.frame)
             );
         }
-        // ponytail: the native keyboard sends no modifiers yet, so the paste
-        // chord takes the tools; add `zwp_virtual_keyboard_v1.modifiers`
-        // to drop wtype/ydotool for it.
-        let chord = matches!(input, DocumentInput::Paste { .. });
-        let native = !chord && if pointer { native.0 } else { native.1 };
+        let chord = matches!(input, DocumentInput::Paste { chord: true, .. });
+        // A terminal pastes on Ctrl+Shift+V; the window that takes the
+        // chord is the target, or whatever has focus on a display.
+        let shift = chord && *hyprland && {
+            let window = place.as_ref().and_then(|p| p.window.as_deref());
+            let what = if window.is_some() {
+                "clients"
+            } else {
+                "activewindow"
+            };
+            hyprctl(what, env).is_ok_and(|json| is_terminal(&json, window))
+        };
+        let native = if pointer { native.0 } else { native.1 };
         let (argvs, ops) = if native {
             let focus = place.as_ref().and_then(|p| p.window.as_deref()).map(focus);
-            (
-                focus.into_iter().collect(),
-                super::surface_wayland::ops(input, image, place.as_ref())?,
-            )
+            let ops = if chord {
+                vec![super::surface_wayland::paste_chord(shift)]
+            } else {
+                super::surface_wayland::ops(input, image, place.as_ref())?
+            };
+            (focus.into_iter().collect(), ops)
         } else {
-            (plan(input, image, place.as_ref(), *tools)?, Vec::new())
+            (
+                plan(input, image, place.as_ref(), *tools, shift)?,
+                Vec::new(),
+            )
         };
         for argv in argvs {
             if *dry_run {
@@ -281,6 +327,7 @@ pub(super) fn plan(
     image: (u32, u32),
     place: Option<&Place>,
     tools: Tools,
+    shift: bool,
 ) -> Result<Vec<Vec<String>>, String> {
     let argv = |words: &[&str]| words.iter().map(|&w| w.to_owned()).collect::<Vec<_>>();
     let mut out = Vec::new();
@@ -302,14 +349,18 @@ pub(super) fn plan(
         | DocumentInput::ClipboardText { .. }
         | DocumentInput::Activate { .. }
         | DocumentInput::Paste { chord: false, .. } => return Ok(Vec::new()),
-        // ponytail: Ctrl+V; a terminal window wants Ctrl+Shift+V.
-        DocumentInput::Paste { chord: true, .. } => out.push(if tools.wtype {
-            argv(&["wtype", "-M", "ctrl", "v", "-m", "ctrl"])
-        } else if tools.ydotool {
-            argv(&["ydotool", "key", "29:1", "47:1", "47:0", "29:0"])
-        } else {
-            return Err("nothing here can press Ctrl+V: install wtype, or ydotool with ydotoold running".into());
-        }),
+        DocumentInput::Paste { chord: true, .. } => out.push(paste_argv(tools, shift)?),
+        DocumentInput::Drag { from, to } => {
+            let place =
+                place.ok_or("a drag needs Hyprland (hyprctl) to place the pointer; run under Hyprland")?;
+            if !tools.ydotool {
+                return Err("nothing here can drag: the compositor offers no virtual pointer; install ydotool with ydotoold running".into());
+            }
+            out.push(movecursor(to_layout(*from, image, place.frame)?));
+            out.push(argv(&["ydotool", "click", "0x40"]));
+            out.push(movecursor(to_layout(*to, image, place.frame)?));
+            out.push(argv(&["ydotool", "click", "0x80"]));
+        }
         DocumentInput::Click { x, y } => {
             let place =
                 place.ok_or("a click needs Hyprland (hyprctl) to place the pointer; run under Hyprland")?;
@@ -382,6 +433,19 @@ pub(super) fn plan(
         }),
     }
     Ok(out)
+}
+
+/// The command that presses the paste chord, Ctrl+V or with `shift`
+/// Ctrl+Shift+V.
+fn paste_argv(tools: Tools, shift: bool) -> Result<Vec<String>, String> {
+    let words: &[&str] = match (tools.wtype, tools.ydotool, shift) {
+        (true, _, false) => &["wtype", "-M", "ctrl", "v", "-m", "ctrl"],
+        (true, _, true) => &["wtype", "-M", "ctrl", "-M", "shift", "v", "-m", "shift", "-m", "ctrl"],
+        (false, true, false) => &["ydotool", "key", "29:1", "47:1", "47:0", "29:0"],
+        (false, true, true) => &["ydotool", "key", "29:1", "42:1", "47:1", "47:0", "42:0", "29:0"],
+        (false, false, _) => return Err("nothing here can press the paste chord: the compositor offers no virtual keyboard; install wtype, or ydotool with ydotoold running".into()),
+    };
+    Ok(words.iter().map(|&w| w.to_owned()).collect())
 }
 
 /// The XKB keysym `wtype -k` names, and the native keymap binds.

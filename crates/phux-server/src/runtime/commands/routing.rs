@@ -230,16 +230,26 @@ async fn route_command(
     // Only the satellite knows a document's control class: stamp the
     // classes this hub's guard lets the caller control there, so it refuses
     // a document of any other (`docs/resource-kinds.md#authority`).
+    // It also names who it relays for, so the satellite's control indicator
+    // and audit log show the device, not this hub (`docs/authority.md`).
     if let Command::SendDocumentInput {
         terminal_id,
         control,
+        on_behalf_of,
         ..
     } = &mut command
         && let Some((host, _)) = crate::hub::relay::satellite_route(terminal_id)
-        && let Some(allowed) = state
-            .with(|s| crate::policy::filter::satellite_input_classes(s, client_id, host.as_str()))
     {
-        *control = Some(control.map_or(allowed, |asked| asked.intersect(allowed)));
+        let (allowed, relayed) = state.with(|s| {
+            (
+                crate::policy::filter::satellite_input_classes(s, client_id, host.as_str()),
+                s.relayed_for(client_id),
+            )
+        });
+        if let Some(allowed) = allowed {
+            *control = Some(control.map_or(allowed, |asked| asked.intersect(allowed)));
+        }
+        *on_behalf_of = Some(relayed);
     }
 
     // ADR-0007 §4: a satellite-owned target never touches local dispatch.

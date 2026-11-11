@@ -329,7 +329,10 @@ fn bindings_render_under_group_headers() {
     for header in ["Pane", "Tab", "Session", "phux"] {
         assert!(text.contains(header), "{header} missing:\n{text}");
     }
-    assert!(text.contains("esc cancel"), "legend missing:\n{text}");
+    assert!(
+        text.contains(" esc ") && !text.contains("cancel"),
+        "legend missing:\n{text}"
+    );
 }
 
 /// The shipped prefix table lays out one group per column on a roomy
@@ -360,4 +363,20 @@ fn shipped_table_fits_roomy_and_classic_screens() {
         let label = crate::render::clip_text(&row.label, LABEL_MAX);
         assert!(text.contains(&label), "{label} missing:\n{text}");
     }
+}
+
+/// An 80x24 terminal leaves the popup a 61x23 pane area beside the
+/// sidebar: too small for the table, so every group keeps its first rows
+/// (Detach among them) and the note names the key that lists the rest.
+#[test]
+fn a_cramped_popup_keeps_every_group_and_points_at_the_palette() {
+    let overlay = shipped_overlay();
+    let text = render_to_string(&overlay, 61, 23);
+    for header in ["Pane", "Tab", "Session", "phux"] {
+        assert!(text.contains(header), "{header} missing:\n{text}");
+    }
+    assert!(text.contains("Detach"), "{text}");
+    assert!(text.contains(": lists all"), "{text}");
+    let hidden = unrendered(&overlay, Rect::new(0, 0, 61, 23), &text);
+    assert_eq!(overflow_count(&text), Some(hidden), "{text}");
 }

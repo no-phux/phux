@@ -135,6 +135,63 @@ class OtaTests(unittest.TestCase):
         with patch.object(ota.subprocess, "check_output", side_effect=failure), self.assertRaisesRegex(RuntimeError, "keychain locked"):
             ota.run("codesign")
 
+    def framework(self, app):
+        framework = app / "Frameworks/TailscaleKit.framework"
+        framework.mkdir(parents=True)
+        (framework / "Info.plist").write_bytes(plistlib.dumps({
+            "CFBundleIdentifier": "io.tailscale.Tailscale", "CFBundleExecutable": "TailscaleKit",
+            "CFBundlePackageType": "FMWK"}))
+        (framework / "TailscaleKit").write_bytes(b"device-dylib-fixture")
+        return framework
+
+    def test_only_known_device_framework_is_admitted(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            app, _, _ = self.bundle(Path(temporary))
+            framework = self.framework(app)
+            with patch.object(ota, "run", return_value=b"platform IOS\n"):
+                ota.device_bundle_info(app)
+            with patch.object(ota, "run", side_effect=[b"platform IOS\n", b"platform IOSSIMULATOR\n"]), \
+                    self.assertRaisesRegex(ValueError, "device framework"):
+                ota.device_bundle_info(app)
+            (framework.parent / "Unexpected.framework").mkdir()
+            with patch.object(ota, "run", return_value=b"platform IOS\n"), \
+                    self.assertRaisesRegex(ValueError, "only the pinned"):
+                ota.device_bundle_info(app)
+
+    def test_framework_is_signed_inside_out_without_app_entitlements(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            app, embedded, out = self.bundle(Path(temporary))
+            self.framework(app)
+            value = profile()
+            outputs = [plistlib.dumps(value), b"platform IOS\n", b"platform IOS\n",
+                       b"", b"", b"", b"", plistlib.dumps(value["Entitlements"])]
+            with patch.object(ota, "run", side_effect=outputs) as run:
+                ota.package(app, embedded, IDENTITY, "https://host/private/", out, ["owned-device"])
+            signs = [c.args for c in run.call_args_list if "--sign" in c.args]
+            self.assertEqual(len(signs), 2)
+            self.assertTrue(str(signs[0][-1]).endswith("TailscaleKit.framework"))
+            self.assertNotIn("--entitlements", signs[0])
+            self.assertNotIn("--deep", signs[0])
+            self.assertIn("--entitlements", signs[1])
+            self.assertTrue(any("--deep" in c.args and "--verify" in c.args for c in run.call_args_list))
+
+    def test_framework_identity_and_symlinks_fail_closed(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            app, _, _ = self.bundle(Path(temporary))
+            framework = self.framework(app)
+            info_path = framework / "Info.plist"
+            original = plistlib.loads(info_path.read_bytes())
+            for field in ("CFBundleIdentifier", "CFBundleExecutable", "CFBundlePackageType"):
+                info_path.write_bytes(plistlib.dumps({**original, field: "unexpected"}))
+                with self.subTest(field=field), patch.object(ota, "run", return_value=b"platform IOS\n"), \
+                        self.assertRaisesRegex(ValueError, "framework identity"):
+                    ota.device_bundle_info(app)
+            info_path.write_bytes(plistlib.dumps(original))
+            (framework / "unexpected-link").symlink_to("TailscaleKit")
+            with patch.object(ota, "run", return_value=b"platform IOS\n"), \
+                    self.assertRaisesRegex(ValueError, "symlinked"):
+                ota.device_bundle_info(app)
+
 
 if __name__ == "__main__":
     unittest.main()

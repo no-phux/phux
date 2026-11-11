@@ -50,6 +50,9 @@ fn a_controlled_surface_takes_a_click_and_keys_until_refused() {
     rt.update(|d, _| {
         d.document_press(&id(1), [250.0, 75.0, 400.0, 100.0]);
         d.document_press(&id(1), [50.0, 50.0, 400.0, 100.0]);
+        // A press that barely moves is a click; one that moves is a drag.
+        d.document_release(&id(1), [250.0, 75.0], [252.0, 77.0], [400.0, 100.0]);
+        d.document_release(&id(1), [110.0, 10.0], [290.0, 90.0], [400.0, 100.0]);
     });
     for (key, mods) in [
         (Key::Text("h".into()), Mods::default()),
@@ -79,6 +82,11 @@ fn a_controlled_surface_takes_a_click_and_keys_until_refused() {
         intents,
         [
             DocumentInput::Click { x: 3, y: 1 },
+            DocumentInput::Click { x: 3, y: 1 },
+            DocumentInput::Drag {
+                from: (0, 0),
+                to: (3, 1),
+            },
             DocumentInput::Type { text: "h".into() },
             DocumentInput::Key {
                 key: DocumentKey::Enter
@@ -92,7 +100,8 @@ fn a_controlled_surface_takes_a_click_and_keys_until_refused() {
         "the letterbox press sends nothing; copy and paste trade clipboards"
     );
     // The host's clipboard lands on this machine's.
-    let (copy, _) = sent[3].clone();
+    let (copy, _) = sent[5].clone();
+    let (paste, _) = sent[6].clone();
     client
         .feed(FrameKind::CommandResult {
             request_id: copy,
@@ -103,6 +112,23 @@ fn a_controlled_surface_takes_a_click_and_keys_until_refused() {
     assert_eq!(
         board.text().as_deref().map(String::as_str),
         Some("from the host")
+    );
+    // A paste the host could not press says why.
+    client
+        .feed(FrameKind::CommandResult {
+            request_id: paste,
+            result: CommandResult::Error {
+                code: ErrorCode::Unavailable,
+                message: "nothing here can press the paste chord".into(),
+            },
+        })
+        .unwrap();
+    step(&mut rt);
+    let notice = rt.state.notice.as_ref().expect("the paste failure is said");
+    assert!(
+        notice.text.contains("Could not paste on the host"),
+        "{}",
+        notice.text
     );
     for (request_id, _) in sent.into_iter().filter(|(id, _)| *id != copy) {
         client

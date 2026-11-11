@@ -1,5 +1,5 @@
-//! Drawn accessory keys still belong to the native editor, not a hidden
-//! terminal. The system keyboard owns field shift/control editing traits.
+//! Synchronous drawn keys for app-owned sheet fields in either phone host.
+//! The system keyboard owns native field shift/control editing traits.
 use super::super::{Desk, input::Modal, phone::Soft};
 use super::target::Field;
 use rune::{KeyEvent, Mods, Runtime, Tx};
@@ -35,8 +35,9 @@ pub(crate) fn done(d: &mut Desk, tx: &mut Tx) {
             edit.cancel_composition();
         }
     }
+    // Unfocusing hides the field's keyboard. Whether the terminal shows one
+    // is its own choice, and still stands when this sheet closes.
     if let Some(phone) = &mut d.phone {
-        phone.keyboard = false;
         phone.release();
     }
     d.preedit = None;
@@ -51,13 +52,37 @@ pub(in crate::desk) fn soft(d: &mut Desk, soft: &Soft, tx: &mut Tx) -> bool {
     let field = match d.modal() {
         Some(Modal::Rename) => Some(Field::Rename),
         Some(Modal::Machines) => Some(Field::Machine),
-        Some(Modal::Inbox) if d.inbox.reply.focused => Some(Field::Inbox),
-        None | Some(Modal::Inbox) => return question(d, soft, tx),
+        Some(Modal::Inbox)
+            if d.inbox.reply.focused && Field::resolve(d, "inbox-reply").is_some() =>
+        {
+            Some(Field::Inbox)
+        }
+        Some(Modal::Inbox) => return inbox(d, soft, tx),
+        None => return question(d, soft, tx),
         _ => return false, // existing Settings/Palette/Find/confirm routes
     };
     if let Some(field) = field {
         send(d, field, soft, tx);
     }
+    true
+}
+
+fn inbox(d: &mut Desk, soft: &Soft, tx: &mut Tx) -> bool {
+    // Only the native bridge retires unmounted ACP focus. A retained draft
+    // flag alone must not enable a hidden ACP editor in the drawn preview.
+    if d.native.is_some() && question(d, soft, tx) {
+        return true;
+    }
+    let Some(phone) = &mut d.phone else {
+        return true;
+    };
+    let event = KeyEvent {
+        key: phone.for_field(soft.clone()),
+        mods: Mods::default(),
+    };
+    // Navigation/close still works without a mounted reply editor. Other
+    // keys are consumed, never inserted into a hidden draft or terminal.
+    d.inbox_key(&event, tx);
     true
 }
 
