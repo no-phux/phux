@@ -53,7 +53,8 @@ pub(crate) struct ServerArgs {
 
     /// Start with no pre-seeded session. `phux new --empty` starts a
     /// server this way when none is running, so the only session is the
-    /// empty one it asked for.
+    /// empty one it asked for. With `--ensure`, a server it has to start
+    /// seeds nothing: the desktop app picks its own session.
     #[usage(long, hide, conflicts("--seed-command"))]
     pub(crate) no_seed: bool,
 

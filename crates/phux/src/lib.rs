@@ -337,10 +337,13 @@ fn run_cli() -> ExitCode {
     // (PHUX_LOG may name a FIFO). Ensure initializes tracing on its bounded
     // worker; its watchdog reports failures directly on stderr.
     if let Some(Command::Server(commands::ServerArgs {
-        ensure: true, json, ..
+        ensure: true,
+        json,
+        no_seed,
+        ..
     })) = &cli.command
     {
-        return commands::server::run_ensure(cli.socket, json.json);
+        return commands::server::run_ensure(cli.socket, json.json, !no_seed);
     }
 
     // Refuse every alt-screen path before telemetry, dialing, server spawn,
