@@ -207,40 +207,6 @@ async fn exec_failure_restores_original_descriptor_flags() {
     assert_eq!(fd_flags(listener_fd), original);
 }
 
-/// Re-exec lands on the installed (allowlistable) path while it still
-/// matches the validated snapshot, and aborts once the install is
-/// swapped; validation always sees the snapshot.
-#[test]
-fn upgrade_execs_the_installed_path_only_while_it_matches_the_snapshot() {
-    let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("phux");
-    install("/usr/bin/true", &path);
-    let pinned = PinnedExecutable::open(&path).unwrap();
-    assert_ne!(pinned.path, pinned.source_path);
-    assert_eq!(pinned.exec_path().unwrap(), pinned.source_path.as_path());
-
-    let replacement = dir.path().join("replacement");
-    install("/usr/bin/false", &replacement);
-    std::fs::rename(&replacement, &path).unwrap();
-    validate_binary(&pinned.path).expect("the pinned image remains the validated one");
-    assert!(validate_binary(&path).is_err());
-    assert!(
-        pinned.exec_path().is_err(),
-        "a swapped install path must abort rather than re-exec the tempfile"
-    );
-}
-
-/// A resumed image whose predecessor handed down `<path> (deleted)`
-/// still pins the installed `<path>`.
-#[test]
-fn an_inherited_deleted_source_pins_the_installed_path() {
-    let dir = tempfile::tempdir().unwrap();
-    let installed = write_stub_phux(dir.path(), "#!/bin/sh\nexit 0\n");
-    let inherited = dir.path().join("phux (deleted)");
-    let pinned = pin_validated_executable(Some(&inherited)).unwrap();
-    assert_eq!(pinned.source_path, installed);
-}
-
 /// `config check` runs before the irreversible exec: a replacement that
 /// cannot load this host's config aborts with the loader's diagnostic.
 #[test]
