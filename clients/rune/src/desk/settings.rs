@@ -139,6 +139,7 @@ impl Desk {
                 option_as_meta: Some(settings.option_as_meta),
                 copy_on_select: Some(settings.copy_on_select),
                 confirm_close: Some(settings.confirm_close),
+                ..RuneCfg::default()
             }
             .to_toml(),
         );

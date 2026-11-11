@@ -23,6 +23,10 @@ pub struct RuneCfg {
     pub copy_on_select: Option<bool>,
     /// Ask before closing a terminal or tab with something running.
     pub confirm_close: Option<bool>,
+    /// `[rune.keys]`: a chord such as `"cmd+shift+d"` and the command it
+    /// runs, or `"none"` to take a built-in chord away.
+    #[serde(skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub keys: std::collections::BTreeMap<String, String>,
 }
 
 impl RuneCfg {
@@ -52,5 +56,8 @@ mod tests {
         );
         let parsed = crate::loader::parse_client(&text, std::path::Path::new("config.toml"));
         assert_eq!(parsed.expect("parses").rune, cfg);
+        let keyed = "[rune.keys]\n\"cmd+d\" = \"none\"\n";
+        let parsed = crate::loader::parse_client(keyed, std::path::Path::new("config.toml"));
+        assert_eq!(parsed.expect("parses").rune.keys["cmd+d"], "none");
     }
 }
