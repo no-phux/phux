@@ -158,46 +158,42 @@
         # a different random subset on every run. libghostty-vt's compiler_rt.o
         # then fails the Rust link with mold "undefined symbol: " (empty name).
         # The release binary is statically linked and built by Zig's own
-        # bootstrap, so no nixpkgs stdenv can reach it. Intel Darwin also uses
-        # the official archive: its retained nixpkgs input has no zig_0_17.
-        # Apple silicon keeps nixpkgs' unaffected clang-built Zig.
+        # bootstrap, so no nixpkgs stdenv can reach it. Darwin uses the same
+        # archive, so every shell gets exactly the pinned version.
         zigPins = builtins.fromJSON (builtins.readFile ./.config/zig-toolchain.json);
         zigArchiveTarget = builtins.replaceStrings [ "-darwin" ] [ "-macos" ] system;
         zigPinned =
-          if pkgs.stdenv.hostPlatform.isLinux || system == "x86_64-darwin" then
-            let
-              pin =
-                zigPins.archives.${zigArchiveTarget}
-                  or (throw "flake.nix: .config/zig-toolchain.json pins no Zig archive for ${system}");
-            in
-            pkgs.stdenvNoCC.mkDerivation {
-              pname = "zig";
-              version = zigPins.version;
-              src = pkgs.fetchurl {
-                url = "https://ziglang.org/download/${zigPins.version}/${pin.archive}";
-                sha256 = pin.sha256;
-              };
-              dontConfigure = true;
-              dontBuild = true;
-              dontStrip = true;
-              dontPatchELF = true;
-              installPhase = ''
-                runHook preInstall
-                mkdir -p $out/bin $out/libexec
-                cp -r . $out/libexec/zig
-                # Zig finds its lib/ next to its real path, so a symlink works.
-                ln -s $out/libexec/zig/zig $out/bin/zig
-                runHook postInstall
-              '';
-              meta = {
-                homepage = "https://ziglang.org";
-                description = "Zig compiler (official release binary)";
-                license = pkgs.lib.licenses.mit;
-                mainProgram = "zig";
-              };
-            }
-          else
-            pkgs.zig_0_17;
+          let
+            pin =
+              zigPins.archives.${zigArchiveTarget}
+                or (throw "flake.nix: .config/zig-toolchain.json pins no Zig archive for ${system}");
+          in
+          pkgs.stdenvNoCC.mkDerivation {
+            pname = "zig";
+            version = zigPins.version;
+            src = pkgs.fetchurl {
+              url = "https://ziglang.org/download/${zigPins.version}/${pin.archive}";
+              sha256 = pin.sha256;
+            };
+            dontConfigure = true;
+            dontBuild = true;
+            dontStrip = true;
+            dontPatchELF = true;
+            installPhase = ''
+              runHook preInstall
+              mkdir -p $out/bin $out/libexec
+              cp -r . $out/libexec/zig
+              # Zig finds its lib/ next to its real path, so a symlink works.
+              ln -s $out/libexec/zig/zig $out/bin/zig
+              runHook postInstall
+            '';
+            meta = {
+              homepage = "https://ziglang.org";
+              description = "Zig compiler (official release binary)";
+              license = pkgs.lib.licenses.mit;
+              mainProgram = "zig";
+            };
+          };
 
         # mbx (jdx/mr-boxington): the Cargo wrapper behind the shared build
         # cache. mise.toml is the source of truth for the release, same
