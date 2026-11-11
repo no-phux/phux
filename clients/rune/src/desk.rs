@@ -22,6 +22,7 @@ use crate::launch::Resolved;
 
 mod attach;
 pub(crate) mod bare;
+mod copy_mode;
 mod events;
 mod find;
 mod fleet;
@@ -155,6 +156,8 @@ pub struct Desk {
     /// Find in the focused pane's history, while open.
     pub find: Option<find::Find>,
     pub find_query: rune::TextEdit,
+    /// Keyboard copy mode, while on.
+    pub copy_mode: Option<copy_mode::CopyMode>,
     /// The link under the pointer while ⌘ is held.
     pub pointer: links::Pointer,
     /// Everything waiting on you, and the system's view of it.
@@ -275,14 +278,6 @@ impl Desk {
         self.post(NoticeKind::Tip, text.into(), Some((label, action)));
     }
 
-    /// The pressed offer's action, then the toast goes.
-    pub fn take_offer(&mut self) {
-        let Some((_, action)) = self.notice.take().and_then(|notice| notice.action) else {
-            return;
-        };
-        action(self);
-    }
-
     /// Once per install, on the first connection: point a newcomer at the
     /// keys worth learning first. The palette lists them; `Keyboard
     /// Shortcuts: Essentials` reopens the list any time.
@@ -312,10 +307,6 @@ impl Desk {
         if let Some(waker) = &self.waker {
             waker();
         }
-    }
-
-    pub fn dismiss_notice(&mut self) {
-        self.notice = None;
     }
 
     /// Take down a notice whose time is up, and wake for the one still
@@ -379,6 +370,7 @@ impl Desk {
             sidebar_open,
             foot_hover: None,
             find: None,
+            copy_mode: None,
             find_query: rune::TextEdit::new(""),
             pointer: links::Pointer::default(),
             inbox: inbox::Inbox::default(),
@@ -490,6 +482,7 @@ impl Desk {
         changed |= self.autoscroll(tx);
         changed |= self.phone_touch_tick(tx);
         self.keep_find();
+        self.keep_copy_mode();
         // Also re-snaps cells after a display-scale change.
         self.fit();
         self.wake_phone_fit(tx);
