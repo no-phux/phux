@@ -10,6 +10,7 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 
 use phux_client::kill::KeyedError;
+use phux_client::read::Verb;
 use phux_client::signal::LeaseOutcome;
 use phux_protocol::caps::ServerFeature;
 use phux_protocol::ids::IdempotencyKey;
@@ -51,7 +52,11 @@ fn ttl_ms(ttl: Option<u32>) -> u32 {
 /// `take` is `Some(ttl_ms)`; `give` is `None`, distinguishing the two verbs
 /// for the shared resolve-then-request body below.
 fn run_lease(target: &str, json: bool, socket: Option<PathBuf>, take: Option<u32>) -> ExitCode {
-    let verb = if take.is_some() { "take" } else { "give" };
+    let verb = if take.is_some() {
+        Verb::Take
+    } else {
+        Verb::Give
+    };
     let selector = match parse_selector(Some(target)) {
         Ok(sel) => sel,
         Err(code) => return code,
@@ -94,8 +99,8 @@ fn run_lease(target: &str, json: bool, socket: Option<PathBuf>, take: Option<u32
                 }
                 ExitCode::SUCCESS
             }
-            Ok(outcome) => report_refusal(json, verb, target, outcome),
-            Err(err) => json_err::report_no_server(json, &err, &socket_path, verb),
+            Ok(outcome) => report_refusal(json, verb.name(), target, outcome),
+            Err(err) => json_err::report_no_server(json, &err, &socket_path, verb.name()),
         }
     })
 }
@@ -144,20 +149,23 @@ pub(crate) fn run_signal(
         Err(code) => return code,
     };
     let wire_signal = TerminalSignal::from(signal);
-    if phux_client::signal::is_dangerous(wire_signal)
-        && let Err(code) = crate::commands::confirm::confirmed_for(
-            json,
-            yes,
-            &format!("signal {target} ({signal:?})"),
-        )
-    {
-        return code;
-    }
     let socket_path = socket.unwrap_or_else(default_socket_path);
     let rt = match crate::commands::cli_runtime() {
         Ok(rt) => rt,
         Err(code) => return code,
     };
+    if phux_client::signal::is_dangerous(wire_signal) && !yes {
+        if let Err(code) = rt.block_on(refuse_kind_before_asking(&socket_path, &selector, json)) {
+            return code;
+        }
+        if let Err(code) = crate::commands::confirm::confirmed_for(
+            json,
+            yes,
+            &format!("signal {target} ({signal:?})"),
+        ) {
+            return code;
+        }
+    }
     rt.block_on(async move {
         let mut notices = Vec::new();
         let result =
@@ -195,6 +203,9 @@ pub(crate) fn run_signal(
             Err(phux_client::signal::SignalError::Agent(err)) => {
                 crate::commands::report_agent_resolve_error(json, &err, true)
             }
+            Err(phux_client::signal::SignalError::WrongKind(err)) => {
+                crate::commands::read_kind::wrong_kind(json, &err)
+            }
             Err(phux_client::signal::SignalError::Keyed(KeyedError::Unsupported)) => {
                 crate::commands::spawn::unsupported_server(json, ServerFeature::KeyedSignal)
             }
@@ -203,4 +214,24 @@ pub(crate) fn run_signal(
             }
         }
     })
+}
+
+/// A dangerous signal asks first, so a target that is not a Terminal is
+/// refused before the question rather than after it. Only an exact ID can
+/// name another kind; anything else, or an unreachable server, is left to
+/// [`phux_client::signal::deliver`] to resolve and report.
+async fn refuse_kind_before_asking(
+    socket: &std::path::Path,
+    selector: &phux_client::selector::Selector,
+    json: bool,
+) -> Result<(), ExitCode> {
+    let Some(id) = selector.explicit_id() else {
+        return Ok(());
+    };
+    let Ok(view) = phux_client::state::get_state(socket).await else {
+        return Ok(());
+    };
+    let resolved = phux_client::read::Resolved::in_snapshot(view.snapshot(), id);
+    phux_client::read::require_terminal(Verb::Signal, &resolved)
+        .map_err(|err| crate::commands::read_kind::wrong_kind(json, &err))
 }

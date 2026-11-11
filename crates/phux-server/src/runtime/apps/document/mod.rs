@@ -28,6 +28,7 @@ mod attach;
 pub(crate) mod audit;
 mod input;
 mod spawn;
+pub(crate) mod upgrade;
 
 pub(crate) use attach::attach_document;
 pub(crate) use spawn::spawn_document;
@@ -48,6 +49,9 @@ pub(crate) trait DocumentApi: DocumentKind {
     const WIRE_KIND: phux_protocol::ids::ResourceKind;
     /// How a message names the kind, e.g. "accessibility tree".
     const LABEL: &'static str;
+    /// The target a record of this kind was opened on; `None` for a
+    /// record of another kind.
+    fn launch_target(launch: &phux_core::LaunchSpec) -> Option<&str>;
     /// Create the registry record under `parent`, running, named `name`;
     /// a tree or surface is named for what it observes.
     fn create(
@@ -78,6 +82,13 @@ impl DocumentApi for TreeDocument {
         phux_protocol::ids::ResourceKind::AccessibilityTree;
     const LABEL: &'static str = "accessibility tree";
 
+    fn launch_target(launch: &phux_core::LaunchSpec) -> Option<&str> {
+        match launch {
+            phux_core::LaunchSpec::Tree(tree) => Some(&tree.target),
+            _ => None,
+        }
+    }
+
     fn create(
         state: &mut ServerState,
         parent: phux_core::ids::ResourceId,
@@ -105,6 +116,13 @@ impl DocumentApi for SurfaceDocument {
     const WIRE_KIND: phux_protocol::ids::ResourceKind =
         phux_protocol::ids::ResourceKind::PixelSurface;
     const LABEL: &'static str = "pixel surface";
+
+    fn launch_target(launch: &phux_core::LaunchSpec) -> Option<&str> {
+        match launch {
+            phux_core::LaunchSpec::Surface(surface) => Some(&surface.target),
+            _ => None,
+        }
+    }
 
     fn create(
         state: &mut ServerState,
@@ -139,6 +157,13 @@ impl DocumentApi for TypedDocument {
     const PROFILE: BootstrapStreamProfile = BootstrapStreamProfile::DocumentTypedV1;
     const WIRE_KIND: phux_protocol::ids::ResourceKind = phux_protocol::ids::ResourceKind::Document;
     const LABEL: &'static str = "document";
+
+    fn launch_target(launch: &phux_core::LaunchSpec) -> Option<&str> {
+        match launch {
+            phux_core::LaunchSpec::Document(document) => Some(&document.content_type),
+            _ => None,
+        }
+    }
 
     fn create(
         state: &mut ServerState,
@@ -221,6 +246,14 @@ impl<A: DocumentApi> ResourceApp for DocumentApp<A> {
     ) -> LocalBoxFuture<'a, ()> {
         // Nothing to fence: the engine emits only to the shared watch.
         Box::pin(std::future::ready(()))
+    }
+
+    fn begin_upgrade(&self, _state: &SharedState) -> Option<Box<dyn super::UpgradeCut>> {
+        Some(upgrade::DocumentCut::<A>::begin())
+    }
+
+    fn resume(&self, _state: &SharedState) -> Box<dyn super::KindResume> {
+        upgrade::DocumentResume::<A>::begin()
     }
 
     fn resumed(&self, _state: &SharedState) {}

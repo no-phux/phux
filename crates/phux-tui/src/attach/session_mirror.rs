@@ -67,6 +67,8 @@ pub(in crate::attach) struct SessionMirror {
     pub(in crate::attach) agent_meta: AgentMetaIndex,
     /// Non-Terminal resources the server's graph named: placeholder leaves.
     pub(in crate::attach) leaves: LeafBook,
+    /// When the panes' kitty images are next re-sent.
+    pub(in crate::attach) kitty_heal: super::kitty_heal::KittyHeal,
 }
 
 impl SessionMirror {
@@ -134,6 +136,7 @@ impl SessionMirror {
             pending_resource_ops: HashMap::new(),
             agent_meta: AgentMetaIndex::default(),
             leaves: LeafBook::default(),
+            kitty_heal: super::kitty_heal::KittyHeal::default(),
         }
     }
 }

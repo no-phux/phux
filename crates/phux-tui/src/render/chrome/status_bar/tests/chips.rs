@@ -226,6 +226,30 @@ fn the_prefix_chip_moves_right_widgets_instead_of_cutting_them() {
     assert!(after.trim_end().ends_with("work"), "{after:?}");
 }
 
+/// The badge and the attention hint push right widgets left the same way:
+/// an agent asking never cuts the session name to `wo`.
+#[test]
+fn badges_move_right_widgets_instead_of_cutting_them() {
+    let cfg = StatusCfg {
+        left: vec![spec("windows", &[])],
+        right: vec![spec("session-name", &[])],
+        ..StatusCfg::default()
+    };
+    let mut p = StatusBarPainter::new(build_bar(&cfg), Position::Bottom);
+    p.set_windows(wins(&[("a", true)]));
+    assert!(p.set_supervisory(Some("[ FROZEN ]".to_owned())));
+    assert!(p.set_attention(Some("[ ASK ]".to_owned())));
+    // The composed row, chips over widgets, as the screen shows it.
+    let (buf, _, _) = p
+        .compose_buffer(BarInset::NONE, 40, 10, &ctx_default("work"))
+        .expect("composes");
+    let row: String = (0..40).map(|x| buf[(x, 0)].symbol().to_owned()).collect();
+    let work = row.find("work").expect("the session name survives whole");
+    let ask = row.find("[ ASK ]").expect("the hint");
+    assert!(work + 4 < ask, "the name sits left of the chips: {row:?}");
+    assert!(row.contains("[ FROZEN ]"), "{row:?}");
+}
+
 /// The active key mode rides the same chip; the pending prefix outranks
 /// it, and clearing either leaves the other showing.
 #[test]

@@ -304,7 +304,7 @@ fn tab_pills(desk: &Desk, p: &Ink) -> Option<El> {
     );
     for (index, tab) in desk.tabs.list.iter().enumerate() {
         let waiting = tab
-            .terminals
+            .resources
             .iter()
             .any(|id| desk.activities.mark(id).needs_you());
         let ink = if tab.active { p.text } else { p.dim };

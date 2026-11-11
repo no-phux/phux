@@ -54,15 +54,11 @@ impl ResourceFacet for AgentSessionHandle {
     const KIND: ResourceKind = ResourceKind::AgentSession;
 }
 
-/// A record stream has no grid to size and no process to hand off; an upgrade
-/// carries it through its bootstrap mailbox instead.
+/// A record stream has no grid to size; an upgrade carries it through its
+/// bootstrap mailbox.
 impl ResourceOps for AgentSessionHandle {
     fn resize(&self, _size: (u16, u16), _cell_px: Option<(u16, u16)>) -> bool {
         false
-    }
-
-    fn upgrade_sender(&self) -> Option<mpsc::Sender<phux_resource::handoff::UpgradeHandleRequest>> {
-        None
     }
 
     fn lease_changed(&self, _change: LeaseChange) -> Delivery {

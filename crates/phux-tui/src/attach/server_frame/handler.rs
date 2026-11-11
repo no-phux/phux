@@ -187,6 +187,7 @@ pub(in crate::attach) fn handle_server_frame<W: crate::attach::RenderSink>(
         pending_resource_ops,
         agent_meta,
         leaves,
+        kitty_heal: _,
     } = mirror;
     let FrameEnv {
         focused_session,

@@ -307,6 +307,7 @@ fn samples(world: &World, agent: &WireResourceId) -> Vec<FrameKind> {
                 orphan
             }),
         ),
+        spawn(None, None, Some(controlled_surface(&t, ControlClass::Display))),
         FrameKind::ResizeTerminal {
             terminal_id: t.clone(),
             cols: 80,

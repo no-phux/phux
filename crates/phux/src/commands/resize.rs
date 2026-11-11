@@ -3,10 +3,11 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 
 use phux_client::attach::AttachError;
+use phux_client::read::Verb;
 use phux_client::resize::{ResizeOutcome, resize_to};
 use phux_server::runtime::default_socket_path;
 
-use crate::commands::{cli_runtime, json_err, parse_selector, resolve_target};
+use crate::commands::{cli_runtime, json_err, parse_selector, resolve_terminal_target};
 
 /// A `COLSxROWS` geometry, both axes [`NonZeroU16`]. `x` and `X` are both
 /// accepted as the separator.
@@ -67,7 +68,8 @@ pub(crate) fn run_resize(
         Err(code) => return code,
     };
     rt.block_on(async move {
-        let pane = match resolve_target(&socket_path, &selector, "resize", json).await {
+        let pane = match resolve_terminal_target(&socket_path, &selector, Verb::Resize, json).await
+        {
             Ok(id) => id,
             Err(code) => return code,
         };

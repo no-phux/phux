@@ -298,7 +298,7 @@ async fn generic_hooks_cannot_create_another_source_or_self_input_under_native_g
                     },
                     out_tx: &tx,
                     root_token: &fx.root,
-                    profile: phux_protocol::caps::BootstrapStreamProfile::SynthesizedVtRaw,
+                    profile: Some(phux_protocol::caps::BootstrapStreamProfile::SynthesizedVtRaw),
                     limits: fx.context(fx.owner).limits,
                     connection_token: &fx.root,
                     output_pumps: &mut tokio::task::JoinSet::new(),

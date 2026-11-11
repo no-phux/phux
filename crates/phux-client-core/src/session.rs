@@ -413,27 +413,47 @@ pub const KERNEL_RESOURCE_KINDS: phux_protocol::caps::ResourceKindSet =
         ResourceKind::Document,
     ]);
 
-/// Whether a stream profile names the `AgentSession` record codec. Such a
-/// stream is legal under every connection profile: it carries no engine
-/// checkpoint and no VT, so profile negotiation does not constrain it.
-const fn is_agent_profile(profile: BootstrapStreamProfile) -> bool {
-    matches!(
-        profile,
-        BootstrapStreamProfile::AgentEventsJsonlV1
-            | BootstrapStreamProfile::AgentEventsJsonlResumeV1 { .. }
-    )
+/// The kernel lane a stream joins, as its codec's catalog stream contract
+/// says. Classified once per `BOOTSTRAP_BEGIN`: one catalog lookup, on the
+/// resync hot path.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum StreamLane {
+    /// Whole documents of this kind. The kernel models no replica for one:
+    /// a bootstrap is the document in chunks and every live frame is a whole
+    /// newer document, each handed on as a [`KernelEffect::Document`].
+    Document(ResourceKind),
+    /// A record log, the `AgentSession` lane's. Such a stream is legal under
+    /// every connection profile: it carries no engine checkpoint and no VT,
+    /// so profile negotiation does not constrain it.
+    Agent,
+    /// Anything else: the Terminal replica, which checks the profile.
+    Terminal,
 }
 
-/// The document kind a stream profile carries, if it is a document codec.
-/// The kernel models no replica for one: a bootstrap is the document in
-/// chunks and every live frame is a whole newer document, each handed on as
-/// a [`KernelEffect::Document`].
+const fn stream_lane(profile: BootstrapStreamProfile) -> StreamLane {
+    use phux_protocol::kinds::Delivery;
+    let Some(spec) = profile.kind_spec() else {
+        return StreamLane::Terminal;
+    };
+    if spec.stream.delivers(Delivery::WholeDocument) {
+        StreamLane::Document(spec.kind)
+    } else if spec.stream.delivers(Delivery::Log) {
+        StreamLane::Agent
+    } else {
+        StreamLane::Terminal
+    }
+}
+
+/// Whether a stream profile names a record-log codec ([`StreamLane::Agent`]).
+const fn is_agent_profile(profile: BootstrapStreamProfile) -> bool {
+    matches!(stream_lane(profile), StreamLane::Agent)
+}
+
+/// The document kind a stream profile carries ([`StreamLane::Document`]).
 const fn document_kind(profile: BootstrapStreamProfile) -> Option<ResourceKind> {
-    match profile {
-        BootstrapStreamProfile::AccessibilityTreeJsonV1 => Some(ResourceKind::AccessibilityTree),
-        BootstrapStreamProfile::PixelSurfacePngV1 => Some(ResourceKind::PixelSurface),
-        BootstrapStreamProfile::DocumentTypedV1 => Some(ResourceKind::Document),
-        _ => None,
+    match stream_lane(profile) {
+        StreamLane::Document(kind) => Some(kind),
+        StreamLane::Agent | StreamLane::Terminal => None,
     }
 }
 

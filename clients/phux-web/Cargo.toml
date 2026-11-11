@@ -44,6 +44,9 @@ gloo-timers = { version = "0.4", features = ["futures"] }
 # pumps in client.rs.
 web-sys = { version = "0.3", features = [
     "AbortSignal",
+    "Blob",
+    "BlobPropertyBag",
+    "Url",
     "Window",
     "Document",
     "Element",

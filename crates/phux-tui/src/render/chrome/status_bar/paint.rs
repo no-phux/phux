@@ -33,17 +33,24 @@ impl StatusBarPainter {
         badge_span(&chip, cols, 0).start.checked_sub(1)
     }
 
-    /// Columns the widgets compose into: all of them, less the key chip and
-    /// its gap while one is up, so a right-aligned widget
-    /// moves left of the chip whole instead of being cut under it. A bar
-    /// too narrow for the chip keeps every column.
+    /// Columns the widgets compose into: all of them, less the right-edge
+    /// chips and their gaps (the key chip, or the badge and attention hint
+    /// side by side), so a right-aligned widget moves left of the chips
+    /// whole instead of being cut under them. A bar too narrow for the
+    /// chips keeps every column.
     fn widget_cols(&self, cols: u16) -> u16 {
-        let Some(chip) = self.key_chip() else {
-            return cols;
+        let width = |chip: &str| {
+            u16::try_from(chip.chars().count())
+                .unwrap_or(u16::MAX)
+                .saturating_add(1)
         };
-        let reserve = u16::try_from(chip.chars().count())
-            .unwrap_or(u16::MAX)
-            .saturating_add(1);
+        let key = self.key_chip().map_or(0, |chip| width(&chip));
+        let offset = self.attention_offset();
+        let badges = self
+            .attention
+            .as_deref()
+            .map_or(offset, |hint| offset.saturating_add(width(hint)));
+        let reserve = key.max(badges);
         if reserve >= cols {
             cols
         } else {

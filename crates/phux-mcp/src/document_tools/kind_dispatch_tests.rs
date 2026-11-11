@@ -1,7 +1,8 @@
-//! `phux_snapshot`, `phux_wait` and `phux_send_keys` check their target's
-//! kind against a real server: a Terminal reads as before, and a document
-//! is refused with `wrong_resource_kind` naming the tool that reads it, so
-//! the two readers stay read-only (they never attach).
+//! `phux_snapshot`, `phux_wait`, `phux_send_keys` and the other
+//! Terminal-only tools check their target's kind against a real server: a
+//! Terminal reads as before, and a document is refused with
+//! `wrong_resource_kind` naming the tool that reads it, so the two readers
+//! stay read-only (they never attach).
 
 use phux_client::tree::Kind;
 use phux_server_testkit::{
@@ -52,7 +53,11 @@ fn the_screen_verbs_dispatch_on_the_target_kind() {
     run_local(async {
         let dir = tempfile::tempdir().unwrap();
         let socket = dir.path().join("kinds.sock");
-        let (shutdown, server) = spawn_server_with(socket.clone(), Some("main"), |_| {});
+        let uploads = dir.path().join("uploads");
+        let upload_root = uploads.clone();
+        let (shutdown, server) = spawn_server_with(socket.clone(), Some("main"), |cfg| {
+            cfg.env.upload_dir = Some(upload_root);
+        });
         drop(wait_for_socket(&socket, SOCKET_CONNECT_DEADLINE).await);
         let view = phux_client::state::get_state(&socket).await.unwrap();
         let pane = phux_client::resource::terminals(&view.into_snapshot_ignoring_degradation())
@@ -131,6 +136,57 @@ fn the_screen_verbs_dispatch_on_the_target_kind() {
             assert_eq!(code, "wrong_resource_kind", "{tool} {id:?}");
             assert!(remedy.contains(instead), "{tool} {id:?}: {remedy}");
         }
+
+        // The other Terminal tools: exact IDs too, so each one's Terminal
+        // command goes first and the server's refusal names the kind.
+        let file = dir.path().join("upload.txt");
+        std::fs::write(&file, b"x").unwrap();
+        let paste = json!({ "text": "hi" });
+        let upload = json!({ "path": file });
+        let ask = json!({ "id": "q", "question": "ok?" });
+        let signal = json!({ "signal": "freeze" });
+        for (tool, id, extra, instead) in [
+            ("phux_paste", &tree_id, paste.clone(), "phux_document_type"),
+            ("phux_paste", &notes, paste.clone(), "takes no input"),
+            (
+                "phux_upload",
+                &tree_id,
+                upload.clone(),
+                "address a Terminal",
+            ),
+            ("phux_upload", &notes, upload.clone(), "address a Terminal"),
+            ("phux_ask", &tree_id, ask.clone(), "address a Terminal"),
+            ("phux_ask", &notes, ask.clone(), "address a Terminal"),
+            (
+                "phux_signal",
+                &tree_id,
+                signal.clone(),
+                "address a Terminal",
+            ),
+            ("phux_signal", &notes, signal.clone(), "address a Terminal"),
+        ] {
+            let (code, remedy) = refused(tool, &target(id, &socket, extra.clone())).await;
+            assert_eq!(code, "wrong_resource_kind", "{tool} {id:?}");
+            assert!(remedy.contains(instead), "{tool} {id:?}: {remedy}");
+        }
+        // A refused upload wrote nothing; a Terminal's lands in the same place.
+        let landed = || std::fs::read_dir(&uploads).map_or(0, Iterator::count);
+        assert_eq!(landed(), 0, "a refused upload left a file");
+        let uploaded = ok("phux_upload", &target(&pane, &socket, upload.clone())).await;
+        assert_eq!(uploaded["receipt"]["outcome"], "completed", "{uploaded}");
+        let path = uploaded["receipt"]["path"].as_str().unwrap();
+        let root = uploads.canonicalize().unwrap();
+        let landed_at = std::path::Path::new(path).canonicalize().unwrap();
+        assert!(
+            landed_at.starts_with(&root),
+            "{path} is outside {uploads:?}"
+        );
+        let pasted = ok(
+            "phux_paste",
+            &target(&pane, &socket, json!({ "text": "x" })),
+        )
+        .await;
+        assert_eq!(pasted["sent"], true, "a Terminal still takes a paste");
 
         drop(producer);
         join_after_shutdown(shutdown, server).await;

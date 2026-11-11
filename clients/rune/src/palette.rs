@@ -5,6 +5,7 @@ use phux_client_runtime::control::{PaneDescriptor, SessionDescriptor, Topology};
 use phux_client_runtime::project_groups::{Block, GroupRow, group_rows};
 use phux_protocol::ids::ResourceId;
 
+use crate::addressable::Addressable;
 use crate::keys::{COMMANDS, ESSENTIALS, Shortcut};
 
 pub mod phone;
@@ -73,10 +74,33 @@ pub struct Hit {
     pub matched: Vec<usize>,
 }
 
-/// Everything the palette lists, in its empty-query order: terminals, then
-/// sessions, then actions, then themes.
-pub fn items(topology: Option<&Topology>) -> Vec<Item> {
-    let mut out = terminal_items(topology);
+/// Everything the palette lists, in its empty-query order: what `shown`
+/// can put on screen (terminals, then documents), then sessions, then
+/// actions, then themes.
+pub fn items(topology: Option<&Topology>, shown: &[Addressable]) -> Vec<Item> {
+    let mut out: Vec<_> = shown
+        .iter()
+        .map(|resource| {
+            let terminal = resource.kind.is_terminal();
+            let detail = if terminal {
+                format!("{} · {}", resource.session, resource.id)
+            } else {
+                format!(
+                    "{} · {} · {}",
+                    resource.session, resource.id, resource.mirror
+                )
+            };
+            Item {
+                title: resource.label.clone(),
+                detail,
+                kind: if terminal { "terminal" } else { "document" },
+                target: Target::Terminal {
+                    id: resource.id.clone(),
+                    session: resource.session.clone(),
+                },
+            }
+        })
+        .collect();
     out.extend(session_items(topology));
     for command in COMMANDS.iter().filter(|command| command.listed) {
         out.push(Item {
@@ -386,7 +410,7 @@ mod tests {
 
     #[test]
     fn ranking_puts_the_best_title_first_and_falls_back_to_details() {
-        let hits = rank(items(None), "new tab");
+        let hits = rank(items(None, &[]), "new tab");
         assert_eq!(hits[0].item.target, Target::Action(Shortcut::NewTerminal));
     }
 
@@ -401,7 +425,7 @@ mod tests {
 
     #[test]
     fn close_and_step_tab_are_in_the_palette() {
-        let list = items(None);
+        let list = items(None, &[]);
         for action in [Shortcut::CloseTab, Shortcut::NextTab, Shortcut::PreviousTab] {
             assert!(list.iter().any(|i| i.target == Target::Action(action)));
         }
@@ -409,9 +433,9 @@ mod tests {
 
     #[test]
     fn every_theme_is_a_row_and_its_name_finds_it() {
-        let hits = rank(items(None), "nord");
+        let hits = rank(items(None, &[]), "nord");
         assert_eq!(hits[0].item.target, Target::Theme(Some("nord")));
-        let themes = items(None)
+        let themes = items(None, &[])
             .iter()
             .filter(|i| matches!(i.target, Target::Theme(_)))
             .count();
@@ -494,7 +518,7 @@ mod tests {
 
     #[test]
     fn an_empty_query_keeps_list_order() {
-        let items = items(None);
+        let items = items(None, &[]);
         let hits = rank(items.clone(), "");
         assert_eq!(hits.len(), items.len());
         assert_eq!(hits[0].item, items[0]);

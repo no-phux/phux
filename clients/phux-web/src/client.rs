@@ -48,6 +48,7 @@ use crate::{Mark, Metrics, Overlay, render_cursor_row_appearance, render_selecte
 
 mod app;
 mod connect;
+mod documents;
 mod find;
 mod gestures;
 mod handle;
@@ -61,6 +62,7 @@ mod transport;
 
 use app::*;
 pub use connect::*;
+pub use documents::DOCUMENTS_CONTAINER_ID;
 use gestures::*;
 use handlers::*;
 use keyboard::*;

@@ -13,7 +13,7 @@
 //!
 //! [ADR-0125]: https://github.com/no-phux/phux/blob/d21db2e345aeaff43a681b3a04dfd43f2cc082ca/docs/adr/0125-kind-catalog-is-generated-metadata.md
 
-use crate::caps::{ServerFeature, ServerFeatureExt};
+use crate::caps::{BootstrapCodec, ServerFeature, ServerFeatureExt};
 use crate::ids::{ResourceId, ResourceKind, SatelliteHost};
 use crate::wire::frame::{
     APPROVAL_DECIDE_KEY_PREFIX, APPROVAL_DENY, APPROVAL_KEY_PREFIX, EVENT_TAG_APPROVAL_DECIDED,
@@ -67,6 +67,7 @@ include!("kinds/rules.rs");
 include!("kinds/classifiers.rs");
 include!("kinds/method_catalog.rs");
 include!("kinds/resource_catalog.rs");
+include!("kinds/contracts.rs");
 
 /// Every catalog method: server-level, then substrate, then each kind's
 /// facet in [`KINDS`] order.
@@ -151,10 +152,13 @@ pub fn frame_is_dangerous(frame: &FrameKind) -> bool {
 /// The catalog entry for `kind`, or `None` for a kind this build does not
 /// serve.
 #[must_use]
-pub fn kind_spec(kind: ResourceKind) -> Option<&'static KindSpec> {
-    KINDS.iter().find(|spec| spec.kind == kind)
+#[inline]
+pub const fn kind_spec(kind: ResourceKind) -> Option<&'static KindSpec> {
+    kind_spec_in(&KINDS, kind)
 }
 
+#[cfg(test)]
+mod contract_tests;
 #[cfg(test)]
 mod samples;
 
@@ -200,12 +204,12 @@ mod tests {
     fn agent_session_spawn_rows_follow_parent_and_host() {
         assert_eq!(
             row(&spawn(None, None, Some(agent(terminal())))),
-            F_SPAWN_AGENT_LOCAL.case
+            F_SPAWN_CHILD_LOCAL.case
         );
         let remote_parent = ResourceId::satellite("h", 7);
         assert_eq!(
             row(&spawn(Some("h"), None, Some(agent(remote_parent.clone())))),
-            F_SPAWN_AGENT_SATELLITE.case
+            F_SPAWN_CHILD_SATELLITE.case
         );
         // A local or different-host parent under a satellite spawn.
         assert_eq!(
@@ -221,6 +225,42 @@ mod tests {
             row(&spawn(None, Some(terminal()), Some(agent(terminal())))),
             F_UNCLASSIFIED.case
         );
+    }
+
+    /// Every served child kind lands on the parent rows, not default-deny,
+    /// so a scoped grant can open one beside a Terminal it may bind.
+    #[test]
+    fn every_served_child_kind_spawns_on_the_parent_rows() {
+        let remote_parent = ResourceId::satellite("h", 7);
+        for spec in KINDS.iter().filter(|spec| !spec.kind.is_terminal()) {
+            let child = |parent: ResourceId| SpawnResource {
+                kind: spec.kind,
+                ..agent(parent)
+            };
+            assert_eq!(
+                row(&spawn(None, None, Some(child(terminal())))),
+                F_SPAWN_CHILD_LOCAL.case,
+                "{}",
+                spec.name
+            );
+            assert_eq!(
+                row(&spawn(Some("h"), None, Some(child(remote_parent.clone())))),
+                F_SPAWN_CHILD_SATELLITE.case,
+                "{}",
+                spec.name
+            );
+            assert_eq!(
+                row(&spawn(None, Some(terminal()), Some(child(terminal())))),
+                F_UNCLASSIFIED.case,
+                "{}",
+                spec.name
+            );
+        }
+        let unknown = SpawnResource {
+            kind: ResourceKind::Unknown { tag: 9 },
+            ..agent(terminal())
+        };
+        assert_eq!(row(&spawn(None, None, Some(unknown))), F_UNCLASSIFIED.case);
     }
 
     #[test]

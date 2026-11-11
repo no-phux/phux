@@ -61,19 +61,23 @@ static F_SPAWN_OWNED: Rule = Rule::verbs(
 );
 static F_SPAWN_SATELLITE_OWNED: Rule =
     Rule::deny("`SPAWN_RESOURCE { satellite: Some, owner_terminal: Some }`");
-static F_SPAWN_AGENT_LOCAL: Rule = Rule::verbs(
-    "`SPAWN_RESOURCE { kind: AGENT_SESSION, satellite: None, parent: Some }`",
+static F_SPAWN_CHILD_LOCAL: Rule = Rule::verbs(
+    "`SPAWN_RESOURCE { kind: served non-TERMINAL, satellite: None, parent: Some }`",
     &[Verb::Create, Verb::Bind],
     Subject::ParentTerminalGroup,
 );
-static F_SPAWN_AGENT_SATELLITE: Rule = Rule::verbs(
-    "`SPAWN_RESOURCE { kind: AGENT_SESSION, satellite: Some(H), parent: Some(Satellite { H, .. }) }`",
+static F_SPAWN_CHILD_SATELLITE: Rule = Rule::verbs(
+    "`SPAWN_RESOURCE { kind: served non-TERMINAL, satellite: Some(H), parent: Some(Satellite { H, .. }) }`",
     &[Verb::Create, Verb::Bind],
     Subject::SatelliteHostAndParent,
 );
 static F_SPAWN_KIND_MISMATCH: Rule = Rule::deny(
     "`SPAWN_RESOURCE { kind: not TERMINAL, parent: None }` or `{ kind: TERMINAL, parent: Some }`",
 );
+// Declaring a control class (page, window, display) claims what viewers'
+// `input@CLASS` grants then reach: only the owner socket opens one
+// (`docs/authority.md`).
+static F_SPAWN_MACHINE_CONTROL: Rule = Rule::deny("`SPAWN_RESOURCE { control: Some }`");
 static F_RESIZE_TERMINAL: Rule =
     Rule::verbs("`RESIZE_TERMINAL`", &[Verb::Bind], Subject::NamedTerminal);
 static F_MOVE_RESOURCE: Rule = Rule::verbs(
@@ -163,7 +167,7 @@ static F_UNCLASSIFIED: Rule =
 ///
 /// [`classify_frame`] returns one of these rows for every decoded frame. It
 /// never returns the `COMMAND` row: the nested command decides.
-pub static FRAME_RULES: [&Rule; 40] = [
+pub static FRAME_RULES: [&Rule; 41] = [
     &F_HELLO,
     &F_PING,
     &F_DETACH,
@@ -179,9 +183,10 @@ pub static FRAME_RULES: [&Rule; 40] = [
     &F_SPAWN_LOCAL,
     &F_SPAWN_OWNED,
     &F_SPAWN_SATELLITE_OWNED,
-    &F_SPAWN_AGENT_LOCAL,
-    &F_SPAWN_AGENT_SATELLITE,
+    &F_SPAWN_CHILD_LOCAL,
+    &F_SPAWN_CHILD_SATELLITE,
     &F_SPAWN_KIND_MISMATCH,
+    &F_SPAWN_MACHINE_CONTROL,
     &F_RESIZE_TERMINAL,
     &F_MOVE_RESOURCE,
     &F_SUBSCRIBE_EVENTS_ONE,

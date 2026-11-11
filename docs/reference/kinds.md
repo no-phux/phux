@@ -279,9 +279,10 @@ Every client-originated frame lands on exactly one row.
 | `SPAWN_RESOURCE { satellite: None, owner_terminal: None }` | CREATE | `PayloadGroup` |
 | `SPAWN_RESOURCE { satellite: None, owner_terminal: Some }` | CREATE+BIND | `OwnerTerminalGroup` |
 | `SPAWN_RESOURCE { satellite: Some, owner_terminal: Some }` | deny | `None` |
-| `SPAWN_RESOURCE { kind: AGENT_SESSION, satellite: None, parent: Some }` | CREATE+BIND | `ParentTerminalGroup` |
-| `SPAWN_RESOURCE { kind: AGENT_SESSION, satellite: Some(H), parent: Some(Satellite { H, .. }) }` | CREATE+BIND | `SatelliteHostAndParent` |
+| `SPAWN_RESOURCE { kind: served non-TERMINAL, satellite: None, parent: Some }` | CREATE+BIND | `ParentTerminalGroup` |
+| `SPAWN_RESOURCE { kind: served non-TERMINAL, satellite: Some(H), parent: Some(Satellite { H, .. }) }` | CREATE+BIND | `SatelliteHostAndParent` |
 | `SPAWN_RESOURCE { kind: not TERMINAL, parent: None }` or `{ kind: TERMINAL, parent: Some }` | deny | `None` |
+| `SPAWN_RESOURCE { control: Some }` | deny | `None` |
 | `RESIZE_TERMINAL` | BIND | `NamedTerminal` |
 | `MOVE_RESOURCE` | BIND | `MovedAndOwnerTerminals` |
 | `SUBSCRIBE_EVENTS { terminal: Some }` | OBSERVE | `NamedTerminal` |

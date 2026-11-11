@@ -24,7 +24,7 @@ fn phone() -> Desk {
 fn failed(error: &str) -> Desk {
     let mut desk = phone();
     desk.shown = Some(Shown {
-        terminal: ResourceId::local(1),
+        resource: ResourceId::local(1),
         view: phux_client_runtime::ViewId::from_raw(1),
     });
     desk.client = Some(embedded());

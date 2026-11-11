@@ -3,7 +3,6 @@
 use phux_protocol::wire::frame::ControlClass;
 use phux_tree::{DocumentActor, DocumentResource as _, SnapshotRequest, TypedDocument};
 
-use super::super::handoff::*;
 use super::super::*;
 
 const DOC: &[u8] = b"# before the upgrade";
@@ -76,26 +75,22 @@ async fn upgrade_carries_documents_with_their_id_and_newest_document() {
                 .unwrap();
             rx.await.unwrap().unwrap();
 
+            // Every kind's cut, as `prepare_upgrade` takes them.
+            let mut cuts = crate::runtime::apps::upgrade::begin(&state).unwrap();
             let context = capture_upgrade_context(&state).unwrap();
             assert!(
                 context.tree_identity.documents.is_empty(),
                 "never part of the identity"
             );
-            let panes = collect_pane_handoffs(context.pane_senders, Duration::from_secs(2))
-                .await
-                .unwrap();
-            let documents =
-                collect_document_cuts(context.document_senders, Duration::from_secs(2)).await;
+            for cut in &mut cuts {
+                cut.cut(&state, Duration::from_secs(2)).await.unwrap();
+            }
             let blob = reassemble_unchanged_tree(
                 &state,
                 context.listener_fd,
                 context.listener_fd,
                 &context.tree_identity,
-                &UpgradeHandoffs {
-                    panes,
-                    agent_sessions: HashMap::new(),
-                    documents,
-                },
+                &cuts,
             )
             .unwrap();
             assert_eq!(blob.documents.len(), 1);
@@ -109,11 +104,7 @@ async fn upgrade_carries_documents_with_their_id_and_newest_document() {
             let resumed = SharedState::new();
             resumed
                 .with_mut(|s| {
-                    s.rebuild_from_blob(
-                        &blob,
-                        crate::runtime::apps::terminal::upgrade::unwired,
-                        crate::runtime::apps::rebuild_session,
-                    )
+                    crate::runtime::apps::terminal::test_support::rebuild_unwired(s, &blob)
                 })
                 .expect("rebuild");
             let (doc, snapshot) = resumed.with(|s| {
