@@ -140,6 +140,17 @@ impl<W: crate::attach::RenderSink> EventEnv<'_, '_, W> {
         Ok(ran || dismissed)
     }
 
+    /// Report the focused pane's viewport position to copy-mode after
+    /// anything that may have scrolled it.
+    fn sync_copy_viewport_top(&mut self) {
+        if let Some(fid) = self.focused_resource.as_ref()
+            && let Some(top) = published_terminal(self.ctx.engine_kernel, fid)
+                .and_then(crate::attach::copy::viewport_screen_top)
+        {
+            self.ctx.overlays.set_copy_viewport_top(top);
+        }
+    }
+
     /// Run one [`OverlayOutcome`] the overlay stack produced, returning
     /// `true` iff it changed layout state the caller must repaint.
     pub(super) async fn apply_overlay_outcome(
@@ -158,12 +169,16 @@ impl<W: crate::attach::RenderSink> EventEnv<'_, '_, W> {
                 }
                 Ok(false)
             }
-            OverlayOutcome::ScrollViewport(delta) => Ok(scroll_focused_pane_viewport(
-                self.ctx.engine_kernel,
-                self.panes,
-                self.focused_resource.as_ref(),
-                delta,
-            )),
+            OverlayOutcome::ScrollViewport(delta) => {
+                let scrolled = scroll_focused_pane_viewport(
+                    self.ctx.engine_kernel,
+                    self.panes,
+                    self.focused_resource.as_ref(),
+                    delta,
+                );
+                self.sync_copy_viewport_top();
+                Ok(scrolled)
+            }
             // ADR-0101: the settings page wrote the file. The driver owns
             // the settings this batch is still borrowing, so hand the
             // reload up exactly as the `reload-config` action does.
@@ -179,7 +194,20 @@ impl<W: crate::attach::RenderSink> EventEnv<'_, '_, W> {
                     &req,
                 );
                 self.ctx.overlays.apply_copy_search(result);
+                self.sync_copy_viewport_top();
                 // The cursor, selection, or viewport moved: repaint.
+                Ok(true)
+            }
+            OverlayOutcome::Motion(req) => {
+                if let Some(fid) = self.focused_resource.as_ref()
+                    && let Some(terminal) = published_terminal(self.ctx.engine_kernel, fid)
+                {
+                    let cells =
+                        crate::attach::copy::viewport_row_cells(terminal, req.row, req.pane_cols);
+                    let col =
+                        crate::render::overlay::row_motion_target(&cells, req.col, req.motion);
+                    self.ctx.overlays.apply_copy_motion(col);
+                }
                 Ok(true)
             }
             OverlayOutcome::Paste(paste) => {
