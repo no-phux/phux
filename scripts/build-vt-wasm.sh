@@ -4,8 +4,8 @@
 #
 # The browser instantiates the engine as a second WASM module with no imports.
 # The source is the official libghostty-vt C API (the GHOSTSNP snapshot codec
-# the server speaks) plus one fork commit that makes terminal identity
-# wasm32-safe; the browser decodes native bootstraps with its snapshot decoder.
+# the server speaks) plus the shipping integration and upstream correctness
+# backports; the browser decodes native bootstraps with its snapshot decoder.
 #
 # Requires Node, plus the official Zig release binary, which this script
 # installs itself with scripts/install-zig.sh (digest-verified against
@@ -29,8 +29,8 @@ set -euo pipefail
 
 repo="$(cd "$(dirname "$0")/.." && pwd)"
 source "$repo/scripts/lib/dev-toolchain.sh"
-revision=790017b92360bf076ce6d5a62e6c7984b922f96b
-archive_sha256=9968e344c3910aa6fbaa72398c40dc4f3a6d4eaa4e9b8eb5f8109f7cc106c21b
+revision=aabbd296d8ac8a6d668b6c76c59b24c3b6705d2c
+archive_sha256=0676c59a27eb49d0a2ea3bca508503cd720e1a1533b2033652c5388ed25660e3
 mode="${1:-build}"
 [[ $# -le 1 && ( "$mode" = build || "$mode" = --check ) ]] || {
   echo 'usage: bash scripts/build-vt-wasm.sh [--check]' >&2; exit 2;

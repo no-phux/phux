@@ -5,6 +5,18 @@ use phux_vt_web::{Rgb, Vt};
 use wasm_bindgen_test::wasm_bindgen_test;
 
 #[wasm_bindgen_test]
+async fn combined_row_growth_and_column_shrink_preserves_scrollback() {
+    let vt = Vt::load().await.expect("load ghostty-vt engine");
+    let term = vt.terminal(5, 2);
+    term.write(b"1A\r\n2B\r\n3C\r\n");
+    term.resize(4, 4, 8, 16);
+    assert_eq!(term.rows_text(), ["1A", "2B", "3C", ""]);
+    assert_eq!(term.grid().cursor_row, 3);
+    term.write(b"OK");
+    assert_eq!(term.rows_text(), ["1A", "2B", "3C", "OK"]);
+}
+
+#[wasm_bindgen_test]
 fn engine_wasm_is_embedded() {
     assert!(phux_vt_web::engine_wasm_len() > 1_000_000);
 }

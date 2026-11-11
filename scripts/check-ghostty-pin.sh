@@ -1,14 +1,15 @@
 #!/usr/bin/env bash
-# Verify that the pinned libghostty-rs publishes a prebuilt libghostty-vt for
-# every target phux is developed on.
+# Verify that the pinned libghostty-rs publishes native archives, unless Cargo
+# explicitly requires source builds for this checkout.
 #
 # libghostty-vt-sys links a SHA-256-verified archive of its Ghostty commit,
 # downloaded from the libghostty-rs release named in its download.rs, and
 # falls back to a ~200 s Zig source build when its table has no entry for the
 # target. A pin bump onto a libghostty-rs rev whose release was never cut
 # would send every developer and CI lane back to Zig without failing anything,
-# so this check fails instead. Cargo.lock names the libghostty-rs rev; that
-# rev's download.rs names the archives.
+# so this check fails instead. A canonical source-build setting in Cargo's
+# [env] table deliberately opts out of archive downloads, not out of building
+# and testing the pinned engine. Cargo.lock names the binding revision.
 #
 # FAILURE POLICY: a reachable download.rs without an entry for a target, or a
 # listed archive the release does not serve, is a hard failure. An
@@ -42,6 +43,17 @@ source_line="$(awk '
   fail "Cargo.lock has no git source for libghostty-vt-sys (got: ${source_line:-nothing})"
 fork="${BASH_REMATCH[1]}"
 fork_rev="${BASH_REMATCH[3]}"
+
+# Match the actual forced build setting, not a comment, inherited shell
+# variable, or unrelated section. Removing it restores the archive requirement.
+if awk '
+  /^\[/ { in_env = ($0 == "[env]") }
+  in_env && /^LIBGHOSTTY_VT_SYS_FROM_SOURCE = [{] value = "1", force = true [}][[:space:]]*(#.*)?$/ { found = 1 }
+  END { exit !found }
+' "$ROOT/.cargo/config.toml"; then
+  phux_ok "check-ghostty-pin: ${fork}@${fork_rev:0:12} explicitly builds from source; no prebuilt archives claimed"
+  exit 0
+fi
 
 command -v curl >/dev/null 2>&1 || skip "curl not available"
 raw="https://raw.githubusercontent.com/${fork}/${fork_rev}/crates/libghostty-vt-sys"
