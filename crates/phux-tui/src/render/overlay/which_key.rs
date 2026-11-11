@@ -188,15 +188,46 @@ impl WhichKeyOverlay {
         grid
     }
 
-    /// The layout for a viewport too small for every binding: groups flow
-    /// at the full height, only the columns that fit the width stay, and
-    /// the last cell says how many bindings the rest of the table holds.
+    /// The layout for a viewport too small for every binding. Each group
+    /// keeps its first `cap` bindings, the largest cap that leaves room for
+    /// the closing note, so a cramped screen shows every group's headline
+    /// keys rather than the first group whole. Below one binding a group,
+    /// groups flow at the full height and only the columns that fit stay.
+    /// Either way the last cell says how many bindings the rest holds.
     fn truncated(
         &self,
         groups: &[(Group, Vec<usize>)],
         height: usize,
         max_columns: usize,
     ) -> Vec<Vec<Cell>> {
+        let tallest = groups.iter().map(|(_, rows)| rows.len()).max().unwrap_or(0);
+        for cap in (1..tallest).rev() {
+            let capped: Vec<(Group, Vec<usize>)> = groups
+                .iter()
+                .map(|(group, rows)| (*group, rows.iter().copied().take(cap).collect()))
+                .collect();
+            // Headers already set the groups apart; a cramped popup spends
+            // the blank rows between them on bindings instead.
+            let mut columns = flow(&capped, height, false);
+            for column in &mut columns {
+                column.retain(|cell| *cell != Cell::Gap);
+            }
+            let note_fits = columns.len() < max_columns
+                || (columns.len() == max_columns
+                    && columns.last().is_some_and(|c| c.len() < height));
+            if !note_fits {
+                continue;
+            }
+            if columns.last().is_some_and(|c| c.len() >= height) {
+                columns.push(Vec::new());
+            }
+            let shown: usize = capped.iter().map(|(_, rows)| rows.len()).sum();
+            let hidden = self.rows.len().saturating_sub(shown);
+            if let Some(last_column) = columns.last_mut() {
+                last_column.push(Cell::Overflow(hidden));
+            }
+            return columns;
+        }
         let mut columns = flow(groups, height, false);
         if columns.len() <= max_columns {
             return columns;
@@ -229,7 +260,15 @@ impl WhichKeyOverlay {
         match cell {
             Cell::Gap => blank(),
             Cell::Overflow(n) => {
-                let note = crate::render::clip_text(&format!("+ {n} more"), grid.cell_w());
+                // Point at the palette, which lists every action, when the
+                // prefix table reaches it.
+                let all = self
+                    .rows
+                    .iter()
+                    .find(|row| row.action == "command-palette")
+                    .and_then(|row| row.keys.first())
+                    .map_or_else(String::new, |key| format!(" \u{b7} {key} lists all"));
+                let note = crate::render::clip_text(&format!("+ {n} more{all}"), grid.cell_w());
                 let pad = grid
                     .cell_w()
                     .saturating_sub(crate::render::display_width(&note));
@@ -307,7 +346,7 @@ impl RenderOverlay for WhichKeyOverlay {
         let modal_area = self.bounds(area).unwrap_or(area);
         let body = self.grid_lines(&self.grid(area));
         Modal::new(&self.theme, self.prefix.clone(), body)
-            .footer("", "esc cancel")
+            .footer("", "esc")
             .render_into(modal_area, buf);
     }
 
