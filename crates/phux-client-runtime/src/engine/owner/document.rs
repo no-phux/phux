@@ -243,7 +243,7 @@ impl Owner {
         self.render_and_publish(id)?;
         Ok(EngineOutcome {
             effects: self.effects.take(),
-            error: None,
+            ..EngineOutcome::default()
         })
     }
 

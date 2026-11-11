@@ -99,23 +99,23 @@ impl RemoteClient {
     /// settle input replies; any other event comes back unchanged.
     pub(super) fn project_document(
         &self,
+        client: Option<&Client>,
         event: Event,
         projected: &mut Vec<WireEvent>,
     ) -> Option<Event> {
+        if let Event::DocumentPublished {
+            resource_id,
+            generation,
+        } = &event
+        {
+            if let Some(client) = client {
+                self.project_published_document(client, resource_id, *generation, projected);
+            }
+            return None;
+        }
         let mut state = self.document_input.lock().unwrap();
         match event {
             Event::TopologySnapshot { snapshot, .. } => state.inputs.note_snapshot(&snapshot),
-            Event::DocumentPublished { publication } => {
-                let control = state.inputs.control(&publication.resource_id);
-                projected.push(WireEvent::DocumentPublished {
-                    resource_id: id::encode(&publication.resource_id),
-                    kind: crate::projection::topology::kind_word(publication.kind),
-                    seq: publication.seq,
-                    bytes: publication.bytes.clone(),
-                    content_type: publication.content_type.clone(),
-                    control: control.map(|class| class.name().to_owned()),
-                });
-            }
             Event::CommandResult { request_id, result } => {
                 let Some(resource) = state.pending.remove(&request_id) else {
                     return Some(Event::CommandResult { request_id, result });
@@ -130,6 +130,35 @@ impl RemoteClient {
             event => return Some(event),
         }
         None
+    }
+
+    /// The document the wake for `generation` announced, read from the
+    /// runtime's publication table; nothing for a stale wake (a newer one
+    /// follows) or a retired slot, so no document is copied twice.
+    fn project_published_document(
+        &self,
+        client: &Client,
+        resource_id: &ResourceId,
+        generation: u64,
+        projected: &mut Vec<WireEvent>,
+    ) {
+        let Some(publication) = client.acquire_document_at(resource_id, generation) else {
+            return;
+        };
+        let control = self
+            .document_input
+            .lock()
+            .unwrap()
+            .inputs
+            .control(resource_id);
+        projected.push(WireEvent::DocumentPublished {
+            resource_id: id::encode(resource_id),
+            kind: crate::projection::topology::kind_word(publication.kind),
+            seq: publication.seq,
+            bytes: publication.bytes.clone(),
+            content_type: publication.content_type.clone(),
+            control: control.map(|class| class.name().to_owned()),
+        });
     }
 }
 

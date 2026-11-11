@@ -77,8 +77,12 @@ fn one_observation_with_old_and_new_publications_uses_latest_incarnation_only() 
         );
         client.feed(FrameKind::AttachReady { attach_id }).unwrap();
         let observation = client.take_activity();
-        assert!(observation.events.iter().any(|e| matches!(e, phux_client_runtime::control::Event::DocumentPublished { publication } if publication.seq == 42)));
-        assert!(observation.events.iter().any(|e| matches!(e, phux_client_runtime::control::Event::DocumentPublished { publication } if publication.bytes == b"{\"latest\":true}")));
+        let wakes = observation.events.iter().filter(|e| matches!(e, phux_client_runtime::control::Event::DocumentPublished { resource_id, .. } if *resource_id == id(1))).count();
+        assert_eq!(wakes, 1, "the newest wake supersedes the stale one");
+        assert_eq!(
+            client.acquire_document(&id(1)).unwrap().bytes,
+            b"{\"latest\":true}"
+        );
         assert_eq!(
             observation.events.iter().any(|e| matches!(
                 e,
@@ -404,4 +408,39 @@ fn dragging_a_secondary_json_selection_also_focuses_its_resource() {
     rt.pointer_up(rect[0] + 100.0, rect[1] + 20.0);
     rt.frame(0.0);
     assert!(outbound(&client).is_empty());
+}
+
+#[test]
+fn a_stale_document_wake_reads_nothing_and_the_newer_wake_applies() {
+    let (client, mut rt) = fixture(
+        &[record(1, ResourceKind::AccessibilityTree)],
+        &doc(LayoutNode::Leaf(id(1))),
+    );
+    publish(&client, 1, ResourceKind::AccessibilityTree, b"{\"cut\":0}");
+    step(&mut rt);
+    client
+        .feed(FrameKind::ResourceOutput {
+            terminal_id: id(1),
+            stream_id: StreamId::new(1).unwrap(),
+            bootstrap_id: BootstrapId::new(1).unwrap(),
+            seq: 1,
+            bytes: b"{\"live\":1}".to_vec().into(),
+        })
+        .unwrap();
+    // The cut's wake, drained after the slot moved on: it must not read the
+    // live document, whose own wake follows.
+    let stale = phux_client_runtime::control::Event::DocumentPublished {
+        resource_id: id(1),
+        generation: 1,
+    };
+    let mut applied = true;
+    rt.update(|d, tx| applied = d.apply(&client, stale, tx));
+    assert!(!applied, "a stale wake changes nothing");
+    assert!(
+        matches!(&rt.state.resources.entries[&id(1)].body, Body::Tree(json) if json.contains("cut"))
+    );
+    step(&mut rt);
+    assert!(
+        matches!(&rt.state.resources.entries[&id(1)].body, Body::Tree(json) if json.contains("live"))
+    );
 }

@@ -74,6 +74,9 @@ pub(super) struct Owner {
     visible: HashSet<ResourceId>,
     #[cfg(feature = "engine")]
     publication: Arc<Publication>,
+    /// Document resources this owner published a slot for.
+    #[cfg(feature = "engine")]
+    documents: HashSet<ResourceId>,
     #[cfg(feature = "engine")]
     projectors: HashMap<ResourceId, ProjectorSlot>,
     #[cfg(feature = "engine")]
@@ -116,6 +119,8 @@ impl Owner {
             visible: HashSet::new(),
             #[cfg(feature = "engine")]
             publication,
+            #[cfg(feature = "engine")]
+            documents: HashSet::new(),
             #[cfg(feature = "engine")]
             projectors: HashMap::new(),
             #[cfg(feature = "engine")]
@@ -182,6 +187,9 @@ impl Owner {
                 self.publication.remove(id);
             }
             self.presentations.clear();
+            for id in self.documents.drain() {
+                self.publication.remove(&id);
+            }
         }
     }
 
@@ -212,8 +220,13 @@ impl Owner {
                     self.forget_projection(&id);
                 }
                 // Agent streams and released closes publish no projection,
-                // so `visible` never names them.
+                // so `visible` never names them. Documents are forgotten
+                // with the incarnation.
                 self.kernel.release_incarnation();
+                #[cfg(feature = "engine")]
+                for id in self.documents.drain() {
+                    self.publication.remove(&id);
+                }
                 let _ = reply.send(());
             }
             #[cfg(feature = "engine")]
@@ -246,6 +259,7 @@ impl Owner {
             self.projectors.remove(id);
             self.cell_pixels.remove(id);
             self.publication.remove(id);
+            self.documents.remove(id);
             self.invalidate_handles(id);
             self.forget_views(id);
             self.presentations.remove(id);

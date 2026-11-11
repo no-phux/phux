@@ -183,3 +183,106 @@ fn documents_publish_their_kind_seq_content_type_and_bytes() {
         phux_client_free(client);
     }
 }
+
+/// Feed `frame` into the runtime without the C projection, so the wakes it
+/// raises stay undrained.
+fn feed_undrained(client: *mut PhuxClient, frame: FrameKind) {
+    // SAFETY: the test owns the live client and no ABI call is in flight.
+    unsafe { (*client).inner.control().feed(frame) }.expect("feed");
+}
+
+fn live(id: u32, seq: u64, payload: &'static [u8]) -> FrameKind {
+    FrameKind::ResourceOutput {
+        terminal_id: ResourceId::local(id),
+        stream_id: StreamId::new(u64::from(id)).expect("stream"),
+        bootstrap_id: BootstrapId::new(1).expect("bootstrap"),
+        seq,
+        bytes: payload.into(),
+    }
+}
+
+fn opened_surface() -> *mut PhuxClient {
+    let client = attaching(&[], 7);
+    complete_resource_attach(client, document_snapshot());
+    open(
+        client,
+        SURFACE,
+        BootstrapStreamProfile::PixelSurfacePngV1,
+        2,
+        b"\x89PNG-cut",
+    );
+    // SAFETY: the test owns the live client.
+    assert_eq!(
+        unsafe { phux_client_effect_clear(client) },
+        PhuxClientResult::Ok
+    );
+    client
+}
+
+#[test]
+fn a_stale_wake_copies_nothing_and_the_newer_wake_copies_once() {
+    let client = opened_surface();
+    feed_undrained(client, live(SURFACE, 3, b"\x89PNG-live"));
+    // SAFETY: the test owns the live client and no ABI call is in flight.
+    unsafe {
+        // The wake for the cut, drained after the slot moved on.
+        (*client)
+            .inner
+            .process_runtime_event(phux_client_runtime::control::Event::DocumentPublished {
+                resource_id: ResourceId::local(SURFACE),
+                generation: 1,
+            })
+            .expect("stale wake");
+        (*client).inner.publish_effects();
+    }
+    assert!(
+        documents(client).is_empty(),
+        "the stale wake copies nothing"
+    );
+    // SAFETY: as above.
+    unsafe { (*client).inner.process_runtime_events() }.expect("drain");
+    assert_eq!(
+        documents(client),
+        [(
+            SURFACE,
+            RESOURCE_KIND_PIXEL_SURFACE,
+            3,
+            Vec::new(),
+            b"\x89PNG-live".to_vec()
+        )]
+    );
+    // SAFETY: the test owns the live client.
+    unsafe { phux_client_free(client) };
+}
+
+#[test]
+fn an_undrained_wake_stages_nothing_after_close_or_detach() {
+    let client = opened_surface();
+    feed_undrained(client, live(SURFACE, 3, b"\x89PNG-live"));
+    let closed = FrameKind::ResourceClosed {
+        terminal_id: ResourceId::local(SURFACE),
+        exit_status: None,
+        reason: phux_protocol::wire::frame::CloseReason::Exited,
+        signal: None,
+    };
+    assert_eq!(feed(client, &closed), PhuxClientResult::Ok);
+    assert!(documents(client).is_empty(), "closed");
+    // SAFETY: the test owns the live client.
+    unsafe { phux_client_free(client) };
+
+    let client = opened_surface();
+    feed_undrained(client, live(SURFACE, 3, b"\x89PNG-live"));
+    // SAFETY: the test owns the live client and no ABI call is in flight.
+    unsafe {
+        assert!(
+            (*client)
+                .inner
+                .control()
+                .release_terminal(&ResourceId::local(SURFACE))
+        );
+        (*client).inner.process_runtime_events().expect("drain");
+    }
+    assert!(documents(client).is_empty(), "detached");
+    // SAFETY: the test owns the live client.
+    unsafe { phux_client_free(client) };
+}

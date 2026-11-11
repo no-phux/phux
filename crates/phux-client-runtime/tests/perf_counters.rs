@@ -94,4 +94,46 @@ fn a_batched_read_publishes_once_and_frame_at_a_time_publishes_per_read() {
     assert_eq!(CAUGHT_UP.get() - caught_up, 1);
     assert_eq!(PUBLISHED.get() - published, 2, "the read pulled one more");
     assert_eq!(ACQUIRED.get() - acquired, 1);
+
+    // A document is whole and never paced: reading one is not a grid
+    // acquire. Measured here, in this binary's one test, so no other
+    // thread's grid reads land inside the delta.
+    let tree = phux_protocol::ResourceId::local(8);
+    let _ = client.attach_terminal(&tree);
+    let (stream_id, bootstrap_id) = (StreamId::new(8).unwrap(), BootstrapId::new(1).unwrap());
+    for frame in [
+        FrameKind::BootstrapBegin {
+            terminal_id: tree.clone(),
+            stream_id,
+            bootstrap_id,
+            profile: phux_protocol::caps::BootstrapStreamProfile::AccessibilityTreeJsonV1,
+            cols: 0,
+            rows: 0,
+            base_seq: 0,
+        },
+        FrameKind::BootstrapChunk {
+            terminal_id: tree.clone(),
+            stream_id,
+            bootstrap_id,
+            chunk_seq: 0,
+            payload: b"{}".to_vec().into(),
+        },
+        FrameKind::BootstrapReady {
+            terminal_id: tree.clone(),
+            stream_id,
+            bootstrap_id,
+            history_cursor: None,
+        },
+    ] {
+        client.feed(frame).unwrap();
+    }
+    let acquired = ACQUIRED.get();
+    assert!(client.acquire_document(&tree).is_some());
+    assert!(client.acquire_document_at(&tree, 1).is_some());
+    assert!(client.publication().acquire_published(&tree).is_some());
+    assert_eq!(
+        ACQUIRED.get() - acquired,
+        0,
+        "document reads are not counted"
+    );
 }

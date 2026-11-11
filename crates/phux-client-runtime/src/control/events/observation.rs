@@ -42,6 +42,8 @@ pub struct Observation {
 impl Event {
     /// Whether the queue cap may drop this event. Correlated replies and
     /// receipts resolve one user action exactly once and are never dropped.
+    /// A document wake is kept too: one waits per resource at most, and
+    /// dropping it would strand that resource's newest document unread.
     #[must_use]
     pub const fn is_lossless(&self) -> bool {
         matches!(
@@ -58,6 +60,7 @@ impl Event {
                 | Self::InputHolderChanged { .. }
                 | Self::AgentPublication { .. }
                 | Self::AgentSessionClosed { .. }
+                | Self::DocumentPublished { .. }
                 | Self::ApprovalsChanged
                 | Self::ApprovalDecision { .. }
                 | Self::ConnectionOpened { .. }

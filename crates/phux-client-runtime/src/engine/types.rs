@@ -190,6 +190,11 @@ pub struct EngineOutcome {
     pub effects: Vec<KernelEffect>,
     /// The kernel's typed refusal, if any.
     pub error: Option<EngineApplyError>,
+    /// Documents this event published into the publication table, as
+    /// `(resource, generation)` in publish order. The owner thread takes
+    /// each [`KernelEffect::Document`] out of `effects` to publish it, so
+    /// with the engine none reaches the control plane.
+    pub documents: Vec<(ResourceId, u64)>,
 }
 
 impl EngineOutcome {
