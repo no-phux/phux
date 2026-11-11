@@ -5,7 +5,7 @@ use rune::{El, TextStyle, col, el, row, text, text_input};
 
 use super::{CAPTION, Ink, Sheet, button, icon_press, icons, pressable, tip};
 use crate::activity::Mark;
-use crate::desk::{Desk, Renaming, Tab};
+use crate::desk::{Desk, Grab, Renaming, Tab};
 use crate::keys::{self, Shortcut};
 
 /// A tab's name: one weight whether or not it is the active one, so
@@ -126,6 +126,8 @@ fn tab(desk: &Desk, tab: &Tab, index: usize, width: f32, ink: &Ink) -> El {
         name.group_color(ink.text)
     };
     let roomy = width >= ROOMY;
+    let grab = Grab::Tab(tab.id);
+    let target = desk.reorder.target() == Some(grab);
     let base = pressable(format!("tab-{index}"), ink)
         .h(HEIGHT)
         .pl(if roomy { 10.0 } else { 7.0 })
@@ -136,7 +138,12 @@ fn tab(desk: &Desk, tab: &Tab, index: usize, width: f32, ink: &Ink) -> El {
         .items_center()
         .hover_group()
         .on_press(move |d: &mut Desk| d.select_tab(index))
-        .on_double_press(move |d: &mut Desk| d.rename_tab(index));
+        .on_double_press(move |d: &mut Desk| d.rename_tab(index))
+        .on_drag(move |d: &mut Desk, drag, _| d.drag_reorder(grab, drag))
+        .on_layout_tx(move |d: &mut Desk, rect, tx| {
+            d.reorder.laid_out(grab, rect);
+            tx.live_only();
+        });
     let base = if tab.active {
         // The one you are on never gives up its name to a crowd. It is lit
         // as the keyboard's card is: the rim runs into the machine's colour.
@@ -148,6 +155,12 @@ fn tab(desk: &Desk, tab: &Tab, index: usize, width: f32, ink: &Ink) -> El {
     } else {
         // `shrink` clears the floor, so the floor is set after it.
         base.max_w(width).shrink().min_w(NARROWEST.min(width))
+    };
+    // Where a dragged tab would land.
+    let base = if target {
+        base.border(1.0, ink.accent)
+    } else {
+        base
     };
     let digit = u8::try_from(index).ok().filter(|i| *i < 9);
     let base = match digit {

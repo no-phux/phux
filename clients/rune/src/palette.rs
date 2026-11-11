@@ -159,11 +159,12 @@ pub fn theme_items() -> Vec<Item> {
 /// The sessions, each with its terminal count, grouped by project: a
 /// grouped session names its project, and a linked worktree is marked `└`.
 pub fn session_items(topology: Option<&Topology>) -> Vec<Item> {
-    let Some(sessions) = topology.map(|t| &t.sessions) else {
+    let Some(topology) = topology else {
         return Vec::new();
     };
+    let sessions: Vec<_> = topology.sessions.iter().collect();
     let item = |index: usize, project: Option<(&str, bool)>| {
-        let session = &sessions[index];
+        let session = sessions[index];
         let terminals = format!(
             "{} terminal{}",
             session.members,
@@ -182,7 +183,7 @@ pub fn session_items(topology: Option<&Topology>) -> Vec<Item> {
             target: Target::Session(session.name.clone()),
         }
     };
-    project_blocks(sessions, |_| 0)
+    project_blocks(&sessions, |_| 0)
         .into_iter()
         .flat_map(|block| match block {
             Block::Single(index) => vec![item(index, None)],
@@ -197,9 +198,10 @@ pub fn session_items(topology: Option<&Topology>) -> Vec<Item> {
 
 /// Sessions grouped by project (ADR-0168), as the TUI sidebar groups them:
 /// projects of two or more sessions first, each primary checkout followed
-/// by its linked worktrees, then every other session in its place.
+/// by its linked worktrees, then every other session in its place. Order
+/// within a group and among the rest is the order `sessions` come in.
 pub fn project_blocks(
-    sessions: &[SessionDescriptor],
+    sessions: &[&SessionDescriptor],
     needs_you: impl Fn(u32) -> usize,
 ) -> Vec<Block> {
     let rows: Vec<GroupRow<'_>> = sessions

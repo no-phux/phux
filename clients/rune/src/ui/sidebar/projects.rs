@@ -34,12 +34,13 @@ fn project_header(name: &str, waiting: usize, ink: &Ink) -> El {
         .children((waiting > 0).then(|| waiting_badge(waiting, ink)))
 }
 
-/// `sessions` onto `list` in project order: each project's header, then its
-/// sessions indented; every other session after. `rows` draws one session's
-/// header and rows, told whether it is a linked worktree.
+/// `sessions`, already in the stored order, onto `list` in project order:
+/// each project's header, then its sessions indented; every other session
+/// after. `rows` draws one session's header and rows, told whether it is a
+/// linked worktree.
 pub(super) fn grouped(
     mut list: El,
-    sessions: &[SessionDescriptor],
+    sessions: &[&SessionDescriptor],
     waiting: impl Fn(u32) -> usize,
     theme: Option<&str>,
     ink: &Ink,
@@ -47,7 +48,7 @@ pub(super) fn grouped(
 ) -> El {
     for block in project_blocks(sessions, waiting) {
         list = match block {
-            Block::Single(index) => list.children(rows(&sessions[index], false)),
+            Block::Single(index) => list.children(rows(sessions[index], false)),
             Block::Project(project) => list
                 .child(memo(
                     format!("project-{}", project.key),
@@ -59,7 +60,7 @@ pub(super) fn grouped(
                         project
                             .members
                             .iter()
-                            .flat_map(|m| rows(&sessions[m.index], m.linked)),
+                            .flat_map(|m| rows(sessions[m.index], m.linked)),
                     ),
                 ),
         };

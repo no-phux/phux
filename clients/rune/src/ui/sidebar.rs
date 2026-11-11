@@ -12,11 +12,12 @@ use rune::{Color, El, col, el, memo, row, text};
 
 use super::{CAPTION, Ink, LABEL, NAME, SIDEBAR_W, icons, keycap, lifted, pressable};
 use crate::activity::Mark;
-use crate::desk::Desk;
+use crate::desk::{Desk, Grab};
 use crate::host_color;
 use crate::keys::{self, Shortcut};
 use crate::palette::pane_label;
 
+mod drag;
 mod hosts;
 use hosts::{host_header, other_machines};
 mod projects;
@@ -135,6 +136,8 @@ struct Header<'a> {
     host: Option<(&'a str, u32)>,
     /// A linked worktree, marked under its project's primary checkout.
     branch: bool,
+    /// A dragged session would land here.
+    target: bool,
 }
 
 /// A pill counting what needs you.
@@ -174,6 +177,7 @@ fn session_header(session: &Header, ink: &Ink) -> El {
                 .truncate(),
         )
         .child(el().grow(1.0));
+    let header = drag::reorderable(header, key, session.target, ink);
     header.children((session.waiting > 0).then(|| waiting_badge(session.waiting, ink)))
 }
 
@@ -194,6 +198,8 @@ struct Row<'a> {
     host: (&'a str, u32),
     /// A one-terminal session that is a linked worktree.
     branch: bool,
+    /// A dragged session would land on this lone row's.
+    target: bool,
 }
 
 impl Row<'_> {
@@ -223,7 +229,8 @@ fn pane_row(pane: &Row, ink: &Ink) -> El {
     });
     let base = row().key(format!("pane-{}", pane.id));
     let base = if selected { lifted(base, ink) } else { base };
-    base.w_full()
+    let row = base
+        .w_full()
         .min_h(30.0)
         .px(6.0)
         .py(5.0)
@@ -259,7 +266,9 @@ fn pane_row(pane: &Row, ink: &Ink) -> El {
                 )
                 .children(detail),
         )
-        .children(selected.then(|| host_color::stripe(host)))
+        .children(selected.then(|| host_color::stripe(host)));
+    // A lone row stands for its session, so it drags the session.
+    drag::reorderable(row, key, pane.target, ink)
 }
 
 /// Marks that need you, by session: one pass, for every header and the button.
@@ -285,7 +294,9 @@ fn session_list(desk: &Desk, topology: &Topology, waiting: &HashMap<u32, usize>,
     let here = desk.machines.label();
     let host = (here, host_color::entry(here).0);
     let waiting_in = |id: u32| waiting.get(&id).copied().unwrap_or(0);
+    let dropping = desk.reorder.target();
     let session_rows = |session: &SessionDescriptor, branch: bool| {
+        let target = dropping.is_some() && dropping == session.key.map(Grab::Session);
         let mut out = Vec::new();
         let rows: Vec<_> = all.iter().filter(|r| r.session_id == session.id).collect();
         let alone = rows.len() == 1;
@@ -298,6 +309,7 @@ fn session_list(desk: &Desk, topology: &Topology, waiting: &HashMap<u32, usize>,
                 waiting: waiting_in(session.id),
                 host: None,
                 branch,
+                target,
             };
             out.push(memo(
                 format!("session-{}", session.id),
@@ -327,6 +339,7 @@ fn session_list(desk: &Desk, topology: &Topology, waiting: &HashMap<u32, usize>,
                 selected: shown == Some(id),
                 host,
                 branch: branch && alone,
+                target: target && alone,
             };
             out.push(memo(format!("pane-{id}"), (&row, theme), || {
                 pane_row(&row, ink)
@@ -336,7 +349,7 @@ fn session_list(desk: &Desk, topology: &Topology, waiting: &HashMap<u32, usize>,
     };
     projects::grouped(
         list,
-        &topology.sessions,
+        &desk.ordered_sessions(),
         waiting_in,
         theme,
         ink,
@@ -369,6 +382,7 @@ fn satellite_list(desk: &Desk, topology: &Topology, ink: &Ink) -> El {
             waiting: 0,
             host: Some(host),
             branch: false,
+            target: false,
         };
         list = list.child(memo(format!("satellite-{name}"), (&header, theme), || {
             session_header(&header, ink)
@@ -409,6 +423,7 @@ fn satellite_list(desk: &Desk, topology: &Topology, ink: &Ink) -> El {
                 selected: shown == Some(id),
                 host,
                 branch: false,
+                target: false,
             };
             list = list.child(memo(format!("pane-{id}"), (&row, theme), || {
                 pane_row(&row, ink)
