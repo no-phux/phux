@@ -2214,30 +2214,33 @@ place.
 Usage: phux config <SUBCOMMAND>
 
 Commands:
-  agents       List configured agents, merged with live pane state when a server
-               is running.
-  check        Validate the config and report every problem, with full key
-               paths.
-  distro       Discover or switch distro layers without overwriting personal
-               config. Changes are local only; run `phux config reload`
-               afterwards for running clients. Server startup settings apply on
-               the next server start.
-  import-tmux  Bring tmux bindings and preferences into a native phux config
-               layer.
-  init         Write a commented starter config to the canonical path.
-  keys         List every key binding in effect and where it came from.
-  path         Print the resolved config path. Pure path math — prints the path
-               whether or not the file exists.
-  plugins      List plugin manifests declared by `[[plugins]]`.
-  reload       Re-read the layered config and apply it to running clients in
-               place.
-  run          Execute one action declared by a configured plugin manifest.
-  show         Print the effective config (shipped defaults + your overrides) as
-               TOML. With `--default`, print the shipped defaults verbatim
-               instead, ignoring any user config. With `--layers`, print which
-               layer of the `extends` stack set each effective key instead of
-               the values.
-  help         Print this message or the help of the given subcommand(s)
+  agents             List configured agents, merged with live pane state when a
+                     server is running.
+  check              Validate the config and report every problem, with full key
+                     paths.
+  distro             Discover or switch distro layers without overwriting
+                     personal config. Changes are local only; run `phux config
+                     reload` afterwards for running clients. Server startup
+                     settings apply on the next server start.
+  import-tmux        Bring tmux bindings and preferences into a native phux
+                     config layer.
+  init               Write a commented starter config to the canonical path.
+  keys               List every key binding in effect and where it came from.
+  path               Print the resolved config path. Pure path math — prints the
+                     path whether or not the file exists.
+  plugins            List plugin manifests declared by `[[plugins]]`.
+  reload             Re-read the layered config and apply it to running clients
+                     in place.
+  run                Execute one action declared by a configured plugin
+                     manifest.
+  shell-integration  Print the snippet that makes a shell mark prompts and
+                     commands.
+  show               Print the effective config (shipped defaults + your
+                     overrides) as TOML. With `--default`, print the shipped
+                     defaults verbatim instead, ignoring any user config. With
+                     `--layers`, print which layer of the `extends` stack set
+                     each effective key instead of the values.
+  help               Print this message or the help of the given subcommand(s)
 
 Flags:
   -h, --help           Print help
@@ -2532,6 +2535,34 @@ Flags:
 
 Global flags:
       --socket <PATH>   Server socket to dial (default: `$PHUX_SOCKET`)
+```
+
+## `phux config shell-integration`
+
+```text
+Print the snippet that makes a shell mark prompts and commands.
+
+phux reads the prompt and command marks a shell emits (OSC 133): `phux wait
+--output-only`, copy mode's "last command's output" key and the exit-code widget
+rely on them. This prints the snippet for zsh, bash or fish; it contacts no
+server and reads no config.
+
+Examples:
+eval "$(phux config shell-integration zsh)" (in ~/.zshrc)
+eval "$(phux config shell-integration bash)" (in ~/.bashrc)
+phux config shell-integration fish | source (in config.fish)
+
+Usage: phux config shell-integration <SHELL>
+
+Arguments:
+  <SHELL>  The shell to print the snippet for: zsh, bash or fish.
+           [possible values: bash, elvish, zsh, fish, nu, powershell]
+
+Flags:
+  -h, --help           Print help
+
+Global flags:
+      --socket <PATH>  Server socket to dial (default: `$PHUX_SOCKET`)
 ```
 
 ## `phux config show`

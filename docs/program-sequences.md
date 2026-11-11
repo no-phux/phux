@@ -76,6 +76,18 @@ phux reads the semantic prompt marks a shell emits:
 | `OSC 133 ; C ST` | A command started: a `command_started` event. |
 | `OSC 133 ; D [; code] ST` | A command finished: a `command_finished` event with the exit code, and the status bar's `exit` widget shows it. phux also rechecks the pane's folder. |
 
+Your shell has to emit these marks. If your prompt or terminal setup does
+not already do it, phux prints a snippet for zsh, bash and fish:
+
+```sh
+eval "$(phux config shell-integration zsh)"     # in ~/.zshrc
+eval "$(phux config shell-integration bash)"    # in ~/.bashrc
+phux config shell-integration fish | source     # in ~/.config/fish/config.fish
+```
+
+phux never adds it to a shell on its own. bash older than 4.4 (the one
+macOS ships) marks prompts and exit codes but not command starts.
+
 Extra parameters such as `aid=` are allowed and ignored. A `D` without a
 code clears the last code. `phux wait --output-only`, `phux snapshot --cells`, and the
 `command_started` and `command_finished` events of `phux watch` rely on

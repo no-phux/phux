@@ -33,6 +33,7 @@ pub(crate) fn run_config(action: &ConfigAction, socket: Option<std::path::PathBu
             apply,
             json,
         } => import_tmux::run(tmux_socket.as_deref(), output.as_deref(), *apply, *json),
+        ConfigAction::ShellIntegration { shell } => super::shell_integration::run(*shell),
         ConfigAction::Path => {
             outln!("{}", config_loader::config_path().display());
             ExitCode::SUCCESS
