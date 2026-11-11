@@ -48,6 +48,7 @@ pub mod pitch;
 pub mod pitlane;
 pub mod questions;
 pub mod reef;
+mod reorder;
 pub mod resources;
 mod sessions;
 mod settings;
@@ -59,6 +60,7 @@ pub mod updates;
 pub use layout::SplitPath;
 pub use notice::{Notice, NoticeKind};
 pub use palette::{CONTEXT_MENU, with_menus};
+pub use reorder::Grab;
 pub use settings::Category as SettingsCategory;
 pub use tabs::{Renaming, Tab};
 
@@ -185,6 +187,8 @@ pub struct Desk {
     /// Navigation and search belong to this window, never to stored preferences.
     pub settings_ui: settings::SettingsUi,
     pub tabs: tabs::Tabs,
+    /// A tab or session drag, and the session order the server keeps.
+    pub reorder: reorder::Reorder,
     pub updater: updates::Updater,
     pub machines: machines::Machines,
     pub link: link::Link,
@@ -334,6 +338,7 @@ impl Desk {
             news: news::News::load(&prefs),
             settings_ui: settings::SettingsUi::default(),
             tabs: tabs::Tabs::default(),
+            reorder: reorder::Reorder::default(),
             updater: updates::Updater::new(&prefs, resolved),
             machines: machines::Machines::new(machine, resolved.phux.clone()),
             link: link::Link::default(),
@@ -405,7 +410,7 @@ impl Desk {
             return updated | self.tend_link(tx);
         };
         let (news, moved) = self.observe(&client, client.take_activity(), tx);
-        let mut changed = updated | news;
+        let mut changed = updated | news | self.take_globals(&client);
         let rearrange = updated || moved;
         changed |= self.drop_dead_views(&client);
         let opened = self.settle_home(&client) | self.open_wanted(&client);

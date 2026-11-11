@@ -162,6 +162,9 @@ pub(in crate::attach) struct FrameOutcome {
     pub(in crate::attach) session_project_set: Option<(SessionKey, Option<String>)>,
     /// A `phux.session.project/v1` write. `Absent` means this frame did not speak.
     pub(in crate::attach) project_tag: ProjectTagFrame,
+    /// A `phux.session-order/v1` write, decoded (a delete is empty); `None`
+    /// means this frame did not speak.
+    pub(in crate::attach) session_order: Option<Vec<SessionKey>>,
     /// Transient status-bar notices raised by this frame.
     pub(in crate::attach) notices: Vec<Notice>,
     /// A status-bar paint completed while handling this frame. Used to commit
