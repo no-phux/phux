@@ -59,6 +59,10 @@ fn tab(desk: &Desk, tab: &Tab, index: usize, ink: &Ink) -> El {
         )
         .children(hint)
         .children(close)
+        .children(
+            tab.active
+                .then(|| crate::host_color::stripe(ink.host, false)),
+        )
 }
 
 pub fn strip(desk: &Desk, ink: &Ink) -> Option<El> {

@@ -2829,7 +2829,7 @@ Usage: phux host color [--local] [--json] <[NAME] COLOR>…
 Arguments:
   <[NAME] COLOR>…  `NAME COLOR` for a registered remote, or `COLOR` alone with
                    `--local`. COLOR is a palette id (blue, violet, magenta, sky,
-                   coral, olive, slate, copper) or `auto`.
+                   coral, olive, slate, copper, green, navy) or `auto`.
 
 Flags:
       --local          Colour this machine instead of a registered remote.

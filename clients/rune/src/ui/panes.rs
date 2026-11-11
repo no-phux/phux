@@ -116,13 +116,14 @@ fn divider(path: SplitPath, horizontal: bool, ratio: f32, ink: &Ink) -> El {
         })
         .child(
             grip.radius(GRIP.0 / 2.0)
-                .fill(ink.accent)
+                .fill(ink.host)
                 .group_opacity(0.0, 0.85)
                 .inert(),
         )
 }
 
-/// How a card is lit: the keyboard's, among several, glows in the accent.
+/// How a card is lit: the keyboard's, among several, glows in the window's
+/// machine colour.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(super) enum Lit {
     Resting,
@@ -135,7 +136,7 @@ pub(super) enum Lit {
 pub(super) fn card(content: El, ground: Color, lit: Lit, ink: &Ink) -> El {
     let (top, bottom) = match lit {
         Lit::Resting => (ink.text.alpha(0.16), ink.text.alpha(0.05)),
-        Lit::Focused => (ink.accent.alpha(0.8), ink.accent.alpha(0.35)),
+        Lit::Focused => (ink.host.alpha(0.8), ink.host.alpha(0.35)),
     };
     let lifted = el()
         .w_full()
@@ -147,7 +148,7 @@ pub(super) fn card(content: El, ground: Color, lit: Lit, ink: &Ink) -> El {
         .shadow(10.0, 30.0, ink.shade);
     let lifted = match lit {
         Lit::Resting => lifted,
-        Lit::Focused => lifted.shadow(0.0, 22.0, ink.accent.alpha(0.22)),
+        Lit::Focused => lifted.shadow(0.0, 22.0, ink.host.alpha(0.22)),
     };
     lifted
         .child(

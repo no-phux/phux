@@ -91,8 +91,9 @@ pub fn channels(name: &str) -> [f32; 3] {
     [16, 8, 0].map(|shift| ((rgb >> shift) & 0xff) as f32)
 }
 
-/// `name`'s colour moved at most 15% toward white or black, just far enough
-/// to read at 3:1 on `ground`; the hue stays.
+/// `name`'s colour moved toward white or black just far enough to read at
+/// 3:1 on `ground`, at most 40% (navy on a dark blue ground needs ~30%);
+/// the hue stays.
 pub fn on(name: &str, ground: Color) -> Color {
     eased(entry(name).0, ground)
 }
@@ -105,11 +106,22 @@ fn eased(rgb: u32, ground: Color) -> Color {
     };
     let step = |s: u8| mix(rgb, end, f32::from(s) / 100.0);
     color(
-        (0..=15)
+        (0..=40)
             .map(step)
             .find(|c| contrast(color(*c), ground) >= 3.0)
-            .unwrap_or_else(|| step(15)),
+            .unwrap_or_else(|| step(40)),
     )
+}
+
+/// A short bar in `color` along the selected row's or tab's edge: the fill
+/// stays the theme's, so its text reads as before.
+pub fn stripe(color: Color, vertical: bool) -> El {
+    let bar = if vertical {
+        el().pin(Some(0.0), Some(7.0), None, Some(7.0)).w(3.0)
+    } else {
+        el().pin(Some(8.0), None, Some(8.0), Some(0.0)).h(2.0)
+    };
+    bar.radius(1.5).fill(color).inert().a11y_hidden()
 }
 
 /// A round mark in `name`'s colour.
@@ -202,10 +214,7 @@ mod tests {
             for (i, (id, _)) in PALETTE.iter().enumerate() {
                 let c = swatch(i, color(ground));
                 let bar = contrast(c, color(ground));
-                // The 15% cap wins over 3:1 for olive on the light sidebar,
-                // which tops out at 2.75.
-                let floor = if *id == "olive" { 2.7 } else { 3.0 };
-                assert!(bar >= floor, "{id} on {ground:06x}: {bar}");
+                assert!(bar >= 3.0, "{id} on {ground:06x}: {bar}");
             }
         }
     }
