@@ -87,6 +87,17 @@ impl Client {
         self.inner.publication.acquire(terminal_id)
     }
 
+    /// The newest whole document a document resource published, read on
+    /// [`crate::control::Event::DocumentPublished`].
+    #[cfg(feature = "engine")]
+    #[must_use]
+    pub fn acquire_document(
+        &self,
+        resource_id: &ResourceId,
+    ) -> Option<Arc<crate::publication::DocumentPublication>> {
+        self.inner.publication.acquire_document(resource_id)
+    }
+
     /// The generation of the terminal's current frame.
     #[cfg(feature = "engine")]
     #[must_use]

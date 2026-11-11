@@ -33,6 +33,7 @@ impl Owner {
         } else {
             self.projectors.remove(&id);
             self.publication.remove(&id);
+            self.documents.remove(&id);
         }
     }
 

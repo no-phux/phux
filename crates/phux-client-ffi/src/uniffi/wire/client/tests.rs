@@ -427,21 +427,43 @@ fn background_work_reaches_bindings() {
     );
 }
 
-#[test]
-fn a_published_surface_reaches_bindings_whole_and_named() {
-    let remote = RemoteClient::new("unused".into(), 80, 24, None, None);
+/// Publish `document` into a fresh embedded runtime behind `remote` and
+/// project the wake for it.
+fn project_published(
+    remote: &RemoteClient,
+    document: phux_client_runtime::control::DocumentPublication,
+) -> Vec<WireEvent> {
+    let client = phux_client_runtime::Runtime::embedded(
+        phux_client_runtime::control::ControlOptions::default(),
+    );
+    *remote.client.lock().unwrap() = Some(client.clone());
+    let resource_id = document.resource_id.clone();
+    let generation = client
+        .publication()
+        .publish_document_for_testing(Arc::new(document));
     let mut projected = Vec::new();
     remote.project_event(
         Event::DocumentPublished {
-            publication: Arc::new(phux_client_runtime::control::DocumentPublication {
-                resource_id: phux_protocol::ResourceId::local(9),
-                kind: phux_protocol::ResourceKind::PixelSurface,
-                seq: 4,
-                bytes: b"\x89PNG".to_vec(),
-                content_type: None,
-            }),
+            resource_id,
+            generation,
         },
         &mut projected,
+    );
+    projected
+}
+
+#[test]
+fn a_published_surface_reaches_bindings_whole_and_named() {
+    let remote = RemoteClient::new("unused".into(), 80, 24, None, None);
+    let projected = project_published(
+        &remote,
+        phux_client_runtime::control::DocumentPublication {
+            resource_id: phux_protocol::ResourceId::local(9),
+            kind: phux_protocol::ResourceKind::PixelSurface,
+            seq: 4,
+            bytes: b"\x89PNG".to_vec(),
+            content_type: None,
+        },
     );
     let [
         WireEvent::DocumentPublished {
@@ -472,18 +494,15 @@ fn a_published_surface_reaches_bindings_whole_and_named() {
 #[test]
 fn a_published_typed_document_names_its_content_type() {
     let remote = RemoteClient::new("unused".into(), 80, 24, None, None);
-    let mut projected = Vec::new();
-    remote.project_event(
-        Event::DocumentPublished {
-            publication: Arc::new(phux_client_runtime::control::DocumentPublication {
-                resource_id: phux_protocol::ResourceId::local(5),
-                kind: phux_protocol::ResourceKind::Document,
-                seq: 2,
-                bytes: b"# hi".to_vec(),
-                content_type: Some("text/markdown".to_owned()),
-            }),
+    let projected = project_published(
+        &remote,
+        phux_client_runtime::control::DocumentPublication {
+            resource_id: phux_protocol::ResourceId::local(5),
+            kind: phux_protocol::ResourceKind::Document,
+            seq: 2,
+            bytes: b"# hi".to_vec(),
+            content_type: Some("text/markdown".to_owned()),
         },
-        &mut projected,
     );
     let [
         WireEvent::DocumentPublished {

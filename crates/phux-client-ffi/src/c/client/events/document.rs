@@ -1,17 +1,21 @@
 //! Projection of whole published documents (`PHUX_CLIENT_EFFECT_DOCUMENT`).
-use phux_client_runtime::control::DocumentPublication;
+use phux_protocol::ResourceId;
 
 use super::{Client, OwnedEffect};
 use crate::c::types::EFFECT_DOCUMENT;
 
 impl Client {
-    /// Stage one document: `detail` is its wire kind tag, `seq` its publish
-    /// sequence, `status_code` the length of the content type that `bytes`
-    /// starts with (0 for a tree or surface), and the rest of `bytes` the
-    /// document. Live-only, and the last delivered wins (not the highest
-    /// `seq`), so it supersedes a staged one of the same resource instead of
-    /// queueing behind it.
-    pub(super) fn document_effect(&mut self, publication: &DocumentPublication) {
+    /// Stage `resource`'s newest published document: `detail` is its wire
+    /// kind tag, `seq` its publish sequence, `status_code` the length of the
+    /// content type that `bytes` starts with (0 for a tree or surface), and
+    /// the rest of `bytes` the document. Live-only, and the last delivered
+    /// wins (not the highest `seq`), so it supersedes a staged one of the
+    /// same resource instead of queueing behind it. A resource whose slot is
+    /// already gone (closed, detached, replaced) stages nothing.
+    pub(super) fn document_effect(&mut self, resource: &ResourceId) {
+        let Some(publication) = self.runtime.acquire_document(resource) else {
+            return;
+        };
         self.owned_effects.retain(|effect| {
             effect.kind != EFFECT_DOCUMENT || effect.terminal_id != publication.resource_id
         });

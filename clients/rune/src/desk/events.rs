@@ -53,7 +53,9 @@ impl Desk {
 
     fn apply_view(&mut self, client: &Client, event: Event, tx: &mut Tx) -> bool {
         match event {
-            Event::DocumentPublished { publication } => self.publish_document(&publication),
+            Event::DocumentPublished { resource_id, .. } => client
+                .acquire_document(&resource_id)
+                .is_some_and(|publication| self.publish_document(&publication)),
             Event::TerminalChanged { terminal_id } if self.view_of(&terminal_id).is_some() => {
                 self.relink(&terminal_id);
                 self.generation += 1;

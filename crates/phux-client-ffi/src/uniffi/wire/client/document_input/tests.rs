@@ -36,17 +36,23 @@ fn remote() -> (Arc<RemoteClient>, Client) {
     (remote, client)
 }
 
-fn published(remote: &RemoteClient, resource: u32) -> Option<String> {
-    let mut projected = Vec::new();
-    remote.project_event(
-        Event::DocumentPublished {
-            publication: Arc::new(DocumentPublication {
-                resource_id: ResourceId::local(resource),
+fn published(remote: &RemoteClient, client: &Client, resource: u32) -> Option<String> {
+    let resource_id = ResourceId::local(resource);
+    let generation =
+        client
+            .publication()
+            .publish_document_for_testing(Arc::new(DocumentPublication {
+                resource_id: resource_id.clone(),
                 kind: ResourceKind::PixelSurface,
                 seq: 1,
                 bytes: Vec::new(),
                 content_type: None,
-            }),
+            }));
+    let mut projected = Vec::new();
+    remote.project_event(
+        Event::DocumentPublished {
+            resource_id,
+            generation,
         },
         &mut projected,
     );
@@ -58,10 +64,10 @@ fn published(remote: &RemoteClient, resource: u32) -> Option<String> {
 
 #[test]
 fn a_published_document_carries_the_snapshot_control_class() {
-    let (remote, _) = remote();
-    assert_eq!(published(&remote, PAGE).as_deref(), Some("page"));
-    assert_eq!(published(&remote, PLAIN), None);
-    assert_eq!(published(&remote, 77), None, "never listed");
+    let (remote, client) = remote();
+    assert_eq!(published(&remote, &client, PAGE).as_deref(), Some("page"));
+    assert_eq!(published(&remote, &client, PLAIN), None);
+    assert_eq!(published(&remote, &client, 77), None, "never listed");
 }
 
 #[test]

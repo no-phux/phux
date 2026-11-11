@@ -139,19 +139,27 @@ placement. A document kind delivers whole documents instead: attach it with
 effects. `bytes` holds the content type (`status_code` bytes long, empty for
 a tree or surface), then the document; show the last one delivered, not the
 highest `seq`. In Rust these
-are `Event::DocumentPublished` and `Topology::resources`
-([resource kinds](./resource-kinds.md)).
+are `Event::DocumentPublished` with `Client::acquire_document`, and
+`Topology::resources` ([resource kinds](./resource-kinds.md)).
 
 ## Documents, trees, and surfaces
 
 A session can hold resources that are not terminals
-([resource kinds](./resource-kinds.md#available-now)). Each arrives whole:
-the runtime emits `Event::DocumentPublished`, whose `DocumentPublication`
-carries the resource id, its kind, the publish sequence, the bytes (JSON
-for a tree, PNG or JPEG for a surface, the content type of a typed
-document) and that content type. Show the last one delivered, not the
-highest `seq`. The event is live-only, and there is no grid or replica to
-paint.
+([resource kinds](./resource-kinds.md#available-now)). Each arrives whole,
+and the runtime publishes it in the same table as a terminal's grid: one
+slot per resource, newest wins. `Event::DocumentPublished` names the
+resource and the generation it woke for; read the document with
+`Client::acquire_document` (or `Publication::acquire_document`). Its
+`DocumentPublication` carries the resource id, its kind, the publish
+sequence, the bytes (JSON for a tree, PNG or JPEG for a surface, the content
+type of a typed document) and that content type. Show the last one read,
+not the highest `seq`. At most one wake waits undrained per resource, and
+it is never dropped by the queue cap; the slot may already hold a newer
+document, and reads `None` once the resource closed, was released, or the
+server restarted. A document you hold stays intact. It is live-only, and
+there is no grid or replica to paint. Agent records are the exception to
+the slot model: a log, delivered in order through `Event::AgentPublication`
+([below](#runtime-consumer-contract)).
 
 UniFFI's `RemoteClient` projects the same event as
 `WireEvent::DocumentPublished`, with the document's `control` class

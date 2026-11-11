@@ -135,6 +135,9 @@ impl ControlPlane {
         for effect in outcome.effects {
             self.process_effect(effect);
         }
+        for (resource_id, generation) in outcome.documents {
+            self.note_document(resource_id, generation);
+        }
         if resync {
             return Err(ControlError::Resync);
         }
@@ -168,10 +171,26 @@ impl ControlPlane {
             KernelEffect::AgentPublication(publication) => {
                 self.commit_agent_publication(publication);
             }
-            KernelEffect::Document(publication) => self.push_event(Event::DocumentPublished {
-                publication: std::sync::Arc::new(publication),
-            }),
+            // The owner thread publishes documents into the publication
+            // table; without the engine there is no table to read.
+            KernelEffect::Document(publication) => tracing::debug!(
+                resource = %publication.resource_id,
+                "document dropped: this build publishes no resources"
+            ),
         }
+    }
+
+    /// Wake the consumer for a newly published document. At most one wake
+    /// per resource waits undrained, at the newest position: the slot holds
+    /// only the newest document, so an older wake would read the same one.
+    fn note_document(&mut self, resource_id: ResourceId, generation: u64) {
+        self.events.retain(|event| {
+            !matches!(event, Event::DocumentPublished { resource_id: queued, .. } if *queued == resource_id)
+        });
+        self.push_event(Event::DocumentPublished {
+            resource_id,
+            generation,
+        });
     }
 
     pub(super) fn process_send(&mut self, send: KernelSend) {

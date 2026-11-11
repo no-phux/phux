@@ -102,20 +102,13 @@ impl RemoteClient {
         event: Event,
         projected: &mut Vec<WireEvent>,
     ) -> Option<Event> {
+        if let Event::DocumentPublished { resource_id, .. } = &event {
+            self.project_published_document(resource_id, projected);
+            return None;
+        }
         let mut state = self.document_input.lock().unwrap();
         match event {
             Event::TopologySnapshot { snapshot, .. } => state.inputs.note_snapshot(&snapshot),
-            Event::DocumentPublished { publication } => {
-                let control = state.inputs.control(&publication.resource_id);
-                projected.push(WireEvent::DocumentPublished {
-                    resource_id: id::encode(&publication.resource_id),
-                    kind: crate::projection::topology::kind_word(publication.kind),
-                    seq: publication.seq,
-                    bytes: publication.bytes.clone(),
-                    content_type: publication.content_type.clone(),
-                    control: control.map(|class| class.name().to_owned()),
-                });
-            }
             Event::CommandResult { request_id, result } => {
                 let Some(resource) = state.pending.remove(&request_id) else {
                     return Some(Event::CommandResult { request_id, result });
@@ -130,6 +123,31 @@ impl RemoteClient {
             event => return Some(event),
         }
         None
+    }
+
+    /// The resource's newest document, read from the runtime's publication
+    /// table; nothing once its slot is gone (closed, detached, replaced).
+    fn project_published_document(&self, resource_id: &ResourceId, projected: &mut Vec<WireEvent>) {
+        let Some(publication) = self
+            .runtime_client()
+            .and_then(|client| client.acquire_document(resource_id))
+        else {
+            return;
+        };
+        let control = self
+            .document_input
+            .lock()
+            .unwrap()
+            .inputs
+            .control(resource_id);
+        projected.push(WireEvent::DocumentPublished {
+            resource_id: id::encode(resource_id),
+            kind: crate::projection::topology::kind_word(publication.kind),
+            seq: publication.seq,
+            bytes: publication.bytes.clone(),
+            content_type: publication.content_type.clone(),
+            control: control.map(|class| class.name().to_owned()),
+        });
     }
 }
 

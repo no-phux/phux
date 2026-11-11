@@ -77,8 +77,12 @@ fn one_observation_with_old_and_new_publications_uses_latest_incarnation_only() 
         );
         client.feed(FrameKind::AttachReady { attach_id }).unwrap();
         let observation = client.take_activity();
-        assert!(observation.events.iter().any(|e| matches!(e, phux_client_runtime::control::Event::DocumentPublished { publication } if publication.seq == 42)));
-        assert!(observation.events.iter().any(|e| matches!(e, phux_client_runtime::control::Event::DocumentPublished { publication } if publication.bytes == b"{\"latest\":true}")));
+        let wakes = observation.events.iter().filter(|e| matches!(e, phux_client_runtime::control::Event::DocumentPublished { resource_id, .. } if *resource_id == id(1))).count();
+        assert_eq!(wakes, 1, "the newest wake supersedes the stale one");
+        assert_eq!(
+            client.acquire_document(&id(1)).unwrap().bytes,
+            b"{\"latest\":true}"
+        );
         assert_eq!(
             observation.events.iter().any(|e| matches!(
                 e,

@@ -27,6 +27,13 @@
 //! generations still sees a change it has not painted. libghostty keeps
 //! accumulating dirty rows across a deferral, so the caught-up frame's
 //! [`GridFrame::dirty_rows`] cover everything since the frame before it.
+//!
+//! A document resource (`docs/resource-kinds.md`) publishes into the same
+//! table: its slot holds the newest whole [`DocumentPublication`] and shares
+//! the generation counter, so a publish bumps it exactly as a grid's does.
+//! A document is never projected, so it is never deferred or caught up.
+//! [`Publication::acquire_document`] reads it; [`Publication::acquire`]
+//! stays grid-only.
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -36,10 +43,41 @@ use crate::ViewId;
 pub use phux_client_core::grid::{
     Cell, CellMetadata, Cursor, CursorStyle, CursorWidth, GridBuffer, GridDamage,
 };
+pub use phux_client_core::session::DocumentPublication;
 use phux_protocol::ResourceId;
 
 mod model;
 pub use model::{FrameColors, GridFrame, ImageData, ImagePlacement, Rgb, Scrollbar};
+
+/// What one slot publishes: a terminal presentation's grid or a document
+/// resource's newest whole document.
+#[derive(Debug, Clone)]
+pub enum Published {
+    /// A projected terminal viewport.
+    Grid(Arc<GridFrame>),
+    /// A whole document: a tree, a surface, or a typed document.
+    Document(Arc<DocumentPublication>),
+}
+
+impl Published {
+    /// The grid, when this slot publishes one.
+    #[must_use]
+    pub fn into_grid(self) -> Option<Arc<GridFrame>> {
+        match self {
+            Self::Grid(frame) => Some(frame),
+            Self::Document(_) => None,
+        }
+    }
+
+    /// The document, when this slot publishes one.
+    #[must_use]
+    pub fn into_document(self) -> Option<Arc<DocumentPublication>> {
+        match self {
+            Self::Document(document) => Some(document),
+            Self::Grid(_) => None,
+        }
+    }
+}
 
 /// Which presentation a slot publishes: a terminal's default one or an
 /// independent view.
@@ -74,8 +112,9 @@ impl std::fmt::Debug for Hook {
     }
 }
 
-/// One presentation's slot: the generation counter a consumer polls, the
-/// frame behind it, and the read/stale pair that paces publication.
+/// One presentation's or document's slot: the generation counter a consumer
+/// polls, what is published behind it, and the read/stale pair that paces
+/// grid publication.
 #[derive(Debug)]
 struct Slot {
     key: FrameKey,
@@ -86,7 +125,7 @@ struct Slot {
     /// The owner deferred a projection past the current frame; the next
     /// acquire catches up.
     stale: AtomicBool,
-    frame: RwLock<Option<Arc<GridFrame>>>,
+    frame: RwLock<Option<Published>>,
 }
 
 impl Slot {
@@ -101,7 +140,7 @@ impl Slot {
         }
     }
 
-    fn current(&self) -> Option<Arc<GridFrame>> {
+    fn current(&self) -> Option<Published> {
         self.frame
             .read()
             .unwrap_or_else(PoisonError::into_inner)
@@ -114,7 +153,7 @@ impl Slot {
     /// of deferring, the safe direction. `read` before `stale` pairs with
     /// the owner's `stale` before `read` in [`Self::defer`]: under `SeqCst`
     /// at least one side sees the other, so no deferral goes unanswered.
-    fn acquire(&self) -> Option<Arc<GridFrame>> {
+    fn acquire(&self) -> Option<Published> {
         crate::perf::ACQUIRED.incr();
         let frame = self.current();
         self.read.store(true, Ordering::SeqCst);
@@ -126,7 +165,7 @@ impl Slot {
         // A slot removed meanwhile stays removed, even when a replacement
         // owner answered for the same key.
         self.current()?;
-        caught_up.or(frame)
+        caught_up.map(Published::Grid).or(frame)
     }
 
     /// The owner half: skip this projection while the current frame is
@@ -165,13 +204,13 @@ impl TerminalPublication {
     /// thread.
     #[must_use]
     pub fn acquire(&self) -> Option<Arc<GridFrame>> {
-        self.slot.acquire()
+        self.slot.acquire().and_then(Published::into_grid)
     }
 }
 
-/// The table of published frames: one default slot per terminal and one slot
-/// per explicitly created view. Existing terminal-keyed methods address the
-/// default presentation only.
+/// The table of published frames: one default slot per terminal or document
+/// resource and one slot per explicitly created view. Existing
+/// terminal-keyed methods address the default presentation only.
 ///
 /// Shared between the owner thread that publishes and every consumer that
 /// acquires; both sides hold it through an `Arc`.
@@ -192,6 +231,22 @@ impl Publication {
     #[must_use]
     pub fn acquire(&self, terminal: &ResourceId) -> Option<Arc<GridFrame>> {
         self.slot(terminal).and_then(|slot| slot.acquire())
+    }
+
+    /// Whatever `resource`'s default slot publishes, grid or document.
+    #[must_use]
+    pub fn acquire_published(&self, resource: &ResourceId) -> Option<Published> {
+        self.slot_arc(&FrameKey::Default(resource.clone()))
+            .and_then(|slot| slot.acquire())
+    }
+
+    /// The newest whole document published for `resource`, if it is a
+    /// document resource and one has arrived. Newest-wins: a later publish
+    /// replaces it, and a document already handed out stays intact.
+    #[must_use]
+    pub fn acquire_document(&self, resource: &ResourceId) -> Option<Arc<DocumentPublication>> {
+        self.acquire_published(resource)
+            .and_then(Published::into_document)
     }
 
     /// The generation of `terminal`'s current frame; `None` for a terminal
@@ -233,15 +288,26 @@ impl Publication {
     /// The terminals with a published frame.
     #[must_use]
     pub fn terminals(&self) -> Vec<ResourceId> {
+        self.defaults(|published| matches!(published, Published::Grid(_)))
+    }
+
+    /// Every resource with a published grid or document.
+    #[must_use]
+    pub fn resources(&self) -> Vec<ResourceId> {
+        self.defaults(|_| true)
+    }
+
+    fn defaults(&self, keep: impl Fn(&Published) -> bool) -> Vec<ResourceId> {
         self.slots
             .read()
             .unwrap_or_else(PoisonError::into_inner)
             .iter()
-            .filter(|(_, slot)| slot.generation.load(Ordering::Acquire) != 0)
-            .filter_map(|(key, _)| match key {
-                FrameKey::Default(id) => Some(id.clone()),
+            .filter_map(|(key, slot)| match key {
+                FrameKey::Default(id) => Some((id, slot)),
                 FrameKey::View(_) => None,
             })
+            .filter(|(_, slot)| slot.current().is_some_and(|published| keep(&published)))
+            .map(|(id, _)| id.clone())
             .collect()
     }
 
@@ -270,7 +336,7 @@ impl Publication {
         let slot = self.slot_arc(key)?;
         let frame = slot.current();
         slot.read.store(true, Ordering::SeqCst);
-        frame
+        frame.and_then(Published::into_grid)
     }
 
     fn slot_arc(&self, key: &FrameKey) -> Option<Arc<Slot>> {
@@ -297,6 +363,37 @@ impl Publication {
     }
 
     fn publish_key(&self, key: FrameKey, mut frame: GridFrame) -> Option<Arc<GridFrame>> {
+        self.swap(key, |generation| {
+            frame.generation = generation;
+            Published::Grid(Arc::new(frame))
+        })
+        .1
+        .and_then(Published::into_grid)
+    }
+
+    /// Publish `document` as its resource's newest, stamping the next
+    /// generation, which it returns. The one it replaces is dropped here;
+    /// a consumer holding it keeps it.
+    pub(crate) fn publish_document(&self, document: Arc<DocumentPublication>) -> u64 {
+        let key = FrameKey::Default(document.resource_id.clone());
+        self.swap(key, |_| Published::Document(document)).0
+    }
+
+    /// Publish `document` as the owner thread does, for a binding's tests
+    /// that project a document without a server.
+    #[cfg(feature = "testing")]
+    #[doc(hidden)]
+    pub fn publish_document_for_testing(&self, document: Arc<DocumentPublication>) -> u64 {
+        self.publish_document(document)
+    }
+
+    /// Publish into `key`'s slot, creating it, and return the generation
+    /// stamped and what was replaced.
+    fn swap(
+        &self,
+        key: FrameKey,
+        published: impl FnOnce(u64) -> Published,
+    ) -> (u64, Option<Published>) {
         let slot = {
             let mut slots = self.slots.write().unwrap_or_else(PoisonError::into_inner);
             Arc::clone(
@@ -306,21 +403,22 @@ impl Publication {
             )
         };
         let generation = slot.generation.load(Ordering::Acquire) + 1;
-        frame.generation = generation;
+        let published = published(generation);
         // Cleared before the swap: a consumer that loads the new frame
         // raises `read` after this, never before it.
         slot.read.store(false, Ordering::SeqCst);
         slot.stale.store(false, Ordering::SeqCst);
         let previous = {
             let mut current = slot.frame.write().unwrap_or_else(PoisonError::into_inner);
-            current.replace(Arc::new(frame))
+            current.replace(published)
         };
         slot.generation.store(generation, Ordering::Release);
-        previous
+        (generation, previous)
     }
 
-    /// Drop `terminal`'s slot. Consumers holding a frame keep it; a handle
-    /// they hold keeps reporting the last generation and acquires `None`.
+    /// Drop `terminal`'s (or a document resource's) slot. Consumers holding
+    /// a frame keep it; a handle they hold keeps reporting the last
+    /// generation and acquires `None`.
     pub(crate) fn remove(&self, terminal: &ResourceId) {
         self.remove_key(&FrameKey::Default(terminal.clone()));
     }

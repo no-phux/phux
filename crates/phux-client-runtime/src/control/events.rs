@@ -360,13 +360,21 @@ pub enum Event {
         /// The resource's parent and provider identity.
         session: AgentSessionInfo,
     },
-    /// A replicated document (`docs/resource-kinds.md`) arrived whole: the
-    /// bootstrap cut of an attached `AccessibilityTree`, `PixelSurface` or
-    /// typed `Document`, or a newer publish of it. Live-only: nothing is journaled, and the
-    /// newest document for a resource is the one to show.
+    /// A replicated document (`docs/resource-kinds.md`) arrived whole and
+    /// is published: the bootstrap cut of an attached `AccessibilityTree`,
+    /// `PixelSurface` or typed `Document`, or a newer publish of it.
+    ///
+    /// A wake, not a payload: read the document with
+    /// `Publication::acquire_document` (`Client::acquire_document`), which
+    /// returns the newest one, or `None` once the resource closed, detached
+    /// or the connection was replaced. At most one waits undrained per
+    /// resource. Live-only: nothing is journaled.
     DocumentPublished {
-        /// The document, its kind, and its publish sequence.
-        publication: Arc<DocumentPublication>,
+        /// The document resource.
+        resource_id: ResourceId,
+        /// The publication generation the wake was raised for; the slot may
+        /// already hold a newer one.
+        generation: u64,
     },
     /// An `AgentSession` stream the runtime subscribed
     /// (`ControlOptions::subscribe_agent_sessions`) ended: the server
