@@ -422,7 +422,7 @@ fn readout(r: &Pitch, waiting: usize, p: &Ink) -> El {
         }))
         .children(picked)
         .child(overlay::icon_button(
-            "✕",
+            &super::icons::CLOSE,
             "Close",
             "pitch-close",
             p,

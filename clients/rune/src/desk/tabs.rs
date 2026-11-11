@@ -37,6 +37,9 @@ pub struct Tabs {
     focus: HashMap<[u8; 16], ResourceId>,
     pub renaming: Option<Renaming>,
     pub rename_field: TextEdit,
+    /// The title bar's room for the strip, in points, once it is laid out:
+    /// what each tab's share is cut from.
+    pub room: f32,
 }
 
 /// The group holding `shown`, which the rest of the window treats as active.

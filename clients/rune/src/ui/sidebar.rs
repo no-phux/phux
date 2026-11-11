@@ -10,7 +10,7 @@ use phux_client_runtime::control::{SessionDescriptor, Topology};
 use phux_protocol::ids::{ResourceId, SessionKey};
 use rune::{Color, El, col, el, memo, row, text};
 
-use super::{CAPTION, Ink, LABEL, NAME, SIDEBAR_W, icons, pressable};
+use super::{CAPTION, Ink, LABEL, NAME, SIDEBAR_W, icons, keycap, lifted, pressable};
 use crate::activity::Mark;
 use crate::desk::Desk;
 use crate::host_color;
@@ -61,6 +61,12 @@ fn dot(mark: Mark, color: Color, ink: &Ink) -> El {
 }
 
 fn search(ink: &Ink) -> El {
+    // ⌘K is the chord this field has always taught; ⌘P reaches it too.
+    let chord: &[&str] = if cfg!(target_os = "macos") {
+        &["⌘", "K"]
+    } else {
+        &["Ctrl", "Shift", "K"]
+    };
     pressable("sidebar-search", ink)
         .w_full()
         .h(28.0)
@@ -68,19 +74,20 @@ fn search(ink: &Ink) -> El {
         .gap(7.0)
         .radius(7.0)
         .items_center()
-        .fill(ink.current.alpha(0.06))
+        .fill(ink.text.alpha(0.05))
+        .border_gradient(1.0, ink.text.alpha(0.09), ink.text.alpha(0.04))
         .on_press(|d: &mut Desk| d.toggle_palette())
-        .child(rune::icon(&icons::SEARCH, 13.0).color(ink.dim))
+        .child(
+            rune::icon(&icons::SEARCH, 14.0)
+                .color(ink.dim)
+                .a11y_hidden(),
+        )
         .child(text("Jump to…").font(LABEL).color(ink.dim))
         .child(el().grow(1.0))
         .child(
-            text(if cfg!(target_os = "macos") {
-                "⌘K"
-            } else {
-                "Ctrl+Shift+K"
-            })
-            .font(CAPTION)
-            .color(ink.dim),
+            row()
+                .gap(2.0)
+                .children(chord.iter().map(|key| keycap(*key, ink))),
         )
 }
 
@@ -214,21 +221,18 @@ fn pane_row(pane: &Row, ink: &Ink) -> El {
             .color(if tinted { accent } else { ink.dim })
             .truncate()
     });
-    row()
-        .key(format!("pane-{}", pane.id))
-        .w_full()
+    let base = row().key(format!("pane-{}", pane.id));
+    let base = if selected { lifted(base, ink) } else { base };
+    base.w_full()
         .min_h(30.0)
         .px(6.0)
         .py(5.0)
         .gap(6.0)
         .radius(7.0)
+        .continuous_corners()
         .items_center()
-        .fill(if selected {
-            ink.current
-        } else {
-            Color::TRANSPARENT
-        })
         .hover(ink.hover)
+        .press(ink.hover)
         .cursor(rune::Cursor::Pointer)
         .on_press(move |d: &mut Desk| d.show(id.clone(), &session))
         .on_double_press(move |d: &mut Desk| {
@@ -255,7 +259,7 @@ fn pane_row(pane: &Row, ink: &Ink) -> El {
                 )
                 .children(detail),
         )
-        .children(selected.then(|| host_color::stripe(host, true)))
+        .children(selected.then(|| host_color::stripe(host)))
 }
 
 /// Marks that need you, by session: one pass, for every header and the button.

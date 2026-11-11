@@ -4,6 +4,8 @@
 
 use super::Shortcut;
 
+mod keycaps;
+
 /// The key of a chord.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Cap {

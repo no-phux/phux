@@ -38,7 +38,9 @@ pub fn bell(desk: &Desk, p: &Ink) -> El {
         Desk::toggle_news,
     )
     .expanded(desk.news.open)
-    .children(unread_dot(desk, p, (15.0, 3.0), 6.0))
+    .help("What's new")
+    // Cut out of the bar by a ring of its ground.
+    .children(unread_dot(desk, p, (15.0, 3.0), 8.0).map(|dot| dot.border(1.5, p.sidebar)))
 }
 
 pub fn view(_desk: &Desk, p: &Ink) -> El {
