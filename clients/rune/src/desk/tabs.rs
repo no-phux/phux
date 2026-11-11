@@ -40,6 +40,9 @@ pub struct Tabs {
     /// The title bar's room for the strip, in points, once it is laid out:
     /// what each tab's share is cut from.
     pub room: f32,
+    /// The active tab the phone's strip last scrolled to, and its label
+    /// then: a longer name widens the tab past the edge again.
+    revealed: Option<([u8; 16], String)>,
 }
 
 /// The group holding `shown`, which the rest of the window treats as active.
@@ -86,6 +89,27 @@ impl Desk {
         let shown = self.shown.as_ref().map(|s| s.resource.clone());
         if let (Some(tab), Some(shown)) = (self.tabs.list.iter().find(|t| t.active), shown) {
             self.tabs.focus.insert(tab.id, shown);
+        }
+    }
+
+    /// Bring the phone strip's active tab into view when another becomes
+    /// active or it is renamed, wherever that happened; between those a
+    /// scroll by hand is left alone.
+    pub(crate) fn reveal_active_tab(&mut self, tx: &mut Tx) {
+        if self.phone.is_none() {
+            return;
+        }
+        let active = self.tabs.list.iter().position(|t| t.active);
+        let now = active.map(|at| {
+            let tab = &self.tabs.list[at];
+            (tab.id, self.tab_label(tab))
+        });
+        if now == self.tabs.revealed {
+            return;
+        }
+        self.tabs.revealed = now;
+        if let Some(at) = active {
+            tx.scroll_into_view(format!("phone-tab-{at}"));
         }
     }
 
