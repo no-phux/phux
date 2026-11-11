@@ -89,10 +89,11 @@ pub(crate) enum ThemeAction {
     /// `~/.local/share/phux/themes`) under a name derived from the URL as
     /// Omarchy derives it: the last path segment minus `.git`, an
     /// `omarchy-` or `phux-` prefix, and a `-theme` suffix. It must hold
-    /// `colors.toml` at its root. Installing the same name again replaces
-    /// it. Nothing in a theme is executed.
+    /// `colors.toml` at its root. A local file is read as a Ghostty theme
+    /// and converted. Installing the same name again replaces it. Nothing
+    /// in a theme is executed.
     Install {
-        /// Git URL or local theme directory.
+        /// Git URL, local theme directory, or Ghostty theme file.
         #[usage(value_name = "SOURCE")]
         source: String,
 
