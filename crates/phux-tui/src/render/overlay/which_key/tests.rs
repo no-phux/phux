@@ -329,7 +329,10 @@ fn bindings_render_under_group_headers() {
     for header in ["Pane", "Tab", "Session", "phux"] {
         assert!(text.contains(header), "{header} missing:\n{text}");
     }
-    assert!(text.contains("esc"), "legend missing:\n{text}");
+    assert!(
+        text.contains(" esc ") && !text.contains("cancel"),
+        "legend missing:\n{text}"
+    );
 }
 
 /// The shipped prefix table lays out one group per column on a roomy

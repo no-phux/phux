@@ -152,7 +152,10 @@ mod tests {
             .collect::<Vec<_>>()
             .join("\n");
         assert!(text.contains("New tab in folder"), "title:\n{text}");
-        assert!(text.contains("esc"), "legend:\n{text}");
+        assert!(
+            text.contains(" esc ") && !text.contains("cancel"),
+            "legend:\n{text}"
+        );
     }
 
     #[test]
