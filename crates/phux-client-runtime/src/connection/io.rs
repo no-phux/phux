@@ -196,7 +196,6 @@ impl Io {
     }
 
     /// Adopt a spawned stdio bridge. Missing pipes are a failed dial.
-    #[cfg(any(windows, test))]
     pub(crate) fn child(command: &mut tokio::process::Command) -> std::io::Result<Self> {
         let (child, reader, writer) = ChildLink::spawn(command)?;
         let mut link = Self::framed(Box::new(reader), Box::new(writer), None, None);

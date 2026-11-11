@@ -9,9 +9,10 @@
 //! 4. a short probe tells filtered UDP from a slow host, then the pinned QUIC
 //!    attach takes over.
 //!
-//! If UDP is filtered or the far phux predates `bootstrap`, it falls back to
-//! `ssh -t HOST phux attach` and says why; ssh failing or no phux at all is
-//! reported instead.
+//! If UDP is filtered or the host cannot open a listener, the local client
+//! attaches through `ssh HOST phux stdio-bridge` instead. If that cannot
+//! attach either, it falls back to `ssh -t HOST phux attach` and says why;
+//! ssh failing or no phux at all is reported instead.
 
 use std::process::{Command, ExitCode, Stdio};
 
@@ -121,21 +122,53 @@ pub(crate) fn run(args: SshAttach<'_>) -> ExitCode {
     )
 }
 
-/// Say why the direct path is unavailable, then attach the old way.
+/// Say why the direct path is unavailable, then attach through ssh: the
+/// local client over a stdio bridge, or the far TUI under `ssh -t` when the
+/// bridge cannot attach (a far phux too old or too new for this one).
 fn fall_back(args: &SshAttach<'_>, why: &str) -> ExitCode {
     warn!("{why}");
+    warn!("attaching through ssh instead; it does not roam between networks");
+    let stdio = attach::run_attach_stdio(
+        &args.destination,
+        &args.remote_phux,
+        args.session.clone(),
+        args.rec,
+    );
+    let err = match stdio {
+        Ok(code) => return code,
+        Err(err) => err,
+    };
+    warn!("the ssh bridge did not attach: {err}");
     warn!(
-        "falling back to `ssh -t {} {} attach` (no roaming or local rendering)",
+        "falling back to `ssh -t {} {} attach` (no local rendering)",
         args.destination, args.remote_phux
     );
     if args.rec.is_some() {
         warn!("--rec does not carry over ssh; run `phux --rec` on the host to record");
     }
-    attach::run_attach_over_ssh(
+    run_attach_over_ssh(
         &args.destination,
         &args.remote_phux,
         args.session.as_deref(),
     )
+}
+
+/// Replace this process with `ssh -t HOST REMOTE_PHUX attach [SESSION]`, so
+/// the terminal, signals, and exit code belong to ssh directly.
+fn run_attach_over_ssh(host: &str, remote_phux: &str, session: Option<&str>) -> ExitCode {
+    use std::os::unix::process::CommandExt as _;
+
+    let program = std::env::var_os("PHUX_SSH").unwrap_or_else(|| "ssh".into());
+    let mut command = std::process::Command::new(&program);
+    command.arg("-t").arg(host).arg(remote_phux).arg("attach");
+    if let Some(session) = session {
+        command.arg(session);
+    }
+
+    // `exec` only returns on failure.
+    let err = command.exec();
+    error!("could not exec {}: {err}", program.to_string_lossy());
+    ExitCode::FAILURE
 }
 
 /// Run `phux bootstrap` on the host and read its report. Only stdout is

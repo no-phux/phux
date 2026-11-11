@@ -503,7 +503,7 @@ const REMOTE_RECONNECT: ReconnectPolicy = ReconnectPolicy {
 const fn reconnect_policy(dial: &Dial) -> ReconnectPolicy {
     match dial {
         Dial::Uds(_) => UDS_RECONNECT,
-        Dial::Quic(_) | Dial::Ws(_) => REMOTE_RECONNECT,
+        _ => REMOTE_RECONNECT,
     }
 }
 
@@ -551,7 +551,7 @@ async fn attach_with_reconnect(
     // the UDS blink restarts the server with a fresh incarnation.
     let input_replay: Option<ReplayHandle> = match dial {
         Dial::Uds(_) => None,
-        Dial::Quic(_) | Dial::Ws(_) => Some(Rc::new(RefCell::new(InputReplayJournal::new()))),
+        _ => Some(Rc::new(RefCell::new(InputReplayJournal::new()))),
     };
 
     // Set after a successful reconnect so the next attach's status bar
@@ -812,7 +812,7 @@ async fn probe_connectability(dial: &Dial) -> ProbeAttempt {
         }
         // The returned connection is reused by the TUI, so its HELLO must
         // carry the same capabilities and client name as the initial attach.
-        Dial::Quic(_) | Dial::Ws(_) => match phux_tui::attach::connect_for_attach(dial).await {
+        _ => match phux_tui::attach::connect_for_attach(dial).await {
             Ok(conn) => ProbeAttempt::Connectable(Some(Box::new(conn))),
             // ADR-0133: the runtime owns which refusals no retry can
             // satisfy. A 401/403 on the upgrade or a refused QUIC preamble
@@ -941,28 +941,6 @@ pub(crate) fn run_attach_remote_outcome(
             },
         )),
     }
-}
-
-/// Replace this process with `ssh -t HOST REMOTE_PHUX attach [SESSION]`, so
-/// the terminal, signals, and exit code belong to ssh directly.
-pub(crate) fn run_attach_over_ssh(
-    host: &str,
-    remote_phux: &str,
-    session: Option<&str>,
-) -> ExitCode {
-    use std::os::unix::process::CommandExt as _;
-
-    let program = std::env::var_os("PHUX_SSH").unwrap_or_else(|| "ssh".into());
-    let mut command = std::process::Command::new(&program);
-    command.arg("-t").arg(host).arg(remote_phux).arg("attach");
-    if let Some(session) = session {
-        command.arg(session);
-    }
-
-    // `exec` only returns on failure.
-    let err = command.exec();
-    error!("could not exec {}: {err}", program.to_string_lossy());
-    ExitCode::FAILURE
 }
 
 /// `phux attach [NAME]` with no recording.
@@ -1321,7 +1299,7 @@ impl DialPlan {
         match &mut self.dial {
             Dial::Quic(quic) => quic.identity = identity,
             Dial::Ws(ws) => ws.identity = identity,
-            Dial::Uds(_) => {}
+            _ => {}
         }
         self
     }
@@ -1347,7 +1325,7 @@ impl DialPlan {
         let trust = match &mut self.dial {
             Dial::Quic(quic) => &mut quic.trust,
             Dial::Ws(ws) => &mut ws.trust,
-            Dial::Uds(_) => return Ok(self),
+            _ => return Ok(self),
         };
         if let CertTrust::Pinned(leaf) = trust
             && let Some(pinned) = pin.trust(Some(leaf.as_str()))
@@ -1660,6 +1638,7 @@ pub(crate) fn predictive_config_for(dial: &Dial) -> PredictiveConfig {
 fn dial_leaves_the_machine(dial: &Dial) -> bool {
     match dial {
         Dial::Uds(_) => false,
+        Dial::Ssh { .. } => true,
         Dial::Quic(quic) => !quic.addr.ip().is_loopback(),
         Dial::Ws(ws) => {
             phux_dial::ws::WsTarget::parse(&ws.url).is_ok_and(|target| !target.is_loopback())
@@ -1703,6 +1682,9 @@ const fn remote_repair(result: &Result<AttachEnd, AttachError>) -> Repair {
         _ => Repair::None,
     }
 }
+
+mod stdio;
+pub(crate) use stdio::run_attach_stdio;
 
 #[cfg(test)]
 mod tests {
