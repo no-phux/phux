@@ -373,6 +373,17 @@ pub(super) const PALETTE_ROWS: &[ActionSpec] = &[
         run: run::url_picker,
     },
     ActionSpec {
+        name: "restore-sessions",
+        description: "Relaunch the panes a server restart ended, resuming their agents",
+        params: "",
+        palette: Palette::Row {
+            title: "Restore sessions",
+            category: Category::Session,
+            args: &[],
+        },
+        run: run::restore_sessions,
+    },
+    ActionSpec {
         name: "new-worktree",
         description: "Create a git worktree for a new branch and switch to its session",
         params: "`branch?` (bare opens an interactive prompt); `cwd?` picks the repository",
