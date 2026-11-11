@@ -252,7 +252,9 @@ impl Connection {
         }
     }
 
-    /// Retire expired staging; a failed new split never disconnects its siblings.
+    /// Retire expired staging and report document recuts that never began.
+    /// A stalled document or agent stream loses only its tile, and a failed
+    /// new split never disconnects its siblings; any other stall does.
     pub fn expire_bootstrap_staging(&mut self) -> Outcome {
         let Some(kernel) = self.kernel.as_mut() else {
             self.effects.clear();
@@ -263,19 +265,38 @@ impl Connection {
             self.effects.clear();
             return Outcome::default();
         }
+        let stalled: Vec<ResourceId> = self
+            .effects
+            .as_slice()
+            .iter()
+            .filter_map(|effect| match effect {
+                KernelEffect::Status(KernelStatus::ResyncRequired { terminal_id, .. }) => {
+                    Some(terminal_id.clone())
+                }
+                _ => None,
+            })
+            .collect();
+        self.effects.clear();
         let split = self
             .pending_split
             .as_ref()
-            .and_then(|pending| pending.resource.as_ref());
-        let only_split = self.effects.as_slice().iter().all(|effect| {
-            !matches!(effect, KernelEffect::Status(KernelStatus::ResyncRequired { terminal_id, .. })
-                if Some(terminal_id) != split)
-        });
-        self.effects.clear();
-        if split.is_some() && only_split {
-            self.pane_refusal("New pane bootstrap timed out. The other panes are still available; try splitting again.".to_owned())
-        } else {
-            self.protocol_failure("bootstrap staging timed out")
+            .and_then(|pending| pending.resource.clone());
+        let mut split_stalled = false;
+        for id in &stalled {
+            if self.is_document(id) || self.is_agent_session(id) {
+                self.lose_document(id);
+            } else if Some(id) == split.as_ref() {
+                split_stalled = true;
+            } else {
+                return self.protocol_failure("bootstrap staging timed out");
+            }
+        }
+        if split_stalled {
+            return self.pane_refusal("New pane bootstrap timed out. The other panes are still available; try splitting again.".to_owned());
+        }
+        Outcome {
+            render: true,
+            ..Outcome::default()
         }
     }
 

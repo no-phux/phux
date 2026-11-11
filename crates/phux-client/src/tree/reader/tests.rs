@@ -130,10 +130,13 @@ fn a_tombstoned_generation_is_dropped_until_the_recut_lands() {
         reason: TombstoneReason::OutboundGap,
         last_valid_seq: 3,
     };
+    assert!(!reader.has_deadline());
     assert!(matches!(
         reader.absorb(tombstone).unwrap(),
         Absorbed::Nothing
     ));
+    assert!(reader.has_deadline(), "the recut is awaited");
+    assert!(!reader.stalled());
     assert!(matches!(
         reader.absorb(output(1, 4)).unwrap(),
         Absorbed::Nothing
@@ -145,6 +148,7 @@ fn a_tombstoned_generation_is_dropped_until_the_recut_lands() {
         panic!("the recut lands");
     };
     assert_eq!(cut.bytes, b"png");
+    assert!(!reader.has_deadline());
 }
 
 #[test]

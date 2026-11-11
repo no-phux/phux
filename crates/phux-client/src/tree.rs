@@ -414,11 +414,13 @@ pub async fn snapshot(conn: &mut Connection, tree: &ResourceId) -> Result<Docume
 }
 
 /// Every document from the newest on, until `sink` returns `false`, the
-/// tree closes, or the connection ends.
+/// tree closes, or the connection ends. A stream that stalls (a cut stops
+/// arriving, or a fence is never followed by a recut) is attached again.
 ///
 /// # Errors
 ///
-/// The refusal, or a connection failure.
+/// The refusal, a connection failure, or a stream still stalled after
+/// three re-attaches in a row.
 pub async fn follow(
     conn: &mut Connection,
     tree: &ResourceId,

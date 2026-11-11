@@ -104,7 +104,7 @@ fn a_tombstone_fences_the_generation_until_its_recut() {
     let mut lane = begun(1);
     let (stream_id, bootstrap_id) = ids(1);
     lane.ready(stream_id, bootstrap_id, 0).unwrap();
-    lane.tombstone(stream_id, bootstrap_id, TombstoneReason::OutboundGap, 4);
+    lane.tombstone(stream_id, bootstrap_id, TombstoneReason::OutboundGap, 4, 0);
     assert!(matches!(
         lane.output(stream_id, bootstrap_id, 5, b"late"),
         Err(KernelError::RetiredGeneration { .. })
@@ -170,7 +170,7 @@ fn only_one_document_kind_is_admitted() {
 }
 
 #[test]
-fn a_stalled_cut_is_reported_once_so_the_reader_can_reattach() {
+fn a_stall_is_reported_once_so_the_reader_can_reattach() {
     let idle = MAX_BOOTSTRAP_STAGING_IDLE_MS;
     let (stream_id, bootstrap_id) = ids(1);
     let mut lane = begun(1);
@@ -178,9 +178,17 @@ fn a_stalled_cut_is_reported_once_so_the_reader_can_reattach() {
     assert!(!lane.stalled(idle));
     assert!(lane.stalled(idle + 1), "a cut that stopped arriving");
     assert!(!lane.has_deadline());
-    assert!(!lane.stalled(idle + 2));
     assert!(matches!(
         lane.chunk(stream_id, bootstrap_id, 0, b"late", idle + 2),
         Err(KernelError::RetiredGeneration { .. })
     ));
+
+    let mut lane = begun(1);
+    lane.ready(stream_id, bootstrap_id, 0).unwrap();
+    assert!(!lane.has_deadline());
+    lane.tombstone(stream_id, bootstrap_id, TombstoneReason::OutboundGap, 4, 5);
+    assert!(!lane.stalled(5 + idle));
+    assert!(lane.stalled(6 + idle), "a fence no recut followed");
+    assert!(!lane.stalled(9 * idle));
+    assert!(!lane.has_deadline());
 }

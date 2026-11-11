@@ -69,7 +69,12 @@ impl<R> TerminalState<R> {
 }
 
 impl<R> LaneRails for TerminalState<R> {
-    fn on_tombstone(&mut self, generation: GenerationId, record: TombstoneRecord) -> AttachSignal {
+    fn on_tombstone(
+        &mut self,
+        generation: GenerationId,
+        record: TombstoneRecord,
+        _now_ms: u64,
+    ) -> AttachSignal {
         self.retired.entry(generation).or_insert(record);
         if self.staging_matches(generation) {
             self.staging = None;

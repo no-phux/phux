@@ -14,7 +14,12 @@ use super::{
 };
 
 impl LaneRails for AgentStream {
-    fn on_tombstone(&mut self, generation: GenerationId, record: TombstoneRecord) -> AttachSignal {
+    fn on_tombstone(
+        &mut self,
+        generation: GenerationId,
+        record: TombstoneRecord,
+        _now_ms: u64,
+    ) -> AttachSignal {
         self.note_external_tombstone(generation, record);
         AttachSignal::Unchanged
     }

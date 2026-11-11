@@ -417,6 +417,10 @@ pub(super) fn install_bootstrap_expiry(app: &Rc<RefCell<App>>) -> Result<(), JsV
         if outcome.panes {
             app.publish_panes();
         }
+        // A stalled document's tile now says its stream was lost.
+        if outcome.render {
+            app.request_paint();
+        }
     });
     let interval = window.set_interval_with_callback_and_timeout_and_arguments_0(
         callback.as_ref().unchecked_ref(),

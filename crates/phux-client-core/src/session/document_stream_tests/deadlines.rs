@@ -1,5 +1,5 @@
-//! Staging expires on progress, not age, and an update reclaims a cut that
-//! stalled elsewhere when no host timer does.
+//! Staging expires on progress, not age; a fenced document whose recut never
+//! begins is reported; and every update reclaims what stalled elsewhere.
 
 use phux_protocol::wire::frame::TombstoneReason;
 use phux_protocol::{BootstrapId, BootstrapProfile, BootstrapStreamProfile, ResourceId, StreamId};
@@ -76,6 +76,23 @@ fn ready(kernel: &mut Kernel, now_ms: u64, raw: u64, effects: &mut EffectBuffer)
         },
         effects,
     )
+}
+
+fn tombstone(kernel: &mut Kernel, now_ms: u64, raw: u64) {
+    let (stream_id, bootstrap_id) = ids(raw);
+    kernel
+        .update_at(
+            now_ms,
+            KernelInput::Tombstone {
+                terminal_id: &surface(),
+                stream_id,
+                bootstrap_id,
+                reason: TombstoneReason::OutboundGap,
+                last_valid_seq: 4,
+            },
+            &mut EffectBuffer::new(),
+        )
+        .unwrap();
 }
 
 fn resyncs(effects: &EffectBuffer) -> Vec<(ResourceId, TombstoneReason)> {
@@ -155,6 +172,76 @@ fn a_cut_that_stops_or_trickles_still_expires() {
 }
 
 #[test]
+fn a_fenced_document_whose_recut_never_begins_is_reported_once() {
+    let mut kernel = kernel();
+    let mut effects = EffectBuffer::new();
+    begin(&mut kernel, 0, &surface(), 1).unwrap();
+    ready(&mut kernel, 0, 1, &mut effects).unwrap();
+    tombstone(&mut kernel, 1_000, 1);
+    assert_eq!(kernel.next_deadline_in_ms(), Some(IDLE + 1));
+    assert_eq!(
+        kernel.expire_bootstrap_staging(1_000 + IDLE, &mut effects),
+        0
+    );
+    assert_eq!(
+        kernel.expire_bootstrap_staging(1_001 + IDLE, &mut effects),
+        1
+    );
+    assert_eq!(
+        resyncs(&effects),
+        [(surface(), TombstoneReason::OutboundGap)]
+    );
+    assert_eq!(kernel.expire_bootstrap_staging(9 * IDLE, &mut effects), 0);
+    assert_eq!(kernel.next_deadline_in_ms(), None);
+
+    // A server that recuts at once is never reported.
+    let mut kernel = self::kernel();
+    begin(&mut kernel, 0, &surface(), 1).unwrap();
+    ready(&mut kernel, 0, 1, &mut effects).unwrap();
+    tombstone(&mut kernel, 0, 1);
+    begin(&mut kernel, 0, &surface(), 2).unwrap();
+    ready(&mut kernel, 0, 2, &mut effects).unwrap();
+    assert_eq!(kernel.expire_bootstrap_staging(9 * IDLE, &mut effects), 0);
+    assert_eq!(kernel.next_deadline_in_ms(), None);
+}
+
+fn fenced_then_output_elsewhere(host_ticks: bool) -> EffectBuffer {
+    let mut kernel = kernel();
+    let mut effects = EffectBuffer::new();
+    begin(&mut kernel, 0, &surface(), 1).unwrap();
+    ready(&mut kernel, 0, 1, &mut effects).unwrap();
+    if host_ticks {
+        kernel.expire_bootstrap_staging(0, &mut effects);
+    }
+    tombstone(&mut kernel, 0, 1);
+    kernel
+        .update_at(
+            IDLE + 1,
+            KernelInput::ResourceOutput {
+                terminal_id: &ResourceId::local(77),
+                stream_id: stream(),
+                bootstrap_id: generation(1),
+                seq: 1,
+                payload: b"",
+            },
+            &mut effects,
+        )
+        .unwrap_err();
+    effects
+}
+
+#[test]
+fn without_a_host_timer_any_update_reports_an_overdue_recut() {
+    let reported = fenced_then_output_elsewhere(false);
+    assert_eq!(
+        resyncs(&reported),
+        [(surface(), TombstoneReason::OutboundGap)]
+    );
+    // A host that ticks owns the deadlines; its tick reports them.
+    assert!(resyncs(&fenced_then_output_elsewhere(true)).is_empty());
+}
+
+#[test]
 fn a_stalled_cut_from_an_earlier_connection_stops_holding_the_ceiling() {
     // A terminal cut holding the whole byte budget went silent.
     let mut kernel = kernel();
@@ -202,7 +289,6 @@ fn a_stalled_cut_from_an_earlier_connection_stops_holding_the_ceiling() {
     );
     assert!(kernel.staging(&stale).is_none());
     chunk(&mut kernel, IDLE + 1, 0, b"x").unwrap();
-
     // A host that ticks owns expiry: an update leaves the cut to its tick.
     let mut kernel = self::kernel();
     begin(&mut kernel, 0, &stale, 1).unwrap();

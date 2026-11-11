@@ -130,7 +130,9 @@ impl<E: EngineAdapter> SessionKernel<E> {
                 reason,
                 last_valid_seq,
             } => {
-                let signal = self.lanes.fence_slot(terminal_id).on_tombstone(
+                let now_ms = self.monotonic_now_ms();
+                let lane = self.lanes.fence_slot(terminal_id);
+                let signal = lane.on_tombstone(
                     GenerationId {
                         stream_id,
                         bootstrap_id,
@@ -139,7 +141,9 @@ impl<E: EngineAdapter> SessionKernel<E> {
                         reason,
                         last_valid_seq,
                     },
+                    now_ms,
                 );
+                self.deadline_watch |= lane.deadline_ms().is_some();
                 self.apply_attach_signal(terminal_id, signal);
                 Ok(())
             }

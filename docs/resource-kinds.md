@@ -213,7 +213,9 @@ supplies its cell reference and synthesizer.
 
 A whole-document stream takes no `FRAME_ACK`. Each viewer gets the newest
 document, so a slow viewer skips only intermediate documents
-([protocol](./protocol.md#commands-events-resources)).
+([protocol](./protocol.md#commands-events-resources)). A federation hub
+that cannot deliver to a viewer fences its generation without a recut, so a
+client that sees no recut within 30 seconds attaches the document again.
 
 ## Producers
 

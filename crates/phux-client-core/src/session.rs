@@ -29,7 +29,8 @@ use crate::history::{
 const MAX_BOOTSTRAP_STAGING_BYTES: usize = 64 * 1024 * 1024;
 /// Hard connection-wide ceiling for bootstrap chunks accepted before READY.
 const MAX_BOOTSTRAP_STAGING_CHUNKS: usize = 4_096;
-/// A staging generation that receives no chunk for this long has stalled.
+/// A staging generation that receives no chunk for this long has stalled;
+/// a fenced document whose recut has not begun by then has too.
 const MAX_BOOTSTRAP_STAGING_IDLE_MS: u64 = 30_000;
 /// The slowest average rate a staging generation may arrive at once the idle
 /// window has passed: its age may not exceed that window plus the time its

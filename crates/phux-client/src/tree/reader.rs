@@ -21,7 +21,7 @@ pub(super) enum Absorbed {
 
 /// A bootstrap's chunks make one document, and every live `RESOURCE_OUTPUT`
 /// is one. A tombstone fences its generation; the recut's bootstrap carries
-/// the newest document.
+/// the newest document, and a recut that never begins is a stall.
 pub(super) struct Reader {
     tree: ResourceId,
     lane: DocumentLane,
@@ -92,7 +92,7 @@ impl Reader {
                 last_valid_seq,
             } if terminal_id == self.tree => {
                 self.lane
-                    .tombstone(stream_id, bootstrap_id, reason, last_valid_seq);
+                    .tombstone(stream_id, bootstrap_id, reason, last_valid_seq, now_ms);
                 Ok(Absorbed::Nothing)
             }
             FrameKind::ResourceClosed {
@@ -114,13 +114,14 @@ impl Reader {
         result.or_else(|error| self.refused(&error))
     }
 
-    /// Whether a cut in flight must be watched for a stall even while no
-    /// frame arrives.
+    /// Whether a cut in flight or an awaited recut must be watched for a
+    /// stall even while no frame arrives.
     pub(super) fn has_deadline(&self) -> bool {
         self.lane.has_deadline()
     }
 
-    /// Whether the cut in flight stopped arriving.
+    /// Whether the stream stalled: a cut stopped arriving, or a fence (a
+    /// relay that dropped this viewer) was never followed by a recut.
     pub(super) fn stalled(&mut self) -> bool {
         let now_ms = self.now_ms();
         self.lane.stalled(now_ms)
