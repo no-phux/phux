@@ -69,8 +69,8 @@ pub(crate) fn page() -> Page {
     body.push_str(
         "\n## The universal `min-cols` / `max-cols` options\n\n\
          Every kind also accepts `min-cols` and `max-cols`: integer \
-         bounds on the width of the **whole status row** (not the \
-         widget's own share) outside which the widget renders nothing at \
+         bounds on the width of the **terminal** (not the status row, \
+         which a sidebar narrows, nor the widget's own share) outside which the widget renders nothing at \
          all. A hidden widget costs no width, so the widgets that remain \
          get the columns it would have taken.\n\n\
          Use them to make one lineup change shape with the terminal \

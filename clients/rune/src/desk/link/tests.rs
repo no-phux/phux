@@ -103,7 +103,7 @@ fn new_work_starts_in_the_focused_panes_directory() {
     assert_eq!(desk.focused_cwd(), None);
     desk.topology = Some(topology(vec![pane(1, 1, Some("/there")), pane(2, 1, None)]));
     let shown = |id| super::super::Shown {
-        terminal: ResourceId::local(id),
+        resource: ResourceId::local(id),
         view: phux_client_runtime::ViewId::from_raw(1),
     };
     desk.shown = Some(shown(1));
@@ -184,7 +184,7 @@ fn the_runtime_renders_a_protocol_refusal_as_this_reads_it() {
 fn stale(client: Arc<Client>) -> Desk {
     let mut desk = desk();
     desk.shown = Some(Shown {
-        terminal: ResourceId::local(1),
+        resource: ResourceId::local(1),
         view: phux_client_runtime::ViewId::from_raw(1),
     });
     desk.client = Some(client);

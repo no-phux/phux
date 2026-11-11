@@ -66,7 +66,8 @@ async fn upgrade_capture_ignores_agent_sessions_and_orphan_handles() {
             });
 
             let context = capture_upgrade_context(&state).unwrap();
-            let asked: Vec<_> = context.pane_senders.iter().map(|(id, _)| *id).collect();
+            let senders = state.with(pane_senders);
+            let asked: Vec<_> = senders.iter().map(|(id, _)| *id).collect();
             assert_eq!(asked, vec![live_pane], "only the live tree pane is asked");
             assert!(
                 !asked.contains(&agent),
@@ -74,7 +75,7 @@ async fn upgrade_capture_ignores_agent_sessions_and_orphan_handles() {
             );
             assert!(!asked.contains(&orphan), "an orphan handle is not a pane");
 
-            let panes = collect_pane_handoffs(context.pane_senders, Duration::from_secs(2))
+            let panes = collect_pane_handoffs(senders, Duration::from_secs(2))
                 .await
                 .expect("an agent session or orphan handle must not abort");
             assert_eq!(panes.len(), 1);
@@ -85,11 +86,7 @@ async fn upgrade_capture_ignores_agent_sessions_and_orphan_handles() {
                 context.listener_fd,
                 context.listener_fd,
                 &context.tree_identity,
-                &UpgradeHandoffs {
-                    panes,
-                    agent_sessions: HashMap::new(),
-                    documents: HashMap::new(),
-                },
+                &[TerminalCut::holding(panes)],
             )
             .expect("the tree did not change");
             assert_eq!(blob.panes.len(), 1, "only the live pane crosses");

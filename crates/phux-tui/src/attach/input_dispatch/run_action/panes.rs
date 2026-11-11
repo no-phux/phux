@@ -62,6 +62,7 @@ pub(in crate::attach) fn move_pane(
             ctx.peers.focused_session,
             ctx.peers.sessions,
             ctx.peers.foreign_layouts,
+            ctx.peers.session_order,
         );
         if items.is_empty() {
             effects.bell = true;

@@ -24,12 +24,11 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use bytes::Bytes;
 use phux_protocol::ClientId;
 use phux_protocol::wire::frame::{ControlAction, FrameKind};
-use tokio::sync::{broadcast, mpsc, oneshot};
+use tokio::sync::{broadcast, oneshot};
 use tokio_util::sync::CancellationToken;
 
 pub mod cwd_query;
 pub mod event_sink;
-pub mod handoff;
 pub mod handoff_env;
 pub mod mailbox;
 pub mod proc_query;
@@ -209,10 +208,6 @@ pub trait ResourceFacet: ResourceOps + std::any::Any {
 pub trait ResourceOps: Send + Sync + std::fmt::Debug {
     /// Ask the engine to take `size` in cells, returning whether it accepted.
     fn resize(&self, size: (u16, u16), cell_px: Option<(u16, u16)>) -> bool;
-
-    /// Where this resource answers a graceful-upgrade handoff, if it has a
-    /// process to hand off.
-    fn upgrade_sender(&self) -> Option<mpsc::Sender<handoff::UpgradeHandleRequest>>;
 
     /// Tell the engine its input lease changed, waiting for mailbox room.
     fn lease_changed(&self, change: LeaseChange) -> Delivery;

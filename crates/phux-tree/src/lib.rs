@@ -176,15 +176,10 @@ impl<K: DocumentKind> ResourceFacet for DocumentHandle<K> {
     const KIND: ResourceKind = K::KIND;
 }
 
-/// A document has no grid to size, no process to hand off and no input
-/// lease.
+/// A document has no grid to size and no input lease.
 impl<K: DocumentKind> ResourceOps for DocumentHandle<K> {
     fn resize(&self, _size: (u16, u16), _cell_px: Option<(u16, u16)>) -> bool {
         false
-    }
-
-    fn upgrade_sender(&self) -> Option<mpsc::Sender<phux_resource::handoff::UpgradeHandleRequest>> {
-        None
     }
 
     fn lease_changed(&self, _change: LeaseChange) -> Delivery {

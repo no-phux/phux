@@ -1,23 +1,27 @@
 //! The sidebar: every session and terminal on the server, each terminal
-//! with what it is doing, and what needs you counted per session. They sit
-//! under the machine this window is on; the other machines follow, folded,
-//! each opening to a glance at its sessions.
+//! with what it is doing, and what needs you counted per session. Sessions
+//! of one project sit together under its name, a linked worktree marked
+//! `└`. They sit under the machine this window is on; the other machines
+//! follow, folded, each opening to a glance at its sessions.
 
 use std::collections::HashMap;
 
-use phux_client_runtime::control::Topology;
+use phux_client_runtime::control::{SessionDescriptor, Topology};
 use phux_protocol::ids::{ResourceId, SessionKey};
 use rune::{Color, El, col, el, memo, row, text};
 
-use super::{CAPTION, Ink, LABEL, NAME, SIDEBAR_W, icons, pressable};
+use super::{CAPTION, Ink, LABEL, NAME, SIDEBAR_W, icons, keycap, lifted, pressable};
 use crate::activity::Mark;
-use crate::desk::Desk;
+use crate::desk::{Desk, Grab};
 use crate::host_color;
 use crate::keys::{self, Shortcut};
 use crate::palette::pane_label;
 
+mod drag;
 mod hosts;
 use hosts::{host_header, other_machines};
+mod projects;
+use projects::branch_mark;
 
 /// A mark's colour, from the theme's own palette.
 pub(super) fn mark_color(mark: Mark, ink: &Ink) -> Color {
@@ -58,6 +62,12 @@ fn dot(mark: Mark, color: Color, ink: &Ink) -> El {
 }
 
 fn search(ink: &Ink) -> El {
+    // ⌘K is the chord this field has always taught; ⌘P reaches it too.
+    let chord: &[&str] = if cfg!(target_os = "macos") {
+        &["⌘", "K"]
+    } else {
+        &["Ctrl", "Shift", "K"]
+    };
     pressable("sidebar-search", ink)
         .w_full()
         .h(28.0)
@@ -65,19 +75,20 @@ fn search(ink: &Ink) -> El {
         .gap(7.0)
         .radius(7.0)
         .items_center()
-        .fill(ink.current.alpha(0.06))
+        .fill(ink.text.alpha(0.05))
+        .border_gradient(1.0, ink.text.alpha(0.09), ink.text.alpha(0.04))
         .on_press(|d: &mut Desk| d.toggle_palette())
-        .child(rune::icon(&icons::SEARCH, 13.0).color(ink.dim))
+        .child(
+            rune::icon(&icons::SEARCH, 14.0)
+                .color(ink.dim)
+                .a11y_hidden(),
+        )
         .child(text("Jump to…").font(LABEL).color(ink.dim))
         .child(el().grow(1.0))
         .child(
-            text(if cfg!(target_os = "macos") {
-                "⌘K"
-            } else {
-                "Ctrl+Shift+K"
-            })
-            .font(CAPTION)
-            .color(ink.dim),
+            row()
+                .gap(2.0)
+                .children(chord.iter().map(|key| keycap(*key, ink))),
         )
 }
 
@@ -123,6 +134,22 @@ struct Header<'a> {
     waiting: usize,
     /// A satellite session's machine, and its colour so a recolour redraws.
     host: Option<(&'a str, u32)>,
+    /// A linked worktree, marked under its project's primary checkout.
+    branch: bool,
+    /// A dragged session would land here.
+    target: bool,
+}
+
+/// A pill counting what needs you.
+fn waiting_badge(waiting: usize, ink: &Ink) -> El {
+    el().px(6.0)
+        .radius(8.0)
+        .fill(mark_color(Mark::Blocked, ink).alpha(0.22))
+        .child(
+            text(waiting.to_string())
+                .font(CAPTION)
+                .color(mark_color(Mark::Blocked, ink)),
+        )
 }
 
 fn session_header(session: &Header, ink: &Ink) -> El {
@@ -142,6 +169,7 @@ fn session_header(session: &Header, ink: &Ink) -> El {
             }
         })
         .children((session.host).map(|(host, _)| host_color::dot(host, 6.0, ink.sidebar)))
+        .children(session.branch.then(|| branch_mark(ink)))
         .child(
             text(session.name.to_owned())
                 .font(CAPTION)
@@ -149,19 +177,8 @@ fn session_header(session: &Header, ink: &Ink) -> El {
                 .truncate(),
         )
         .child(el().grow(1.0));
-    if session.waiting == 0 {
-        return header;
-    }
-    header.child(
-        el().px(6.0)
-            .radius(8.0)
-            .fill(mark_color(Mark::Blocked, ink).alpha(0.22))
-            .child(
-                text(session.waiting.to_string())
-                    .font(CAPTION)
-                    .color(mark_color(Mark::Blocked, ink)),
-            ),
-    )
+    let header = drag::reorderable(header, key, session.target, ink);
+    header.children((session.waiting > 0).then(|| waiting_badge(session.waiting, ink)))
 }
 
 /// What a terminal's row draws, likewise. A session of one terminal is one
@@ -179,6 +196,10 @@ struct Row<'a> {
     selected: bool,
     /// The terminal's machine and its colour, so a recolour redraws.
     host: (&'a str, u32),
+    /// A one-terminal session that is a linked worktree.
+    branch: bool,
+    /// A dragged session would land on this lone row's.
+    target: bool,
 }
 
 impl Row<'_> {
@@ -206,21 +227,19 @@ fn pane_row(pane: &Row, ink: &Ink) -> El {
             .color(if tinted { accent } else { ink.dim })
             .truncate()
     });
-    row()
-        .key(format!("pane-{}", pane.id))
+    let base = row().key(format!("pane-{}", pane.id));
+    let base = if selected { lifted(base, ink) } else { base };
+    let row = base
         .w_full()
         .min_h(30.0)
         .px(6.0)
         .py(5.0)
         .gap(6.0)
         .radius(7.0)
+        .continuous_corners()
         .items_center()
-        .fill(if selected {
-            ink.current
-        } else {
-            Color::TRANSPARENT
-        })
         .hover(ink.hover)
+        .press(ink.hover)
         .cursor(rune::Cursor::Pointer)
         .on_press(move |d: &mut Desk| d.show(id.clone(), &session))
         .on_double_press(move |d: &mut Desk| {
@@ -228,6 +247,7 @@ fn pane_row(pane: &Row, ink: &Ink) -> El {
                 d.rename_session(key, &label);
             }
         })
+        .children(pane.branch.then(|| branch_mark(ink)))
         .child(dot(mark, accent, ink))
         .child(
             col()
@@ -246,7 +266,9 @@ fn pane_row(pane: &Row, ink: &Ink) -> El {
                 )
                 .children(detail),
         )
-        .children(selected.then(|| host_color::stripe(host, true)))
+        .children(selected.then(|| host_color::stripe(host)));
+    // A lone row stands for its session, so it drags the session.
+    drag::reorderable(row, key, pane.target, ink)
 }
 
 /// Marks that need you, by session: one pass, for every header and the button.
@@ -260,51 +282,55 @@ fn waiting_by_session(desk: &Desk, topology: &Topology) -> HashMap<u32, usize> {
     waiting
 }
 
-/// Every session's header and rows, rebuilt only where their inputs moved:
-/// the view runs for each frame of terminal output.
-fn session_list(desk: &Desk, topology: &Topology, waiting: &HashMap<u32, usize>, ink: &Ink) -> El {
-    let mut list = col().w_full().gap(1.0).px(8.0);
-    let shown = desk.shown.as_ref().map(|s| &s.terminal);
+/// Every session's header and rows (its terminals, then its documents),
+/// rebuilt only where their inputs moved: the view runs for each frame of
+/// terminal output. A project's sessions follow its header, indented.
+fn session_list(desk: &Desk, waiting: &HashMap<u32, usize>, ink: &Ink) -> El {
+    let list = col().w_full().gap(1.0).px(8.0);
+    let shown = desk.shown.as_ref().map(|s| &s.resource);
     let current = desk.selected_session_name();
     let theme = desk.settings.theme.map(|t| t.id);
+    let all = desk.addressable();
     let here = desk.machines.label();
     let host = (here, host_color::entry(here).0);
-    for session in &topology.sessions {
-        let panes: Vec<_> = topology
-            .panes
-            .iter()
-            .filter(|p| p.session_id == session.id)
-            .collect();
-        let alone = panes.len() == 1;
-        let labels: Vec<_> = panes.iter().map(|p| pane_label(p)).collect();
+    let waiting_in = |id: u32| waiting.get(&id).copied().unwrap_or(0);
+    let dropping = desk.reorder.target();
+    let session_rows = |session: &SessionDescriptor, branch: bool| {
+        let target = dropping.is_some() && dropping == session.key.map(Grab::Session);
+        let mut out = Vec::new();
+        let rows: Vec<_> = all.iter().filter(|r| r.session_id == session.id).collect();
+        let alone = rows.len() == 1;
         if !alone {
             let header = Header {
                 id: session.id,
                 name: &session.name,
                 key: session.key,
                 current: current.as_deref() == Some(session.name.as_str()),
-                waiting: waiting.get(&session.id).copied().unwrap_or(0),
+                waiting: waiting_in(session.id),
                 host: None,
+                branch,
+                target,
             };
-            list = list.child(memo(
+            out.push(memo(
                 format!("session-{}", session.id),
                 (&header, theme),
                 || session_header(&header, ink),
             ));
         }
-        for (pane, label) in panes.iter().zip(&labels) {
-            let id = &pane.terminal_id;
+        for resource in &rows {
+            let (id, label) = (&resource.id, &resource.label);
             let (name, place) = if alone {
                 let place = (*label != session.name).then(|| label.clone());
                 (session.name.clone(), place)
             } else {
                 // Twins are told apart by what the CLI calls them.
-                let twin = labels.iter().filter(|other| *other == label).count() > 1;
-                (label.clone(), twin.then(|| id.to_string()))
+                let twin = rows.iter().filter(|other| other.label == *label).count() > 1;
+                let mirror = (!resource.kind.is_terminal()).then(|| resource.mirror.to_owned());
+                (label.clone(), twin.then(|| id.to_string()).or(mirror))
             };
             let row = Row {
                 id,
-                session: &pane.session_name,
+                session: &resource.session,
                 name,
                 place,
                 rename: session.key.filter(|_| alone),
@@ -312,13 +338,23 @@ fn session_list(desk: &Desk, topology: &Topology, waiting: &HashMap<u32, usize>,
                 mark: desk.activities.mark(id),
                 selected: shown == Some(id),
                 host,
+                branch: branch && alone,
+                target: target && alone,
             };
-            list = list.child(memo(format!("pane-{id}"), (&row, theme), || {
+            out.push(memo(format!("pane-{id}"), (&row, theme), || {
                 pane_row(&row, ink)
             }));
         }
-    }
-    list
+        out
+    };
+    projects::grouped(
+        list,
+        &desk.ordered_sessions(),
+        waiting_in,
+        theme,
+        ink,
+        session_rows,
+    )
 }
 
 /// Whether a satellite session member is a Terminal: not a document or an
@@ -333,7 +369,7 @@ fn is_terminal_member(topology: &Topology, id: &ResourceId) -> bool {
 /// the hub's own sessions).
 fn satellite_list(desk: &Desk, topology: &Topology, ink: &Ink) -> El {
     let mut list = col().w_full().gap(1.0).px(8.0);
-    let shown = desk.shown.as_ref().map(|s| &s.terminal);
+    let shown = desk.shown.as_ref().map(|s| &s.resource);
     let theme = desk.settings.theme.map(|t| t.id);
     for (n, session) in topology.satellite_sessions.iter().enumerate() {
         let name = format!("{} · {}", session.host, session.name);
@@ -345,6 +381,8 @@ fn satellite_list(desk: &Desk, topology: &Topology, ink: &Ink) -> El {
             current: session.members.iter().any(|id| shown == Some(id)),
             waiting: 0,
             host: Some(host),
+            branch: false,
+            target: false,
         };
         list = list.child(memo(format!("satellite-{name}"), (&header, theme), || {
             session_header(&header, ink)
@@ -384,6 +422,8 @@ fn satellite_list(desk: &Desk, topology: &Topology, ink: &Ink) -> El {
                 mark: desk.activities.mark(id),
                 selected: shown == Some(id),
                 host,
+                branch: false,
+                target: false,
             };
             list = list.child(memo(format!("pane-{id}"), (&row, theme), || {
                 pane_row(&row, ink)
@@ -435,7 +475,7 @@ pub fn view(desk: &Desk, ink: &Ink, inset: f32) -> El {
     let list = topology.filter(|_| !folded).map_or_else(col, |t| {
         col()
             .w_full()
-            .child(session_list(desk, t, &counts, ink))
+            .child(session_list(desk, &counts, ink))
             .child(satellite_list(desk, t, ink))
     });
     let here = desk.machines.current.clone();
@@ -502,29 +542,4 @@ pub fn view(desk: &Desk, ink: &Ink, inset: f32) -> El {
 }
 
 #[cfg(test)]
-mod tests {
-    use crate::host_color;
-    use crate::theme::{DIM_BAR, contrast};
-    use phux_config_core::host_color::PALETTE;
-
-    #[test]
-    fn host_marks_read_in_every_theme() {
-        let mut low = Vec::new();
-        for theme in std::iter::once(None).chain(crate::theme::all().map(Some)) {
-            for dark in [true, false] {
-                let ink = super::super::ink(dark, rune::oklch(0.6, 0.15, 250.0), theme);
-                for (i, (id, _)) in PALETTE.iter().enumerate() {
-                    let host = host_color::swatch(i, ink.sidebar);
-                    let name = theme.map_or("system", |t| t.id);
-                    // Eased for the sidebar; the focused card's rim sits on
-                    // the window ground, a shade away.
-                    let mark = contrast(host, ink.sidebar);
-                    if mark < DIM_BAR || contrast(host, ink.bg) < DIM_BAR - 0.1 {
-                        low.push(format!("{id} on {name}/{dark}: {mark:.2}"));
-                    }
-                }
-            }
-        }
-        assert!(low.is_empty(), "{low:#?}");
-    }
-}
+mod tests;

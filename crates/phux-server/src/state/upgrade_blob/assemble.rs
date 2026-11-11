@@ -1,4 +1,4 @@
-//! Assembling the blob: panes, agent sessions, wire ids.
+//! Assembling the blob's tree: sessions, windows, panes, wire ids.
 
 #[allow(
     unused_imports,
@@ -8,16 +8,12 @@
 use super::*;
 
 impl ServerState {
-    /// Assemble the blob from the live tree plus pre-fetched handoffs,
-    /// under the lock. Agent sessions come only from their cuts, so a blob
-    /// assembled with no handoffs is the tree's identity alone: a busy
-    /// agent's appends never make it look changed.
-    #[allow(clippy::too_many_lines, reason = "one pass per carried entity kind")]
-    pub(crate) fn assemble_upgrade_blob(
-        &self,
-        listener_fd: RawFd,
-        handoffs: &UpgradeHandoffs,
-    ) -> StateBlob {
+    /// Assemble the blob's tree from the registry, under the lock: the
+    /// tree's identity alone. Each app adds what its engines carry at the
+    /// cut (`runtime::apps::UpgradeCut::carry`), so a busy engine never
+    /// makes the tree look changed.
+    #[allow(clippy::too_many_lines, reason = "one pass per tree level")]
+    pub(crate) fn assemble_upgrade_blob(&self, listener_fd: RawFd) -> StateBlob {
         let mut sessions = Vec::new();
         let mut windows = Vec::new();
         let mut panes = Vec::new();
@@ -77,14 +73,12 @@ impl ServerState {
                 };
                 // ADR-0124 §6: a retained pane's PTY does not cross; a live
                 // pane's retention request does.
-                let retained = self.retained_exit(tid).map(exit_blob);
                 let mut pane = pane_blob(
                     pane_wire,
                     window_wire,
                     desc,
                     &self.config.term,
-                    handoffs.panes.get(&tid).filter(|_| retained.is_none()),
-                    retained,
+                    self.retained_exit(tid).map(exit_blob),
                     self.retain_request(tid),
                 );
                 pane.key = self.sessions.registry.resource_key(tid);
@@ -92,13 +86,6 @@ impl ServerState {
             }
         }
 
-        let live_panes: HashSet<u32> = panes
-            .iter()
-            .filter(|pane| pane.retained_exit.is_none())
-            .map(|pane| pane.wire_id)
-            .collect();
-        let agent_sessions = self.agent_session_blobs(&handoffs.agent_sessions, &live_panes);
-        let documents = self.document_blobs(&handoffs.documents, &live_panes);
         let org = self.org();
 
         StateBlob {
@@ -114,7 +101,8 @@ impl ServerState {
             sessions,
             windows,
             panes,
-            agent_sessions,
+            // What engines carry, each app adds at the cut.
+            agent_sessions: Vec::new(),
             metadata: Vec::new(),
             org: Some(OrgBlob {
                 authority: *org.authority(),
@@ -134,64 +122,10 @@ impl ServerState {
             // (`runtime::delegation::carry_delegations`); not part of the
             // tree's identity.
             delegations: Vec::new(),
+            // Each app's, like `agent_sessions`.
             native_agents: Vec::new(),
-            documents,
+            documents: Vec::new(),
         }
-    }
-
-    /// One [`AgentSessionBlob`] per cut whose session is still registered
-    /// under a pane that crosses live, in wire-id order. A session that
-    /// closed, or whose parent stopped crossing, since its cut is dropped.
-    pub(in crate::state) fn agent_session_blobs(
-        &self,
-        cuts: &HashMap<ResourceId, AgentStreamCut>,
-        live_panes: &HashSet<u32>,
-    ) -> Vec<AgentSessionBlob> {
-        let mut blobs: Vec<AgentSessionBlob> = cuts
-            .iter()
-            .filter_map(|(&id, cut)| {
-                let desc = self.sessions.registry.resource(id)?;
-                let facet = desc.agent.as_ref()?;
-                let parent_wire_id = self.resource_wire(desc.parent?)?;
-                if !live_panes.contains(&parent_wire_id) {
-                    return None;
-                }
-                Some(AgentSessionBlob {
-                    wire_id: self.resource_wire(id)?,
-                    parent_wire_id,
-                    provider: facet.provider.clone(),
-                    native_id: facet.native_id.clone(),
-                    state: facet.state.clone(),
-                    base_seq: cut.base_seq,
-                    dropped: cut.dropped,
-                    ended: cut.ended,
-                    records: cut.records.clone(),
-                    key: Some(desc.key),
-                    native_publications: cut.native_publications.clone(),
-                    native_publication_high_water: cut.native_publication_high_water,
-                })
-            })
-            .collect();
-        blobs.sort_by_key(|blob| blob.wire_id);
-        blobs
-    }
-
-    /// Ask one pane's actor for its upgrade handoff. `None` when the pane has
-    /// no registered handle or the actor has gone away.
-    #[allow(
-        clippy::future_not_send,
-        reason = "ADR-0014: the server runs on a LocalSet; pane actors are reached through !Send local futures"
-    )]
-    #[cfg(test)]
-    pub(in crate::state) async fn request_pane_handoff(
-        &self,
-        tid: ResourceId,
-    ) -> Option<ProcessHandoff> {
-        let handle = self.resource_handle(tid)?;
-        let upgrade = handle.ops().upgrade_sender()?;
-        let (reply, rx) = oneshot::channel();
-        upgrade.send(UpgradeHandleRequest { reply }).await.ok()?;
-        rx.await.ok()
     }
 
     pub(in crate::state) fn session_wire(&self, sid: SessionId) -> Option<u32> {

@@ -2,8 +2,9 @@
 
 use std::collections::HashMap;
 
+use phux_client::session_order;
 use phux_protocol::ResourceId;
-use phux_protocol::ids::SessionId;
+use phux_protocol::ids::{SessionId, SessionKey};
 
 use crate::layout::ArrangementDoc;
 use crate::render::overlay::SelectItem;
@@ -29,6 +30,7 @@ pub(super) fn move_pane_picker_items(
     focused_session: Option<SessionId>,
     sessions: &[phux_protocol::wire::info::SessionInfo],
     foreign_layouts: &HashMap<SessionId, ArrangementDoc>,
+    order: &[SessionKey],
 ) -> Vec<SelectItem> {
     let mut rows = Vec::new();
     append_move_destinations(&mut rows, source, session_name, workspace);
@@ -39,11 +41,15 @@ pub(super) fn move_pane_picker_items(
         .filter_map(|session| {
             foreign_layouts
                 .get(&session.id)
-                .map(|workspace| (session.name.as_str(), workspace))
+                .map(|workspace| (session, workspace))
         })
         .collect();
-    foreign.sort_by_key(|(name, _)| *name);
-    for (name, workspace) in foreign {
+    foreign.sort_by(|(a, _), (b, _)| {
+        let rank = |s: &phux_protocol::wire::info::SessionInfo| session_order::rank(order, s.key);
+        rank(a).cmp(&rank(b)).then_with(|| a.name.cmp(&b.name))
+    });
+    for (session, workspace) in foreign {
+        let name = session.name.as_str();
         append_move_destinations(&mut rows, source, name, workspace);
     }
     rows
@@ -84,7 +90,7 @@ fn append_move_destinations(
 }
 
 /// The grouped window picker: one header per session (current first, then
-/// by name). Current-session windows commit `select-window { index }`; a
+/// in the stored session order, then by name). Current-session windows commit `select-window { index }`; a
 /// peer with a cached layout lists one-step `switch-session { name, window }`
 /// rows, else a single "switch to this session" row. The caller bells when
 /// only headers result. `terminals` counts each session's terminals in the
@@ -97,14 +103,19 @@ pub(super) fn window_picker_items(
     foreign_layouts: &HashMap<phux_protocol::ids::SessionId, ArrangementDoc>,
     terminals: Option<&HashMap<phux_protocol::ids::SessionId, usize>>,
     focused: Option<phux_protocol::ids::SessionId>,
+    order: &[SessionKey],
 ) -> Vec<SelectItem> {
-    // Order sessions: current first, then the rest alphabetically by name
-    // for a deterministic layout.
+    // Order sessions: current first, then the stored order, then the rest
+    // alphabetically by name for a deterministic layout.
+    let rank = |s: &phux_protocol::wire::info::SessionInfo| session_order::rank(order, s.key);
     let mut ordered: Vec<&phux_protocol::wire::info::SessionInfo> = sessions.iter().collect();
     ordered.sort_by(|a, b| {
         let a_cur = Some(a.id) == focused;
         let b_cur = Some(b.id) == focused;
-        b_cur.cmp(&a_cur).then_with(|| a.name.cmp(&b.name))
+        b_cur
+            .cmp(&a_cur)
+            .then_with(|| rank(a).cmp(&rank(b)))
+            .then_with(|| a.name.cmp(&b.name))
     });
 
     let mut items = Vec::new();

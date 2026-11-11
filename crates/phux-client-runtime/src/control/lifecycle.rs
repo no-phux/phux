@@ -1,5 +1,6 @@
 //! Construction, observation, and the connection lifecycle.
 
+use super::subscriptions::{KERNEL_KNOWN, Origin, STREAMED};
 #[cfg(feature = "engine")]
 use super::{Arc, EngineError, Publication, Scroll};
 use super::{
@@ -8,6 +9,7 @@ use super::{
     SessionRecovery, Status, Topology, ViewportInfo, agent_delivery, approvals, extensions,
     geometry, global_metadata, org_plane, organization, roster, topology,
 };
+use phux_protocol::ids::ResourceKind;
 
 impl ControlPlane {
     /// A control plane that has opened no connection.
@@ -42,19 +44,14 @@ impl ControlPlane {
             topology: None,
             listings: topology::Listings::default(),
             active_attach_id: None,
-            attach_terminals: HashSet::new(),
+            subscriptions: super::subscriptions::Subscriptions::default(),
             attached_session: None,
             selected_session: None,
-            terminal_attached: HashSet::new(),
             preserve_terminal_geometry: HashSet::new(),
             terminal_roles: HashMap::new(),
             geometry_bootstrapped: HashSet::new(),
             stream_recoveries: HashSet::new(),
-            own_spawns: HashSet::new(),
-            agent_streams: HashSet::new(),
             agent_catalog: Vec::new(),
-            agent_subscriptions: HashMap::new(),
-            retired_agents: HashSet::new(),
             agent_delivery: agent_delivery::AgentDelivery::default(),
             own_client_id: None,
             pending: HashMap::new(),
@@ -293,7 +290,7 @@ impl ControlPlane {
     /// Whether `terminal_id` belongs to the active session attach.
     #[must_use]
     pub fn active_attach_contains(&self, terminal_id: &ResourceId) -> bool {
-        self.attach_terminals.contains(terminal_id)
+        self.subscriptions.has(terminal_id, Origin::SessionAttach)
             && self
                 .engine
                 .as_ref()
@@ -304,9 +301,7 @@ impl ControlPlane {
     /// control plane, including a manual binding's explicit operations.
     #[must_use]
     pub fn terminal_is_admitted(&self, terminal_id: &ResourceId) -> bool {
-        (self.attach_terminals.contains(terminal_id)
-            || self.terminal_attached.contains(terminal_id)
-            || self.own_spawns.contains(terminal_id))
+        self.subscriptions.has_any(terminal_id, STREAMED)
             && self
                 .engine
                 .as_ref()
@@ -324,7 +319,9 @@ impl ControlPlane {
         }
         self.terminal_roles
             .insert(terminal_id.clone(), role_policy.unwrap_or_default());
-        self.terminal_attached.insert(terminal_id.clone())
+        let kind = self.resource_kind_of(terminal_id);
+        self.subscriptions
+            .insert(terminal_id, kind, Origin::AttachResource)
     }
 
     /// Record a server pump created by a manual binding's successful spawn.
@@ -332,7 +329,8 @@ impl ControlPlane {
         if self.terminal_is_admitted(terminal_id) {
             return false;
         }
-        self.own_spawns.insert(terminal_id.clone())
+        self.subscriptions
+            .insert(terminal_id, ResourceKind::Terminal, Origin::OwnSpawn)
     }
 
     /// Release one explicitly withdrawn terminal from both the attach
@@ -347,10 +345,7 @@ impl ControlPlane {
         self.preserve_terminal_geometry.remove(terminal_id);
         self.terminal_roles.remove(terminal_id);
         self.geometry_bootstrapped.remove(terminal_id);
-        let known = self.attach_terminals.remove(terminal_id)
-            | self.terminal_attached.remove(terminal_id)
-            | self.own_spawns.remove(terminal_id)
-            | self.agent_streams.remove(terminal_id);
+        let known = self.subscriptions.remove_all(terminal_id, KERNEL_KNOWN);
         // Detach discards undrained publications. A later
         // `AgentSessionDeclared` clears that fence so the same id can commit
         // again. The stamp is taken here, before the kernel forgets the stream.
@@ -385,15 +380,15 @@ impl ControlPlane {
         // that just ended, and feeding it against fresh per-connection
         // state would be a protocol error.
         let _ = self.take_inbound();
-        self.terminal_attached.clear();
+        self.subscriptions.clear(Origin::AttachResource);
         self.terminal_roles.clear();
         self.stream_recoveries.clear();
-        self.own_spawns.clear();
+        self.subscriptions.clear(Origin::OwnSpawn);
         self.command_states.clear();
         self.handshake_ready = false;
         self.attach_ended = false;
         self.active_attach_id = None;
-        self.attach_terminals.clear();
+        self.subscriptions.clear(Origin::SessionAttach);
         self.attached_session = None;
         self.selected_session = None;
         self.input_replay.connection_lost();
@@ -459,12 +454,12 @@ impl ControlPlane {
             engine.reset_connection();
         }
         self.active_attach_id = None;
-        self.attach_terminals.clear();
+        self.subscriptions.clear(Origin::SessionAttach);
         self.attached_session = None;
         self.selected_session = None;
-        self.terminal_attached.clear();
+        self.subscriptions.clear(Origin::AttachResource);
         self.terminal_roles.clear();
-        self.agent_streams.clear();
+        self.subscriptions.clear(Origin::AgentDeclared);
         self.command_states.clear();
         self.preserve_terminal_geometry.clear();
         self.geometry_bootstrapped.clear();

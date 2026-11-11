@@ -209,6 +209,7 @@ impl CtxFixture {
                 foreign_agents: &self.foreign_agents,
                 foreign_attention: &self.foreign_attention,
                 project_tags: &self.project_tags,
+                session_order: &[],
                 collapsed_projects: &self.collapsed_projects,
                 review: &self.review,
             },

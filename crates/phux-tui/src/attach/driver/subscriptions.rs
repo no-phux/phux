@@ -92,6 +92,10 @@ pub(super) struct PeerWatch {
     pub(super) stored_project_tag: Option<(String, String)>,
     /// In-flight `GET` of `phux.session.project/v1`.
     pub(super) project_tag_pending: Option<u32>,
+    /// The stored session order (`phux.session-order/v1`), first on top.
+    pub(super) session_order: Vec<phux_protocol::ids::SessionKey>,
+    /// In-flight `GET` of that key.
+    pub(super) session_order_pending: Option<u32>,
     /// ADR-0168: project groups collapsed in this client's sidebar, read
     /// from and written to the state dir.
     pub(super) collapsed_projects: std::collections::BTreeSet<String>,
@@ -121,6 +125,7 @@ impl PeerWatch {
             foreign_agents: &self.foreign_agents,
             foreign_attention: &self.foreign_attention,
             project_tags: &self.project_tags,
+            session_order: &self.session_order,
             collapsed_projects: &self.collapsed_projects,
             review,
         }

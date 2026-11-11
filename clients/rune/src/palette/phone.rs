@@ -3,6 +3,7 @@
 //! and what needs a desktop is left out.
 
 use phux_client_runtime::control::Topology;
+use phux_protocol::ids::SessionKey;
 
 use super::{Item, Target, session_items, terminal_items, theme_items};
 use crate::keys::{COMMANDS, Command, Shortcut, command};
@@ -53,14 +54,19 @@ fn action(command: &Command, native: bool) -> Item {
 
 /// A phone's empty-query order: its first commands, terminals, sessions,
 /// `extra` (the desk's own rows), the remaining commands, then themes.
-pub fn items(topology: Option<&Topology>, native: bool, extra: Vec<Item>) -> Vec<Item> {
+pub fn items(
+    topology: Option<&Topology>,
+    order: &[SessionKey],
+    native: bool,
+    extra: Vec<Item>,
+) -> Vec<Item> {
     let mut out: Vec<Item> = FIRST
         .iter()
         .filter_map(|shortcut| command(*shortcut))
         .map(|command| action(command, native))
         .collect();
     out.extend(terminal_items(topology));
-    out.extend(session_items(topology));
+    out.extend(session_items(topology, order));
     out.extend(extra);
     let rest = COMMANDS.iter().filter(|command| {
         command.listed && !FIRST.contains(&command.action) && !DESKTOP.contains(&command.action)
@@ -76,7 +82,7 @@ mod tests {
 
     #[test]
     fn a_phone_lists_its_commands_first_without_chords_or_desktop_rows() {
-        let list = items(None, true, Vec::new());
+        let list = items(None, &[], true, Vec::new());
         let titles: Vec<&str> = list.iter().map(|item| item.title.as_str()).collect();
         assert_eq!(&titles[..3], ["New Tab", "Paste", "Find in Terminal"]);
         assert!(titles.contains(&"Change Computer"));
@@ -89,7 +95,7 @@ mod tests {
         let mut seen = std::collections::HashSet::new();
         assert!(actions.into_iter().all(|item| seen.insert(&item.title)));
         // The desktop-hosted preview keeps the shared name.
-        let preview = items(None, false, Vec::new());
+        let preview = items(None, &[], false, Vec::new());
         assert!(
             preview
                 .iter()

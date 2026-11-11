@@ -204,19 +204,19 @@ impl InheritedUpgradeEnv {
 }
 
 /// Everything the re-exec'd image must inherit needs `FD_CLOEXEC` cleared: the
-/// blob, the listener, every pane master, and every delegated socket.
+/// blob, the listener, every descriptor a kind's cut carries (a Terminal's
+/// PTY master), and every delegated socket.
 pub(super) fn clear_inherited_cloexec(
     blob_fd: RawFd,
     listener_fd: RawFd,
     blob: &StateBlob,
+    cuts: &[Box<dyn crate::runtime::apps::UpgradeCut>],
 ) -> Result<FdFlagsGuard, UpgradeError> {
     let mut fd_flags = FdFlagsGuard::new();
     fd_flags.clear_cloexec(blob_fd)?;
     fd_flags.clear_cloexec(listener_fd)?;
-    for pane in &blob.panes {
-        if let Some(master_fd) = pane.master_fd {
-            fd_flags.clear_cloexec(master_fd)?;
-        }
+    for fd in cuts.iter().flat_map(|cut| cut.inherited_fds(blob)) {
+        fd_flags.clear_cloexec(fd)?;
     }
     for delegation in &blob.delegations {
         fd_flags.clear_cloexec(delegation::carried_fd(delegation))?;

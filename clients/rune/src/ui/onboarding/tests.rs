@@ -22,6 +22,7 @@ fn skill(agent: &str, state: &str) -> AgentSkill {
 /// found and one permission granted would show it.
 fn window(step: Step) -> Runtime<Desk> {
     let mut desk = Desk::settings_test_fixture();
+    desk.resources.images = Some(rune::ImageCache::new(std::sync::Arc::new(|| {})));
     desk.settings_open = false;
     desk.settings.theme = theme::find("midnight");
     let mut rt = Runtime::new(desk, crate::ui::view, SIZE, Env::new(true, SCALE));
@@ -87,6 +88,7 @@ fn snap(rt: &mut Runtime<Desk>, name: &str) {
 fn every_step_renders_its_parts() {
     let mut rt = window(Step::Welcome);
     assert!(has(&rt, "onboarding-continue") && has(&rt, "onboarding-skip"));
+    assert!(rt.state.fox_image().is_some(), "the brand fox, not a glyph");
     assert!(!has(&rt, "onboarding-back"), "nothing to go back to");
     snap(&mut rt, "1-welcome");
 
@@ -122,6 +124,9 @@ fn every_step_renders_its_parts() {
         assert!(!has(&rt, "grant-full_disk_access"), "granted shows Granted");
         assert!(has(&rt, "grant-screen_recording") && has(&rt, "grant-accessibility"));
         assert!(has(&rt, "grant-drag"), "the server's app to drag in");
+        let badge = rt.state.badge_image().expect("the app badge").clone();
+        assert!(badge.wait().is_ok(), "the pinned app icon decodes");
+        settle(&mut rt);
         snap(&mut rt, "3b-grant-sheet");
     }
 

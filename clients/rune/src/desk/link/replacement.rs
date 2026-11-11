@@ -34,7 +34,7 @@ impl Desk {
             .shown
             .as_ref()
             .filter(|s| s.view.is_some())
-            .map(|shown| (shown.terminal.clone(), Instant::now()));
+            .map(|shown| (shown.resource.clone(), Instant::now()));
         self.carry_document_focus(&mut next);
         *self = next;
     }

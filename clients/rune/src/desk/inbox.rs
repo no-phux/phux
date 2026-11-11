@@ -214,7 +214,7 @@ impl Desk {
         let Some(topology) = &self.topology else {
             return;
         };
-        let shown = self.shown.as_ref().map(|s| &s.terminal);
+        let shown = self.shown.as_ref().map(|s| &s.resource);
         let next = inbox::next_jump(&topology.panes, &self.activities, shown)
             .map(|p| (p.terminal_id.clone(), p.session_name.clone()));
         if let Some((terminal, session)) = next {

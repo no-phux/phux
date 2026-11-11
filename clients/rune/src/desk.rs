@@ -22,6 +22,7 @@ use crate::launch::Resolved;
 
 mod attach;
 pub(crate) mod bare;
+mod copy_mode;
 mod events;
 mod find;
 mod fleet;
@@ -47,6 +48,7 @@ pub mod pitch;
 pub mod pitlane;
 pub mod questions;
 pub mod reef;
+mod reorder;
 pub mod resources;
 mod sessions;
 mod settings;
@@ -56,8 +58,9 @@ mod tabs;
 pub mod updates;
 
 pub use layout::SplitPath;
-pub use notice::{Notice, NoticeKind, Offer};
+pub use notice::{Notice, NoticeKind};
 pub use palette::{CONTEXT_MENU, with_menus};
+pub use reorder::Grab;
 pub use settings::Category as SettingsCategory;
 pub use tabs::{Renaming, Tab};
 
@@ -112,7 +115,7 @@ type Placement = Option<(ResourceId, SplitDir)>;
 
 /// Focused resource identity, with a view only for a terminal replica.
 pub struct Shown {
-    pub terminal: ResourceId,
+    pub resource: ResourceId,
     pub view: Option<ViewId>,
 }
 
@@ -159,6 +162,8 @@ pub struct Desk {
     /// Find in the focused pane's history, while open.
     pub find: Option<find::Find>,
     pub find_query: rune::TextEdit,
+    /// Keyboard copy mode, while on.
+    pub copy_mode: Option<copy_mode::CopyMode>,
     /// The link under the pointer while ⌘ is held.
     pub pointer: links::Pointer,
     /// Everything waiting on you, and the system's view of it.
@@ -186,6 +191,8 @@ pub struct Desk {
     /// Navigation and search belong to this window, never to stored preferences.
     pub settings_ui: settings::SettingsUi,
     pub tabs: tabs::Tabs,
+    /// A tab or session drag, and the session order the server keeps.
+    pub reorder: reorder::Reorder,
     pub updater: updates::Updater,
     pub machines: machines::Machines,
     pub link: link::Link,
@@ -213,6 +220,12 @@ pub struct Desk {
     /// Bumped by every frame change of the shown terminal, so the view runs.
     pub generation: u64,
     pub font_size: f32,
+    /// The terminal font family; empty is the default.
+    pub font_family: String,
+    /// `font_family` is not behind Rune's mono slot yet.
+    font_due: bool,
+    /// `rune::text::font_epoch` when the panes were last fitted.
+    font_epoch: u64,
     /// The window's device pixels per point, as the last view build saw it.
     pub scale: Cell<f32>,
     /// Each pane's grid area in points, from its last layout.
@@ -268,78 +281,6 @@ pub struct Desk {
 }
 
 impl Desk {
-    /// Put a line in front of the user.
-    pub fn say(&mut self, kind: NoticeKind, text: impl Into<String>) {
-        self.post(kind, text.into(), None);
-    }
-
-    /// A tip with a way to act on it: `label` is the button, `action` what
-    /// pressing it does. Pressing dismisses the tip.
-    pub fn offer(&mut self, text: impl Into<String>, label: &'static str, action: fn(&mut Desk)) {
-        self.post(NoticeKind::Tip, text.into(), Some((label, action)));
-    }
-
-    /// The pressed offer's action, then the toast goes.
-    pub fn take_offer(&mut self) {
-        let Some((_, action)) = self.notice.take().and_then(|notice| notice.action) else {
-            return;
-        };
-        action(self);
-    }
-
-    /// Once per install, on the first connection: point a newcomer at the
-    /// keys worth learning first. The palette lists them; `Keyboard
-    /// Shortcuts: Essentials` reopens the list any time.
-    pub(crate) fn offer_tour(&mut self) {
-        // The tour teaches chords; a phone has the accessory bar instead.
-        if self.phone.is_some() || self.prefs.get::<bool>("tour_offered").unwrap_or(false) {
-            return;
-        }
-        let _ = self.prefs.set("tour_offered", &true);
-        self.offer(
-            "New here? A few keys do most of the work.",
-            "Show me",
-            Self::show_essentials,
-        );
-    }
-
-    fn post(&mut self, kind: NoticeKind, text: String, action: Option<Offer>) {
-        let expires = self.clock + kind.lasts();
-        self.notice = Some(Notice {
-            kind,
-            text,
-            action,
-            expires,
-        });
-        // This may come after the frame's `expire_notice`, in a handler or
-        // later in `poll`: another poll sets its timer.
-        if let Some(waker) = &self.waker {
-            waker();
-        }
-    }
-
-    pub fn dismiss_notice(&mut self) {
-        self.notice = None;
-    }
-
-    /// Take down a notice whose time is up, and wake for the one still
-    /// showing. "Uploading" stays for as long as that's true.
-    fn expire_notice(&mut self, tx: &mut Tx) -> bool {
-        let Some(notice) = &self.notice else {
-            return false;
-        };
-        if notice.kind == NoticeKind::Info && !self.uploads.is_empty() {
-            return false;
-        }
-        let left = notice.expires - self.clock;
-        if left > 0.0 {
-            tx.wake_after(Duration::from_secs_f64(left));
-            return false;
-        }
-        self.notice = None;
-        true
-    }
-
     pub fn new(resolved: &Resolved) -> Self {
         let remembered = (!resolved.aimed)
             .then(|| rune::prefs::Prefs::open(PREFS_ID).get::<String>("machine"))
@@ -358,6 +299,7 @@ impl Desk {
             .map_or(grid::DEFAULT_FONT_SIZE, |s| {
                 s.clamp(grid::MIN_FONT_SIZE, grid::MAX_FONT_SIZE)
             });
+        let font_family: String = prefs.get("font_family").unwrap_or_default();
         let sidebar_open = prefs.get("sidebar_open").unwrap_or(true);
         let settings = settings::Settings::load(&prefs);
         Self {
@@ -385,6 +327,7 @@ impl Desk {
             sidebar_peek: false,
             foot_hover: None,
             find: None,
+            copy_mode: None,
             find_query: rune::TextEdit::new(""),
             pointer: links::Pointer::default(),
             inbox: inbox::Inbox::default(),
@@ -401,6 +344,7 @@ impl Desk {
             news: news::News::load(&prefs),
             settings_ui: settings::SettingsUi::default(),
             tabs: tabs::Tabs::default(),
+            reorder: reorder::Reorder::default(),
             updater: updates::Updater::new(&prefs, resolved),
             machines: machines::Machines::new(machine, resolved.phux.clone()),
             link: link::Link::default(),
@@ -418,6 +362,9 @@ impl Desk {
             receipts: events::Receipts::default(),
             generation: 0,
             font_size,
+            font_due: !font_family.is_empty(),
+            font_family,
+            font_epoch: rune::text::font_epoch(),
             scale: Cell::new(2.0),
             areas: HashMap::new(),
             fitted: HashMap::new(),
@@ -454,6 +401,7 @@ impl Desk {
     /// Drain the runtime once. True when anything on screen may have changed.
     pub fn poll(&mut self, clock: f64, tx: &mut Tx) -> bool {
         self.clock = clock;
+        self.follow_font(tx);
         self.machines.tick_glances(clock, tx);
         let updated = self.pump_updates(tx)
             | self.finish_document_images()
@@ -468,7 +416,7 @@ impl Desk {
             return updated | self.tend_link(tx);
         };
         let (news, moved) = self.observe(&client, client.take_activity(), tx);
-        let mut changed = updated | news;
+        let mut changed = updated | news | self.take_globals(&client);
         let rearrange = updated || moved;
         changed |= self.drop_dead_views(&client);
         let opened = self.settle_home(&client) | self.open_wanted(&client);
@@ -496,6 +444,7 @@ impl Desk {
         changed |= self.autoscroll(tx);
         changed |= self.phone_touch_tick(tx);
         self.keep_find();
+        self.keep_copy_mode();
         // Also re-snaps cells after a display-scale change.
         self.fit();
         self.wake_phone_fit(tx);

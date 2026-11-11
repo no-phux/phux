@@ -113,15 +113,15 @@ fn eased(rgb: u32, ground: Color) -> Color {
     )
 }
 
-/// A short bar in `color` along the selected row's or tab's edge: the fill
+/// A short bar in `color` down the selected row's leading edge: the fill
 /// stays the theme's, so its text reads as before.
-pub fn stripe(color: Color, vertical: bool) -> El {
-    let bar = if vertical {
-        el().pin(Some(0.0), Some(7.0), None, Some(7.0)).w(3.0)
-    } else {
-        el().pin(Some(8.0), None, Some(8.0), Some(0.0)).h(2.0)
-    };
-    bar.radius(1.5).fill(color).inert().a11y_hidden()
+pub fn stripe(color: Color) -> El {
+    el().pin(Some(0.0), Some(7.0), None, Some(7.0))
+        .w(3.0)
+        .radius(1.5)
+        .fill(color)
+        .inert()
+        .a11y_hidden()
 }
 
 /// A round mark in `name`'s colour.

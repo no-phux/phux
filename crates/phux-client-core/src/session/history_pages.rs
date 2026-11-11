@@ -5,8 +5,7 @@ use super::{
     EngineEffectBuffer, GenerationId, HistoryCacheError, HistoryCursor, HistoryLoadState,
     HistoryPageCheck, HistoryPageInput, HistoryPageRejection, HistoryRejectionReason,
     HistoryStatus, HistoryUnavailableReason, KernelEffect, KernelError, KernelSend, KernelStatus,
-    Replica, ReplicaKey, ResourceId, SessionKernel, StreamId, generation_of, mismatch_error,
-    retired_error,
+    Replica, ReplicaKey, ResourceId, SessionKernel, StreamId, drain_engine_effects,
 };
 
 impl<E: EngineAdapter> SessionKernel<E> {
@@ -77,7 +76,12 @@ impl<E: EngineAdapter> SessionKernel<E> {
         effects: &mut EffectBuffer,
     ) {
         let damage_allowed = !self.attach_blocks(terminal_id);
-        self.drain_engine_effects(&replica_key, damage_allowed, effects);
+        drain_engine_effects::<E>(
+            &mut self.engine_effects,
+            &replica_key,
+            damage_allowed,
+            effects,
+        );
         effects.push(KernelEffect::Status(KernelStatus::History {
             key: replica_key.clone(),
             status: history_status,
@@ -98,8 +102,7 @@ impl<E: EngineAdapter> SessionKernel<E> {
         effects: &mut EffectBuffer,
     ) -> Result<(), KernelError<E::Error>> {
         self.ensure_open(page.terminal_id)?;
-        let replica =
-            Self::published_replica(&mut self.terminals, page.terminal_id, page.generation)?;
+        let replica = Self::published_replica(&mut self.lanes, page.terminal_id, page.generation)?;
         if replica.history.is_locally_cleared() {
             return Ok(());
         }
@@ -174,18 +177,7 @@ impl<E: EngineAdapter> SessionKernel<E> {
             stream_id,
             bootstrap_id,
         };
-        let state = self
-            .terminals
-            .get_mut(terminal_id)
-            .ok_or_else(|| KernelError::UnknownTerminal(terminal_id.clone()))?;
-        if state.retired.contains_key(&generation) {
-            return Err(retired_error(terminal_id, generation));
-        }
-        let replica = state
-            .published
-            .as_mut()
-            .filter(|replica| generation_of(&replica.key) == generation)
-            .ok_or_else(|| mismatch_error(terminal_id, generation))?;
+        let replica = Self::published_replica(&mut self.lanes, terminal_id, generation)?;
         let cursor = HistoryCursor::new(cursor);
         let state = match reason {
             HistoryUnavailableReason::Stale => HistoryLoadState::Stale,
@@ -231,18 +223,7 @@ impl<E: EngineAdapter> SessionKernel<E> {
             stream_id,
             bootstrap_id,
         };
-        let state = self
-            .terminals
-            .get_mut(terminal_id)
-            .ok_or_else(|| KernelError::UnknownTerminal(terminal_id.clone()))?;
-        if state.retired.contains_key(&generation) {
-            return Err(retired_error(terminal_id, generation));
-        }
-        let replica = state
-            .published
-            .as_mut()
-            .filter(|replica| generation_of(&replica.key) == generation)
-            .ok_or_else(|| mismatch_error(terminal_id, generation))?;
+        let replica = Self::published_replica(&mut self.lanes, terminal_id, generation)?;
         let cursor = HistoryCursor::new(cursor);
         let next_request =
             Self::retry_rejected_history(replica, &cursor, reason, required_bytes, required_rows)

@@ -57,16 +57,23 @@ pub(super) fn run_agent_set(
             ),
         );
     }
-    with_target_pane(target, socket, "agent set", json, move |conn, pane| {
-        Box::pin(async move {
-            // `set_record` reads back: SET_METADATA has no reply frame, so the
-            // read-back proves the write landed.
-            let (answer, degradation) =
-                phux_client::agent_record::set_record(conn, 100, &pane, &record).await?;
-            warn_interleaved_degradation(&degradation);
-            Ok(report_outcome(json, Write::Set, &pane, answer))
-        })
-    })
+    with_target_pane(
+        target,
+        socket,
+        "agent set",
+        None,
+        json,
+        move |conn, pane| {
+            Box::pin(async move {
+                // `set_record` reads back: SET_METADATA has no reply frame, so the
+                // read-back proves the write landed.
+                let (answer, degradation) =
+                    phux_client::agent_record::set_record(conn, 100, &pane, &record).await?;
+                warn_interleaved_degradation(&degradation);
+                Ok(report_outcome(json, Write::Set, &pane, answer))
+            })
+        },
+    )
 }
 
 /// `phux agent clear [TARGET] [--json]` — delete the target pane's
@@ -77,15 +84,22 @@ pub(super) fn run_agent_clear(
     json: bool,
     socket: Option<PathBuf>,
 ) -> ExitCode {
-    with_target_pane(target, socket, "agent clear", json, move |conn, pane| {
-        Box::pin(async move {
-            // Same load-bearing confirmation round-trip as `set`.
-            let (answer, degradation) =
-                phux_client::agent_record::clear_record(conn, 100, &pane).await?;
-            warn_interleaved_degradation(&degradation);
-            Ok(report_outcome(json, Write::Clear, &pane, answer))
-        })
-    })
+    with_target_pane(
+        target,
+        socket,
+        "agent clear",
+        None,
+        json,
+        move |conn, pane| {
+            Box::pin(async move {
+                // Same load-bearing confirmation round-trip as `set`.
+                let (answer, degradation) =
+                    phux_client::agent_record::clear_record(conn, 100, &pane).await?;
+                warn_interleaved_degradation(&degradation);
+                Ok(report_outcome(json, Write::Clear, &pane, answer))
+            })
+        },
+    )
 }
 
 /// Which write a read-back is confirming.
@@ -181,10 +195,12 @@ fn usage_error(json: bool, message: &str) -> ExitCode {
 /// Resolve `target` to exactly one pane (focused-pane fallback, like
 /// `agent show`) and run `body` against it on a fresh connection; `body`
 /// decides the exit code. Failures before `body` report on `json`'s channel.
+/// A `terminal_only` verb refuses a resource of another kind first.
 pub(super) fn with_target_pane<F>(
     target: Option<&str>,
     socket: Option<PathBuf>,
     verb: &'static str,
+    terminal_only: Option<phux_client::read::Verb>,
     json: bool,
     body: F,
 ) -> ExitCode
@@ -236,6 +252,12 @@ where
             // A miss under a partial fleet view is unresolved, not absent.
             return partial::report_target_miss_for(json, target, &degradation);
         };
+        if let Some(only) = terminal_only {
+            let resolved = phux_client::read::Resolved::in_snapshot(&snapshot, pane.clone());
+            if let Err(err) = phux_client::read::require_terminal(only, &resolved) {
+                return crate::commands::read_kind::wrong_kind(json, &err);
+            }
+        }
         // Resolved, but from a narrower world than the user assumed.
         partial::warn_partial_view(verb, &degradation);
         match body(&mut conn, pane).await {

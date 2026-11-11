@@ -240,12 +240,12 @@ impl ControlPlane {
         let events = {
             let Self {
                 agent_delivery,
-                agent_subscriptions,
+                subscriptions,
                 ..
             } = self;
             agent_delivery.release(|id| {
-                agent_subscriptions
-                    .get(id)
+                subscriptions
+                    .follow(id)
                     .map(|subscription| subscription.info.clone())
                     .unwrap_or_default()
             })

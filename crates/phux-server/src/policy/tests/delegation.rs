@@ -13,8 +13,8 @@ use phux_protocol::wire::frame::{Command, FrameKind, TerminalSignal};
 use phux_protocol::wire::frame::{AttachTarget, InputMode, ReportedAgentState};
 
 use super::{
-    ConnectionGrant, World, admits, admits_command, agent_child, attach, command, get_screen,
-    organization_samples, samples, scoped, world,
+    ConnectionGrant, World, admits, admits_command, agent_child, attach, command,
+    controlled_surface, get_screen, organization_samples, samples, scoped, spawn, world,
 };
 use crate::delegation::{AGENT_VERBS, DelegatedCredential, DelegationError, DelegationRequest};
 use crate::state::ClientId;
@@ -394,4 +394,25 @@ fn paired_policy_grants_act_as_the_principal_the_record_was_enrolled_for() {
             .kind(),
         PrincipalKind::Human
     );
+}
+
+/// A delegated agent holds no `CREATE`, so it opens no document beside its
+/// own pane, with a control class (a page included) or without one.
+#[test]
+fn a_delegated_agent_opens_no_document() {
+    use phux_protocol::wire::frame::ControlClass;
+    let mut world = world();
+    let grant = agent(&mut world);
+    let parent = world.alpha.clone();
+    let classes = ControlClass::ALL.map(Some);
+    for control in std::iter::once(None).chain(classes) {
+        let surface = phux_protocol::wire::frame::SpawnResource {
+            control,
+            ..controlled_surface(&parent, ControlClass::Page)
+        };
+        assert!(
+            !admits(&world, &grant, &spawn(None, None, Some(surface))),
+            "a delegated agent opened a {control:?} surface"
+        );
+    }
 }
