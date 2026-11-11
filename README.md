@@ -117,7 +117,8 @@ $ echo $?
 `snapshot` reads a screen, `send-keys` types into it, `wait` blocks until
 text appears or the pane goes quiet, and `watch --json` streams events. The
 same operations are an MCP server (`phux mcp`), so an agent can use the
-terminals you can see.
+terminals you can see, and the documents, accessibility trees and screen
+surfaces phux hosts ([resource kinds](./docs/resource-kinds.md)).
 
 [Scripting](./docs/scripting.md) ·
 [MCP](./docs/agents.md#mcp) ·

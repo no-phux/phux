@@ -2,9 +2,10 @@
 //!
 //! Only a server sends these. A Terminal profile or engine codec names a
 //! choice from the client's own offer, so one the client does not know is
-//! malformed, not newer: skipping `HELLO_OK` would hang the handshake. A
-//! codec tag the client does not know is another kind's newer codec: it
-//! decodes as `Unknown` and the client refuses only that resource.
+//! malformed, not newer: skipping `HELLO_OK` would hang the handshake. Every
+//! other kind's codec is fixed by the kind and never offered, so a codec tag
+//! the client does not know is another kind's newer codec: it decodes as
+//! `Unknown` and the client refuses only that resource.
 
 use crate::caps::{
     BootstrapCodec, BootstrapProfile, BootstrapStreamProfile, EngineCodec, EngineFeatureSet,

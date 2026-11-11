@@ -11,7 +11,8 @@
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 #[non_exhaustive]
 pub enum Layer {
-    /// Terminal substrate. Always implemented; always implied.
+    /// Resource substrate: attach, streams, input, and resource lifecycle
+    /// for every kind. Always implemented; always implied.
     L1 = 0x01,
     /// Collection lifecycle (OPTIONAL). SPEC §7.3 / §11.L2.
     L2 = 0x02,
@@ -176,7 +177,9 @@ define_server_features! {
     /// The server serves `AgentSession` resources as well as Terminals
     /// (spawn fields, `APPEND_RESOURCE_OUTPUT`, the JSONL codec, close
     /// reasons, snapshot facets). All shapes are skip-by-length additive; the
-    /// bit tells a client the kind it asked for is the kind it got.
+    /// bit tells a client the kind it asked for is the kind it got. The
+    /// document kinds have their own bits in [`ServerFeatureExt`]
+    /// (`ACCESSIBILITY_TREE`, `PIXEL_SURFACE`, `TYPED_DOCUMENT`).
     ResourceKinds = RESOURCE_KINDS = 0x0000_4000,
     /// The server answers `LIST_DIRECTORY` for its own host
     /// (`docs/protocol.md#commands-events-resources`). A client MUST see the bit first: a 1.x
@@ -209,8 +212,9 @@ define_server_features! {
     /// bit before sending the command.
     ConditionalKill = CONDITIONAL_KILL = 0x0020_0000,
     /// The connection may use QUIC multi-stream (ADR-0115): one control
-    /// stream plus one client-opened bidi stream per attached Terminal. A
-    /// client MUST NOT open a second QUIC stream without it. QUIC-only.
+    /// stream plus one client-opened bidi stream per attached Terminal;
+    /// every other kind stays on the control stream. A client MUST NOT open
+    /// a second QUIC stream without it. QUIC-only.
     QuicStreams = QUIC_STREAMS = 0x0040_0000,
     /// The server accepts `OPEN_LISTENER` on its Unix socket (ADR-0120). A
     /// client MUST see the bit before sending the command.

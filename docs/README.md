@@ -37,6 +37,7 @@ unshipped experiment, and phone apps are not available yet. See
 - [Driving terminals from scripts](./scripting.md): snapshot, send keys, run, wait, with JSON output and exit codes.
 - [Runnable examples](../examples/README.md): small programs for learning the CLI and integrations.
 - [Coding agents](./agents.md): see which agent needs you, connect your agent's host, and use the MCP server.
+- [Mail across a hub](./hub-mail.md): shared mail and path claims between a hub and the machines joined to it.
 - [Agent skill setup](./agent-skill.md): `phux skill setup` teaches every installed agent about phux.
 - [ACP sessions](./acp.md): run an agent through the Agent Client Protocol, and answer its permission requests yourself.
 
@@ -90,7 +91,8 @@ Generated from the `phux` binary, so they match the code these docs describe.
 - [Decisions](./decisions.md): the constraints the code keeps, and why.
 - [Organization](./organization.md): how the server owns sessions and their contents.
 - [Substrate](./substrate.md): how people, hosts, and agents fit together.
-- [Resource kinds beyond terminals](./resource-kinds.md): the design for accessibility-tree, pixel and browser resources, and the order it lands in.
+- [Resource kinds beyond terminals](./resource-kinds.md): accessibility-tree, pixel-surface and typed-document resources, what is not done yet, and how they were built.
+- [Mirror formats and platforms](./mirrors.md): surface frame formats, the Linux tree and surface mirrors, and the notice shown while input arrives.
 - [Held actions](./approvals.md): which actions a key's scope can hold for approval, and who may decide them.
 - [Authority over pages, windows, and displays](./authority.md): who may watch or control a mirrored page, window, or display, and why no terminal grant does.
 - [Applications as resources](./applications.md): `phux spawn --app`, launching an app with its mirrors and quitting it with its pane.
