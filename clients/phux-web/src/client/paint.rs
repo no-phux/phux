@@ -37,6 +37,7 @@ impl App {
             self.ctx
                 .fill_rect(0.0, 0.0, geometry.width, geometry.height);
         }
+        self.paint_documents();
         self.painted.replace(Some(grid));
         self.painted_cursor_rows.replace(cursor_rows);
         self.painted_marks.replace(marks);

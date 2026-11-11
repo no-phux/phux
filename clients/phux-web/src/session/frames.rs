@@ -5,9 +5,10 @@ use super::*;
 impl Connection {
     /// Reduce one decoded server frame through the shared kernel.
     ///
-    /// A fault on an `AgentSession` stream (the kernel retires that generation
-    /// and asks for a resync) never fails the connection: the browser cannot
-    /// reopen an agent stream, and a badge is not worth the terminal.
+    /// A fault on an `AgentSession` or document stream (the kernel retires
+    /// that generation and asks for a resync) never fails the connection: the
+    /// browser cannot reopen the stream, and a badge or a tile is not worth
+    /// the terminal.
     pub fn on_frame(&mut self, frame: FrameKind) -> Outcome {
         if self.failed {
             return Outcome::default();
@@ -41,7 +42,10 @@ impl Connection {
         {
             return Outcome::default();
         }
-        let agent_frame = frame_resource_id(&frame).is_some_and(|id| self.is_agent_session(id));
+        // A document's fault likewise costs only its tile, which says so.
+        let optional = frame_resource_id(&frame)
+            .filter(|id| self.is_agent_session(id) || self.is_document(id))
+            .cloned();
         let split_frame = frame_resource_id(&frame).is_some_and(|id| {
             self.pending_split
                 .as_ref()
@@ -49,9 +53,12 @@ impl Connection {
                 == Some(id)
         });
         let mut outcome = self.reduce_frame(frame);
-        if agent_frame && outcome.fatal.is_some() {
+        if let Some(id) = &optional
+            && outcome.fatal.take().is_some()
+        {
             self.failed = false;
-            outcome.fatal = None;
+            self.lose_document(id);
+            outcome.render = true;
         }
         if split_frame && let Some(message) = outcome.fatal.take() {
             self.failed = false;
@@ -169,7 +176,11 @@ impl Connection {
                     profile,
                     phux_protocol::BootstrapStreamProfile::Unknown { .. }
                 );
-                if applied && !refused && !self.is_agent_session(&terminal_id) {
+                if applied
+                    && !refused
+                    && !self.is_agent_session(&terminal_id)
+                    && !self.is_document(&terminal_id)
+                {
                     self.focused_terminal
                         .get_or_insert_with(|| terminal_id.clone());
                 }

@@ -85,8 +85,7 @@ fn argv(
 
 impl Desk {
     pub(in crate::desk) fn resource_items(&self) -> Vec<Item> {
-        let mut items = self.document_items();
-        items.push(Self::screens_item());
+        let mut items = vec![Self::screens_item()];
         items.extend(
             [Source::Page, Source::Tree, Source::Surface].map(|source| Item {
                 title: format!("Start {} mirror…", source.verb()),
@@ -95,40 +94,6 @@ impl Desk {
                 target: Target::Mirror(source),
             }),
         );
-        items
-    }
-
-    fn document_items(&self) -> Vec<Item> {
-        let Some(client) = &self.client else {
-            return Vec::new();
-        };
-        let org = client.organization();
-        let mut items: Vec<_> = self
-            .resources
-            .entries
-            .iter()
-            .filter_map(|(id, doc)| {
-                // A satellite's document has no session here: its host names it.
-                let session = match id.host() {
-                    Some(host) => host.as_str().to_owned(),
-                    None => org.session(&doc.record.session)?.name.clone(),
-                };
-                Some(Item {
-                    title: doc
-                        .record
-                        .name
-                        .clone()
-                        .unwrap_or_else(|| format!("{:?}", doc.record.kind)),
-                    detail: format!("{session} · {id} · {}", self.mirror_label(id)),
-                    kind: "document",
-                    target: Target::Terminal {
-                        id: id.clone(),
-                        session,
-                    },
-                })
-            })
-            .collect();
-        items.sort_by(|a, b| a.detail.cmp(&b.detail));
         items
     }
 

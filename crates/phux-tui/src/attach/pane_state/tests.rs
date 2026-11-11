@@ -1,6 +1,8 @@
 use super::*;
 use crate::attach::render::ReplicaWalk;
 
+mod kitty;
+
 /// The hub's unreachable wording names a host, and only
 /// that host's panes go grey. A later return clears them for replay.
 #[test]
@@ -66,35 +68,6 @@ fn every_hub_unreachable_shape_names_its_host() {
 }
 
 #[test]
-fn first_live_kitty_render_restores_a_visible_image() {
-    let mut slot = PaneSlot::new_with_size(10, 5).expect("slot");
-    slot.terminal
-        .vt_write(b"\x1b_Ga=T,f=32,s=1,v=1,i=77,q=2;/wAA/w==\x1b\\");
-    let mut out = Vec::new();
-    slot.renderer
-        .render(ReplicaWalk::for_test(&slot.terminal), &mut out)
-        .expect("render");
-    let mut receiver = PaneSlot::new_with_size(10, 5).expect("receiver");
-    receiver.terminal.vt_write(&out);
-    let graphics = receiver.terminal.kitty_graphics().unwrap();
-    let image = graphics.image(77).expect("replayed image");
-    assert_eq!(image.data().unwrap().unwrap(), &[255, 0, 0, 255]);
-    let mut iter = libghostty_vt::kitty::graphics::PlacementIterator::new().unwrap();
-    let mut placements = iter.update(&graphics).unwrap();
-    let placement = placements.next().expect("visible placement");
-    let size = placement.pixel_size(&image, &receiver.terminal).unwrap();
-    assert_eq!((size.width, size.height), (1, 1));
-    assert_eq!(
-        placement
-            .viewport_pos(&image, &receiver.terminal)
-            .unwrap()
-            .map(|p| (p.col, p.row)),
-        Some((0, 0))
-    );
-    assert!(placements.next().is_none());
-}
-
-#[test]
 fn a_fresh_input_origin_badges_the_label_until_it_expires() {
     let id = ResourceId::local(1);
     let mut slot = PaneSlot::new().expect("slot");
@@ -117,102 +90,6 @@ fn a_fresh_input_origin_badges_the_label_until_it_expires() {
         pane_label(&kernel, &panes, &id)
             .expect("label")
             .origin
-            .is_none()
-    );
-}
-
-fn kitty_commands(bytes: &[u8], action: &[u8]) -> usize {
-    let needle = [b"\x1b_Ga=".as_slice(), action].concat();
-    bytes.windows(needle.len()).filter(|w| *w == needle).count()
-}
-
-fn paint_slot(slot: &mut PaneSlot) -> Vec<u8> {
-    let mut out = Vec::new();
-    slot.renderer
-        .render(ReplicaWalk::for_test(&slot.terminal), &mut out)
-        .expect("render");
-    out
-}
-
-/// An image on screen is sent once: clean repaints and keystrokes that
-/// repaint the prompt under it carry no image bytes and keep the front
-/// buffer, so the keystroke repaints only its own cells.
-#[test]
-fn kitty_images_are_sent_once_not_on_every_repaint() {
-    let mut slot = PaneSlot::new_with_size(10, 5).expect("slot");
-    slot.terminal
-        .vt_write(b"\x1b_Ga=T,f=32,s=1,v=1,i=77,q=2;/wAA/w==\x1b\\\r\n\r\n$ ");
-    let first = paint_slot(&mut slot);
-    assert_eq!(kitty_commands(&first, b"t,"), 1);
-    assert_eq!(kitty_commands(&first, b"p,"), 1);
-
-    assert!(paint_slot(&mut slot).is_empty(), "a clean frame is silent");
-    // Two dirty paints: the first may rewrite its row whole (the image's
-    // placement forgot the front), the second must be a cell diff.
-    slot.terminal.vt_write(b"l");
-    let _ = paint_slot(&mut slot);
-    slot.terminal.vt_write(b"s");
-    let typed = paint_slot(&mut slot);
-    assert!(!typed.windows(3).any(|w| w == b"\x1b_G"), "{typed:?}");
-    assert!(
-        !String::from_utf8_lossy(&typed).contains("$ l"),
-        "{typed:?}"
-    );
-}
-
-/// A forced paint and an outside invalidation each assume the outer terminal
-/// lost its images and re-send them once.
-#[test]
-fn kitty_residency_resets_on_forced_paint_and_invalidation() {
-    let mut slot = PaneSlot::new_with_size(10, 5).expect("slot");
-    slot.terminal
-        .vt_write(b"\x1b_Ga=T,f=32,s=1,v=1,i=77,q=2;/wAA/w==\x1b\\");
-    let _ = paint_slot(&mut slot);
-
-    let mut forced = Vec::new();
-    slot.renderer
-        .render_at_full(
-            ReplicaWalk::for_test(&slot.terminal),
-            &mut forced,
-            (0, 0),
-            (10, 5),
-        )
-        .expect("forced paint");
-    assert_eq!(kitty_commands(&forced, b"t,"), 1);
-    assert!(paint_slot(&mut slot).is_empty());
-
-    slot.renderer.invalidate_front();
-    assert_eq!(kitty_commands(&paint_slot(&mut slot), b"t,"), 1);
-    assert!(paint_slot(&mut slot).is_empty());
-}
-
-/// An image deleted inside the pane is deleted from the outer terminal.
-#[test]
-fn a_deleted_kitty_image_is_deleted_from_the_outer_terminal() {
-    let mut slot = PaneSlot::new_with_size(10, 5).expect("slot");
-    slot.terminal
-        .vt_write(b"\x1b_Ga=T,f=32,s=1,v=1,i=77,q=2;/wAA/w==\x1b\\");
-    let mut receiver = PaneSlot::new_with_size(10, 5).expect("receiver");
-    receiver.terminal.vt_write(&paint_slot(&mut slot));
-    assert!(
-        receiver
-            .terminal
-            .kitty_graphics()
-            .unwrap()
-            .image(77)
-            .is_some()
-    );
-
-    slot.terminal.vt_write(b"\x1b_Ga=d,d=I,i=77,q=2;\x1b\\");
-    let deleted = paint_slot(&mut slot);
-    assert_eq!(kitty_commands(&deleted, b"d,d=I,i=77,"), 1);
-    receiver.terminal.vt_write(&deleted);
-    assert!(
-        receiver
-            .terminal
-            .kitty_graphics()
-            .unwrap()
-            .image(77)
             .is_none()
     );
 }

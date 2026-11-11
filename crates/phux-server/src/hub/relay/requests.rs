@@ -86,12 +86,11 @@ impl RelaySession {
                     return None;
                 }
                 let request_id = self.allocate_request_id();
+                // An absent record is the default kind, a Terminal.
                 let kind = spawn
                     .resource
                     .as_ref()
-                    .map_or(phux_protocol::ids::ResourceKind::Terminal, |resource| {
-                        resource.kind
-                    });
+                    .map_or_else(Default::default, |resource| resource.kind);
                 self.pending_spawns.insert(request_id, (reply, kind));
                 Some(self.encode(&FrameKind::SpawnResource {
                     request_id,

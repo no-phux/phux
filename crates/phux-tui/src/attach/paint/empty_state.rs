@@ -1,7 +1,12 @@
 //! Screens with no pane to draw: the empty and not-arranged session states,
 //! and the centered message lines they (and placeholder tiles) are made of.
 
+use std::collections::HashMap;
 use std::io::Write;
+
+use phux_protocol::ids::ResourceId;
+
+use crate::attach::pane_state::PaneSlot;
 
 use super::{
     ChromeCtx, FrameBlock, StatusBarPaint, end_of_frame_cursor, paint_bar_after_pane,
@@ -57,11 +62,14 @@ pub(in crate::attach) fn paint_empty_session<W: crate::attach::RenderSink>(
     out: &mut W,
     chrome: &mut ChromeCtx<'_>,
     lines: &[String],
+    panes: &mut HashMap<ResourceId, PaneSlot>,
 ) -> StatusBarPaint {
     let mut block = FrameBlock::begin(out);
     let content = chrome.content_layout().rect;
     let origin = Some((content.x, content.y));
     let _ = block.write_all(b"\x1b[2J\x1b[H");
+    // No pane shows, so none keeps its kitty images.
+    crate::attach::pane_state::release_hidden_kitty(&mut block, panes, |_| false);
     write_centered_lines(&mut block, content, lines);
     // No grid is drawn here, so the strip's rule has nothing to tee into.
     repaint_sidebar_strip(&mut block, chrome, &[]);
@@ -85,5 +93,44 @@ pub(in crate::attach) fn write_centered_lines<W: Write>(
         let col = rect.x.saturating_add(rect.w.saturating_sub(width) / 2);
         let _ = crate::attach::render::write_cup(out, row, col);
         let _ = out.write_all(text.as_bytes());
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The empty state says what happened and names the `new-window` chord
+    /// (or the palette), with no pane owning the cursor.
+    #[test]
+    fn empty_session_state_names_the_new_window_action() {
+        let lines = empty_session_lines(Some("C-a c"));
+        assert_eq!(
+            lines[..3],
+            [
+                "Empty session",
+                "Open a new tab to start a terminal.",
+                "C-a c  new tab"
+            ]
+        );
+        assert!(empty_session_lines(None)[2].contains("command palette"));
+        let mut out: Vec<u8> = Vec::new();
+        let theme = crate::render::theme::Theme::default();
+        let mut chrome = ChromeCtx {
+            viewport: (80, 24),
+            sidebar: None,
+            status_bar: None,
+            sidebar_painter: None,
+            session_name: "parked",
+            theme: &theme,
+            leaves: &crate::attach::surface_leaf::LeafBook::default(),
+        };
+        let _ = paint_empty_session(&mut out, &mut chrome, &lines, &mut HashMap::new());
+        let text = String::from_utf8_lossy(&out);
+        assert!(
+            lines.iter().all(|line| text.contains(line.as_str())),
+            "{text:?}"
+        );
+        assert!(text.contains("\x1b[?25l"));
     }
 }

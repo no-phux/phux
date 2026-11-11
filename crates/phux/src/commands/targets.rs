@@ -4,7 +4,9 @@
 use std::path::Path;
 use std::process::ExitCode;
 
-use crate::commands::{json_err, partial};
+use phux_client::read::Verb;
+
+use crate::commands::{json_err, partial, read_kind};
 
 /// Parse an optional target string into a [`phux_client::selector::Selector`],
 /// defaulting to the focused session when absent. On a parse error,
@@ -66,19 +68,44 @@ pub(crate) async fn resolve_resource(
     resolve_target_with(socket_path, selector, verb, json, for_input).await
 }
 
-/// [`resolve_target`] for the verbs that deliver input into the pane
-/// (`send-keys`, `paste`, `run`, `signal`, and the acknowledged agent
-/// writes, `agent start` among them): identical, except that a `%name` whose record has the withdrawn
-/// shape is refused (ADR-0075 point 5) rather than resolved.
+/// [`resolve_terminal_target`] for the verbs that deliver input into the
+/// pane (`send-keys`, `paste`, `run`, `take`, `give`, and the acknowledged
+/// agent writes, `agent start` among them): identical, except that a
+/// `%name` whose record has the withdrawn shape is refused (ADR-0075 point
+/// 5) rather than resolved.
 pub(crate) async fn resolve_target_for_input(
     socket_path: &Path,
     selector: &phux_client::selector::Selector,
-    verb: &str,
+    verb: Verb,
     json: bool,
 ) -> Result<phux_protocol::ids::ResourceId, ExitCode> {
-    resolve_target_with(socket_path, selector, verb, json, true)
-        .await
-        .map(|resolved| resolved.id)
+    resolve_terminal_with(socket_path, selector, verb, json, true).await
+}
+
+/// [`resolve_target`] for a verb that reaches a Terminal only (`resize`,
+/// `ask`, `rec`): a resource of another kind is refused before anything is
+/// sent, `wrong_resource_kind` and exit 2, as `send-keys` refuses it. The
+/// kind is read from the snapshot the resolution already fetched.
+pub(crate) async fn resolve_terminal_target(
+    socket_path: &Path,
+    selector: &phux_client::selector::Selector,
+    verb: Verb,
+    json: bool,
+) -> Result<phux_protocol::ids::ResourceId, ExitCode> {
+    resolve_terminal_with(socket_path, selector, verb, json, false).await
+}
+
+async fn resolve_terminal_with(
+    socket_path: &Path,
+    selector: &phux_client::selector::Selector,
+    verb: Verb,
+    json: bool,
+    for_input: bool,
+) -> Result<phux_protocol::ids::ResourceId, ExitCode> {
+    let resolved = resolve_target_with(socket_path, selector, verb.name(), json, for_input).await?;
+    phux_client::read::require_terminal(verb, &resolved)
+        .map_err(|err| read_kind::wrong_kind(json, &err))?;
+    Ok(resolved.id)
 }
 
 async fn resolve_target_with(

@@ -36,6 +36,7 @@ pub mod input_dispatch;
 // ADR-0172: background work that reports back as a toast.
 mod agent_filter_state;
 mod jobs;
+mod kitty_heal;
 mod notify;
 mod onboarding;
 pub mod paint;

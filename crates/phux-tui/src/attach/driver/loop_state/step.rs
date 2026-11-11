@@ -7,6 +7,8 @@ use super::{
     sleep_until_or_pending, sync_hover_tracking, sync_mouse_capture, update_which_key_deadline,
 };
 
+mod kitty_heal;
+
 impl super::SessionLoop {
     // ---- one loop iteration -------------------------------------------
 
@@ -148,20 +150,13 @@ impl super::SessionLoop {
                 .flatten()
                 .min(),
         );
-        let sync_output_sleep = sleep_until_or_pending(
-            self.mirror
-                .panes
-                .values()
-                .filter_map(|slot| slot.sync_output_since)
-                .map(|since| since + SYNC_OUTPUT_WATCHDOG)
-                .min(),
-        );
+        let sync_output_sleep = sleep_until_or_pending(self.sync_output_deadline());
         // Down satellite panes probe the host inventory on a fixed cadence.
         self.arm_satellite_probe(tokio::time::Instant::now());
         let satellite_probe = sleep_until_or_pending(self.satellite_probe_at);
         let origin_fade = sleep_until_or_pending(self.next_input_origin_wake());
-        // A coalesced agent notification comes due.
-        let notify_due = sleep_until_or_pending(self.notifier.deadline());
+        // A coalesced agent notification, or a kitty image heal, comes due.
+        let housekeeping = sleep_until_or_pending(self.housekeeping_deadline());
 
         tokio::select! {
             biased;
@@ -218,9 +213,10 @@ impl super::SessionLoop {
                 Ok(Step::Continue)
             }
 
-            // Post the agent notifications that waited out the coalesce window.
-            () = notify_due => {
-                self.on_notify_due(out);
+            // Post the agent notifications that waited out the coalesce
+            // window; re-send kitty images the outer terminal may have lost.
+            () = housekeeping => {
+                self.on_housekeeping_due(out, sidebar);
                 Ok(Step::Continue)
             }
 
@@ -294,6 +290,16 @@ impl super::SessionLoop {
         self.satellite_probe_at = None;
         self.request_host_inventory(conn).await?;
         Ok(Step::Continue)
+    }
+
+    /// When the oldest unfinished `?2026` block exposes its pane's mirror.
+    fn sync_output_deadline(&self) -> Option<tokio::time::Instant> {
+        self.mirror
+            .panes
+            .values()
+            .filter_map(|slot| slot.sync_output_since)
+            .map(|since| since + SYNC_OUTPUT_WATCHDOG)
+            .min()
     }
 
     /// Arm the bare-ESC timer only while a lone ESC is pending, anchored to

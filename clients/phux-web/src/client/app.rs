@@ -158,6 +158,7 @@ impl App {
     }
 
     pub(super) fn dispose(&mut self) {
+        self.dispose_documents();
         self.bindings.get_mut().dispose();
         self.tx.close();
         self.reconnect.get_mut().take();
