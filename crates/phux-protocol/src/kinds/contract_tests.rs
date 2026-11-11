@@ -269,13 +269,7 @@ fn a_kind_with_only_a_catalog_row_is_decoded_validated_admitted_and_classified()
         BootstrapCodec::Unknown { tag: 9 }
     );
     let profile = BootstrapStreamProfile::for_kind_codec_in(&FIXTURE, codec, None).unwrap();
-    assert_eq!(
-        profile,
-        BootstrapStreamProfile::Kind {
-            codec_tag: 9,
-            after_seq: None
-        }
-    );
+    assert_eq!(profile, BootstrapStreamProfile::Kind { codec_tag: 9 });
     assert_eq!(profile.codec(), codec);
     assert_eq!(profile.output_mode(), crate::caps::OutputMode::Raw);
     assert_eq!(

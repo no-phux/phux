@@ -145,8 +145,16 @@ pub enum BootstrapStreamProfile {
     Kind {
         /// The codec's wire tag.
         codec_tag: u8,
-        /// The resume cursor, when the kind's contract admits one.
-        after_seq: Option<u64>,
+    },
+    /// [`Self::Kind`] resuming after a record already committed by the
+    /// consumer, when the kind's contract admits a cursor. A variant of its
+    /// own rather than an `Option` cursor keeps the profile 16 bytes: every
+    /// kernel effect carries one.
+    KindResume {
+        /// The codec's wire tag.
+        codec_tag: u8,
+        /// Last record already committed by the consumer.
+        after_seq: u64,
     },
     /// A stream whose codec this build does not know. A client refuses
     /// that one resource and ignores its stream; the connection stays.
@@ -155,6 +163,10 @@ pub enum BootstrapStreamProfile {
         codec_tag: u8,
     },
 }
+
+// Every kernel effect and input carries a profile; a larger one pushes
+// `KernelEffect` past the size x86-64 copies inline.
+const _: () = assert!(core::mem::size_of::<BootstrapStreamProfile>() <= 16);
 
 impl BootstrapStreamProfile {
     /// The codec `BOOTSTRAP_BEGIN` names for this stream.
@@ -170,7 +182,9 @@ impl BootstrapStreamProfile {
             Self::AccessibilityTreeJsonV1 => BootstrapCodec::AccessibilityTreeJsonV1,
             Self::PixelSurfacePngV1 => BootstrapCodec::PixelSurfacePngV1,
             Self::DocumentTypedV1 => BootstrapCodec::DocumentTypedV1,
-            Self::Kind { codec_tag, .. } => BootstrapCodec::Kind { tag: codec_tag },
+            Self::Kind { codec_tag } | Self::KindResume { codec_tag, .. } => {
+                BootstrapCodec::Kind { tag: codec_tag }
+            }
             Self::Unknown { codec_tag } => BootstrapCodec::Unknown { tag: codec_tag },
         }
     }
@@ -189,8 +203,9 @@ impl BootstrapStreamProfile {
     #[must_use]
     pub const fn resume_after_seq(self) -> Option<u64> {
         match self {
-            Self::AgentEventsJsonlResumeV1 { after_seq } => Some(after_seq),
-            Self::Kind { after_seq, .. } => after_seq,
+            Self::AgentEventsJsonlResumeV1 { after_seq } | Self::KindResume { after_seq, .. } => {
+                Some(after_seq)
+            }
             _ => None,
         }
     }
@@ -238,7 +253,8 @@ impl BootstrapStreamProfile {
             (BootstrapCodec::AccessibilityTreeJsonV1, None) => Self::AccessibilityTreeJsonV1,
             (BootstrapCodec::PixelSurfacePngV1, None) => Self::PixelSurfacePngV1,
             (BootstrapCodec::DocumentTypedV1, None) => Self::DocumentTypedV1,
-            (BootstrapCodec::Kind { tag }, after_seq) => Self::Kind {
+            (BootstrapCodec::Kind { tag }, None) => Self::Kind { codec_tag: tag },
+            (BootstrapCodec::Kind { tag }, Some(after_seq)) => Self::KindResume {
                 codec_tag: tag,
                 after_seq,
             },
