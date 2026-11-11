@@ -130,6 +130,7 @@ impl DocumentInputs {
             terminal_id: resource.clone(),
             intent,
             control: None,
+            on_behalf_of: None,
         }
     }
 

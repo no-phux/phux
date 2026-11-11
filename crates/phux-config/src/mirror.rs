@@ -43,21 +43,26 @@ pub enum MirrorFormat {
 /// such sessions and closes one whose entry is gone.
 pub const MIRROR_SESSION_PREFIX: &str = "mirror-";
 
+/// `prefix` and `label`, lowercased, every run of other characters a `-`.
+pub(crate) fn session_name(prefix: &str, label: &str) -> String {
+    let mut name = prefix.to_owned();
+    for c in label.chars() {
+        if c.is_ascii_alphanumeric() {
+            name.push(c.to_ascii_lowercase());
+        } else if !name.ends_with('-') {
+            name.push('-');
+        }
+    }
+    name.trim_end_matches('-').to_owned()
+}
+
 impl MirrorConfigEntry {
     /// The session the mirror runs in: `mirror-` and the target, lowercased,
     /// every run of other characters a `-` (`display:HDMI-A-1` is
     /// `mirror-display-hdmi-a-1`).
     #[must_use]
     pub fn session_name(&self) -> String {
-        let mut name = MIRROR_SESSION_PREFIX.to_owned();
-        for c in self.target.chars() {
-            if c.is_ascii_alphanumeric() {
-                name.push(c.to_ascii_lowercase());
-            } else if !name.ends_with('-') {
-                name.push('-');
-            }
-        }
-        name.trim_end_matches('-').to_owned()
+        session_name(MIRROR_SESSION_PREFIX, &self.target)
     }
 
     /// The `phux` arguments that run this mirror.

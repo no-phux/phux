@@ -331,18 +331,48 @@ PNG...). Needs `TYPED_DOCUMENT`.
 Usage: phux agent doc <SUBCOMMAND>
 
 Commands:
-  follow    Write every document as it arrives.
-  open      Open a document under the pane its producer runs in.
-  publish   Replace the document from a file, or stdin.
-  snapshot  Write the newest document to a file, or stdout: text with control
-            characters shown as signs, binary only into a pipe.
-  help      Print this message or the help of the given subcommand(s)
+  folder         Keep a directory listed as a Markdown document, refreshed on
+                 change; a `navigate` intent opens a subdirectory.
+  follow         Write every document as it arrives.
+  notifications  Keep this host's desktop notifications as a Markdown document
+                 (Linux, freedesktop Notifications on the session bus).
+  open           Open a document under the pane its producer runs in.
+  publish        Replace the document from a file, or stdin.
+  serve          Produce a document over a pipe until stdin ends: each stdin
+                 line `{"text": ...}` or `{"base64": ...}` replaces it; stdout
+                 prints an `opened` line, then one `input` line per viewer
+                 intent.
+  snapshot       Write the newest document to a file, or stdout: text with
+                 control characters shown as signs, binary only into a pipe.
+  help           Print this message or the help of the given subcommand(s)
 
 Flags:
   -h, --help           Print help
 
 Global flags:
       --socket <PATH>  Server socket to dial (default: `$PHUX_SOCKET`)
+```
+
+## `phux agent doc folder`
+
+```text
+Keep a directory listed as a Markdown document, refreshed on change; a
+`navigate` intent opens a subdirectory.
+
+Usage: phux agent doc folder [FLAGS] <PATH>
+
+Arguments:
+  <PATH>  The directory.
+
+Flags:
+      --name <NAME>      A name for the document; the directory's name when
+                         absent.
+      --pane <PANE>      The parent pane; this process's own pane when absent.
+      --interval <SECS>  Seconds between rereads (default 2).
+  -h, --help             Print help
+
+Global flags:
+      --socket <PATH>    Server socket to dial (default: `$PHUX_SOCKET`)
 ```
 
 ## `phux agent doc follow`
@@ -364,6 +394,24 @@ Flags:
 
 Global flags:
       --socket <PATH>   Server socket to dial (default: `$PHUX_SOCKET`)
+```
+
+## `phux agent doc notifications`
+
+```text
+Keep this host's desktop notifications as a Markdown document (Linux,
+freedesktop Notifications on the session bus).
+
+Usage: phux agent doc notifications [FLAGS]
+
+Flags:
+      --name <NAME>    A name for the document (default `notifications`).
+      --pane <PANE>    The parent pane; this process's own pane when absent.
+      --keep <N>       How many to keep, newest first (default 50).
+  -h, --help           Print help
+
+Global flags:
+      --socket <PATH>  Server socket to dial (default: `$PHUX_SOCKET`)
 ```
 
 ## `phux agent doc open`
@@ -399,6 +447,25 @@ Arguments:
 Flags:
       --file <PATH>    The document; stdin when absent.
       --json
+  -h, --help           Print help
+
+Global flags:
+      --socket <PATH>  Server socket to dial (default: `$PHUX_SOCKET`)
+```
+
+## `phux agent doc serve`
+
+```text
+Produce a document over a pipe until stdin ends: each stdin line `{"text": ...}`
+or `{"base64": ...}` replaces it; stdout prints an `opened` line, then one
+`input` line per viewer intent.
+
+Usage: phux agent doc serve <FLAGS>
+
+Flags:
+      --type <MIME>    The content type, a MIME type such as `text/markdown`.
+      --name <NAME>    A name for the document.
+      --pane <PANE>    The parent pane; this process's own pane when absent.
   -h, --help           Print help
 
 Global flags:
@@ -617,6 +684,8 @@ Commands:
             pixels.
   copy      Print the host clipboard's text, read by a mirrored page's or
             screen's producer.
+  drag      Drag across a mirrored page or screen with the left button, from one
+            point of its surface image to another: selects text.
   key       Press one key in a mirrored page: Enter, Tab, Backspace, Escape, or
             an arrow.
   mirror    Mirror a browser page into a tree and a surface until Ctrl-C.
@@ -663,6 +732,29 @@ Usage: phux agent page copy [--json] <TARGET>
 
 Arguments:
   <TARGET>  The document's surface or tree.
+
+Flags:
+      --json
+  -h, --help           Print help
+
+Global flags:
+      --socket <PATH>  Server socket to dial (default: `$PHUX_SOCKET`)
+```
+
+## `phux agent page drag`
+
+```text
+Drag across a mirrored page or screen with the left button, from one point of
+its surface image to another: selects text.
+
+Usage: phux agent page drag [--json] <ARGS>…
+
+Arguments:
+  <TARGET>  The document's surface or tree.
+  <X1>      Where the press lands: pixels from the image's left edge.
+  <Y1>      Where the press lands: pixels from the image's top edge.
+  <X2>      Where the release lands: pixels from the image's left edge.
+  <Y2>      Where the release lands: pixels from the image's top edge.
 
 Flags:
       --json
@@ -2804,7 +2896,7 @@ Usage: phux host color [--local] [--json] <[NAME] COLOR>…
 Arguments:
   <[NAME] COLOR>…  `NAME COLOR` for a registered remote, or `COLOR` alone with
                    `--local`. COLOR is a palette id (blue, violet, magenta, sky,
-                   coral, olive, slate, copper) or `auto`.
+                   coral, olive, slate, copper, green, navy) or `auto`.
 
 Flags:
       --local          Colour this machine instead of a registered remote.

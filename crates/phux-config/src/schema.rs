@@ -12,8 +12,9 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     OrganizeCfg, connector::ConnectorConfigEntry, host_color::LocalHostCfg,
-    mirror::MirrorConfigEntry, plugin::PluginConfigEntry, project::ProjectConfigEntry,
-    remote::RemoteConfigEntry, satellite::SatelliteConfigEntry, uplink::UplinkConfigEntry,
+    mirror::MirrorConfigEntry, plugin::PluginConfigEntry, producer::ProducerConfigEntry,
+    project::ProjectConfigEntry, remote::RemoteConfigEntry, satellite::SatelliteConfigEntry,
+    uplink::UplinkConfigEntry,
 };
 
 /// Top-level config (`docs/config.md`).
@@ -45,6 +46,9 @@ pub struct Config {
     pub uplink: Vec<UplinkConfigEntry>,
     /// Displays and windows the server keeps mirrored (`[[mirrors]]`).
     pub mirrors: Vec<MirrorConfigEntry>,
+    /// Commands the server keeps running as document producers
+    /// (`[[producers]]`).
+    pub producers: Vec<ProducerConfigEntry>,
     /// Remote servers this machine attaches to (ADR-0055), written by
     /// `phux host add`.
     pub remote: Vec<RemoteConfigEntry>,

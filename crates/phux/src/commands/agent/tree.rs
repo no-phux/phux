@@ -28,6 +28,9 @@ mod app_launch;
 mod click;
 mod clipboard;
 mod doc;
+mod doc_folder;
+mod doc_notifications;
+mod doc_producer;
 mod mirror;
 #[cfg(any(target_os = "linux", test))]
 mod mirror_atspi;
@@ -197,7 +200,6 @@ pub(super) async fn resolve(
 
 /// The pane a mirror binds to: `pane` when given, else the pane this process
 /// runs in (the injected `PHUX_TERMINAL_ID`), or report why there is none.
-#[cfg(any(target_os = "macos", target_os = "linux"))]
 pub(super) async fn mirror_pane(
     socket_path: &std::path::Path,
     pane: Option<&str>,

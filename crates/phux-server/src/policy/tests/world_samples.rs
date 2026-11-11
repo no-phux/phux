@@ -490,6 +490,7 @@ fn samples(world: &World, agent: &WireResourceId) -> Vec<FrameKind> {
             terminal_id: t.clone(),
             intent: phux_protocol::wire::frame::DocumentInput::Click { x: 1, y: 1 },
             control: None,
+            on_behalf_of: None,
         }),
         command(Command::Mirror {
             host: None,

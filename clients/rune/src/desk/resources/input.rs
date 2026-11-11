@@ -1,8 +1,8 @@
 //! Pointer, wheel and keys into a surface whose producer takes input
 //! (`SEND_DOCUMENT_INPUT`). A document with no control class, or one that
 //! refused this window, stays a read-only mirror and captures nothing.
-//! Cmd+V pastes this machine's clipboard into it, and Cmd+C brings the
-//! host's clipboard back.
+//! A press that moves drags, selecting text on the host. Cmd+V pastes this
+//! machine's clipboard into it, and Cmd+C brings the host's clipboard back.
 
 use phux_client_core::document_input::{DocumentInputs, frame_point, scroll};
 use phux_client_runtime::control::Status;
@@ -12,6 +12,10 @@ use rune::{Key, Mods, Tx};
 
 use super::{Body, Desk};
 use crate::desk::NoticeKind;
+
+/// How far, in points, a press may wander and still be a click; rune's own
+/// click run allows the same.
+pub const DRAG_SLOP: f32 = 4.0;
 
 /// What a key does to a document, or `None` when it is not the pane's: Cmd
 /// and Ctrl chords stay the app's, and keys outside the document's small
@@ -48,6 +52,18 @@ impl Desk {
         match &self.resources.entries.get(id)?.body {
             Body::Surface(image) if image.error().is_none() => image.size(),
             _ => None,
+        }
+    }
+
+    /// What a list calls the document: a **Live mirror** when its producer
+    /// declared a control class, else a **Read-only mirror**, and **View
+    /// only** once it refused this window.
+    pub fn mirror_label(&self, id: &ResourceId) -> &'static str {
+        let input = &self.resources.input;
+        match (input.refused(id), input.control(id)) {
+            (Some(_), _) => "View only",
+            (None, Some(_)) => "Live mirror",
+            (None, None) => "Read-only mirror",
         }
     }
 
@@ -99,7 +115,7 @@ impl Desk {
                     text: text.to_owned(),
                     chord: true,
                 };
-                desk.send_document_input(&id, paste);
+                desk.resources.pasting = desk.send_document_request(&id, paste);
             }
         });
         true
@@ -150,6 +166,35 @@ impl Desk {
         }
     }
 
+    /// A press that went down at `from` and came up at `to`, in an area
+    /// `w` by `h` where the surface is drawn contain-fit: a click where it
+    /// went down when it moved less than [`DRAG_SLOP`] points, else a drag
+    /// between the two frame pixels, which selects text.
+    pub fn document_release(
+        &mut self,
+        id: &ResourceId,
+        from: [f32; 2],
+        to: [f32; 2],
+        [w, h]: [f32; 2],
+    ) {
+        if (to[0] - from[0]).hypot(to[1] - from[1]) < DRAG_SLOP {
+            return self.document_press(id, [from[0], from[1], w, h]);
+        }
+        let Some(frame) = self.document_input_frame(id) else {
+            return;
+        };
+        // ponytail: a drag that ends in the letterbox is dropped; clamp it
+        // to the image's edge if selecting past the edge matters.
+        let at = |p: [f32; 2]| frame_point([0.0, 0.0, w, h], frame, p);
+        if let (Some([x0, y0]), Some([x1, y1])) = (at(from), at(to)) {
+            let drag = DocumentInput::Drag {
+                from: (x0, y0),
+                to: (x1, y1),
+            };
+            self.send_document_input(id, drag);
+        }
+    }
+
     /// A wheel turn over the surface, as Rune reports it (content movement
     /// in points), scrolled in frame pixels.
     pub fn document_wheel(&mut self, id: &ResourceId, area: [f32; 2], content: [f32; 2]) -> bool {
@@ -194,6 +239,14 @@ impl Desk {
                 self.say(
                     NoticeKind::Error,
                     format!("Could not copy from the host: {error}"),
+                );
+                true
+            }
+            Err(error) if self.resources.pasting == Some(request) => {
+                self.resources.pasting = None;
+                self.say(
+                    NoticeKind::Error,
+                    format!("Could not paste on the host: {error}"),
                 );
                 true
             }

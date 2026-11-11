@@ -238,8 +238,8 @@ the session's arrangement. Trees use a selectable native JSON inspector; PNG
 surfaces use Rune's image decoder and fit without cropping. These are mirrors,
 not embedded browsers: paste, file drops, and terminal resizing never reach a
 document pane. A surface whose producer declared a control class (a page or
-surface mirror) reads **Live mirror**: a click, the wheel, and plain keys reach
-its producer as document input. Any other document is a **Read-only mirror**,
+surface mirror) reads **Live mirror**: a click, a drag, the wheel, plain keys
+reach its producer as document input. Any other document is a **Read-only mirror**,
 and a refused send turns a live one **View only**. Closing its view does not
 stop the producer.
 
