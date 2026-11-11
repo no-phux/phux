@@ -61,10 +61,11 @@ fn skill_card(desk: &Desk, p: &Ink) -> El {
             )
             .child(el().grow(1.0))
             .child(
-                text(s.summary())
+                text(s.label())
                     .font(CAPTION)
                     .color(if s.installed() { p.marks.good } else { p.dim })
-                    .truncate(),
+                    .truncate()
+                    .help(s.hook_detail().unwrap_or_default()),
             )
     });
     let card = card.children(rows);
