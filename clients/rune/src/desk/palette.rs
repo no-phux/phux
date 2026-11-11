@@ -334,6 +334,7 @@ impl Desk {
                     query,
                 );
                 let new = palette::new_session_item(topology, query);
+                let new = new.into_iter().chain(palette::new_worktree_item(query));
                 hits.extend(new.map(|item| Hit {
                     item,
                     score: 0,
@@ -429,6 +430,7 @@ impl Desk {
             Target::Action(action) => self.shortcut(action, tx),
             Target::Theme(id) => self.choose_theme(id.and_then(crate::theme::find)),
             Target::NewSession(name) => self.create_session(name),
+            Target::NewWorktree(branch) => self.new_worktree(&branch),
             Target::Path(path) => {
                 if let Some(search) = search {
                     self.insert_path(&path, search);

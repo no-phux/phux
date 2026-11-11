@@ -184,6 +184,7 @@ session (or `--session NAME`). It never creates a session on its own.
 | ⌘I | Inbox |
 | ⌘, | Settings |
 | ⌘T / ⌘N | New tab / new session |
+| ⌘⇧S, a branch name | New git worktree and its session |
 | ⌘1–⌘9 | Switch tab (in the inbox: pick a suggested answer) |
 | ⌘D / ⌘⇧D | Split right / down |
 | ⌘⌥ arrows | Move between panes |

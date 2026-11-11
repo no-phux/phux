@@ -76,6 +76,7 @@ pub(super) const ACTION_ORDER: &[&str] = &[
     // cramped popup that keeps each group's first rows still shows it.
     "detach",
     "new-session",
+    "new-worktree",
     "session-picker",
     "next-session",
     "previous-session",

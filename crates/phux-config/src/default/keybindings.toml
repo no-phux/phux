@@ -107,6 +107,9 @@ which-key-delay-ms = 400
 
 # Sessions: C makes a new one, N and P cycle, ) goes back to the last.
 "C" = "new-session"
+# T asks for a branch name, then makes a git worktree for it beside the
+# focused pane's repository and switches to its session.
+"T" = "new-worktree"
 "N" = "next-session"
 "P" = "previous-session"
 ")" = "last-session"

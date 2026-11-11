@@ -63,6 +63,7 @@ A capital letter means Shift: <kbd>X</kbd> is <kbd>Shift</kbd>+<kbd>x</kbd>. Whe
 
 | Keys | Does | Action |
 |---|---|---|
+| <kbd>T</kbd> | New worktree… | `new-worktree` |
 | <kbd>:</kbd> <kbd>?</kbd> <kbd>Space</kbd> | Command palette | `command-palette` |
 | <kbd>A</kbd> | Agents | `agent-fleet` |
 | <kbd>q</kbd> | Next waiting pane | `next-attention` |

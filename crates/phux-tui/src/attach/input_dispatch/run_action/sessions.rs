@@ -193,7 +193,7 @@ fn remember_session(ctx: &mut DispatchCtx<'_>) {
     ctx.focus_history.remember_session(&name);
 }
 
-fn reattach_named(ctx: &mut DispatchCtx<'_>, effects: &mut ActionEffects, name: String) {
+pub(super) fn reattach_named(ctx: &mut DispatchCtx<'_>, effects: &mut ActionEffects, name: String) {
     remember_session(ctx);
     effects.reattach = Some(ReattachTarget::Existing {
         name,
