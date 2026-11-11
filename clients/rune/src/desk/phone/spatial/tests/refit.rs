@@ -149,11 +149,49 @@ fn a_native_viewport_change_cannot_release_the_expired_previous_measurement() {
     rt.state.clock = 2.2;
     rt.state.fit();
     assert!(resizes(&client).is_empty());
-    assert!(rt.state.areas.is_empty());
+    assert!(
+        rt.state.areas.contains_key(&id(1)),
+        "a sub-threshold change may deliver no layout"
+    );
     area(&mut rt.state, 2.21, 320.0);
     assert!(resizes(&client).is_empty());
     rt.state.clock = 2.331;
     rt.state.fit();
     let (cols, rows) = rt.state.metrics().fit([360.0, 320.0]);
     assert_eq!(resizes(&client), [(id(1), cols, rows)]);
+}
+
+#[test]
+fn native_sub_threshold_and_scale_only_changes_keep_a_usable_measurement() {
+    let (client, mut rt) = fixture(true);
+    rt.poll = Some(Desk::poll);
+    rt.frame(0.01);
+    resizes(&client);
+    let initial = rt.state.areas[&id(1)];
+    // Rune suppresses on_layout for a sub-half-point rect change. This is
+    // also the native layer's pixel-rounded, effectively unchanged case.
+    crate::mobile::viewport_changed(&mut rt);
+    rt.set_viewport((393.01, 852.0), 2.0);
+    for _ in 0..20 {
+        rt.frame(0.01);
+    }
+    assert_eq!(rt.state.areas[&id(1)], initial);
+    assert!(resizes(&client).is_empty());
+
+    // A device-pixel scale change need not move a pane in points either,
+    // but its cell pixels must still reach the PTY after settling.
+    let before = rt.state.fitted[&id(1)];
+    crate::mobile::viewport_changed(&mut rt);
+    rt.set_viewport((393.01, 852.0), 3.0);
+    for _ in 0..20 {
+        rt.frame(0.01);
+    }
+    assert!(rt.state.areas.contains_key(&id(1)));
+    assert_ne!(rt.state.fitted[&id(1)].1, before.1);
+    assert!(!resizes(&client).is_empty());
+
+    // A later pinch/font change still has an area to fit, even without
+    // another viewport layout. Never leave the terminal permanently stuck.
+    rt.update(|d, _| d.zoom(Some(d.font_size + 2.0)));
+    assert!(!resizes(&client).is_empty());
 }

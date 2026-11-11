@@ -5,8 +5,8 @@ use serde_json::{Value, json};
 
 use super::State;
 
-/// Called before a changed native viewport reaches Rune. Its next poll must
-/// not release an old measurement before the new layout callback arrives.
+/// Called before a changed native viewport reaches Rune. Restart the grid's
+/// wait before poll can send an old proposal ahead of the new layout.
 pub fn viewport_changed(rt: &mut rune::Runtime<State>) {
     rt.update(|state, _| state.phone_viewport_changed());
 }

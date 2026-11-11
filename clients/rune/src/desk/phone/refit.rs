@@ -19,10 +19,11 @@ pub(super) struct Refit {
 }
 
 impl Desk {
-    /// A native surface changed before Rune has laid it out. Forget the old
-    /// measurement so poll cannot send it while the new layout is queued.
+    /// A native surface changed before Rune has laid it out. Restart the
+    /// wait on poll's fresh clock, before it can release an old proposal.
     pub(crate) fn phone_viewport_changed(&mut self) {
-        self.areas.clear();
+        // Keep the measurement: pixel rounding, sub-half-point changes and
+        // scale-only changes need not deliver another on_layout callback.
         if let Some(phone) = self.phone.as_mut() {
             phone.refit = None;
         }
