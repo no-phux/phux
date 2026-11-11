@@ -66,6 +66,9 @@ pub(crate) struct Ink {
     pub(crate) current: Color,
     pub(crate) hover: Color,
     pub(crate) accent: Color,
+    /// The window's machine colour: what marks this window, its sessions and
+    /// its terminals. The accent until a window knows its machine.
+    pub(crate) host: Color,
     /// Text and marks on an accent fill.
     pub(crate) on_accent: Color,
     pub(crate) danger: Color,
@@ -98,6 +101,7 @@ fn ink(dark: bool, accent: Color, theme: Option<&Theme>) -> Ink {
             current: roles.text.alpha(0.1),
             hover: roles.text.alpha(0.07),
             accent: roles.accent,
+            host: roles.accent,
             on_accent: roles.on_accent,
             danger: roles.danger,
             edge: roles.edge,
@@ -124,6 +128,7 @@ fn ink(dark: bool, accent: Color, theme: Option<&Theme>) -> Ink {
         current: t.text.alpha(0.1),
         hover: t.hover,
         accent,
+        host: accent,
         on_accent: on_fill(accent),
         danger: Theme::system_danger(dark),
         edge: crate::theme::color(edge),
@@ -138,6 +143,10 @@ pub fn view(desk: &Desk, cx: &mut Cx<Desk>) -> El {
         return phone::view(desk, cx);
     }
     let p = ink(cx.system_dark(), cx.accent(), desk.settings.theme);
+    let p = Ink {
+        host: crate::host_color::on(desk.machines.label(), p.sidebar),
+        ..p
+    };
     // Native fields inherit a readable caret and selection in light themes too.
     cx.foreground(p.text);
     // `titlebar_inset` is the traffic lights' width; zero when the system

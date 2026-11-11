@@ -12,6 +12,7 @@ use rune::{Color, El, col, el, memo, row, text};
 use super::{CAPTION, Ink, LABEL, NAME, SIDEBAR_W, icons, pressable};
 use crate::activity::Mark;
 use crate::desk::Desk;
+use crate::host_color;
 use crate::keys::{self, Shortcut};
 use crate::palette::pane_label;
 
@@ -32,17 +33,26 @@ pub(super) fn mark_color(mark: Mark, ink: &Ink) -> Color {
     }
 }
 
+/// A row's mark: a state that asks or reports in the theme's colour, a
+/// terminal merely running or resting in its machine's.
+fn row_color(mark: Mark, ink: &Ink, host: Color) -> Color {
+    match mark {
+        Mark::Running | Mark::Succeeded | Mark::Idle => host,
+        Mark::Background => host.alpha(0.55),
+        _ => mark_color(mark, ink),
+    }
+}
+
 /// A ring while work is under way, a solid dot otherwise; never animated,
 /// so a busy agent costs no frames. A plain shell gets a faint speck, so
 /// names line up without a column of loud nothing.
-fn dot(mark: Mark, ink: &Ink) -> El {
+fn dot(mark: Mark, color: Color, ink: &Ink) -> El {
     let dot = match mark {
         Mark::None => el().size(4.0, 4.0).radius(2.0).fill(ink.dim.alpha(0.45)),
-        _ if mark.live() || mark == Mark::Background => el()
-            .size(8.0, 8.0)
-            .radius(4.0)
-            .border(1.5, mark_color(mark, ink)),
-        _ => el().size(8.0, 8.0).radius(4.0).fill(mark_color(mark, ink)),
+        _ if mark.live() || mark == Mark::Background => {
+            el().size(8.0, 8.0).radius(4.0).border(1.5, color)
+        }
+        _ => el().size(8.0, 8.0).radius(4.0).fill(color),
     };
     el().w(14.0).h(14.0).center().child(dot)
 }
@@ -131,7 +141,7 @@ fn session_header(session: &Header, ink: &Ink) -> El {
                 d.rename_session(key, &label);
             }
         })
-        .children((session.host).map(|(host, _)| crate::host_color::dot(host, 6.0, ink.sidebar)))
+        .children((session.host).map(|(host, _)| host_color::dot(host, 6.0, ink.sidebar)))
         .child(
             text(session.name.to_owned())
                 .font(CAPTION)
@@ -167,6 +177,8 @@ struct Row<'a> {
     agent: Option<&'a str>,
     mark: Mark,
     selected: bool,
+    /// The terminal's machine and its colour, so a recolour redraws.
+    host: (&'a str, u32),
 }
 
 impl Row<'_> {
@@ -185,7 +197,8 @@ impl Row<'_> {
 fn pane_row(pane: &Row, ink: &Ink) -> El {
     let (mark, selected) = (pane.mark, pane.selected);
     let (id, session) = (pane.id.clone(), pane.session.to_owned());
-    let accent = mark_color(mark, ink);
+    let host = host_color::on(pane.host.0, ink.sidebar);
+    let accent = row_color(mark, ink, host);
     let (key, label) = (pane.rename, pane.name.clone());
     let detail = pane.detail().map(|(words, tinted)| {
         text(words)
@@ -215,7 +228,7 @@ fn pane_row(pane: &Row, ink: &Ink) -> El {
                 d.rename_session(key, &label);
             }
         })
-        .child(dot(mark, ink))
+        .child(dot(mark, accent, ink))
         .child(
             col()
                 .grow(1.0)
@@ -233,6 +246,7 @@ fn pane_row(pane: &Row, ink: &Ink) -> El {
                 )
                 .children(detail),
         )
+        .children(selected.then(|| host_color::stripe(host, true)))
 }
 
 /// Marks that need you, by session: one pass, for every header and the button.
@@ -253,6 +267,8 @@ fn session_list(desk: &Desk, topology: &Topology, waiting: &HashMap<u32, usize>,
     let shown = desk.shown.as_ref().map(|s| &s.terminal);
     let current = desk.selected_session_name();
     let theme = desk.settings.theme.map(|t| t.id);
+    let here = desk.machines.label();
+    let host = (here, host_color::entry(here).0);
     for session in &topology.sessions {
         let panes: Vec<_> = topology
             .panes
@@ -295,6 +311,7 @@ fn session_list(desk: &Desk, topology: &Topology, waiting: &HashMap<u32, usize>,
                 agent: desk.activities.agent_name(id),
                 mark: desk.activities.mark(id),
                 selected: shown == Some(id),
+                host,
             };
             list = list.child(memo(format!("pane-{id}"), (&row, theme), || {
                 pane_row(&row, ink)
@@ -320,13 +337,14 @@ fn satellite_list(desk: &Desk, topology: &Topology, ink: &Ink) -> El {
     let theme = desk.settings.theme.map(|t| t.id);
     for (n, session) in topology.satellite_sessions.iter().enumerate() {
         let name = format!("{} · {}", session.host, session.name);
+        let host = (session.host.as_str(), host_color::entry(&session.host).0);
         let header = Header {
             id: u32::MAX - u32::try_from(n).unwrap_or(0),
             name: &name,
             key: None,
             current: session.members.iter().any(|id| shown == Some(id)),
             waiting: 0,
-            host: Some((&session.host, crate::host_color::entry(&session.host).0)),
+            host: Some(host),
         };
         list = list.child(memo(format!("satellite-{name}"), (&header, theme), || {
             session_header(&header, ink)
@@ -365,6 +383,7 @@ fn satellite_list(desk: &Desk, topology: &Topology, ink: &Ink) -> El {
                 agent: desk.activities.agent_name(id),
                 mark: desk.activities.mark(id),
                 selected: shown == Some(id),
+                host,
             };
             list = list.child(memo(format!("pane-{id}"), (&row, theme), || {
                 pane_row(&row, ink)
@@ -401,7 +420,7 @@ fn foot(
                 d.foot_hover = None;
             }
         })
-        .child(rune::icon(&icons::PLUS, 12.0).color(ink.dim))
+        .child(rune::icon(&icons::PLUS, 12.0).color(ink.host))
         .child(text(label).font(LABEL).color(ink.dim))
         .child(match chord.filter(|_| hovered) {
             Some(chord) => text(chord).font(CAPTION).color(ink.dim),
@@ -480,4 +499,32 @@ pub fn view(desk: &Desk, ink: &Ink, inset: f32) -> El {
                     Desk::new_session,
                 )),
         )
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::host_color;
+    use crate::theme::{DIM_BAR, contrast};
+    use phux_config_core::host_color::PALETTE;
+
+    #[test]
+    fn host_marks_read_in_every_theme() {
+        let mut low = Vec::new();
+        for theme in std::iter::once(None).chain(crate::theme::all().map(Some)) {
+            for dark in [true, false] {
+                let ink = super::super::ink(dark, rune::oklch(0.6, 0.15, 250.0), theme);
+                for (i, (id, _)) in PALETTE.iter().enumerate() {
+                    let host = host_color::swatch(i, ink.sidebar);
+                    let name = theme.map_or("system", |t| t.id);
+                    // Eased for the sidebar; the focused card's rim sits on
+                    // the window ground, a shade away.
+                    let mark = contrast(host, ink.sidebar);
+                    if mark < DIM_BAR || contrast(host, ink.bg) < DIM_BAR - 0.1 {
+                        low.push(format!("{id} on {name}/{dark}: {mark:.2}"));
+                    }
+                }
+            }
+        }
+        assert!(low.is_empty(), "{low:#?}");
+    }
 }

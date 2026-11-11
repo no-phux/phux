@@ -43,7 +43,11 @@ fn chip(label: &'static str, key: String, ink: &Ink, press: impl Fn(&mut Desk) +
 fn current_state(desk: &Desk, ink: &Ink) -> Vec<El> {
     let word = desk.link_word();
     let up = word == "connected";
-    let color = if up { ink.accent } else { ink.dim };
+    let color = if up {
+        host_color::on(desk.machines.label(), ink.raised)
+    } else {
+        ink.dim
+    };
     let mut state = vec![text(word).font(CAPTION).color(color)];
     if !up {
         state.push(chip(
@@ -92,7 +96,7 @@ fn color_button(name: &str, ink: &Ink) -> El {
         .child(host_color::dot(name, 12.0, ink.raised))
 }
 
-/// Eight swatches and Auto under the row whose colour is being picked; the
+/// Every palette swatch and Auto under the row whose colour is being picked; the
 /// current pick wears a ring.
 fn picker(name: &str, desk: &Desk, ink: &Ink) -> Option<El> {
     if desk.machines.picking.as_deref() != Some(name) {
