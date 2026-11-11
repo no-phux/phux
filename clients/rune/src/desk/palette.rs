@@ -306,12 +306,21 @@ impl Desk {
         match self.palette_mode {
             Mode::All if self.phone.is_some() => {
                 let native = self.native.is_some();
-                let items = palette::phone::items(topology, native, self.resource_items());
+                let items = palette::phone::items(
+                    topology,
+                    self.reorder.order(),
+                    native,
+                    self.resource_items(),
+                );
                 palette::rank(items, query)
             }
             Mode::All => {
                 let mut items = self.resource_items();
-                items.extend(palette::items(topology, &self.addressable()));
+                items.extend(palette::items(
+                    topology,
+                    &self.addressable(),
+                    self.reorder.order(),
+                ));
                 palette::rank(items, query)
             }
             Mode::Mirror(source) => self.mirror_items(source, query),
@@ -320,7 +329,10 @@ impl Desk {
             Mode::Essentials => palette::rank(palette::essential_items(), query),
             Mode::Themes => palette::rank(palette::theme_items(), query),
             Mode::Sessions => {
-                let mut hits = palette::rank(palette::session_items(topology), query);
+                let mut hits = palette::rank(
+                    palette::session_items(topology, self.reorder.order()),
+                    query,
+                );
                 let new = palette::new_session_item(topology, query);
                 hits.extend(new.map(|item| Hit {
                     item,

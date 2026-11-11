@@ -285,7 +285,7 @@ fn waiting_by_session(desk: &Desk, topology: &Topology) -> HashMap<u32, usize> {
 /// Every session's header and rows (its terminals, then its documents),
 /// rebuilt only where their inputs moved: the view runs for each frame of
 /// terminal output. A project's sessions follow its header, indented.
-fn session_list(desk: &Desk, topology: &Topology, waiting: &HashMap<u32, usize>, ink: &Ink) -> El {
+fn session_list(desk: &Desk, waiting: &HashMap<u32, usize>, ink: &Ink) -> El {
     let list = col().w_full().gap(1.0).px(8.0);
     let shown = desk.shown.as_ref().map(|s| &s.resource);
     let current = desk.selected_session_name();
@@ -475,7 +475,7 @@ pub fn view(desk: &Desk, ink: &Ink, inset: f32) -> El {
     let list = topology.filter(|_| !folded).map_or_else(col, |t| {
         col()
             .w_full()
-            .child(session_list(desk, t, &counts, ink))
+            .child(session_list(desk, &counts, ink))
             .child(satellite_list(desk, t, ink))
     });
     let here = desk.machines.current.clone();

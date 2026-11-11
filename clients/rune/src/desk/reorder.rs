@@ -41,6 +41,11 @@ impl Reorder {
         self.rects.insert(grab, rect);
     }
 
+    /// The server's session order, as last heard.
+    pub fn order(&self) -> &[SessionKey] {
+        &self.order
+    }
+
     /// The item a drop would land on, when it is not the one held.
     pub fn target(&self) -> Option<Grab> {
         self.held
