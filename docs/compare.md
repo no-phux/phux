@@ -57,6 +57,21 @@ Choose cmux for that integrated terminal, browser, and notification experience. 
 
 None of the four keeps running programs across a reboot.
 
+## Coming from another tool
+
+What people look for first when they arrive, and where it lives in phux.
+
+| You want                                   | In phux                                                                                                   |
+| ------------------------------------------ | --------------------------------------------------------------------------------------------------------- |
+| your tmux or zellij keys                   | `phux migrate` rewrites them with your agent; see [Migrate your config](./migrate.md) and [tmux import](./tmux-import.md) |
+| a config file you can keep in dotfiles     | [`config.toml`](./config.md), with [layers](./config.md#layers) for per-machine differences               |
+| copy mode with vi keys                     | <kbd>C-a</kbd> <kbd>[</kbd>; see [the first-session tour](./getting-started.md)                           |
+| a session per git worktree                 | [`phux worktree new BRANCH`](./reference/cli.md#phux-worktree-new)                                        |
+| work that returns after a reboot           | `phux service install`, then `phux restore`; see [what survives what](./concepts.md#what-survives-what)   |
+| a machine reached with no VPN              | [`phux host add`](./remote.md#adding-a-machine) over SSH, a [pairing link](./remote.md#pairing-with-a-link), or a [relay](./remote.md#relays) |
+| agents that report when they need you      | [Coding agents](./agents.md)                                                                              |
+| a desktop app, a browser, or a phone       | [Clients](./clients.md) says what exists on macOS, Linux, and phones today                                |
+
 ## Measurements
 
 On 2026-09-30, two runs compared the terminal clients of phux 0.46, tmux 3.7c, and Herdr 0.9.0 on one heavily loaded Apple M4 Pro. The rankings reversed between runs: phux's median key echo was the slowest of the three in one run and the fastest in the other. The one consistent result was that tmux's server used the least memory in both. Treat these as old versions on a noisy machine, not a speed ranking. The raw samples and commands are published for [run 1](https://phux.sh/benchmarks/2026-09-30/run1/samples.json) and [run 2](https://phux.sh/benchmarks/2026-09-30/run2/samples.json).

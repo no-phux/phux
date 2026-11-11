@@ -69,7 +69,12 @@ impl Owner {
         {
             self.note_view_output(&id);
         }
-        let effects = self.effects.take();
+        #[cfg_attr(not(feature = "engine"), allow(unused_mut))]
+        let mut effects = self.effects.take();
+        #[cfg(feature = "engine")]
+        let documents = self.publish_documents(&mut effects);
+        #[cfg(not(feature = "engine"))]
+        let documents = Vec::new();
         // A retained close moves the final replica aside before the damage
         // walk sees the kernel's `Removed`, so the walk re-publishes it
         // from there instead of dropping its slot.
@@ -81,7 +86,27 @@ impl Owner {
         EngineOutcome {
             effects,
             error: result.as_ref().err().map(EngineApplyError::from_kernel),
+            documents,
         }
+    }
+
+    /// Move each whole document out of `effects` into its resource's slot,
+    /// newest wins, and name what was published for the control plane.
+    #[cfg(feature = "engine")]
+    fn publish_documents(&mut self, effects: &mut Vec<KernelEffect>) -> Vec<(ResourceId, u64)> {
+        effects
+            .extract_if(.., |effect| matches!(effect, KernelEffect::Document(_)))
+            .filter_map(|effect| match effect {
+                KernelEffect::Document(document) => Some(document),
+                _ => None,
+            })
+            .map(|document| {
+                let id = document.resource_id.clone();
+                let generation = self.publication.publish_document(Arc::new(document));
+                self.documents.insert(id.clone());
+                (id, generation)
+            })
+            .collect()
     }
 
     /// Theme every published replica and every later bootstrap, then

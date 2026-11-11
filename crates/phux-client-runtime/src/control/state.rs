@@ -313,4 +313,44 @@ mod tests {
         assert!(dropped.events_dropped);
         assert!(dropped.events.is_empty());
     }
+
+    #[cfg(feature = "engine")]
+    #[test]
+    fn a_document_wake_survives_the_queue_cap_and_a_dead_one_does_not_drain() {
+        let mut plane = ControlPlane::new(ControlOptions::default());
+        let live = ResourceId::local(8);
+        let retired = ResourceId::local(9);
+        for id in [&live, &retired] {
+            let generation = plane.publication.publish_document(std::sync::Arc::new(
+                crate::control::DocumentPublication {
+                    resource_id: id.clone(),
+                    kind: phux_protocol::ResourceKind::PixelSurface,
+                    seq: 1,
+                    bytes: b"png".to_vec(),
+                    content_type: None,
+                },
+            ));
+            plane.note_document(id.clone(), generation);
+        }
+        plane.publication.remove(&retired);
+        for _ in 0..=EVENT_QUEUE_CAP {
+            plane.push_event(Event::Bell {
+                terminal_id: ResourceId::local(7),
+            });
+        }
+        let flooded = plane.take_observation();
+        assert!(flooded.events_dropped, "the cap trimmed the queue");
+        let wakes: Vec<_> = flooded
+            .events
+            .iter()
+            .filter_map(|event| match event {
+                Event::DocumentPublished {
+                    resource_id,
+                    generation,
+                } => Some((resource_id.clone(), *generation)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(wakes, [(live, 1)], "the retired slot's wake is dropped");
+    }
 }

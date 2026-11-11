@@ -12,7 +12,8 @@
 //! - [`control`]: the sans-IO control plane over `SessionKernel`.
 //! - [`engine`]: the owner thread hosting the kernel and every replica.
 //! - [`perf`]: owner-thread apply and publication telemetry.
-//! - `publication` (feature `engine`): the double-buffered grid.
+//! - `publication` (feature `engine`): the published-resource table:
+//!   double-buffered grids and whole documents.
 //! - `draw` (feature `engine`): how a published frame paints, for any UI
 //!   toolkit: colour, face, cursor and block rules, and a draw list.
 //! - [`handshake`]: `HELLO` and `HELLO_OK` acceptance, shared by every lane.

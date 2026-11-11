@@ -28,6 +28,9 @@ SESSION = _reports.SESSION
 INPUT_CONTRACTS = _reports.INPUT_CONTRACTS
 validate_report = _reports.validate_report
 validate_input_contracts = _reports.validate_input_contracts
+_settle_spec = importlib.util.spec_from_file_location("rune_simulator_settle", Path(__file__).with_name("simulator_settle.py"))
+_settle = importlib.util.module_from_spec(_settle_spec)
+_settle_spec.loader.exec_module(_settle)
 
 BUNDLE_ID = "sh.phux.rune.ios"
 MARKER = "RUNE_IOS_INPUT_OK"
@@ -187,6 +190,10 @@ class Qualification:
         }, indent=2) + "\n")
         self.simctl("boot", self.udid)
         self.simctl("bootstatus", self.udid, "-b", timeout=240)
+        self.settle()
+
+    def settle(self):
+        return _settle.settle(self.simctl, self.udid, self.out)
 
     def app_documents(self):
         # Retain the existing bounded container-readiness policy from main,

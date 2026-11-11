@@ -28,7 +28,8 @@ pub static PROJECT: Histogram = Histogram::new();
 /// Damaged presentations a batch left unprojected because nobody had read
 /// their current frame.
 pub static DEFERRED: Counter = Counter::new();
-/// Frames consumers acquired from the publication table.
+/// Grid frames consumers acquired from the publication table; document
+/// reads are not counted.
 pub static ACQUIRED: Counter = Counter::new();
 /// Projections an acquire pulled from the owner for a deferred presentation.
 pub static CAUGHT_UP: Counter = Counter::new();

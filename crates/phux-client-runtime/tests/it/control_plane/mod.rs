@@ -38,6 +38,8 @@ mod approvals;
 mod batching;
 mod checkout;
 mod document_stalls;
+#[cfg(feature = "engine")]
+mod documents;
 mod geometry;
 mod global_metadata;
 #[cfg(feature = "engine")]

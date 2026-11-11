@@ -148,7 +148,15 @@ def test_table_marks_blanks() -> None:
 
 
 def _install_stub(bindir: Path, names: tuple[str, ...]) -> None:
-    """Copy the stub into the temp bin. Never chmod the tracked source."""
+    """Copy the stub into the temp bin. Never chmod the tracked source.
+
+    The stub's `#!/usr/bin/env python3` resolves against the bin first, so
+    it runs under this interpreter as `python3 <agent>`, a runtime wrapper
+    phux identifies through. On the restricted PATH it would otherwise
+    find macOS's /usr/bin/python3 shim, which hosts the script as `xcrun`
+    or `Python` and hides the agent name.
+    """
+    os.symlink(sys.executable, bindir / "python3")
     copy = bindir / "stub_agent.py"
     shutil.copyfile(HERE / "stub_agent.py", copy)
     copy.chmod(0o755)

@@ -1,6 +1,6 @@
 {
   "name": "@phux/pi",
-  "version": "0.9.1",
+  "version": "0.9.2",
   "description": "phux integration for pi: terminal tools and agent status.",
   "homepage": "https://docs.phux.sh/",
   "type": "module",

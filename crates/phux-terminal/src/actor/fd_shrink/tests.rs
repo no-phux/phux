@@ -44,7 +44,10 @@ fn spawn_pane_child_routes_a_missing_trampoline_through_strict_cwd() {
     }
     let _restore = Restore;
     set_force_trampoline_missing(true);
-    let mut strict = CommandBuilder::new("/bin/true");
+    // `/bin/sh`, not `/bin/true`: macOS has only `/usr/bin/true`, so the
+    // fallback spawn failed there with ENOENT rather than testing the route.
+    let mut strict = CommandBuilder::new("/bin/sh");
+    strict.args(["-c", "exit 0"]);
     strict.env(super::super::spawn::STRICT_CWD_KEY, "1");
     match spawn(&strict) {
         Err(LaunchDiagnostic {
@@ -54,7 +57,8 @@ fn spawn_pane_child_routes_a_missing_trampoline_through_strict_cwd() {
         Err(error) => panic!("strict missing trampoline returned {error}"),
         Ok(_) => panic!("strict missing trampoline spawned"),
     }
-    let loose = CommandBuilder::new("/bin/true");
+    let mut loose = CommandBuilder::new("/bin/sh");
+    loose.args(["-c", "exit 0"]);
     let mut spawned = spawn(&loose).unwrap();
     assert_eq!(spawned.wait().exit_code(), 0);
 }

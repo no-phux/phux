@@ -219,6 +219,27 @@ keys:
   ...
 ```
 
+## Keeping it in dotfiles
+
+`config.toml` is meant to be committed. To share one file across machines:
+
+- **Shared settings go in a layer.** Keep `layers/base.toml` in your
+  dotfiles and start each machine's `config.toml` with
+  `extends = ["base"]`. What a machine sets itself wins.
+- **Machine-specific tables stay out of the shared layer.** `[[remote]]`,
+  `[[connector]]`, `[[uplink]]`, and `[[satellites]]` are written by
+  commands such as `phux host add` and point at token files that exist
+  only on that machine. Tokens and certificates are never in
+  `config.toml`; they are separate files and should not be copied between
+  machines.
+- **`[defaults]` belongs to the server.** It is read by the machine that
+  runs the panes, so a laptop attaching to another machine gets that
+  machine's shell and scrollback settings. Key bindings, the status bar,
+  and the theme belong to the client you attach with.
+- **Check the file before it ships.** `phux config check --json PATH`
+  exits non-zero on a file that would not load, so it can run in your
+  dotfiles' CI without a server.
+
 ## Settings page
 
 Press <kbd>C-a</kbd> <kbd>S</kbd> to open the Settings page. It lists

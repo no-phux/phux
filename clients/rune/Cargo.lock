@@ -2894,7 +2894,7 @@ dependencies = [
 [[package]]
 name = "procwatch"
 version = "0.1.0"
-source = "git+https://github.com/anomalyco/rune?rev=0ea75abef0a6caa014067a88f89518b9a04cce2b#0ea75abef0a6caa014067a88f89518b9a04cce2b"
+source = "git+https://github.com/anomalyco/rune?rev=c382cb17886e0ad862e2c788ab64ead60e466a73#c382cb17886e0ad862e2c788ab64ead60e466a73"
 dependencies = [
  "libc",
 ]
@@ -3198,7 +3198,7 @@ dependencies = [
 [[package]]
 name = "rune"
 version = "0.0.1"
-source = "git+https://github.com/anomalyco/rune?rev=0ea75abef0a6caa014067a88f89518b9a04cce2b#0ea75abef0a6caa014067a88f89518b9a04cce2b"
+source = "git+https://github.com/anomalyco/rune?rev=c382cb17886e0ad862e2c788ab64ead60e466a73#c382cb17886e0ad862e2c788ab64ead60e466a73"
 dependencies = [
  "accesskit",
  "accesskit_macos",
@@ -3267,6 +3267,7 @@ dependencies = [
  "wgpu-hal",
  "wgpu-naga-bridge",
  "windows",
+ "windows-core",
  "windows-sys 0.59.0",
  "winit",
  "x11rb",
@@ -3278,12 +3279,12 @@ dependencies = [
 [[package]]
 name = "rune-motion"
 version = "0.1.0"
-source = "git+https://github.com/anomalyco/rune?rev=0ea75abef0a6caa014067a88f89518b9a04cce2b#0ea75abef0a6caa014067a88f89518b9a04cce2b"
+source = "git+https://github.com/anomalyco/rune?rev=c382cb17886e0ad862e2c788ab64ead60e466a73#c382cb17886e0ad862e2c788ab64ead60e466a73"
 
 [[package]]
 name = "rune-notify"
 version = "0.0.1"
-source = "git+https://github.com/anomalyco/rune?rev=0ea75abef0a6caa014067a88f89518b9a04cce2b#0ea75abef0a6caa014067a88f89518b9a04cce2b"
+source = "git+https://github.com/anomalyco/rune?rev=c382cb17886e0ad862e2c788ab64ead60e466a73#c382cb17886e0ad862e2c788ab64ead60e466a73"
 dependencies = [
  "block2 0.5.1",
  "objc2 0.5.3",
@@ -3294,7 +3295,7 @@ dependencies = [
 [[package]]
 name = "rune-perf"
 version = "0.1.0"
-source = "git+https://github.com/anomalyco/rune?rev=0ea75abef0a6caa014067a88f89518b9a04cce2b#0ea75abef0a6caa014067a88f89518b9a04cce2b"
+source = "git+https://github.com/anomalyco/rune?rev=c382cb17886e0ad862e2c788ab64ead60e466a73#c382cb17886e0ad862e2c788ab64ead60e466a73"
 dependencies = [
  "procwatch",
  "serde_json",
@@ -3303,7 +3304,7 @@ dependencies = [
 [[package]]
 name = "rune-staging"
 version = "0.0.1"
-source = "git+https://github.com/anomalyco/rune?rev=0ea75abef0a6caa014067a88f89518b9a04cce2b#0ea75abef0a6caa014067a88f89518b9a04cce2b"
+source = "git+https://github.com/anomalyco/rune?rev=c382cb17886e0ad862e2c788ab64ead60e466a73#c382cb17886e0ad862e2c788ab64ead60e466a73"
 dependencies = [
  "wgpu",
 ]
@@ -3311,7 +3312,7 @@ dependencies = [
 [[package]]
 name = "rune-taffy"
 version = "0.0.1"
-source = "git+https://github.com/anomalyco/rune?rev=0ea75abef0a6caa014067a88f89518b9a04cce2b#0ea75abef0a6caa014067a88f89518b9a04cce2b"
+source = "git+https://github.com/anomalyco/rune?rev=c382cb17886e0ad862e2c788ab64ead60e466a73#c382cb17886e0ad862e2c788ab64ead60e466a73"
 dependencies = [
  "taffy",
 ]

@@ -48,6 +48,7 @@ impl ControlPlane {
     fn drain_events(&mut self) -> Vec<Event> {
         self.events_dropped = 0;
         self.clipboard_event_bytes = 0;
+        self.drop_dead_document_wakes();
         let mut events: Vec<Event> = self
             .damaged
             .drain(..)
@@ -55,6 +56,32 @@ impl ControlPlane {
             .collect();
         events.append(&mut self.events);
         events
+    }
+
+    /// A document wake reads only its own generation, so one whose slot moved
+    /// on (a newer wake follows) or retired (close, detach, release, reset,
+    /// engine rebuild) would read nothing: the drain drops it here, one place
+    /// for every retirement path. Without the engine there are no wakes.
+    #[cfg_attr(
+        not(feature = "engine"),
+        allow(
+            clippy::unused_self,
+            clippy::needless_pass_by_ref_mut,
+            clippy::missing_const_for_fn
+        )
+    )]
+    fn drop_dead_document_wakes(&mut self) {
+        #[cfg(feature = "engine")]
+        {
+            let publication = &self.publication;
+            self.events.retain(|event| match event {
+                Event::DocumentPublished {
+                    resource_id,
+                    generation,
+                } => publication.generation(resource_id) == Some(*generation),
+                _ => true,
+            });
+        }
     }
 
     /// Drain the events exactly as [`ControlPlane::take_events`] does, and

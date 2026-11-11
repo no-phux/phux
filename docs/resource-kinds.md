@@ -219,6 +219,13 @@ client that sees no recut within 30 seconds attaches that document again,
 waiting longer each time. After three re-attaches with no document between
 them, it reports the document lost; the connection is never replaced.
 
+In the client runtime, a grid and a whole document publish through one
+table: one slot per resource with one generation counter, newest wins, and
+the slot retires when the resource closes, is detached or released, the
+server restarts, or a reconnect rebuilds the engine. A log is the exception: an `AgentSession`'s records stay on their
+own ordered, acknowledged queue, because every record counts
+([embedding](./embedding.md#documents-trees-and-surfaces)).
+
 ## Producers
 
 OpenCode owns its conversations; phux owns a projection of them (the
@@ -305,10 +312,6 @@ Each gap below holds on current `main`:
 - **The kind catalog.** `KindSpec` does not own a kind's input
   vocabulary, and a new kind still adds a `ResourceKind` variant and its
   app (`phux-rbz0y.7`).
-- **Runtime publication.** The client kernel keeps one lane per resource
-  behind a single dispatch, and the runtime keeps one subscription per
-  resource with a per-kind policy, but the published-frame table holds
-  grids only: documents still arrive as events (`phux-rbz0y.21`).
 - **Clients.** The terminal UI shows a non-terminal pane as a placeholder
   tile, not its content ([clients](./clients.md)).
 
