@@ -211,8 +211,11 @@ impl StatusBar {
     /// on a full row they render nothing and never push content off.
     #[must_use]
     pub fn render(&self, ctx: &WidgetContext<'_>, width: u16) -> Vec<Cell> {
+        // The gates read the viewport the caller stamped in `ctx.cols`, never
+        // less than the row: a bar sharing the screen with a sidebar is
+        // narrower than the terminal its `min-cols` / `max-cols` describe.
         let ctx = &WidgetContext {
-            cols: width,
+            cols: ctx.cols.max(width),
             ..*ctx
         };
         let width = usize::from(width);
