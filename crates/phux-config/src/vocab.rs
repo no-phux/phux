@@ -57,6 +57,7 @@ pub const ACTION_NAMES: &[&str] = &[
     "toggle-project-group",
     "new-session",
     "new-worktree",
+    "restore-sessions",
     "url-picker",
     "copy-text",
     "popup",

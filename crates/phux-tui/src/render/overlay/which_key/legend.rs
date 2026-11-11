@@ -80,6 +80,7 @@ pub(super) const ACTION_ORDER: &[&str] = &[
     "detach",
     "new-session",
     "new-worktree",
+    "restore-sessions",
     "session-picker",
     "next-session",
     "previous-session",
