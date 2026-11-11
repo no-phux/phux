@@ -251,6 +251,8 @@ which-key-delay-ms = 400
 "c" = "new-window"
 "n" = "next-window"
 "p" = "previous-window"
+# t toggles between this tab and the one you were on before it.
+"t" = "last-window"
 "Tab" = "next-window"
 "0" = { action = "select-window", index = 0 }
 "1" = { action = "select-window", index = 1 }

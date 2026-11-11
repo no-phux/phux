@@ -68,6 +68,7 @@ pub(super) const ACTION_ORDER: &[&str] = &[
     "select-window",
     "next-window",
     "previous-window",
+    "last-window",
     "window-picker",
     "rename-window",
     "move-window",

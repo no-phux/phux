@@ -23,6 +23,19 @@ pub(in crate::attach) fn previous_window(ActionCall { ctx, effects, .. }: Action
     switch_window(ctx, effects, ArrangementDoc::prev);
 }
 
+/// `last-window`: back to the tab this client switched away from last.
+pub(in crate::attach) fn last_window(ActionCall { ctx, effects, .. }: ActionCall<'_, '_>) {
+    let left = ctx.focus_history.left_window().cloned();
+    let index = left.and_then(|pane| window_holding(ctx.workspace, &pane));
+    let Some(index) = index.filter(|index| *index != ctx.workspace.active) else {
+        effects.bell = true;
+        return;
+    };
+    switch_window(ctx, effects, |w| {
+        w.select(index);
+    });
+}
+
 /// Remove the focused view from the arrangement (MIGRATION §03): the leaf
 /// folds out of its window, an emptied window goes, and the terminal keeps
 /// running and stays a member of the session. Never a kill, never a detach;
@@ -365,5 +378,34 @@ pub(in crate::attach) fn rename_window(
         ctx.overlays
             .push(Box::new(PromptOverlay::rename_window(&current, ctx.theme)));
         effects.layout_mutated = true;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::HashMap;
+
+    use crate::attach::input_dispatch::args::bare_action;
+    use crate::attach::input_dispatch::run_action::run_action;
+    use crate::attach::input_dispatch::test_support::{fx, tid};
+    use crate::layout::ArrangementDoc;
+
+    #[test]
+    fn last_window_toggles_between_the_two_most_recent_tabs() {
+        let mut workspace = ArrangementDoc::single(tid(1));
+        workspace.add_group("2".to_owned(), tid(2));
+        workspace.add_group("3".to_owned(), tid(3));
+        workspace.select(0);
+        let mut f = fx(workspace);
+        // One context throughout: it owns the history between actions.
+        let mut ctx = f.ctx();
+        let panes = HashMap::new();
+        let mut run = |name: &str| run_action(&bare_action(name), &mut ctx, None, &panes);
+        assert!(run("last-window").bell, "no tab was left yet");
+        run("previous-window");
+        let effects = run("last-window");
+        assert_eq!(effects.set_focus, Some(tid(1)));
+        let effects = run("last-window");
+        assert_eq!(effects.set_focus, Some(tid(3)));
     }
 }

@@ -27,6 +27,7 @@ pub const ACTION_NAMES: &[&str] = &[
     "session-actions",
     "next-window",
     "previous-window",
+    "last-window",
     "select-window",
     "move-window",
     "rename-window",

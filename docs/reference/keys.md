@@ -41,6 +41,7 @@ A capital letter means Shift: <kbd>X</kbd> is <kbd>Shift</kbd>+<kbd>x</kbd>. Whe
 | <kbd>0</kbd>–<kbd>9</kbd> | Go to tab | `select-window` |
 | <kbd>Tab</kbd> <kbd>n</kbd> | Next tab | `next-window` |
 | <kbd>p</kbd> | Previous tab | `previous-window` |
+| <kbd>t</kbd> | Last tab | `last-window` |
 | <kbd>w</kbd> | Go to tab… | `window-picker` |
 | <kbd>,</kbd> | Rename tab… | `rename-window` |
 | <kbd>&lt;</kbd> | Move tab left | `move-window` |

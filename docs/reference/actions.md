@@ -32,6 +32,7 @@ The **Palette** column is the command-palette section the action is offered unde
 | `session-actions` | — | `id`, `name`, `host` (pinned picker identity) | Open management for the selected session row |
 | `next-window` | Tab |  | Switch to the next tab |
 | `previous-window` | Tab |  | Switch to the previous tab |
+| `last-window` | Tab |  | Switch back to the tab you were on before this one |
 | `select-window` | — | `index` (0-based tab position) | Focus the tab at a given index |
 | `move-window` | — | `index` (0-based destination) or `delta` (signed slots, e.g. `-1`); clamped to the ends | Move the active tab to another position in the tab order |
 | `rename-window` | Tab | `name?` (bare opens an interactive prompt) | Rename the active tab (interactive prompt) |
