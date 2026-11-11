@@ -414,8 +414,10 @@ pub async fn snapshot(conn: &mut Connection, tree: &ResourceId) -> Result<Docume
 }
 
 /// Every document from the newest on, until `sink` returns `false`, the
-/// tree closes, or the connection ends. A stream that stalls (a cut stops
-/// arriving, or a fence is never followed by a recut) is attached again.
+/// tree closes, or the connection ends.
+///
+/// A stream that stalls (a cut stops arriving, or a fence is never followed
+/// by a recut) is attached again.
 ///
 /// # Errors
 ///
