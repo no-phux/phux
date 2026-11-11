@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.7.2](https://github.com/no-phux/phux/compare/claude-plugin-v0.7.1...claude-plugin-v0.7.2) (2026-11-11)
+
+
+### Documentation
+
+* **claude:** keep allowScripts with the claude-code pin; publish as 0.7.2 ([#2247](https://github.com/no-phux/phux/issues/2247)) ([529c323](https://github.com/no-phux/phux/commit/529c32369f34e68a69598996f4dc248e0c095e63))
+
 ## [0.7.1](https://github.com/no-phux/phux/compare/claude-plugin-v0.7.0...claude-plugin-v0.7.1) (2026-11-11)
 
 
