@@ -108,6 +108,12 @@ const SECTIONS: &[Section] = &[
                   live-reloaded (Linux; macOS skips them).",
     },
     Section {
+        key: "producers",
+        header: "[[producers]]",
+        summary: "Commands kept running as document producers, each in its \
+                  own `producer-*` session, like `[[mirrors]]`.",
+    },
+    Section {
         key: "remote",
         header: "[[remote]]",
         summary: "Remote phux servers this machine attaches to, written by \
