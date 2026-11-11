@@ -1,4 +1,4 @@
-//! zellij and herdr: settings are reported, key lines go to the agent to
+//! zellij, herdr and Rex: settings are reported, key lines go to the agent to
 //! translate itself.
 
 use std::path::Path;
@@ -77,6 +77,35 @@ pub(super) fn herdr(path: &Path) -> Source {
     read_tree(path, &mut files, &mut rows, &mut decide);
     Source {
         kind: MigrateSource::Herdr,
+        files,
+        rows,
+        note: None,
+    }
+}
+
+/// Rex's `init.lua`. Every line goes to the agent, because a binding may
+/// run a Lua function whose body is the lines after it.
+// ponytail: reads init.lua only; files it loads with `require` are not
+// followed. Resolve Lua module paths here if split configs turn out common.
+pub(super) fn rex(path: &Path) -> Source {
+    let mut files = Vec::new();
+    let mut rows = Vec::new();
+    let mut decide = |_: &Path, line: &str| {
+        if line.is_empty() || line.starts_with("--") {
+            return Line::Nothing;
+        }
+        let class = if line.starts_with("rex.unbind(") {
+            Class::Unbinding
+        } else if line.starts_with("rex.bind(") {
+            Class::Binding
+        } else {
+            Class::Other
+        };
+        Line::Row(class, Verdict::Raw, None)
+    };
+    read_tree(path, &mut files, &mut rows, &mut decide);
+    Source {
+        kind: MigrateSource::Rex,
         files,
         rows,
         note: None,

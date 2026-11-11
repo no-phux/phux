@@ -1,7 +1,7 @@
 # Migrate your config with your agent
 
 `phux migrate` moves the key bindings you already have in tmux, zellij,
-Ghostty or herdr into your phux config. phux reads your files and decides
+Ghostty, herdr or Rex into your phux config. phux reads your files and decides
 every line it can; your own coding agent (Claude Code, Codex or OpenCode)
 writes the result, checks it and reloads phux, in a pane next to you.
 
@@ -17,6 +17,7 @@ phux migrate
 | zellij | `$XDG_CONFIG_HOME/zellij/config.kdl` |
 | Ghostty | `$XDG_CONFIG_HOME/ghostty/config` and, on macOS, `~/Library/Application Support/com.mitchellh.ghostty/config`, and every `config-file` they load |
 | herdr | `$XDG_CONFIG_HOME/herdr/config.toml` |
+| Rex | `$XDG_CONFIG_HOME/rex/init.lua` (not the files it `require`s) |
 
 `--source tmux` (repeatable) reads only the sources you name. With nothing
 to migrate, `phux migrate` says so and exits 0.
@@ -45,7 +46,7 @@ Some lines are never written:
   <kbd>Ctrl</kbd>+<kbd>Cmd</kbd>+<kbd>Q</kbd>) are never bound.
 - tmux copy-mode bindings, plugins and commands no phux action matches.
 
-zellij and herdr lines, and Ghostty lines phux cannot translate with
+zellij, herdr and Rex lines, and Ghostty lines phux cannot translate with
 certainty (key sequences, actions with no clear counterpart), go to the
 agent as "translate these yourself", with the list of phux actions it may
 bind. A binding with no phux action is reported, never approximated.
@@ -101,7 +102,7 @@ phux migrate --print | pbcopy
 }
 ```
 
-- `sources[].name` is `tmux`, `zellij`, `ghostty` or `herdr`; `files` are
+- `sources[].name` is `tmux`, `zellij`, `ghostty`, `herdr` or `rex`; `files` are
   absolute; `found` counts binding, unbinding and setting lines.
 - `launched` is `{ "pane": "@N" }` for a split, `{ "session": "migrate",
   "pane": "@N" }` for a new session, and `null` when nothing started.

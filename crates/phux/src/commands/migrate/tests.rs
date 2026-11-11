@@ -139,6 +139,10 @@ fn every_source_is_found_under_a_temp_home() {
         ".config/herdr/config.toml",
         "[ui]\ntheme = \"x\"\n\n[keys]\nprefix = \"ctrl+b\"\nnew_tab = \"prefix+c\"\n",
     );
+    write(
+        ".config/rex/init.lua",
+        "-- mine\nrex.bind(\"ctrl+b>c\", \"client.tab.new\")\nrex.bind(\"ctrl+x\", function(ctx, ev)\n  return true\nend)\nrex.unbind(\"cmd+k\")\n",
+    );
     let sources = discover(home, None, &[]);
     let found: Vec<_> = sources.iter().map(|s| (s.kind, s.found())).collect();
     assert_eq!(
@@ -148,6 +152,7 @@ fn every_source_is_found_under_a_temp_home() {
             (MigrateSource::Zellij, (1, 1, 1)),
             (MigrateSource::Ghostty, (1, 0, 1)),
             (MigrateSource::Herdr, (2, 0, 1)),
+            (MigrateSource::Rex, (2, 1, 0)),
         ]
     );
     // No `set prefix` line: tmux used C-b, and the agent is told phux keeps its own.

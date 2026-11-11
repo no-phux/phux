@@ -30,6 +30,7 @@ pub(super) const fn name(kind: MigrateSource) -> &'static str {
         MigrateSource::Zellij => "zellij",
         MigrateSource::Ghostty => "Ghostty",
         MigrateSource::Herdr => "herdr",
+        MigrateSource::Rex => "Rex",
     }
 }
 
@@ -134,6 +135,17 @@ fn intro(kind: MigrateSource, prefix: &str) -> String {
              becomes `[keybindings] prefix` only when you ask me first. herdr spells keys \
              `ctrl+b` and names punctuation (`minus`, `comma`, `plus`, `backtick`): in phux \
              those are `C-b`, `-`, `,`, `+` and the backtick."
+        ),
+        MigrateSource::Rex => format!(
+            "Rex binds keys in Lua: `rex.bind(\"KEY\", \"ACTION\", {{ args }})` and \
+             `rex.unbind(\"KEY\")`. A key on its own, such as `ctrl+alt+n`, is `\"C-M-n\"` in \
+             `[keybindings.global]`. Keys joined by `>` are a sequence: when the first key is \
+             the phux prefix ({prefix}) the rest goes in `[keybindings.prefix-table]`; any \
+             other first key is reported, and becomes `[keybindings] prefix` only when you \
+             ask me first. A key with `cmd` is reported, not written: phux key bindings have \
+             no Cmd modifier. A key bound to a Lua function is reported with what the \
+             function does, unless one phux action does exactly that. Lines that are not \
+             `rex.bind` or `rex.unbind` are there for context only."
         ),
     }
 }

@@ -395,8 +395,8 @@ pub(crate) enum PluginAction {
 
 /// Have your coding agent bring your terminal keys into phux
 ///
-/// Reads your tmux, zellij, Ghostty and herdr configs, translates every key
-/// binding it can into phux config lines, and starts your agent (claude,
+/// Reads your tmux, zellij, Ghostty, herdr and Rex configs, translates every
+/// key binding it can into phux config lines, and starts your agent (claude,
 /// codex or opencode) with a strict prompt: write those lines into `phux
 /// config path`, run `phux config check` and `phux config reload`, and report
 /// what migrated, what replaced a phux default, which sources conflicted
@@ -446,4 +446,5 @@ pub(crate) enum MigrateSource {
     Zellij,
     Ghostty,
     Herdr,
+    Rex,
 }

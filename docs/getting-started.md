@@ -168,7 +168,7 @@ When an agent is waiting on you, <kbd>C-a</kbd> <kbd>q</kbd> jumps to it and <kb
 
 ## Coming from tmux
 
-Already have tmux, zellij, Ghostty or herdr configured the way you like?
+Already have tmux, zellij, Ghostty, herdr or Rex configured the way you like?
 Run `phux migrate` and your coding agent moves your key bindings into your
 phux config, checks it and reports what carried over. See [Migrate your
 config with your agent](./migrate.md). Without an agent,
