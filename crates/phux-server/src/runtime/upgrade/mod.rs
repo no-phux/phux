@@ -8,7 +8,6 @@
 //! image keeps serving and no child is stranded) and [`UpgradePlan::exec`]
 //! (the irreversible re-exec). The caller acks the client between the two.
 
-use std::collections::HashMap;
 use std::ffi::OsString;
 use std::io::{Seek, SeekFrom, Write};
 use std::os::fd::{AsRawFd, BorrowedFd, OwnedFd, RawFd};
@@ -17,20 +16,17 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::Duration;
 
-use tokio::sync::mpsc;
+use futures_util::future::join_all;
 
 use super::RuntimeFlags;
-use crate::resource::handoff::{ProcessHandoff, UpgradeHandleRequest};
-use crate::runtime::apps::StreamUpgrade;
-use crate::state::{SharedState, UpgradeHandoffs};
+use crate::runtime::apps::UpgradeCut;
+use crate::state::SharedState;
 use crate::upgrade::blob::StateBlob;
 
-mod handoff;
 #[cfg(test)]
 mod tests;
 pub(super) mod validate;
 
-use handoff::collect_pane_handoffs;
 pub(super) use validate::{InheritedUpgradeEnv, cleanup_executable_snapshot};
 use validate::{
     PinnedExecutable, clear_inherited_cloexec, pin_validated_executable, preflight_blob,
@@ -43,7 +39,11 @@ const UPGRADE_SNAPSHOT_DIR: &str = crate::upgrade::SNAPSHOT_DIR_ENV;
 /// Errors preparing a graceful upgrade. Any of these leaves the running server
 /// untouched (the children are never stranded — see the module docs).
 #[derive(Debug, thiserror::Error)]
-pub(super) enum UpgradeError {
+#[allow(
+    clippy::redundant_pub_crate,
+    reason = "each app's upgrade cut returns it; pub would violate unreachable_pub"
+)]
+pub(crate) enum UpgradeError {
     /// The server hasn't captured its upgrade context yet (not serving).
     #[error("server not ready for upgrade (no listener context)")]
     NoContext,
@@ -154,9 +154,9 @@ pub(super) struct UpgradePlan {
     _listener_fd: OwnedFd,
     /// Each carried delegated socket's duplicated listener (ADR-0163 §5).
     _delegated_listeners: Vec<OwnedFd>,
-    _handoffs: HashMap<phux_core::ids::ResourceId, ProcessHandoff>,
-    /// Lifted only if `exec` returns, so the old image keeps streaming.
-    streams: Box<dyn StreamUpgrade>,
+    /// Each kind's cut, holding what crosses until exec. Lifted only if
+    /// `exec` returns, so the old image keeps serving.
+    cuts: Vec<Box<dyn UpgradeCut>>,
 }
 
 /// Everything `prepare_upgrade` reads out of the live server under one lock,
@@ -168,14 +168,6 @@ struct UpgradeContext {
     /// The serializable tree as it stood when the actor set was chosen. The
     /// blob is reassembled only if the tree still matches this exactly.
     tree_identity: StateBlob,
-    pane_senders: Vec<(
-        phux_core::ids::ResourceId,
-        mpsc::Sender<UpgradeHandleRequest>,
-    )>,
-    document_senders: Vec<(
-        phux_core::ids::ResourceId,
-        mpsc::Sender<phux_tree::SnapshotRequest>,
-    )>,
 }
 
 /// Do everything reversible: snapshot the tree into a handoff blob, stage it in
@@ -197,41 +189,32 @@ pub(super) async fn prepare_upgrade(state: &SharedState) -> Result<UpgradePlan, 
 }
 
 async fn prepare_upgrade_inner(state: &SharedState) -> Result<UpgradePlan, UpgradeError> {
-    let mut streams =
-        crate::runtime::apps::begin_stream_upgrade(state).ok_or(UpgradeError::TreeChanged)?;
+    let mut cuts = crate::runtime::apps::upgrade::begin(state).ok_or(UpgradeError::TreeChanged)?;
     let UpgradeContext {
         listener_fd,
         socket_path,
         flags,
         tree_identity,
-        pane_senders,
-        document_senders,
     } = capture_upgrade_context(state)?;
-    // No await since the capture: the streams are chosen from the same tree.
-    let cuts = streams.cut(state, PANE_HANDOFF_TIMEOUT);
-    refuse_invalid_hub_registry(state, &flags)?;
-
-    let listener = dup_listener(listener_fd)?;
-    let (panes, agent_sessions, documents) = tokio::join!(
-        collect_pane_handoffs(pane_senders, PANE_HANDOFF_TIMEOUT),
-        cuts,
-        handoff::collect_document_cuts(document_senders, PANE_HANDOFF_TIMEOUT),
-    );
     let staged: Result<_, UpgradeError> = async {
-        let handoffs = UpgradeHandoffs {
-            panes: panes?,
-            agent_sessions,
-            documents,
-        };
-        if let Some(agent) = state.with(|s| streams.uncarried(s, &handoffs.agent_sessions)) {
-            return Err(UpgradeError::NativeAgentHandoff { agent });
-        }
+        // No await since the capture: each kind chooses what it carries
+        // from the same tree.
+        let cutting: Vec<_> = cuts
+            .iter_mut()
+            .map(|cut| cut.cut(state, PANE_HANDOFF_TIMEOUT))
+            .collect();
+        refuse_invalid_hub_registry(state, &flags)?;
+        let listener = dup_listener(listener_fd)?;
+        join_all(cutting)
+            .await
+            .into_iter()
+            .collect::<Result<(), _>>()?;
         let blob = reassemble_unchanged_tree(
             state,
             listener_fd,
             listener.as_raw_fd(),
             &tree_identity,
-            &handoffs,
+            &cuts,
         )?;
         let (blob, delegated_listeners) = super::delegation::carry_delegations(state, blob)?;
 
@@ -239,9 +222,9 @@ async fn prepare_upgrade_inner(state: &SharedState) -> Result<UpgradePlan, Upgra
         let blob_fd = blob_file.as_raw_fd();
         let executable = pin_validated_executable(flags.upgrade_source_exe.as_deref())?;
         preflight_blob(&executable.path, &mut blob_file)?;
-        let fd_flags = clear_inherited_cloexec(blob_fd, listener_fd, &blob)?;
+        let fd_flags = clear_inherited_cloexec(blob_fd, listener_fd, &blob, &cuts)?;
         Ok((
-            handoffs,
+            listener,
             blob_file,
             blob_fd,
             executable,
@@ -251,13 +234,13 @@ async fn prepare_upgrade_inner(state: &SharedState) -> Result<UpgradePlan, Upgra
     }
     .await;
 
-    let (handoffs, blob_file, blob_fd, executable, fd_flags, delegated_listeners) = match staged {
+    let (listener, blob_file, blob_fd, executable, fd_flags, delegated_listeners) = match staged {
         Ok(parts) => parts,
         Err(error) => {
             // Await responsive actors before reporting the failure (#1035).
             // Drop retains responsibility for actors that miss rollback's
             // deadline, including ones that never answered their initial cut.
-            streams.lift().await;
+            lift(&mut cuts).await;
             return Err(error);
         }
     };
@@ -271,13 +254,17 @@ async fn prepare_upgrade_inner(state: &SharedState) -> Result<UpgradePlan, Upgra
         _blob_file: blob_file,
         _listener_fd: listener,
         _delegated_listeners: delegated_listeners,
-        _handoffs: handoffs.panes,
-        streams,
+        cuts,
     })
 }
 
-/// Read the listener context, the tree identity, and one upgrade sender per
-/// pane out of the live server under a single lock.
+/// Lift every kind's cut concurrently, each within its own bound.
+async fn lift(cuts: &mut [Box<dyn UpgradeCut>]) {
+    join_all(cuts.iter_mut().map(|cut| cut.lift())).await;
+}
+
+/// Read the listener context and the tree identity out of the live server
+/// under a single lock.
 fn capture_upgrade_context(state: &SharedState) -> Result<UpgradeContext, UpgradeError> {
     state
         .with_mut(|s| {
@@ -289,14 +276,7 @@ fn capture_upgrade_context(state: &SharedState) -> Result<UpgradeContext, Upgrad
                     listener_fd,
                     socket_path: path.to_path_buf(),
                     flags: served_flags(flags, s.hub_has_links()),
-                    tree_identity: s
-                        .assemble_upgrade_blob(listener_fd, &UpgradeHandoffs::default()),
-                    pane_senders: s
-                        .upgrade_handles()
-                        .into_iter()
-                        .filter_map(|(pane, handle)| Some((pane, handle.ops().upgrade_sender()?)))
-                        .collect(),
-                    document_senders: s.upgrade_documents(),
+                    tree_identity: s.assemble_upgrade_blob(listener_fd),
                 })
         })
         .ok_or(UpgradeError::NoContext)
@@ -339,25 +319,29 @@ fn dup_listener(listener_fd: RawFd) -> Result<OwnedFd, UpgradeError> {
 }
 
 /// Re-read under one lock and require the exact serializable state used to
-/// choose actors to still be current. A concurrent split/close/focus/name
-/// change aborts rather than pairing old handoffs with a new tree.
+/// choose actors to still be current, then let each kind write what it cut.
+/// A concurrent split/close/focus/name change aborts rather than pairing old
+/// handoffs with a new tree.
 fn reassemble_unchanged_tree(
     state: &SharedState,
     listener_fd: RawFd,
     inherited_fd: RawFd,
     tree_identity: &StateBlob,
-    handoffs: &UpgradeHandoffs,
+    cuts: &[Box<dyn UpgradeCut>],
 ) -> Result<StateBlob, UpgradeError> {
-    state
-        .with_mut(|s| {
-            // Without this, anything new since the capture would be missing
-            // from both blobs and look unchanged.
-            s.intern_upgrade_wires();
-            let current = s.assemble_upgrade_blob(listener_fd, &UpgradeHandoffs::default());
-            (current == *tree_identity)
-                .then(|| s.with_upgrade_metadata(s.assemble_upgrade_blob(inherited_fd, handoffs)))
-        })
-        .ok_or(UpgradeError::TreeChanged)
+    state.with_mut(|s| {
+        // Without this, anything new since the capture would be missing
+        // from both blobs and look unchanged.
+        s.intern_upgrade_wires();
+        if s.assemble_upgrade_blob(listener_fd) != *tree_identity {
+            return Err(UpgradeError::TreeChanged);
+        }
+        let mut blob = s.with_upgrade_metadata(s.assemble_upgrade_blob(inherited_fd));
+        for cut in cuts {
+            cut.carry(s, &mut blob)?;
+        }
+        Ok(blob)
+    })
 }
 
 /// Stage the blob in an anonymous temp file (auto-removed on close), rewound
@@ -376,7 +360,7 @@ impl UpgradePlan {
     pub(super) async fn exec(mut self) -> std::io::Error {
         let error = self.try_exec();
         drop(self.fd_flags);
-        self.streams.lift().await;
+        lift(&mut self.cuts).await;
         error
     }
 

@@ -25,8 +25,10 @@ pub mod spawn_terminal {
     pub const INITIAL_SIZE: u32 = 10;
     /// Optional `ResourceKind` tag (`u8`); absent = `Terminal`.
     ///
-    /// `AgentSession` requires `PARENT` and `PROVIDER` and forbids fields 3-6,
-    /// 8, and 10; `Terminal` forbids fields 12-14.
+    /// Which other fields the kind requires or forbids is its catalog
+    /// spawn contract (`kinds::KindSpec::spawn`): a Terminal forbids fields
+    /// 12-14 and 18, and every other kind requires `PARENT` and `PROVIDER`
+    /// and forbids fields 3-6, 8, 10 and 16.
     pub const KIND: u32 = 11;
     /// Optional parent resource (positional `ResourceId`).
     pub const PARENT: u32 = 12;

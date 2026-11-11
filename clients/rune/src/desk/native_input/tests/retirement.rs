@@ -21,7 +21,7 @@ fn unmounted_acp_focus_does_not_capture_later_terminal_accessory_input() {
         questions: vec![],
         fields: serde_json::Value::Null,
     };
-    let terminal = rt.state.shown.as_ref().unwrap().terminal.clone();
+    let terminal = rt.state.shown.as_ref().unwrap().resource.clone();
     rt.state.inbox.questions.views.insert(
         terminal,
         (

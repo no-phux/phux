@@ -60,6 +60,11 @@ pub(crate) async fn handle_spawn_terminal(spawn: ResourceSpawn<'_>) {
         defer_subscription,
         decodes,
     } = spawn;
+    // The host refuses a Terminal spawn without a profile before this.
+    let Some(profile) = profile else {
+        crate::runtime::apps::spawn::refuse_without_terminal_profile(out_tx, request_id).await;
+        return;
+    };
     let SpawnLaunch {
         group,
         command,

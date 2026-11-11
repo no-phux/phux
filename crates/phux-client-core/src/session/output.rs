@@ -1,81 +1,70 @@
-//! Publication of staged generations and live terminal output.
+//! The Terminal lane's publication of staged generations and live output.
 
+use super::lane::{AttachSignal, LaneCx, LaneRegistry, OutputFrame};
+use super::staging_rules::{fence_replaced, reject_retired, retire_for_codec_failure};
 use super::{
-    BootstrapId, BootstrapStreamProfile, DocumentAnchorId, EffectBuffer, EngineAdapter,
-    GenerationId, HashMap, HistoryCache, HistoryUnavailableReason, KernelDamage, KernelDamageKind,
-    KernelEffect, KernelError, KernelSend, KernelStatus, Replica, ReplicaKey, ResourceId,
-    SessionKernel, StreamId, TerminalState, TombstoneReason, TombstoneRecord, ViewportAnchor,
-    generation_of, mismatch_error, retired_error,
+    BootstrapStreamProfile, DocumentAnchorId, EffectBuffer, EngineAdapter, GenerationId,
+    HistoryCache, HistoryUnavailableReason, KernelDamage, KernelDamageKind, KernelEffect,
+    KernelError, KernelSend, KernelStatus, Replica, ResourceId, SessionKernel, TerminalState,
+    ViewportAnchor, drain_engine_effects, generation_of, mismatch_error,
 };
 
-impl<E: EngineAdapter> SessionKernel<E> {
-    pub(super) fn publish(
+impl<R> TerminalState<R> {
+    pub(super) fn publish<E: EngineAdapter<Replica = R>>(
         &mut self,
-        terminal_id: &ResourceId,
+        cx: &mut LaneCx<'_, E>,
         effects: &mut EffectBuffer,
     ) -> Result<(), KernelError<E::Error>> {
-        let history_config = self.history_config;
-        let (replica_key, pending_effects, initial_history_cursor, history_status) = {
-            let state = self
-                .terminals
-                .get_mut(terminal_id)
-                .ok_or_else(|| KernelError::UnknownTerminal(terminal_id.clone()))?;
-            {
-                let staging = state
-                    .staging
-                    .as_mut()
-                    .ok_or_else(|| KernelError::MissingStaging(terminal_id.clone()))?;
-                debug_assert!(staging.engine_ready && staging.protocol_ready);
-                self.adapter
-                    .configure_history_budget(
-                        &mut staging.engine,
-                        history_config.max_bytes,
-                        history_config.max_materialized_rows,
-                    )
-                    .map_err(KernelError::Engine)?;
-            }
-            let mut staging = state
+        let terminal_id = cx.resource_id;
+        let history_config = cx.history_config;
+        {
+            let staging = self
                 .staging
-                .take()
+                .as_mut()
                 .ok_or_else(|| KernelError::MissingStaging(terminal_id.clone()))?;
-            let replica_key = staging.key.clone();
-            let pending_effects = std::mem::take(&mut staging.pending_effects);
-            let mut history = HistoryCache::new(
-                history_config,
-                staging.history_cursor.take(),
-                staging.geometry.cols,
-            );
-            let initial_history_cursor = history.begin_fetch();
-            let replacement = Replica {
-                key: staging.key,
-                geometry: staging.geometry,
-                last_seq: staging.base_seq,
-                next_seq: staging.base_seq.checked_add(1),
-                engine: staging.engine,
-                history,
-            };
-            let history_status = replacement.history.status();
-            if let Some(old) = state.published.replace(replacement) {
-                state
-                    .retired
-                    .entry(generation_of(&old.key))
-                    .or_insert(TombstoneRecord {
-                        reason: TombstoneReason::ExplicitReattach,
-                        last_valid_seq: old.last_seq,
-                    });
-            }
-            (
-                replica_key,
-                pending_effects,
-                initial_history_cursor,
-                history_status,
-            )
+            debug_assert!(staging.engine_ready && staging.protocol_ready);
+            cx.adapter
+                .configure_history_budget(
+                    &mut staging.engine,
+                    history_config.max_bytes,
+                    history_config.max_materialized_rows,
+                )
+                .map_err(KernelError::Engine)?;
+        }
+        let mut staging = self
+            .staging
+            .take()
+            .ok_or_else(|| KernelError::MissingStaging(terminal_id.clone()))?;
+        let replica_key = staging.key.clone();
+        let pending_effects = std::mem::take(&mut staging.pending_effects);
+        let mut history = HistoryCache::new(
+            history_config,
+            staging.history_cursor.take(),
+            staging.geometry.cols,
+        );
+        let initial_history_cursor = history.begin_fetch();
+        let replacement = Replica {
+            key: staging.key,
+            geometry: staging.geometry,
+            last_seq: staging.base_seq,
+            next_seq: staging.base_seq.checked_add(1),
+            engine: staging.engine,
+            history,
         };
+        let history_status = replacement.history.status();
+        if let Some(old) = self.published.replace(replacement) {
+            fence_replaced(&mut self.retired, generation_of(&old.key), old.last_seq);
+        }
 
-        self.mark_attach_resolved(terminal_id);
-        let damage_allowed = !self.attach_blocks(terminal_id);
+        cx.attach = AttachSignal::Resolved;
+        let damage_allowed = !cx.attach_blocks;
         for effect in pending_effects {
-            Self::translate_engine_effect(&replica_key, effect, damage_allowed, effects);
+            SessionKernel::<E>::translate_engine_effect(
+                &replica_key,
+                effect,
+                damage_allowed,
+                effects,
+            );
         }
         if let Some(cursor) = initial_history_cursor {
             effects.push(KernelEffect::Send(KernelSend::HistoryRequest {
@@ -98,22 +87,16 @@ impl<E: EngineAdapter> SessionKernel<E> {
         Ok(())
     }
 
-    /// Resolve the published replica for `generation`, or the error that
-    /// says why it cannot accept the frame: the generation is retired,
-    /// the terminal is unknown, or another generation is published.
-    pub(super) fn published_replica<'a>(
-        terminals: &'a mut HashMap<ResourceId, TerminalState<E::Replica>>,
+    /// The published replica for `generation`, or the error that says why
+    /// it cannot accept the frame: the generation is retired or another
+    /// generation is published.
+    pub(super) fn published_for<X>(
+        &mut self,
         terminal_id: &ResourceId,
         generation: GenerationId,
-    ) -> Result<&'a mut Replica<E::Replica>, KernelError<E::Error>> {
-        let state = terminals
-            .get_mut(terminal_id)
-            .ok_or_else(|| KernelError::UnknownTerminal(terminal_id.clone()))?;
-        if state.retired.contains_key(&generation) {
-            return Err(retired_error(terminal_id, generation));
-        }
-        state
-            .published
+    ) -> Result<&mut Replica<R>, KernelError<X>> {
+        reject_retired(&self.retired, terminal_id, generation)?;
+        self.published
             .as_mut()
             .filter(|replica| generation_of(&replica.key) == generation)
             .ok_or_else(|| mismatch_error(terminal_id, generation))
@@ -121,10 +104,7 @@ impl<E: EngineAdapter> SessionKernel<E> {
 
     /// Live output is exactly sequenced: the replica accepts `expected`
     /// and nothing else.
-    const fn expect_next_seq(
-        replica: &Replica<E::Replica>,
-        seq: u64,
-    ) -> Result<(), KernelError<E::Error>> {
+    const fn expect_next_seq<X>(replica: &Replica<R>, seq: u64) -> Result<(), KernelError<X>> {
         let Some(expected) = replica.next_seq else {
             return Err(KernelError::SequenceExhausted);
         };
@@ -141,6 +121,118 @@ impl<E: EngineAdapter> SessionKernel<E> {
             });
         }
         Ok(())
+    }
+
+    /// Retire the generation whose engine could not decode live output:
+    /// drop the published replica, tombstone the generation, and ask the
+    /// frontend for a resync.
+    fn retire_after_codec_failure<E: EngineAdapter<Replica = R>>(
+        &mut self,
+        cx: &mut LaneCx<'_, E>,
+        generation: GenerationId,
+        last_valid_seq: u64,
+        effects: &mut EffectBuffer,
+    ) {
+        cx.engine_effects.clear();
+        self.published = None;
+        let damage_blocked = cx.attach_blocks;
+        cx.attach = AttachSignal::Unresolved {
+            pending_removal: damage_blocked,
+        };
+        retire_for_codec_failure(
+            &mut self.retired,
+            cx.resource_id,
+            generation,
+            last_valid_seq,
+            effects,
+        );
+        if !damage_blocked {
+            effects.push(KernelEffect::Damage(KernelDamage {
+                terminal_id: cx.resource_id.clone(),
+                kind: KernelDamageKind::Removed,
+            }));
+        }
+    }
+
+    pub(super) fn output<E: EngineAdapter<Replica = R>>(
+        &mut self,
+        cx: &mut LaneCx<'_, E>,
+        frame: &OutputFrame<'_>,
+        effects: &mut EffectBuffer,
+    ) -> Result<(), KernelError<E::Error>> {
+        let terminal_id = cx.resource_id;
+        crate::perf::OUTPUT_FRAMES.incr();
+        crate::perf::OUTPUT_BYTES.add_len(frame.payload.len());
+        cx.perf_echo.observe(terminal_id);
+        let _timed = crate::perf::apply_timer();
+        let generation = frame.generation;
+        let seq = frame.seq;
+        let replica = self.published_for(terminal_id, generation)?;
+        Self::expect_next_seq(replica, seq)?;
+
+        let pinned_anchor = match replica.history.viewport_anchor() {
+            ViewportAnchor::Pinned(anchor) => Some(anchor),
+            ViewportAnchor::Tail => None,
+        };
+        let distance_before = if let Some(anchor) = pinned_anchor {
+            cx.adapter
+                .history_anchor_tail_distance(&replica.engine, anchor)
+                .map_err(KernelError::Engine)?
+        } else {
+            None
+        };
+        cx.engine_effects.clear();
+        let applied =
+            cx.adapter
+                .apply_output(&mut replica.engine, frame.payload, cx.engine_effects);
+        if let Err(error) = applied {
+            let last_valid_seq = replica.last_seq;
+            self.retire_after_codec_failure(cx, generation, last_valid_seq, effects);
+            return Err(KernelError::Engine(error));
+        }
+        if let Some(anchor) = pinned_anchor {
+            SessionKernel::<E>::reconcile_pinned_anchor(
+                cx.adapter,
+                replica,
+                anchor,
+                distance_before,
+                effects,
+            );
+        }
+        replica.last_seq = seq;
+        replica.next_seq = seq.checked_add(1);
+        let replica_key = replica.key.clone();
+        let acknowledge = matches!(
+            replica_key.profile,
+            BootstrapStreamProfile::SynthesizedVtStateSync
+        );
+
+        let damage_allowed = !cx.attach_blocks;
+        drain_engine_effects::<E>(cx.engine_effects, &replica_key, damage_allowed, effects);
+        if acknowledge {
+            effects.push(KernelEffect::Send(KernelSend::FrameAck {
+                terminal_id: terminal_id.clone(),
+                stream_id: generation.stream_id,
+                bootstrap_id: generation.bootstrap_id,
+                seq,
+            }));
+        }
+        Ok(())
+    }
+}
+
+impl<E: EngineAdapter> SessionKernel<E> {
+    /// Resolve the published replica for `generation` in the Terminal lane,
+    /// or the error that says why it cannot accept the frame.
+    pub(super) fn published_replica<'a>(
+        lanes: &'a mut LaneRegistry<E::Replica>,
+        terminal_id: &ResourceId,
+        generation: GenerationId,
+    ) -> Result<&'a mut Replica<E::Replica>, KernelError<E::Error>> {
+        lanes
+            .terminal_mut(terminal_id)
+            .ok_or_else(|| KernelError::UnknownTerminal(terminal_id.clone()))?
+            .published_for(terminal_id, generation)
     }
 
     /// Report why progressive history became unavailable, together with
@@ -211,124 +303,5 @@ impl<E: EngineAdapter> SessionKernel<E> {
                 );
             }
         }
-    }
-
-    /// Retire the generation whose engine could not decode live output:
-    /// drop the published replica, tombstone the generation, and ask the
-    /// frontend for a resync.
-    fn retire_after_codec_failure(
-        &mut self,
-        terminal_id: &ResourceId,
-        generation: GenerationId,
-        last_valid_seq: u64,
-        effects: &mut EffectBuffer,
-    ) {
-        self.engine_effects.clear();
-        if let Some(state) = self.terminals.get_mut(terminal_id) {
-            state.published = None;
-            state.retired.insert(
-                generation,
-                TombstoneRecord {
-                    reason: TombstoneReason::CodecFailure,
-                    last_valid_seq,
-                },
-            );
-        }
-        let damage_blocked = self.attach_blocks(terminal_id);
-        self.mark_attach_unresolved(terminal_id, damage_blocked);
-        effects.push(KernelEffect::Status(KernelStatus::ResyncRequired {
-            terminal_id: terminal_id.clone(),
-            stream_id: generation.stream_id,
-            bootstrap_id: generation.bootstrap_id,
-            reason: TombstoneReason::CodecFailure,
-        }));
-        if !damage_blocked {
-            effects.push(KernelEffect::Damage(KernelDamage {
-                terminal_id: terminal_id.clone(),
-                kind: KernelDamageKind::Removed,
-            }));
-        }
-    }
-
-    /// Translate everything the engine just produced into kernel effects,
-    /// keeping the buffer allocation for the next apply.
-    pub(super) fn drain_engine_effects(
-        &mut self,
-        replica_key: &ReplicaKey,
-        damage_allowed: bool,
-        effects: &mut EffectBuffer,
-    ) {
-        let mut captured = std::mem::take(&mut self.engine_effects);
-        for effect in captured.drain() {
-            Self::translate_engine_effect(replica_key, effect, damage_allowed, effects);
-        }
-        self.engine_effects = captured;
-    }
-
-    pub(super) fn terminal_output(
-        &mut self,
-        terminal_id: &ResourceId,
-        stream_id: StreamId,
-        bootstrap_id: BootstrapId,
-        seq: u64,
-        payload: &[u8],
-        effects: &mut EffectBuffer,
-    ) -> Result<(), KernelError<E::Error>> {
-        self.ensure_open(terminal_id)?;
-        let generation = GenerationId {
-            stream_id,
-            bootstrap_id,
-        };
-        let replica = Self::published_replica(&mut self.terminals, terminal_id, generation)?;
-        Self::expect_next_seq(replica, seq)?;
-
-        let pinned_anchor = match replica.history.viewport_anchor() {
-            ViewportAnchor::Pinned(anchor) => Some(anchor),
-            ViewportAnchor::Tail => None,
-        };
-        let distance_before = if let Some(anchor) = pinned_anchor {
-            self.adapter
-                .history_anchor_tail_distance(&replica.engine, anchor)
-                .map_err(KernelError::Engine)?
-        } else {
-            None
-        };
-        self.engine_effects.clear();
-        let applied =
-            self.adapter
-                .apply_output(&mut replica.engine, payload, &mut self.engine_effects);
-        if let Err(error) = applied {
-            let last_valid_seq = replica.last_seq;
-            self.retire_after_codec_failure(terminal_id, generation, last_valid_seq, effects);
-            return Err(KernelError::Engine(error));
-        }
-        if let Some(anchor) = pinned_anchor {
-            Self::reconcile_pinned_anchor(
-                &mut self.adapter,
-                replica,
-                anchor,
-                distance_before,
-                effects,
-            );
-        }
-        replica.last_seq = seq;
-        replica.next_seq = seq.checked_add(1);
-        let replica_key = replica.key.clone();
-        let acknowledge = matches!(
-            replica_key.profile,
-            BootstrapStreamProfile::SynthesizedVtStateSync
-        );
-
-        let damage_allowed = !self.attach_blocks(terminal_id);
-        self.drain_engine_effects(&replica_key, damage_allowed, effects);
-        if acknowledge {
-            effects.push(KernelEffect::Send(KernelSend::FrameAck {
-                terminal_id: terminal_id.clone(),
-                stream_id,
-                bootstrap_id,
-                seq,
-            }));
-        }
-        Ok(())
     }
 }

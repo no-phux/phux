@@ -8,9 +8,8 @@
 
 use std::path::{Path, PathBuf};
 
-use phux_core::project_identity::{
-    SessionProject, normalize_remote_url, path_project_id, repo_name,
-};
+pub use phux_core::project_identity::SessionProject;
+use phux_core::project_identity::{normalize_remote_url, path_project_id, repo_name};
 use phux_protocol::wire::info::SessionInfo;
 
 /// Where a checkout's git state lives.
@@ -216,9 +215,14 @@ pub fn set_link_attr(attrs: &mut Vec<(String, String)>, link: Option<&str>) {
 /// The identity a listed session's attributes carry.
 #[must_use]
 pub fn of_session(session: &SessionInfo) -> Option<SessionProject> {
+    of_attrs(&session.attrs)
+}
+
+/// The identity a session's attributes carry.
+#[must_use]
+pub fn of_attrs(attrs: &[(String, String)]) -> Option<SessionProject> {
     SessionProject::from_attrs(
-        session
-            .attrs
+        attrs
             .iter()
             .map(|(name, value)| (name.as_str(), value.as_str())),
     )

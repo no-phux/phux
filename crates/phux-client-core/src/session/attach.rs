@@ -1,5 +1,6 @@
 //! ATTACH inventory: membership, release, and readiness tracking.
 
+use super::lane::LaneKind;
 use super::{
     AttachParticipant, AttachState, EffectBuffer, EngineAdapter, KernelDamage, KernelDamageKind,
     KernelEffect, KernelError, KernelSend, ResourceId, ResourceKind, SessionKernel,
@@ -80,11 +81,9 @@ impl<E: EngineAdapter> SessionKernel<E> {
         }) {
             return false;
         }
-        self.terminals.remove(terminal_id);
+        self.lanes.remove(terminal_id);
         self.closed_replicas.remove(terminal_id);
         self.retain_replica_on_close.remove(terminal_id);
-        self.agents.remove(terminal_id);
-        self.documents.remove(terminal_id);
         self.lift_refusal(terminal_id);
         self.closed_native_views.remove(terminal_id);
         self.kinds.remove(terminal_id);
@@ -145,9 +144,9 @@ impl<E: EngineAdapter> SessionKernel<E> {
         for terminal_id in terminal_ids {
             self.expect_kind(terminal_id, ResourceKind::Terminal)?;
         }
-        self.terminals.reserve(terminal_ids.len());
+        self.lanes.reserve(terminal_ids.len());
         for terminal_id in terminal_ids {
-            self.terminals.entry(terminal_id.clone()).or_default();
+            self.lanes.open(terminal_id, LaneKind::Terminal);
         }
 
         let attach = self.attach.get_or_insert_with(|| AttachState {
@@ -220,8 +219,8 @@ impl<E: EngineAdapter> SessionKernel<E> {
                 continue;
             }
             if self
-                .terminals
-                .get(&participant.terminal_id)
+                .lanes
+                .terminal(&participant.terminal_id)
                 .and_then(|state| state.published.as_ref())
                 .is_some()
             {

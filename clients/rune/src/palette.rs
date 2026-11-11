@@ -1,9 +1,12 @@
 //! The command palette: one field that reaches every terminal, session, and
 //! action, ranked by a small fuzzy match.
 
-use phux_client_runtime::control::{PaneDescriptor, Topology};
-use phux_protocol::ids::ResourceId;
+use phux_client_runtime::control::{PaneDescriptor, SessionDescriptor, Topology};
+use phux_client_runtime::project_groups::{Block, GroupRow, group_rows};
+use phux_client_runtime::session_order;
+use phux_protocol::ids::{ResourceId, SessionKey};
 
+use crate::addressable::Addressable;
 use crate::keys::{COMMANDS, ESSENTIALS, Shortcut};
 
 pub mod phone;
@@ -72,11 +75,38 @@ pub struct Hit {
     pub matched: Vec<usize>,
 }
 
-/// Everything the palette lists, in its empty-query order: terminals, then
-/// sessions, then actions, then themes.
-pub fn items(topology: Option<&Topology>) -> Vec<Item> {
-    let mut out = terminal_items(topology);
-    out.extend(session_items(topology));
+/// Everything the palette lists, in its empty-query order: what `shown`
+/// can put on screen (terminals, then documents), then sessions (in the
+/// stored `order`), then actions, then themes.
+pub fn items(
+    topology: Option<&Topology>,
+    shown: &[Addressable],
+    order: &[SessionKey],
+) -> Vec<Item> {
+    let mut out: Vec<_> = shown
+        .iter()
+        .map(|resource| {
+            let terminal = resource.kind.is_terminal();
+            let detail = if terminal {
+                format!("{} · {}", resource.session, resource.id)
+            } else {
+                format!(
+                    "{} · {} · {}",
+                    resource.session, resource.id, resource.mirror
+                )
+            };
+            Item {
+                title: resource.label.clone(),
+                detail,
+                kind: if terminal { "terminal" } else { "document" },
+                target: Target::Terminal {
+                    id: resource.id.clone(),
+                    session: resource.session.clone(),
+                },
+            }
+        })
+        .collect();
+    out.extend(session_items(topology, order));
     for command in COMMANDS.iter().filter(|command| command.listed) {
         out.push(Item {
             title: command.title.to_owned(),
@@ -131,21 +161,70 @@ pub fn theme_items() -> Vec<Item> {
     out
 }
 
-/// The sessions, each with its terminal count.
-pub fn session_items(topology: Option<&Topology>) -> Vec<Item> {
-    let sessions = topology.into_iter().flat_map(|t| &t.sessions);
-    sessions
-        .map(|session| Item {
-            title: session.name.clone(),
-            detail: format!(
-                "{} terminal{}",
-                session.members,
-                if session.members == 1 { "" } else { "s" }
-            ),
+/// The sessions, each with its terminal count, in the stored `order` and
+/// grouped by project: a grouped session names its project, and a linked
+/// worktree is marked `└`.
+pub fn session_items(topology: Option<&Topology>, order: &[SessionKey]) -> Vec<Item> {
+    let Some(topology) = topology else {
+        return Vec::new();
+    };
+    let mut sessions: Vec<_> = topology.sessions.iter().collect();
+    session_order::sort(&mut sessions, order, |s| s.key);
+    let item = |index: usize, project: Option<(&str, bool)>| {
+        let session = sessions[index];
+        let terminals = format!(
+            "{} terminal{}",
+            session.members,
+            if session.members == 1 { "" } else { "s" }
+        );
+        Item {
+            title: match project {
+                Some((_, true)) => format!("└ {}", session.name),
+                _ => session.name.clone(),
+            },
+            detail: match project {
+                Some((name, _)) => format!("{name} · {terminals}"),
+                None => terminals,
+            },
             kind: "session",
             target: Target::Session(session.name.clone()),
+        }
+    };
+    project_blocks(&sessions, |_| 0)
+        .into_iter()
+        .flat_map(|block| match block {
+            Block::Single(index) => vec![item(index, None)],
+            Block::Project(project) => project
+                .members
+                .iter()
+                .map(|member| item(member.index, Some((&project.name, member.linked))))
+                .collect(),
         })
         .collect()
+}
+
+/// Sessions grouped by project (ADR-0168), as the TUI sidebar groups them:
+/// projects of two or more sessions first, each primary checkout followed
+/// by its linked worktrees, then every other session in its place. Order
+/// within a group and among the rest is the order `sessions` come in.
+pub fn project_blocks(
+    sessions: &[&SessionDescriptor],
+    needs_you: impl Fn(u32) -> usize,
+) -> Vec<Block> {
+    let rows: Vec<GroupRow<'_>> = sessions
+        .iter()
+        .map(|session| GroupRow {
+            project: session.project.as_ref(),
+            link: session.project_link.as_deref(),
+            label: None,
+            needs_you: needs_you(session.id),
+        })
+        .collect();
+    let (mut blocks, singles): (Vec<_>, Vec<_>) = group_rows(&rows, 2)
+        .into_iter()
+        .partition(|block| matches!(block, Block::Project(_)));
+    blocks.extend(singles);
+    blocks
 }
 
 /// A row creating the session `query` names, unless one has that name.
@@ -340,7 +419,7 @@ mod tests {
 
     #[test]
     fn ranking_puts_the_best_title_first_and_falls_back_to_details() {
-        let hits = rank(items(None), "new tab");
+        let hits = rank(items(None, &[], &[]), "new tab");
         assert_eq!(hits[0].item.target, Target::Action(Shortcut::NewTerminal));
     }
 
@@ -355,7 +434,7 @@ mod tests {
 
     #[test]
     fn close_and_step_tab_are_in_the_palette() {
-        let list = items(None);
+        let list = items(None, &[], &[]);
         for action in [Shortcut::CloseTab, Shortcut::NextTab, Shortcut::PreviousTab] {
             assert!(list.iter().any(|i| i.target == Target::Action(action)));
         }
@@ -363,9 +442,9 @@ mod tests {
 
     #[test]
     fn every_theme_is_a_row_and_its_name_finds_it() {
-        let hits = rank(items(None), "nord");
+        let hits = rank(items(None, &[], &[]), "nord");
         assert_eq!(hits[0].item.target, Target::Theme(Some("nord")));
-        let themes = items(None)
+        let themes = items(None, &[], &[])
             .iter()
             .filter(|i| matches!(i.target, Target::Theme(_)))
             .count();
@@ -388,8 +467,78 @@ mod tests {
     }
 
     #[test]
+    fn sessions_group_by_project_with_linked_worktrees_marked() {
+        use phux_client_core::layout::wire::HandleMap;
+        use phux_client_runtime::project_identity::SessionProject;
+        let project = |linked| SessionProject {
+            id: "github.com/no-phux/phux".to_owned(),
+            name: "phux".to_owned(),
+            checkout: "/w/phux".to_owned(),
+            branch: None,
+            linked_worktree: linked,
+            host: Some("mini".to_owned()),
+        };
+        let session = |id, name: &str, project| SessionDescriptor {
+            id,
+            name: name.to_owned(),
+            attached_client_count: 0,
+            keep_empty: false,
+            created_at_unix_secs: 0,
+            key: None,
+            lifetime: None,
+            revision: None,
+            members: 1,
+            arrangement: None,
+            awaiting_organization: false,
+            project,
+            project_link: None,
+        };
+        let mut topology = Topology {
+            sessions: vec![
+                session(1, "scratch", None),
+                session(2, "feat", Some(project(true))),
+                session(3, "phux", Some(project(false))),
+            ],
+            resources: Vec::new(),
+            panes: Vec::new(),
+            agent_sessions: Vec::new(),
+            documents: Vec::new(),
+            satellite_sessions: Vec::new(),
+            focused_session: 0,
+            focused_pane: ResourceId::local(0),
+            authority: None,
+            inbox: None,
+            handles: HandleMap::new(),
+        };
+        let rows: Vec<_> = session_items(Some(&topology), &[])
+            .into_iter()
+            .map(|item| (item.title, item.detail))
+            .collect();
+        assert_eq!(
+            rows,
+            [
+                ("phux".to_owned(), "phux · 1 terminal".to_owned()),
+                ("└ feat".to_owned(), "phux · 1 terminal".to_owned()),
+                ("scratch".to_owned(), "1 terminal".to_owned()),
+            ],
+            "the group leads, its primary checkout first"
+        );
+        // The stored order places the rest; the group still leads.
+        let alpha = SessionKey::new([4; 16]);
+        topology.sessions.push(SessionDescriptor {
+            key: alpha,
+            ..session(4, "alpha", None)
+        });
+        let titles: Vec<_> = session_items(Some(&topology), &[alpha.expect("nonzero")])
+            .into_iter()
+            .map(|item| item.title)
+            .collect();
+        assert_eq!(titles, ["phux", "└ feat", "alpha", "scratch"]);
+    }
+
+    #[test]
     fn an_empty_query_keeps_list_order() {
-        let items = items(None);
+        let items = items(None, &[], &[]);
         let hits = rank(items.clone(), "");
         assert_eq!(hits.len(), items.len());
         assert_eq!(hits[0].item, items[0]);

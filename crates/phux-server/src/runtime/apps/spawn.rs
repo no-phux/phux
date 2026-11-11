@@ -88,8 +88,9 @@ pub(crate) struct ResourceSpawn<'a> {
     pub(crate) out_tx: &'a tokio::sync::mpsc::Sender<Outbound>,
     /// The server's cancellation.
     pub(crate) root_token: &'a CancellationToken,
-    /// The stream profile the connection negotiated.
-    pub(crate) profile: BootstrapStreamProfile,
+    /// The Terminal stream profile the connection negotiated, if any; the
+    /// host refuses a kind whose stream needs one before this is `None`.
+    pub(crate) profile: Option<BootstrapStreamProfile>,
     /// The negotiated bootstrap limits.
     pub(crate) limits: BootstrapLimits,
     /// The connection's cancellation.
@@ -122,10 +123,10 @@ pub(crate) struct SpawnConnection<'a> {
 }
 
 /// Serve `SPAWN_RESOURCE` (SPEC §10.1) through the app of the requested
-/// kind. The spawner is subscribed to what it spawns, so a connection with
-/// no usable stream profile is refused before the kind is read
-/// (per-kind spawn rules are phux-rbz0y.7); an unrecognised kind is refused,
-/// never spawned as a Terminal.
+/// kind. An unrecognised kind is refused, never spawned as a Terminal. The
+/// spawner is subscribed to what it spawns, so a connection with no
+/// Terminal profile is refused a kind whose catalog stream contract needs
+/// one; any other kind is spawned and streamed without it.
 pub(crate) async fn dispatch_spawn(
     state: &SharedState,
     client_id: ClientId,
@@ -142,22 +143,6 @@ pub(crate) async fn dispatch_spawn(
         output_pumps,
         defer_subscription,
     } = connection;
-    let Some(stream_profile) = profile.and_then(super::terminal::attach::bootstrap_stream_profile)
-    else {
-        let _ = out_tx
-            .send(Outbound::Frame(FrameKind::Error {
-                request_id: Some(request_id),
-                code: ErrorCode::CodecUnavailable,
-                message: match profile {
-                    None => super::terminal::commands::NO_TERMINAL_PROFILE.to_owned(),
-                    Some(_) => {
-                        "SPAWN_RESOURCE selected an unsupported bootstrap profile".to_owned()
-                    }
-                },
-            }))
-            .await;
-        return;
-    };
     log_spawn_request(client_id, request_id, &request);
     let SpawnRequest {
         group,
@@ -184,6 +169,11 @@ pub(crate) async fn dispatch_spawn(
         refuse_spawn(out_tx, request_id, SpawnError::UnsupportedKind).await;
         return;
     };
+    let stream_profile = profile.map(BootstrapProfile::terminal_stream);
+    if stream_profile.is_none() && phux_protocol::kinds::needs_terminal_profile(resource.kind) {
+        refuse_without_terminal_profile(out_tx, request_id).await;
+        return;
+    }
     super::app_for(kind)
         .spawn(ResourceSpawn {
             state,
@@ -210,6 +200,21 @@ pub(crate) async fn dispatch_spawn(
             defer_subscription,
             decodes,
         })
+        .await;
+}
+
+/// `CODEC_UNAVAILABLE`: the connection selected no Terminal profile at
+/// `HELLO`, and the spawn's stream needs one.
+pub(crate) async fn refuse_without_terminal_profile(
+    out_tx: &tokio::sync::mpsc::Sender<Outbound>,
+    request_id: u32,
+) {
+    let _ = out_tx
+        .send(Outbound::Frame(FrameKind::Error {
+            request_id: Some(request_id),
+            code: ErrorCode::CodecUnavailable,
+            message: super::terminal::commands::NO_TERMINAL_PROFILE.to_owned(),
+        }))
         .await;
 }
 
@@ -273,12 +278,20 @@ mod tests {
     /// The first reply `dispatch_spawn` sends for `request` on a connection
     /// that negotiated `profile`.
     async fn reply_to(request: SpawnRequest, profile: Option<BootstrapProfile>) -> FrameKind {
-        let state = SharedState::new();
+        reply_in(&SharedState::new(), request, profile).await
+    }
+
+    /// [`reply_to`] against `state`.
+    async fn reply_in(
+        state: &SharedState,
+        request: SpawnRequest,
+        profile: Option<BootstrapProfile>,
+    ) -> FrameKind {
         let (out_tx, mut out_rx) = tokio::sync::mpsc::channel(8);
         let token = CancellationToken::new();
         let mut pumps = JoinSet::new();
         dispatch_spawn(
-            &state,
+            state,
             ClientId(1),
             7,
             request,
@@ -310,24 +323,90 @@ mod tests {
         error
     }
 
-    /// A connection with no stream profile is refused before its kind is
-    /// read, an unknown kind included.
+    /// With no Terminal profile only a kind whose stream needs one is
+    /// refused `CODEC_UNAVAILABLE`; every other kind reaches its app, and an
+    /// unknown kind is still refused as unknown.
     #[tokio::test]
-    async fn no_profile_is_refused_before_the_kind() {
-        for kind in [ResourceKind::Document, ResourceKind::Unknown { tag: 99 }] {
-            let FrameKind::Error {
-                request_id: Some(7),
-                code: ErrorCode::CodecUnavailable,
-                message,
-            } = reply(kind, None).await
-            else {
-                panic!("CODEC_UNAVAILABLE for {kind:?}");
+    async fn no_profile_refuses_only_a_kind_that_needs_one() {
+        let FrameKind::Error {
+            request_id: Some(7),
+            code: ErrorCode::CodecUnavailable,
+            message,
+        } = reply(ResourceKind::Terminal, None).await
+        else {
+            panic!("CODEC_UNAVAILABLE for a Terminal");
+        };
+        assert_eq!(
+            message,
+            super::super::terminal::commands::NO_TERMINAL_PROFILE
+        );
+        let SpawnError::SpawnFailed(agent) = refusal(reply(ResourceKind::AgentSession, None).await)
+        else {
+            panic!("the agent session app refuses");
+        };
+        assert!(agent.contains("agent session"), "{agent}");
+        for kind in [
+            ResourceKind::AccessibilityTree,
+            ResourceKind::PixelSurface,
+            ResourceKind::Document,
+        ] {
+            let SpawnError::SpawnFailed(document) = refusal(reply(kind, None).await) else {
+                panic!("the document app refuses {kind:?}");
             };
-            assert_eq!(
-                message,
-                super::super::terminal::commands::NO_TERMINAL_PROFILE
-            );
+            assert!(document.contains("producer observes"), "{document}");
         }
+        assert_eq!(
+            refusal(reply(ResourceKind::Unknown { tag: 99 }, None).await),
+            SpawnError::UnsupportedKind
+        );
+    }
+
+    /// A document's spawner becomes its producer, so only a connection that
+    /// may publish (the Unix socket or localhost) opens one: an unstamped
+    /// or remote one is refused before the parent is looked up.
+    #[tokio::test]
+    async fn only_a_connection_that_may_publish_opens_a_document() {
+        use phux_protocol::policy::TransportType;
+        let profile = Some(BootstrapProfile::SynthesizedVtRaw);
+        for transport in [
+            None,
+            Some(TransportType::Quic),
+            Some(TransportType::WebSocket),
+        ] {
+            let state = SharedState::new();
+            if let Some(transport) = transport {
+                let peer = phux_protocol::policy::PeerIdentity {
+                    transport,
+                    ..crate::runtime::test_support::owner_peer()
+                };
+                state.with_mut(|s| s.set_peer_identity(ClientId(1), peer));
+            }
+            let SpawnError::SpawnFailed(message) =
+                refusal(reply_in(&state, document_request(), profile).await)
+            else {
+                panic!("{transport:?} opened a document");
+            };
+            assert!(message.contains("local owner connection"), "{message}");
+        }
+        let state = SharedState::new();
+        state.with_mut(|s| {
+            s.set_peer_identity(ClientId(1), crate::runtime::test_support::owner_peer());
+        });
+        assert_eq!(
+            refusal(reply_in(&state, document_request(), profile).await),
+            SpawnError::ParentNotFound,
+            "the owner's socket reaches the parent lookup"
+        );
+    }
+
+    fn document_request() -> SpawnRequest {
+        let mut request = request(ResourceKind::Document);
+        request.resource = Some(Box::new(SpawnResource::document(
+            WireResourceId::local(3),
+            "text/plain",
+            None,
+        )));
+        request
     }
 
     #[tokio::test]

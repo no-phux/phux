@@ -163,17 +163,24 @@ pub struct Resolved {
     pub id: ResourceId,
     /// Its kind.
     pub kind: ResourceKind,
+    /// The resource it is bound to, when the snapshot names one: an agent
+    /// session's or a document's pane.
+    pub parent: Option<ResourceId>,
 }
 
 impl Resolved {
-    /// `id` with the kind `snapshot` lists for it. A resource the snapshot
-    /// does not list is taken as a Terminal, the kind every verb assumed
-    /// before kinds were dispatched, so the server's own answer stands.
+    /// `id` with the kind and parent `snapshot` lists for it. A resource the
+    /// snapshot does not list is taken as a Terminal, the kind every verb
+    /// assumed before kinds were dispatched, so the server's own answer
+    /// stands.
     #[must_use]
     pub fn in_snapshot(snapshot: &SessionSnapshot, id: ResourceId) -> Self {
-        let kind =
-            crate::resource::find(snapshot, &id).map_or(ResourceKind::Terminal, |info| info.kind);
-        Self { id, kind }
+        let info = crate::resource::find(snapshot, &id);
+        Self {
+            kind: info.map_or(ResourceKind::Terminal, |info| info.kind),
+            parent: info.and_then(|info| info.parent.clone()),
+            id,
+        }
     }
 }
 

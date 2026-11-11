@@ -11,6 +11,8 @@
 
 use std::collections::BTreeSet;
 
+use crate::wire::frame::ControlClass;
+
 use bytes::{Bytes, BytesMut};
 
 use super::*;

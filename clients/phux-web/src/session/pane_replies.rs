@@ -17,9 +17,14 @@ impl Connection {
             self.terminal_order.swap(0, index);
         }
         self.terminal_order.truncate(4);
-        let mut ids = self.terminal_order.iter().take(4);
+        let leaves: Vec<_> = (self.terminal_order.iter())
+            .chain(&self.document_order)
+            .take(4)
+            .cloned()
+            .collect();
+        let mut ids = leaves.iter();
         self.layout = ids.next().cloned().map(Layout::Leaf);
-        let mut previous = self.terminal_order.first().cloned();
+        let mut previous = leaves.first().cloned();
         for id in ids {
             if let (Some(layout), Some(target)) = (&mut self.layout, &previous) {
                 layout.insert(target, id.clone(), Axis::Vertical);
@@ -28,8 +33,12 @@ impl Connection {
         }
     }
 
+    /// A document tile is never resized: it is not a grid.
     pub(super) fn pane_resize_frames(&mut self) -> Vec<Vec<u8>> {
-        self.pane_rects()
+        let terminals: Vec<_> = (self.pane_rects().into_iter())
+            .filter(|(id, _)| !self.is_document(id))
+            .collect();
+        terminals
             .into_iter()
             .filter_map(|(terminal_id, rect)| {
                 let geometry = CanonicalGeometry {
@@ -224,6 +233,10 @@ impl Connection {
             return;
         }
         let id = id.clone();
+        self.make_room_for_terminal();
+        let Some(pending) = self.pending_split.as_ref() else {
+            return;
+        };
         if let Some(layout) = self.layout.as_mut() {
             if !layout.insert(&pending.target, id.clone(), pending.axis)
                 && let Some(target) = self.terminal_order.first()

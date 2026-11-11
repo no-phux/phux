@@ -15,6 +15,14 @@ pub struct Note {
 pub const NOTES: &[Note] = &[
     Note {
         date: "2026-11-10",
+        title: "Tabs that make room",
+        body: "Tabs share the title bar instead of running under its \
+               buttons: a crowd narrows the resting ones and the active tab \
+               keeps its name. Hover a tab to close it, or rest on any \
+               button to see what it does and its keys.",
+    },
+    Note {
+        date: "2026-11-10",
         title: "Pair your phone by scanning",
         body: "Pairing the phone client starts with the camera: scan the code \
                and you're in, no typing an address.",

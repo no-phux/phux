@@ -1,9 +1,11 @@
 //! Engine outcomes and kernel effect processing.
 
+use super::subscriptions::Origin;
 use super::{
     ControlError, ControlPlane, EngineApplyError, EngineEvent, EngineHandle, EngineOutcome, Event,
     FrameKind, InputEvent, KernelEffect, KernelSend, KernelStatus, ResourceId, ServerFeature,
 };
+use phux_protocol::ids::ResourceKind;
 
 /// One engine batch handed out by [`ControlPlane::prepare_engine_apply`].
 pub(super) struct EngineApply {
@@ -94,13 +96,18 @@ impl ControlPlane {
                 terminals,
             } => {
                 self.active_attach_id = Some(*attach_id);
-                self.attach_terminals = terminals.iter().cloned().collect();
+                self.subscriptions.replace(
+                    Origin::SessionAttach,
+                    ResourceKind::Terminal,
+                    terminals.iter().cloned(),
+                );
             }
             EngineEvent::AttachReady { attach_id } if self.active_attach_id == Some(*attach_id) => {
                 self.attached_once = true;
             }
             EngineEvent::Closed { terminal_id, .. } => {
-                self.attach_terminals.remove(terminal_id);
+                self.subscriptions
+                    .remove(terminal_id, Origin::SessionAttach);
             }
             EngineEvent::AgentSessionDeclared { terminal_id, .. } => {
                 self.agent_delivery.admit(terminal_id);

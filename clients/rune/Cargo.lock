@@ -2703,6 +2703,7 @@ dependencies = [
  "phux-config-core",
  "phux-perf",
  "phux-protocol",
+ "png 0.17.16",
  "rune",
  "rune-notify",
  "rune-perf",

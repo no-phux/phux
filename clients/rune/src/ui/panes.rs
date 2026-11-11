@@ -242,7 +242,7 @@ fn float(id: &ResourceId, card: El) -> El {
 }
 
 pub(super) fn pane(desk: &Desk, id: &ResourceId, several: bool, ink: &Ink) -> El {
-    let focused = desk.shown.as_ref().is_some_and(|s| &s.terminal == id);
+    let focused = desk.shown.as_ref().is_some_and(|s| &s.resource == id);
     if desk.is_document(id) {
         let lit = if focused && several {
             Lit::Focused
@@ -258,7 +258,7 @@ pub(super) fn pane(desk: &Desk, id: &ResourceId, several: bool, ink: &Ink) -> El
 }
 
 fn terminal_pane(desk: &Desk, id: &ResourceId, several: bool, ink: &Ink) -> El {
-    let focused = desk.shown.as_ref().is_some_and(|s| &s.terminal == id);
+    let focused = desk.shown.as_ref().is_some_and(|s| &s.resource == id);
     let view = if focused {
         desk.shown.as_ref().and_then(|s| s.view)
     } else {
@@ -355,7 +355,7 @@ fn terminal_layer(
 
 /// Only terminal cards install terminal mouse, drop, and history handlers.
 fn terminal_input(host: El, desk: &Desk, id: &ResourceId) -> El {
-    if desk.phone.is_some() && !desk.shown.as_ref().is_some_and(|s| &s.terminal == id) {
+    if desk.phone.is_some() && !desk.shown.as_ref().is_some_and(|s| &s.resource == id) {
         return host.inert();
     }
     let (wheel, press, moved, left, dropped, menu) = (

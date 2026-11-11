@@ -98,3 +98,76 @@ targets, start the pick and open its surface.
 - On macOS the server cannot see window titles or capture, so Rune's
   runner (`phux agent surface standing`) reports the targets and runs the
   mirrors. Without Rune open there, both are refused `UNAVAILABLE`.
+
+## Publish your own kind
+
+Any program can add a resource kind without a client change: open a typed
+`Document` under a pane, publish whole documents of one content type, and
+every viewer draws it by that type
+([resource kinds](./resource-kinds.md#available-now)): PNG, JPEG, GIF and
+WebP as images, JSON pretty-printed, Markdown, CSV, SVG and other text as
+source. A publish is at most 4 MiB and must match its type.
+
+`phux agent doc serve --type MIME [--name NAME] [--pane @N]` is the
+contract, spoken over a pipe from any language. It opens the document
+under `--pane`, or the pane it runs in (`PHUX_TERMINAL_ID`), and prints
+JSON lines on stdout:
+
+- `{"event": "opened", "resource": "@12", "parent": "@3", ...}` first.
+- `{"event": "input", "intent": "navigate", "url": ...}` for each intent
+  a viewer sends: `navigate` (`url`), `click` (`x`, `y`), `type` (`text`),
+  `key` (`key`), `scroll` (`dx`, `dy`), `paste` (`text`, `chord`),
+  `activate` (`node`), `drag` (`from`, `to`, each `[x, y]`). Viewers send them with `phux agent page
+  navigate|click|type|key|scroll DOC ...` or the MCP `phux_document_*`
+  tools; only the owner socket may, since a typed document has no
+  `control` class. `serve` refuses a clipboard copy itself.
+
+Each stdin line `{"text": "..."}` or `{"base64": "..."}` replaces the
+document. A refused publish is reported on stderr and serving goes on.
+When `phux upgrade` closes the connection, `serve` redials for up to a
+minute and publishes the newest document again, which re-adopts the same
+resource ([supervision](./resource-kinds.md#supervision)). The end of
+stdin ends it, and the document stays with `producer: "gone"`.
+
+```python
+import json, subprocess, time
+p = subprocess.Popen(["phux", "agent", "doc", "serve", "--type", "text/markdown",
+                      "--name", "clock"], stdin=subprocess.PIPE, text=True)
+while True:
+    p.stdin.write(json.dumps({"text": "# " + time.strftime("%T")}) + "\n")
+    p.stdin.flush()
+    time.sleep(1)
+```
+
+A Rust program can link `phux-client` instead: `tree::open_document`,
+`tree::publish_collecting` (which keeps intents relayed meanwhile) and
+`tree::intent` over `Connection::recv` are what `serve` is built on.
+
+Two producers ship built in:
+
+- `phux agent doc folder PATH` lists a directory as Markdown, rereading
+  it every `--interval` seconds (default 2) and publishing on change. A
+  `navigate` intent opens a subdirectory or `..`, never above PATH. The
+  listing names the `phux download HOST:PATH` that fetches a file.
+- `phux agent doc notifications` keeps the host's last `--keep` (default
+  50) desktop notifications, newest first. On Linux it monitors the
+  session bus for freedesktop `Notify` calls. macOS does not let other
+  programs read Notification Center, so there it refuses.
+
+## Standing producers
+
+`[[producers]]` in `config.toml` keeps any command running as a producer,
+the way [`[[mirrors]]`](./resource-kinds.md#standing-mirrors) keeps
+mirrors. Each entry has a `name` and a `command` argv. A first word
+`phux` is the server's own binary. It runs in a pane of its own ephemeral
+session, `producer-` plus the name, so it opens its documents under that
+pane. It is restarted after a backoff (1 s doubling to 60 s), kept running
+across `phux upgrade`, recreated on a cold start, and added, restarted or
+closed by `phux config reload`. Do not name sessions of your own
+`producer-*`.
+
+```toml
+[[producers]]
+name = "downloads"
+command = ["phux", "agent", "doc", "folder", "/home/me/Downloads"]
+```

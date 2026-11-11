@@ -22,7 +22,7 @@ icon!(
     "M2 4h12M2 8h12M2 12h12M5 2.5v3M11 6.5v3M6 10.5v3"
 );
 icon!(CLOSE, "phux-close", "M4.5 4.5l7 7M11.5 4.5l-7 7");
-icon!(PLUS, "phux-plus", "M8 3.5v9M3.5 8h9");
+icon!(PLUS, "phux-plus", "M8 4v8M4 8h8");
 icon!(CHEVRON, "phux-chevron", "M4.5 6.5L8 10l3.5-3.5");
 icon!(
     CHEVRON_RIGHT,
@@ -74,6 +74,19 @@ icon!(
 );
 icon!(CHECK, "phux-check", "M3.5 8.5l3 3 6-7");
 icon!(ARROW_RIGHT, "phux-arrow-right", "M3 8h10M9 4l4 4-4 4");
+icon!(ARROW_UP, "phux-arrow-up", "M8 13V3M4 7l4-4 4 4");
+icon!(ARROW_DOWN, "phux-arrow-down", "M8 3v10M4 9l4 4 4-4");
+icon!(BOLT, "phux-bolt", "M9 2L3.5 9h4L7 14l5.5-7h-4z");
+icon!(
+    WINDOW,
+    "phux-window",
+    "M3.5 3h9a1 1 0 0 1 1 1v8a1 1 0 0 1-1 1h-9a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1zM2.5 6h11"
+);
+icon!(
+    FOLDER,
+    "phux-folder",
+    "M2.5 4.5a1 1 0 0 1 1-1h2.5L7.5 5h5a1 1 0 0 1 1 1v5.5a1 1 0 0 1-1 1h-9a1 1 0 0 1-1-1z"
+);
 icon!(ARROW_LEFT, "phux-arrow-left", "M13 8H3M7 4L3 8l4 4");
 icon!(
     PUZZLE,
@@ -101,17 +114,6 @@ icon!(
     "M8 14a6 6 0 1 1 6-6c0 1.5-1 2.5-2.5 2.5H10a1.2 1.2 0 0 0-.8 2.1c.4.4.3 1.4-1.2 1.4zM5 7h.01M7 4.8h.01M10 5h.01"
 );
 
-/// The phux fox: its outline in the ink, the lime spine, and the eye.
-pub static FOX: Icon = Icon {
-    name: "phux-fox",
-    view: 512.0,
-    body: concat!(
-        r##"<polygon points="148,54 134,140 114,190 66,246 96,294 150,352 242,450 330,372 370,316 414,234 374,154 338,96 272,38 206,108" fill="none" stroke="currentColor" stroke-width="18" stroke-linejoin="round"/>"##,
-        r##"<polyline points="272,38 198,232 242,450" fill="none" stroke="#bef264" stroke-width="20" stroke-linejoin="round"/>"##,
-        r##"<circle cx="198" cy="232" r="30" fill="none" stroke="#bef264" stroke-width="12"/>"##,
-        r##"<circle cx="198" cy="232" r="13" fill="#bef264"/>"##,
-    ),
-};
 icon!(
     BELL,
     "phux-bell",

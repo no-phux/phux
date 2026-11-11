@@ -118,7 +118,7 @@ pub(super) async fn relay_satellite_attach(
     let local = phux_protocol::ids::ResourceId::local(target.terminal);
     let wire = phux_protocol::ids::ResourceId::satellite(target.host.clone(), target.terminal);
     // Known kinds avoid inventory work. Unknown full attaches need kind only
-    // when the Terminal profiles differ; cursors always require AgentSession.
+    // when the Terminal profiles differ; a cursor needs a kind that resumes.
     let cursor = matches!(
         command,
         Command::AttachResource {
@@ -143,7 +143,10 @@ pub(super) async fn relay_satellite_attach(
     {
         return super::dispatch::undecodable_kind(kind);
     }
-    if cursor && kind != Some(phux_protocol::ids::ResourceKind::AgentSession) {
+    let resumes = kind
+        .and_then(phux_protocol::kinds::kind_spec)
+        .is_some_and(|spec| spec.stream.resume.is_some());
+    if cursor && !resumes {
         return invalid_agent_cursor();
     }
     if ctx.profile.is_none() && crate::hub::relay::stream_needs_terminal_profile(kind) {

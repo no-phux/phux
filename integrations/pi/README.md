@@ -22,7 +22,9 @@ tag, ask, collect events, rendered snapshot, status, runtime info, and
 branch-local aliases. `phux_list` shows every resource kind, not only
 terminals, and the document reads match `phux mcp`: `phux_documents`,
 `phux_tree_snapshot`, `phux_tree_wait`, and `phux_surface_snapshot`, whose
-frame arrives as an image. Commands for the person at the keyboard: `/phux` to
+frame arrives as an image. Snapshot, wait, send keys and paste act on a
+terminal only: pointed at a tree, surface, or document they fail with
+`wrong_resource_kind`, naming the tool that reads it. Commands for the person at the keyboard: `/phux` to
 pick a target pane, `/phux-status` to check it, `/phux-attach` to print the
 `phux attach` invocation to run in a real terminal.
 

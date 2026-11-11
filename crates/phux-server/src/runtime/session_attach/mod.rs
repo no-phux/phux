@@ -15,9 +15,8 @@ use super::{apps, send_error, stream_id_from};
 use crate::state::{AttachSnapshotPane, ClientId, Outbound, SharedState};
 use apps::terminal::attach::{
     apply_attach_viewport, apply_client_default_colors, apply_session_role,
-    bootstrap_stream_profile, detach_prior_state_sync_consumers,
-    fail_aggregate_attach_prepublication, initial_bootstrap_id, refresh_registry_cwds,
-    resolve_attach_target,
+    detach_prior_state_sync_consumers, fail_aggregate_attach_prepublication, initial_bootstrap_id,
+    refresh_registry_cwds, resolve_attach_target,
 };
 use prepare::{is_same_session_reattach, prepare_attach_or_refuse};
 use publication::AttachPublication;
@@ -98,7 +97,21 @@ fn requires_terminal_profile(
     state: &SharedState,
     pinned: Option<phux_core::ids::SessionId>,
 ) -> bool {
-    pinned.is_none_or(|session| state.with(|s| !s.session_terminals(session).is_empty()))
+    pinned.is_none_or(|session| state.with(|s| session_needs_terminal_profile(s, session)))
+}
+
+/// Whether some member of `session` streams in the connection's Terminal
+/// profile, as its kind's catalog stream contract says.
+pub(crate) fn session_needs_terminal_profile(
+    s: &crate::state::ServerState,
+    session: phux_core::ids::SessionId,
+) -> bool {
+    let registry = s.registry();
+    registry.members(session).into_iter().any(|id| {
+        registry.resource(id).is_some_and(|resource| {
+            phux_protocol::kinds::needs_terminal_profile(crate::id_bridge::wire_kind(resource.kind))
+        })
+    })
 }
 
 fn attach_refusal(
@@ -113,9 +126,7 @@ fn attach_refusal(
             "ATTACH role_policy { VIEWER, DELIBERATE } is invalid: a viewer cannot take over",
         ));
     }
-    if requires_terminal_profile(state, pinned)
-        && profile.and_then(bootstrap_stream_profile).is_none()
-    {
+    if requires_terminal_profile(state, pinned) && profile.is_none() {
         return Some((
             ErrorCode::CodecUnavailable,
             apps::terminal::commands::NO_TERMINAL_PROFILE,

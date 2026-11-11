@@ -40,7 +40,7 @@ impl Desk {
         let Some(shown) = &self.shown else {
             return self.say(NoticeKind::Error, "No terminal to paste into.");
         };
-        let terminal = shown.terminal.clone();
+        let terminal = shown.resource.clone();
         if let Some(native) = &mut self.native {
             // The system owns a phone's pasteboard and asks its user first;
             // the host answers through the input bridge's paste.
@@ -59,7 +59,7 @@ impl Desk {
         if !self.pastes_allowed() {
             return self.say(NoticeKind::Error, "Nothing was pasted.");
         }
-        if let Some(terminal) = self.shown.as_ref().map(|s| s.terminal.clone()) {
+        if let Some(terminal) = self.shown.as_ref().map(|s| s.resource.clone()) {
             self.paste(&terminal, text);
         }
     }
@@ -195,7 +195,7 @@ mod tests {
             phux_client_runtime::control::ControlOptions::default(),
         )));
         desk.shown = Some(crate::desk::Shown {
-            terminal: ResourceId::local(terminal),
+            resource: ResourceId::local(terminal),
             view: phux_client_runtime::ViewId::from_raw(1),
         });
     }

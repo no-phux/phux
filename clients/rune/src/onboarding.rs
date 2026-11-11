@@ -150,12 +150,20 @@ impl AgentSkill {
     }
 
     /// What to say about it beside its name.
-    pub fn summary(&self) -> String {
-        let skill = self.skill.as_deref().unwrap_or("unknown").replace('_', " ");
+    pub fn label(&self) -> &'static str {
+        match self.skill.as_deref() {
+            _ if self.installed() => "Installed",
+            Some("stale" | "conflict") => "Needs update",
+            _ => "Not installed",
+        }
+    }
+
+    /// The hook's state, for the label's tooltip.
+    pub fn hook_detail(&self) -> Option<String> {
         match (&self.hook, &self.reason) {
-            (_, Some(reason)) => format!("{skill}; hook: {reason}"),
-            (Some(hook), None) => format!("{skill}; hook {}", hook.replace('_', " ")),
-            (None, None) => skill,
+            (_, Some(reason)) => Some(format!("Hook: {reason}")),
+            (Some(hook), None) => Some(format!("Hook: {}", hook.replace('_', " "))),
+            (None, None) => None,
         }
     }
 }
@@ -397,7 +405,19 @@ mod tests {
         assert_eq!(skills.len(), 3, "a row without an agent is dropped");
         assert!(skills[0].installed());
         assert!(!skills[1].installed());
-        assert_eq!(skills[1].summary(), "missing; hook: codex has no hooks");
+        assert_eq!(skills[0].label(), "Installed");
+        assert_eq!(skills[1].label(), "Not installed");
+        assert_eq!(
+            skills[1].hook_detail().as_deref(),
+            Some("Hook: codex has no hooks")
+        );
+        assert_eq!(skills[0].hook_detail().as_deref(), Some("Hook: installed"));
+        let stale = AgentSkill {
+            skill: Some("stale".into()),
+            ..AgentSkill::default()
+        };
+        assert_eq!(stale.label(), "Needs update");
+        assert_eq!(stale.hook_detail(), None);
         assert_eq!(migrators(&skills), ["claude", "codex"]);
         let wrapped = br#"{"agents":[{"agent":"claude","skill":{"state":"updated"}}]}"#;
         let skills = parse_skills(wrapped).unwrap();

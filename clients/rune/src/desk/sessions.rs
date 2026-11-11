@@ -18,6 +18,7 @@ impl Desk {
         // A hub's satellite resource is in none of its sessions: it is
         // viewed from whichever one is attached.
         if terminal.host().is_none()
+            && !session_name.is_empty()
             && attached.as_deref() != Some(session_name)
             && let Some(client) = &self.client
         {
@@ -102,7 +103,7 @@ impl Desk {
             let cwd = topology.pane(id)?.cwd.clone();
             cwd.filter(|cwd| !cwd.is_empty())
         };
-        cwd(&shown.terminal).or_else(|| self.on_screen().iter().find_map(cwd))
+        cwd(&shown.resource).or_else(|| self.on_screen().iter().find_map(cwd))
     }
 
     pub fn new_session(&mut self) {
@@ -155,7 +156,7 @@ impl Desk {
             .shown
             .as_ref()
             .filter(|s| self.focused && s.view.is_some());
-        let now = now.map(|shown| shown.terminal.clone());
+        let now = now.map(|shown| shown.resource.clone());
         if self.focus_told == now {
             return false;
         }
@@ -170,26 +171,23 @@ impl Desk {
         self.status == Status::Attached
     }
 
-    /// Step through every terminal the server lists.
+    /// Step through everything this window can show, every session's.
     pub fn cycle(&mut self, step: isize) {
-        let Some(topology) = &self.topology else {
-            return;
-        };
-        let panes = &topology.panes;
-        if panes.is_empty() {
+        let all = self.addressable();
+        if all.is_empty() {
             return;
         }
         let current = self
             .shown
             .as_ref()
-            .and_then(|s| panes.iter().position(|p| p.terminal_id == s.terminal))
+            .and_then(|s| all.iter().position(|r| r.id == s.resource))
             .unwrap_or(0);
-        let next = (current as isize + step).rem_euclid(panes.len() as isize) as usize;
-        let pane = panes[next].clone();
-        self.show(pane.terminal_id, &pane.session_name);
+        let next = (current as isize + step).rem_euclid(all.len() as isize) as usize;
+        let next = all[next].clone();
+        self.show(next.id, &next.session);
     }
 
-    /// The window title: the focused terminal's label and its session, set
+    /// The window title: the focused resource's label and its session, set
     /// only when it changes.
     pub fn window_title(&self) -> &str {
         &self.window_title
@@ -199,16 +197,10 @@ impl Desk {
         let title = self
             .shown
             .as_ref()
-            .and_then(|s| {
-                self.topology
-                    .as_ref()?
-                    .panes
-                    .iter()
-                    .find(|p| p.terminal_id == s.terminal)
-            })
+            .and_then(|s| self.addressable().into_iter().find(|r| r.id == s.resource))
             .map_or_else(
                 || "phux".to_owned(),
-                |p| format!("{} — {}", crate::palette::pane_label(p), p.session_name),
+                |r| format!("{} — {}", r.label, r.session),
             );
         if self.window_title != title {
             tx.set_title(title.clone());

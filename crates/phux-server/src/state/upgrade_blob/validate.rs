@@ -13,16 +13,9 @@ pub(crate) fn validate_upgrade_blob(blob: &StateBlob) -> Result<(), RebuildError
     let sessions = unique_wire_ids("session", blob.sessions.iter().map(|s| s.wire_id))?;
     let windows = unique_wire_ids("window", blob.windows.iter().map(|w| w.wire_id))?;
     let panes = unique_wire_ids("pane", blob.panes.iter().map(|p| p.wire_id))?;
-    // Agent sessions and documents share the pane wire-id space: one id,
-    // one resource.
-    unique_wire_ids(
-        "resource",
-        blob.panes
-            .iter()
-            .map(|p| p.wire_id)
-            .chain(blob.agent_sessions.iter().map(|a| a.wire_id))
-            .chain(blob.documents.iter().map(|d| d.wire_id)),
-    )?;
+    // Every carried resource shares the pane wire-id space: one id, one
+    // resource.
+    unique_wire_ids("resource", resource_wires(blob))?;
 
     for s in &blob.sessions {
         require_refs("window", &s.window_wire_ids, &windows)?;

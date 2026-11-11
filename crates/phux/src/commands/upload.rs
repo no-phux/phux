@@ -130,9 +130,18 @@ async fn resolve_terminal(
         .await
         .map_err(|err| super::report_agent_resolve_error(json, &err, true))?;
     drop(conn);
-    selector::pick_target_pane(&candidates, &view.snapshot().focused_resource).ok_or_else(|| {
-        super::partial::report_target_miss_keeping_status_for(json, Some(raw), view.degradation())
-    })
+    let picked = selector::pick_target_pane(&candidates, &view.snapshot().focused_resource)
+        .ok_or_else(|| {
+            super::partial::report_target_miss_keeping_status_for(
+                json,
+                Some(raw),
+                view.degradation(),
+            )
+        })?;
+    let resolved = selector::Resolved::in_snapshot(view.snapshot(), picked);
+    phux_client::read::require_terminal(phux_client::read::Verb::Upload, &resolved)
+        .map_err(|err| super::read_kind::wrong_kind(json, &err))?;
+    Ok(resolved.id)
 }
 
 fn print_receipt(receipt: &UploadReceipt, json: bool) -> ExitCode {

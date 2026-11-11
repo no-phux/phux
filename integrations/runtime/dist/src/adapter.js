@@ -1,7 +1,8 @@
 import { retryUpgradeSeal } from "./agent-session.js";
+import { commandFailed, diagnosticSuffix, screenParser } from "./cli-failure.js";
 import { PhuxError } from "./errors.js";
 import { DEFAULT_MAX_OUTPUT_BYTES, nodeProcessRunner, } from "./runner.js";
-import { AGENT_EVENT_TYPES, isAgentEventType, parseAgentEmitResult, parseAgentRecord, parseAgentSessionOpenResult, parseAgentStateList, parseAskedEvent, parseCreateResult, parseInsertPaneResult, parseLaunchResult, parseMovePaneResult, parseRenderedFrame, parseRunResult, parseScreenState, parseSessionList, parseSpawnResult, parseSwapPaneResult, parseWatchEvent, parseAgentPromptResult, parseAgentWaitResult, parseResourceWaitResult, parseStatusResult, parseSurfaceFacts, parseTreeDocument, parseVersionedDocument, SchemaValidationError, } from "./schemas.js";
+import { AGENT_EVENT_TYPES, isAgentEventType, parseAgentEmitResult, parseAgentRecord, parseAgentSessionOpenResult, parseAgentStateList, parseAskedEvent, parseCreateResult, parseInsertPaneResult, parseLaunchResult, parseMovePaneResult, parseRenderedFrame, parseRunResult, parseSessionList, parseSpawnResult, parseSwapPaneResult, parseWatchEvent, parseAgentPromptResult, parseAgentWaitResult, parseResourceWaitResult, parseStatusResult, parseSurfaceFacts, parseTreeDocument, parseVersionedDocument, SchemaValidationError, } from "./schemas.js";
 export { AGENT_EVENT_TYPES, isAgentEventType } from "./schemas.js";
 export { AgentSessionEmitter, hasAgentSessionCli, isAgentSessionUnsupported, isUpgradeSealRefusal, UPGRADE_RETRY_BUDGET_MS, } from "./agent-session.js";
 export const MINIMUM_PHUX_VERSION = "0.1.0";
@@ -266,7 +267,7 @@ export class PhuxCli {
         this.pushSocket(args);
         if (options.target !== undefined)
             args.push(options.target);
-        return this.jsonCommand("snapshot", args, options, parseScreenState);
+        return this.jsonCommand("snapshot", args, options, screenParser("snapshot", options.target));
     }
     async wait(options = {}) {
         const args = ["wait", "--json"];
@@ -292,10 +293,11 @@ export class PhuxCli {
         if (options.target !== undefined)
             args.push(options.target);
         const result = await this.completed("wait", args, boundedExecution(options), true);
-        if (result.exitCode !== 0 && result.exitCode !== 124) {
+        // A document wait's timeout prints no screen (cli-failure.ts).
+        if (result.exitCode !== 0 && (result.exitCode !== 124 || result.stdout.trim() === "")) {
             throw commandFailed("wait", this.executable, args, result);
         }
-        const screen = parseJson("wait", this.executable, result.stdout, args, parseScreenState);
+        const screen = parseJson("wait", this.executable, result.stdout, args, screenParser("wait", options.target));
         return {
             outcome: result.exitCode === 124 ? "timed_out" : "satisfied",
             screen,
@@ -664,28 +666,6 @@ function parseTagRows(stdout, verb, executable, args) {
 }
 function invalidResponse(verb, executable, args, detail, cause) {
     return new PhuxError("invalid_response", `phux ${verb} JSON does not match its documented CLI shape: ${detail}`, { argv: [executable, ...args], cause });
-}
-function commandFailed(verb, executable, args, result) {
-    let cliError;
-    try {
-        const document = JSON.parse(result.stderr.trim());
-        if (document !== null && typeof document === "object" && !Array.isArray(document)) {
-            cliError = document;
-        }
-    }
-    catch {
-        // Non-JSON diagnostics from older binaries remain available as stderr.
-    }
-    return new PhuxError("command_failed", `phux ${verb} failed with exit code ${String(result.exitCode)}${diagnosticSuffix(result.stderr)}`, {
-        argv: [executable, ...args],
-        exitCode: result.exitCode,
-        stderr: result.stderr,
-        ...(cliError === undefined ? {} : { cliError }),
-    });
-}
-function diagnosticSuffix(stderr) {
-    const detail = stderr.trim();
-    return detail.length === 0 ? "" : `: ${detail}`;
 }
 function failureMessage(result) {
     return `phux --version exited ${String(result.exitCode)}${diagnosticSuffix(result.stderr)}`;

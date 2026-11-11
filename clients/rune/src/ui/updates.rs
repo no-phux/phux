@@ -151,7 +151,11 @@ pub fn card(desk: &Desk, ink: &Ink, top: f32) -> Option<El> {
                     el().key("update-dismiss")
                         .cursor(rune::Cursor::Pointer)
                         .on_press(|d: &mut Desk| d.updater.dismiss())
-                        .child(text("✕").font(CAPTION).color(ink.dim)),
+                        .child(
+                            rune::icon(&super::icons::CLOSE, 12.0)
+                                .color(ink.dim)
+                                .a11y_hidden(),
+                        ),
                 ),
         )
         .child(lines(desk, ink, CAPTION))
@@ -177,8 +181,12 @@ pub fn pill(desk: &Desk, ink: &Ink) -> Option<El> {
     let updater = &desk.updater;
     let due = updater.action().is_some() || !matches!(updater.work, Work::Idle | Work::Checking);
     (due && !updater.card_open()).then(|| {
-        el().key("update-pill")
-            .cursor(rune::Cursor::Pointer)
+        super::pressable("update-pill", ink)
+            .h(20.0)
+            .px(8.0)
+            .radius(10.0)
+            .center()
+            .fill(ink.accent.alpha(0.16))
             .on_press(|d: &mut Desk| d.updater.reopen())
             .child(text("Update ready").font(CAPTION).color(ink.accent))
     })

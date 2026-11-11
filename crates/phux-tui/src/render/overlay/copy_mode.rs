@@ -27,7 +27,7 @@ use super::{
 
 mod vi;
 
-pub use vi::{CopyMotionRequest, RowMotion, row_motion_target};
+pub use vi::CopyMotionRequest;
 
 const WHEEL_SCROLL_LINES: isize = 3;
 

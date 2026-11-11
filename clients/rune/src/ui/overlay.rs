@@ -7,7 +7,7 @@ use phux_protocol::ids::ResourceId;
 use rune::{Color, El, Family, TextStyle, Transition, el, row, text, text_input};
 
 use super::status::notice_line;
-use super::{CAPTION, Ink, PAD, keep_from_pane, pressable};
+use super::{CAPTION, Ink, PAD, icons, keep_from_pane, pressable};
 use crate::desk::{Desk, NoticeKind};
 use crate::grid::Metrics;
 use crate::host_color::{dot, named};
@@ -36,9 +36,9 @@ pub fn link_underline(desk: &Desk, id: &ResourceId, m: &Metrics, ink: &Ink) -> V
         .collect()
 }
 
-/// A glyph to press; `name` is what a screen reader says for it.
+/// An icon to press; `name` is what a screen reader says for it.
 pub(super) fn icon_button(
-    glyph: &'static str,
+    glyph: &'static rune::Icon,
     name: &'static str,
     key: impl Into<String>,
     ink: &Ink,
@@ -46,18 +46,26 @@ pub(super) fn icon_button(
 ) -> El {
     pressable(key, ink)
         .size(24.0, 24.0)
-        .radius(5.0)
+        .radius(6.0)
         .center()
         .label(name)
+        .help(name)
         .on_press(press)
-        .child(text(glyph).font(CAPTION).color(ink.dim).a11y_hidden())
+        .hover_group()
+        .child(
+            rune::icon(glyph, 14.0)
+                .color(ink.dim)
+                .group_color(ink.text)
+                .a11y_hidden(),
+        )
 }
 
 /// A key and what it does, as a sheet's footer lists them.
 pub(super) fn key_hint(key: &'static str, what: &'static str, ink: &Ink) -> El {
     row()
-        .gap(4.0)
-        .child(text(key).font(CAPTION).color(ink.text))
+        .gap(5.0)
+        .items_center()
+        .child(super::keycap(key, ink))
         .child(text(what).font(CAPTION).color(ink.dim))
 }
 
@@ -110,7 +118,7 @@ pub fn toast(desk: &Desk, ink: &Ink) -> Option<El> {
         None => toast,
     };
     let toast = toast.child(icon_button(
-        "✕",
+        &icons::CLOSE,
         "Dismiss",
         "toast-close",
         ink,
@@ -202,14 +210,22 @@ pub fn find_bar(desk: &Desk, id: &ResourceId, area: [f32; 2], ink: &Ink) -> Opti
                     .color(if miss { ink.danger } else { ink.dim }),
             )
             .child(case)
-            .child(icon_button("↑", "Older match", "find-older", ink, |d| {
-                d.step_find(-1)
-            }))
-            .child(icon_button("↓", "Newer match", "find-newer", ink, |d| {
-                d.step_find(1)
-            }))
             .child(icon_button(
-                "✕",
+                &icons::ARROW_UP,
+                "Older match",
+                "find-older",
+                ink,
+                |d| d.step_find(-1),
+            ))
+            .child(icon_button(
+                &icons::ARROW_DOWN,
+                "Newer match",
+                "find-newer",
+                ink,
+                |d| d.step_find(1),
+            ))
+            .child(icon_button(
+                &icons::CLOSE,
                 "Close find",
                 "find-close",
                 ink,

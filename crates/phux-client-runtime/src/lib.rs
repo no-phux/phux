@@ -18,6 +18,7 @@
 //! - [`handshake`]: `HELLO` and `HELLO_OK` acceptance, shared by every lane.
 //! - [`connection`]: the async driver (dial, framing, keepalive, reconnect).
 //! - [`project_identity`]: a checkout's repository identity, from git files.
+//! - [`project_groups`]: session rows grouped by that identity.
 //! - [`release`]: channels, release asset names, and the channel manifest
 //!   every updater reads (ADR-0176).
 //! - [`organize`]: the organize judge, its Jev transport, and the undo
@@ -46,6 +47,7 @@ pub mod handshake;
 pub mod organize;
 pub mod pairing;
 pub mod perf;
+pub mod project_groups;
 pub mod project_identity;
 #[cfg(feature = "engine")]
 pub mod publication;
@@ -53,6 +55,7 @@ pub mod reconnect;
 pub mod release;
 pub mod runtime;
 pub mod session;
+pub mod session_order;
 pub mod target;
 #[cfg(unix)]
 pub mod tunnel;
