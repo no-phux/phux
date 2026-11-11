@@ -59,4 +59,6 @@ PHUX_PI_REAL_SMOKE=1 npm run smoke:real   # against a real phux, opt in
 ```
 
 Releases publish to npm as `@phux/pi` with provenance, tagged
-`pi-extension-vX.Y.Z`.
+`pi-extension-vX.Y.Z`. CI and the release pack with npm 12.2.1, where
+`npm pack --json` prints an object keyed by package name instead of npm 11's
+array; the pack and load checks read either through `scripts/pack-report.mjs`.
