@@ -1,3 +1,3 @@
-**Phux Rune 0.1.13**: 1 change since 0.1.12.
+**Phux Rune 0.1.14**: 1 change since 0.1.13.
 
-- Settle phone viewport changes before resizing terminals (#2205)
+- What's new bell in the phone top bar (#2217)
