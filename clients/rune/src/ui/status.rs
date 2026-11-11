@@ -150,6 +150,16 @@ fn updates_can_fix(standing: &Standing, remote: bool) -> bool {
 
 /// What stands in for the terminal: the words, then what can be done.
 fn words(standing: &Standing, machine: &str, remote: bool) -> (&'static str, String) {
+    // Every use below is mid-sentence, where the local label reads lowercase.
+    let machine = if machine == crate::machines::LOCAL {
+        if cfg!(target_os = "macos") {
+            "this Mac"
+        } else {
+            "this computer"
+        }
+    } else {
+        machine
+    };
     match standing {
         Standing::Starting => ("Starting phux…", String::new()),
         Standing::NoCli => (

@@ -285,7 +285,15 @@ fn ensure_server(phux: &Path, socket: Option<&Path>) -> Result<PathBuf, String> 
         ];
     }
     let call = |args: &[&'static str]| run(phux, &[at.as_slice(), args].concat());
-    call(&["server", "--ensure"])?;
+    // The window picks its own session (README: it never creates one), so a
+    // server started here seeds none. A CLI older than `--no-seed` refuses
+    // the word; it seeds as it always did.
+    if let Err(error) = call(&["server", "--ensure", "--no-seed"]) {
+        if !error.contains("unexpected argument '--no-seed'") {
+            return Err(error);
+        }
+        call(&["server", "--ensure"])?;
+    }
     let status: serde_json::Value = serde_json::from_slice(&call(&["status", "--json"])?)
         .map_err(|error| format!("`phux status --json` printed no JSON: {error}"))?;
     status["socket"]
@@ -378,6 +386,36 @@ mod tests {
         let found = ensure_server(&phux, Some(Path::new("/tmp/named"))).expect("ensured");
         assert_eq!(found, PathBuf::from("/tmp/named"));
         assert!(ensure_server(&phux, None).is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn ensure_asks_for_no_seed_and_falls_back_on_an_older_cli() {
+        let dir = std::env::temp_dir().join(format!("phux-rune-seed-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let log = dir.join("calls");
+        let phux = dir.join("phux");
+        // An older CLI: `--no-seed` is an unknown argument; `status` answers.
+        std::fs::write(
+            &phux,
+            format!(
+                "#!/bin/sh\necho \"$*\" >> {log}\ncase \"$*\" in\n*--no-seed*) echo \"error: unexpected argument '--no-seed' found\" >&2; exit 2;;\n*status*) printf '{{\"socket\":\"/tmp/s\"}}';;\nesac\n",
+                log = log.display()
+            ),
+        )
+        .unwrap();
+        Command::new("/bin/chmod")
+            .arg("+x")
+            .arg(&phux)
+            .status()
+            .unwrap();
+        let found = ensure_server(&phux, Some(Path::new("/tmp/s"))).expect("ensured");
+        assert_eq!(found, PathBuf::from("/tmp/s"));
+        let calls = std::fs::read_to_string(&log).unwrap();
+        let lines: Vec<&str> = calls.lines().collect();
+        assert_eq!(lines[0], "--socket /tmp/s server --ensure --no-seed");
+        assert_eq!(lines[1], "--socket /tmp/s server --ensure");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[cfg(unix)]
