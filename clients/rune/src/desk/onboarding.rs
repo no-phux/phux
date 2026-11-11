@@ -28,6 +28,8 @@ const STEP_KEY: &str = "onboarding_step";
 const POLL_EVERY: f64 = 1.0;
 const QUICK: Duration = Duration::from_secs(10);
 const SLOW: Duration = Duration::from_secs(60);
+/// How long after Grant… the sheet waits for System Settings to dock beside.
+const DOCK_FOR: f64 = 5.0;
 
 /// What a CLI call has said so far.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -88,6 +90,13 @@ pub struct Onboarding {
     pub bundle: Option<PathBuf>,
     pub migrate: Migrate,
     pub copied: bool,
+    /// The window, to move the grant sheet beside System Settings; the
+    /// sheet's last rect in global and in window points; and until when on
+    /// the app clock it's looking for Settings.
+    pub window: Option<rune::AppHandle<Desk>>,
+    pub sheet_at: [f32; 4],
+    pub sheet_in_window: [f32; 4],
+    dock_until: f64,
     /// When the grant sheet last asked, on the app clock, and whether that
     /// answer is still out.
     asked_at: f64,
@@ -107,6 +116,10 @@ impl Default for Onboarding {
             bundle: None,
             migrate: Migrate::Choosing,
             copied: false,
+            window: None,
+            sheet_at: [0.0; 4],
+            sheet_in_window: [0.0; 4],
+            dock_until: f64::NEG_INFINITY,
             asked_at: f64::NEG_INFINITY,
             asking: false,
             done: channel(),
@@ -316,8 +329,9 @@ impl Desk {
     }
 
     /// Open `service`'s System Settings pane; the server's app shows beside
-    /// the list to drag in.
+    /// the list to drag in, and the sheet moves out from under Settings.
     pub fn grant(&mut self, service: Service) {
+        self.onboarding.dock_until = self.clock + DOCK_FOR;
         self.ask(
             &["server", "permissions", "--open", service.id(), "--json"],
             QUICK,
@@ -432,9 +446,41 @@ impl Desk {
             if due <= 0.0 && !self.onboarding.asking {
                 self.ask_permissions();
             }
-            tx.wake_after(Duration::from_secs_f64(due.clamp(0.1, POLL_EVERY)));
+            let mut wait = due.clamp(0.1, POLL_EVERY);
+            if self.clock < self.onboarding.dock_until {
+                if self.dock_sheet() {
+                    self.onboarding.dock_until = f64::NEG_INFINITY;
+                } else {
+                    wait = wait.min(0.25);
+                }
+            }
+            tx.wake_after(Duration::from_secs_f64(wait));
         }
         changed
+    }
+
+    /// Move the window so the grant sheet sits beside System Settings, its
+    /// drag item clear of the list it's dragged into. True once Settings has
+    /// a window, moved or not.
+    fn dock_sheet(&self) -> bool {
+        let Some((settings, screen)) = crate::system_settings::frame() else {
+            return false;
+        };
+        let ob = &self.onboarding;
+        if let (Some(window), Some(x)) = (
+            &ob.window,
+            crate::system_settings::beside(ob.sheet_at, settings, screen),
+        ) {
+            // Full-size content: the content's origin is the window's.
+            let [_, gy, ..] = ob.sheet_at;
+            let [wx, wy, ..] = ob.sheet_in_window;
+            let scale = self.scale.get();
+            window.set_position((
+                ((x - wx) * scale).round() as i32,
+                ((gy - wy) * scale).round() as i32,
+            ));
+        }
+        true
     }
 }
 
