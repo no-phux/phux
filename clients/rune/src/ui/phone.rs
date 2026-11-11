@@ -304,7 +304,11 @@ fn tab_pills(desk: &Desk, p: &Ink) -> Option<El> {
             .gap(2.0)
             .radius(ROUND / 2.0)
             .items_center()
-            .scroll_x(),
+            .scroll_x()
+            // A tab past the edge fades out instead of being cut square,
+            // and one scrolled to stops clear of the fade.
+            .scroll_edge_fade(20.0)
+            .scroll_margin(20.0),
         p,
     );
     for (index, tab) in desk.tabs.list.iter().enumerate() {
@@ -522,35 +526,4 @@ fn keyboard_control(desk: &Desk, native_field: bool, p: &Ink) -> El {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn glass_ink_tracks_its_terminal_ground_not_the_os_appearance() {
-        for (ground, expected) in [(Color::BLACK, Color::WHITE), (Color::WHITE, Color::BLACK)] {
-            let ink = ground_ink(ground, Color::WHITE, None);
-            assert_eq!(
-                crate::theme::on_fill(ink.text),
-                crate::theme::on_fill(expected)
-            );
-            assert!(crate::theme::contrast(ink.text, ground) >= 4.5);
-        }
-    }
-
-    #[test]
-    fn a_phone_takes_its_sheets_from_the_theme_or_the_ground_never_the_system() {
-        let mut desk = Desk::settings_test_fixture().with_phone(true);
-        desk.settings.theme = None;
-        desk.settings_open = false;
-        // No terminal yet: the black one starts on, so a light-mode phone
-        // does not open on a white page between a dark launch and terminal.
-        assert_eq!(terminal_ground(&desk), Color::BLACK);
-        assert_eq!(edge_color(&desk), Color::BLACK);
-        let sheets = ink(&desk, Color::WHITE);
-        assert_eq!(crate::theme::on_fill(sheets.raised), Color::WHITE);
-        let light = crate::theme::all().find(|theme| !theme.dark);
-        desk.settings.theme = light;
-        let sheets = ink(&desk, Color::WHITE);
-        assert_eq!(crate::theme::on_fill(sheets.raised), Color::BLACK);
-    }
-}
+mod tests;
