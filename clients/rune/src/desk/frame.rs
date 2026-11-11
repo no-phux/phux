@@ -99,30 +99,37 @@ impl Desk {
         let metrics = self.metrics();
         let cell = metrics.cell_px();
         for terminal in on_screen {
-            if self.view_of(&terminal).is_none() {
-                continue;
-            }
-            let Some(area) = self.areas.get(&terminal).copied() else {
-                continue;
-            };
-            if area[0] < 1.0 || area[1] < 1.0 {
-                continue;
-            }
-            let size = metrics.fit(area);
-            if self.fitted.get(&terminal) == Some(&(size, cell)) {
-                continue;
-            }
-            let outcome = client.with_control(|control| {
-                control.resize_terminal_with_cell(
-                    &terminal,
-                    size.0.into(),
-                    size.1.into(),
-                    Some(cell),
-                )
-            });
-            if outcome == phux_client_runtime::control::TerminalResizeOutcome::Queued {
-                self.fitted.insert(terminal, (size, cell));
-            }
+            self.fit_terminal(&client, terminal, &metrics, cell);
+        }
+    }
+
+    fn fit_terminal(
+        &mut self,
+        client: &Client,
+        terminal: ResourceId,
+        metrics: &crate::grid::Metrics,
+        cell: (u16, u16),
+    ) {
+        if self.view_of(&terminal).is_none() {
+            return;
+        }
+        let Some(area) = self.areas.get(&terminal).copied() else {
+            return;
+        };
+        if area[0] < 1.0 || area[1] < 1.0 {
+            return;
+        }
+        let size = metrics.fit(area);
+        if self.defer_phone_fit(&terminal, (size, cell))
+            || self.fitted.get(&terminal) == Some(&(size, cell))
+        {
+            return;
+        }
+        let outcome = client.with_control(|control| {
+            control.resize_terminal_with_cell(&terminal, size.0.into(), size.1.into(), Some(cell))
+        });
+        if outcome == phux_client_runtime::control::TerminalResizeOutcome::Queued {
+            self.fitted.insert(terminal, (size, cell));
         }
     }
 

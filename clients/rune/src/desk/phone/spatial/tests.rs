@@ -2,6 +2,7 @@ use super::*;
 
 mod fixture;
 mod input;
+mod refit;
 mod touch;
 mod viewport;
 
@@ -349,6 +350,8 @@ fn returning_keeps_real_views_scroll_selection_and_only_focused_pane_is_fit_or_s
 fn keyboard_resizes_only_focus_and_drag_frames_do_not_storm_pty_sizes() {
     use phux_protocol::wire::frame::FrameKind;
     let (client, mut rt) = fixture(true);
+    // Unlike the geometry-only fixture, resize settling runs on the app clock.
+    rt.poll = Some(Desk::poll);
     let before = rt.state.fitted[&id(1)];
     tap(&mut rt, "phone-keyboard-toggle");
     settle(&mut rt);

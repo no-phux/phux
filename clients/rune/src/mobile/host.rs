@@ -5,6 +5,12 @@ use serde_json::{Value, json};
 
 use super::State;
 
+/// Called before a changed native viewport reaches Rune. Restart the grid's
+/// wait before poll can send an old proposal ahead of the new layout.
+pub fn viewport_changed(rt: &mut rune::Runtime<State>) {
+    rt.update(|state, _| state.phone_viewport_changed());
+}
+
 /// What the last frame asked of the system. An embedded runtime reaches no
 /// pasteboard, link opener or haptics; the host that owns them answers.
 /// Every copy here is plain: this app writes no secret to the clipboard.

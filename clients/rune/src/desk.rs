@@ -490,8 +490,9 @@ impl Desk {
         changed |= self.autoscroll(tx);
         changed |= self.phone_touch_tick(tx);
         self.keep_find();
-        // Also catches a display-scale change, which re-snaps the cells.
+        // Also re-snaps cells after a display-scale change.
         self.fit();
+        self.wake_phone_fit(tx);
         changed | self.blink(&client, tx) | self.tend_link(tx)
     }
 
