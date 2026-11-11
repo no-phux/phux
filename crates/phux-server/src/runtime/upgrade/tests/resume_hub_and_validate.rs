@@ -1,6 +1,5 @@
 #![allow(clippy::unwrap_used, reason = "tests")]
 
-use super::super::handoff::*;
 use super::super::validate::*;
 use super::super::*;
 use super::support::*;
@@ -195,12 +194,9 @@ async fn exec_failure_restores_original_descriptor_flags() {
         _blob_file: blob_file,
         _listener_fd: tempfile::tempfile().unwrap().into(),
         _delegated_listeners: Vec::new(),
-        _handoffs: HashMap::new(),
-        streams: crate::runtime::apps::agent_session::upgrade::AgentSessionUpgrade::holding(
-            crate::runtime::apps::agent_session::upgrade::AgentSessionSeal {
-                bootstraps: Vec::new(),
-            },
-        ),
+        cuts: vec![AgentSessionUpgrade::holding(AgentSessionSeal {
+            bootstraps: Vec::new(),
+        })],
     };
 
     assert_eq!(plan.exec().await.kind(), std::io::ErrorKind::NotFound);

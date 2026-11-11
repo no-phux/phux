@@ -35,12 +35,13 @@ pub enum Mood {
 
 impl Mood {
     /// The galaxy's marks in the prototype's four moods: a finished agent
-    /// still counts as needing you there, here it glides home.
+    /// still counts as needing you there, here it glides home. An idle agent
+    /// with work still running under it (a build, a watch loop) is working.
     pub fn of(mark: Mark) -> Mood {
         match mark {
             Mark::Done | Mark::Succeeded => Mood::Done,
             _ if mark.needs_you() => Mood::Waiting,
-            _ if mark.live() => Mood::Working,
+            _ if mark.live() || mark == Mark::Background => Mood::Working,
             _ => Mood::Idle,
         }
     }

@@ -10,11 +10,11 @@ use phux_protocol::wire::frame::TombstoneReason;
 use phux_protocol::{BootstrapId, BootstrapStreamProfile, ResourceId, StreamId};
 
 use super::super::staging_rules::{
-    chunk_admission, retire_for_codec_failure, staging_lifetime_exceeded,
+    chunk_admission, reject_retired, retire_for_codec_failure, staging_lifetime_exceeded,
 };
 use super::super::{
     AgentSessionDeclaration, AgentStreamInfo, EffectBuffer, GenerationId, KernelError, ReplicaKey,
-    TombstoneRecord, generation_of, mismatch_error, retired_error,
+    TombstoneRecord, generation_of, mismatch_error,
 };
 use super::{
     AgentEventRecord, AgentLog, AgentPublication, AgentRecordMode, AgentSessionState,
@@ -155,9 +155,7 @@ impl AgentStream {
             stream_id,
             bootstrap_id,
         };
-        if self.retired.contains_key(&generation) {
-            return Err(retired_error(resource_id, generation));
-        }
+        self.reject_retired(resource_id, generation)?;
         if self.published_matches(generation) || self.staging_matches(generation) {
             return Err(KernelError::DuplicateGeneration {
                 terminal_id: resource_id.clone(),
@@ -520,11 +518,7 @@ impl AgentStream {
         resource_id: &ResourceId,
         generation: GenerationId,
     ) -> Result<(), KernelError<E>> {
-        if self.retired.contains_key(&generation) {
-            Err(retired_error(resource_id, generation))
-        } else {
-            Ok(())
-        }
+        reject_retired(&self.retired, resource_id, generation)
     }
 
     fn published_matches(&self, generation: GenerationId) -> bool {

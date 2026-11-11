@@ -1,18 +1,18 @@
-//! What crosses a graceful upgrade (ADR-0032): plain data an engine hands
-//! its host to carry across the exec.
+//! What a Terminal hands its app to carry across a graceful upgrade
+//! (ADR-0032): the PTY to re-adopt and a replay snapshot, as plain data.
 
 use std::os::fd::OwnedFd;
 
 use tokio::sync::oneshot;
 
-/// Request a resource's graceful-upgrade handoff (ADR-0032); read-only.
+/// Request a Terminal's graceful-upgrade handoff (ADR-0032); read-only.
 #[derive(Debug)]
 pub struct UpgradeHandleRequest {
     /// Reply channel; dropping the receiver is benign.
     pub reply: oneshot::Sender<ProcessHandoff>,
 }
 
-/// One process-backed resource's upgrade handoff.
+/// One Terminal's upgrade handoff.
 ///
 /// The descriptors to re-adopt plus a replay snapshot. `master_fd`/`child_pid`
 /// are `None` without a live process (skipped). The fields name what the

@@ -72,6 +72,7 @@ mod responses;
 mod roster;
 mod service_http;
 mod state;
+mod subscriptions;
 mod topology;
 
 pub use checkout::{CheckoutFailure, CheckoutOutcome, CheckoutResponse, MAX_CHECKOUT_ANSWERS};
@@ -237,14 +238,15 @@ pub struct ControlPlane {
     /// so reconnect follows renames and never re-creates.
     attach_target: Option<AttachTarget>,
     active_attach_id: Option<u32>,
-    attach_terminals: HashSet<ResourceId>,
+    /// Every resource streamed on this control plane: its kind, how it came
+    /// to stream (session attach, own attach, own spawn, declared agent),
+    /// the `AgentSession` follow intent, and whether its stream ended.
+    subscriptions: subscriptions::Subscriptions,
     /// The home session whose pumps the connection-level `ATTACH` opened.
     attached_session: Option<u32>,
     /// The session the consumer is currently viewing. This may differ from
     /// `attached_session` after a live, per-terminal session switch.
     selected_session: Option<u32>,
-    /// Terminals subscribed with a per-terminal attach on this connection.
-    terminal_attached: HashSet<ResourceId>,
     /// Opt-in subscription intent retained across transport reconnects.
     preserve_terminal_geometry: HashSet<ResourceId>,
     /// Roles declared by manual per-terminal attaches, overriding the session role.
@@ -253,20 +255,9 @@ pub struct ControlPlane {
     geometry_bootstrapped: HashSet<ResourceId>,
     /// Terminals whose replacement snapshot is requested but not published.
     stream_recoveries: HashSet<ResourceId>,
-    /// Terminals this client's own spawns created on this connection.
-    own_spawns: HashSet<ResourceId>,
-    /// `AgentSession` resources declared to the kernel.
-    agent_streams: HashSet<ResourceId>,
     /// The `AgentSession` resources the last topology listed, kept for
     /// subscribing one whose parent this connection admits later.
     agent_catalog: Vec<phux_protocol::wire::info::ResourceInfo>,
-    /// The `AgentSession` streams `subscribe_agent_sessions` follows, kept
-    /// across reconnects until the server proves them closed.
-    agent_subscriptions: HashMap<ResourceId, agents::AgentSubscription>,
-    /// `AgentSession` streams that ended on this server incarnation: a
-    /// later close the server sends for one is not a pane closing. Ids are
-    /// unique within an incarnation, so a restart clears it.
-    retired_agents: HashSet<ResourceId>,
     /// Undrained committed agent publications and close stamps.
     agent_delivery: agent_delivery::AgentDelivery,
     /// This connection's identity on the server, from `ATTACHED`; what an

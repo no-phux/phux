@@ -219,10 +219,14 @@ anywhere in the document, `--regex` one line of it. As on a screen, only the
 first document gets the 2 second floor; `--timeout` bounds every later one.
 `--tail`, `--output-only` and `--idle` are for a terminal and exit 2 here,
 and so do an idle wait (no `--until` or `--regex`), a binary document, and a
-surface. A resource that closes before it matches exits 1. `phux send-keys`
-refuses a document (exit 2); a page's or a window's tree or surface takes
-input through `phux agent page type TARGET TEXT` and `phux agent page key
-TARGET KEY`.
+surface. A resource that closes before it matches exits 1.
+
+A verb that reaches a terminal only refuses any other kind before it sends
+anything, with `wrong_resource_kind` and exit 2: `send-keys`, `paste`,
+`run`, `resize`, `upload`, `take`, `give`, `signal`, `ask`, `rec`, and
+`phux agent send-keys|prompt|answer|start|report-state`, with their MCP
+tools. A page's or a window's tree or surface takes input through `phux
+agent page type TARGET TEXT` and `phux agent page key TARGET KEY`.
 
 ## Watching events
 

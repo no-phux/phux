@@ -36,27 +36,10 @@ fn required_target(args: &Value) -> Result<Selector, ToolError> {
     parse_selector(required_str(args, "target")?)
 }
 
-/// Exact IDs bypass inventory/name resolution, including for retained resources.
-pub(crate) async fn resolve_selector(
-    socket: &Path,
-    selector: &Selector,
-    for_input: bool,
-) -> Result<ResourceId, ToolError> {
-    if let Some(id) = selector.explicit_id() {
-        return Ok(id);
-    }
-    let view = state::get_state(socket).await?;
-    if for_input {
-        resolve_one_for_input(socket, selector, &view).await
-    } else {
-        resolve_one(socket, selector, &view).await
-    }
-}
-
 /// Resolve `selector` against `view` to one pane as the CLI does (ADR-0021),
 /// preferring the focused pane. A miss against a degraded view says so
-/// rather than claiming the target is gone. For read tools; a tool that
-/// delivers input resolves through [`resolve_one_for_input`].
+/// rather than claiming the target is gone. For read tools; a Terminal tool
+/// resolves through [`resolve_kinded`].
 ///
 /// # Errors
 ///
@@ -67,22 +50,6 @@ pub(crate) async fn resolve_one(
     view: &StateView,
 ) -> Result<ResourceId, ToolError> {
     resolve_one_with(socket, selector, view, false).await
-}
-
-/// [`resolve_one`] for the tools that deliver input into the pane
-/// (`phux_send_keys`, `phux_paste`): identical, except that a `%name` whose
-/// record has the withdrawn shape is refused (ADR-0075 point 5), as the
-/// CLI's input verbs refuse it.
-///
-/// # Errors
-///
-/// A [`ToolError`] when the selector matches no pane, or `agent_withdrawn`.
-pub(crate) async fn resolve_one_for_input(
-    socket: &std::path::Path,
-    selector: &Selector,
-    view: &StateView,
-) -> Result<ResourceId, ToolError> {
-    resolve_one_with(socket, selector, view, true).await
 }
 
 async fn resolve_one_with(

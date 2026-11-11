@@ -93,7 +93,7 @@ impl Desk {
         let Some((terminal, view)) = self
             .shown
             .as_ref()
-            .and_then(|s| Some((s.terminal.clone(), s.view?)))
+            .and_then(|s| Some((s.resource.clone(), s.view?)))
         else {
             return;
         };
@@ -143,7 +143,7 @@ impl Desk {
         let gone = self.copy_mode.as_ref().is_some_and(|mode| {
             self.shown
                 .as_ref()
-                .is_none_or(|s| s.terminal != mode.terminal || s.view != Some(mode.view))
+                .is_none_or(|s| s.resource != mode.terminal || s.view != Some(mode.view))
         });
         if gone {
             self.leave_copy_mode(true);

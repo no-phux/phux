@@ -6,6 +6,10 @@
     "logos/docs-wordmark.svg": "docs/assets/logo.svg",
     "logos/docs-wordmark.png": "docs/assets/logo.png",
     "tooling/brand.py": "scripts/brand.py",
-    "desktop/AppIcon.png": "clients/rune/packaging/AppIcon.png"
+    "desktop/AppIcon.png": "clients/rune/packaging/AppIcon.png",
+    "playground/fox/idle.png": "clients/rune/assets/brand/fox/idle.png",
+    "playground/fox/celebrate.png": "clients/rune/assets/brand/fox/celebrate.png",
+    "playground/fox/still.png": "clients/rune/assets/brand/fox/still.png",
+    "playground/fox/atlas.json": "clients/rune/assets/brand/fox/atlas.json"
   }
 }

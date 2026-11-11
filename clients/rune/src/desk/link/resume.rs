@@ -200,7 +200,7 @@ mod tests {
         rt.update(|desk, _| {
             desk.clock = 20.0;
             let shown = desk.shown.as_mut().expect("the fixture's terminal");
-            shown.terminal = phux_protocol::ids::ResourceId::local(9);
+            shown.resource = phux_protocol::ids::ResourceId::local(9);
             type_a(desk);
         });
         assert_eq!(rt.state.link.nudged, Some(7.0));

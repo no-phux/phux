@@ -148,7 +148,10 @@ session (or `--session NAME`). It never creates a session on its own.
   descriptions, categories and current values across all sections, including
   useful aliases such as **font**, **zoom**, and **colours**. **Theme**
   opens the existing live-preview palette; Return keeps a choice and Escape
-  restores the old theme, both returning to Settings. Text size, notifications,
+  restores the old theme, both returning to Settings. **Font** steps through
+  the system monospace, the bundled JetBrains Mono and two the platform ships;
+  `font_family` in Rune's prefs can name any installed family, and one that
+  isn't installed shows the system's. Font, text size, notifications,
   Option as Meta (macOS), copy on select, and close confirmation are remembered
   immediately. Diagnostics stays available in development builds; update errors
   and protocol warnings remain visible during search. A program's own OSC
@@ -210,7 +213,7 @@ each line; the window asks first (Return pastes, Esc cancels).
 
 - One window. Tabs can't be dragged to reorder yet, and the server has no
   call to rename a single terminal.
-- No Kitty images or font choice; the only custom themes are Ghostty's and Omarchy's. Find covers the history the
+- No Kitty images; the only custom themes are Ghostty's and Omarchy's. Find covers the history the
   window has loaded, not the server's whole scrollback.
 - A question raised through a hook before the window connected has no text
   to show (the server keeps only that one is pending); its card opens the
@@ -230,29 +233,10 @@ each line; the window asks first (Return pastes, Esc cancels).
 
 ## Read-only mirrors
 
-The palette lists live AccessibilityTree and PixelSurface resources alongside
-terminals. Open one directly, switch its tab, or focus it beside a terminal in
-the session's arrangement. Trees use a selectable native JSON inspector; PNG
-surfaces use Rune's image decoder and fit without cropping. These are mirrors,
-not embedded browsers: paste, file drops, and terminal resizing never reach a
-document pane. A surface whose producer declared a control class (a page or
-surface mirror) reads **Live mirror**: a click, a drag, the wheel, plain keys
-reach its producer as document input. Any other document is a **Read-only mirror**,
-and a refused send turns a live one **View only**. Closing its view does not
-stop the producer.
-
-To start a source, choose **Start page/tree/surface mirror…** in the palette,
-name the existing source, then confirm. Rune starts a dedicated producer
-terminal using the selected local CLI and socket, never the focused shell.
-Page capture needs Chrome debugging on localhost:9222 with a separate profile.
-Tree and surface capture require macOS Accessibility or Screen Recording
-permission respectively. The confirmation explains the prerequisite; producer
-exit produces an actionable notice. Ctrl-C in its terminal stops it.
-
-Starting a producer remotely is refused rather than guessing that host's
-platform, CLI, or permissions. Run the producer on the source host and reopen
-its published resource here. Opening or moving its view is not process or
-application migration.
+The palette opens AccessibilityTree and PixelSurface resources beside
+terminals, and can start a page, tree or surface producer.
+[MIRRORS.md](./MIRRORS.md) covers live and read-only mirrors and starting a
+source.
 
 ## Develop
 

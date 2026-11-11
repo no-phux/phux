@@ -1,16 +1,20 @@
-//! Kind dispatch for the verbs that read, wait on, or type into one
-//! resource: `phux snapshot`, `phux wait` and `phux send-keys`.
+//! Kind dispatch for the verbs that address one resource.
+//!
+//! `phux snapshot` and `phux wait` read a document by its kind; `phux
+//! send-keys` and every other verb that reaches a Terminal only (`run`,
+//! `paste`, `resize`, `upload`, `take`, `give`, `signal`, `ask`, `rec`, and
+//! the agent input verbs) refuse any other kind.
 //!
 //! Their MCP tools route through it too, but read a Terminal only, so they keep their
 //! read-only annotation and name the per-kind tool for a document.
 //!
-//! The kind catalog ([`phux_protocol::kinds`]) decides. A kind whose facet
-//! carries `GET_SCREEN` is read as a screen, and one whose facet carries
-//! `ROUTE_INPUT` takes keys: today the Terminal. The document kinds are
-//! read through an attach ([`crate::tree`]); their input goes to their
-//! producer as typed intents, which keys do not map onto, so `send-keys`
-//! refuses them. Any other kind, or one this build does not know, is
-//! refused with [`WrongKind`].
+//! The kind catalog ([`phux_protocol::kinds`]) decides. Each verb names the
+//! Terminal facet method it sends ([`Verb::terminal_method`]); a kind whose
+//! facet carries it takes the verb: today the Terminal. The document kinds
+//! are read through an attach ([`crate::tree`]); their input goes to their
+//! producer as typed intents, which keys do not map onto, so the input
+//! verbs refuse them. Any other kind, or one this build does not know, is
+//! refused with [`WrongKind`] before anything is sent.
 
 use std::borrow::Cow;
 use std::path::Path;
@@ -41,9 +45,58 @@ pub enum Verb {
     Wait,
     /// Type keys into it.
     SendKeys,
+    /// Paste text into it.
+    Paste,
+    /// Run a shell command in it.
+    Run,
+    /// Set its grid.
+    Resize,
+    /// Put a file beside its process.
+    Upload,
+    /// Seize its input lease.
+    Take,
+    /// Release its input lease.
+    Give,
+    /// Signal its process group.
+    Signal,
+    /// Report that its agent is asking.
+    Ask,
+    /// Record its screen.
+    Rec,
+    /// `phux agent send-keys`.
+    AgentSendKeys,
+    /// `phux agent prompt`.
+    AgentPrompt,
+    /// `phux agent answer`.
+    AgentAnswer,
+    /// `phux agent start`.
+    AgentStart,
+    /// `phux agent report-state`.
+    AgentReportState,
 }
 
 impl Verb {
+    /// Every verb, for the tests that walk the catalog.
+    pub const ALL: [Self; 17] = [
+        Self::Snapshot,
+        Self::Wait,
+        Self::SendKeys,
+        Self::Paste,
+        Self::Run,
+        Self::Resize,
+        Self::Upload,
+        Self::Take,
+        Self::Give,
+        Self::Signal,
+        Self::Ask,
+        Self::Rec,
+        Self::AgentSendKeys,
+        Self::AgentPrompt,
+        Self::AgentAnswer,
+        Self::AgentStart,
+        Self::AgentReportState,
+    ];
+
     /// The CLI verb's name.
     #[must_use]
     pub const fn name(self) -> &'static str {
@@ -51,15 +104,56 @@ impl Verb {
             Self::Snapshot => "snapshot",
             Self::Wait => "wait",
             Self::SendKeys => "send-keys",
+            Self::Paste => "paste",
+            Self::Run => "run",
+            Self::Resize => "resize",
+            Self::Upload => "upload",
+            Self::Take => "take",
+            Self::Give => "give",
+            Self::Signal => "signal",
+            Self::Ask => "ask",
+            Self::Rec => "rec",
+            Self::AgentSendKeys => "agent send-keys",
+            Self::AgentPrompt => "agent prompt",
+            Self::AgentAnswer => "agent answer",
+            Self::AgentStart => "agent start",
+            Self::AgentReportState => "agent report-state",
         }
     }
 
-    /// The Terminal facet method the verb sends.
-    const fn screen_method(self) -> &'static str {
+    /// The Terminal facet method the verb sends, as the kind catalog names
+    /// it. `rec` attaches the output stream, which every kind has; it
+    /// records a screen, so it needs the kind that has one.
+    #[must_use]
+    pub const fn terminal_method(self) -> &'static str {
         match self {
-            Self::Snapshot | Self::Wait => "GET_SCREEN",
-            Self::SendKeys => "ROUTE_INPUT",
+            Self::Snapshot | Self::Wait | Self::Rec => "GET_SCREEN",
+            Self::SendKeys | Self::Paste | Self::Run => "ROUTE_INPUT",
+            Self::AgentSendKeys | Self::AgentPrompt | Self::AgentAnswer | Self::AgentStart => {
+                "APPLY_INPUT"
+            }
+            Self::Resize => "RESIZE_TERMINAL",
+            Self::Upload => "PUT_FILE",
+            Self::Take => "ACQUIRE_INPUT",
+            Self::Give => "RELEASE_INPUT",
+            Self::Signal => "SIGNAL_TERMINAL",
+            Self::Ask => "REPORT_ASKED",
+            Self::AgentReportState => "REPORT_AGENT_STATE",
         }
+    }
+
+    /// Whether the verb types text a document's producer takes as typed
+    /// intents. `run` and `agent start` type a shell command line, which a
+    /// document has no shell for.
+    const fn types(self) -> bool {
+        matches!(
+            self,
+            Self::SendKeys
+                | Self::Paste
+                | Self::AgentSendKeys
+                | Self::AgentPrompt
+                | Self::AgentAnswer
+        )
     }
 }
 
@@ -82,6 +176,8 @@ pub struct WrongKind {
     pub kind: ResourceKind,
     /// The verb refused.
     pub verb: Verb,
+    /// The resource it is bound to, when the inventory names one.
+    pub parent: Option<ResourceId>,
 }
 
 impl WrongKind {
@@ -94,22 +190,40 @@ impl WrongKind {
         }
         match (self.verb, document_kind(self.kind)) {
             // A page's or a window's tree and surface take page input.
-            (Verb::SendKeys, Some(Kind::Tree | Kind::Surface)) => format!(
+            (verb, Some(Kind::Tree | Kind::Surface)) if verb.types() => format!(
                 "its producer takes typed intents: `phux agent page type {id} TEXT` or \
                  `phux agent page key {id} KEY`"
             ),
             (Verb::SendKeys, Some(Kind::Document)) => {
                 "a typed document takes no keys: its producer publishes it".to_owned()
             }
+            (verb, Some(Kind::Document)) if verb.types() => {
+                "a typed document takes no input: its producer publishes it".to_owned()
+            }
             (Verb::Wait, Some(Kind::Surface)) => format!(
                 "a surface is pixels, not text: read it with `phux snapshot {id} --out FILE`, \
                  or wait on the accessibility tree beside it"
             ),
-            _ if self.kind == ResourceKind::AgentSession => format!(
-                "read an agent session with `phux agent log {id}`; address its parent pane \
-                 for the screen and for keys"
-            ),
+            _ if self.kind == ResourceKind::AgentSession => self.agent_session_remedy(&id),
             _ => "address a Terminal; `phux ls --json` lists each resource's kind".to_owned(),
+        }
+    }
+
+    /// An agent session runs in a Terminal, its parent pane: the verb
+    /// reaches that pane, and `phux agent log` reads the session itself.
+    fn agent_session_remedy(&self, id: &str) -> String {
+        let pane = self.parent.as_ref().map_or_else(
+            || "its parent pane".to_owned(),
+            |parent| format!("its parent pane {}", format_terminal_id(parent)),
+        );
+        match self.verb {
+            Verb::Snapshot | Verb::Wait | Verb::Rec => {
+                format!("read an agent session with `phux agent log {id}`; {pane} has the screen")
+            }
+            verb if verb.types() || matches!(verb, Verb::Run | Verb::AgentStart) => format!(
+                "type into {pane}, where the agent runs; `phux agent log {id}` reads the session"
+            ),
+            _ => format!("address {pane}, the terminal the agent runs in"),
         }
     }
 }
@@ -131,19 +245,16 @@ pub struct TerminalOnly {
 /// # Errors
 ///
 /// [`WrongKind`] when the verb does not apply to the kind: an
-/// `AgentSession`, a kind this build does not know, a document for
-/// `send-keys`, or a pixel surface for `wait`, which has no text.
+/// `AgentSession`, a kind this build does not know, a document for any verb
+/// but `snapshot` and `wait`, or a pixel surface for `wait`, which has no
+/// text.
 pub fn route(verb: Verb, resolved: &Resolved) -> Result<Route, WrongKind> {
-    let refuse = || WrongKind {
-        resource: resolved.id.clone(),
-        kind: resolved.kind,
-        verb,
-    };
+    let refuse = || wrong_kind(verb, resolved);
     let spec = kinds::kind_spec(resolved.kind).ok_or_else(refuse)?;
     if spec
         .methods
         .iter()
-        .any(|method| method.name == verb.screen_method())
+        .any(|method| method.name == verb.terminal_method())
     {
         return Ok(Route::Terminal);
     }
@@ -152,6 +263,29 @@ pub fn route(verb: Verb, resolved: &Resolved) -> Result<Route, WrongKind> {
             Ok(Route::Document(kind))
         }
         _ => Err(refuse()),
+    }
+}
+
+/// [`route`] for a verb that reaches a Terminal only: `Ok` when `resolved`
+/// takes it on the Terminal facet. Read from the snapshot the target was
+/// resolved against, so a Terminal costs no round trip.
+///
+/// # Errors
+///
+/// [`WrongKind`] for any other kind, a document included.
+pub fn require_terminal(verb: Verb, resolved: &Resolved) -> Result<(), WrongKind> {
+    match route(verb, resolved)? {
+        Route::Terminal => Ok(()),
+        Route::Document(_) => Err(wrong_kind(verb, resolved)),
+    }
+}
+
+fn wrong_kind(verb: Verb, resolved: &Resolved) -> WrongKind {
+    WrongKind {
+        resource: resolved.id.clone(),
+        kind: resolved.kind,
+        verb,
+        parent: resolved.parent.clone(),
     }
 }
 

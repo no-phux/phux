@@ -581,5 +581,6 @@ fn rows(world: &mut World) -> Vec<Row> {
         ),
     ]);
     rows.extend(mirror_rows());
+    rows.extend(child_spawn_rows(world));
     rows
 }

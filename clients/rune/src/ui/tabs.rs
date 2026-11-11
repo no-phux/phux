@@ -102,7 +102,7 @@ fn trailing(index: usize, active: bool, width: f32, ink: &Ink) -> Option<El> {
 
 fn tab(desk: &Desk, tab: &Tab, index: usize, width: f32, ink: &Ink) -> El {
     let waiting = tab
-        .terminals
+        .resources
         .iter()
         .any(|id| desk.activities.mark(id).needs_you());
     let dot = waiting.then(|| {
@@ -282,7 +282,7 @@ mod tests {
             .map(|i| Tab {
                 id: [i; 16],
                 name: format!("a tab with a long name {i}"),
-                terminals: Vec::new(),
+                resources: Vec::new(),
                 active: i == active,
             })
             .collect()

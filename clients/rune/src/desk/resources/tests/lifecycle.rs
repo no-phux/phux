@@ -22,7 +22,7 @@ fn three() -> LayoutNode {
 }
 
 fn focus(rt: &Runtime<Desk>) -> ResourceId {
-    rt.state.shown.as_ref().unwrap().terminal.clone()
+    rt.state.shown.as_ref().unwrap().resource.clone()
 }
 
 fn stored(client: &Client) -> ArrangementDoc {

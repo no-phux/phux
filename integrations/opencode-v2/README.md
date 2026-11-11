@@ -151,6 +151,9 @@ with a native permission action for each tool name:
 - Documents: `phux_documents` lists accessibility trees, pixel surfaces, and
   typed documents; `phux_tree_snapshot` and `phux_tree_wait` read a tree's
   JSON; `phux_surface_snapshot` returns a surface's frame as an image file part.
+  The terminal tools act on a terminal only: pointed at a document resource,
+  `phux_snapshot`, `phux_wait`, `phux_send_keys`, and `phux_paste` fail with
+  `wrong_resource_kind`, naming the tool that reads it.
 - Diagnostics: `phux_status`.
 
 The shared runtime's `phux_create`, `phux_list`, and `phux_runtime_info` are not

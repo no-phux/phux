@@ -298,7 +298,7 @@ impl Desk {
         let Some(touch) = self.phone.as_ref().and_then(|p| p.touch.as_ref()) else {
             return false;
         };
-        let shown = self.shown.as_ref().map(|shown| &shown.terminal);
+        let shown = self.shown.as_ref().map(|shown| &shown.resource);
         shown != Some(&touch.terminal) || self.phone_content_blocked()
     }
 
@@ -372,7 +372,7 @@ impl Desk {
         let focused = self
             .shown
             .as_ref()
-            .is_some_and(|s| s.terminal == fling.terminal);
+            .is_some_and(|s| s.resource == fling.terminal);
         if !focused || self.modal().is_some() || self.coast_ended(&fling) {
             self.stop_coast();
             return false;

@@ -173,6 +173,14 @@ impl ResourceApp for AgentSessionApp {
         spawn::spawn_agent_session(spawn).boxed_local()
     }
 
+    fn begin_upgrade(&self, state: &SharedState) -> Option<Box<dyn super::UpgradeCut>> {
+        upgrade::begin(state)
+    }
+
+    fn resume(&self, _state: &SharedState) -> Box<dyn super::KindResume> {
+        Box::new(upgrade::AgentSessionResume)
+    }
+
     fn resumed(&self, state: &SharedState) {
         native_agent::retry_pending_closures(state);
     }

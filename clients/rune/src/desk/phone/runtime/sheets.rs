@@ -36,7 +36,7 @@ fn visible_editor(rt: &Runtime<Desk>, key: &str) {
 }
 
 fn ask(rt: &mut Runtime<Desk>, id: &str) {
-    let terminal_id = rt.state.shown.as_ref().unwrap().terminal.clone();
+    let terminal_id = rt.state.shown.as_ref().unwrap().resource.clone();
     rt.state.activities.apply(
         &Event::AgentAsked {
             terminal_id,
@@ -156,7 +156,7 @@ fn an_inbox_return_submits_only_the_picked_reply() {
 fn retained_acp_focus_cannot_capture_the_drawn_inbox_keyboard() {
     use phux_protocol::native_agent::{NativeCapabilities, NativeQuestion, NativeView};
     let (client, mut rt) = phone((393.0, 852.0));
-    let terminal = rt.state.shown.as_ref().unwrap().terminal.clone();
+    let terminal = rt.state.shown.as_ref().unwrap().resource.clone();
     let question = |id: &str| NativeQuestion {
         id: format!("acp-question:{id}"),
         kind: "input".into(),

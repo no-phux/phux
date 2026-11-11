@@ -5,9 +5,10 @@
 //! whose frame didn't move reuses its whole subtree without walking a cell.
 //! Otherwise each row is one memoized subtree named by its content, so a line
 //! of output rebuilds one row wherever the others scrolled to. Text runs are
-//! set in the system monospace face with tracking that lands every glyph on a
-//! device-pixel cell, which keeps long runs aligned with the backgrounds and
-//! the cursor beneath them; `glyphs` keeps the rest on the grid.
+//! set in the mono slot (the system monospace face unless Settings names a
+//! family) with tracking that lands every glyph on a device-pixel cell, which
+//! keeps long runs aligned with the backgrounds and the cursor beneath them;
+//! `glyphs` keeps the rest on the grid.
 
 use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
@@ -32,13 +33,34 @@ pub const FONTS: &[&[u8]] = &[
     include_bytes!("../assets/fonts/Inter.ttf"),
     include_bytes!("../assets/fonts/JetBrainsMonoNLNerdFontMono-Regular.ttf"),
 ];
-/// The sans and mono slots. `Family::SystemMono` stacks the system's faces
-/// over the mono slot, so the Nerd Font only ever fills in missing glyphs.
+/// The sans and mono slots. `ui-monospace` puts the system's faces first in
+/// the mono slot, so the Nerd Font only ever fills in missing glyphs.
 pub const FAMILIES: (&str, &str) = ("Inter", "ui-monospace, JetBrainsMonoNL Nerd Font Mono");
 
 pub const DEFAULT_FONT_SIZE: f32 = 13.0;
 pub const MIN_FONT_SIZE: f32 = 8.0;
 pub const MAX_FONT_SIZE: f32 = 32.0;
+
+/// The families Settings steps through: the default, the bundled face, and
+/// two the platform ships. Prefs can name any other installed family.
+#[cfg(any(target_os = "macos", target_os = "ios"))]
+pub const FONT_CHOICES: &[&str] = &["", "JetBrainsMonoNL Nerd Font Mono", "Menlo", "Courier New"];
+#[cfg(not(any(target_os = "macos", target_os = "ios")))]
+pub const FONT_CHOICES: &[&str] = &[
+    "",
+    "JetBrainsMonoNL Nerd Font Mono",
+    "DejaVu Sans Mono",
+    "Liberation Mono",
+];
+
+/// The mono slot with `family` in front, quoted so it is one literal name.
+/// One that isn't installed falls through to the default faces behind it.
+pub fn mono_family(family: &str) -> String {
+    match family.replace(['"', '\\'], "").trim() {
+        "" => FAMILIES.1.to_owned(),
+        family => format!("\"{family}\", {}", FAMILIES.1),
+    }
+}
 
 /// One cell's size in points, snapped to whole device pixels.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -54,7 +76,7 @@ pub struct Metrics {
 impl Metrics {
     pub fn new(font_size: f32, scale: f32) -> Self {
         let scale = if scale > 0.0 { scale } else { 1.0 };
-        let face = TextStyle::new(font_size, 400.0).family(Family::SystemMono);
+        let face = TextStyle::new(font_size, 400.0).family(Family::Mono);
         // Ten cells, so a fractional advance survives the measurement.
         let natural = advance("MMMMMMMMMM", face) / 10.0;
         let natural = if natural > 0.0 {
@@ -101,7 +123,7 @@ impl Metrics {
 
     fn style(&self, bold: bool, italic: bool) -> TextStyle {
         let style = TextStyle::new(self.font_size, if bold { 700.0 } else { 400.0 })
-            .family(Family::SystemMono)
+            .family(Family::Mono)
             .lh(self.cell_h)
             .tracking(self.tracking);
         if italic { style.italic() } else { style }
@@ -463,6 +485,20 @@ pub(crate) mod budget;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_missing_font_family_falls_back_to_the_default() {
+        assert_eq!(mono_family(" "), FAMILIES.1);
+        assert_eq!(
+            mono_family(" Menlo\" "),
+            format!("\"Menlo\", {}", FAMILIES.1)
+        );
+        let width = |mono: &str| {
+            let _scope = rune::text::with_families(FAMILIES.0, mono);
+            Metrics::new(DEFAULT_FONT_SIZE, 2.0).cell_w
+        };
+        assert_eq!(width(&mono_family("No Such Font")), width(FAMILIES.1));
+    }
 
     #[test]
     fn cells_land_on_device_pixels() {
