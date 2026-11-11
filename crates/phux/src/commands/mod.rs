@@ -101,6 +101,7 @@ pub(crate) mod send_keys;
 pub(crate) mod server;
 pub(crate) mod server_target;
 pub(crate) mod service;
+pub(crate) mod shell_integration;
 pub(crate) mod snapshot;
 pub(crate) mod spatial;
 pub(crate) mod spawn;
@@ -158,6 +159,9 @@ pub(crate) const fn socketless_verb(command: &Command) -> Option<&'static str> {
             config_action::ConfigAction::ImportTmux { .. } => Some("config import-tmux"),
             config_action::ConfigAction::Init { .. } => Some("config init"),
             config_action::ConfigAction::Path => Some("config path"),
+            config_action::ConfigAction::ShellIntegration { .. } => {
+                Some("config shell-integration")
+            }
             config_action::ConfigAction::Check { .. } => Some("config check"),
             config_action::ConfigAction::Show { .. } => Some("config show"),
             config_action::ConfigAction::Keys { .. } => Some("config keys"),
