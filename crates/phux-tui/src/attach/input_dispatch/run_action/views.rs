@@ -31,8 +31,9 @@ pub(in crate::attach) fn push_action_finder(ActionCall { ctx, .. }: ActionCall<'
     if !phux_record::recording_live() {
         items.retain(|item| item.action.action != "rec-mark");
     }
-    ctx.overlays
-        .push(Box::new(SelectList::new("Commands", items, ctx.theme)));
+    ctx.overlays.push(Box::new(
+        SelectList::new("Commands", items, ctx.theme).without_vi_navigation(),
+    ));
 }
 
 /// Explicit reload; the driver re-reads after the batch because `ctx`

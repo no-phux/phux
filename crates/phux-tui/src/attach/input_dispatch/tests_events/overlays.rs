@@ -296,3 +296,20 @@ fn rename_prompt_for_an_auto_named_tab_opens_empty() {
     f.run(&commit);
     assert_eq!(f.workspace.groups[0].name, "build");
 }
+
+/// The palette is typed into: `k` starts "kill", it does not move the
+/// selection the way it does in a picker.
+#[test]
+fn palette_takes_k_as_query_text() {
+    let mut f = fx(crate::layout::ArrangementDoc::single(tid(1)));
+    f.run(&bare_action("command-palette"));
+    for (key, text) in [(PhysicalKey::K, "k"), (PhysicalKey::I, "i")] {
+        f.overlays.handle_key(&key_event(key, Some(text)));
+    }
+    let crate::render::overlay::OverlayOutcome::RunAction(commit) =
+        f.overlays.handle_key(&key_event(PhysicalKey::Enter, None))
+    else {
+        panic!("Enter commits");
+    };
+    assert_eq!(commit.action, "kill-pane");
+}
