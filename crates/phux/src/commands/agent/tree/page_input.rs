@@ -214,6 +214,27 @@ pub(super) fn mouse_click(x: f64, y: f64) -> Vec<(&'static str, serde_json::Valu
         .collect()
 }
 
+/// A left-button drag through `points` (frame pixels), scaled to CSS
+/// pixels: pressed at the first, moved through the rest, released at the
+/// last.
+fn mouse_drag(points: &[(u32, u32)], view: Viewport) -> Vec<(&'static str, serde_json::Value)> {
+    let css = |&(x, y): &(u32, u32)| (f64::from(x) * view.scale_x, f64::from(y) * view.scale_y);
+    let event = |kind: &str, (x, y): (f64, f64), buttons: u8| {
+        let mut event = serde_json::json!({ "type": kind, "x": x, "y": y, "button": "left", "buttons": buttons });
+        if kind != "mouseMoved" {
+            event["clickCount"] = 1.into();
+        }
+        ("Input.dispatchMouseEvent", event)
+    };
+    let (Some(first), Some(last)) = (points.first(), points.last()) else {
+        return Vec::new();
+    };
+    let mut calls = vec![event("mousePressed", css(first), 1)];
+    calls.extend(points[1..].iter().map(|p| event("mouseMoved", css(p), 1)));
+    calls.push(event("mouseReleased", css(last), 0));
+    calls
+}
+
 /// The `DevTools` calls that carry out `input`, in order.
 pub(super) fn cdp_calls(
     input: &DocumentInput,
@@ -233,6 +254,9 @@ pub(super) fn cdp_calls(
         | DocumentInput::Activate { .. } => Vec::new(),
         DocumentInput::Click { x, y } => {
             mouse_click(f64::from(*x) * view.scale_x, f64::from(*y) * view.scale_y)
+        }
+        DocumentInput::Drag { from, to } => {
+            mouse_drag(&super::surface_input::drag_path(*from, *to), view)
         }
         DocumentInput::Scroll { dx, dy } => vec![(
             "Input.dispatchMouseEvent",
@@ -302,6 +326,30 @@ mod tests {
         assert_eq!(
             (calls[0].1["x"].as_f64(), calls[0].1["y"].as_f64()),
             (Some(200.0), Some(100.0))
+        );
+    }
+
+    #[test]
+    fn a_drag_presses_moves_and_releases_with_the_button_held() {
+        let scaled = Viewport::of((200, 100), (100.0, 50.0));
+        let drag = DocumentInput::Drag {
+            from: (0, 0),
+            to: (80, 40),
+        };
+        let calls = cdp_calls(&drag, scaled);
+        let kinds: Vec<_> = calls
+            .iter()
+            .map(|(_, p)| p["type"].as_str().unwrap())
+            .collect();
+        assert_eq!(kinds.len(), 10);
+        assert_eq!(
+            (kinds[0], kinds[1], kinds[9]),
+            ("mousePressed", "mouseMoved", "mouseReleased")
+        );
+        assert_eq!(calls[8].1["buttons"], 1);
+        assert_eq!(
+            (calls[9].1["x"].as_f64(), calls[9].1["buttons"].as_u64()),
+            (Some(40.0), Some(0))
         );
     }
 

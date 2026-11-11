@@ -35,6 +35,9 @@ pub(super) fn run(action: &DistroAction) -> ExitCode {
 fn execute(action: &DistroAction, json: bool) -> Result<(), String> {
     let config = phux_config::loader::config_path();
     let dirs = search_dirs(super::CHECKOUT_DISTROS.get().copied());
+    if matches!(action, DistroAction::List { .. } | DistroAction::Use { .. }) {
+        super::bundled::ensure(&dirs)?;
+    }
     match action {
         DistroAction::List { .. } => print_list(&dirs, json)?,
         DistroAction::Current { .. } => {
@@ -45,6 +48,7 @@ fn execute(action: &DistroAction, json: bool) -> Result<(), String> {
             let layer = resolve_distro_in(spec, &dirs).map_err(|err| err.to_string())?;
             switch_distro(&config, Some(&layer))?;
             print_selection(&config, Some(&layer), json, true)?;
+            warn_missing_python(&layer);
         }
         DistroAction::Off { .. } => {
             switch_distro(&config, None)?;
@@ -52,6 +56,17 @@ fn execute(action: &DistroAction, json: bool) -> Result<(), String> {
         }
     }
     Ok(())
+}
+
+/// Crew's lead, board and palette entries run `python3`; say so now rather
+/// than when a pane fails to start.
+fn warn_missing_python(layer: &Path) {
+    let crew = layer
+        .parent()
+        .is_some_and(|dir| dir.join("crew.py").is_file());
+    if crew && phux_plugin::executable_path("python3").is_none() {
+        warn!("Crew needs python3 3.9 or later on PATH; install it before `phux launch crew`");
+    }
 }
 
 fn print_list(dirs: &[std::path::PathBuf], json: bool) -> Result<(), String> {

@@ -207,7 +207,7 @@ async fn publish_until_gone(
     resource: &phux_protocol::ids::ResourceId,
     (mut capture, mut act, mut indicator, clipboard): (
         impl FnMut() -> Result<Vec<u8>, String>,
-        impl FnMut(&phux_client::tree::DocumentInput, (u32, u32)),
+        impl FnMut(&phux_client::tree::DocumentInput, (u32, u32)) -> Result<(), String>,
         super::surface_indicator::Indicator,
         &super::clipboard::Clipboard,
     ),

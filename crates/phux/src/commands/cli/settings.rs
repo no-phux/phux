@@ -392,3 +392,58 @@ pub(crate) enum PluginAction {
         startup: Option<String>,
     },
 }
+
+/// Have your coding agent bring your terminal keys into phux
+///
+/// Reads your tmux, zellij, Ghostty and herdr configs, translates every key
+/// binding it can into phux config lines, and starts your agent (claude,
+/// codex or opencode) with a strict prompt: write those lines into `phux
+/// config path`, run `phux config check` and `phux config reload`, and report
+/// what migrated, what replaced a phux default, which sources conflicted
+/// and what could not migrate. Inside a phux pane the agent opens in a
+/// split to the right; elsewhere in a new session named `migrate`.
+///
+/// `--print` prints the prompt instead, for any other agent. With nothing
+/// to migrate it says so and exits 0.
+///
+/// Examples:
+///   phux migrate
+///   phux migrate --agent codex --source tmux
+///   phux migrate --print | pbcopy
+#[derive(Debug, Args)]
+pub(crate) struct MigrateArgs {
+    /// The agent to start. Default: the one installed, or ask when there
+    /// are several.
+    #[usage(long, value_enum, value_name = "AGENT")]
+    pub(crate) agent: Option<MigrateAgent>,
+
+    /// Print the prompt and exit; start nothing.
+    #[usage(long)]
+    pub(crate) print: bool,
+
+    /// Read only this source (repeatable). Default: every source found.
+    #[usage(long, value_enum, value_name = "SOURCE")]
+    pub(crate) source: Vec<MigrateSource>,
+
+    /// Emit one JSON document: the sources found, the agent, the config
+    /// path and what was launched (with `--print`, the prompt too).
+    #[usage(long)]
+    pub(crate) json: bool,
+}
+
+/// A coding agent `phux migrate` can start.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, usage::ValueEnum)]
+pub(crate) enum MigrateAgent {
+    Claude,
+    Codex,
+    Opencode,
+}
+
+/// A config `phux migrate` can read.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, usage::ValueEnum)]
+pub(crate) enum MigrateSource {
+    Tmux,
+    Zellij,
+    Ghostty,
+    Herdr,
+}

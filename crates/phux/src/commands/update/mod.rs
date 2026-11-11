@@ -28,6 +28,7 @@ pub(crate) mod channel;
 mod model;
 mod outcome;
 pub(crate) mod release;
+mod server_bundle;
 pub(crate) mod signature;
 pub(crate) mod source;
 
@@ -179,6 +180,20 @@ fn install_release(
 
     let replaced = apply::replace_binaries(&bin_dir, &staged, &plan.current.to_string())?;
     channel::persist(&bin_dir, plan.channel)?;
+    // Before the handoff, so the server re-execs through the new bundle. A
+    // failure leaves the server on the CLI binary, which still works.
+    if let (Some(root), Build::Stable(_)) = (&env.server_bundle, &plan.target)
+        && let Err(err) = server_bundle::install(
+            env.releases,
+            env.release_keys,
+            &artifact,
+            &plan.target.tag(),
+            root,
+        )
+        && !opts.json
+    {
+        warn!("phux Server.app was not updated ({err}); the server runs from the CLI binary");
+    }
     let handoff = if opts.no_restart {
         Handoff::Skipped
     } else {
@@ -316,6 +331,13 @@ fn rollback(
         })?
         .to_path_buf();
     let restored = apply::rollback(&bin_dir)?;
+    // The bundle follows the binaries back when it still holds that release.
+    if let Some(root) = &env.server_bundle {
+        let release = format!("v{}", restored.version);
+        if root.join("Versions").join(&release).is_dir() {
+            let _ = server_bundle::point_current(root, &release);
+        }
+    }
     let target = Version::parse(&restored.version).unwrap_or(current);
     let plan = Plan {
         install,
@@ -390,6 +412,8 @@ pub(crate) fn run_update(opts: &UpdateOpts, socket: Option<PathBuf>) -> ExitCode
         handoff: &handoff,
         install,
         release_keys: signature::RELEASE_KEYS,
+        server_bundle: phux_config::server_bundle::root()
+            .filter(|_| !phux_config::instance::is_dev_build()),
     };
 
     match execute(opts, &env) {

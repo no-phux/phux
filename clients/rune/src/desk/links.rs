@@ -1,6 +1,6 @@
 //! ⌘-click (Ctrl-click elsewhere) opens a link; holding ⌘ over one
 //! underlines it and shows where it goes. A phone has no ⌘: there a tap that
-//! lifts where it landed opens the link, and a drag still selects.
+//! lifts where it landed opens the link (`phone/touch.rs`).
 
 use std::sync::{Arc, Mutex};
 
@@ -166,6 +166,7 @@ impl Desk {
         if phase != Phase::Down {
             if let Some(url) = self.tapped(terminal, phase, x, y) {
                 self.open_link(terminal, &url, tx);
+                return true;
             }
             let opened = self.pointer.opened;
             if phase == Phase::Up {
@@ -190,13 +191,20 @@ impl Desk {
     }
 }
 
+impl Desk {
+    /// The finger's gesture became something other than a tap.
+    pub(super) fn forget_link_tap(&mut self) {
+        self.pointer.tap = None;
+    }
+}
+
 /// How far a finger may travel, in points, and still be a tap.
 const TAP_SLOP: f32 = 8.0;
 
 impl Desk {
     /// The link a phone tap just lifted from: the finger stayed within
     /// [`TAP_SLOP`] of where it landed on it. Travelling further makes the
-    /// gesture a selection.
+    /// gesture a scroll.
     fn tapped(&mut self, terminal: &ResourceId, phase: Phase, x: f32, y: f32) -> Option<String> {
         let (on, _, x0, y0) = self.pointer.tap.as_ref()?;
         let still = on == terminal && (x - x0).hypot(y - y0) <= TAP_SLOP;
@@ -233,7 +241,7 @@ mod tests {
     }
 
     #[test]
-    fn a_phone_tap_opens_its_link_and_a_drag_selects_instead() {
+    fn a_phone_tap_opens_its_link_and_a_drag_does_not() {
         let mut desk = desk();
         let pane = ResourceId::local(1);
         let url = "https://phux.sh".to_owned();

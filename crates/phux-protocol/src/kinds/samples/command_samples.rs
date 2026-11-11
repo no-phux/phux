@@ -60,10 +60,11 @@ const fn command_variant(command: &Command) -> usize {
         Command::SendDocumentInput { .. } => 55,
         Command::Mirror { .. } => 56,
         Command::MirrorProvide { .. } => 57,
+        Command::PrivacyStatus => 58,
     }
 }
 
-const COMMAND_VARIANTS: usize = 58;
+const COMMAND_VARIANTS: usize = 59;
 
 fn operation() -> IdempotencyKey {
     IdempotencyKey::new([3; 16]).unwrap()
@@ -519,6 +520,7 @@ fn command_samples() -> Vec<(Command, &'static Rule)> {
             &C_AGENT_REPORT,
         ),
         (Command::DescribeApi, &C_API_DESCRIBE),
+        (Command::PrivacyStatus, &C_PRIVACY_STATUS),
         (Command::GetCreation { operation: operation(), session: session_key() }, &C_GET_CREATION),
         (Command::GetPerf { reset: false }, &C_GET_PERF),
         (Command::GetPerf { reset: true }, &C_GET_PERF_RESET),
@@ -554,6 +556,7 @@ fn command_samples() -> Vec<(Command, &'static Rule)> {
                 terminal_id: terminal(),
                 intent: crate::wire::frame::DocumentInput::Click { x: 1, y: 2 },
                 control: None,
+                on_behalf_of: None,
             },
             &C_SEND_DOCUMENT_INPUT,
         ),

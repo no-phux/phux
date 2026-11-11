@@ -23,6 +23,7 @@ pub(super) fn row(name: &str, role: HostRole) -> HostRow {
         direct: None,
         client_cert: None,
         client_key: None,
+        color: None,
     }
 }
 
@@ -205,6 +206,7 @@ fn table_renders_role_state_and_auth_columns() {
             direct: None,
             client_cert: None,
             client_key: None,
+            color: None,
         },
         HostRow {
             name: "edge".to_owned(),
@@ -219,6 +221,7 @@ fn table_renders_role_state_and_auth_columns() {
             direct: None,
             client_cert: None,
             client_key: None,
+            color: None,
         },
     ];
     let table = render_table(&rows);

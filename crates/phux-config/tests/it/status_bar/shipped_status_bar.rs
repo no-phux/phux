@@ -159,6 +159,34 @@ fn a_narrow_terminal_trades_context_for_an_affordance() {
     assert!(!text.contains('\u{2026}'), "no clipped tab: {text:?}");
 }
 
+/// The gates read the terminal, not the row: beside a sidebar an 80-column
+/// terminal leaves the bar 61 columns, and that is still room for context,
+/// with the sidebar already listing the agents the chip would open.
+#[test]
+fn a_bar_beside_the_sidebar_gates_on_the_terminal_width() {
+    let cfg = phux_config::parse_with_defaults("", Path::new("/nonexistent/config.toml"))
+        .expect("shipped defaults parse");
+    let bar = StatusBar::build(&cfg.status, &WidgetRegistry::with_builtins())
+        .expect("the shipped status lineup must build");
+    let windows = [win("zsh", true)];
+    let ctx = WidgetContext {
+        cols: 80,
+        ..WidgetContext::new(
+            UNIX_EPOCH + Duration::from_secs(12_345),
+            "phux",
+            "C-a",
+            &windows,
+        )
+    };
+    let text = row_to_string(&bar.render(&ctx, 61));
+    assert_eq!(text.chars().count(), 61, "{text:?}");
+    assert!(text.contains("phux"), "session name stays: {text:?}");
+    assert!(
+        !text.contains(" agents "),
+        "no chip beside the sidebar: {text:?}"
+    );
+}
+
 /// The chip is a click target across its whole painted width, padding
 /// included — and nothing else on the row claims to be one.
 #[test]
