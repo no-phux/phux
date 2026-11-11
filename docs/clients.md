@@ -100,7 +100,7 @@ already prints the pairing code they will scan; see
 Every client draws each machine in one of eight colours (blue, violet,
 magenta, sky, coral, olive, slate, copper), picked from a hash of its name,
 so `mini` looks the same on the desktop, on mobile, and in `phux host ls
---json`. Amber, mint, and red stay reserved for agent state, and a name is
+--json`. Two more, green and navy, are yours to pick but never assigned. Amber, mint, and red stay reserved for agent state, and a name is
 always shown beside the colour. Pick a colour yourself when two machines
 land on the same one:
 

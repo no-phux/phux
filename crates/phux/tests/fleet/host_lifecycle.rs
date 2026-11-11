@@ -324,6 +324,13 @@ fn host_color_overrides_the_hash_and_ls_reports_it() {
     assert_eq!(ls["hosts"][0]["color"]["override"], true);
     assert_eq!(ls["local"]["color"]["hex"], "#C9926B");
 
+    for (id, hex) in [("green", "#3DAA5C"), ("navy", "#2F55C4")] {
+        let set = color(&["host", "color", "mini", id, "--json"]);
+        assert_eq!(set["host"]["color"]["id"], id);
+        let ls = color(&["host", "ls", "--json"]);
+        let want = serde_json::json!({"id": id, "hex": hex, "override": true});
+        assert_eq!(ls["hosts"][0]["color"], want);
+    }
     color(&["host", "color", "mini", "auto", "--json"]);
     let ls = color(&["host", "ls", "--json"]);
     assert_eq!(ls["hosts"][0]["color"], auto);
