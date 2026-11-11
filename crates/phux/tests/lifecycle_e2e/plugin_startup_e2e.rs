@@ -116,6 +116,32 @@ fn start_server(xdg: &XdgDirs, tag: &str) -> ServerGuard {
         .start()
 }
 
+// The server writes the sidecar's pidfile after `spawn` returns, so the
+// sidecar can publish its own pid first. A SIGKILL in that gap leaves the
+// next start nothing to reap; the reap contract begins once the record is
+// there. The pidfile is renamed into place, so existing means complete.
+fn wait_for_server_pidfile(server: &ServerGuard, state: &Path) {
+    let name = format!("web.{}.pid", server.pid());
+    assert!(
+        poll_until(Duration::from_secs(20), || find_file(state, &name)),
+        "the server never recorded the sidecar in {name}"
+    );
+}
+
+fn find_file(dir: &Path, name: &str) -> bool {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return false;
+    };
+    entries.flatten().any(|entry| {
+        let path = entry.path();
+        if path.is_dir() {
+            find_file(&path, name)
+        } else {
+            entry.file_name() == name
+        }
+    })
+}
+
 struct Reap(i32);
 impl Drop for Reap {
     fn drop(&mut self) {
@@ -254,6 +280,7 @@ fn sigkill_of_the_server_is_reaped_by_the_next_start() {
         .parse()
         .unwrap();
     let reap = Reap(pid);
+    wait_for_server_pidfile(&server, &xdg.state);
     server.sigkill();
     assert!(
         alive(pid),
@@ -299,6 +326,7 @@ fn sigkill_reaps_a_grandchild_when_the_leader_honors_term() {
         .unwrap();
     let reap_leader = Reap(leader);
     let reap_grand = Reap(grand);
+    wait_for_server_pidfile(&server, &xdg.state);
     server.sigkill();
     // Only Linux delivers PDEATHSIG. On macOS both processes remain for
     // the next start's orphan reaper, which is the cross-platform contract.
@@ -353,6 +381,7 @@ fn sigkill_reaps_a_grandchild_forked_in_the_leaders_start_tick() {
         .unwrap();
     let reap_leader = Reap(leader);
     let reap_grand = Reap(grand);
+    wait_for_server_pidfile(&server, &xdg.state);
     server.sigkill();
     #[cfg(target_os = "linux")]
     {
