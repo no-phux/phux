@@ -10,8 +10,9 @@ use crate::runtime::apps::ResourceSpawn;
 use crate::runtime::spawn_reply::{refuse_spawn, spawned_result};
 
 /// The target, wire parent, and core parent a document spawn binds to, or
-/// why it is refused. The parent must be live and local, and is checked fit
-/// when the document registers; `provider` names what the producer observes.
+/// why it is refused. The spawner must be a connection that may publish;
+/// the parent must be live and local, and is checked fit when the document
+/// registers; `provider` names what the producer observes.
 fn admit<'a, A: DocumentApi>(
     spawn: &ResourceSpawn<'a>,
 ) -> Result<
@@ -34,6 +35,14 @@ fn admit<'a, A: DocumentApi>(
     if spawn.satellite.is_some() || !parent.is_local() {
         return Err(SpawnError::SpawnFailed(format!(
             "a {} is local to the machine its producer runs on",
+            A::LABEL
+        )));
+    }
+    // The spawner becomes the producer, so it must be a connection that may
+    // publish: one that never could would open a document nothing feeds.
+    if !spawn.state.with(|s| s.client_may_produce(spawn.client_id)) {
+        return Err(SpawnError::SpawnFailed(format!(
+            "opening a {} requires a local owner connection, which may publish to it",
             A::LABEL
         )));
     }

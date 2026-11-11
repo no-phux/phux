@@ -10,7 +10,7 @@ use phux_client_runtime::control::{SessionDescriptor, Topology};
 use phux_protocol::ids::{ResourceId, SessionKey};
 use rune::{Color, El, col, el, memo, row, text};
 
-use super::{CAPTION, Ink, LABEL, NAME, SIDEBAR_W, icons, pressable};
+use super::{CAPTION, Ink, LABEL, NAME, SIDEBAR_W, icons, keycap, lifted, pressable};
 use crate::activity::Mark;
 use crate::desk::Desk;
 use crate::host_color;
@@ -61,6 +61,12 @@ fn dot(mark: Mark, color: Color, ink: &Ink) -> El {
 }
 
 fn search(ink: &Ink) -> El {
+    // ⌘K is the chord this field has always taught; ⌘P reaches it too.
+    let chord: &[&str] = if cfg!(target_os = "macos") {
+        &["⌘", "K"]
+    } else {
+        &["Ctrl", "Shift", "K"]
+    };
     pressable("sidebar-search", ink)
         .w_full()
         .h(28.0)
@@ -68,19 +74,20 @@ fn search(ink: &Ink) -> El {
         .gap(7.0)
         .radius(7.0)
         .items_center()
-        .fill(ink.current.alpha(0.06))
+        .fill(ink.text.alpha(0.05))
+        .border_gradient(1.0, ink.text.alpha(0.09), ink.text.alpha(0.04))
         .on_press(|d: &mut Desk| d.toggle_palette())
-        .child(rune::icon(&icons::SEARCH, 13.0).color(ink.dim))
+        .child(
+            rune::icon(&icons::SEARCH, 14.0)
+                .color(ink.dim)
+                .a11y_hidden(),
+        )
         .child(text("Jump to…").font(LABEL).color(ink.dim))
         .child(el().grow(1.0))
         .child(
-            text(if cfg!(target_os = "macos") {
-                "⌘K"
-            } else {
-                "Ctrl+Shift+K"
-            })
-            .font(CAPTION)
-            .color(ink.dim),
+            row()
+                .gap(2.0)
+                .children(chord.iter().map(|key| keycap(*key, ink))),
         )
 }
 
@@ -214,21 +221,18 @@ fn pane_row(pane: &Row, ink: &Ink) -> El {
             .color(if tinted { accent } else { ink.dim })
             .truncate()
     });
-    row()
-        .key(format!("pane-{}", pane.id))
-        .w_full()
+    let base = row().key(format!("pane-{}", pane.id));
+    let base = if selected { lifted(base, ink) } else { base };
+    base.w_full()
         .min_h(30.0)
         .px(6.0)
         .py(5.0)
         .gap(6.0)
         .radius(7.0)
+        .continuous_corners()
         .items_center()
-        .fill(if selected {
-            ink.current
-        } else {
-            Color::TRANSPARENT
-        })
         .hover(ink.hover)
+        .press(ink.hover)
         .cursor(rune::Cursor::Pointer)
         .on_press(move |d: &mut Desk| d.show(id.clone(), &session))
         .on_double_press(move |d: &mut Desk| {
@@ -255,7 +259,7 @@ fn pane_row(pane: &Row, ink: &Ink) -> El {
                 )
                 .children(detail),
         )
-        .children(selected.then(|| host_color::stripe(host, true)))
+        .children(selected.then(|| host_color::stripe(host)))
 }
 
 /// Marks that need you, by session: one pass, for every header and the button.
@@ -269,26 +273,22 @@ fn waiting_by_session(desk: &Desk, topology: &Topology) -> HashMap<u32, usize> {
     waiting
 }
 
-/// Every session's header and rows, rebuilt only where their inputs moved:
-/// the view runs for each frame of terminal output. A project's sessions
-/// follow its header, indented.
+/// Every session's header and rows (its terminals, then its documents),
+/// rebuilt only where their inputs moved: the view runs for each frame of
+/// terminal output. A project's sessions follow its header, indented.
 fn session_list(desk: &Desk, topology: &Topology, waiting: &HashMap<u32, usize>, ink: &Ink) -> El {
     let list = col().w_full().gap(1.0).px(8.0);
-    let shown = desk.shown.as_ref().map(|s| &s.terminal);
+    let shown = desk.shown.as_ref().map(|s| &s.resource);
     let current = desk.selected_session_name();
     let theme = desk.settings.theme.map(|t| t.id);
+    let all = desk.addressable();
     let here = desk.machines.label();
     let host = (here, host_color::entry(here).0);
     let waiting_in = |id: u32| waiting.get(&id).copied().unwrap_or(0);
     let session_rows = |session: &SessionDescriptor, branch: bool| {
         let mut out = Vec::new();
-        let panes: Vec<_> = topology
-            .panes
-            .iter()
-            .filter(|p| p.session_id == session.id)
-            .collect();
-        let alone = panes.len() == 1;
-        let labels: Vec<_> = panes.iter().map(|p| pane_label(p)).collect();
+        let rows: Vec<_> = all.iter().filter(|r| r.session_id == session.id).collect();
+        let alone = rows.len() == 1;
         if !alone {
             let header = Header {
                 id: session.id,
@@ -305,19 +305,20 @@ fn session_list(desk: &Desk, topology: &Topology, waiting: &HashMap<u32, usize>,
                 || session_header(&header, ink),
             ));
         }
-        for (pane, label) in panes.iter().zip(&labels) {
-            let id = &pane.terminal_id;
+        for resource in &rows {
+            let (id, label) = (&resource.id, &resource.label);
             let (name, place) = if alone {
                 let place = (*label != session.name).then(|| label.clone());
                 (session.name.clone(), place)
             } else {
                 // Twins are told apart by what the CLI calls them.
-                let twin = labels.iter().filter(|other| *other == label).count() > 1;
-                (label.clone(), twin.then(|| id.to_string()))
+                let twin = rows.iter().filter(|other| other.label == *label).count() > 1;
+                let mirror = (!resource.kind.is_terminal()).then(|| resource.mirror.to_owned());
+                (label.clone(), twin.then(|| id.to_string()).or(mirror))
             };
             let row = Row {
                 id,
-                session: &pane.session_name,
+                session: &resource.session,
                 name,
                 place,
                 rename: session.key.filter(|_| alone),
@@ -355,7 +356,7 @@ fn is_terminal_member(topology: &Topology, id: &ResourceId) -> bool {
 /// the hub's own sessions).
 fn satellite_list(desk: &Desk, topology: &Topology, ink: &Ink) -> El {
     let mut list = col().w_full().gap(1.0).px(8.0);
-    let shown = desk.shown.as_ref().map(|s| &s.terminal);
+    let shown = desk.shown.as_ref().map(|s| &s.resource);
     let theme = desk.settings.theme.map(|t| t.id);
     for (n, session) in topology.satellite_sessions.iter().enumerate() {
         let name = format!("{} · {}", session.host, session.name);

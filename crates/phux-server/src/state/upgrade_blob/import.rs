@@ -61,7 +61,7 @@ pub(in crate::state) fn merge_carried(
     let mut keyed = Keyed {
         sessions: HashMap::new(),
         panes: HashMap::new(),
-        agent_sessions: HashMap::new(),
+        resources: HashMap::new(),
     };
     for s in &blob.sessions {
         let key = s
@@ -80,11 +80,12 @@ pub(in crate::state) fn merge_carried(
         })?;
         keyed.panes.insert(p.wire_id, key);
     }
-    for a in &blob.agent_sessions {
-        if let Some(key) = a.key {
-            keyed.agent_sessions.insert(a.wire_id, key);
-        }
-    }
+    let carried = blob
+        .agent_sessions
+        .iter()
+        .filter_map(|a| Some((a.wire_id, a.key?)))
+        .chain(blob.documents.iter().map(|d| (d.wire_id, d.key)));
+    keyed.resources.extend(carried);
     Ok((org, keyed, false))
 }
 
@@ -111,7 +112,7 @@ pub(in crate::state) fn import_tree(
     let mut keyed = Keyed {
         sessions: HashMap::new(),
         panes: HashMap::new(),
-        agent_sessions: HashMap::new(),
+        resources: HashMap::new(),
     };
     let window_session: HashMap<u32, u32> = blob
         .windows
@@ -239,7 +240,7 @@ pub(in crate::state) fn import_tree(
         if let Some(record) = sessions.iter_mut().find(|s| s.key == session) {
             record.members.push(key);
         }
-        keyed.agent_sessions.insert(a.wire_id, key);
+        keyed.resources.insert(a.wire_id, key);
     }
     // Each window becomes a group, in the session's window order.
     for s in &blob.sessions {
@@ -292,6 +293,11 @@ pub(in crate::state) fn import_tree(
         current.receipts().cloned(),
     )?;
     crate::state::org::ensure_arrangements(&mut org);
+    // A document names its record by key, imported or not, so it resolves
+    // only if the current records already hold it.
+    keyed
+        .resources
+        .extend(blob.documents.iter().map(|d| (d.wire_id, d.key)));
     Ok((org, keyed, true))
 }
 

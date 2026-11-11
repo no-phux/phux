@@ -149,6 +149,7 @@ pub fn view(desk: &Desk, cx: &mut Cx<Desk>) -> El {
     };
     // Native fields inherit a readable caret and selection in light themes too.
     cx.foreground(p.text);
+    cx.help_look(tooltip(&p, cx.system_dark()));
     // `titlebar_inset` is the traffic lights' width; zero when the system
     // draws its own titlebar.
     let lights = cx.titlebar_inset();
@@ -210,6 +211,26 @@ pub fn view(desk: &Desk, cx: &mut Cx<Desk>) -> El {
     floating(root, desk, &p, band, cx)
 }
 
+/// A tooltip in the chrome's own colours, its chord in keycaps, on every
+/// platform: quick to follow the pointer along a row of buttons.
+fn tooltip(p: &Ink, dark: bool) -> rune::HelpLook {
+    rune::HelpLook::system(dark)
+        .fill(p.raised)
+        .ink(p.text)
+        .ring(1.0, p.text.alpha(0.14))
+        .radius(7.0)
+        .padding(8.0, 5.0)
+        .font(TextStyle::new(11.5, 500.0).lh(16.0))
+        .keycaps(
+            p.text.alpha(0.09),
+            p.dim,
+            TextStyle::new(10.5, 600.0).lh(11.0),
+            false,
+        )
+        .skip_delay(0.4)
+        .fade(0.12, 0.08, 0.96)
+}
+
 /// What floats over the window: banners, cards, sheets and menus.
 fn floating(root: El, desk: &Desk, p: &Ink, band: f32, cx: &mut Cx<Desk>) -> El {
     root.children(status::banner(desk, p))
@@ -251,7 +272,6 @@ fn playground(desk: &Desk, p: &Ink, cx: &mut Cx<Desk>) -> Option<El> {
 /// own chrome: `esc` closes this. Escape lets go of a pick first; a press
 /// here always closes.
 fn esc_chip(p: &Ink, close: fn(&mut Desk)) -> El {
-    const KEY: TextStyle = TextStyle::new(10.5, 600.0).mono();
     pressable("playground-esc", p)
         .pin(None, Some(9.0), Some(16.0), None)
         .h(24.0)
@@ -268,15 +288,7 @@ fn esc_chip(p: &Ink, close: fn(&mut Desk)) -> El {
         .hover(p.text.alpha(0.08))
         .label("Close, Escape")
         .on_press(close)
-        .child(
-            el().h(16.0)
-                .px(5.0)
-                .radius(4.0)
-                .center()
-                .fill(p.text.alpha(0.07))
-                .border(1.0, p.text.alpha(0.22))
-                .child(text("esc").font(KEY).color(p.text).a11y_hidden()),
-        )
+        .child(keycap("esc", p))
         .child(text("close").font(CAPTION).color(p.dim).a11y_hidden())
 }
 
@@ -337,7 +349,7 @@ impl Sheet {
             .child(el().grow(1.0))
             .children(aside)
             .child(overlay::icon_button(
-                "✕",
+                &icons::CLOSE,
                 "Close",
                 format!("{}-close", self.key),
                 p,
@@ -398,19 +410,55 @@ pub(crate) fn icon_press(
     press: impl Fn(&mut Desk) + 'static,
 ) -> El {
     pressable(key, p)
-        .size(24.0, 24.0)
-        .radius(6.0)
+        .size(26.0, 26.0)
+        .radius(7.0)
         .center()
         .label(name)
         .on_press(press)
-        .child(rune::icon(glyph, 14.0).color(p.dim))
+        .child(
+            rune::icon(glyph, 16.0)
+                .color(p.dim)
+                .group_color(p.text)
+                .a11y_hidden(),
+        )
+        .hover_group()
 }
 
-/// Something to press: the hover wash and the pointer. Key errors name the
-/// caller, not this.
+/// Something to press: a wash under the pointer that deepens while held, and
+/// the pointer. Key errors name the caller, not this.
 #[track_caller]
 pub(crate) fn pressable(key: impl Into<String>, p: &Ink) -> El {
-    el().key(key).hover(p.hover).cursor(rune::Cursor::Pointer)
+    el().key(key)
+        .hover(p.hover)
+        .press(p.hover)
+        .cursor(rune::Cursor::Pointer)
+}
+
+/// Where you are in the chrome: a row or tab lifted a shade off its ground,
+/// lit from the top as the terminal cards are.
+pub(crate) fn lifted(el: El, p: &Ink) -> El {
+    el.fill(p.current)
+        .border_gradient(1.0, p.text.alpha(0.14), p.text.alpha(0.03))
+}
+
+/// A key as the chrome draws one, wherever it names a chord.
+pub(crate) fn keycap(key: impl Into<String>, p: &Ink) -> El {
+    const KEY: TextStyle = TextStyle::new(10.5, 600.0);
+    el().h(16.0)
+        .min_w(16.0)
+        .px(4.0)
+        .radius(4.0)
+        .center()
+        .fill(p.text.alpha(0.07))
+        .border_gradient(1.0, p.text.alpha(0.2), p.text.alpha(0.1))
+        .child(text(key).font(KEY).color(p.dim).a11y_hidden())
+}
+
+/// A tooltip for `el`: what pressing it does, and the chord that does the
+/// same from the keyboard.
+pub(crate) fn tip(el: El, words: impl Into<String>, action: crate::keys::Shortcut) -> El {
+    let keys = crate::keys::command(action).map_or_else(Vec::new, |command| command.keycaps());
+    el.help(words).help_keys(keys)
 }
 
 pub(crate) fn button(label: &'static str, key: &'static str, p: &Ink, press: fn(&mut Desk)) -> El {

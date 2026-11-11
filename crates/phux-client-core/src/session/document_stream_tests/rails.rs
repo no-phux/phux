@@ -163,8 +163,8 @@ fn document_and_terminal_staging_share_the_connection_ceilings() {
     let raw = BootstrapStreamProfile::SynthesizedVtRaw;
     begin_profile(&mut kernel, &terminal, raw, first(), &mut effects).unwrap();
     kernel
-        .terminals
-        .get_mut(&terminal)
+        .lanes
+        .terminal_mut(&terminal)
         .and_then(|state| state.staging.as_mut())
         .unwrap()
         .accepted_bytes = MAX_BOOTSTRAP_STAGING_BYTES;
@@ -328,7 +328,7 @@ fn closing_a_document_forgets_it_and_refuses_later_frames() {
             &mut effects,
         )
         .unwrap();
-    assert!(kernel.documents.is_empty());
+    assert!(kernel.lanes.is_empty());
     assert!(matches!(
         output(&mut kernel, first(), 5, &mut effects),
         Err(KernelError::ClosedTerminal(_))
@@ -347,7 +347,7 @@ fn a_new_incarnation_may_reuse_an_open_document_id_for_any_kind() {
     begin(&mut kernel, first(), &mut effects).unwrap();
     ready(&mut kernel, 0, first(), &mut effects).unwrap();
     kernel.release_incarnation();
-    assert!(kernel.documents.is_empty());
+    assert!(kernel.lanes.is_empty());
     begin_profile(
         &mut kernel,
         &id,

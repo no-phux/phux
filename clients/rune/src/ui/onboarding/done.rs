@@ -28,7 +28,7 @@ const KEYS: [Shortcut; 3] = [
     Shortcut::SplitRight,
 ];
 
-pub(super) fn done(p: &Ink) -> El {
+pub(super) fn done(desk: &Desk, p: &Ink) -> El {
     let mut list = col()
         .w_full()
         .max_w(400.0)
@@ -57,10 +57,10 @@ pub(super) fn done(p: &Ink) -> El {
         );
     }
     let mark = el()
-        .size(104.0, 104.0)
-        .child(rune::icon(&icons::FOX, 96.0).color(p.text))
+        .size(112.0, 112.0)
+        .child(art(desk.fox_image(), 112.0))
         .child(
-            el().absolute(72.0, 72.0)
+            el().absolute(80.0, 80.0)
                 .size(28.0, 28.0)
                 .radius(14.0)
                 .center()

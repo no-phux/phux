@@ -18,7 +18,7 @@ impl<E: EngineAdapter> SessionKernel<E> {
     /// Borrow one open `AgentSession` resource.
     #[must_use]
     pub fn agent_session(&self, terminal_id: &ResourceId) -> Option<AgentSessionView<'_>> {
-        let (terminal_id, stream) = self.agents.get_key_value(terminal_id)?;
+        let (terminal_id, stream) = self.lanes.agent_entry(terminal_id)?;
         Some(Self::agent_view(terminal_id, stream))
     }
 
@@ -35,7 +35,7 @@ impl<E: EngineAdapter> SessionKernel<E> {
         &self,
         agent_session_id: &ResourceId,
     ) -> Option<phux_protocol::native_agent::NativeView> {
-        let Some(stream) = self.agents.get(agent_session_id) else {
+        let Some(stream) = self.lanes.agent(agent_session_id) else {
             return self.closed_native_views.get(agent_session_id).cloned();
         };
         let mut view = stream.native_view()?.clone();
@@ -54,7 +54,7 @@ impl<E: EngineAdapter> SessionKernel<E> {
     /// Presence identifies native ownership, not readiness to accept commands.
     #[must_use]
     pub fn has_native_agent_view(&self, agent_session_id: &ResourceId) -> bool {
-        self.agents.get(agent_session_id).map_or_else(
+        self.lanes.agent(agent_session_id).map_or_else(
             || self.closed_native_views.contains_key(agent_session_id),
             |stream| stream.native_view().is_some(),
         )
@@ -63,13 +63,13 @@ impl<E: EngineAdapter> SessionKernel<E> {
     /// Identity and sequence cursor of an agent's committed generation.
     #[must_use]
     pub fn agent_stream_info(&self, terminal_id: &ResourceId) -> Option<AgentStreamInfo> {
-        self.agents.get(terminal_id)?.committed()
+        self.lanes.agent(terminal_id)?.committed()
     }
 
     /// Every open `AgentSession` resource, in no particular order.
     pub fn agent_sessions(&self) -> impl Iterator<Item = AgentSessionView<'_>> + '_ {
-        self.agents
-            .iter()
+        self.lanes
+            .agents()
             .map(|(terminal_id, stream)| Self::agent_view(terminal_id, stream))
     }
 
@@ -89,7 +89,7 @@ impl<E: EngineAdapter> SessionKernel<E> {
     /// Borrow the published replica for one terminal.
     #[must_use]
     pub fn published(&self, terminal_id: &ResourceId) -> Option<PublishedReplica<'_, E>> {
-        let replica = self.terminals.get(terminal_id)?.published.as_ref()?;
+        let replica = self.lanes.terminal(terminal_id)?.published.as_ref()?;
         Some(PublishedReplica {
             key: &replica.key,
             geometry: replica.geometry,
@@ -101,7 +101,7 @@ impl<E: EngineAdapter> SessionKernel<E> {
     /// Borrow the published engine replica directly for frontend projection.
     #[must_use]
     pub fn published_engine(&self, terminal_id: &ResourceId) -> Option<&E::Replica> {
-        Some(&self.terminals.get(terminal_id)?.published.as_ref()?.engine)
+        Some(&self.lanes.terminal(terminal_id)?.published.as_ref()?.engine)
     }
 
     /// Mutably borrow a published engine for frontend-local controlled operations.
@@ -113,8 +113,8 @@ impl<E: EngineAdapter> SessionKernel<E> {
     pub fn published_engine_mut(&mut self, terminal_id: &ResourceId) -> Option<&mut E::Replica> {
         Some(
             &mut self
-                .terminals
-                .get_mut(terminal_id)?
+                .lanes
+                .terminal_mut(terminal_id)?
                 .published
                 .as_mut()?
                 .engine,
@@ -155,8 +155,8 @@ impl<E: EngineAdapter> SessionKernel<E> {
     {
         self.ensure_open(terminal_id)?;
         let replica = self
-            .terminals
-            .get_mut(terminal_id)
+            .lanes
+            .terminal_mut(terminal_id)
             .and_then(|state| state.published.as_mut())
             .ok_or_else(|| KernelError::UnknownTerminal(terminal_id.clone()))?;
         self.adapter
@@ -169,7 +169,14 @@ impl<E: EngineAdapter> SessionKernel<E> {
     /// Borrow one published generation's progressive history cache.
     #[must_use]
     pub fn history_cache(&self, terminal_id: &ResourceId) -> Option<&HistoryCache> {
-        Some(&self.terminals.get(terminal_id)?.published.as_ref()?.history)
+        Some(
+            &self
+                .lanes
+                .terminal(terminal_id)?
+                .published
+                .as_ref()?
+                .history,
+        )
     }
 
     /// Request the next older page when a pinned viewport nears the cache edge.
@@ -182,7 +189,7 @@ impl<E: EngineAdapter> SessionKernel<E> {
         rows_from_oldest: usize,
         effects: &mut EffectBuffer,
     ) -> bool {
-        let Some(state) = self.terminals.get_mut(terminal_id) else {
+        let Some(state) = self.lanes.terminal_mut(terminal_id) else {
             return false;
         };
         let Some(replica) = state.published.as_mut() else {
@@ -213,7 +220,7 @@ impl<E: EngineAdapter> SessionKernel<E> {
     /// Borrow the unpublished staging replica for one terminal.
     #[must_use]
     pub fn staging(&self, terminal_id: &ResourceId) -> Option<StagingReplica<'_, E>> {
-        let staging = self.terminals.get(terminal_id)?.staging.as_ref()?;
+        let staging = self.lanes.terminal(terminal_id)?.staging.as_ref()?;
         Some(StagingReplica {
             key: &staging.key,
             geometry: staging.geometry,
@@ -231,8 +238,8 @@ impl<E: EngineAdapter> SessionKernel<E> {
         stream_id: StreamId,
         bootstrap_id: BootstrapId,
     ) -> Option<TombstoneRecord> {
-        self.terminals
-            .get(terminal_id)?
+        self.lanes
+            .terminal(terminal_id)?
             .retired
             .get(&GenerationId {
                 stream_id,
@@ -254,7 +261,7 @@ impl<E: EngineAdapter> SessionKernel<E> {
         {
             return InputEligibility::Ineligible(InputBlockReason::NotATerminal);
         }
-        let Some(state) = self.terminals.get(terminal_id) else {
+        let Some(state) = self.lanes.terminal(terminal_id) else {
             return InputEligibility::Ineligible(InputBlockReason::UnknownTerminal);
         };
         let Some(replica) = state.published.as_ref() else {

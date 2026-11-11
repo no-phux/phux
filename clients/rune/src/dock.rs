@@ -1,5 +1,5 @@
-//! The Dock icon's count. Rune has no call for it, so this is the crate's
-//! one piece of unsafe: a label on `NSApp.dockTile`.
+//! The Dock icon's count. Rune has no call for it, so this is unsafe (as is
+//! `system_settings`): a label on `NSApp.dockTile`.
 
 /// Show `count` on the Dock icon; zero clears it. Headless runs have no tile.
 #[cfg(target_os = "macos")]

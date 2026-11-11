@@ -112,7 +112,7 @@ fn reconnect_same_or_new_server_retires_bytes_and_restores_key_on_new_handle() {
             b"{\"fresh\":true}",
         );
         step(&mut rt);
-        assert_eq!(rt.state.shown.as_ref().unwrap().terminal, id(9));
+        assert_eq!(rt.state.shown.as_ref().unwrap().resource, id(9));
         assert!(
             matches!(&rt.state.resources.entries[&id(9)].body, Body::Tree(json) if json.contains("fresh") && !json.contains("old"))
         );

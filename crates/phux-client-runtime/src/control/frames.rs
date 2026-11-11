@@ -1,5 +1,6 @@
 //! Inbound frame decoding and dispatch.
 
+use super::subscriptions::Origin;
 use bytes::Bytes;
 use phux_client_core::newer_server::read_undecodable_frame;
 use phux_protocol::wire::DecodeError;
@@ -341,7 +342,8 @@ impl ControlPlane {
                 signal,
             } => {
                 self.fence_topology_read();
-                self.attach_terminals.remove(&terminal_id);
+                self.subscriptions
+                    .remove(&terminal_id, Origin::SessionAttach);
                 self.apply_engine(EngineEvent::Closed {
                     terminal_id: terminal_id.clone(),
                     exit_status,
@@ -349,7 +351,7 @@ impl ControlPlane {
                     reason,
                 })?;
                 if !self.close_pane(&terminal_id, exit_status, signal, reason)
-                    && !self.retired_agents.contains(&terminal_id)
+                    && !self.subscriptions.ended(&terminal_id)
                 {
                     // A manual binding may own the admission correlation;
                     // still surface the authoritative close exactly once.

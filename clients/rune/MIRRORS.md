@@ -1,4 +1,4 @@
-# Read-only mirrors in Phux Rune
+# Read-only mirrors
 
 The palette lists live AccessibilityTree and PixelSurface resources alongside
 terminals. Open one directly, switch its tab, or focus it beside a terminal in

@@ -43,10 +43,10 @@ impl State {
     pub(super) fn of(mark: Mark) -> State {
         match mark {
             Mark::Blocked | Mark::Bell => State::Needs,
-            Mark::Working | Mark::Running => State::Working,
+            Mark::Working | Mark::Running | Mark::Background => State::Working,
             Mark::Done | Mark::Succeeded => State::Ok,
             Mark::Failed => State::Failed,
-            Mark::Background | Mark::Idle | Mark::None => State::Idle,
+            Mark::Idle | Mark::None => State::Idle,
         }
     }
 }

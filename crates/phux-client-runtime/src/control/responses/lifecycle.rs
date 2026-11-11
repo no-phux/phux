@@ -4,7 +4,9 @@ use super::super::{
     CommandResult, ControlError, ControlPlane, ErrorCode, Event, FrameKind, Pending, ResourceId,
     SessionSnapshot, SpawnResult, Status,
 };
+use crate::control::subscriptions::Origin;
 use crate::control::topology::View;
+use phux_protocol::ids::ResourceKind;
 use phux_protocol::wire::frame::SpawnError;
 
 impl ControlPlane {
@@ -31,7 +33,8 @@ impl ControlPlane {
             // The server pumps a spawned terminal's output to its spawner
             // and answers before it broadcasts the spawn event, so this set
             // is populated before the foreign-pane pickup examines it.
-            self.own_spawns.insert(id.clone());
+            self.subscriptions
+                .insert(id, ResourceKind::Terminal, Origin::OwnSpawn);
         }
         self.push_event(Event::TerminalSpawned {
             request_id,
@@ -173,7 +176,8 @@ impl ControlPlane {
         match pending {
             Pending::AttachTerminal(terminal_id) => {
                 if error.is_some() {
-                    self.terminal_attached.remove(terminal_id);
+                    self.subscriptions
+                        .remove(terminal_id, Origin::AttachResource);
                     self.stream_recoveries.remove(terminal_id);
                 } else {
                     self.subscribe_catalogued_agents()?;
@@ -219,9 +223,14 @@ impl ControlPlane {
                     .retain(|event| !matches!(event, Event::ClipboardWrite { .. }));
                 self.clipboard_event_bytes = 0;
             }
-            self.attach_terminals.remove(terminal_id);
-            self.terminal_attached.remove(terminal_id);
-            self.agent_streams.remove(terminal_id);
+            self.subscriptions.remove_all(
+                terminal_id,
+                &[
+                    Origin::SessionAttach,
+                    Origin::AttachResource,
+                    Origin::AgentDeclared,
+                ],
+            );
             if let Some(engine) = &self.engine {
                 let _ = engine.detach(terminal_id.clone());
             }
@@ -232,7 +241,9 @@ impl ControlPlane {
                 .as_ref()
                 .is_none_or(|engine| !engine.is_closed(terminal_id))
         {
-            self.terminal_attached.insert(terminal_id.clone());
+            let kind = self.resource_kind_of(terminal_id);
+            self.subscriptions
+                .insert(terminal_id, kind, Origin::AttachResource);
         }
     }
 

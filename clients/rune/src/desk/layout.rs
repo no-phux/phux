@@ -33,7 +33,7 @@ impl Desk {
             .find(|s| s.id == selected)?;
         let key = session.key?;
         if let Some((_, _, mut doc, _)) = client.organization().arrangement_document(&key) {
-            let shown = self.shown.as_ref().map(|s| &s.terminal);
+            let shown = self.shown.as_ref().map(|s| &s.resource);
             super::tabs::focus_group(&mut doc, shown);
             return Some((key, doc));
         }
@@ -55,10 +55,10 @@ impl Desk {
         match (self.navigation_tree(), &self.shown) {
             (Some(tree), Some(shown)) => {
                 let on_screen = leaves(tree);
-                !on_screen.contains(&shown.terminal)
+                !on_screen.contains(&shown.resource)
                     || on_screen
                         .iter()
-                        .any(|id| id != &shown.terminal && !self.others.contains_key(id))
+                        .any(|id| id != &shown.resource && !self.others.contains_key(id))
             }
             (None, None) => false,
             _ => true,
@@ -68,7 +68,7 @@ impl Desk {
     /// Recompute what the terminal area shows: the arrangement's active
     /// group when it holds the focused pane, else the focused pane alone.
     pub(super) fn refresh_layout(&mut self, client: &Client) -> bool {
-        let Some(shown) = self.shown.as_ref().map(|s| s.terminal.clone()) else {
+        let Some(shown) = self.shown.as_ref().map(|s| s.resource.clone()) else {
             let listed = self.listed_resources();
             self.sync_tabs(client, &listed);
             let changed = self.layout.take().is_some();
@@ -127,7 +127,7 @@ impl Desk {
     /// ones that left it. Retaining a view does not make its pane seen.
     fn sync_views(&mut self, client: &Client) -> bool {
         let wanted: Vec<ResourceId> = self.navigation_tree().map(leaves).unwrap_or_default();
-        let shown = self.shown.as_ref().map(|s| s.terminal.clone());
+        let shown = self.shown.as_ref().map(|s| s.resource.clone());
         let mut changed = false;
         self.others.retain(|id, view| {
             let keep = wanted.contains(id) && Some(id) != shown.as_ref();
@@ -158,7 +158,7 @@ impl Desk {
 
     /// Move the keyboard to a pane in the active layout, keeping its view.
     pub fn focus_pane(&mut self, id: &ResourceId) {
-        if self.shown.as_ref().is_some_and(|s| &s.terminal == id) {
+        if self.shown.as_ref().is_some_and(|s| &s.resource == id) {
             self.resources.returning = None;
             return;
         }
@@ -167,11 +167,11 @@ impl Desk {
         };
         self.resources.returning = None;
         if let Some(old) = self.shown.take() {
-            self.others.insert(old.terminal, old.view);
+            self.others.insert(old.resource, old.view);
         }
         self.activities.seen(id);
         self.shown = Some(super::Shown {
-            terminal: id.clone(),
+            resource: id.clone(),
             view,
         });
         if let Some(phone) = self.phone.as_mut() {
@@ -191,9 +191,9 @@ impl Desk {
             return;
         };
         let next = if self.phone.is_some() {
-            super::phone::spatial::toward(tree, &shown.terminal, direction)
+            super::phone::spatial::toward(tree, &shown.resource, direction)
         } else {
-            focus_direction(tree, &shown.terminal, direction)
+            focus_direction(tree, &shown.resource, direction)
         };
         if let Some(next) = next {
             self.focus_pane(&next);
@@ -212,7 +212,7 @@ impl Desk {
     pub fn toggle_zoom(&mut self) {
         self.zoomed = match (&self.zoomed, &self.shown) {
             (Some(_), _) | (None, None) => None,
-            (None, Some(shown)) => Some(shown.terminal.clone()),
+            (None, Some(shown)) => Some(shown.resource.clone()),
         };
         if let Some(client) = self.client.clone() {
             self.refresh_layout(&client);

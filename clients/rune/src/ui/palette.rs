@@ -4,7 +4,7 @@ use rune::{
     Color, El, PointerPress, Span, TextStyle, Transition, col, el, rich, row, text, text_input,
 };
 
-use super::{CAPTION, Ink, LABEL, pressable};
+use super::{CAPTION, Ink, LABEL, icons, pressable};
 use crate::desk::{CONTEXT_MENU, Desk};
 use crate::keys::{self, Shortcut};
 use crate::palette::{Hit, Mode, Target};
@@ -35,10 +35,10 @@ pub fn view(desk: &Desk, ink: &Ink, top: f32) -> El {
         Mode::Screens => "Filter displays and windows…",
     };
     let (open, glyph) = match mode {
-        Mode::Paths => ("insert", "/"),
-        Mode::Themes => ("keep", "◐"),
-        Mode::Sessions => ("switch", "◫"),
-        _ => ("open", "⌘"),
+        Mode::Paths => ("insert", &icons::FOLDER),
+        Mode::Themes => ("keep", &icons::PALETTE),
+        Mode::Sessions => ("switch", &icons::WINDOW),
+        _ => ("open", &icons::SEARCH),
     };
     let field = text_input(&desk.palette_query, TextStyle::new(16.0, 400.0).lh(24.0))
         .key("palette-query")
@@ -101,11 +101,7 @@ pub fn view(desk: &Desk, ink: &Ink, top: f32) -> El {
                 .px(18.0)
                 .gap(12.0)
                 .items_center()
-                .child(
-                    text(glyph)
-                        .font(TextStyle::new(15.0, 500.0))
-                        .color(ink.accent),
-                )
+                .child(rune::icon(glyph, 16.0).color(ink.accent).a11y_hidden())
                 .child(field),
         )
         .child(el().w_full().h(1.0).fill(ink.separator))
@@ -225,28 +221,25 @@ fn hint(keys: &'static str, what: &'static str, ink: &Ink) -> El {
     row()
         .gap(5.0)
         .items_center()
-        .child(
-            el().px(5.0)
-                .radius(4.0)
-                .fill(ink.separator)
-                .child(text(keys).font(CAPTION).color(ink.text)),
-        )
+        .child(super::keycap(keys, ink))
         .child(text(what).font(CAPTION).color(ink.dim))
 }
 
-fn kind_mark(kind: &str) -> &'static str {
+fn kind_mark(kind: &str) -> &'static rune::Icon {
     match kind {
-        "terminal" => "›_",
-        "session" => "◫",
-        "path" => "/",
-        _ => "⚡",
+        "terminal" => &icons::PROMPT,
+        "session" => &icons::WINDOW,
+        "path" => &icons::FOLDER,
+        _ => &icons::BOLT,
     }
 }
 
-/// What a row is: a glyph, or for a theme a swatch of its colours.
+/// What a row is: an icon, or for a theme a swatch of its colours.
 fn mark(hit: &Hit, ink: &Ink) -> El {
     let Target::Theme(id) = hit.item.target else {
-        return text(kind_mark(hit.item.kind)).font(CAPTION).color(ink.dim);
+        return rune::icon(kind_mark(hit.item.kind), 14.0)
+            .color(ink.dim)
+            .a11y_hidden();
     };
     let theme = id.and_then(crate::theme::find);
     let (fill, ring) = theme.map_or((ink.bg, ink.separator), |t| {

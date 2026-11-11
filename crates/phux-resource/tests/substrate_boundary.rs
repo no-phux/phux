@@ -18,9 +18,8 @@ const FORBIDDEN_DEPENDENCIES: [&str; 3] =
 const KIND_WORDS: [&str; 6] = ["terminal", "agent", "pane", "pty", "scrollback", "osc"];
 
 /// Names the substrate may not rename. `AgentEvent` is the wire frame the
-/// event sink carries; the rest are `ProcessHandoff` fields that mirror what
-/// the upgrade blob persists.
-const ALLOWED_NAMES: [&str; 4] = ["AgentEvent", "master_fd", "osc_title", "scrollback_bytes"];
+/// event sink carries.
+const ALLOWED_NAMES: [&str; 1] = ["AgentEvent"];
 
 fn manifest_dir() -> PathBuf {
     PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").expect("set by cargo and nextest"))
@@ -129,5 +128,4 @@ fn the_word_check_ignores_wire_names_only() {
     assert_eq!(kind_words("osc_sequence"), ["osc"]);
     assert_eq!(kind_words("pub scrollback: Vec<u8>"), ["scrollback"]);
     assert!(kind_words("empty panel").is_empty());
-    assert!(kind_words("master_fd osc_title scrollback_bytes").is_empty());
 }
