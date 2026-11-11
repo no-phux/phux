@@ -37,6 +37,33 @@ macOS on Apple silicon, Linux on x86_64 or arm64, and Windows through WSL 2.
 [Every install option](./docs/install.md), including the
 [desktop app](./clients/rune/README.md).
 
+## One server, every screen
+
+The server owns the terminals. Anything that connects is a client, and they
+all show the same sessions at once. The capture at the top is the terminal
+UI, which is `phux` in the terminal you already use. These are the others:
+
+<table>
+  <tr>
+    <td width="41%"><b>Desktop</b><br><a href="./clients/rune/README.md">Phux Rune</a>, for macOS and Linux.</td>
+    <td width="41%"><b>Embedded in a web page</b><br>The browser client, live on <a href="https://phux.sh">phux.sh</a>.</td>
+    <td width="18%"><b>Phone</b><br>The same client, in a phone's browser.</td>
+  </tr>
+  <tr>
+    <td><img src="./docs/assets/desktop.webp" alt="Phux Rune, the desktop app, showing the same sessions as the terminal UI"></td>
+    <td><img src="./docs/assets/web.webp" alt="Two phux panes embedded in a web page"></td>
+    <td><img src="./docs/assets/phone.webp" alt="A phux shell in a phone browser, with a key bar under the terminal"></td>
+  </tr>
+</table>
+
+And headless: every command in the sections below works with no screen
+attached, which is how scripts and agents use it.
+
+The browser client is an experiment that a server does not serve by default,
+and native phone apps are not out yet. [Clients](./docs/clients.md) has what
+each one can and cannot do, and [Embed phux](./docs/embedding.md) covers
+putting a terminal in your own app.
+
 ## See which agent needs you
 
 Start Claude Code, Codex, OpenCode, pi, or any other agent in a pane. From
