@@ -84,6 +84,7 @@ A tab holds a set of panes. The status bar along the top shows your tabs.
 | ---------------------------------------------------------- | ------------------------------------------ |
 | <kbd>C-a</kbd> <kbd>c</kbd>                                | new tab                                    |
 | <kbd>C-a</kbd> <kbd>n</kbd> or <kbd>C-a</kbd> <kbd>Tab</kbd>, <kbd>C-a</kbd> <kbd>p</kbd> | next, previous tab |
+| <kbd>C-a</kbd> <kbd>t</kbd> | the tab you were on before this one |
 | <kbd>C-a</kbd> <kbd>0</kbd>–<kbd>9</kbd>                   | go to tab 0–9                              |
 | <kbd>C-a</kbd> <kbd>w</kbd>                                | pick a tab from every session              |
 | <kbd>C-a</kbd> <kbd>,</kbd>                                | rename the tab                             |

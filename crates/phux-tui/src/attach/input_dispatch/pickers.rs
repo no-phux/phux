@@ -316,10 +316,12 @@ pub(super) fn switch_window(
     mutate: impl FnOnce(&mut ArrangementDoc),
 ) {
     let before = ctx.workspace.active;
+    let left = ctx.workspace.active_group().and_then(|w| w.focus.clone());
     mutate(ctx.workspace);
     if ctx.workspace.active == before {
         return;
     }
+    ctx.focus_history.leave_window(left);
     effects.layout_mutated = true;
     effects.clear_predict = true;
     effects.set_focus = ctx.workspace.active_group().and_then(|w| w.focus.clone());

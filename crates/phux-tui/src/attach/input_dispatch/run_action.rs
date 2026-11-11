@@ -47,7 +47,7 @@ pub(in crate::attach) use views::{
 #[cfg(test)]
 pub(super) use windows::kill_window_confirm;
 pub(in crate::attach) use windows::{
-    close_view, kill_window, move_window, next_window, previous_window, rename_window,
+    close_view, kill_window, last_window, move_window, next_window, previous_window, rename_window,
     reopen_views, select_window,
 };
 pub(in crate::attach) use worktree::new_worktree;

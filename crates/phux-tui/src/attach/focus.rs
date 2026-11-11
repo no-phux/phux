@@ -9,6 +9,11 @@ use crate::layout::{self, ArrangementDoc};
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub(super) struct FocusHistory {
     previous: Option<ResourceId>,
+    /// The pane focused in the tab this client last switched away from. A
+    /// pane names its tab however tabs are reordered.
+    // ponytail: only tab switches record it; a jump made by `last-pane` or
+    // a picker does not. Record at the focus transition if that matters.
+    left_window: Option<ResourceId>,
     /// Attached session names, oldest first. Not persisted.
     sessions: Vec<String>,
 }
@@ -19,6 +24,7 @@ impl FocusHistory {
     pub(super) const fn with_previous(previous: ResourceId) -> Self {
         Self {
             previous: Some(previous),
+            left_window: None,
             sessions: Vec::new(),
         }
     }
@@ -42,6 +48,16 @@ impl FocusHistory {
     #[cfg(test)]
     pub(super) fn set_sessions(&mut self, names: Vec<String>) {
         self.sessions = names;
+    }
+
+    /// Remember the tab being left by the pane focused in it.
+    pub(super) fn leave_window(&mut self, focus: Option<ResourceId>) {
+        self.left_window = focus;
+    }
+
+    /// The pane that names the tab last left, for `last-window`.
+    pub(super) const fn left_window(&self) -> Option<&ResourceId> {
+        self.left_window.as_ref()
     }
 
     /// Apply one focus transition and remember the pane being left.

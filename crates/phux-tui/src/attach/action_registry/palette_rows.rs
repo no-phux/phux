@@ -230,6 +230,17 @@ pub(super) const PALETTE_ROWS: &[ActionSpec] = &[
         run: run::next_window,
     },
     ActionSpec {
+        name: "last-window",
+        description: "Switch back to the tab you were on before this one",
+        params: "",
+        palette: Palette::Row {
+            title: "Last tab",
+            category: Category::Window,
+            args: &[],
+        },
+        run: run::last_window,
+    },
+    ActionSpec {
         name: "previous-window",
         description: "Switch to the previous tab",
         params: "",
