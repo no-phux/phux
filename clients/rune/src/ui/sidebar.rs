@@ -7,7 +7,6 @@
 use std::collections::HashMap;
 
 use phux_client_runtime::control::{SessionDescriptor, Topology};
-use phux_client_runtime::project_groups::Block;
 use phux_protocol::ids::{ResourceId, SessionKey};
 use rune::{Color, El, col, el, memo, row, text};
 
@@ -16,10 +15,12 @@ use crate::activity::Mark;
 use crate::desk::Desk;
 use crate::host_color;
 use crate::keys::{self, Shortcut};
-use crate::palette::{pane_label, project_blocks};
+use crate::palette::pane_label;
 
 mod hosts;
 use hosts::{host_header, other_machines};
+mod projects;
+use projects::branch_mark;
 
 /// A mark's colour, from the theme's own palette.
 pub(super) fn mark_color(mark: Mark, ink: &Ink) -> Color {
@@ -129,11 +130,6 @@ struct Header<'a> {
     branch: bool,
 }
 
-/// The `└` a linked worktree's name follows.
-fn branch_mark(ink: &Ink) -> El {
-    text("└").font(CAPTION).color(ink.dim)
-}
-
 /// A pill counting what needs you.
 fn waiting_badge(waiting: usize, ink: &Ink) -> El {
     el().px(6.0)
@@ -144,25 +140,6 @@ fn waiting_badge(waiting: usize, ink: &Ink) -> El {
                 .font(CAPTION)
                 .color(mark_color(Mark::Blocked, ink)),
         )
-}
-
-/// A project's name over its sessions, and what needs you across them.
-fn project_header(name: &str, waiting: usize, ink: &Ink) -> El {
-    row()
-        .w_full()
-        .pt(12.0)
-        .pb(2.0)
-        .px(8.0)
-        .gap(6.0)
-        .items_center()
-        .child(
-            text(name.to_owned())
-                .font(LABEL)
-                .color(ink.text.alpha(0.82))
-                .truncate(),
-        )
-        .child(el().grow(1.0))
-        .children((waiting > 0).then(|| waiting_badge(waiting, ink)))
 }
 
 fn session_header(session: &Header, ink: &Ink) -> El {
@@ -296,7 +273,7 @@ fn waiting_by_session(desk: &Desk, topology: &Topology) -> HashMap<u32, usize> {
 /// the view runs for each frame of terminal output. A project's sessions
 /// follow its header, indented.
 fn session_list(desk: &Desk, topology: &Topology, waiting: &HashMap<u32, usize>, ink: &Ink) -> El {
-    let mut list = col().w_full().gap(1.0).px(8.0);
+    let list = col().w_full().gap(1.0).px(8.0);
     let shown = desk.shown.as_ref().map(|s| &s.terminal);
     let current = desk.selected_session_name();
     let theme = desk.settings.theme.map(|t| t.id);
@@ -356,26 +333,14 @@ fn session_list(desk: &Desk, topology: &Topology, waiting: &HashMap<u32, usize>,
         }
         out
     };
-    for block in project_blocks(&topology.sessions, waiting_in) {
-        list = match block {
-            Block::Single(index) => list.children(session_rows(&topology.sessions[index], false)),
-            Block::Project(project) => list
-                .child(memo(
-                    format!("project-{}", project.key),
-                    (&project.name, project.needs_you, theme),
-                    || project_header(&project.name, project.needs_you, ink),
-                ))
-                .child(
-                    col().w_full().gap(1.0).pl(10.0).children(
-                        project
-                            .members
-                            .iter()
-                            .flat_map(|m| session_rows(&topology.sessions[m.index], m.linked)),
-                    ),
-                ),
-        };
-    }
-    list
+    projects::grouped(
+        list,
+        &topology.sessions,
+        waiting_in,
+        theme,
+        ink,
+        session_rows,
+    )
 }
 
 /// Whether a satellite session member is a Terminal: not a document or an
