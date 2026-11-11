@@ -9,7 +9,9 @@
 # PHUX is a dev build (target/debug/phux). Checks the notices, what the binary
 # links, its version, and that a headless frame shows the session in the
 # desktop and phone forms; on Linux it also opens a real window under Xvfb,
-# and under a headless weston (Wayland) where weston is installed.
+# under a headless weston (Wayland) where weston is installed, and is typed
+# into, pasted into, copied from and rescaled under a headless sway where
+# sway and its tools are (qualify-wayland.sh).
 set -euo pipefail
 
 archive="${1:?usage: qualify.sh ARCHIVE PHUX [EVIDENCE_DIR]}"
@@ -130,6 +132,12 @@ if [[ "$(uname -s)" == Linux ]]; then
         kill "$weston_pid" 2>/dev/null || true
         wait "$weston_pid" 2>/dev/null || true
         [[ "$code" == 124 ]] || fail "the Wayland window exited $code: $(cat "$scratch/wayland.log")"
+    fi
+    # And is used there: typing, the clipboard both ways, an input method,
+    # fractional scaling.
+    if command -v sway >/dev/null && command -v wtype >/dev/null \
+        && command -v wl-copy >/dev/null && command -v grim >/dev/null; then
+        bash "$repo/clients/rune/scripts/qualify-wayland.sh" "$binary" "$phux" "$socket" "$scratch"
     fi
 fi
 echo "qualify: $(basename "$archive") launched"
