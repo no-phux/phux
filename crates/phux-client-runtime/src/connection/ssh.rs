@@ -32,7 +32,9 @@ fn command(destination: &str, remote_phux: &str) -> std::io::Result<tokio::proce
     let program = std::env::var_os("PHUX_SSH").unwrap_or_else(|| "ssh".into());
     let mut command = tokio::process::Command::new(program);
     command
-        .args(["-T", "-o", "ClearAllForwardings=yes"])
+        // The pipes are the protocol's, and the terminal may be the TUI's:
+        // a login that must prompt fails here and is left to `ssh -t`.
+        .args(["-T", "-o", "BatchMode=yes", "-o", "ClearAllForwardings=yes"])
         // A dead path ends the link in about 45 s instead of hanging it.
         .args(["-o", "ServerAliveInterval=15", "-o", "ServerAliveCountMax=3"])
         .arg("--")
