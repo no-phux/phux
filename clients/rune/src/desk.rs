@@ -22,6 +22,7 @@ use crate::launch::Resolved;
 
 mod attach;
 pub(crate) mod bare;
+mod copy_mode;
 mod events;
 mod find;
 mod fleet;
@@ -38,7 +39,9 @@ mod links;
 pub mod machines;
 pub mod mouse;
 pub(crate) mod native_input;
+pub mod news;
 mod notice;
+pub mod onboarding;
 mod palette;
 pub mod phone;
 pub mod pitch;
@@ -153,6 +156,8 @@ pub struct Desk {
     /// Find in the focused pane's history, while open.
     pub find: Option<find::Find>,
     pub find_query: rune::TextEdit,
+    /// Keyboard copy mode, while on.
+    pub copy_mode: Option<copy_mode::CopyMode>,
     /// The link under the pointer while ⌘ is held.
     pub pointer: links::Pointer,
     /// Everything waiting on you, and the system's view of it.
@@ -173,6 +178,10 @@ pub struct Desk {
     pub(crate) fleet: fleet::Fleet,
     pub settings: settings::Settings,
     pub settings_open: bool,
+    /// First-run onboarding, while open, and what it has learned.
+    pub onboarding: onboarding::Onboarding,
+    /// What's new, and whether its bell is lit.
+    pub news: news::News,
     /// Navigation and search belong to this window, never to stored preferences.
     pub settings_ui: settings::SettingsUi,
     pub tabs: tabs::Tabs,
@@ -269,14 +278,6 @@ impl Desk {
         self.post(NoticeKind::Tip, text.into(), Some((label, action)));
     }
 
-    /// The pressed offer's action, then the toast goes.
-    pub fn take_offer(&mut self) {
-        let Some((_, action)) = self.notice.take().and_then(|notice| notice.action) else {
-            return;
-        };
-        action(self);
-    }
-
     /// Once per install, on the first connection: point a newcomer at the
     /// keys worth learning first. The palette lists them; `Keyboard
     /// Shortcuts: Essentials` reopens the list any time.
@@ -306,10 +307,6 @@ impl Desk {
         if let Some(waker) = &self.waker {
             waker();
         }
-    }
-
-    pub fn dismiss_notice(&mut self) {
-        self.notice = None;
     }
 
     /// Take down a notice whose time is up, and wake for the one still
@@ -373,6 +370,7 @@ impl Desk {
             sidebar_open,
             foot_hover: None,
             find: None,
+            copy_mode: None,
             find_query: rune::TextEdit::new(""),
             pointer: links::Pointer::default(),
             inbox: inbox::Inbox::default(),
@@ -385,6 +383,8 @@ impl Desk {
             fleet: fleet::Fleet::default(),
             settings,
             settings_open: false,
+            onboarding: onboarding::Onboarding::default(),
+            news: news::News::load(&prefs),
             settings_ui: settings::SettingsUi::default(),
             tabs: tabs::Tabs::default(),
             updater: updates::Updater::new(&prefs, resolved),
@@ -448,6 +448,7 @@ impl Desk {
             | self.pump_link()
             | self.pump_links()
             | self.follow_omarchy()
+            | self.pump_onboarding(tx)
             | self.expire_notice(tx);
         let Some(client) = self.client.clone() else {
             return updated | self.tend_link(tx);
@@ -479,9 +480,12 @@ impl Desk {
         changed |= self.tick_hive(tx);
         self.settle_pointer();
         changed |= self.autoscroll(tx);
+        changed |= self.phone_touch_tick(tx);
         self.keep_find();
-        // Also catches a display-scale change, which re-snaps the cells.
+        self.keep_copy_mode();
+        // Also re-snaps cells after a display-scale change.
         self.fit();
+        self.wake_phone_fit(tx);
         changed | self.blink(&client, tx) | self.tend_link(tx)
     }
 

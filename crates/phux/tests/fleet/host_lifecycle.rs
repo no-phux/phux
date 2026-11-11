@@ -300,3 +300,41 @@ fn lifecycle_writes_through_a_symlinked_config() {
     assert!(target.contains("devbox"));
     assert!(target.contains("ssh://devbox"));
 }
+
+#[test]
+fn host_color_overrides_the_hash_and_ls_reports_it() {
+    let tmp = TempDir::new().expect("tempdir");
+    let xdg = tmp.path().join("xdg");
+    let (code, _, stderr) = run_with_xdg(&["host", "add", "mini", "ssh://mini"], &xdg);
+    assert_eq!(code, 0, "stderr={stderr}");
+    let color = |args: &[&str]| {
+        let (code, stdout, stderr) = run_with_xdg(args, &xdg);
+        assert_eq!(code, 0, "{args:?}: stderr={stderr}");
+        serde_json::from_str::<serde_json::Value>(&stdout).expect("JSON")
+    };
+    let ls = color(&["host", "ls", "--json"]);
+    let auto = serde_json::json!({"id": "magenta", "hex": "#D9629F", "override": false});
+    assert_eq!(ls["hosts"][0]["color"], auto);
+    assert!(ls["local"]["name"].is_string());
+
+    let set = color(&["host", "color", "mini", "violet", "--json"]);
+    assert_eq!(set["host"]["color"]["id"], "violet");
+    color(&["host", "color", "--local", "copper", "--json"]);
+    let ls = color(&["host", "ls", "--json"]);
+    assert_eq!(ls["hosts"][0]["color"]["override"], true);
+    assert_eq!(ls["local"]["color"]["hex"], "#C9926B");
+
+    for (id, hex) in [("green", "#3DAA5C"), ("navy", "#2F55C4")] {
+        let set = color(&["host", "color", "mini", id, "--json"]);
+        assert_eq!(set["host"]["color"]["id"], id);
+        let ls = color(&["host", "ls", "--json"]);
+        let want = serde_json::json!({"id": id, "hex": hex, "override": true});
+        assert_eq!(ls["hosts"][0]["color"], want);
+    }
+    color(&["host", "color", "mini", "auto", "--json"]);
+    let ls = color(&["host", "ls", "--json"]);
+    assert_eq!(ls["hosts"][0]["color"], auto);
+
+    let (code, _, _) = run_with_xdg(&["host", "color", "mini", "teal"], &xdg);
+    assert_eq!(code, 2, "an unknown colour is a usage error");
+}

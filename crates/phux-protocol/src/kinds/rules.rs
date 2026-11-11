@@ -439,12 +439,19 @@ static C_MIRROR_PROVIDE: Rule = Rule::verbs(
     &[Verb::Observe],
     GLOBAL_OWNER_UDS,
 );
+// Which grants the host's server holds says what its panes can read: owner,
+// Unix socket only.
+static C_PRIVACY_STATUS: Rule = Rule::verbs(
+    "`PRIVACY_STATUS`",
+    &[Verb::Inventory],
+    GLOBAL_OWNER_UDS,
+);
 static C_UNCLASSIFIED: Rule = Rule::deny("Unknown, retired, or otherwise unclassified command tag");
 
 /// The nested-command table of workload-auth §6, in spec row order.
 ///
 /// [`classify_command`] returns one of these rows for every decoded command.
-pub static COMMAND_RULES: [&Rule; 58] = [
+pub static COMMAND_RULES: [&Rule; 59] = [
     &C_SPAWN,
     &C_ATTACH_RESOURCE,
     &C_DETACH_RESOURCE,
@@ -480,6 +487,7 @@ pub static COMMAND_RULES: [&Rule; 58] = [
     &C_SEND_DOCUMENT_INPUT,
     &C_MIRROR,
     &C_MIRROR_PROVIDE,
+    &C_PRIVACY_STATUS,
     &C_NATIVE_SPAWN,
     &C_NATIVE_LIST,
     &C_NATIVE_LAUNCH,

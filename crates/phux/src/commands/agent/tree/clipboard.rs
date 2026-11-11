@@ -152,7 +152,8 @@ impl Clipboard {
 
     /// Carry out `intent` on a window or display: a copy is answered, a
     /// paste sets the clipboard before `act` presses the chord, and
-    /// anything else goes straight to `act`.
+    /// anything else goes straight to `act`. A failure is logged, and a
+    /// paste's outcome goes back to the viewer ([`Self::answer_paste`]).
     #[allow(
         clippy::future_not_send,
         reason = "the CLI runtime is single-threaded; the connection is not shared"
@@ -162,17 +163,41 @@ impl Clipboard {
         conn: &mut Connection,
         intent: &Intent,
         intents: &mut Vec<Intent>,
-        act: impl FnOnce(&DocumentInput),
+        act: impl FnOnce(&DocumentInput) -> Result<(), String>,
     ) {
         if self.answered(conn, intent, intents).await {
             return;
         }
-        if let DocumentInput::Paste { text, .. } = &intent.input
-            && let Err(message) = self.set(text)
-        {
-            return eprintln!("phux: paste skipped: {message}");
+        let outcome = match &intent.input {
+            DocumentInput::Paste { text, .. } => self.set(text).and_then(|()| act(&intent.input)),
+            input => act(input),
+        };
+        if let Err(message) = &outcome {
+            eprintln!("phux: input skipped: {message}");
         }
-        act(&intent.input);
+        Self::answer_paste(conn, intent, outcome, intents).await;
+    }
+
+    /// Tell the viewer how its paste went: a server holding the paste
+    /// (`SEND_DOCUMENT_INPUT`) takes a `ClipboardText` answer with reply 0
+    /// as its outcome. An older server refuses the answer; that is ignored.
+    #[allow(
+        clippy::future_not_send,
+        reason = "the CLI runtime is single-threaded; the connection is not shared"
+    )]
+    pub(super) async fn answer_paste(
+        conn: &mut Connection,
+        intent: &Intent,
+        outcome: Result<(), String>,
+        intents: &mut Vec<Intent>,
+    ) {
+        if !matches!(intent.input, DocumentInput::Paste { .. }) {
+            return;
+        }
+        let text = outcome.map(|()| String::new());
+        if let Err(err) = tree::answer_copy(conn, &intent.resource, 0, text, intents).await {
+            tracing::debug!(%err, "paste outcome not taken");
+        }
     }
 }
 

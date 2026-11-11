@@ -16,11 +16,12 @@ pub(super) enum Entry {
     Notifications,
     Hosts,
     Diagnostics,
+    GetStarted,
     Updates,
 }
 
 impl Entry {
-    const ALL: [Self; 9] = [
+    const ALL: [Self; 10] = [
         Self::Theme,
         Self::TextSize,
         Self::CopySelect,
@@ -29,6 +30,7 @@ impl Entry {
         Self::Notifications,
         Self::Hosts,
         Self::Diagnostics,
+        Self::GetStarted,
         Self::Updates,
     ];
 
@@ -41,7 +43,7 @@ impl Entry {
             Self::Notifications => Category::Notifications,
             Self::Hosts => Category::RemoteHosts,
             Self::Diagnostics => Category::Developer,
-            Self::Updates => Category::About,
+            Self::GetStarted | Self::Updates => Category::About,
         }
     }
 
@@ -55,6 +57,7 @@ impl Entry {
             Self::Notifications => "Notifications",
             Self::Hosts => "Machines",
             Self::Diagnostics => "Copy diagnostics",
+            Self::GetStarted => "Get started",
             Self::Updates => "Updates",
         }
     }
@@ -78,6 +81,9 @@ impl Entry {
                 "Connect to a remote host, add a machine or manage your existing machines."
             }
             Self::Diagnostics => "Copy local logs and app state. Nothing is sent anywhere.",
+            Self::GetStarted => {
+                "The look, the phux agent skill, permissions and your key bindings, step by step."
+            }
             Self::Updates => {
                 "Phux Rune version, Check now, Check automatically, Update phux with Phux Rune, phux release channel: Follow installed, Stable or Next, local installation, package manager, server and protocol compatibility."
             }
@@ -95,6 +101,7 @@ impl Entry {
             Self::Notifications => on(desk.settings.notifications),
             Self::Hosts => desk.machines.label().to_owned(),
             Self::Diagnostics => "Local only".to_owned(),
+            Self::GetStarted => String::new(),
             Self::Updates => format!(
                 "{} automatic {} manage phux {} channel {}",
                 crate::updates::VERSION,
@@ -130,6 +137,7 @@ impl Entry {
             Self::Notifications => "alerts bell",
             Self::Hosts => "remote ssh connection",
             Self::Diagnostics => "logs debug troubleshooting",
+            Self::GetStarted => "onboarding welcome setup skill permissions migrate import",
             Self::Updates => {
                 "upgrade version automatic release channel stable next preview install"
             }
@@ -154,6 +162,13 @@ impl Entry {
                 ink,
             ),
             Self::Diagnostics => diagnostics(desk, ink),
+            Self::GetStarted => self.link(
+                "settings-get-started",
+                desk,
+                self.value(desk),
+                Desk::open_onboarding,
+                ink,
+            ),
             Self::Updates => el()
                 .w_full()
                 .padding(16.0)

@@ -35,6 +35,7 @@ done
 bash scripts/check-product-skills-export.sh
 bash scripts/test-pack-release.sh
 bash scripts/test-install.sh
+bash scripts/test-install-server-app.sh
 bash scripts/test-gen-formula.sh
 bash scripts/test-install-rune.sh
 bash scripts/first-run-timing.sh --self-test

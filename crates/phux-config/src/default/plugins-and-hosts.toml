@@ -116,6 +116,15 @@
 # max-width = 1920
 # interval-ms = 1000
 
+# Standing producers: any command this server keeps running as a document
+# producer (`docs/applications.md#standing-producers`), in its own session
+# `producer-<name>`, restarted and reloaded like the mirrors above. A first
+# word `phux` is this server's own binary.
+#
+# [[producers]]
+# name = "downloads"
+# command = ["phux", "agent", "doc", "folder", "/home/me/Downloads"]
+
 # Remote phux servers this machine attaches TO: `phux attach
 # mini` resolves the endpoint, certificate pin, and token recorded here, so
 # you never retype them. `phux host add me@mini` writes an entry for you

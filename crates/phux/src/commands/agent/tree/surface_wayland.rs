@@ -38,12 +38,42 @@ const KEYMAP_KEYS: usize = 200;
 pub(super) enum Op {
     /// Put the pointer at `(x, y)` of the `w`x`h` layout box.
     Move { x: u32, y: u32, w: u32, h: u32 },
-    /// Press and release the left button.
-    Click,
+    /// Press (true) or release (false) the left button.
+    Button(bool),
     /// Scroll by layout pixels, down and right positive.
     Scroll { dx: f64, dy: f64 },
-    /// Load `keymap`, then press and release each key code in order.
-    Keys { keymap: String, codes: Vec<u32> },
+    /// Load `keymap`, hold the modifiers in mask `mods` (none when 0),
+    /// then press and release each key code in order.
+    Keys {
+        keymap: String,
+        codes: Vec<u32>,
+        mods: u32,
+    },
+}
+
+/// The Shift and Control bits of a modifier mask: xkb's first real
+/// modifiers, the same in every keymap.
+const SHIFT: u32 = 1;
+const CONTROL: u32 = 1 << 2;
+/// `KEY_V`, the evdev code a real keyboard's V sends, so a client that
+/// reads physical keys for shortcuts sees one.
+const KEY_V: u32 = 47;
+
+/// The paste chord: Ctrl+V, or Ctrl+Shift+V for a terminal, on a keymap
+/// whose `KEY_V` is a real V.
+pub(super) fn paste_chord(shift: bool) -> Op {
+    let code = KEY_V + 8;
+    let keymap = format!(
+        "xkb_keymap {{\nxkb_keycodes \"phux\" {{\nminimum = 8;\nmaximum = {code};\n<V> = {code};\n}};\n\
+         xkb_types \"phux\" {{ include \"complete\" }};\n\
+         xkb_compatibility \"phux\" {{ include \"complete\" }};\n\
+         xkb_symbols \"phux\" {{\nkey <V> {{[v, V]}};\n}};\n}};\n"
+    );
+    Op::Keys {
+        keymap,
+        codes: vec![KEY_V],
+        mods: CONTROL | if shift { SHIFT } else { 0 },
+    }
 }
 
 /// The steps that carry out `input` on an `image`-sized frame placed at
@@ -56,14 +86,28 @@ pub(super) fn ops(
     let need =
         || place.ok_or("the pointer needs Hyprland (hyprctl) to place it; run under Hyprland");
     Ok(match input {
-        // A paste's chord goes through the tools (`surface_grim_input`);
-        // the clipboard itself is the mirror's (`clipboard`).
+        // A paste's chord is [`paste_chord`], which needs the focused
+        // window; the clipboard itself is the mirror's (`clipboard`).
         DocumentInput::Navigate { .. }
         | DocumentInput::Paste { .. }
         | DocumentInput::CopyClipboard { .. }
         | DocumentInput::ClipboardText { .. }
         | DocumentInput::Activate { .. } => Vec::new(),
-        DocumentInput::Click { x, y } => vec![at((*x, *y), image, need()?)?, Op::Click],
+        DocumentInput::Click { x, y } => vec![
+            at((*x, *y), image, need()?)?,
+            Op::Button(true),
+            Op::Button(false),
+        ],
+        DocumentInput::Drag { from, to } => {
+            let place = need()?;
+            let path = super::surface_input::drag_path(*from, *to);
+            let mut out = vec![at(path[0], image, place)?, Op::Button(true)];
+            for point in &path[1..] {
+                out.push(at(*point, image, place)?);
+            }
+            out.push(Op::Button(false));
+            out
+        }
         DocumentInput::Scroll { dx, dy } => {
             let place = need()?;
             let ratio = place.frame.w / f64::from(image.0.max(1));
@@ -151,7 +195,11 @@ fn keys(syms: &[String], codes: Vec<u32>) -> Op {
         let _ = writeln!(keymap, "key <K{}> {{[{sym}]}};", i + 1);
     }
     keymap.push_str("};\n};\n");
-    Op::Keys { keymap, codes }
+    Op::Keys {
+        keymap,
+        codes,
+        mods: 0,
+    }
 }
 
 /// One argument of a request.
@@ -260,17 +308,18 @@ mod wire {
                         ];
                         self.put(&message(p, 1, &at))?;
                         self.put(&message(p, 4, &[]))?;
+                        // A drag's steps must read as movement over time.
+                        std::thread::sleep(Duration::from_millis(8));
                     }
-                    Op::Click => {
+                    Op::Button(pressed) => {
                         let p = self.pointer()?;
-                        for state in [1, 0] {
-                            self.put(&message(
-                                p,
-                                2,
-                                &[Arg::U(now()), Arg::U(BTN_LEFT), Arg::U(state)],
-                            ))?;
-                            self.put(&message(p, 4, &[]))?;
-                        }
+                        let state = u32::from(*pressed);
+                        self.put(&message(
+                            p,
+                            2,
+                            &[Arg::U(now()), Arg::U(BTN_LEFT), Arg::U(state)],
+                        ))?;
+                        self.put(&message(p, 4, &[]))?;
                     }
                     Op::Scroll { dx, dy } => {
                         let p = self.pointer()?;
@@ -285,9 +334,18 @@ mod wire {
                         }
                         self.put(&message(p, 4, &[]))?;
                     }
-                    Op::Keys { keymap, codes } => {
+                    Op::Keys {
+                        keymap,
+                        codes,
+                        mods,
+                    } => {
                         let k = self.keyboard()?;
                         self.keymap(k, keymap)?;
+                        // modifiers(depressed, latched, locked, group)
+                        let hold = |m| message(k, 2, &[Arg::U(m), Arg::U(0), Arg::U(0), Arg::U(0)]);
+                        if *mods != 0 {
+                            self.put(&hold(*mods))?;
+                        }
                         for code in codes {
                             for state in [1, 0] {
                                 self.put(&message(
@@ -296,6 +354,9 @@ mod wire {
                                     &[Arg::U(now()), Arg::U(*code), Arg::U(state)],
                                 ))?;
                             }
+                        }
+                        if *mods != 0 {
+                            self.put(&hold(0))?;
                         }
                     }
                 }

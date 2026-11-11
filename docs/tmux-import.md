@@ -5,6 +5,10 @@ native configuration layer for phux's terminal UI. It brings over common
 bindings and a few preferences, with a report of what changes or cannot be
 represented. Desktop shortcuts use a separate configuration.
 
+To have your coding agent do the migration from your config files instead,
+with Ghostty, zellij and herdr bindings too, use
+[`phux migrate`](./migrate.md).
+
 Start tmux with your usual configuration first, then preview:
 
 ```sh
@@ -76,7 +80,7 @@ flags, targets, and command chains are not silently discarded.
 | `switch-client -n/-p/-l` | Next/previous/last session |
 | Basic rename prompts, session/window pickers, `list-keys` | Native phux prompts, pickers and help, reported as approximate |
 | `command-prompt`, `source-file PATH` | phux's action palette or native config reload, reported as approximate |
-| `copy-mode` | Enters phux copy mode; navigation and selection keys differ |
+| `copy-mode` | Enters phux copy mode, which has vi keys; copy-mode key tables are not imported |
 
 Bindings from tmux's `prefix` and `root` tables become prefix and global
 bindings. Repeat bindings are reported as approximate: tmux's repeat

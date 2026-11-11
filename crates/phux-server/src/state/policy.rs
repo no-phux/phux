@@ -50,6 +50,37 @@ impl ServerState {
         self.clients.authenticated_credential(client_id)
     }
 
+    /// `client` as the input log names it: its credential id, `owner` on
+    /// the owner's socket, else `anonymous`.
+    #[must_use]
+    pub fn input_sender(&self, client: ClientId) -> String {
+        if let Some(credential) = self.authenticated_credential(client) {
+            return credential.id.clone();
+        }
+        let owner = self
+            .peer_identity(client)
+            .is_some_and(|peer| peer.transport == phux_protocol::policy::TransportType::UnixSocket);
+        if owner { "owner" } else { "anonymous" }.to_owned()
+    }
+
+    /// What a hub stamps on document input it relays for `client`
+    /// (`docs/authority.md#relayed-identity`): [`Self::input_sender`] and
+    /// its `HELLO` name, each cut to `MAX_ON_BEHALF_OF` bytes.
+    #[must_use]
+    pub fn relayed_for(&self, client: ClientId) -> phux_protocol::wire::frame::OnBehalfOf {
+        let cut = |text: &str| {
+            let mut end = text.len().min(phux_protocol::wire::frame::MAX_ON_BEHALF_OF);
+            while !text.is_char_boundary(end) {
+                end -= 1;
+            }
+            text[..end].to_owned()
+        };
+        phux_protocol::wire::frame::OnBehalfOf {
+            credential: cut(&self.input_sender(client)),
+            name: cut(self.client_name(client).unwrap_or_default()),
+        }
+    }
+
     /// The audit actor for `client_id`; the server itself when unknown.
     #[must_use]
     pub fn audit_actor(&self, client_id: ClientId) -> crate::audit::AuditActor {

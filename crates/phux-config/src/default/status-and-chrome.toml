@@ -43,7 +43,7 @@ left = [
 center = []
 # The right slot changes shape with the terminal, via the universal
 # `min-cols` / `max-cols` options every widget accepts (they gate on the
-# width of the whole bar, not on the widget's own share).
+# terminal's width, not the bar's or the widget's own share).
 #
 # Wide enough for ambient context (>64 columns): session name and clock.
 # Narrower than that, those columns are worth more as an affordance: the

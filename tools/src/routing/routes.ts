@@ -25,6 +25,8 @@ const DOC_INPUTS: Record<string, Surface[]> = {
   "docs/spec/wire-schema.json": ["phux"],
   "docs/{reference,assets}/**": ["phux"],
   "docs/agents.md": ["phux"],
+  // examples_e2e runs this page's automation example.
+  "docs/scripting.md": ["phux"],
   "CHANGELOG.md": [],
 };
 

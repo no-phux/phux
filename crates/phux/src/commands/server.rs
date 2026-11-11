@@ -5,10 +5,12 @@ use std::time::Duration;
 use phux_server::runtime::default_socket_path;
 
 pub(super) mod ensure;
+mod permissions;
 mod run;
 mod spawn;
 
 pub use ensure::ENSURE_TIMEOUT_ENV;
+pub(crate) use permissions::{PrivacyService, run as run_permissions};
 pub(crate) use run::run_server;
 pub use spawn::AUTO_SPAWN_IDLE_ENV;
 pub(crate) use spawn::{ensure_server, ensure_server_for_bootstrap, ensure_server_unseeded};

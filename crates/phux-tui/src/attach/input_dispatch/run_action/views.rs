@@ -187,6 +187,12 @@ pub(in crate::attach) fn push_copy_mode(
         pane_rect.h,
     ));
     ctx.overlays.push(overlay);
+    if let Some(top) = focused
+        .and_then(|id| published_terminal(ctx.engine_kernel, id))
+        .and_then(crate::attach::copy::viewport_screen_top)
+    {
+        ctx.overlays.set_copy_viewport_top(top);
+    }
 }
 
 /// ADR-0058: the keyboard route to the pane menu (the only one when the app

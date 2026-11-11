@@ -5,6 +5,7 @@
 //!   (ADR-0128), shared by the one-shot verbs and the control plane.
 //! - [`target`]: resolve `[USER@]HOST[:PORT]` against the `[[remote]]`
 //!   registry (ADR-0093 rung 1).
+//! - [`pairing`]: parse the canonical connect link without dialing or learning trust.
 //! - [`dial`]: dial a resolved entry under the CLI's trust rules.
 //! - [`reconnect`]: backoff ladders and fatal-refusal rules.
 //! - `tunnel` (Unix): the byte relay for a socket-owning embedder.
@@ -17,6 +18,7 @@
 //! - [`handshake`]: `HELLO` and `HELLO_OK` acceptance, shared by every lane.
 //! - [`connection`]: the async driver (dial, framing, keepalive, reconnect).
 //! - [`project_identity`]: a checkout's repository identity, from git files.
+//! - [`project_groups`]: session rows grouped by that identity.
 //! - [`release`]: channels, release asset names, and the channel manifest
 //!   every updater reads (ADR-0176).
 //! - [`organize`]: the organize judge, its Jev transport, and the undo
@@ -43,7 +45,9 @@ pub mod engine;
 pub mod enroll;
 pub mod handshake;
 pub mod organize;
+pub mod pairing;
 pub mod perf;
+pub mod project_groups;
 pub mod project_identity;
 #[cfg(feature = "engine")]
 pub mod publication;

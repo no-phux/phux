@@ -82,6 +82,8 @@ enum CommandTag {
     Mirror = 0x4a,
     /// `MIRROR_PROVIDE`: Rune's macOS runner reports and learns its mirrors.
     MirrorProvide = 0x4b,
+    /// `PRIVACY_STATUS`: the macOS privacy grants the server holds.
+    PrivacyStatus = 0x4c,
 }
 
 // `Command` tags (SPEC §5.1). `0x00`, `0x04`, and `0x06` are reserved catalog
@@ -166,6 +168,8 @@ pub(crate) const COMMAND_TAG_SEND_DOCUMENT_INPUT: u8 = CommandTag::SendDocumentI
 pub(crate) const COMMAND_TAG_MIRROR: u8 = CommandTag::Mirror as u8;
 /// Wire tag for [`Command::MirrorProvide`].
 pub(crate) const COMMAND_TAG_MIRROR_PROVIDE: u8 = CommandTag::MirrorProvide as u8;
+/// Wire tag for [`Command::PrivacyStatus`].
+pub(crate) const COMMAND_TAG_PRIVACY_STATUS: u8 = CommandTag::PrivacyStatus as u8;
 /// Wire tag for [`Command::KillResourceIf`]: a new tag rather than a field on
 /// `KILL_RESOURCE`, so a peer without `CONDITIONAL_KILL` fails to decode it
 /// instead of killing unconditionally (ADR-0109).

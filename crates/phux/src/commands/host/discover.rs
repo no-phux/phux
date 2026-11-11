@@ -221,6 +221,7 @@ mod tests {
             remote_phux: None,
             client_cert: None,
             client_key: None,
+            color: None,
         }
     }
 

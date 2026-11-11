@@ -258,6 +258,11 @@ fn board(r: &Pitch, i: usize) -> El {
                 .items_center()
                 .fill(rgba([12.0, 18.0, 28.0], 0.9))
                 .border(1.0, rgba(MINT, 0.35 + 0.3 * r.nt))
+                .child(crate::host_color::dot(
+                    &z.host,
+                    7.0,
+                    rgba([12.0, 18.0, 28.0], 1.0),
+                ))
                 .child(text(label).font(BOARD).color(rgba(ink, 1.0)))
                 .children((waiting > 0).then(|| {
                     el().size(15.0, 15.0)

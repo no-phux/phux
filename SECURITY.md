@@ -14,11 +14,8 @@ How the LTS line is promoted and patched is in
 
 ## Reporting a vulnerability
 
-Please do not open a public issue. Report privately through either:
-
-- GitHub private vulnerability reporting:
-  [Report a vulnerability](https://github.com/no-phux/phux/security/advisories/new)
-- Email: security@phux.sh
+Please do not open a public issue. Email privacy@phall.io with "security" in
+the subject.
 
 Include the version (`phux --version`), the platform, and steps or a proof of
 concept. We acknowledge reports within 5 business days.

@@ -215,6 +215,7 @@ fn plaque(h: &Hive, i: usize) -> El {
     let bh = (f.bar - 6.0).min(22.0) * z;
     let size = (10.0 + 2.0 * h.s).round() * z;
     let ink = rgba([70.0, 34.0, 8.0], 0.9);
+    let wood = rgba(mix([238.0, 206.0, 156.0], [120.0, 92.0, 60.0], nt), 1.0);
     let nail = || {
         el().size(2.6 * z, 2.6 * z)
             .radius(1.3 * z)
@@ -246,12 +247,10 @@ fn plaque(h: &Hive, i: usize) -> El {
                 .gap(5.0 * z)
                 .radius(3.0 * z)
                 .items_center()
-                .fill(rgba(
-                    mix([238.0, 206.0, 156.0], [120.0, 92.0, 60.0], nt),
-                    1.0,
-                ))
+                .fill(wood)
                 .border(1.0, rgba([80.0, 40.0, 10.0], 0.55))
                 .child(nail())
+                .child(crate::host_color::dot(&f.host, 7.0 * z, wood))
                 .child(
                     text(f.host.to_uppercase())
                         .font(TextStyle::new(size, 600.0))

@@ -112,7 +112,7 @@ Every kind additionally accepts a `style` table with optional `fg`, `bg` (color 
 
 ## The universal `min-cols` / `max-cols` options
 
-Every kind also accepts `min-cols` and `max-cols`: integer bounds on the width of the **whole status row** (not the widget's own share) outside which the widget renders nothing at all. A hidden widget costs no width, so the widgets that remain get the columns it would have taken.
+Every kind also accepts `min-cols` and `max-cols`: integer bounds on the width of the **terminal** (not the status row, which a sidebar narrows, nor the widget's own share) outside which the widget renders nothing at all. A hidden widget costs no width, so the widgets that remain get the columns it would have taken.
 
 Use them to make one lineup change shape with the terminal rather than shrink inside it. The honest answer to a narrow window is often not "show this smaller" but "do not show this": a clock is worth four columns at 120 and worth none at 45. The shipped `[status]` block uses exactly this to trade the session name and clock for a `switch` chip below 65 columns.
 
