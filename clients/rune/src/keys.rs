@@ -57,6 +57,8 @@ pub enum Shortcut {
     /// A keyboard cursor over the pane, to select and copy with vi keys.
     CopyMode,
     CopyConfig,
+    /// Start again what a server restart ended.
+    RestoreSessions,
     Inbox,
     /// The fleet as a galaxy: machines, their agents, and how they relate.
     Galaxy,

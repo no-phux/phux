@@ -305,8 +305,8 @@ The command names:
   `split-right`, `split-down`, `zoom-pane`, `focus-left`, `focus-right`,
   `focus-up`, `focus-down`, `next-terminal`, `previous-terminal`.
 - Sessions and machines: `new-session`, `switch-session`, `rename-session`,
-  `close-session`, `machines`, `retry-connection`, `jump-to-attention`,
-  `inbox`.
+  `close-session`, `restore-sessions`, `machines`, `retry-connection`,
+  `jump-to-attention`, `inbox`.
 - Text: `copy`, `paste`, `select-all`, `copy-mode`, `find`, `find-next`,
   `find-previous`, `find-selection`, `insert-path`, `scroll-top`,
   `scroll-bottom`, `prompt-up`, `prompt-down`, `zoom-in`, `zoom-out`,

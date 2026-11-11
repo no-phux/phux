@@ -88,6 +88,7 @@ every_shortcut!(
     FindSelection,
     CopyMode,
     CopyConfig,
+    RestoreSessions,
     Inbox,
     Galaxy,
     Reef,

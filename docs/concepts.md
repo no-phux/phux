@@ -127,7 +127,7 @@ phux relaunch @4       # start one pane again
 phux rm @4             # forget a pane instead
 ```
 
-`phux restore` also resumes coding agents whose integration supports it. From an attached window, **Restore sessions** in the command palette runs the same thing.
+`phux restore` also resumes coding agents whose integration supports it. From an attached window, **Restore sessions** in the command palette (the TUI's or Rune's) runs the same thing.
 
 To have each new server do that by itself, opt in:
 
