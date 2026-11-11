@@ -301,6 +301,19 @@ mod tests {
         );
     }
 
+    /// Off macOS a release archive marks its directory; a build tree has no mark.
+    #[test]
+    #[cfg(not(target_os = "macos"))]
+    fn only_the_marked_linux_layout_updates() {
+        let dir = std::env::temp_dir().join(format!("rune-layout-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let executable = dir.join(EXECUTABLE);
+        assert!(installation(&executable).is_err());
+        std::fs::write(dir.join(LINUX_MARKER), "").unwrap();
+        assert_eq!(installation(&executable), Ok(dir.clone()));
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
     #[test]
     fn protocol_lines_compare_by_major() {
         assert!(same_protocol_line("3.1", "3.9"));

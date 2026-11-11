@@ -16,9 +16,12 @@ impl Desk {
     /// Ghostty's cursor blink: 600 ms phases while the window has focus and
     /// the program asked for a blinking cursor, restarting on typing. Wakes
     /// only for the next flip, so an idle window draws two frames a second.
+    /// A connection that is down holds the cursor steady: a blink would make
+    /// a screen that has stopped look alive, and redraw it for nothing.
     pub(super) fn blink(&mut self, client: &Client, tx: &mut Tx) -> bool {
         const PHASE: f64 = 0.6;
         let blinking = self.focused
+            && self.link_is_up()
             && self
                 .shown
                 .as_ref()
@@ -96,30 +99,37 @@ impl Desk {
         let metrics = self.metrics();
         let cell = metrics.cell_px();
         for terminal in on_screen {
-            if self.view_of(&terminal).is_none() {
-                continue;
-            }
-            let Some(area) = self.areas.get(&terminal).copied() else {
-                continue;
-            };
-            if area[0] < 1.0 || area[1] < 1.0 {
-                continue;
-            }
-            let size = metrics.fit(area);
-            if self.fitted.get(&terminal) == Some(&(size, cell)) {
-                continue;
-            }
-            let outcome = client.with_control(|control| {
-                control.resize_terminal_with_cell(
-                    &terminal,
-                    size.0.into(),
-                    size.1.into(),
-                    Some(cell),
-                )
-            });
-            if outcome == phux_client_runtime::control::TerminalResizeOutcome::Queued {
-                self.fitted.insert(terminal, (size, cell));
-            }
+            self.fit_terminal(&client, terminal, &metrics, cell);
+        }
+    }
+
+    fn fit_terminal(
+        &mut self,
+        client: &Client,
+        terminal: ResourceId,
+        metrics: &crate::grid::Metrics,
+        cell: (u16, u16),
+    ) {
+        if self.view_of(&terminal).is_none() {
+            return;
+        }
+        let Some(area) = self.areas.get(&terminal).copied() else {
+            return;
+        };
+        if area[0] < 1.0 || area[1] < 1.0 {
+            return;
+        }
+        let size = metrics.fit(area);
+        if self.defer_phone_fit(&terminal, (size, cell))
+            || self.fitted.get(&terminal) == Some(&(size, cell))
+        {
+            return;
+        }
+        let outcome = client.with_control(|control| {
+            control.resize_terminal_with_cell(&terminal, size.0.into(), size.1.into(), Some(cell))
+        });
+        if outcome == phux_client_runtime::control::TerminalResizeOutcome::Queued {
+            self.fitted.insert(terminal, (size, cell));
         }
     }
 
@@ -161,5 +171,38 @@ impl Desk {
             })
         });
         self.painted.replace(painted);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_cursor_blinks_only_while_the_connection_is_up() {
+        // DECSCUSR 1: a blinking block.
+        let (client, mut rt) = crate::grid::budget::input_fixture_showing("\x1b[1 q");
+        rt.frame(0.0);
+        let mut blink_at = |clock: f64, status: Status| {
+            rt.update(|desk, tx| {
+                desk.clock = clock;
+                desk.status = status;
+                desk.blink(&client, tx);
+            });
+            (rt.state.blink_on, rt.state.generation)
+        };
+        let (on, drawn) = blink_at(0.1, Status::Attached);
+        assert!(on);
+        // The dark phase of a live cursor.
+        let (on, dark) = blink_at(0.7, Status::Attached);
+        assert!(!on && dark > drawn);
+        // The link drops mid-phase: the cursor comes back and stays.
+        let (on, steady) = blink_at(0.8, Status::Connecting);
+        assert!(on && steady > dark);
+        for clock in [1.3, 1.9, 2.5, 60.7] {
+            assert_eq!(blink_at(clock, Status::Connecting), (true, steady));
+        }
+        // Up again, it blinks again.
+        assert!(!blink_at(61.9, Status::Attached).0);
     }
 }

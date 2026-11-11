@@ -4,7 +4,7 @@
 
 use phux_client_core::layout::{Direction, LayoutNode, SplitDir};
 use phux_protocol::ids::ResourceId;
-use rune::{Drag, Key, KeyEvent, Mods, Phase};
+use rune::{Drag, Key, KeyEvent, Phase};
 
 use super::super::Desk;
 use super::super::input::Modal;
@@ -305,41 +305,6 @@ impl Desk {
                 self.focus_pane(&next);
             }
         }
-    }
-
-    /// Deliberate history pad, through the existing app-aware wheel policy:
-    /// local history, alternate-screen arrows, or program mouse wheels.
-    pub fn phone_history(&mut self, drag: &Drag) {
-        if self.modal().is_some() {
-            return;
-        }
-        let Some(focus) = self.shown.as_ref().map(|s| s.resource.clone()) else {
-            return;
-        };
-        let Some(phone) = self.phone.as_mut() else {
-            return;
-        };
-        if drag.phase == Phase::Down {
-            phone.history = Some((focus, 0.0));
-            return;
-        }
-        let Some((started, last)) = phone.history.as_mut() else {
-            return;
-        };
-        if *started != focus {
-            phone.history = None;
-            return;
-        }
-        let dy = drag.dy - *last;
-        *last = drag.dy;
-        if drag.phase == Phase::Up {
-            phone.history = None;
-        }
-        if drag.cancelled() {
-            return;
-        }
-        let [w, h] = self.pane_area(&focus).unwrap_or([0.0; 2]);
-        self.wheel(&focus, w / 2.0, h / 2.0, dy, Mods::default());
     }
 }
 

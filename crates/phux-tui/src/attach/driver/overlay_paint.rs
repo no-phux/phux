@@ -147,7 +147,7 @@ fn visible_search_hits(
 /// The copy-mode key legends, longest first; the strip paints the longest one
 /// that fits.
 pub(super) const COPY_MODE_LEGENDS: [&str; 3] = [
-    "⏎ copy · w word · v line · / find · tab block · esc",
+    "y copy · v select · V line · / find · tab block · esc",
     "⏎ copy · / find · tab block · esc",
     "⏎ copy · esc",
 ];

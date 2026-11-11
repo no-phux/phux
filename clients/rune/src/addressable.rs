@@ -18,6 +18,8 @@ pub struct Addressable {
     /// The session's name, or a satellite resource's host.
     pub session: String,
     pub kind: ResourceKind,
+    /// What a list calls the document when `!kind.is_terminal()`.
+    pub mirror: &'static str,
 }
 
 /// The topology's terminals and documents. An agent session has no screen
@@ -48,6 +50,7 @@ pub fn list(topology: &Topology) -> Vec<Addressable> {
                 session_id: r.session_id,
                 session,
                 kind: r.kind,
+                mirror: "Read-only mirror",
             }
         })
         .collect();
@@ -90,6 +93,7 @@ impl Desk {
                 {
                     r.session.clone_from(&session.name);
                 }
+                r.mirror = self.mirror_label(&r.id);
             }
             !r.session.is_empty()
         });

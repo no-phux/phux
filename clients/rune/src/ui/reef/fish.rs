@@ -156,6 +156,7 @@ pub fn fish(pen: &mut Pen, r: &Reef, pal: &Pal, f: &Fish, labels: &mut Vec<Label
             text,
             badge: None,
             amber: true,
+            host: None,
         });
     } else if named {
         labels.push(Label {
@@ -163,6 +164,7 @@ pub fn fish(pen: &mut Pen, r: &Reef, pal: &Pal, f: &Fish, labels: &mut Vec<Label
             text: f.who.name.clone(),
             badge: None,
             amber: false,
+            host: None,
         });
     }
 }

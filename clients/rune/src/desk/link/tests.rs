@@ -19,6 +19,12 @@ use phux_protocol::ids::ResourceId;
 use crate::desk::{NoticeKind, Pending, Shown};
 use crate::launch::{self, Options};
 
+mod phone;
+
+/// A refused token as the QUIC lane renders it (`dial::dial_message`).
+const QUIC_REFUSED: &str =
+    "mini refused the pairing token (unauthorized); re-pair it with `phux host add mini`";
+
 fn desk() -> Desk {
     let options = Options {
         socket: Some(PathBuf::from("/nowhere/phux.sock")),
@@ -146,6 +152,11 @@ fn nothing_retries_what_retrying_cant_change() {
     assert!(!desk.stuck());
     desk.error = Some("websocket: 401".to_owned());
     assert!(desk.stuck());
+    // The QUIC lane's refusal is as final as the WebSocket's.
+    desk.error = Some(QUIC_REFUSED.to_owned());
+    assert!(desk.stuck());
+    desk.error = Some("mini did not answer (timed out)".to_owned());
+    assert!(!desk.stuck());
     desk.error = None;
     desk.failed_with("server error VersionIncompatible: server speaks 12");
     assert!(desk.stuck());
@@ -203,11 +214,13 @@ fn a_stale_window_says_when_it_has_stopped_trying() {
     );
     desk.link.ended = None;
     desk.status = Status::Failed;
-    desk.error = Some("websocket: 401".to_owned());
-    assert!(matches!(
-        desk.banner(),
-        Some(Banner::Stuck(Standing::Unreachable(_)))
-    ));
+    for refusal in ["websocket: 401", QUIC_REFUSED] {
+        desk.error = Some(refusal.to_owned());
+        let Some(Banner::Stuck(Standing::Unreachable(why))) = desk.banner() else {
+            panic!("{refusal} keeps retrying");
+        };
+        assert!(why.contains("Set it up again"), "{why}");
+    }
 }
 
 /// Counts the wakes a client delivers.
@@ -434,6 +447,7 @@ fn transport_errors_read_as_words() {
         "No answer from the machine."
     );
     assert!(plainly("websocket: 401 pairing token refused").contains("Set it up again"));
+    assert!(plainly(QUIC_REFUSED).contains("Set it up again"));
     assert_eq!(plainly("something new"), "something new");
 }
 

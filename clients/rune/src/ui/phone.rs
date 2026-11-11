@@ -3,55 +3,40 @@
 //! Rune can't do on a phone yet (safe areas, the system keyboard) is drawn
 //! here instead; clients/rune/MOBILE.md lists each piece and what replaces it.
 
-use rune::{Color, Cursor, Cx, Edge, El, Key, TextStyle, Transition, col, el, row, text, tok};
+use rune::{Color, Cursor, Cx, El, Key, TextStyle, col, el, row, text, tok};
 
 use super::{
-    Ink, TITLEBAR_H, icons, inbox, machines, overlay, palette, panes, settings, spatial, status,
-    tabs,
+    Ink, TITLEBAR_H, icons, inbox, machines, news, overlay, palette, panes, settings, spatial,
+    status, tabs,
 };
 use crate::desk::Desk;
 use crate::desk::phone::{Latch, Phone, Soft};
 use crate::keys::Shortcut;
 
+mod keyboard;
+use keyboard::keyboard;
+
 const TITLE: TextStyle = TextStyle::new(16.0, 600.0);
 const SUBTITLE: TextStyle = TextStyle::new(13.0, 400.0);
-const CAP: TextStyle = TextStyle::new(21.0, 400.0);
 const CAP_WORD: TextStyle = TextStyle::new(15.0, 500.0);
 const CHIP: TextStyle = TextStyle::new(16.0, 500.0);
+const TAB: TextStyle = TextStyle::new(14.0, 500.0);
 /// A round control: the 44-point touch target.
 const ROUND: f32 = 44.0;
-const KEY_H: f32 = 42.0;
-/// Room for the status bar and the home indicator, which Rune doesn't
-/// report on a phone yet.
+/// The top bar's capsule and the gap under it: where a banner starts.
+pub(super) const TOP_BAR: f32 = ROUND + 4.0 + 8.0;
+/// Room for the status bar, which Rune doesn't report on a phone yet.
 const STATUS_INSET: f32 = 12.0;
-const HOME_INSET: f32 = 20.0;
-/// How far glass blurs what it floats over. Rune blurs four elements a frame
-/// (`MAX_BACKDROP_BLURS`): the top bar's three and the tab pills.
-const GLASS_BLUR: f32 = 22.0;
-
-const LETTERS: [&str; 3] = ["qwertyuiop", "asdfghjkl", "zxcvbnm"];
-const SYMBOLS: [&str; 3] = ["1234567890", "-/:;()$&@\"", ".,?!'`|~"];
 
 pub fn view(desk: &Desk, cx: &mut Cx<Desk>) -> El {
-    let p = super::ink(cx.system_dark(), cx.accent(), desk.settings.theme);
+    let p = ink(desk, cx.accent());
     let fallback = Phone::default();
     let phone = desk.phone.as_ref().unwrap_or(&fallback);
     let keyboard_visible = desk.phone_keyboard_visible();
-    // The terminal's own ground runs under everything, as on a phone.
-    let ground = desk
-        .client
-        .as_ref()
-        .zip(desk.shown.as_ref())
-        .and_then(|(client, shown)| client.acquire_view(shown.view?))
-        .map_or(p.bg, |frame| crate::grid::background(&frame));
-    // Glass floats over the terminal, which may stay dark while UIKit/the
-    // desktop prefers light chrome. Its ink must contrast with that ground,
-    // not disappear into it. Fields/sheets keep their own opaque theme ink.
-    let controls = if desk.settings_open {
-        super::ink(cx.system_dark(), cx.accent(), desk.settings.theme)
-    } else {
-        ground_ink(ground, cx.accent(), desk.settings.theme)
-    };
+    // Glass floats beside the terminal, which may not have taken a newly
+    // chosen theme yet: its ink contrasts with the ground actually drawn.
+    let drawn = ground_ink(terminal_ground(desk), cx.accent(), desk.settings.theme);
+    let controls = if desk.settings_open { &p } else { &drawn };
     cx.foreground(p.text);
     let stage = phone_stage(desk, &p, cx);
     let screen = col()
@@ -59,44 +44,86 @@ pub fn view(desk: &Desk, cx: &mut Cx<Desk>) -> El {
         .w_full()
         .h_full()
         .pt(top_inset(desk, cx))
-        .children((!desk.settings_open).then(|| top_bar(desk, &controls)))
+        .children((!desk.settings_open).then(|| top_bar(desk, controls)))
         .child(stage)
-        .children((!desk.settings_open).then(|| tab_pills(desk, &controls)));
-    let bar = (!desk.settings_open || keyboard_visible).then(|| accessory(desk, phone, &controls));
-    let fill = if desk.settings_open {
+        .children(
+            (!desk.settings_open)
+                .then(|| tab_pills(desk, controls))
+                .flatten(),
+        );
+    let bar = (!desk.settings_open || keyboard_visible).then(|| accessory(desk, phone, controls));
+    let fill = edge_fill(desk, &p);
+    // Both keyboards sit after every sheet, outside its measured viewport.
+    // Rune treats post-modal controls as part of the modal: keys remain live
+    // while the scrim still blocks the terminal and navigation behind it.
+    let content = overlays(
+        el().h(0.0).grow(1.0).w_full().min_h(0.0).child(screen),
+        desk,
+        &p,
+    );
+    col()
+        .key("phone")
+        .w_full()
+        .h_full()
+        .fill(fill)
+        .child(content)
+        .children(bar)
+        .children(
+            desk.native
+                .is_none()
+                .then(|| keyboard(phone, keyboard_visible, controls)),
+        )
+}
+
+/// The terminal's own ground runs under everything, as on a phone. Before
+/// a terminal is on screen it is the theme's, or the black a terminal
+/// starts on: never the system's light page behind a dark launch.
+fn terminal_ground(desk: &Desk) -> Color {
+    let frame = desk
+        .client
+        .as_ref()
+        .zip(desk.shown.as_ref())
+        .and_then(|(client, shown)| client.acquire_view(shown.view?));
+    frame.map_or_else(
+        || {
+            let theme = desk.settings.theme;
+            theme.map_or(Color::BLACK, |theme| crate::theme::color(theme.background))
+        },
+        |frame| crate::grid::background(&frame),
+    )
+}
+
+/// A phone shows one surface at a time, so its sheets and pages take the
+/// chosen theme's ink, or with none the terminal ground's, never the
+/// system appearance: a light-mode phone would otherwise open white sheets
+/// over a dark terminal.
+fn ink(desk: &Desk, accent: Color) -> Ink {
+    match desk.settings.theme {
+        Some(theme) => super::ink(theme.dark, accent, Some(theme)),
+        None => ground_ink(terminal_ground(desk), accent, None),
+    }
+}
+
+fn edge_fill(desk: &Desk, p: &Ink) -> Color {
+    if desk.settings_open {
         p.sidebar
     } else {
-        ground
-    };
-    if desk.native.is_some() {
-        // An accessory inside `screen` precedes root sheets and is inert
-        // behind their modal scrims. Reserve it below the modal content and
-        // append it AFTER every sheet, just as an OS input accessory behaves.
-        let content = overlays(
-            el().h(0.0).grow(1.0).w_full().min_h(0.0).child(screen),
-            desk,
-            &p,
-        );
-        return col()
-            .key("phone")
-            .w_full()
-            .h_full()
-            .fill(fill)
-            .child(content)
-            .children(bar);
+        terminal_ground(desk)
     }
-    let screen =
-        screen
-            .key("phone")
-            .children(bar)
-            .child(keyboard(phone, keyboard_visible, &controls));
-    overlays(el().w_full().h_full().fill(fill).child(screen), desk, &p)
+}
+
+/// The phone's edge colour, for a native host to continue under the status
+/// bar and home indicator it keeps outside the surface.
+pub(crate) fn edge_color(desk: &Desk) -> Color {
+    let accent = rune::SystemAccent::DEFAULT.accent(true);
+    edge_fill(desk, &ink(desk, accent))
 }
 
 fn overlays(root: El, desk: &Desk, p: &Ink) -> El {
     root.children(status::banner(desk, p))
         .children(desk.inbox.open.then(|| inbox::view(desk, p)))
         .children(machines::sheet(desk, p))
+        .children(desk.news.open.then(|| news::view(desk, p)))
         .children(tabs::rename_sheet(desk, p))
         .children(
             desk.pointer
@@ -141,14 +168,10 @@ fn phone_stage(desk: &Desk, p: &Ink, cx: &mut Cx<Desk>) -> El {
         .children(desk.palette_open.then(|| palette::view(desk, p, 8.0)))
 }
 
-/// Liquid glass: what it floats over, blurred (`blur`) and tinted, under a
-/// rim lit from above and a soft lift.
-fn glass(surface: El, blur: bool, p: &Ink) -> El {
-    let surface = if blur {
-        surface.backdrop_blur(GLASS_BLUR)
-    } else {
-        surface
-    };
+/// Tinted glass under a rim lit from above and a soft lift. Every surface
+/// sits beside the terminal on its flat ground, never over its text, so
+/// there is nothing behind one for a backdrop blur to show.
+fn glass(surface: El, p: &Ink) -> El {
     surface
         .continuous_corners()
         .gradient(p.text.alpha(0.13), p.text.alpha(0.06))
@@ -157,13 +180,13 @@ fn glass(surface: El, blur: bool, p: &Ink) -> El {
 }
 
 /// A glass circle around `content`.
-fn round(key: &'static str, name: &'static str, content: El, blur: bool, p: &Ink) -> El {
+fn round(key: &'static str, name: &'static str, content: El, p: &Ink) -> El {
     let circle = el()
         .key(key)
         .size(ROUND, ROUND)
         .radius(ROUND / 2.0)
         .center();
-    glass(circle, blur, p)
+    glass(circle, p)
         .press(p.hover)
         .cursor(Cursor::Pointer)
         .label(name)
@@ -200,7 +223,7 @@ fn top_bar(desk: &Desk, p: &Ink) -> El {
         .gap(10.0)
         .radius((ROUND + 4.0) / 2.0)
         .items_center();
-    let place = glass(capsule, true, p)
+    let place = glass(capsule, p)
         .press(p.hover)
         .cursor(Cursor::Pointer)
         .label("Change session")
@@ -226,11 +249,19 @@ fn top_bar(desk: &Desk, p: &Ink) -> El {
             "phone-more",
             "Commands",
             glyph(&icons::MORE, 20.0, p.text),
-            true,
             p,
         )
         .on_press_tx(|d: &mut Desk, tx| d.shortcut(Shortcut::Palette, tx))
     });
+    let bell = round(
+        "phone-news",
+        news::bell_name(desk),
+        glyph(&icons::BELL, 18.0, p.text),
+        p,
+    )
+    .expanded(desk.news.open)
+    .on_press(Desk::toggle_news)
+    .children(news::unread_dot(desk, p, (27.0, 10.0), 7.0));
     row()
         .key("phone-top")
         .w_full()
@@ -244,37 +275,49 @@ fn top_bar(desk: &Desk, p: &Ink) -> El {
                 "phone-back",
                 "Sessions",
                 glyph(&icons::CHEVRON_LEFT, 18.0, p.text),
-                true,
                 p,
             )
             .on_press_tx(|d: &mut Desk, tx| d.shortcut(Shortcut::SwitchSession, tx)),
         )
         .child(place)
+        .child(bell)
         .child(trailing)
 }
 
-/// The session's tabs as a row of prompts, and a new one.
-fn tab_pills(desk: &Desk, p: &Ink) -> El {
-    let count = desk.tabs.list.len().max(1);
+/// The session's tabs by name, and a new one. A lone tab needs no strip:
+/// its rows go to the terminal, and New Tab is in the commands.
+fn tab_pills(desk: &Desk, p: &Ink) -> Option<El> {
+    if desk.tabs.list.len() < 2 {
+        return None;
+    }
     let mut pills = glass(
         row()
             .key("phone-tabs")
+            .shrink()
+            .min_w(0.0)
             .padding(3.0)
             .gap(2.0)
-            .radius(17.0)
-            .items_center(),
-        true,
+            .radius(ROUND / 2.0)
+            .items_center()
+            .scroll_x(),
         p,
     );
-    for index in 0..count {
-        let active = desk.tabs.list.get(index).is_none_or(|tab| tab.active);
+    for (index, tab) in desk.tabs.list.iter().enumerate() {
+        let waiting = tab
+            .resources
+            .iter()
+            .any(|id| desk.activities.mark(id).needs_you());
+        let ink = if tab.active { p.text } else { p.dim };
         pills = pills.child(
-            el().key(format!("phone-tab-{index}"))
-                .w(40.0)
-                .h(28.0)
-                .radius(14.0)
-                .center()
-                .fill(if active {
+            row()
+                .key(format!("phone-tab-{index}"))
+                .h(ROUND - 6.0)
+                .max_w(132.0)
+                .px(12.0)
+                .gap(6.0)
+                .radius((ROUND - 6.0) / 2.0)
+                .items_center()
+                .fill(if tab.active {
                     p.current
                 } else {
                     Color::TRANSPARENT
@@ -283,46 +326,40 @@ fn tab_pills(desk: &Desk, p: &Ink) -> El {
                 .cursor(Cursor::Pointer)
                 .label(format!("Tab {}", index + 1))
                 .on_press(move |d: &mut Desk| d.select_tab(index))
-                .child(glyph(
-                    &icons::PROMPT,
-                    15.0,
-                    if active { p.text } else { p.dim },
-                )),
+                .children(waiting.then(|| el().size(6.0, 6.0).radius(3.0).fill(p.marks.alert)))
+                .child(text(desk.tab_label(tab)).font(TAB).color(ink).truncate()),
         );
     }
-    let new = glass(
-        el().key("phone-tab-new")
-            .size(34.0, 34.0)
-            .radius(17.0)
-            .center(),
-        false,
+    let new = round(
+        "phone-tab-new",
+        "New tab",
+        glyph(&icons::PLUS, 16.0, p.text),
         p,
     )
-    .press(p.hover)
-    .cursor(Cursor::Pointer)
-    .label("New tab")
-    .on_press(Desk::new_tab)
-    .child(glyph(&icons::PLUS, 15.0, p.text));
+    .on_press(Desk::new_tab);
     let strip = row()
         .w_full()
-        .py(8.0)
+        .px(12.0)
+        .py(6.0)
         .gap(8.0)
         .center()
         .child(pills)
         .child(new);
     // A modal owns the current group until it closes.
-    if desk.modal().is_some() {
+    Some(if desk.modal().is_some() {
         strip.inert()
     } else {
         strip
-    }
+    })
 }
 
-/// A key on the accessory bar's strip.
-fn chip(key: String, name: &'static str, content: El, lit: bool, p: &Ink) -> El {
+/// A key on the accessory bar's strip. The strip scrolls instead of
+/// squeezing its keys; at this width the sixth peeks in to say so.
+fn chip(key: String, name: &'static str, label: &'static str, lit: bool, p: &Ink) -> El {
     el().key(key)
-        .grow(1.0)
+        .min_w(40.0)
         .h(36.0)
+        .px(6.0)
         .radius(18.0)
         .center()
         .fill(if lit { p.accent } else { Color::TRANSPARENT })
@@ -330,30 +367,33 @@ fn chip(key: String, name: &'static str, content: El, lit: bool, p: &Ink) -> El 
         .press(p.hover)
         .cursor(Cursor::Pointer)
         .label(name)
-        .child(content)
-}
-
-fn accessory(desk: &Desk, phone: &Phone, p: &Ink) -> El {
-    let native_field = desk.native.is_some() && crate::desk::native_input::editing(desk);
-    let send = |label: &'static str, name: &'static str, key: Key| {
-        chip(
-            format!("phone-key-{name}"),
-            name,
-            text(label).font(CHIP).color(p.text),
-            false,
-            p,
-        )
-        .on_press_tx(move |d: &mut Desk, tx| d.soft(Soft::Key(key.clone()), tx))
-    };
-    let latch = |latch: Latch, label: &'static str, name: &'static str| {
-        let lit = phone.latched(latch);
-        chip(
-            format!("phone-latch-{name}"),
-            name,
+        .child(
             text(label)
                 .font(CHIP)
                 .color(if lit { p.on_accent } else { p.text }),
-            lit,
+        )
+}
+
+/// What a terminal needs that a phone keyboard buries or lacks, in the
+/// order it is reached for; the strip scrolls sideways through them.
+const TYPED: [(&str, &str, char); 4] = [
+    ("|", "Pipe", '|'),
+    ("~", "Tilde", '~'),
+    ("/", "Slash", '/'),
+    ("-", "Hyphen", '-'),
+];
+
+fn strip(phone: &Phone, native_field: bool, p: &Ink) -> El {
+    let send = |label: &'static str, name: &'static str, key: Key| {
+        chip(format!("phone-key-{name}"), name, label, false, p)
+            .on_press_tx(move |d: &mut Desk, tx| d.soft(Soft::Key(key.clone()), tx))
+    };
+    let latch = |latch: Latch, label: &'static str, name: &'static str| {
+        chip(
+            format!("phone-latch-{name}"),
+            name,
+            label,
+            phone.latched(latch),
             p,
         )
         .on_press(move |d: &mut Desk| d.toggle_latch(latch))
@@ -367,15 +407,39 @@ fn accessory(desk: &Desk, phone: &Phone, p: &Ink) -> El {
             .px(4.0)
             .gap(2.0)
             .radius(ROUND / 2.0)
-            .items_center(),
-        false,
+            .items_center()
+            .scroll_x(),
         p,
     )
     .child(send("esc", "Escape", Key::Escape))
-    .child(send("⇥", "Tab", Key::Tab))
-    .children((!native_field).then(|| latch(Latch::Ctrl, "⌃", "Control")))
-    .children((!native_field).then(|| latch(Latch::Alt, "⌥", "Option")))
-    .children((!native_field).then(|| latch(Latch::Shift, "⇧", "Shift")));
+    .child(send("⇥", "Tab", Key::Tab));
+    // A field being edited by the system keyboard takes neither chords nor
+    // terminal keys.
+    if native_field {
+        return strip;
+    }
+    let interrupt = chip("phone-key-Interrupt".into(), "Control C", "⌃C", false, p)
+        .on_press_tx(|d: &mut Desk, tx| d.soft_chord('c', tx));
+    let paste = chip("phone-key-Paste".into(), "Paste", "Paste", false, p)
+        .on_press_tx(|d: &mut Desk, tx| d.shortcut(Shortcut::Paste, tx));
+    strip
+        .child(latch(Latch::Ctrl, "⌃", "Control"))
+        .child(latch(Latch::Alt, "⌥", "Option"))
+        .child(latch(Latch::Shift, "⇧", "Shift"))
+        .child(interrupt)
+        .child(send("←", "Left", Key::Left))
+        .child(send("↓", "Down", Key::Down))
+        .child(send("↑", "Up", Key::Up))
+        .child(send("→", "Right", Key::Right))
+        .children(TYPED.map(|(label, name, typed)| {
+            chip(format!("phone-key-{name}"), name, label, false, p)
+                .on_press_tx(move |d: &mut Desk, tx| d.soft(Soft::Char(typed), tx))
+        }))
+        .child(paste)
+}
+
+fn accessory(desk: &Desk, phone: &Phone, p: &Ink) -> El {
+    let native_field = desk.native.is_some() && crate::desk::native_input::editing(desk);
     let pad = el()
         .key("phone-pad")
         .size(ROUND, ROUND)
@@ -388,7 +452,6 @@ fn accessory(desk: &Desk, phone: &Phone, p: &Ink) -> El {
         .child(glyph(&icons::PAD, 20.0, p.text));
     let pair = glass(
         row().key("phone-pair").radius(ROUND / 2.0).items_center(),
-        false,
         p,
     )
     .child(pad)
@@ -403,7 +466,6 @@ fn accessory(desk: &Desk, phone: &Phone, p: &Ink) -> El {
         text(if desk.settings_open { "✓" } else { "⌘" })
             .font(CHIP)
             .color(p.text),
-        false,
         p,
     )
     .on_press_tx(Desk::phone_commands);
@@ -416,7 +478,7 @@ fn accessory(desk: &Desk, phone: &Phone, p: &Ink) -> El {
         .gap(8.0)
         .items_center()
         .child(command)
-        .child(strip)
+        .child(strip(phone, native_field, p))
         .child(pair)
 }
 
@@ -452,135 +514,6 @@ fn keyboard_control(desk: &Desk, native_field: bool, p: &Ink) -> El {
         .child(glyph(&icons::KEYBOARD, 20.0, p.text))
 }
 
-/// A keyboard key; `fill` sets letters apart from the keys around them.
-fn cap(key: String, name: String, content: El, fill: Color, p: &Ink) -> El {
-    el().key(key)
-        .h(KEY_H)
-        .radius(7.0)
-        .continuous_corners()
-        .center()
-        .fill(fill)
-        .press(p.text.alpha(0.4))
-        .cursor(Cursor::Pointer)
-        .label(name)
-        .child(content)
-}
-
-/// The drawn keyboard, until Rune brings up the system's on a phone.
-fn keyboard(phone: &Phone, visible: bool, p: &Ink) -> El {
-    if !visible {
-        return el().key("phone-home").h(HOME_INSET);
-    }
-    let letter = p.text.alpha(0.22);
-    let function = p.text.alpha(0.1);
-    let rows = if phone.symbols { SYMBOLS } else { LETTERS };
-    let capital = phone.capital && !phone.symbols;
-    let char_key = |c: char| {
-        let shown = if capital { c.to_ascii_uppercase() } else { c };
-        cap(
-            format!("phone-cap-{}", u32::from(c)),
-            shown.to_string(),
-            text(shown.to_string()).font(CAP).color(p.text),
-            letter,
-            p,
-        )
-        .grow(1.0)
-        .min_w(0.0)
-        .on_press_tx(move |d: &mut Desk, tx| d.soft(Soft::Char(c), tx))
-    };
-    let line = |chars: &str, inset: f32| {
-        let mut line = row().w_full().gap(6.0).px(inset);
-        for c in chars.chars() {
-            line = line.child(char_key(c));
-        }
-        line
-    };
-    let backspace = cap(
-        "phone-cap-backspace".to_owned(),
-        "Delete".to_owned(),
-        glyph(&icons::BACKSPACE, 20.0, p.text),
-        function,
-        p,
-    )
-    .w(KEY_H)
-    .on_press_tx(|d: &mut Desk, tx| d.soft(Soft::Key(Key::Backspace), tx));
-    let third = row()
-        .w_full()
-        .gap(6.0)
-        .child(shift_cap(phone, capital, p))
-        .child(line(rows[2], 8.0).grow(1.0).min_w(0.0))
-        .child(backspace);
-    let word = |label: &'static str, key: &'static str| {
-        cap(
-            key.to_owned(),
-            label.to_owned(),
-            text(label).font(CAP_WORD).color(p.text),
-            function,
-            p,
-        )
-    };
-    let bottom = row()
-        .w_full()
-        .gap(6.0)
-        .child(
-            word(if phone.symbols { "ABC" } else { "123" }, "phone-cap-page")
-                .w(88.0)
-                .on_press(Desk::toggle_symbols),
-        )
-        .child(
-            cap(
-                "phone-cap-space".to_owned(),
-                "Space".to_owned(),
-                el(),
-                letter,
-                p,
-            )
-            .grow(1.0)
-            .on_press_tx(|d: &mut Desk, tx| d.soft(Soft::Char(' '), tx)),
-        )
-        .child(
-            cap(
-                "phone-cap-return".to_owned(),
-                "Return".to_owned(),
-                glyph(&icons::RETURN, 20.0, p.text),
-                function,
-                p,
-            )
-            .w(88.0)
-            .on_press_tx(|d: &mut Desk, tx| d.soft(Soft::Key(Key::Enter), tx)),
-        );
-    let board = col()
-        .key("phone-keyboard")
-        .preserve_focus_on_press(true)
-        .w_full()
-        .px(4.0)
-        .pt(10.0)
-        .pb(HOME_INSET)
-        .gap(11.0)
-        .radius(26.0);
-    glass(board, false, p)
-        .transition(Transition::move_edge(Edge::Bottom))
-        .child(line(rows[0], 0.0))
-        .child(line(rows[1], if phone.symbols { 0.0 } else { 18.0 }))
-        .child(third)
-        .child(bottom)
-}
-
-fn shift_cap(phone: &Phone, capital: bool, p: &Ink) -> El {
-    if phone.symbols {
-        return el().w(KEY_H);
-    }
-    cap(
-        "phone-cap-shift".to_owned(),
-        "Shift".to_owned(),
-        glyph(&icons::SHIFT, 18.0, if capital { p.bg } else { p.text }),
-        if capital { p.text } else { p.text.alpha(0.1) },
-        p,
-    )
-    .w(KEY_H)
-    .on_press(Desk::toggle_capital)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -595,5 +528,22 @@ mod tests {
             );
             assert!(crate::theme::contrast(ink.text, ground) >= 4.5);
         }
+    }
+
+    #[test]
+    fn a_phone_takes_its_sheets_from_the_theme_or_the_ground_never_the_system() {
+        let mut desk = Desk::settings_test_fixture().with_phone(true);
+        desk.settings.theme = None;
+        desk.settings_open = false;
+        // No terminal yet: the black one starts on, so a light-mode phone
+        // does not open on a white page between a dark launch and terminal.
+        assert_eq!(terminal_ground(&desk), Color::BLACK);
+        assert_eq!(edge_color(&desk), Color::BLACK);
+        let sheets = ink(&desk, Color::WHITE);
+        assert_eq!(crate::theme::on_fill(sheets.raised), Color::WHITE);
+        let light = crate::theme::all().find(|theme| !theme.dark);
+        desk.settings.theme = light;
+        let sheets = ink(&desk, Color::WHITE);
+        assert_eq!(crate::theme::on_fill(sheets.raised), Color::BLACK);
     }
 }

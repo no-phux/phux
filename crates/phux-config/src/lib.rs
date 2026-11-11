@@ -17,6 +17,7 @@ pub mod loader;
 pub mod mirror;
 pub mod overlay;
 pub mod plugin;
+pub mod producer;
 pub mod production;
 pub mod project;
 pub mod satellite;
@@ -39,8 +40,10 @@ pub use mirror::MirrorConfigEntry;
 use phux_config_core::layer;
 pub use phux_config_core::{
     ConfigError, ConfigProvenance, KeyOrigin, LayerSource, MAX_EXTENDS_DEPTH, OrganizeCfg,
-    RemoteConfigEntry, byte_offset_to_line_col, instance, known_authorities, remote, socket,
+    RemoteConfigEntry, byte_offset_to_line_col, host_color, instance, known_authorities, remote,
+    server_bundle, socket,
 };
+pub use producer::ProducerConfigEntry;
 pub use project::ProjectConfigEntry;
 pub use satellite::SatelliteConfigEntry;
 pub use schema::{

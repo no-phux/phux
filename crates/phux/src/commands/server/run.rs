@@ -450,10 +450,11 @@ fn with_config_reload(
                 .map(|config| config.uplink)
                 .map_err(|err| err.to_string())
         }));
-    // Standing mirrors: the config-reload doorbell re-reads `[[mirrors]]`.
+    // Standing mirrors and producers: the config-reload doorbell re-reads
+    // `[[mirrors]]` and `[[producers]]`.
     server.standing_mirrors(phux_server::runtime::MirrorSource::new(|| {
         config_loader::load()
-            .map(|config| config.mirrors)
+            .map(|config| (config.mirrors, config.producers))
             .map_err(|err| err.to_string())
     }))
 }

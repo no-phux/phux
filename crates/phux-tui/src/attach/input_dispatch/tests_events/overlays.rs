@@ -278,3 +278,21 @@ async fn bracketed_paste_populates_modal_text_without_reaching_the_pane() {
         }
     }
 }
+
+/// The tab bar never shows an auto name ("1"), so the rename prompt opens
+/// empty rather than pre-filled with it: typing "build" names it "build".
+#[test]
+fn rename_prompt_for_an_auto_named_tab_opens_empty() {
+    let mut f = fx(crate::layout::ArrangementDoc::single(tid(1)));
+    f.run(&bare_action("rename-window"));
+    f.overlays.handle_paste("build");
+    let InputEvent::Key(enter) = press(PhysicalKey::Enter, None) else {
+        unreachable!()
+    };
+    let crate::render::overlay::OverlayOutcome::RunAction(commit) = f.overlays.handle_key(&enter)
+    else {
+        panic!("Enter commits");
+    };
+    f.run(&commit);
+    assert_eq!(f.workspace.groups[0].name, "build");
+}

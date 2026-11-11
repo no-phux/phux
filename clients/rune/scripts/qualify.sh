@@ -8,7 +8,8 @@
 #
 # PHUX is a dev build (target/debug/phux). Checks the notices, what the binary
 # links, its version, and that a headless frame shows the session in the
-# desktop and phone forms; on Linux it also opens a real window under Xvfb.
+# desktop and phone forms; on Linux it also opens a real window under Xvfb,
+# and under a headless weston (Wayland) where weston is installed.
 set -euo pipefail
 
 archive="${1:?usage: qualify.sh ARCHIVE PHUX [EVIDENCE_DIR]}"
@@ -113,5 +114,22 @@ if [[ "$(uname -s)" == Linux ]]; then
     "${clean[@]}" xvfb-run -a timeout 10 "$binary" --socket "$socket" --session "$marker" \
         >"$scratch/window.log" 2>&1 || code=$?
     [[ "$code" == 124 ]] || fail "the window exited $code: $(cat "$scratch/window.log")"
+    # Wayland is what a Linux desktop (Omarchy's Hyprland) gives Rune, so the
+    # window opens there too: a headless weston, with no X display in reach.
+    if command -v weston >/dev/null; then
+        runtime="$scratch/wl"
+        mkdir -m 700 "$runtime"
+        XDG_RUNTIME_DIR="$runtime" weston --backend=headless --socket=qualify --idle-time=0 \
+            >"$scratch/weston.log" 2>&1 &
+        weston_pid=$!
+        for _ in $(seq 50); do [[ -S "$runtime/qualify" ]] && break; sleep 0.1; done
+        [[ -S "$runtime/qualify" ]] || fail "weston never listened: $(cat "$scratch/weston.log")"
+        code=0
+        "${clean[@]}" XDG_RUNTIME_DIR="$runtime" WAYLAND_DISPLAY=qualify timeout 10 "$binary" \
+            --socket "$socket" --session "$marker" >"$scratch/wayland.log" 2>&1 || code=$?
+        kill "$weston_pid" 2>/dev/null || true
+        wait "$weston_pid" 2>/dev/null || true
+        [[ "$code" == 124 ]] || fail "the Wayland window exited $code: $(cat "$scratch/wayland.log")"
+    fi
 fi
 echo "qualify: $(basename "$archive") launched"

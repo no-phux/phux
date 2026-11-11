@@ -31,8 +31,8 @@ pub use args::{
     ResourceEventType, StateScope, TerminalSignal,
 };
 pub use document_input::{
-    ControlClass, ControlClasses, DocumentInput, DocumentKey, MAX_CLIPBOARD_TEXT,
-    MAX_DOCUMENT_INPUT_TEXT,
+    CONTROL_UNRESTRICTED, ControlClass, ControlClasses, DocumentInput, DocumentKey,
+    MAX_CLIPBOARD_TEXT, MAX_DOCUMENT_INPUT_TEXT, MAX_ON_BEHALF_OF, OnBehalfOf,
 };
 pub use event::{AgentEvent, ApprovalOutcome, ControlAction, ResourceLifecycle};
 pub use mirror::{MAX_MIRROR_TARGET, MAX_MIRROR_TARGETS, MirrorOp};

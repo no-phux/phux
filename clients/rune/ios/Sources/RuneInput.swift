@@ -26,6 +26,7 @@ final class RuneInput: UITextView, UITextViewDelegate {
         keyboardType = .default; autocapitalizationType = .none
         autocorrectionType = .no; spellCheckingType = .no
         smartDashesType = .no; smartQuotesType = .no; smartInsertDeleteType = .no
+        keyboardAppearance = .dark
         accessibilityLabel = "Terminal keyboard"
         accessibilityIdentifier = "rune-native-input"
         NotificationCenter.default.addObserver(self, selector: #selector(publish),
@@ -41,7 +42,7 @@ final class RuneInput: UITextView, UITextViewDelegate {
         }
         if composing, composition == nil { composition = context }
         let next = cancelStaleComposition(next)
-        if context?.token != next.token { retire() }
+        if let current = context, current.token != next.token { retire() }
         guard next.wanted, dismissedToken != next.token else {
             retire()
             return
@@ -93,6 +94,25 @@ final class RuneInput: UITextView, UITextViewDelegate {
             super.unmarkText()
             text = ""
         }
+    }
+
+    /// Inactive but still on screen (Control Center, a banner): forget the
+    /// document without dropping a keyboard that would come straight back.
+    func suspend() {
+        context = nil
+        composition = nil
+        programmatic {
+            super.unmarkText()
+            text = ""
+        }
+    }
+
+    /// The keyboard belongs to the terminal's ground, not the system theme.
+    func match(dark: Bool) {
+        let appearance: UIKeyboardAppearance = dark ? .dark : .light
+        guard keyboardAppearance != appearance else { return }
+        keyboardAppearance = appearance
+        if isFirstResponder { reloadInputViews() }
     }
 
     private func programmatic(_ body: () -> Void) {
@@ -169,9 +189,6 @@ final class RuneInput: UITextView, UITextViewDelegate {
             if result["accepted"] as? Bool != true { retire() }
             synchronize(next)
         }
-        if let text = result["copied_text"] as? String {
-            UIPasteboard.general.string = text
-        }
     }
     func named(_ name: String, ctrl: Bool = false, alt: Bool = false,
                shift: Bool = false, command: Bool = false) {
@@ -226,6 +243,12 @@ final class RuneInput: UITextView, UITextViewDelegate {
             if name == "Up" || name == "Down" { return context?.multiline != true }
             return name == "Escape" || name == "Tab"
         }
+        // A bare Return or Backspace stays in UIKit's text pipeline with the
+        // characters around it. Sent from here, one in a burst of fast key
+        // presses overtakes text still on its way: "seq 1 300" then Return
+        // ran "seq" alone.
+        let chorded = !flags.intersection([.shift, .control, .alternate, .command]).isEmpty
+        if name == "Enter" || name == "Backspace" { return chorded }
         // Option-only characters/dead keys stay UIKit-owned unless the
         // person explicitly chose Option as Meta in terminal Settings.
         if name != nil { return true }

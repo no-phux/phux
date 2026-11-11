@@ -13,6 +13,7 @@
 //!   barrier shared by every frontend.
 //! - [`layout`] — the pane-geometry layout tree, split math, and the CBOR
 //!   metadata envelope that persists it server-side.
+//! - [`motion`] — vi cursor motions within a row, for keyboard copy mode.
 //! - [`multi_pane`] — layout tree → per-pane rectangles + the divider
 //!   cells between them (pure compute; the chrome layer rasterizes the
 //!   `DividerCell`s to VT).
@@ -50,6 +51,7 @@ pub mod history;
 pub mod input_replay;
 pub mod keys;
 pub mod layout;
+pub mod motion;
 pub mod multi_pane;
 pub mod newer_server;
 pub mod org_ops;

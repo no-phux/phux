@@ -11,6 +11,13 @@
 * Honor `PHUX_AGENT_TRANSCRIPT=0` and opt-in `full` tool output using the shared
   Pi/OMP transcript mapper.
 
+## [0.5.0](https://github.com/no-phux/phux/compare/omp-extension-v0.4.1...omp-extension-v0.5.0) (2026-11-10)
+
+
+### Features
+
+* **integrations:** list and read every resource kind ([#2160](https://github.com/no-phux/phux/issues/2160)) ([4edc3bd](https://github.com/no-phux/phux/commit/4edc3bdfa4de57c0dffcc49fa99950a1a4c724f7))
+
 ## [0.4.1](https://github.com/no-phux/phux/compare/omp-extension-v0.4.0...omp-extension-v0.4.1) (2026-10-27)
 
 

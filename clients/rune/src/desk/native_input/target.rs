@@ -28,7 +28,7 @@ pub(super) enum Target {
 }
 
 impl Field {
-    fn resolve(d: &Desk, key: &str) -> Option<(Self, String)> {
+    pub(super) fn resolve(d: &Desk, key: &str) -> Option<(Self, String)> {
         let found = match (key, d.modal()) {
             ("palette-query", Some(Modal::Palette)) => {
                 (Self::Palette, format!("{:?}", d.palette_mode))

@@ -4,6 +4,8 @@ use std::process::ExitCode;
 
 use usage::ValueEnum;
 
+pub(crate) mod setup;
+
 /// Amount and subject of agent guidance to print.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, ValueEnum)]
 pub(crate) enum SkillScope {
@@ -53,6 +55,38 @@ pub(crate) fn render(scope: SkillScope) -> String {
         }
     }
     rendered
+}
+
+/// `phux skill [SCOPE]` prints the guide; its subcommands manage the stub.
+pub(crate) fn dispatch(
+    action: Option<crate::commands::SkillAction>,
+    scope: SkillScope,
+    socket: Option<std::path::PathBuf>,
+) -> ExitCode {
+    use crate::commands::SkillAction;
+    use setup::Mode;
+    match action {
+        None => run(scope),
+        Some(SkillAction::Setup {
+            agent,
+            project,
+            dry_run,
+            force,
+            json,
+        }) => setup::run(Mode::Setup { force }, &agent, project, dry_run, json),
+        Some(SkillAction::Status {
+            agent,
+            project,
+            json,
+        }) => setup::run(Mode::Status, &agent, project, false, json),
+        Some(SkillAction::Remove {
+            agent,
+            project,
+            dry_run,
+            json,
+        }) => setup::run(Mode::Remove, &agent, project, dry_run, json),
+        Some(SkillAction::SessionStart {}) => setup::session_start(socket),
+    }
 }
 
 pub(crate) fn run(scope: SkillScope) -> ExitCode {

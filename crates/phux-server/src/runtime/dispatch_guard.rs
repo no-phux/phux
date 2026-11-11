@@ -204,6 +204,7 @@ pub(super) async fn guard_command(
             if let Command::SendDocumentInput {
                 terminal_id,
                 intent,
+                on_behalf_of,
                 ..
             } = command
             {
@@ -211,6 +212,7 @@ pub(super) async fn guard_command(
                     crate::runtime::apps::document::audit::record(
                         s,
                         client_id,
+                        on_behalf_of.as_ref(),
                         terminal_id,
                         intent,
                         &result,

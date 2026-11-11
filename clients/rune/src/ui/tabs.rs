@@ -59,6 +59,10 @@ fn tab(desk: &Desk, tab: &Tab, index: usize, ink: &Ink) -> El {
         )
         .children(hint)
         .children(close)
+        .children(
+            tab.active
+                .then(|| crate::host_color::stripe(ink.host, false)),
+        )
 }
 
 pub fn strip(desk: &Desk, ink: &Ink) -> Option<El> {
@@ -109,6 +113,12 @@ pub fn rename_sheet(desk: &Desk, ink: &Ink) -> Option<El> {
             .on_input_key(|d: &mut Desk, event, tx| d.rename_key(event, tx))
             .on_submit(|d: &mut Desk, tx| d.submit_rename(tx)),
         );
+    // A phone has no Return or Esc to name.
+    let (save_words, cancel_words) = if desk.phone.is_some() {
+        ("Save", "Cancel")
+    } else {
+        ("Save (Return)", "Cancel (Esc)")
+    };
     let save = pressable("rename-save", ink)
         .px(12.0)
         .py(6.0)
@@ -119,8 +129,8 @@ pub fn rename_sheet(desk: &Desk, ink: &Ink) -> Option<El> {
         .label("Save")
         .default_button()
         .on_press_tx(|d: &mut Desk, tx| d.submit_rename(tx))
-        .child(text("Save (Return)").font(CAPTION).color(ink.on_accent));
-    let cancel = button("Cancel (Esc)", "rename-cancel", ink, Desk::cancel_rename)
+        .child(text(save_words).font(CAPTION).color(ink.on_accent));
+    let cancel = button(cancel_words, "rename-cancel", ink, Desk::cancel_rename)
         .grow(0.0)
         .px(12.0)
         .focusable(true)

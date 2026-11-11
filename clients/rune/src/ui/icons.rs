@@ -72,3 +72,48 @@ icon!(
     "phux-return",
     "M13 3.5v5a1 1 0 0 1-1 1H3.5M6 6.5l-3 3 3 3"
 );
+icon!(CHECK, "phux-check", "M3.5 8.5l3 3 6-7");
+icon!(ARROW_RIGHT, "phux-arrow-right", "M3 8h10M9 4l4 4-4 4");
+icon!(ARROW_LEFT, "phux-arrow-left", "M13 8H3M7 4L3 8l4 4");
+icon!(
+    PUZZLE,
+    "phux-puzzle",
+    "M3 5.5h2.5a1.5 1.5 0 1 1 3 0H11v2.5a1.5 1.5 0 1 1 0 3V13H3z"
+);
+icon!(
+    HAND,
+    "phux-hand",
+    "M5.5 8V3.5a1 1 0 0 1 2 0V7.5M7.5 7V2.5a1 1 0 0 1 2 0V7.5M9.5 7.5V3.5a1 1 0 0 1 2 0V9.5c0 2.5-1.5 4.5-4 4.5S4 12.5 3 10.5L2 8.5a1 1 0 0 1 1.7-1L5.5 9.5"
+);
+icon!(
+    BRING,
+    "phux-bring",
+    "M1.5 8h1M4 8h1M6.5 8h7M10.5 4.5L14 8l-3.5 3.5"
+);
+icon!(
+    SKIP,
+    "phux-skip",
+    "M8 14a6 6 0 1 0 0-12 6 6 0 0 0 0 12zM3.8 3.8l8.4 8.4"
+);
+icon!(
+    PALETTE,
+    "phux-palette",
+    "M8 14a6 6 0 1 1 6-6c0 1.5-1 2.5-2.5 2.5H10a1.2 1.2 0 0 0-.8 2.1c.4.4.3 1.4-1.2 1.4zM5 7h.01M7 4.8h.01M10 5h.01"
+);
+
+/// The phux fox: its outline in the ink, the lime spine, and the eye.
+pub static FOX: Icon = Icon {
+    name: "phux-fox",
+    view: 512.0,
+    body: concat!(
+        r##"<polygon points="148,54 134,140 114,190 66,246 96,294 150,352 242,450 330,372 370,316 414,234 374,154 338,96 272,38 206,108" fill="none" stroke="currentColor" stroke-width="18" stroke-linejoin="round"/>"##,
+        r##"<polyline points="272,38 198,232 242,450" fill="none" stroke="#bef264" stroke-width="20" stroke-linejoin="round"/>"##,
+        r##"<circle cx="198" cy="232" r="30" fill="none" stroke="#bef264" stroke-width="12"/>"##,
+        r##"<circle cx="198" cy="232" r="13" fill="#bef264"/>"##,
+    ),
+};
+icon!(
+    BELL,
+    "phux-bell",
+    "M4 11.5V7a4 4 0 0 1 8 0v4.5l1 1H3zM6.5 14h3"
+);

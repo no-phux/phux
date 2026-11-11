@@ -102,6 +102,27 @@ iOS and Android apps are in progress and not available yet. `phux pair --qr`
 already prints the pairing code they will scan; see
 [pairing with a link](./remote.md#pairing-with-a-link).
 
+## Host colours
+
+Every client draws each machine in one of eight colours (blue, violet,
+magenta, sky, coral, olive, slate, copper), picked from a hash of its name,
+so `mini` looks the same on the desktop, on mobile, and in `phux host ls
+--json`. Two more, green and navy, are yours to pick but never assigned.
+Amber, mint, and red stay reserved for agent state, and a name is always
+shown beside the colour. Pick a colour yourself when two machines
+land on the same one:
+
+```sh
+phux host color mini violet      # [[remote]] color = "violet"
+phux host color --local sky      # this machine: [host] color = "sky"
+phux host color mini auto        # back to the hashed colour
+```
+
+`phux host ls --json` reports each host's resolved `color` (`id`, `hex`,
+and whether an `override` chose it) and this machine under `local`. The
+desktop's Machines sheet sets the same override, and a desktop window's
+sessions, tabs and focused terminal take its machine's colour.
+
 ## Your own
 
 To put a phux terminal in your own app, see

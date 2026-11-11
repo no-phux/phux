@@ -271,6 +271,9 @@ pub(crate) enum Command {
     #[usage(help_heading = "Maintain", display_order = 54)]
     Config(ConfigArgs),
 
+    #[usage(help_heading = "Maintain", display_order = 54)]
+    Migrate(MigrateArgs),
+
     #[usage(help_heading = "Maintain", display_order = 55)]
     Plugin(PluginArgs),
 

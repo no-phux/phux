@@ -189,6 +189,8 @@ mod tests {
             members: 1,
             arrangement: None,
             awaiting_organization: false,
+            project: None,
+            project_link: None,
         };
         let topology = Topology {
             sessions: vec![session(1, "tui"), session(2, "tui-2")],

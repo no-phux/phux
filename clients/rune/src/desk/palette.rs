@@ -106,12 +106,14 @@ pub fn with_menus(app: App<Desk>) -> App<Desk> {
         item!(VIEW, Palette),
         item!(VIEW, KeyboardShortcuts),
         item!(VIEW, EssentialShortcuts),
+        item!(Some("Help"), GetStarted),
         item!(TERMINAL, SplitRight),
         item!(TERMINAL, SplitDown),
         item!(TERMINAL, Find),
         item!(TERMINAL, FindNext),
         item!(TERMINAL, FindPrevious),
         item!(TERMINAL, FindSelection),
+        item!(TERMINAL, CopyMode),
         item!(TERMINAL, InsertPath),
         item!(TERMINAL, NextTab),
         item!(TERMINAL, PreviousTab),
@@ -302,6 +304,11 @@ impl Desk {
         let topology = self.topology.as_ref();
         let query = &self.palette_query.text;
         match self.palette_mode {
+            Mode::All if self.phone.is_some() => {
+                let native = self.native.is_some();
+                let items = palette::phone::items(topology, native, self.resource_items());
+                palette::rank(items, query)
+            }
             Mode::All => {
                 let mut items = self.resource_items();
                 items.extend(palette::items(topology, &self.addressable()));

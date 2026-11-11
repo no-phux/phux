@@ -23,6 +23,7 @@ fn input_to(document: &WireResourceId) -> Command {
         terminal_id: document.clone(),
         intent: phux_protocol::wire::frame::DocumentInput::Click { x: 1, y: 1 },
         control: None,
+        on_behalf_of: None,
     }
 }
 
@@ -86,6 +87,16 @@ fn document_input_needs_a_control_grant_never_a_terminal_one() {
         assert!(!admits(grant, &plain), "{grant:?} reached a document with no control class");
     }
 
+    // A relayed identity is informational: naming the owner widens nothing.
+    let mut relayed = input_to(&display);
+    if let Command::SendDocumentInput { on_behalf_of, .. } = &mut relayed {
+        *on_behalf_of = Some(phux_protocol::wire::frame::OnBehalfOf {
+            credential: "owner".to_owned(),
+            name: "Rune".to_owned(),
+        });
+    }
+    assert!(!admits_command(&world, &scoped(&[crate::workload::PAIRED_DEVICE_SCOPE]), relayed));
+
     // The owner socket reaches every one of them.
     for target in [&display, &window, &page, &plain, &satellite_window] {
         assert!(admits_command(&world, &ConnectionGrant::owner(), input_to(target)));
@@ -108,6 +119,7 @@ fn the_clipboard_needs_the_same_control_grant_as_any_input() {
             terminal_id: display.clone(),
             intent: intent.clone(),
             control: None,
+            on_behalf_of: None,
         };
         let terminal_scope = format!("*@terminal:{}", local_id(&world.alpha));
         for grant in [&[][..], &["observe@display"], &["*@host"], &[&terminal_scope]] {
