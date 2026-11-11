@@ -89,7 +89,9 @@ fn a_satellite_tree_streams_through_the_hub() {
 /// `SEND_DOCUMENT_INPUT` to a satellite document relays through the hub to
 /// the satellite producer, and the classes a sender stamps cross the link:
 /// the satellite, which knows the document's class, refuses one outside
-/// them (`docs/resource-kinds.md#authority`).
+/// them (`docs/resource-kinds.md#authority`). The hub names the device it
+/// relays for, so the producer's `input_activity` shows that device, and a
+/// claim the sender wrote itself is replaced (`docs/authority.md`).
 #[test]
 fn input_to_a_satellite_document_reaches_its_producer_through_the_hub() {
     use phux_protocol::wire::frame::{ControlClass, ControlClasses, DocumentInput};
@@ -111,6 +113,10 @@ fn input_to_a_satellite_document_reaches_its_producer_through_the_hub() {
             terminal_id: ResourceId::satellite("sat", id),
             intent: DocumentInput::Click { x: 3, y: 4 },
             control,
+            on_behalf_of: Some(phux_protocol::wire::frame::OnBehalfOf {
+                credential: "sha256:spoofed".to_owned(),
+                name: "Spoofed".to_owned(),
+            }),
         };
         let display = Some(ControlClasses::EMPTY.with(ControlClass::Display));
         let refused = phux_server_testkit::command(&mut hub, 2, send(display)).await;
@@ -127,19 +133,28 @@ fn input_to_a_satellite_document_reaches_its_producer_through_the_hub() {
         let taken = phux_server_testkit::command(&mut hub, 3, send(None)).await;
         assert!(matches!(taken, CommandResult::Ok), "{taken:?}");
         let deadline = Instant::now() + STEP_DEADLINE;
-        let mut got = None;
+        let (mut origin, mut got) = (None, None);
         while got.is_none() && Instant::now() < deadline {
-            if let FrameKind::Event {
-                terminal: Some(ResourceId::Local { id: at }),
-                event: AgentEvent::DocumentInput { intent },
-                ..
-            } = recv_typed(&mut sat).await.1
-                && at == id
-            {
-                got = Some(intent);
+            match recv_typed(&mut sat).await.1 {
+                FrameKind::Event {
+                    terminal: Some(ResourceId::Local { id: at }),
+                    event: AgentEvent::InputActivity { origin: from },
+                    ..
+                } if at == id => origin = Some(from),
+                FrameKind::Event {
+                    terminal: Some(ResourceId::Local { id: at }),
+                    event: AgentEvent::DocumentInput { intent },
+                    ..
+                } if at == id => got = Some(intent),
+                _ => {}
             }
         }
         assert_eq!(got, Some(DocumentInput::Click { x: 3, y: 4 }));
+        assert_eq!(
+            origin.as_deref(),
+            Some("phux-server-integration-test"),
+            "the hub's client, not the hub link nor the sender's own claim"
+        );
 
         drop(hub);
         fed.shutdown().await;

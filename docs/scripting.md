@@ -25,6 +25,23 @@ has the whole grammar, and `phux help targets` prints it.
 you. `.` is whatever a person is looking at right now, so use it only when
 that is what you mean.
 
+## Drive only the pane you create
+
+From a POSIX shell, with `jq` installed, create a **new shell pane** and drive
+only that pane. No terminal UI needs to be attached:
+
+```sh
+(
+  set -eu
+  session="phux-demo-$$"
+  created=$(phux new --json -s "$session" -- sh)
+  pane="@$(printf '%s\n' "$created" | jq -er .terminal_id)"
+  phux run --timeout 10 "$pane" 'printf "hello from phux\n"'
+  phux snapshot "$pane"
+  printf 'The shell is still running. From a terminal: phux attach %s\n' "$session"
+)
+```
+
 ## Keeping track of ids
 
 Commands that create a pane print its id. With `--json` they print a

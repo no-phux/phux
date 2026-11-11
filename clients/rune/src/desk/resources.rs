@@ -44,6 +44,8 @@ pub struct Resources {
     pub(super) input: phux_client_core::document_input::DocumentInputs,
     /// The copy from a host clipboard awaiting its reply.
     pub(super) copying: Option<u32>,
+    /// The paste in flight to a host, whose failure is worth a notice.
+    pub(super) pasting: Option<u32>,
     /// The screen and window picker.
     pub screens: screens::Screens,
 }

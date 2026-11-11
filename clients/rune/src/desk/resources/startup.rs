@@ -119,7 +119,7 @@ impl Desk {
                         .name
                         .clone()
                         .unwrap_or_else(|| format!("{:?}", doc.record.kind)),
-                    detail: format!("{session} · {id} · Read-only mirror"),
+                    detail: format!("{session} · {id} · {}", self.mirror_label(id)),
                     kind: "document",
                     target: Target::Terminal {
                         id: id.clone(),

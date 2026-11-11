@@ -57,6 +57,18 @@ The app finds `phux` (`--phux`, `PHUX_BIN`, `~/.local/bin`,
 reuses the server with `phux server --ensure`, and attaches the most recent
 session (or `--session NAME`). It never creates a session on its own.
 
+- **Getting started.** An installed app's first connection walks through
+  five steps in the terminal area: **Welcome**; **Look** (colour scheme,
+  sidebar and themes, applied live); **Agents & permissions** (`phux skill
+  setup --json`, and on macOS a sheet that opens each privacy pane with
+  `phux server permissions --open SERVICE`, offers the server's app to drag
+  in, and polls until it is granted); **Bring your setup**, shown only with
+  Claude Code, Codex or OpenCode installed (`phux migrate --json --agent ID`
+  opens the agent's pane beside it; key bindings move, themes and fonts
+  don't); and **All set**, with three keys from the keymap. Enter
+  continues; Escape goes back. A quit resumes at the same step. An older
+  phux reads **Update phux to enable this**. **Get Started** in the palette
+  or Settings reopens it; runs aimed at a server never open it on their own.
 - **Machines.** The switcher under the sidebar's title moves the window to
   any machine in the CLI's registry; the choice is remembered, and sessions
   keep running wherever they are. **Add a machine** takes `me@host` or a
@@ -175,26 +187,24 @@ session (or `--session NAME`). It never creates a session on its own.
 | ⌘W | Close the terminal (**Confirm before closing** asks if something is running) |
 | ⌘] / ⌘[ | Next / previous terminal |
 | ⌘B | Fold the sidebar |
-| ⌘F / ⌘G / ⌘⇧G | Find / older match / newer match |
-| ⌘E | Find the selected text |
-| ⌘-click | Open the link under the pointer |
-| ⌘C / ⌘V | Copy the selection / paste (bracketed by the server) |
+| ⌘F / ⌘G / ⌘⇧G / ⌘E | Find / older / newer / the selection |
+| ⌘⇧C | Copy mode: vi keys; `v` selects, `y` copies |
+| ⌘-click | Open the link under it |
+| ⌘C / ⌘V | Copy the selection / paste (bracketed) |
 | ⌘= / ⌘- / ⌘0 | Bigger / smaller / default text |
 | ⌘↑ / ⌘↓ | Top / bottom of history |
 | Drag, double- and triple-click | Select by cell, word, line (Shift selects over mouse-tracking programs) |
 
-On Linux the same chords use Ctrl-Shift (split down is Ctrl-Shift-E, and
-Ctrl-click opens links);
-plain Ctrl chords go to the shell. Ctrl and Alt chords follow the key's
+On Linux the same chords use Ctrl-Shift (split down is Ctrl-Shift-E, copy
+mode Ctrl-Shift-X, Ctrl-click opens links); plain Ctrl chords go to the shell. Ctrl and Alt chords follow the key's
 position, so Ctrl-C is ^C on any layout.
 
 In a text field, use the native editing keys: ⌘C/V/A on macOS, plain
 Ctrl+C/V/A on Linux. Terminal clipboard chords never act on the terminal
 behind a focused Find field.
 
-A paste with line breaks into a program that has not turned on bracketed
-paste would run each line; the window asks first (Return pastes, Esc
-cancels).
+A paste with line breaks into a program without bracketed paste would run
+each line; the window asks first (Return pastes, Esc cancels).
 
 ## Known gaps
 
@@ -226,8 +236,8 @@ the session's arrangement. Trees use a selectable native JSON inspector; PNG
 surfaces use Rune's image decoder and fit without cropping. These are mirrors,
 not embedded browsers: paste, file drops, and terminal resizing never reach a
 document pane. A surface whose producer declared a control class (a page or
-surface mirror) reads **Live mirror**: a click, the wheel, and plain keys reach
-its producer as document input. Any other document is a **Read-only mirror**,
+surface mirror) reads **Live mirror**: a click, a drag, the wheel, plain keys
+reach its producer as document input. Any other document is a **Read-only mirror**,
 and a refused send turns a live one **View only**. Closing its view does not
 stop the producer.
 
@@ -302,6 +312,9 @@ RUNE_RESOURCE_SNAP="$PWD/target/resource-native.png" \
 The test checks decoded PNG pixels, native image draw commands, JSON text,
 and the Read-only mirror label; `target/resource-native.json` is the tree.
 
+`RUNE_ONBOARDING_SNAP=DIR cargo test --locked every_step_renders` writes
+each onboarding step as a PNG under `DIR`.
+
 On macOS, notifications need the signed bundle (`rune_notify::available`);
 `cargo run` can't post, and Settings says so. On Linux any build posts while
 `notify-send` is on `PATH`, and withdraws through `gdbus`.
@@ -329,6 +342,7 @@ do about a bad release.
 | `alerts`, `dock` | system notifications, their clicks, and the Dock count (`dock` is the crate's only `unsafe`) |
 | `theme` | built-in terminal palettes and the chrome drawn from them |
 | `palette` | palette items and fuzzy ranking |
+| `onboarding`, `desk/onboarding`, `ui/onboarding` | first-run steps: the CLI's `--json` answers parsed, step state in settings, the view |
 | `grid` | cell metrics and the draw list as Rune elements |
 | `keys` | Rune keys as phux key atoms and app shortcuts |
 | `ui` | window composition; `ui/*`: sidebar, tabs, panes, pane overlays (find, history), inbox, settings, palette |

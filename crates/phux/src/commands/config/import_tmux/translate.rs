@@ -229,15 +229,17 @@ fn unsupported_preferences(
 }
 
 #[derive(Debug)]
-struct Binding {
-    table: String,
-    key: String,
-    command: Vec<String>,
-    repeat: bool,
+pub(crate) struct Binding {
+    pub(crate) table: String,
+    pub(crate) key: String,
+    pub(crate) command: Vec<String>,
+    pub(crate) repeat: bool,
     source: String,
 }
 
-fn binding(line: &str) -> Result<Binding, String> {
+/// Parse one `bind-key` line: `list-keys` output, or a line of a tmux.conf
+/// (where `-n` means the root table).
+pub(crate) fn binding(line: &str) -> Result<Binding, String> {
     let words = shell_words::split(line).map_err(|e| format!("cannot decode tmux binding: {e}"))?;
     let mut rest = words.as_slice();
     if !matches!(rest.first().map(String::as_str), Some("bind-key" | "bind")) {
@@ -250,6 +252,10 @@ fn binding(line: &str) -> Result<Binding, String> {
         match flag.as_str() {
             "-r" => {
                 repeat = true;
+                rest = tail;
+            }
+            "-n" => {
+                "root".clone_into(&mut table);
                 rest = tail;
             }
             "-T" | "-N" => {
@@ -283,7 +289,7 @@ fn binding(line: &str) -> Result<Binding, String> {
     })
 }
 
-fn chord(key: &str) -> Result<String, String> {
+pub(crate) fn chord(key: &str) -> Result<String, String> {
     let key = match key {
         "BSpace" => "Backspace",
         "BTab" => "BackTab",
@@ -374,7 +380,11 @@ fn action(name: &str, args: &[(&str, Value)]) -> Value {
     Value::Table(table)
 }
 
-fn map_command(command: &[&str], key: &str, prefix: &str) -> Option<(Value, Option<&'static str>)> {
+pub(crate) fn map_command(
+    command: &[&str],
+    key: &str,
+    prefix: &str,
+) -> Option<(Value, Option<&'static str>)> {
     if let Some(mapped) = fixed_command(command) {
         return Some(mapped);
     }
@@ -509,7 +519,7 @@ fn direction_action(name: &str, flag: &str, amount: Option<u16>) -> Option<Value
     Some(action(name, &args))
 }
 
-fn window_target(
+pub(crate) fn window_target(
     command: &[&str],
     options: &BTreeMap<String, String>,
 ) -> Option<(Value, Option<&'static str>)> {

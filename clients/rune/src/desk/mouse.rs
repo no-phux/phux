@@ -47,7 +47,7 @@ const fn wire_button(button: PointerButton) -> MouseButton {
 const MAX_WHEEL_STEPS: i64 = 100;
 
 impl Desk {
-    fn mouse_mode(&self, terminal: &ResourceId) -> MouseMode {
+    pub(super) fn mouse_mode(&self, terminal: &ResourceId) -> MouseMode {
         self.client
             .as_ref()
             .and_then(|c| c.engine())

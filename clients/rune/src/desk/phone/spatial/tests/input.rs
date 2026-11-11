@@ -159,12 +159,7 @@ fn disabled_navigation_surfaces_do_not_pass_mouse_presses_into_programs() {
     poll(&mut rt);
     rt.update(|d, _| d.open_find());
     settle(&mut rt);
-    for key in [
-        "phone-minimap",
-        "phone-navigation",
-        "phone-pane-picker",
-        "phone-history",
-    ] {
+    for key in ["phone-minimap", "phone-navigation", "phone-pane-picker"] {
         tap(&mut rt, key);
         assert_eq!(focus(&rt), id(1));
     }

@@ -1,6 +1,6 @@
 [package]
 name = "phux-rune"
-version = "0.1.8"
+version = "0.1.13"
 description = "The phux desktop client, built on the Rune UI framework."
 edition = "2024"
 publish = false
@@ -18,6 +18,8 @@ default-members = ["."]
 [dependencies]
 phux-client-core = { path = "../../crates/phux-client-core" }
 phux-client-runtime = { path = "../../crates/phux-client-runtime" }
+# The host palette and hash every client shares.
+phux-config-core = { path = "../../crates/phux-config-core" }
 phux-perf = { path = "../../crates/phux-perf" }
 phux-protocol = { path = "../../crates/phux-protocol" }
 # Rune has no releases; apps pin a `dev` revision (dev is fast-forward only).

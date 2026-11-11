@@ -164,9 +164,9 @@ anything, and `phux config show` prints the merged result in effect.
 
 `phux config init --distro starter` writes the same file plus an `extends`
 line that layers the starter distribution under it. The starter turns on
-the example plugins (workspace autosave, agent helpers, plan usage). It is
-found in a phux source checkout, or in the directory `PHUX_DISTROS_DIR`
-names.
+the example plugins (workspace autosave, agent helpers, plan usage). Every
+release carries it ([Distributions](./distros.md#choose-and-switch) says where
+it is written).
 
 ## Layers
 

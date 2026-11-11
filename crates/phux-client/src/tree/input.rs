@@ -115,6 +115,7 @@ async fn send(
                 terminal_id: resource.clone(),
                 intent: input,
                 control: None,
+                on_behalf_of: None,
             },
         )
         .await?

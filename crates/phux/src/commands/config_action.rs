@@ -10,6 +10,8 @@ pub(crate) enum ConfigAction {
     /// TOML on stdout and a fidelity report on stderr. Unsupported bindings
     /// are never executed or silently replaced with a different phux action.
     /// This configures the terminal UI; desktop shortcuts are separate.
+    /// To have your coding agent migrate from your config files instead, run
+    /// `phux migrate`.
     ImportTmux {
         /// Read this tmux socket instead of tmux's current/default server.
         #[usage(long, value_name = "PATH")]

@@ -283,6 +283,8 @@ fn deprecation_table_matches_the_clap_tree_bidirectionally() {
         "phux agent hook-transcript",
         // Server-bootstrapped durable ACP guardian, never a human verb.
         "phux agent host",
+        // The Claude Code `SessionStart` hook `phux skill setup` installs.
+        "phux skill session-start",
     ];
 
     /// Collect every hidden row of the tree under `path`: hidden long

@@ -289,6 +289,7 @@ impl Cdp {
         for intent in std::mem::take(intents) {
             if !clipboard.answered(conn, &intent, intents).await {
                 box_request = self.act(&intent, view, last_tree).await?.or(box_request);
+                super::clipboard::Clipboard::answer_paste(conn, &intent, Ok(()), intents).await;
             }
         }
         Ok(box_request)

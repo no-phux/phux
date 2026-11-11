@@ -43,6 +43,9 @@ pub(in crate::wire) fn decode_command(dec: &mut Decoder<'_>) -> Result<Command, 
     if tag == crate::wire::frame::COMMAND_TAG_DESCRIBE_API {
         return Ok(Command::DescribeApi);
     }
+    if tag == crate::wire::frame::COMMAND_TAG_PRIVACY_STATUS {
+        return Ok(Command::PrivacyStatus);
+    }
     if tag == crate::wire::frame::COMMAND_TAG_NATIVE_AGENT {
         let bytes = dec.read_bytes()?;
         if bytes.len() > crate::native_agent::MAX_NATIVE_PAYLOAD_BYTES {
@@ -108,9 +111,15 @@ pub(super) fn decode_resource_command(
             control: if dec.at_body_end() {
                 None
             } else {
-                Some(crate::wire::frame::ControlClasses::from_bits(
-                    dec.read_u8()?,
-                ))
+                match dec.read_u8()? {
+                    crate::wire::frame::CONTROL_UNRESTRICTED => None,
+                    bits => Some(crate::wire::frame::ControlClasses::from_bits(bits)),
+                }
+            },
+            on_behalf_of: if dec.at_body_end() {
+                None
+            } else {
+                Some(crate::wire::frame::OnBehalfOf::decode(dec)?)
             },
         },
         _ => return Ok(None),

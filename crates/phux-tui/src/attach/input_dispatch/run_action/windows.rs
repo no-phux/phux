@@ -360,6 +360,7 @@ pub(in crate::attach) fn rename_window(
             .groups
             .get(ctx.workspace.active)
             .map(|w| w.name.clone())
+            .filter(|name| !crate::attach::pane_state::auto_named(name))
             .unwrap_or_default();
         ctx.overlays
             .push(Box::new(PromptOverlay::rename_window(&current, ctx.theme)));

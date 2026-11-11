@@ -8,6 +8,7 @@ use rune::{Runtime, TouchPhase};
 use super::*;
 
 mod settings;
+mod sheets;
 
 fn fixture() -> (std::sync::Arc<Client>, Runtime<Desk>) {
     let (client, mut rt) = crate::grid::budget::input_fixture();
