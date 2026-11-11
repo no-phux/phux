@@ -19,7 +19,7 @@ pub fn view(desk: &Desk, id: &ResourceId, ink: &Ink) -> El {
     let interactive = desk.document_input_frame(id).is_some();
     let state = match desk.document_input_refused(id) {
         Some(reason) => format!("View only: {reason}"),
-        None if interactive => "Live mirror · click and type".to_owned(),
+        None if interactive => "Live mirror · click, drag and type".to_owned(),
         None => "Read-only mirror".to_owned(),
     };
     let surface = el()
@@ -62,16 +62,22 @@ pub fn view(desk: &Desk, id: &ResourceId, ink: &Ink) -> El {
 }
 
 /// A surface whose producer takes input: a press clicks the frame pixel
-/// under it, and the wheel scrolls the page. Drag points and sizes are the
-/// element's own, where the frame is drawn contain-fit.
+/// under it once released, a press that moves drags (selecting text), and
+/// the wheel scrolls the page. Drag points and sizes are the element's own,
+/// where the frame is drawn contain-fit.
 fn takes_input(surface: El, id: &ResourceId, area: [f32; 2]) -> El {
     let (pressed, wheeled) = (id.clone(), id.clone());
     surface
         .cursor(rune::Cursor::Pointer)
-        .on_drag(move |d: &mut Desk, drag, _| {
-            if drag.phase == rune::Phase::Down {
-                d.document_press(&pressed, [drag.x, drag.y, drag.w, drag.h]);
-            }
+        .on_drag(move |d: &mut Desk, drag, _| match drag.phase {
+            rune::Phase::Down => d.focus_pane(&pressed),
+            rune::Phase::Move => {}
+            rune::Phase::Up => d.document_release(
+                &pressed,
+                [drag.start_x, drag.start_y],
+                [drag.x, drag.y],
+                [drag.w, drag.h],
+            ),
         })
         .on_wheel(move |d: &mut Desk, event, _| {
             d.document_wheel(&wheeled, area, [event.dx, event.dy])

@@ -99,7 +99,9 @@ link alone. Watching adds nothing to the wire.
 
 Rune's panes send input too. A surface whose document declares
 a class takes a click at the frame pixel under the pointer (contain-fit, so
-a press in the letterbox bars sends nothing), the wheel as `Scroll` in frame
+a press in the letterbox bars sends nothing), a press that moves 4 points or
+more as `Drag` from where it went down to where it came up (selecting text),
+the wheel as `Scroll` in frame
 pixels (positive `dy` scrolls the page down), and, while focused, printable
 keys as `Type` and Enter, Tab, Backspace, Escape and the arrows as `Key`;
 Cmd and Ctrl chords stay the app's. A document with no class, or one whose
@@ -111,7 +113,12 @@ captures neither pointer nor keys, and the refusal is said once.
 A paste and a copy are input too, under the same grant. `Paste` puts text
 (up to 1 MiB) on the host clipboard (`pbcopy`, or `wl-copy` from
 wl-clipboard on Wayland; a missing tool is an error, never typing) and
-presses Cmd+V or Ctrl+V; a page inserts the text instead. `CopyClipboard`
+presses Cmd+V or Ctrl+V (Ctrl+Shift+V when Hyprland's focused window is a
+terminal such as kitty, foot, Alacritty, Ghostty or WezTerm; on Linux through
+the virtual keyboard, else `wtype` or `ydotool`); a page inserts the text
+instead. The server holds a paste up to 3 s for the producer's outcome, so a
+chord that could not be pressed is an error the viewer sees; an older
+producer never answers, and the paste then succeeds. `CopyClipboard`
 returns the host clipboard's text, at most 1 MiB, to the viewer that asked
 and no one else: the server holds the command open until the producer
 answers. From the CLI, `phux agent page paste|copy`; in Rune, Cmd+V and

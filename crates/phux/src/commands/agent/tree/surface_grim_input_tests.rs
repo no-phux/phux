@@ -65,7 +65,7 @@ const YDOTOOL: Tools = Tools {
 };
 
 fn cmds(input: &DocumentInput, place: Option<&Place>, tools: Tools) -> Result<Vec<String>, String> {
-    plan(input, (1600, 1200), place, tools).map(|out| out.iter().map(|a| shown(a)).collect())
+    plan(input, (1600, 1200), place, tools, false).map(|out| out.iter().map(|a| shown(a)).collect())
 }
 
 #[test]
@@ -170,4 +170,63 @@ fn keys_text_and_scroll_pick_the_first_tool_present() {
         ["ydotool key 29:1 47:1 47:0 29:0"]
     );
     assert!(cmds(&paste, None, wlrctl_only).is_err());
+}
+
+#[test]
+fn a_terminal_pastes_on_ctrl_shift_v_and_a_drag_holds_the_button() {
+    assert!(is_terminal(r#"{"class":"kitty","address":"0x1"}"#, None));
+    assert!(is_terminal(r#"{"class":"com.mitchellh.ghostty"}"#, None));
+    assert!(is_terminal(r#"{"class":"Alacritty"}"#, None));
+    assert!(!is_terminal(r#"{"class":"chromium"}"#, None));
+    assert!(!is_terminal("{}", None));
+    assert!(!is_terminal("not json", None));
+    let clients = r#"[{"address":"0x1","class":"chromium"},{"address":"0x2","class":"foot"}]"#;
+    assert!(is_terminal(clients, Some("0x2")));
+    assert!(!is_terminal(clients, Some("0x1")));
+    assert!(!is_terminal(clients, Some("0x9")));
+    let paste = DocumentInput::Paste {
+        text: "x".into(),
+        chord: true,
+    };
+    let shifted = |tools| {
+        plan(&paste, (1, 1), None, tools, true)
+            .map(|out| out.iter().map(|a| shown(a)).collect::<Vec<_>>())
+    };
+    assert_eq!(
+        shifted(ALL).unwrap(),
+        ["wtype -M ctrl -M shift v -m shift -m ctrl"]
+    );
+    assert_eq!(
+        shifted(YDOTOOL).unwrap(),
+        ["ydotool key 29:1 42:1 47:1 47:0 42:0 29:0"]
+    );
+    let place = Place {
+        frame: rect(12.0, 34.0, 800.0, 600.0),
+        window: Some("0xa1".into()),
+        layout: rect(0.0, 0.0, 3000.0, 1920.0),
+    };
+    let drag = DocumentInput::Drag {
+        from: (100, 50),
+        to: (300, 50),
+    };
+    assert_eq!(
+        cmds(&drag, Some(&place), YDOTOOL).unwrap(),
+        [
+            "hyprctl dispatch focuswindow address:0xa1",
+            "hyprctl dispatch movecursor 62 59",
+            "ydotool click 0x40",
+            "hyprctl dispatch movecursor 162 59",
+            "ydotool click 0x80",
+        ]
+    );
+    let wlrctl = Tools {
+        hyprctl: true,
+        wlrctl: true,
+        ..Tools::default()
+    };
+    assert!(
+        cmds(&drag, Some(&place), wlrctl)
+            .unwrap_err()
+            .contains("ydotool")
+    );
 }

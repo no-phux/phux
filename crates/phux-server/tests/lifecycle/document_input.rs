@@ -3,7 +3,8 @@
 //! connection producing the document as an unjournaled event, is refused
 //! when a hub's stamped classes leave out the document's control class, and
 //! is refused once that producer is gone. A clipboard copy is held open
-//! until the producer answers, and only that producer may.
+//! until the producer answers, and only that producer may; a paste is held
+//! briefly for the producer's outcome.
 
 use phux_protocol::wire::frame::{
     AgentEvent, Command, CommandResult, CommandValue, ControlClass, ControlClasses, DocumentInput,
@@ -273,6 +274,84 @@ fn a_copy_waits_for_its_producer_and_reaches_only_the_viewer_that_asked() {
             "{failed:?}"
         );
         drop((producer, stranger));
+        server.stop().await;
+    });
+}
+
+#[test]
+fn a_paste_waits_briefly_for_its_producers_outcome() {
+    phux_server_testkit::run_local(async {
+        let server = Server::start(Some("demo"), |cfg| {
+            let mut seed = CommandBuilder::new("/bin/sh");
+            seed.args(["-c", FOREVER]);
+            phux_server_testkit::seed_pty(cfg, seed);
+        });
+        let mut producer = server.connect().await;
+        attach(&mut producer, "demo").await;
+        let parent = spawned(&mut producer, 1, sh(FOREVER)).await;
+        let spawn = Spawn {
+            resource: Some(Box::new(
+                SpawnResource::pixel_surface(parent, "display")
+                    .with_control(Some(ControlClass::Display)),
+            )),
+            ..Spawn::default()
+        };
+        let SpawnResult::Ok(surface) = spawn_resource(&mut producer, 2, spawn).await else {
+            panic!("spawn surface failed");
+        };
+        let send = |intent| Command::SendDocumentInput {
+            terminal_id: surface.clone(),
+            intent,
+            control: None,
+        };
+        let paste = || {
+            send(DocumentInput::Paste {
+                text: "hello".into(),
+                chord: true,
+            })
+        };
+        let pasted = |frame: FrameKind| match frame {
+            FrameKind::Event {
+                event:
+                    AgentEvent::DocumentInput {
+                        intent: DocumentInput::Paste { .. },
+                    },
+                ..
+            } => Some(()),
+            _ => None,
+        };
+
+        // The chord could not be pressed: the viewer hears why.
+        let mut viewer = server.connect().await;
+        let asked = tokio::task::spawn_local({
+            let paste = paste();
+            async move {
+                let result = command(&mut viewer, 10, paste).await;
+                (viewer, result)
+            }
+        });
+        wait_frame(&mut producer, "paste", pasted).await;
+        let outcome = |text| send(DocumentInput::ClipboardText { reply: 0, text });
+        let no_keyboard = Err("nothing here can press the paste chord".to_owned());
+        let taken = command(&mut producer, 11, outcome(no_keyboard)).await;
+        assert!(matches!(taken, CommandResult::Ok), "{taken:?}");
+        let (mut viewer, failed) = asked.await.unwrap();
+        assert!(
+            matches!(
+                &failed,
+                CommandResult::Error { code: ErrorCode::Unavailable, message }
+                    if message.contains("paste chord")
+            ),
+            "{failed:?}"
+        );
+
+        // A producer that never answers (it predates the answer) is a
+        // success once the wait runs out.
+        let started = std::time::Instant::now();
+        let silent = command(&mut viewer, 12, paste()).await;
+        assert!(matches!(silent, CommandResult::Ok), "{silent:?}");
+        assert!(started.elapsed() >= std::time::Duration::from_secs(2));
+        drop((producer, viewer));
         server.stop().await;
     });
 }

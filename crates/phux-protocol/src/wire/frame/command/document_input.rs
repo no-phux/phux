@@ -241,6 +241,15 @@ pub enum DocumentInput {
         /// The node's id, at most [`MAX_DOCUMENT_INPUT_TEXT`] bytes.
         node: String,
     },
+    /// Press the left button at `from`, move to `to`, release there, in the
+    /// published surface image's own pixels: a text selection or a drag.
+    /// The producer moves through the points between.
+    Drag {
+        /// Where the press lands, `(x, y)`.
+        from: (u32, u32),
+        /// Where the release lands, `(x, y)`.
+        to: (u32, u32),
+    },
 }
 
 const NAVIGATE: u8 = 0;
@@ -252,6 +261,7 @@ const PASTE: u8 = 5;
 const COPY_CLIPBOARD: u8 = 6;
 const CLIPBOARD_TEXT: u8 = 7;
 const ACTIVATE: u8 = 8;
+const DRAG: u8 = 9;
 
 impl DocumentInput {
     pub(crate) fn encode(&self, enc: &mut Encoder<'_>) {
@@ -296,6 +306,12 @@ impl DocumentInput {
             Self::Activate { node } => {
                 enc.write_u8(ACTIVATE);
                 enc.write_str(node);
+            }
+            Self::Drag { from, to } => {
+                enc.write_u8(DRAG);
+                for v in [from.0, from.1, to.0, to.1] {
+                    enc.write_u32_be(v);
+                }
             }
         }
     }
@@ -349,6 +365,10 @@ impl DocumentInput {
                 }
             }
             ACTIVATE => Self::Activate { node: text(dec)? },
+            DRAG => Self::Drag {
+                from: (dec.read_u32_be()?, dec.read_u32_be()?),
+                to: (dec.read_u32_be()?, dec.read_u32_be()?),
+            },
             other => return Err(DecodeError::unknown_enum("DocumentInput", other)),
         })
     }
@@ -386,6 +406,10 @@ mod tests {
             DocumentInput::Activate {
                 node: "0.2.1".into(),
             },
+            DocumentInput::Drag {
+                from: (10, 20),
+                to: (300, 25),
+            },
         ];
         let encode = |intent: &DocumentInput| {
             let mut buf = bytes::BytesMut::new();
@@ -405,7 +429,8 @@ mod tests {
             chord: false,
         });
         assert!(DocumentInput::decode(&mut Decoder::new(&huge)).is_err());
-        assert!(DocumentInput::decode(&mut Decoder::new(&[9])).is_err());
+        assert!(DocumentInput::decode(&mut Decoder::new(&[10])).is_err());
+        assert!(DocumentInput::decode(&mut Decoder::new(&[9, 0, 0])).is_err());
         assert_eq!(DocumentKey::parse("escape"), Some(DocumentKey::Escape));
         assert_eq!(DocumentKey::parse("F1"), None);
     }

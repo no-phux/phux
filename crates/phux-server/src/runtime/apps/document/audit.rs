@@ -119,6 +119,7 @@ fn kind(intent: &DocumentInput) -> (&'static str, usize) {
             text.as_ref().map_or(0, |text| text.chars().count()),
         ),
         DocumentInput::Activate { .. } => ("activate", 0),
+        DocumentInput::Drag { .. } => ("drag", 0),
     }
 }
 

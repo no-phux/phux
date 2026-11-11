@@ -617,6 +617,8 @@ Commands:
             pixels.
   copy      Print the host clipboard's text, read by a mirrored page's or
             screen's producer.
+  drag      Drag across a mirrored page or screen with the left button, from one
+            point of its surface image to another: selects text.
   key       Press one key in a mirrored page: Enter, Tab, Backspace, Escape, or
             an arrow.
   mirror    Mirror a browser page into a tree and a surface until Ctrl-C.
@@ -663,6 +665,29 @@ Usage: phux agent page copy [--json] <TARGET>
 
 Arguments:
   <TARGET>  The document's surface or tree.
+
+Flags:
+      --json
+  -h, --help           Print help
+
+Global flags:
+      --socket <PATH>  Server socket to dial (default: `$PHUX_SOCKET`)
+```
+
+## `phux agent page drag`
+
+```text
+Drag across a mirrored page or screen with the left button, from one point of
+its surface image to another: selects text.
+
+Usage: phux agent page drag [--json] <ARGS>…
+
+Arguments:
+  <TARGET>  The document's surface or tree.
+  <X1>      Where the press lands: pixels from the image's left edge.
+  <Y1>      Where the press lands: pixels from the image's top edge.
+  <X2>      Where the release lands: pixels from the image's left edge.
+  <Y2>      Where the release lands: pixels from the image's top edge.
 
 Flags:
       --json

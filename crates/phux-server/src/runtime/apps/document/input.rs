@@ -1,8 +1,10 @@
 //! `SEND_DOCUMENT_INPUT`: relay a viewer's typed intent to the connection
 //! producing a document. The server reads none of it; the producer maps it
-//! to its source (`docs/resource-kinds.md#producers`). The one exception is
-//! a clipboard copy, which the server holds open until the producer answers
-//! with the text, so only the viewer that asked receives it.
+//! to its source (`docs/resource-kinds.md#producers`). The exceptions are
+//! the clipboard: a copy is held open until the producer answers with the
+//! text, so only the viewer that asked receives it, and a paste is held
+//! briefly for the producer's outcome, so a paste that could not land says
+//! so.
 
 use std::collections::HashMap;
 use std::collections::hash_map::Entry;
@@ -23,12 +25,18 @@ use crate::state::ClientId;
 
 /// How long a copy waits for the producer to read the host clipboard.
 const COPY_TIMEOUT: Duration = Duration::from_secs(10);
+/// How long a paste waits for the producer's outcome. A producer that
+/// predates the answer never sends one, so silence is success.
+const PASTE_TIMEOUT: Duration = Duration::from_secs(3);
 
-/// A copy waiting on a producer: its document, the producer that must
-/// answer, and where the answer goes.
+/// A copy or paste waiting on a producer: its document, the producer that
+/// must answer, and where the answer goes. A paste's answer carries reply
+/// 0, since a paste names no reply on the wire; the oldest paste waiting
+/// on that document and producer takes it.
 struct Waiting {
     document: phux_core::ids::ResourceId,
     producer: ClientId,
+    paste: bool,
     answer: oneshot::Sender<Result<String, String>>,
 }
 
@@ -107,24 +115,27 @@ pub(super) async fn relay<A: DocumentApi>(
     let (Some(producer), Some(spawner)) = (producer, spawner) else {
         return not_connected();
     };
-    let (intent, copy) = match intent {
-        DocumentInput::CopyClipboard { .. } => {
-            let reply = NEXT_REPLY.fetch_add(1, Ordering::Relaxed);
-            let (answer, rx) = oneshot::channel();
-            waiting().insert(
-                reply,
-                Waiting {
-                    document: core,
-                    producer: spawner,
-                    answer,
-                },
-            );
-            (
-                DocumentInput::CopyClipboard { reply },
-                Some((Unwait(reply), rx)),
-            )
-        }
-        intent => (intent, None),
+    let paste = matches!(intent, DocumentInput::Paste { .. });
+    let (intent, held) = if paste || matches!(intent, DocumentInput::CopyClipboard { .. }) {
+        let reply = NEXT_REPLY.fetch_add(1, Ordering::Relaxed);
+        let (answer, rx) = oneshot::channel();
+        waiting().insert(
+            reply,
+            Waiting {
+                document: core,
+                producer: spawner,
+                paste,
+                answer,
+            },
+        );
+        let intent = if paste {
+            intent
+        } else {
+            DocumentInput::CopyClipboard { reply }
+        };
+        (intent, Some((Unwait(reply), rx)))
+    } else {
+        (intent, None)
     };
     // Best effort: a full mailbox refuses the intent below anyway.
     let _ = producer.try_send(Outbound::Frame(FrameKind::Event {
@@ -147,43 +158,69 @@ pub(super) async fn relay<A: DocumentApi>(
         }
         Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => return not_connected(),
     }
-    let Some((_unwait, rx)) = copy else {
+    let Some((_unwait, rx)) = held else {
         return CommandResult::Ok;
     };
+    settle(paste, A::LABEL, rx).await
+}
+
+/// The viewer's result for a held copy or paste, once the producer answers
+/// or the wait runs out.
+async fn settle(
+    paste: bool,
+    label: &str,
+    rx: oneshot::Receiver<Result<String, String>>,
+) -> CommandResult {
     let unavailable = |message: String| CommandResult::Error {
         code: ErrorCode::Unavailable,
         message,
     };
+    if paste {
+        return match tokio::time::timeout(PASTE_TIMEOUT, rx).await {
+            Ok(Ok(Err(message))) => unavailable(message),
+            _ => CommandResult::Ok,
+        };
+    }
     match tokio::time::timeout(COPY_TIMEOUT, rx).await {
         Ok(Ok(Ok(text))) => CommandResult::OkWith(CommandValue::Bytes(text.into_bytes())),
         Ok(Ok(Err(message))) => unavailable(message),
-        Ok(Err(_)) | Err(_) => unavailable(format!(
-            "the {}'s producer did not answer the copy",
-            A::LABEL
-        )),
+        Ok(Err(_)) | Err(_) => {
+            unavailable(format!("the {label}'s producer did not answer the copy"))
+        }
     }
 }
 
-/// The producer `client` answers copy `reply` on `document`. Anyone else,
-/// or a reply nothing waits on, is refused and the copy keeps waiting.
+/// The producer `client` answers copy `reply` (or, with 0, its oldest
+/// paste) on `document`. Anyone else, or a reply nothing waits on, is
+/// refused and the copy keeps waiting.
 fn answer(
     document: phux_core::ids::ResourceId,
     client: ClientId,
     reply: u32,
     text: Result<String, String>,
 ) -> CommandResult {
-    let entry = match waiting().entry(reply) {
-        Entry::Occupied(waiting)
-            if waiting.get().document == document && waiting.get().producer == client =>
-        {
-            Some(waiting.remove())
-        }
+    let mut table = waiting();
+    let ours = |w: &Waiting| w.document == document && w.producer == client;
+    // Reply 0 answers this producer's oldest paste on the document.
+    let reply = if reply == 0 {
+        table
+            .iter()
+            .filter(|(_, w)| w.paste && ours(w))
+            .map(|(reply, _)| *reply)
+            .min()
+            .unwrap_or(0)
+    } else {
+        reply
+    };
+    let entry = match table.entry(reply) {
+        Entry::Occupied(waiting) if ours(waiting.get()) => Some(waiting.remove()),
         _ => None,
     };
+    drop(table);
     let Some(entry) = entry else {
         return CommandResult::Error {
             code: ErrorCode::NotProducer,
-            message: "no copy from this producer is waiting on that reply".to_owned(),
+            message: "no copy or paste from this producer is waiting on that reply".to_owned(),
         };
     };
     // The viewer may have given up; its answer then goes nowhere.

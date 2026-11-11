@@ -98,6 +98,13 @@ fn send_document_input_queues_one_send_document_input_command() {
         remote.send_document_input("local:9".into(), key),
         remote.send_document_input("local:9".into(), paste),
         remote.send_document_input("local:9".into(), WireDocumentIntent::CopyClipboard),
+        remote.send_document_input(
+            "local:9".into(),
+            WireDocumentIntent::Drag {
+                from: WireFramePoint { x: 1, y: 2 },
+                to: WireFramePoint { x: 30, y: 2 },
+            },
+        ),
     ];
     let frames: Vec<_> = client
         .take_outbound()
@@ -130,6 +137,13 @@ fn send_document_input_queues_one_send_document_input_command() {
                 }
             ),
             expected(sent[3], DocumentInput::CopyClipboard { reply: 0 }),
+            expected(
+                sent[4],
+                DocumentInput::Drag {
+                    from: (1, 2),
+                    to: (30, 2),
+                }
+            ),
         ]
     );
 }
