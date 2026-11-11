@@ -50,6 +50,22 @@ pub struct NewResource {
     pub launch_mode: LaunchMode,
 }
 
+impl NewResource {
+    /// A resource of `launch`'s kind, started by it now and removed on exit,
+    /// as a producer's child is; its creator names the parent.
+    #[must_use]
+    pub const fn child(launch: LaunchSpec, name: Option<String>) -> Self {
+        Self {
+            kind: launch.kind(),
+            name,
+            launch: Some(launch),
+            on_exit: ExitPolicy::Remove,
+            parent: None,
+            launch_mode: LaunchMode::Immediate,
+        }
+    }
+}
+
 /// Whether a created resource starts executing in its creating transaction.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]

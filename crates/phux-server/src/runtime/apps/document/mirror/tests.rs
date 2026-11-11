@@ -1,5 +1,5 @@
 use super::*;
-use crate::state::mirror_demand::RUNNER_FRESH;
+use crate::runtime::apps::mirror_demand::RUNNER_FRESH;
 
 fn entry(target: &str) -> MirrorConfigEntry {
     MirrorConfigEntry {

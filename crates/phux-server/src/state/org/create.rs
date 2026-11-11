@@ -1,4 +1,4 @@
-//! Creating resources: a new Terminal or agent session record.
+//! Creating resources: a Terminal with its session, or a child of one.
 
 #[allow(
     unused_imports,
@@ -23,10 +23,11 @@ impl ServerState {
         on_exit: ExitPolicy,
         actor: &Actor,
     ) -> Result<(SessionId, ResourceId), Refusal> {
+        let launch = LaunchSpec::Terminal(launch);
         let resource = NewResource {
-            kind: ResourceKind::Terminal,
+            kind: launch.kind(),
             name: None,
-            launch: Some(LaunchSpec::Terminal(launch)),
+            launch: Some(launch),
             on_exit,
             parent: None,
             launch_mode: phux_core::LaunchMode::Immediate,
@@ -96,45 +97,31 @@ impl ServerState {
             .ok_or(Refusal::NotFound)
     }
 
-    /// Create an agent conversation bound to Terminal `parent`, in the
-    /// parent's session, and record it running: its engine starts in the
-    /// same lock.
+    /// Create `resource` as a child of `parent`, in the parent's session,
+    /// and record it running: its engine starts in the same lock. Its
+    /// `parent` field is set to `parent`'s key.
     ///
     /// # Errors
     ///
     /// The [`Refusal`]; nothing was created.
-    pub fn create_agent_session(
+    pub fn create_child(
         &mut self,
         parent: ResourceId,
-        facet: &phux_core::AgentFacet,
+        mut resource: NewResource,
         actor: &Actor,
     ) -> Result<ResourceId, Refusal> {
-        let parent_key = self
-            .sessions
-            .registry
-            .resource_key(parent)
-            .ok_or(Refusal::NotFound)?;
-        let session = self
+        let record = self
             .sessions
             .registry
             .record(parent)
-            .map(|r| r.session)
             .ok_or(Refusal::NotFound)?;
+        let session = record.session;
+        resource.parent = Some(record.key);
         let commit = self.commit(
             Op::ResourceCreate {
                 placement: None,
                 session: Some(session),
-                resource: NewResource {
-                    kind: ResourceKind::AgentSession,
-                    name: None,
-                    launch: Some(LaunchSpec::Agent(AgentLaunch {
-                        provider: facet.provider.clone(),
-                        native_id: facet.native_id.clone(),
-                    })),
-                    on_exit: ExitPolicy::Remove,
-                    parent: Some(parent_key),
-                    launch_mode: phux_core::LaunchMode::Immediate,
-                },
+                resource,
             },
             actor,
         )?;
@@ -145,22 +132,13 @@ impl ServerState {
             .resource
             .and_then(|k| self.sessions.registry.resource_id(&k))
             .ok_or(Refusal::NotFound)?;
-        if let Some(agent) = self
-            .sessions
-            .registry
-            .resource_mut(id)
-            .and_then(|d| d.agent.as_mut())
-        {
-            agent.state.clone_from(&facet.state);
-        }
         self.activation_started(id, None);
         Ok(id)
     }
 
     /// Create a document resource (an accessibility tree, a pixel surface, a
-    /// typed document) under `parent` (a Terminal), in the parent's session,
-    /// and record it running. `launch` names the kind and what its producer
-    /// observes.
+    /// typed document) under `parent`, labelled `name`; `launch` names the
+    /// kind and what its producer observes. See [`Self::create_child`].
     ///
     /// # Errors
     ///
@@ -171,56 +149,7 @@ impl ServerState {
         launch: LaunchSpec,
         actor: &Actor,
     ) -> Result<ResourceId, Refusal> {
-        self.create_named_document(parent, launch, None, actor)
-    }
-
-    /// [`Self::create_document`], labelled `name`.
-    ///
-    /// # Errors
-    ///
-    /// The [`Refusal`]; nothing was created.
-    pub fn create_named_document(
-        &mut self,
-        parent: ResourceId,
-        launch: LaunchSpec,
-        name: Option<String>,
-        actor: &Actor,
-    ) -> Result<ResourceId, Refusal> {
-        let parent_key = self
-            .sessions
-            .registry
-            .resource_key(parent)
-            .ok_or(Refusal::NotFound)?;
-        let session = self
-            .sessions
-            .registry
-            .record(parent)
-            .map(|r| r.session)
-            .ok_or(Refusal::NotFound)?;
-        let commit = self.commit(
-            Op::ResourceCreate {
-                placement: None,
-                session: Some(session),
-                resource: NewResource {
-                    kind: launch.kind(),
-                    name,
-                    launch: Some(launch),
-                    on_exit: ExitPolicy::Remove,
-                    parent: Some(parent_key),
-                    launch_mode: phux_core::LaunchMode::Immediate,
-                },
-            },
-            actor,
-        )?;
-        let phux_core::Reply::Ok { created, .. } = commit.applied.reply else {
-            return Err(Refusal::NotFound);
-        };
-        let id = created
-            .resource
-            .and_then(|k| self.sessions.registry.resource_id(&k))
-            .ok_or(Refusal::NotFound)?;
-        self.activation_started(id, None);
-        Ok(id)
+        self.create_child(parent, NewResource::child(launch, None), actor)
     }
 
     // ---- executor reports -------------------------------------------------

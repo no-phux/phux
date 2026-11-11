@@ -1,12 +1,37 @@
 use super::metadata_read::protected_key_refusal;
 use super::session_create::{apply_session_keep_empty, handle_session_create_metadata};
-use crate::runtime::apps::terminal::agent_state::invalidate_agent_detector;
 use crate::state::{ClientId, Outbound, ServerInterceptedKey, ServerState, SharedState};
 use phux_protocol::ids::ResourceId as WireResourceId;
 use phux_protocol::wire::frame::{FrameKind, RESOURCE_AGENT_KEY, Scope};
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, info, trace, warn};
+
+/// Re-arm the agent detector's edge filter after someone else wrote its
+/// `phux.agent/v1` record (ADR-0046 §E); otherwise the filter keeps modelling
+/// a store that no longer exists and suppresses the next write. A full or
+/// closed mailbox is benign (the actor is wedged or gone). Any resource that
+/// hosts an agent carries the [`AgentParent`](phux_agent_session::parent::AgentParent)
+/// companion it is told through.
+fn invalidate_agent_detector(state: &SharedState, scope: &Scope, key: &str) {
+    if key != RESOURCE_AGENT_KEY {
+        return;
+    }
+    let Scope::Resource(wire) = scope else {
+        return;
+    };
+    let handle = state.with(|s| {
+        s.resource_from_wire(wire)
+            .and_then(|pane| s.resource_handle(pane).cloned())
+    });
+    if let Some(handle) = handle
+        && let Some(agent_parent) = handle.companion::<phux_agent_session::parent::AgentParent>()
+    {
+        let _ = agent_parent
+            .mailbox
+            .try_send(phux_agent_session::parent::AgentParentRequest::RecordInvalidated);
+    }
+}
 
 /// Reject writes into a local Terminal namespace after its owner is gone.
 fn reject_unknown_local_terminal_scope(
@@ -255,7 +280,7 @@ pub(super) fn handle_set_metadata(
         crate::hub::reload_satellites(state);
         crate::uplink::reload_uplinks(state);
         crate::plugin_startup::request_reload(state);
-        crate::runtime::apps::terminal::standing::request_reload(state);
+        state.request_standing_reload();
     }
 }
 

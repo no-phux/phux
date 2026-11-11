@@ -27,6 +27,7 @@ use crate::state::{ClientId, ServerState, SharedState};
 mod attach;
 pub(crate) mod audit;
 mod input;
+mod mirror;
 mod spawn;
 pub(crate) mod upgrade;
 
@@ -70,6 +71,18 @@ fn target_name(target: &str) -> Option<String> {
     (!target.trim().is_empty() && !target.chars().any(char::is_control)).then(|| target.to_owned())
 }
 
+/// `handle` carrying the control class its producer declared, which the host
+/// reads as [`ServerState::resource_control`]; none controls nothing.
+fn with_control(
+    handle: ResourceHandle,
+    control: Option<phux_protocol::wire::frame::ControlClass>,
+) -> ResourceHandle {
+    match control {
+        Some(class) => handle.with_companion(class),
+        None => handle,
+    }
+}
+
 impl DocumentApi for TreeDocument {
     fn validate_bootstrap(_target: &str, bytes: &[u8]) -> Result<(), String> {
         serde_json::from_slice::<serde::de::IgnoredAny>(bytes)
@@ -96,12 +109,14 @@ impl DocumentApi for TreeDocument {
         _name: Option<&str>,
         actor: &phux_core::actor::Actor,
     ) -> Result<phux_core::ids::ResourceId, phux_core::Refusal> {
-        state.create_named_document(
+        state.create_child(
             parent,
-            phux_core::LaunchSpec::Tree(phux_core::resource::TreeLaunch {
-                target: target.to_owned(),
-            }),
-            target_name(target),
+            phux_core::NewResource::child(
+                phux_core::LaunchSpec::Tree(phux_core::resource::TreeLaunch {
+                    target: target.to_owned(),
+                }),
+                target_name(target),
+            ),
             actor,
         )
     }
@@ -131,12 +146,14 @@ impl DocumentApi for SurfaceDocument {
         _name: Option<&str>,
         actor: &phux_core::actor::Actor,
     ) -> Result<phux_core::ids::ResourceId, phux_core::Refusal> {
-        state.create_named_document(
+        state.create_child(
             parent,
-            phux_core::LaunchSpec::Surface(phux_core::resource::SurfaceLaunch {
-                target: target.to_owned(),
-            }),
-            target_name(target),
+            phux_core::NewResource::child(
+                phux_core::LaunchSpec::Surface(phux_core::resource::SurfaceLaunch {
+                    target: target.to_owned(),
+                }),
+                target_name(target),
+            ),
             actor,
         )
     }
@@ -172,12 +189,14 @@ impl DocumentApi for TypedDocument {
         name: Option<&str>,
         actor: &phux_core::actor::Actor,
     ) -> Result<phux_core::ids::ResourceId, phux_core::Refusal> {
-        state.create_named_document(
+        state.create_child(
             parent,
-            phux_core::LaunchSpec::Document(phux_core::resource::DocumentLaunch {
-                content_type: content_type.to_owned(),
-            }),
-            name.map(str::to_owned),
+            phux_core::NewResource::child(
+                phux_core::LaunchSpec::Document(phux_core::resource::DocumentLaunch {
+                    content_type: content_type.to_owned(),
+                }),
+                name.map(str::to_owned),
+            ),
             actor,
         )
     }
@@ -215,6 +234,46 @@ impl<A: DocumentApi> ResourceApp for DocumentApp<A> {
         attach::stage_session::<A>(capture, staging, pane).boxed_local()
     }
 
+    fn refresh_for_attach<'a>(&'a self, _state: &'a SharedState) -> LocalBoxFuture<'a, ()> {
+        Box::pin(std::future::ready(()))
+    }
+
+    fn prepare_attach<'a>(
+        &'a self,
+        _attach: crate::runtime::session_attach::SessionAttach<'a>,
+        _panes: &'a [crate::state::AttachSnapshotPane],
+    ) -> LocalBoxFuture<'a, ()> {
+        Box::pin(std::future::ready(()))
+    }
+
+    fn attach_viewport(
+        &self,
+        _s: &mut crate::state::ServerState,
+        _panes: &[crate::state::AttachSnapshotPane],
+        _viewport: phux_protocol::wire::frame::ViewportInfo,
+    ) {
+        // A document takes its producer's size, never a viewer's.
+    }
+
+    fn after_attach<'a>(
+        &'a self,
+        _attach: crate::runtime::session_attach::SessionAttach<'a>,
+        _panes: &'a [crate::state::AttachSnapshotPane],
+        _role: phux_protocol::wire::frame::RolePolicy,
+    ) -> LocalBoxFuture<'a, ()> {
+        // Only a Terminal has an input role to take.
+        Box::pin(std::future::ready(()))
+    }
+
+    fn abort_attach<'a>(
+        &'a self,
+        _client: ClientId,
+        _handles: &'a [ResourceHandle],
+    ) -> LocalBoxFuture<'a, ()> {
+        // A document keeps no per-consumer state in its engine.
+        Box::pin(std::future::ready(()))
+    }
+
     fn defers_stream_bootstrap(&self) -> bool {
         false
     }
@@ -230,8 +289,8 @@ impl<A: DocumentApi> ResourceApp for DocumentApp<A> {
         })
     }
 
-    fn metrics(&self) -> &'static [phux_perf::Metric] {
-        &[]
+    fn metrics(&self, _state: &SharedState) -> Vec<&'static [phux_perf::Metric]> {
+        Vec::new()
     }
 
     fn release_consumer(&self, _handle: &ResourceHandle, _client: ClientId) {
@@ -264,6 +323,15 @@ impl<A: DocumentApi> ResourceApp for DocumentApp<A> {
         _resource: phux_core::ids::ResourceId,
     ) -> LocalBoxFuture<'a, ()> {
         Box::pin(std::future::ready(()))
+    }
+
+    fn exit_retained(
+        &self,
+        _s: &mut ServerState,
+        _wire: &phux_protocol::ids::ResourceId,
+    ) -> Option<crate::hooks::HookEvent> {
+        // A document is removed on exit; nothing of it outlives its process.
+        None
     }
 
     fn claim_relaunch(
@@ -308,6 +376,9 @@ impl<A: DocumentApi> ResourceApp for DocumentApp<A> {
                     });
                     result
                 }
+                // The catalog gives these to the `PixelSurface` row alone.
+                Command::Mirror { op, .. } => mirror::handle(&ctx.state, op).await,
+                Command::MirrorProvide { targets } => mirror::provide(&ctx.state, &targets),
                 _ => CommandResult::Error {
                     code: ErrorCode::InvalidCommand,
                     message: "command not supported by this server".to_owned(),

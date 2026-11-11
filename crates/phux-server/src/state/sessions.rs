@@ -206,8 +206,25 @@ impl ServerState {
         parent: ResourceId,
         facet: &phux_core::resource::AgentFacet,
     ) -> Option<ResourceId> {
-        self.create_agent_session(parent, facet, &Actor::owner())
-            .ok()
+        let launch = phux_core::LaunchSpec::Agent(phux_core::resource::AgentLaunch {
+            provider: facet.provider.clone(),
+            native_id: facet.native_id.clone(),
+        });
+        let id = self
+            .create_child(
+                parent,
+                phux_core::NewResource::child(launch, None),
+                &Actor::owner(),
+            )
+            .ok()?;
+        if let Some(agent) = self
+            .registry_mut()
+            .resource_mut(id)
+            .and_then(|d| d.agent.as_mut())
+        {
+            agent.state.clone_from(&facet.state);
+        }
+        Some(id)
     }
 
     /// Commit a membership move of `resource` into `to` at the revisions

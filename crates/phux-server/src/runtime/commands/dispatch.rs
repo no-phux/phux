@@ -68,12 +68,6 @@ pub(super) async fn dispatch_local(
         Command::GetPerf { reset } => handle_get_perf(state, reset),
         Command::DescribeApi => super::super::api::describe(state),
         Command::PrivacyStatus => super::super::privacy::handle(state, client_id),
-        Command::Mirror { op, .. } => {
-            crate::runtime::apps::terminal::standing::handle(state, op).await
-        }
-        Command::MirrorProvide { targets } => {
-            crate::runtime::apps::terminal::standing::provide(state, &targets)
-        }
         Command::PerfControl { op } => super::super::perf_control::handle(state, op).await,
         Command::KillResources { ids, operation_id } => {
             handle_kill_terminals(state, client_id, &ids, operation_id).await

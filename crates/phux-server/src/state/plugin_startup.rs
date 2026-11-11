@@ -18,20 +18,32 @@ impl ServerState {
         self.standing_mirrors = Some(reload);
     }
 
-    /// The mirrors wanted beside `[[mirrors]]`, and Rune's macOS runner.
-    #[must_use]
-    pub(crate) const fn mirror_demand(&self) -> &crate::state::mirror_demand::Demand {
-        &self.mirror_demand
-    }
-
-    /// Mutable [`Self::mirror_demand`].
-    pub(crate) const fn mirror_demand_mut(&mut self) -> &mut crate::state::mirror_demand::Demand {
-        &mut self.mirror_demand
-    }
-
     /// The standing-mirror supervisor's reload doorbell, once installed.
     #[must_use]
     pub(crate) const fn standing_mirrors(&self) -> Option<&std::sync::Arc<tokio::sync::Notify>> {
         self.standing_mirrors.as_ref()
+    }
+
+    /// The server's own executable, which native hosts and mirror listings
+    /// run; tests point it at a fixture.
+    pub(crate) fn set_native_host_executable(&mut self, executable: Option<std::path::PathBuf>) {
+        self.config.native_host_executable = executable;
+    }
+
+    /// [`Self::set_native_host_executable`], else the running binary.
+    pub(crate) fn native_host_executable(&self) -> Result<std::path::PathBuf, std::io::Error> {
+        self.config
+            .native_host_executable
+            .clone()
+            .map_or_else(std::env::current_exe, Ok)
+    }
+}
+
+impl super::SharedState {
+    /// Ring the standing-mirror supervisor's reload doorbell, once installed.
+    pub(crate) fn request_standing_reload(&self) {
+        if let Some(reload) = self.with(|s| s.standing_mirrors().cloned()) {
+            reload.notify_one();
+        }
     }
 }

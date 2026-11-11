@@ -124,6 +124,10 @@ pub struct MethodSpec {
     /// (ADR-0128). MCP `destructiveHint`/`confirm` and CLI `--yes` derive
     /// from this; see [`command_is_dangerous`] and [`frame_is_dangerous`].
     pub dangerous: bool,
+    /// The kind whose app serves this host-addressed method, though it names
+    /// no resource; see [`command_served_by`]. `None` for the host's own
+    /// methods and for facet methods, whose kind is their row's.
+    pub served_by: Option<ResourceKind>,
 }
 
 impl MethodSpec {
@@ -226,11 +230,20 @@ macro_rules! method {
             gate: $gate,
             shipped: true,
             dangerous: false,
+            served_by: None,
         }
     };
     ($name:expr, $carrier:expr, [$($rule:ident),+ $(,)?]) => {
         method!($name, $carrier, [$($rule),+], None)
     };
+}
+
+/// Host-addressed `method` served by `kind`'s app ([`MethodSpec::served_by`]).
+const fn served_by(kind: ResourceKind, method: MethodSpec) -> MethodSpec {
+    MethodSpec {
+        served_by: Some(kind),
+        ..method
+    }
 }
 
 /// `method` marked [`MethodSpec::dangerous`].
@@ -291,12 +304,19 @@ pub static SERVER_METHODS: &[MethodSpec] = &[
     ),
     // A host's screen mirrors: list, start, stop; Rune's macOS runner
     // reports its targets and learns its mirrors through MIRROR_PROVIDE.
-    method!("MIRROR", Carrier::Command(COMMAND_TAG_MIRROR), [C_MIRROR], MIRRORS),
-    method!(
-        "MIRROR_PROVIDE",
-        Carrier::Command(COMMAND_TAG_MIRROR_PROVIDE),
-        [C_MIRROR_PROVIDE],
-        MIRRORS
+    // Addressed to the host, served by the app of the surfaces they make.
+    served_by(
+        ResourceKind::PixelSurface,
+        method!("MIRROR", Carrier::Command(COMMAND_TAG_MIRROR), [C_MIRROR], MIRRORS),
+    ),
+    served_by(
+        ResourceKind::PixelSurface,
+        method!(
+            "MIRROR_PROVIDE",
+            Carrier::Command(COMMAND_TAG_MIRROR_PROVIDE),
+            [C_MIRROR_PROVIDE],
+            MIRRORS
+        ),
     ),
     method!(
         "GET_FILE",

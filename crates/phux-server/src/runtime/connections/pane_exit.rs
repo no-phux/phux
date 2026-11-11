@@ -1,14 +1,11 @@
 //! The pane exit lifecycle: the exit watcher, retention and reaping, cascading
 //! closes to children, and the `RESOURCE_CLOSED` broadcast.
 
-use crate::runtime::apps::terminal::agent_state::drain_retract;
-
 use super::detach_clients_of_killed_session;
 use crate::hooks::HookEvent;
 use phux_core::ids::ResourceId as CoreResourceId;
 use phux_core::process::ExitOutcome;
 use phux_protocol::ids::ResourceId as WireResourceId;
-use phux_protocol::wire::frame::Scope;
 use tokio_util::sync::CancellationToken;
 
 use phux_protocol::wire::frame::{AgentEvent, CloseReason, FrameKind};
@@ -52,7 +49,7 @@ pub(crate) fn spawn_resource_exit_watcher(
         if let Some(RetainedExit {
             retention,
             wire_terminal_id,
-            agent_hook,
+            app_hook,
             handle,
         }) = retained
         {
@@ -60,7 +57,7 @@ pub(crate) fn spawn_resource_exit_watcher(
             if let Some(handle) = handle {
                 handle.ops().retire().await;
             }
-            fire_retained_exit_hooks(&state, &wire_terminal_id, agent_hook, exit);
+            fire_retained_exit_hooks(&state, &wire_terminal_id, app_hook, exit);
             events = hold_until_purge(&state, &retention, events).await;
         }
         let reap = state.with_mut(|s| reap_exited_pane(s, pane, exit, events.as_mut()));
@@ -121,8 +118,9 @@ struct RetainedExit {
     retention: crate::state::Retention,
     /// The pane's wire id, for the `pane-exit` hook.
     wire_terminal_id: WireResourceId,
-    /// The `agent-state-changed` hook the withdrawn agent record owes.
-    agent_hook: Option<HookEvent>,
+    /// The hook its app's retained-exit withdrawal owes (a Terminal's
+    /// `agent-state-changed`).
+    app_hook: Option<HookEvent>,
     /// The engine's control mailbox, for the `Retire` sent off the lock.
     handle: Option<crate::resource::ResourceHandle>,
 }
@@ -130,8 +128,9 @@ struct RetainedExit {
 /// Keep `pane` as `Exited` when it asked to be retained and nothing is
 /// already closing it (ADR-0124 §2), all in one lock: record its exit facet,
 /// journal what it already queued and then `terminal_control { Exited }`,
-/// withdraw its `phux.agent/v1` state to `unknown` (L3 §3.7), and tell its
-/// engine to stop the detector and refuse input. No `RESOURCE_CLOSED`: the
+/// let its app withdraw what the exit invalidates (a Terminal's
+/// `phux.agent/v1` state, to `unknown`, L3 §3.7), and tell its engine to stop
+/// the detector and refuse input. No `RESOURCE_CLOSED`: the
 /// resource is still here. `None` leaves the pane to the close path.
 fn retain_exited_pane(
     s: &mut ServerState,
@@ -159,28 +158,30 @@ fn retain_exited_pane(
         exited,
     ));
     let handle = s.resource_handle(pane).cloned();
-    let scope = Scope::Resource(wire_terminal_id.clone());
-    let hooks_live = s.hook_dispatcher().is_some();
-    let agent_hook = drain_retract(s, &wire_terminal_id, &scope, hooks_live);
+    let app_hook = s
+        .registry()
+        .resource(pane)
+        .map(|resource| crate::runtime::apps::app_for(resource.kind))
+        .and_then(|app| app.exit_retained(s, &wire_terminal_id));
     Some(RetainedExit {
         retention,
         wire_terminal_id,
-        agent_hook,
+        app_hook,
         handle,
     })
 }
 
 /// The hooks a retained exit owes, fired off-lock: `pane-exit` now, because
-/// the process is what exited (its purge fires none), and the withdrawn agent
-/// record's `agent-state-changed`.
+/// the process is what exited (its purge fires none), and the one its app's
+/// withdrawal owes.
 fn fire_retained_exit_hooks(
     state: &SharedState,
     wire_terminal_id: &WireResourceId,
-    agent_hook: Option<HookEvent>,
+    app_hook: Option<HookEvent>,
     exit: ExitOutcome,
 ) {
     crate::hooks::fire_hook(state, HookEvent::pane_exit(wire_terminal_id, exit.status));
-    if let Some(event) = agent_hook {
+    if let Some(event) = app_hook {
         crate::hooks::fire_hook(state, event);
     }
 }

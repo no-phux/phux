@@ -1,6 +1,7 @@
-//! `MIRROR` (`docs/resource-kinds.md#standing-mirrors`): list a host's
-//! capture targets and start or stop a mirror of one on demand, in the same
-//! `mirror-<target>` session a `[[mirrors]]` entry gets. Linux runs the
+//! `MIRROR` (`docs/resource-kinds.md#standing-mirrors`), the `PixelSurface`
+//! app's: list a host's capture targets and start or stop a mirror of one on
+//! demand, in the same `mirror-<target>` session a `[[mirrors]]` entry gets;
+//! the standing-mirror supervisor runs it. Linux runs the
 //! mirror here; on macOS Rune's runner (`phux agent surface standing`)
 //! reports the targets and runs the mirrors, so without it both are
 //! refused. On-demand mirrors last until stopped or the server restarts or
@@ -9,7 +10,7 @@
 use std::time::{Duration, Instant};
 
 use phux_config::MirrorConfigEntry;
-use phux_config::mirror::MirrorFormat;
+use phux_config::mirror::{MIRROR_SESSION_PREFIX, MirrorFormat};
 use phux_protocol::wire::frame::{CommandResult, CommandValue, ErrorCode, MirrorOp};
 
 use crate::state::{ServerState, SharedState};
@@ -101,7 +102,7 @@ fn checked(target: &str) -> Result<MirrorConfigEntry, CommandResult> {
     };
     if entry.target.is_empty()
         || entry.target.chars().any(char::is_control)
-        || entry.session_name() == super::MIRROR_SESSION_PREFIX.trim_end_matches('-')
+        || entry.session_name() == MIRROR_SESSION_PREFIX.trim_end_matches('-')
     {
         return Err(refuse(
             ErrorCode::InvalidCommand,
@@ -116,7 +117,7 @@ async fn start(state: &SharedState, target: String, jpeg: bool) -> CommandResult
         Ok(name) => name,
         Err(refused) => return refused,
     };
-    super::request_reload(state);
+    state.request_standing_reload();
     let deadline = Instant::now() + SURFACE_WAIT;
     let surface = loop {
         if let Some(id) = state.with_mut(|s| surface_in(s, &name)) {
@@ -153,7 +154,7 @@ fn stop(state: &SharedState, target: &str) -> CommandResult {
             format!("no mirror of {target:?} was started"),
         ),
         Ok(true) => {
-            super::request_reload(state);
+            state.request_standing_reload();
             json(&serde_json::json!({ "session": name }))
         }
     }

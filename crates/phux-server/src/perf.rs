@@ -94,41 +94,17 @@ pub static TABLE: &[Metric] = &[
     Metric::gauge("proc.sched_interactive", Unit::Count, &SCHED_INTERACTIVE),
 ];
 
-/// Every table a report covers: each app's rows, then the host's.
-pub(crate) fn tables() -> Vec<&'static [Metric]> {
-    let mut tables = crate::runtime::apps::metric_tables();
+/// Every table a report covers: each app's, its engine's first, then the
+/// host's.
+pub(crate) fn tables(state: &crate::state::SharedState) -> Vec<&'static [Metric]> {
+    let mut tables = crate::runtime::apps::metric_tables(state);
     tables.push(TABLE);
     tables
-}
-
-pub(crate) fn engine_tables(state: &crate::state::SharedState) -> Vec<&'static [Metric]> {
-    let mut combined = Vec::new();
-    if let Some(engine) = state.terminal_engine() {
-        combined.push(engine.metrics());
-    }
-    combined.extend(tables());
-    combined
 }
 
 pub(crate) fn promote_helper_thread(name: &str) {
     if !phux_perf::promote_current_thread() {
         tracing::debug!(thread = name, "interactive scheduling not granted");
-    }
-}
-
-pub(crate) fn engine_report(state: &crate::state::SharedState) -> PerfReport {
-    let (epoch, baseline) = started();
-    phux_perf::snapshot_since(
-        "server",
-        &engine_tables(state),
-        epoch.elapsed(),
-        baseline.as_ref(),
-    )
-}
-
-pub(crate) fn engine_reset(state: &crate::state::SharedState) {
-    for table in engine_tables(state) {
-        phux_perf::reset(table);
     }
 }
 
@@ -149,14 +125,14 @@ pub fn mark_started() {
 /// Take a report. The gauges are the caller's to refresh first (they are
 /// derived from registry state this module cannot see).
 #[must_use]
-pub fn report() -> PerfReport {
+pub(crate) fn report(state: &crate::state::SharedState) -> PerfReport {
     let (epoch, baseline) = started();
-    phux_perf::snapshot_since("server", &tables(), epoch.elapsed(), baseline.as_ref())
+    phux_perf::snapshot_since("server", &tables(state), epoch.elapsed(), baseline.as_ref())
 }
 
 /// Zero every metric after a `GET_PERF { reset: true }`.
-pub fn reset() {
-    for table in tables() {
+pub(crate) fn reset(state: &crate::state::SharedState) {
+    for table in tables(state) {
         phux_perf::reset(table);
     }
 }
@@ -167,7 +143,7 @@ mod tests {
 
     #[test]
     fn table_names_are_unique_and_dotted() {
-        let mut names: Vec<&str> = tables()
+        let mut names: Vec<&str> = tables(&crate::state::SharedState::new())
             .into_iter()
             .flatten()
             .map(|metric| metric.name)
@@ -182,11 +158,15 @@ mod tests {
     #[test]
     fn report_carries_every_table_row_and_a_server_role() {
         mark_started();
-        let r = report();
+        let state = crate::state::SharedState::new();
+        let r = report(&state);
         assert_eq!(r.role, "server");
         assert_eq!(
             r.metrics.len(),
-            tables().iter().map(|table| table.len()).sum::<usize>()
+            tables(&state)
+                .iter()
+                .map(|table| table.len())
+                .sum::<usize>()
         );
         assert!(r.process.is_some());
     }

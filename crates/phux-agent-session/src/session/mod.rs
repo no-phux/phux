@@ -14,8 +14,8 @@ use tokio::sync::{mpsc, oneshot};
 use tokio_util::sync::CancellationToken;
 
 use phux_resource::{
-    Delivery, LeaseChange, ResourceCore, ResourceCoreChannels, ResourceFacet, ResourceHandle,
-    ResourceId, ResourceKind, ResourceOps, ResourceOutput, WrongResourceKind,
+    Delivery, ResourceCore, ResourceCoreChannels, ResourceFacet, ResourceHandle, ResourceId,
+    ResourceKind, ResourceOps, ResourceOutput, WrongResourceKind,
 };
 
 pub mod record;
@@ -54,25 +54,11 @@ impl ResourceFacet for AgentSessionHandle {
     const KIND: ResourceKind = ResourceKind::AgentSession;
 }
 
-/// A record stream has no grid to size; an upgrade carries it through its
-/// bootstrap mailbox.
+/// A record stream has no grid to size and no input lease; an upgrade
+/// carries it through its bootstrap mailbox.
 impl ResourceOps for AgentSessionHandle {
-    fn resize(&self, _size: (u16, u16), _cell_px: Option<(u16, u16)>) -> bool {
-        false
-    }
-
-    fn lease_changed(&self, _change: LeaseChange) -> Delivery {
-        Box::pin(std::future::ready(()))
-    }
-
-    fn try_lease_changed(&self, _change: LeaseChange) {}
-
     fn retire(&self) -> Delivery {
         Box::pin(std::future::ready(()))
-    }
-
-    fn is_live_stream(&self) -> bool {
-        !self.ended.load(Ordering::Relaxed)
     }
 }
 
@@ -165,7 +151,9 @@ impl AgentSessionActor {
             bootstrap: bootstrap_tx,
             ended: Arc::clone(&ended),
         };
-        let handle = ResourceHandle::new(Some(parent), output, facet);
+        let handle = ResourceHandle::new(Some(parent), output, facet).with_companion(
+            phux_resource::companions::LiveStream::new(Arc::clone(&ended)),
+        );
         AgentSessionBundle {
             actor: Self {
                 core,

@@ -27,10 +27,9 @@ fn old_image(
         content_type: "text/markdown".to_owned(),
     });
     let core = s
-        .create_named_document(
+        .create_child(
             pane,
-            launch,
-            Some("notes".into()),
+            phux_core::NewResource::child(launch, Some("notes".into())),
             &phux_core::Actor::system(),
         )
         .unwrap();
@@ -43,9 +42,13 @@ fn old_image(
         .publish
         .clone();
     let doc_wire = s
-        .spawn_resource_actor(core, bundle.handle, token, bundle.actor.run())
+        .spawn_resource_actor(
+            core,
+            bundle.handle.with_companion(ControlClass::Window),
+            token,
+            bundle.actor.run(),
+        )
         .unwrap();
-    s.set_document_control(core, Some(ControlClass::Window));
     s.set_upgrade_context(
         7,
         PathBuf::from("/nonexistent/phux.sock"),
@@ -112,7 +115,7 @@ async fn upgrade_carries_documents_with_their_id_and_newest_document() {
                 let handle = s.resource_handle(doc).expect("engine");
                 let snapshot = handle.document::<TypedDocument>().unwrap().snapshot.clone();
                 assert_eq!(handle.parent, s.resource_from_wire(&pane_wire));
-                assert_eq!(s.document_control(doc), Some(ControlClass::Window));
+                assert_eq!(s.resource_control(doc), Some(ControlClass::Window));
                 assert!(
                     s.resource_producer(doc).is_none(),
                     "no producer until one publishes"

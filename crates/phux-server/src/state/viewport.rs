@@ -172,7 +172,8 @@ impl ServerState {
             }
             let resized = self
                 .resource_handle(terminal)
-                .is_some_and(|handle| handle.ops().resize((cols, rows), cell_px));
+                .and_then(|handle| handle.companion::<crate::resource::companions::Resizable>())
+                .is_some_and(|engine| engine.resize((cols, rows), cell_px));
             if resized && let Some(pane) = self.registry_mut().terminal_mut(terminal) {
                 pane.dims = (cols, rows);
             }

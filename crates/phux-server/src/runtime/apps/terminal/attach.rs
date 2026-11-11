@@ -73,7 +73,6 @@ pub(crate) use prepare::{
     apply_client_default_colors, apply_session_role, detach_prior_state_sync_consumers,
 };
 use publication::release_gates;
-pub(crate) use pump_loop::fail_aggregate_attach_prepublication;
 #[cfg(test)]
 use pump_loop::next_wait;
 pub(crate) use pump_loop::*;

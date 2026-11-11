@@ -14,7 +14,14 @@ fn document(world: &mut World, control: Option<phux_protocol::wire::frame::Contr
             &phux_core::Actor::owner(),
         )
         .unwrap();
-    world.state.set_document_control(core, control);
+    let token = tokio_util::sync::CancellationToken::new();
+    let bundle =
+        phux_tree::DocumentActor::<phux_tree::SurfaceDocument>::build(world.alpha_core, "smoke", token.clone());
+    let handle = match control {
+        Some(class) => bundle.handle.with_companion(class),
+        None => bundle.handle,
+    };
+    world.state.register_resource_handle(core, handle, token).unwrap();
     world.state.intern_resource_wire(core)
 }
 

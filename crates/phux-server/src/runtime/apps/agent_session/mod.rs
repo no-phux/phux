@@ -50,6 +50,46 @@ impl ResourceApp for AgentSessionApp {
         std::future::ready(Ok(())).boxed_local()
     }
 
+    fn refresh_for_attach<'a>(&'a self, _state: &'a SharedState) -> LocalBoxFuture<'a, ()> {
+        Box::pin(std::future::ready(()))
+    }
+
+    fn prepare_attach<'a>(
+        &'a self,
+        _attach: crate::runtime::session_attach::SessionAttach<'a>,
+        _panes: &'a [crate::state::AttachSnapshotPane],
+    ) -> LocalBoxFuture<'a, ()> {
+        Box::pin(std::future::ready(()))
+    }
+
+    fn attach_viewport(
+        &self,
+        _s: &mut crate::state::ServerState,
+        _panes: &[crate::state::AttachSnapshotPane],
+        _viewport: phux_protocol::wire::frame::ViewportInfo,
+    ) {
+        // A record stream has no grid to size.
+    }
+
+    fn after_attach<'a>(
+        &'a self,
+        _attach: crate::runtime::session_attach::SessionAttach<'a>,
+        _panes: &'a [crate::state::AttachSnapshotPane],
+        _role: phux_protocol::wire::frame::RolePolicy,
+    ) -> LocalBoxFuture<'a, ()> {
+        // Only a Terminal has an input role to take.
+        Box::pin(std::future::ready(()))
+    }
+
+    fn abort_attach<'a>(
+        &'a self,
+        _client: ClientId,
+        _handles: &'a [ResourceHandle],
+    ) -> LocalBoxFuture<'a, ()> {
+        // The stream is deferred to `ATTACH_RESOURCE`: nothing was staged.
+        Box::pin(std::future::ready(()))
+    }
+
     fn defers_stream_bootstrap(&self) -> bool {
         false
     }
@@ -92,8 +132,8 @@ impl ResourceApp for AgentSessionApp {
         std::future::ready(frames::serve(&ctx, &frame)).boxed_local()
     }
 
-    fn metrics(&self) -> &'static [phux_perf::Metric] {
-        &[]
+    fn metrics(&self, _state: &SharedState) -> Vec<&'static [phux_perf::Metric]> {
+        Vec::new()
     }
 
     fn release_consumer(&self, _handle: &ResourceHandle, _client: ClientId) {
@@ -191,6 +231,16 @@ impl ResourceApp for AgentSessionApp {
         resource: phux_core::ids::ResourceId,
     ) -> LocalBoxFuture<'a, ()> {
         native_agent::source_exited(state, resource).boxed_local()
+    }
+
+    fn exit_retained(
+        &self,
+        _s: &mut crate::state::ServerState,
+        _wire: &phux_protocol::ids::ResourceId,
+    ) -> Option<crate::hooks::HookEvent> {
+        // A record stream is removed on exit; its native controller closes
+        // through `resource_exited`.
+        None
     }
 
     fn claim_relaunch(

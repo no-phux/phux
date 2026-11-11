@@ -213,7 +213,7 @@ pub(crate) async fn refuse_without_terminal_profile(
         .send(Outbound::Frame(FrameKind::Error {
             request_id: Some(request_id),
             code: ErrorCode::CodecUnavailable,
-            message: super::terminal::commands::NO_TERMINAL_PROFILE.to_owned(),
+            message: super::NO_TERMINAL_PROFILE.to_owned(),
         }))
         .await;
 }
@@ -336,10 +336,7 @@ mod tests {
         else {
             panic!("CODEC_UNAVAILABLE for a Terminal");
         };
-        assert_eq!(
-            message,
-            super::super::terminal::commands::NO_TERMINAL_PROFILE
-        );
+        assert_eq!(message, super::super::NO_TERMINAL_PROFILE);
         let SpawnError::SpawnFailed(agent) = refusal(reply(ResourceKind::AgentSession, None).await)
         else {
             panic!("the agent session app refuses");

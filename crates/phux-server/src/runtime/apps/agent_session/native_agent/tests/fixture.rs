@@ -180,13 +180,15 @@ impl Fixture {
     ) -> ResourceId {
         state.with_mut(|s| {
             let core = s
-                .create_agent_session(
+                .create_child(
                     parent,
-                    &phux_core::AgentFacet {
-                        provider: "omp".into(),
-                        native_id: None,
-                        state: None,
-                    },
+                    phux_core::NewResource::child(
+                        phux_core::LaunchSpec::Agent(phux_core::resource::AgentLaunch {
+                            provider: "omp".into(),
+                            native_id: None,
+                        }),
+                        None,
+                    ),
                     &s.actor_for(owner),
                 )
                 .unwrap();

@@ -115,6 +115,20 @@ pub fn command_kind(command: &Command) -> Option<ResourceKind> {
         .map(|kind| kind.kind)
 }
 
+/// The kind whose app serves `command`: the kind whose facet carries it, or
+/// the [`MethodSpec::served_by`] of the host-addressed method that does.
+/// `None` for a command the host serves itself.
+#[must_use]
+pub fn command_served_by(command: &Command) -> Option<ResourceKind> {
+    command_kind(command).or_else(|| {
+        let rule = command_rule(command);
+        SERVER_METHODS
+            .iter()
+            .find(|method| method.rules.iter().any(|row| core::ptr::eq(*row, rule)))
+            .and_then(|method| method.served_by)
+    })
+}
+
 /// Whether some dangerous method lists `rule` among its rows.
 fn rule_is_dangerous(rule: &Rule) -> bool {
     methods()

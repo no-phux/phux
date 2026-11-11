@@ -146,24 +146,17 @@ impl ServerState {
         // An unclaimed close reason must not outlive its id.
         self.forget_close_reason(pane);
         self.retained.forget(pane);
-        self.document_controls.remove(&pane);
-        // Asked state is keyed by core id; the arbiter by wire id (below).
-        self.agent.clear_asked(pane);
         // No lease change can follow a removed pane.
         self.leases.forget_resource(pane);
-        // The retired wire id keys the metadata scope and the arbiter.
-        if let Some(wire) = self.idspace.retire_terminal(pane) {
-            if self.native_agents.bindings.remove(&wire).is_some()
-                && let Some(wake) = self.native_agents.wakes.remove(&wire)
-            {
-                wake.notify_waiters();
-            }
-            self.metadata.forget_resource(&wire);
+        // The retired wire id keys the metadata scope and the app slots.
+        let wire = self.idspace.retire_terminal(pane);
+        if let Some(wire) = &wire {
+            self.metadata.forget_resource(wire);
             // A viewer mark (ADR-0127) must not outlive the Terminal it names.
-            self.clients.forget_viewed_terminal(&wire);
-            // A recycled wire id must not inherit a stale declaration.
-            self.agent.forget_record(&wire);
+            self.clients.forget_viewed_terminal(wire);
         }
+        // A recycled wire id must not inherit an app's stale state.
+        self.app_slots.forget_resource(pane, wire.as_ref());
         token
     }
 

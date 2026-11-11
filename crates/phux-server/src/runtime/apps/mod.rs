@@ -31,7 +31,9 @@ use crate::resource::{ResourceHandle, ResourceKind};
 use crate::state::{ClientId, Outbound, SharedState};
 
 pub(crate) mod agent_session;
+pub(crate) mod agent_tracking;
 pub(crate) mod document;
+pub(crate) mod mirror_demand;
 pub(crate) mod spawn;
 pub(crate) mod terminal;
 pub(crate) mod upgrade;
@@ -133,6 +135,45 @@ pub(crate) trait ResourceApp: Sync {
         pane: crate::state::AttachSnapshotPane,
     ) -> LocalBoxFuture<'a, Result<(), super::session_attach::staging::CaptureFailure>>;
 
+    /// Before a session `ATTACH` reads membership: refresh what its snapshot
+    /// reports of this kind's resources (a Terminal's live cwd).
+    fn refresh_for_attach<'a>(&'a self, state: &'a SharedState) -> LocalBoxFuture<'a, ()>;
+
+    /// A session `ATTACH` is about to stage `panes`, all of this kind:
+    /// fence the client's earlier consumers and apply its presentation.
+    fn prepare_attach<'a>(
+        &'a self,
+        attach: super::session_attach::SessionAttach<'a>,
+        panes: &'a [crate::state::AttachSnapshotPane],
+    ) -> LocalBoxFuture<'a, ()>;
+
+    /// Size `panes`, all of this kind, to the attaching client's viewport,
+    /// in the lock that records it.
+    fn attach_viewport(
+        &self,
+        s: &mut crate::state::ServerState,
+        panes: &[crate::state::AttachSnapshotPane],
+        viewport: phux_protocol::wire::frame::ViewportInfo,
+    );
+
+    /// The session `ATTACH` published: apply its declared role to `panes`,
+    /// all of this kind.
+    fn after_attach<'a>(
+        &'a self,
+        attach: super::session_attach::SessionAttach<'a>,
+        panes: &'a [crate::state::AttachSnapshotPane],
+        role: phux_protocol::wire::frame::RolePolicy,
+    ) -> LocalBoxFuture<'a, ()>;
+
+    /// The session `ATTACH` failed before publication: release `client`'s
+    /// engine-side consumers of `handles`, all of this kind, each within a
+    /// bounded wait.
+    fn abort_attach<'a>(
+        &'a self,
+        client: ClientId,
+        handles: &'a [ResourceHandle],
+    ) -> LocalBoxFuture<'a, ()>;
+
     /// Whether a multi-stream connection waits for `STREAM_BIND` before
     /// bootstrapping this kind's content.
     fn defers_stream_bootstrap(&self) -> bool;
@@ -190,6 +231,15 @@ pub(crate) trait ResourceApp: Sync {
         resource: phux_core::ids::ResourceId,
     ) -> LocalBoxFuture<'a, ()>;
 
+    /// A resource of this kind exited and is retained (ADR-0124): withdraw
+    /// what its exit invalidates, in the lock that retains it, after its
+    /// `Exited` event. Returns a hook the withdrawal owes, fired off-lock.
+    fn exit_retained(
+        &self,
+        s: &mut crate::state::ServerState,
+        wire: &WireResourceId,
+    ) -> Option<crate::hooks::HookEvent>;
+
     /// Serve a relaunch this kind recognizes as its own, leaving the rest to
     /// the organization path.
     fn claim_relaunch(
@@ -214,9 +264,14 @@ pub(crate) trait ResourceApp: Sync {
         frame: FrameKind,
     ) -> LocalBoxFuture<'a, FrameFlow>;
 
-    /// This kind's rows of the `GET_PERF` report.
-    fn metrics(&self) -> &'static [phux_perf::Metric];
+    /// This kind's tables of the `GET_PERF` report, its engine's included.
+    fn metrics(&self, state: &SharedState) -> Vec<&'static [phux_perf::Metric]>;
 }
+
+/// The refusal a stream that needs the connection's Terminal bootstrap
+/// profile (its kind's catalog stream contract says so) gets on a connection
+/// whose `HELLO` offered none. The connection stays.
+pub(crate) const NO_TERMINAL_PROFILE: &str = "this connection offered no Terminal bootstrap profile at HELLO, so it cannot consume a Terminal stream";
 
 /// The app serving `kind`. Exhaustive: a kind with no app does not compile.
 pub(crate) const fn app_for(kind: ResourceKind) -> &'static dyn ResourceApp {
@@ -260,6 +315,36 @@ const _: () = {
     }
 };
 
+/// `items` split by kind, each with the app serving it, in [`APP_KINDS`]
+/// order; a kind with none is left out.
+pub(crate) fn by_kind<T: Clone>(
+    items: &[T],
+    kind_of: impl Fn(&T) -> ResourceKind,
+) -> Vec<(&'static dyn ResourceApp, Vec<T>)> {
+    APP_KINDS
+        .iter()
+        .filter_map(|&kind| {
+            let of_kind: Vec<T> = items
+                .iter()
+                .filter(|item| kind_of(item) == kind)
+                .cloned()
+                .collect();
+            (!of_kind.is_empty()).then(|| (app_for(kind), of_kind))
+        })
+        .collect()
+}
+
+/// Ask every app to refresh what a session `ATTACH` snapshot reports.
+pub(crate) async fn refresh_for_attach(state: &SharedState) {
+    for app in APPS {
+        app.refresh_for_attach(state).await;
+    }
+}
+
+/// Resolve a session `ATTACH` target. `CreateIfMissing` seeds the new
+/// session with a Terminal, the one kind that runs without a producer.
+pub(crate) use terminal::attach::resolve_attach_target;
+
 /// Tell every app the tree came back from an upgrade blob.
 pub(crate) fn resumed(state: &SharedState) {
     for app in APPS {
@@ -299,9 +384,9 @@ pub(crate) fn app_serving(
     kind.map(app_for)
 }
 
-/// Every app's rows of the `GET_PERF` report.
-pub(crate) fn metric_tables() -> Vec<&'static [phux_perf::Metric]> {
-    APPS.iter().map(|app| app.metrics()).collect()
+/// Every app's tables of the `GET_PERF` report.
+pub(crate) fn metric_tables(state: &SharedState) -> Vec<&'static [phux_perf::Metric]> {
+    APPS.iter().flat_map(|app| app.metrics(state)).collect()
 }
 
 /// The native bootstrap profiles this server can offer at HELLO.
@@ -316,9 +401,10 @@ pub(crate) fn app_owning(command: &Command) -> Option<&'static dyn ResourceApp> 
     owning_kind(command).map(app_for)
 }
 
-/// The kind whose catalog rows carry `command`; `None` for a host command.
+/// The kind whose catalog rows carry `command`, or that serves the
+/// host-addressed method carrying it; `None` for a host command.
 fn owning_kind(command: &Command) -> Option<ResourceKind> {
-    phux_protocol::kinds::command_kind(command).and_then(crate::id_bridge::core_kind)
+    phux_protocol::kinds::command_served_by(command).and_then(crate::id_bridge::core_kind)
 }
 
 #[cfg(test)]
