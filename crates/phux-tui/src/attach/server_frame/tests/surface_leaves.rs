@@ -248,10 +248,11 @@ fn a_document_bootstrap_classifies_a_leaf_the_graph_did_not_name() {
     });
     assert!(begin.layout_replaced, "the first word repaints the tile");
     assert!(paint(&mut h).contains("Document"));
-    // The rest of the same generation never reaches the TTY.
+    // The rest of the stream never reaches the TTY or repaints again. The
+    // generation is already open, so send only what follows the begin.
     h.send(chunk_frame(
         &doc,
-        b"\x0atext/plain\x1b]52;c;bm90LXR0eQ==\x07untrusted document",
+        b"\x1b]52;c;bm90LXR0eQ==\x07untrusted document",
     ));
     h.send(ready_frame(&doc));
     h.send(output_frame(&doc, 2, b"\x1b[2Juntrusted live document"));

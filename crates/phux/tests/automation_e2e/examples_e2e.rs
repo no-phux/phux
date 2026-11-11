@@ -47,17 +47,18 @@ fn introductory_examples_use_real_output_and_propagate_failures() {
 
 #[test]
 #[ignore = "spawns a private server and PTY; run through just e2e"]
-fn readme_automation_drives_only_the_shell_it_creates() {
+fn scripting_doc_automation_drives_only_the_shell_it_creates() {
     let server = common::ServerGuard::start("readme");
-    let readme = std::fs::read_to_string(crate::runner::manifest_dir().join("../../README.md"))
-        .expect("read README");
-    let script = readme
+    let doc =
+        std::fs::read_to_string(crate::runner::manifest_dir().join("../../docs/scripting.md"))
+            .expect("read docs/scripting.md");
+    let script = doc
         .split("```sh\n")
         .skip(1)
         .filter_map(|block| block.split_once("```"))
         .map(|(script, _)| script)
         .find(|script| script.contains("session=\"phux-demo-$$\""))
-        .expect("README automation example");
+        .expect("docs/scripting.md automation example");
     let directory = tempfile::tempdir().expect("private command path");
     std::os::unix::fs::symlink(crate::runner::phux_bin(), directory.path().join("phux"))
         .expect("same-checkout CLI on PATH");
@@ -76,7 +77,9 @@ fn readme_automation_drives_only_the_shell_it_creates() {
         .env("PHUX_NO_UPDATE_CHECK", "1")
         .args(["-eu", "-c", script]);
     server.xdg.apply(&mut command);
-    let output = command.output().expect("execute README automation");
+    let output = command
+        .output()
+        .expect("execute docs/scripting.md automation");
     assert!(
         output.status.success(),
         "{}",

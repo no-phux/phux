@@ -297,11 +297,14 @@ impl<A: DocumentApi> ResourceApp for DocumentApp<A> {
                     terminal_id,
                     intent,
                     control,
+                    on_behalf_of,
                 } => {
                     let audited = intent.clone();
-                    let result = input::relay::<A>(ctx, &terminal_id, intent, control).await;
+                    let relayed = on_behalf_of.as_ref();
+                    let result =
+                        input::relay::<A>(ctx, &terminal_id, intent, control, relayed).await;
                     ctx.state.with(|s| {
-                        audit::record(s, ctx.client_id, &terminal_id, &audited, &result);
+                        audit::record(s, ctx.client_id, relayed, &terminal_id, &audited, &result);
                     });
                     result
                 }

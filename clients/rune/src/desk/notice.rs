@@ -36,3 +36,17 @@ pub struct Notice {
     /// When it goes, on the app clock.
     pub(super) expires: f64,
 }
+
+impl Desk {
+    /// The pressed offer's action, then the toast goes.
+    pub fn take_offer(&mut self) {
+        let Some((_, action)) = self.notice.take().and_then(|notice| notice.action) else {
+            return;
+        };
+        action(self);
+    }
+
+    pub fn dismiss_notice(&mut self) {
+        self.notice = None;
+    }
+}

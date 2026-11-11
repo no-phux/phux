@@ -25,14 +25,23 @@
 //!       "ssh": "me@mini",
 //!       "direct": null,
 //!       "client_cert": "/path/to/mini.client.0123456789abcdef.pem",
-//!       "client_key": "/path/to/mini.client.0123456789abcdef.key"
+//!       "client_key": "/path/to/mini.client.0123456789abcdef.key",
+//!       "color": {"id": "magenta", "hex": "#D9629F", "override": false}
 //!     }
-//!   ]
+//!   ],
+//!   "local": {
+//!     "name": "studio",
+//!     "color": {"id": "violet", "hex": "#9A78E8", "override": true}
+//!   }
 //! }
 //! ```
 //!
 //! `enabled` is `null` for remotes; `session`, `ssh`, `direct`, `client_cert`,
-//! and `client_key` are `null` for satellites. The client identity is named
+//! and `client_key` are `null` for satellites. `color` is the host's resolved
+//! palette colour ([`phux_config::host_color`]); `override` says a `color`
+//! key chose it rather than the name hash (satellites are always hashed).
+//! `local` is this machine under its short host name, coloured by
+//! `[host] color`. `phux host color` sets either. The client identity is named
 //! by path only; the key bytes never appear. `host add --json` and `host
 //! renew --json` wrap one such object under `"host"`, beside an
 //! `"enrollment"` object (`status`, `error`, `credential_id`, `expires_at`,
@@ -57,6 +66,7 @@ use usage::ValueEnum;
 mod add;
 mod add_ssh;
 mod args;
+mod color;
 mod discover;
 mod enrollment;
 mod hub;
@@ -130,6 +140,7 @@ pub(crate) fn run_host(action: &HostAction) -> ExitCode {
             role,
             json,
         } => run_rename(name, new_name, *role, json.json),
+        HostAction::Color { args, local, json } => color::run_color(args, *local, json.json),
         HostAction::Renew {
             name,
             remote_phux,

@@ -3,7 +3,7 @@
 
 mod apply;
 mod snapshot;
-mod translate;
+pub(crate) mod translate;
 
 use std::path::Path;
 use std::process::ExitCode;

@@ -471,6 +471,61 @@ install_cli() {
   unpack_cli
   publish_cli
   phux_message ok "installed phux ${build_id} for ${target} to ${install_dir}"
+  if [ "$target" = aarch64-apple-darwin ] && [ "$channel" != next ]; then
+    # Best effort, in a subshell so a failure cannot undo the CLI install.
+    (install_server_app) || phux_message warn "phux Server.app was not installed; the server runs from ${install_dir}/phux"
+  fi
+}
+
+# --- phux Server.app (macOS) -------------------------------------------------
+
+# Install the release's signed phux Server.app beside the CLI, into
+# ~/Library/Application Support/sh.phux/Server/Versions/v<version>, point
+# Versions/Current at it, and keep only the release Current named before.
+# The server starts through Versions/Current so macOS privacy grants survive
+# updates (docs/install.md#macos-permissions); phux update does the same.
+install_server_app() {
+  [ -n "${HOME:-}" ] || die "HOME is not set"
+  release="v${build_id}"
+  asset_stem="phux-server-${release}-${target}"
+  asset_name="${asset_stem}.tar.gz"
+  asset_url="${RELEASES}/${release}/${asset_name}"
+  sidecar_url="${asset_url}.sha256"
+  build_sha256=""
+  fetch_verified
+  tar -tzf "${work}/${asset_name}" > "${work}/server-members" || die "could not read ${asset_name}"
+  while IFS= read -r member; do
+    case "$member" in
+      "$asset_stem" | "$asset_stem/" | "$asset_stem/phux Server.app/"*) ;;
+      *) die "unexpected archive member: $member" ;;
+    esac
+    case "/$member/" in */../* | */./*) die "unexpected archive member: $member" ;; esac
+  done < "${work}/server-members"
+  server_root="$HOME/Library/Application Support/sh.phux/Server"
+  mkdir -p "$server_root/Versions"
+  stage="$(mktemp -d "$server_root/.incoming.XXXXXX")"
+  trap 'rm -rf "$stage"' EXIT
+  tar -xzf "${work}/${asset_name}" -C "$stage"
+  app="$stage/$asset_stem/phux Server.app"
+  [ -f "$app/Contents/MacOS/phux" ] || die "${asset_name} has no Contents/MacOS/phux"
+  [ -z "$(find "$stage" -type l -print -quit)" ] || die "${asset_name} contains a symlink"
+  versions="$server_root/Versions"
+  # A release already present stays: a running server may be executing it.
+  if [ ! -e "$versions/$release/phux Server.app" ]; then
+    rm -rf "${versions:?}/$release"
+    mkdir "$versions/$release"
+    mv "$app" "$versions/$release/phux Server.app"
+  fi
+  previous="$(readlink "$versions/Current" 2>/dev/null || true)"
+  # -n replaces the link itself, not an entry inside the directory it names.
+  ln -sfn "$release" "$versions/Current"
+  for entry in "$versions"/*; do
+    case "${entry##*/}" in
+      Current | "$release" | "$previous") ;;
+      *) rm -rf "$entry" ;;
+    esac
+  done
+  phux_message ok "installed phux Server.app ${build_id} to ${versions}/Current"
 }
 
 # --- Phux Rune ---------------------------------------------------------------

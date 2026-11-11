@@ -107,6 +107,9 @@ so its panes show up here as `mini/@7`.
 Several terminals and the desktop app can attach to the same remote session
 at once.
 
+Each machine has a colour on every client; `phux host color mini violet`
+picks one ([host colours](./clients.md#host-colours)).
+
 ## Who can connect
 
 A server's `[policy] mode` decides who can connect:
@@ -364,7 +367,7 @@ a box still can't reach your other panes.
 Agents in a box can still talk to yours. `phux mail` and `phux claim` in a
 box use this machine's store, in the box's name, so an agent there writes
 `phux mail send hub/@749 ...` and the agent in your pane `@749` gets it as
-mail from `min-NAME/@N` ([Mail across a hub](./agents.md#mail-across-a-hub)).
+mail from `min-NAME/@N` ([Mail across a hub](./hub-mail.md)).
 
 A box activated with `--no-loadouts` has no phux and is skipped. A
 `--network none` box, and an `--network own_ip` box whose egress rules don't

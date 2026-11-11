@@ -7,5 +7,6 @@ mod agent_seal_rollback;
 mod documents;
 mod exec_failures_and_capture;
 mod native_agent_cut;
+mod pinning;
 mod resume_hub_and_validate;
 mod support;

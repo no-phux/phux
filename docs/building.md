@@ -22,6 +22,9 @@ quoted from there.
   emitter. A program writes one escape sequence. It needs no phux library
   and no socket.
 - [Plugin API](./plugins.md). A directory with a `phux-plugin.toml` manifest.
+- [Publish your own resource kind](./applications.md#publish-your-own-kind).
+  `phux agent doc serve` turns JSON lines on a pipe into a typed document
+  every client draws; `[[producers]]` keeps the program running.
 - [Agent integrations](./agents.md#agent-setup). The table there includes
   Claude Code, pi, Oh My Pi, OpenCode, Grok, and any MCP client.
 - [Calling phux from a program](./agent-quickstart.md#call-phux-from-a-program)

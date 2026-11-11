@@ -1,6 +1,7 @@
+mod bundled;
 mod config_json;
 mod distro;
-mod import_tmux;
+pub(crate) mod import_tmux;
 mod keys;
 mod live_feed;
 mod show;
@@ -212,8 +213,12 @@ fn run_config_init(force: bool, distro: Option<&str>) -> ExitCode {
     let contents = match distro {
         None => phux_config::scaffold::reference_config(),
         Some(spec) => {
-            let checkout = CHECKOUT_DISTROS.get().copied();
-            let layer = match phux_config::distro::resolve_distro(spec, checkout) {
+            let dirs = phux_config::distro::search_dirs(CHECKOUT_DISTROS.get().copied());
+            if let Err(err) = bundled::ensure(&dirs) {
+                error!("{err}");
+                return ExitCode::FAILURE;
+            }
+            let layer = match phux_config::distro::resolve_distro_in(spec, &dirs) {
                 Ok(layer) => layer,
                 Err(err) => {
                     error!("{err}");

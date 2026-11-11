@@ -63,7 +63,7 @@ fn assert_viewport(rt: &rune::Runtime<Desk>, rows: u16) {
         last_row_bottom <= toolbar[1] - crate::ui::PAD + 0.5,
         "every proposed row fits above the toolbar"
     );
-    for key in ["phone-navigation", "phone-pane-picker", "phone-history"] {
+    for key in ["phone-navigation", "phone-pane-picker"] {
         let action = geometry(rt, key).rect;
         assert_eq!(action[3], 44.0);
         assert!(action[1] >= toolbar[1] && action[1] + action[3] <= toolbar[1] + toolbar[3] + 0.5);
@@ -83,6 +83,7 @@ fn phone_sizes_reserve_toolbar_and_header_space_so_the_last_prompt_stays_visible
     for size in [(393.0, 852.0), (320.0, 568.0)] {
         for keyboard in [true, false] {
             let (client, mut rt) = fixture(true);
+            rt.poll = Some(Desk::poll);
             rt.set_viewport(size, 2.0);
             rt.update(|d, _| d.phone.as_mut().unwrap().keyboard = keyboard);
             settle(&mut rt);
@@ -117,7 +118,7 @@ fn phone_sizes_reserve_toolbar_and_header_space_so_the_last_prompt_stays_visible
 }
 
 #[test]
-fn a_single_terminal_keeps_more_and_reserves_only_its_scroll_control() {
+fn a_single_terminal_keeps_more_and_gives_its_whole_stage_to_the_terminal() {
     let (client, mut rt) = fixture(true);
     tap(&mut rt, "phone-tab-1");
     poll(&mut rt);
@@ -128,7 +129,7 @@ fn a_single_terminal_keeps_more_and_reserves_only_its_scroll_control() {
     assert!(rt.find("phone-pane-picker").is_none());
     let toolbar = geometry(&rt, "phone-navigation-toolbar").rect;
     let viewport = geometry(&rt, "phone-spatial-stage").rect;
-    assert_eq!(toolbar[3], 44.0);
+    assert_eq!(toolbar[3], 0.0, "nothing to move between: no toolbar");
     assert!(viewport[1] + viewport[3] <= toolbar[1] + 0.5);
     no_input(&client);
 }

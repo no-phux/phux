@@ -43,7 +43,10 @@ fn a_click_moves_within_the_whole_layout_then_presses() {
         (6000, 3840),
         Some(&display),
     );
-    assert_eq!(got, Ok(vec![mv(2000, 100), Op::Click]));
+    assert_eq!(
+        got,
+        Ok(vec![mv(2000, 100), Op::Button(true), Op::Button(false)])
+    );
     // The same under `--max-width 1500`.
     assert_eq!(click(1000, 50, (1500, 960), &display), mv(2000, 100));
     // `display:HDMI-A-1` alone, natively 1080x1920: its origin is added.
@@ -99,7 +102,11 @@ fn a_window_scroll_points_at_it_and_scales_the_delta() {
 
 fn keymap_and_codes(op: &Op) -> (&str, &[u32]) {
     match op {
-        Op::Keys { keymap, codes } => (keymap, codes),
+        Op::Keys {
+            keymap,
+            codes,
+            mods: 0,
+        } => (keymap, codes),
         other => panic!("not keys: {other:?}"),
     }
 }
@@ -188,4 +195,49 @@ fn requests_are_little_endian_words_with_padded_strings() {
     let bytes = message(4, 3, &[Arg::U(5), Arg::U(0), Arg::Fixed(-1.5)]);
     assert_eq!(&bytes[4..8], &[3, 0, 20, 0]);
     assert_eq!(&bytes[16..20], &(-384i32).to_le_bytes());
+}
+
+#[test]
+fn a_drag_presses_at_the_start_moves_through_the_path_and_releases() {
+    let display = place(LAYOUT, None);
+    let got = ops(
+        &DocumentInput::Drag {
+            from: (0, 0),
+            to: (1600, 800),
+        },
+        (3000, 1920),
+        Some(&display),
+    )
+    .unwrap();
+    assert_eq!(got.len(), 11);
+    assert_eq!(got[..2], [mv(0, 0), Op::Button(true)]);
+    assert_eq!(got[2], mv(200, 100));
+    assert_eq!(got[9..], [mv(1600, 800), Op::Button(false)]);
+    let drag = DocumentInput::Drag {
+        from: (0, 0),
+        to: (1, 1),
+    };
+    assert!(ops(&drag, (10, 10), None).is_err());
+}
+
+#[test]
+fn the_paste_chord_holds_control_and_shift_for_a_terminal_on_a_real_v() {
+    for (shift, mask) in [(false, 4), (true, 5)] {
+        let Op::Keys {
+            keymap,
+            codes,
+            mods,
+        } = paste_chord(shift)
+        else {
+            panic!("not keys");
+        };
+        assert_eq!((codes, mods), (vec![47], mask));
+        for line in ["maximum = 55;", "<V> = 55;", "key <V> {[v, V]};"] {
+            assert!(keymap.contains(line), "{line} missing from\n{keymap}");
+        }
+    }
+    // zwp_virtual_keyboard_v1.modifiers(depressed 4, 0, 0, 0)
+    let bytes = message(9, 2, &[Arg::U(4), Arg::U(0), Arg::U(0), Arg::U(0)]);
+    assert_eq!(&bytes[..8], &[9, 0, 0, 0, 2, 0, 24, 0]);
+    assert_eq!(&bytes[8..12], &4u32.to_le_bytes());
 }

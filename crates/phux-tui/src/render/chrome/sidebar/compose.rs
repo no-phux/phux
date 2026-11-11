@@ -194,8 +194,13 @@ impl SidebarPainter {
         let mut spans = Vec::with_capacity(chips.len() * 2);
         let mut x = 0u16;
         for (start, w, chip) in chips {
+            // A quiet dot in each one-cell gap, so the chips read as a
+            // segmented control rather than the words "all this need".
             if start > x {
-                spans.push(Span::raw(" ".repeat(usize::from(start - x))));
+                spans.push(Span::styled(
+                    "\u{b7}".repeat(usize::from(start - x)),
+                    Style::default().fg(self.theme.border),
+                ));
             }
             let (label, on) = match chip {
                 FilterChip::Scope(scope) => {

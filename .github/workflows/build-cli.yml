@@ -144,6 +144,34 @@ jobs:
           TARGET: ${{ matrix.target }}
         run: bash scripts/pack-release.sh --id "$ID" --target "$TARGET" --bin-dir target/release --out-dir . --smoke
 
+      # macOS: phux Server.app around the phux binary, so privacy grants
+      # attach to one stable identity (docs/install.md#macos-permissions).
+      # next keeps the script's ad hoc seal (still sh.phux.server); stable
+      # re-signs with the Developer ID, notarizes and staples.
+      - name: Assemble phux Server.app
+        if: runner.os == 'macOS'
+        run: |
+          set -euo pipefail
+          label="$(target/release/phux --version | awk '{print $2}')"
+          bash scripts/make-server-app.sh target/release/phux server-app "${label%%+*}"
+
+      - name: Sign and notarize phux Server.app
+        if: runner.os == 'macOS' && inputs.channel == 'stable'
+        env:
+          APPLE_DEVELOPER_ID_P12: ${{ secrets.APPLE_DEVELOPER_ID_P12 }}
+          APPLE_DEVELOPER_ID_PASSWORD: ${{ secrets.APPLE_DEVELOPER_ID_PASSWORD }}
+          APPLE_NOTARY_KEY_P8: ${{ secrets.APPLE_NOTARY_KEY_P8 }}
+          APPLE_NOTARY_KEY_ID: ${{ secrets.APPLE_NOTARY_KEY_ID }}
+          APPLE_NOTARY_ISSUER_ID: ${{ secrets.APPLE_NOTARY_ISSUER_ID }}
+        run: bash scripts/ci/sign-macos-desktop.sh "server-app/phux Server.app" "$RUNNER_TEMP/phux-server-notarized.zip"
+
+      - name: Package phux Server.app
+        if: runner.os == 'macOS'
+        env:
+          ID: ${{ inputs.id }}
+          TARGET: ${{ matrix.target }}
+        run: bash scripts/make-server-app.sh --pack "server-app/phux Server.app" . "$ID" "$TARGET"
+
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: cli-${{ matrix.target }}
