@@ -83,6 +83,9 @@ impl Desk {
             self.modal_key(modal, event, action, tx);
             return true;
         }
+        if self.copy_mode_key(event, tx) {
+            return true;
+        }
         if self.native_text_shortcut(event) {
             return false;
         }
@@ -182,6 +185,7 @@ impl Desk {
     /// quietly.
     pub(super) fn send_input(&mut self, send: impl FnOnce(&mut ControlPlane, &ResourceId) -> bool) {
         self.stop_coast();
+        self.leave_copy_mode(false);
         let (Some(client), Some(shown)) = (self.client.clone(), &self.shown) else {
             return;
         };
@@ -295,6 +299,7 @@ impl Desk {
             Shortcut::FindNext => self.step_find(-1),
             Shortcut::FindPrevious => self.step_find(1),
             Shortcut::FindSelection => self.find_selection(),
+            Shortcut::CopyMode => self.toggle_copy_mode(),
             Shortcut::Bare => self.toggle_bare(),
         }
     }
