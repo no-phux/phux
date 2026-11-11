@@ -24,7 +24,8 @@ impl LaneRails for AgentStream {
     }
 
     fn expired_staging(&self, now_ms: u64) -> Option<GenerationId> {
-        Self::expired_staging(self, now_ms)
+        let (generation, clock, staged_bytes) = self.staging_clock()?;
+        clock.expired(staged_bytes, now_ms).then_some(generation)
     }
 
     fn retire_for_limit(

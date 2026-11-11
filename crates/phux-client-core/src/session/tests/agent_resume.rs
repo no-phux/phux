@@ -559,10 +559,10 @@ fn expired_agent_resume_staging_preserves_the_committed_generation() {
         assert_eq!(kernel.expire_bootstrap_staging(0, &mut effects), 0);
         agent_resume_begin(&mut kernel, (stream(5), bootstrap(6)), 1, 1, &mut effects).unwrap();
         assert_eq!(
-            kernel.expire_bootstrap_staging(MAX_BOOTSTRAP_STAGING_LIFETIME_MS, &mut effects),
+            kernel.expire_bootstrap_staging(MAX_BOOTSTRAP_STAGING_IDLE_MS, &mut effects),
             0
         );
-        let expired = MAX_BOOTSTRAP_STAGING_LIFETIME_MS + 1;
+        let expired = MAX_BOOTSTRAP_STAGING_IDLE_MS + 1;
         match transition {
             0 => assert!(matches!(
                 kernel.update_at(

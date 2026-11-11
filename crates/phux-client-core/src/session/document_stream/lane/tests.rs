@@ -1,7 +1,7 @@
 #![allow(clippy::unwrap_used, reason = "tests")]
 
 use super::super::super::{
-    MAX_BOOTSTRAP_STAGING_CHUNKS, MAX_BOOTSTRAP_STAGING_LIFETIME_MS, ResourceKind,
+    MAX_BOOTSTRAP_STAGING_CHUNKS, MAX_BOOTSTRAP_STAGING_IDLE_MS, ResourceKind,
 };
 use super::*;
 
@@ -87,7 +87,7 @@ fn staging_is_bounded_by_the_kernel_ceilings_and_lifetime() {
     ));
 
     let mut lane = begun(1);
-    let expired_at = MAX_BOOTSTRAP_STAGING_LIFETIME_MS + 1;
+    let expired_at = MAX_BOOTSTRAP_STAGING_IDLE_MS + 1;
     assert!(matches!(
         lane.chunk(stream_id, bootstrap_id, 0, b"x", expired_at),
         Err(KernelError::BootstrapStagingLimitExceeded)

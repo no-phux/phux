@@ -4,7 +4,7 @@
 //! chunks and every live frame is a whole newer document, each handed on as
 //! a [`KernelEffect::Document`]. The lane keeps the same rails as the agent
 //! lane: exact generation identity, contiguous `chunk_seq`, staging counted
-//! against the connection-wide ceilings and lifetime, and retirement.
+//! against the connection-wide ceilings and staging clock, and retirement.
 
 use std::collections::HashMap;
 
@@ -16,8 +16,7 @@ use super::lane::{
     AttachSignal, BeginFrame, ChunkFrame, KindLane, LaneCx, LaneRails, OutputFrame, ReadyFrame,
 };
 use super::staging_rules::{
-    chunk_admission, fence_replaced, reject_retired, retire_for_codec_failure,
-    staging_lifetime_exceeded,
+    StagingClock, chunk_admission, fence_replaced, reject_retired, retire_for_codec_failure,
 };
 use super::{
     DocumentPublication, EffectBuffer, EngineAdapter, GenerationId, KernelEffect, KernelError,
@@ -30,7 +29,7 @@ struct DocumentCut {
     next_chunk_seq: Option<u32>,
     buffer: Vec<u8>,
     accepted_chunks: usize,
-    started_at_ms: u64,
+    clock: StagingClock,
 }
 
 /// Kernel state for one document resource: the cut in flight and the fence.
@@ -64,7 +63,9 @@ impl DocumentStream {
 
     pub(super) fn expired_staging(&self, now_ms: u64) -> Option<GenerationId> {
         let cut = self.staging.as_ref()?;
-        staging_lifetime_exceeded(cut.started_at_ms, now_ms).then_some(cut.generation)
+        cut.clock
+            .expired(cut.buffer.len(), now_ms)
+            .then_some(cut.generation)
     }
 
     pub(super) fn retire_for_limit(
@@ -98,7 +99,7 @@ impl DocumentStream {
             next_chunk_seq: Some(0),
             buffer: Vec::new(),
             accepted_chunks: 0,
-            started_at_ms,
+            clock: StagingClock::start(started_at_ms),
         });
         if let Some(old) = replaced {
             fence_replaced(&mut self.retired, old.generation, old.base_seq);
@@ -129,7 +130,8 @@ impl DocumentStream {
         let admission = chunk_admission(
             cut.next_chunk_seq,
             chunk_seq,
-            cut.started_at_ms,
+            cut.clock,
+            cut.buffer.len().saturating_add(payload.len()),
             now_ms,
             usage_allowed,
         );
@@ -141,6 +143,7 @@ impl DocumentStream {
         cut.buffer.extend_from_slice(payload);
         cut.next_chunk_seq = chunk_seq.checked_add(1);
         cut.accepted_chunks += 1;
+        cut.clock.progress(now_ms);
         Ok(())
     }
 
@@ -157,7 +160,7 @@ impl DocumentStream {
             .staging
             .take_if(|cut| cut.generation == generation)
             .ok_or_else(|| mismatch_error(resource_id, generation))?;
-        if staging_lifetime_exceeded(cut.started_at_ms, now_ms) {
+        if cut.clock.expired(cut.buffer.len(), now_ms) {
             self.retire_generation(resource_id, generation, cut.base_seq, effects);
             return Err(KernelError::BootstrapStagingLimitExceeded);
         }

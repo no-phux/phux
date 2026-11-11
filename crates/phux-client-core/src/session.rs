@@ -29,8 +29,12 @@ use crate::history::{
 const MAX_BOOTSTRAP_STAGING_BYTES: usize = 64 * 1024 * 1024;
 /// Hard connection-wide ceiling for bootstrap chunks accepted before READY.
 const MAX_BOOTSTRAP_STAGING_CHUNKS: usize = 4_096;
-/// A peer must complete one bootstrap generation within this interval.
-const MAX_BOOTSTRAP_STAGING_LIFETIME_MS: u64 = 30_000;
+/// A staging generation that receives no chunk for this long has stalled.
+const MAX_BOOTSTRAP_STAGING_IDLE_MS: u64 = 30_000;
+/// The slowest average rate a staging generation may arrive at once the idle
+/// window has passed: its age may not exceed that window plus the time its
+/// staged bytes take at this rate.
+const MIN_BOOTSTRAP_STAGING_BYTES_PER_SEC: u64 = 32 * 1024;
 
 mod agent_lane;
 mod attach;
@@ -53,6 +57,7 @@ mod update;
 
 use lane::{LaneRails, LaneRegistry};
 use lifecycle::drain_engine_effects;
+use staging_rules::StagingClock;
 use terminal_lane::TerminalState;
 
 pub use document_stream::DocumentLane;
@@ -95,7 +100,7 @@ struct Staging<R> {
     pending_effects: Vec<EngineEffect>,
     accepted_bytes: usize,
     accepted_chunks: usize,
-    started_at_ms: u64,
+    clock: StagingClock,
 }
 
 fn retained_engine_effect_bytes(capacity: usize, effects: &[EngineEffect]) -> usize {
@@ -304,7 +309,7 @@ impl<E: EngineAdapter> SessionKernel<E> {
         self.update(input, effects)
     }
 
-    /// Retire every incomplete bootstrap older than the hard staging lifetime.
+    /// Retire every incomplete bootstrap whose staging clock expired.
     ///
     /// A synchronous kernel cannot observe a silent peer by itself. Drivers
     /// should call this from their existing connection timer using the same

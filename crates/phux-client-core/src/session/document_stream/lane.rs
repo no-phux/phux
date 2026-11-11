@@ -3,7 +3,7 @@
 //! A headless reader (a snapshot or follow over one connection) folds its
 //! frames through the same [`DocumentStream`] the kernel uses, so it keeps
 //! the same rails: generation identity, contiguous chunks, the bootstrap
-//! staging ceilings and lifetime, tombstones, and forward-only live frames.
+//! staging ceilings and clock, tombstones, and forward-only live frames.
 
 use std::convert::Infallible;
 

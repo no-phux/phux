@@ -139,7 +139,7 @@ pub(super) trait LaneRails {
     fn on_tombstone(&mut self, generation: GenerationId, record: TombstoneRecord) -> AttachSignal;
     /// Bytes and chunks accepted by the open staging generation.
     fn staged_accounting(&self) -> Option<(usize, usize)>;
-    /// The staging generation past the hard lifetime, if any.
+    /// The staging generation its clock has expired, if any.
     fn expired_staging(&self, now_ms: u64) -> Option<GenerationId>;
     /// Fence `generation` for exceeding a staging limit and ask for a recut.
     fn retire_for_limit(

@@ -7,7 +7,7 @@ use phux_protocol::{BootstrapId, BootstrapProfile, BootstrapStreamProfile, Resou
 use super::super::kernel_rig::RigAdapter;
 use super::super::{
     EffectBuffer, KernelEffect, KernelError, KernelInput, KernelStatus,
-    MAX_BOOTSTRAP_STAGING_BYTES, MAX_BOOTSTRAP_STAGING_CHUNKS, MAX_BOOTSTRAP_STAGING_LIFETIME_MS,
+    MAX_BOOTSTRAP_STAGING_BYTES, MAX_BOOTSTRAP_STAGING_CHUNKS, MAX_BOOTSTRAP_STAGING_IDLE_MS,
     SessionKernel,
 };
 use super::{documents, generation, stream, surface};
@@ -192,7 +192,7 @@ fn silent_document_staging_expires_on_tick_and_at_ready() {
     let mut kernel = kernel();
     let mut effects = EffectBuffer::new();
     begin(&mut kernel, first(), &mut effects).unwrap();
-    let lifetime = MAX_BOOTSTRAP_STAGING_LIFETIME_MS;
+    let lifetime = MAX_BOOTSTRAP_STAGING_IDLE_MS;
     assert_eq!(kernel.expire_bootstrap_staging(lifetime, &mut effects), 0);
     assert_eq!(
         kernel.expire_bootstrap_staging(lifetime + 1, &mut effects),
