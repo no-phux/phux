@@ -35,12 +35,20 @@ fn outer(slot: &PaneSlot, pane_id: u32) -> u32 {
 }
 
 fn pixels(slot: &PaneSlot, id: u32) -> Option<Vec<u8>> {
-    let graphics = slot.terminal.kitty_graphics().unwrap();
+    let graphics = slot
+        .terminal
+        .kitty_graphics()
+        .unwrap()
+        .expect("Kitty graphics enabled");
     Some(graphics.image(id)?.data().unwrap()?.to_vec())
 }
 
 fn placed_ids(slot: &PaneSlot) -> Vec<(u32, bool)> {
-    let graphics = slot.terminal.kitty_graphics().unwrap();
+    let graphics = slot
+        .terminal
+        .kitty_graphics()
+        .unwrap()
+        .expect("Kitty graphics enabled");
     let mut iter = libghostty_vt::kitty::graphics::PlacementIterator::new().unwrap();
     let mut placements = iter.update(&graphics).unwrap();
     let mut ids = Vec::new();
@@ -63,7 +71,11 @@ fn first_live_kitty_render_restores_a_visible_image() {
     let mut receiver = PaneSlot::new_with_size(10, 5).expect("receiver");
     receiver.terminal.vt_write(&out);
     assert_eq!(pixels(&receiver, id).expect("replayed"), [255, 0, 0, 255]);
-    let graphics = receiver.terminal.kitty_graphics().unwrap();
+    let graphics = receiver
+        .terminal
+        .kitty_graphics()
+        .unwrap()
+        .expect("Kitty graphics enabled");
     let image = graphics.image(id).expect("replayed image");
     let mut iter = libghostty_vt::kitty::graphics::PlacementIterator::new().unwrap();
     let mut placements = iter.update(&graphics).unwrap();

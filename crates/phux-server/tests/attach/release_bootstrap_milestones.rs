@@ -5,6 +5,8 @@
 
 #![allow(clippy::too_many_lines, reason = "scripted release gates")]
 
+mod capture_latency;
+
 use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
@@ -577,9 +579,8 @@ fn warm_50k_fullscreen_eight_clients_one_stalled_history_cache() {
             let stalled = beginnings.pop().expect("eight BEGIN clients");
             assert_eq!(stalled.attach_id, 8);
 
-            // BEGIN is the live-output fence. Emit while the native generation
-            // is building and prove the established client is not held behind
-            // capture publication.
+            // BEGIN fences live output. An established client must not wait
+            // for publication of the native prefix.
             send_live_bytes(&mut established, LIVE_SENTINEL).await;
             receive_established_until(&mut established, LIVE_SENTINEL).await;
 
@@ -627,7 +628,7 @@ fn warm_50k_fullscreen_eight_clients_one_stalled_history_cache() {
         }
 
         // Client 8 takes its own cursor lease and then stops consuming again.
-        // Detached capture may give owners independent cuts even when their
+        // Captures may give owners independent generations even when their
         // prefixes are identical. Each must advance its own opaque cursor and
         // page_seq from 1 through FINISH; cursor equality is not a contract.
         let mut stalled = clients.pop().expect("stalled client");

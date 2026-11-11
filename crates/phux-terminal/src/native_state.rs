@@ -1,24 +1,22 @@
 //! Native checkpoint hosts over libghostty's GHOSTSNP snapshot codec.
 //!
-//! Prefix capture advances one bounded record at a time through READY;
-//! detaching READY registers a history cut in O(1), and each later
-//! `HISTORY_REQUEST` borrows the live terminal for one bounded step, so PTY
-//! output continues between pulls. Records are forwarded without decoding.
+//! The stock encoder writes one bounded immutable snapshot. Its renderable
+//! prefix is published through READY; older history is delivered on demand
+//! from shared snapshot storage, independently of later terminal mutations.
 
 use bytes::Bytes;
 use sha2::{Digest, Sha256};
 use std::{
     collections::HashMap,
-    marker::PhantomData,
     sync::{
         Arc,
         atomic::{AtomicUsize, Ordering},
     },
 };
 
-use libghostty_vt::{
-    Error as GhosttyError, Terminal as GhosttyTerminal,
-    snapshot::{CaptureEvent, CaptureInvalidation, CaptureOptions, HistoryCapture, OwnedCapture},
+use libghostty_vt::{Error as GhosttyError, Terminal as GhosttyTerminal};
+use phux_client_core::engine::ghostty::snapshot::{
+    EncodedSnapshot, SnapshotCaptureError, SnapshotCaptureLimits, SnapshotHistoryRecord,
 };
 use phux_protocol::caps::{BootstrapCapabilities, BootstrapLimits, EngineCodec, EngineFeatureSet};
 use thiserror::Error;
@@ -117,6 +115,17 @@ impl From<GhosttyError> for NativeStateError {
     }
 }
 
+impl From<SnapshotCaptureError> for NativeStateError {
+    fn from(error: SnapshotCaptureError) -> Self {
+        match error {
+            SnapshotCaptureError::LimitExceeded => Self::LimitExceeded,
+            SnapshotCaptureError::OutOfMemory => Self::OutOfMemory,
+            SnapshotCaptureError::InvalidSnapshot => Self::Corruption,
+            SnapshotCaptureError::Engine(error) => error.into(),
+        }
+    }
+}
+
 impl From<NativeStateError> for phux_terminal_api::native_state::NativeStateError {
     fn from(error: NativeStateError) -> Self {
         match error {
@@ -178,20 +187,16 @@ fn official_snapshot_available() -> bool {
 
 fn progressive_ready_available(terminal: &mut GhosttyTerminal<'static, 'static>) -> bool {
     const PROBE_RECORD_BYTES: usize = 4096;
-    let Ok(mut capture) = terminal.capture_snapshot(CaptureOptions {
-        max_record_bytes: PROBE_RECORD_BYTES,
-        max_pages: 8,
-    }) else {
-        return false;
-    };
-    let mut buffer = vec![0; PROBE_RECORD_BYTES];
-    loop {
-        match capture.next(&mut buffer) {
-            Ok(CaptureEvent::Ready { written }) => return written > 0,
-            Ok(CaptureEvent::Record { .. }) => {}
-            _ => return false,
-        }
-    }
+    EncodedSnapshot::capture(
+        terminal,
+        SnapshotCaptureLimits {
+            max_bytes: PROBE_RECORD_BYTES * 8,
+            max_record_bytes: PROBE_RECORD_BYTES,
+            max_records: 8,
+            max_rows: usize::MAX,
+        },
+    )
+    .is_ok()
 }
 
 /// Typed metadata for one complete bootstrap-prefix record.
@@ -235,6 +240,28 @@ pub(crate) struct NativeGenerationBounds {
 }
 
 impl NativeGenerationBounds {
+    fn for_capture(
+        limits: BootstrapLimits,
+        max_prefix_bytes: usize,
+        max_prefix_chunks: usize,
+    ) -> Result<Self, NativeStateError> {
+        if max_prefix_chunks == 0 || max_prefix_bytes == 0 {
+            return Err(NativeStateError::InvalidState);
+        }
+        Ok(Self {
+            max_record_bytes: usize::try_from(limits.max_history_page_bytes())
+                .map_err(|_| NativeStateError::LimitExceeded)?
+                .min(max_prefix_bytes)
+                .max(1),
+            max_rows: usize::try_from(phux_protocol::MAX_HISTORY_PAGE_ROWS)
+                .map_err(|_| NativeStateError::LimitExceeded)?,
+            max_records: max_prefix_chunks
+                .min(MAX_NATIVE_PREFIX_CHUNKS)
+                .saturating_add(1),
+            max_total_bytes: MAX_NATIVE_PREFIX_BYTES,
+        })
+    }
+
     /// Retained bytes needed for the exact fixed record table and payload budget.
     pub(crate) fn required_reserved_bytes(self) -> Result<usize, NativeStateError> {
         let record_table_bytes = self
@@ -247,11 +274,11 @@ impl NativeGenerationBounds {
     }
 }
 
-/// The continuation of a capture that reached READY: a leased engine cut
-/// (no pages copied), installed back into the actor-local manager.
+/// Immutable encoded history for a capture that reached READY.
 #[derive(Debug)]
 pub(crate) struct NativeGenerationSeed {
-    capture: HistoryCapture<'static>,
+    bytes: Bytes,
+    records: Vec<SnapshotHistoryRecord>,
     bounds: NativeGenerationBounds,
 }
 
@@ -289,12 +316,12 @@ struct NativeGenerationCharge {
 
 #[derive(Debug)]
 struct ChargedNativePayload {
-    bytes: Box<[u8]>,
+    bytes: Bytes,
     charge: Arc<NativeGenerationCharge>,
 }
 
 impl ChargedNativePayload {
-    fn new(bytes: Box<[u8]>, charge: Arc<NativeGenerationCharge>) -> Self {
+    fn new(bytes: Bytes, charge: Arc<NativeGenerationCharge>) -> Self {
         charge.live_payloads.fetch_add(1, Ordering::Relaxed);
         charge
             .live_payload_bytes
@@ -340,38 +367,40 @@ impl NativeRecordTable {
     fn get(&self, index: usize) -> Option<&CachedNativeHistoryRecord> {
         self.slots.get(index).and_then(Option::as_ref)
     }
+
+    fn from_snapshot(
+        bytes: Bytes,
+        metadata: Vec<SnapshotHistoryRecord>,
+        bounds: NativeGenerationBounds,
+        charge: &Arc<NativeGenerationCharge>,
+    ) -> Result<Self, NativeStateError> {
+        let mut records = Self::new(bounds.max_records)?;
+        if metadata.len() > records.slots.len() || bytes.len() > bounds.max_total_bytes {
+            return Err(NativeStateError::LimitExceeded);
+        }
+        // A queued page retains the whole snapshot, not merely its visible
+        // slice. Charge the allocation once until its last slice is dropped.
+        let bytes = Bytes::from_owner(ChargedNativePayload::new(bytes, Arc::clone(charge)));
+        for record in metadata {
+            records.slots[records.len] = Some(CachedNativeHistoryRecord {
+                bytes: bytes.slice(record.range),
+                rows: record.rows,
+                finish: record.finish,
+            });
+            records.len += 1;
+        }
+        Ok(records)
+    }
 }
 
 #[derive(Debug)]
 struct NativeCheckpointGeneration {
     records: NativeRecordTable,
-    capture: Option<HistoryCapture<'static>>,
-    /// Why the cut was spent before FINISH, reported to every later request.
-    failure: Option<NativeStateError>,
-    scratch: Vec<u8>,
-    pending: Vec<u8>,
-    retained_bytes: usize,
-    #[allow(
-        dead_code,
-        reason = "retained for install-time equality checks and debug"
-    )]
-    bounds: NativeGenerationBounds,
     owners: usize,
     charge: Arc<NativeGenerationCharge>,
 }
 
-impl NativeCheckpointGeneration {
-    /// Drop a cut that cannot resume, keeping the reason for every later
-    /// request at this frontier.
-    fn spend(&mut self, error: NativeStateError) -> NativeStateError {
-        self.capture = None;
-        self.failure = Some(error);
-        error
-    }
-}
-
-/// Actor-owned terminal and bounded concurrent history cuts. `Drop` releases
-/// the cuts first, since their pins live in the terminal's page list.
+/// Actor-owned terminal and bounded concurrent immutable history generations.
 #[derive(Debug)]
 pub(crate) struct NativeTerminalManager {
     terminal: Option<GhosttyTerminal<'static, 'static>>,
@@ -382,46 +411,22 @@ pub(crate) struct NativeTerminalManager {
     next_generation: u64,
 }
 
-impl Drop for NativeTerminalManager {
-    fn drop(&mut self) {
-        // Release cuts before the terminal (they untrack its pins).
-        self.generations.clear();
-    }
-}
-
-/// First `HistoryCapture::next` against an empty buffer: a scan, a
-/// zero-byte event, or the exact byte count the next record needs.
-enum HistoryProbe {
-    Scan,
-    Event(CaptureEvent),
-    Required(usize),
-}
-
 /// Actor-owned prefix capture that no longer borrows the live terminal.
 #[derive(Debug)]
-pub(crate) struct NativeManagedCapture<'manager> {
-    capture: OwnedCapture<'static, 'static>,
+pub(crate) struct NativeManagedCapture {
+    terminal: GhosttyTerminal<'static, 'static>,
+    snapshot: EncodedSnapshot,
+    next_prefix_record: usize,
     digest: Sha256,
     generation: u64,
     max_record_bytes: usize,
     bounds: NativeGenerationBounds,
     ready: bool,
-    _marker: PhantomData<&'manager ()>,
 }
 
 struct NativeManagedCaptureFailure {
     error: NativeStateError,
     terminal: GhosttyTerminal<'static, 'static>,
-}
-
-const fn invalidation_error(reason: CaptureInvalidation) -> NativeStateError {
-    match reason {
-        CaptureInvalidation::Reset => NativeStateError::Reset,
-        CaptureInvalidation::Resize => NativeStateError::Resize,
-        CaptureInvalidation::WrongTerminal => NativeStateError::WrongTerminal,
-        CaptureInvalidation::Mutation => NativeStateError::Stale,
-        CaptureInvalidation::Evicted => NativeStateError::Pruned,
-    }
 }
 
 fn requested_record_window(

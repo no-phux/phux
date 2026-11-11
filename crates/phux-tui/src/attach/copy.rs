@@ -9,9 +9,9 @@ use std::io::{self, Write};
 
 use libghostty_vt::{
     Terminal as GhosttyTerminal,
-    fmt::Format,
+    fmt::{Format, Formatter},
     screen::GridRef,
-    selection::{FormatOptions, SelectLineOptions, SelectWordOptions, Selection},
+    selection::{SelectLineOptions, SelectWordOptions, Selection},
     terminal::{Point, PointCoordinate, PointSpace},
 };
 use phux_client_core::engine::DocumentSpace;
@@ -35,16 +35,15 @@ pub fn extract_selection_text(
     req: CopyRequest,
 ) -> Option<String> {
     let selection = resolve_selection(terminal, req)?;
-    let bytes = terminal
-        .format_selection_alloc(
-            None,
-            FormatOptions::new()
-                .with_emit_format(Format::Plain)
-                .with_trim(true)
-                .with_unwrap(true)
-                .with_selection(&selection),
-        )
-        .ok()??;
+    let mut formatter = Formatter::new_with_selection(terminal, &selection).ok()?;
+    formatter
+        .set_format(Format::Plain)
+        .ok()?
+        .set_trim(true)
+        .ok()?
+        .set_unwrap(true)
+        .ok()?;
+    let bytes = formatter.format_alloc(None).ok()?;
     Some(String::from_utf8_lossy(&bytes).into_owned())
 }
 

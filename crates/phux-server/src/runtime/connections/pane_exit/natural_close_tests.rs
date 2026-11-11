@@ -452,7 +452,10 @@ async fn a_native_final_checkpoint_is_decodable_before_close() {
                             let decoder = vt::snapshot::Decoder::new(&mut input)
                                 .expect("valid native envelope");
                             let checkpoint = decoder.ready().expect("validated native READY");
-                            assert_eq!(checkpoint.terminal().title().unwrap(), "final-close-title");
+                            assert_eq!(
+                                checkpoint.terminal().title().unwrap(),
+                                b"final-close-title"
+                            );
                             validated_ready = true;
                         }
                         FrameKind::ResourceClosed { terminal_id, .. } => {

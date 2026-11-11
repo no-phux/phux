@@ -28,6 +28,7 @@ fn image_actor() -> TerminalActorBundle {
             .unwrap()
             .kitty_graphics()
             .unwrap()
+            .expect("Kitty graphics enabled")
             .image(9)
             .is_some()
     );

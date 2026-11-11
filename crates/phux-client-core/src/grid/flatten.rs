@@ -1,7 +1,9 @@
 //! The walk from libghostty's row and cell iterators to [`Cell`] records.
 
 use libghostty_vt::Terminal;
-use libghostty_vt::render::{CellIteration, CellIterator, Colors, RowIterator, Snapshot};
+use libghostty_vt::render::{
+    CellIteration, CellIterator, Colors, RowIteration, RowIterator, Snapshot,
+};
 use libghostty_vt::screen::{Cell as RawCell, CellContentTag, GridRef};
 use libghostty_vt::style::{RgbColor, Style, StyleColor};
 use libghostty_vt::terminal::{Point, PointCoordinate};
@@ -48,34 +50,37 @@ pub(super) fn fill_grid_cells(
     buffer: &mut GridBuffer,
     scratch: &mut CellScratch,
 ) -> Result<(), GridError> {
-    let mut row_index = 0_u32;
+    let viewport_rows = i32::from(snapshot.rows()?);
     let mut row_iter = rows.update(snapshot)?;
     while let Some(row) = row_iter.next() {
-        // Read the flag before clearing it: the buffer reports what changed
-        // since the previous projection, and the next one starts clean.
-        buffer.row_dirty.push(row.dirty()?);
-        row.set_dirty(false)?;
-        buffer.row_wrapped.push(row.raw_row()?.is_wrapped()?);
-        let mut column_index = 0_u16;
-        let mut cell_iter = cells.update(row)?;
-        while let Some(cell) = cell_iter.next() {
-            push_flattened_cell(
-                cell,
-                PointCoordinate {
-                    x: column_index,
-                    y: row_index,
-                },
-                context,
-                scratch,
-                buffer,
-            )?;
-            column_index = column_index
-                .checked_add(1)
-                .ok_or(GridError::Overflow("render column exceeds u16"))?;
+        let y = row.viewport_y()?;
+        if !(0..viewport_rows).contains(&y) {
+            continue;
         }
-        row_index = row_index
+        fill_viewport_row(row, cells, y.cast_unsigned(), context, buffer, scratch)?;
+    }
+    Ok(())
+}
+
+fn fill_viewport_row(
+    row: &RowIteration<'static, '_>,
+    cells: &mut CellIterator<'static>,
+    y: u32,
+    context: &CellContext<'_, '_>,
+    buffer: &mut GridBuffer,
+    scratch: &mut CellScratch,
+) -> Result<(), GridError> {
+    // Preserve damage before cleaning the cached row for the next frame.
+    buffer.row_dirty.push(row.dirty()?);
+    row.set_dirty(false)?;
+    buffer.row_wrapped.push(row.raw_row()?.is_wrapped()?);
+    let mut x = 0_u16;
+    let mut cell_iter = cells.update(row)?;
+    while let Some(cell) = cell_iter.next() {
+        push_flattened_cell(cell, PointCoordinate { x, y }, context, scratch, buffer)?;
+        x = x
             .checked_add(1)
-            .ok_or(GridError::Overflow("render row exceeds u32"))?;
+            .ok_or(GridError::Overflow("render column exceeds u16"))?;
     }
     Ok(())
 }

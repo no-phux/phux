@@ -155,8 +155,9 @@ impl ControlOptions {
     #[cfg(feature = "engine")]
     fn bootstrap_caps(&self) -> BootstrapCapabilities {
         if self.image_protocols.contains(ImageProtocol::KittyGraphics) {
-            // Native GHOSTSNP does not preserve image storage. Synthesized
-            // replay is the image-capable bootstrap contract.
+            // Native pixels arrive after READY through history units. This
+            // viewer pulls history on demand, so use synthesized replay to
+            // make initial images paint without waiting for a history request.
             return BootstrapCapabilities::new()
                 .with_profiles(BootstrapProfileSet::with(&[
                     BootstrapProfileKind::SynthesizedVtRaw,
@@ -190,7 +191,7 @@ mod image_tests {
     }
 
     #[test]
-    fn image_offer_is_explicit_and_never_uses_lossy_native_bootstrap() {
+    fn image_offer_is_explicit_and_eagerly_bootstraps_pixels() {
         let options = ControlOptions {
             image_protocols: ImageProtocolSet::with(&[ImageProtocol::KittyGraphics]),
             ..ControlOptions::default()

@@ -53,7 +53,7 @@ fn synthesized_profiles_write_borrowed_bytes_and_reject_history() {
         );
         assert_eq!(
             replica.terminal().expect("synth terminal").title().unwrap(),
-            "synth-title"
+            b"synth-title"
         );
         assert!(matches!(
             adapter.apply_history_page(&mut replica, b"history", 1, &mut effects),

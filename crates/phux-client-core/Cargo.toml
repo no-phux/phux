@@ -17,7 +17,7 @@ default = []
 # Safe native libghostty checkpoint host. The target-qualified optional
 # dependency below keeps wasm builds, including `--all-features`, off the
 # native C/Zig linkage graph.
-native-engine = ["dep:libghostty-vt", "phux-protocol/server"]
+native-engine = ["dep:bytes", "dep:libghostty-vt", "phux-protocol/server"]
 # Criterion is only needed by the history benchmark. Keeping this feature off
 # by default prevents workspace tests from compiling the benchmark toolchain.
 history-bench = ["dep:criterion"]
@@ -47,6 +47,7 @@ thiserror.workspace = true
 sha2 = "0.11"
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+bytes = { workspace = true, optional = true }
 libghostty-vt = { workspace = true, optional = true }
 
 [dev-dependencies]

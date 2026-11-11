@@ -1,20 +1,17 @@
 #!/usr/bin/env bash
-# Verify that the pinned libghostty-rs publishes native archives, unless Cargo
-# explicitly requires source builds for this checkout.
+# Verify immutable engine source and report actual prebuilt coverage.
 #
 # libghostty-vt-sys links a SHA-256-verified archive of its Ghostty commit,
 # downloaded from the libghostty-rs release named in its download.rs, and
-# falls back to a ~200 s Zig source build when its table has no entry for the
-# target. A pin bump onto a libghostty-rs rev whose release was never cut
-# would send every developer and CI lane back to Zig without failing anything,
-# so this check fails instead. A canonical source-build setting in Cargo's
-# [env] table deliberately opts out of archive downloads, not out of building
-# and testing the pinned engine. Cargo.lock names the binding revision.
+# falls back to a Zig source build when its table has no entry for the target.
+# Source-only pins are supported: this gate must never require cutting a release
+# or accept old archive hashes as evidence for a new engine. Cargo.lock names
+# the immutable libghostty-rs rev; its build.rs pins the engine source and its
+# download.rs names any separately published archives.
 #
-# FAILURE POLICY: a reachable download.rs without an entry for a target, or a
-# listed archive the release does not serve, is a hard failure. An
-# unreachable one (offline checkout, GitHub outage, no curl) is a warning and
-# exit 0.
+# FAILURE POLICY: malformed pins, missing engine source, or a listed archive the
+# release does not serve are hard failures. An unreachable service (offline,
+# GitHub outage, no curl) is a warning and exit 0, never a verification claim.
 set -euo pipefail
 # shellcheck source=scripts/lib/output.sh
 source "$(dirname "${BASH_SOURCE[0]}")/lib/output.sh"
@@ -39,30 +36,55 @@ source_line="$(awk '
   found && /^source = / { print; exit }
   /^\[\[package\]\]/ { found = 0 }
 ' "$ROOT/Cargo.lock")"
-[[ "$source_line" =~ git\+https://github\.com/([^/]+/[^/.]+)(\.git)?\?rev=[0-9a-f]+#([0-9a-f]{40}) ]] ||
+[[ "$source_line" =~ git\+https://github\.com/([^/]+/[^/.]+)(\.git)?\?rev=[0-9a-f]{40}#([0-9a-f]{40}) ]] ||
   fail "Cargo.lock has no git source for libghostty-vt-sys (got: ${source_line:-nothing})"
 fork="${BASH_REMATCH[1]}"
 fork_rev="${BASH_REMATCH[3]}"
-
-# Match the actual forced build setting, not a comment, inherited shell
-# variable, or unrelated section. Removing it restores the archive requirement.
-if awk '
-  /^\[/ { in_env = ($0 == "[env]") }
-  in_env && /^LIBGHOSTTY_VT_SYS_FROM_SOURCE = [{] value = "1", force = true [}][[:space:]]*(#.*)?$/ { found = 1 }
-  END { exit !found }
-' "$ROOT/.cargo/config.toml"; then
-  phux_ok "check-ghostty-pin: ${fork}@${fork_rev:0:12} explicitly builds from source; no prebuilt archives claimed"
-  exit 0
-fi
+[[ "$source_line" == *"?rev=$fork_rev#$fork_rev"* ]] ||
+  fail "Cargo.lock binding revision does not match its resolved commit"
 
 command -v curl >/dev/null 2>&1 || skip "curl not available"
+
+# Keep HTTP absence distinct from network failure; a typo is not an outage.
+fetch_source() {
+  local url="$1" response status
+  response="$(curl -sSL --max-time 30 -w $'\n%{http_code}' "$url" 2>/dev/null)" ||
+    skip "could not fetch $url"
+  status="${response##*$'\n'}"
+  case "$status" in
+    2??) fetched="${response%$'\n'*}" ;;
+    4??) fail "$url is not served (HTTP $status)" ;;
+    *) skip "$url is unreachable (HTTP $status)" ;;
+  esac
+}
+
 raw="https://raw.githubusercontent.com/${fork}/${fork_rev}/crates/libghostty-vt-sys"
-build_rs="$(curl -fsSL --max-time 30 "$raw/build.rs" 2>/dev/null)" || skip "could not fetch $raw/build.rs"
-download_rs="$(curl -fsSL --max-time 30 "$raw/download.rs" 2>/dev/null)" ||
-  fail "${fork}@${fork_rev:0:12} has no crates/libghostty-vt-sys/download.rs (no prebuilt archives)"
+fetch_source "$raw/build.rs"
+build_rs="$fetched"
+fetch_source "$raw/download.rs"
+download_rs="$fetched"
 
 const() { sed -n "s|^const $1: &str = \"\\(.*\\)\";\$|\\1|p"; }
 commit="$(const GHOSTTY_COMMIT <<<"$build_rs")"
+engine_repo="$(const GHOSTTY_REPO <<<"$build_rs")"
+[[ "$commit" =~ ^[0-9a-f]{40}$ ]] || fail "engine revision is not an immutable full commit: $commit"
+[[ "$engine_repo" =~ ^https://github\.com/([^/]+/[^/.]+)(\.git)?$ ]] ||
+  fail "cannot verify engine source repository: $engine_repo"
+engine_fork="${BASH_REMATCH[1]}"
+browser_build="$ROOT/scripts/build-vt-wasm.sh"
+browser_commit="$(sed -n 's/^revision=//p' "$browser_build")"
+[[ "$browser_commit" == "$commit" ]] ||
+  fail "native engine $commit differs from browser engine $browser_commit"
+browser_sha="$(sed -n 's/^archive_sha256=//p' "$browser_build")"
+[[ "$browser_sha" =~ ^[0-9a-f]{64}$ ]] || fail "browser engine source checksum is missing or malformed"
+grep -Fq "https://codeload.github.com/$engine_fork/tar.gz/\$revision" "$browser_build" ||
+  fail "native and browser engine source repositories differ"
+fetch_source "https://raw.githubusercontent.com/$engine_fork/$commit/build.zig.zon"
+engine_zig="$(sed -n 's/.*\.minimum_zig_version = "\([^"]*\)".*/\1/p' <<<"$fetched")"
+expected_zig="$(sed -n 's/^[[:space:]]*"version": "\([^"]*\)",*/\1/p' "$ROOT/.config/zig-toolchain.json")"
+[[ -n "$engine_zig" && "$engine_zig" == "$expected_zig" ]] ||
+  fail "engine requires Zig ${engine_zig:-unknown}; toolchain pins $expected_zig"
+phux_ok "check-ghostty-pin: immutable engine source $engine_fork@$commit verified"
 base="$(const PREBUILT_BASE_URL <<<"$download_rs")"
 optimize="$(const PREBUILT_OPTIMIZE <<<"$download_rs")"
 cpu="$(const PREBUILT_CPU <<<"$download_rs")"
@@ -87,13 +109,19 @@ listed() {
 }
 
 # rustfmt may split a table entry over lines; match it on one.
-table="$(tr -s '[:space:]' ' ' <<<"$download_rs")"
+table="$(awk '/^const PREBUILT_ARCHIVES:/ { found=1 } found { print; if (/;/) exit }' <<<"$download_rs" | tr -s '[:space:]' ' ')"
+grep -Fq 'const PREBUILT_ARCHIVES:' <<<"$table" || fail "prebuilt coverage table is missing"
+prebuilt=0
+source_only=0
 for target in "${TARGETS[@]}"; do
-  grep -Eq "\( ?\"$target\", ?\"[0-9a-f]{64}\",? ?\)" <<<"$table" || {
-    phux_error "check-ghostty-pin: ${fork}@${fork_rev:0:12} publishes no prebuilt libghostty-vt for $target"
-    phux_hint "Run the prebuilt workflow in $fork and land its PREBUILT_ARCHIVES table before bumping the pin."
-    exit 1
-  }
+  if ! grep -Fq "\"$target\"" <<<"$table"; then
+    phux_info "check-ghostty-pin: $target uses verified source (no prebuilt declared)"
+    source_only=$((source_only + 1))
+    continue
+  fi
+  grep -Eq "\( ?\"$target\", ?\"[0-9a-f]{64}\",? ?\)" <<<"$table" ||
+    fail "malformed prebuilt checksum for $target"
+  prebuilt=$((prebuilt + 1))
   archive="libghostty-vt-$target.tar.gz"
   url="$base/$tag/$archive"
   status="$(curl -sIL --max-time 30 -o /dev/null -w '%{http_code}' "$url" 2>/dev/null)" || status=000
@@ -106,4 +134,4 @@ for target in "${TARGETS[@]}"; do
   listed "$archive" || fail "$url is not served (HTTP $status, and the release does not list it)"
 done
 
-phux_ok "check-ghostty-pin: ${fork}@${fork_rev:0:12} publishes $tag for ${#TARGETS[@]} targets"
+phux_ok "check-ghostty-pin: ${fork}@${fork_rev:0:12}: $prebuilt prebuilt, $source_only source-only targets ($tag)"

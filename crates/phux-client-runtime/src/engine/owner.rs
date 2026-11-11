@@ -24,9 +24,9 @@ use libghostty_vt::selection::gesture::{
     Behavior, Behaviors, DragEvent, Geometry, Gesture, PressEvent,
 };
 #[cfg(feature = "engine")]
-use libghostty_vt::selection::{FormatOptions, Selection};
-#[cfg(feature = "engine")]
 use libghostty_vt::terminal::{Point, PointCoordinate, PointSpace};
+#[cfg(feature = "engine")]
+use libghostty_vt::{fmt::Formatter, selection::Selection};
 
 #[cfg(feature = "engine")]
 mod document;

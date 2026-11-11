@@ -225,11 +225,11 @@ impl PaneSlot {
 
     /// Update the cached title after a terminal mutation.
     pub(super) fn title_changed(&mut self, terminal: &GhosttyTerminal<'_, '_>) -> bool {
-        let current = terminal.title().unwrap_or_default();
+        let current = String::from_utf8_lossy(terminal.title().unwrap_or_default());
         if self.last_title == current {
             return false;
         }
-        current.clone_into(&mut self.last_title);
+        current.as_ref().clone_into(&mut self.last_title);
         true
     }
 

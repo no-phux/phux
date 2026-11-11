@@ -43,20 +43,19 @@ Nix provides it.
 ## libghostty-vt
 
 The terminal engine is Ghostty's C library. What it does in a running phux,
-and what it does not, is [libghostty in phux](./libghostty.md). The current
-correctness-backport pin has no published native archives. `.cargo/config.toml`
-explicitly forces `LIBGHOSTTY_VT_SYS_FROM_SOURCE=1`, so builds compile it with
-Zig, about 200 seconds once per set of inputs, cached outside any `target/`
-directory. No old archive checksum is reused for the new engine.
+and what it does not, is [libghostty in phux](./libghostty.md). The 1.0
+migration pin builds from immutable source with Zig 0.17.0, cached outside
+any `target/` directory. Older compilers are incompatible with its build API.
+No prebuilt release is required to use this pin.
 
-When that explicit source requirement is removed, the build script downloads
-a checksummed `libghostty-vt.a` when a matching archive exists; other targets,
-offline builds, and failed downloads fall back to Zig. `GHOSTTY_SOURCE_DIR`
-builds a local checkout; `LIBGHOSTTY_VT_SYS_LIB_DIR` links one you built.
-`bash scripts/check-ghostty-pin.sh` verifies either the deliberate Cargo source-build
-setting or published archives for every target. Source builds still run all
-normal compile and test gates. Ghostty requires Zig 0.16.0; 0.17.0's build API
-is incompatible.
+When verified prebuilt archives exist for a pin and target, the build script
+can download a checksummed `libghostty-vt.a` instead. Other targets,
+`LIBGHOSTTY_VT_SYS_FROM_SOURCE=1`, offline operation, and failed downloads
+use the source path. `GHOSTTY_SOURCE_DIR` builds a local Ghostty checkout;
+`LIBGHOSTTY_VT_SYS_LIB_DIR` links one you built. `just ghostty-pin-check`
+validates the immutable engine source and matching Zig requirement, then
+reports prebuilt versus source-only target coverage. It does not replace
+native compilation tests or claim unpublished archives exist.
 
 ## Build cache (mbx)
 
@@ -347,9 +346,8 @@ mutation recipes. Regression tests still belong in the ordinary suite.
 
 ## Demos and recordings
 
-`bash scripts/record-readme.sh` records `docs/assets/tour.gif`, a short
-composited TUI capture, using `target/debug/phux`, a private server, and an
-empty home. The README's screenshot is `docs/assets/workspace.webp`. It needs
+`bash scripts/record-readme.sh` records the README's real composited TUI
+using `target/debug/phux`, a private server, and an empty home. It needs
 Python 3 for JSON processing, not a signed-in agent or an external renderer.
 `scripts/demo-setup.sh` stages a demo session and prints the runbook.
 `scripts/demo-record.sh` records `docs/assets/recording-demo.cast` and

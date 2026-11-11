@@ -32,11 +32,11 @@ impl GhosttyReplica {
         let Some(terminal) = self.terminal() else {
             return Ok(());
         };
-        let title = terminal.title()?;
-        if Some(title) == self.reported_title.as_deref() {
+        let title = String::from_utf8_lossy(terminal.title()?);
+        if Some(title.as_ref()) == self.reported_title.as_deref() {
             return Ok(());
         }
-        let title = title.to_owned();
+        let title = title.into_owned();
         self.reported_title = Some(title.clone());
         effects.push(EngineEffect::Status(crate::engine::EngineStatus::Title(
             title,

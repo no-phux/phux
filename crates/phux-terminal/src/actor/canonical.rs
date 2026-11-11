@@ -39,7 +39,7 @@ pub(super) struct NativeCursorOwner {
 #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
 #[derive(Debug)]
 pub(super) struct PendingNativeBootstrap {
-    pub(super) capture: Option<crate::native_state::NativeManagedCapture<'static>>,
+    pub(super) capture: Option<crate::native_state::NativeManagedCapture>,
     pub(super) waiters: Vec<NativeBootstrapRequest>,
     pub(super) records: Vec<Bytes>,
     pub(super) retained_bytes: usize,

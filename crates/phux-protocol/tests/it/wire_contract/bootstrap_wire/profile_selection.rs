@@ -115,12 +115,56 @@ fn official_snapshot_v1_and_legacy_checkpoint_v2_fall_back_to_synthesis() {
         "different native contracts must never be inferred compatible"
     );
     assert_eq!(EngineCodec::LibghosttyCheckpointV2.as_wire(), 2);
-    assert_eq!(EngineCodec::LibghosttySnapshotV1.as_wire(), 4);
+    assert_eq!(EngineCodec::LibghosttySnapshotV1.as_wire(), 5);
     assert_eq!(
         EngineCodec::from_wire(2),
         Some(EngineCodec::LibghosttyCheckpointV2),
         "legacy checkpoint-v2 remains decodable"
     );
+}
+
+#[test]
+fn pre1_and_vt1_snapshots_negotiate_synthesis_in_both_directions() {
+    assert_eq!(EngineCodec::LibghosttyPre1SnapshotV1.as_wire(), 4);
+    assert_eq!(
+        EngineCodec::from_wire(4),
+        Some(EngineCodec::LibghosttyPre1SnapshotV1)
+    );
+    assert_eq!(
+        EngineCodec::from_wire(5),
+        Some(EngineCodec::LibghosttySnapshotV1)
+    );
+    for (client_codec, server_codec) in [
+        (
+            EngineCodec::LibghosttyPre1SnapshotV1,
+            EngineCodec::LibghosttySnapshotV1,
+        ),
+        (
+            EngineCodec::LibghosttySnapshotV1,
+            EngineCodec::LibghosttyPre1SnapshotV1,
+        ),
+    ] {
+        let client = ClientCapabilities::new().with_bootstrap(
+            BootstrapCapabilities::new()
+                .with_native(client_codec, EngineFeatureSet::required_native()),
+        );
+        let server = BootstrapCapabilities::new()
+            .with_native(server_codec, EngineFeatureSet::required_native());
+        assert_eq!(
+            select_bootstrap_profile(&client, &server).unwrap().0,
+            BootstrapProfile::SynthesizedVtRaw,
+            "the unchanged snapshot envelope version must not imply codec compatibility"
+        );
+        let native_only = BootstrapProfileSet::with(&[BootstrapProfileKind::NativeState]);
+        assert!(
+            select_bootstrap_profile(
+                &client.with_bootstrap(client.bootstrap.with_profiles(native_only)),
+                &server.with_profiles(native_only),
+            )
+            .is_err(),
+            "native-only peers must refuse incompatible snapshot contracts"
+        );
+    }
 }
 
 /// Id 3 named the BLAKE3-checkpointed `GHOSTSNPv1` bytes that the current

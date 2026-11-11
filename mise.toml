@@ -21,7 +21,7 @@
 # docs/development.md#build-cache-mbx for why phux needs it.
 rust = { version = "1.99.1", mr_boxington = true }
 # Ghostty's build rejects Zig 0.17; advance when its build API migration ships.
-zig = "0.16.0"
+zig = "0.17.0"
 node = "26"
 # flake.nix reads this value directly, so the Nix shell cannot lag behind it
 # the way it did at 1.3.13 while this said 1.4.0. The demo image in

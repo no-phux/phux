@@ -104,13 +104,12 @@ impl Owner {
             .map_err(|error| engine_error(format!("scrollbar: {error}")))?;
         // A scrolled-back viewport also carries the row below it, so a
         // consumer can scroll by less than a row without another turn.
-        let below = bar.offset.saturating_add(bar.len);
-        let fringe = (below < bar.total)
-            .then(|| u32::try_from(below).ok())
-            .flatten();
-        let snapshot = slot
+        let fringe = fringe_row(bar);
+        let (snapshot, images) = slot
             .projector
-            .project_with_fringe(terminal, slot.token, fringe)
+            .project_with_fringe_and_snapshot(terminal, slot.token, fringe, |snapshot| {
+                slot.images.project(terminal, snapshot).map_err(Into::into)
+            })
             .map_err(|error| engine_error(error.to_string()))?;
         let mut colors = frame_colors(&snapshot.colors);
         apply_default_colors(&mut colors, defaults);
@@ -129,7 +128,7 @@ impl Owner {
                 len: bar.len,
             },
             colors,
-            images: Vec::new(),
+            images,
             // Publication has no metadata-only damage channel. Multi-view
             // damage is conservative because the cache's last reader may be
             // another view; default-only row damage remains exact.
@@ -147,10 +146,6 @@ impl Owner {
                 }),
         };
         slot.projector.swap_buffer(&mut frame.buffer);
-        frame.images = slot
-            .images
-            .project(self.terminal(id)?, &frame.buffer, frame.cols, frame.rows)
-            .map_err(|error| engine_error(format!("image projection: {error}")))?;
         if full {
             frame.buffer.row_dirty.fill(true);
         }
@@ -179,6 +174,13 @@ impl Owner {
         }
         Ok(())
     }
+}
+
+fn fringe_row(bar: libghostty_vt::terminal::Scrollbar) -> Option<u32> {
+    let below = bar.offset.saturating_add(bar.len);
+    (below < bar.total)
+        .then(|| u32::try_from(below).ok())
+        .flatten()
 }
 
 #[cfg(test)]

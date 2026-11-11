@@ -130,6 +130,13 @@ fn bounded_copy_refuses_main_screen_anchors_while_alternate_is_active() {
         BoundedSelectionText::Unavailable
     );
     assert_eq!(copy(&kernel, main, 16), BoundedSelectionText::Unavailable);
+    assert_eq!(
+        kernel
+            .format_document_selection(&ResourceId::local(1), main)
+            .unwrap(),
+        None,
+        "unbounded formatting must also reject inactive-screen anchors"
+    );
     output(&mut kernel, 2, b"\x1b[?1049l");
     assert_eq!(
         copy(&kernel, main, 4),
@@ -150,6 +157,13 @@ fn bounded_copy_refuses_mixed_screen_endpoints_in_both_orders() {
             rectangle: false,
         };
         assert_eq!(copy(&kernel, mixed, 16), BoundedSelectionText::Unavailable);
+        assert_eq!(
+            kernel
+                .format_document_selection(&ResourceId::local(1), mixed)
+                .unwrap(),
+            None,
+            "unbounded formatting must reject either mixed-screen ordering"
+        );
     }
     assert_eq!(
         copy(&kernel, alt, 3),

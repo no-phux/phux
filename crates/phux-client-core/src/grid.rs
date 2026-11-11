@@ -16,12 +16,15 @@
 use std::fmt;
 
 use libghostty_vt::Terminal;
-use libghostty_vt::render::{Colors, CursorViewport, CursorVisualStyle, Dirty, Snapshot};
-use libghostty_vt::screen::CellWide;
+use libghostty_vt::render::{Colors, CursorVisualStyle, Dirty, Overscan, Snapshot};
 use phux_protocol::render_pool::{RenderPool, RenderWalk, TerminalGeneration};
 use thiserror::Error;
 
 mod flatten;
+mod project;
+use project::{fill_fringe, flatten_viewport, read_cursor, snapshot_header};
+
+type FrameMetadata = (u16, u16, Cursor, Colors, GridDamage);
 #[cfg(test)]
 mod tests;
 
@@ -403,49 +406,63 @@ impl GridProjector {
         generation: TerminalGeneration,
         fringe: Option<u32>,
     ) -> Result<GridSnapshot<'_>, GridError> {
-        let (cols, rows, cursor, colors, damage) = self.fill(terminal, generation, fringe)?;
-        Ok(GridSnapshot {
-            cols,
-            rows,
-            cursor,
-            colors,
-            damage,
-            buffer: &self.buffer,
-        })
+        self.project_with_fringe_and_snapshot(terminal, generation, fringe, |_| Ok(()))
+            .map(|(grid, ())| grid)
     }
 
-    /// The part of a projection that holds the libghostty snapshot: every
-    /// borrow of the render state ends before `project` lends the buffer.
-    fn fill(
+    /// Project cells and inspect the same engine snapshot before it is cleaned.
+    /// Image renderers use this to avoid a second update consuming shared dirty
+    /// state. A failed inspection publishes nothing and forces full retry damage.
+    pub fn project_with_fringe_and_snapshot<R>(
         &mut self,
         terminal: &Terminal<'static, '_>,
         generation: TerminalGeneration,
         fringe: Option<u32>,
-    ) -> Result<(u16, u16, Cursor, Colors, GridDamage), GridError> {
+        inspect: impl FnOnce(&Snapshot<'static, '_>) -> Result<R, GridError>,
+    ) -> Result<(GridSnapshot<'_>, R), GridError> {
+        let ((cols, rows, cursor, colors, damage), inspected) =
+            self.fill(terminal, generation, fringe, inspect)?;
+        Ok((
+            GridSnapshot {
+                cols,
+                rows,
+                cursor,
+                colors,
+                damage,
+                buffer: &self.buffer,
+            },
+            inspected,
+        ))
+    }
+
+    /// The part of a projection that holds the libghostty snapshot: every
+    /// borrow of the render state ends before `project` lends the buffer.
+    fn fill<R>(
+        &mut self,
+        terminal: &Terminal<'static, '_>,
+        generation: TerminalGeneration,
+        fringe: Option<u32>,
+        inspect: impl FnOnce(&Snapshot<'static, '_>) -> Result<R, GridError>,
+    ) -> Result<(FrameMetadata, R), GridError> {
+        let projected = std::mem::replace(&mut self.projected, false);
         let RenderWalk {
             snapshot,
             rows,
             cells,
-        } = self.pool.begin(terminal, generation)?;
-        let cols = snapshot.cols()?;
-        let row_count = snapshot.rows()?;
-        let colors = snapshot.colors()?;
-        let damage = if self.projected {
-            GridDamage::from(snapshot.dirty()?)
-        } else {
-            GridDamage::Full
-        };
-        self.buffer.clear();
-        let expected = usize::from(cols)
-            .checked_mul(usize::from(row_count))
-            .ok_or(GridError::Overflow("viewport cell count exceeds usize"))?;
-        self.buffer.cells.reserve(expected);
-        self.buffer.metadata.reserve(expected);
+        } = self.pool.begin_with_overscan(
+            terminal,
+            generation,
+            Overscan {
+                above: 0,
+                below: u16::from(fringe.is_some()),
+            },
+        )?;
+        let (cols, row_count, colors, damage) = snapshot_header(&snapshot, projected)?;
         let context = flatten::CellContext {
             terminal,
             colors: &colors,
         };
-        flatten::fill_grid_cells(
+        flatten_viewport(
             rows,
             cells,
             &snapshot,
@@ -453,68 +470,16 @@ impl GridProjector {
             &mut self.buffer,
             &mut self.scratch,
         )?;
-        let produced = self.buffer.cells.len();
-        if produced != expected {
-            return Err(GridError::SparseViewport { produced, expected });
-        }
-        if let Some(y) = fringe
-            && let Err(error) =
-                flatten::fill_fringe_row(&context, y, cols, &mut self.scratch, &mut self.buffer)
-        {
-            self.buffer.fringe.clear();
-            self.buffer.fringe_metadata.clear();
-            if !matches!(error, GridError::Engine(libghostty_vt::Error::InvalidValue)) {
-                return Err(error);
-            }
-        }
+        fill_fringe(&context, fringe, cols, &mut self.scratch, &mut self.buffer)?;
         if damage == GridDamage::Full {
             self.buffer.row_dirty.iter_mut().for_each(|row| *row = true);
         }
         // The render state accumulates dirty flags until a renderer clears
         // them (the libghostty contract); this projection consumed them.
-        snapshot.set_dirty(Dirty::Clean)?;
+        let inspected = inspect(&snapshot)?;
         let cursor = read_cursor(&snapshot, &self.buffer, cols)?;
+        snapshot.set_dirty(Dirty::Clean)?;
         self.projected = true;
-        Ok((cols, row_count, cursor, colors, damage))
-    }
-}
-
-/// Read the cursor placement and shape the snapshot reports, and whether the
-/// cell under it is a wide character's head or tail.
-fn read_cursor(
-    snapshot: &Snapshot<'static, '_>,
-    buffer: &GridBuffer,
-    cols: u16,
-) -> Result<Cursor, GridError> {
-    let viewport = snapshot.cursor_viewport()?;
-    let (col, row, width) = viewport.map_or((0, 0, CursorWidth::Narrow), |at| {
-        (at.x, at.y, cursor_width(at, buffer, cols))
-    });
-    Ok(Cursor {
-        visible: snapshot.cursor_visible()? && viewport.is_some(),
-        col,
-        row,
-        style: snapshot.cursor_visual_style()?.into(),
-        blinking: snapshot.cursor_blinking()?,
-        width,
-    })
-}
-
-/// Width of the glyph under a cursor that is on the viewport: libghostty says
-/// when the cursor sits on a wide character's spacer tail; the projected cell
-/// says when it sits on the head.
-fn cursor_width(at: CursorViewport, buffer: &GridBuffer, cols: u16) -> CursorWidth {
-    if at.at_wide_tail {
-        return CursorWidth::WideTail;
-    }
-    let index = usize::from(at.y) * usize::from(cols) + usize::from(at.x);
-    let on_wide_head = buffer
-        .cells
-        .get(index)
-        .is_some_and(|cell| cell.wide == CellWide::Wide as u8);
-    if on_wide_head {
-        CursorWidth::Wide
-    } else {
-        CursorWidth::Narrow
+        Ok(((cols, row_count, cursor, colors, damage), inspected))
     }
 }

@@ -55,6 +55,7 @@ fn outer_images(outer: &PaneSlot) -> Vec<u32> {
         .terminal
         .kitty_graphics()
         .unwrap()
+        .expect("Kitty graphics enabled")
         .image_ids_into(&mut ids)
         .unwrap();
     ids.sort_unstable();

@@ -1,5 +1,7 @@
 use std::mem::{align_of, offset_of, size_of};
 
+mod snapshot;
+
 use libghostty_vt::Terminal;
 use libghostty_vt::screen::{CellContentTag, CellWide};
 

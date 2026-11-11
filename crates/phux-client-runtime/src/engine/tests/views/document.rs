@@ -202,7 +202,9 @@ fn pruning_one_view_does_not_clear_another_views_recent_selection() {
     let owner = EngineHandle::start(&config, Arc::clone(&publication)).unwrap();
     let terminal = id(108);
     let initial = "line\r\n".repeat(20);
-    attach(&owner, &terminal, initial.as_bytes());
+    // Normal-width pages reach eviction within the bounded loop. Narrow
+    // pages can retain thousands of rows despite the requested line limit.
+    attach_many_sized(&owner, &[(&terminal, initial.as_bytes())], (80, 4));
     let old = owner.create_view(&terminal).unwrap();
     let recent = owner.create_view(&terminal).unwrap();
     owner.scroll_view(old, Scroll::Top).unwrap();
@@ -212,7 +214,10 @@ fn pruning_one_view_does_not_clear_another_views_recent_selection() {
     for seq in 1..=1000 {
         let (start, end) = select(&owner, recent, 2, 3);
         let selected = owner.view_selection_text(recent).unwrap();
-        output(&owner, &terminal, seq, b"next\r\nnext\r\nnext\r\nnext\r\n");
+        // Keep the recent selection in the active area across the write.
+        // Page-granular history eviction may legitimately discard even
+        // recently scrolled-off rows; that is not cross-view invalidation.
+        output(&owner, &terminal, seq, b"next\r\n");
         assert_eq!(owner.view_selection_text(recent).unwrap(), selected);
         owner.clear_view_selection(recent).unwrap();
         owner.release_view_anchor(recent, start).unwrap();

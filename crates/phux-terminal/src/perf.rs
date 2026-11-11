@@ -112,12 +112,13 @@ pub static CONSUMER_ACK_RTT: Histogram = Histogram::new();
 /// Includes scrollback and bounded refusals for raw/state-sync attach and
 /// resize/gap resyncs; excludes queue wait, reply handoff and capability adaptation.
 pub static BOOTSTRAP_SYNTH: Histogram = Histogram::new();
-/// Microseconds initializing one native capture: validation, engine loan and
-/// initial scratch allocation. Includes refused starts; excludes backlog wait.
+/// Microseconds initializing one native capture: bounded stock encoding,
+/// record indexing, engine loan and initial scratch allocation. Includes
+/// refused starts; excludes backlog wait.
 pub static BOOTSTRAP_NATIVE_BEGIN: Histogram = Histogram::new();
 /// Microseconds per productive native bootstrap actor step.
 ///
-/// Includes engine export, scratch growth/retention, completion and failure
+/// Includes prefix copying, scratch growth/retention, completion and failure
 /// handling/replay. No pending capture means no sample; excludes inter-turn scheduling.
 pub static BOOTSTRAP_NATIVE_STEP: Histogram = Histogram::new();
 

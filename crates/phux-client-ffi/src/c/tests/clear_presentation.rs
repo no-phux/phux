@@ -219,7 +219,7 @@ fn clear_preserves_partial_dcs_and_utf8() {
 type CapturedHistory = Vec<(Vec<u8>, u32)>;
 
 fn native_capture(pending: &[u8]) -> (Vec<u8>, CapturedHistory, u32) {
-    use libghostty_vt::snapshot::{CaptureEvent, CaptureOptions};
+    use phux_client_core::engine::ghostty::snapshot::{EncodedSnapshot, SnapshotCaptureLimits};
     let mut source = libghostty_vt::Terminal::new(40, 12).unwrap();
     source.set_scrollback_max_lines(Some(100)).unwrap();
     source.set_continuation_max_bytes(64 * 1024 * 1024).unwrap();
@@ -228,39 +228,27 @@ fn native_capture(pending: &[u8]) -> (Vec<u8>, CapturedHistory, u32) {
     }
     let rows = u32::try_from(source.scrollback_rows().unwrap()).unwrap();
     source.vt_write(pending);
-    let mut capture = source
-        .capture_snapshot(CaptureOptions {
+    let capture = EncodedSnapshot::capture(
+        &mut source,
+        SnapshotCaptureLimits {
+            max_bytes: 64 * 1024 * 1024,
             max_record_bytes: 64 * 1024,
-            max_pages: 1_000,
+            max_records: 10_000,
+            max_rows: 10_000,
+        },
+    )
+    .unwrap();
+    let ready = capture.bytes[..capture.prefix_records.last().unwrap().end].to_vec();
+    let pages = capture
+        .history
+        .iter()
+        .map(|unit| {
+            (
+                capture.bytes[unit.range.clone()].to_vec(),
+                u32::try_from(unit.rows).unwrap(),
+            )
         })
-        .unwrap();
-    let mut buffer = vec![0; 64 * 1024];
-    let mut ready = Vec::new();
-    loop {
-        let event = capture.next(&mut buffer).unwrap();
-        ready.extend_from_slice(&buffer[..event.written()]);
-        if matches!(event, CaptureEvent::Ready { .. }) {
-            break;
-        }
-    }
-    let mut history = capture.detach().unwrap();
-    let mut pages = Vec::new();
-    let mut pending = Vec::new();
-    loop {
-        let event = history.next(&mut source, &mut buffer).unwrap();
-        pending.extend_from_slice(&buffer[..event.written()]);
-        match event {
-            CaptureEvent::HistoryPage { rows, .. } => {
-                pages.push((std::mem::take(&mut pending), u32::try_from(rows).unwrap()));
-            }
-            CaptureEvent::Finish { .. } => {
-                pages.push((pending, 0));
-                break;
-            }
-            CaptureEvent::Scan | CaptureEvent::Record { .. } => {}
-            other => panic!("unexpected history event: {other:?}"),
-        }
-    }
+        .collect();
     (ready, pages, rows)
 }
 

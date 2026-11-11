@@ -17,9 +17,10 @@ use std::{
 
 use libghostty_vt::{
     Error as SnapshotError, Terminal as GhosttyTerminal,
+    fmt::Formatter,
     screen::{CellContentTag, CellWide, TrackedGridRef},
-    selection::{FormatOptions, Selection},
-    snapshot::{CaptureEvent, CaptureOptions, FeedDecoder, FeedIncrementalDecoder},
+    selection::Selection,
+    snapshot::{FeedDecoder, FeedIncrementalDecoder},
     style::{Palette, PaletteIndex, RgbColor},
     terminal::{ClipboardWrite, Point, PointCoordinate, PointSpace, ScrollViewport},
 };
@@ -46,6 +47,7 @@ mod document;
 mod native;
 mod projection;
 mod replica;
+pub mod snapshot;
 
 use document::enforce_history_budget;
 use native::{PendingEffects, finish_native, install_effect_hooks, push_history, push_native};
@@ -84,20 +86,16 @@ fn official_snapshot_available() -> bool {
         return false;
     }
     terminal.vt_write(b"ok");
-    let Ok(mut capture) = terminal.capture_snapshot(CaptureOptions {
-        max_record_bytes: 4096,
-        max_pages: 8,
-    }) else {
-        return false;
-    };
-    let mut buffer = vec![0; 4096];
-    loop {
-        match capture.next(&mut buffer) {
-            Ok(CaptureEvent::Ready { written }) => return written > 0,
-            Ok(CaptureEvent::Record { .. }) => {}
-            _ => return false,
-        }
-    }
+    snapshot::EncodedSnapshot::capture(
+        &mut terminal,
+        snapshot::SnapshotCaptureLimits {
+            max_bytes: 64 * 1024,
+            max_record_bytes: 4096,
+            max_records: 64,
+            max_rows: 2,
+        },
+    )
+    .is_ok()
 }
 
 /// Concrete, current-thread libghostty engine host.

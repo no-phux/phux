@@ -38,6 +38,24 @@ async fn writes_and_reads_back_text() {
 }
 
 #[wasm_bindgen_test]
+async fn codepoint_buffer_reads_the_base_of_combining_clusters() {
+    let vt = Vt::load().await.expect("load ghostty-vt engine");
+    let term = vt.terminal(20, 3);
+    term.write("e\u{301}Z".as_bytes());
+    let grid = term.grid();
+    assert_eq!(
+        grid.cells[0].ch, 'e',
+        "base survives a partial codepoint buffer"
+    );
+    assert_eq!(grid.cells[1].ch, 'Z', "cluster occupies one cell");
+    assert_eq!(term.rows_text()[0], "eZ");
+    assert_eq!(
+        term.selection_text((0, 0), (0, 0)).as_deref(),
+        Some("e\u{301}")
+    );
+}
+
+#[wasm_bindgen_test]
 async fn handles_cursor_movement_and_overwrite() {
     let vt = Vt::load().await.expect("load ghostty-vt engine");
     let term = vt.terminal(20, 5);
@@ -69,6 +87,29 @@ async fn reads_truecolor_grid() {
         Some(Rgb { r: 255, g: 0, b: 0 }),
         "first cell fg = {:?}",
         cell0.fg,
+    );
+}
+
+#[wasm_bindgen_test]
+async fn frozen_style_flags_distinguish_inverse_from_other_attributes() {
+    let vt = Vt::load().await.expect("load ghostty-vt engine");
+    let term = vt.terminal(20, 3);
+    term.write(b"\x1b[1mB\x1b[0;7mI\x1b[0mN");
+    let grid = term.grid();
+    assert!(!grid.cells[0].inverse, "bold is not inverse");
+    assert!(grid.cells[1].inverse, "SGR 7 sets the inverse flag");
+    assert!(!grid.cells[2].inverse, "SGR 0 clears inverse");
+}
+
+#[wasm_bindgen_test]
+async fn history_budget_options_round_trip() {
+    let vt = Vt::load().await.expect("load ghostty-vt engine");
+    let term = vt.terminal(20, 3);
+    term.set_history_budget(2 * 1024 * 1024, 1234)
+        .expect("set budgets");
+    assert_eq!(
+        term.history_budget().expect("get budgets"),
+        (2 * 1024 * 1024, 1234)
     );
 }
 

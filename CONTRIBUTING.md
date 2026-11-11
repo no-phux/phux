@@ -70,8 +70,8 @@ parallel narrative for every function or TODO ledger is needed.
   script and call `phux`.
 - An in-process plugin host. Plugins are external processes declared in
   config.
-- A homegrown selection or extraction engine. That is libghostty's; phux
-  owns find-in-scrollback because libghostty has no search.
+- A homegrown selection, extraction, or image-placement engine. Those belong
+  to libghostty; phux owns the search policy over its leased, loaded history.
 - Homegrown crypto. TLS, SSH, and Unix permissions.
 - tmux behavior "for compatibility" where phux has a reason to differ.
 
