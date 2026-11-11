@@ -234,7 +234,7 @@ pub(super) fn grant_sheet(desk: &Desk, p: &Ink) -> El {
                 )
                 .child(el().grow(1.0))
                 .child(crate::ui::overlay::icon_button(
-                    "✕",
+                    &crate::ui::icons::CLOSE,
                     "Close",
                     "grant-close",
                     p,

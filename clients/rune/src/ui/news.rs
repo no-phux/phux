@@ -16,11 +16,14 @@ pub fn bell(desk: &Desk, p: &Ink) -> El {
     };
     icon_press(&icons::BELL, name, "news-button", p, Desk::toggle_news)
         .expanded(desk.news.open)
+        .help("What's new")
+        // A badge, cut out of the bar by a ring of its ground.
         .children(desk.news.unread.then(|| {
             el().absolute(15.0, 3.0)
-                .size(6.0, 6.0)
-                .radius(3.0)
+                .size(8.0, 8.0)
+                .radius(4.0)
                 .fill(p.accent)
+                .border(1.5, p.sidebar)
                 .a11y_hidden()
         }))
 }

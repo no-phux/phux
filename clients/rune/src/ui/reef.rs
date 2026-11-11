@@ -300,7 +300,7 @@ fn readout(r: &Reef, waiting: usize, p: &Ink) -> El {
         }))
         .children(picked)
         .child(overlay::icon_button(
-            "✕",
+            &super::icons::CLOSE,
             "Close",
             "reef-close",
             p,

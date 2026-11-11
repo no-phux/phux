@@ -2,17 +2,24 @@
 //! waits in, and what stands in for a terminal that isn't there.
 
 use phux_client_runtime::control::Status;
-use rune::{Color, El, Family, TextStyle, col, el, row, text};
+use rune::{Color, El, Family, TextStyle, col, row, text};
 
 use super::{
     CAPTION, Ink, LABEL, LABEL_STRONG, TITLEBAR_H, button, icon_press, icons, keep_from_pane,
-    pressable, tabs,
+    pressable, tabs, tip,
 };
 use crate::desk::link::{Banner, Standing};
 use crate::desk::{Desk, Notice, NoticeKind, Pending};
+use crate::keys::Shortcut;
 use crate::launch::INSTALL;
 
 mod phone;
+
+/// The terminal's size in the title bar: quiet figures that keep their
+/// columns as the window is dragged.
+const GEOMETRY: TextStyle = TextStyle::new(10.5, 500.0)
+    .family(Family::SystemMono)
+    .features("tnum");
 
 /// The least height of something a thumb presses, in points.
 const TOUCH: f32 = 44.0;
@@ -413,49 +420,74 @@ pub fn title_bar(desk: &Desk, p: &Ink, lights: f32) -> El {
         .map(|frame| format!("{}×{}", frame.cols, frame.rows))
         .unwrap_or_default();
     let folded = !desk.sidebar_open;
+    let sidebar = icon_press(
+        &icons::SIDEBAR,
+        "Sidebar",
+        "sidebar-toggle",
+        p,
+        Desk::toggle_sidebar,
+    )
+    .expanded(desk.sidebar_open);
+    let settings = icon_press(
+        &icons::SETTINGS,
+        "Settings",
+        "settings-button",
+        p,
+        Desk::toggle_settings,
+    );
+    // Where a ⌘-click goes, as a browser shows it: in the room the tabs
+    // leave, so pointing at a link never squeezes them.
+    let link = desk.pointer.hover.as_ref().map(|(_, link)| {
+        text(link.url.clone())
+            .font(CAPTION)
+            .color(p.accent)
+            .truncate()
+    });
+    // Everything between the sidebar's button and the window's own words:
+    // its width is the room the tabs are cut from.
+    let lane = row()
+        .key("titlebar-lane")
+        .grow(1.0)
+        .min_w(0.0)
+        .h_full()
+        .gap(8.0)
+        .items_center()
+        .on_layout(|d: &mut Desk, rect| d.tabs.room = rect[2])
+        .children(tabs::strip(desk, p).or_else(|| Some(place(desk, p))))
+        .child(
+            row()
+                .grow(1.0)
+                .min_w(0.0)
+                .justify_end()
+                .items_center()
+                .children(link),
+        );
     row()
         .key("titlebar")
         .w_full()
         .h(TITLEBAR_H)
         .pl(if folded { lights + 8.0 } else { 2.0 })
-        .pr(12.0)
+        .pr(10.0)
         .gap(8.0)
         .items_center()
         .window_drag()
-        .child(
-            icon_press(
-                &icons::SIDEBAR,
-                "Sidebar",
-                "sidebar-toggle",
-                p,
-                Desk::toggle_sidebar,
-            )
-            .expanded(desk.sidebar_open),
-        )
-        .children(tabs::strip(desk, p).or_else(|| Some(place(desk, p))))
-        .child(el().grow(1.0))
-        // Where a ⌘-click goes, as a browser shows it.
-        .children(desk.pointer.hover.as_ref().map(|(_, link)| {
-            text(link.url.clone())
-                .font(CAPTION)
-                .color(p.accent)
-                .truncate()
-        }))
+        .child(tip(sidebar, "Sidebar", Shortcut::ToggleSidebar))
+        .child(lane)
         .children(link_trouble(desk, p).map(|(word, color)| text(word).font(CAPTION).color(color)))
         .children(super::updates::pill(desk, p))
         .child(
             text(geometry)
-                .font(CAPTION.family(Family::SystemMono))
-                .color(p.dim),
+                .font(GEOMETRY)
+                .color(p.dim.alpha(0.8))
+                .a11y_hidden(),
         )
-        .child(super::news::bell(desk, p))
-        .child(icon_press(
-            &icons::SETTINGS,
-            "Settings",
-            "settings-button",
-            p,
-            Desk::toggle_settings,
-        ))
+        .child(
+            row()
+                .gap(2.0)
+                .items_center()
+                .child(super::news::bell(desk, p))
+                .child(tip(settings, "Settings", Shortcut::Settings)),
+        )
 }
 
 #[cfg(test)]

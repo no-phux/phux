@@ -279,7 +279,7 @@ pub(super) fn view(desk: &Desk, p: &Ink, cx: &mut Cx<Desk>) -> El {
                 )
         }))
         .child(overlay::icon_button(
-            "✕",
+            &super::icons::CLOSE,
             "Close",
             "galaxy-close",
             p,
