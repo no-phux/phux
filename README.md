@@ -43,14 +43,16 @@ The server owns the terminals. Anything that connects is a client, and they
 all show the same sessions at once. The capture at the top is the terminal
 UI, which is `phux` in the terminal you already use. These are the others:
 
+**Desktop.** [Phux Rune](./clients/rune/README.md), for macOS and Linux.
+
+![Phux Rune, the desktop app, showing the same sessions as the terminal UI](./docs/assets/desktop.webp)
+
 <table>
   <tr>
-    <td width="41%"><b>Desktop</b><br><a href="./clients/rune/README.md">Phux Rune</a>, for macOS and Linux.</td>
-    <td width="41%"><b>Embedded in a web page</b><br>The browser client, live on <a href="https://phux.sh">phux.sh</a>.</td>
-    <td width="18%"><b>Phone</b><br>The same client, in a phone's browser.</td>
+    <td width="70%"><b>Embedded in a web page.</b> The browser client, live on <a href="https://phux.sh">phux.sh</a>.</td>
+    <td width="30%"><b>Phone.</b> The same client, in a phone's browser.</td>
   </tr>
   <tr>
-    <td><img src="./docs/assets/desktop.webp" alt="Phux Rune, the desktop app, showing the same sessions as the terminal UI"></td>
     <td><img src="./docs/assets/web.webp" alt="Two phux panes embedded in a web page"></td>
     <td><img src="./docs/assets/phone.webp" alt="A phux shell in a phone browser, with a key bar under the terminal"></td>
   </tr>
