@@ -188,6 +188,15 @@ impl ResourceTable {
         }
     }
 
+    /// Cancel every registered engine and take all engine futures, including
+    /// killed ones still inside their hangup grace.
+    pub(super) fn retire_engines(&mut self) -> JoinSet<()> {
+        for token in self.tokens.values() {
+            token.cancel();
+        }
+        std::mem::take(&mut self.tasks)
+    }
+
     /// `terminal`'s engine token while registered (a retained pane's exit
     /// watcher waits on it).
     pub(super) fn token(&self, terminal: ResourceId) -> Option<CancellationToken> {

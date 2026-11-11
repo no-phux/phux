@@ -14,8 +14,8 @@ use crate::runtime::posture::{
     remote_listener_configured, startup_policy,
 };
 use crate::runtime::services::{
-    arm_idle_exit, install_hook_dispatcher, spawn_connector_supervisors, spawn_hub_links,
-    spawn_shutdown_folder,
+    arm_idle_exit, drain_engines, install_hook_dispatcher, spawn_connector_supervisors,
+    spawn_hub_links, spawn_shutdown_folder,
 };
 use crate::runtime::startup::{
     adopt_or_bind_listener, install_hub_table, load_connector_consumer_tokens,
@@ -310,6 +310,7 @@ impl ServerRuntime {
                 if let Some(task) = startup_task {
                     let _ = tokio::time::timeout(std::time::Duration::from_secs(8), task).await;
                 }
+                drain_engines(&state).await;
                 accept_result
             })
             .await;

@@ -67,3 +67,14 @@ pub fn spawn_server_seed_pty_no_cmd(
 ) -> ServerHandles {
     spawn_server_with(socket_path, pre_seeded, |cfg| cfg.seed_with_pty = true)
 }
+
+/// A `/bin/sh -c` body that ignores `SIGHUP`, so only a pane kill's
+/// `SIGKILL` backstop ends it. It also exits within a second of this test
+/// process ending, so a run that panics, times out, or drops its server
+/// mid-grace cannot orphan it, and with it a PTY.
+pub fn hangup_proof_script() -> String {
+    format!(
+        "trap '' HUP; while kill -0 {} 2>/dev/null; do sleep 1; done",
+        std::process::id()
+    )
+}

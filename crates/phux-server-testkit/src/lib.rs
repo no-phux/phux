@@ -24,8 +24,8 @@ pub mod screen;
 mod server;
 pub mod tracing_capture;
 pub use server::{
-    ServerHandles, seed_pty, spawn_server, spawn_server_seed_pty_no_cmd, spawn_server_with,
-    spawn_server_with_seed_cmd, terminal_server,
+    ServerHandles, hangup_proof_script, seed_pty, spawn_server, spawn_server_seed_pty_no_cmd,
+    spawn_server_with, spawn_server_with_seed_cmd, terminal_server,
 };
 
 use std::future::Future;

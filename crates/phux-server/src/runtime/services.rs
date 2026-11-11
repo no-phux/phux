@@ -7,7 +7,7 @@ use std::future::Future;
 use std::path::PathBuf;
 use std::time::Duration;
 use tokio_util::sync::CancellationToken;
-use tracing::{debug, error, info};
+use tracing::{debug, error, info, warn};
 
 /// Floor on the idle watchdog's re-check interval, so an already-expired
 /// budget never spins the runtime with zero-length sleeps.
@@ -55,6 +55,30 @@ pub(in crate::runtime) fn spawn_idle_exit_watchdog(
             }
         }
     });
+}
+
+/// Bound on engine teardown at shutdown: a PTY pane's hangup grace, its
+/// reap, and its two bridge-thread joins (500 ms each in phux-terminal),
+/// with slack. Engines tear down concurrently, so this is not per pane.
+const ENGINE_DRAIN_TIMEOUT: Duration = Duration::from_secs(3);
+
+/// Cancel every engine and wait, bounded, for each to finish its teardown.
+/// Dropping the `LocalSet` instead aborts a pane inside its hangup grace,
+/// before the `SIGKILL` backstop, so a child that ignores `SIGHUP` outlives
+/// the server holding its PTY. That includes a pane already killed, whose
+/// reply precedes the grace.
+pub(in crate::runtime) async fn drain_engines(state: &SharedState) {
+    let mut engines = state.with_mut(crate::state::ServerState::retire_engines);
+    let drained = tokio::time::timeout(ENGINE_DRAIN_TIMEOUT, async {
+        while engines.join_next().await.is_some() {}
+    })
+    .await;
+    if drained.is_err() {
+        warn!(
+            remaining = engines.len(),
+            "engines missed the shutdown teardown budget; aborting them"
+        );
+    }
 }
 
 /// Fold the external shutdown future into the root token. `spawn_local` (not
