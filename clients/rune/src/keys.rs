@@ -56,6 +56,7 @@ pub enum Shortcut {
     FindSelection,
     /// A keyboard cursor over the pane, to select and copy with vi keys.
     CopyMode,
+    CopyConfig,
     Inbox,
     /// The fleet as a galaxy: machines, their agents, and how they relate.
     Galaxy,

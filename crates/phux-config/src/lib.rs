@@ -40,8 +40,8 @@ pub use mirror::MirrorConfigEntry;
 use phux_config_core::layer;
 pub use phux_config_core::{
     ConfigError, ConfigProvenance, KeyOrigin, LayerSource, MAX_EXTENDS_DEPTH, OrganizeCfg,
-    RemoteConfigEntry, byte_offset_to_line_col, host_color, instance, known_authorities, remote,
-    server_bundle, socket,
+    RemoteConfigEntry, RuneCfg, byte_offset_to_line_col, host_color, instance, known_authorities,
+    remote, server_bundle, socket,
 };
 pub use producer::ProducerConfigEntry;
 pub use project::ProjectConfigEntry;

@@ -258,6 +258,26 @@ make the file invalid is refused before it is written. A setting that
 comes from a file you extend can't be reset here; the page names that
 file so you can edit it.
 
+## Rune
+
+The Rune desktop app reads a `[rune]` table from the same file. A key set
+there wins over the choice Rune saved, and Settings shows it as set in
+`config.toml`; a key you leave out stays Rune's to remember.
+
+```toml
+[rune]
+theme = "nord"          # a theme id; "" follows the system
+font-size = 14.0        # the size each window starts at
+font-family = ""        # "" is the built-in face
+notifications = true
+option-as-meta = false
+copy-on-select = true
+confirm-close = false
+```
+
+**Copy Settings as TOML** in Rune's command palette puts your current
+choices on the clipboard as this table. Rune reads the file at launch.
+
 ## Predictive echo
 
 Predictive echo shows your typing in a pane before the server echoes it

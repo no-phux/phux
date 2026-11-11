@@ -11,7 +11,7 @@ use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    OrganizeCfg, connector::ConnectorConfigEntry, host_color::LocalHostCfg,
+    OrganizeCfg, RuneCfg, connector::ConnectorConfigEntry, host_color::LocalHostCfg,
     mirror::MirrorConfigEntry, plugin::PluginConfigEntry, producer::ProducerConfigEntry,
     project::ProjectConfigEntry, remote::RemoteConfigEntry, satellite::SatelliteConfigEntry,
     uplink::UplinkConfigEntry,
@@ -67,6 +67,8 @@ pub struct Config {
     pub voice: VoiceCfg,
     /// `[organize]`: the judge behind `phux organize`.
     pub organize: OrganizeCfg,
+    /// `[rune]`: settings the Rune desktop app reads; ignored elsewhere.
+    pub rune: RuneCfg,
     /// `[limits]`: server-enforced ceilings that are not per-pane defaults.
     pub limits: LimitsCfg,
 }
