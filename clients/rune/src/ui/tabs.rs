@@ -311,6 +311,17 @@ mod tests {
             assert!(rt.state.tabs.room > 0.0, "the bar reported its room");
             let add = rt.presented("tab-new").expect("the new-tab button").0;
             let bell = rt.presented("news-button").expect("the bell").0;
+            // Every tab is inside the strip, which ends before the button:
+            // none is drawn past its own box.
+            let last = rt.presented(&format!("tab-{}", count - 1));
+            if let Some((last, ..)) = last.filter(|_| !crowded(rt.state.tabs.room, count.into())) {
+                assert!(
+                    last[0] + last[2] <= add[0] + 0.5,
+                    "{count} tabs: the last ends at {}, new-tab starts at {}",
+                    last[0] + last[2],
+                    add[0]
+                );
+            }
             assert!(
                 add[0] + add[2] <= bell[0],
                 "{count} tabs: new-tab ends at {}, the bell starts at {}",
