@@ -102,6 +102,14 @@ exist. This avoids a redundant SpringBoard termination/registration round
 trip on cold CI images. All launch deadlines and the real paired input and
 lifecycle requirements remain unchanged.
 
+A just-booted simulator keeps doing first-boot work for minutes after
+`bootstatus` returns; on CI runners install, launch and `launchctl` calls in
+that window took 20-130 seconds and the app's 18-second connect budget ran
+out. Before installing, the fixture waits until three consecutive
+`launchctl list` queries each answer within two seconds, for at most five
+minutes, and records the query times in `settle.json`. Still slow at the
+budget, it says so on stderr and continues under the per-command deadlines.
+
 Cold CoreSimulator registration can outlast installation. Container acquisition
 uses bounded timeout-only retries (at most three 60-second attempts) and must
 return an existing absolute directory. The fixture retains that Documents path
