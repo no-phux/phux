@@ -77,6 +77,19 @@ action's `id`:
 <kbd>M-Enter</kbd> never reaches your editor or shell again. Pick global
 keys that your programs don't use.
 
+### A command in a popup
+
+`popup` runs one command in a floating box over your panes, in the focused
+pane's directory. The box closes when the command exits, or on the next
+phux action:
+
+```toml
+[keybindings.prefix-table]
+"g" = { action = "popup", command = "lazygit" }
+```
+
+Without `command` it asks for one; the palette's **Popup…** row does the same.
+
 ## Finding actions
 
 - Press <kbd>C-a</kbd> <kbd>Space</kbd> to open the command palette. It

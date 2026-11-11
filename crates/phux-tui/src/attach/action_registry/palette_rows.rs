@@ -351,6 +351,17 @@ pub(super) const PALETTE_ROWS: &[ActionSpec] = &[
         run: run::new_session,
     },
     ActionSpec {
+        name: "popup",
+        description: "Run a command in a floating pane that closes when it exits",
+        params: "`command?` (bare opens an interactive prompt); `cwd?`",
+        palette: Palette::Row {
+            title: "Popup…",
+            category: Category::Pane,
+            args: &[],
+        },
+        run: run::popup,
+    },
+    ActionSpec {
         name: "new-worktree",
         description: "Create a git worktree for a new branch and switch to its session",
         params: "`branch?` (bare opens an interactive prompt); `cwd?` picks the repository",
