@@ -110,6 +110,7 @@ fn send_document_input_queues_one_send_document_input_command() {
             terminal_id: ResourceId::local(PAGE),
             intent,
             control: None,
+            on_behalf_of: None,
         },
     };
     assert_eq!(

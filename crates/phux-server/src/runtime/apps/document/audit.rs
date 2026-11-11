@@ -12,7 +12,7 @@ use std::sync::{Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
 use phux_protocol::ids::ResourceId;
-use phux_protocol::wire::frame::{CommandResult, DocumentInput};
+use phux_protocol::wire::frame::{CommandResult, DocumentInput, OnBehalfOf};
 
 use crate::state::{ClientId, ServerState};
 
@@ -22,9 +22,11 @@ const QUIET: Duration = Duration::from_secs(2);
 static BURSTS: Mutex<Bursts> = Mutex::new(Bursts(None));
 
 /// Log `intent` from `client` to `resource`, which ended in `result`.
+/// `relayed` is the hub's claim of who it sent it for, if any.
 pub(crate) fn record(
     state: &ServerState,
     client: ClientId,
+    relayed: Option<&OnBehalfOf>,
     resource: &ResourceId,
     intent: &DocumentInput,
     result: &CommandResult,
@@ -34,7 +36,7 @@ pub(crate) fn record(
         _ => "relayed".to_owned(),
     };
     let key = Key {
-        who: who(state, client),
+        who: who(state, client, relayed),
         resource: resource.to_string(),
         outcome,
     };
@@ -92,16 +94,47 @@ pub(crate) fn record(
     });
 }
 
+/// `relayed` when `client`'s link may vouch for who it relays for
+/// (`docs/authority.md#relayed-identity`); otherwise the claim is ignored.
+pub(super) fn believed<'a>(
+    state: &ServerState,
+    client: ClientId,
+    relayed: Option<&'a OnBehalfOf>,
+) -> Option<&'a OnBehalfOf> {
+    relayed.filter(|_| crate::policy::filter::vouches_for_relay(state, client))
+}
+
+/// The name `input_activity` gives the sender: a believed relay claim's
+/// client name (its credential when it has none), else the connection's.
+pub(super) fn origin(
+    state: &ServerState,
+    client: ClientId,
+    relayed: Option<&OnBehalfOf>,
+) -> String {
+    believed(state, client, relayed).map_or_else(
+        || state.input_origin(client),
+        |relayed| {
+            if relayed.name.is_empty() {
+                relayed.credential.clone()
+            } else {
+                relayed.name.clone()
+            }
+        },
+    )
+}
+
 /// The sender as the log names it: its credential id, `owner` on the
-/// owner's socket, else `anonymous`.
-fn who(state: &ServerState, client: ClientId) -> String {
-    if let Some(credential) = state.authenticated_credential(client) {
-        return credential.id.clone();
+/// owner's socket, else `anonymous`; through a believed relay,
+/// `via hub <that>, on behalf of <credential> (<name>)`.
+fn who(state: &ServerState, client: ClientId, relayed: Option<&OnBehalfOf>) -> String {
+    let link = state.input_sender(client);
+    match believed(state, client, relayed) {
+        Some(relayed) => format!(
+            "via hub {link}, on behalf of {} ({:?})",
+            relayed.credential, relayed.name
+        ),
+        None => link,
     }
-    let owner = state
-        .peer_identity(client)
-        .is_some_and(|peer| peer.transport == phux_protocol::policy::TransportType::UnixSocket);
-    if owner { "owner" } else { "anonymous" }.to_owned()
 }
 
 /// The intent's kind and the length of any text it carries.
@@ -204,6 +237,66 @@ mod tests {
         // The next intent opens a fresh burst.
         assert!(bursts.note(&key("relayed"), "type", 3, at(2700)));
         assert!(bursts.settle(&key("refused"), None).is_some());
+    }
+
+    /// A hub's claim of who it relays for names the sender only from a
+    /// link that may vouch for it; anything else keeps the link's own name.
+    #[test]
+    fn a_relay_claim_is_believed_only_from_a_full_control_link() {
+        use crate::policy::ConnectionGrant;
+        use phux_protocol::policy::{PeerIdentity, TransportType};
+        use phux_protocol::scope::TerminalScopeSet;
+        let scoped = |scopes: &[&str]| {
+            let set = TerminalScopeSet::parse_all(scopes).unwrap();
+            ConnectionGrant::scoped(set, Some("sha256:link".to_owned())).unwrap()
+        };
+        let mut state = ServerState::new();
+        let (hub, bot, owner) = (ClientId(1), ClientId(2), ClientId(3));
+        state.set_connection_grant(hub, scoped(&[crate::workload::PAIRED_DEVICE_SCOPE]));
+        state.set_connection_grant(bot, scoped(&["input@display"]));
+        state.set_connection_grant(owner, ConnectionGrant::owner());
+        state.set_peer_identity(
+            owner,
+            PeerIdentity {
+                uid: 0,
+                pid: None,
+                exe_path: None,
+                mcp_host_key: None,
+                transport: TransportType::UnixSocket,
+                source_addr: None,
+            },
+        );
+        state.set_client_name(owner, "Rune".to_owned());
+        let claim = OnBehalfOf {
+            credential: "sha256:phone".to_owned(),
+            name: "iPhone".to_owned(),
+        };
+        let claim = Some(&claim);
+
+        assert_eq!(origin(&state, hub, claim), "iPhone");
+        assert_eq!(
+            who(&state, hub, claim),
+            r#"via hub anonymous, on behalf of sha256:phone ("iPhone")"#
+        );
+        assert_eq!(
+            origin(&state, owner, claim),
+            "iPhone",
+            "an ssh or uplink hub"
+        );
+        // An automation key's claim is ignored.
+        assert_eq!(origin(&state, bot, claim), "client:2");
+        assert_eq!(who(&state, bot, claim), "anonymous");
+        // No claim: the connection itself.
+        assert_eq!(who(&state, owner, None), "owner");
+
+        // What a hub stamps: its caller's credential and name, cut short.
+        let stamp = state.relayed_for(owner);
+        assert_eq!(
+            (stamp.credential.as_str(), stamp.name.as_str()),
+            ("owner", "Rune")
+        );
+        state.set_client_name(owner, "é".repeat(200));
+        assert_eq!(state.relayed_for(owner).name.len(), 254);
     }
 
     #[test]

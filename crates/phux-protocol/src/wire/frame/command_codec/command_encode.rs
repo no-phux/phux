@@ -276,12 +276,18 @@ pub(in crate::wire) fn encode_command(command: &Command, enc: &mut Encoder<'_>) 
             terminal_id,
             intent,
             control,
+            on_behalf_of,
         } => {
             enc.write_u8(crate::wire::frame::COMMAND_TAG_SEND_DOCUMENT_INPUT);
             encode_terminal_id(terminal_id, enc);
             intent.encode(enc);
-            if let Some(control) = control {
-                enc.write_u8(control.bits());
+            match (control, on_behalf_of) {
+                (Some(control), _) => enc.write_u8(control.bits()),
+                (None, Some(_)) => enc.write_u8(crate::wire::frame::CONTROL_UNRESTRICTED),
+                (None, None) => {}
+            }
+            if let Some(on_behalf_of) = on_behalf_of {
+                on_behalf_of.encode(enc);
             }
         }
         org @ (Command::GetOrganization { .. }
