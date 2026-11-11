@@ -129,6 +129,16 @@ phux rm @4             # forget a pane instead
 
 `phux restore` also resumes coding agents whose integration supports it.
 
+To have each new server do that by itself, opt in:
+
+```toml
+[restore]
+on-start = true
+```
+
+The server then runs `phux restore` once it is listening. It starts
+programs again and resumes agents; it never types anything into them.
+
 To have the server start at login and come back by itself after a reboot:
 
 ```sh
