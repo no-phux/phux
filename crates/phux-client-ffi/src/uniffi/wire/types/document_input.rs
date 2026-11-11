@@ -24,6 +24,12 @@ pub enum WireDocumentIntent {
     Navigate { url: String },
     /// Click at a frame pixel.
     Click { x: u32, y: u32 },
+    /// Press the left button at `from`, move to `to`, release: selects
+    /// text. Both are frame pixels.
+    Drag {
+        from: WireFramePoint,
+        to: WireFramePoint,
+    },
     /// Insert text at the focus.
     Type { text: String },
     /// Press and release one key.
@@ -67,6 +73,10 @@ impl From<WireDocumentIntent> for DocumentInput {
         match intent {
             WireDocumentIntent::Navigate { url } => Self::Navigate { url },
             WireDocumentIntent::Click { x, y } => Self::Click { x, y },
+            WireDocumentIntent::Drag { from, to } => Self::Drag {
+                from: (from.x, from.y),
+                to: (to.x, to.y),
+            },
             WireDocumentIntent::Type { text } => Self::Type { text },
             WireDocumentIntent::Key { key } => Self::Key {
                 key: match key {

@@ -353,7 +353,7 @@ fn satellite_list(desk: &Desk, topology: &Topology, ink: &Ink) -> El {
             })
             .map(|doc| {
                 let label = doc.name.clone().unwrap_or_else(|| "Mirror".to_owned());
-                (&doc.id, label, Some("Read-only mirror".to_owned()))
+                (&doc.id, label, Some(desk.mirror_label(&doc.id).to_owned()))
             });
         for (id, label, place) in terminals.chain(mirrors) {
             let row = Row {
