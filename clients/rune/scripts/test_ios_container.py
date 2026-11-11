@@ -61,6 +61,43 @@ class ContainerTests(unittest.TestCase):
             self.assertEqual(json.loads((root / "command-002.timing.json").read_text()), {
                 "elapsed_seconds": 120, "deadline_seconds": 120, "succeeded": False})
 
+    def settle_with(self, root, durations):
+        """Run settle() on a fake clock; each query takes the next duration
+        (None: it times out) and each pause between queries one second."""
+        clock = [0.0]
+        def query(*args, **kwargs):
+            took = durations.pop(0)
+            clock[0] += 30 if took is None else took
+            if took is None:
+                raise subprocess.TimeoutExpired("simctl", 30)
+            return ""
+        def pause(seconds):
+            clock[0] += seconds
+        lane = self.lane(root)
+        lane.udid = "NEW"
+        lane.simctl = Mock(side_effect=query)
+        with patch.object(qualify._settle.time, "monotonic", side_effect=lambda: clock[0]), \
+                patch.object(qualify._settle.time, "sleep", side_effect=pause):
+            settled = lane.settle()
+        return settled, lane, json.loads((root / "settle.json").read_text())
+
+    def test_settle_waits_for_consecutive_prompt_answers_after_a_slow_boot(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            settled, lane, record = self.settle_with(
+                Path(temporary), [24.0, None, 0.5, 8.0, 0.25, 0.75, 0.5, 99.0])
+            self.assertTrue(settled)
+            self.assertEqual(record["query_seconds"], [24.0, None, 0.5, 8.0, 0.25, 0.75, 0.5])
+            self.assertEqual(lane.simctl.call_count, 7)
+            lane.simctl.assert_called_with("spawn", "NEW", "launchctl", "list")
+
+    def test_settle_is_bounded_and_not_fatal_when_the_simulator_stays_slow(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            with patch("sys.stderr"):
+                settled, lane, record = self.settle_with(Path(temporary), [20.0] * 100)
+            self.assertFalse(settled)
+            self.assertLessEqual(record["elapsed_seconds"], qualify._settle.SETTLE_BUDGET + 21)
+            self.assertEqual(lane.simctl.call_count, len(record["query_seconds"]))
+
     def test_only_a_retried_query_survives_a_stuck_simctl_call(self):
         with tempfile.TemporaryDirectory() as temporary:
             lane = self.lane(Path(temporary))
