@@ -118,9 +118,20 @@ pub fn install() {
 }
 
 fn tail(path: &Path) -> Option<String> {
-    let bytes = fs::read(path).ok()?;
-    let start = bytes.len().saturating_sub(REPORT_TAIL);
-    Some(String::from_utf8_lossy(&bytes[start..]).into_owned())
+    use std::io::{Read as _, Seek as _, SeekFrom};
+    // Only a regular file: a log symlinked to a device may never end.
+    let meta = fs::metadata(path).ok()?;
+    if !meta.is_file() {
+        return None;
+    }
+    let mut file = fs::File::open(path).ok()?;
+    file.seek(SeekFrom::Start(
+        meta.len().saturating_sub(REPORT_TAIL as u64),
+    ))
+    .ok()?;
+    let mut bytes = Vec::new();
+    file.take(REPORT_TAIL as u64).read_to_end(&mut bytes).ok()?;
+    Some(String::from_utf8_lossy(&bytes).into_owned())
 }
 
 fn report_from(dir: Option<&Path>, facts: &[(&str, String)]) -> String {

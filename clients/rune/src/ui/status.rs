@@ -2,7 +2,7 @@
 //! waits in, and what stands in for a terminal that isn't there.
 
 use phux_client_runtime::control::Status;
-use rune::{Color, El, Family, TextStyle, col, row, text};
+use rune::{Color, El, Family, TextStyle, col, el, row, text};
 
 use super::{
     CAPTION, Ink, LABEL, LABEL_STRONG, TITLEBAR_H, button, icon_press, icons, keep_from_pane,
@@ -195,6 +195,14 @@ fn words(standing: &Standing, machine: &str, remote: bool) -> (&'static str, Str
             "No terminals",
             "This session is empty; start a terminal in it.".to_owned(),
         ),
+        Standing::Ended(1) => (
+            "The server restarted",
+            "It ended this session's terminal. Restore starts it again.".to_owned(),
+        ),
+        Standing::Ended(n) => (
+            "The server restarted",
+            format!("It ended this session's {n} terminals. Restore starts them again."),
+        ),
         Standing::Opening => ("Opening terminal…", String::new()),
     }
 }
@@ -250,6 +258,7 @@ fn remedy(standing: &Standing, updates: bool, p: &Ink) -> Option<El> {
             p,
             Desk::new_terminal,
         ),
+        Standing::Ended(_) => action("Restore", "placeholder-restore", p, Desk::restore_session),
         Standing::Incompatible(_) if updates => {
             action("Check for updates", "placeholder-update", p, |d| {
                 d.updater.check_now();
@@ -398,12 +407,20 @@ fn place(desk: &Desk, p: &Ink) -> El {
     let title = title
         .strip_suffix(&format!(" — {session}"))
         .map_or(title.clone(), str::to_owned);
-    let terminal = (title != session && !title.is_empty())
-        .then(|| text(title).font(LABEL).color(p.dim).truncate());
+    // The terminal's title grows from nothing into what is left, so a narrow
+    // window cuts it before it cuts the session's name.
+    // With no terminal on screen the window title is the app's own name.
+    let terminal = (desk.shown.is_some() && title != session && !title.is_empty()).then(|| {
+        el().w(0.0)
+            .grow(1.0)
+            .min_w(0.0)
+            .child(text(title).font(LABEL).color(p.dim).truncate())
+    });
     row()
         .gap(7.0)
         .min_w(0.0)
         .shrink()
+        .grow(8.0)
         .items_center()
         .child(text(session).font(LABEL_STRONG).color(p.text).truncate())
         .children(terminal)
@@ -419,7 +436,7 @@ pub fn title_bar(desk: &Desk, p: &Ink, lights: f32) -> El {
         .and_then(|(client, shown)| client.acquire_view(shown.view?))
         .map(|frame| format!("{}×{}", frame.cols, frame.rows))
         .unwrap_or_default();
-    let folded = !desk.sidebar_open;
+    let folded = !desk.sidebar_shown();
     let sidebar = icon_press(
         &icons::SIDEBAR,
         "Sidebar",
@@ -427,7 +444,7 @@ pub fn title_bar(desk: &Desk, p: &Ink, lights: f32) -> El {
         p,
         Desk::toggle_sidebar,
     )
-    .expanded(desk.sidebar_open);
+    .expanded(desk.sidebar_shown());
     let settings = icon_press(
         &icons::SETTINGS,
         "Settings",

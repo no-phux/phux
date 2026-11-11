@@ -132,11 +132,7 @@ pub(super) fn look(desk: &Desk, p: &Ink) -> El {
             shown,
             window(p.bg, p.text, true),
             p,
-            |d: &mut Desk| {
-                if !d.sidebar_open {
-                    d.toggle_sidebar();
-                }
-            },
+            |d: &mut Desk| d.set_sidebar_open(true),
         ))
         .child(choice(
             "look-no-sidebar",
@@ -144,11 +140,7 @@ pub(super) fn look(desk: &Desk, p: &Ink) -> El {
             !shown,
             window(p.bg, p.text, false),
             p,
-            |d: &mut Desk| {
-                if d.sidebar_open {
-                    d.toggle_sidebar();
-                }
-            },
+            |d: &mut Desk| d.set_sidebar_open(false),
         ));
     // The picker's own list, System first, narrowed to the chosen scheme.
     let themes = std::iter::once(None)

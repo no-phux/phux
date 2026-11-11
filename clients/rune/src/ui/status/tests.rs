@@ -116,3 +116,49 @@ fn the_phone_app_speaks_of_its_computer_and_of_no_command() {
     assert_eq!(said(&desktop, &refused).0, "Can't reach phux");
     assert!(!phone::repairs(&desktop, &refused));
 }
+
+#[test]
+fn a_narrow_window_folds_the_sidebar_and_the_toggle_peeks() {
+    use rune::accesskit::Action;
+
+    let width = |rt: &rune::Runtime<Desk>| rt.presented("sidebar-host").expect("host").0[2];
+    let mut desk = Desk::settings_test_fixture();
+    desk.settings_open = false;
+    desk.sidebar_open = true;
+    let mut rt = rune::Runtime::new(
+        desk,
+        crate::ui::view,
+        (500.0, 700.0),
+        rune::Env::new(false, 1.0),
+    );
+    // The first layout learns the width; the next frame folds.
+    for t in [0.0, 0.016, 1.0] {
+        rt.frame(t);
+    }
+    assert!(rt.state.sidebar_narrow());
+    assert_eq!(width(&rt), 0.0);
+    assert!(rt.accessibility_action("sidebar-toggle", Action::Click, None));
+    for t in [1.1, 2.0] {
+        rt.frame(t);
+    }
+    assert!(width(&rt) > 0.0, "the toggle peeks");
+    // A peek is not a preference: a wide window still shows the sidebar.
+    assert!(rt.state.sidebar_open);
+    rt.state.window_laid_out(1100.0);
+    assert!(!rt.state.sidebar_peek && rt.state.sidebar_shown());
+}
+
+#[test]
+fn a_session_a_restart_ended_offers_to_restore_it() {
+    assert_eq!(
+        words(&Standing::Ended(1), "here", false).1,
+        "It ended this session's terminal. Restore starts it again."
+    );
+    assert!(
+        words(&Standing::Ended(3), "here", false)
+            .1
+            .contains("3 terminals")
+    );
+    let p = super::super::ink(true, rune::Color::WHITE, None);
+    assert!(remedy(&Standing::Ended(2), false, &p).is_some());
+}

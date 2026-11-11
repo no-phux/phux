@@ -1,8 +1,8 @@
 //! Spawn, command, and pending-request results.
 
 use super::super::{
-    CommandResult, ControlError, ControlPlane, ErrorCode, Event, FrameKind, Pending, ResourceId,
-    SessionSnapshot, SpawnResult, Status,
+    CommandResult, ControlError, ControlPlane, DetachReason, ErrorCode, Event, FrameKind, Pending,
+    ResourceId, SessionSnapshot, SpawnResult, Status,
 };
 use crate::control::subscriptions::Origin;
 use crate::control::topology::View;
@@ -294,6 +294,56 @@ impl ControlPlane {
         self.retire_unadmitted_agent_subscriptions();
         self.sync_agent_metadata();
         self.reconcile_agent_delivery_catalog(snapshot);
+        Ok(())
+    }
+
+    pub(in crate::control) fn detached(
+        &mut self,
+        reason: Option<DetachReason>,
+        message: &str,
+    ) -> Result<(), ControlError> {
+        self.forget_roster_subscriptions();
+        // Revoked, expired or replaced: the server ended this attach. Input
+        // sent before the socket closes would only reach a refusal.
+        self.attach_ended = true;
+        // A killed session keeps the socket open and frees this client's
+        // terminals, so input only stops until it subscribes to another.
+        if reason == Some(DetachReason::SessionKilled) {
+            self.attach_ended = false;
+            self.subscriptions.clear(Origin::SessionAttach);
+            self.subscriptions.clear(Origin::AttachResource);
+        }
+        self.push_event(Event::Detached {
+            reason,
+            message: message.to_owned(),
+        });
+        // A `None` reason is unstated (an older server) and is never read
+        // as Requested.
+        if reason == Some(DetachReason::Requested) {
+            if self.detach_requested {
+                self.close();
+                return Err(ControlError::Closed);
+            }
+            return Ok(());
+        }
+        let detail = match (reason, message) {
+            (Some(reason), "") => reason.describe().to_owned(),
+            (Some(reason), extra) => format!("{}: {extra}", reason.describe()),
+            (None, "") => "the server ended the attach without saying why".to_owned(),
+            (None, extra) => extra.to_owned(),
+        };
+        self.error = Some(detail.clone());
+        // A refused HELLO ended with PROTOCOL_ERROR before workload-auth §7's
+        // AUTHENTICATION_FAILED was emitted; both stop retrying.
+        let fatal = matches!(
+            reason,
+            Some(DetachReason::ProtocolError | DetachReason::AuthenticationFailed)
+        );
+        if fatal && self.options.automatic_lifecycle {
+            return Err(ControlError::Refused(detail));
+        }
+        // Other endings but a killed session: the server closes the socket
+        // itself, and the frames it sent ahead of the close still apply.
         Ok(())
     }
 }

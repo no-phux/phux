@@ -35,12 +35,11 @@ fn read_in(home: &Path, config_home: &Path) -> Option<Theme> {
     ]
     .into_iter()
     .find(|path| path.is_file())?;
-    let own = std::fs::read_to_string(&main).ok()?;
+    let own = super::read_config(&main)?;
     let mut texts = vec![own];
     texts.extend(includes(&main, &texts[0], home));
     let joined = texts.join("\n");
-    let themed =
-        theme_file(&joined, config_home).and_then(|path| std::fs::read_to_string(path).ok());
+    let themed = theme_file(&joined, config_home).and_then(|path| super::read_config(&path));
     parse(
         &themed
             .into_iter()
@@ -141,7 +140,7 @@ fn includes(main: &Path, text: &str, home: &Path) -> Vec<String> {
             } else {
                 main.parent().unwrap_or(Path::new(".")).join(value)
             };
-            std::fs::read_to_string(path).ok()
+            super::read_config(&path)
         })
         .collect()
 }

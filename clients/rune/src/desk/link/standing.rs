@@ -96,6 +96,8 @@ pub enum Standing {
     NoSessions,
     /// The selected session holds no terminals.
     NoTerminals,
+    /// A server restart ended this many of the selected session's terminals.
+    Ended(usize),
     /// Nothing is wrong; a terminal is on its way.
     Opening,
 }
@@ -170,7 +172,10 @@ impl Desk {
             _ if waiting => Standing::Opening,
             None if topology.sessions.is_empty() => Standing::NoSessions,
             Some(s) if !topology.panes.iter().any(|p| p.session_id == s.id) => {
-                Standing::NoTerminals
+                match self.ended_by_restart().len() {
+                    0 => Standing::NoTerminals,
+                    ended => Standing::Ended(ended),
+                }
             }
             _ => Standing::Opening,
         }

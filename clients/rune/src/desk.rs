@@ -152,6 +152,10 @@ pub struct Desk {
     /// Each pane's grid origin in window points, from its last layout.
     origins: HashMap<ResourceId, [f32; 2]>,
     pub sidebar_open: bool,
+    /// The window's width in points, from the root's last layout; 0 until then.
+    pub window_w: f32,
+    /// The sidebar shown over the preference in a window too narrow for it.
+    pub sidebar_peek: bool,
     /// The sidebar's foot button under the pointer, by key, so it can show
     /// its chord.
     pub foot_hover: Option<&'static str>,
@@ -319,6 +323,8 @@ impl Desk {
             paths: None,
             origins: HashMap::new(),
             sidebar_open,
+            window_w: 0.0,
+            sidebar_peek: false,
             foot_hover: None,
             find: None,
             copy_mode: None,

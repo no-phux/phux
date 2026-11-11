@@ -7,6 +7,7 @@
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
 pub const USAGE: &str = "usage: phux-rune [--socket PATH] [--session NAME] [--phux PATH] [--phone]";
@@ -191,6 +192,12 @@ fn locate(explicit: Option<&Path>) -> Result<PathBuf, String> {
 /// How long a CLI call may take before the window shows the failure.
 const CLI_TIMEOUT: Duration = Duration::from_secs(30);
 
+/// The most a CLI answer may print.
+const MAX_OUTPUT: u64 = 16 << 20;
+
+/// How long a finished CLI's pipes get to reach their end.
+const DRAIN_GRACE: Duration = Duration::from_secs(1);
+
 fn run(phux: &Path, args: &[&str]) -> Result<Vec<u8>, String> {
     run_for(phux, args, CLI_TIMEOUT)
 }
@@ -204,15 +211,18 @@ pub fn run_for(phux: &Path, args: &[&str], timeout: Duration) -> Result<Vec<u8>,
         .spawn()
         .map_err(|error| format!("could not run {}: {error}", phux.display()))?;
     // Drain both pipes on threads so a chatty CLI can't block on a full pipe
-    // while this waits for it.
+    // while this waits for it. Past the limit the pipe closes, and the writer
+    // gets SIGPIPE instead of this window's memory.
     let drain = |pipe: Option<Box<dyn Read + Send>>| {
+        let (done, bytes) = mpsc::channel();
         std::thread::spawn(move || {
             let mut bytes = Vec::new();
-            if let Some(mut pipe) = pipe {
-                let _ = pipe.read_to_end(&mut bytes);
+            if let Some(pipe) = pipe {
+                let _ = pipe.take(MAX_OUTPUT + 1).read_to_end(&mut bytes);
             }
-            bytes
-        })
+            let _ = done.send(bytes);
+        });
+        bytes
     };
     let stdout = drain(
         child
@@ -243,8 +253,17 @@ pub fn run_for(phux: &Path, args: &[&str], timeout: Duration) -> Result<Vec<u8>,
             Err(error) => return Err(format!("waiting for {}: {error}", phux.display())),
         }
     };
-    let stdout = stdout.join().unwrap_or_default();
-    let stderr = stderr.join().unwrap_or_default();
+    // A daemon the CLI left behind (an ssh master, say) can hold a pipe open
+    // long after the CLI is gone, so its end of file can't be waited for.
+    let stdout = stdout.recv_timeout(DRAIN_GRACE).unwrap_or_default();
+    let stderr = stderr.recv_timeout(DRAIN_GRACE).unwrap_or_default();
+    if stdout.len() as u64 > MAX_OUTPUT {
+        return Err(format!(
+            "`phux {}` printed more than {} MB.",
+            args.join(" "),
+            MAX_OUTPUT >> 20
+        ));
+    }
     if status.success() {
         Ok(stdout)
     } else {
@@ -394,5 +413,21 @@ mod tests {
         assert_eq!(run(sh, &["-c", "printf ok"]).expect("runs"), b"ok");
         let error = run(sh, &["-c", "echo nope >&2; exit 3"]).expect_err("fails");
         assert!(error.contains("nope"), "{error}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn endless_output_fails_instead_of_filling_memory() {
+        let error = run(Path::new("/bin/sh"), &["-c", "exec cat /dev/zero"]).expect_err("capped");
+        assert!(error.contains("more than"), "{error}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_daemon_holding_the_pipes_doesnt_hang_the_call() {
+        let started = Instant::now();
+        let out = run(Path::new("/bin/sh"), &["-c", "sleep 30 & exit 0"]).expect("finishes");
+        assert!(out.is_empty());
+        assert!(started.elapsed() < Duration::from_secs(10));
     }
 }

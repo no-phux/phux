@@ -223,6 +223,27 @@ fn a_stale_window_says_when_it_has_stopped_trying() {
     }
 }
 
+#[test]
+fn a_killed_session_leaves_the_link_up_for_the_next_one() {
+    use phux_client_runtime::control::Event;
+    use phux_protocol::wire::frame::DetachReason;
+    let client = embedded();
+    let mut desk = desk();
+    desk.client = Some(client.clone());
+    desk.status = Status::Attached;
+    let ended = |reason| Event::Detached {
+        reason: Some(reason),
+        message: "the session this attach was rooted in was killed".to_owned(),
+    };
+    desk.apply_connection(&client, ended(DetachReason::SessionKilled));
+    assert!(
+        desk.link_is_up(),
+        "the socket stays open and nothing retries"
+    );
+    desk.apply_connection(&client, ended(DetachReason::AuthorizationRevoked));
+    assert!(!desk.link_is_up(), "this one really did end the connection");
+}
+
 /// Counts the wakes a client delivers.
 #[derive(Default)]
 struct Wakes(AtomicU32);
