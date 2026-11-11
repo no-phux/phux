@@ -22,7 +22,7 @@ case "$*" in
     printf '%s\n' 'prefix C-b' 'prefix2 None' 'mouse on' 'history-limit 4000' "default-shell '/bin/sh'" 'base-index 0';;
   'show-options -gw') printf '%s\n' 'mode-keys vi';;
   'list-keys')
-    printf '%s\n' 'bind-key -T prefix v split-window -h' 'bind-key -T prefix x confirm-before -p "kill?" kill-pane' 'bind-key -T prefix r run-shell "touch /tmp/should-never-execute"';;
+    printf '%s\n' 'bind-key -T prefix v split-window -h' 'bind-key -T prefix x confirm-before -p "kill?" kill-window -t :2' 'bind-key -T prefix r run-shell "touch /tmp/should-never-execute"';;
   *) exit 43;;
 esac
 "#;

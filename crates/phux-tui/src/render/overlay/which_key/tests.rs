@@ -141,7 +141,7 @@ fn labels_read_as_phrases() {
     let s = |v: &str| toml::Value::String(v.to_owned());
     assert_eq!(
         action_label(&Action::Bare("kill-pane".to_owned())),
-        "Kill pane"
+        "Kill pane…"
     );
     assert_eq!(
         action_label(&Action::Bare("take-input".to_owned())),

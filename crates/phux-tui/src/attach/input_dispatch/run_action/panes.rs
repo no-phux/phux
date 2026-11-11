@@ -215,33 +215,38 @@ fn split_host(host: Option<SatelliteHost>, support: DirectorySupport) -> SplitHo
     }
 }
 
-/// Close the focused pane with one correlated `KILL_RESOURCE`. A
-/// `TerminalNotFound` refusal folds the leaf out too, so a pane whose
-/// resource died under us can still be dismissed.
+/// `kill-pane`: without a target, open the confirm naming the focused
+/// pane; with the `terminals` target the confirm committed, close it with
+/// one correlated `KILL_RESOURCE`. A `TerminalNotFound` refusal folds the
+/// leaf out too, so a pane whose resource died under us can still be
+/// dismissed.
 pub(in crate::attach) fn kill_focused_pane(call: ActionCall<'_, '_>) {
+    if let Some(targets) = super::windows::confirmed_targets(call.resolved) {
+        let Some(target) = targets.into_iter().next() else {
+            call.effects.bell = true;
+            return;
+        };
+        let request_id = call.ctx.take_request_id();
+        call.effects.kill_frames = vec![kill_resource_frame(&target, request_id)];
+        call.effects.kill_requests = vec![(request_id, target.clone())];
+        // Mark the close as ours so the resulting
+        // RESOURCE_CLOSED does not raise a pane-exit notice.
+        call.effects.expected_closes = vec![target];
+        return;
+    }
     // A placeholder's resource belongs to another client (a document's
-    // producer, an agent): killing its pane only closes the view.
+    // producer, an agent): killing its pane only closes the view, unasked.
     if call.focused.is_some_and(|id| call.ctx.is_surface_leaf(id)) {
         super::windows::close_view(call);
         return;
     }
-    let ActionCall {
-        ctx,
-        focused,
-        effects,
-        ..
-    } = call;
-    let Some(focused_id) = focused.cloned() else {
+    let Some(focused) = call.focused else {
         tracing::warn!("kill-pane: no focused pane to kill; dropping action");
-        effects.bell = true;
+        call.effects.bell = true;
         return;
     };
-    let request_id = ctx.take_request_id();
-    effects.kill_frames = vec![kill_resource_frame(&focused_id, request_id)];
-    effects.kill_requests = vec![(request_id, focused_id.clone())];
-    // Mark the close as ours so the resulting
-    // RESOURCE_CLOSED does not raise a pane-exit notice.
-    effects.expected_closes = vec![focused_id];
+    let confirm = super::windows::kill_pane_confirm(call.ctx, focused);
+    call.ctx.overlays.push(Box::new(confirm));
 }
 
 /// Send `command(focused pane)` as a correlated `COMMAND`, or bell with no

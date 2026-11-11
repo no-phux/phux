@@ -18,7 +18,7 @@ A capital letter means Shift: <kbd>X</kbd> is <kbd>Shift</kbd>+<kbd>x</kbd>. Whe
 |---|---|---|
 | <kbd>"</kbd> <kbd>-</kbd> | Split below | `split-pane` |
 | <kbd>%</kbd> <kbd>\|</kbd> | Split right | `split-pane` |
-| <kbd>x</kbd> | Kill pane | `kill-pane` |
+| <kbd>x</kbd> | Kill pane… | `kill-pane` |
 | <kbd>h</kbd> <kbd>j</kbd> <kbd>k</kbd> <kbd>l</kbd> | Focus left, down, up, right | `focus-direction` |
 | <kbd>H</kbd> <kbd>J</kbd> <kbd>K</kbd> <kbd>L</kbd> | Resize left, down, up, right | `resize-pane` |
 | <kbd>o</kbd> | Next pane | `next-pane` |
