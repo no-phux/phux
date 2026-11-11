@@ -3804,13 +3804,13 @@ Global flags:
 ```text
 Have your coding agent bring your terminal keys into phux
 
-Reads your tmux, zellij, Ghostty and herdr configs, translates every key binding
-it can into phux config lines, and starts your agent (claude, codex or opencode)
-with a strict prompt: write those lines into `phux config path`, run `phux
-config check` and `phux config reload`, and report what migrated, what replaced
-a phux default, which sources conflicted and what could not migrate. Inside a
-phux pane the agent opens in a split to the right; elsewhere in a new session
-named `migrate`.
+Reads your tmux, zellij, Ghostty, herdr and Rex configs, translates every key
+binding it can into phux config lines, and starts your agent (claude, codex or
+opencode) with a strict prompt: write those lines into `phux config path`, run
+`phux config check` and `phux config reload`, and report what migrated, what
+replaced a phux default, which sources conflicted and what could not migrate.
+Inside a phux pane the agent opens in a split to the right; elsewhere in a new
+session named `migrate`.
 
 `--print` prints the prompt instead, for any other agent. With nothing to
 migrate it says so and exits 0.
@@ -3829,7 +3829,7 @@ Flags:
       --print            Print the prompt and exit; start nothing.
       --source <SOURCE>  Read only this source (repeatable). Default: every
                          source found.
-                         [possible values: tmux, zellij, ghostty, herdr]
+                         [possible values: tmux, zellij, ghostty, herdr, rex]
       --json             Emit one JSON document: the sources found, the agent,
                          the config path and what was launched (with `--print`,
                          the prompt too).

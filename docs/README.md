@@ -20,7 +20,7 @@ unshipped experiment, and phone apps are not available yet. See
 
 - [Configuration file](./config.md): where the file lives, how it layers over the defaults, and when a change takes effect.
 - [Key bindings](./keys.md): change the prefix, rebind or unbind keys, and see what's in effect.
-- [Migrate your config](./migrate.md): your coding agent moves your tmux, zellij, Ghostty or herdr keys into phux.
+- [Migrate your config](./migrate.md): your coding agent moves your tmux, zellij, Ghostty, herdr or Rex keys into phux.
 - [Themes](./themes.md): install, pick, and write colour themes.
 - [Status bar and sidebar](./status-bar.md): what the bar and the sidebar show, and how to change it.
 - [Hooks](./hooks.md): run a command when something happens.

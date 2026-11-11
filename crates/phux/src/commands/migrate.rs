@@ -1,4 +1,4 @@
-//! `phux migrate`: read the user's tmux, zellij, Ghostty and herdr configs,
+//! `phux migrate`: read the user's tmux, zellij, Ghostty, herdr and Rex configs,
 //! decide every line, and hand the result to their coding agent as a strict
 //! prompt, in a pane beside them. phux translates; the agent writes, checks,
 //! reloads and reports. Nothing here edits the phux config itself.
@@ -46,7 +46,7 @@ pub(crate) fn run(args: MigrateArgs, socket: Option<PathBuf>) -> ExitCode {
         if json {
             return crate::output::json(&document(&found, None, &config, None, 0));
         }
-        let message = "Nothing to migrate: no tmux, zellij, Ghostty or herdr config found.";
+        let message = "Nothing to migrate: no tmux, zellij, Ghostty, herdr or Rex config found.";
         if print {
             info!("{message}");
         } else {
@@ -156,6 +156,7 @@ const fn source_id(kind: crate::commands::MigrateSource) -> &'static str {
         MigrateSource::Zellij => "zellij",
         MigrateSource::Ghostty => "ghostty",
         MigrateSource::Herdr => "herdr",
+        MigrateSource::Rex => "rex",
     }
 }
 

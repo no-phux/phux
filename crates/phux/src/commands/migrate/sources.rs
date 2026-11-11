@@ -163,6 +163,11 @@ pub(super) fn discover(home: &Path, xdg: Option<&Path>, only: &[MigrateSource]) 
     {
         out.push(raw::herdr(&path));
     }
+    if wanted(MigrateSource::Rex)
+        && let Some(path) = first(vec![config.join("rex/init.lua")])
+    {
+        out.push(raw::rex(&path));
+    }
     for source in &mut out {
         last_line_wins(source, home);
     }
