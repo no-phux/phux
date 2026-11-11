@@ -26,12 +26,20 @@ pub(in crate::attach) fn new_worktree(
         return;
     };
     let place = spawn_place(resolved, focused, panes);
-    let created = match (place.host, place.directory) {
-        (Some(host), _) => Err(format!("{host} is another machine; run it there")),
-        (None, None) => Err("the focused pane reports no directory".to_owned()),
-        (None, Some(directory)) => {
+    // The command must reach the server this window is attached to, and its
+    // repository must be on this machine: only a local socket is both.
+    let socket = match ctx.control_dial {
+        Some(crate::attach::Dial::Uds(path)) => Ok(Some(path.as_path())),
+        Some(_) => Err("this session is on another machine; run it there".to_owned()),
+        None => Ok(None),
+    };
+    let created = match (socket, place.host, place.directory) {
+        (Err(why), _, _) => Err(why),
+        (_, Some(host), _) => Err(format!("{host} is another machine; run it there")),
+        (_, None, None) => Err("the focused pane reports no directory".to_owned()),
+        (Ok(socket), None, Some(directory)) => {
             let program = std::env::current_exe().unwrap_or_else(|_| "phux".into());
-            create(&program, &branch, &directory)
+            create(&program, socket, &branch, &directory)
         }
     };
     match created {
@@ -46,8 +54,17 @@ pub(in crate::attach) fn new_worktree(
 /// and return the session it bound.
 // ponytail: blocks the UI for as long as `git worktree add` takes; move it
 // to a task if a large repository makes that noticeable.
-fn create(program: &Path, branch: &str, directory: &str) -> Result<String, String> {
-    let out = Command::new(program)
+fn create(
+    program: &Path,
+    socket: Option<&Path>,
+    branch: &str,
+    directory: &str,
+) -> Result<String, String> {
+    let mut command = Command::new(program);
+    if let Some(socket) = socket {
+        command.arg("--socket").arg(socket);
+    }
+    let out = command
         .args(["worktree", "new", branch, "--repo", directory, "--json"])
         .stdin(Stdio::null())
         .output()
@@ -79,10 +96,19 @@ mod tests {
     fn the_session_comes_from_the_reply_and_a_failure_keeps_its_reason() {
         let dir = tempfile::tempdir().unwrap();
         let ok = script(dir.path(), r#"echo "{\"session\":\"$3-in-$5\"}""#);
-        assert_eq!(create(&ok, "feat", "/repo"), Ok("feat-in-/repo".to_owned()));
+        assert_eq!(
+            create(&ok, None, "feat", "/repo"),
+            Ok("feat-in-/repo".to_owned())
+        );
+        // The attached server's socket goes first, so the session is bound there.
+        let at = script(dir.path(), r#"echo "{\"session\":\"$1 $2 $5\"}""#);
+        assert_eq!(
+            create(&at, Some(Path::new("/tmp/s.sock")), "feat", "/repo"),
+            Ok("--socket /tmp/s.sock feat".to_owned())
+        );
         let bad = script(dir.path(), "echo 'fatal: not a git repository' >&2; exit 1");
         assert_eq!(
-            create(&bad, "feat", "/repo"),
+            create(&bad, None, "feat", "/repo"),
             Err("fatal: not a git repository".to_owned())
         );
     }
