@@ -159,6 +159,10 @@ pub struct SidebarCfg {
     /// Seconds between hosts provider runs. Default `10`; at least 2.
     #[serde(rename = "hosts-refresh-secs")]
     pub hosts_refresh_secs: u64,
+    /// List sessions most recently used first instead of in the arranged
+    /// order.
+    #[serde(rename = "recent-first")]
+    pub recent_first: bool,
 }
 
 impl Default for SidebarCfg {
@@ -171,6 +175,7 @@ impl Default for SidebarCfg {
             hosts: true,
             hosts_provider: Vec::new(),
             hosts_refresh_secs: 10,
+            recent_first: false,
         }
     }
 }

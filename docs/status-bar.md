@@ -149,7 +149,13 @@ width = 20            # columns; 0 adapts to a quarter of the terminal, 28 to 40
 position = "left"     # or "right"
 agents-share = 50     # percent of the height for Agents; 0 drops the panel
 hosts = true          # group sessions by machine
+recent-first = false  # true lists the session you used last first
 ```
+
+With `recent-first`, the attached machine's sessions are ordered by when
+each was last attached to or typed into, instead of the order you arranged
+them in. Sessions of one project stay together, ordered that way inside
+their group. It needs a server new enough to report it.
 
 Agents and Sessions split the height at a fixed line, so gaining or
 losing an agent never moves the Sessions panel. Plugins can add fixed
