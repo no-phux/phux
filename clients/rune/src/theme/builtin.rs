@@ -4,7 +4,7 @@ use super::Theme;
 
 /// Where the Catppuccin pair sits in `THEMES`.
 pub(super) const MOCHA: usize = 3;
-pub(super) const LATTE: usize = 18;
+pub(super) const LATTE: usize = 30;
 
 /// Built in, in picker order: dark themes, then light.
 pub const THEMES: &[Theme] = &[
@@ -242,6 +242,163 @@ pub const THEMES: &[Theme] = &[
         cursor: 0xcecdc3,
         accent: 0x4385be,
     },
+    // Omarchy's themes (omarchy.org), its Ghostty template over colors.toml.
+    Theme {
+        id: "ethereal",
+        name: "Ethereal",
+        dark: true,
+        ansi: [
+            0x060b1e, 0xed5b5a, 0x92a593, 0xe9bb4f, 0x7d82d9, 0xc89dc1, 0xa3bfd1, 0xffcead,
+            0x6d7db6, 0xfaaaa9, 0xc4cfc4, 0xf7dc9c, 0xc2c4f0, 0xead7e7, 0xdfeaf0, 0xffcead,
+        ],
+        foreground: 0xffcead,
+        background: 0x060b1e,
+        cursor: 0xffcead,
+        accent: 0x7d82d9,
+    },
+    Theme {
+        id: "hackerman",
+        name: "Hackerman",
+        dark: true,
+        ansi: [
+            0x0b0c16, 0x50f872, 0x4fe88f, 0x50f7d4, 0x829dd4, 0x86a7df, 0x7cf8f7, 0xddf7ff,
+            0x2d3450, 0x85ff9d, 0x9cf7c2, 0xa4ffec, 0xc4d2ed, 0xcddbf4, 0xd1fffe, 0xddf7ff,
+        ],
+        foreground: 0xddf7ff,
+        background: 0x0b0c16,
+        cursor: 0xddf7ff,
+        accent: 0x82fb9c,
+    },
+    Theme {
+        id: "jade-horse",
+        name: "Jade Horse",
+        dark: true,
+        ansi: [
+            0x142620, 0xd88d91, 0x8bcbb1, 0xc5cc91, 0x96b7d0, 0xb7a1c8, 0x86c7c5, 0xdfede5,
+            0x64887b, 0xe6a6aa, 0xa7dfc5, 0xdce1ac, 0xb0cde3, 0xcfbce0, 0xa2dcda, 0xf0faf4,
+        ],
+        foreground: 0xdfede5,
+        background: 0x142620,
+        cursor: 0xf0faf4,
+        accent: 0x8bcbb1,
+    },
+    Theme {
+        id: "last-horizon",
+        name: "Last Horizon",
+        dark: true,
+        ansi: [
+            0x0c0b0c, 0xc38b7b, 0x87a9b0, 0x6b5e73, 0xb59790, 0xc4d8e2, 0xa5a0b6, 0xfafcfb,
+            0x584e51, 0xc38b7b, 0x87a9b0, 0x6b5e73, 0xb59790, 0xc4d8e2, 0xa5a0b6, 0xe2dddc,
+        ],
+        foreground: 0xfafcfb,
+        background: 0x0c0b0c,
+        cursor: 0xe2dddc,
+        accent: 0xb59790,
+    },
+    Theme {
+        id: "lumon",
+        name: "Lumon",
+        dark: true,
+        ansi: [
+            0x16242d, 0x4d86b0, 0x5e95bc, 0x6fa4c9, 0x6fb8e3, 0x8bc9eb, 0xb4e4f6, 0xd6e2ee,
+            0x304860, 0x73a6cb, 0x86b7d8, 0x9dcae5, 0xf2fcff, 0xb1d8ee, 0xd1eef8, 0xf2fcff,
+        ],
+        foreground: 0xd6e2ee,
+        background: 0x16242d,
+        cursor: 0xf2fcff,
+        accent: 0x8bc9eb,
+    },
+    Theme {
+        id: "matte-black",
+        name: "Matte Black",
+        dark: true,
+        ansi: [
+            0x121212, 0xd35f5f, 0xffc107, 0xb91c1c, 0xe68e0d, 0xd35f5f, 0xbebebe, 0xbebebe,
+            0x333333, 0xb91c1c, 0xffc107, 0xb90a0a, 0xf59e0b, 0xb91c1c, 0xeaeaea, 0xbebebe,
+        ],
+        foreground: 0xbebebe,
+        background: 0x121212,
+        cursor: 0xbebebe,
+        accent: 0xe68e0d,
+    },
+    Theme {
+        id: "miasma",
+        name: "Miasma",
+        dark: true,
+        ansi: [
+            0x222222, 0x685742, 0x5f875f, 0xb36d43, 0x78824b, 0xbb7744, 0xc9a554, 0xc2c2b0,
+            0x666666, 0x685742, 0x5f875f, 0xb36d43, 0x78824b, 0xbb7744, 0xc9a554, 0xc2c2b0,
+        ],
+        foreground: 0xc2c2b0,
+        background: 0x222222,
+        cursor: 0xc2c2b0,
+        accent: 0x78824b,
+    },
+    Theme {
+        id: "retro-82",
+        name: "Retro 82",
+        dark: true,
+        ansi: [
+            0x05182e, 0xf85525, 0x028391, 0xe97b3c, 0x3f8f8a, 0x3f8f8a, 0x8cbfb8, 0xf6dcac,
+            0x2a6b78, 0xf85525, 0x028391, 0xe97b3c, 0xfaa968, 0x3f8f8a, 0x8cbfb8, 0xf6dcac,
+        ],
+        foreground: 0xf6dcac,
+        background: 0x05182e,
+        cursor: 0xf6dcac,
+        accent: 0xfaa968,
+    },
+    Theme {
+        id: "ristretto",
+        name: "Ristretto",
+        dark: true,
+        ansi: [
+            0x2c2525, 0xfd6883, 0xadda78, 0xf9cc6c, 0xf38d70, 0xa8a9eb, 0x85dacc, 0xe6d9db,
+            0x72696a, 0xff8297, 0xc8e292, 0xfcd675, 0xf8a788, 0xbebffd, 0x9bf1e1, 0xe6d9db,
+        ],
+        foreground: 0xe6d9db,
+        background: 0x2c2525,
+        cursor: 0xe6d9db,
+        accent: 0xf38d70,
+    },
+    Theme {
+        id: "solitude",
+        name: "Solitude",
+        dark: true,
+        ansi: [
+            0x101315, 0x565d60, 0x9fa5a9, 0xd9dbdc, 0x798186, 0xaeaeae, 0x707070, 0xcacccc,
+            0x4b4e55, 0xde6145, 0x343d41, 0xc9c2b4, 0x5d6367, 0x9a9a9a, 0x707070, 0xa5aeb4,
+        ],
+        foreground: 0xcacccc,
+        background: 0x101315,
+        cursor: 0xa5aeb4,
+        accent: 0x798186,
+    },
+    Theme {
+        id: "starship",
+        name: "Starship",
+        dark: true,
+        ansi: [
+            0x1c1c1e, 0xff5f4a, 0xff9f0a, 0xffc27a, 0x8fb8de, 0xff8fa3, 0xa6dcef, 0xf5f5f7,
+            0x8e8e93, 0xff8373, 0xffb340, 0xffd8a8, 0xb5d0ea, 0xffb3c1, 0xcdeefa, 0xffffff,
+        ],
+        foreground: 0xf5f5f7,
+        background: 0x1c1c1e,
+        cursor: 0xffffff,
+        accent: 0xff9f0a,
+    },
+    Theme {
+        id: "vantablack",
+        name: "Vantablack",
+        dark: true,
+        ansi: [
+            0x000000, 0xa4a4a4, 0xb6b6b6, 0xcecece, 0x8d8d8d, 0x9b9b9b, 0xb0b0b0, 0xffffff,
+            0x7a7a7a, 0xa4a4a4, 0xb6b6b6, 0xcecece, 0x8d8d8d, 0x9b9b9b, 0xb0b0b0, 0xffffff,
+        ],
+        foreground: 0xffffff,
+        background: 0x000000,
+        cursor: 0xffffff,
+        accent: 0x8d8d8d,
+    },
     Theme {
         id: "catppuccin-latte",
         name: "Catppuccin Latte",
@@ -345,5 +502,32 @@ pub const THEMES: &[Theme] = &[
         background: 0xfdf6e3,
         cursor: 0x4f5d65,
         accent: 0x3a94c5,
+    },
+    // Omarchy's light themes.
+    Theme {
+        id: "lupine",
+        name: "Lupine",
+        dark: false,
+        ansi: [
+            0xfafafa, 0xc900c4, 0x4a2fd0, 0x026fde, 0x3264eb, 0x8a4ad7, 0x0c67de, 0x212121,
+            0x9e9e9e, 0xf930fb, 0x9f85e0, 0x358fff, 0x5482ff, 0xb363ff, 0x3986ff, 0x000000,
+        ],
+        foreground: 0x212121,
+        background: 0xfafafa,
+        cursor: 0x000000,
+        accent: 0x3264eb,
+    },
+    Theme {
+        id: "white",
+        name: "White",
+        dark: false,
+        ansi: [
+            0xffffff, 0x2a2a2a, 0x3a3a3a, 0x4a4a4a, 0x1a1a1a, 0x2e2e2e, 0x3e3e3e, 0x000000,
+            0x808080, 0x2a2a2a, 0x3a3a3a, 0x4a4a4a, 0x1a1a1a, 0x2e2e2e, 0x3e3e3e, 0x000000,
+        ],
+        foreground: 0x000000,
+        background: 0xffffff,
+        cursor: 0x000000,
+        accent: 0x6e6e6e,
     },
 ];
