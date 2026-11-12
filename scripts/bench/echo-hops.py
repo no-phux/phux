@@ -4,7 +4,12 @@
 Lines are `pid <TAB> hop <TAB> unix_nanos`. One quiet pty-echo run is a
 sequence of keystrokes separated by a gap. Hops, in path order:
 
-    stdin send server_recv lane pty_write pty_read main frame_send client_recv stdout
+    stdin send server_recv lane pty_write pty_read main frame_send client_recv build stdout
+
+The terminal UI and Rune share the client hops. In Rune, `stdin` is the
+key event, `send` the input handed to the runtime, `client_recv` the
+runtime waking the UI, `build` the focused pane building the new frame
+(Rune only), and `stdout` the first drawn frame that shows it.
 
 `lane` is absent when the receive task wrote the PTY itself. Each sample is
 the delta from the previous hop that did occur.
@@ -30,6 +35,7 @@ ORDER = (
     "main",
     "frame_send",
     "client_recv",
+    "build",
     "stdout",
 )
 def percentile(values: list[int], pct: float) -> int:

@@ -74,6 +74,7 @@ struct Wake(Waker);
 
 impl Listener for Wake {
     fn on_activity(&self) {
+        phux_perf::echo_hop::record("client_recv");
         (self.0)();
     }
 }

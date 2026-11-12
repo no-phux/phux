@@ -45,6 +45,18 @@ perf-echo flood="full" cols="188" rows="48" iters="60":
     cargo build --release -p phux
     bash scripts/bench/tui-load.sh target/release/phux "{{flood}}-{{cols}}x{{rows}}" {{flood}} {{cols}} {{rows}} {{iters}}
 
+# Rune's keystroke-echo hops (clients/rune/DEVELOP.md#keystroke-latency):
+# headless phux-rune typing into an isolated release server, frames paced at
+# `fps`. Prints p50/p99 per hop and key event to drawn frame.
+#   just perf-rune-echo             # 60 Hz pacing, 200 keys
+#   just perf-rune-echo 1000        # client and server work alone
+[group('perf')]
+[doc('Rune keystroke-echo hops against an isolated release server.')]
+perf-rune-echo fps="60" keys="200":
+    cargo build --release -p phux
+    cargo build --release --locked --manifest-path clients/rune/Cargo.toml
+    bash scripts/bench/rune-echo.sh target/release/phux clients/rune/target/release/phux-rune {{keys}} 120 {{fps}}
+
 
 # Cyclomatic complexity of production code over a CCN ceiling — advisory.
 # clippy.toml is the CI gate; this is lizard via uvx. Not in `ci`.

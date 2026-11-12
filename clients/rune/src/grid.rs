@@ -390,6 +390,9 @@ pub fn paint(
         build(frame, focused, blink_on, metrics, selection)
     });
     if built {
+        if focused {
+            perf::built(frame.last_seq);
+        }
         perf::PREPARE_PATCHED.incr();
     } else {
         perf::PREPARE_REUSED.incr();
