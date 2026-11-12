@@ -287,12 +287,17 @@ impl ServerState {
         writer: Option<ClientId>,
     ) -> Vec<ClientId> {
         // Equal bytes return early before any broadcast or write.
-        let unchanged = self
-            .metadata
-            .get(scope, key)
-            .is_some_and(|prev| prev == value);
-        if unchanged {
+        let prev = self.metadata.get(scope, key);
+        if prev.as_ref() == Some(&value) {
             return Vec::new();
+        }
+        // Every writer of the agent record (detector, program status, a
+        // client's SET_METADATA, the satellite mirror) stores it here, so
+        // this is where an absent phone hears that an agent finished.
+        if let Scope::Resource(pane) = scope
+            && key == phux_protocol::wire::frame::RESOURCE_AGENT_KEY
+        {
+            crate::push::on_agent_record(self, pane, prev.as_deref(), &value);
         }
         let delivered = self.broadcast_metadata_change(scope, key, Some(&value), writer);
         let _ = self.metadata.set(scope, key, value);

@@ -220,13 +220,14 @@ pub const APPROVAL_KEY_PREFIX: &str = "phux.approval/v1/";
 pub const APPROVAL_DECIDE_KEY_PREFIX: &str = "phux.approval.decide/v1/";
 
 /// `Global`-scope key family a device registers a background-push grant
-/// under (ADR-0155, `docs/protocol.md#commands-events-resources`).
+/// under (ADR-0155, `docs/protocol/host-operations.md#background-push`).
 ///
 /// `phux.push/v1/<device>` holds a client-owned UTF-8 JSON object naming the
 /// gateway the device trusts, the bearer secret that gateway minted for it,
 /// and the id the device knows this server by. The server posts a
 /// content-free notice there when an agent asks while the connection that
-/// wrote the key is gone.
+/// wrote the key is gone, and, when the object says `"finished": true`, when
+/// an agent finishes.
 pub const PUSH_GRANT_KEY_PREFIX: &str = "phux.push/v1/";
 
 /// A decision's value: release the held action once.
