@@ -30,6 +30,25 @@ fn ensure_document_is_an_availability_result_not_a_handshake_claim() {
     assert!(doc.get("server_version").is_none());
 }
 
+/// A umask of 002 (the default where each user has a private group) must
+/// not leave the runtime directory group-writable: the server refuses to
+/// put its socket in one.
+#[test]
+fn spawn_lock_makes_a_private_runtime_dir_under_a_group_writable_umask() {
+    use std::os::unix::fs::PermissionsExt as _;
+    let dir = tempfile::tempdir().expect("tempdir");
+    let runtime = dir.path().join("run");
+    let before = rustix::process::umask(rustix::fs::Mode::from_raw_mode(0o002));
+    let lock = SpawnLock::acquire(&runtime.join("spawn.lock"));
+    rustix::process::umask(before);
+    assert!(lock.0.is_some());
+    let mode = std::fs::metadata(&runtime)
+        .expect("runtime dir")
+        .permissions()
+        .mode();
+    assert_eq!(mode & 0o777, 0o700);
+}
+
 #[test]
 fn spawn_lock_refuses_symlinks_and_fifos() {
     let dir = tempfile::tempdir().expect("tempdir");

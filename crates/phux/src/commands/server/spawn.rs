@@ -426,7 +426,11 @@ impl SpawnLock {
         let Some(parent) = path.parent() else {
             return Self(None);
         };
-        if std::fs::create_dir_all(parent).is_err() {
+        // Private from the start: the server refuses a socket directory that
+        // a umask of 002 left group-writable.
+        let mut dirs = std::fs::DirBuilder::new();
+        std::os::unix::fs::DirBuilderExt::mode(&mut dirs, 0o700);
+        if dirs.recursive(true).create(parent).is_err() {
             return Self(None);
         }
         let Ok(file) = rustix::fs::open(
