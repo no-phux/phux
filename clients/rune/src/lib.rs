@@ -6,6 +6,7 @@
 mod activity;
 mod addressable;
 mod alerts;
+mod askpass;
 mod creature;
 mod desk;
 mod diag;
@@ -41,6 +42,10 @@ use rune::{AppSpec, Chrome};
 const APP_ID: &str = "sh.phux.rune";
 
 pub fn run_desktop() {
+    // ssh runs this executable to ask for a password or 2FA code.
+    if let Some(code) = askpass::answer() {
+        std::process::exit(code);
+    }
     // The updater asks a new binary this before trusting it can run here.
     if rune::extra_args().iter().any(|arg| arg == "--version") {
         println!("phux-rune {}", updates::VERSION);

@@ -2,6 +2,11 @@
 //! hosts UDP cannot reach. ssh authenticates; the far server sees its own
 //! user on its own socket, so no token or pin is involved.
 
+use std::path::Path;
+use std::process::Stdio;
+
+use tokio::io::AsyncReadExt as _;
+
 use super::io::Io;
 
 /// Refuse a destination or program ssh would read as an option.
@@ -41,7 +46,7 @@ pub fn control_options() -> Vec<String> {
     client_options(phux_config_core::instance::ssh_control_dir(false).as_deref())
 }
 
-fn client_options(dir: Option<&std::path::Path>) -> Vec<String> {
+fn client_options(dir: Option<&Path>) -> Vec<String> {
     dir.map_or_else(Vec::new, |dir| {
         [
             format!("ControlPath={}/%C", dir.display()),
@@ -52,6 +57,106 @@ fn client_options(dir: Option<&std::path::Path>) -> Vec<String> {
         .flat_map(|option| ["-o".to_owned(), option])
         .collect()
     })
+}
+
+/// How long phux's ssh master outlives its last client: enough for the rest
+/// of an enrollment or attach and a quick reconnect, short enough that a
+/// password or 2FA login does not stay usable all day.
+const CONTROL_PERSIST_SECS: u32 = 300;
+
+/// `-o` options for the login that becomes phux's ssh master in `dir`.
+#[must_use]
+pub fn master_options(dir: &Path) -> Vec<String> {
+    [
+        format!("ControlPath={}/%C", dir.display()),
+        // `auto`, not `yes`: over a dead master's stale socket `yes` gives
+        // up multiplexing and leaves the `-N` login running for good, while
+        // `auto` removes the socket and takes over.
+        "ControlMaster=auto".to_owned(),
+        format!("ControlPersist={CONTROL_PERSIST_SECS}"),
+        // The master carries the keepalive for every client riding it.
+        "ServerAliveInterval=15".to_owned(),
+        "ServerAliveCountMax=3".to_owned(),
+        // A network that drops packets fails in seconds, not the system's
+        // TCP timeout, so a reconnect keeps its count.
+        "ConnectTimeout=10".to_owned(),
+        "ClearAllForwardings=yes".to_owned(),
+    ]
+    .into_iter()
+    .flat_map(|option| ["-o".to_owned(), option])
+    .collect()
+}
+
+/// Set, to `1`, in the environment of the askpass program ssh runs for
+/// [`Target::ssh_askpass`](super::Target::ssh_askpass): how a desktop
+/// client's own executable knows to answer one prompt and exit.
+pub const ASKPASS_ENV: &str = "PHUX_ASKPASS";
+
+/// Log in to `destination` through `askpass` and keep the login as phux's
+/// ssh master, as the CLI does from a terminal, so the `BatchMode` lane
+/// rides it. Does nothing when a master is up or phux has no control
+/// directory.
+///
+/// `Err` is final, worded for the person: the sign-in was cancelled or
+/// refused, or ssh refused the host key. Asking again on the next attempt
+/// would bring the dialog straight back. Failing to reach the host is left
+/// to the dial, so a network that is down is waited out without a prompt.
+pub(super) async fn askpass_login(destination: &str, askpass: &Path) -> Result<(), String> {
+    let Some(dir) = phux_config_core::instance::ssh_control_dir(true) else {
+        return Ok(());
+    };
+    let alive = tokio::process::Command::new(program())
+        .args(["-o", &format!("ControlPath={}/%C", dir.display())])
+        .args(["-O", "check", "--", destination])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .await
+        .is_ok_and(|status| status.success());
+    if alive {
+        return Ok(());
+    }
+    let Ok(mut child) = tokio::process::Command::new(program())
+        .args(master_options(&dir))
+        // `-f` backgrounds once authenticated; `-N` runs nothing remotely.
+        .args(["-f", "-N", "--", destination])
+        .env("SSH_ASKPASS", askpass)
+        .env("SSH_ASKPASS_REQUIRE", "force")
+        .env(ASKPASS_ENV, "1")
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .kill_on_drop(true)
+        .spawn()
+    else {
+        return Ok(());
+    };
+    let stderr = child.stderr.take();
+    if child.wait().await.is_ok_and(|status| status.success()) {
+        // The master forked off holding stderr; nothing to read.
+        return Ok(());
+    }
+    let mut said = String::new();
+    if let Some(mut stderr) = stderr {
+        let _ = stderr.read_to_string(&mut said).await;
+    }
+    login_refusal(&said, destination).map_or(Ok(()), Err)
+}
+
+/// The final reason in a failed login's stderr, if it has one.
+fn login_refusal(stderr: &str, destination: &str) -> Option<String> {
+    if let Some(remedy) = host_key_remedy(stderr, destination) {
+        return Some(format!("ssh refused {destination}'s host key: {remedy}"));
+    }
+    stderr.contains("Permission denied").then(|| {
+        format!("the ssh sign-in to {destination} was cancelled or refused; connect again to retry")
+    })
+}
+
+/// The ssh program: `$PHUX_SSH` when set, otherwise `ssh`.
+fn program() -> std::ffi::OsString {
+    std::env::var_os("PHUX_SSH").unwrap_or_else(|| "ssh".into())
 }
 
 /// What ssh prints when it refuses a host key: a changed or revoked one, or
@@ -120,8 +225,7 @@ fn remove_command(stderr: &str) -> String {
 
 fn command(destination: &str, remote_phux: &str) -> std::io::Result<tokio::process::Command> {
     validate(destination, remote_phux)?;
-    let program = std::env::var_os("PHUX_SSH").unwrap_or_else(|| "ssh".into());
-    let mut command = tokio::process::Command::new(program);
+    let mut command = tokio::process::Command::new(program());
     command
         // A password or 2FA login done once in the foreground (`phux attach
         // --ssh`, `phux host add`) left a master this run rides.
@@ -235,6 +339,17 @@ Host key verification failed.";
             host_key_remedy("Permission denied (publickey).", "box"),
             None
         );
+    }
+
+    #[test]
+    fn only_a_cancelled_or_refused_sign_in_ends_the_session() {
+        let denied = "me@box: Permission denied (publickey,keyboard-interactive).";
+        assert!(login_refusal(denied, "box").is_some_and(|why| why.contains("cancelled")));
+        let host_key = "Host key verification failed.";
+        assert!(login_refusal(host_key, "box").is_some_and(|why| why.contains("host key")));
+        // An unreachable host walks the ladder, so a down network heals.
+        let unreachable = "ssh: connect to host box port 22: No route to host";
+        assert_eq!(login_refusal(unreachable, "box"), None);
     }
 
     #[test]

@@ -84,6 +84,11 @@ pub struct Target {
     /// what a registry entry enrolled, else [`TlsClientIdentity::None`].
     /// Never read from the environment.
     pub client_identity: TlsClientIdentity,
+    /// The program ssh asks for a password, 2FA code or key tap when no
+    /// terminal can (`SSH_ASKPASS`): a desktop client's dialog. With one, an
+    /// ssh target logs in through it before each dial; without one, ssh
+    /// never prompts. Never read from the environment.
+    pub ssh_askpass: Option<PathBuf>,
 }
 
 impl Target {
@@ -124,6 +129,7 @@ impl Target {
             token: None,
             tls_server_name: None,
             client_identity: TlsClientIdentity::None,
+            ssh_askpass: None,
         }
     }
 
@@ -140,6 +146,7 @@ impl Target {
             token: None,
             tls_server_name: None,
             client_identity: TlsClientIdentity::None,
+            ssh_askpass: None,
         }
     }
 
@@ -156,6 +163,7 @@ impl Target {
             token: None,
             tls_server_name: None,
             client_identity: TlsClientIdentity::None,
+            ssh_askpass: None,
         }
     }
 
@@ -251,6 +259,7 @@ impl From<Resolved> for Target {
             token: None,
             tls_server_name: resolved.tls_server_name,
             client_identity: resolved.client_identity,
+            ssh_askpass: None,
         }
     }
 }
@@ -333,6 +342,9 @@ mod ssh;
 mod wsl;
 
 pub(crate) use establish::{DialFailure, establish};
-pub use ssh::{HOST_KEY_REFUSED, control_options as ssh_control_options, host_key_remedy};
+pub use ssh::{
+    ASKPASS_ENV, HOST_KEY_REFUSED, control_options as ssh_control_options, host_key_remedy,
+    master_options as ssh_master_options,
+};
 
 pub use driver::run_session;
