@@ -48,10 +48,12 @@ Every scalar knob with its shipped default, serialized from the schema itself, p
 | `chrome.compact-cols` | `64` |
 | `chrome.compact-rows` | `18` |
 | `chrome.min-pane-cols` | `40` |
+| `chrome.new-tab-after-current` | `false` |
 | `defaults.agent-log-bytes` | `4194304` |
 | `defaults.approval-max-pending` | `64` |
 | `defaults.approval-max-pending-total` | `1024` |
 | `defaults.approval-ttl-secs` | `120` |
+| `defaults.browser-shim` | `false` |
 | `defaults.clipboard-write` | `"allow"` |
 | `defaults.cwd-inheritance` | `"inherit-focused"` |
 | `defaults.event-journal-bytes` | `1048576` |
@@ -64,6 +66,7 @@ Every scalar knob with its shipped default, serialized from the schema itself, p
 | `defaults.retain-on-exit-max-secs` | `86400` |
 | `defaults.retain-on-exit-secs` | `600` |
 | `defaults.session-name-template` | `"${cwd-basename}"` |
+| `defaults.shell-integration` | `false` |
 | `defaults.term` | `"xterm-256color"` |
 | `defaults.window-size` | `"smallest"` |
 | `experimental.predictive-echo` | unset — the dial decides: on when the attach leaves the machine, off otherwise. `true` / `false` force it on every transport |
@@ -153,6 +156,19 @@ agent-log-bytes = 4194304
 # 67108864 bytes are the maximums.
 event-journal-entries = 4096
 event-journal-bytes = 1048576
+
+# Have new panes' shells (zsh, bash, fish) mark their prompts and commands, so
+# `phux wait --output-only`, copy mode's last-output key and the exit widget
+# work without a line in your shell's startup file. Read when the server
+# starts. `phux config shell-integration SHELL` prints the same snippet to load
+# yourself instead.
+shell-integration = false
+
+# On a machine with no screen, a program that opens a browser (a sign-in,
+# `gh auth login`) goes nowhere. With this on, panes get a stand-in `BROWSER`
+# that prints the link in the pane and copies it to your clipboard. Nothing
+# opens by itself. Read when the server starts.
+browser-shim = false
 
 # Keep a pane inspectable after its program exits: its exit status, last
 # screen, and scrollback stay until they expire or are closed. Off by
@@ -736,10 +752,14 @@ right = [
 # threshold, a very large value pins the opposite, and both are
 # legitimate configurations rather than errors.
 #
+# `new-tab-after-current`: a new tab opens right after the one in view
+# instead of at the end of the strip.
+#
 # [chrome]
 # compact-cols = 64
 # compact-rows = 18
 # min-pane-cols = 40
+# new-tab-after-current = false
 
 # Agent notifications. The TUI
 # posts one when an agent becomes blocked or asks for you, and when an

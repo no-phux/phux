@@ -250,6 +250,24 @@ fn badges_move_right_widgets_instead_of_cutting_them() {
     assert!(row.contains("[ FROZEN ]"), "{row:?}");
 }
 
+/// A notice toast sits left of the key chip whole; the chip never cuts the
+/// end off the message.
+#[test]
+fn a_notice_moves_left_of_the_key_chip_instead_of_being_cut() {
+    let mut p = windows_bar();
+    p.set_windows(wins(&[("a", true)]));
+    assert!(p.set_key_mode(Some("resize")));
+    assert!(p.set_notice(
+        Notice::info("input: wheel released"),
+        std::time::Instant::now()
+    ));
+    let (buf, _, _) = p
+        .compose_buffer(BarInset::NONE, 40, 10, &ctx_default(""))
+        .expect("composes");
+    let row: String = (0..40).map(|x| buf[(x, 0)].symbol().to_owned()).collect();
+    assert!(row.ends_with(" input: wheel released   resize "), "{row:?}");
+}
+
 /// The active key mode rides the same chip; the pending prefix outranks
 /// it, and clearing either leaves the other showing.
 #[test]

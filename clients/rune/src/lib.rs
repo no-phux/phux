@@ -83,6 +83,12 @@ pub fn run_desktop() {
             drag_regions: true,
         })
         .standard_menus()
+        // Transparent so the glass slider can show Liquid Glass behind the
+        // chrome; the root paints it solid until glass is turned up.
+        .window_options(rune::WindowOptions {
+            transparent: cfg!(target_os = "macos"),
+            ..rune::WindowOptions::default()
+        })
         // Rune's native host drops on_modifiers; keep logical events.
         .modifier_keys()
         .on_ime(|desk: &mut Desk, event, _| desk.ime(event))

@@ -122,6 +122,21 @@ impl<W: crate::attach::RenderSink> EventEnv<'_, '_, W> {
         let layout_changed = matches!(ev, InputEvent::Key(_) | InputEvent::Paste(_))
             && clear_attention_on_input(self.panes, &pane);
         let acknowledged = matches!(ev, InputEvent::Paste(_));
+        // Synchronized input: keys and pastes also go to the tab's other
+        // panes that can take them. Mouse and focus stay with the one pane.
+        let shared = if matches!(ev, InputEvent::Key(_) | InputEvent::Paste(_)) {
+            crate::attach::sync_input::others(self.ctx.workspace, &pane)
+        } else {
+            Vec::new()
+        };
+        for other in shared {
+            let closed = crate::attach::pane_state::pane_exited(self.panes, &other)
+                || crate::attach::pane_state::pane_satellite_down(self.panes, &other);
+            if !closed {
+                self.send_terminal_input(other, ev.clone(), acknowledged)
+                    .await?;
+            }
+        }
         self.send_terminal_input(pane, ev, acknowledged).await?;
         Ok(layout_changed)
     }

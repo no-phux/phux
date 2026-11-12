@@ -193,3 +193,47 @@ fn start_using_phux_closes_it() {
     assert!(!rt.state.onboarding.open);
     assert!(!has(&rt, "onboarding"));
 }
+
+#[test]
+fn the_glass_slider_steps_and_clamps() {
+    let mut rt = window(Step::Look);
+    assert_eq!(
+        has(&rt, "look-glass"),
+        cfg!(target_os = "macos"),
+        "macOS only"
+    );
+    rt.state.set_glass(250);
+    assert_eq!(rt.state.settings.glass, 100, "clamped");
+    rt.state.set_glass(0);
+    if !cfg!(target_os = "macos") {
+        assert_eq!(
+            rt.state.glass(),
+            0.0,
+            "no glass without a transparent window"
+        );
+        return;
+    }
+    rt.frame(0.1);
+    assert!(rt.accessibility_action("look-glass", Action::Focus, None));
+    for key in [Key::Right, Key::Right] {
+        rt.key(KeyEvent {
+            key,
+            mods: Mods::default(),
+        });
+        rt.frame(0.2);
+    }
+    assert_eq!(rt.state.settings.glass, 10, "arrows step by 5");
+    assert!((rt.state.glass() - 0.10).abs() < 1e-6);
+    assert_eq!(
+        rt.state.onboarding.step,
+        Step::Look,
+        "arrows don't change step"
+    );
+    rt.key(KeyEvent {
+        key: Key::End,
+        mods: Mods::default(),
+    });
+    rt.frame(0.3);
+    assert_eq!(rt.state.settings.glass, 100);
+    snap(&mut rt, "2b-look-glass");
+}

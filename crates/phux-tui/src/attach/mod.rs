@@ -65,6 +65,7 @@ mod session_mirror;
 mod stdout_writer;
 // Non-Terminal layout leaves: placeholder tiles, no input or resize.
 mod surface_leaf;
+mod sync_input;
 mod terminal_probe;
 mod tty_input;
 pub mod update_notice;
@@ -83,6 +84,11 @@ pub use driver::{
 
 // ADR-0127: the CLI declares `--viewer` / `--take` once, before it dials.
 pub use attach_role::set_attach_role;
+
+/// Tell the tab strip where `[chrome] new-tab-after-current` puts a new tab.
+pub(crate) fn set_new_tab_after_current(on: bool) {
+    server_frame::set_new_tab_after_current(on);
+}
 
 pub use crate::multi_pane;
 

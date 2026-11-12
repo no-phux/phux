@@ -1,6 +1,7 @@
 //! `ERROR` and `COMMAND_RESULT` replies: satellites, adoption, and stray panes.
 
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use phux_client::conditional_kill::BoundResource;
 use phux_protocol::ids::ResourceId;
@@ -374,7 +375,29 @@ fn open_adopted_window<W: crate::attach::RenderSink>(
     )
 }
 
-/// Append an active window named `name` on `pane`, seed its slot, focus it,
+/// `[chrome] new-tab-after-current`, as the config in effect last said.
+// ponytail: a process-wide flag, because the spawn reply that opens the tab
+// has no config in reach; thread it through the frame context if a second
+// client ever lives in one process.
+pub(in crate::attach) static NEW_TAB_AFTER_CURRENT: AtomicBool = AtomicBool::new(false);
+
+/// Add an active window on `pane`: at the end, or right after the window in
+/// view when `after_current`.
+fn place_new_window(
+    workspace: &mut ArrangementDoc,
+    name: &str,
+    pane: ResourceId,
+    after_current: bool,
+) {
+    let current = workspace.active;
+    let had_windows = !workspace.groups.is_empty();
+    workspace.add_group(name.to_owned(), pane);
+    if after_current && had_windows {
+        let _ = workspace.move_group(workspace.groups.len() - 1, current + 1);
+    }
+}
+
+/// Add an active window named `name` on `pane`, seed its slot, focus it,
 /// and request repaint, broadcast, and reflow.
 pub(super) fn open_window(
     workspace: &mut ArrangementDoc,
@@ -383,7 +406,12 @@ pub(super) fn open_window(
     name: &str,
     pane: ResourceId,
 ) -> Result<FrameOutcome, AttachError> {
-    workspace.add_group(name.to_owned(), pane.clone());
+    place_new_window(
+        workspace,
+        name,
+        pane.clone(),
+        NEW_TAB_AFTER_CURRENT.load(Ordering::Relaxed),
+    );
     if let std::collections::hash_map::Entry::Vacant(slot) = panes.entry(pane) {
         slot.insert(PaneSlot::new()?);
     }
@@ -394,4 +422,34 @@ pub(super) fn open_window(
         reflow_panes: true,
         ..FrameOutcome::default()
     })
+}
+
+#[cfg(test)]
+mod placement_tests {
+    use super::place_new_window;
+    use crate::layout::ArrangementDoc;
+    use phux_protocol::ids::ResourceId;
+
+    fn names(doc: &ArrangementDoc) -> Vec<&str> {
+        doc.groups.iter().map(|group| group.name.as_str()).collect()
+    }
+
+    #[test]
+    fn a_new_tab_goes_to_the_end_or_right_after_the_one_in_view() {
+        let pane = ResourceId::local;
+        let mut doc = ArrangementDoc::single(pane(1));
+        doc.add_group("b".to_owned(), pane(2));
+        doc.add_group("c".to_owned(), pane(3));
+        doc.select(0);
+
+        place_new_window(&mut doc, "end", pane(4), false);
+        assert_eq!(names(&doc)[3], "end");
+        assert_eq!(doc.active, 3);
+
+        doc.select(0);
+        place_new_window(&mut doc, "next", pane(5), true);
+        assert_eq!(names(&doc)[1], "next");
+        assert_eq!(doc.active, 1, "the new tab is the one in view");
+        assert_eq!(names(&doc)[2], "b", "the others keep their order");
+    }
 }

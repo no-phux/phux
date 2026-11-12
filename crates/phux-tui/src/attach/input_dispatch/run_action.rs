@@ -28,9 +28,11 @@ mod views;
 mod windows;
 pub(in crate::attach) use popup::popup;
 mod urls;
-pub(in crate::attach) use urls::{copy_text, url_picker};
+pub(in crate::attach) use urls::{copy_mode_key, copy_text, url_picker};
 mod restore;
 pub(in crate::attach) use restore::restore_sessions;
+mod sync;
+pub(in crate::attach) use sync::sync_panes;
 mod worktree;
 
 pub(in crate::attach) use modes::{enter_mode, exit_mode};

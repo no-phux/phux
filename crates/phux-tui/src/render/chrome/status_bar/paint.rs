@@ -33,6 +33,12 @@ impl StatusBarPainter {
         badge_span(&chip, cols, 0).start.checked_sub(1)
     }
 
+    /// Columns the notice toast right-aligns within: left of the key chip
+    /// and its gap, so the chip never cuts the end off the message.
+    fn notice_cols(&self, cols: u16) -> u16 {
+        self.key_gap(cols).unwrap_or(cols)
+    }
+
     /// Columns the widgets compose into: all of them, less the right-edge
     /// chips and their gaps (the key chip, or the badge and attention hint
     /// side by side), so a right-aligned widget moves left of the chips
@@ -258,7 +264,14 @@ impl StatusBarPainter {
             )?;
         }
         if let Some((notice, _)) = &self.notice {
-            paint_notice_overlay(out, notice, row_index, x, cols, &self.theme)?;
+            paint_notice_overlay(
+                out,
+                notice,
+                row_index,
+                x,
+                self.notice_cols(cols),
+                &self.theme,
+            )?;
         }
         // The key chip (pending prefix, or the active key mode) outranks every
         // other right-edge chip: it is what the next keystroke depends on.
@@ -356,7 +369,7 @@ impl StatusBarPainter {
         // compact toast over the normal row and temporarily outranks the
         // persistent right-edge chips beneath it.
         if let Some((notice, _)) = &self.notice {
-            overlay_notice_into_buffer(&mut buffer, notice, cols, &self.theme);
+            overlay_notice_into_buffer(&mut buffer, notice, self.notice_cols(cols), &self.theme);
         }
         if let Some(chip) = self.key_chip() {
             if let Some(gap) = self.key_gap(cols) {
@@ -460,7 +473,7 @@ impl StatusBarPainter {
         if self
             .notice
             .as_ref()
-            .and_then(|(notice, _)| notice_span(notice, *cols))
+            .and_then(|(notice, _)| notice_span(notice, self.notice_cols(*cols)))
             .is_some_and(|span| span.contains(&col))
             || self
                 .supervisory

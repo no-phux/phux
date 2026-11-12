@@ -62,6 +62,16 @@ impl StatusWidget for TimeWidget {
         WidgetCells::from_text(&text)
     }
 
+    /// Whole or not at all: a clipped clock (`Wed 18:…`) tells no time.
+    fn render_within(&self, ctx: &WidgetContext<'_>, budget: usize) -> WidgetCells {
+        let cells = self.render(ctx);
+        if cells.cells.len() <= budget {
+            cells
+        } else {
+            WidgetCells { cells: Vec::new() }
+        }
+    }
+
     fn poll_interval(&self) -> Option<Duration> {
         Some(Duration::from_secs(1))
     }

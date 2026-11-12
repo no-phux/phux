@@ -6,6 +6,10 @@ use serde::{Deserialize, Serialize};
 /// `[defaults]` table. See `docs/reference/config.md` for shipped values.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(default, deny_unknown_fields)]
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "independent config switches, one key each"
+)]
 pub struct DefaultsCfg {
     /// Shell for new panes. `None` resolves `$SHELL`, then `/bin/sh`, once at
     /// server start; a wire `command` always wins.
@@ -43,6 +47,18 @@ pub struct DefaultsCfg {
     /// [`Self::event_journal_entries`]. Ceiling: [`MAX_EVENT_JOURNAL_BYTES`].
     #[serde(rename = "event-journal-bytes")]
     pub event_journal_bytes: u32,
+
+    /// Make the default shell of new panes mark its prompts and commands
+    /// (OSC 133) without the person editing a startup file. Read at server
+    /// start.
+    #[serde(rename = "shell-integration")]
+    pub shell_integration: bool,
+
+    /// Give panes a stand-in `BROWSER` that prints a link and copies it to
+    /// the attached person's clipboard, for a machine with no screen. Read
+    /// at server start.
+    #[serde(rename = "browser-shim")]
+    pub browser_shim: bool,
 
     /// Whether a Terminal spawned without `retain_secs` stays in the
     /// inventory, exited, after its process exits (ADR-0124).
@@ -117,6 +133,8 @@ impl Default for DefaultsCfg {
             agent_log_bytes: DEFAULT_AGENT_LOG_BYTES,
             event_journal_entries: DEFAULT_EVENT_JOURNAL_ENTRIES,
             event_journal_bytes: DEFAULT_EVENT_JOURNAL_BYTES,
+            shell_integration: false,
+            browser_shim: false,
             retain_on_exit: false,
             retain_on_exit_secs: DEFAULT_RETAIN_ON_EXIT_SECS,
             retain_on_exit_max_secs: DEFAULT_RETAIN_ON_EXIT_MAX_SECS,
