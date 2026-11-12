@@ -124,6 +124,11 @@ session (or `--session NAME`). It never creates a session on its own.
   from here. A diff over 2,000 lines shows its start and says so.
 - **Popup.** **Popup…** in the palette runs a command you type in a floating
   terminal, in the focused terminal's folder, until it exits or you press ⌘W.
+- **Quick terminal.** With `quick-terminal = "ctrl+backquote"` (any chord)
+  in `[rune]`, that chord drops a terminal from the top of the screen over
+  whatever app is in front, without switching to this window, and hides it
+  again; so does clicking away. It holds the `quick` session on this
+  computer ([config](../../docs/config.md#rune)).
 - **Insert Path.** ⌥; (or ⇧⌘I) opens a picker at the cursor that searches
   the focused pane's folder on the machine it runs on. Return types the path at the prompt as one shell word, relative to
   that folder and quoted only when it must be.

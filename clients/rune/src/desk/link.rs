@@ -171,7 +171,9 @@ impl Desk {
             self.dial();
             return;
         }
-        self.machines.listen(waker.clone());
+        if self.quick.is_none() {
+            self.machines.listen(waker.clone());
+        }
         crate::theme::watch_omarchy(waker.clone());
         self.watch(waker);
         self.dial();
@@ -274,7 +276,7 @@ impl Desk {
 
     /// Start the updater once it knows which CLI and server it manages.
     pub(super) fn start_updater(&mut self) {
-        if self.native.is_some() {
+        if self.native.is_some() || self.quick.is_some() {
             return;
         }
         if std::mem::replace(&mut self.link.updater_started, true) {

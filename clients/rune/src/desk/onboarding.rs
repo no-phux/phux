@@ -148,6 +148,9 @@ impl Desk {
     /// on its own.
     pub(crate) fn first_run(&mut self) {
         let done = self.prefs.get::<bool>(DONE_KEY).unwrap_or(false);
+        if self.quick.is_some() {
+            return;
+        }
         if done || self.launch.aimed || self.phone.is_some() || self.bare.is_some() {
             return self.offer_tour();
         }

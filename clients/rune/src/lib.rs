@@ -75,7 +75,10 @@ pub fn run_desktop() {
     };
     let spec = app_spec(size, min_size);
     perf::report_to_file();
-    let app = desk::with_menus(rune::App::new(spec));
+    let mut app = desk::with_menus(rune::App::new(spec));
+    if let Some(chord) = desk::quick::configured().filter(|_| !phone) {
+        desk::quick::add(&mut app, &chord, resolved.clone());
+    }
     let window = app.handle();
     let app = app
         .init(move || {
@@ -106,7 +109,7 @@ pub fn run_desktop() {
     }
 }
 
-fn app_spec(size: (f32, f32), min_size: (f32, f32)) -> AppSpec<Desk> {
+pub(crate) fn app_spec(size: (f32, f32), min_size: (f32, f32)) -> AppSpec<Desk> {
     AppSpec {
         min_size: Some(min_size),
         fonts: grid::FONTS,

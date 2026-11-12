@@ -49,6 +49,7 @@ pub mod pitch;
 pub mod pitlane;
 pub mod popup;
 pub mod questions;
+pub mod quick;
 pub mod reef;
 mod reorder;
 pub mod resources;
@@ -286,6 +287,8 @@ pub struct Desk {
     pub phone: Option<phone::Phone>,
     /// The bare window: one pane, the terminal UI in it, no chrome.
     pub bare: Option<bare::Bare>,
+    /// The quick terminal's own handle, when this window is it.
+    pub quick: Option<rune::AppHandle<Desk>>,
     pub native: Option<crate::mobile::Platform>,
 }
 
@@ -410,6 +413,7 @@ impl Desk {
             split_write: None,
             phone: None,
             bare: None,
+            quick: None,
             native: None,
             file,
         };

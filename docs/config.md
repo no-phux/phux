@@ -283,6 +283,19 @@ recent-first = true     # list the session you used last first
 **Copy Settings as TOML** in Rune's command palette puts your current
 choices on the clipboard as this table. Rune reads the file at launch.
 
+`quick-terminal` names a global chord that drops a terminal from the top of
+the screen over whatever app is in front, on the current Space, without
+switching to Rune's window. The same chord, or clicking away, hides it. It
+shows a session of its own called `quick` on this computer, so what runs
+there keeps running while it's hidden, and `phux attach quick` reaches it
+too. It's off until you name a chord, because a global chord is taken from
+every other app:
+
+```toml
+[rune]
+quick-terminal = "ctrl+backquote"   # or "alt+space", "cmd+shift+t"; "none" is off
+```
+
 `[rune.keys]` binds Rune's own shortcuts. The key is a chord and the value
 is a command, or `"none"` to take a built-in chord away:
 
