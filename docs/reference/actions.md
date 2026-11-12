@@ -42,6 +42,7 @@ The **Palette** column is the command-palette section the action is offered unde
 | `show-help` | — |  | Open the fuzzy commands and help finder |
 | `getting-started` | phux |  | Getting started: detach, return, the Agents list, and command discovery |
 | `copy-mode` | — |  | Enter copy-mode on the focused pane (scrollback navigation, search, selection, yank) |
+| `copy-mode-key` | — | `key` (the built-in key, e.g. `j` or `C-b`) | In the `copy-mode` key mode, make a key stand for a built-in copy-mode key |
 | `detach` | phux |  | Detach this client from the session |
 | `next-pane` | Pane |  | Cycle focus to the next pane |
 | `previous-pane` | Pane |  | Cycle focus to the previous pane |
@@ -84,6 +85,7 @@ The **Palette** column is the command-palette section the action is offered unde
 
 Why the dash rows have no palette entry:
 
+- `copy-mode-key` — it only means something as an entry of `[keybindings.modes.copy-mode]`.
 - `copy-text` — it is what a row of the link picker does; on its own it has no text to copy.
 - `command-palette` — it is an entry alias for the finder, so listing it inside the finder would recurse.
 - `show-help` — it is an entry alias for the same finder as `command-palette`, so listing it would duplicate that surface.
