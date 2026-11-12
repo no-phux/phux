@@ -144,6 +144,7 @@ fn ink(dark: bool, accent: Color, theme: Option<&Theme>) -> Ink {
 }
 
 pub fn view(desk: &Desk, cx: &mut Cx<Desk>) -> El {
+    desk.follow_appearance(cx.system_dark());
     if desk.phone.is_some() {
         return phone::view(desk, cx);
     }

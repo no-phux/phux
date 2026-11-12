@@ -331,10 +331,27 @@ impl Desk {
 
     /// Install the chosen palette on the runtime. Live panes repaint with it.
     pub(super) fn apply_theme(&mut self) {
-        if let Some(client) = &self.client {
-            client.set_terminal_theme(self.settings.theme.map(Theme::terminal));
-        }
+        self.install_terminal_theme();
         self.generation += 1;
+    }
+
+    fn install_terminal_theme(&self) {
+        if let Some(client) = &self.client {
+            let dark = self.system_dark.get().unwrap_or(true);
+            client.set_terminal_theme(
+                self.settings
+                    .theme
+                    .map_or_else(|| Theme::system_terminal(dark), |t| Some(t.terminal())),
+            );
+        }
+    }
+
+    /// The view saw the system appearance: with no theme picked, the
+    /// terminal follows a change to it.
+    pub fn follow_appearance(&self, dark: bool) {
+        if self.system_dark.replace(Some(dark)) != Some(dark) && self.settings.theme.is_none() {
+            self.install_terminal_theme();
+        }
     }
 
     /// Omarchy changed its theme: a window following it repaints.

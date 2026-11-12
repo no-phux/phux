@@ -238,6 +238,8 @@ pub struct Desk {
     font_epoch: u64,
     /// The window's device pixels per point, as the last view build saw it.
     pub scale: Cell<f32>,
+    /// The system appearance as the last view build saw it; `None` before.
+    pub system_dark: Cell<Option<bool>>,
     /// Each pane's grid area in points, from its last layout.
     areas: HashMap<ResourceId, [f32; 2]>,
     /// The size this window last asked the server for, per terminal.
@@ -389,6 +391,7 @@ impl Desk {
             font_family,
             font_epoch: rune::text::font_epoch(),
             scale: Cell::new(2.0),
+            system_dark: Cell::new(None),
             areas: HashMap::new(),
             fitted: HashMap::new(),
             layout: None,
