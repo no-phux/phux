@@ -77,3 +77,22 @@ fn a_document_in_no_known_session_is_named_by_its_record_or_left_out() {
             .any(|h| matches!(&h.item.target, crate::palette::Target::Terminal { id: shown, .. } if *shown == id(2)))
     );
 }
+
+#[test]
+fn stepping_in_session_walks_tabs_then_panes_and_wraps() {
+    let records = [
+        record(1, ResourceKind::Terminal),
+        record(2, ResourceKind::Terminal),
+        record(3, ResourceKind::Terminal),
+    ];
+    let mut arrangement = doc(split(1, 2));
+    arrangement.add_group("second".to_owned(), id(3));
+    arrangement.active = 0;
+    let (_client, mut rt) = fixture(&records, &arrangement);
+    assert_eq!(rt.state.shown.as_ref().unwrap().resource, id(1));
+    for (step_by, want) in [(1, 2), (1, 3), (1, 1), (-1, 3)] {
+        rt.update(|d, _| d.cycle_in_session(step_by));
+        step(&mut rt);
+        assert_eq!(rt.state.shown.as_ref().unwrap().resource, id(want));
+    }
+}

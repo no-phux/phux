@@ -187,6 +187,44 @@ impl Desk {
         self.show(next.id, &next.session);
     }
 
+    /// Step through the shown session's terminals, tab by tab in pane order.
+    pub fn cycle_in_session(&mut self, step: isize) {
+        let all: Vec<ResourceId> = self
+            .tabs
+            .list
+            .iter()
+            .flat_map(|t| t.resources.clone())
+            .collect();
+        let Some(session) = self.selected_session_name().filter(|_| !all.is_empty()) else {
+            return;
+        };
+        let current = self
+            .shown
+            .as_ref()
+            .and_then(|s| all.iter().position(|r| *r == s.resource))
+            .unwrap_or(0);
+        let next = all[stepped(current, step, all.len())].clone();
+        self.zoomed = None;
+        self.show(next, &session);
+    }
+
+    /// Step through the sessions in the sidebar's order.
+    pub fn step_session(&mut self, step: isize) {
+        let names: Vec<String> = self
+            .ordered_sessions()
+            .iter()
+            .map(|s| s.name.clone())
+            .collect();
+        if names.is_empty() {
+            return;
+        }
+        let current = self
+            .selected_session_name()
+            .and_then(|name| names.iter().position(|n| *n == name))
+            .unwrap_or(0);
+        self.show_session(&names[stepped(current, step, names.len())]);
+    }
+
     /// The window title: the focused resource's label and its session, set
     /// only when it changes.
     pub fn window_title(&self) -> &str {
@@ -220,6 +258,11 @@ impl Desk {
         }
         self.generation += 1;
     }
+}
+
+/// `step` along from `at` in a list of `len`, wrapping.
+const fn stepped(at: usize, step: isize, len: usize) -> usize {
+    (at as isize + step).rem_euclid(len as isize) as usize
 }
 
 /// The pane to show in `session`: the server's focus when it's there.
