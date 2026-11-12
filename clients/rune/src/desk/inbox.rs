@@ -365,6 +365,10 @@ impl Desk {
     /// Post, take back, and count when what they read from moved; then
     /// follow any notification clicked.
     pub(super) fn sync_alerts(&mut self) -> bool {
+        // The main window posts them; a second poster would double each.
+        if self.quick.is_some() {
+            return false;
+        }
         let relisted = self.relist();
         let inputs = self.alert_inputs();
         if self.inbox.synced.as_ref() == Some(&inputs) && !self.inbox.alerts.clicked() {

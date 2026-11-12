@@ -22,7 +22,8 @@ pub enum Home {
 }
 
 /// The explicit request when it exists or is missing; else the Intake (named
-/// by `inbox`); else the most recently created session.
+/// by `inbox`); else the most recently created session that isn't the quick
+/// terminal's.
 pub fn choose(requested: Option<&str>, topology: &Topology, inbox: Option<&str>) -> Home {
     if let Some(name) = requested.map(str::trim).filter(|name| !name.is_empty()) {
         return if topology.session_named(name).is_some() {
@@ -38,6 +39,7 @@ pub fn choose(requested: Option<&str>, topology: &Topology, inbox: Option<&str>)
     topology
         .sessions
         .iter()
+        .filter(|session| session.name != super::quick::SESSION)
         .max_by_key(|session| (session.created_at_unix_secs, session.id))
         .map_or(Home::Nothing, |session| {
             Home::Existing(session.name.clone())
@@ -102,7 +104,11 @@ impl Desk {
             || {
                 // Asked for once: a killed session isn't made again.
                 let last = self.native.as_ref().and(self.prefs.get(LAST_SESSION));
-                let requested = self.launch.session.take();
+                // The quick terminal's session is made again whenever it ends.
+                let requested = match self.quick {
+                    Some(_) => Some(super::quick::SESSION.to_owned()),
+                    None => self.launch.session.take(),
+                };
                 let requested = requested.or_else(|| remembered(last, topology));
                 choose(
                     requested.as_deref(),
@@ -210,6 +216,17 @@ mod tests {
         assert_eq!(
             choose(None, &graph, Some("inbox")),
             Home::Existing("work".into())
+        );
+    }
+
+    #[test]
+    fn the_main_window_never_falls_back_to_the_quick_session() {
+        let graph = topology(vec![session(1, "work", 10), session(2, "quick", 30)]);
+        assert_eq!(choose(None, &graph, None), Home::Existing("work".into()));
+        assert_eq!(
+            choose(Some("quick"), &graph, None),
+            Home::Existing("quick".into()),
+            "asked for by name, it opens"
         );
     }
 

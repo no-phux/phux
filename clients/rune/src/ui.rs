@@ -159,7 +159,7 @@ pub fn view(desk: &Desk, cx: &mut Cx<Desk>) -> El {
     // draws its own titlebar.
     let lights = cx.titlebar_inset();
     let band = if lights > 0.0 { TITLEBAR_H } else { 12.0 };
-    if desk.bare.is_some() {
+    if desk.bare.is_some() || desk.quick.is_some() {
         return bare(desk, &p, lights, band, cx);
     }
     let main = row()

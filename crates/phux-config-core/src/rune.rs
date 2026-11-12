@@ -25,6 +25,9 @@ pub struct RuneCfg {
     pub confirm_close: Option<bool>,
     /// List the session used last first, instead of in the arranged order.
     pub recent_first: Option<bool>,
+    /// Global chord that shows and hides the quick terminal, such as
+    /// `"ctrl+backquote"`; unset or `"none"` leaves it off.
+    pub quick_terminal: Option<String>,
     /// `[rune.keys]`: a chord such as `"cmd+shift+d"` and the command it
     /// runs, or `"none"` to take a built-in chord away.
     #[serde(skip_serializing_if = "std::collections::BTreeMap::is_empty")]
