@@ -134,22 +134,19 @@ test("only pull requests write receipts; content publishes after a green push", 
   expect(str(content["if"])).toContain("github.event_name == 'push'");
 });
 
-test("both FFI workflows build on mobile_ffi_needed or a failed classification", () => {
-  // phux-mobile pins one revision and fetches both artifacts at it, by
-  // push run of these two file names.
+test("both FFI workflows build only on dispatch and tell mobile only about releases", () => {
+  // phux-mobile pins a release (release.yml dispatches both with the tag) or,
+  // for an override, one commit it dispatches both for. A main push building
+  // them cost 45 macOS minutes a time for archives mobile mostly never pinned.
   for (const name of FFI) {
     const document = workflow(name);
-    expect(Object.keys(table(document["on"]))).toContain("push");
-    const condition = str(job(document, "build")["if"]) ?? "";
-    expect(condition).toContain("needs.changes.result == 'failure'");
-    expect(condition).toContain("needs.changes.outputs.mobile_ffi_needed == 'true'");
-    const detect = steps(job(document, "changes"));
-    expect(detect.some((step) => run(step).includes("bun tools/main.ts detect-changes"))).toBe(
-      true,
-    );
-    const checkout = detect.find((step) => uses(step).startsWith("actions/checkout@"));
-    expect(withInput(checkout ?? {}, "fetch-depth")).toBe(0);
+    expect(Object.keys(table(document["on"]))).toEqual(["workflow_dispatch"]);
+    expect(Object.keys(jobs(document))).not.toContain("changes");
+    expect(str(job(document, "notify-mobile")["if"])).toContain("inputs.tag != ''");
   }
+  expect(workflowText("release.yml")).toContain(
+    "for workflow in ffi-xcframework.yml ffi-android.yml",
+  );
 });
 
 test("post-merge workflows follow ci on main pushes only", () => {

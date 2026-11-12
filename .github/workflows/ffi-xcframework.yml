@@ -15,23 +15,17 @@
 # No pull request triggers this workflow, so its caches are saved from every
 # run without thrashing the PR cache budget docs/development.md#ci describes.
 #
-# It also fires on main when the shim or its runtime inputs change, exactly as
-# ffi-android.yml does, so a merge is the produce run. That pairing is the
-# point: phux-mobile pins ONE revision and fetches both artifacts at it, and a
-# tagless push run uploads the workflow artifact without touching any release
-# (the attach step is guarded on RELEASE_TAG). Before this, only android
-# produced on merge while the xcframework waited for a dispatch, so the two
-# artifacts almost never existed at the same commit and the mobile pin had
-# nothing to land on.
+# phux-mobile pins ONE revision and fetches both artifacts at it, so this
+# workflow and ffi-android.yml always run as a pair: release.yml dispatches
+# both with the tag (the default mobile pin is a release), and a mobile
+# override pin dispatches both with `commit` (phux-mobile `just pin-phux
+# <sha>`), which only uploads workflow artifacts (the attach step is guarded
+# on RELEASE_TAG). Main pushes no longer build it: each build is 45 minutes
+# on the five-slot macOS pool, and most push builds were never pinned.
 
 name: ffi-xcframework
 
 on:
-  # Main pushes build only when the classifier's mobile_ffi_needed says
-  # so, or when classification failed. Both FFI workflows read that one
-  # output, so phux-mobile's pin always finds the pair at the same commit.
-  push:
-    branches: [main]
   workflow_dispatch:
     inputs:
       tag:
@@ -58,28 +52,8 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  changes:
-    name: classify changes
-    if: github.event_name == 'push'
-    runs-on: ubuntu-24.04
-    timeout-minutes: 5
-    outputs:
-      mobile_ffi_needed: ${{ steps.detect.outputs.mobile_ffi_needed }}
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          fetch-depth: 0
-      - uses: ./.github/actions/setup-bun
-      - id: detect
-        run: bun tools/main.ts detect-changes >> "$GITHUB_OUTPUT"
-
   build:
     name: build native xcframeworks
-    needs: changes
-    if: >-
-      !cancelled() &&
-      (github.event_name != 'push' || needs.changes.result == 'failure' ||
-       needs.changes.outputs.mobile_ffi_needed == 'true')
     # Standard xcode-27 is an arm64 GitHub-hosted runner with Xcode 27 and the
     # iOS SDK; device and simulator slices need both.
     runs-on: xcode-27
@@ -253,13 +227,13 @@ jobs:
           (cd "$existing" && shasum -a 256 -c "${MOBILE_STEM}.xcframework.zip.sha256")
           echo "attached ${STEM} and ${MOBILE_STEM} to ${RELEASE_TAG}"
 
-  # phux-mobile pins the newest main commit that published both mobile
-  # archives. Tell it one just landed instead of leaving it to its six-hour
-  # poll. Best effort: the poll still catches a missed event, so a failed
-  # dispatch must not mark main red.
+  # phux-mobile pins the newest release that carries both mobile archives.
+  # Tell it one was just attached instead of leaving it to its six-hour poll.
+  # Best effort: the poll still catches a missed event, so a failed dispatch
+  # must not fail the release build.
   notify-mobile:
     needs: build
-    if: github.event_name == 'push' && needs.build.result == 'success'
+    if: inputs.tag != '' && needs.build.result == 'success'
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     continue-on-error: true
@@ -273,10 +247,10 @@ jobs:
           owner: no-phux
           repositories: phux-mobile
           permission-contents: write
-      - name: Tell phux-mobile an archive landed
+      - name: Tell phux-mobile a release archive was attached
         env:
           GH_TOKEN: ${{ steps.mobile.outputs.token }}
-          SHA: ${{ github.sha }}
+          TAG: ${{ inputs.tag }}
         run: >-
           gh api repos/no-phux/phux-mobile/dispatches
-          -f event_type=phux-ffi-published -f "client_payload[sha]=$SHA"
+          -f event_type=phux-ffi-published -f "client_payload[tag]=$TAG"
