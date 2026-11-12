@@ -16,7 +16,9 @@ impl LaunchCommand {
     pub fn new(program: impl AsRef<OsStr>) -> Self {
         Self {
             argv: vec![program.as_ref().to_owned()],
-            env: std::env::vars_os().collect(),
+            env: std::env::vars_os()
+                .chain(PANE_ENV.get().into_iter().flatten().cloned())
+                .collect(),
             removed: BTreeSet::new(),
             cwd: None,
             controlling_tty: true,
@@ -98,6 +100,15 @@ pub fn default_shell_command(shell: &str, login: bool) -> LaunchCommand {
     apply_term(&mut command, "xterm-256color");
     apply_shell_integration(&mut command, name);
     command
+}
+
+/// Variables every pane's program starts with, beyond the server's own
+/// environment; set once at start (the `[defaults] browser-shim` stand-in).
+static PANE_ENV: std::sync::OnceLock<Vec<(OsString, OsString)>> = std::sync::OnceLock::new();
+
+/// Give every program this process launches these variables.
+pub fn set_pane_env(vars: Vec<(OsString, OsString)>) {
+    let _ = PANE_ENV.set(vars);
 }
 
 /// Where the server keeps the files that make a shell mark its prompts and
@@ -198,6 +209,18 @@ pub fn shell_command(shell: &str, text: &str, login: bool) -> LaunchCommand {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn pane_variables_reach_every_launch() {
+        set_pane_env(vec![("PHUX_TEST_PANE_VAR".into(), "set".into())]);
+        let command = LaunchCommand::new("anything");
+        let seen = command.environment().get(OsStr::new("PHUX_TEST_PANE_VAR"));
+        assert_eq!(
+            seen.map(|value| value.to_string_lossy().into_owned())
+                .as_deref(),
+            Some("set")
+        );
+    }
 
     #[test]
     fn each_shell_is_integrated_its_own_way_and_keeps_what_was_set() {

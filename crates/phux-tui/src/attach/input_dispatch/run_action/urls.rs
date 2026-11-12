@@ -92,6 +92,12 @@ pub(in crate::attach) fn copy_text(
     effects.clipboard = str_arg(resolved, "text");
 }
 
+/// `copy-mode-key` outside copy mode does nothing: it is read as an entry
+/// of the `copy-mode` key mode, where the overlay applies it.
+pub(in crate::attach) const fn copy_mode_key(ActionCall { effects, .. }: ActionCall<'_, '_>) {
+    effects.bell = true;
+}
+
 #[cfg(test)]
 mod tests {
     use super::links;

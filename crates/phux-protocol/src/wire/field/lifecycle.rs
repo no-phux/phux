@@ -193,6 +193,10 @@ pub mod session_state {
     /// The session's most recent input target (`ResourceId`, R14); absent =
     /// none reported.
     pub const RECENT_INPUT: u32 = 4;
+    /// How recently the session was attached to or typed into (`u64`): a
+    /// counter that only grows, so a higher value is more recent; absent =
+    /// never touched, or not reported.
+    pub const TOUCHED: u32 = 5;
 }
 
 /// Fields of one `RESOURCE_STATE` value, after its positional `ResourceId`.

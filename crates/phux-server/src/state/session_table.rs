@@ -61,6 +61,12 @@ impl SessionTable {
             .map(|(sid, _)| *sid)
     }
 
+    /// When `session` was last touched, as a counter that only grows.
+    #[must_use]
+    pub(super) fn touched_at(&self, session: SessionId) -> Option<u64> {
+        self.last_touched.get(&session).copied()
+    }
+
     /// Whether any session was ever touched (live or not).
     #[must_use]
     pub(super) fn has_touch_history(&self) -> bool {

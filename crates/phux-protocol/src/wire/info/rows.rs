@@ -72,6 +72,7 @@ pub(super) fn decode_session_info_body(dec: &mut Decoder<'_>) -> Result<SessionI
         key: None,
         attrs: Vec::new(),
         recent_input: None,
+        touched: None,
     })
 }
 

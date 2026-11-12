@@ -280,6 +280,7 @@ impl TuiSettings {
         plugin_sidebar: Vec<PluginSectionSpec>,
     ) -> Self {
         crate::attach::set_new_tab_after_current(cfg.chrome.new_tab_after_current);
+        phux_client::session_order::set_recent_first(cfg.sidebar.recent_first);
         Self {
             which_key: WhichKey {
                 enabled: keybindings.which_key,
@@ -329,6 +330,9 @@ fn enabled_manifests(cfg: &Config) -> Vec<PluginManifest> {
 fn merged_keybindings(cfg: &Config, plugin_actions: &[PluginActionEntry]) -> KeybindingsCfg {
     let mut kb = cfg.keybindings.clone();
     plugin_actions::merge_plugin_bindings(&mut kb, plugin_actions);
+    for problem in crate::render::overlay::copy_mode::set_copy_mode_keys(&kb.modes) {
+        tracing::warn!("{problem}");
+    }
     kb
 }
 

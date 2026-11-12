@@ -53,6 +53,7 @@ Every scalar knob with its shipped default, serialized from the schema itself, p
 | `defaults.approval-max-pending` | `64` |
 | `defaults.approval-max-pending-total` | `1024` |
 | `defaults.approval-ttl-secs` | `120` |
+| `defaults.browser-shim` | `false` |
 | `defaults.clipboard-write` | `"allow"` |
 | `defaults.cwd-inheritance` | `"inherit-focused"` |
 | `defaults.event-journal-bytes` | `1048576` |
@@ -88,6 +89,7 @@ Every scalar knob with its shipped default, serialized from the schema itself, p
 | `sidebar.hosts` | `true` |
 | `sidebar.hosts-refresh-secs` | `10` |
 | `sidebar.position` | `"left"` |
+| `sidebar.recent-first` | `false` |
 | `sidebar.width` | `20` |
 | `status.position` | `"top"` |
 | `voice.timeout-secs` | unset — 30. Seconds before the transcriber is killed and the request refused |
@@ -162,6 +164,12 @@ event-journal-bytes = 1048576
 # starts. `phux config shell-integration SHELL` prints the same snippet to load
 # yourself instead.
 shell-integration = false
+
+# On a machine with no screen, a program that opens a browser (a sign-in,
+# `gh auth login`) goes nowhere. With this on, panes get a stand-in `BROWSER`
+# that prints the link in the pane and copies it to your clipboard. Nothing
+# opens by itself. Read when the server starts.
+browser-shim = false
 
 # Keep a pane inspectable after its program exits: its exit status, last
 # screen, and scrollback stay until they expire or are closed. Off by
@@ -719,11 +727,15 @@ right = [
 # placeholder. Set `agents-share = 0` to drop the panel and give Sessions the
 # whole strip.
 #
+# `recent-first = true` lists the session you used last on top instead of in
+# the order you arranged them.
+#
 # [sidebar]
 # enabled = true
 # width = 20
 # position = "left"
 # agents-share = 50
+# recent-first = false
 
 # Responsive-chrome breakpoints. The chrome adapts to small terminals
 # around three thresholds; these move them without moving the behaviour.

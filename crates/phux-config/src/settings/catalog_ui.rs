@@ -117,6 +117,17 @@ pub(super) const ROWS: &[SettingSpec] = &[
         applies: Applies::NextAttach,
     },
     SettingSpec {
+        key: "sidebar.recent-first",
+        section: SettingSection::Sidebar,
+        kind: SettingKind::Bool,
+        summary: "List the session you used last first",
+        detail: "Off (the default), sessions keep the order you arranged them in. On, the \
+                 attached server's sessions are listed by when they were last attached to or \
+                 typed into, most recent on top; a session never used stays below. Needs a \
+                 server that reports it; with an older one the order is unchanged.",
+        applies: Applies::LiveReload,
+    },
+    SettingSpec {
         key: "sidebar.hosts-refresh-secs",
         section: SettingSection::Sidebar,
         kind: SettingKind::Integer {

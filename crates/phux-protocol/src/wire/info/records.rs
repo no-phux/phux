@@ -45,6 +45,11 @@ pub struct SessionInfo {
     /// `SESSION_STATE`; `None` when the session has none or the server does
     /// not report it.
     pub recent_input: Option<ResourceId>,
+    /// How recently the session was attached to or typed into: a counter
+    /// that only grows, so the session with the highest value was used
+    /// last. From the extension block's `SESSION_STATE`; `None` for a
+    /// session never touched, or a server that does not report it.
+    pub touched: Option<u64>,
 }
 
 impl SessionInfo {
@@ -63,6 +68,7 @@ impl SessionInfo {
             key: None,
             attrs: Vec::new(),
             recent_input: None,
+            touched: None,
         }
     }
 
@@ -106,6 +112,13 @@ impl SessionInfo {
         self
     }
 
+    /// Builder setter for [`Self::touched`].
+    #[must_use]
+    pub const fn with_touched(mut self, touched: Option<u64>) -> Self {
+        self.touched = touched;
+        self
+    }
+
     /// Whether this session's extension-block `SESSION_STATE` has anything
     /// to say.
     pub(super) const fn has_session_state(&self) -> bool {
@@ -113,6 +126,7 @@ impl SessionInfo {
             || self.key.is_some()
             || !self.attrs.is_empty()
             || self.recent_input.is_some()
+            || self.touched.is_some()
     }
 
     /// Whether the session currently holds no windows: a keep-empty session

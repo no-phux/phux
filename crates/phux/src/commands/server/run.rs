@@ -361,6 +361,7 @@ pub(crate) fn run_server(
     }
 
     super::startup::shell_integration(config.defaults.shell_integration);
+    super::startup::browser_shim(config.defaults.browser_shim);
     let mut cfg = build_server_config(
         session,
         &socket_path,
