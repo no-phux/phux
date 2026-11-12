@@ -3,6 +3,7 @@
 use super::{
     AttachError, EventEnv, FrameKind, InputEvent, MouseEvent, OverlayOutcome, StageOutcome,
     copy_search, focused_pane_rect, published_terminal, scroll_focused_pane_viewport,
+    snap_scrolled_viewport,
 };
 
 #[allow(
@@ -49,6 +50,7 @@ impl<W: crate::attach::RenderSink> EventEnv<'_, '_, W> {
             resolver.reset();
         }
         let was_active = self.ctx.overlays.is_active();
+        let was_copy = self.ctx.overlays.copy_selection().is_some();
         // An overlay may commit an action (e.g. the
         // rename prompt returning `rename-window { name }`); run
         // it through the same path as a keybinding.
@@ -61,7 +63,16 @@ impl<W: crate::attach::RenderSink> EventEnv<'_, '_, W> {
         // over pane cells and we need a coherent base for the
         // next RESOURCE_OUTPUT.
         let dismissed = was_active && !self.ctx.overlays.is_active();
-        Ok(ran || dismissed)
+        // Leaving copy mode from the keyboard returns to the live screen,
+        // as tmux does; a mouse drag-copy keeps the history it was read in.
+        let snapped = was_copy
+            && self.ctx.overlays.copy_selection().is_none()
+            && snap_scrolled_viewport(
+                self.ctx.engine_kernel,
+                self.panes,
+                self.focused_resource.as_ref(),
+            );
+        Ok(ran || dismissed || snapped)
     }
 
     /// Escape on the `go-to-directory` placeholder cancels its listing:

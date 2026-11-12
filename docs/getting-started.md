@@ -142,9 +142,10 @@ Scroll a pane's history with the mouse wheel. For keyboard selection, press <kbd
 | <kbd>/</kbd>, <kbd>?</kbd>                    | search down, up; <kbd>n</kbd> and <kbd>N</kbd> repeat   |
 | <kbd>y</kbd>, <kbd>Enter</kbd>                | copy the selection and leave; with nothing selected, <kbd>y</kbd> copies the word |
 | <kbd>Y</kbd>, <kbd>A</kbd>                    | copy the line, or everything, and leave                 |
-| <kbd>q</kbd>, <kbd>Esc</kbd>                  | leave                                                   |
+| <kbd>q</kbd>, <kbd>Esc</kbd>                  | leave without copying                                   |
 | <kbd>]</kbd>                                  | copy the last command's output and leave                |
-| <kbd>Esc</kbd>                                | leave without copying                                   |
+
+Leaving copy mode from the keyboard puts the pane back on the live screen. Scrolling with the wheel stays where you left it until you type.
 
 Copies go to your system clipboard through your terminal (OSC 52), so they work over SSH too if your terminal allows it.
 
