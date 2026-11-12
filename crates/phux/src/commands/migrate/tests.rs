@@ -297,7 +297,7 @@ fn ghostty_never_binds_cmd_and_names_macos_keys() {
         &Verdict::Skip("macOS uses this key itself".into())
     );
     assert!(
-        matches!(verdict("keybind = cmd+d=new_split:right"), Verdict::Skip(reason) if reason.contains("no Cmd"))
+        matches!(verdict("keybind = cmd+d=new_split:right"), Verdict::Skip(reason) if reason.contains("no Cmd") && reason.contains("Ghostty's own tabs"))
     );
     assert!(
         matches!(verdict("keybind = ctrl+shift+t=new_tab"), Verdict::Write { key, .. } if key == "C-S-t")

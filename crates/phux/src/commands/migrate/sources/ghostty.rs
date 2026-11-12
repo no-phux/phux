@@ -124,7 +124,8 @@ fn ghostty_chord(trigger: &str) -> Option<Result<String, String>> {
         let reason = if MACOS_KEYS.contains(&spelled.join("+").as_str()) {
             "macOS uses this key itself"
         } else {
-            "phux key bindings have no Cmd key; Rune's Cmd shortcuts are built in"
+            "phux key bindings have no Cmd key. It keeps working in Ghostty, but on \
+             Ghostty's own tabs and splits, not phux's"
         };
         return Some(Err(reason.into()));
     }

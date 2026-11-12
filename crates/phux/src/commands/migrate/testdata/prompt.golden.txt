@@ -120,7 +120,7 @@ Write every line marked "write" exactly as given, in the table it names, once. A
 - ~/.config/ghostty/config:3 `keybind = cmd+q=quit`
   not written: macOS uses this key itself
 - ~/.config/ghostty/config:4 `keybind = cmd+d=new_split:right`
-  not written: phux key bindings have no Cmd key; Rune's Cmd shortcuts are built in
+  not written: phux key bindings have no Cmd key. It keeps working in Ghostty, but on Ghostty's own tabs and splits, not phux's
 - ~/.config/ghostty/config:5 `keybind = ctrl+h=goto_split:right`
   write `"C-h" = { action = "focus-direction", direction = "right" }` in `[keybindings.global]`
 - ~/.config/ghostty/config:6 `keybind = ctrl+shift+t=new_tab`

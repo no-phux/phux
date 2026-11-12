@@ -62,7 +62,9 @@ Some lines are never written:
 - A theme line. When you already picked a phux theme (`phux theme set`, or
   `[theme] name` / `file` in your config), the line is reported as "kept your
   phux theme"; otherwise it points you at `phux theme list` and `phux theme set`.
-- Any binding on Cmd. phux key bindings have no Cmd modifier, and the macOS
+- Any binding on Cmd. phux key bindings have no Cmd modifier. A Ghostty Cmd
+  binding keeps working, but on Ghostty's own tabs and splits, not phux's.
+  The macOS
   system shortcuts (<kbd>Cmd</kbd>+<kbd>Q</kbd>, <kbd>Cmd</kbd>+<kbd>H</kbd>,
   <kbd>Cmd</kbd>+<kbd>M</kbd>, <kbd>Cmd</kbd>+<kbd>Tab</kbd>,
   <kbd>Cmd</kbd>+<kbd>Space</kbd>, <kbd>Cmd</kbd>+<kbd>Shift</kbd>+<kbd>3</kbd>/<kbd>4</kbd>/<kbd>5</kbd>,

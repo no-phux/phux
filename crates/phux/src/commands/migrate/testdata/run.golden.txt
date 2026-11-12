@@ -120,7 +120,7 @@ Write every line marked "write" exactly as given, in the table it names, once. A
 - ~/.config/ghostty/config:7 `custom-shader = ~/.config/ghostty/crt.glsl`
   nothing to do: the Ghostty setting custom-shader keeps working while phux runs inside Ghostty
 - ~/.config/ghostty/config:8 `keybind = cmd+d=new_split:right`
-  not written: phux key bindings have no Cmd key; Rune's Cmd shortcuts are built in
+  not written: phux key bindings have no Cmd key. It keeps working in Ghostty, but on Ghostty's own tabs and splits, not phux's
 
 ## Conflicts between sources
 A source is one program with every file it loads. Inside one source the line the
