@@ -96,7 +96,7 @@ async fn prefix_chord_matches_with_caps_lock_reported() {
 }
 
 #[tokio::test]
-async fn copy_mode_page_scroll_mutates_focused_terminal_viewport() {
+async fn copy_mode_page_scroll_mutates_focused_terminal_viewport_until_it_leaves() {
     let mut replay = Vec::new();
     for n in 0..10 {
         replay.extend_from_slice(format!("line{n:02}\r\n").as_bytes());
@@ -128,6 +128,13 @@ async fn copy_mode_page_scroll_mutates_focused_terminal_viewport() {
         visible(&mut env),
         "the scroll reaches the focused viewport"
     );
+
+    // Leaving with `q` returns to the live screen instead of stranding the
+    // pane in history until the next keystroke.
+    let sent = env.dispatch(vec![press(PhysicalKey::Q, Some("q"))]).await;
+    assert!(!env.fx.overlays.is_active());
+    assert!(sent.repainted);
+    assert_eq!(before, visible(&mut env), "back on the live screen");
 }
 
 /// Copy-mode search end to end through the dispatcher: `/needle` Enter

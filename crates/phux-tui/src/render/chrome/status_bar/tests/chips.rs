@@ -268,6 +268,29 @@ fn a_notice_moves_left_of_the_key_chip_instead_of_being_cut() {
     assert!(row.ends_with(" input: wheel released   resize "), "{row:?}");
 }
 
+/// A notice pushes right widgets left the same way: the toast never
+/// cuts `phux-tui-polish6` to a different-looking `phux-tui-polish`.
+#[test]
+fn a_notice_moves_right_widgets_instead_of_cutting_them() {
+    let cfg = StatusCfg {
+        left: vec![spec("windows", &[])],
+        right: vec![spec("session-name", &[])],
+        ..StatusCfg::default()
+    };
+    let mut p = StatusBarPainter::new(build_bar(&cfg), Position::Bottom);
+    p.set_windows(wins(&[("a", true)]));
+    assert!(p.set_notice(
+        Notice::info("no links in this pane"),
+        std::time::Instant::now()
+    ));
+    let (buf, _, _) = p
+        .compose_buffer(BarInset::NONE, 40, 10, &ctx_default("polish6"))
+        .expect("composes");
+    let row: String = (0..40).map(|x| buf[(x, 0)].symbol().to_owned()).collect();
+    assert!(row.ends_with(" no links in this pane "), "{row:?}");
+    assert!(row.contains("polish6 "), "the name survives whole: {row:?}");
+}
+
 /// The active key mode rides the same chip; the pending prefix outranks
 /// it, and clearing either leaves the other showing.
 #[test]

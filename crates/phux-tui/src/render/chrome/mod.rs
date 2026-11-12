@@ -55,9 +55,10 @@ pub(crate) const fn agent_state_glyph(state: AgentMetaState) -> &'static str {
 /// ○ done+seen / idle / unknown
 /// ```
 ///
-/// The glyphs are `agent_state_glyph`'s, with one exception: a `done` the
+/// The glyphs are `agent_state_glyph`'s, with two exceptions: a `done` the
 /// user has already looked at needs no one, so it relaxes to the idle ring
-/// instead of keeping the diamond.
+/// instead of keeping the diamond, and an `unknown` that asked wears the
+/// [`attention_badge`], not a dim ring that says nothing is wrong.
 #[must_use]
 pub fn agent_badge(
     theme: &Theme,
@@ -65,6 +66,10 @@ pub fn agent_badge(
     attention: bool,
     seen: bool,
 ) -> AgentBadge {
+    // No state to show, but it asked: the same dot a bare ask wears.
+    if state == AgentMetaState::Unknown && attention {
+        return attention_badge(theme);
+    }
     let color = match state {
         AgentMetaState::Idle => theme.agent_idle,
         AgentMetaState::Working => theme.agent_working,
@@ -93,5 +98,21 @@ pub const fn attention_badge(theme: &Theme) -> AgentBadge {
         glyph: AGENT_BLOCKED_GLYPH,
         color: theme.attention,
         emphatic: true,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// An agent of unknown state that asked wears the attention dot, not
+    /// the dim ring that says nothing is wrong.
+    #[test]
+    fn an_unknown_agent_that_asked_wears_the_attention_dot() {
+        let theme = Theme::default();
+        let asked = agent_badge(&theme, AgentMetaState::Unknown, true, false);
+        assert_eq!(asked, attention_badge(&theme));
+        let quiet = agent_badge(&theme, AgentMetaState::Unknown, false, false);
+        assert_eq!(quiet.glyph, AGENT_IDLE_GLYPH);
     }
 }

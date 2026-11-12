@@ -41,9 +41,10 @@ impl StatusBarPainter {
 
     /// Columns the widgets compose into: all of them, less the right-edge
     /// chips and their gaps (the key chip, or the badge and attention hint
-    /// side by side), so a right-aligned widget moves left of the chips
-    /// whole instead of being cut under them. A bar too narrow for the
-    /// chips keeps every column.
+    /// side by side, or a notice toast), so a right-aligned widget moves
+    /// left of them whole instead of being cut under them (a session name
+    /// cut to `phux-tui-polish` by a toast reads as a different name). A
+    /// bar too narrow for the chips keeps every column.
     fn widget_cols(&self, cols: u16) -> u16 {
         let width = |chip: &str| {
             u16::try_from(chip.chars().count())
@@ -56,7 +57,11 @@ impl StatusBarPainter {
             .attention
             .as_deref()
             .map_or(offset, |hint| offset.saturating_add(width(hint)));
-        let reserve = key.max(badges);
+        let notice = self.notice.as_ref().map_or(0, |(notice, _)| {
+            notice_span(notice, self.notice_cols(cols))
+                .map_or(0, |span| (cols - span.start).saturating_add(1))
+        });
+        let reserve = key.max(badges).max(notice);
         if reserve >= cols {
             cols
         } else {
