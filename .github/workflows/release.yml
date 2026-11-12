@@ -232,7 +232,7 @@ jobs:
   # gating it. phux.sh reads the release list at build time, and a
   # GITHUB_TOKEN publish fires no release event, so tell the site here.
   announce:
-    name: mobile FFI, phux.sh, and Linear
+    name: mobile FFI, phux.sh, Homebrew, and Linear
     needs: [plan, cli, manifest]
     if: ${{ !cancelled() && needs.cli.result == 'success' }}
     runs-on: ubuntu-24.04
@@ -265,6 +265,27 @@ jobs:
         run: |
           gh api repos/no-phux/website/dispatches \
             -f event_type=phux-content -f "client_payload[sha]=${GITHUB_SHA}"
+      # The tap re-resolves the release itself and ignores the payload; this only
+      # buys latency. Its */15 cron fired every 4-8 hours in practice, so brew
+      # trailed releases by hours and skipped some. Best effort: if the release
+      # app cannot reach homebrew-tap, the cron still catches up.
+      - uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        id: tap-token
+        continue-on-error: true
+        with:
+          client-id: ${{ vars.RELEASE_APP_ID }}
+          private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
+          owner: no-phux
+          repositories: homebrew-tap
+          permission-contents: write
+      - name: Update the Homebrew tap
+        if: steps.tap-token.outcome == 'success'
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ steps.tap-token.outputs.token }}
+        run: |
+          gh api repos/no-phux/homebrew-tap/dispatches \
+            -f event_type=phux-release -f "client_payload[tag]=${TAG}"
       # Linear finds the issues a release carried in its commit range.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         if: needs.cli.result == 'success'
