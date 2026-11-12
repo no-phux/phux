@@ -125,6 +125,8 @@ impl RemoteClient {
             token: self.token.clone(),
             tls_server_name: self.route.lock().unwrap().clone(),
             client_identity: self.client_identity.lock().unwrap().clone(),
+            // Mobile has no askpass; its ssh never prompts.
+            ssh_askpass: None,
         })
     }
 

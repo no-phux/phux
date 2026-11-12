@@ -52,7 +52,7 @@ pub fn control_options() -> Vec<String> {
 /// [`control_options`] for a `BatchMode` run, which never prompts.
 ///
 /// With no master up, the run logs in with its key and keeps that connection
-/// as phux's master for [`CONTROL_PERSIST_SECS`], so the runs after it skip
+/// as phux's master for five minutes, so the runs after it skip
 /// the ssh handshake, those without a terminal (scripts, Rune) included.
 #[must_use]
 pub fn batch_control_options() -> Vec<String> {
