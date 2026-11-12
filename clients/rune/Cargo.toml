@@ -1,6 +1,6 @@
 [package]
 name = "phux-rune"
-version = "0.1.18"
+version = "0.1.19"
 description = "The phux desktop client, built on the Rune UI framework."
 edition = "2024"
 publish = false
