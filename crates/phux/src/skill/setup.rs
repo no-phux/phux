@@ -36,7 +36,7 @@ pub(crate) enum SkillAgent {
     Pi,
 }
 
-const ALL: [SkillAgent; 4] = [
+pub(crate) const ALL: [SkillAgent; 4] = [
     SkillAgent::Claude,
     SkillAgent::Codex,
     SkillAgent::Opencode,
@@ -44,7 +44,7 @@ const ALL: [SkillAgent; 4] = [
 ];
 
 impl SkillAgent {
-    const fn name(self) -> &'static str {
+    pub(crate) const fn name(self) -> &'static str {
         match self {
             Self::Claude => "claude",
             Self::Codex => "codex",

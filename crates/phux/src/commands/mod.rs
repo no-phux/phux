@@ -150,6 +150,8 @@ pub(crate) const fn socketless_verb(command: &Command) -> Option<&'static str> {
         Command::Agent(AgentArgs { action }) => match action {
             agent::AgentAction::InstallClaude { .. } => Some("agent install-claude"),
             agent::AgentAction::UninstallClaude => Some("agent uninstall-claude"),
+            agent::AgentAction::InstallShim { .. } => Some("agent install-shim"),
+            agent::AgentAction::UninstallShim { .. } => Some("agent uninstall-shim"),
             agent::AgentAction::HookPayload => Some("agent hook-payload"),
             agent::AgentAction::HookTranscript => Some("agent hook-transcript"),
             _ => None,

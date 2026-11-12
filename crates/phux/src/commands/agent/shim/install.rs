@@ -48,7 +48,7 @@ pub(super) fn install_claude_into(
     let settings = shim_dir.join("claude-hooks.json");
     let manifest = shim_dir.join(MANIFEST);
     let replaced = installed_shim_schema(&shim);
-    let real = resolve_real_claude(explicit_real, shim_dir, &manifest)?;
+    let real = resolve_real("claude", "real_claude", explicit_real, shim_dir, &manifest)?;
     let (shim_dir, rc) = (shim_dir.to_path_buf(), rc.to_path_buf());
 
     std::fs::create_dir_all(&shim_dir)
@@ -111,7 +111,10 @@ pub(super) fn uninstall_claude_from(shim_dir: &Path) -> Result<Option<PathBuf>, 
         .map(PathBuf::from)
         .ok_or_else(|| format!("{} has no rc path", manifest.display()))?;
 
-    remove_rc_block(&rc)?;
+    // The rc block is shared by every agent's shim: it goes with the last.
+    if !other_manifests(shim_dir, &manifest) {
+        remove_rc_block(&rc)?;
+    }
     for path in [
         shim_dir.join("claude"),
         shim_dir.join("claude-hooks.json"),
@@ -139,7 +142,12 @@ pub(super) fn data_home(home: &Path) -> PathBuf {
         .map_or_else(|| home.join(".local").join("share"), PathBuf::from)
 }
 
-pub(super) fn resolve_real_claude(
+/// The real `bin` this shim wraps: `explicit`, else the one the manifest
+/// recorded under `key`, else the first `bin` on `PATH` outside the shim
+/// directory.
+pub(super) fn resolve_real(
+    bin: &str,
+    key: &str,
     explicit: Option<&Path>,
     shim_dir: &Path,
     manifest: &Path,
@@ -148,7 +156,7 @@ pub(super) fn resolve_real_claude(
         return validate_executable(path, shim_dir);
     }
     if let Some(value) = read_manifest(manifest)?
-        && let Some(path) = value.get("real_claude").and_then(serde_json::Value::as_str)
+        && let Some(path) = value.get(key).and_then(serde_json::Value::as_str)
     {
         return validate_executable(Path::new(path), shim_dir);
     }
@@ -158,27 +166,47 @@ pub(super) fn resolve_real_claude(
         if dir == shim_dir {
             continue;
         }
-        let candidate = dir.join("claude");
+        let candidate = dir.join(bin);
         if is_executable(&candidate) {
             return Ok(candidate);
         }
     }
-    Err("could not find the real `claude` on PATH; pass --real /absolute/path/to/claude".to_owned())
+    // Only `install-claude` takes `--real`.
+    let hint = if bin == "claude" {
+        "; pass --real /absolute/path/to/claude"
+    } else {
+        ""
+    };
+    Err(format!("could not find the real `{bin}` on PATH{hint}"))
+}
+
+/// Whether any shim manifest other than `except` is still in `shim_dir`.
+pub(super) fn other_manifests(shim_dir: &Path, except: &Path) -> bool {
+    std::fs::read_dir(shim_dir).is_ok_and(|entries| {
+        entries.flatten().any(|entry| {
+            let path = entry.path();
+            path != except
+                && path
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .is_some_and(|name| name.ends_with("-install.json"))
+        })
+    })
 }
 
 pub(super) fn validate_executable(path: &Path, shim_dir: &Path) -> Result<PathBuf, String> {
     if !path.is_absolute() {
         return Err(format!(
-            "real Claude path must be absolute: {}",
+            "real agent path must be absolute: {}",
             path.display()
         ));
     }
     if path.parent() == Some(shim_dir) {
-        return Err("real Claude path resolves to the phux shim itself".to_owned());
+        return Err("real agent path resolves to the phux shim itself".to_owned());
     }
     if !is_executable(path) {
         return Err(format!(
-            "real Claude binary is not executable: {}",
+            "real agent binary is not executable: {}",
             path.display()
         ));
     }

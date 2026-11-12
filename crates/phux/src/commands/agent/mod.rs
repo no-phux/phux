@@ -238,6 +238,13 @@ pub(crate) fn run_agent(action: &AgentAction, socket: Option<PathBuf>) -> ExitCo
             shim::run_install_claude(shell.as_deref(), real.as_deref())
         }
         AgentAction::UninstallClaude => shim::run_uninstall_claude(),
+        AgentAction::InstallShim {
+            agent,
+            all,
+            shell,
+            json,
+        } => shim::run_install_shim(agent, *all, shell.as_deref(), *json),
+        AgentAction::UninstallShim { agent, json } => shim::run_uninstall_shim(agent, *json),
         AgentAction::Usage {
             flags:
                 action_flags::UsageFlags {

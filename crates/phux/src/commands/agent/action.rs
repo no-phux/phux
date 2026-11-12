@@ -354,6 +354,39 @@ pub(crate) enum AgentAction {
     },
     /// Remove the claude-in-phux shim and shell activation.
     UninstallClaude,
+    /// Make plain agent commands (`claude`, `codex`, `opencode`, `pi`)
+    /// launch inside phux.
+    ///
+    /// Claude gets the same hook-fed shim as `install-claude`. Codex,
+    /// `OpenCode` and pi get a launch-only shim that declares the pane's
+    /// agent identity; their state comes from phux's screen-detection
+    /// rules. One-shot runs (`codex exec`, `opencode run`, `pi -p`,
+    /// `--help`, piped I/O) go straight to the real binary. Every shim lives
+    /// in `~/.local/share/phux/shims`, activated by one shell rc block.
+    InstallShim {
+        /// Only this agent (repeatable).
+        #[usage(long, value_enum, value_name = "AGENT")]
+        agent: Vec<crate::skill::setup::SkillAgent>,
+        /// Every agent installed on this machine; one not on `PATH` is
+        /// skipped.
+        #[usage(long)]
+        all: bool,
+        /// Shell rc file to activate (auto-detected from SHELL).
+        #[usage(long, choices("zsh", "bash", "fish"))]
+        shell: Option<String>,
+        /// Print the per-agent result as JSON (`phux.agent-shims/v1`).
+        #[usage(long)]
+        json: bool,
+    },
+    /// Remove agent shims; the shell rc block goes with the last one.
+    UninstallShim {
+        /// Only this agent (repeatable). Default: all of them.
+        #[usage(long, value_enum, value_name = "AGENT")]
+        agent: Vec<crate::skill::setup::SkillAgent>,
+        /// Print the per-agent result as JSON (`phux.agent-shims/v1`).
+        #[usage(long)]
+        json: bool,
+    },
     /// Show the AI plan limits this host can see.
     ///
     /// Reads each signed-in subscription's limit windows from the vendor's
