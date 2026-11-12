@@ -213,7 +213,10 @@ impl Desk {
             return self.say(NoticeKind::Error, INPUT_PAUSED);
         }
         phux_perf::echo_hop::record("send");
-        if let Some(before) = &frame {
+        // Only this computer's server echoes inside the wait; a remote
+        // one would stall every key for nothing.
+        let local = self.machines.current.is_none() && self.native.is_none();
+        if let Some(before) = frame.as_ref().filter(|_| local) {
             echo::await_echo(&client, view, before);
         }
         self.nudge_typing(&client);
