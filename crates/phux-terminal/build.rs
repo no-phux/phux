@@ -21,13 +21,19 @@ fn main() {
     let src = "src/actor/fd_shrink.c";
     println!("cargo::rerun-if-changed={src}");
 
-    let cc = std::env::var("CC").unwrap_or_else(|_| "cc".to_owned());
-    let compiled = std::process::Command::new(&cc)
-        .arg("-O2")
-        .arg("-o")
-        .arg(&dest)
-        .arg(src)
-        .status();
+    // The trampoline runs on the target, so a cross build's compiler wins
+    // (`CC_<target>`, then `TARGET_CC`, the names `cc`-based crates read).
+    let target = std::env::var("TARGET").unwrap_or_default();
+    let cc = std::env::var(format!("CC_{}", target.replace('-', "_")))
+        .or_else(|_| std::env::var("TARGET_CC"))
+        .or_else(|_| std::env::var("CC"))
+        .unwrap_or_else(|_| "cc".to_owned());
+    let mut command = std::process::Command::new(&cc);
+    // A static server may land where no dynamic loader exists.
+    if std::env::var("CARGO_CFG_TARGET_ENV").as_deref() == Ok("musl") {
+        command.arg("-static");
+    }
+    let compiled = command.arg("-O2").arg("-o").arg(&dest).arg(src).status();
     match compiled {
         Ok(status) if status.success() => {
             println!("cargo::rustc-cfg=phux_fd_shrink");
