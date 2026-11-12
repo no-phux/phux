@@ -48,7 +48,7 @@ pub(crate) use pair::{
 pub(crate) use provision::provision_remote_phux;
 pub(crate) use server::ensure_remote_server;
 pub(crate) use ssh::{
-    accept_new_host_keys, authority, destination_host, ssh_hostname, ssh_program,
+    accept_new_host_keys, authority, destination_host, login, ssh_hostname, ssh_program,
 };
 pub(crate) use workload::{
     Settlement, TicketPins, enroll_client_certificate, enroll_with_ticket, settle_identity,

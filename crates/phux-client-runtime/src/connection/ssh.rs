@@ -27,11 +27,37 @@ fn remote_command(remote_phux: &str) -> String {
     format!("{phux} server --ensure >/dev/null 2>&1; exec {phux} stdio-bridge")
 }
 
+/// `-o` options that make an ssh run a client of phux's own master
+/// connection for its destination.
+///
+/// None when phux has no control directory
+/// ([`phux_config_core::instance::ssh_control_dir`]). With no master up, ssh
+/// connects as it would have. `ControlMaster=no` keeps the run
+/// from becoming a master that dies with it, whatever the user's config says.
+/// `ClearAllForwardings=yes` matters as much: a client whose config forwards
+/// a port the master already holds abandons the master and logs in again.
+#[must_use]
+pub fn control_options() -> Vec<String> {
+    phux_config_core::instance::ssh_control_dir(false).map_or_else(Vec::new, |dir| {
+        [
+            format!("ControlPath={}/%C", dir.display()),
+            "ControlMaster=no".to_owned(),
+            "ClearAllForwardings=yes".to_owned(),
+        ]
+        .into_iter()
+        .flat_map(|option| ["-o".to_owned(), option])
+        .collect()
+    })
+}
+
 fn command(destination: &str, remote_phux: &str) -> std::io::Result<tokio::process::Command> {
     validate(destination, remote_phux)?;
     let program = std::env::var_os("PHUX_SSH").unwrap_or_else(|| "ssh".into());
     let mut command = tokio::process::Command::new(program);
     command
+        // A password or 2FA login done once in the foreground (`phux attach
+        // --ssh`, `phux host add`) left a master this run rides.
+        .args(control_options())
         // The pipes are the protocol's, and the terminal may be the TUI's:
         // a login that must prompt fails here and is left to `ssh -t`.
         .args(["-T", "-o", "BatchMode=yes", "-o", "ClearAllForwardings=yes"])

@@ -39,6 +39,13 @@ Over `ssh me@mini`, this:
 There is nothing to copy by hand. Run `phux host add me@mini` again whenever
 the host stops answering: it checks the setup and repairs what broke.
 
+From a terminal, phux logs in to the host once, so a password, 2FA or
+security-key prompt comes up a single time and every later step reuses that
+login. phux keeps the login open as its own ssh connection, in a directory
+only you can read (`/tmp/phux-ssh-<uid>`), until five minutes after its last
+use. Without a terminal, as from a script or Rune, phux never prompts, so the
+host needs a key that works on its own.
+
 If a non-interactive SSH shell doesn't find `phux` on the remote machine, as
 with some Homebrew or Nix installs, say where it is:
 
@@ -240,7 +247,9 @@ phux attach --ssh me@box
 
 SSH logs you in (password and 2FA prompts work), starts the server on the
 remote machine if needed, and opens a QUIC (UDP) listener for this attach
-alone.
+alone. The login is kept the same way as for
+[`phux host add`](#adding-a-machine), so the ssh fallback below reuses it
+instead of asking again.
 Then SSH exits and the session runs directly over QUIC, so it survives
 network changes and draws locally. The listener and its token live only in
 memory and go away shortly after you detach.
