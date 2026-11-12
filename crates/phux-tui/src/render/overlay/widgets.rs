@@ -78,6 +78,12 @@ impl<'a> Modal<'a> {
     /// painted over another (a job's result over its running notice) never
     /// shows the glyphs beneath where its own text is shorter.
     pub fn render_into(&self, area: Rect, buf: &mut Buffer) {
+        let keys = fitted_keys(&self.footer.1, &self.footer.0, area.width);
+        if keys != self.footer.1 {
+            let mut fitted = self.clone();
+            fitted.footer.1 = keys;
+            return fitted.render_into(area, buf);
+        }
         for y in area.y..area.bottom() {
             for x in area.x..area.right() {
                 if let Some(cell) = buf.cell_mut((x, y)) {
@@ -141,6 +147,29 @@ impl<'a> Modal<'a> {
             para
         }
     }
+}
+
+/// The `a · b · esc` key legend trimmed to sit beside `status` in a border
+/// `width` wide: leading hints go first (`↑↓ move` is the one nobody needs
+/// spelled out), the last one stays. Untrimmed, the two titles collide and
+/// the status (`3 of 61`) is what gets cut.
+fn fitted_keys(keys: &str, status: &str, width: u16) -> String {
+    let pad = |s: &str| {
+        if s.is_empty() {
+            0
+        } else {
+            crate::render::display_width(s) + 2
+        }
+    };
+    let room = usize::from(width).saturating_sub(2 + pad(status) + 1);
+    let mut rest = keys;
+    while pad(rest) > room {
+        match rest.split_once(" · ") {
+            Some((_, tail)) => rest = tail,
+            None => break,
+        }
+    }
+    rest.to_owned()
 }
 
 /// A centered [`Rect`] at `frac_num`/10 of `outer`, at least `min_w`x`min_h`
@@ -267,6 +296,23 @@ mod tests {
             ["demo", "hello", "world"].iter().all(|w| text.contains(w)),
             "{text}"
         );
+    }
+
+    /// A legend too long to sit beside the count sheds its leading hints
+    /// instead of cutting `1 of 2` down to `1`.
+    #[test]
+    fn a_crowded_footer_drops_leading_hints_and_keeps_the_count() {
+        let theme = Theme::default();
+        let area = Rect::new(0, 0, 40, 3);
+        let mut buf = Buffer::empty(area);
+        Modal::new(&theme, "Sessions", vec![])
+            .footer("1 of 2", "↑↓ move · ⏎ run · tab manage · esc")
+            .render_into(area, &mut buf);
+        let bottom: String = (0..40).map(|x| buf[(x, 2)].symbol().to_owned()).collect();
+        assert!(bottom.contains(" 1 of 2 "), "{bottom}");
+        assert!(bottom.contains(" ⏎ run · tab manage · esc "), "{bottom}");
+        assert!(!bottom.contains("move"), "{bottom}");
+        assert_eq!(fitted_keys("a · esc", "1 of 2", 4), "esc");
     }
 
     /// The window holds still while the cursor is inside it, moves minimally
