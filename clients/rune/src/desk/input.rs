@@ -386,10 +386,10 @@ impl Desk {
         if self.is_document(&terminal) {
             return self.hide_documents(&[terminal]);
         }
-        if !self.settings.confirm_close || self.vouched_idle(&terminal) {
-            self.close_now(&terminal);
-        } else {
+        if self.asks_to_close(&terminal) {
             self.pending = Some(Pending::Close(terminal));
+        } else {
+            self.close_now(&terminal);
         }
     }
 
