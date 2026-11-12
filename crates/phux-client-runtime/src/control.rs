@@ -73,6 +73,7 @@ mod roster;
 mod service_http;
 mod state;
 mod subscriptions;
+mod tab_lock;
 mod topology;
 
 pub use checkout::{CheckoutFailure, CheckoutOutcome, CheckoutResponse, MAX_CHECKOUT_ANSWERS};

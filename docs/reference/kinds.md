@@ -67,6 +67,7 @@ Addressed to the server or the connection rather than to one resource.
 | `REVOKE_DELEGATION` | command `0x36` | TERMINATE (owner socket only) | yes | none | shipped |
 | `SESSION_KILL` | command `0x37` | TERMINATE | yes | `session_kill` (features_ext) | shipped |
 | `SESSION_SET_PROJECT` | command `0x3a` | ORGANIZE | yes | `session_project` (features_ext) | shipped |
+| `ARRANGEMENT_LOCK` | command `0x4d` | ORGANIZE | yes | `tab_lock` (features_ext) | shipped |
 
 ## Server events
 
@@ -368,6 +369,6 @@ Every command nested in `COMMAND` lands on exactly one row; the envelope alone g
 | `RESOURCE_RELAUNCH` | CREATE | `KeyedResource` |
 | `ORGANIZATION_UNDO` | ORGANIZE | `UndoneOperation` |
 | `ARRANGEMENT_GET` | INVENTORY | `ArrangementOwner` |
-| `ARRANGEMENT_REPLACE` | ORGANIZE | `ArrangementOwner` |
+| `ARRANGEMENT_REPLACE`, `ARRANGEMENT_LOCK` | ORGANIZE | `ArrangementOwner` |
 | `DELEGATE_AGENT`, `REVOKE_DELEGATION` | TERMINATE + owner-UDS transport | `Global { owner_uds_only: true }` |
 | Unknown, retired, or otherwise unclassified command tag | deny | `None` |

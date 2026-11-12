@@ -261,6 +261,25 @@ pub(super) fn translate(
             };
             (ow::core_operation(&operation), op)
         }
+        Command::ArrangementLock {
+            operation,
+            arrangement,
+            group,
+            locked,
+        } => {
+            let key = ow::core_arrangement_key(&arrangement);
+            let op = s
+                .org()
+                .arrangement(&key)
+                .map_or(Err(Refusal::NotFound), |a| {
+                    Ok(Op::ArrangementLock {
+                        owner: a.owner,
+                        group,
+                        locked,
+                    })
+                });
+            (ow::core_operation(&operation), op)
+        }
         _ => return None,
     })
 }

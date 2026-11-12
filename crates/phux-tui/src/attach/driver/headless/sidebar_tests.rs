@@ -72,6 +72,7 @@ async fn headless_layout_is_the_arrangement_record() {
         work,
         WireDoc {
             groups: vec![ArrangementGroup {
+                locked: false,
                 id: [7; 16],
                 name: Some("build".to_owned()),
                 tree: ArrangementNode::Leaf(EntryRef {

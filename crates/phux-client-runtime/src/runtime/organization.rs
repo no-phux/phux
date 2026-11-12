@@ -207,6 +207,27 @@ impl Client {
             .with(|control| control.terminate_resource(resource, mode))
     }
 
+    /// Lock (`locked`) or unlock one tab of `session`'s arrangement.
+    ///
+    /// # Errors
+    ///
+    /// [`SubmitError`].
+    pub fn lock_group(
+        &self,
+        session: SessionKey,
+        group: [u8; 16],
+        locked: bool,
+    ) -> Result<OperationId, SubmitError> {
+        self.inner
+            .with(|control| control.lock_group(session, group, locked))
+    }
+
+    /// Whether the connected server can lock a tab.
+    #[must_use]
+    pub fn tab_lock_supported(&self) -> bool {
+        self.inner.with(|control| control.tab_lock_supported())
+    }
+
     /// Replace a session's arrangement with a handle-space document.
     ///
     /// # Errors

@@ -18,7 +18,6 @@
 use std::collections::{HashMap, HashSet};
 
 use phux_protocol::ResourceId;
-use phux_protocol::ids::ResourceKey;
 use phux_protocol::wire::frame::{
     ArrangementDoc as WireDoc, ArrangementGroup as WireGroup, ArrangementNode as WireNode,
     EntryRef, EntryTarget, SplitDirection,
@@ -27,85 +26,12 @@ use thiserror::Error;
 
 use super::{ArrangementDoc, Group, LayoutNode, LayoutState, SplitDir, identity, leaves};
 
+mod handle_map;
+pub use handle_map::HandleMap;
+
 /// Smallest ratio a written split carries; the wire requires the open
 /// interval `(0, 1)`, while a client may bank the closed endpoints.
 const MIN_WIRE_RATIO: f32 = 0.001;
-
-/// The translation between resource keys and the live handles that execute
-/// them on the connected server.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct HandleMap {
-    to_handle: HashMap<ResourceKey, ResourceId>,
-    to_key: HashMap<ResourceId, ResourceKey>,
-}
-
-impl HandleMap {
-    /// An empty map.
-    #[must_use]
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    /// Build a map from `(key, live handle)` pairs; records without a live
-    /// handle are skipped.
-    #[must_use]
-    pub fn from_pairs<I>(pairs: I) -> Self
-    where
-        I: IntoIterator<Item = (ResourceKey, Option<ResourceId>)>,
-    {
-        let mut map = Self::new();
-        for (key, handle) in pairs {
-            if let Some(handle) = handle {
-                map.insert(key, handle);
-            }
-        }
-        map
-    }
-
-    /// Record that `key` executes as `handle`, replacing any earlier pairing
-    /// of either side.
-    pub fn insert(&mut self, key: ResourceKey, handle: ResourceId) {
-        if let Some(old) = self.to_handle.insert(key, handle.clone()) {
-            self.to_key.remove(&old);
-        }
-        if let Some(old) = self.to_key.insert(handle, key)
-            && old != key
-        {
-            self.to_handle.remove(&old);
-        }
-    }
-
-    /// Forget `key` and its handle.
-    pub fn remove_key(&mut self, key: &ResourceKey) {
-        if let Some(handle) = self.to_handle.remove(key) {
-            self.to_key.remove(&handle);
-        }
-    }
-
-    /// The live handle `key` executes as.
-    #[must_use]
-    pub fn handle(&self, key: &ResourceKey) -> Option<&ResourceId> {
-        self.to_handle.get(key)
-    }
-
-    /// The key `handle` executes.
-    #[must_use]
-    pub fn key(&self, handle: &ResourceId) -> Option<ResourceKey> {
-        self.to_key.get(handle).copied()
-    }
-
-    /// How many keys have a live handle.
-    #[must_use]
-    pub fn len(&self) -> usize {
-        self.to_handle.len()
-    }
-
-    /// Whether no key has a live handle.
-    #[must_use]
-    pub fn is_empty(&self) -> bool {
-        self.to_handle.is_empty()
-    }
-}
 
 /// A member entry the client document could not place, because its resource
 /// has no live handle.
@@ -194,14 +120,11 @@ pub fn from_protocol(doc: &WireDoc, map: &HandleMap) -> (ArrangementDoc, EntryBi
                     .name
                     .clone()
                     .unwrap_or_else(|| (index + 1).to_string());
-                groups.push(Group::with_id(
-                    group.id,
-                    name,
-                    LayoutState {
-                        tree: Some(tree),
-                        focus,
-                    },
-                ));
+                let state = LayoutState {
+                    tree: Some(tree),
+                    focus,
+                };
+                groups.push(Group::with_id(group.id, name, state).with_locked(group.locked));
             }
             None => binding.hidden.push(HiddenGroup {
                 index,
@@ -244,6 +167,7 @@ pub fn to_protocol(
             id: group.id,
             name: (!group.name.is_empty()).then(|| group.name.clone()),
             tree: node,
+            locked: group.locked,
         });
     }
     let mut orphans: Vec<WireGroup> = Vec::new();
@@ -261,6 +185,7 @@ pub fn to_protocol(
                 id: unplaced.group,
                 name: None,
                 tree: WireNode::Leaf(entry),
+                locked: false,
             }),
         }
     }
@@ -428,7 +353,7 @@ fn collect_wire_leaves(node: &WireNode, out: &mut Vec<EntryRef>) {
 mod tests {
     use super::*;
     use crate::layout::split_at;
-    use phux_protocol::ids::SatelliteHost;
+    use phux_protocol::ids::{ResourceKey, SatelliteHost};
 
     /// The keys of every stored member entry that has no live handle.
     fn unplaced_keys(binding: &EntryBinding) -> Vec<ResourceKey> {
@@ -512,11 +437,13 @@ mod tests {
         WireDoc {
             groups: vec![
                 WireGroup {
+                    locked: false,
                     id: [1; 16],
                     name: Some("editor".to_owned()),
                     tree: split(member(1), split(member(2), satellite())),
                 },
                 WireGroup {
+                    locked: false,
                     id: [2; 16],
                     name: None,
                     tree: member(3),

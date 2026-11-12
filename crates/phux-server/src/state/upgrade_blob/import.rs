@@ -257,6 +257,7 @@ pub(in crate::state) fn import_tree(
             };
             if let Some(tree) = tree {
                 groups.push(Group {
+                    locked: false,
                     id: keys.fresh(),
                     name: None,
                     tree,

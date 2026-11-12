@@ -59,6 +59,7 @@ fn replace(groups: u32) -> Command {
         document: ArrangementDoc {
             groups: (0..groups)
                 .map(|i| ArrangementGroup {
+                    locked: false,
                     id: [9; 16],
                     name: None,
                     tree: leaf(i),

@@ -309,6 +309,7 @@ pub(in crate::wire) fn encode_command(command: &Command, enc: &mut Encoder<'_>) 
         | Command::OrganizationUndo { .. }
         | Command::ArrangementGet { .. }
         | Command::ArrangementReplace { .. }
+        | Command::ArrangementLock { .. }
         | Command::DelegateAgent { .. }
         | Command::RevokeDelegation { .. }) => {
             let written = crate::wire::frame::org::encode_org_command(org, enc);

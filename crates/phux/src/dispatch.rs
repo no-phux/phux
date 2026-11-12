@@ -106,6 +106,16 @@ pub(crate) fn dispatch(
         })) => {
             commands::rename::run_rename(&target, &new_name, json.json, remote.with_socket(socket))
         }
+        Some(Command::Lock(commands::LockArgs {
+            target,
+            json,
+            remote,
+        })) => commands::org::run_lock(&target, true, json.json, remote.with_socket(socket)),
+        Some(Command::Unlock(commands::UnlockArgs {
+            target,
+            json,
+            remote,
+        })) => commands::org::run_lock(&target, false, json.json, remote.with_socket(socket)),
         Some(Command::Snapshot(args)) => panes::snapshot(args, socket),
         Some(Command::SendKeys(commands::SendKeysArgs { target, keys, json })) => {
             commands::send_keys::run_send_keys(&target, &keys, json.json, socket)

@@ -253,6 +253,7 @@ impl Desk {
             Shortcut::Tab(index) => self.select_tab(usize::from(index)),
             Shortcut::RenameSession => self.rename_selected_session(),
             Shortcut::RenameTab => self.rename_active_tab(),
+            Shortcut::LockTab => self.toggle_tab_lock(),
             Shortcut::CloseSession => self.close_session(),
             Shortcut::NewSession => self.new_session(),
             Shortcut::NextTerminal => self.cycle(1),

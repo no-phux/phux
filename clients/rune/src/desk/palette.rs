@@ -29,6 +29,9 @@ impl PathSearch {
     }
 }
 
+/// What right-clicking a tab offers, in order.
+pub const TAB_MENU: [Shortcut; 3] = [Shortcut::LockTab, Shortcut::RenameTab, Shortcut::CloseTab];
+
 /// What right-clicking a pane offers, in order.
 pub const CONTEXT_MENU: [Shortcut; 7] = [
     Shortcut::Copy,
@@ -91,6 +94,7 @@ pub fn with_menus(app: App<Desk>) -> App<Desk> {
         item!(FILE, PreviousSession),
         item!(FILE, CloseTerminal),
         item!(FILE, CloseTab),
+        item!(FILE, LockTab),
         item!(FILE, CloseSession),
         item!(VIEW, ToggleSidebar),
         item!(VIEW, ToggleFullScreen),
@@ -138,6 +142,15 @@ pub fn with_menus(app: App<Desk>) -> App<Desk> {
 impl Desk {
     pub fn close_menu(&mut self) {
         self.pointer.menu = None;
+        self.pointer.tab_menu = false;
+    }
+
+    /// The right-click menu of the tab at `index`, which it selects first so
+    /// the rows act on the active tab.
+    pub fn open_tab_menu(&mut self, index: usize, at: rune::PointerPress) {
+        self.select_tab(index);
+        self.pointer.menu = Some(at);
+        self.pointer.tab_menu = true;
     }
 
     /// A row of the context menu.

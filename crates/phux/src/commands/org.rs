@@ -33,7 +33,9 @@ pub(crate) enum Target {
     Resource(ResourceRecord),
 }
 
+mod lock;
 mod targeting;
+pub(crate) use lock::run_lock;
 pub(crate) use targeting::resolve;
 use targeting::{connect, key_text, records};
 

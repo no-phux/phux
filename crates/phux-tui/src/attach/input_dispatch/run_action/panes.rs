@@ -221,6 +221,9 @@ fn split_host(host: Option<SatelliteHost>, support: DirectorySupport) -> SplitHo
 /// leaf out too, so a pane whose resource died under us can still be
 /// dismissed.
 pub(in crate::attach) fn kill_focused_pane(call: ActionCall<'_, '_>) {
+    if crate::attach::input_dispatch::tab_lock::refuse_locked(call.ctx, call.effects, true) {
+        return;
+    }
     if let Some(targets) = super::windows::confirmed_targets(call.resolved) {
         let Some(target) = targets.into_iter().next() else {
             call.effects.bell = true;

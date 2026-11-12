@@ -59,9 +59,16 @@ fn chord(index: usize) -> Option<String> {
 /// The tab's trailing slot: its chord at rest and its close button under the
 /// pointer, in the same place so neither moves the name. The active tab
 /// always shows its close.
-fn trailing(index: usize, active: bool, width: f32, ink: &Ink) -> Option<El> {
+fn trailing(index: usize, tab: &Tab, width: f32, ink: &Ink) -> Option<El> {
+    let active = tab.active;
     if !active && width < ROOMY {
         return None;
+    }
+    // A locked tab has no close to offer: its lock sits where close would.
+    if tab.locked {
+        let lock = rune::icon(&icons::LOCK, 11.0).color(ink.dim).a11y_hidden();
+        let lock = el().size(16.0, 16.0).center().child(lock);
+        return Some(lock.help("Locked: unlock it to close it"));
     }
     let close = pressable(format!("tab-close-{index}"), ink)
         .size(16.0, 16.0)
@@ -139,6 +146,9 @@ fn tab(desk: &Desk, tab: &Tab, index: usize, width: f32, ink: &Ink) -> El {
         .hover_group()
         .on_press(move |d: &mut Desk| d.select_tab(index))
         .on_double_press(move |d: &mut Desk| d.rename_tab(index))
+        .on_secondary_press_local(move |d: &mut Desk, event, _| {
+            d.open_tab_menu(index, event.window());
+        })
         .on_drag(move |d: &mut Desk, drag, _| d.drag_reorder(grab, drag))
         .on_layout_tx(move |d: &mut Desk, rect, tx| {
             d.reorder.laid_out(grab, rect);
@@ -170,7 +180,7 @@ fn tab(desk: &Desk, tab: &Tab, index: usize, width: f32, ink: &Ink) -> El {
     base.children(dot)
         .child(name)
         .child(el().grow(1.0))
-        .children(trailing(index, tab.active, width, ink))
+        .children(trailing(index, tab, width, ink))
 }
 
 /// The hairline between two resting tabs. Beside the active tab it keeps its
@@ -293,6 +303,7 @@ mod tests {
     fn named(count: u8, active: u8) -> Vec<Tab> {
         (0..count)
             .map(|i| Tab {
+                locked: false,
                 id: [i; 16],
                 name: format!("a tab with a long name {i}"),
                 resources: Vec::new(),

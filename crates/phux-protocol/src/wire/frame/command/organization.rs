@@ -91,6 +91,20 @@ macro_rules! organization_commands {
         /// The session.
         session: SessionKey,
     },
+    /// Lock or unlock one group (a tab) of an arrangement. A locked group
+    /// refuses every close of its last member, and an `ARRANGEMENT_REPLACE`
+    /// that drops it, until it is unlocked; `SESSION_KILL` still ends it.
+    /// Gated on `features_ext.TAB_LOCK`; answered `COMMITTED`.
+    ArrangementLock {
+        /// Caller-generated operation id.
+        operation: OperationId,
+        /// The arrangement holding the group.
+        arrangement: ArrangementKey,
+        /// The group's id.
+        group: [u8; 16],
+        /// Lock (`true`) or unlock (`false`).
+        locked: bool,
+    },
     /// Create a resource record in a session, with its membership and launch
     /// intent, in one transaction.
     ResourceCreate {

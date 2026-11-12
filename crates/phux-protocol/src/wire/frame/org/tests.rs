@@ -15,6 +15,7 @@ fn split_doc() -> ArrangementDoc {
     };
     ArrangementDoc {
         groups: vec![ArrangementGroup {
+            locked: false,
             id: [9; 16],
             name: Some("tab".to_owned()),
             tree: ArrangementNode::Split {
@@ -56,10 +57,16 @@ fn bytes_a_newer_peer_appends_to_a_document_are_skipped() {
     let trailing = [bytes.as_slice(), &[0xEE; 5]].concat();
     assert_eq!(decode_arrangement_doc(&trailing), Ok(doc.clone()));
 
-    // Inside the group record, which starts after the `u16` count.
+    // Inside the group record, which starts after the `u16` count: a newer
+    // peer writes the lock byte, then whatever it added after it.
     let group = 2;
-    let grown_group = grow(&bytes, group, None, &[0xEE; 3]);
+    let grown_group = grow(&bytes, group, None, &[0x00, 0xEE, 0xEE]);
     assert_eq!(decode_arrangement_doc(&grown_group), Ok(doc.clone()));
+    let mut locked = doc.clone();
+    locked.groups[0].locked = true;
+    let locked_group = grow(&bytes, group, None, &[0x01, 0xEE]);
+    assert_eq!(decode_arrangement_doc(&locked_group), Ok(locked.clone()));
+    assert_eq!(encoded(&locked), grow(&bytes, group, None, &[0x01]));
 
     // Inside the split node, after the group's length, id, and name
     // (presence byte, `u32` length, "tab").

@@ -119,6 +119,7 @@ fn launch() -> LaunchSpec {
 fn document() -> ArrangementDoc {
     ArrangementDoc {
         groups: vec![ArrangementGroup {
+            locked: false,
             id: [0x61; 16],
             name: Some("main".to_owned()),
             tree: ArrangementNode::Split {

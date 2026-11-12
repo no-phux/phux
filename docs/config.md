@@ -315,7 +315,7 @@ are the app's own.
 The command names:
 
 - Tabs and panes: `new-terminal` (a new tab), `close-terminal`, `close-tab`,
-  `next-tab`, `previous-tab`, `tab-1` to `tab-9`, `rename-tab`,
+  `next-tab`, `previous-tab`, `tab-1` to `tab-9`, `rename-tab`, `lock-tab`,
   `split-right`, `split-down`, `zoom-pane`, `focus-left`, `focus-right`,
   `focus-up`, `focus-down`, `next-terminal`, `previous-terminal`.
 - Sessions and machines: `new-session`, `switch-session`, `rename-session`,

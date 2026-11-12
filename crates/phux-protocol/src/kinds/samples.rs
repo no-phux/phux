@@ -244,6 +244,7 @@ fn only_organization_commands_need_the_v2_verbs() {
             let gate = match command {
                 Command::SessionKill { .. } => crate::caps::ServerFeatureExt::SessionKill,
                 Command::SessionSetProject { .. } => crate::caps::ServerFeatureExt::SessionProject,
+                Command::ArrangementLock { .. } => crate::caps::ServerFeatureExt::TabLock,
                 Command::GetCreation { .. } => crate::caps::ServerFeatureExt::ApiDescription,
                 _ => crate::caps::ServerFeatureExt::Organization,
             };

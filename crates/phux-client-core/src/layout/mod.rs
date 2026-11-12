@@ -159,6 +159,9 @@ pub struct Group {
     pub name: String,
     /// This group's pane layout and per-client focus.
     pub state: LayoutState,
+    /// Locked against close (the server's `TAB_LOCK`): closing it, or its
+    /// last pane, is refused until it is unlocked.
+    pub locked: bool,
 }
 
 impl Group {
@@ -172,7 +175,19 @@ impl Group {
     /// server's arrangement).
     #[must_use]
     pub const fn with_id(id: [u8; 16], name: String, state: LayoutState) -> Self {
-        Self { id, name, state }
+        Self {
+            id,
+            name,
+            state,
+            locked: false,
+        }
+    }
+
+    /// This group, locked or not.
+    #[must_use]
+    pub const fn with_locked(mut self, locked: bool) -> Self {
+        self.locked = locked;
+        self
     }
 }
 

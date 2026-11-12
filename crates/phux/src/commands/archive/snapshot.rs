@@ -277,14 +277,14 @@ fn reconcile_layout(
         placed.extend(leaves(&tree));
         kept.push((
             index == layout.active,
-            Group {
-                id: window.id,
-                name: window.name.clone(),
-                state: LayoutState {
+            Group::with_id(
+                window.id,
+                window.name.clone(),
+                LayoutState {
                     focus: window.state.focus.clone().filter(|id| live.contains(id)),
                     tree: Some(tree),
                 },
-            },
+            ),
         ));
     }
     let unplaced = live_ids

@@ -310,10 +310,7 @@ impl<W: crate::attach::RenderSink> EventEnv<'_, '_, W> {
             None => false,
         };
         let spec = if is_window {
-            crate::attach::context_menu::window_menu(
-                self.ctx.keybindings,
-                &active_window_label(self.ctx),
-            )
+            crate::attach::context_menu::active_window_menu(self.ctx)
         } else {
             crate::attach::context_menu::session_menu(self.ctx.keybindings, self.ctx.session_name)
         };
@@ -806,17 +803,6 @@ pub(in crate::attach::input_dispatch) fn open_context_menu(
 /// The active tab as the bar labels it: its name, or `Tab N` by its index
 /// when the name is one the server handed out (a bare integer, which would
 /// read as a second, disagreeing index).
-fn active_window_label(ctx: &DispatchCtx<'_>) -> String {
-    let Some(window) = ctx.workspace.groups.get(ctx.workspace.active) else {
-        return String::new();
-    };
-    if crate::attach::pane_state::auto_named(&window.name) {
-        format!("Tab {}", ctx.workspace.active)
-    } else {
-        window.name.clone()
-    }
-}
-
 /// Quantise an f64 pointer position (1-px-per-cell per SPEC §9.2.1) to an
 /// outer-viewport cell, saturating into `u16` like the mouse hit-test.
 #[allow(

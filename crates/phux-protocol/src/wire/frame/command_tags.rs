@@ -84,6 +84,8 @@ enum CommandTag {
     MirrorProvide = 0x4b,
     /// `PRIVACY_STATUS`: the macOS privacy grants the server holds.
     PrivacyStatus = 0x4c,
+    /// `ARRANGEMENT_LOCK`: lock or unlock one group of an arrangement.
+    ArrangementLock = 0x4d,
 }
 
 // `Command` tags (SPEC §5.1). `0x00`, `0x04`, and `0x06` are reserved catalog
@@ -235,6 +237,13 @@ pub(crate) const COMMAND_TAG_REVOKE_DELEGATION: u8 = CommandTag::RevokeDelegatio
 wire_tags! { Command;
 /// Wire tag for [`Command::SessionKill`].
 pub(crate) const COMMAND_TAG_SESSION_KILL: u8 = CommandTag::SessionKill as u8;
+}
+
+// `ARRANGEMENT_LOCK` (`docs/organization.md`), an organization command gated
+// on `features_ext.TAB_LOCK`.
+wire_tags! { Command;
+/// Wire tag for [`Command::ArrangementLock`].
+pub(crate) const COMMAND_TAG_ARRANGEMENT_LOCK: u8 = CommandTag::ArrangementLock as u8;
 }
 
 // `InputEvent` tags (`ROUTE_INPUT`), mirroring the `INPUT_*` frame atoms.

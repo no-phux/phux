@@ -2,7 +2,7 @@
 
 use super::{ActionSpec, ArgValue, Category, Palette};
 use crate::attach::input_dispatch::run_action as run;
-use crate::attach::input_dispatch::{organize, session_management};
+use crate::attach::input_dispatch::{organize, session_management, tab_lock};
 
 /// The actions with a palette row, in the order the palette lists them.
 pub(super) const PALETTE_ROWS: &[ActionSpec] = &[
@@ -217,6 +217,28 @@ pub(super) const PALETTE_ROWS: &[ActionSpec] = &[
             args: &[],
         },
         run: run::kill_window,
+    },
+    ActionSpec {
+        name: "lock-window",
+        description: "Lock the active tab: closing it or its last pane is refused until unlocked",
+        params: "",
+        palette: Palette::Row {
+            title: "Lock tab",
+            category: Category::Window,
+            args: &[],
+        },
+        run: tab_lock::lock_window,
+    },
+    ActionSpec {
+        name: "unlock-window",
+        description: "Unlock the active tab so it can be closed again",
+        params: "",
+        palette: Palette::Row {
+            title: "Unlock tab",
+            category: Category::Window,
+            args: &[],
+        },
+        run: tab_lock::unlock_window,
     },
     ActionSpec {
         name: "next-window",

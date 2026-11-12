@@ -28,7 +28,9 @@ Sessions:
   detach        Detach clients from a session
   native        Run one terminal in a native emulator window
   rename        Rename a session or a pane
+  lock          Lock a tab against closing
   project       Open a project session from a trusted recipe [aliases: p]
+  unlock        Unlock a tab so it can be closed again
   rm            Remove a stopped pane, or delete an empty session
   relaunch      Start a stopped pane again
   restore       Relaunch every pane a server restart ended
@@ -3594,6 +3596,45 @@ Global flags:
       --socket <PATH>      Server socket to dial (default: `$PHUX_SOCKET`)
 ```
 
+## `phux lock`
+
+```text
+Lock a tab against closing
+
+`TAB` is `SESSION:N` (0-based) or `SESSION:NAME`. A locked tab refuses every
+close until `phux unlock` unlocks it: closing the tab or its last pane, `phux
+kill SESSION:N`, and every client's close keys, menus and buttons. Killing the
+whole session still ends it, after the usual confirmation.
+
+Usage: phux lock [--json] [--remote <[USER@]HOST[:PORT]>] <TAB>
+
+Arguments:
+  <TAB>  The tab: `SESSION:N` or `SESSION:NAME`.
+
+Flags:
+      --json                      Emit stable, versioned JSON on stdout instead
+                                  of the human view. On failure, stdout stays
+                                  empty and stderr carries one JSON error
+                                  object.
+      --remote <[USER@]HOST[:PORT]>  Run against the phux server on another
+                                  machine instead of the local socket,
+                                  ssh-style: `--remote me@mini`. Same target
+                                  and resolution as `phux attach --remote`: a
+                                  registered host is dialed directly over
+                                  QUIC or WSS, and an unregistered one is
+                                  paired over your ssh trust first and
+                                  remembered (except `upload`, `download`,
+                                  and calls with `--json`: these never pair
+                                  and refuse unregistered hosts, naming
+                                  remedies). PORT defaults to 8788. Cannot
+                                  combine with `--socket`.
+  -h, --help                      Print help
+
+Global flags:
+      --socket <PATH>             Server socket to dial (default:
+                                  `$PHUX_SOCKET`)
+```
+
 ## `phux logs`
 
 ```text
@@ -7077,6 +7118,42 @@ Flags:
 
 Global flags:
       --socket <PATH>  Server socket to dial (default: `$PHUX_SOCKET`)
+```
+
+## `phux unlock`
+
+```text
+Unlock a tab so it can be closed again
+
+`TAB` is `SESSION:N` (0-based) or `SESSION:NAME`, as for `phux lock`.
+
+Usage: phux unlock [--json] [--remote <[USER@]HOST[:PORT]>] <TAB>
+
+Arguments:
+  <TAB>  The tab: `SESSION:N` or `SESSION:NAME`.
+
+Flags:
+      --json                      Emit stable, versioned JSON on stdout instead
+                                  of the human view. On failure, stdout stays
+                                  empty and stderr carries one JSON error
+                                  object.
+      --remote <[USER@]HOST[:PORT]>  Run against the phux server on another
+                                  machine instead of the local socket,
+                                  ssh-style: `--remote me@mini`. Same target
+                                  and resolution as `phux attach --remote`: a
+                                  registered host is dialed directly over
+                                  QUIC or WSS, and an unregistered one is
+                                  paired over your ssh trust first and
+                                  remembered (except `upload`, `download`,
+                                  and calls with `--json`: these never pair
+                                  and refuse unregistered hosts, naming
+                                  remedies). PORT defaults to 8788. Cannot
+                                  combine with `--socket`.
+  -h, --help                      Print help
+
+Global flags:
+      --socket <PATH>             Server socket to dial (default:
+                                  `$PHUX_SOCKET`)
 ```
 
 ## `phux update`

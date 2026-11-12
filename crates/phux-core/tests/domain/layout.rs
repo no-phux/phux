@@ -134,6 +134,7 @@ fn satellite_entries_skip_membership_but_member_entries_are_checked() {
         },
     };
     let group = |right: EntryRef| Group {
+        locked: false,
         id: [9; 16],
         name: None,
         tree: LayoutNode::Split {

@@ -85,6 +85,7 @@ pub(super) fn moving_out_prunes_the_source_arrangement() {
         owner: ArrangementOwner::Session(a),
         expected: Revision::FIRST,
         groups: vec![Group {
+            locked: false,
             id: [5; 16],
             name: None,
             tree,
@@ -114,6 +115,7 @@ pub(super) fn undoing_a_move_restores_the_source_placement() {
     let r1 = h.shell_in(a);
     let r2 = h.shell_in(a);
     let groups = vec![Group {
+        locked: false,
         id: [5; 16],
         name: None,
         tree: LayoutNode::Split {
@@ -404,6 +406,7 @@ pub(super) fn arrangement_replace_validates_members_and_revisions() {
     let mine = h.shell_in(a);
     let theirs = h.shell_in(b);
     let group = |resource, entry| Group {
+        locked: false,
         id: [entry; 16],
         name: Some("main".to_owned()),
         tree: LayoutNode::Leaf(EntryRef::member([entry; 16], resource)),
@@ -494,4 +497,63 @@ pub(super) fn retries_replay_the_receipt_and_reject_a_changed_payload() {
         h.run_cmd(&owner, &changed).err(),
         Some(Refusal::DuplicateOperation)
     );
+}
+
+#[test]
+pub(super) fn a_locked_tab_refuses_close_until_unlocked_but_not_a_session_kill() {
+    let mut h = Harness::new();
+    let s = h.create_session("work", SessionLifetime::Persistent);
+    let (r1, r2) = (h.shell_in(s), h.shell_in(s));
+    let tab = |id: u8, entry: u8, r| Group {
+        id: [id; 16],
+        name: None,
+        tree: LayoutNode::Leaf(EntryRef::member([entry; 16], r)),
+        locked: false,
+    };
+    let owner = ArrangementOwner::Session(s);
+    h.run(Op::ArrangementReplace {
+        owner,
+        expected: Revision::FIRST,
+        groups: vec![tab(5, 1, r1), tab(6, 2, r2)],
+    })
+    .expect("arrangement");
+    let lock = |locked| Op::ArrangementLock {
+        owner,
+        group: [5; 16],
+        locked,
+    };
+    let terminate = |resource| Op::ResourceTerminate {
+        resource,
+        activation: A1,
+        mode: TerminateMode::Graceful,
+    };
+    h.run(lock(true)).expect("lock");
+    let ak = h.session(s).arrangement.expect("linked");
+    let refused = |h: &mut Harness, op| matches!(h.run(op), Err(Refusal::InvalidArgument { .. }));
+
+    assert!(refused(&mut h, terminate(r1)), "its last pane is refused");
+    h.run(terminate(r2)).expect("an unlocked tab still closes");
+    let current = h.reg.org().arrangement(&ak).expect("kept").revision;
+    let replace = |groups| Op::ArrangementReplace {
+        owner,
+        expected: current,
+        groups,
+    };
+    assert!(
+        refused(&mut h, replace(vec![tab(6, 2, r2)])),
+        "dropping it is refused"
+    );
+    h.run(replace(vec![tab(5, 1, r1), tab(6, 2, r2)]))
+        .expect("a replace that keeps it");
+    let groups = &h.reg.org().arrangement(&ak).expect("kept").groups;
+    assert!(
+        groups[0].locked,
+        "a replace that omits the flag keeps the lock"
+    );
+
+    h.run(lock(false)).expect("unlock");
+    h.run(terminate(r1)).expect("unlocked, it closes");
+    h.run(lock(true)).expect("lock again");
+    h.run(Op::SessionKill { session: s })
+        .expect("a session kill overrides locks");
 }

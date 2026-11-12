@@ -35,6 +35,9 @@ pub(in crate::layout) struct CborWindow {
     pub root: CborLayoutNode,
     /// The focused leaf within this window.
     pub focused_terminal: CborResourceId,
+    /// Locked against close; absent (unlocked) in an older document.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub locked: bool,
 }
 
 /// CBOR shadow of [`LayoutNode`]: pins the envelope schema apart from the

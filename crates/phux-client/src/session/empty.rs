@@ -249,6 +249,7 @@ async fn arrange_legacy_directory_shell(
         document
             .groups
             .push(phux_protocol::wire::frame::ArrangementGroup {
+                locked: false,
                 id: crate::layout::fresh_id(),
                 name: None,
                 tree: phux_protocol::wire::frame::ArrangementNode::Leaf(
