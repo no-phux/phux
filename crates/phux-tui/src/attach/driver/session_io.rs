@@ -193,3 +193,30 @@ pub(super) async fn wait_for_attached(
         }
     }
 }
+
+/// Make the session `new-session` asked for persistent, so closing its last
+/// tab leaves it empty rather than ending it: create it headless with that
+/// lifetime, as `phux new` does. The `CreateIfMissing` attach that follows
+/// then opens it, or the session already holding that name, whose lifetime
+/// this leaves alone. A server without the organization plane skips this,
+/// and the attach creates the session as it always did.
+pub(super) async fn create_persistent_session(conn: &mut Connection, target: &AttachTarget) {
+    let AttachTarget::CreateIfMissing { name, cwd, .. } = target else {
+        return;
+    };
+    if !phux_client::org::supported(conn) {
+        return;
+    }
+    let request = phux_client::session::CreateSessionRequest {
+        name,
+        command: None,
+        cwd: cwd.as_deref(),
+        env: &std::collections::BTreeMap::new(),
+        agent_session: None,
+        idempotency_key: None,
+        lifetime: phux_protocol::wire::frame::SessionLifetime::Persistent,
+        attrs: &[],
+    };
+    let created = phux_client::session::create_session(conn, &request, &mut Vec::new()).await;
+    tracing::debug!(session = %name, ?created, "new-session: persistent create");
+}

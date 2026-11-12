@@ -76,6 +76,8 @@ pub struct Link {
     /// `new_session` lent the runtime its automatic attach, which carries a
     /// create across the redial.
     pub creating: bool,
+    /// The session `create_session` made, to make persistent once listed.
+    pub keep: Option<String>,
     /// Why this window isn't on the machine it remembered, for after its
     /// first terminal opens.
     pub moved: Option<String>,
@@ -108,6 +110,7 @@ impl Default for Link {
             home: None,
             org_unavailable: None,
             creating: false,
+            keep: None,
             moved: None,
             server: 0,
             handoff_until: None,

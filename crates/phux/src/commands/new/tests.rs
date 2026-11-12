@@ -162,17 +162,15 @@ fn new_session_json_pins_the_contract_shape() {
     assert_eq!(doc.as_object().map(serde_json::Map::len), Some(3));
 }
 
-/// ADR-0160: a session the user names is persistent; a generated name
-/// is ephemeral; `--ephemeral` overrides a name; `--empty` is always
-/// persistent, since an ephemeral session is never empty.
+/// A session `phux new` creates is persistent, named or not; `--ephemeral`
+/// opts out; `--empty` is always persistent, since an ephemeral session is
+/// never empty.
 #[test]
-fn named_sessions_are_persistent_and_generated_ones_ephemeral() {
+fn new_sessions_are_persistent_unless_ephemeral() {
     use phux_protocol::wire::frame::SessionLifetime::{Ephemeral, Persistent};
-    assert_eq!(super::session_lifetime(true, false, false), Persistent);
-    assert_eq!(super::session_lifetime(false, false, false), Ephemeral);
-    assert_eq!(super::session_lifetime(true, false, true), Ephemeral);
-    assert_eq!(super::session_lifetime(false, true, false), Persistent);
-    assert_eq!(super::session_lifetime(true, true, false), Persistent);
+    assert_eq!(super::session_lifetime(false, false), Persistent);
+    assert_eq!(super::session_lifetime(false, true), Ephemeral);
+    assert_eq!(super::session_lifetime(true, false), Persistent);
 }
 
 /// phux-0db: `phux new` without `--cwd` seeds a local session in the

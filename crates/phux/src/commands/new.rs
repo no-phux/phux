@@ -30,11 +30,10 @@ pub(crate) use naming::{existing_session_names, unique_session_name};
 /// `session-name-template`, redrawing a taken `${random-name}` and settling on a
 /// numeric suffix. Only a local server is auto-spawned.
 ///
-/// Lifetime follows [`session_lifetime`]: a named session is persistent and
-/// is created headless, then attached by name; a generated name, or
-/// `--ephemeral`, makes it ephemeral, and the create+attach rides
-/// `CreateIfMissing`. `mode.empty` creates a persistent session with no
-/// terminal.
+/// Lifetime follows [`session_lifetime`]: a session is persistent and is
+/// created headless, then attached by name; `--ephemeral` makes it
+/// ephemeral, and the create+attach rides `CreateIfMissing`. `mode.empty`
+/// creates a persistent session with no terminal.
 pub(crate) fn run_new(
     name: Option<String>,
     session: Option<String>,
@@ -54,7 +53,7 @@ pub(crate) fn run_new(
         Ok(requested) => requested,
         Err(code) => return code,
     };
-    let lifetime = session_lifetime(requested.is_some(), empty, ephemeral);
+    let lifetime = session_lifetime(empty, ephemeral);
     if let Some(name) = &requested
         && let Err(invalid) = phux_client::rename::check_session_name(name)
     {
@@ -97,12 +96,11 @@ pub(crate) fn run_new(
     )
 }
 
-/// The lifetime `phux new` asks for (ADR-0160): an empty session is always
-/// persistent (an ephemeral session is never empty); otherwise
-/// `--ephemeral` wins, and a session the user named is persistent while one
-/// whose name was generated is ephemeral.
-pub(crate) const fn session_lifetime(named: bool, empty: bool, ephemeral: bool) -> SessionLifetime {
-    if empty || (named && !ephemeral) {
+/// The lifetime `phux new` asks for: a session someone creates is
+/// persistent, named or not, unless `--ephemeral` asks otherwise. An empty
+/// session is always persistent, since an ephemeral session is never empty.
+pub(crate) const fn session_lifetime(empty: bool, ephemeral: bool) -> SessionLifetime {
+    if empty || !ephemeral {
         SessionLifetime::Persistent
     } else {
         SessionLifetime::Ephemeral

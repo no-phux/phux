@@ -123,14 +123,18 @@ impl Desk {
     }
 
     /// A create is one attach across a redial, which only the runtime's
-    /// automatic recovery carries; `settle_home` takes it back.
+    /// automatic recovery carries; `settle_home` takes it back. The session
+    /// is someone's to keep, so `settle_home` makes it persistent once it is
+    /// listed: closing its last tab leaves it empty.
     pub(super) fn create_session(&mut self, name: String) {
-        self.create_session_running(name, None);
+        self.create_session_running(name.clone(), None);
+        self.link.keep = Some(name);
     }
 
     /// As [`Self::create_session`], its seed pane running `command` rather
-    /// than the shell.
+    /// than the shell, and ephemeral: it ends with its last terminal.
     pub(super) fn create_session_running(&mut self, name: String, command: Option<Vec<String>>) {
+        self.link.keep = None;
         let cwd = self.focused_cwd();
         let Some(client) = &self.client else { return };
         client.with_control(|control| control.set_session_recovery(SessionRecovery::Automatic));

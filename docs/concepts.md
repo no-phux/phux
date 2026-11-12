@@ -35,7 +35,7 @@ phux new api      # a session named "api"
 phux ls           # every session, and which ones need you
 ```
 
-**A session you name stays until you delete it.** It's still there, empty, after its last program exits, until `phux rm` or `phux kill` removes it. A session with a generated name, like the one bare `phux` creates from the current directory, ends with its last program. `phux new --ephemeral NAME` gives a named session that behavior too.
+**A session you create stays until you end it.** A session from `phux new`, the terminal UI's new-session action, or the desktop app is still there, empty, after you close its last tab or its last program exits. Open a new tab in it to keep going. `phux kill` or `phux rm` ends it, as do `kill-session` in the terminal UI and Close Session in the desktop app. The session bare `phux` starts from the current directory is the exception: it ends with its last program. `phux new --ephemeral` gives a new session that behavior too.
 
 A pane closes when its program exits. To keep a finished pane's last screen and exit status around for a while, set `retain-on-exit = true` under `[defaults]` in your [config file](./config.md).
 

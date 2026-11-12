@@ -51,11 +51,10 @@ pub(crate) struct LsArgs {
 /// `session-name-template`, disambiguated with fresh `${random-name}`
 /// picks when the template draws one, then a numeric suffix.
 ///
-/// A session you name is persistent: it stays, empty, after its last
-/// process exits, until `phux rm` or `phux kill` deletes it. A session
-/// whose name was generated, like the one bare `phux` starts, is
-/// ephemeral: it ends with its last process. `--ephemeral` makes a
-/// named session ephemeral too.
+/// The session is persistent, named or not: it stays, empty, after its
+/// last tab closes or its last process exits, until `phux rm` or
+/// `phux kill` deletes it. `--ephemeral` makes it end with its last
+/// process instead, like the session bare `phux` starts.
 ///
 /// With `--json`, creates the session *without* attaching and prints
 /// the seed pane's id as JSON instead. This neither attaches nor
@@ -121,8 +120,7 @@ pub(crate) struct NewArgs {
     #[usage(long, conflicts("--command", "--env", "--cwd", "--ephemeral"))]
     pub(crate) empty: bool,
 
-    /// Make the session ephemeral: it ends when its last process exits,
-    /// even though you named it.
+    /// Make the session ephemeral: it ends when its last process exits.
     #[usage(long)]
     pub(crate) ephemeral: bool,
 
