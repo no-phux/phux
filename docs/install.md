@@ -215,6 +215,20 @@ docker exec -it phux phux            # attach from inside the container
 - To reach it from another machine, give the server a listener and pair as
   on any host ([Remote access](./remote.md)), and publish that port.
 
+On Kubernetes,
+[`examples/container/statefulset.yaml`](https://github.com/no-phux/phux/blob/main/examples/container/statefulset.yaml)
+runs the same image as a one-pod StatefulSet with a volume claim for each
+of those two directories:
+
+```sh
+kubectl apply -f examples/container/statefulset.yaml
+kubectl exec -it phux-0 -- phux      # attach from inside the pod
+```
+
+Keep it at one replica: a server owns its sessions. After the pod is
+replaced, `phux ls` lists the sessions again and `phux restore` starts
+their programs.
+
 ## Homebrew
 
 ```sh
