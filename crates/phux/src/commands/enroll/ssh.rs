@@ -115,11 +115,6 @@ impl From<std::process::Output> for SshOutput {
     }
 }
 
-/// How long phux's ssh master outlives its last client: enough for the rest
-/// of an enrollment or attach and a quick reconnect, short enough that a
-/// password or 2FA login does not stay usable all day.
-const CONTROL_PERSIST_SECS: u32 = 300;
-
 /// Log in to `destination` once, in the foreground, so a password, 2FA or
 /// hardware-key prompt reaches the person at this terminal, and keep that
 /// connection as phux's ssh master. Every later ssh run for the destination,
@@ -150,26 +145,15 @@ pub(crate) fn login(destination: &str) {
     }
     // The prompt starts its own line, not after a reconnect countdown.
     eprint!("\r\x1b[K");
-    let _ = login_command(&program, &path, destination)
+    let _ = login_command(&program, &dir, destination)
         .stdout(Stdio::null())
         .status();
 }
 
-/// The foreground login [`login`] runs, `ControlPath` option given.
-fn login_command(program: &OsString, path: &str, destination: &str) -> Command {
+/// The foreground login [`login`] runs, its master in `dir`.
+fn login_command(program: &OsString, dir: &std::path::Path, destination: &str) -> Command {
     let mut command = Command::new(program);
-    command
-        // `auto`, not `yes`: over a dead master's stale socket `yes` gives
-        // up multiplexing and leaves this `-N` login running for good, while
-        // `auto` removes the socket and takes over.
-        .args(["-o", path, "-o", "ControlMaster=auto"])
-        .args(["-o", &format!("ControlPersist={CONTROL_PERSIST_SECS}")])
-        // The master carries the keepalive for every client riding it.
-        .args(["-o", "ServerAliveInterval=15", "-o", "ServerAliveCountMax=3"])
-        // A network that drops packets fails in seconds, not the system's
-        // TCP timeout, so a reconnect window keeps its count.
-        .args(["-o", "ConnectTimeout=10"])
-        .args(["-o", "ClearAllForwardings=yes"]);
+    command.args(phux_client_runtime::connection::ssh_master_options(dir));
     if ACCEPT_NEW_HOST_KEYS.load(Ordering::Relaxed) {
         command.args(["-o", "StrictHostKeyChecking=accept-new"]);
     }
@@ -251,7 +235,7 @@ mod tests {
     /// every later run log in again.
     #[test]
     fn the_login_takes_over_a_stale_socket_and_forwards_nothing() {
-        let command = login_command(&"ssh".into(), "ControlPath=/tmp/x/%C", "me@box");
+        let command = login_command(&"ssh".into(), std::path::Path::new("/tmp/x"), "me@box");
         let args: Vec<_> = command
             .get_args()
             .map(|arg| arg.to_string_lossy().into_owned())

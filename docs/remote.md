@@ -43,8 +43,10 @@ From a terminal, phux logs in to the host once, so a password, 2FA or
 security-key prompt comes up a single time and every later step reuses that
 login. phux keeps the login open as its own ssh connection, in a directory
 only you can read (`/tmp/phux-ssh-<uid>`), until five minutes after its last
-use. Without a terminal, as from a script or Rune, phux never prompts, so the
-host needs a key that works on its own. If the host's key changed, phux stops
+use. Rune asks in a dialog instead, for the machine you pick (on Linux,
+through your desktop's `SSH_ASKPASS`); cancelling it stops the connection
+rather than asking again. Without either, as from a script, phux never
+prompts, so the host needs a key that works on its own. If the host's key changed, phux stops
 and prints the `ssh-keygen -R` command that removes the old one; it never
 accepts a new key for you.
 
