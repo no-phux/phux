@@ -59,6 +59,44 @@ and the Read-only mirror label; `target/resource-native.json` is the tree.
 `RUNE_ONBOARDING_SNAP=DIR cargo test --locked every_step_renders` writes
 each onboarding step as a PNG under `DIR`.
 
+## Keystroke latency
+
+Rune writes its hops into the server's keystroke-echo trace
+(`PHUX_ECHO_HOPS=FILE`, `pid TAB hop TAB unix_nanos`): `stdin` when the key
+event arrives, `send` when the input is handed to the runtime,
+`client_recv` when the runtime wakes the window, `build` when the focused
+pane builds a frame with a new publication, and `stdout` when the first
+frame showing it is drawn (after present in a window, after submit
+headless). The server's hops fall between `send` and `client_recv`.
+`scripts/bench/rune-echo.sh` runs it end to end against a temp-socket
+server and prints p50 and p99 per hop and for `stdin->stdout`:
+
+```sh
+just perf-rune-echo        # or, built already:
+bash scripts/bench/rune-echo.sh target/release/phux clients/rune/target/release/phux-rune 200 120 60
+```
+
+The arguments after the binaries are keystrokes, the gap between them in
+ms, and the headless frame rate. At 60 the frames are paced like a 60 Hz
+display; at 1000 a frame starts as soon as the last one ends, which leaves
+the client's and server's work. `--window` (macOS) types into a real window
+with `post-keys.swift` instead, which needs the Accessibility permission and
+a window that stays uncovered for the run: Rune draws nothing while
+occluded. `PHUX_ECHO_FAST=0` turns off the server's fast paths and the
+echo wait below, for a before/after with one build.
+
+A key runs inside a frame that Rune presents, so an echo that lands after
+it waits for the display's next opportunity, a refresh or more. The key's
+frame therefore holds up to 4 ms for the runtime's next publication
+(`desk/input/echo.rs`), and a local server's echo draws in that same frame.
+
+The trace stops at the present. Photons need a camera: a high-speed camera
+(240 fps or more) on the keyboard and screen, or a Typometer-style tool that
+injects a key and watches the screen's pixels, run against Rune and a
+native terminal on the same display, with the same font size, shell and
+prompt. Compare medians over 100 or more keys; the refresh rate bounds the
+resolution of any such test.
+
 On macOS, notifications need the signed bundle (`rune_notify::available`);
 `cargo run` can't post, and Settings says so. On Linux any build posts while
 `notify-send` is on `PATH`, and withdraws through `gdbus`.

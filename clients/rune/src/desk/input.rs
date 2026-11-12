@@ -12,6 +12,7 @@ use rune::Tx;
 use super::{Desk, NoticeKind, Pending};
 use crate::keys::{self, Shortcut, Typed};
 
+mod echo;
 mod modal;
 pub(super) mod selection;
 pub use modal::Modal;
@@ -212,6 +213,9 @@ impl Desk {
             return self.say(NoticeKind::Error, INPUT_PAUSED);
         }
         phux_perf::echo_hop::record("send");
+        if let Some(before) = &frame {
+            echo::await_echo(&client, view, before);
+        }
         self.nudge_typing(&client);
         self.reclaim_fits();
         if self.notice.as_ref().is_some_and(|n| n.text == INPUT_PAUSED) {
