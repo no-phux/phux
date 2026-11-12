@@ -530,4 +530,17 @@ pub const THEMES: &[Theme] = &[
         cursor: 0x000000,
         accent: 0x6e6e6e,
     },
+    Theme {
+        id: "windows-98",
+        name: "Windows 98",
+        dark: false,
+        ansi: [
+            0xc0c0c0, 0x800000, 0x008000, 0x808000, 0x000080, 0x800080, 0x008080, 0x000000,
+            0x808080, 0x800000, 0x008000, 0x808000, 0x000080, 0x800080, 0x008080, 0x000000,
+        ],
+        foreground: 0x000000,
+        background: 0xc0c0c0,
+        cursor: 0x000080,
+        accent: 0x000080,
+    },
 ];

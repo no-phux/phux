@@ -92,7 +92,7 @@ pub fn channels(name: &str) -> [f32; 3] {
 }
 
 /// `name`'s colour moved toward white or black just far enough to read at
-/// 3:1 on `ground`, at most 40% (navy on a dark blue ground needs ~30%);
+/// 3:1 on `ground`, at most 50% (olive on Windows 98 silver needs ~45%);
 /// the hue stays.
 pub fn on(name: &str, ground: Color) -> Color {
     eased(entry(name).0, ground)
@@ -106,10 +106,10 @@ fn eased(rgb: u32, ground: Color) -> Color {
     };
     let step = |s: u8| mix(rgb, end, f32::from(s) / 100.0);
     color(
-        (0..=40)
+        (0..=50)
             .map(step)
             .find(|c| contrast(color(*c), ground) >= 3.0)
-            .unwrap_or_else(|| step(40)),
+            .unwrap_or_else(|| step(50)),
     )
 }
 
