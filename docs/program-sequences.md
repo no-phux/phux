@@ -85,7 +85,18 @@ eval "$(phux config shell-integration bash)"    # in ~/.bashrc
 phux config shell-integration fish | source     # in ~/.config/fish/config.fish
 ```
 
-phux never adds it to a shell on its own. bash older than 4.4 (the one
+Or let phux do it for the default shell of every new pane, with nothing
+in a startup file:
+
+```toml
+[defaults]
+shell-integration = true
+```
+
+The server reads this when it starts. zsh is reached through `ZDOTDIR`
+(yours is put back before your own files are read), bash through
+`PROMPT_COMMAND` and `PS0`, fish through a vendor directory. It is off
+unless you set it, and a pane started with its own command is left alone. bash older than 4.4 (the one
 macOS ships) marks prompts and exit codes but not command starts.
 
 Extra parameters such as `aid=` are allowed and ignored. A `D` without a

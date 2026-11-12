@@ -96,7 +96,64 @@ pub fn default_shell_command(shell: &str, login: bool) -> LaunchCommand {
         }
     }
     apply_term(&mut command, "xterm-256color");
+    apply_shell_integration(&mut command, name);
     command
+}
+
+/// Where the server keeps the files that make a shell mark its prompts and
+/// commands (OSC 133); set once at start when `[defaults] shell-integration`
+/// is on.
+static SHELL_INTEGRATION: std::sync::OnceLock<std::path::PathBuf> = std::sync::OnceLock::new();
+
+/// Turn shell integration on for every default shell this process starts.
+pub fn enable_shell_integration(dir: std::path::PathBuf) {
+    let _ = SHELL_INTEGRATION.set(dir);
+}
+
+/// What bash runs before each prompt: the last command's exit code (after
+/// the first prompt), then the prompt mark, leaving `$?` as it was.
+const BASH_PROMPT: &str = "__phux_c=$?; [ -n \"$__phux_seen\" ] && printf '\\033]133;D;%s\\a' \"$__phux_c\"; \
+    __phux_seen=1; printf '\\033]133;A\\a'; (exit $__phux_c)";
+
+/// Each shell is reached the way it allows without touching the person's
+/// startup files: zsh through `ZDOTDIR`, bash through the two prompt
+/// variables it takes from the environment, fish through a vendor directory.
+fn apply_shell_integration(command: &mut LaunchCommand, shell: &str) {
+    if let Some(dir) = SHELL_INTEGRATION.get() {
+        integrate(command, shell, dir);
+    }
+}
+
+fn integrate(command: &mut LaunchCommand, shell: &str, dir: &std::path::Path) {
+    let current = |key: &str| command.environment().get(OsStr::new(key)).cloned();
+    match shell {
+        "zsh" => {
+            // The wrapper puts this back before it reads the person's own files.
+            if let Some(theirs) = current("ZDOTDIR") {
+                command.env("PHUX_ZDOTDIR", theirs);
+            }
+            command.env("ZDOTDIR", dir.join("zsh"));
+        }
+        "bash" => {
+            let mut prompt = OsString::from(BASH_PROMPT);
+            if let Some(theirs) = current("PROMPT_COMMAND").filter(|theirs| !theirs.is_empty()) {
+                prompt.push("; ");
+                prompt.push(theirs);
+            }
+            command.env("PROMPT_COMMAND", prompt);
+            // bash 4.4 and newer print this as a command starts.
+            command.env("PS0", "\u{1b}]133;C\u{7}");
+        }
+        "fish" => {
+            let mut dirs = OsString::from(dir.join("fish"));
+            dirs.push(":");
+            dirs.push(
+                current("XDG_DATA_DIRS").unwrap_or_else(|| "/usr/local/share:/usr/share".into()),
+            );
+            command.env("XDG_DATA_DIRS", dirs);
+        }
+        _ => {}
+    }
 }
 pub fn apply_term(command: &mut LaunchCommand, term: &str) {
     command.env("TERM", term);
@@ -136,4 +193,53 @@ pub fn shell_command(shell: &str, text: &str, login: bool) -> LaunchCommand {
     let mut command = default_shell_command(shell, login);
     command.args(["-c", text]);
     command
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn each_shell_is_integrated_its_own_way_and_keeps_what_was_set() {
+        let dir = std::path::Path::new("/state/shell-integration");
+        let value = |command: &LaunchCommand, key: &str| {
+            let found = command.environment().get(OsStr::new(key));
+            found.map(|value| value.to_string_lossy().into_owned())
+        };
+
+        let mut zsh = LaunchCommand::new("zsh");
+        zsh.env("ZDOTDIR", "/home/me/.zsh");
+        integrate(&mut zsh, "zsh", dir);
+        assert_eq!(
+            value(&zsh, "ZDOTDIR").as_deref(),
+            Some("/state/shell-integration/zsh")
+        );
+        assert_eq!(
+            value(&zsh, "PHUX_ZDOTDIR").as_deref(),
+            Some("/home/me/.zsh")
+        );
+
+        let mut bash = LaunchCommand::new("bash");
+        bash.env("PROMPT_COMMAND", "theirs");
+        integrate(&mut bash, "bash", dir);
+        let prompt = value(&bash, "PROMPT_COMMAND").unwrap_or_default();
+        assert!(
+            prompt.starts_with("__phux_c=$?") && prompt.ends_with("; theirs"),
+            "{prompt}"
+        );
+        assert!(value(&bash, "PS0").is_some_and(|ps0| ps0.contains("133;C")));
+
+        let mut fish = LaunchCommand::new("fish");
+        fish.env("XDG_DATA_DIRS", "/opt/share");
+        integrate(&mut fish, "fish", dir);
+        assert_eq!(
+            value(&fish, "XDG_DATA_DIRS").as_deref(),
+            Some("/state/shell-integration/fish:/opt/share")
+        );
+
+        let mut other = LaunchCommand::new("nu");
+        let before = other.clone();
+        integrate(&mut other, "nu", dir);
+        assert_eq!(other, before);
+    }
 }

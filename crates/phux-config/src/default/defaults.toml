@@ -56,6 +56,13 @@ agent-log-bytes = 4194304
 event-journal-entries = 4096
 event-journal-bytes = 1048576
 
+# Have new panes' shells (zsh, bash, fish) mark their prompts and commands, so
+# `phux wait --output-only`, copy mode's last-output key and the exit widget
+# work without a line in your shell's startup file. Read when the server
+# starts. `phux config shell-integration SHELL` prints the same snippet to load
+# yourself instead.
+shell-integration = false
+
 # Keep a pane inspectable after its program exits: its exit status, last
 # screen, and scrollback stay until they expire or are closed. Off by
 # default; `phux run` and `phux spawn` can ask for it per pane. A kept

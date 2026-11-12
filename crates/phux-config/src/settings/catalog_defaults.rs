@@ -111,6 +111,17 @@ pub(super) const ROWS: &[SettingSpec] = &[
         applies: Applies::NextSpawn,
     },
     SettingSpec {
+        key: "defaults.shell-integration",
+        section: SettingSection::Defaults,
+        kind: SettingKind::Bool,
+        summary: "Have new panes' shells mark prompts and commands",
+        detail: "zsh, bash and fish started as a pane's default shell emit the OSC 133 marks \
+                 that phux wait --output-only, copy mode's last-output key and the exit widget \
+                 read, with no line in a startup file. A pane running its own command is left \
+                 alone. The server reads this when it starts.",
+        applies: Applies::NextSpawn,
+    },
+    SettingSpec {
         key: "defaults.retain-on-exit",
         section: SettingSection::Defaults,
         kind: SettingKind::Bool,

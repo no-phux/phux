@@ -8,6 +8,7 @@ pub(super) mod ensure;
 mod permissions;
 mod run;
 mod spawn;
+mod startup;
 
 pub use ensure::ENSURE_TIMEOUT_ENV;
 pub(crate) use permissions::{PrivacyService, run as run_permissions};
