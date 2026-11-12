@@ -535,11 +535,15 @@ async fn wait_for_probe(deadline: &mut Option<Pin<Box<tokio::time::Sleep>>>) {
 }
 
 /// How a link failure ends the connection: a QUIC close refusing the
-/// bearer token is final, everything else walks the ladder.
+/// bearer token, or ssh refusing the host key, is final; everything else
+/// walks the ladder.
 fn link_end(name: &str, error: &LinkError) -> ConnectionEnd {
     let message = error.describe(name);
     match error {
         LinkError::Closed(DialError::AuthRefused(_)) => ConnectionEnd::Refused(message),
+        LinkError::Read(_) if message.contains(super::HOST_KEY_REFUSED) => {
+            ConnectionEnd::Refused(message)
+        }
         _ => ConnectionEnd::Dropped(Some(message)),
     }
 }

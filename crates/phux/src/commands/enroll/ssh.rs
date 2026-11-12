@@ -126,8 +126,8 @@ const CONTROL_PERSIST_SECS: u32 = 300;
 /// `BatchMode` ones included, rides it instead of authenticating again.
 ///
 /// Does nothing without a terminal or a private control directory, or when a
-/// master is already up. A failed login is left to the next ssh run to
-/// report; ssh has already said why on stderr.
+/// master is already up, so a caller may retry it freely. A failed login is
+/// left to the next ssh run to report; ssh has already said why on stderr.
 pub(crate) fn login(destination: &str) {
     use std::io::IsTerminal as _;
     if !(std::io::stdin().is_terminal() && std::io::stderr().is_terminal()) {
@@ -148,24 +148,34 @@ pub(crate) fn login(destination: &str) {
     if alive {
         return;
     }
-    let mut command = Command::new(&program);
+    // The prompt starts its own line, not after a reconnect countdown.
+    eprint!("\r\x1b[K");
+    let _ = login_command(&program, &path, destination)
+        .stdout(Stdio::null())
+        .status();
+}
+
+/// The foreground login [`login`] runs, `ControlPath` option given.
+fn login_command(program: &OsString, path: &str, destination: &str) -> Command {
+    let mut command = Command::new(program);
     command
         // `auto`, not `yes`: over a dead master's stale socket `yes` gives
         // up multiplexing and leaves this `-N` login running for good, while
         // `auto` removes the socket and takes over.
-        .args(["-o", &path, "-o", "ControlMaster=auto"])
+        .args(["-o", path, "-o", "ControlMaster=auto"])
         .args(["-o", &format!("ControlPersist={CONTROL_PERSIST_SECS}")])
         // The master carries the keepalive for every client riding it.
         .args(["-o", "ServerAliveInterval=15", "-o", "ServerAliveCountMax=3"])
+        // A network that drops packets fails in seconds, not the system's
+        // TCP timeout, so a reconnect window keeps its count.
+        .args(["-o", "ConnectTimeout=10"])
         .args(["-o", "ClearAllForwardings=yes"]);
     if ACCEPT_NEW_HOST_KEYS.load(Ordering::Relaxed) {
         command.args(["-o", "StrictHostKeyChecking=accept-new"]);
     }
     // `-f` backgrounds once authenticated; `-N` runs nothing remotely.
-    let _ = command
-        .args(["-f", "-N", "--", destination])
-        .stdout(Stdio::null())
-        .status();
+    command.args(["-f", "-N", "--", destination]);
+    command
 }
 
 /// The ssh program: `$PHUX_SSH` when set, otherwise `ssh`.
@@ -229,5 +239,35 @@ pub(crate) fn authority(host: &str, port: u16) -> String {
         format!("[{host}]:{port}")
     } else {
         format!("{host}:{port}")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Pins what a real sshd taught: `yes` over a stale socket leaves a
+    /// login running for good, and a user `LocalForward` on the master makes
+    /// every later run log in again.
+    #[test]
+    fn the_login_takes_over_a_stale_socket_and_forwards_nothing() {
+        let command = login_command(&"ssh".into(), "ControlPath=/tmp/x/%C", "me@box");
+        let args: Vec<_> = command
+            .get_args()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect();
+        for option in [
+            "ControlPath=/tmp/x/%C",
+            "ControlMaster=auto",
+            "ClearAllForwardings=yes",
+            "ConnectTimeout=10",
+        ] {
+            assert!(args.iter().any(|arg| arg == option), "{option}: {args:?}");
+        }
+        assert!(
+            !args.iter().any(|arg| arg == "BatchMode=yes"),
+            "it may prompt"
+        );
+        assert!(args.ends_with(&["-f", "-N", "--", "me@box"].map(str::to_owned)));
     }
 }

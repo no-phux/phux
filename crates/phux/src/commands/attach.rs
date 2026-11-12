@@ -587,13 +587,6 @@ async fn attach_with_reconnect(
                     "lost the server connection; waiting up to {}s for it to come back",
                     policy.deadline.as_secs()
                 );
-                // An ssh lane drops when phux's ssh master does, so the
-                // network took the login with it: log in again here, while
-                // the terminal is cooked, or a password or 2FA host fails
-                // every `BatchMode` probe below. A live master returns at once.
-                if let Dial::Ssh { destination, .. } = dial {
-                    super::enroll::login(destination);
-                }
                 match wait_with_countdown(dial, policy).await {
                     ReconnectOutcome::Connectable(connection) => {
                         info!("server is back; re-attaching…");
@@ -606,7 +599,8 @@ async fn attach_with_reconnect(
                     }
                     outcome @ (ReconnectOutcome::SocketGone
                     | ReconnectOutcome::TimedOut
-                    | ReconnectOutcome::Refused(_)) => {
+                    | ReconnectOutcome::Refused(_)
+                    | ReconnectOutcome::HostKey(_)) => {
                         // Fully reported here — the call sites map a
                         // `Disconnected` breaking out of this loop straight
                         // to the failure exit code without a second remedy
@@ -662,6 +656,8 @@ enum ReconnectOutcome {
     /// The host refused the credentials (ADR-0133), so no retry can succeed.
     /// Remote lanes only.
     Refused(AttachError),
+    /// ssh refused the host's key; carries the fix. ssh lanes only.
+    HostKey(String),
 }
 
 enum ProbeAttempt {
@@ -671,6 +667,8 @@ enum ProbeAttempt {
     /// This probe was refused, not merely unanswered: retrying cannot
     /// change the verdict, so the wait ends on it.
     Refused(AttachError),
+    /// ssh refused the host's key, with the fix: final, like a refusal.
+    HostKey(String),
 }
 
 /// Clear the "lost the server connection" / "server is back" pair before
@@ -735,6 +733,10 @@ fn reconnect_failure_lines(outcome: &ReconnectOutcome, deadline: Duration) -> Ve
             "the credentials this attach dialed with are no longer accepted;".to_owned(),
             "re-pair the host with `phux host add HOST` and attach again".to_owned(),
         ],
+        ReconnectOutcome::HostKey(remedy) => vec![
+            "ssh refused the host's key, so phux cannot log in again".to_owned(),
+            remedy.clone(),
+        ],
     }
 }
 
@@ -792,6 +794,7 @@ async fn wait_until_connectable(dial: &Dial, policy: ReconnectPolicy) -> Reconne
             // is the user's attach-wait window, not a grace period for
             // credentials: end here, with the reason they can act on.
             Ok(ProbeAttempt::Refused(err)) => return ReconnectOutcome::Refused(err),
+            Ok(ProbeAttempt::HostKey(remedy)) => return ReconnectOutcome::HostKey(remedy),
             Ok(ProbeAttempt::Unavailable) => {}
             Err(_) => return ReconnectOutcome::TimedOut,
         }
@@ -806,6 +809,14 @@ async fn wait_until_connectable(dial: &Dial, policy: ReconnectPolicy) -> Reconne
 }
 
 async fn probe_connectability(dial: &Dial) -> ProbeAttempt {
+    // An ssh lane drops when phux's ssh master does, so the network took the
+    // login with it: log in again first, on the cooked terminal, or a
+    // password or 2FA host fails every `BatchMode` probe. Each probe tries,
+    // so a network still down when the lane dropped is waited out. A live
+    // master returns at once; a down network fails without a prompt.
+    if let Dial::Ssh { destination, .. } = dial {
+        super::enroll::login(destination);
+    }
     match dial {
         Dial::Uds(path) => {
             if !path.exists() {
@@ -826,7 +837,15 @@ async fn probe_connectability(dial: &Dial) -> ProbeAttempt {
             // ends the wait; everything else — an unanswered dial, a 503, a
             // half-open lane — may heal and walks the ladder.
             Err(err) if err.is_fatal_refusal() => ProbeAttempt::Refused(err),
-            Err(_) => ProbeAttempt::Unavailable,
+            // A changed key does not heal by waiting, and saying "it may have
+            // crashed" after a minute would hide the one thing to do.
+            Err(err) => match dial {
+                Dial::Ssh { destination, .. } => {
+                    phux_client_runtime::connection::host_key_remedy(&err.to_string(), destination)
+                        .map_or(ProbeAttempt::Unavailable, ProbeAttempt::HostKey)
+                }
+                _ => ProbeAttempt::Unavailable,
+            },
         },
     }
 }
@@ -2298,6 +2317,15 @@ mod tests {
         );
 
         assert_ne!(gone[0], timed_out[0], "the two failures read differently");
+
+        let host_key = reconnect_failure_lines(
+            &ReconnectOutcome::HostKey("remove the old key with `ssh-keygen -R box`".to_owned()),
+            deadline,
+        );
+        assert!(
+            host_key[0].contains("host's key") && host_key[1].contains("ssh-keygen -R box"),
+            "a refused host key names the fix, not a crash: {host_key:?}"
+        );
         assert!(
             reconnect_failure_lines(&ReconnectOutcome::Connectable(None), deadline).is_empty(),
             "a successful reconnect has nothing to report"
