@@ -80,7 +80,11 @@ When two sources bind the same key differently, the agent asks you once per
 pair of sources which one wins. It never decides alone.
 
 The agent then runs `phux config check` until the file is clean, `phux
-config reload`, and `phux config keys --json`, and reports five lists:
+config reload`, and `phux config keys --json`. It then checks intent, not
+just syntax: every binding you had is on its key in phux and does the same
+thing (written or already the default), no key it removed is one your
+config still binds, and no tmux line was left out that a phux action does
+exactly. It reports five lists:
 Migrated, Replaced phux defaults, Conflicts between sources, Nothing to do,
 and Could not migrate. Every line of your files lands in one of them.
 "Nothing to do" is grouped by reason: terminal settings that keep working

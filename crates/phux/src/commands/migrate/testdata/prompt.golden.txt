@@ -159,11 +159,21 @@ terminal's environment, and a bare `phux` could be a different phux.
 4. Run `phux config keys --json`. Its `skipped` list must be empty: each entry is a
    binding phux will not use. Fix the file, run steps 1 and 3 again, and repeat until it
    is empty.
+5. Check that my habits survived, not just the syntax. Steps 1 to 4 prove the file is
+   valid; this proves it does what my old setup did. Using the `bindings` from step 4
+   (a prefix-table key shows as the prefix, a space, then the key):
+   - Every source binding line marked "write" or "already phux's default" must be in
+     `bindings` on its phux key, with an action that does what the source line did.
+   - Every key the file sets to "none" must be one that no source line still binds.
+   - A tmux `bind` line marked "not written" whose command an action under "Actions you
+     may bind" does exactly is a mistake in the table.
+   Do not change the file for these. Report each one under "Could not migrate" as
+   "intent check:", the source line, and what phux does instead.
 
 ## Report
 Keep it short. Do not print the file, a diff, or command output. Give the path of the
 file, then these five lists in this order, one line per entry, then one line each for
-config check, reload and keys.
+config check, reload, keys and the intent check.
 - Migrated: each source line written, quoted with its file and line number, the phux
   key it became and its action. A line marked "already phux's default" goes here with
   "(phux default)".
