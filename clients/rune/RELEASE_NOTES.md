@@ -1,3 +1,3 @@
-**Phux Rune 0.1.17**: 1 change since 0.1.16.
+**Phux Rune 0.1.18**: 1 change since 0.1.17.
 
-- A windows 98 theme (#2290)
+- Ask before closing a terminal an agent runs in (#2323)
