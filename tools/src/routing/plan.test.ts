@@ -1,4 +1,4 @@
-import { expect, test } from "bun:test";
+import { describe, expect, test } from "bun:test";
 import { Classifier } from "./classify.ts";
 import { LANES, plan, planOutputs, reused, type Lane, type Trigger } from "./plan.ts";
 
@@ -56,4 +56,45 @@ test("a reused main tree still qualifies the binding, and nothing else", () => {
   expect([...reused(rust).lanes]).toEqual(["ffi"]);
   const docs = plan(classifier.classify(["docs/SETUP.md"]), "push");
   expect([...reused(docs).lanes]).toEqual([]);
+});
+
+describe("the Rune iOS simulator job", () => {
+  const closure = classifier.classify(["crates/phux-protocol/src/lib.rs"]);
+  const direct = classifier.classify(["clients/rune/src/main.rs"]);
+  const shared = classifier.classify(["Cargo.toml"]);
+
+  test("a pull request reached only through Cargo skips it once the merge queue is on", () => {
+    const pr = plan(closure, "pull_request", true);
+    expect(pr.lanes.has("rune")).toBe(true);
+    expect(planOutputs(pr, closure)).toMatchObject({ rune: true, rune_ios: false });
+    expect(pr.coverage).not.toContain("rune_ios");
+  });
+
+  test("without the queue, pull requests run it exactly as before", () => {
+    expect(plan(closure, "pull_request").runeIos).toBe(true);
+    expect(planOutputs(plan(closure, "pull_request"), closure)).toMatchObject({ rune_ios: true });
+  });
+
+  test("a direct Rune route keeps it on a pull request", () => {
+    for (const c of [direct, shared, classifier.classify([])]) {
+      expect(plan(c, "pull_request", true).runeIos).toBe(true);
+    }
+  });
+
+  test("main policy always runs it, and nothing without Rune does", () => {
+    expect(plan(closure, "push", true).runeIos).toBe(true);
+    const docs = classifier.classify(["docs/SETUP.md"]);
+    expect(planOutputs(plan(docs, "push"), docs)).toMatchObject({ rune: false, rune_ios: false });
+  });
+
+  test("a main push never reuses a pull request that skipped it", () => {
+    const main = plan(closure, "push").coverage;
+    expect(main.split(",")).toContain("rune_ios");
+    expect(plan(closure, "pull_request").coverage).toBe(main);
+    expect(plan(closure, "pull_request", true).coverage).not.toBe(main);
+  });
+
+  test("a reused main tree outputs no iOS job", () => {
+    expect(planOutputs(reused(plan(direct, "push")), direct)).toMatchObject({ rune_ios: false });
+  });
 });

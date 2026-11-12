@@ -9,6 +9,12 @@ name: Rune build
 # `contents: write`.
 on:
   workflow_call:
+    inputs:
+      # ci.yml's plan turns this off for a pull request that reaches Rune
+      # only through the root Cargo closure, once the merge queue runs it.
+      ios:
+        type: boolean
+        default: true
     secrets:
       APPLE_DEVELOPER_ID_P12:
         required: false
@@ -157,6 +163,7 @@ jobs:
 
   ios-native:
     name: ios-native-simulator
+    if: inputs.ios
     runs-on: macos-26
     timeout-minutes: 60
     env:

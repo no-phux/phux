@@ -51,6 +51,17 @@ test("push and pull_request resolve to the same paths", () => {
   }
 });
 
+test("a merge group diffs its queue commit against the group's base", () => {
+  const earlier = commitFiles({ "docs/development.md": "fixture\n" });
+  const queued = commitFiles({ "clients/rune/src/main.rs": "fixture\n" }, "HEAD");
+  const event = { merge_group: { base_sha: base, head_sha: queued } };
+  expect(run("merge_group", event)).toEqual({
+    kind: "paths",
+    paths: ["clients/rune/src/main.rs", "docs/development.md"],
+  });
+  expect(run("merge_group", { merge_group: { base_sha: earlier } }).kind).toBe("full");
+});
+
 test("a pull request diffs from the merge base, not the advanced base branch", () => {
   const head = commitFiles({ "docs/development.md": "fixture\n" });
   const advanced = commitFiles({ "new-product/unrelated.xyz": "fixture\n" });

@@ -76,7 +76,10 @@ export const commands: Record<string, Command> = {
       const event = process.env["GITHUB_EVENT_NAME"] ?? "";
       const repository = process.env["GITHUB_REPOSITORY"] ?? "";
       const c = classifyEvent(event, process.env["GITHUB_EVENT_PATH"]);
-      const p = plan(c, event === "push" ? "push" : "pull_request");
+      // A merge group is main's tree before it lands: main policy.
+      const main = event === "push" || event === "merge_group";
+      const queued = event === "pull_request" && process.env["PHUX_MERGE_QUEUE"] === "true";
+      const p = plan(c, main ? "push" : "pull_request", queued);
       const tree = git(["rev-parse", "HEAD^{tree}"]).trim();
       const receipt: Receipt = { schema: 2, tree, workflow: WORKFLOW, coverage: p.coverage };
       const validated =
@@ -84,7 +87,8 @@ export const commands: Record<string, Command> = {
       const run = validated ? reused(p) : p;
       const outputs = planOutputs(run, c);
       console.error(
-        `${validated ? "Tree already validated; lanes: " : "Lanes: "}${[...run.lanes].join(" ")}`,
+        `${validated ? "Tree already validated; lanes: " : "Lanes: "}${[...run.lanes].join(" ")}` +
+          (outputs["rune_ios"] === true ? " (rune with iOS)" : ""),
       );
       writeOutputs({
         ...outputs,
@@ -119,7 +123,10 @@ export const commands: Record<string, Command> = {
       const p = plan(new Classifier().classify(workingChanges(base)), "pull_request");
       const lanes = LANES.filter((lane) => p.lanes.has(lane));
       const local = lanes.filter((lane) => !CI_ONLY.has(lane));
-      const skipped = lanes.filter((lane) => CI_ONLY.has(lane));
+      const skipped = [
+        ...lanes.filter((lane) => CI_ONLY.has(lane)),
+        ...(p.runeIos ? ["rune iOS simulator"] : []),
+      ];
       console.log(`changes since ${base.slice(0, 12)} need: ${lanes.join(", ")}`);
       if (skipped.length > 0) console.log(`CI only, not run here: ${skipped.join(", ")}`);
       if (values["dry-run"]) return 0;

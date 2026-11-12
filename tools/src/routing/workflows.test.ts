@@ -46,9 +46,14 @@ test("the root justfile holds only imports and default", () => {
   expect(recipes).toEqual([]);
 });
 
-test("ci.yml routes every event through plan, with no path filter or merge queue", () => {
+test("ci.yml routes every event through plan, with no path filter", () => {
   const on = table(CI["on"]);
-  expect(Object.keys(on).toSorted()).toEqual(["pull_request", "push", "workflow_dispatch"]);
+  expect(Object.keys(on).toSorted()).toEqual([
+    "merge_group",
+    "pull_request",
+    "push",
+    "workflow_dispatch",
+  ]);
   for (const trigger of Object.values(on)) {
     expect(Object.keys(table(trigger)).filter((key) => key.startsWith("paths"))).toEqual([]);
   }
@@ -124,9 +129,11 @@ test("the ci aggregate needs every lane and accepts only success or a skip", () 
   }
 });
 
-test("only pull requests write receipts; content publishes after a green push", () => {
+test("pull requests and merge groups write receipts; content publishes after a green push", () => {
   for (const step of steps(job(CI, "ci")).slice(1)) {
-    expect(str(step["if"])).toBe("github.event_name == 'pull_request'");
+    expect(str(step["if"])).toBe(
+      "github.event_name == 'pull_request' || github.event_name == 'merge_group'",
+    );
   }
   const content = job(CI, "content");
   expect(needs(content)).toContain("ci");
@@ -152,8 +159,32 @@ test("both FFI workflows build on mobile_ffi_needed or a failed classification",
   }
 });
 
+test("the merge queue gets both required checks", () => {
+  // A queue that never sees `ci` and `commitlint` on its commit waits forever.
+  for (const name of ["ci.yml", "commitlint.yml"]) {
+    const trigger = table(table(workflow(name)["on"])["merge_group"]);
+    expect([name, trigger["types"]]).toEqual([name, ["checks_requested"]]);
+  }
+  const lint = workflowText("commitlint.yml");
+  expect(lint).toContain("github.event.merge_group.base_sha");
+  expect(lint).toContain("github.event.merge_group.head_sha");
+});
+
+test("the Rune lane's iOS job follows the plan, gated on the merge queue variable", () => {
+  const rune = job(CI, "rune");
+  expect(withInput(rune, "ios")).toBe("${{ needs.plan.outputs.rune_ios == 'true' }}");
+  const planStep = steps(job(CI, "plan")).find((step) => run(step).includes("ci-plan"));
+  expect(table(planStep?.["env"])["PHUX_MERGE_QUEUE"]).toBe("${{ vars.PHUX_MERGE_QUEUE }}");
+  const build = workflow("rune-build.yml");
+  const input = table(table(table(table(build["on"])["workflow_call"])["inputs"])["ios"]);
+  // rune-client.yml calls it for a tag without inputs: the release keeps iOS.
+  expect(input).toMatchObject({ type: "boolean", default: true });
+  expect(str(job(build, "ios-native")["if"])).toBe("inputs.ios");
+});
+
 test("post-merge workflows follow ci on main pushes only", () => {
-  for (const name of ["release.yml", "next.yml"]) {
+  // A merge group's run is on gh-readonly-queue/main/*, never `main`.
+  for (const name of ["release.yml", "next.yml", "rune-auto-release.yml"]) {
     const trigger = table(table(workflow(name)["on"])["workflow_run"]);
     expect(trigger["workflows"]).toEqual(["ci"]);
     expect(trigger["branches"]).toEqual(["main"]);

@@ -1,11 +1,12 @@
-# The one validation workflow: every pull request and every main push.
+# The one validation workflow: every pull request, merge group and main push.
 #
 # `plan` routes the diff (tools/src/routing) to lanes. Each lane is one job
 # that sets up its environment and runs the just recipes plan.ts names for
 # it, so `just check` locally runs the same commands. A lane the diff cannot
 # affect is skipped; the `ci` aggregate (the required check) accepts a skip
-# and nothing else. A main push whose tree a pull request already validated
-# with the same lanes skips them all (tools/src/routing/receipt.ts).
+# and nothing else. A merge group plans like a main push. A main push whose
+# tree a pull request or merge group already validated with the same lanes
+# skips them all (tools/src/routing/receipt.ts).
 name: ci
 
 on:
@@ -15,12 +16,17 @@ on:
     types: [opened, synchronize, reopened, ready_for_review, closed]
   push:
     branches: [main]
+  # Inert until the main ruleset enables the queue. The queue waits for the
+  # `ci` check on its gh-readonly-queue/main/* commit.
+  merge_group:
+    types: [checks_requested]
   workflow_dispatch:
 
 concurrency:
   # PRs are latest-wins, keyed by number: a merged PR's `closed` event carries
   # the base ref, not the PR's. Every main SHA keeps its own run: release.yml
-  # publishes a draft only on a green ci for that exact commit.
+  # publishes a draft only on a green ci for that exact commit. A merge group
+  # has no PR payload; its queue ref names one entry.
   group: ci-${{ github.event_name == 'push' && github.sha || github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
@@ -31,7 +37,8 @@ permissions:
 jobs:
   plan:
     # Drafts skip the suite. A release-please head stays draft while it
-    # accumulates, and still needs every lane.
+    # accumulates, and still needs every lane. Push and merge_group carry no
+    # pull_request payload, so the draft test passes for them.
     if: github.event.action != 'closed' && (startsWith(github.head_ref, 'release-please--') || github.event.pull_request.draft != true)
     runs-on: ubuntu-24.04
     timeout-minutes: 5
@@ -46,6 +53,7 @@ jobs:
       web: ${{ steps.plan.outputs.web }}
       native: ${{ steps.plan.outputs.native }}
       rune: ${{ steps.plan.outputs.rune }}
+      rune_ios: ${{ steps.plan.outputs.rune_ios }}
       docs_only: ${{ steps.plan.outputs.docs_only }}
       web_engine: ${{ steps.plan.outputs.web_engine }}
       content: ${{ steps.plan.outputs.content }}
@@ -63,6 +71,9 @@ jobs:
       - id: plan
         env:
           GH_TOKEN: ${{ github.token }}
+          # 'true' once the merge queue is on: a PR reaching Rune only through
+          # Cargo leaves the iOS simulator job to its merge group.
+          PHUX_MERGE_QUEUE: ${{ vars.PHUX_MERGE_QUEUE }}
         run: bun tools/main.ts ci-plan
 
   guards:
@@ -381,6 +392,8 @@ jobs:
     needs: plan
     if: needs.plan.outputs.rune == 'true'
     uses: ./.github/workflows/rune-build.yml
+    with:
+      ios: ${{ needs.plan.outputs.rune_ios == 'true' }}
 
   # The required check. The ruleset matches this display name.
   ci:
@@ -399,14 +412,14 @@ jobs:
           jq -e '.plan.result == "success" and ([.[].result] | all(. == "success" or . == "skipped"))' \
             <<<"$RESULTS" >/dev/null
       - name: write the validation receipt
-        if: github.event_name == 'pull_request'
+        if: github.event_name == 'pull_request' || github.event_name == 'merge_group'
         env:
           RECEIPT: ${{ needs.plan.outputs.receipt }}
         run: |
           mkdir -p "$RUNNER_TEMP/receipt"
           printf '%s\n' "$RECEIPT" > "$RUNNER_TEMP/receipt/receipt.json"
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        if: github.event_name == 'pull_request'
+        if: github.event_name == 'pull_request' || github.event_name == 'merge_group'
         with:
           name: ${{ needs.plan.outputs.receipt_name }}
           path: ${{ runner.temp }}/receipt/receipt.json

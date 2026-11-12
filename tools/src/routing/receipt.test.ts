@@ -50,6 +50,11 @@ test("a successful exact tree is reused", () => {
   expect(find()).toBe(3);
 });
 
+test("a merge group that validated the exact tree is reused", () => {
+  run["event"] = "merge_group";
+  expect(find()).toBe(3);
+});
+
 test.each<[string, () => void]>([
   ["a changed tree", () => (files["receipt.json"] = JSON.stringify({ ...expected, tree: "b" }))],
   ["a forged receipt from another commit", () => (commitTree = "d".repeat(40))],
