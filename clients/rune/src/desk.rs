@@ -47,6 +47,7 @@ mod palette;
 pub mod phone;
 pub mod pitch;
 pub mod pitlane;
+pub mod popup;
 pub mod questions;
 pub mod reef;
 mod reorder;
@@ -194,6 +195,8 @@ pub struct Desk {
     pub news: news::News,
     /// The focused terminal's checkout, while its changes are open.
     pub changes: changes::Changes,
+    /// One command in a floating terminal, while it runs.
+    pub popup: popup::Popup,
     /// Navigation and search belong to this window, never to stored preferences.
     pub settings_ui: settings::SettingsUi,
     pub tabs: tabs::Tabs,
@@ -358,6 +361,7 @@ impl Desk {
             onboarding: onboarding::Onboarding::default(),
             news: news::News::load(&prefs),
             changes: changes::Changes::default(),
+            popup: popup::Popup::default(),
             settings_ui: settings::SettingsUi::default(),
             tabs: tabs::Tabs::default(),
             reorder: reorder::Reorder::default(),
@@ -440,7 +444,7 @@ impl Desk {
         let (news, moved) = self.observe(&client, client.take_activity(), tx);
         let mut changed = updated | news | self.take_globals(&client);
         let rearrange = updated || moved;
-        changed |= self.drop_dead_views(&client);
+        changed |= self.drop_dead_views(&client) | self.tend_popup(&client, tx);
         let opened = self.settle_home(&client) | self.open_wanted(&client);
         changed |= opened;
         let unfocused = self.sync_focus(&client);

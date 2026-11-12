@@ -143,7 +143,11 @@ impl Desk {
     /// A row of the context menu.
     pub fn context_pick(&mut self, action: Shortcut, tx: &mut Tx) {
         self.close_menu();
-        self.shortcut(action, tx);
+        // Over a popup, only what its keys may do.
+        match self.modal() {
+            Some(modal @ super::input::Modal::Popup) => self.modal_command(modal, action, tx),
+            _ => self.shortcut(action, tx),
+        }
     }
 
     /// A menu pick: the same rule as the chord.
@@ -361,6 +365,15 @@ impl Desk {
                 }));
                 hits
             }
+            Mode::Popup => {
+                let item = super::popup::item(query);
+                let hit = item.map(|item| Hit {
+                    item,
+                    score: 0,
+                    matched: Vec::new(),
+                });
+                hit.into_iter().collect()
+            }
             // The host already matched them, best first.
             Mode::Paths => {
                 let Some(search) = &self.paths else {
@@ -450,6 +463,7 @@ impl Desk {
             Target::Theme(id) => self.choose_theme(id.and_then(crate::theme::find)),
             Target::NewSession(name) => self.create_session(name),
             Target::NewWorktree(branch) => self.new_worktree(&branch),
+            Target::Popup(line) => self.open_popup(&line),
             Target::Path(path) => {
                 if let Some(search) = search {
                     self.insert_path(&path, search);

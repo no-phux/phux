@@ -258,12 +258,8 @@ pub(super) fn pane(desk: &Desk, id: &ResourceId, several: bool, ink: &Ink) -> El
 }
 
 fn terminal_pane(desk: &Desk, id: &ResourceId, several: bool, ink: &Ink) -> El {
-    let focused = desk.shown.as_ref().is_some_and(|s| &s.resource == id);
-    let view = if focused {
-        desk.shown.as_ref().and_then(|s| s.view)
-    } else {
-        desk.others.get(id).copied().flatten()
-    };
+    let focused = desk.keyboard().is_some_and(|(has, _)| has == id);
+    let view = desk.view_of(id);
     perf::RENDERS.incr();
     let acquiring = Instant::now();
     let frame = desk

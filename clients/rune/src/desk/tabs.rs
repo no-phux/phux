@@ -248,6 +248,50 @@ impl Desk {
                 .any(|a| a.parent.as_ref() == Some(terminal))
     }
 
+    /// Close the focused terminal: at once at a prompt shell integration
+    /// vouches for, after asking otherwise. Closing is not undoable, so
+    /// "unknown" asks too.
+    pub fn close_terminal(&mut self) {
+        // A popup is closed before anything under it.
+        if self.popup.command().is_some() {
+            return self.dismiss_popup();
+        }
+        let Some(terminal) = self.shown.as_ref().map(|s| s.resource.clone()) else {
+            return;
+        };
+        if self.is_document(&terminal) {
+            return self.hide_documents(&[terminal]);
+        }
+        if self.asks_to_close(&terminal) {
+            self.pending = Some(Pending::Close(terminal));
+        } else {
+            self.close_now(&terminal);
+        }
+    }
+
+    /// Whether shell integration vouches this terminal is at a prompt.
+    pub(super) fn vouched_idle(&self, terminal: &ResourceId) -> bool {
+        let Some(client) = &self.client else {
+            return false;
+        };
+        match client.with_control(|control| control.command_state(terminal)) {
+            Some(running) => !running,
+            None => client.engine().is_some_and(|engine| {
+                engine.replica_prompt(terminal)
+                    == phux_client_runtime::engine::ReplicaPrompt::AtPrompt
+            }),
+        }
+    }
+
+    pub(super) fn close_now(&mut self, terminal: &ResourceId) {
+        if self.is_document(terminal) {
+            return self.hide_documents(std::slice::from_ref(terminal));
+        }
+        if let Some(client) = &self.client {
+            let _ = client.close_terminals(vec![terminal.clone()]);
+        }
+    }
+
     pub fn close_session(&mut self) {
         let Some(id) = self.client.as_ref().and_then(|c| c.selected_session()) else {
             return;

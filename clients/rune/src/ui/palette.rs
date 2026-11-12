@@ -33,6 +33,7 @@ pub fn view(desk: &Desk, ink: &Ink, top: f32) -> El {
         Mode::Themes => "Preview a theme…",
         Mode::Paths => "Find a file or folder…",
         Mode::Screens => "Filter displays and windows…",
+        Mode::Popup => "A command to run in a popup…",
     };
     let (open, glyph) = match mode {
         Mode::Paths => ("insert", &icons::FOLDER),

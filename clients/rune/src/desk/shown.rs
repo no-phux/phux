@@ -13,7 +13,11 @@ use super::{Desk, NoticeKind, Shown, WANTED_GRACE, input, sessions};
 // Keep teardown beside view ownership (and Desk within its file budget).
 impl Drop for Desk {
     fn drop(&mut self) {
-        let Some(client) = &self.client else { return };
+        let Some(client) = self.client.clone() else {
+            return;
+        };
+        // A popup's command ends with the window that showed it.
+        self.close_popup(&client, true);
         if let Some(view) = self.shown.take().and_then(|s| s.view) {
             let _ = client.destroy_view(view);
         }

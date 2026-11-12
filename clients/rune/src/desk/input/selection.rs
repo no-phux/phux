@@ -72,10 +72,7 @@ impl Desk {
     /// The focused view's selection, bounded.
     pub(in crate::desk) fn selected(&self) -> Selected {
         let engine = self.client.as_ref().and_then(|client| client.engine());
-        let (Some(engine), Some(shown)) = (engine, &self.shown) else {
-            return Selected::Nothing;
-        };
-        let Some(view) = shown.view else {
+        let (Some(engine), Some((_, Some(view)))) = (engine, self.keyboard()) else {
             return Selected::Nothing;
         };
         match engine.selection_text_view_bounded(view, COPY_LIMIT) {

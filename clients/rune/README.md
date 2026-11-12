@@ -81,11 +81,9 @@ session (or `--session NAME`). It never creates a session on its own.
   computer the local server is empty, so sessions living elsewhere appear
   only once that machine is added.
 - **Updates.** Settings → **About & Updates** controls automatic checks,
-  local phux management, and the phux release channel (**Follow installed**,
-  **Stable**, or **Next**). Rune uses the existing CLI's updater, not a private
-  install; package managers keep ownership. Downloads and server handoffs
-  still need a click. [Updates and release channels](./UPDATES.md) covers
-  verification, restart behavior, and the app's independent feed.
+  local phux management, and the phux release channel. Downloads and server
+  handoffs still need a click. [Updates and release channels](./UPDATES.md)
+  covers the channels, verification, restart behavior, and the app's own feed.
 - **Diagnostics.** Panics, startup and update outcomes are logged on this
   computer, with credentials and your home directory removed: `rune-panic.log`,
   `rune.log` and `rune-update.log` in `~/Library/Logs/Phux`, or
@@ -124,6 +122,8 @@ session (or `--session NAME`). It never creates a session on its own.
   untracked file, and the picked file's diff. ↑ and ↓ pick a file, `r` or
   **Refresh** reads again, Escape closes. It only reads; nothing is staged
   from here. A diff over 2,000 lines shows its start and says so.
+- **Popup.** **Popup…** in the palette runs a command you type in a floating
+  terminal, in the focused terminal's folder, until it exits or you press ⌘W.
 - **Insert Path.** ⌥; (or ⇧⌘I) opens a picker at the cursor that searches
   the focused pane's folder on the machine it runs on. Return types the path at the prompt as one shell word, relative to
   that folder and quoted only when it must be.

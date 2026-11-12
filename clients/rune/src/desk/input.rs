@@ -4,7 +4,6 @@
 use phux_client_core::layout::{Direction, SplitDir};
 use phux_client_runtime::ViewId;
 use phux_client_runtime::control::{ControlPlane, DeliveryOutcome};
-use phux_client_runtime::engine::ReplicaPrompt;
 use phux_client_runtime::engine::Scroll;
 use phux_client_runtime::publication::GridFrame;
 use phux_protocol::ids::ResourceId;
@@ -58,6 +57,7 @@ impl Desk {
             (self.palette_open, Modal::Palette),
             // A question outranks the field: the bar says what its keys do.
             (self.pending.is_some(), Modal::Confirm),
+            (self.popup.command().is_some(), Modal::Popup),
             (
                 self.phone.as_ref().is_some_and(|phone| phone.picker),
                 Modal::PhonePicker,
@@ -114,6 +114,9 @@ impl Desk {
             Modal::Rename if escape => self.cancel_rename(),
             Modal::News if escape => self.close_news(),
             Modal::Changes => self.changes_key(event, tx),
+            Modal::Popup if action.is_none() => {
+                self.type_key(event, tx);
+            }
             Modal::Inbox if self.inbox_key(event, tx) => {}
             Modal::Onboarding if self.onboarding_key(event) => {}
             _ if self.navigation_sheet_key(modal, event) => {}
@@ -188,11 +191,11 @@ impl Desk {
     pub(super) fn send_input(&mut self, send: impl FnOnce(&mut ControlPlane, &ResourceId) -> bool) {
         self.stop_coast();
         self.leave_copy_mode(false);
-        let (Some(client), Some(shown)) = (self.client.clone(), &self.shown) else {
+        let (Some(client), Some((terminal, Some(view)))) = (self.client.clone(), self.keyboard())
+        else {
             return;
         };
-        let Some(view) = shown.view else { return };
-        let terminal = shown.resource.clone();
+        let terminal = terminal.clone();
         let frame = client.acquire_view(view);
         let behind = frame.as_ref().is_some_and(|f| !f.scrollbar.at_tail());
         let sent = client.with_control(|control| {
@@ -268,6 +271,7 @@ impl Desk {
             Shortcut::ToggleSidebar => self.toggle_sidebar(),
             Shortcut::Inbox => self.toggle_inbox(),
             Shortcut::Changes => self.open_changes(),
+            Shortcut::Popup => self.ask_popup(),
             Shortcut::Galaxy => self.toggle_galaxy(),
             Shortcut::Reef => self.toggle_reef(),
             Shortcut::Pitch => self.toggle_pitch(),
@@ -383,45 +387,6 @@ impl Desk {
         }
     }
 
-    /// Close the focused terminal: at once at a prompt shell integration
-    /// vouches for, after asking otherwise. Closing is not undoable, so
-    /// "unknown" asks too.
-    pub fn close_terminal(&mut self) {
-        let Some(terminal) = self.shown.as_ref().map(|s| s.resource.clone()) else {
-            return;
-        };
-        if self.is_document(&terminal) {
-            return self.hide_documents(&[terminal]);
-        }
-        if self.asks_to_close(&terminal) {
-            self.pending = Some(Pending::Close(terminal));
-        } else {
-            self.close_now(&terminal);
-        }
-    }
-
-    /// Whether shell integration vouches this terminal is at a prompt.
-    pub(super) fn vouched_idle(&self, terminal: &ResourceId) -> bool {
-        let Some(client) = &self.client else {
-            return false;
-        };
-        match client.with_control(|control| control.command_state(terminal)) {
-            Some(running) => !running,
-            None => client
-                .engine()
-                .is_some_and(|engine| engine.replica_prompt(terminal) == ReplicaPrompt::AtPrompt),
-        }
-    }
-
-    fn close_now(&mut self, terminal: &ResourceId) {
-        if self.is_document(terminal) {
-            return self.hide_documents(std::slice::from_ref(terminal));
-        }
-        if let Some(client) = &self.client {
-            let _ = client.close_terminals(vec![terminal.clone()]);
-        }
-    }
-
     /// To the terminal it was meant for, wherever the keyboard went since.
     fn send_paste(&mut self, terminal: &ResourceId, text: &str) {
         if self.topology.is_some() && !self.lists(terminal) {
@@ -494,10 +459,11 @@ impl Desk {
     }
 
     /// The view showing `terminal`, focused or not.
-    pub(super) fn view_of(&self, terminal: &ResourceId) -> Option<ViewId> {
+    pub fn view_of(&self, terminal: &ResourceId) -> Option<ViewId> {
         match &self.shown {
             Some(shown) if &shown.resource == terminal => shown.view,
-            _ => self.others.get(terminal).copied().flatten(),
+            _ => (self.others.get(terminal).copied().flatten())
+                .or_else(|| self.popup.view_of(terminal)),
         }
     }
 }

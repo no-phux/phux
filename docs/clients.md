@@ -72,7 +72,9 @@ its palette ([resource kinds](./resource-kinds.md#available-now)). It has
 a command palette, splits from the session's server-stored arrangement (the
 same layout the terminal UI shows), find in history, ⌘-clickable links, an
 agent inbox with notifications, tabs, themes, and a read-only view of the
-Git changes in a terminal's checkout (**Show Changes** in the palette). It ships as `rune-v*`
+Git changes in a terminal's checkout (**Show Changes** in the palette), and
+a popup that runs one command in a floating terminal and closes when it
+exits (**Popup…** in the palette). It ships as `rune-v*`
 releases, Developer ID signed and notarized on macOS, and does not draw Kitty
 images yet. The same app has a phone form ([MOBILE.md](../clients/rune/MOBILE.md)).
 Expect rough edges: the terminal UI is ahead of the desktop.

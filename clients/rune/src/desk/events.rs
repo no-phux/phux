@@ -74,7 +74,10 @@ impl Desk {
                 terminal_id,
                 exit_status,
                 ..
-            } => self.resource_closed(client, &terminal_id, exit_status),
+            } => {
+                self.popup_ended(client, &terminal_id, false)
+                    | self.resource_closed(client, &terminal_id, exit_status)
+            }
             Event::OrganizationOperation { operation, outcome } => {
                 self.layout_outcome(client, operation, outcome)
             }
@@ -95,11 +98,8 @@ impl Desk {
     }
 
     fn terminal_has_keyboard(&self, id: &ResourceId) -> bool {
-        self.focused
-            && self
-                .shown
-                .as_ref()
-                .is_some_and(|s| &s.resource == id && s.view.is_some())
+        let keyboard = self.keyboard();
+        self.focused && keyboard.is_some_and(|(has, view)| has == id && view.is_some())
     }
 
     pub(super) fn apply_connection(&mut self, client: &Client, event: Event) -> bool {
@@ -108,7 +108,10 @@ impl Desk {
                 terminal_id,
                 exit_status,
                 ..
-            } => self.producer_ended(&terminal_id, exit_status),
+            } => {
+                self.popup_ended(client, &terminal_id, true)
+                    | self.producer_ended(&terminal_id, exit_status)
+            }
             Event::ConnectionLost { .. } => {
                 self.retire_documents(client);
                 true
@@ -171,6 +174,9 @@ impl Desk {
         id: Option<ResourceId>,
         error: Option<String>,
     ) -> bool {
+        if self.popup_spawned(client, request, id.as_ref(), error.as_deref()) {
+            return true;
+        }
         let source = self.resources.starting.remove(&request);
         if let Some((new, source)) = id.as_ref().zip(source) {
             self.resources.producers.insert(new.clone(), source);
