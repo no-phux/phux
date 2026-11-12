@@ -20,7 +20,7 @@ use phux_client_core::handshake::protocol_compatible;
 use phux_protocol::{PROTOCOL_VERSION, Version};
 
 use super::attach;
-use super::enroll::{authority, ssh_hostname, ssh_program};
+use super::enroll::{authority, login, ssh_hostname, ssh_program};
 use super::rec::RecordSpec;
 
 /// ssh's exit status when ssh itself failed (resolution, connection,
@@ -85,6 +85,8 @@ pub(crate) fn run(args: SshAttach<'_>) -> ExitCode {
         return ExitCode::from(2);
     }
 
+    // One prompt for the bootstrap, the stdio fallback and `ssh -t`.
+    login(&args.destination);
     info!("bootstrapping {} over ssh…", args.destination);
     let report = match bootstrap(&args) {
         Ok(report) => report,
@@ -160,6 +162,7 @@ fn run_attach_over_ssh(host: &str, remote_phux: &str, session: Option<&str>) -> 
 
     let program = std::env::var_os("PHUX_SSH").unwrap_or_else(|| "ssh".into());
     let mut command = std::process::Command::new(&program);
+    command.args(phux_client_runtime::connection::ssh_control_options());
     command.arg("-t").arg(host).arg(remote_phux).arg("attach");
     if let Some(session) = session {
         command.arg(session);
@@ -176,6 +179,7 @@ fn run_attach_over_ssh(host: &str, remote_phux: &str, session: Option<&str>) -> 
 fn bootstrap(args: &SshAttach<'_>) -> Result<Report, Failure> {
     let program = ssh_program();
     let output = Command::new(&program)
+        .args(phux_client_runtime::connection::ssh_control_options())
         .arg("-T")
         .arg("-o")
         .arg("ClearAllForwardings=yes")

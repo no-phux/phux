@@ -95,6 +95,8 @@ pub(crate) fn accept_new_host_keys() {
 /// prompting.
 pub(super) fn ssh_command(program: &OsString, ssh_host: &str, argv: &[&str]) -> Command {
     let mut command = Command::new(program);
+    // Rides the master a foreground [`login`] left, if any.
+    command.args(phux_client_runtime::connection::ssh_control_options());
     command.arg("-o").arg("BatchMode=yes");
     if ACCEPT_NEW_HOST_KEYS.load(Ordering::Relaxed) {
         command.arg("-o").arg("StrictHostKeyChecking=accept-new");
@@ -111,6 +113,59 @@ impl From<std::process::Output> for SshOutput {
             stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
         }
     }
+}
+
+/// How long phux's ssh master outlives its last client: enough for the rest
+/// of an enrollment or attach and a quick reconnect, short enough that a
+/// password or 2FA login does not stay usable all day.
+const CONTROL_PERSIST_SECS: u32 = 300;
+
+/// Log in to `destination` once, in the foreground, so a password, 2FA or
+/// hardware-key prompt reaches the person at this terminal, and keep that
+/// connection as phux's ssh master. Every later ssh run for the destination,
+/// `BatchMode` ones included, rides it instead of authenticating again.
+///
+/// Does nothing without a terminal or a private control directory, or when a
+/// master is already up. A failed login is left to the next ssh run to
+/// report; ssh has already said why on stderr.
+pub(crate) fn login(destination: &str) {
+    use std::io::IsTerminal as _;
+    if !(std::io::stdin().is_terminal() && std::io::stderr().is_terminal()) {
+        return;
+    }
+    let Some(dir) = phux_config::instance::ssh_control_dir(true) else {
+        return;
+    };
+    let path = format!("ControlPath={}/%C", dir.display());
+    let program = ssh_program();
+    let alive = Command::new(&program)
+        .args(["-o", &path, "-O", "check", "--", destination])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .is_ok_and(|status| status.success());
+    if alive {
+        return;
+    }
+    let mut command = Command::new(&program);
+    command
+        // `auto`, not `yes`: over a dead master's stale socket `yes` gives
+        // up multiplexing and leaves this `-N` login running for good, while
+        // `auto` removes the socket and takes over.
+        .args(["-o", &path, "-o", "ControlMaster=auto"])
+        .args(["-o", &format!("ControlPersist={CONTROL_PERSIST_SECS}")])
+        // The master carries the keepalive for every client riding it.
+        .args(["-o", "ServerAliveInterval=15", "-o", "ServerAliveCountMax=3"])
+        .args(["-o", "ClearAllForwardings=yes"]);
+    if ACCEPT_NEW_HOST_KEYS.load(Ordering::Relaxed) {
+        command.args(["-o", "StrictHostKeyChecking=accept-new"]);
+    }
+    // `-f` backgrounds once authenticated; `-N` runs nothing remotely.
+    let _ = command
+        .args(["-f", "-N", "--", destination])
+        .stdout(Stdio::null())
+        .status();
 }
 
 /// The ssh program: `$PHUX_SSH` when set, otherwise `ssh`.

@@ -47,6 +47,8 @@ pub(super) fn run_add_over_ssh(raw_target: &str, opts: &AddOpts) -> ExitCode {
     if opts.accept_new_host_key {
         enroll::accept_new_host_keys();
     }
+    // One prompt for every ssh run the enrollment makes.
+    enroll::login(&ssh_host);
 
     let mut warnings = Vec::new();
     let mut narrate = |event: &EnrollEvent| {

@@ -356,6 +356,38 @@ fn owned_dir(dir: &Path, uid: u32) -> bool {
     std::fs::metadata(dir).is_ok_and(|meta| meta.is_dir() && meta.uid() == uid)
 }
 
+/// Where phux keeps its own ssh master sockets: `/tmp/phux-ssh-<uid>`.
+///
+/// Created `0700` when `create` is set. `None` when it is missing, or is not
+/// a directory private to this user (a symlink, another owner, or any mode
+/// but `0700`). Short on purpose: a control socket must fit `sun_path`
+/// (104 bytes on macOS) with ssh's 40-character `%C` and the 17-byte suffix
+/// ssh adds while binding, which a macOS `$TMPDIR` leaves no room for.
+#[cfg(unix)]
+#[must_use]
+pub fn ssh_control_dir(create: bool) -> Option<PathBuf> {
+    let uid = nix::unistd::getuid().as_raw();
+    private_dir(PathBuf::from(format!("/tmp/phux-ssh-{uid}")), create, uid)
+}
+
+#[cfg(not(unix))]
+#[must_use]
+pub const fn ssh_control_dir(_create: bool) -> Option<PathBuf> {
+    None
+}
+
+#[cfg(unix)]
+fn private_dir(dir: PathBuf, create: bool, uid: u32) -> Option<PathBuf> {
+    use std::os::unix::fs::{DirBuilderExt as _, MetadataExt as _};
+    if create {
+        // An existing directory, whoever made it, is checked below.
+        let _ = std::fs::DirBuilder::new().mode(0o700).create(&dir);
+    }
+    std::fs::symlink_metadata(&dir)
+        .is_ok_and(|meta| meta.is_dir() && meta.uid() == uid && meta.mode() & 0o777 == 0o700)
+        .then_some(dir)
+}
+
 /// The path segment identifying the user, for the `/tmp` fallback.
 ///
 /// Only needs to be unique per user on a shared machine; the directory is
@@ -416,6 +448,35 @@ mod tests {
         assert!(owned_dir(dir.path(), uid));
         assert!(!owned_dir(dir.path(), uid.wrapping_add(1)));
         assert!(!owned_dir(&dir.path().join("missing"), uid));
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn the_ssh_control_dir_must_be_private_to_this_user() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let root = tempfile::tempdir().expect("tempdir");
+        let uid = nix::unistd::getuid().as_raw();
+        let dir = root.path().join("ssh");
+
+        assert_eq!(private_dir(dir.clone(), false, uid), None, "not created");
+        assert_eq!(private_dir(dir.clone(), true, uid), Some(dir.clone()));
+        assert_eq!(
+            std::fs::metadata(&dir).expect("made").permissions().mode() & 0o777,
+            0o700
+        );
+        assert_eq!(private_dir(dir.clone(), false, uid.wrapping_add(1)), None);
+
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+        assert_eq!(
+            private_dir(dir.clone(), true, uid),
+            None,
+            "group/other access"
+        );
+
+        let link = root.path().join("link");
+        std::os::unix::fs::symlink(&dir, &link).expect("symlink");
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700)).expect("chmod");
+        assert_eq!(private_dir(link, false, uid), None, "a symlink");
     }
 
     #[test]
