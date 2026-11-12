@@ -73,8 +73,12 @@ fn time_widget_formats_render_expected_widths() {
     // An explicit format is honored: %Y is a 4-digit year.
     let w = build_spec("time", &[("format", toml::Value::String("%Y".to_owned()))])
         .expect("time builds");
-    let cells = w.render(&WidgetContext::new(fixed_time(), "", "C-a", &[]));
-    assert_eq!(cells.cells.len(), 4);
+    let ctx = WidgetContext::new(fixed_time(), "", "C-a", &[]);
+    assert_eq!(w.render(&ctx).cells.len(), 4);
+
+    // Squeezed, the clock drops whole rather than clipping to `20…`.
+    assert_eq!(w.render_within(&ctx, 4).cells.len(), 4);
+    assert!(w.render_within(&ctx, 3).cells.is_empty());
 }
 
 // --- Invalid options (per-kind); unknown kind

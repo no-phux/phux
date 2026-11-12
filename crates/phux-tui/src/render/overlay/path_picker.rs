@@ -66,15 +66,20 @@ fn rows(result: &PathQueryResult, browsing: bool) -> Vec<SelectItem> {
                         .secondary("insert this directory"),
                 );
             }
-            items.extend(found.rows.iter().flat_map(|row| path_items(row, browsing)));
+            items.extend(
+                found
+                    .rows
+                    .iter()
+                    .flat_map(|row| path_items(row, &found.root, browsing)),
+            );
             items.extend(status_note(found.status));
             items
         }
     }
 }
 
-fn path_items(row: &PathRow, browsing: bool) -> Vec<SelectItem> {
-    let shown = display(&row.path);
+fn path_items(row: &PathRow, root: &str, browsing: bool) -> Vec<SelectItem> {
+    let shown = display(relative(&row.path, root));
     let label = if row.kind == PathKind::Directory {
         format!("{shown}/")
     } else {
@@ -91,6 +96,21 @@ fn path_items(row: &PathRow, browsing: bool) -> Vec<SelectItem> {
             .secondary("browse"),
         insert.secondary("insert directory"),
     ]
+}
+
+/// How a row names `path`: relative to the `root` it was found under, so
+/// rows read as names rather than one shared prefix cut at the box edge.
+fn relative<'a>(path: &'a str, root: &str) -> &'a str {
+    path.strip_prefix(root)
+        .and_then(|rest| {
+            if root.ends_with('/') {
+                Some(rest)
+            } else {
+                rest.strip_prefix('/')
+            }
+        })
+        .filter(|rest| !rest.is_empty())
+        .unwrap_or(path)
 }
 
 /// Host-supplied text as it may be painted: a filename is arbitrary bytes on
@@ -205,6 +225,19 @@ mod tests {
             ["find-path", "insert-path", "find-path", "insert-path"]
         );
         assert_eq!(items[3].action.args["path"].as_str(), Some("/home/a b"));
+        assert_eq!(
+            items.iter().map(|i| i.label.as_str()).collect::<Vec<_>>(),
+            ["../", "./", "open a b/", "a b/"],
+            "rows name entries relative to the root"
+        );
+    }
+
+    #[test]
+    fn rows_outside_or_at_the_root_keep_their_full_path() {
+        assert_eq!(relative("/home/a", "/home"), "a");
+        assert_eq!(relative("/etc/x", "/"), "etc/x");
+        assert_eq!(relative("/homework/a", "/home"), "/homework/a");
+        assert_eq!(relative("/home", "/home"), "/home");
     }
 
     #[test]
