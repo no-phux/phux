@@ -127,7 +127,9 @@ impl Desk {
             }
             Modal::Settings if action.is_none() => self.settings_key(event, tx),
             Modal::Confirm => {
-                self.confirm_key(event);
+                if self.clipboard_read_key(event, tx).is_none() {
+                    self.confirm_key(event);
+                }
             }
             Modal::PhonePicker => {
                 self.phone_picker_key(event);
@@ -356,6 +358,8 @@ impl Desk {
         match self.pending.take() {
             Some(Pending::Mirror(source, target)) => self.start_mirror(source, &target),
             Some(Pending::Paste(terminal, text)) => self.send_paste(&terminal, &text),
+            // Answered through `confirm_pending_tx`, which can read the clipboard.
+            Some(Pending::ClipboardRead(..)) => {}
             Some(Pending::Close(terminal)) => self.close_now(&terminal),
             Some(Pending::CloseTab(terminals)) => {
                 let terminals = terminals

@@ -93,6 +93,13 @@ fn question(pending: &Pending, touch: bool) -> (String, &'static str) {
             ),
             keyed("Close", "Close (Return)"),
         ),
+        Pending::ClipboardRead(terminal, _) => (
+            format!(
+                "{terminal} wants to read your clipboard.{}",
+                keyed("", " A allows it every time.")
+            ),
+            keyed("Allow once", "Allow once (Return)"),
+        ),
         Pending::CloseSession(_, name) => (
             format!("End session {name} and everything running in it?"),
             keyed("End session", "End session (Return)"),
@@ -146,7 +153,10 @@ pub(super) fn question_bar(desk: &Desk, p: &Ink) -> Option<El> {
                 p,
                 Desk::cancel_pending,
             )))
-            .child(press(button(verb, "confirm-ok", p, Desk::confirm_pending))),
+            .child(press(
+                button(verb, "confirm-ok", p, Desk::confirm_pending)
+                    .on_press_tx(Desk::confirm_pending_tx),
+            )),
     )
 }
 
