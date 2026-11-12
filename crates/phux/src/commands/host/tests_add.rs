@@ -228,6 +228,18 @@ fn add_failures_carry_pasteable_remedies() {
     let err = add_failure_error(
         "mini",
         HostRole::Remote,
+        &EnrollFailure::SshUnreachable("Host key verification failed.".to_owned()),
+    );
+    assert!(err.message.contains("host key"), "got {}", err.message);
+    assert!(
+        err.remedy.contains("`ssh mini`"),
+        "an unknown key says how to check it: {}",
+        err.remedy
+    );
+
+    let err = add_failure_error(
+        "mini",
+        HostRole::Remote,
         &EnrollFailure::MissingPhux("`phux` was not found on mini".to_owned()),
     );
     assert!(err.message.contains("no phux"), "got {}", err.message);

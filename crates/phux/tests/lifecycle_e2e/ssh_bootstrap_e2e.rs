@@ -81,6 +81,8 @@ impl Home {
             "#!/bin/sh\n\
              # -G names the host; -T runs the remote command here; anything\n\
              # else is the `ssh -t` fallback, which just reports itself.\n\
+             # Leading `-o` pairs (phux's ssh master options) are skipped.\n\
+             while [ \"$1\" = \"-o\" ]; do shift 2; done\n\
              if [ \"$1\" = \"-G\" ]; then echo 'user me'; echo 'hostname {hostname}'; exit 0; fi\n\
              if [ \"$1\" = \"-T\" ]; then\n\
                for last in \"$@\"; do :; done\n\

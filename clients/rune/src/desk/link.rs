@@ -238,7 +238,10 @@ impl Desk {
         self.inbox.alerts.sync(&[], |_| true, false);
     }
 
-    fn connect(&mut self, target: Target) {
+    fn connect(&mut self, mut target: Target) {
+        // The machine the person chose may ask for a password or 2FA code;
+        // background watchers never get a dialog and ride its login.
+        target.ssh_askpass = crate::askpass::program();
         match sessions::connect(target) {
             Ok(client) => {
                 self.client = Some(std::sync::Arc::new(client));

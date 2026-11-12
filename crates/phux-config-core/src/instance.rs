@@ -368,6 +368,9 @@ pub(crate) fn user_segment() -> String {
         .unwrap_or_else(|| DEFAULT_PROFILE.to_owned())
 }
 
+mod ssh_control;
+pub use ssh_control::ssh_control_dir;
+
 #[cfg(test)]
 mod tests {
     use super::*;

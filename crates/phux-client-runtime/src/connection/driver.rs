@@ -63,12 +63,20 @@ pub async fn run_session(
     let options = options_for(&target, options);
     let mut backoff = options.ladder.floor;
     let mut attempts: u32 = 0;
-    // The never-attached deadline: armed from the first dial, moot once a
-    // handshake lands. It bounds how long a session may spend having never
-    // attached, never how long an attached session may run.
-    let ladder_deadline = tokio::time::Instant::now() + options.initial_budget;
+    let mut ladder_deadline = None;
     loop {
         attempts += 1;
+        // A person's time, so before the budget below.
+        if let Some(end) = super::ssh::sign_in(&target, &mut signals.close).await {
+            finish_attempt(&shared, end, attempts, options.initial_attempts);
+            wake();
+            return;
+        }
+        // The never-attached deadline: armed from the first dial, moot once
+        // a handshake lands. It bounds how long a session may spend having
+        // never attached, never how long an attached session may run.
+        let ladder_deadline = *ladder_deadline
+            .get_or_insert_with(|| tokio::time::Instant::now() + options.initial_budget);
         let Some(tried) = run_attempt(
             &target,
             options,
@@ -535,11 +543,15 @@ async fn wait_for_probe(deadline: &mut Option<Pin<Box<tokio::time::Sleep>>>) {
 }
 
 /// How a link failure ends the connection: a QUIC close refusing the
-/// bearer token is final, everything else walks the ladder.
+/// bearer token, or ssh refusing the host key, is final; everything else
+/// walks the ladder.
 fn link_end(name: &str, error: &LinkError) -> ConnectionEnd {
     let message = error.describe(name);
     match error {
         LinkError::Closed(DialError::AuthRefused(_)) => ConnectionEnd::Refused(message),
+        LinkError::Read(_) if message.contains(super::HOST_KEY_REFUSED) => {
+            ConnectionEnd::Refused(message)
+        }
         _ => ConnectionEnd::Dropped(Some(message)),
     }
 }

@@ -3,14 +3,13 @@ use std::io::{self, IsTerminal};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::rc::Rc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use phux_client::attach::connection::Connection;
 use phux_client::attach::{
     AttachEnd, AttachError, CertTrust, Dial, InputReplayJournal, QuicDial, WsDial,
 };
 use phux_client::predict::PredictiveConfig;
-use phux_client_runtime::reconnect::Ladder;
 use phux_config::loader as config_loader;
 use phux_protocol::wire::frame::AttachTarget;
 use phux_record::cast::CastVersion;
@@ -471,42 +470,6 @@ pub(crate) fn client_cwd() -> Option<String> {
         .map(|path| path.to_string_lossy().into_owned())
 }
 
-/// How long a vanished server is given to come back and how hard to poll,
-/// per dial lane (see [`reconnect_policy`]).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct ReconnectPolicy {
-    /// How long to keep trying before giving up and exiting.
-    deadline: Duration,
-    /// The cadence between attempts (the first is immediate): the runtime's
-    /// ladder for this lane (ADR-0133), so the arithmetic exists once.
-    ladder: Ladder,
-}
-
-/// The local lane: the ADR-0032 graceful-upgrade blink. The re-exec'd server
-/// keeps the socket bound and returns in well under a second; ten seconds lets a
-/// real crash report promptly.
-const UDS_RECONNECT: ReconnectPolicy = ReconnectPolicy {
-    deadline: Duration::from_secs(10),
-    ladder: Ladder::LOCAL_UPGRADE,
-};
-
-/// The remote lanes: usually the client's network changing (wifi to
-/// cellular, sleep/wake), which routinely takes longer than ten seconds. Each
-/// probe is a full TLS handshake, so the runtime's exponential interactive
-/// ladder replaces a flat poll.
-const REMOTE_RECONNECT: ReconnectPolicy = ReconnectPolicy {
-    deadline: Duration::from_secs(60),
-    ladder: Ladder::INTERACTIVE,
-};
-
-/// Which policy governs this dial.
-const fn reconnect_policy(dial: &Dial) -> ReconnectPolicy {
-    match dial {
-        Dial::Uds(_) => UDS_RECONNECT,
-        _ => REMOTE_RECONNECT,
-    }
-}
-
 /// Drive an attach, reconnecting if the server vanishes mid-session (the
 /// ADR-0032 blink). A clean detach returns `Ok`. On `Disconnected` a live
 /// countdown runs on the cooked terminal; a recovery re-attaches with a
@@ -599,7 +562,8 @@ async fn attach_with_reconnect(
                     }
                     outcome @ (ReconnectOutcome::SocketGone
                     | ReconnectOutcome::TimedOut
-                    | ReconnectOutcome::Refused(_)) => {
+                    | ReconnectOutcome::Refused(_)
+                    | ReconnectOutcome::HostKey(_)) => {
                         // Fully reported here — the call sites map a
                         // `Disconnected` breaking out of this loop straight
                         // to the failure exit code without a second remedy
@@ -634,126 +598,6 @@ async fn attach_with_reconnect(
     outcome
 }
 
-/// The status-bar notice text a post-reconnect attach shows (phux-i0e8.2.3).
-const RECONNECT_NOTICE_TEXT: &str = "re-attached after server restart";
-
-/// How the bounded reconnect probe ended. A gone socket is a clean shutdown,
-/// one that never accepts is a crash or hang, and a refusal is a healthy server
-/// rejecting these credentials.
-#[derive(Debug)]
-enum ReconnectOutcome {
-    /// The server accepts connections again — re-attach now.
-    /// Remote lanes carry the already-negotiated connection into the attach;
-    /// UDS carries `None` because its cheap readiness probe is a raw socket.
-    Connectable(Option<Box<Connection>>),
-    /// The UDS socket file disappeared: the server shut down cleanly and
-    /// is not restarting. Only reachable on UDS dials; remote transports
-    /// have no socket file to observe.
-    SocketGone,
-    /// The deadline elapsed with every probe still failing.
-    TimedOut,
-    /// The host refused the credentials (ADR-0133), so no retry can succeed.
-    /// Remote lanes only.
-    Refused(AttachError),
-}
-
-enum ProbeAttempt {
-    Connectable(Option<Box<Connection>>),
-    SocketGone,
-    Unavailable,
-    /// This probe was refused, not merely unanswered: retrying cannot
-    /// change the verdict, so the wait ends on it.
-    Refused(AttachError),
-}
-
-/// Clear the "lost the server connection" / "server is back" pair before
-/// the next attach enters the alt screen.
-fn erase_reconnect_banner() {
-    eprint!("\x1b[2A\x1b[J");
-}
-
-/// Ctrl-C during the cooked countdown. The line already says this is how
-/// to give up; dying inside the next color probe is what leaves
-/// `^[]10;rgb:...` and a `%` on the prompt.
-#[allow(
-    clippy::exit,
-    reason = "SIGINT during the cooked reconnect window must exit now, matching the TUI signal path"
-)]
-fn give_up_reconnect() -> ! {
-    eprint!("\r\x1b[K\x1b[A\x1b[K");
-    std::process::exit(130);
-}
-
-async fn interrupt_reconnect() {
-    if tokio::signal::ctrl_c().await.is_err() {
-        std::future::pending::<()>().await;
-    }
-}
-
-/// One line of `\r`-overwritten countdown, pure so tests can pin the
-/// format. `remaining` is rounded UP to whole seconds so the countdown
-/// starts at the full deadline and never shows `0s` while still waiting.
-fn reconnect_progress_line(remaining: Duration) -> String {
-    let secs = remaining
-        .saturating_add(Duration::from_millis(999))
-        .as_secs();
-    format!("phux: reconnecting… {secs}s left (Ctrl-C to give up)")
-}
-
-/// The cooked-terminal failure report for a reconnect window that closed
-/// without a server; each shape names its cause and `phux doctor`.
-/// `Connectable` maps to an empty report.
-fn reconnect_failure_lines(outcome: &ReconnectOutcome, deadline: Duration) -> Vec<String> {
-    match outcome {
-        ReconnectOutcome::Connectable(_) => Vec::new(),
-        ReconnectOutcome::SocketGone => vec![
-            "the server shut down (its socket is gone) and is not restarting".to_owned(),
-            "start a new one with `phux` (attaches, auto-starting a server) or `phux server`"
-                .to_owned(),
-            "run `phux doctor` for a health check".to_owned(),
-        ],
-        ReconnectOutcome::TimedOut => vec![
-            format!(
-                "the server did not come back within {}s — it may have crashed",
-                deadline.as_secs()
-            ),
-            format!(
-                "server log: {}",
-                phux_server::telemetry::server_log_path().display()
-            ),
-            "run `phux doctor` for a health check".to_owned(),
-        ],
-        ReconnectOutcome::Refused(err) => vec![
-            format!("the server refused the reconnect: {err}"),
-            "the credentials this attach dialed with are no longer accepted;".to_owned(),
-            "re-pair the host with `phux host add HOST` and attach again".to_owned(),
-        ],
-    }
-}
-
-/// Drive [`wait_until_connectable`] while painting a `\r`-overwritten
-/// per-second countdown on stderr, erased before returning.
-async fn wait_with_countdown(dial: &Dial, policy: ReconnectPolicy) -> ReconnectOutcome {
-    let end = Instant::now() + policy.deadline;
-    let mut probe = std::pin::pin!(wait_until_connectable(dial, policy));
-    // The first tick fires immediately, so the countdown appears at the
-    // full deadline before the first probe can even fail.
-    let mut ticker = tokio::time::interval(Duration::from_secs(1));
-    loop {
-        tokio::select! {
-            outcome = &mut probe => {
-                eprint!("\r\x1b[K");
-                return outcome;
-            }
-            _ = ticker.tick() => {
-                let remaining = end.saturating_duration_since(Instant::now());
-                eprint!("\r\x1b[K{}", reconnect_progress_line(remaining));
-            }
-            () = interrupt_reconnect() => give_up_reconnect(),
-        }
-    }
-}
-
 /// Flush the residual UTF-8 tail, backfill `duration`, and close the cast.
 /// Idempotent: the clean-detach path finalizes before `process::exit`.
 fn close_recorder(recorder: Option<RecorderHandle>) {
@@ -762,65 +606,6 @@ fn close_recorder(recorder: Option<RecorderHandle>) {
     };
     if let Err(err) = handle.borrow_mut().finish_in_place() {
         tracing::warn!(error = %err, "closing the session recording failed");
-    }
-}
-
-/// Wait until the server accepts again on `dial`, or give up.
-///
-/// UDS short-circuits to [`ReconnectOutcome::SocketGone`] when the socket file is
-/// gone (a clean shutdown unlinks it; an upgrade does not). Remote lanes return
-/// the negotiated connection for the next attach to reuse, and a refusal ends
-/// the ladder immediately (ADR-0133). The first attempt is immediate; `policy`
-/// sets the deadline and cadence.
-async fn wait_until_connectable(dial: &Dial, policy: ReconnectPolicy) -> ReconnectOutcome {
-    let end = tokio::time::Instant::now() + policy.deadline;
-    let mut backoff = policy.ladder.floor;
-    loop {
-        match tokio::time::timeout_at(end, probe_connectability(dial)).await {
-            Ok(ProbeAttempt::Connectable(connection)) => {
-                return ReconnectOutcome::Connectable(connection);
-            }
-            Ok(ProbeAttempt::SocketGone) => return ReconnectOutcome::SocketGone,
-            // No amount of ladder changes a refused token, and the deadline
-            // is the user's attach-wait window, not a grace period for
-            // credentials: end here, with the reason they can act on.
-            Ok(ProbeAttempt::Refused(err)) => return ReconnectOutcome::Refused(err),
-            Ok(ProbeAttempt::Unavailable) => {}
-            Err(_) => return ReconnectOutcome::TimedOut,
-        }
-        if tokio::time::timeout_at(end, tokio::time::sleep(backoff))
-            .await
-            .is_err()
-        {
-            return ReconnectOutcome::TimedOut;
-        }
-        backoff = policy.ladder.next(backoff);
-    }
-}
-
-async fn probe_connectability(dial: &Dial) -> ProbeAttempt {
-    match dial {
-        Dial::Uds(path) => {
-            if !path.exists() {
-                return ProbeAttempt::SocketGone;
-            }
-            if tokio::net::UnixStream::connect(path).await.is_ok() {
-                ProbeAttempt::Connectable(None)
-            } else {
-                ProbeAttempt::Unavailable
-            }
-        }
-        // The returned connection is reused by the TUI, so its HELLO must
-        // carry the same capabilities and client name as the initial attach.
-        _ => match phux_tui::attach::connect_for_attach(dial).await {
-            Ok(conn) => ProbeAttempt::Connectable(Some(Box::new(conn))),
-            // ADR-0133: the runtime owns which refusals no retry can
-            // satisfy. A 401/403 on the upgrade or a refused QUIC preamble
-            // ends the wait; everything else — an unanswered dial, a 503, a
-            // half-open lane — may heal and walks the ladder.
-            Err(err) if err.is_fatal_refusal() => ProbeAttempt::Refused(err),
-            Err(_) => ProbeAttempt::Unavailable,
-        },
     }
 }
 
@@ -1683,13 +1468,24 @@ const fn remote_repair(result: &Result<AttachEnd, AttachError>) -> Repair {
     }
 }
 
+mod reconnect;
 mod stdio;
+use reconnect::{
+    RECONNECT_NOTICE_TEXT, ReconnectOutcome, erase_reconnect_banner, reconnect_failure_lines,
+    reconnect_policy, wait_with_countdown,
+};
 pub(crate) use stdio::run_attach_stdio;
 
 #[cfg(test)]
 mod tests {
+    use std::time::Instant;
+
+    use phux_client_runtime::reconnect::Ladder;
     use phux_protocol::wire::frame::DetachReason;
 
+    use super::reconnect::{
+        ReconnectPolicy, UDS_RECONNECT, reconnect_progress_line, wait_until_connectable,
+    };
     use super::*;
 
     /// Only a pane attaching to its own server is refused, and the override
@@ -2291,6 +2087,15 @@ mod tests {
         );
 
         assert_ne!(gone[0], timed_out[0], "the two failures read differently");
+
+        let host_key = reconnect_failure_lines(
+            &ReconnectOutcome::HostKey("remove the old key with `ssh-keygen -R box`".to_owned()),
+            deadline,
+        );
+        assert!(
+            host_key[0].contains("host's key") && host_key[1].contains("ssh-keygen -R box"),
+            "a refused host key names the fix, not a crash: {host_key:?}"
+        );
         assert!(
             reconnect_failure_lines(&ReconnectOutcome::Connectable(None), deadline).is_empty(),
             "a successful reconnect has nothing to report"

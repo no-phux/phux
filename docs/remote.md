@@ -39,6 +39,10 @@ Over `ssh me@mini`, this:
 There is nothing to copy by hand. Run `phux host add me@mini` again whenever
 the host stops answering: it checks the setup and repairs what broke.
 
+phux signs in to the host once and reuses that login for every step, so a
+password or 2FA prompt comes up a single time; [SSH](./ssh.md) covers
+signing in, host-key changes, and attaching without pairing.
+
 If a non-interactive SSH shell doesn't find `phux` on the remote machine, as
 with some Homebrew or Nix installs, say where it is:
 
@@ -232,26 +236,9 @@ A refused attach says which grant is missing and the command that adds it.
 
 ## Attaching over SSH
 
-`phux attach --ssh` needs no pairing and no service:
-
-```sh
-phux attach --ssh me@box
-```
-
-SSH logs you in (password and 2FA prompts work), starts the server on the
-remote machine if needed, and opens a QUIC (UDP) listener for this attach
-alone.
-Then SSH exits and the session runs directly over QUIC, so it survives
-network changes and draws locally. The listener and its token live only in
-memory and go away shortly after you detach.
-
-The remote server's policy must allow the listener, and UDP must reach it.
-If it can't, phux says why and keeps your local client, carried through
-`ssh` itself, jump hosts and keys included. It doesn't roam. An SSH login
-failure, or a remote machine without phux, is an error, not a fallback.
-
-`--udp-ports 60000-61000` keeps the listener in a range one firewall rule
-can cover.
+`phux attach --ssh me@box` attaches with no pairing and no service: SSH logs
+you in, then the session runs over QUIC, or through `ssh` itself when UDP
+can't get through. [SSH](./ssh.md#attaching-over-ssh) has the details.
 
 ## Pairing with a link
 

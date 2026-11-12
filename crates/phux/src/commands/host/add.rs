@@ -290,6 +290,16 @@ pub(super) fn add_failure_error(
     // asked for, or following it would register into the wrong registry.
     let role_flag = role.flag();
     match failure {
+        EnrollFailure::SshUnreachable(detail)
+            if let Some(remedy) =
+                phux_client_runtime::connection::host_key_remedy(detail, ssh_host) =>
+        {
+            CliError::new(
+                codes::REGISTRY,
+                format!("ssh refused {ssh_host}'s host key"),
+                remedy,
+            )
+        }
         EnrollFailure::SshUnreachable(detail) => {
             let check = format!(
                 "check that `ssh {ssh_host}` works from this machine, then rerun \
