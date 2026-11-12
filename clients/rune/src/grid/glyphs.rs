@@ -229,6 +229,42 @@ mod tests {
         assert_eq!(marks(&m, "════", false).quads.len(), 2);
     }
 
+    /// A symbol every family Settings offers lacks (⏵, which coding agents print in their mode
+    /// line) draws from a system face, not as `.notdef` or the last-resort box.
+    #[cfg(target_vendor = "apple")]
+    #[test]
+    fn symbols_the_chosen_font_lacks_fall_back_to_a_system_face() {
+        use super::super::{FAMILIES, FONT_CHOICES, FONTS, mono_family};
+        let style = Metrics::new(13.0, 2.0).style(false, false);
+        for family in FONT_CHOICES {
+            let mut ts = rune::text::TextSystem::new(FONTS, (FAMILIES.0, &mono_family(family)));
+            // Each glyph id and the font it came from, shaped alone as `Marks::glyph` does.
+            let mut shaped = |content: &str| {
+                let layout = ts.layout_rich(content, &[], style, 2.0, None);
+                let line = layout.lines().next().expect("one line");
+                let run = line.runs().next().expect("one run");
+                let font = run.font().data.id();
+                let glyph = run
+                    .clusters()
+                    .flat_map(|c| c.glyphs())
+                    .next()
+                    .expect("one glyph");
+                (glyph.id, font)
+            };
+            // Misc Technical, Dingbats, Geometric Shapes.
+            let symbols = ["⏵", "⏴", "⏎", "✔", "❯", "▶", "◆"].map(|s| (s, shaped(s)));
+            // Unassigned, so only the last-resort face has it; asked last, so it can't get ahead
+            // of the faces above.
+            let last_resort = shaped("\u{378}").1;
+            for (symbol, (id, font)) in symbols {
+                assert!(
+                    id != 0 && font != last_resort,
+                    "{symbol} in {family:?} is tofu"
+                );
+            }
+        }
+    }
+
     #[test]
     fn a_rounded_corner_is_not_a_fill() {
         let m = Metrics::new(13.0, 2.0);
