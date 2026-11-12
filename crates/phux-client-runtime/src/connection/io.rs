@@ -125,7 +125,7 @@ pub(crate) enum Io {
         /// The server's pid from Unix-socket peer credentials.
         peer_pid: Option<i32>,
         /// Own the stdio bridge and its stderr drainer for this link's life.
-        child: Option<ChildLink>,
+        child: Option<Box<ChildLink>>,
     },
     Ws {
         reader: WsReader,
@@ -201,7 +201,7 @@ impl Io {
         let (child, reader, writer) = ChildLink::spawn(command)?;
         let mut link = Self::framed(Box::new(reader), Box::new(writer), None, None);
         if let Self::Stream { child: owner, .. } = &mut link {
-            *owner = Some(child);
+            *owner = Some(Box::new(child));
         }
         Ok(link)
     }
