@@ -148,6 +148,12 @@ chord that could not be pressed is an error the viewer sees; an older
 producer never answers, and the paste then succeeds. `CopyClipboard`
 returns the host clipboard's text, at most 1 MiB, to the viewer that asked
 and no one else: the server holds the command open until the producer
-answers. From the CLI, `phux agent page paste|copy`; in Rune, Cmd+V and
-Cmd+C (Ctrl+Shift+V and Ctrl+Shift+C on Linux) over a surface pane; on a
-phone, the paste and copy buttons beside the keyboard.
+answers; an empty clipboard is the error "Nothing copied on the host".
+`CopySelection` copies what is selected on the host first: the producer
+presses Cmd+C or Ctrl+C (a terminal's Ctrl+Shift+C), waits a moment, then
+answers as `CopyClipboard` does; with `cut` it presses Cmd+X or Ctrl+X (a
+terminal copies). `SelectAll` presses Cmd+A or Ctrl+A (skipped in a
+terminal); a page runs the browser's own select-all, copy and cut. From the
+CLI, `phux agent page paste|copy`; in Rune, Cmd+V and Cmd+C (Ctrl+Shift+V
+and Ctrl+Shift+C on Linux) over a surface pane; on a phone, the paste and
+copy buttons beside the keyboard and the menu over a selection.

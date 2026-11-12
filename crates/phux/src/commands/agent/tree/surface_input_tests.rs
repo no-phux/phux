@@ -73,7 +73,22 @@ fn a_click_is_move_down_up_and_a_scroll_turns_under_the_pointer() {
         text: "x".into(),
         chord,
     };
-    assert_eq!(events(&paste(true), (1, 1), DISPLAY), [Event::PasteChord]);
+    assert_eq!(events(&paste(true), (1, 1), DISPLAY), [Event::Chord('v')]);
+    let selection = |cut| DocumentInput::CopySelection { reply: 1, cut };
+    assert_eq!(
+        events(&selection(false), (1, 1), DISPLAY),
+        [Event::Chord('c')]
+    );
+    assert_eq!(
+        events(&selection(true), (1, 1), DISPLAY),
+        [Event::Chord('x')]
+    );
+    let all = events(&DocumentInput::SelectAll, (1, 1), DISPLAY);
+    assert_eq!(all, [Event::Chord('a')]);
+    assert_eq!(all[0].to_string(), "Cmd+A");
+    // A Linux terminal copies on Ctrl+Shift+C, cannot cut, and has no select-all.
+    assert_eq!(chord_letter(&selection(true), true), Some('c'));
+    assert_eq!(chord_letter(&DocumentInput::SelectAll, true), None);
     assert!(events(&paste(false), (1, 1), DISPLAY).is_empty());
     let copy = DocumentInput::CopyClipboard { reply: 1 };
     assert!(events(&copy, (1, 1), DISPLAY).is_empty());

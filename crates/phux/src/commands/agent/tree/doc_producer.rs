@@ -143,7 +143,10 @@ pub(super) fn intent_json(input: &DocumentInput) -> Option<Value> {
             "drag",
             json!({ "from": [from.0, from.1], "to": [to.0, to.1] }),
         ),
-        DocumentInput::CopyClipboard { .. } | DocumentInput::ClipboardText { .. } => return None,
+        DocumentInput::CopyClipboard { .. }
+        | DocumentInput::ClipboardText { .. }
+        | DocumentInput::SelectAll
+        | DocumentInput::CopySelection { .. } => return None,
     };
     let mut line = json!({ "schema_version": SCHEMA_VERSION, "event": "input", "intent": intent });
     if let (Some(line), Value::Object(fields)) = (line.as_object_mut(), fields) {

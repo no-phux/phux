@@ -24,6 +24,35 @@ pub(super) struct Rect {
     pub(super) h: f64,
 }
 
+/// The letter of the chord `input` presses with the host's command
+/// modifier (Cmd on macOS, Ctrl on Linux): `v` pastes, `c` copies, `x` cuts,
+/// `a` selects all. A `terminal` (Linux's, which takes Ctrl+Shift) cannot
+/// cut, so it copies, and has no select-all.
+pub(super) const fn chord_letter(input: &DocumentInput, terminal: bool) -> Option<char> {
+    match input {
+        DocumentInput::Paste { chord: true, .. } => Some('v'),
+        DocumentInput::CopySelection { cut: true, .. } if !terminal => Some('x'),
+        DocumentInput::CopySelection { .. } => Some('c'),
+        DocumentInput::SelectAll if !terminal => Some('a'),
+        _ => None,
+    }
+}
+
+/// The evdev code of a chord's real `letter` key (`a`, `c`, `x`, else `v`),
+/// for clients that read physical keys.
+#[cfg_attr(
+    target_os = "macos",
+    allow(dead_code, reason = "Linux's chords use it")
+)]
+pub(super) const fn letter_code(letter: char) -> u32 {
+    match letter {
+        'a' => 30,
+        'x' => 45,
+        'c' => 46,
+        _ => 47,
+    }
+}
+
 /// Where pixel `(px, py)` of a `frame`-sized image of `rect` lands, clamped
 /// inside `rect`; `None` before any frame.
 pub(super) fn to_screen(frame: (u32, u32), rect: Rect, px: u32, py: u32) -> Option<(f64, f64)> {
@@ -67,8 +96,8 @@ pub(super) enum Event {
     Text(String),
     /// Key down and up of a macOS virtual key code.
     Key(u16),
-    /// Cmd+V: paste what a viewer's paste put on the clipboard.
-    PasteChord,
+    /// Cmd and a letter ([`chord_letter`]): paste, copy, cut, select all.
+    Chord(char),
     /// One scroll-wheel event in pixels; positive is up and left.
     Scroll {
         dy: i32,
@@ -85,7 +114,7 @@ impl std::fmt::Display for Event {
             Self::LeftDragged(x, y) => write!(f, "left-dragged to {x:.1},{y:.1}"),
             Self::Text(text) => write!(f, "key down+up with text {text:?}"),
             Self::Key(code) => write!(f, "key down+up of virtual key 0x{code:02x}"),
-            Self::PasteChord => write!(f, "Cmd+V"),
+            Self::Chord(letter) => write!(f, "Cmd+{}", letter.to_ascii_uppercase()),
             Self::Scroll { dy, dx } => write!(f, "scroll-wheel {dy} up, {dx} left (pixels)"),
         }
     }
@@ -108,13 +137,17 @@ pub(super) const TEXT_CHUNK: usize = 20;
 pub(super) fn events(input: &DocumentInput, frame: (u32, u32), rect: Rect) -> Vec<Event> {
     match input {
         // The clipboard itself is the mirror's (`clipboard`): only the
-        // paste chord is an event.
+        // chords are events.
+        DocumentInput::Paste { .. }
+        | DocumentInput::SelectAll
+        | DocumentInput::CopySelection { .. } => chord_letter(input, false)
+            .map(Event::Chord)
+            .into_iter()
+            .collect(),
         DocumentInput::Navigate { .. }
         | DocumentInput::CopyClipboard { .. }
         | DocumentInput::ClipboardText { .. }
-        | DocumentInput::Activate { .. }
-        | DocumentInput::Paste { chord: false, .. } => Vec::new(),
-        DocumentInput::Paste { chord: true, .. } => vec![Event::PasteChord],
+        | DocumentInput::Activate { .. } => Vec::new(),
         DocumentInput::Click { x, y } => to_screen(frame, rect, *x, *y)
             .map(|(x, y)| {
                 vec![
@@ -398,9 +431,15 @@ mod macos {
                 Event::LeftDragged(x, y) => vec![mouse(CGEventType::LeftMouseDragged, *x, *y)?],
                 Event::Text(text) => key(0, Some(text))?,
                 Event::Key(code) => key(*code, None)?,
-                Event::PasteChord => {
-                    // kVK_ANSI_V with Command held.
-                    let chord = key(0x09, None)?;
+                Event::Chord(letter) => {
+                    // kVK_ANSI_A, _X, _C, _V with Command held.
+                    let code = match letter {
+                        'a' => 0x00,
+                        'x' => 0x07,
+                        'c' => 0x08,
+                        _ => 0x09,
+                    };
+                    let chord = key(code, None)?;
                     for event in &chord {
                         event.set_flags(CGEventFlags::CGEventFlagCommand);
                     }

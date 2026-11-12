@@ -177,6 +177,11 @@ fn outcome(result: &CommandResult, control: Option<ControlClass>) -> WireDocumen
         }
         ErrorCode::PermissionDenied => WireDocumentInputOutcome::NoGrant,
         ErrorCode::NotProducer => WireDocumentInputOutcome::NoProducer,
+        // The producer's own words: "Nothing copied on the host", a failed
+        // paste's reason.
+        ErrorCode::Unavailable if !message.is_empty() => WireDocumentInputOutcome::Other {
+            message: message.clone(),
+        },
         _ => WireDocumentInputOutcome::Other {
             message: format!("{code:?}: {message}"),
         },

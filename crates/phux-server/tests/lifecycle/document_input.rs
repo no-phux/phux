@@ -253,8 +253,12 @@ fn a_copy_waits_for_its_producer_and_reaches_only_the_viewer_that_asked() {
         let late = command(&mut producer, 13, answer(Ok("again".into()))).await;
         assert!(matches!(late, CommandResult::Error { .. }), "{late:?}");
 
-        // A producer that cannot read its clipboard says why.
-        let copy = send(DocumentInput::CopyClipboard { reply: 0 });
+        // A cut of the selection is held the same way; a producer that
+        // cannot read its clipboard says why.
+        let copy = send(DocumentInput::CopySelection {
+            reply: 0,
+            cut: true,
+        });
         let asked = tokio::task::spawn_local(async move { command(&mut viewer, 14, copy).await });
         let reply = copy_relayed(&mut producer).await;
         let no_tool = Err("wl-paste is not installed here".to_owned());
@@ -367,7 +371,9 @@ async fn copy_relayed(producer: &mut tokio::net::UnixStream) -> u32 {
         FrameKind::Event {
             event:
                 AgentEvent::DocumentInput {
-                    intent: DocumentInput::CopyClipboard { reply },
+                    intent:
+                        DocumentInput::CopyClipboard { reply }
+                        | DocumentInput::CopySelection { reply, .. },
                 },
             ..
         } => Some(reply),

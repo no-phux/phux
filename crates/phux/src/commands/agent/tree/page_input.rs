@@ -252,6 +252,19 @@ pub(super) fn cdp_calls(
         DocumentInput::CopyClipboard { .. }
         | DocumentInput::ClipboardText { .. }
         | DocumentInput::Activate { .. } => Vec::new(),
+        // The browser's own editing commands, as its Ctrl+A/C/X run; the
+        // mirror then reads the copy back from the host clipboard.
+        DocumentInput::SelectAll | DocumentInput::CopySelection { .. } => {
+            let command = match input {
+                DocumentInput::SelectAll => "selectAll",
+                DocumentInput::CopySelection { cut: true, .. } => "cut",
+                _ => "copy",
+            };
+            vec![(
+                "Input.dispatchKeyEvent",
+                json!({ "type": "rawKeyDown", "commands": [command] }),
+            )]
+        }
         DocumentInput::Click { x, y } => {
             mouse_click(f64::from(*x) * view.scale_x, f64::from(*y) * view.scale_y)
         }

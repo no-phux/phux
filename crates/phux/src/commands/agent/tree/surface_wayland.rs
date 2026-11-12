@@ -55,23 +55,20 @@ pub(super) enum Op {
 /// modifiers, the same in every keymap.
 const SHIFT: u32 = 1;
 const CONTROL: u32 = 1 << 2;
-/// `KEY_V`, the evdev code a real keyboard's V sends, so a client that
-/// reads physical keys for shortcuts sees one.
-const KEY_V: u32 = 47;
-
-/// The paste chord: Ctrl+V, or Ctrl+Shift+V for a terminal, on a keymap
-/// whose `KEY_V` is a real V.
-pub(super) fn paste_chord(shift: bool) -> Op {
-    let code = KEY_V + 8;
+/// Ctrl (with `shift`, Ctrl+Shift) and `letter`, on a keymap of the real key.
+pub(super) fn chord(letter: char, shift: bool) -> Op {
+    let key = super::surface_input::letter_code(letter);
+    let code = key + 8;
+    let upper = letter.to_ascii_uppercase();
     let keymap = format!(
-        "xkb_keymap {{\nxkb_keycodes \"phux\" {{\nminimum = 8;\nmaximum = {code};\n<V> = {code};\n}};\n\
+        "xkb_keymap {{\nxkb_keycodes \"phux\" {{\nminimum = 8;\nmaximum = {code};\n<K> = {code};\n}};\n\
          xkb_types \"phux\" {{ include \"complete\" }};\n\
          xkb_compatibility \"phux\" {{ include \"complete\" }};\n\
-         xkb_symbols \"phux\" {{\nkey <V> {{[v, V]}};\n}};\n}};\n"
+         xkb_symbols \"phux\" {{\nkey <K> {{[{letter}, {upper}]}};\n}};\n}};\n"
     );
     Op::Keys {
         keymap,
-        codes: vec![KEY_V],
+        codes: vec![key],
         mods: CONTROL | if shift { SHIFT } else { 0 },
     }
 }
@@ -86,10 +83,11 @@ pub(super) fn ops(
     let need =
         || place.ok_or("the pointer needs Hyprland (hyprctl) to place it; run under Hyprland");
     Ok(match input {
-        // A paste's chord is [`paste_chord`], which needs the focused
-        // window; the clipboard itself is the mirror's (`clipboard`).
+        // Chords are [`chord`]; the clipboard is the mirror's.
         DocumentInput::Navigate { .. }
         | DocumentInput::Paste { .. }
+        | DocumentInput::SelectAll
+        | DocumentInput::CopySelection { .. }
         | DocumentInput::CopyClipboard { .. }
         | DocumentInput::ClipboardText { .. }
         | DocumentInput::Activate { .. } => Vec::new(),

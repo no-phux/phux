@@ -70,6 +70,36 @@ fn cmds(input: &DocumentInput, place: Option<&Place>, tools: Tools) -> Result<Ve
 
 #[test]
 fn a_window_click_focuses_moves_then_presses() {
+    // Copy, cut and select-all: Ctrl+C/X/A, a terminal's Ctrl+Shift+C for
+    // both copy and cut, and no select-all in a terminal.
+    let try_chord = |input: &DocumentInput, terminal, tools| {
+        plan(input, (1, 1), None, tools, terminal)
+            .map(|out| out.iter().map(|a| shown(a)).collect::<Vec<_>>())
+    };
+    let chord = |input: &DocumentInput, terminal, tools| try_chord(input, terminal, tools).unwrap();
+    let cut = DocumentInput::CopySelection {
+        reply: 1,
+        cut: true,
+    };
+    assert_eq!(chord(&cut, false, ALL), ["wtype -M ctrl x -m ctrl"]);
+    assert_eq!(
+        chord(&cut, true, ALL),
+        ["wtype -M ctrl -M shift c -m shift -m ctrl"]
+    );
+    assert_eq!(
+        chord(&cut, true, YDOTOOL),
+        ["ydotool key 29:1 42:1 46:1 46:0 42:0 29:0"]
+    );
+    let all = DocumentInput::SelectAll;
+    assert_eq!(
+        chord(&all, false, YDOTOOL),
+        ["ydotool key 29:1 30:1 30:0 29:0"]
+    );
+    assert!(
+        try_chord(&all, true, ALL)
+            .unwrap_err()
+            .contains("select-all")
+    );
     let place = Place {
         frame: rect(12.0, 34.0, 800.0, 600.0),
         window: Some("0xa1".into()),
