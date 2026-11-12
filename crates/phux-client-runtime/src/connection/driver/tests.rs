@@ -134,6 +134,14 @@ fn only_a_refused_token_ends_the_session_from_the_link() {
         link_end("mini", &lost),
         ConnectionEnd::Dropped(Some(_))
     ));
+    // No redial gets past ssh refusing the host key.
+    let host_key = LinkError::Read(std::io::Error::other(
+        "stdio bridge closed (exit status: 255): Host key verification failed.",
+    ));
+    assert!(matches!(
+        link_end("mini", &host_key),
+        ConnectionEnd::Refused(_)
+    ));
 }
 
 #[tokio::test]

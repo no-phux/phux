@@ -367,7 +367,12 @@ fn owned_dir(dir: &Path, uid: u32) -> bool {
 #[must_use]
 pub fn ssh_control_dir(create: bool) -> Option<PathBuf> {
     let uid = nix::unistd::getuid().as_raw();
-    private_dir(PathBuf::from(format!("/tmp/phux-ssh-{uid}")), create, uid)
+    private_dir(ssh_control_path(uid), create, uid)
+}
+
+#[cfg(unix)]
+fn ssh_control_path(uid: u32) -> PathBuf {
+    PathBuf::from(format!("/tmp/phux-ssh-{uid}"))
 }
 
 #[cfg(not(unix))]
@@ -477,6 +482,23 @@ mod tests {
         std::os::unix::fs::symlink(&dir, &link).expect("symlink");
         std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700)).expect("chmod");
         assert_eq!(private_dir(link, false, uid), None, "a symlink");
+    }
+
+    /// Fixed under `/tmp`, never under a runtime or temp dir that can be
+    /// long, so the socket fits `sun_path` for any uid.
+    #[test]
+    #[cfg(unix)]
+    fn an_ssh_control_socket_fits_sun_path_for_any_uid() {
+        const SUN_PATH_MACOS: usize = 104;
+        const PERCENT_C: usize = 40;
+        const BIND_SUFFIX: usize = 17;
+        let dir = ssh_control_path(u32::MAX);
+        let socket = dir.as_os_str().len() + 1 + PERCENT_C + BIND_SUFFIX;
+        assert!(
+            socket < SUN_PATH_MACOS,
+            "{} -> {socket} bytes",
+            dir.display()
+        );
     }
 
     #[test]

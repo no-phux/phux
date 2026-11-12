@@ -333,6 +333,6 @@ mod ssh;
 mod wsl;
 
 pub(crate) use establish::{DialFailure, establish};
-pub use ssh::control_options as ssh_control_options;
+pub use ssh::{HOST_KEY_REFUSED, control_options as ssh_control_options, host_key_remedy};
 
 pub use driver::run_session;
