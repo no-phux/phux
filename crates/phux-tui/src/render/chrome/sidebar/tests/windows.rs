@@ -69,6 +69,19 @@ fn only_a_shared_tab_name_carries_its_index() {
     assert!(plain.contains("○ logs"), "{plain:?}");
 }
 
+/// A tab list cut short for room still shows the active tab: on the
+/// ninth of nine, the rows end at it instead of hiding it in `+N tabs`.
+#[test]
+fn a_cut_tab_list_keeps_the_active_tab() {
+    let mut p = SidebarPainter::new(Theme::default());
+    p.set_roster(vec![active_roster()]);
+    p.set_windows((0..9).map(|i| win(&format!("t{i}"), i == 8)).collect());
+    let plain = strip_ansi(&paint_to_string(&mut p, r(0, 0, 20, 12)));
+    assert!(plain.contains("● t8"), "{plain:?}");
+    assert!(!plain.contains("t0"), "{plain:?}");
+    assert!(plain.contains("tabs"), "the rest still counted: {plain:?}");
+}
+
 #[test]
 fn unchanged_repaint_is_a_no_op() {
     let mut p = SidebarPainter::new(Theme::default());

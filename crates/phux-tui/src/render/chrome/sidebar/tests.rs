@@ -231,6 +231,7 @@ fn counts(needs_you: usize, windows: usize, roster: usize) -> SidebarCounts {
         windows,
         roster,
         active_session: None,
+        active_window: None,
         host_starts: every_segment(roster),
         project_starts: 0,
         rule: SidebarRule::Trailing,

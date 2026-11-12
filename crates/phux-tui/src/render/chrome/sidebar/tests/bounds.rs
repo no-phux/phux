@@ -106,6 +106,7 @@ fn tiny_viewports_and_huge_counts_remain_bounded() {
         windows: usize::MAX,
         roster: usize::MAX,
         active_session: Some(0),
+        active_window: None,
         host_starts: u128::MAX,
         project_starts: 0,
         rule: SidebarRule::Trailing,
