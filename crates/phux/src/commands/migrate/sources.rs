@@ -41,10 +41,12 @@ pub(super) struct Source {
     pub note: Option<String>,
 }
 
-/// What every decider needs: `$HOME` (for `~`) and the shipped bindings.
+/// What every decider needs: `$HOME` (for `~`), the shipped bindings and
+/// the phux theme already selected, if any.
 pub(super) struct Ctx<'a> {
     pub home: &'a Path,
     pub defaults: &'a KeybindingsCfg,
+    pub theme: Option<&'a str>,
 }
 
 /// One line of a source file.
@@ -118,13 +120,19 @@ impl Source {
 }
 
 /// Every source found under `home`, in `MigrateSource` order. `only`
-/// narrows it; empty means all.
-pub(super) fn discover(home: &Path, xdg: Option<&Path>, only: &[MigrateSource]) -> Vec<Source> {
+/// narrows it; empty means all. `theme` is the phux theme already selected.
+pub(super) fn discover(
+    home: &Path,
+    xdg: Option<&Path>,
+    only: &[MigrateSource],
+    theme: Option<&str>,
+) -> Vec<Source> {
     let config = xdg.map_or_else(|| home.join(".config"), Path::to_path_buf);
     let defaults = shipped_bindings();
     let ctx = Ctx {
         home,
         defaults: &defaults,
+        theme,
     };
     let wanted = |kind| only.is_empty() || only.contains(&kind);
     let first = |paths: Vec<PathBuf>| paths.into_iter().find(|p| p.is_file());
@@ -141,7 +149,7 @@ pub(super) fn discover(home: &Path, xdg: Option<&Path>, only: &[MigrateSource]) 
     if wanted(MigrateSource::Zellij)
         && let Some(path) = first(vec![config.join("zellij/config.kdl")])
     {
-        out.push(raw::zellij(&path));
+        out.push(raw::zellij(&path, theme));
     }
     if wanted(MigrateSource::Ghostty) {
         // Ghostty loads the XDG file, then the macOS one on top.
@@ -161,7 +169,7 @@ pub(super) fn discover(home: &Path, xdg: Option<&Path>, only: &[MigrateSource]) 
     if wanted(MigrateSource::Herdr)
         && let Some(path) = first(vec![config.join("herdr/config.toml")])
     {
-        out.push(raw::herdr(&path));
+        out.push(raw::herdr(&path, theme));
     }
     if wanted(MigrateSource::Rex)
         && let Some(path) = first(vec![config.join("rex/init.lua")])
@@ -274,6 +282,19 @@ pub(super) enum Line {
 
 pub(super) fn skip(class: Class, reason: impl Into<String>) -> Line {
     Line::Row(class, Verdict::Skip(reason.into()), None)
+}
+
+/// A source's theme line. Never migrated: a phux theme already selected
+/// wins, and with none selected the user picks one.
+pub(super) fn theme(program: &str, value: &str, selected: Option<&str>) -> Line {
+    let reason = selected.map_or_else(
+        || {
+            "the theme is not migrated; pick one with `phux theme list` and `phux theme set`"
+                .to_owned()
+        },
+        |name| format!("kept your phux theme `{name}`; {program}'s `{value}` is not applied"),
+    );
+    skip(Class::Setting, reason)
 }
 
 /// Turn a translated key and value into a verdict against the shipped

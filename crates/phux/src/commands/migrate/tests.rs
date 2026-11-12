@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 use serde_json::json;
 
 use super::sources::{Verdict, discover};
-use super::{agent_argv, document, prompt, user_executable};
+use super::{agent_argv, document, prompt, selected_theme, user_executable};
 use crate::commands::{MigrateAgent, MigrateSource};
 
 fn fixture_home() -> PathBuf {
@@ -29,7 +29,7 @@ fn render(home: &Path, sources: &[super::sources::Source]) -> String {
 #[test]
 fn prompt_for_tmux_and_ghostty_matches_the_golden() {
     let home = fixture_home();
-    let sources = discover(&home, None, &[]);
+    let sources = discover(&home, None, &[], None);
     let text = render(&home, &sources);
     let golden = home.parent().expect("testdata").join("prompt.golden.txt");
     if std::env::var_os("PHUX_UPDATE_MIGRATE_GOLDENS").is_some() {
@@ -41,12 +41,47 @@ fn prompt_for_tmux_and_ghostty_matches_the_golden() {
         text, expected,
         "prompt drifted; rerun with PHUX_UPDATE_MIGRATE_GOLDENS=1"
     );
+    // No phux theme selected: the Ghostty theme line keeps the pointer.
+    assert!(text.contains("pick one with `phux theme list` and `phux theme set`"));
+    assert!(!text.contains("kept your phux theme"));
+}
+
+#[test]
+fn a_selected_phux_theme_is_kept_over_ghostty_s() {
+    let home = fixture_home().with_file_name("theme-kept");
+    let theme = selected_theme(&home.join(".config/phux/config.toml"));
+    assert_eq!(theme.as_deref(), Some("tokyo-night"));
+    let sources = discover(&home, None, &[], theme.as_deref());
+    let text = render(&home, &sources);
+    let golden = home.with_file_name("theme-kept.golden.txt");
+    if std::env::var_os("PHUX_UPDATE_MIGRATE_GOLDENS").is_some() {
+        std::fs::write(&golden, &text).expect("write golden");
+        return;
+    }
+    let expected = std::fs::read_to_string(&golden).unwrap_or_default();
+    assert_eq!(
+        text, expected,
+        "prompt drifted; rerun with PHUX_UPDATE_MIGRATE_GOLDENS=1"
+    );
+    assert!(text.contains(
+        "kept your phux theme `tokyo-night`; Ghostty's `dark:TokyoNight Storm,light:Catppuccin Latte` is not applied"
+    ));
+    assert!(!text.contains("pick one"));
+    // Never written: the row is a skip, not a write.
+    let row = sources[0]
+        .rows
+        .iter()
+        .find(|row| row.text.starts_with("theme ="))
+        .expect("theme row");
+    assert!(matches!(row.verdict, Verdict::Skip(_)));
+    // No config, no theme.
+    assert_eq!(selected_theme(&home.join("missing.toml")), None);
 }
 
 #[test]
 fn tmux_lines_are_decided_one_by_one() {
     let home = fixture_home();
-    let sources = discover(&home, None, &[MigrateSource::Tmux]);
+    let sources = discover(&home, None, &[MigrateSource::Tmux], None);
     let [tmux] = sources.as_slice() else {
         panic!("one source: {sources:?}");
     };
@@ -88,7 +123,7 @@ fn tmux_lines_are_decided_one_by_one() {
 #[test]
 fn ghostty_never_binds_cmd_and_names_macos_keys() {
     let home = fixture_home();
-    let sources = discover(&home, None, &[MigrateSource::Ghostty]);
+    let sources = discover(&home, None, &[MigrateSource::Ghostty], None);
     let [ghostty] = sources.as_slice() else {
         panic!("one source: {sources:?}");
     };
@@ -143,7 +178,7 @@ fn every_source_is_found_under_a_temp_home() {
         ".config/rex/init.lua",
         "-- mine\nrex.bind(\"ctrl+b>c\", \"client.tab.new\")\nrex.bind(\"ctrl+x\", function(ctx, ev)\n  return true\nend)\nrex.unbind(\"cmd+k\")\n",
     );
-    let sources = discover(home, None, &[]);
+    let sources = discover(home, None, &[], None);
     let found: Vec<_> = sources.iter().map(|s| (s.kind, s.found())).collect();
     assert_eq!(
         found,
@@ -162,29 +197,45 @@ fn every_source_is_found_under_a_temp_home() {
             .as_deref()
             .is_some_and(|n| n.contains("C-b"))
     );
-    let only = discover(home, None, &[MigrateSource::Herdr]);
+    // zellij's and herdr's theme lines follow the same rule as Ghostty's.
+    let kept = discover(home, None, &[], Some("mine"));
+    let themes: Vec<_> = kept
+        .iter()
+        .flat_map(|s| &s.rows)
+        .filter(|r| r.text.starts_with("theme"))
+        .collect();
+    assert_eq!(themes.len(), 2, "{themes:?}");
+    for row in themes {
+        assert!(
+            matches!(&row.verdict, Verdict::Skip(r) if r.starts_with("kept your phux theme `mine`")),
+            "{row:?}"
+        );
+    }
+    let only = discover(home, None, &[MigrateSource::Herdr], None);
     assert_eq!(only.len(), 1);
     assert_eq!(only[0].kind, MigrateSource::Herdr);
 
     // An empty home has nothing to migrate.
     let empty = tempfile::tempdir().expect("tempdir");
-    assert!(discover(empty.path(), None, &[]).is_empty());
+    assert!(discover(empty.path(), None, &[], None).is_empty());
 }
 
 #[test]
 fn json_document_shape_is_stable() {
     let home = fixture_home();
-    let sources = discover(&home, None, &[]);
+    let sources = discover(&home, None, &[], None);
     let doc = document(
         &sources,
         Some(MigrateAgent::Claude),
         Path::new("/c/config.toml"),
+        Some("tokyo-night"),
         Some(&json!({ "pane": "@3" })),
         42,
     );
     assert_eq!(doc["schema_version"], 1);
     assert_eq!(doc["agent"], "claude");
     assert_eq!(doc["config_path"], "/c/config.toml");
+    assert_eq!(doc["theme"], "tokyo-night");
     assert_eq!(doc["launched"], json!({ "pane": "@3" }));
     assert_eq!(doc["prompt_bytes"], 42);
     assert_eq!(doc["sources"][0]["name"], "tmux");
@@ -194,9 +245,9 @@ fn json_document_shape_is_stable() {
     assert!(found["unbindings"].is_u64() && found["settings"].is_u64());
     assert!(doc["sources"][0]["files"][0].is_string());
 
-    let none = document(&[], None, Path::new("/c/config.toml"), None, 0);
+    let none = document(&[], None, Path::new("/c/config.toml"), None, None, 0);
     assert_eq!(none["sources"], json!([]));
-    assert!(none["agent"].is_null() && none["launched"].is_null());
+    assert!(none["agent"].is_null() && none["launched"].is_null() && none["theme"].is_null());
 }
 
 #[test]

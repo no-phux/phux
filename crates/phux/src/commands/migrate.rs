@@ -13,6 +13,7 @@ use std::io::{BufRead as _, IsTerminal as _, Write as _};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
+use phux_config::theme::ThemeSelection;
 use phux_protocol::ids::GroupId;
 use phux_protocol::wire::frame::{FrameKind, SessionLifetime, SpawnResult};
 use phux_server::runtime::default_socket_path;
@@ -39,12 +40,20 @@ pub(crate) fn run(args: MigrateArgs, socket: Option<PathBuf>) -> ExitCode {
     let xdg = std::env::var_os("XDG_CONFIG_HOME")
         .filter(|dir| !dir.is_empty())
         .map(PathBuf::from);
-    let found = sources::discover(&home, xdg.as_deref(), &source);
     let config = phux_config::loader::config_path();
+    let theme = selected_theme(&config);
+    let found = sources::discover(&home, xdg.as_deref(), &source, theme.as_deref());
     let installed = installed_agents();
     if found.is_empty() {
         if json {
-            return crate::output::json(&document(&found, None, &config, None, 0));
+            return crate::output::json(&document(
+                &found,
+                None,
+                &config,
+                theme.as_deref(),
+                None,
+                0,
+            ));
         }
         let message = "Nothing to migrate: no tmux, zellij, Ghostty, herdr or Rex config found.";
         if print {
@@ -78,7 +87,7 @@ pub(crate) fn run(args: MigrateArgs, socket: Option<PathBuf>) -> ExitCode {
                 [(only, _)] => Some(*only),
                 _ => None,
             });
-            let mut doc = document(&found, picked, &config, None, text.len());
+            let mut doc = document(&found, picked, &config, theme.as_deref(), None, text.len());
             doc["prompt"] = Value::String(text);
             return crate::output::json(&doc);
         }
@@ -113,6 +122,7 @@ pub(crate) fn run(args: MigrateArgs, socket: Option<PathBuf>) -> ExitCode {
             &found,
             Some(agent),
             &config,
+            theme.as_deref(),
             launched.as_ref(),
             text.len(),
         ));
@@ -120,11 +130,23 @@ pub(crate) fn run(args: MigrateArgs, socket: Option<PathBuf>) -> ExitCode {
     ExitCode::SUCCESS
 }
 
+/// The phux theme the config selects (`[theme] file`, else `name`, as
+/// `phux theme set` writes them), or `None`. An unreadable config selects
+/// none.
+fn selected_theme(config: &Path) -> Option<String> {
+    let cfg = phux_config::loader::load_from(config).ok()?;
+    match cfg.theme.selection() {
+        ThemeSelection::Name(theme) | ThemeSelection::File(theme) => Some(theme.to_owned()),
+        ThemeSelection::None => None,
+    }
+}
+
 /// The `--json` document. Stable: the Rune onboarding reads it.
 fn document(
     found: &[sources::Source],
     agent: Option<MigrateAgent>,
     config: &Path,
+    theme: Option<&str>,
     launched: Option<&Value>,
     prompt_bytes: usize,
 ) -> Value {
@@ -144,6 +166,7 @@ fn document(
         "sources": sources,
         "agent": agent.map(agent_id),
         "config_path": config,
+        "theme": theme,
         "launched": launched,
         "prompt_bytes": prompt_bytes,
     })
