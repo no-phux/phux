@@ -25,7 +25,8 @@ const FIRST: [Shortcut; 12] = [
 ];
 
 /// What needs a desktop's window, sidebar, updater or keyboard.
-const DESKTOP: [Shortcut; 8] = [
+const DESKTOP: [Shortcut; 9] = [
+    Shortcut::Popup,
     Shortcut::ToggleSidebar,
     Shortcut::ToggleFullScreen,
     Shortcut::KeyboardShortcuts,

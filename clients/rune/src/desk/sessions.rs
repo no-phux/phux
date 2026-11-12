@@ -153,10 +153,9 @@ impl Desk {
     /// wakes the window itself when it returns.
     pub(super) fn sync_focus(&mut self, client: &Client) -> bool {
         let now = self
-            .shown
-            .as_ref()
-            .filter(|s| self.focused && s.view.is_some());
-        let now = now.map(|shown| shown.resource.clone());
+            .keyboard()
+            .filter(|(_, view)| self.focused && view.is_some());
+        let now = now.map(|(terminal, _)| terminal.clone());
         if self.focus_told == now {
             return false;
         }

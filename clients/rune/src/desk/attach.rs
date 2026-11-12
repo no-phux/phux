@@ -34,13 +34,13 @@ impl Desk {
         if self.native.is_none() && self.paste_into_document(tx) {
             return;
         }
-        if self.shown.as_ref().is_some_and(|s| s.view.is_none()) {
-            return;
-        }
-        let Some(shown) = &self.shown else {
+        let Some((terminal, view)) = self.keyboard() else {
             return self.say(NoticeKind::Error, "No terminal to paste into.");
         };
-        let terminal = shown.resource.clone();
+        if view.is_none() {
+            return;
+        }
+        let terminal = terminal.clone();
         if let Some(native) = &mut self.native {
             // The system owns a phone's pasteboard and asks its user first;
             // the host answers through the input bridge's paste.

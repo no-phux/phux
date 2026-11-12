@@ -95,6 +95,7 @@ every_shortcut!(
     RestoreSessions,
     Inbox,
     Changes,
+    Popup,
     Galaxy,
     Reef,
     Pitch,

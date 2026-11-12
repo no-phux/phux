@@ -32,6 +32,8 @@ pub enum Target {
     NewSession(String),
     /// A git worktree to create, by the branch typed.
     NewWorktree(String),
+    /// A command line to run in a popup.
+    Popup(String),
     /// An absolute path on the pane's host, to insert at its prompt.
     Path(String),
 }
@@ -55,6 +57,8 @@ pub enum Mode {
     Paths,
     /// Every host's displays and windows, to mirror one.
     Screens,
+    /// A command line, typed, to run in a popup.
+    Popup,
 }
 
 /// The most rows the palette renders; the highlight stays within them.

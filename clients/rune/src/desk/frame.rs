@@ -23,9 +23,8 @@ impl Desk {
         let blinking = self.focused
             && self.link_is_up()
             && self
-                .shown
-                .as_ref()
-                .and_then(|s| client.acquire_view(s.view?))
+                .keyboard()
+                .and_then(|(_, view)| client.acquire_view(view?))
                 .is_some_and(|f| f.cursor.blinking && f.cursor.visible);
         let on = if blinking {
             let elapsed = (self.clock - self.blink_since).max(0.0);
@@ -96,6 +95,7 @@ impl Desk {
             self.others.keys().cloned().collect()
         };
         on_screen.extend(self.shown.as_ref().map(|s| s.resource.clone()));
+        on_screen.extend(self.popup.terminal().cloned());
         let metrics = self.metrics();
         let cell = metrics.cell_px();
         for terminal in on_screen {

@@ -24,6 +24,8 @@ pub enum Modal {
     Onboarding,
     FindField,
     Confirm,
+    /// A popup's command: typing is its own, and few commands reach past it.
+    Popup,
     PhonePicker,
 }
 
@@ -40,6 +42,10 @@ impl Modal {
                 Shortcut::Copy | Shortcut::Paste | Shortcut::SelectAll
             ),
             Self::Palette => matches!(action, Shortcut::Palette),
+            Self::Popup => matches!(
+                action,
+                Shortcut::Copy | Shortcut::Paste | Shortcut::CloseTerminal
+            ),
             Self::Onboarding => matches!(action, Shortcut::Palette) || action.works_over_sheets(),
             Self::Settings => matches!(action, Shortcut::Find) || action.works_over_sheets(),
             Self::Inbox
@@ -60,9 +66,10 @@ impl Modal {
     }
 
     /// Whether this covers the panes as a Rune modal, which drops any held
-    /// press without its release. Find and confirmation live inside a pane.
+    /// press without its release. Find and confirmation live inside a pane,
+    /// and a popup is one.
     pub(in crate::desk) const fn takes_pointer(self) -> bool {
-        !matches!(self, Self::FindField | Self::Confirm)
+        !matches!(self, Self::FindField | Self::Confirm | Self::Popup)
     }
 }
 

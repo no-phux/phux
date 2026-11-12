@@ -80,6 +80,10 @@ impl Desk {
         let org = self.client.as_ref().map(|client| client.organization());
         let mut all = list(topology);
         all.retain_mut(|r| {
+            // A popup's terminal is its box's, never a place to go.
+            if self.popup.terminal() == Some(&r.id) {
+                return false;
+            }
             if !r.kind.is_terminal() {
                 let Some(document) = self.resources.entries.get(&r.id) else {
                     return false;

@@ -103,6 +103,15 @@ fn question(pending: &Pending, touch: bool) -> (String, &'static str) {
 /// The action waiting on Return or Escape, floating over the terminals so
 /// asking never resizes them.
 pub fn confirm_bar(desk: &Desk, p: &Ink) -> Option<El> {
+    // A popup covers this place and asks in its own box.
+    if desk.popup.command().is_some() {
+        return None;
+    }
+    question_bar(desk, p)
+}
+
+/// [`confirm_bar`], wherever its parent puts it.
+pub(super) fn question_bar(desk: &Desk, p: &Ink) -> Option<El> {
     let touch = desk.phone.is_some();
     let (message, verb) = question(desk.pending.as_ref()?, touch);
     let cancel = if touch { "Cancel" } else { "Cancel (Esc)" };
