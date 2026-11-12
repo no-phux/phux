@@ -485,8 +485,9 @@ mod tests {
     #[test]
     fn scrollback_keeps_the_rows_it_was_asked_for() {
         let engine = TerminalEngine::new(80, 24, 2000).expect("engine");
-        let lines: String = (0..1200).map(|n| format!("line {n}\r\n")).collect();
-        engine.write(lines.into_bytes());
+        for n in 0..1200 {
+            engine.write(format!("line {n}\r\n").into_bytes());
+        }
         let bar = engine.scrollbar().expect("scrollbar");
         assert!(bar.total - bar.len >= 1000, "{bar:?}");
     }
