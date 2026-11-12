@@ -25,6 +25,7 @@ pub(super) fn read(paths: &[PathBuf], ctx: &Ctx<'_>) -> Source {
         files,
         rows,
         note: None,
+        prefix: None,
     }
 }
 

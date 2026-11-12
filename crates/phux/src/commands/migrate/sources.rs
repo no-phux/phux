@@ -39,14 +39,34 @@ pub(super) struct Source {
     pub rows: Vec<Row>,
     /// Something the agent must know about the whole source.
     pub note: Option<String>,
+    /// The prefix the program used, for a program that has one (tmux).
+    pub prefix: Option<String>,
+}
+
+/// What `phux migrate` asked the user, or took from its flags.
+#[derive(Debug, Default)]
+pub(super) struct Setup {
+    /// The phux prefix chosen; `None` keeps phux's own.
+    pub prefix: Option<String>,
 }
 
 /// What every decider needs: `$HOME` (for `~`), the shipped bindings and
-/// the phux theme already selected, if any.
+/// the phux theme already selected, if any, and what the user chose.
 pub(super) struct Ctx<'a> {
     pub home: &'a Path,
     pub defaults: &'a KeybindingsCfg,
     pub theme: Option<&'a str>,
+    pub setup: &'a Setup,
+}
+
+impl Ctx<'_> {
+    /// The phux prefix the migrated config ends up with.
+    pub(super) fn prefix(&self) -> &str {
+        self.setup
+            .prefix
+            .as_deref()
+            .unwrap_or(&self.defaults.prefix)
+    }
 }
 
 /// One line of a source file.
@@ -126,6 +146,7 @@ pub(super) fn discover(
     xdg: Option<&Path>,
     only: &[MigrateSource],
     theme: Option<&str>,
+    setup: &Setup,
 ) -> Vec<Source> {
     let config = xdg.map_or_else(|| home.join(".config"), Path::to_path_buf);
     let defaults = shipped_bindings();
@@ -133,6 +154,7 @@ pub(super) fn discover(
         home,
         defaults: &defaults,
         theme,
+        setup,
     };
     let wanted = |kind| only.is_empty() || only.contains(&kind);
     let first = |paths: Vec<PathBuf>| paths.into_iter().find(|p| p.is_file());

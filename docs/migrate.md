@@ -26,6 +26,14 @@ phux only reads files. It never runs tmux or any other program, and it never
 edits your phux config itself: the agent does, and it backs up an existing
 file first.
 
+## Your prefix
+
+phux's prefix is <kbd>C-a</kbd>. When your tmux prefix is different (tmux's
+own <kbd>C-b</kbd>, or your `set -g prefix`), `phux migrate` asks whether to
+keep phux's or use tmux's, before it starts the agent. Enter keeps phux's.
+`--prefix C-b` answers for a script; without a terminal, and with `--print`
+or `--json`, phux keeps its own unless `--prefix` says otherwise.
+
 ## What phux decides, and what the agent decides
 
 For tmux and Ghostty, phux writes a table with one row per line of your
@@ -102,7 +110,8 @@ phux migrate --print | pbcopy
   "config_path": "/Users/me/.config/phux/config.toml",
   "theme": "tokyo-night",
   "launched": { "pane": "@12" },
-  "prompt_bytes": 15873
+  "prompt_bytes": 15873,
+  "prefix": { "chosen": "C-a", "tmux": "C-b", "phux": "C-a" }
 }
 ```
 
@@ -112,6 +121,9 @@ phux migrate --print | pbcopy
   for `[theme] file`), or `null` when none is selected.
 - `launched` is `{ "pane": "@N" }` for a split, `{ "session": "migrate",
   "pane": "@N" }` for a new session, and `null` when nothing started.
+- `prefix.chosen` is the prefix the migrated config ends up with,
+  `prefix.tmux` tmux's (`null` without a tmux config), `prefix.phux`
+  phux's own.
 - With nothing to migrate, `sources` is empty, `agent` and `launched` are
   `null`, and `prompt_bytes` is 0.
 - `--print --json` starts nothing: `launched` is `null`, `agent` is the one
@@ -120,4 +132,4 @@ phux migrate --print | pbcopy
 
 Failures use the [JSON error contract](./scripting.md#json-output-and-errors):
 `usage_error` (exit 2) when the agent is not installed, none is, or several
-are and `--agent` is missing.
+are and `--agent` is missing, or when `--prefix` is not a phux key.

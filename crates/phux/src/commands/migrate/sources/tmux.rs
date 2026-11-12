@@ -22,19 +22,37 @@ pub(super) fn read(path: &Path, ctx: &Ctx<'_>) -> Source {
     let mut decide =
         |file: &Path, line: &str| tmux_line(file, line, &mut prefix, &mut options, ctx);
     read_tree(path, &mut files, &mut rows, &mut decide);
-    let note = (!options.contains_key("prefix")).then(|| {
-        format!(
-            "These files never set a prefix, so tmux used C-b. phux keeps its own prefix, {}: \
-             every prefix-table line below fires after it. Do not change `prefix` unless I ask.",
-            ctx.defaults.prefix
-        )
-    });
+    let chosen = ctx.prefix();
+    let used = if options.contains_key("prefix") {
+        format!("tmux's prefix was {prefix}")
+    } else {
+        "These files never set a prefix, so tmux used C-b".to_owned()
+    };
+    let row_writes_it = options.contains_key("prefix") && same_key(&prefix, chosen);
+    let note = if !row_writes_it && !same_key(chosen, &ctx.defaults.prefix) {
+        Some(format!(
+            "{used}. I chose {chosen} as my phux prefix: write `prefix = \"{chosen}\"` in \
+             `[keybindings]`. Every prefix-table line below fires after it."
+        ))
+    } else if !same_key(&prefix, chosen) {
+        Some(format!(
+            "{used}. I chose to keep phux's own prefix, {chosen}: every prefix-table line below \
+             fires after it. Do not change `prefix`."
+        ))
+    } else {
+        None
+    };
     Source {
         kind: MigrateSource::Tmux,
         files,
         rows,
         note,
+        prefix: Some(prefix),
     }
+}
+
+fn same_key(a: &str, b: &str) -> bool {
+    parse_chord(a).ok() == parse_chord(b).ok()
 }
 
 fn tmux_line(
@@ -210,6 +228,13 @@ fn tmux_set(
             return skip(Class::Setting, format!("phux cannot spell the key {value}"));
         };
         prefix.clone_from(&key);
+        let chosen = ctx.prefix();
+        if !same_key(&key, chosen) {
+            return skip(
+                Class::Setting,
+                format!("I chose {chosen} as my phux prefix, not tmux's {key}"),
+            );
+        }
         let verdict = against_default(
             ctx,
             Table::Keybindings,
