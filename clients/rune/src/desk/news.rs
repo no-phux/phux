@@ -14,6 +14,14 @@ pub struct Note {
 /// the bell lights until the person opens the panel after it ships.
 pub const NOTES: &[Note] = &[
     Note {
+        date: "2026-11-12",
+        title: "A Windows 98 theme, previewed as you browse",
+        body: "Windows 98 joins the themes: silver, navy and the old VGA \
+               colours. In the palette, a highlighted theme shows live as \
+               you move through the results; Return keeps it and Escape \
+               puts yours back.",
+    },
+    Note {
         date: "2026-11-10",
         title: "Tabs that make room",
         body: "Tabs share the title bar instead of running under its \

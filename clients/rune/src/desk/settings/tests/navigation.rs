@@ -284,3 +284,32 @@ fn closing_an_agents_terminal_asks_until_the_setting_is_chosen() {
     desk.toggle_confirm_close();
     assert!(!desk.asks_to_close(&agent), "turned off by hand");
 }
+
+#[test]
+fn the_general_palette_previews_a_highlighted_theme_and_puts_it_back() {
+    let mut runtime = runtime(settings_desk());
+    let before = runtime.state.settings.theme;
+    let search = |d: &mut Desk, query: &str| {
+        d.palette_query = rune::TextEdit::new(query);
+        d.palette_edited();
+    };
+    runtime.update(|d, _| {
+        d.open_palette(crate::palette::Mode::All);
+        search(d, "Theme: Nord");
+    });
+    assert_eq!(runtime.state.settings.theme, crate::theme::find("nord"));
+    // A row that is no theme shows the theme the palette opened with.
+    runtime.update(|d, _| search(d, "New Terminal"));
+    assert_eq!(runtime.state.settings.theme, before);
+    runtime.update(|d, tx| {
+        search(d, "Theme: Nord");
+        d.palette_key(&event(Key::Escape), tx);
+    });
+    assert_eq!(runtime.state.settings.theme, before);
+    runtime.update(|d, tx| {
+        d.open_palette(crate::palette::Mode::All);
+        search(d, "Theme: Nord");
+        d.palette_run(None, tx);
+    });
+    assert_eq!(runtime.state.settings.theme, crate::theme::find("nord"));
+}

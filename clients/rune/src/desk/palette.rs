@@ -269,19 +269,32 @@ impl Desk {
         self.palette_picked = 0;
         match self.palette_mode {
             Mode::Paths => self.search_paths(),
-            Mode::Themes => self.preview_picked(),
+            Mode::Themes | Mode::All => self.preview_picked(),
             _ => {}
         }
     }
 
-    /// Show the highlighted theme without keeping it.
+    /// Show the highlighted theme without keeping it. The general palette
+    /// shows the theme it opened with again once the highlight leaves the
+    /// themes.
     fn preview_picked(&mut self) {
-        if self.palette_mode != Mode::Themes {
+        let general = self.palette_mode == Mode::All;
+        if !general && self.palette_mode != Mode::Themes {
             return;
         }
         let hits = self.palette_hits();
-        if let Some(Target::Theme(id)) = hits.get(self.palette_picked).map(|h| &h.item.target) {
-            self.settings.theme = id.and_then(crate::theme::find);
+        let theme = match hits.get(self.palette_picked).map(|h| &h.item.target) {
+            Some(Target::Theme(id)) => {
+                self.theme_before.get_or_insert(self.settings.theme);
+                id.and_then(crate::theme::find)
+            }
+            _ => match self.theme_before {
+                Some(before) if general => before,
+                _ => return,
+            },
+        };
+        if theme != self.settings.theme {
+            self.settings.theme = theme;
             self.apply_theme();
         }
     }
