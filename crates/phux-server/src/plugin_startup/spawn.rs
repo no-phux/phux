@@ -340,8 +340,10 @@ fn mark_cloexec_above_stderr() {
         // `daemon::withhold_inherited_descriptors`). A non-zero return is
         // `ENOSYS` or `EINVAL` on kernels before 5.9, and the loop below
         // covers that.
-        let flags = libc::CLOSE_RANGE_CLOEXEC.cast_signed();
-        if unsafe { libc::close_range(3, u32::MAX, flags) } == 0 {
+        // Called by number: musl has no `close_range` wrapper, and glibc
+        // only gained one in 2.34.
+        let flags = libc::CLOSE_RANGE_CLOEXEC;
+        if unsafe { libc::syscall(libc::SYS_close_range, 3_u32, u32::MAX, flags) } == 0 {
             return;
         }
     }
