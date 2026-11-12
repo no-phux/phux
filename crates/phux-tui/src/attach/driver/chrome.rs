@@ -360,8 +360,19 @@ pub(super) fn agent_entries(
                 }
                 continue;
             }
-            if let Some(entry) = advisory_agent_entry(base, record) {
-                rows.push(entry);
+            match record {
+                Some(record) => rows.push(advisory_agent_entry(base, record)),
+                // An ask from a pane with no agent identity (a script's
+                // `phux ask`) still needs you: list it by its title, as
+                // the notifier does, not under "none running".
+                None if base.attention => rows.push(AgentEntry {
+                    name: panes
+                        .get(id)
+                        .map_or("", |slot| slot.last_title.trim())
+                        .to_owned(),
+                    ..base
+                }),
+                None => {}
             }
         }
     }
@@ -372,11 +383,11 @@ pub(super) fn agent_entries(
 /// keyed by the pane's identity. Local rows resolve their leaf from the
 /// attached layout; a pane with several `AgentSession`s reads as its most
 /// urgent one (blocked, then working, then settled). A local pane that
-/// asked (ADR-0035) without any agent identity still gets a row.
+/// asked (ADR-0035) without any agent identity arrives as an `agents` row
+/// from [`agent_entries`].
 pub(super) fn notify_rows(
     agents: &[AgentEntry],
     workspace: &ArrangementDoc,
-    panes: &HashMap<ResourceId, PaneSlot>,
     focused: Option<&ResourceId>,
     session_name: &str,
 ) -> Vec<NotifyRow> {
@@ -417,30 +428,6 @@ pub(super) fn notify_rows(
             None => rows.push(row),
         }
     }
-    for window in &workspace.groups {
-        let Some(tree) = window.state.tree.as_ref() else {
-            continue;
-        };
-        for id in crate::layout::leaves(tree) {
-            let Some(slot) = panes.get(&id).filter(|slot| slot.attention) else {
-                continue;
-            };
-            if rows.iter().any(|row| row.key == id) {
-                continue;
-            }
-            let title = slot.last_title.trim();
-            rows.push(NotifyRow {
-                viewing: focused == Some(&id),
-                name: if title.is_empty() { "agent" } else { title }.to_owned(),
-                phase: Phase::Blocked,
-                asking: true,
-                session: session_name.to_owned(),
-                place: agent_locator(&window.name, Some(slot)),
-                host: id.host().map(|host| host.as_str().to_owned()),
-                key: id,
-            });
-        }
-    }
     rows
 }
 
@@ -455,14 +442,13 @@ const fn urgency(phase: Phase) -> u8 {
 }
 
 /// Fill identity from advisory metadata.
-fn advisory_agent_entry(base: AgentEntry, record: Option<&AgentRecord>) -> Option<AgentEntry> {
-    let record = record?;
-    Some(AgentEntry {
+fn advisory_agent_entry(base: AgentEntry, record: &AgentRecord) -> AgentEntry {
+    AgentEntry {
         name: record.name.clone(),
         state: record.state,
         attention: base.attention || record.effective_attention() == AgentAttention::High,
         ..base
-    })
+    }
 }
 
 /// Mark the focused pane seen. Returns `true` only on the flip, which the
@@ -939,7 +925,7 @@ mod tests {
     /// marks the focused pane as viewed, and still sees an ask on a pane with
     /// no agent identity.
     #[test]
-    fn notify_rows_key_local_rows_by_pane_and_keep_bare_asks() {
+    fn bare_asks_reach_the_sidebar_and_the_notifier() {
         use crate::attach::notify::Phase;
         let agent = ResourceId::local(1);
         let shell = ResourceId::local(2);
@@ -954,6 +940,7 @@ mod tests {
         );
         let mut asking = PaneSlot::new_with_size(80, 24).expect("slot");
         asking.attention = true;
+        asking.last_title = " deploy ".to_owned();
         panes.insert(shell.clone(), asking);
         let mut records: HashMap<ResourceId, AgentRecord> = HashMap::new();
         records.insert(
@@ -971,7 +958,11 @@ mod tests {
             &HashMap::new(),
             &ReviewIndex::new(),
         );
-        let rows = notify_rows(&entries, &workspace, &panes, Some(&agent), "dev");
+        // The sidebar lists the bare ask too, not "none running".
+        assert_eq!(entries.len(), 2, "{entries:?}");
+        assert_eq!(entries[1].name, "deploy");
+        assert!(entries[1].attention);
+        let rows = notify_rows(&entries, &workspace, Some(&agent), "dev");
         assert_eq!(rows.len(), 2, "{rows:?}");
         assert_eq!(rows[0].key, agent);
         assert_eq!(rows[0].name, "reviewer");
@@ -979,6 +970,7 @@ mod tests {
         assert_eq!(rows[0].session, "dev");
         assert!(rows[0].viewing);
         assert_eq!(rows[1].key, shell);
+        assert_eq!(rows[1].name, "deploy");
         assert_eq!(rows[1].phase, Phase::Blocked);
         assert!(rows[1].asking);
         assert!(!rows[1].viewing);

@@ -14,7 +14,6 @@ impl super::SessionLoop {
         let rows = super::super::chrome::notify_rows(
             agents,
             &self.mirror.workspace,
-            &self.mirror.panes,
             self.mirror.focused_resource.as_ref(),
             &self.mirror.session_name,
         );
