@@ -200,6 +200,7 @@ mod marks;
 #[cfg(test)]
 use letterbox::Letterbox;
 use letterbox::{emit_letterbox_margins, letterbox_rect};
+use marks::{apply_mark, cell_mark};
 
 /// One pane's published replica `Terminal` paired with its generation token.
 ///
@@ -1602,26 +1603,6 @@ fn emit_sgr_if_changed(
     }
     emit_sgr_set(out, &style, fg, bg);
     *emitted = Some(key);
-}
-
-/// The copy-mode mark on a cell; a wide cell takes its spacer column's mark
-/// when its own column carries none.
-fn cell_mark(marks: &CopyMarks, row: u16, col: u16, wide: CellWide) -> CellMark {
-    match marks.mark(row, col) {
-        CellMark::None if matches!(wide, CellWide::Wide) => marks.mark(row, col.saturating_add(1)),
-        mark => mark,
-    }
-}
-
-/// Restyle a cell for its copy-mode mark: a selected cell flips reverse
-/// video, a search hit is underlined.
-const fn apply_mark(style: &mut Style, mark: CellMark) {
-    match mark {
-        CellMark::None => {}
-        CellMark::Selected => style.inverse ^= true,
-        CellMark::Matched => style.underline = Underline::Single,
-        CellMark::Dimmed => style.faint = true,
-    }
 }
 
 /// Write `\x1b[0m` followed by the SGR set for `(style, fg, bg)`.

@@ -1,7 +1,7 @@
 //! Setting what restyles a pane's cells at paint time: the copy-mode marks
 //! and the unfocused-pane dim.
 
-use super::{CopyMarks, SelectionRect, TerminalRenderer};
+use super::{CellMark, CellWide, CopyMarks, SelectionRect, Style, TerminalRenderer, Underline};
 
 impl TerminalRenderer<'_> {
     /// Set (or clear) the copy-mode selection for the next render. A change
@@ -32,5 +32,25 @@ impl TerminalRenderer<'_> {
             self.front.invalidate_all();
         }
         changed
+    }
+}
+
+/// The copy-mode mark on a cell; a wide cell takes its spacer column's mark
+/// when its own column carries none.
+pub(super) fn cell_mark(marks: &CopyMarks, row: u16, col: u16, wide: CellWide) -> CellMark {
+    match marks.mark(row, col) {
+        CellMark::None if matches!(wide, CellWide::Wide) => marks.mark(row, col.saturating_add(1)),
+        mark => mark,
+    }
+}
+
+/// Restyle a cell for its copy-mode mark: a selected cell flips reverse
+/// video, a search hit is underlined, a dimmed pane goes faint.
+pub(super) const fn apply_mark(style: &mut Style, mark: CellMark) {
+    match mark {
+        CellMark::None => {}
+        CellMark::Selected => style.inverse ^= true,
+        CellMark::Matched => style.underline = Underline::Single,
+        CellMark::Dimmed => style.faint = true,
     }
 }
