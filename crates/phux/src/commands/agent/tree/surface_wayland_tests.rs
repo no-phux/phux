@@ -221,19 +221,30 @@ fn a_drag_presses_at_the_start_moves_through_the_path_and_releases() {
 }
 
 #[test]
-fn the_paste_chord_holds_control_and_shift_for_a_terminal_on_a_real_v() {
-    for (shift, mask) in [(false, 4), (true, 5)] {
+fn a_chord_holds_control_and_shift_for_a_terminal_on_a_real_key() {
+    for (letter, shift, mask, code) in [
+        ('v', false, 4, 47),
+        ('v', true, 5, 47),
+        ('c', true, 5, 46),
+        ('a', false, 4, 30),
+    ] {
         let Op::Keys {
             keymap,
             codes,
             mods,
-        } = paste_chord(shift)
+        } = chord(letter, shift)
         else {
             panic!("not keys");
         };
-        assert_eq!((codes, mods), (vec![47], mask));
-        for line in ["maximum = 55;", "<V> = 55;", "key <V> {[v, V]};"] {
-            assert!(keymap.contains(line), "{line} missing from\n{keymap}");
+        assert_eq!((codes, mods), (vec![code], mask));
+        let upper = letter.to_ascii_uppercase();
+        let xkb = code + 8;
+        for line in [
+            format!("maximum = {xkb};"),
+            format!("<K> = {xkb};"),
+            format!("key <K> {{[{letter}, {upper}]}};"),
+        ] {
+            assert!(keymap.contains(&line), "{line} missing from\n{keymap}");
         }
     }
     // zwp_virtual_keyboard_v1.modifiers(depressed 4, 0, 0, 0)

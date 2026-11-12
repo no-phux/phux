@@ -42,6 +42,15 @@ pub enum WireDocumentIntent {
     /// Read the host clipboard; the text comes back as
     /// [`WireDocumentInputOutcome::Copied`].
     CopyClipboard,
+    /// Press the host's copy chord on its selection (the one the focused
+    /// window takes: a terminal's Ctrl+Shift+C), then read the clipboard;
+    /// the text comes back as [`WireDocumentInputOutcome::Copied`]. Needs a
+    /// producer from phux 0.145 or later.
+    CopySelection,
+    /// As `CopySelection`, cutting instead; a terminal copies.
+    CutSelection,
+    /// Press the host's select-all chord; a terminal has none.
+    SelectAll,
 }
 
 /// How a `send_document_input` ended.
@@ -93,6 +102,15 @@ impl From<WireDocumentIntent> for DocumentInput {
             WireDocumentIntent::Scroll { dx, dy } => Self::Scroll { dx, dy },
             WireDocumentIntent::Paste { text } => Self::Paste { text, chord: true },
             WireDocumentIntent::CopyClipboard => Self::CopyClipboard { reply: 0 },
+            WireDocumentIntent::CopySelection => Self::CopySelection {
+                reply: 0,
+                cut: false,
+            },
+            WireDocumentIntent::CutSelection => Self::CopySelection {
+                reply: 0,
+                cut: true,
+            },
+            WireDocumentIntent::SelectAll => Self::SelectAll,
         }
     }
 }

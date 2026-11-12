@@ -153,6 +153,9 @@ fn kind(intent: &DocumentInput) -> (&'static str, usize) {
         ),
         DocumentInput::Activate { .. } => ("activate", 0),
         DocumentInput::Drag { .. } => ("drag", 0),
+        DocumentInput::SelectAll => ("select_all", 0),
+        DocumentInput::CopySelection { cut: false, .. } => ("copy_selection", 0),
+        DocumentInput::CopySelection { cut: true, .. } => ("cut_selection", 0),
     }
 }
 

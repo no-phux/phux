@@ -159,6 +159,7 @@ pub(in crate::runtime) fn route(command: &Command, input_lane: Option<&InputLane
             | Command::Mirror { .. }
             | Command::SendDocumentInput {
                 intent: phux_protocol::wire::frame::DocumentInput::CopyClipboard { .. }
+                    | phux_protocol::wire::frame::DocumentInput::CopySelection { .. }
                     | phux_protocol::wire::frame::DocumentInput::Paste { .. },
                 ..
             }

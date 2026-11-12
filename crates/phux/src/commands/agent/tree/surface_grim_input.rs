@@ -28,7 +28,7 @@ use std::process::Command;
 use phux_client::tree::{DocumentInput, DocumentKey};
 
 use super::surface_grim::{Rect, Target, find_window, hyprctl, run, session_env};
-use super::surface_input::to_screen;
+use super::surface_input::{chord_letter, to_screen};
 
 /// The input tools found on `PATH` at startup.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -180,8 +180,8 @@ impl Injector {
                 super::surface_grim::geometry(place.frame)
             );
         }
-        let chord = matches!(input, DocumentInput::Paste { chord: true, .. });
-        // A terminal pastes on Ctrl+Shift+V; the window that takes the
+        let chord = chord_letter(input, false).is_some();
+        // A terminal takes Ctrl+Shift chords; the window that takes the
         // chord is the target, or whatever has focus on a display.
         let shift = chord && *hyprland && {
             let window = place.as_ref().and_then(|p| p.window.as_deref());
@@ -196,7 +196,8 @@ impl Injector {
         let (argvs, ops) = if native {
             let focus = place.as_ref().and_then(|p| p.window.as_deref()).map(focus);
             let ops = if chord {
-                vec![super::surface_wayland::paste_chord(shift)]
+                let letter = chord_letter(input, shift).ok_or(NO_SELECT_ALL)?;
+                vec![super::surface_wayland::chord(letter, shift)]
             } else {
                 super::surface_wayland::ops(input, image, place.as_ref())?
             };
@@ -321,7 +322,8 @@ pub(super) fn to_layout(
         .ok_or_else(|| "no frame has been published yet".to_owned())
 }
 
-/// The commands that carry out `input`, in order, or why none can here.
+/// The commands that carry out `input`, in order, or why none can here;
+/// `shift` when the window that takes a chord is a terminal.
 pub(super) fn plan(
     input: &DocumentInput,
     image: (u32, u32),
@@ -332,24 +334,18 @@ pub(super) fn plan(
     let argv = |words: &[&str]| words.iter().map(|&w| w.to_owned()).collect::<Vec<_>>();
     let mut out = Vec::new();
     out.extend(place.and_then(|p| p.window.as_deref()).map(focus));
-    let movecursor = |(x, y): (i64, i64)| {
-        argv(&[
-            "hyprctl",
-            "dispatch",
-            "movecursor",
-            &x.to_string(),
-            &y.to_string(),
-        ])
-    };
     match input {
-        // The clipboard itself is the mirror's (`clipboard`): only the
-        // paste chord is input.
+        // The clipboard is the mirror's (`clipboard`); only chords are input.
         DocumentInput::Navigate { .. }
         | DocumentInput::CopyClipboard { .. }
         | DocumentInput::ClipboardText { .. }
         | DocumentInput::Activate { .. }
         | DocumentInput::Paste { chord: false, .. } => return Ok(Vec::new()),
-        DocumentInput::Paste { chord: true, .. } => out.push(paste_argv(tools, shift)?),
+        DocumentInput::Paste { .. }
+        | DocumentInput::SelectAll
+        | DocumentInput::CopySelection { .. } => {
+            out.push(chord_argv(tools, chord_letter(input, shift).ok_or(NO_SELECT_ALL)?, shift)?);
+        }
         DocumentInput::Drag { from, to } => {
             let place =
                 place.ok_or("a drag needs Hyprland (hyprctl) to place the pointer; run under Hyprland")?;
@@ -435,17 +431,53 @@ pub(super) fn plan(
     Ok(out)
 }
 
-/// The command that presses the paste chord, Ctrl+V or with `shift`
-/// Ctrl+Shift+V.
-fn paste_argv(tools: Tools, shift: bool) -> Result<Vec<String>, String> {
-    let words: &[&str] = match (tools.wtype, tools.ydotool, shift) {
-        (true, _, false) => &["wtype", "-M", "ctrl", "v", "-m", "ctrl"],
-        (true, _, true) => &["wtype", "-M", "ctrl", "-M", "shift", "v", "-m", "shift", "-m", "ctrl"],
-        (false, true, false) => &["ydotool", "key", "29:1", "47:1", "47:0", "29:0"],
-        (false, true, true) => &["ydotool", "key", "29:1", "42:1", "47:1", "47:0", "42:0", "29:0"],
-        (false, false, _) => return Err("nothing here can press the paste chord: the compositor offers no virtual keyboard; install wtype, or ydotool with ydotoold running".into()),
+/// The command that puts the pointer at layout point `(x, y)`.
+fn movecursor((x, y): (i64, i64)) -> Vec<String> {
+    let (x, y) = (x.to_string(), y.to_string());
+    ["hyprctl", "dispatch", "movecursor", &x, &y]
+        .map(str::to_owned)
+        .to_vec()
+}
+
+/// Why a terminal skips a select-all.
+const NO_SELECT_ALL: &str = "a terminal has no select-all; skipped";
+
+/// The command that presses Ctrl and `letter`, with `shift` Ctrl+Shift.
+fn chord_argv(tools: Tools, letter: char, shift: bool) -> Result<Vec<String>, String> {
+    let (l, code) = (
+        letter.to_string(),
+        super::surface_input::letter_code(letter),
+    );
+    let words: Vec<String> = if tools.wtype {
+        let (hold, free): (&[&str], &[&str]) = if shift {
+            (
+                &["-M", "ctrl", "-M", "shift"],
+                &["-m", "shift", "-m", "ctrl"],
+            )
+        } else {
+            (&["-M", "ctrl"], &["-m", "ctrl"])
+        };
+        let mut words = vec!["wtype".to_owned()];
+        words.extend(hold.iter().map(|&w| w.to_owned()));
+        words.push(l);
+        words.extend(free.iter().map(|&w| w.to_owned()));
+        words
+    } else if tools.ydotool {
+        let (down, up) = (format!("{code}:1"), format!("{code}:0"));
+        let keys: &[&str] = if shift {
+            &["29:1", "42:1", &down, &up, "42:0", "29:0"]
+        } else {
+            &["29:1", &down, &up, "29:0"]
+        };
+        ["ydotool", "key"]
+            .iter()
+            .chain(keys)
+            .map(|&w| w.to_owned())
+            .collect()
+    } else {
+        return Err("nothing here can press the chord: the compositor offers no virtual keyboard; install wtype, or ydotool with ydotoold running".into());
     };
-    Ok(words.iter().map(|&w| w.to_owned()).collect())
+    Ok(words)
 }
 
 /// The XKB keysym `wtype -k` names, and the native keymap binds.

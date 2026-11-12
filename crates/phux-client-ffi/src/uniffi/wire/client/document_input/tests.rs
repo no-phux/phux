@@ -113,6 +113,9 @@ fn send_document_input_queues_one_send_document_input_command() {
                 to: WireFramePoint { x: 30, y: 2 },
             },
         ),
+        remote.send_document_input("local:9".into(), WireDocumentIntent::CopySelection),
+        remote.send_document_input("local:9".into(), WireDocumentIntent::CutSelection),
+        remote.send_document_input("local:9".into(), WireDocumentIntent::SelectAll),
     ];
     let frames: Vec<_> = client
         .take_outbound()
@@ -153,6 +156,21 @@ fn send_document_input_queues_one_send_document_input_command() {
                     to: (30, 2),
                 }
             ),
+            expected(
+                sent[5],
+                DocumentInput::CopySelection {
+                    reply: 0,
+                    cut: false,
+                }
+            ),
+            expected(
+                sent[6],
+                DocumentInput::CopySelection {
+                    reply: 0,
+                    cut: true,
+                }
+            ),
+            expected(sent[7], DocumentInput::SelectAll),
         ]
     );
 }
@@ -187,6 +205,16 @@ fn replies_settle_as_outcomes_and_others_pass_through() {
             CommandResult::OkWith(CommandValue::Bytes(b"host text".to_vec())),
             WireDocumentInputOutcome::Copied {
                 text: "host text".into(),
+            },
+        ),
+        (
+            PAGE,
+            CommandResult::Error {
+                code: ErrorCode::Unavailable,
+                message: "Nothing copied on the host".into(),
+            },
+            WireDocumentInputOutcome::Other {
+                message: "Nothing copied on the host".into(),
             },
         ),
         (

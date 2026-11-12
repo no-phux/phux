@@ -118,7 +118,11 @@ pub(super) async fn relay<A: DocumentApi>(
         return not_connected();
     };
     let paste = matches!(intent, DocumentInput::Paste { .. });
-    let (intent, held) = if paste || matches!(intent, DocumentInput::CopyClipboard { .. }) {
+    let copy = matches!(
+        intent,
+        DocumentInput::CopyClipboard { .. } | DocumentInput::CopySelection { .. }
+    );
+    let (intent, held) = if paste || copy {
         let reply = NEXT_REPLY.fetch_add(1, Ordering::Relaxed);
         let (answer, rx) = oneshot::channel();
         waiting().insert(
@@ -130,10 +134,10 @@ pub(super) async fn relay<A: DocumentApi>(
                 answer,
             },
         );
-        let intent = if paste {
-            intent
-        } else {
-            DocumentInput::CopyClipboard { reply }
+        let intent = match intent {
+            DocumentInput::CopySelection { cut, .. } => DocumentInput::CopySelection { reply, cut },
+            DocumentInput::CopyClipboard { .. } => DocumentInput::CopyClipboard { reply },
+            paste => paste,
         };
         (intent, Some((Unwait(reply), rx)))
     } else {
