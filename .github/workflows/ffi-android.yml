@@ -2,18 +2,14 @@
 # Sibling of ffi-xcframework.yml, not a job on it: Apple publication must not
 # wait on NDK. phux-mobile fetches this zip at PHUX_REV.
 #
-# Fires on main when the shim or its runtime inputs change, so a merge is the
-# produce run. release.yml dispatches it with the tag to attach the zip once
-# a root release is public; a tagless dispatch is a repair build.
+# release.yml dispatches it with the tag to attach the zip once a root
+# release is public; that is the build phux-mobile pins by default. A
+# dispatch with `commit` builds one main commit for a mobile override pin
+# (phux-mobile `just pin-phux <sha>`). Main pushes no longer build it.
 
 name: ffi-android
 
 on:
-  # Main pushes build only when the classifier's mobile_ffi_needed says
-  # so, or when classification failed. Both FFI workflows read that one
-  # output, so phux-mobile's pin always finds the pair at the same commit.
-  push:
-    branches: [main]
   workflow_dispatch:
     inputs:
       tag:
@@ -40,28 +36,8 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  changes:
-    name: classify changes
-    if: github.event_name == 'push'
-    runs-on: ubuntu-24.04
-    timeout-minutes: 5
-    outputs:
-      mobile_ffi_needed: ${{ steps.detect.outputs.mobile_ffi_needed }}
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          fetch-depth: 0
-      - uses: ./.github/actions/setup-bun
-      - id: detect
-        run: bun tools/main.ts detect-changes >> "$GITHUB_OUTPUT"
-
   build:
     name: build Android UniFFI zip
-    needs: changes
-    if: >-
-      !cancelled() &&
-      (github.event_name != 'push' || needs.changes.result == 'failure' ||
-       needs.changes.outputs.mobile_ffi_needed == 'true')
     runs-on: ubuntu-24.04
     timeout-minutes: 90
     permissions:
@@ -175,13 +151,13 @@ jobs:
           cmp "${STEM}.zip" "$existing/${STEM}.zip"
           (cd "$existing" && shasum -a 256 -c "${STEM}.zip.sha256")
 
-  # phux-mobile pins the newest main commit that published both mobile
-  # archives. Tell it one just landed instead of leaving it to its six-hour
-  # poll. Best effort: the poll still catches a missed event, so a failed
-  # dispatch must not mark main red.
+  # phux-mobile pins the newest release that carries both mobile archives.
+  # Tell it one was just attached instead of leaving it to its six-hour poll.
+  # Best effort: the poll still catches a missed event, so a failed dispatch
+  # must not fail the release build.
   notify-mobile:
     needs: build
-    if: github.event_name == 'push' && needs.build.result == 'success'
+    if: inputs.tag != '' && needs.build.result == 'success'
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     continue-on-error: true
@@ -195,10 +171,10 @@ jobs:
           owner: no-phux
           repositories: phux-mobile
           permission-contents: write
-      - name: Tell phux-mobile an archive landed
+      - name: Tell phux-mobile a release archive was attached
         env:
           GH_TOKEN: ${{ steps.mobile.outputs.token }}
-          SHA: ${{ github.sha }}
+          TAG: ${{ inputs.tag }}
         run: >-
           gh api repos/no-phux/phux-mobile/dispatches
-          -f event_type=phux-ffi-published -f "client_payload[sha]=$SHA"
+          -f event_type=phux-ffi-published -f "client_payload[tag]=$TAG"
