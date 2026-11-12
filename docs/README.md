@@ -55,6 +55,7 @@ unshipped experiment, and phone apps are not available yet. See
 ## Machines and clients
 
 - [Remote machines](./remote.md): reach another machine's server with `phux host add`, and link machines together.
+- [SSH](./ssh.md): sign in once (passwords and 2FA included), recover from a changed host key, and attach over `ssh` without pairing.
 - [Audit log](./audit.md): the signed record of connections, decisions, approvals, and credential changes, and how to check it.
 - [Native terminal windows](./native-terminal.md): one server-owned shell per emulator window, without TUI chrome.
 - [Organizations](./enterprise.md): managed credentials, the audit log, held actions, and what the paid team service adds.

@@ -166,6 +166,26 @@ pub(super) async fn askpass_login(destination: &str, askpass: &Path) -> Result<(
     login_refusal(&said, destination).map_or(Ok(()), Err)
 }
 
+/// Before each attempt on an ssh target with an askpass program, sign in
+/// through it ([`askpass_login`]). `Some` ends the session: a refusal, or
+/// the consumer closing it meanwhile.
+pub(super) async fn sign_in(
+    target: &super::Target,
+    close: &mut tokio::sync::watch::Receiver<bool>,
+) -> Option<super::ConnectionEnd> {
+    let (super::Transport::Ssh { destination, .. }, Some(askpass)) =
+        (&target.transport, &target.ssh_askpass)
+    else {
+        return None;
+    };
+    tokio::select! {
+        signed_in = askpass_login(destination, askpass) => {
+            signed_in.err().map(super::ConnectionEnd::Refused)
+        }
+        _ = close.wait_for(|closed| *closed) => Some(super::ConnectionEnd::Closed),
+    }
+}
+
 /// The final reason in a failed login's stderr, if it has one.
 fn login_refusal(stderr: &str, destination: &str) -> Option<String> {
     if let Some(remedy) = host_key_remedy(stderr, destination) {

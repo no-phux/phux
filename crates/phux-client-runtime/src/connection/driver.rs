@@ -66,15 +66,15 @@ pub async fn run_session(
     let mut ladder_deadline = None;
     loop {
         attempts += 1;
-        if let Some(end) = ssh_login(&target, &mut signals).await {
+        // A person's time, so before the budget below.
+        if let Some(end) = super::ssh::sign_in(&target, &mut signals.close).await {
             finish_attempt(&shared, end, attempts, options.initial_attempts);
             wake();
             return;
         }
-        // The never-attached deadline: armed from the first dial, after any
-        // sign-in (a person's time), moot once a handshake lands. It bounds
-        // how long a session may spend having never attached, never how
-        // long an attached session may run.
+        // The never-attached deadline: armed from the first dial, moot once
+        // a handshake lands. It bounds how long a session may spend having
+        // never attached, never how long an attached session may run.
         let ladder_deadline = *ladder_deadline
             .get_or_insert_with(|| tokio::time::Instant::now() + options.initial_budget);
         let Some(tried) = run_attempt(
@@ -114,23 +114,6 @@ pub async fn run_session(
                 backoff = options.ladder.next(backoff);
             }
         }
-    }
-}
-
-/// An ssh target with an askpass program signs in through it before each
-/// attempt (see [`super::ssh::askpass_login`]). `Some` ends the session: a
-/// refused sign-in or host key, or the consumer closing it meanwhile.
-async fn ssh_login(target: &Target, signals: &mut Signals) -> Option<ConnectionEnd> {
-    let (Transport::Ssh { destination, .. }, Some(askpass)) =
-        (&target.transport, &target.ssh_askpass)
-    else {
-        return None;
-    };
-    tokio::select! {
-        signed_in = super::ssh::askpass_login(destination, askpass) => {
-            signed_in.err().map(ConnectionEnd::Refused)
-        }
-        () = closed(&mut signals.close) => Some(ConnectionEnd::Closed),
     }
 }
 
