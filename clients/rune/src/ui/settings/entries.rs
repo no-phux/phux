@@ -76,7 +76,8 @@ impl Entry {
             Self::Font => "Terminal font. One that isn't installed shows the system's.",
             Self::CopySelect => "Finishing a selection puts it on the clipboard.",
             Self::ConfirmClose => {
-                "Ask before closing a terminal or tab that's still running something."
+                "Ask before closing a terminal or tab that's still running something. Until you \
+                 choose, only a terminal an agent runs in asks."
             }
             Self::OptionMeta => "Option sends Esc-prefixed keys instead of typing å and ∑.",
             Self::Notifications => crate::alerts::notifications_detail(

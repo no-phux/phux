@@ -245,3 +245,42 @@ fn config_file_keys_win_and_cannot_be_changed_in_the_app() {
     desk.toggle_confirm_close();
     assert_eq!(desk.prefs.get::<bool>("confirm_close"), Some(true));
 }
+
+/// A stray close cannot end an agent: its terminal asks first until the
+/// setting is chosen, and turning it off by hand stops the asking.
+#[test]
+fn closing_an_agents_terminal_asks_until_the_setting_is_chosen() {
+    use phux_client_core::layout::wire::HandleMap;
+    use phux_client_runtime::control::{AgentSessionDescriptor, Topology};
+    use phux_protocol::ids::ResourceId;
+
+    let (agent, shell) = (ResourceId::local(1), ResourceId::local(2));
+    let mut desk = settings_desk();
+    desk.topology = Some(Topology {
+        sessions: Vec::new(),
+        resources: Vec::new(),
+        panes: Vec::new(),
+        agent_sessions: vec![AgentSessionDescriptor {
+            id: ResourceId::local(9),
+            parent: Some(agent.clone()),
+            provider: None,
+            native_id: None,
+            state: None,
+        }],
+        documents: Vec::new(),
+        satellite_sessions: Vec::new(),
+        focused_session: 0,
+        focused_pane: shell.clone(),
+        authority: None,
+        inbox: None,
+        handles: HandleMap::new(),
+    });
+    assert!(desk.asks_to_close(&agent) && !desk.asks_to_close(&shell));
+    desk.toggle_confirm_close();
+    assert!(
+        desk.asks_to_close(&agent) && desk.asks_to_close(&shell),
+        "on"
+    );
+    desk.toggle_confirm_close();
+    assert!(!desk.asks_to_close(&agent), "turned off by hand");
+}

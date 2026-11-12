@@ -221,12 +221,31 @@ impl Desk {
         if terminals.is_empty() {
             return;
         }
-        let idle = terminals.iter().all(|id| self.vouched_idle(id));
-        if self.settings.confirm_close && !idle {
+        if terminals.iter().any(|id| self.asks_to_close(id)) {
             self.pending = Some(Pending::CloseTab(terminals));
         } else if let Some(client) = &self.client {
             let _ = client.close_terminals(terminals);
         }
+    }
+
+    /// Whether closing `terminal` asks first. An idle prompt never asks.
+    /// With "Confirm before closing" on, anything else does. With it never
+    /// chosen, a terminal an agent runs in still does, so a stray Cmd+W
+    /// cannot end one; turning the setting off by hand stops that too.
+    pub(super) fn asks_to_close(&self, terminal: &ResourceId) -> bool {
+        if self.vouched_idle(terminal) {
+            return false;
+        }
+        if self.settings.confirm_close {
+            return true;
+        }
+        let chosen =
+            self.file.confirm_close.is_some() || self.prefs.get::<bool>("confirm_close").is_some();
+        let agents = self.topology.iter().flat_map(|t| &t.agent_sessions);
+        !chosen
+            && agents
+                .into_iter()
+                .any(|a| a.parent.as_ref() == Some(terminal))
     }
 
     pub fn close_session(&mut self) {
