@@ -339,6 +339,9 @@ final class TailscaleSetupController: UITableViewController {
         // SSH/NIO errors and remote output never cross into the UI.
         if let error = error as? TailnetPairingError { return error.localizedDescription }
         if let error = error as? SSHFailure {
+            if case .authenticationFailed(passwordAccepted: false) = error {
+                return "This computer asks for a sign-in step Rune can't answer yet, such as a one-time code. Turn on Tailscale SSH for it, or allow SSH password sign-in, then try again. You can also scan or paste its pairing code."
+            }
             if case .authenticationFailed = error {
                 return "The computer rejected that login. Use its local account name and computer login password—not your Tailscale or Apple ID login. You can retry or use QR / paste without SSH."
             }

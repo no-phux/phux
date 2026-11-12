@@ -27,7 +27,9 @@ authentication, closes it, then deletes its state and ends active streams.
 Start a new stream to resume discovery after signing out. No key export is exposed.
 
 `SSHFailure.authenticationFailed(passwordAccepted: true)` lets the app ask for
-the computer account password. Authentication always tries `none` first.
+the computer account password; `false` means the server wants a step this
+client can't answer (keyboard-interactive, such as a one-time code, a key, or a
+second factor after the password). Authentication always tries `none` first.
 `onBanner` receives only a bounded `https://login.tailscale.com/a/...` check
 URL for netmap-pinned Tailscale SSH, never arbitrary SSH output. Other failures
 implement `LocalizedError` and contain no remote output or pairing secrets.
