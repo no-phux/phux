@@ -116,7 +116,12 @@ land on the same one:
 phux host color mini violet      # [[remote]] color = "violet"
 phux host color --local sky      # this machine: [host] color = "sky"
 phux host color mini auto        # back to the hashed colour
+phux host color --role satellite box navy   # [[satellites]] color = "navy"
 ```
+
+A name registered as both a remote and a satellite needs `--role`. One
+name is one machine, so an override on either role colours it in both,
+unless the other role has its own override.
 
 `phux host ls --json` reports each host's resolved `color` (`id`, `hex`,
 and whether an `override` chose it) and this machine under `local`. The

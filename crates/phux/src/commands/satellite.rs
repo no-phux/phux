@@ -23,6 +23,8 @@ pub(crate) struct SatelliteEntry {
     pub(crate) token_file: Option<PathBuf>,
     /// TLS certificate SHA-256 pin, as printed by `phux pair`. Not a secret.
     pub(crate) cert_fingerprint: Option<String>,
+    /// Palette id overriding the hashed colour (`phux host color`).
+    pub(crate) color: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -86,14 +88,11 @@ pub(crate) fn add_or_update_at(path: &Path, new: &NewSatellite) -> Result<Satell
         },
         |table| fill_table(table, new),
     )?;
-    Ok(SatelliteEntry {
-        index: 0,
-        name: new.name.clone(),
-        endpoint: new.endpoint.clone(),
-        enabled: new.enabled,
-        token_file: new.token_file.clone(),
-        cert_fingerprint: new.cert_fingerprint.clone(),
-    })
+    // Read back, so the entry carries what the add kept (its colour).
+    load_registry_from(path)?
+        .into_iter()
+        .find(|entry| entry.name == new.name)
+        .ok_or_else(|| "satellite disappeared after write".to_owned())
 }
 
 pub(crate) fn remove_entry(entry: &SatelliteEntry) -> Result<(), String> {
@@ -112,6 +111,7 @@ fn entry_from_config(index: usize, satellite: SatelliteConfigEntry) -> Satellite
         enabled: satellite.enabled,
         token_file: satellite.token_file,
         cert_fingerprint: satellite.cert_fingerprint,
+        color: satellite.color,
     }
 }
 

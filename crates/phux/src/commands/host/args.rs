@@ -215,17 +215,23 @@ pub(crate) enum HostAction {
     /// Set the colour a host is drawn in, or go back to its automatic one.
     ///
     /// Every client hashes a host's name to one of eight palette colours;
-    /// this overrides that for a `[[remote]]` entry, or for this machine
-    /// with `--local` (`[host] color`). `auto` removes the override.
+    /// this overrides that for a `[[remote]]` or `[[satellites]]` entry, or
+    /// for this machine with `--local` (`[host] color`). `auto` removes the
+    /// override. A name registered in both roles needs `--role`; an override
+    /// on one role colours the name in both, unless the other role has its
+    /// own.
     Color {
-        /// `NAME COLOR` for a registered remote, or `COLOR` alone with
+        /// `NAME COLOR` for a registered host, or `COLOR` alone with
         /// `--local`. COLOR is a palette id (blue, violet, magenta, sky,
         /// coral, olive, slate, copper, green, navy) or `auto`.
         #[usage(required = true, value_name = "[NAME] COLOR", num_args = 1..=2)]
         args: Vec<String>,
-        /// Colour this machine instead of a registered remote.
+        /// Colour this machine instead of a registered host.
         #[usage(long)]
         local: bool,
+        /// Disambiguate a name present in both registries.
+        #[usage(long, value_enum)]
+        role: Option<HostRole>,
         #[usage(flatten)]
         json: JsonOpt,
     },

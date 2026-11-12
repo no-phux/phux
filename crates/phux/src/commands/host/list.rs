@@ -36,7 +36,8 @@ pub(super) struct HostRow {
     pub(super) client_cert: Option<PathBuf>,
     /// Remote only: its private key's path (never its bytes).
     pub(super) client_key: Option<PathBuf>,
-    /// Remote only: the palette id overriding the hashed colour.
+    /// The palette id overriding the hashed colour: the entry's own, else
+    /// the one the same name carries in the other role ([`share_colors`]).
     pub(super) color: Option<String>,
 }
 
@@ -98,26 +99,46 @@ impl HostRow {
             direct: None,
             client_cert: None,
             client_key: None,
-            color: None,
+            color: entry.color,
         }
+    }
+}
+
+/// One host name, one colour: a name registered as both a remote and a
+/// satellite with an override on only one role takes it in both; a role
+/// with its own override keeps it.
+pub(super) fn share_colors(rows: &mut [HostRow]) {
+    let picked: std::collections::HashMap<String, String> = rows
+        .iter()
+        .filter_map(|row| Some((row.name.clone(), row.color.clone()?)))
+        .collect();
+    for row in rows.iter_mut().filter(|row| row.color.is_none()) {
+        row.color = picked.get(&row.name).cloned();
     }
 }
 
 /// `phux host ls`.
 pub(super) fn run_list(role: Option<HostRole>, json: bool) -> ExitCode {
+    // Both registries load even when `--role` filters, so a shared name's
+    // colour is the same in either listing; only the wanted one may fail it.
+    let wanted = |want: HostRole| role.is_none_or(|role| role == want);
     let mut rows = Vec::new();
-    if role != Some(HostRole::Satellite) {
-        match remote::load_registry() {
-            Ok(entries) => rows.extend(entries.into_iter().map(HostRow::from_remote)),
-            Err(err) => return json_err::emit(json, &registry_failure(err), 1),
+    match remote::load_registry() {
+        Ok(entries) => rows.extend(entries.into_iter().map(HostRow::from_remote)),
+        Err(err) if wanted(HostRole::Remote) => {
+            return json_err::emit(json, &registry_failure(err), 1);
         }
+        Err(_) => {}
     }
-    if role != Some(HostRole::Remote) {
-        match satellite_registry::load_registry() {
-            Ok(entries) => rows.extend(entries.into_iter().map(HostRow::from_satellite)),
-            Err(err) => return json_err::emit(json, &registry_failure(err), 1),
+    match satellite_registry::load_registry() {
+        Ok(entries) => rows.extend(entries.into_iter().map(HostRow::from_satellite)),
+        Err(err) if wanted(HostRole::Satellite) => {
+            return json_err::emit(json, &registry_failure(err), 1);
         }
+        Err(_) => {}
     }
+    share_colors(&mut rows);
+    rows.retain(|row| wanted(row.role));
     sort_rows(&mut rows);
 
     if json {

@@ -35,6 +35,7 @@ cert-fingerprint = "AB:CD:EF:01"
                 cert_fingerprint: None,
                 client_cert: None,
                 client_key: None,
+                color: None,
             },
             SatelliteConfigEntry {
                 name: "lab".to_owned(),
@@ -44,6 +45,7 @@ cert-fingerprint = "AB:CD:EF:01"
                 cert_fingerprint: Some("AB:CD:EF:01".to_owned()),
                 client_cert: None,
                 client_key: None,
+                color: None,
             },
         ]
     );

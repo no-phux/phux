@@ -44,6 +44,7 @@ fn fully_populated_sample() -> Config {
         cert_fingerprint: Some("AB:CD".to_owned()),
         client_cert: None,
         client_key: None,
+        color: None,
     }];
     config.connector = vec![ConnectorConfigEntry {
         relay: "relay.example:4433".to_owned(),

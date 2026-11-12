@@ -51,6 +51,7 @@ fn inbound_entry(name: &str) -> SatelliteConfigEntry {
         cert_fingerprint: None,
         client_cert: None,
         client_key: None,
+        color: None,
     }
 }
 

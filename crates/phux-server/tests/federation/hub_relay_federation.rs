@@ -38,6 +38,8 @@ mod conditional_kill;
 mod consumer_filters;
 mod detach_fence;
 mod documents;
+mod entries;
+use entries::satellite_entry;
 mod event_restamp;
 mod kill_visibility;
 mod link_gap;
@@ -88,18 +90,6 @@ impl DeadEndpoint {
 impl Drop for DeadEndpoint {
     fn drop(&mut self) {
         self.accept.abort();
-    }
-}
-
-fn satellite_entry(name: &str, port: u16) -> SatelliteConfigEntry {
-    SatelliteConfigEntry {
-        name: name.to_owned(),
-        endpoint: format!("ws://127.0.0.1:{port}"),
-        enabled: true,
-        token_file: None,
-        cert_fingerprint: None,
-        client_cert: None,
-        client_key: None,
     }
 }
 

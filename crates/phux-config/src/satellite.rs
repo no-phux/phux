@@ -53,6 +53,11 @@ pub struct SatelliteConfigEntry {
         skip_serializing_if = "Option::is_none"
     )]
     pub client_key: Option<PathBuf>,
+
+    /// Palette id overriding the satellite's automatic colour
+    /// ([`crate::host_color`]); absent or `"auto"` keeps the hash of `name`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub color: Option<String>,
 }
 
 impl SatelliteConfigEntry {

@@ -49,6 +49,7 @@ fn entry(name: &str, endpoint: &str, enabled: bool) -> SatelliteConfigEntry {
         cert_fingerprint: None,
         client_cert: None,
         client_key: None,
+        color: None,
     }
 }
 

@@ -12,7 +12,7 @@ use super::super::satellite as satellite_registry;
 
 use super::add::{registry_failure, reject_entry};
 use super::hub::{HubReload, add_hub_reload, reload_local_hub};
-use super::list::{HostRow, auth_display, row_json};
+use super::list::{HostRow, auth_display, row_json, share_colors};
 use super::{HostRole, inbound};
 
 /// Decide which registry `host rm NAME` removes from. A name in both with no
@@ -53,18 +53,25 @@ pub(super) fn resolve_host_role(
                 1,
             ))
         }
-        None if in_remote && in_satellite => Err((
-            CliError::new(
-                codes::REGISTRY,
-                format!("{name:?} is registered as both a remote and a satellite"),
-                format!(
-                    "name the registry to remove from: \
-                      `phux host {verb} --role remote {name}` or \
-                      `phux host {verb} --role satellite {name}`"
+        None if in_remote && in_satellite => {
+            let more = match verb {
+                "color" => " COLOR",
+                "rename" => " NEW_NAME",
+                _ => "",
+            };
+            Err((
+                CliError::new(
+                    codes::REGISTRY,
+                    format!("{name:?} is registered as both a remote and a satellite"),
+                    format!(
+                        "name the registry: \
+                          `phux host {verb} --role remote {name}{more}` or \
+                          `phux host {verb} --role satellite {name}{more}`"
+                    ),
                 ),
-            ),
-            2,
-        )),
+                2,
+            ))
+        }
         None if in_remote => Ok(HostRole::Remote),
         None if in_satellite => Ok(HostRole::Satellite),
         _ => Err((
@@ -89,16 +96,20 @@ pub(super) fn find_host(
     let remote = remotes.into_iter().find(|entry| entry.name == name);
     let satellite = satellites.into_iter().find(|entry| entry.name == name);
     let resolved = resolve_host_role(name, role, remote.is_some(), satellite.is_some(), verb)?;
-    match resolved {
-        HostRole::Remote => remote.map(HostRow::from_remote),
-        HostRole::Satellite => satellite.map(HostRow::from_satellite),
-    }
-    .ok_or_else(|| {
-        (
-            registry_failure("host disappeared during lookup".to_owned()),
-            1,
-        )
-    })
+    let mut rows: Vec<_> = remote
+        .map(HostRow::from_remote)
+        .into_iter()
+        .chain(satellite.map(HostRow::from_satellite))
+        .collect();
+    share_colors(&mut rows);
+    rows.into_iter()
+        .find(|row| row.role == resolved)
+        .ok_or_else(|| {
+            (
+                registry_failure("host disappeared during lookup".to_owned()),
+                1,
+            )
+        })
 }
 
 pub(super) fn run_show(name: &str, role: Option<HostRole>, json: bool) -> ExitCode {

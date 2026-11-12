@@ -59,6 +59,7 @@ pub(super) fn satellite(name: &str, endpoint: &str) -> phux_config::SatelliteCon
         cert_fingerprint: None,
         client_cert: None,
         client_key: None,
+        color: None,
     }
 }
 

@@ -3,7 +3,7 @@
 use std::path::PathBuf;
 
 use super::HostRole;
-use super::list::{HostRow, auth_display, empty_state, render_table, sort_rows};
+use super::list::{HostRow, auth_display, empty_state, render_table, share_colors, sort_rows};
 use super::manage::{
     edit_host_field_at, inbound_rename_refusal, resolve_host_role, resolve_rm_role,
 };
@@ -157,6 +157,47 @@ fn merged_rows_sort_by_name_then_remote_first() {
 
 /// The AUTH column classifies the transport: ssh rides ssh trust, the
 /// paired transports report which halves of token + pin are on file.
+/// A name in both registries: one override colours both roles; a role with
+/// its own override keeps it; other names are untouched.
+#[test]
+fn a_shared_name_shares_its_one_override() {
+    let colored = |name, role, color: Option<&str>| HostRow {
+        color: color.map(str::to_owned),
+        ..row(name, role)
+    };
+    let mut rows = [
+        colored("ph", HostRole::Remote, None),
+        colored("ph", HostRole::Satellite, Some("navy")),
+        colored("other", HostRole::Remote, None),
+    ];
+    share_colors(&mut rows);
+    let colors: Vec<_> = rows.iter().map(|row| row.color.as_deref()).collect();
+    assert_eq!(colors, [Some("navy"), Some("navy"), None]);
+
+    let mut rows = [
+        colored("ph", HostRole::Remote, Some("green")),
+        colored("ph", HostRole::Satellite, Some("navy")),
+    ];
+    share_colors(&mut rows);
+    let colors: Vec<_> = rows.iter().map(|row| row.color.as_deref()).collect();
+    assert_eq!(colors, [Some("green"), Some("navy")]);
+}
+
+#[test]
+fn ambiguous_colour_remedy_names_the_role_flag_and_colour() {
+    let (err, code) = resolve_host_role("ph", None, true, true, "color").expect_err("ambiguous");
+    assert_eq!(code, 2);
+    assert!(
+        err.remedy
+            .contains("phux host color --role remote ph COLOR")
+            && err
+                .remedy
+                .contains("phux host color --role satellite ph COLOR"),
+        "{}",
+        err.remedy
+    );
+}
+
 #[test]
 fn auth_display_classifies_transports() {
     assert_eq!(auth_display("ssh://mini", false, false), "ssh");
