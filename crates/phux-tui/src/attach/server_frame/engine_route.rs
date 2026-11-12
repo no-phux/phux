@@ -341,10 +341,14 @@ fn collect_route_effects(route: &mut KernelRoute, effects: &KernelEffectBuffer) 
                     ?reason,
                     "history unavailable for pane"
                 );
-                route.notices.push(Notice::warn(format!(
-                    "{}: scrollback unavailable",
-                    pane_label(&key.terminal_id),
-                )));
+                // `Released` means the terminal is already gone (a popup
+                // whose command exited): nothing is lost worth a toast.
+                if *reason != phux_client_core::session::HistoryUnavailableReason::Released {
+                    route.notices.push(Notice::warn(format!(
+                        "{}: scrollback unavailable",
+                        pane_label(&key.terminal_id),
+                    )));
+                }
                 route.history_degraded.insert(key.terminal_id.clone(), true);
             }
             // A healthy cache (a fresh fetch, or a completed one) clears the

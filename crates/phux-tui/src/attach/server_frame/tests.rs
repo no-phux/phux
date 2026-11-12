@@ -680,6 +680,29 @@ fn history_unavailable_status_names_the_pane_in_a_warn_notice() {
     assert_eq!(outcome.notices[0].text, "pane 3: scrollback unavailable");
 }
 
+/// A terminal that is already gone (a popup whose command exited) loses no
+/// scrollback anyone can read: `Released` raises no toast.
+#[test]
+fn a_released_history_raises_no_notice() {
+    let id = tid(6);
+    let mut h = H::new();
+    h.send(begin_frame(&id));
+    h.send(FrameKind::BootstrapReady {
+        terminal_id: id.clone(),
+        stream_id: stream(),
+        bootstrap_id: bootstrap(),
+        history_cursor: Some(bytes::Bytes::from_static(b"c0")),
+    });
+    let gone = h.send(FrameKind::HistoryTombstone {
+        terminal_id: id,
+        stream_id: stream(),
+        bootstrap_id: bootstrap(),
+        cursor: bytes::Bytes::from_static(b"c0"),
+        reason: phux_protocol::wire::frame::HistoryTombstoneReason::Released,
+    });
+    assert!(gone.notices.is_empty(), "{:?}", gone.notices);
+}
+
 /// A server-pruned history boundary marks the pane past the notice's TTL; a
 /// loading cache before it leaves the pane unmarked.
 #[test]
