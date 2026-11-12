@@ -43,19 +43,41 @@ fn remote_command(remote_phux: &str) -> String {
 /// a port the master already holds abandons the master and logs in again.
 #[must_use]
 pub fn control_options() -> Vec<String> {
-    client_options(phux_config_core::instance::ssh_control_dir(false).as_deref())
+    client_options(
+        phux_config_core::instance::ssh_control_dir(false).as_deref(),
+        false,
+    )
 }
 
-fn client_options(dir: Option<&Path>) -> Vec<String> {
+/// [`control_options`] for a `BatchMode` run, which never prompts.
+///
+/// With no master up, the run logs in with its key and keeps that connection
+/// as phux's master for [`CONTROL_PERSIST_SECS`], so the runs after it skip
+/// the ssh handshake, those without a terminal (scripts, Rune) included.
+#[must_use]
+pub fn batch_control_options() -> Vec<String> {
+    client_options(
+        phux_config_core::instance::ssh_control_dir(true).as_deref(),
+        true,
+    )
+}
+
+fn client_options(dir: Option<&Path>, start_master: bool) -> Vec<String> {
     dir.map_or_else(Vec::new, |dir| {
-        [
-            format!("ControlPath={}/%C", dir.display()),
-            "ControlMaster=no".to_owned(),
-            "ClearAllForwardings=yes".to_owned(),
-        ]
-        .into_iter()
-        .flat_map(|option| ["-o".to_owned(), option])
-        .collect()
+        // `auto` also takes over a dead master's stale socket.
+        let master = if start_master {
+            vec![
+                "ControlMaster=auto".to_owned(),
+                format!("ControlPersist={CONTROL_PERSIST_SECS}"),
+            ]
+        } else {
+            vec!["ControlMaster=no".to_owned()]
+        };
+        std::iter::once(format!("ControlPath={}/%C", dir.display()))
+            .chain(master)
+            .chain(["ClearAllForwardings=yes".to_owned()])
+            .flat_map(|option| ["-o".to_owned(), option])
+            .collect()
     })
 }
 
@@ -228,8 +250,9 @@ fn command(destination: &str, remote_phux: &str) -> std::io::Result<tokio::proce
     let mut command = tokio::process::Command::new(program());
     command
         // A password or 2FA login done once in the foreground (`phux attach
-        // --ssh`, `phux host add`) left a master this run rides.
-        .args(control_options())
+        // --ssh`, `phux host add`) left a master this run rides; without
+        // one, this run leaves one for the next.
+        .args(batch_control_options())
         // The pipes are the protocol's, and the terminal may be the TUI's:
         // a login that must prompt fails here and is left to `ssh -t`.
         .args(["-T", "-o", "BatchMode=yes", "-o", "ClearAllForwardings=yes"])
@@ -272,9 +295,9 @@ mod tests {
     /// phux's master, and its `LocalForward`s never make a run log in again.
     #[test]
     fn every_run_is_a_client_of_phux_master_and_forwards_nothing() {
-        let options = client_options(Some(std::path::Path::new("/tmp/phux-ssh-501")));
+        let dir = Some(std::path::Path::new("/tmp/phux-ssh-501"));
         assert_eq!(
-            options,
+            client_options(dir, false),
             [
                 "-o",
                 "ControlPath=/tmp/phux-ssh-501/%C",
@@ -284,7 +307,38 @@ mod tests {
                 "ClearAllForwardings=yes"
             ]
         );
-        assert!(client_options(None).is_empty(), "no master, plain ssh");
+        assert!(
+            client_options(None, false).is_empty(),
+            "no master, plain ssh"
+        );
+    }
+
+    /// A `BatchMode` run with no master up becomes one that outlives it, so
+    /// the next lane or one-shot run skips the handshake. Without
+    /// `ControlPersist` it would be a master that dies with its own run.
+    #[test]
+    fn a_batch_run_leaves_phux_master_up_for_the_next() {
+        let dir = Some(std::path::Path::new("/tmp/phux-ssh-501"));
+        assert_eq!(
+            client_options(dir, true),
+            [
+                "-o",
+                "ControlPath=/tmp/phux-ssh-501/%C",
+                "-o",
+                "ControlMaster=auto",
+                "-o",
+                "ControlPersist=300",
+                "-o",
+                "ClearAllForwardings=yes"
+            ]
+        );
+        assert!(
+            client_options(None, true).is_empty(),
+            "no master, plain ssh"
+        );
+        let lane = command("me@box", "phux").expect("valid");
+        let args: Vec<_> = lane.as_std().get_args().map(OsString::from).collect();
+        assert!(args.contains(&OsString::from("BatchMode=yes")), "{args:?}");
     }
 
     #[test]

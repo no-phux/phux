@@ -343,8 +343,8 @@ mod wsl;
 
 pub(crate) use establish::{DialFailure, establish};
 pub use ssh::{
-    ASKPASS_ENV, HOST_KEY_REFUSED, control_options as ssh_control_options, host_key_remedy,
-    master_options as ssh_master_options,
+    ASKPASS_ENV, HOST_KEY_REFUSED, batch_control_options as ssh_batch_control_options,
+    control_options as ssh_control_options, host_key_remedy, master_options as ssh_master_options,
 };
 
 pub use driver::run_session;

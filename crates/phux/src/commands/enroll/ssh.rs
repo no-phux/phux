@@ -95,8 +95,8 @@ pub(crate) fn accept_new_host_keys() {
 /// prompting.
 pub(super) fn ssh_command(program: &OsString, ssh_host: &str, argv: &[&str]) -> Command {
     let mut command = Command::new(program);
-    // Rides the master a foreground [`login`] left, if any.
-    command.args(phux_client_runtime::connection::ssh_control_options());
+    // Rides the master a foreground [`login`] left, or leaves one.
+    command.args(phux_client_runtime::connection::ssh_batch_control_options());
     command.arg("-o").arg("BatchMode=yes");
     if ACCEPT_NEW_HOST_KEYS.load(Ordering::Relaxed) {
         command.arg("-o").arg("StrictHostKeyChecking=accept-new");
