@@ -75,6 +75,7 @@ pub enum Migrate {
 enum Done {
     Skills(Result<Vec<AgentSkill>, String>),
     Installed(Result<Vec<AgentSkill>, String>),
+    Shimmed(Result<Vec<String>, String>),
     Permissions(Result<Permissions, String>),
     Opened(Result<Option<String>, String>),
     Prompt(Result<String, String>),
@@ -86,6 +87,9 @@ pub struct Onboarding {
     pub step: Step,
     pub skills: Probe<Vec<AgentSkill>>,
     pub installing: bool,
+    /// The agents now launching inside phux; `None` until asked (opt-in:
+    /// it edits the shell rc).
+    pub shims: Option<Probe<Vec<String>>>,
     pub permissions: Probe<Permissions>,
     pub grant_sheet: bool,
     /// The server's app, to drag into a privacy list.
@@ -109,6 +113,7 @@ impl Default for Onboarding {
             step: Step::Welcome,
             skills: Probe::Asking,
             installing: false,
+            shims: None,
             permissions: Probe::Asking,
             grant_sheet: false,
             bundle: None,
@@ -278,8 +283,9 @@ impl Desk {
         // ponytail: always this computer's server, even with the window on
         // another machine; a migration started then runs here, out of view.
         // `phux skill` never dials a server and refuses `--socket`.
+        // Neither do `agent install-shim`'s files.
         let mut argv: Vec<String> = match &self.launch.socket {
-            Ok(socket) if args.first() != Some(&"skill") => {
+            Ok(socket) if !matches!(args, ["skill", ..] | ["agent", "install-shim", ..]) => {
                 vec!["--socket".to_owned(), socket.display().to_string()]
             }
             _ => Vec::new(),
@@ -306,6 +312,17 @@ impl Desk {
         }
         self.ask(&["skill", "setup", "--json"], SLOW, |out| {
             Done::Installed(out.and_then(|b| words::parse_skills(&b)))
+        });
+    }
+
+    /// Make plain `claude`, `codex`, `opencode` and `pi` open inside phux.
+    pub fn install_shims(&mut self) {
+        if matches!(self.onboarding.shims, Some(Probe::Asking)) {
+            return;
+        }
+        self.onboarding.shims = Some(Probe::Asking);
+        self.ask(&["agent", "install-shim", "--all", "--json"], SLOW, |out| {
+            Done::Shimmed(out.and_then(|b| words::parse_shims(&b)))
         });
     }
 
@@ -403,6 +420,7 @@ impl Desk {
                         probe => self.onboarding.skills = probe,
                     }
                 }
+                Done::Shimmed(result) => self.onboarding.shims = Some(Probe::from(result)),
                 Done::Permissions(result) => {
                     self.onboarding.asking = false;
                     let probe = Probe::from(result);
