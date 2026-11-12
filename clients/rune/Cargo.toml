@@ -25,9 +25,9 @@ phux-protocol = { path = "../../crates/phux-protocol" }
 # Rune has no releases; apps pin a `dev` revision (dev is fast-forward only).
 # Phux supplies Inter and the terminal font through AppSpec::fonts. Keep
 # Rune's other defaults, but don't carry its unused embedded font copies.
-rune = { git = "https://github.com/anomalyco/rune", rev = "656af1d5a4d67af0c849dd25ec54e84a6736880b", default-features = false, features = ["accessibility", "dbus", "metal-backend", "ogg-audio", "svg"] }
-rune-notify = { git = "https://github.com/anomalyco/rune", rev = "656af1d5a4d67af0c849dd25ec54e84a6736880b" }
-rune-perf = { git = "https://github.com/anomalyco/rune", rev = "656af1d5a4d67af0c849dd25ec54e84a6736880b" }
+rune = { git = "https://github.com/anomalyco/rune", rev = "4fbd2d6ac4dd12595dd8ed0b7849b28a309c7c00", default-features = false, features = ["accessibility", "dbus", "metal-backend", "ogg-audio", "svg"] }
+rune-notify = { git = "https://github.com/anomalyco/rune", rev = "4fbd2d6ac4dd12595dd8ed0b7849b28a309c7c00" }
+rune-perf = { git = "https://github.com/anomalyco/rune", rev = "4fbd2d6ac4dd12595dd8ed0b7849b28a309c7c00" }
 # Never called directly: Rune's decoder guesses the format, so these
 # features (unified with Rune's png/jpeg) let typed documents draw GIF/WebP.
 image = { version = "0.25", default-features = false, features = ["gif", "webp"] }
