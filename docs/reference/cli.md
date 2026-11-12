@@ -2921,18 +2921,22 @@ Global flags:
 Set the colour a host is drawn in, or go back to its automatic one.
 
 Every client hashes a host's name to one of eight palette colours; this
-overrides that for a `[[remote]]` entry, or for this machine with `--local`
-(`[host] color`). `auto` removes the override.
+overrides that for a `[[remote]]` or `[[satellites]]` entry, or for this machine
+with `--local` (`[host] color`). `auto` removes the override. A name registered
+in both roles needs `--role`; an override on one role colours the name in both,
+unless the other role has its own.
 
-Usage: phux host color [--local] [--json] <[NAME] COLOR>…
+Usage: phux host color [FLAGS] <[NAME] COLOR>…
 
 Arguments:
-  <[NAME] COLOR>…  `NAME COLOR` for a registered remote, or `COLOR` alone with
+  <[NAME] COLOR>…  `NAME COLOR` for a registered host, or `COLOR` alone with
                    `--local`. COLOR is a palette id (blue, violet, magenta, sky,
                    coral, olive, slate, copper, green, navy) or `auto`.
 
 Flags:
-      --local          Colour this machine instead of a registered remote.
+      --local          Colour this machine instead of a registered host.
+      --role <ROLE>    Disambiguate a name present in both registries.
+                       [possible values: remote, satellite]
       --json           Emit stable, versioned JSON on stdout instead of the
                        human view. On failure, stdout stays empty and stderr
                        carries one JSON error object.

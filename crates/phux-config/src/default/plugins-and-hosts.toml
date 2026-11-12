@@ -74,6 +74,7 @@
 # # certificate, the same pair a [[remote]] entry records:
 # client-cert = "/home/me/.local/state/phux/satellites/devbox.client.pem"
 # client-key = "/home/me/.local/state/phux/satellites/devbox.client.key"
+# color = "navy"   # optional palette id; `phux host color --role satellite`
 
 # Outbound connectors let this server reach consumers through a self-hosted
 # relay without accepting inbound traffic. Each link is supervised

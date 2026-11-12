@@ -84,8 +84,9 @@ const SECTIONS: &[Section] = &[
         key: "satellites",
         header: "[[satellites]]",
         summary: "Federation satellites a hub routes to: name, endpoint, \
-                  token-file path, certificate pin, and the client \
-                  certificate a paired satellite requires.",
+                  token-file path, certificate pin, the client \
+                  certificate a paired satellite requires, and an optional \
+                  `color` like `[[remote]]`'s.",
     },
     Section {
         key: "connector",

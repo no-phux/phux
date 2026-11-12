@@ -1,5 +1,6 @@
 //! `phux host color`: override, or clear, the colour clients draw a host in
-//! (`[[remote]] color`, `[host] color` for this machine).
+//! (`[[remote]] color`, `[[satellites]] color`, `[host] color` for this
+//! machine).
 
 use std::path::Path;
 use std::process::ExitCode;
@@ -18,8 +19,12 @@ use super::manage::find_host;
 pub(super) enum Target<'a> {
     /// This machine: `[host] color`.
     Local,
-    /// The `[[remote]]` entry with this name and endpoint.
-    Remote { name: &'a str, endpoint: &'a str },
+    /// The `[[remote]]` or `[[satellites]]` entry with this name and endpoint.
+    Entry {
+        role: HostRole,
+        name: &'a str,
+        endpoint: &'a str,
+    },
 }
 
 /// This machine's resolved colour, keyed by its short host name.
@@ -31,14 +36,19 @@ pub(super) fn local_color() -> HostColor {
 }
 
 /// `phux host color`.
-pub(super) fn run_color(args: &[String], local: bool, json: bool) -> ExitCode {
-    let (name, color) = match (args, local) {
-        ([color], true) => (None, color.trim()),
-        ([name, color], false) => (Some(name.as_str()), color.trim()),
+pub(super) fn run_color(
+    args: &[String],
+    local: bool,
+    role: Option<HostRole>,
+    json: bool,
+) -> ExitCode {
+    let (name, color) = match (args, local, role) {
+        ([color], true, None) => (None, color.trim()),
+        ([name, color], false, _) => (Some(name.as_str()), color.trim()),
         _ => {
             let err = CliError::new(
                 codes::USAGE_ERROR,
-                "name a remote and a colour, or pass `--local` and a colour",
+                "name a host and a colour, or pass `--local` (without `--role`) and a colour",
                 "`phux host color mini violet` or `phux host color --local violet`",
             );
             return json_err::emit(json, &err, 2);
@@ -61,27 +71,26 @@ pub(super) fn run_color(args: &[String], local: bool, json: bool) -> ExitCode {
             (phux_config::instance::local_host_name(), local_color())
         }
         Some(name) => {
-            let row = match find_host(name, None, "color") {
-                Ok(row) if row.role == HostRole::Remote => row,
-                Ok(_) => {
-                    let err = CliError::new(
-                        codes::REGISTRY,
-                        format!("{name:?} is a satellite"),
-                        "only `[[remote]]` hosts and this machine (`--local`) take a colour",
-                    );
-                    return json_err::emit(json, &err, 1);
-                }
+            let row = match find_host(name, role, "color") {
+                Ok(row) => row,
                 Err((err, code)) => return json_err::emit(json, &err, code),
             };
-            let target = Target::Remote {
+            let target = Target::Entry {
+                role: row.role,
                 name: &row.name,
                 endpoint: &row.endpoint,
             };
             if let Err(err) = set_color_at(&config_path(), target, color) {
                 return json_err::emit(json, &registry_failure(err), 1);
             }
-            let chosen = (color != AUTO).then_some(color);
-            (row.name.clone(), host_color::resolve(&row.name, chosen))
+            // Re-read: clearing one role may leave the other role's override.
+            let shown = find_host(&row.name, Some(row.role), "color")
+                .ok()
+                .and_then(|row| row.color);
+            (
+                row.name.clone(),
+                host_color::resolve(&row.name, shown.as_deref()),
+            )
         }
     };
     if json {
@@ -121,8 +130,16 @@ pub(super) fn set_color_at(path: &Path, target: Target<'_>, color: &str) -> Resu
                 root.remove("host");
             }
         }
-        Target::Remote { name, endpoint } => {
-            let tables = toml_registry::tables_mut(&mut doc, "remote")?;
+        Target::Entry {
+            role,
+            name,
+            endpoint,
+        } => {
+            let key = match role {
+                HostRole::Remote => "remote",
+                HostRole::Satellite => "satellites",
+            };
+            let tables = toml_registry::tables_mut(&mut doc, key)?;
             let matches = toml_registry::machine_indices(tables, name, endpoint);
             let [index] = matches.as_slice() else {
                 return Err("host is ambiguous or inherited; edit its source configuration".into());
@@ -149,7 +166,8 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         let path = dir.path().join("config.toml");
         std::fs::write(&path, START).expect("seed");
-        let mini = Target::Remote {
+        let mini = Target::Entry {
+            role: HostRole::Remote,
             name: "mini",
             endpoint: "quic://mini:8788",
         };
@@ -174,5 +192,23 @@ mod tests {
         set_color_at(&path, Target::Local, AUTO).expect("clear");
         let text = std::fs::read_to_string(&path).expect("read");
         assert!(!text.contains("[host]"), "{text}");
+    }
+
+    #[test]
+    fn satellite_colour_round_trips_and_loads() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("config.toml");
+        let start = "[[satellites]]\nname = \"box\"\nendpoint = \"quic://box:8788\"\n";
+        std::fs::write(&path, start).expect("seed");
+        let sat = Target::Entry {
+            role: HostRole::Satellite,
+            name: "box",
+            endpoint: "quic://box:8788",
+        };
+        set_color_at(&path, sat, "navy").expect("set");
+        let cfg = phux_config::loader::load_from(&path).expect("parses");
+        assert_eq!(cfg.satellites[0].color.as_deref(), Some("navy"));
+        set_color_at(&path, sat, AUTO).expect("clear");
+        assert_eq!(std::fs::read_to_string(&path).expect("read"), start);
     }
 }

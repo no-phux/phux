@@ -100,6 +100,7 @@ fn satellite_entry(name: &str, port: u16) -> SatelliteConfigEntry {
         cert_fingerprint: None,
         client_cert: None,
         client_key: None,
+        color: None,
     }
 }
 

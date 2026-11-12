@@ -39,9 +39,10 @@
 //! `enabled` is `null` for remotes; `session`, `ssh`, `direct`, `client_cert`,
 //! and `client_key` are `null` for satellites. `color` is the host's resolved
 //! palette colour ([`phux_config::host_color`]); `override` says a `color`
-//! key chose it rather than the name hash (satellites are always hashed).
+//! key chose it rather than the name hash. A name in both registries with a
+//! `color` on only one role reports that colour in both.
 //! `local` is this machine under its short host name, coloured by
-//! `[host] color`. `phux host color` sets either. The client identity is named
+//! `[host] color`. `phux host color` sets any of them. The client identity is named
 //! by path only; the key bytes never appear. `host add --json` and `host
 //! renew --json` wrap one such object under `"host"`, beside an
 //! `"enrollment"` object (`status`, `error`, `credential_id`, `expires_at`,
@@ -140,7 +141,12 @@ pub(crate) fn run_host(action: &HostAction) -> ExitCode {
             role,
             json,
         } => run_rename(name, new_name, *role, json.json),
-        HostAction::Color { args, local, json } => color::run_color(args, *local, json.json),
+        HostAction::Color {
+            args,
+            local,
+            role,
+            json,
+        } => color::run_color(args, *local, *role, json.json),
         HostAction::Renew {
             name,
             remote_phux,

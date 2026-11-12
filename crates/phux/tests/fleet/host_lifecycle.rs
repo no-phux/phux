@@ -338,3 +338,96 @@ fn host_color_overrides_the_hash_and_ls_reports_it() {
     let (code, _, _) = run_with_xdg(&["host", "color", "mini", "teal"], &xdg);
     assert_eq!(code, 2, "an unknown colour is a usage error");
 }
+
+/// A name registered as both a remote and a satellite: `--role` picks the
+/// entry, and an override on one role colours the name in both until the
+/// other role sets its own.
+#[test]
+fn host_color_role_picks_the_registry_and_one_override_colours_both() {
+    let tmp = TempDir::new().expect("tempdir");
+    let xdg = tmp.path().join("xdg");
+    for args in [
+        &["host", "add", "ph", "ssh://ph"][..],
+        &["host", "add", "--role", "satellite", "ph", "ssh://ph"],
+    ] {
+        let (code, _, stderr) = run_with_xdg(args, &xdg);
+        assert_eq!(code, 0, "{args:?}: stderr={stderr}");
+    }
+    let run = |args: &[&str]| {
+        let (code, stdout, stderr) = run_with_xdg(args, &xdg);
+        assert_eq!(code, 0, "{args:?}: stderr={stderr}");
+        serde_json::from_str::<serde_json::Value>(&stdout).expect("JSON")
+    };
+    let ids = || {
+        let ls = run(&["host", "ls", "--json"]);
+        let hosts = ls["hosts"].as_array().expect("hosts").clone();
+        hosts
+            .iter()
+            .map(|h| {
+                (
+                    h["role"].as_str().unwrap().to_owned(),
+                    h["color"]["id"].as_str().unwrap().to_owned(),
+                )
+            })
+            .collect::<Vec<_>>()
+    };
+    let pair = |remote: &str, satellite: &str| {
+        vec![
+            ("remote".to_owned(), remote.to_owned()),
+            ("satellite".to_owned(), satellite.to_owned()),
+        ]
+    };
+
+    let (code, _, stderr) = run_with_xdg(&["host", "color", "ph", "navy"], &xdg);
+    assert_eq!(code, 2, "an ambiguous name needs --role; stderr={stderr}");
+    assert!(stderr.contains("--role satellite ph COLOR"), "{stderr}");
+
+    let set = run(&[
+        "host",
+        "color",
+        "--role",
+        "satellite",
+        "ph",
+        "navy",
+        "--json",
+    ]);
+    assert_eq!(set["host"]["color"]["id"], "navy");
+    assert_eq!(
+        ids(),
+        pair("navy", "navy"),
+        "the satellite's override colours the remote"
+    );
+    let remote_only = run(&["host", "ls", "--role", "remote", "--json"]);
+    assert_eq!(remote_only["hosts"][0]["color"]["id"], "navy");
+    assert_eq!(remote_only["hosts"][0]["color"]["override"], true);
+
+    run(&["host", "color", "--role", "remote", "ph", "green", "--json"]);
+    assert_eq!(
+        ids(),
+        pair("green", "navy"),
+        "each role keeps its own override"
+    );
+
+    let cleared = run(&["host", "color", "--role", "remote", "ph", "auto", "--json"]);
+    assert_eq!(
+        cleared["host"]["color"]["id"], "navy",
+        "clearing falls back to the other role"
+    );
+    run(&[
+        "host",
+        "color",
+        "--role",
+        "satellite",
+        "ph",
+        "auto",
+        "--json",
+    ]);
+    let auto = phux_config::host_color::resolve("ph", None).id;
+    assert_eq!(ids(), pair(&auto, &auto));
+
+    let (code, _, _) = run_with_xdg(
+        &["host", "color", "--local", "--role", "remote", "sky"],
+        &xdg,
+    );
+    assert_eq!(code, 2, "--local takes no --role");
+}
