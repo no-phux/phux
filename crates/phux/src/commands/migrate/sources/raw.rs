@@ -3,10 +3,10 @@
 
 use std::path::Path;
 
-use super::{Class, Line, Source, Verdict, read_tree, skip};
+use super::{Class, Line, Source, Verdict, read_tree, skip, theme};
 use crate::commands::MigrateSource;
 
-pub(super) fn zellij(path: &Path) -> Source {
+pub(super) fn zellij(path: &Path, selected: Option<&str>) -> Source {
     let mut files = Vec::new();
     let mut rows = Vec::new();
     // Brace depth inside `keybinds { ... }`; 0 outside it.
@@ -21,6 +21,9 @@ pub(super) fn zellij(path: &Path) -> Source {
                 .is_empty()
             {
                 return Line::Nothing;
+            }
+            if let Some(value) = line.strip_prefix("theme ") {
+                return theme("zellij", value.trim().trim_matches('"'), selected);
             }
             return skip(
                 Class::Setting,
@@ -48,7 +51,7 @@ pub(super) fn zellij(path: &Path) -> Source {
     }
 }
 
-pub(super) fn herdr(path: &Path) -> Source {
+pub(super) fn herdr(path: &Path, selected: Option<&str>) -> Source {
     let mut files = Vec::new();
     let mut rows = Vec::new();
     let mut keys = false;
@@ -68,6 +71,11 @@ pub(super) fn herdr(path: &Path) -> Source {
         }
         if keys {
             return Line::Row(Class::Binding, Verdict::Raw, None);
+        }
+        if let Some((key, value)) = line.split_once('=')
+            && key.trim() == "theme"
+        {
+            return theme("herdr", value.trim().trim_matches('"'), selected);
         }
         skip(
             Class::Setting,

@@ -39,6 +39,9 @@ Some lines are never written:
 
 - Settings: theme, font, colours, mouse, status bar. Each one is reported on
   its own line.
+- A theme line. When you already picked a phux theme (`phux theme set`, or
+  `[theme] name` / `file` in your config), the line is reported as "kept your
+  phux theme"; otherwise it points you at `phux theme list` and `phux theme set`.
 - Any binding on Cmd. phux key bindings have no Cmd modifier, and the macOS
   system shortcuts (<kbd>Cmd</kbd>+<kbd>Q</kbd>, <kbd>Cmd</kbd>+<kbd>H</kbd>,
   <kbd>Cmd</kbd>+<kbd>M</kbd>, <kbd>Cmd</kbd>+<kbd>Tab</kbd>,
@@ -97,6 +100,7 @@ phux migrate --print | pbcopy
   ],
   "agent": "claude",
   "config_path": "/Users/me/.config/phux/config.toml",
+  "theme": "tokyo-night",
   "launched": { "pane": "@12" },
   "prompt_bytes": 15873
 }
@@ -104,6 +108,8 @@ phux migrate --print | pbcopy
 
 - `sources[].name` is `tmux`, `zellij`, `ghostty`, `herdr` or `rex`; `files` are
   absolute; `found` counts binding, unbinding and setting lines.
+- `theme` is the phux theme your config selects (the name, or the file path
+  for `[theme] file`), or `null` when none is selected.
 - `launched` is `{ "pane": "@N" }` for a split, `{ "session": "migrate",
   "pane": "@N" }` for a new session, and `null` when nothing started.
 - With nothing to migrate, `sources` is empty, `agent` and `launched` are

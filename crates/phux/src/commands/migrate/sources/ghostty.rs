@@ -8,7 +8,7 @@ use toml::Value;
 
 use super::{
     Class, Ctx, Line, MACOS_KEYS, Source, Table, Verdict, against_default, expand, read_tree, skip,
-    tilde,
+    theme, tilde,
 };
 use crate::commands::MigrateSource;
 use crate::commands::config::import_tmux::translate;
@@ -48,10 +48,7 @@ fn ghostty_line(file: &Path, line: &str, ctx: &Ctx<'_>) -> Line {
             let reason = format!("loads {}; its lines follow", tilde(&include, ctx.home));
             Line::Row(Class::Other, Verdict::Skip(reason), Some(include))
         }
-        "theme" => skip(
-            Class::Setting,
-            "the theme is not migrated; pick one with `phux theme list` and `phux theme set`",
-        ),
+        "theme" => theme("Ghostty", value, ctx.theme),
         _ => skip(
             Class::Setting,
             format!("the Ghostty setting {name}; this migration moves key bindings only"),
