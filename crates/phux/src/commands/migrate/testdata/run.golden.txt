@@ -90,7 +90,7 @@ Write every line marked "write" exactly as given, in the table it names, once. A
 - ~/.tmux.conf:16 `bind - split-window -v -c "#{pane_current_path}"`
   already phux's default, not written
 - ~/.tmux.conf:18 `bind r source-file ~/.tmux.conf \; display "tmux.conf reloaded"`
-  not written: no phux action does what this tmux command does
+  write `"r" = "reload-config"` in `[keybindings.prefix-table]`; differs from the source: reloads phux config, not the tmux file
 - ~/.tmux.conf:20 `bind h select-pane -L`
   already phux's default, not written
 - ~/.tmux.conf:21 `bind j select-pane -D`

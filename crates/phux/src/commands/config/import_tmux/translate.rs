@@ -1,5 +1,6 @@
 //! A deliberately finite translator, not a tmux interpreter. Extra arguments,
 //! command chains, targets, formats and scripts must never disappear in a map.
+//! The one exception is a chain's trailing `display` message: it is cosmetic.
 
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -402,6 +403,14 @@ pub(crate) fn map_command(
     key: &str,
     prefix: &str,
 ) -> Option<(Value, Option<&'static str>)> {
+    // `bind r source-file ~/.tmux.conf \; display "reloaded"`: the message
+    // only confirms the command, and phux shows its own.
+    if let Some(at) = command.iter().position(|word| *word == ";")
+        && matches!(command.get(at + 1), Some(&("display" | "display-message")))
+        && !command[at + 1..].contains(&";")
+    {
+        return map_command(&command[..at], key, prefix);
+    }
     if let Some(mapped) = fixed_command(command) {
         return Some(mapped);
     }

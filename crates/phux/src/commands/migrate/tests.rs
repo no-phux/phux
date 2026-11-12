@@ -207,6 +207,22 @@ fn lines_with_nothing_to_do_are_kept_apart_from_lost_ones() {
 }
 
 #[test]
+fn a_reload_binding_with_a_message_maps_to_reload_config() {
+    let home = fixture_home();
+    let sources = discover(&home, None, &[MigrateSource::Tmux], None, &Setup::default());
+    let tmux = find(&sources, MigrateSource::Tmux);
+    let verdict = |text| verdict(tmux, text);
+    // A trailing `display` is cosmetic: the reload binding maps, and on a
+    // key phux binds otherwise it replaces the default.
+    assert!(
+        matches!(verdict(r#"bind r source-file ~/.tmux.conf \; display "reloaded""#), Verdict::Write { value, replaces: None, .. } if value.as_str() == Some("reload-config"))
+    );
+    assert!(
+        matches!(verdict(r#"bind R source-file ~/.tmux.conf \; display-message "reloaded""#), Verdict::Write { value, replaces: Some(_), .. } if value.as_str() == Some("reload-config"))
+    );
+}
+
+#[test]
 fn tmux_lines_are_decided_one_by_one() {
     let home = fixture_home();
     let sources = discover(&home, None, &[MigrateSource::Tmux], None, &Setup::default());

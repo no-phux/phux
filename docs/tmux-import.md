@@ -65,7 +65,10 @@ and shell/history defaults are read at server start.
 ## What carries over
 
 The finite translator recognizes supported command forms exactly. Extra
-flags, targets, and command chains are not silently discarded.
+flags, targets, and command chains are not silently discarded. The one
+exception is a trailing `\; display "..."` message, which only confirms the
+command: `bind r source-file ~/.tmux.conf \; display "reloaded"` becomes
+`reload-config`, and phux shows its own reload message.
 
 | tmux setting or binding | phux result |
 | --- | --- |

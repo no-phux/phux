@@ -9,7 +9,7 @@ commands this prompt names.
 - tmux:
   - ~/.tmux.conf
   - ~/.tmux/keys.conf
-  Found: 13 bindings, 1 unbinding, 6 settings.
+  Found: 14 bindings, 1 unbinding, 6 settings.
 - Ghostty:
   - ~/.config/ghostty/config
   Found: 6 bindings, 0 unbindings, 2 settings.
@@ -82,7 +82,7 @@ Write every line marked "write" exactly as given, in the table it names, once. A
 - ~/.tmux.conf:11 `bind -T copy-mode-vi v send -X begin-selection`
   not written: a copy-mode binding; phux copy mode has its own keys
 - ~/.tmux.conf:12 `bind r source-file ~/.tmux.conf \; display "reloaded"`
-  not written: no phux action does what this tmux command does
+  write `"r" = "reload-config"` in `[keybindings.prefix-table]`; differs from the source: reloads phux config, not the tmux file
 - ~/.tmux.conf:13 `bind -n M-1 select-window -t :1`
   write `"M-1" = { action = "select-window", index = 0 }` in `[keybindings.global]`; differs from the source: uses tab position after subtracting tmux base-index; gaps in tmux window numbering cannot be preserved
 - ~/.tmux.conf:14 `bind z resize-pane -Z`
@@ -105,6 +105,8 @@ Write every line marked "write" exactly as given, in the table it names, once. A
   not written: the tmux plugin manager; tmux plugins are not migrated
 - ~/.tmux.conf:20 `set -g status-position bottom`
   write `position = "bottom"` in `[status]` (replaces the phux default `"top"`)
+- ~/.tmux.conf:21 `bind R source-file ~/.tmux.conf \; display-message "reloaded"`
+  write `"R" = "reload-config"` in `[keybindings.prefix-table]`; differs from the source: reloads phux config, not the tmux file (replaces the phux default `{ action = "enter-mode", name = "resize" }`)
 
 ## Ghostty
 Ghostty keybinds fire without a prefix, so they become `[keybindings.global]` lines. The table below decides every line it could; copy its lines and do not translate them again.
