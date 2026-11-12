@@ -1,13 +1,11 @@
 ---
 title: OSC 7501: report status from any program
-description: OSC 7501 is one escape sequence a program writes to report its status, for example working, blocked, or done, and phux supports OSC 7501 since v0.53.0.
+description: phux supports OSC 7501, the escape sequence a program writes to report its status: working, blocked, done, or error.
 ---
 
 # OSC 7501: report status from any program
 
-OSC 7501 is one escape sequence a program writes to report its status, for
-example working, blocked, or done, and phux supports OSC 7501 since v0.53.0.
-Send `printf '\033]7501;state=working\033\\'` to report working.
+phux supports OSC 7501, the escape sequence a program writes to report its status: working, blocked, done, or error. Support shipped in v0.53.0. To report working, run `printf '\033]7501;state=working\033\\'`.
 
 This page is for people who write programs that run inside a phux pane: build tools, deploy scripts, coding agents. It specifies how such a program tells phux what it is doing, and what phux does with that.
 
