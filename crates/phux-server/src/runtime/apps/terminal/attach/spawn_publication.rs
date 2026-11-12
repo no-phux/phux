@@ -62,15 +62,17 @@ impl SpawnPublication<'_> {
     pub(super) async fn capture_native_checkpoint(
         &self,
     ) -> Option<phux_terminal_api::actor::NativeBootstrapReply> {
-        let captured = request_native_checkpoint(&self.terminal, |reply| {
-            phux_terminal_api::actor::NativeBootstrapRequest::full_budget(
-                self.client_id.0,
-                self.wire_terminal_id.clone(),
-                self.stream_id,
-                initial_bootstrap_id(),
-                self.limits,
-                reply,
-            )
+        let captured = past_invalidation(|| {
+            request_native_checkpoint(&self.terminal, |reply| {
+                phux_terminal_api::actor::NativeBootstrapRequest::full_budget(
+                    self.client_id.0,
+                    self.wire_terminal_id.clone(),
+                    self.stream_id,
+                    initial_bootstrap_id(),
+                    self.limits,
+                    reply,
+                )
+            })
         })
         .await;
         if let Err(NativeRequestFailure::Refused(error)) = &captured {
@@ -244,6 +246,32 @@ impl SpawnPublication<'_> {
     }
 }
 
+/// How often a spawn's first capture is asked for before the spawn is
+/// refused.
+#[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
+const CAPTURE_ASKS: usize = 3;
+
+/// `ask` for a capture, again while the actor answers that it invalidated
+/// the cut mid-capture (`Resize`): a reflow, or the PTY's EOF landing the
+/// loan. That is no refusal, and a pane has no pump yet to wait for the
+/// resync, so a command that exits at once would be reaped as a failed
+/// spawn. The actor outlives EOF and captures the final screen when asked.
+#[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
+async fn past_invalidation<T, F>(mut ask: impl FnMut() -> F) -> Result<T, NativeRequestFailure>
+where
+    F: Future<Output = Result<T, NativeRequestFailure>>,
+{
+    use phux_terminal_api::native_state::NativeStateError::Resize;
+    let mut captured = ask().await;
+    for _ in 1..CAPTURE_ASKS {
+        if !matches!(captured, Err(NativeRequestFailure::Refused(Resize))) {
+            break;
+        }
+        captured = ask().await;
+    }
+    captured
+}
+
 /// A spawn's first generation, staged before anything is published.
 struct FirstGeneration {
     pub(super) frames: Vec<FrameKind>,
@@ -251,4 +279,43 @@ struct FirstGeneration {
     /// The native publication to activate once the frames are queued.
     #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
     pub(super) cursor: Option<phux_terminal_api::native_state::OpaqueHistoryCursor>,
+}
+
+#[cfg(all(test, feature = "native-engine", not(target_arch = "wasm32")))]
+mod tests {
+    use std::cell::Cell;
+
+    use phux_terminal_api::native_state::NativeStateError;
+
+    use super::{CAPTURE_ASKS, NativeRequestFailure, past_invalidation};
+
+    /// Asks answered with `refusals` first, then `Ok`; how many were made.
+    async fn asks(refusals: usize, refusal: fn() -> NativeRequestFailure) -> (bool, usize) {
+        let made = Cell::new(0);
+        let captured = past_invalidation(|| {
+            made.set(made.get() + 1);
+            let answer = if made.get() > refusals {
+                Ok(())
+            } else {
+                Err(refusal())
+            };
+            std::future::ready(answer)
+        })
+        .await;
+        (captured.is_ok(), made.get())
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn an_invalidated_first_capture_is_asked_for_again_not_failed() {
+        let invalidated = || NativeRequestFailure::Refused(NativeStateError::Resize);
+        assert_eq!(asks(0, invalidated).await, (true, 1));
+        // A command that exited mid-capture: the second ask has its screen.
+        assert_eq!(asks(1, invalidated).await, (true, 2));
+        // Never forever.
+        assert_eq!(asks(usize::MAX, invalidated).await, (false, CAPTURE_ASKS));
+        // A real refusal, or a pane that is gone, is not asked about twice.
+        let refused = || NativeRequestFailure::Refused(NativeStateError::LimitExceeded);
+        assert_eq!(asks(1, refused).await, (false, 1));
+        assert_eq!(asks(1, || NativeRequestFailure::Unsent).await, (false, 1));
+    }
 }
