@@ -187,8 +187,13 @@ fn push_session_entries(rows: &mut Vec<SidebarRow>, counts: SidebarCounts, limit
         }
         rows.push(SidebarRow::RosterEntry(j));
         if counts.active_session == Some(j) {
+            // Cut short, the list still ends at the active window rather
+            // than hiding the tab you are on under `+N tabs`.
             let shown = counts.windows.min(limit - rows.len());
-            rows.extend((0..shown).map(SidebarRow::WindowName));
+            let first = counts
+                .active_window
+                .map_or(0, |active| (active + 1).saturating_sub(shown));
+            rows.extend((first..first + shown).map(SidebarRow::WindowName));
         }
     }
 }

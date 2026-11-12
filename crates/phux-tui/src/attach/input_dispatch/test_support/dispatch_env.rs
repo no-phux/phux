@@ -203,6 +203,7 @@ pub(super) fn targets(needs_you: usize, windows: usize, roster: usize) -> Sideba
             windows,
             roster,
             active_session: (windows > 0 && roster > 0).then_some(0),
+            active_window: None,
             host_starts: (0..roster.min(128)).fold(0, |mask, j| mask | (1u128 << j)),
             project_starts: 0,
             rule: crate::render::chrome::sidebar::SidebarRule::Trailing,

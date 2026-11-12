@@ -255,6 +255,7 @@ impl SidebarPainter {
             windows: self.windows.len(),
             roster: self.roster.len(),
             active_session: self.roster.iter().position(|s| s.active),
+            active_window: self.windows.iter().position(|w| w.active),
             host_starts: segment_starts(self.roster.iter().map(roster_segment)),
             project_starts: self.project_starts(),
             rule: self.rule,

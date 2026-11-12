@@ -239,6 +239,9 @@ pub struct SidebarCounts {
     pub roster: usize,
     /// Roster index whose windows expand, or None when there is no active entry.
     pub active_session: Option<usize>,
+    /// Index of the active window among `windows`; a window list cut short
+    /// for room still shows it.
+    pub active_window: Option<usize>,
     /// ADR-0140: bit `j` is set when roster entry `j` opens a machine
     /// segment (its host differs from entry `j - 1`'s), so a host header row
     /// precedes it. A bitmask keeps the shape `Copy`; entries past the 128th

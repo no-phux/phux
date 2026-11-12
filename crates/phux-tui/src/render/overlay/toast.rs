@@ -19,6 +19,9 @@ pub struct ToastOverlay {
     /// Snapshotted (copied) at construction so the overlay stays `'static`.
     theme: Theme,
     passthrough: bool,
+    /// The border's key legend in place of `any key` (a confirm's
+    /// `⏎ kill · esc`); `None` keeps the default.
+    keys: Option<&'static str>,
     /// `[chrome]` thresholds, stamped by `OverlayState::push`.
     breakpoints: ChromeBreakpoints,
 }
@@ -32,6 +35,7 @@ impl ToastOverlay {
             lines,
             theme: *theme,
             passthrough: false,
+            keys: None,
             breakpoints: ChromeBreakpoints::default(),
         }
     }
@@ -44,12 +48,21 @@ impl ToastOverlay {
             lines,
             theme: *theme,
             passthrough: true,
+            keys: None,
             breakpoints: ChromeBreakpoints::default(),
         }
     }
 }
 
 impl ToastOverlay {
+    /// Show `keys` in the border instead of `any key`, for a caller that
+    /// takes only some keys (a confirm).
+    #[must_use]
+    pub const fn with_keys(mut self, keys: &'static str) -> Self {
+        self.keys = Some(keys);
+        self
+    }
+
     fn modal(&self) -> Modal<'_> {
         // Styled, not raw: body text inheriting the terminal foreground is
         // invisible on the `surface` fill of a light terminal.
@@ -65,7 +78,9 @@ impl ToastOverlay {
             .collect();
         // A passthrough notice goes away on its own; only a toast that
         // holds the keyboard says how to let go of it.
-        let keys = if self.passthrough { "" } else { "any key" };
+        let keys = self
+            .keys
+            .unwrap_or(if self.passthrough { "" } else { "any key" });
         Modal::new(&self.theme, self.title.clone(), body)
             .wrap(true)
             .footer("", keys)
