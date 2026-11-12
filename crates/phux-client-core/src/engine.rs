@@ -5,6 +5,9 @@ use phux_protocol::BootstrapStreamProfile;
 
 #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
 pub mod ghostty;
+pub mod osc52_read;
+
+pub use osc52_read::ClipboardSelection;
 
 /// The canonical live PTY geometry selected by the server.
 ///
@@ -82,6 +85,10 @@ pub enum EngineStatus {
     /// A program asked to set the clipboard (OSC 52) in live output. The
     /// frontend applies its `clipboard-write` policy (ADR-0158).
     ClipboardWrite(ClipboardText),
+    /// A program asked to read the clipboard (OSC 52 `?`) in live output.
+    /// The frontend applies its `clipboard-read` policy and may answer with
+    /// `CLIPBOARD_REPLY`.
+    ClipboardRead(ClipboardSelection),
 }
 
 /// Text a program asked to place on the clipboard. `Debug` reports only its

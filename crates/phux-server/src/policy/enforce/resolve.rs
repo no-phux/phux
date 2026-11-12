@@ -18,6 +18,7 @@ const fn frame_terminal(frame: &FrameKind) -> Option<&WireResourceId> {
         | FrameKind::InputFocus { terminal_id, .. }
         | FrameKind::InputPaste { terminal_id, .. }
         | FrameKind::InputTerminalReply { terminal_id, .. }
+        | FrameKind::ClipboardReply { terminal_id, .. }
         | FrameKind::ResizeTerminal { terminal_id, .. } => Some(terminal_id),
         FrameKind::SubscribeEvents { terminal, .. } => terminal.as_ref(),
         _ => None,

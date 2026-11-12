@@ -114,6 +114,11 @@ impl FrameKind {
             Self::InputTerminalReply { terminal_id, bytes } => {
                 Self::encode_input_terminal_reply(enc, terminal_id, bytes);
             }
+            Self::ClipboardReply {
+                terminal_id,
+                selection,
+                text,
+            } => Self::encode_clipboard_reply(enc, terminal_id, *selection, &text.0),
             Self::FrameAck {
                 terminal_id,
                 stream_id,

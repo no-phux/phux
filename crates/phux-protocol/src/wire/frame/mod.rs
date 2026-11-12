@@ -127,6 +127,7 @@ enum FrameType {
     InputFocus = 0x14,
     HistoryRequest = 0x16,
     InputTerminalReply = 0x17,
+    ClipboardReply = 0x18,
     FrameAck = 0x21,
     ViewportResize = 0x20,
     Ping = 0x7F,
@@ -191,6 +192,9 @@ pub const TYPE_HISTORY_REQUEST: u8 = FrameType::HistoryRequest as u8;
 /// Discriminant for `INPUT_TERMINAL_REPLY` (client to server,
 /// `docs/protocol.md#terminal-queries`).
 pub const TYPE_INPUT_TERMINAL_REPLY: u8 = FrameType::InputTerminalReply as u8;
+/// Discriminant for `CLIPBOARD_REPLY` (client to server,
+/// `docs/program-sequences.md#clipboard-osc-52`).
+pub const TYPE_CLIPBOARD_REPLY: u8 = FrameType::ClipboardReply as u8;
 /// Discriminant for StateSync-only `FRAME_ACK` (client to server,
 /// `docs/protocol.md#generations-publication-and-history`).
 ///

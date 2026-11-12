@@ -130,6 +130,15 @@
       ]
     },
     {
+      "name": "CLIPBOARD_REPLY",
+      "type_byte": 24,
+      "fields": [
+        {"id":1,"name":"TERMINAL_ID","type":"ResourceId","presence":"required"},
+        {"id":2,"name":"SELECTION","type":"u8","presence":"required"},
+        {"id":3,"name":"TEXT","type":"str","presence":"required"}
+      ]
+    },
+    {
       "name": "VIEWPORT_RESIZE",
       "type_byte": 32,
       "fields": [

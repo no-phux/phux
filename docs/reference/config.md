@@ -56,6 +56,7 @@ Every scalar knob with its shipped default, serialized from the schema itself, p
 | `defaults.approval-max-pending-total` | `1024` |
 | `defaults.approval-ttl-secs` | `120` |
 | `defaults.browser-shim` | `false` |
+| `defaults.clipboard-read` | `"deny"` |
 | `defaults.clipboard-write` | `"allow"` |
 | `defaults.cwd-inheritance` | `"inherit-focused"` |
 | `defaults.event-journal-bytes` | `1048576` |
@@ -189,8 +190,12 @@ mouse = true
 
 # What happens when a program copies to the clipboard (OSC 52): "allow"
 # copies, "ask" asks first, "deny" ignores it. Only the focused pane can
-# copy, and programs can never read your clipboard.
+# copy.
 clipboard-write = "allow"
+
+# Whether a program may read your clipboard (OSC 52): "deny" never answers,
+# "ask" asks first, "allow" answers. Only the focused pane can read.
+clipboard-read = "deny"
 
 # Where a new pane starts:
 #   "inherit-focused"     the focused pane's directory (like tmux)

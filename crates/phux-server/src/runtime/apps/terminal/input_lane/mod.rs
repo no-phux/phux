@@ -100,7 +100,10 @@ const fn is_live_input(event: &InputEvent) -> bool {
 }
 
 const fn is_live_terminal_input(input: &TerminalInput) -> bool {
-    !matches!(input, TerminalInput::Focus(_))
+    !matches!(
+        input,
+        TerminalInput::Focus(_) | TerminalInput::ClipboardReply { .. }
+    )
 }
 
 fn note_input_activity(

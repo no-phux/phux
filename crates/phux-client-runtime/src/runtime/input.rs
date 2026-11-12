@@ -46,6 +46,19 @@ impl Client {
             .with(|control| control.send_paste(terminal_id, data, trust))
     }
 
+    /// Answer a focused terminal's OSC 52 read the user allowed; see
+    /// [`ControlPlane::send_clipboard_reply`](crate::control::ControlPlane::send_clipboard_reply).
+    #[must_use]
+    pub fn send_clipboard_reply(
+        &self,
+        terminal_id: &ResourceId,
+        selection: phux_client_core::engine::ClipboardSelection,
+        text: String,
+    ) -> bool {
+        self.inner
+            .with(|control| control.send_clipboard_reply(terminal_id, selection, text))
+    }
+
     /// Send one mouse event.
     #[must_use]
     pub fn send_mouse(&self, terminal_id: &ResourceId, event: MouseEvent) -> bool {

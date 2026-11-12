@@ -33,6 +33,17 @@ pub(super) async fn serve_frame(ctx: ResourceFrame<'_>, frame: FrameKind) -> Fra
         FrameKind::InputPaste { terminal_id, event } => {
             return route_input(ctx, terminal_id, TerminalInput::Paste(event)).await;
         }
+        FrameKind::ClipboardReply {
+            terminal_id,
+            selection,
+            text,
+        } => {
+            let Some(input) = super::clipboard_read::admit(&ctx, &terminal_id, selection, text)
+            else {
+                return FrameFlow::Continue(());
+            };
+            return route_input(ctx, terminal_id, input).await;
+        }
         FrameKind::InputTerminalReply { terminal_id, bytes } => {
             let Some(selection) = ctx.negotiated else {
                 return FrameFlow::Continue(());
@@ -227,6 +238,7 @@ async fn route_client_input(
         TerminalInput::Mouse(_) => "INPUT_MOUSE",
         TerminalInput::Focus(_) => "INPUT_FOCUS",
         TerminalInput::Paste(_) => "INPUT_PASTE",
+        TerminalInput::ClipboardReply { .. } => "CLIPBOARD_REPLY",
     };
     if let Some(lane) = input_lane
         && terminal_id.is_local()

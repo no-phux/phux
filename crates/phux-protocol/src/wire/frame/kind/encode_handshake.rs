@@ -269,6 +269,18 @@ impl FrameKind {
         enc.write_field(field::input_terminal_reply::BYTES, bytes);
     }
 
+    /// Write the `CLIPBOARD_REPLY` payload.
+    pub(super) fn encode_clipboard_reply(
+        enc: &mut Encoder<'_>,
+        terminal_id: &ResourceId,
+        selection: u8,
+        text: &str,
+    ) {
+        id_field(enc, field::clipboard_reply::TERMINAL_ID, terminal_id);
+        u8_field(enc, field::clipboard_reply::SELECTION, selection);
+        enc.write_field(field::clipboard_reply::TEXT, text.as_bytes());
+    }
+
     /// Write the `FRAME_ACK` payload.
     pub(super) fn encode_frame_ack(
         enc: &mut Encoder<'_>,

@@ -33,7 +33,8 @@ pub fn frame_rule(frame: &FrameKind) -> &'static Rule {
         | FrameKind::InputMouse { .. }
         | FrameKind::InputFocus { .. }
         | FrameKind::InputPaste { .. }
-        | FrameKind::InputTerminalReply { .. } => &F_INPUT,
+        | FrameKind::InputTerminalReply { .. }
+        | FrameKind::ClipboardReply { .. } => &F_INPUT,
         FrameKind::ViewportResize { .. } => &F_VIEWPORT_RESIZE,
         FrameKind::SpawnResource {
             satellite,

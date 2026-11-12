@@ -124,6 +124,16 @@ pub mod input_terminal_reply {
     pub const BYTES: u32 = 2;
 }
 
+/// `CLIPBOARD_REPLY` body fields (`docs/program-sequences.md#clipboard-osc-52`).
+pub mod clipboard_reply {
+    /// Attached target `ResourceId` (positional tagged union).
+    pub const TERMINAL_ID: u32 = 1;
+    /// OSC 52 selection byte (`u8`): `c` or `p`.
+    pub const SELECTION: u32 = 2;
+    /// UTF-8 clipboard text, at most `MAX_CLIPBOARD_TEXT` bytes.
+    pub const TEXT: u32 = 3;
+}
+
 /// `FRAME_ACK` body fields (`docs/protocol.md#attach-and-output`).
 pub mod frame_ack {
     /// Acked `ResourceId` (positional tagged union).

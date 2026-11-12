@@ -26,6 +26,19 @@ pub struct PasteEvent {
     pub data: Vec<u8>,
 }
 
+/// Clipboard text a client answers a pane's OSC 52 read with
+/// (`CLIPBOARD_REPLY`). `Debug` never prints it (ADR-0028).
+#[derive(Clone, PartialEq, Eq)]
+pub struct ClipboardData(pub String);
+
+impl core::fmt::Debug for ClipboardData {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("ClipboardData")
+            .field("len", &self.0.len())
+            .finish()
+    }
+}
+
 impl core::fmt::Debug for PasteEvent {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("PasteEvent")

@@ -37,6 +37,8 @@ mod agent_sessions;
 mod approvals;
 mod batching;
 mod checkout;
+#[cfg(feature = "engine")]
+mod clipboard_read;
 mod document_stalls;
 #[cfg(feature = "engine")]
 mod documents;

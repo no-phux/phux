@@ -35,7 +35,7 @@ static F_COMMAND: Rule = Rule {
 };
 static F_SUBSCRIBE: Rule = Rule::deny("`SUBSCRIBE` (unallocated)");
 static F_INPUT: Rule = Rule::verbs(
-    "`INPUT_KEY`, `INPUT_PASTE`, `INPUT_MOUSE`, `INPUT_RAW`, `INPUT_FOCUS`, `INPUT_TERMINAL_REPLY`",
+    "`INPUT_KEY`, `INPUT_PASTE`, `INPUT_MOUSE`, `INPUT_RAW`, `INPUT_FOCUS`, `INPUT_TERMINAL_REPLY`, `CLIPBOARD_REPLY`",
     &[Verb::Input],
     Subject::NamedTerminal,
 );

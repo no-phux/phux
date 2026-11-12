@@ -26,6 +26,7 @@ const fn client_frame_variant(frame: &FrameKind) -> Option<usize> {
         FrameKind::Command { .. } => Some(21),
         FrameKind::SubscribeEvents { .. } => Some(22),
         FrameKind::PathQuery { .. } => Some(23),
+        FrameKind::ClipboardReply { .. } => Some(24),
         FrameKind::HelloOk { .. }
         | FrameKind::Pong { .. }
         | FrameKind::ResourceOutput { .. }
@@ -54,7 +55,7 @@ const fn client_frame_variant(frame: &FrameKind) -> Option<usize> {
     }
 }
 
-const CLIENT_FRAME_VARIANTS: usize = 24;
+const CLIENT_FRAME_VARIANTS: usize = 25;
 
 fn attach(target: AttachTarget) -> FrameKind {
     FrameKind::Attach {
@@ -365,6 +366,14 @@ fn input_samples() -> Vec<(FrameKind, &'static Rule)> {
             FrameKind::InputTerminalReply {
                 terminal_id: terminal(),
                 bytes: Bytes::from_static(b"\x1b[0n"),
+            },
+            &F_INPUT,
+        ),
+        (
+            FrameKind::ClipboardReply {
+                terminal_id: terminal(),
+                selection: b'c',
+                text: crate::input::paste::ClipboardData("clip".to_owned()),
             },
             &F_INPUT,
         ),

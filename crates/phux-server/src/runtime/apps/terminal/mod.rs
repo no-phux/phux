@@ -9,6 +9,7 @@
 pub(crate) mod agent_state;
 pub(crate) mod attach;
 pub(crate) mod checkout;
+mod clipboard_read;
 pub(crate) mod commands;
 mod engine;
 mod frames;

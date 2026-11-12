@@ -214,6 +214,18 @@ pub enum Event {
         /// Bounded UTF-8 text, redacted by `Debug`.
         text: ClipboardText,
     },
+    /// A program asked to read the clipboard (OSC 52 `?`) from live output
+    /// of the focused terminal. The host applies `defaults.clipboard-read`
+    /// and may answer with [`ControlPlane::send_clipboard_reply`]; it must
+    /// discard it unless this terminal is focused in the foreground.
+    ///
+    /// [`ControlPlane::send_clipboard_reply`]: super::ControlPlane::send_clipboard_reply
+    ClipboardRead {
+        /// The asking terminal.
+        terminal_id: ResourceId,
+        /// The selection it asked for.
+        selection: phux_client_core::engine::ClipboardSelection,
+    },
     /// The terminal's title changed; the topology entry is updated too.
     TitleChanged {
         /// The terminal.

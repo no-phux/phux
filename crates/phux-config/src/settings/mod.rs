@@ -206,6 +206,7 @@ const VOICE_TIMEOUT_MAX_SECS: i64 = 3_600;
 
 // Serde variant names of the schema enums.
 const CLIPBOARD_WRITE: &[&str] = &["allow", "ask", "deny"];
+const CLIPBOARD_READ: &[&str] = &["allow", "ask", "deny"];
 
 const CWD_INHERITANCE: &[&str] = &[
     "inherit-focused",

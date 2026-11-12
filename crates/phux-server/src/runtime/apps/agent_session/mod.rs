@@ -114,6 +114,7 @@ impl ResourceApp for AgentSessionApp {
                 | FrameKind::InputFocus { .. }
                 | FrameKind::InputPaste { .. }
                 | FrameKind::InputTerminalReply { .. }
+                | FrameKind::ClipboardReply { .. }
         ) {
             FrameAdmission::Subscription
         } else {
