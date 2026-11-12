@@ -105,6 +105,11 @@ iOS and Android apps are in progress and not available yet. `phux pair --qr`
 already prints the pairing code they will scan; see
 [pairing with a link](./remote.md#pairing-with-a-link).
 
+A phone off your network can reach a server through a
+[relay you run](./remote.md#relays), with no VPN: `phux pair --relay-route
+home` prints the code to scan. The apps list this under **Your own relay**
+when you add a computer, and show which hosts are reached through one.
+
 ## Host colours
 
 Every client draws each machine in one of eight colours (blue, violet,
