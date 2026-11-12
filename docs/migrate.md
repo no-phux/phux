@@ -66,9 +66,15 @@ When two sources bind the same key differently, the agent asks you once per
 pair of sources which one wins. It never decides alone.
 
 The agent then runs `phux config check` until the file is clean, `phux
-config reload`, and `phux config keys --json`, and reports four lists:
-Migrated, Replaced phux defaults, Conflicts between sources, and Could not
-migrate. Every line of your files lands in one of them. If its sandbox blocks
+config reload`, and `phux config keys --json`, and reports five lists:
+Migrated, Replaced phux defaults, Conflicts between sources, Nothing to do,
+and Could not migrate. Every line of your files lands in one of them.
+"Nothing to do" is grouped by reason: terminal settings that keep working
+in the terminal phux runs in (a Ghostty font, opacity or shader), and tmux
+options phux already behaves like (`mode-keys vi`, `renumber-windows on`,
+`set-clipboard on`, `escape-time`). "Could not migrate" is what you have to
+act on, one line each: a tmux `base-index 1` (phux numbers tabs from 0),
+status-bar formats, plugins. If its sandbox blocks
 the reload, it asks you once, or tells you the reload is pending.
 
 ## Where the agent runs

@@ -62,25 +62,25 @@ The table below decides every tmux line. Copy its lines; do not translate them a
 These files never set a prefix, so tmux used C-b. I chose to keep phux's own prefix, C-a: every prefix-table line below fires after it. Do not change `prefix`.
 
 ### Every tmux line, one by one
-Write every line marked "write" exactly as given, in the table it names, once. A line marked "not written" or "already phux's default" gets nothing. Each line goes in the report under the list its marking names.
+Write every line marked "write" exactly as given, in the table it names, once. A line marked "not written", "nothing to do" or "already phux's default" gets nothing. Each line goes in the report under the list its marking names.
 - ~/.tmux.conf:2 `set -g mouse on`
-  not written: the tmux option mouse is a setting; this migration moves key bindings only
+  not written: the tmux option mouse is not migrated
 - ~/.tmux.conf:3 `set -g history-limit 100000`
-  not written: the tmux option history-limit is a setting; this migration moves key bindings only
+  not written: the tmux option history-limit is not migrated
 - ~/.tmux.conf:4 `set -g base-index 1`
-  not written: the tmux option base-index is a setting; this migration moves key bindings only
+  not written: phux numbers from 0 and cannot start at 1
 - ~/.tmux.conf:5 `setw -g pane-base-index 1`
-  not written: the tmux option pane-base-index is a setting; this migration moves key bindings only
+  not written: phux numbers from 0 and cannot start at 1
 - ~/.tmux.conf:6 `set -g renumber-windows on`
-  not written: the tmux option renumber-windows is a setting; this migration moves key bindings only
+  nothing to do: already phux's behavior: phux tabs are positions, never numbered with gaps
 - ~/.tmux.conf:7 `set -sg escape-time 0`
-  not written: the tmux option escape-time is a setting; this migration moves key bindings only
+  nothing to do: already phux's behavior: phux waits only 10 ms after a bare Escape
 - ~/.tmux.conf:8 `set -g status-position top`
-  not written: the tmux option status-position is a setting; this migration moves key bindings only
+  not written: the tmux option status-position is not migrated
 - ~/.tmux.conf:9 `set -g set-clipboard on`
-  not written: the tmux option set-clipboard is a setting; this migration moves key bindings only
+  nothing to do: already phux's behavior: a pane sets the system clipboard (`defaults.clipboard-write`)
 - ~/.tmux.conf:10 `setw -g mode-keys vi`
-  not written: the tmux option mode-keys is a setting; this migration moves key bindings only
+  nothing to do: already phux's behavior: phux copy mode uses vi keys
 - ~/.tmux.conf:13 `unbind '"'`
   write `'"' = "none"` in `[keybindings.prefix-table]` (replaces the phux default `{ action = "split-pane", direction = "horizontal" }`)
 - ~/.tmux.conf:14 `unbind %`
@@ -104,21 +104,21 @@ Write every line marked "write" exactly as given, in the table it names, once. A
 Ghostty keybinds fire without a prefix, so they become `[keybindings.global]` lines. The table below decides every line it could; copy its lines and do not translate them again.
 
 ### Every Ghostty line, one by one
-Write every line marked "write" exactly as given, in the table it names, once. A line marked "not written" or "already phux's default" gets nothing. Each line goes in the report under the list its marking names.
+Write every line marked "write" exactly as given, in the table it names, once. A line marked "not written", "nothing to do" or "already phux's default" gets nothing. Each line goes in the report under the list its marking names.
 - ~/.config/ghostty/config:1 `theme = catppuccin-mocha`
   not written: the theme is not migrated; pick one with `phux theme list` and `phux theme set`
 - ~/.config/ghostty/config:2 `font-family = JetBrains Mono`
-  not written: the Ghostty setting font-family; this migration moves key bindings only
+  nothing to do: the Ghostty setting font-family keeps working while phux runs inside Ghostty
 - ~/.config/ghostty/config:3 `font-size = 14`
-  not written: the Ghostty setting font-size; this migration moves key bindings only
+  nothing to do: the Ghostty setting font-size keeps working while phux runs inside Ghostty
 - ~/.config/ghostty/config:4 `background-opacity = 0.95`
-  not written: the Ghostty setting background-opacity; this migration moves key bindings only
+  nothing to do: the Ghostty setting background-opacity keeps working while phux runs inside Ghostty
 - ~/.config/ghostty/config:5 `window-padding-x = 8`
-  not written: the Ghostty setting window-padding-x; this migration moves key bindings only
+  nothing to do: the Ghostty setting window-padding-x keeps working while phux runs inside Ghostty
 - ~/.config/ghostty/config:6 `cursor-style = block`
-  not written: the Ghostty setting cursor-style; this migration moves key bindings only
+  nothing to do: the Ghostty setting cursor-style keeps working while phux runs inside Ghostty
 - ~/.config/ghostty/config:7 `custom-shader = ~/.config/ghostty/crt.glsl`
-  not written: the Ghostty setting custom-shader; this migration moves key bindings only
+  nothing to do: the Ghostty setting custom-shader keeps working while phux runs inside Ghostty
 - ~/.config/ghostty/config:8 `keybind = cmd+d=new_split:right`
   not written: phux key bindings have no Cmd key; Rune's Cmd shortcuts are built in
 
@@ -138,7 +138,7 @@ terminal's environment, and a bare `phux` could be a different phux.
    file and run it again until it does.
 2. Compare the file with the tables above, line by line: every line marked "write" is
    in its table exactly as given, once, and nothing is written for a line marked "not
-   written" or "already phux's default". Fix the file until it matches.
+   written", "nothing to do" or "already phux's default". Fix the file until it matches.
 3. Run `phux config reload` once. Do not ask me first: I asked for this migration, and
    nothing takes effect until the reload. If it fails with "operation not permitted" or
    cannot connect, your sandbox blocked it: do not retry it and do not work around it.
@@ -152,7 +152,7 @@ terminal's environment, and a bare `phux` could be a different phux.
 
 ## Report
 Keep it short. Do not print the file, a diff, or command output. Give the path of the
-file, then these four lists in this order, one line per entry, then one line each for
+file, then these five lists in this order, one line per entry, then one line each for
 config check, reload and keys.
 - Migrated: each source line written, quoted with its file and line number, the phux
   key it became and its action. A line marked "already phux's default" goes here with
@@ -161,10 +161,11 @@ config check, reload and keys.
   the key did before, what it does now, and the source line that won.
 - Conflicts between sources: each key more than one source bound, which source won (by
   my answer), and the losing line quoted with its file and line number.
+- Nothing to do: the lines marked "nothing to do". Group them by reason: one line per
+  reason, naming the lines by file and line numbers.
 - Could not migrate: every other source line, quoted as written with its file and line
-  number, and one sentence on why (the table's reason, where it gives one). Settings
-  are lines too: each theme, font, colour, mouse, status bar or include line goes here
-  on its own line, never summarised together.
+  number, and one sentence on why (the table's reason, where it gives one). These are
+  the lines I have to act on: each goes on its own line, never summarised together.
 Never drop a line silently: every line in the tables above appears in exactly one list.
 
 ## Actions you may bind

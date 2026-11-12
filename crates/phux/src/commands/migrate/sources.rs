@@ -121,8 +121,12 @@ pub(super) enum Verdict {
     },
     /// phux already binds this key this way; nothing to write.
     Default { table: Table, key: String },
-    /// Nothing is written, for this reason.
+    /// Nothing is written and something is lost, for this reason: the user
+    /// has to know.
     Skip(String),
+    /// Nothing is written and nothing is lost, for this reason: the source
+    /// line keeps working, or phux already behaves that way.
+    Covered(String),
     /// The agent translates it.
     Raw,
 }
@@ -232,7 +236,7 @@ fn last_line_wins(source: &mut Source, home: &Path) {
                 tilde(&by.file, home),
                 by.line
             );
-            source.rows[index].verdict = Verdict::Skip(reason);
+            source.rows[index].verdict = Verdict::Covered(reason);
         }
     }
 }
@@ -319,6 +323,10 @@ pub(super) fn theme(program: &str, value: &str, selected: Option<&str>) -> Line 
     skip(Class::Setting, reason)
 }
 
+pub(super) fn covered(class: Class, reason: impl Into<String>) -> Line {
+    Line::Row(class, Verdict::Covered(reason.into()), None)
+}
+
 /// Turn a translated key and value into a verdict against the shipped
 /// table: the same binding is `Default`, a different one replaces it.
 pub(super) fn against_default(
@@ -360,7 +368,7 @@ pub(super) fn against_default(
             note,
             replaces: Some(describe(action)),
         },
-        None if value.as_str() == Some("none") => Verdict::Skip(
+        None if value.as_str() == Some("none") => Verdict::Covered(
             "removes a binding; phux binds nothing on this key, so nothing is written".into(),
         ),
         None => Verdict::Write {

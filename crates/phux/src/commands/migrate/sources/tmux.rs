@@ -8,7 +8,8 @@ use phux_config::keybind::parse_chord;
 use toml::Value;
 
 use super::{
-    Class, Ctx, Line, Source, Table, Verdict, against_default, expand, read_tree, skip, tilde,
+    Class, Ctx, Line, Source, Table, Verdict, against_default, covered, expand, read_tree, skip,
+    tilde,
 };
 use crate::commands::MigrateSource;
 use crate::commands::config::import_tmux::translate;
@@ -88,7 +89,7 @@ fn tmux_line(
             } else {
                 format!("loads {}, which does not exist", tilde(&include, ctx.home))
             };
-            Line::Row(Class::Other, Verdict::Skip(reason), Some(include))
+            Line::Row(Class::Other, Verdict::Covered(reason), Some(include))
         }
         "run" | "run-shell" if line.contains("tpm") => skip(
             Class::Setting,
@@ -230,7 +231,7 @@ fn tmux_set(
         prefix.clone_from(&key);
         let chosen = ctx.prefix();
         if !same_key(&key, chosen) {
-            return skip(
+            return covered(
                 Class::Setting,
                 format!("I chose {chosen} as my phux prefix, not tmux's {key}"),
             );
@@ -244,10 +245,36 @@ fn tmux_set(
         );
         return Line::Row(Class::Setting, verdict, None);
     }
-    let reason = if name.starts_with('@') {
-        "a tmux plugin option; tmux plugins are not migrated".to_owned()
-    } else {
-        format!("the tmux option {name} is a setting; this migration moves key bindings only")
-    };
-    skip(Class::Setting, reason)
+    if name.starts_with('@') {
+        return skip(
+            Class::Setting,
+            "a tmux plugin option; tmux plugins are not migrated",
+        );
+    }
+    match behavior(name, &value) {
+        Ok(reason) => covered(Class::Setting, reason),
+        Err(reason) => skip(Class::Setting, reason),
+    }
+}
+
+/// A tmux option phux has no setting for: `Ok` when phux already behaves
+/// the way it asks, `Err` when it is lost.
+fn behavior(name: &str, value: &str) -> Result<String, String> {
+    let already = |what: &str| Ok(format!("already phux's behavior: {what}"));
+    match (name, value) {
+        ("renumber-windows", "on") => already("phux tabs are positions, never numbered with gaps"),
+        ("set-clipboard", "on" | "external") => {
+            already("a pane sets the system clipboard (`defaults.clipboard-write`)")
+        }
+        ("mode-keys", "vi") => already("phux copy mode uses vi keys"),
+        ("escape-time", _) => already("phux waits only 10 ms after a bare Escape"),
+        ("base-index" | "pane-base-index", "0") => already("phux numbers from 0"),
+        ("base-index" | "pane-base-index", _) => {
+            Err(format!("phux numbers from 0 and cannot start at {value}"))
+        }
+        ("status-left" | "status-right", _) => Err(
+            "phux's status bar is built from its own slots; tmux formats are not translated".into(),
+        ),
+        _ => Err(format!("the tmux option {name} is not migrated")),
+    }
 }

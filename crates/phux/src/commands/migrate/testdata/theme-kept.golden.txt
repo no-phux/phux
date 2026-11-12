@@ -58,7 +58,7 @@ The file does not exist yet. Create it, and its directory if needed.
 Ghostty keybinds fire without a prefix, so they become `[keybindings.global]` lines. The table below decides every line it could; copy its lines and do not translate them again.
 
 ### Every Ghostty line, one by one
-Write every line marked "write" exactly as given, in the table it names, once. A line marked "not written" or "already phux's default" gets nothing. Each line goes in the report under the list its marking names.
+Write every line marked "write" exactly as given, in the table it names, once. A line marked "not written", "nothing to do" or "already phux's default" gets nothing. Each line goes in the report under the list its marking names.
 - ~/.config/ghostty/config:1 `theme = dark:TokyoNight Storm,light:Catppuccin Latte`
   not written: kept your phux theme `tokyo-night`; Ghostty's `dark:TokyoNight Storm,light:Catppuccin Latte` is not applied
 - ~/.config/ghostty/config:2 `keybind = ctrl+shift+t=new_tab`
@@ -80,7 +80,7 @@ terminal's environment, and a bare `phux` could be a different phux.
    file and run it again until it does.
 2. Compare the file with the tables above, line by line: every line marked "write" is
    in its table exactly as given, once, and nothing is written for a line marked "not
-   written" or "already phux's default". Fix the file until it matches.
+   written", "nothing to do" or "already phux's default". Fix the file until it matches.
 3. Run `phux config reload` once. Do not ask me first: I asked for this migration, and
    nothing takes effect until the reload. If it fails with "operation not permitted" or
    cannot connect, your sandbox blocked it: do not retry it and do not work around it.
@@ -94,7 +94,7 @@ terminal's environment, and a bare `phux` could be a different phux.
 
 ## Report
 Keep it short. Do not print the file, a diff, or command output. Give the path of the
-file, then these four lists in this order, one line per entry, then one line each for
+file, then these five lists in this order, one line per entry, then one line each for
 config check, reload and keys.
 - Migrated: each source line written, quoted with its file and line number, the phux
   key it became and its action. A line marked "already phux's default" goes here with
@@ -103,10 +103,11 @@ config check, reload and keys.
   the key did before, what it does now, and the source line that won.
 - Conflicts between sources: each key more than one source bound, which source won (by
   my answer), and the losing line quoted with its file and line number.
+- Nothing to do: the lines marked "nothing to do". Group them by reason: one line per
+  reason, naming the lines by file and line numbers.
 - Could not migrate: every other source line, quoted as written with its file and line
-  number, and one sentence on why (the table's reason, where it gives one). Settings
-  are lines too: each theme, font, colour, mouse, status bar or include line goes here
-  on its own line, never summarised together.
+  number, and one sentence on why (the table's reason, where it gives one). These are
+  the lines I have to act on: each goes on its own line, never summarised together.
 Never drop a line silently: every line in the tables above appears in exactly one list.
 
 ## Actions you may bind

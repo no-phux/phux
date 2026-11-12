@@ -50,18 +50,18 @@ fn ghostty_line(file: &Path, line: &str, ctx: &Ctx<'_>) -> Line {
             Line::Row(Class::Other, Verdict::Skip(reason), Some(include))
         }
         "theme" => theme("Ghostty", value, ctx.theme),
-        _ => skip(
+        _ => super::covered(
             Class::Setting,
-            format!("the Ghostty setting {name}; this migration moves key bindings only"),
+            format!("the Ghostty setting {name} keeps working while phux runs inside Ghostty"),
         ),
     }
 }
 
 fn ghostty_keybind(value: &str, ctx: &Ctx<'_>) -> Line {
     if value == "clear" {
-        return skip(
+        return super::covered(
             Class::Unbinding,
-            "clears Ghostty's own defaults; phux keeps its own",
+            "clears Ghostty's own defaults, which keeps working in Ghostty; phux keeps its own",
         );
     }
     // The first `=` that is not itself the key (`ctrl+==...`).
@@ -76,9 +76,9 @@ fn ghostty_keybind(value: &str, ctx: &Ctx<'_>) -> Line {
         trigger = rest;
     }
     if action == "unbind" {
-        return skip(
+        return super::covered(
             Class::Unbinding,
-            "removes a Ghostty default; phux has nothing to remove",
+            "removes a Ghostty default, which keeps working in Ghostty; phux has nothing to remove",
         );
     }
     let chord = match ghostty_chord(trigger) {

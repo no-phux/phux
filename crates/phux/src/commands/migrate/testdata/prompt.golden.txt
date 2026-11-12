@@ -62,17 +62,17 @@ The file does not exist yet. Create it, and its directory if needed.
 The table below decides every tmux line. Copy its lines; do not translate them again. tmux's prefix table becomes `[keybindings.prefix-table]` (after phux's prefix, `C-a` unless a line below sets it) and `bind -n` becomes `[keybindings.global]`.
 
 ### Every tmux line, one by one
-Write every line marked "write" exactly as given, in the table it names, once. A line marked "not written" or "already phux's default" gets nothing. Each line goes in the report under the list its marking names.
+Write every line marked "write" exactly as given, in the table it names, once. A line marked "not written", "nothing to do" or "already phux's default" gets nothing. Each line goes in the report under the list its marking names.
 - ~/.tmux.conf:2 `unbind C-b`
-  not written: removes a binding; phux binds nothing on this key, so nothing is written
+  nothing to do: removes a binding; phux binds nothing on this key, so nothing is written
 - ~/.tmux.conf:3 `set -g prefix C-a`
   already phux's default, not written
 - ~/.tmux.conf:4 `bind C-a send-prefix`
   already phux's default, not written
 - ~/.tmux.conf:5 `set -g mouse on`
-  not written: the tmux option mouse is a setting; this migration moves key bindings only
+  not written: the tmux option mouse is not migrated
 - ~/.tmux.conf:6 `set -g base-index 1`
-  not written: the tmux option base-index is a setting; this migration moves key bindings only
+  not written: phux numbers from 0 and cannot start at 1
 - ~/.tmux.conf:8 `bind | split-window -h`
   already phux's default, not written
 - ~/.tmux.conf:9 `bind - split-window -v -c "#{pane_current_path}"`
@@ -90,7 +90,7 @@ Write every line marked "write" exactly as given, in the table it names, once. A
 - ~/.tmux.conf:15 `bind c new-window`
   already phux's default, not written
 - ~/.tmux.conf:17 `source-file ~/.tmux/keys.conf`
-  not written: loads ~/.tmux/keys.conf; its lines follow
+  nothing to do: loads ~/.tmux/keys.conf; its lines follow
 - ~/.tmux/keys.conf:1 `bind h select-pane -L`
   already phux's default, not written
 - ~/.tmux/keys.conf:2 `bind l select-pane -R`
@@ -108,11 +108,11 @@ Write every line marked "write" exactly as given, in the table it names, once. A
 Ghostty keybinds fire without a prefix, so they become `[keybindings.global]` lines. The table below decides every line it could; copy its lines and do not translate them again.
 
 ### Every Ghostty line, one by one
-Write every line marked "write" exactly as given, in the table it names, once. A line marked "not written" or "already phux's default" gets nothing. Each line goes in the report under the list its marking names.
+Write every line marked "write" exactly as given, in the table it names, once. A line marked "not written", "nothing to do" or "already phux's default" gets nothing. Each line goes in the report under the list its marking names.
 - ~/.config/ghostty/config:1 `theme = catppuccin-mocha`
   not written: the theme is not migrated; pick one with `phux theme list` and `phux theme set`
 - ~/.config/ghostty/config:2 `font-family = JetBrains Mono`
-  not written: the Ghostty setting font-family; this migration moves key bindings only
+  nothing to do: the Ghostty setting font-family keeps working while phux runs inside Ghostty
 - ~/.config/ghostty/config:3 `keybind = cmd+q=quit`
   not written: macOS uses this key itself
 - ~/.config/ghostty/config:4 `keybind = cmd+d=new_split:right`
@@ -144,7 +144,7 @@ terminal's environment, and a bare `phux` could be a different phux.
    file and run it again until it does.
 2. Compare the file with the tables above, line by line: every line marked "write" is
    in its table exactly as given, once, and nothing is written for a line marked "not
-   written" or "already phux's default". Fix the file until it matches.
+   written", "nothing to do" or "already phux's default". Fix the file until it matches.
 3. Run `phux config reload` once. Do not ask me first: I asked for this migration, and
    nothing takes effect until the reload. If it fails with "operation not permitted" or
    cannot connect, your sandbox blocked it: do not retry it and do not work around it.
@@ -158,7 +158,7 @@ terminal's environment, and a bare `phux` could be a different phux.
 
 ## Report
 Keep it short. Do not print the file, a diff, or command output. Give the path of the
-file, then these four lists in this order, one line per entry, then one line each for
+file, then these five lists in this order, one line per entry, then one line each for
 config check, reload and keys.
 - Migrated: each source line written, quoted with its file and line number, the phux
   key it became and its action. A line marked "already phux's default" goes here with
@@ -167,10 +167,11 @@ config check, reload and keys.
   the key did before, what it does now, and the source line that won.
 - Conflicts between sources: each key more than one source bound, which source won (by
   my answer), and the losing line quoted with its file and line number.
+- Nothing to do: the lines marked "nothing to do". Group them by reason: one line per
+  reason, naming the lines by file and line numbers.
 - Could not migrate: every other source line, quoted as written with its file and line
-  number, and one sentence on why (the table's reason, where it gives one). Settings
-  are lines too: each theme, font, colour, mouse, status bar or include line goes here
-  on its own line, never summarised together.
+  number, and one sentence on why (the table's reason, where it gives one). These are
+  the lines I have to act on: each goes on its own line, never summarised together.
 Never drop a line silently: every line in the tables above appears in exactly one list.
 
 ## Actions you may bind

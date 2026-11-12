@@ -120,7 +120,7 @@ fn the_prefix_is_kept_or_taken_from_tmux_as_chosen() {
     );
     let tmux = find(&taken, MigrateSource::Tmux);
     assert!(
-        matches!(verdict(tmux, "set -g prefix C-a"), Verdict::Skip(r) if r.contains("not tmux's C-a"))
+        matches!(verdict(tmux, "set -g prefix C-a"), Verdict::Covered(r) if r.contains("not tmux's C-a"))
     );
     assert!(
         tmux.note
@@ -159,6 +159,31 @@ fn a_selected_phux_theme_is_kept_over_ghostty_s() {
     assert!(matches!(row.verdict, Verdict::Skip(_)));
     // No config, no theme.
     assert_eq!(selected_theme(&home.join("missing.toml")), None);
+}
+
+#[test]
+fn lines_with_nothing_to_do_are_kept_apart_from_lost_ones() {
+    let home = run_home();
+    let sources = discover(&home, None, &[], None, &Setup::default());
+    let tmux = find(&sources, MigrateSource::Tmux);
+    let ghostty = find(&sources, MigrateSource::Ghostty);
+    for text in [
+        "set -g renumber-windows on",
+        "set -sg escape-time 0",
+        "set -g set-clipboard on",
+        "setw -g mode-keys vi",
+    ] {
+        assert!(
+            matches!(verdict(tmux, text), Verdict::Covered(r) if r.starts_with("already phux's behavior")),
+            "{text}"
+        );
+    }
+    assert!(
+        matches!(verdict(tmux, "set -g base-index 1"), Verdict::Skip(r) if r.contains("from 0"))
+    );
+    assert!(
+        matches!(verdict(ghostty, "font-size = 14"), Verdict::Covered(r) if r.contains("keeps working"))
+    );
 }
 
 #[test]
