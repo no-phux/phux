@@ -227,7 +227,9 @@ impl EngineInner {
             .set_scrollback_max_lines(Some(scrollback as usize))
             .map_err(|error| EngineError::Engine(format!("scrollback_max_lines: {error:?}")))?;
         terminal
-            .set_scrollback_max_bytes((scrollback == 0).then_some(0))
+            // The row limit is the cap; without this the engine's default
+            // byte cap cuts history short of it.
+            .set_scrollback_max_bytes(Some(if scrollback == 0 { 0 } else { usize::MAX }))
             .map_err(|error| EngineError::Engine(format!("scrollback_max_bytes: {error:?}")))?;
         let predictor = Predictor::new(cols, rows);
         Ok(Self {
@@ -476,6 +478,17 @@ mod tests {
         assert_eq!(text(&grid, 0), "h");
         assert_eq!(text(&grid, 1), "i");
         assert_eq!(grid.generation, 1);
+    }
+
+    /// History is kept up to the row limit asked for, not the engine's
+    /// default byte cap.
+    #[test]
+    fn scrollback_keeps_the_rows_it_was_asked_for() {
+        let engine = TerminalEngine::new(80, 24, 2000).expect("engine");
+        let lines: String = (0..1200).map(|n| format!("line {n}\r\n")).collect();
+        engine.write(lines.into_bytes());
+        let bar = engine.scrollbar().expect("scrollbar");
+        assert!(bar.total - bar.len >= 1000, "{bar:?}");
     }
 
     #[test]
