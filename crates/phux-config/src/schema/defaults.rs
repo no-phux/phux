@@ -44,6 +44,12 @@ pub struct DefaultsCfg {
     #[serde(rename = "event-journal-bytes")]
     pub event_journal_bytes: u32,
 
+    /// Make the default shell of new panes mark its prompts and commands
+    /// (OSC 133) without the person editing a startup file. Read at server
+    /// start.
+    #[serde(rename = "shell-integration")]
+    pub shell_integration: bool,
+
     /// Whether a Terminal spawned without `retain_secs` stays in the
     /// inventory, exited, after its process exits (ADR-0124).
     #[serde(rename = "retain-on-exit")]
@@ -117,6 +123,7 @@ impl Default for DefaultsCfg {
             agent_log_bytes: DEFAULT_AGENT_LOG_BYTES,
             event_journal_entries: DEFAULT_EVENT_JOURNAL_ENTRIES,
             event_journal_bytes: DEFAULT_EVENT_JOURNAL_BYTES,
+            shell_integration: false,
             retain_on_exit: false,
             retain_on_exit_secs: DEFAULT_RETAIN_ON_EXIT_SECS,
             retain_on_exit_max_secs: DEFAULT_RETAIN_ON_EXIT_MAX_SECS,

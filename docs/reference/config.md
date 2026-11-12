@@ -65,6 +65,7 @@ Every scalar knob with its shipped default, serialized from the schema itself, p
 | `defaults.retain-on-exit-max-secs` | `86400` |
 | `defaults.retain-on-exit-secs` | `600` |
 | `defaults.session-name-template` | `"${cwd-basename}"` |
+| `defaults.shell-integration` | `false` |
 | `defaults.term` | `"xterm-256color"` |
 | `defaults.window-size` | `"smallest"` |
 | `experimental.predictive-echo` | unset — the dial decides: on when the attach leaves the machine, off otherwise. `true` / `false` force it on every transport |
@@ -154,6 +155,13 @@ agent-log-bytes = 4194304
 # 67108864 bytes are the maximums.
 event-journal-entries = 4096
 event-journal-bytes = 1048576
+
+# Have new panes' shells (zsh, bash, fish) mark their prompts and commands, so
+# `phux wait --output-only`, copy mode's last-output key and the exit widget
+# work without a line in your shell's startup file. Read when the server
+# starts. `phux config shell-integration SHELL` prints the same snippet to load
+# yourself instead.
+shell-integration = false
 
 # Keep a pane inspectable after its program exits: its exit status, last
 # screen, and scrollback stay until they expire or are closed. Off by
