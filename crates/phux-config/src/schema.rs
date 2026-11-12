@@ -198,6 +198,8 @@ pub struct ChromeCfg {
     /// Narrowest pane area worth tiling into; the sidebar is not reserved
     /// below `sidebar.width + min-pane-cols`.
     pub min_pane_cols: u16,
+    /// Open a new tab right after the one in view instead of at the end.
+    pub new_tab_after_current: bool,
 }
 
 impl Default for ChromeCfg {
@@ -206,6 +208,7 @@ impl Default for ChromeCfg {
             compact_cols: 64,
             compact_rows: 18,
             min_pane_cols: 40,
+            new_tab_after_current: false,
         }
     }
 }

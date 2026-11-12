@@ -90,6 +90,8 @@ A tab holds a set of panes. The status bar along the top shows your tabs.
 | <kbd>C-a</kbd> <kbd>,</kbd>                                | rename the tab                             |
 | <kbd>C-a</kbd> <kbd>X</kbd>                                | close the tab and everything in it (asks first) |
 
+A new tab opens at the end of the strip. To have it open right after the tab you are on, set `new-tab-after-current = true` under `[chrome]` in your config.
+
 ## Sessions
 
 A session is a named workspace, usually one per project. Each holds its own tabs.

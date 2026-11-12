@@ -40,6 +40,11 @@ use metadata::{
 use output::handle_terminal_output;
 pub(in crate::attach) use output::{OutputFrame, paint_output_frame};
 pub(in crate::attach) use replies::pane_is_referenced;
+
+/// Set `[chrome] new-tab-after-current` for the tabs this process opens.
+pub(in crate::attach) fn set_new_tab_after_current(on: bool) {
+    replies::NEW_TAB_AFTER_CURRENT.store(on, std::sync::atomic::Ordering::Relaxed);
+}
 use replies::{command_result_outcome, error_frame_outcome};
 use spawned::handle_terminal_spawned;
 #[cfg(test)]

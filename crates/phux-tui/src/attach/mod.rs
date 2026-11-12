@@ -84,6 +84,11 @@ pub use driver::{
 // ADR-0127: the CLI declares `--viewer` / `--take` once, before it dials.
 pub use attach_role::set_attach_role;
 
+/// Tell the tab strip where `[chrome] new-tab-after-current` puts a new tab.
+pub(crate) fn set_new_tab_after_current(on: bool) {
+    server_frame::set_new_tab_after_current(on);
+}
+
 pub use crate::multi_pane;
 
 /// The output sink the attach driver composites into.

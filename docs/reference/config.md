@@ -48,6 +48,7 @@ Every scalar knob with its shipped default, serialized from the schema itself, p
 | `chrome.compact-cols` | `64` |
 | `chrome.compact-rows` | `18` |
 | `chrome.min-pane-cols` | `40` |
+| `chrome.new-tab-after-current` | `false` |
 | `defaults.agent-log-bytes` | `4194304` |
 | `defaults.approval-max-pending` | `64` |
 | `defaults.approval-max-pending-total` | `1024` |
@@ -736,10 +737,14 @@ right = [
 # threshold, a very large value pins the opposite, and both are
 # legitimate configurations rather than errors.
 #
+# `new-tab-after-current`: a new tab opens right after the one in view
+# instead of at the end of the strip.
+#
 # [chrome]
 # compact-cols = 64
 # compact-rows = 18
 # min-pane-cols = 40
+# new-tab-after-current = false
 
 # Agent notifications. The TUI
 # posts one when an agent becomes blocked or asks for you, and when an
