@@ -20,8 +20,8 @@
 # a checkout goes away, and a machine-wide compiler pool. See
 # docs/development.md#build-cache-mbx for why phux needs it.
 rust = { version = "1.99.1", mr_boxington = true }
-# Ghostty's build rejects Zig 0.17; advance when its build API migration ships.
-zig = "0.17.0"
+# Ghostty needs Zig >= 0.17; 0.17.0 crashes building it cold on Linux (#2249).
+zig = "0.17.1"
 node = "26"
 # flake.nix reads this value directly, so the Nix shell cannot lag behind it
 # the way it did at 1.3.13 while this said 1.4.0. The demo image in

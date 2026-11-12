@@ -82,7 +82,9 @@ grep -Fq "https://codeload.github.com/$engine_fork/tar.gz/\$revision" "$browser_
 fetch_source "https://raw.githubusercontent.com/$engine_fork/$commit/build.zig.zon"
 engine_zig="$(sed -n 's/.*\.minimum_zig_version = "\([^"]*\)".*/\1/p' <<<"$fetched")"
 expected_zig="$(sed -n 's/^[[:space:]]*"version": "\([^"]*\)",*/\1/p' "$ROOT/.config/zig-toolchain.json")"
-[[ -n "$engine_zig" && "$engine_zig" == "$expected_zig" ]] ||
+# The engine names a minimum; a later patch of the same minor release builds it.
+[[ -n "$engine_zig" && "${engine_zig%.*}" == "${expected_zig%.*}" &&
+    "$(printf '%s\n' "$engine_zig" "$expected_zig" | sort -V | head -1)" == "$engine_zig" ]] ||
   fail "engine requires Zig ${engine_zig:-unknown}; toolchain pins $expected_zig"
 phux_ok "check-ghostty-pin: immutable engine source $engine_fork@$commit verified"
 base="$(const PREBUILT_BASE_URL <<<"$download_rs")"

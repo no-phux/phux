@@ -74,6 +74,10 @@ PIN_TEST_OFFLINE=1 pass 'skipped'
 PIN_TEST_SOURCE_HTTP=404 fail 'is not served (HTTP 404)'
 printf '.minimum_zig_version = "0.0.0",\n' >"$scratch/build.zig.zon"
 fail 'engine requires Zig 0.0.0'
+printf '.minimum_zig_version = "%s.0",\n' "${version%.*}" >"$scratch/build.zig.zon"
+pass '0 prebuilt, 4 source-only targets'
+printf '.minimum_zig_version = "%s.99",\n' "${version%.*}" >"$scratch/build.zig.zon"
+fail "engine requires Zig ${version%.*}.99"
 printf '.minimum_zig_version = "%s",\n' "$version" >"$scratch/build.zig.zon"
 sed "s/$rev/main/" "$scratch/build.rs" >"$scratch/bad.rs"
 mv "$scratch/build.rs" "$scratch/good.rs"
