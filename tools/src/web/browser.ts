@@ -472,15 +472,25 @@ export async function webBrowser(): Promise<number> {
   try {
     // One Cargo schedule for both binaries, at opt-level 0: the dev profile's
     // opt-level 1 made this throwaway build the job's slowest step.
-    await run(
-      "cargo build --locked -p phux-server --example ws_demo_server -p phux --bin phux".split(" "),
-      {
-        cwd: ROOT,
-        env: { ...env, CARGO_PROFILE_DEV_OPT_LEVEL: "0" },
-        logPath: join(logs, "build.log"),
-        timeoutMs: 1_200_000,
-      },
-    );
+    const build = () =>
+      run(
+        "cargo build --locked -p phux-server --example ws_demo_server -p phux --bin phux".split(
+          " ",
+        ),
+        {
+          cwd: ROOT,
+          env: { ...env, CARGO_PROFILE_DEV_OPT_LEVEL: "0" },
+          logPath: join(logs, "build.log"),
+          timeoutMs: 1_200_000,
+        },
+      );
+    // The pinned Zig sometimes aborts while building the vendored terminal
+    // library on hosted runners. Cargo keeps what finished, so one more try
+    // is cheap; a real build error fails again and is reported.
+    await build().catch((error) => {
+      console.error(`browser harness build failed, trying once more: ${error}`);
+      return build();
+    });
     const scratch = mkdtempSync(join(scratchParent, "phux-browser-"));
     try {
       const paths = { logs, scratch, target };
