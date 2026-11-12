@@ -4,7 +4,11 @@
 # is still the latest release). Pushes and manual runs use
 # https://phux.sh/install. The job summary names which installer ran.
 # Linux is the gate. macOS uses the same script on the macos-26 runner
-# this repository already uses for Rune CI.
+# this repository already uses for Rune CI. A pull request installs the
+# latest release binary, so its only macOS-specific input is the installer
+# and this harness: the macOS job runs on a pull request only when one of
+# those changed, and on every main push. That keeps it out of the five-slot
+# macOS pool for the other pull requests.
 name: first-run timing
 
 on:
@@ -25,10 +29,24 @@ jobs:
     name: linux install to first agent
     runs-on: ubuntu-24.04
     timeout-minutes: 10
+    outputs:
+      installer: ${{ steps.changes.outputs.installer }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+          fetch-depth: ${{ github.event_name == 'pull_request' && 0 || 1 }}
+      - name: Did the pull request touch the installer?
+        id: changes
+        if: github.event_name == 'pull_request'
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          if git diff --name-only "$BASE_SHA" HEAD -- scripts/install.sh scripts/installer scripts/generate-install.sh scripts/first-run-timing.sh .github/workflows/first-run-timing.yml | grep -q .; then
+            echo installer=true >> "$GITHUB_OUTPUT"
+          else
+            echo installer=false >> "$GITHUB_OUTPUT"
+          fi
       - name: Time install through a stub agent
         env:
           PHUX_INSTALL_URL: ${{ github.event_name == 'pull_request' && format('{0}/scripts/install.sh', github.workspace) || 'https://phux.sh/install' }}
@@ -36,6 +54,8 @@ jobs:
 
   macos:
     name: macos install to first agent
+    needs: linux
+    if: ${{ !cancelled() && (github.event_name != 'pull_request' || needs.linux.outputs.installer == 'true') }}
     runs-on: macos-26
     timeout-minutes: 10
     steps:
