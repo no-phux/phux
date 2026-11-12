@@ -48,6 +48,18 @@ pub(super) struct Source {
 pub(super) struct Setup {
     /// The phux prefix chosen; `None` keeps phux's own.
     pub prefix: Option<String>,
+    /// Mirror tmux as closely as phux allows, instead of keeping phux's
+    /// defaults wherever they already do what the user wanted.
+    pub advanced: bool,
+}
+
+impl Setup {
+    /// The phux prefix the migrated config ends up with.
+    pub(super) fn chosen_prefix(&self) -> String {
+        self.prefix
+            .clone()
+            .unwrap_or_else(|| shipped_bindings().prefix)
+    }
 }
 
 /// What every decider needs: `$HOME` (for `~`), the shipped bindings and
@@ -96,6 +108,9 @@ pub(super) enum Table {
     Keybindings,
     Prefix,
     Global,
+    /// Settings, not bindings.
+    Defaults,
+    Status,
 }
 
 impl Table {
@@ -104,7 +119,14 @@ impl Table {
             Self::Keybindings => "[keybindings]",
             Self::Prefix => "[keybindings.prefix-table]",
             Self::Global => "[keybindings.global]",
+            Self::Defaults => "[defaults]",
+            Self::Status => "[status]",
         }
+    }
+
+    /// Whether its keys are key chords, not setting names.
+    pub(super) const fn binds_keys(self) -> bool {
+        matches!(self, Self::Prefix | Self::Global)
     }
 }
 
@@ -218,7 +240,7 @@ pub(super) fn shipped_bindings() -> KeybindingsCfg {
 /// Inside one source, the line the program loads last wins: earlier
 /// lines on the same key are not written.
 fn last_line_wins(source: &mut Source, home: &Path) {
-    let mut last: BTreeMap<(Table, Vec<KeyChord>), usize> = BTreeMap::new();
+    let mut last: BTreeMap<(Table, String, Vec<KeyChord>), usize> = BTreeMap::new();
     for (index, row) in source.rows.iter().enumerate() {
         if let Some(id) = identity(row) {
             last.insert(id, index);
@@ -241,15 +263,16 @@ fn last_line_wins(source: &mut Source, home: &Path) {
     }
 }
 
-/// The key a written (or already-default) row claims.
-pub(super) fn identity(row: &Row) -> Option<(Table, Vec<KeyChord>)> {
+/// The key a written (or already-default) row claims: a setting by name,
+/// a binding by the keys it means.
+pub(super) fn identity(row: &Row) -> Option<(Table, String, Vec<KeyChord>)> {
     let (Verdict::Write { table, key, .. } | Verdict::Default { table, key }) = &row.verdict else {
         return None;
     };
-    if *table == Table::Keybindings {
-        return Some((*table, Vec::new()));
+    if !table.binds_keys() {
+        return Some((*table, key.clone(), Vec::new()));
     }
-    Some((*table, parse_chord_sequence(key).ok()?))
+    Some((*table, String::new(), parse_chord_sequence(key).ok()?))
 }
 
 /// `~/...` when under `$HOME`, for the prompt.
@@ -327,6 +350,30 @@ pub(super) fn covered(class: Class, reason: impl Into<String>) -> Line {
     Line::Row(class, Verdict::Covered(reason.into()), None)
 }
 
+/// A phux setting from a source line, against the shipped config: the
+/// value phux already ships is `Default`, any other is written.
+fn setting(table: Table, key: &str, value: Value) -> Verdict {
+    let name = match table {
+        Table::Status => "status",
+        _ => "defaults",
+    };
+    let shipped = phux_config::parse_with_defaults("", Path::new("config.toml"))
+        .ok()
+        .and_then(|cfg| Value::try_from(&cfg).ok())
+        .and_then(|cfg| cfg.get(name)?.get(key).cloned());
+    let key = key.to_owned();
+    if shipped.as_ref() == Some(&value) {
+        return Verdict::Default { table, key };
+    }
+    Verdict::Write {
+        table,
+        key,
+        value,
+        note: None,
+        replaces: shipped.map(|v| v.to_string()),
+    }
+}
+
 /// Turn a translated key and value into a verdict against the shipped
 /// table: the same binding is `Default`, a different one replaces it.
 pub(super) fn against_default(
@@ -340,6 +387,7 @@ pub(super) fn against_default(
     let shipped = match table {
         Table::Prefix => &defaults.prefix_table,
         Table::Global => &defaults.global,
+        Table::Defaults | Table::Status => return setting(table, &key, value),
         Table::Keybindings => {
             return if value.as_str() == Some(defaults.prefix.as_str()) {
                 Verdict::Default { table, key }

@@ -6,7 +6,7 @@ use std::path::Path;
 
 use toml::Value;
 
-use super::sources::{Row, Source, Table, Verdict, identity, tilde};
+use super::sources::{Row, Source, Verdict, identity, tilde};
 use crate::commands::MigrateSource;
 
 const TEMPLATE: &str = include_str!("prompt.txt");
@@ -212,10 +212,10 @@ fn verdict(verdict: &Verdict) -> String {
             note,
             replaces,
         } => {
-            let written = if *table == Table::Keybindings {
-                format!("{key} = {value}")
-            } else {
+            let written = if table.binds_keys() {
                 line(key, value)
+            } else {
+                format!("{key} = {value}")
             };
             let mut out = format!("write `{written}` in `{}`", table.header());
             if let Some(note) = note {

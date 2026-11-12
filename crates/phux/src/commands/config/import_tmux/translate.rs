@@ -129,6 +129,25 @@ fn parse_options(input: &str) -> Result<BTreeMap<String, String>, String> {
         .collect()
 }
 
+/// tmux options with a phux setting: `(option, table, key)`.
+const SETTINGS: &[(&str, &str, &str)] = &[
+    ("mouse", "defaults", "mouse"),
+    ("default-shell", "defaults", "shell"),
+    ("history-limit", "defaults", "history-limit"),
+    ("status-position", "status", "position"),
+];
+
+/// The phux setting a tmux option maps to, as `(table, key, value)`, with
+/// no value when this one has no phux equivalent. `None` when phux has no
+/// setting for the option at all.
+pub(crate) fn setting(
+    option: &str,
+    value: &str,
+) -> Option<(&'static str, &'static str, Option<Value>)> {
+    let (_, table, key) = SETTINGS.iter().find(|(name, ..)| *name == option)?;
+    Some((table, key, default_preference(option, value)))
+}
+
 fn preferences(
     options: &BTreeMap<String, String>,
     window: &BTreeMap<String, String>,
@@ -136,35 +155,30 @@ fn preferences(
     plan: &mut Plan,
 ) {
     let mut defaults = Table::new();
-    for (source, target) in [
-        ("mouse", "mouse"),
-        ("default-shell", "shell"),
-        ("history-limit", "history-limit"),
-    ] {
-        let Some(value) = options.get(source) else {
+    let mut status = Table::new();
+    for (option, ..) in SETTINGS {
+        let Some(value) = options.get(*option) else {
             continue;
         };
-        let converted = default_preference(source, value);
-        if let Some(value) = converted {
-            defaults.insert(target.into(), value);
-            plan.record(source, "mapped", format!("defaults.{target}"));
+        if let Some((table, key, Some(value))) = setting(option, value) {
+            let target = if table == "status" {
+                &mut status
+            } else {
+                &mut defaults
+            };
+            target.insert(key.into(), value);
+            plan.record(*option, "mapped", format!("{table}.{key}"));
         } else {
-            plan.record(source, "unsupported", "value has no direct phux equivalent");
+            plan.record(
+                *option,
+                "unsupported",
+                "value has no direct phux equivalent",
+            );
         }
     }
     root.insert("defaults".into(), Value::Table(defaults));
-    if let Some(position) = options
-        .get("status-position")
-        .filter(|v| matches!(v.as_str(), "top" | "bottom"))
-    {
-        root.insert(
-            "status".into(),
-            Value::Table(Table::from_iter([(
-                "position".into(),
-                Value::String(position.clone()),
-            )])),
-        );
-        plan.record("status-position", "mapped", "status.position");
+    if !status.is_empty() {
+        root.insert("status".into(), Value::Table(status));
     }
     unsupported_preferences(options, window, plan);
 }
@@ -180,6 +194,9 @@ fn default_preference(source: &str, value: &str) -> Option<Value> {
             .parse::<u32>()
             .ok()
             .map(|n| Value::Integer(i64::from(n))),
+        "status-position" => {
+            matches!(value, "top" | "bottom").then(|| Value::String(value.to_owned()))
+        }
         _ => (!value.is_empty()).then(|| Value::String(value.to_owned())),
     }
 }

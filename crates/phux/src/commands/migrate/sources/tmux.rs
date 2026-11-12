@@ -251,6 +251,28 @@ fn tmux_set(
             "a tmux plugin option; tmux plugins are not migrated",
         );
     }
+    if let Some((table, key, setting)) = translate::setting(name, &value) {
+        let table = if table == "status" {
+            Table::Status
+        } else {
+            Table::Defaults
+        };
+        return setting.map_or_else(
+            || {
+                skip(
+                    Class::Setting,
+                    format!("phux has no equivalent for {name} {value}"),
+                )
+            },
+            |setting| {
+                Line::Row(
+                    Class::Setting,
+                    against_default(ctx, table, key.into(), setting, None),
+                    None,
+                )
+            },
+        );
+    }
     match behavior(name, &value) {
         Ok(reason) => covered(Class::Setting, reason),
         Err(reason) => skip(Class::Setting, reason),

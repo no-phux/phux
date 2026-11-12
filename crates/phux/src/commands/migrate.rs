@@ -38,6 +38,7 @@ pub(crate) fn run(args: MigrateArgs, socket: Option<PathBuf>) -> ExitCode {
         source,
         json,
         prefix,
+        advanced,
     } = args;
     let home = std::env::var_os("HOME")
         .map(PathBuf::from)
@@ -47,15 +48,10 @@ pub(crate) fn run(args: MigrateArgs, socket: Option<PathBuf>) -> ExitCode {
         .map(PathBuf::from);
     let config = phux_config::loader::config_path();
     let theme = selected_theme(&config);
+    let setup = sources::Setup { prefix, advanced };
     let ask = !print && !json;
-    let (setup, found) = match setup(
-        prefix,
-        &home,
-        xdg.as_deref(),
-        &source,
-        theme.as_deref(),
-        ask,
-    ) {
+    let (setup, found) = match decide(setup, &home, xdg.as_deref(), &source, theme.as_deref(), ask)
+    {
         Ok(decided) => decided,
         Err(err) => return json_err::emit(json, &err, EXIT_USAGE),
     };
@@ -88,10 +84,7 @@ pub(crate) fn run(args: MigrateArgs, socket: Option<PathBuf>) -> ExitCode {
         |exe| sh_quote(&exe.to_string_lossy()),
     );
     let reference = prompt::reference();
-    let prefix = setup
-        .prefix
-        .clone()
-        .unwrap_or_else(|| sources::shipped_bindings().prefix);
+    let prefix = setup.chosen_prefix();
     let date = chrono::Local::now().format("%Y-%m-%d").to_string();
     let text = prompt::render(
         &found,
@@ -159,15 +152,15 @@ fn selected_theme(config: &Path) -> Option<String> {
 
 /// The choices from the flags, the questions they leave open (asked only
 /// when `ask` and on a terminal), and the sources decided with them.
-fn setup(
-    prefix: Option<String>,
+fn decide(
+    mut setup: sources::Setup,
     home: &Path,
     xdg: Option<&Path>,
     only: &[crate::commands::MigrateSource],
     theme: Option<&str>,
     ask: bool,
 ) -> Result<(sources::Setup, Vec<sources::Source>), CliError> {
-    if let Some(chord) = &prefix
+    if let Some(chord) = &setup.prefix
         && let Err(err) = phux_config::keybind::parse_chord(chord)
     {
         return Err(CliError::new(
@@ -176,11 +169,21 @@ fn setup(
             "spell it as a phux key, such as C-b",
         ));
     }
-    let mut setup = sources::Setup { prefix };
-    let mut found = sources::discover(home, xdg, only, theme, &setup);
-    if ask && std::io::stdin().is_terminal() && ask_setup(&mut setup, &found) {
-        found = sources::discover(home, xdg, only, theme, &setup);
+    let found = sources::discover(home, xdg, only, theme, &setup);
+    // Both questions are about tmux.
+    let Some(tmux) = found.iter().find_map(|source| source.prefix.clone()) else {
+        return Ok((setup, found));
+    };
+    let flags = (setup.prefix.clone(), setup.advanced);
+    if ask && std::io::stdin().is_terminal() {
+        ask_setup(&mut setup, tmux);
+    } else if setup.advanced && setup.prefix.is_none() {
+        setup.prefix = Some(tmux);
     }
+    if (setup.prefix.clone(), setup.advanced) == flags {
+        return Ok((setup, found));
+    }
+    let found = sources::discover(home, xdg, only, theme, &setup);
     Ok((setup, found))
 }
 
@@ -214,43 +217,49 @@ fn document(
         "launched": launched,
         "prompt_bytes": prompt_bytes,
         "prefix": prefix_json(found, setup),
+        "mode": if setup.advanced { "advanced" } else { "beginner" },
     })
 }
 
 /// The prefix choice: phux's own, tmux's (`null` without tmux) and the
 /// one the migrated config ends up with.
 fn prefix_json(found: &[sources::Source], setup: &sources::Setup) -> Value {
-    let phux = sources::shipped_bindings().prefix;
     json!({
-        "chosen": setup.prefix.as_deref().unwrap_or(&phux),
+        "chosen": setup.chosen_prefix(),
         "tmux": found.iter().find_map(|source| source.prefix.as_deref()),
-        "phux": phux,
+        "phux": sources::shipped_bindings().prefix,
     })
 }
 
-/// Ask on the terminal what the flags left open: whether to keep phux's
-/// prefix or take tmux's. Enter keeps phux's. True when anything changed.
-fn ask_setup(setup: &mut sources::Setup, found: &[sources::Source]) -> bool {
+/// Ask on the terminal what the flags left open: the setup mode, then
+/// whether to keep phux's prefix or take tmux's. Enter takes beginner, and
+/// the prefix the mode prefers.
+fn ask_setup(setup: &mut sources::Setup, tmux: String) {
+    if !setup.advanced {
+        setup.advanced = pick(
+            "How closely should phux follow your tmux setup?",
+            &[
+                "beginner: keep phux's defaults where they already do what you wanted".into(),
+                "advanced: mirror tmux as closely as phux allows".into(),
+            ],
+            0,
+        ) == 1;
+    }
     let phux = sources::shipped_bindings().prefix;
-    let Some(tmux) = found.iter().find_map(|source| source.prefix.clone()) else {
-        return false;
-    };
     if setup.prefix.is_some()
         || phux_config::keybind::parse_chord(&tmux).ok()
             == phux_config::keybind::parse_chord(&phux).ok()
     {
-        return false;
+        return;
     }
     let choice = pick(
         &format!("tmux's prefix is {tmux}; phux's is {phux}. Which prefix should phux use?"),
         &[format!("keep phux's {phux}"), format!("use tmux's {tmux}")],
-        0,
+        usize::from(setup.advanced),
     );
-    if choice == 0 {
-        return false;
+    if choice == 1 {
+        setup.prefix = Some(tmux);
     }
-    setup.prefix = Some(tmux);
-    true
 }
 
 /// Ask one numbered question on the terminal; Enter, or an answer that is

@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 use serde_json::json;
 
 use super::sources::{Setup, Source, Verdict, discover};
-use super::{agent_argv, document, prompt, selected_theme, user_executable};
+use super::{agent_argv, decide, document, prompt, selected_theme, user_executable};
 use crate::commands::{MigrateAgent, MigrateSource};
 
 fn testdata() -> PathBuf {
@@ -102,6 +102,7 @@ fn the_prefix_is_kept_or_taken_from_tmux_as_chosen() {
         None,
         &Setup {
             prefix: Some("C-b".into()),
+            ..Setup::default()
         },
     );
     let note = find(&taken, MigrateSource::Tmux).note.as_deref();
@@ -116,6 +117,7 @@ fn the_prefix_is_kept_or_taken_from_tmux_as_chosen() {
         None,
         &Setup {
             prefix: Some("C-b".into()),
+            ..Setup::default()
         },
     );
     let tmux = find(&taken, MigrateSource::Tmux);
@@ -159,6 +161,24 @@ fn a_selected_phux_theme_is_kept_over_ghostty_s() {
     assert!(matches!(row.verdict, Verdict::Skip(_)));
     // No config, no theme.
     assert_eq!(selected_theme(&home.join("missing.toml")), None);
+}
+
+#[test]
+fn advanced_takes_tmux_s_prefix_without_asking() {
+    let home = run_home();
+    let advanced = Setup {
+        advanced: true,
+        ..Setup::default()
+    };
+    let (setup, _) = decide(advanced, &home, None, &[], None, false).expect("decides");
+    assert_eq!(setup.prefix.as_deref(), Some("C-b"));
+    let (setup, _) = decide(Setup::default(), &home, None, &[], None, false).expect("decides");
+    assert_eq!(setup.prefix, None);
+    let bad = Setup {
+        prefix: Some("ctrl+b".into()),
+        ..Setup::default()
+    };
+    assert!(decide(bad, &home, None, &[], None, false).is_err());
 }
 
 #[test]
@@ -217,7 +237,14 @@ fn tmux_lines_are_decided_one_by_one() {
     assert!(
         matches!(verdict("bind -T copy-mode-vi v send -X begin-selection"), Verdict::Skip(reason) if reason.contains("copy-mode"))
     );
-    assert!(matches!(verdict("set -g mouse on"), Verdict::Skip(_)));
+    // Settings phux has go through the `config import-tmux` translator.
+    assert!(matches!(
+        verdict("set -g mouse on"),
+        Verdict::Default { .. }
+    ));
+    assert!(
+        matches!(verdict("set -g status-position bottom"), Verdict::Write { key, value, .. } if key == "position" && value.as_str() == Some("bottom"))
+    );
     // `base-index 1` makes tmux window 1 the first phux tab.
     let Verdict::Write { value, .. } = verdict("bind -n M-1 select-window -t :1") else {
         panic!("select-window is written");
@@ -377,6 +404,7 @@ fn json_document_shape_is_stable() {
     assert_eq!(none["sources"], json!([]));
     assert!(none["agent"].is_null() && none["launched"].is_null() && none["theme"].is_null());
     assert!(none["prefix"]["tmux"].is_null());
+    assert_eq!(none["mode"], "beginner");
 }
 
 #[test]

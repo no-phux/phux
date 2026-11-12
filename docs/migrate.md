@@ -26,13 +26,23 @@ phux only reads files. It never runs tmux or any other program, and it never
 edits your phux config itself: the agent does, and it backs up an existing
 file first.
 
-## Your prefix
+## Two questions
 
-phux's prefix is <kbd>C-a</kbd>. When your tmux prefix is different (tmux's
-own <kbd>C-b</kbd>, or your `set -g prefix`), `phux migrate` asks whether to
-keep phux's or use tmux's, before it starts the agent. Enter keeps phux's.
-`--prefix C-b` answers for a script; without a terminal, and with `--print`
-or `--json`, phux keeps its own unless `--prefix` says otherwise.
+When it reads a tmux config, `phux migrate` asks two questions before it
+starts the agent. Enter takes the default.
+
+1. **Setup mode.** Beginner (the default) keeps phux's defaults wherever they
+   already do what your tmux did, and writes only real differences.
+   Advanced mirrors tmux as closely as phux allows: it writes your tmux
+   unbinds, and tmux's prefix becomes the default answer to the next
+   question. Your tmux bindings win over phux's defaults in both modes.
+2. **Prefix.** phux's prefix is <kbd>C-a</kbd>. When your tmux prefix is
+   different (tmux's own <kbd>C-b</kbd>, or your `set -g prefix`), keep
+   phux's or use tmux's.
+
+`--advanced` and `--prefix C-b` answer for a script. Without a terminal, and
+with `--print` or `--json`, phux takes the defaults: beginner, phux's prefix
+(tmux's with `--advanced`).
 
 ## What phux decides, and what the agent decides
 
@@ -41,12 +51,14 @@ files: the exact phux line to write, "already phux's default", or "not
 written" with the reason. tmux bindings use the same translator as
 [`phux config import-tmux`](./tmux-import.md); `-c "#{pane_current_path}"`
 is dropped because phux opens new panes in the focused pane's directory
-already. Ghostty keybinds become [global bindings](./keys.md#binding-a-key).
+already. tmux `mouse`, `history-limit`, `default-shell` and `status-position`
+become `[defaults]` and `[status]` settings, written only where they differ
+from phux's. Ghostty keybinds become [global bindings](./keys.md#binding-a-key).
 
 Some lines are never written:
 
-- Settings: theme, font, colours, mouse, status bar. Each one is reported on
-  its own line.
+- Terminal settings: font, colours. A Ghostty setting keeps working in
+  Ghostty.
 - A theme line. When you already picked a phux theme (`phux theme set`, or
   `[theme] name` / `file` in your config), the line is reported as "kept your
   phux theme"; otherwise it points you at `phux theme list` and `phux theme set`.
@@ -117,7 +129,8 @@ phux migrate --print | pbcopy
   "theme": "tokyo-night",
   "launched": { "pane": "@12" },
   "prompt_bytes": 15873,
-  "prefix": { "chosen": "C-a", "tmux": "C-b", "phux": "C-a" }
+  "prefix": { "chosen": "C-a", "tmux": "C-b", "phux": "C-a" },
+  "mode": "beginner"
 }
 ```
 
@@ -127,6 +140,7 @@ phux migrate --print | pbcopy
   for `[theme] file`), or `null` when none is selected.
 - `launched` is `{ "pane": "@N" }` for a split, `{ "session": "migrate",
   "pane": "@N" }` for a new session, and `null` when nothing started.
+- `mode` is `beginner` or `advanced`.
 - `prefix.chosen` is the prefix the migrated config ends up with,
   `prefix.tmux` tmux's (`null` without a tmux config), `prefix.phux`
   phux's own.

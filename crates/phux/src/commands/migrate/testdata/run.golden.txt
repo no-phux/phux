@@ -1,7 +1,7 @@
 Move my terminal setup into phux, the terminal multiplexer I run.
-phux has already read my config files and translated every key binding it could; the
-lines are below, decided one by one. Your job is to write them into my phux config,
-check the file, reload, and report. Do not read phux's documentation or source code and
+phux has already read my config files and translated every key binding and setting it
+could; the lines are below, decided one by one. Your job is to write them into my phux
+config, check the file, reload, and report. Do not read phux's documentation or source code and
 do not go looking for action names: everything you need is in this prompt. Run only the
 commands this prompt names.
 
@@ -64,9 +64,9 @@ These files never set a prefix, so tmux used C-b. I chose to keep phux's own pre
 ### Every tmux line, one by one
 Write every line marked "write" exactly as given, in the table it names, once. A line marked "not written", "nothing to do" or "already phux's default" gets nothing. Each line goes in the report under the list its marking names.
 - ~/.tmux.conf:2 `set -g mouse on`
-  not written: the tmux option mouse is not migrated
+  already phux's default, not written
 - ~/.tmux.conf:3 `set -g history-limit 100000`
-  not written: the tmux option history-limit is not migrated
+  write `history-limit = 100000` in `[defaults]` (replaces the phux default `50000`)
 - ~/.tmux.conf:4 `set -g base-index 1`
   not written: phux numbers from 0 and cannot start at 1
 - ~/.tmux.conf:5 `setw -g pane-base-index 1`
@@ -76,7 +76,7 @@ Write every line marked "write" exactly as given, in the table it names, once. A
 - ~/.tmux.conf:7 `set -sg escape-time 0`
   nothing to do: already phux's behavior: phux waits only 10 ms after a bare Escape
 - ~/.tmux.conf:8 `set -g status-position top`
-  not written: the tmux option status-position is not migrated
+  already phux's default, not written
 - ~/.tmux.conf:9 `set -g set-clipboard on`
   nothing to do: already phux's behavior: a pane sets the system clipboard (`defaults.clipboard-write`)
 - ~/.tmux.conf:10 `setw -g mode-keys vi`

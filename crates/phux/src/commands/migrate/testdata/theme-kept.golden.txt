@@ -1,7 +1,7 @@
 Move my terminal setup into phux, the terminal multiplexer I run.
-phux has already read my config files and translated every key binding it could; the
-lines are below, decided one by one. Your job is to write them into my phux config,
-check the file, reload, and report. Do not read phux's documentation or source code and
+phux has already read my config files and translated every key binding and setting it
+could; the lines are below, decided one by one. Your job is to write them into my phux
+config, check the file, reload, and report. Do not read phux's documentation or source code and
 do not go looking for action names: everything you need is in this prompt. Run only the
 commands this prompt names.
 

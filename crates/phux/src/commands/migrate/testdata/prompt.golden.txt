@@ -1,7 +1,7 @@
 Move my terminal setup into phux, the terminal multiplexer I run.
-phux has already read my config files and translated every key binding it could; the
-lines are below, decided one by one. Your job is to write them into my phux config,
-check the file, reload, and report. Do not read phux's documentation or source code and
+phux has already read my config files and translated every key binding and setting it
+could; the lines are below, decided one by one. Your job is to write them into my phux
+config, check the file, reload, and report. Do not read phux's documentation or source code and
 do not go looking for action names: everything you need is in this prompt. Run only the
 commands this prompt names.
 
@@ -9,7 +9,7 @@ commands this prompt names.
 - tmux:
   - ~/.tmux.conf
   - ~/.tmux/keys.conf
-  Found: 13 bindings, 1 unbinding, 5 settings.
+  Found: 13 bindings, 1 unbinding, 6 settings.
 - Ghostty:
   - ~/.config/ghostty/config
   Found: 6 bindings, 0 unbindings, 2 settings.
@@ -70,7 +70,7 @@ Write every line marked "write" exactly as given, in the table it names, once. A
 - ~/.tmux.conf:4 `bind C-a send-prefix`
   already phux's default, not written
 - ~/.tmux.conf:5 `set -g mouse on`
-  not written: the tmux option mouse is not migrated
+  already phux's default, not written
 - ~/.tmux.conf:6 `set -g base-index 1`
   not written: phux numbers from 0 and cannot start at 1
 - ~/.tmux.conf:8 `bind | split-window -h`
@@ -103,6 +103,8 @@ Write every line marked "write" exactly as given, in the table it names, once. A
   not written: a tmux plugin option; tmux plugins are not migrated
 - ~/.tmux.conf:19 `run '~/.tmux/plugins/tpm/tpm'`
   not written: the tmux plugin manager; tmux plugins are not migrated
+- ~/.tmux.conf:20 `set -g status-position bottom`
+  write `position = "bottom"` in `[status]` (replaces the phux default `"top"`)
 
 ## Ghostty
 Ghostty keybinds fire without a prefix, so they become `[keybindings.global]` lines. The table below decides every line it could; copy its lines and do not translate them again.
