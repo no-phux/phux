@@ -191,6 +191,15 @@ pub(super) const ROWS: &[SettingSpec] = &[
                  right after the tab you are looking at, the way a browser does.",
         applies: Applies::LiveReload,
     },
+    SettingSpec {
+        key: "chrome.dim-unfocused",
+        section: SettingSection::Chrome,
+        kind: SettingKind::Bool,
+        summary: "Dim the panes you are not typing in",
+        detail: "In a tab with several panes, the ones without focus are painted faint so the \
+                 one taking your keys stands out. Your terminal decides how faint text looks.",
+        applies: Applies::LiveReload,
+    },
     // -- [notifications] ----------------------------------------------------
     SettingSpec {
         key: "notifications.mode",

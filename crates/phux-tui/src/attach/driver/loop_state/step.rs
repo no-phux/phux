@@ -57,6 +57,12 @@ impl super::SessionLoop {
                 .retain(|id| self.mirror.panes.contains_key(id));
         }
         self.settle_focus_seen(out, sidebar);
+        // Dimming follows focus the same way; an open overlay repaints the
+        // panes from their forgotten fronts on its own next paint.
+        let focused = self.mirror.focused_resource.as_ref();
+        if crate::attach::sync_dim(&mut self.mirror.panes, focused) && !self.overlays.is_active() {
+            self.repaint_view(out, sidebar, RepaintLevel::Panes);
+        }
         // Re-derive outer mouse tracking from the focused pane's opt-out every
         // iteration; a no-op when nothing changed.
         let want_capture = desired_mouse_capture(

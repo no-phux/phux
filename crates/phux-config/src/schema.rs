@@ -205,6 +205,8 @@ pub struct ChromeCfg {
     pub min_pane_cols: u16,
     /// Open a new tab right after the one in view instead of at the end.
     pub new_tab_after_current: bool,
+    /// Paint the panes you are not typing in faint.
+    pub dim_unfocused: bool,
 }
 
 impl Default for ChromeCfg {
@@ -214,6 +216,7 @@ impl Default for ChromeCfg {
             compact_rows: 18,
             min_pane_cols: 40,
             new_tab_after_current: false,
+            dim_unfocused: false,
         }
     }
 }

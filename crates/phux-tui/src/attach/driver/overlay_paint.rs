@@ -90,6 +90,7 @@ fn paint_copy_mode<W: crate::attach::RenderSink>(
         slot.renderer.set_copy_marks(CopyMarks {
             selection: Some(sel),
             matches,
+            dim: false,
         });
     }
     let painted = paint_full_frame(out, base, panes, engine_kernel, focused, chrome);

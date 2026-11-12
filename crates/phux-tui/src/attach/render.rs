@@ -196,6 +196,7 @@ pub(super) use sync_output::SyncOutput;
 #[cfg(test)]
 pub(super) use sync_output::{SYNC_OUTPUT_BEGIN, SYNC_OUTPUT_END};
 mod letterbox;
+mod marks;
 #[cfg(test)]
 use letterbox::Letterbox;
 use letterbox::{emit_letterbox_margins, letterbox_rect};
@@ -428,21 +429,6 @@ impl<'alloc> TerminalRenderer<'alloc> {
             scratch: CellScratch::default(),
             front: FrontBuffer::default(),
         })
-    }
-
-    /// Set (or clear) the copy-mode selection for the next render. A change
-    /// forgets the front buffer.
-    pub fn set_selection(&mut self, selection: Option<SelectionRect>) {
-        self.set_copy_marks(CopyMarks::selection(selection));
-    }
-
-    /// Set the copy-mode selection and search hits for the next render. A
-    /// change forgets the front buffer.
-    pub fn set_copy_marks(&mut self, marks: CopyMarks) {
-        if self.marks != marks {
-            self.front.invalidate_all();
-        }
-        self.marks = marks;
     }
 
     /// Forget what this pane last emitted, so each row's next paint rewrites
@@ -1634,6 +1620,7 @@ const fn apply_mark(style: &mut Style, mark: CellMark) {
         CellMark::None => {}
         CellMark::Selected => style.inverse ^= true,
         CellMark::Matched => style.underline = Underline::Single,
+        CellMark::Dimmed => style.faint = true,
     }
 }
 
@@ -1768,6 +1755,18 @@ mod tests {
         assert!(!full(&mut r, &t, (0, 0), (10, 2)).contains("\x1b[7"));
     }
 
+    /// A dimmed pane repaints faint (SGR 2); copy marks leave the dim alone.
+    #[test]
+    fn a_dimmed_pane_paints_faint() {
+        let t = pane(10, 2, b"hello");
+        let mut r = renderer();
+        assert!(!full(&mut r, &t, (0, 0), (10, 2)).contains("\x1b[2m"));
+        assert!(r.set_dim(true) && !r.set_dim(true));
+        r.set_copy_marks(CopyMarks::default());
+        let s = full(&mut r, &t, (0, 0), (10, 2));
+        assert!(s.contains("\x1b[2m") && s.contains("hello"), "{s:?}");
+    }
+
     /// Block and linear selections invert different cells: linear takes the
     /// whole interior row, block only the column band.
     #[test]
@@ -1797,6 +1796,7 @@ mod tests {
         r.set_copy_marks(CopyMarks {
             selection: Some(sel((0, 0), (0, 2), false)),
             matches: vec![sel((0, 8), (0, 10), false)],
+            dim: false,
         });
         let s = full(&mut r, &t, (0, 0), (12, 1));
         let inverse = s.find("\x1b[7").expect("the current hit inverts");
