@@ -45,11 +45,33 @@ impl SshOutput {
 /// could not run at all.
 pub(crate) fn ssh_run(ssh_host: &str, argv: &[&str]) -> Result<SshOutput, String> {
     let program = ssh_program();
-    let output = ssh_command(&program, ssh_host, argv)
-        .stdin(Stdio::null())
-        .output()
-        .map_err(|err| format!("could not run {}: {err}", program.to_string_lossy()))?;
-    Ok(SshOutput::from(output))
+    retry_pre_auth_drops(|| {
+        let output = ssh_command(&program, ssh_host, argv)
+            .stdin(Stdio::null())
+            .output()
+            .map_err(|err| format!("could not run {}: {err}", program.to_string_lossy()))?;
+        Ok(SshOutput::from(output))
+    })
+}
+
+/// Run `ssh_once` again, after a jittered pause, while sshd drops the login
+/// before it begins (its `MaxStartups` limit), up to a few times. The
+/// command never ran on the host then, so running it again is safe; ssh
+/// failing silently counts, as phux on the host never exits 255.
+fn retry_pre_auth_drops(
+    mut ssh_once: impl FnMut() -> Result<SshOutput, String>,
+) -> Result<SshOutput, String> {
+    use phux_client_runtime::connection::{ssh_pre_auth_retry_delay, ssh_retry_login};
+    let mut retry = 0;
+    loop {
+        let output = ssh_once()?;
+        let dropped = output.status.code() == Some(SSH_FAILED) && ssh_retry_login(&output.stderr);
+        let Some(delay) = ssh_pre_auth_retry_delay(retry).filter(|_| dropped) else {
+            return Ok(output);
+        };
+        std::thread::sleep(delay);
+        retry += 1;
+    }
 }
 
 /// [`ssh_run`] with `stdin` piped to the remote command: how public
@@ -59,10 +81,19 @@ pub(crate) fn ssh_run_with_stdin(
     argv: &[&str],
     stdin: &[u8],
 ) -> Result<SshOutput, String> {
+    let program = ssh_program();
+    retry_pre_auth_drops(|| ssh_once_with_stdin(&program, ssh_host, argv, stdin))
+}
+
+fn ssh_once_with_stdin(
+    program: &OsString,
+    ssh_host: &str,
+    argv: &[&str],
+    stdin: &[u8],
+) -> Result<SshOutput, String> {
     use std::io::Write as _;
 
-    let program = ssh_program();
-    let mut child = ssh_command(&program, ssh_host, argv)
+    let mut child = ssh_command(program, ssh_host, argv)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -229,6 +260,47 @@ pub(crate) fn authority(host: &str, port: u16) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A login sshd dropped before it began runs again; a refused one, or a
+    /// remote command that failed, runs once.
+    #[test]
+    #[cfg(unix)]
+    fn only_logins_sshd_dropped_before_they_began_run_again() {
+        use std::os::unix::process::ExitStatusExt as _;
+        let output = |code: i32, stderr: &str| SshOutput {
+            status: std::process::ExitStatus::from_raw(code << 8),
+            stdout: String::new(),
+            stderr: stderr.to_owned(),
+        };
+        let mut runs = 0;
+        let done = retry_pre_auth_drops(|| {
+            runs += 1;
+            Ok(if runs < 3 {
+                output(
+                    SSH_FAILED,
+                    "kex_exchange_identification: read: Connection reset by peer",
+                )
+            } else {
+                output(0, "")
+            })
+        })
+        .expect("ran");
+        assert!(done.status.success());
+        assert_eq!(runs, 3);
+
+        for (code, stderr) in [
+            (SSH_FAILED, "me@box: Permission denied (publickey)."),
+            (SSH_FAILED, "Host key verification failed."),
+            (1, "Connection closed by 10.0.0.5 port 22"),
+        ] {
+            let mut runs = 0;
+            let _ = retry_pre_auth_drops(|| {
+                runs += 1;
+                Ok(output(code, stderr))
+            });
+            assert_eq!(runs, 1, "{stderr}");
+        }
+    }
 
     /// Pins what a real sshd taught: `yes` over a stale socket leaves a
     /// login running for good, and a user `LocalForward` on the master makes

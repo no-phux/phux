@@ -344,7 +344,9 @@ mod wsl;
 pub(crate) use establish::{DialFailure, establish};
 pub use ssh::{
     ASKPASS_ENV, HOST_KEY_REFUSED, batch_control_options as ssh_batch_control_options,
-    control_options as ssh_control_options, host_key_remedy, master_options as ssh_master_options,
+    control_options as ssh_control_options, failure_hint as ssh_failure_hint, host_key_remedy,
+    master_options as ssh_master_options, pre_auth_drop as ssh_pre_auth_drop,
+    pre_auth_retry_delay as ssh_pre_auth_retry_delay, retry_login as ssh_retry_login,
 };
 
 pub use driver::run_session;

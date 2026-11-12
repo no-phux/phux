@@ -175,27 +175,44 @@ fn run_attach_over_ssh(host: &str, remote_phux: &str, session: Option<&str>) -> 
 }
 
 /// Run `phux bootstrap` on the host and read its report. Only stdout is
-/// captured, so host-key, password, and 2FA prompts reach the operator.
+/// captured: ssh's stderr is copied through as it comes, so host-key,
+/// password, and 2FA prompts reach the operator.
+///
+/// A login sshd drops before it begins (its `MaxStartups` limit, when many
+/// connections open at once) is tried again after a jittered pause, a few
+/// times; nothing ran on the host then. A refused login or host key is not.
 fn bootstrap(args: &SshAttach<'_>) -> Result<Report, Failure> {
     let program = ssh_program();
-    let output = Command::new(&program)
-        .args(phux_client_runtime::connection::ssh_control_options())
-        .arg("-T")
-        .arg("-o")
-        .arg("ClearAllForwardings=yes")
-        .arg("--")
-        .arg(&args.destination)
-        .arg(remote_command(&args.remote_phux, args.udp_ports.as_deref()))
-        .stdin(Stdio::null())
-        .stderr(Stdio::inherit())
-        .output()
-        .map_err(|err| {
+    let mut retry = 0;
+    let (output, stderr) = loop {
+        let (output, stderr) = bootstrap_once(&program, args).map_err(|err| {
             Failure::Fatal(format!(
                 "could not run {}: {err}",
                 program.to_string_lossy()
             ))
         })?;
+        let dropped = output.status.code() == Some(SSH_FAILED)
+            && phux_client_runtime::connection::ssh_retry_login(&stderr);
+        let Some(delay) =
+            phux_client_runtime::connection::ssh_pre_auth_retry_delay(retry).filter(|_| dropped)
+        else {
+            break (output, stderr);
+        };
+        std::thread::sleep(delay);
+        // The dropped login may have been the master's too.
+        login(&args.destination);
+        retry += 1;
+    };
 
+    if output.status.code() == Some(SSH_FAILED)
+        && let Some(hint) =
+            phux_client_runtime::connection::ssh_failure_hint(&stderr, &args.destination)
+    {
+        return Err(Failure::Fatal(format!(
+            "ssh to {} failed (see above): {hint}",
+            args.destination
+        )));
+    }
     match output.status.code() {
         Some(0) => {}
         Some(SSH_FAILED) => {
@@ -225,6 +242,41 @@ fn bootstrap(args: &SshAttach<'_>) -> Result<Report, Failure> {
     check_protocol(report.protocol_version.as_deref(), &args.destination)
         .map_err(Failure::Fallback)?;
     Ok(report)
+}
+
+/// One `phux bootstrap` run: its output, with stdout captured, and what
+/// ssh printed on stderr, which was copied through as it came.
+fn bootstrap_once(
+    program: &std::ffi::OsString,
+    args: &SshAttach<'_>,
+) -> std::io::Result<(std::process::Output, String)> {
+    use std::io::{Read as _, Write as _};
+    let mut child = Command::new(program)
+        .args(phux_client_runtime::connection::ssh_control_options())
+        .arg("-T")
+        .arg("-o")
+        .arg("ClearAllForwardings=yes")
+        .arg("--")
+        .arg(&args.destination)
+        .arg(remote_command(&args.remote_phux, args.udp_ports.as_deref()))
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()?;
+    let tee = child.stderr.take().map(|mut pipe| {
+        std::thread::spawn(move || {
+            let mut seen = Vec::new();
+            let mut chunk = [0; 4096];
+            while let Ok(count @ 1..) = pipe.read(&mut chunk) {
+                let _ = std::io::stderr().write_all(&chunk[..count]);
+                seen.extend_from_slice(&chunk[..count]);
+            }
+            String::from_utf8_lossy(&seen).into_owned()
+        })
+    });
+    let output = child.wait_with_output()?;
+    let stderr = tee.and_then(|tee| tee.join().ok()).unwrap_or_default();
+    Ok((output, stderr))
 }
 
 /// The command line ssh hands the remote shell. ssh joins its arguments into

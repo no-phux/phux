@@ -191,6 +191,24 @@ fn add_mode_refuses_flags_from_the_other_form() {
     );
 }
 
+/// A login sshd turned away before it began names its `MaxStartups` limit.
+#[test]
+fn a_login_sshd_dropped_names_max_startups() {
+    let err = add_failure_error(
+        "mini",
+        HostRole::Remote,
+        &EnrollFailure::SshUnreachable(
+            "kex_exchange_identification: Connection closed by remote host".to_owned(),
+        ),
+    );
+    assert!(
+        err.message.contains("cannot reach mini over ssh"),
+        "{}",
+        err.message
+    );
+    assert!(err.remedy.contains("MaxStartups"), "{}", err.remedy);
+}
+
 /// The three shared-middle failure classes map onto the error contract
 /// with distinct, pasteable remedies.
 #[test]
