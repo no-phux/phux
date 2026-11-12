@@ -46,9 +46,10 @@ only you can read (`/tmp/phux-ssh-<uid>`), until five minutes after its last
 use. Rune asks in a dialog instead, for the machine you pick (on Linux,
 through your desktop's `SSH_ASKPASS`); cancelling it stops the connection
 rather than asking again. Without either, as from a script, phux never
-prompts, so the host needs a key that works on its own. If the host's key changed, phux stops
-and prints the `ssh-keygen -R` command that removes the old one; it never
-accepts a new key for you.
+prompts, so the host needs a key that works on its own; phux keeps that key
+login open the same way, so the next connection skips the SSH handshake. If
+the host's key changed, phux stops and prints the `ssh-keygen -R` command
+that removes the old one; it never accepts a new key for you.
 
 If a non-interactive SSH shell doesn't find `phux` on the remote machine, as
 with some Homebrew or Nix installs, say where it is:
