@@ -6,7 +6,7 @@ The server, CLI and terminal UI are the core product. Remote hosts, agent
 integrations, MCP, plugins and distributions are optional maintained
 features; you do not need them to use local terminals. The separately
 released desktop is a newer maintained client. The browser client is an
-unshipped experiment, and phone apps are not available yet. See
+unshipped experiment, and the phone apps are in testing (Android on Google Play). See
 [Clients](./clients.md) for platform requirements and limitations.
 
 ## Get started
