@@ -31,6 +31,12 @@ pub enum Shortcut {
     NewSession,
     NextTerminal,
     PreviousTerminal,
+    /// The shown session's terminals only, tab by tab in pane order.
+    NextTerminalInSession,
+    PreviousTerminalInSession,
+    /// The sessions in the sidebar's order.
+    NextSession,
+    PreviousSession,
     ZoomIn,
     ZoomOut,
     ZoomReset,
@@ -598,6 +604,30 @@ mod tests {
         );
         // Not in the table, so not the app's.
         assert_eq!(shortcut(&Key::Command('t'), shifted, None), None);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn command_arrows_walk_terminals_and_sessions() {
+        let cmd = m(|m| m.cmd = true);
+        let shifted = m(|m| {
+            m.cmd = true;
+            m.shift = true;
+        });
+        let walk = [
+            (Key::Left, Shortcut::PreviousTerminalInSession),
+            (Key::Right, Shortcut::NextTerminalInSession),
+            (Key::Up, Shortcut::PreviousSession),
+            (Key::Down, Shortcut::NextSession),
+        ];
+        for (key, action) in walk {
+            assert_eq!(shortcut(&key, cmd, None), Some(action), "{key:?}");
+        }
+        assert_eq!(shortcut(&Key::Up, shifted, None), Some(Shortcut::PromptUp));
+        assert_eq!(
+            shortcut(&Key::Down, shifted, None),
+            Some(Shortcut::PromptDown)
+        );
     }
 
     #[cfg(target_os = "macos")]

@@ -195,14 +195,16 @@ session (or `--session NAME`). It never creates a session on its own.
 | ⌘⌥ arrows | Move between panes |
 | ⌘⇧↩ | Zoom the focused pane |
 | ⌘W | Close the terminal (**Confirm before closing** asks if something is running) |
-| ⌘] / ⌘[ | Next / previous terminal |
+| ⌘] / ⌘[ | Next / previous terminal, any session |
 | ⌘B | Fold the sidebar |
 | ⌘F / ⌘G / ⌘⇧G / ⌘E | Find / older / newer / the selection |
 | ⌘⇧C | Copy mode: vi keys; `v` selects, `y` copies |
 | ⌘-click | Open the link under it |
 | ⌘C / ⌘V | Copy the selection / paste (bracketed) |
 | ⌘= / ⌘- / ⌘0 | Bigger / smaller / default text |
-| ⌘↑ / ⌘↓ | Top / bottom of history |
+| ⌘← / ⌘→ | Previous / next terminal in the session |
+| ⌘↑ / ⌘↓ | Previous / next session |
+| ⌘⇧↑ / ⌘⇧↓ | Previous / next prompt |
 | Drag, double- and triple-click | Select by cell, word, line (Shift selects over mouse-tracking programs) |
 
 On Linux the same chords use Ctrl-Shift (split down is Ctrl-Shift-E, copy

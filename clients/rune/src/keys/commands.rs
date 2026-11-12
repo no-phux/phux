@@ -388,6 +388,33 @@ pub const COMMANDS: &[Command] = &[
         [m('[')],
         [l('[')]
     ),
+    // Command+arrows walk the window like the desktop app did: across for
+    // the session's terminals, up and down for sessions. Super+arrows belong
+    // to the window manager elsewhere, so only the palette reaches them.
+    row!(
+        Shortcut::NextTerminalInSession,
+        "Next Terminal in Session",
+        [Chord::cmd(Cap::Right)],
+        []
+    ),
+    row!(
+        Shortcut::PreviousTerminalInSession,
+        "Previous Terminal in Session",
+        [Chord::cmd(Cap::Left)],
+        []
+    ),
+    row!(
+        Shortcut::NextSession,
+        "Next Session",
+        [Chord::cmd(Cap::Down)],
+        []
+    ),
+    row!(
+        Shortcut::PreviousSession,
+        "Previous Session",
+        [Chord::cmd(Cap::Up)],
+        []
+    ),
     row!(
         Shortcut::NextTab,
         "Next Tab",
@@ -446,13 +473,13 @@ pub const COMMANDS: &[Command] = &[
     row!(
         Shortcut::PromptUp,
         "Jump to Previous Prompt",
-        [Chord::cmd(Cap::Up)],
+        [Chord::cmd(Cap::Up).shift()],
         [Chord::ctrl(Cap::Up).shift()]
     ),
     row!(
         Shortcut::PromptDown,
         "Jump to Next Prompt",
-        [Chord::cmd(Cap::Down)],
+        [Chord::cmd(Cap::Down).shift()],
         [Chord::ctrl(Cap::Down).shift()]
     ),
     row!(hidden Shortcut::Palette, "Command Palette", [m('p'), m('k'), m('p').shift()], [l('p'), l('k')]),
