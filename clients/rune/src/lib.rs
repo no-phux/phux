@@ -6,6 +6,7 @@
 mod activity;
 mod addressable;
 mod alerts;
+mod changes;
 mod creature;
 mod desk;
 mod diag;

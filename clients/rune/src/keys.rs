@@ -60,6 +60,8 @@ pub enum Shortcut {
     /// Start again what a server restart ended.
     RestoreSessions,
     Inbox,
+    /// What Git says changed in the focused terminal's checkout.
+    Changes,
     /// The fleet as a galaxy: machines, their agents, and how they relate.
     Galaxy,
     /// The fleet as a reef: machines as reefs, agents as fish.

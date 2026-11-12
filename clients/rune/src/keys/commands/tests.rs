@@ -90,6 +90,7 @@ every_shortcut!(
     CopyConfig,
     RestoreSessions,
     Inbox,
+    Changes,
     Galaxy,
     Reef,
     Pitch,

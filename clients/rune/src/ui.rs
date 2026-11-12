@@ -6,6 +6,7 @@ use rune::{Color, Cx, El, TextStyle, Transition, col, el, row, text};
 use crate::desk::Desk;
 use crate::theme::{Marks, SELECTED_WASH, Selection, Theme, on_fill};
 
+mod changes;
 mod documents;
 mod galaxy;
 mod hive;
@@ -261,6 +262,7 @@ fn floating(root: El, desk: &Desk, p: &Ink, band: f32, cx: &mut Cx<Desk>) -> El 
         .children(desk.settings_open.then(|| settings::view(desk, p)))
         .children(machines::sheet(desk, p))
         .children(desk.news.open.then(|| news::view(desk, p)))
+        .children(desk.changes.open.then(|| changes::view(desk, p)))
         .children(tabs::rename_sheet(desk, p))
         .children(desk.palette_open.then(|| palette::view(desk, p, 96.0)))
         .children(
