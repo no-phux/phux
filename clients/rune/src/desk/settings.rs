@@ -102,6 +102,7 @@ impl Settings {
             option_as_meta: file.option_as_meta.unwrap_or(self.option_as_meta),
             copy_on_select: file.copy_on_select.unwrap_or(self.copy_on_select),
             confirm_close: file.confirm_close.unwrap_or(self.confirm_close),
+            glass: self.glass,
         }
     }
 }
