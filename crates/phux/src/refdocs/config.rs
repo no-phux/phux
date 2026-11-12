@@ -134,6 +134,12 @@ const SECTIONS: &[Section] = &[
                   checkout path and an optional out-of-repo recipe.",
     },
     Section {
+        key: "sessions",
+        header: "[[sessions]]",
+        summary: "A colour for a session by name, drawn beside it in the \
+                  sidebar: `color` is one of the host palette's ids.",
+    },
+    Section {
         key: "theme",
         header: "[theme]",
         summary: "Free-form color slots (`slot = \"color\"`) consumed by \

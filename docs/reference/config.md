@@ -30,6 +30,7 @@ The configuration surface of `~/.config/phux/config.toml`. The loader layers you
 | `[[remote]]` | Remote phux servers this machine attaches to, written by `phux host add` and resolved by `phux attach <name>`; `color` overrides a host's automatic colour. |
 | `[host]` | This machine as clients draw it: `color` overrides its automatic colour (`phux host color --local`). |
 | `[[projects]]` | Named projects `phux project open <name>` resolves: a checkout path and an optional out-of-repo recipe. |
+| `[[sessions]]` | A colour for a session by name, drawn beside it in the sidebar: `color` is one of the host palette's ids. |
 | `[theme]` | Free-form color slots (`slot = "color"`) consumed by the renderer. |
 | `[experimental]` | Opt-in unstable knobs; anything here may change or disappear without notice. |
 | `[policy]` | The authorization posture read at server start: `local` (owner socket only) or `paired` (workload mTLS, scope ceilings enforced at dispatch). |
