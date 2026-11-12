@@ -32,6 +32,20 @@ final class SSHTests: XCTestCase {
         }
     }
 
+    /// NIOSSH drops `keyboard-interactive` from a method list, so a server
+    /// that wants it (alone, or after the password) lists nothing it knows.
+    func testUnanswerableStepIsNotReportedAsAWrongPassword() async throws {
+        for (mode, methods) in [(FixtureMode.noPassword, ["none"]), (.secondFactor, ["none", "password"])] {
+            try await withServer(mode) { server in
+                do {
+                    _ = try await server.connect(password: "fixture-password")
+                    XCTFail("authenticated without the step the server asked for")
+                } catch { XCTAssertEqual(error as? SSHFailure, .authenticationFailed(passwordAccepted: false)) }
+                XCTAssertEqual(server.state.methods, methods)
+            }
+        }
+    }
+
     func testBadPinPreventsAuthentication() async throws {
         try await withServer(.password) { server in
             do {
@@ -113,7 +127,7 @@ final class SSHTests: XCTestCase {
 }
 
 private enum FixtureMode: Sendable {
-    case none, password, holdAuthentication, hangExec, largeOutput, refuseExec
+    case none, password, noPassword, secondFactor, holdAuthentication, hangExec, largeOutput, refuseExec
 }
 
 private final class FixtureState: @unchecked Sendable {
@@ -207,7 +221,9 @@ private struct TestSSHServer: Sendable {
 private final class FixtureAuth: NIOSSHServerUserAuthenticationDelegate {
     let mode: FixtureMode
     let state: FixtureState
-    var supportedAuthenticationMethods: NIOSSHAvailableUserAuthenticationMethods { .password }
+    var supportedAuthenticationMethods: NIOSSHAvailableUserAuthenticationMethods {
+        mode == .noPassword ? [] : .password
+    }
 
     init(mode: FixtureMode, state: FixtureState) {
         self.mode = mode
@@ -227,12 +243,16 @@ private final class FixtureAuth: NIOSSHServerUserAuthenticationDelegate {
             state.hold(responsePromise)
             return
         }
-        if mode != .password {
+        if mode == .noPassword {
+            responsePromise.succeed(.failure)
+            return
+        }
+        if mode != .password, mode != .secondFactor {
             responsePromise.succeed(.success)
             return
         }
         if case let .password(password) = request.request, password.password == "fixture-password" {
-            responsePromise.succeed(.success)
+            responsePromise.succeed(mode == .secondFactor ? .partialSuccess(remainingMethods: []) : .success)
         } else {
             responsePromise.succeed(.failure)
         }

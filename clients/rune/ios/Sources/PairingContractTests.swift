@@ -71,6 +71,8 @@ enum PairingContractTests {
         try require(OnboardingStatus.code(error) == "ssh_authentication", "diagnose authentication separately from discovery")
         try require(OnboardingStatus.code(SSHFailure.unreachable("SECRET-CREDENTIAL")) == "ssh_unreachable", "diagnostics never persist raw errors")
         try require(TailscaleSetupController.pairingFailure(error).contains("local account"), "authentication errors name the correct credential")
+        try require(TailscaleSetupController.pairingFailure(SSHFailure.authenticationFailed(passwordAccepted: false)).contains("Tailscale SSH"),
+                    "a sign-in step Rune can't answer points at what works")
         OnboardingStatus.record(.failed, peer: peer, failure: SSHFailure.unreachable("SECRET-CREDENTIAL"))
         let documents = try FileManager.default.url(for: .documentDirectory, in: .userDomainMask, appropriateFor: nil, create: false)
         let bytes = try Data(contentsOf: documents.appendingPathComponent("rune-onboarding-status.json"))

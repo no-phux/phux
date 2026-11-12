@@ -57,7 +57,10 @@ public enum SSHFailure: Error, Sendable, Equatable, LocalizedError {
     /// The host key matched none the tailnet reported for this computer.
     case hostKeyMismatch
     /// Every method was tried and refused. `passwordAccepted` says whether
-    /// the server would take a password at all.
+    /// the server, when last asked, would take a password. When it would
+    /// not, it wants a step this client can't answer: keyboard-interactive
+    /// (a one-time code, or a password asked through PAM), a key, or a
+    /// second factor after an accepted password.
     case authenticationFailed(passwordAccepted: Bool)
     /// The server refused to run the command, or closed mid-command.
     case commandRefused
@@ -70,7 +73,7 @@ public enum SSHFailure: Error, Sendable, Equatable, LocalizedError {
         case .unreachable: "SSH could not reach this computer. Check Tailscale and Remote Login."
         case .hostKeyMismatch: "The SSH host key did not match this computer's tailnet map."
         case .authenticationFailed(passwordAccepted: true): "SSH requires the computer account password."
-        case .authenticationFailed(passwordAccepted: false): "SSH refused this account or authentication method."
+        case .authenticationFailed(passwordAccepted: false): "This computer asks for a sign-in step Rune can't answer yet, such as a one-time code."
         case .commandRefused: "SSH could not run the pairing command."
         case .timedOut: "SSH pairing timed out. Try again."
         case .outputTooLarge: "The remote command returned too much output."
@@ -243,7 +246,10 @@ private final class OfferingUserAuth: NIOSSHClientUserAuthenticationDelegate, @u
     private var offeredNone = false
     /// Whether the server, answering `none`, listed `password`. NIOSSH's
     /// first call passes every method before the server has said anything,
-    /// so only later calls carry its answer.
+    /// so only later calls carry its answer. NIOSSH 0.15 drops
+    /// `keyboard-interactive` from the list and hides partial success, so a
+    /// list without `password`, including one after the password, means a
+    /// step Rune can't answer.
     private(set) var passwordAccepted = false
 
     init(username: String, password: String?) {
