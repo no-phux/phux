@@ -202,14 +202,31 @@ pub fn view(desk: &Desk, cx: &mut Cx<Desk>) -> El {
     // No root paste hook: it would read the clipboard before anything here
     // saw the key. ⌘V and Edit ▸ Paste come to `Desk::key` instead, which
     // answers to the modal and keeps the terminal asked for.
-    let root = el()
-        .w_full()
-        .h_full()
-        .fill(p.sidebar)
+    let root = chrome_ground(el().w_full().h_full(), desk.glass(), p.sidebar)
         .on_layout(|d: &mut Desk, rect| d.window_laid_out(rect[2]))
         .child(main)
         .child(crate::host_color::edge(desk.machines.label(), p.sidebar));
     floating(root, desk, &p, band, cx)
+}
+
+/// How much of the theme tint full glass still keeps, so text stays readable.
+const GLASS_TINT_FLOOR: f32 = 0.18;
+
+/// The window's ground: solid `tint`, or at `glass` above 0 the system's
+/// Liquid Glass under that tint, thinned as glass rises. The material replaces
+/// a node's own fill, so the tint is its first child.
+fn chrome_ground(root: El, glass: f32, tint: Color) -> El {
+    if glass <= 0.0 {
+        return root.fill(tint);
+    }
+    let alpha = 1.0 - glass * (1.0 - GLASS_TINT_FLOOR);
+    root.system_material(rune::SystemMaterial::Glass).child(
+        el().absolute(0.0, 0.0)
+            .w_full()
+            .h_full()
+            .fill(tint.alpha(alpha))
+            .inert(),
+    )
 }
 
 /// A tooltip in the chrome's own colours, its chord in keycaps, on every

@@ -70,6 +70,8 @@ pub struct Settings {
     pub copy_on_select: bool,
     /// Ask before closing a terminal or tab with something running.
     pub confirm_close: bool,
+    /// How much Liquid Glass shows through the window chrome, 0 to 100.
+    pub glass: u8,
 }
 
 impl Settings {
@@ -85,6 +87,7 @@ impl Settings {
             option_as_meta: prefs.get("option_as_meta").unwrap_or(false),
             copy_on_select: prefs.get("copy_on_select").unwrap_or(false),
             confirm_close: prefs.get("confirm_close").unwrap_or(false),
+            glass: prefs.get::<u8>("glass").unwrap_or(0).min(100),
         }
     }
 
@@ -340,6 +343,22 @@ impl Desk {
         self.settings.theme = Some(fresh);
         self.apply_theme();
         true
+    }
+
+    /// Glass behind the chrome, 0 (solid) to 100 percent, applied live.
+    pub fn set_glass(&mut self, percent: u8) {
+        self.settings.glass = percent.min(100);
+        let _ = self.prefs.set("glass", &self.settings.glass);
+    }
+
+    /// The glass fraction to draw: macOS only, where the window is
+    /// transparent and the system draws Liquid Glass behind it.
+    pub fn glass(&self) -> f32 {
+        if cfg!(target_os = "macos") {
+            f32::from(self.settings.glass) / 100.0
+        } else {
+            0.0
+        }
     }
 
     pub fn choose_theme(&mut self, theme: Option<&'static Theme>) {

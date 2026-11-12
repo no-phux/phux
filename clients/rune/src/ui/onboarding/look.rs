@@ -1,4 +1,4 @@
-//! The Look step: colour scheme, sidebar, and the theme strip.
+//! The Look step: colour scheme, sidebar, glass, and the theme strip.
 
 use super::*;
 
@@ -178,8 +178,74 @@ pub(super) fn look(desk: &Desk, p: &Ink) -> El {
                         .child(group("Colour scheme", schemes, p))
                         .child(group("Sidebar", sidebar, p)),
                 )
+                .children(
+                    cfg!(target_os = "macos")
+                        .then(|| group("Glass", glass_slider(desk.settings.glass, p), p).w_full()),
+                )
                 .child(el().w_full().h(1.0).fill(p.separator))
                 .child(group("Theme", strip, p).w_full()),
+        )
+}
+
+/// Steps the arrow keys move the glass slider by, in percent.
+const GLASS_STEP: u8 = 5;
+
+/// The glass slider: drag or click along the track, or use the arrow keys.
+/// Every value applies to the window as it changes.
+fn glass_slider(percent: u8, p: &Ink) -> El {
+    let t = f32::from(percent) / 100.0;
+    let set_from = |d: &mut Desk, drag: &mut rune::Drag, _: &mut rune::Tx| {
+        let at = (drag.x / drag.w.max(1.0)).clamp(0.0, 1.0);
+        d.set_glass((at * 100.0).round() as u8);
+    };
+    let track = row()
+        .w_full()
+        .h(28.0)
+        .items_center()
+        .child(el().grow(t).h(6.0).radius(3.0).fill(p.accent))
+        .child(
+            el().size(20.0, 20.0)
+                .radius(10.0)
+                .fill(Color::WHITE)
+                .border(1.0, p.separator)
+                .shadow(1.0, 3.0, p.shade),
+        )
+        .child(el().grow(1.0 - t).h(6.0).radius(3.0).fill(p.separator));
+    row()
+        .w_full()
+        .gap(14.0)
+        .items_center()
+        .child(text("Solid").font(CAPTION).color(p.dim).a11y_hidden())
+        .child(
+            el().key("look-glass")
+                .grow(1.0)
+                .min_w(120.0)
+                .focusable(true)
+                .role("slider")
+                .label("Glass")
+                .range_value(f64::from(percent), 0.0, 100.0)
+                .cursor(rune::Cursor::Pointer)
+                .on_drag(set_from)
+                .on_key(move |d: &mut Desk, event: &rune::KeyEvent, _| {
+                    let next = match event.key {
+                        rune::Key::Left | rune::Key::Down => percent.saturating_sub(GLASS_STEP),
+                        rune::Key::Right | rune::Key::Up => (percent + GLASS_STEP).min(100),
+                        rune::Key::Home => 0,
+                        rune::Key::End => 100,
+                        _ => return false,
+                    };
+                    d.set_glass(next);
+                    true
+                })
+                .child(track),
+        )
+        .child(text("Glass").font(CAPTION).color(p.dim).a11y_hidden())
+        .child(
+            text(format!("{percent}%"))
+                .font(CAPTION)
+                .color(p.text)
+                .w(40.0)
+                .a11y_hidden(),
         )
 }
 
