@@ -65,6 +65,7 @@ mod session_mirror;
 mod stdout_writer;
 // Non-Terminal layout leaves: placeholder tiles, no input or resize.
 mod surface_leaf;
+mod sync_input;
 mod terminal_probe;
 mod tty_input;
 pub mod update_notice;

@@ -384,6 +384,17 @@ pub(super) const PALETTE_ROWS: &[ActionSpec] = &[
         run: run::restore_sessions,
     },
     ActionSpec {
+        name: "sync-panes",
+        description: "Send what you type to every pane in the tab, until run again",
+        params: "",
+        palette: Palette::Row {
+            title: "Type in every pane of this tab (toggle)",
+            category: Category::Pane,
+            args: &[],
+        },
+        run: run::sync_panes,
+    },
+    ActionSpec {
         name: "new-worktree",
         description: "Create a git worktree for a new branch and switch to its session",
         params: "`branch?` (bare opens an interactive prompt); `cwd?` picks the repository",

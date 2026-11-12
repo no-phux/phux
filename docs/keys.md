@@ -254,6 +254,22 @@ A mode name is lowercase letters, digits, `-`, and `_`. `phux config
 check` reports an `enter-mode` naming a mode no table defines, and
 options for a mode that doesn't exist.
 
+### Type in every pane at once
+
+`sync-panes` sends what you type, and what you paste, to every pane in the
+tab you are on, until you run it again. It is in the command palette
+(**Type in every pane of this tab (toggle)**) and has no key until you give
+it one:
+
+```toml
+[keybindings.prefix-table]
+"y" = "sync-panes"
+```
+
+It belongs to that one tab: move to another tab and typing is ordinary
+there; come back and it is still on. phux says so each time it turns on or
+off. Mouse input always goes to the pane under the pointer.
+
 ### Your own copy-mode keys
 
 Copy mode's keys are vi's. A key mode named `copy-mode` gives you others:
