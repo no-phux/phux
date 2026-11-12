@@ -7,7 +7,8 @@ clients differ in supported features and maturity.
 
 The terminal UI is the core client. The separately released desktop is
 maintained but newer; the browser client is experimental and unshipped.
-Phone apps are not available yet. Remote hosts and agent integrations are
+The phone apps are in testing: Android on Google Play, iOS not generally
+available yet. Remote hosts and agent integrations are
 optional; no extra client is required to use the server from the CLI.
 
 ```sh
@@ -101,8 +102,10 @@ it. A token alone never gets a browser in.
 
 ## Phones
 
-iOS and Android apps are in progress and not available yet. `phux pair --qr`
-already prints the pairing code they will scan; see
+The Android app is in open testing on
+[Google Play](https://play.google.com/store/apps/details?id=dev.phux.mobile).
+The iOS app is in testing and not generally available yet. `phux pair --qr`
+prints the pairing code they scan; see
 [pairing with a link](./remote.md#pairing-with-a-link).
 
 A phone off your network can reach a server through a
