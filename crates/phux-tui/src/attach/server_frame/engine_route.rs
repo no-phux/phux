@@ -44,8 +44,30 @@ pub(super) struct KernelRoute {
     pub(super) history_degraded: HashMap<ResourceId, bool>,
     /// OSC 52 writes from live output (ADR-0158), for the driver's policy.
     pub(super) clipboard_writes: Vec<(ResourceId, phux_client_core::engine::ClipboardText)>,
+    /// OSC 52 reads from live output, for the driver's policy.
+    pub(super) clipboard_reads: Vec<(ResourceId, phux_client_core::engine::ClipboardSelection)>,
 }
 impl KernelRoute {
+    /// Keep an OSC 52 write or read for the driver's policy; false for any
+    /// other engine status.
+    fn note_clipboard(
+        &mut self,
+        terminal_id: &ResourceId,
+        status: &phux_client_core::engine::EngineStatus,
+    ) -> bool {
+        match status {
+            phux_client_core::engine::EngineStatus::ClipboardWrite(text) => {
+                self.clipboard_writes
+                    .push((terminal_id.clone(), text.clone()));
+            }
+            phux_client_core::engine::EngineStatus::ClipboardRead(selection) => {
+                self.clipboard_reads.push((terminal_id.clone(), *selection));
+            }
+            _ => return false,
+        }
+        true
+    }
+
     pub(super) fn damaged(&self, terminal_id: &ResourceId) -> bool {
         self.damaged.contains(terminal_id)
     }
@@ -384,12 +406,8 @@ fn collect_route_effects(route: &mut KernelRoute, effects: &KernelEffectBuffer) 
             }
             KernelEffect::Status(phux_client_core::session::KernelStatus::Engine {
                 key,
-                status: phux_client_core::engine::EngineStatus::ClipboardWrite(text),
-            }) => {
-                route
-                    .clipboard_writes
-                    .push((key.terminal_id.clone(), text.clone()));
-            }
+                status,
+            }) if route.note_clipboard(&key.terminal_id, status) => {}
             // Title, bell, and history paging are routine (an agent's spinner
             // retitles its pane several times a second): debug, not warn.
             KernelEffect::Status(status) => {

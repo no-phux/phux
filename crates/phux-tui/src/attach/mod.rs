@@ -13,6 +13,7 @@ mod agent_rows;
 mod arrangement_link;
 mod attach_role;
 mod chrome_ctx;
+mod clipboard_read;
 // What is on each right-click menu (ADR-0058). The overlay that
 // renders one lives in `render::overlay::menu`.
 mod context_menu;

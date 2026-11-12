@@ -67,6 +67,7 @@ phux-perf.workspace = true
 # Under ADR-0013 the client runs its own libghostty Terminal per attached
 # pane and drives a RenderState to paint dirty rows.
 libghostty-vt.workspace = true
+base64.workspace = true
 # Chrome-layer TUI toolkit (status bar, dividers, overlays). Lives only in
 # this crate; the pane-interior substrate is in `phux-client-core`, which
 # has no `ratatui` dependency, so the boundary (ADR-0020) is enforced by the

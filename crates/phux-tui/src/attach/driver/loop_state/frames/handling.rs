@@ -30,7 +30,14 @@ impl super::super::SessionLoop {
             defer_paint,
         };
         let mut outcome = handle_server_frame(&mut self.mirror, env, out, frame)?;
+        let depth = self.overlays.depth();
         self.deliver_clipboard_writes(out, &mut outcome)?;
+        self.deliver_clipboard_reads(out, &mut outcome)?;
+        // A clipboard prompt goes up over panes whose program may print
+        // nothing more: paint it now rather than on the next repaint.
+        if self.overlays.depth() > depth && !defer_paint {
+            self.paint_overlay(out, sidebar);
+        }
         for terminal_id in &outcome.authoritative_damage {
             let fenced = self
                 .input_replay

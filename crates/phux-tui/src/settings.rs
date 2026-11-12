@@ -96,6 +96,9 @@ pub struct TuiSettings {
     /// `defaults.clipboard-write`: what a pane's OSC 52 write does
     /// (ADR-0158). Live on reload.
     pub clipboard_write: phux_config::ClipboardWrite,
+    /// `defaults.clipboard-read`: what a pane's OSC 52 read does. Live on
+    /// reload.
+    pub clipboard_read: phux_config::ClipboardRead,
     /// `[notifications]`: agent notification delivery. Live on reload.
     pub notifications: phux_config::NotificationsCfg,
 }
@@ -117,6 +120,7 @@ impl std::fmt::Debug for TuiSettings {
             .field("hosts", &self.hosts)
             .field("mouse_capture", &self.mouse_capture)
             .field("clipboard_write", &self.clipboard_write)
+            .field("clipboard_read", &self.clipboard_read)
             .field("notifications", &self.notifications)
             .finish()
     }
@@ -179,6 +183,7 @@ impl TuiSettings {
         self.sessions = new.sessions;
         self.which_key = new.which_key;
         self.clipboard_write = new.clipboard_write;
+        self.clipboard_read = new.clipboard_read;
         self.notifications = new.notifications;
     }
 
@@ -321,6 +326,7 @@ impl TuiSettings {
             hosts: crate::attach::hosts::HostsSettings::from_cfg(&cfg.sidebar),
             mouse_capture: cfg.defaults.mouse,
             clipboard_write: cfg.defaults.clipboard_write,
+            clipboard_read: cfg.defaults.clipboard_read,
             notifications: cfg.notifications,
         }
     }

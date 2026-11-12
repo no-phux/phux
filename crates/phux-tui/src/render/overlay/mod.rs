@@ -319,7 +319,6 @@ impl OverlayState {
     }
 
     /// Number of overlays currently stacked (0 when inactive).
-    #[cfg(test)]
     #[must_use]
     pub fn depth(&self) -> usize {
         self.stack.len()
