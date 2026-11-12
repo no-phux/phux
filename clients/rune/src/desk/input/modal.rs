@@ -17,6 +17,7 @@ pub enum Modal {
     Hive,
     Machines,
     News,
+    Changes,
     Settings,
     Rename,
     Palette,
@@ -51,6 +52,7 @@ impl Modal {
             Self::ContextMenu
             | Self::Machines
             | Self::News
+            | Self::Changes
             | Self::Rename
             | Self::Confirm
             | Self::PhonePicker => false,

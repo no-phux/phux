@@ -52,6 +52,7 @@ impl Desk {
             (self.hive.open, Modal::Hive),
             (self.machines.open, Modal::Machines),
             (self.news.open, Modal::News),
+            (self.changes.open, Modal::Changes),
             (self.settings_open, Modal::Settings),
             (self.tabs.renaming.is_some(), Modal::Rename),
             (self.palette_open, Modal::Palette),
@@ -112,6 +113,7 @@ impl Desk {
             Modal::ContextMenu if escape => self.close_menu(),
             Modal::Rename if escape => self.cancel_rename(),
             Modal::News if escape => self.close_news(),
+            Modal::Changes => self.changes_key(event, tx),
             Modal::Inbox if self.inbox_key(event, tx) => {}
             Modal::Onboarding if self.onboarding_key(event) => {}
             _ if self.navigation_sheet_key(modal, event) => {}
@@ -261,6 +263,7 @@ impl Desk {
             Shortcut::Palette => self.toggle_palette(),
             Shortcut::ToggleSidebar => self.toggle_sidebar(),
             Shortcut::Inbox => self.toggle_inbox(),
+            Shortcut::Changes => self.open_changes(),
             Shortcut::Galaxy => self.toggle_galaxy(),
             Shortcut::Reef => self.toggle_reef(),
             Shortcut::Pitch => self.toggle_pitch(),

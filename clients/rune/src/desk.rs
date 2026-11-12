@@ -22,6 +22,7 @@ use crate::launch::Resolved;
 
 mod attach;
 pub(crate) mod bare;
+pub mod changes;
 mod copy_mode;
 mod events;
 mod find;
@@ -191,6 +192,8 @@ pub struct Desk {
     pub onboarding: onboarding::Onboarding,
     /// What's new, and whether its bell is lit.
     pub news: news::News,
+    /// The focused terminal's checkout, while its changes are open.
+    pub changes: changes::Changes,
     /// Navigation and search belong to this window, never to stored preferences.
     pub settings_ui: settings::SettingsUi,
     pub tabs: tabs::Tabs,
@@ -354,6 +357,7 @@ impl Desk {
             settings_open: false,
             onboarding: onboarding::Onboarding::default(),
             news: news::News::load(&prefs),
+            changes: changes::Changes::default(),
             settings_ui: settings::SettingsUi::default(),
             tabs: tabs::Tabs::default(),
             reorder: reorder::Reorder::default(),
@@ -451,6 +455,7 @@ impl Desk {
         }
         changed |= self.finish_uploads(&client);
         changed |= self.take_paths(&client) | self.take_screens();
+        changed |= self.take_changes(&client);
         changed |= self.sync_alerts();
         changed |= self.tick_inbox(tx);
         changed |= self.tick_galaxy(tx);

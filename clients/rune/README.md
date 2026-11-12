@@ -119,6 +119,11 @@ session (or `--session NAME`). It never creates a session on its own.
   worth learning first, each row runnable, with every chord one row further;
   the first time a window connects, a tip offers it. Hovering **+ Terminal**
   or **+ Session** at the foot of the sidebar shows the keys that do the same.
+- **Changes.** **Show Changes** in the palette opens what Git says changed
+  in the focused terminal's checkout: the branch, each staged, unstaged and
+  untracked file, and the picked file's diff. ↑ and ↓ pick a file, `r` or
+  **Refresh** reads again, Escape closes. It only reads; nothing is staged
+  from here. A diff over 2,000 lines shows its start and says so.
 - **Insert Path.** ⌥; (or ⇧⌘I) opens a picker at the cursor that searches
   the focused pane's folder on the machine it runs on. Return types the path at the prompt as one shell word, relative to
   that folder and quoted only when it must be.
