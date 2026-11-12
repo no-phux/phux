@@ -156,6 +156,36 @@ pub struct Session {
     pub focused: bool,
     /// The server's recency counter: higher is more recently used.
     pub touched: Option<u64>,
+    /// The repository it was created in, from its attributes.
+    pub project: Option<phux_client_runtime::project_identity::SessionProject>,
+    /// The project it was explicitly linked into; outranks `project` for grouping.
+    pub project_link: Option<String>,
+}
+
+impl Session {
+    fn from_descriptor(
+        session: phux_client_runtime::control::SessionDescriptor,
+        intake: Option<SessionKey>,
+        focused_session: u32,
+    ) -> Self {
+        Self {
+            id: session.id,
+            name: session.name,
+            attached_client_count: session.attached_client_count,
+            created_at_unix_secs: session.created_at_unix_secs,
+            key: session.key.map(|key| key.to_string()),
+            lifetime: session.lifetime.map(lifetime_word),
+            revision: session.revision.map(Revision::get),
+            member_count: session.members,
+            arrangement: session.arrangement.map(|key| key.to_string()),
+            awaiting_organization: session.awaiting_organization,
+            inbox: session.key.is_some() && session.key == intake,
+            focused: session.id == focused_session,
+            touched: session.touched,
+            project: session.project,
+            project_link: session.project_link,
+        }
+    }
 }
 
 /// One pane: a Terminal resource with a live handle, denormalized with its
@@ -329,21 +359,7 @@ pub fn session_graph(
     let sessions = topology
         .sessions
         .into_iter()
-        .map(|session| Session {
-            id: session.id,
-            name: session.name,
-            attached_client_count: session.attached_client_count,
-            created_at_unix_secs: session.created_at_unix_secs,
-            key: session.key.map(|key| key.to_string()),
-            lifetime: session.lifetime.map(lifetime_word),
-            revision: session.revision.map(Revision::get),
-            member_count: session.members,
-            arrangement: session.arrangement.map(|key| key.to_string()),
-            awaiting_organization: session.awaiting_organization,
-            inbox: session.key.is_some() && session.key == intake,
-            focused: session.id == focused_session,
-            touched: session.touched,
-        })
+        .map(|session| Session::from_descriptor(session, intake, focused_session))
         .collect();
     let panes = topology
         .panes

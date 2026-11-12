@@ -70,6 +70,24 @@ pub struct SessionDescriptor {
     pub focused: bool,
     /// The server's recency counter (higher is more recently used), when it reports one.
     pub touched: Option<u64>,
+    /// The repository the session was created in, when it has one.
+    pub project: Option<SessionProjectDescriptor>,
+    /// The project the session was explicitly linked into. Group by this
+    /// label when set, else by `project.id`.
+    pub project_link: Option<String>,
+}
+
+/// The repository a session was created in.
+#[derive(uniffi::Record, Clone, Debug, PartialEq, Eq)]
+pub struct SessionProjectDescriptor {
+    /// Grouping key. Compare it; do not parse it.
+    pub id: String,
+    /// Display name.
+    pub name: String,
+    /// The branch checked out when the session was created.
+    pub branch: Option<String>,
+    /// Whether the checkout is a linked worktree rather than the primary one.
+    pub linked_worktree: bool,
 }
 
 impl From<topology::Session> for SessionDescriptor {
@@ -88,6 +106,13 @@ impl From<topology::Session> for SessionDescriptor {
             inbox: value.inbox,
             focused: value.focused,
             touched: value.touched,
+            project: value.project.map(|project| SessionProjectDescriptor {
+                id: project.id,
+                name: project.name,
+                branch: project.branch,
+                linked_worktree: project.linked_worktree,
+            }),
+            project_link: value.project_link,
         }
     }
 }
