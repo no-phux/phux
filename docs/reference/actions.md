@@ -63,6 +63,7 @@ The **Palette** column is the command-palette section the action is offered unde
 | `toggle-project-group` | — | `project` (the group's key, as the sidebar header carries it) | Collapse or expand one project group in the sidebar's Sessions zone |
 | `new-session` | Session | `name?` (bare opens an interactive prompt); `cwd?`; `host?` | Create a new session and switch to it |
 | `new-worktree` | Session | `branch?` (bare opens an interactive prompt); `cwd?` picks the repository | Create a git worktree for a new branch and switch to its session |
+| `sync-panes` | Pane |  | Send what you type to every pane in the tab, until run again |
 | `restore-sessions` | Session |  | Relaunch the panes a server restart ended, resuming their agents |
 | `url-picker` | Pane |  | List the links in the focused pane and copy the one you choose |
 | `copy-text` | — | `text` | Copy the given text to the clipboard |

@@ -35,6 +35,7 @@ impl Group {
             "toggle-zoom",
             "focus-direction",
             "url-picker",
+            "sync-panes",
             "popup",
         ];
         if action.ends_with("-pane") || PANE.contains(&action) {
