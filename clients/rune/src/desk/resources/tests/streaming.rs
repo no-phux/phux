@@ -177,7 +177,9 @@ fn sustained_unique_png_wire_bursts_render_first_and_subsequent_complete_frames(
     let producer_client = Arc::clone(&client);
     let producer = std::thread::spawn(move || {
         for batch in 1..=512 {
-            let base = png(batch as u32);
+            // Far apart in colour: the render pipeline rounds markers one
+            // step apart to the same pixel, so adjacent batches looked alike.
+            let base = png(batch as u32 * 40 % 256);
             for seq in ((batch - 1) * 64 + 1)..=(batch * 64) {
                 update(&producer_client, seq, &stamped(&base, seq));
             }
@@ -250,7 +252,7 @@ fn sustained_unique_png_wire_bursts_render_first_and_subsequent_complete_frames(
     assert!(published >= 192);
     assert!(
         markers.iter().any(|color| *color != markers[0]),
-        "GPU pixels, not just image handles, advance with the ongoing producer"
+        "GPU pixels, not just image handles, advance with the ongoing producer: {markers:?} published {published}"
     );
     // Drain to the latest cut after proving live progress, then verify the
     // cache really ran only the bounded set of submitted decoder jobs.
