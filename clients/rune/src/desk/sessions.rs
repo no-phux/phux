@@ -81,6 +81,11 @@ impl Desk {
     }
 
     pub fn new_terminal(&mut self) {
+        // A restart left nothing live to host a new terminal; bringing back
+        // what it ended is the terminal asked for.
+        if !self.ended_by_restart().is_empty() {
+            return self.restore_session();
+        }
         let Some(client) = &self.client else { return };
         let session_id = client.selected_session();
         let request = client.spawn_terminal(SpawnRequest {
