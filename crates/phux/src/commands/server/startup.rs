@@ -39,3 +39,26 @@ pub(super) fn shell_integration(enabled: bool) {
         ),
     }
 }
+
+/// The stand-in browser: the link on the person's clipboard (OSC 52, the
+/// path copy uses) and in the pane. It opens nothing.
+const BROWSER_SHIM: &str = "#!/bin/sh
+printf '\\033]52;c;%s\\a' \"$(printf %s \"$1\" | base64 | tr -d '\\n')\" > /dev/tty
+printf 'Open this on your own machine (copied to your clipboard):\\n%s\\n' \"$1\" > /dev/tty
+";
+
+/// `[defaults] browser-shim`: write the stand-in and point every pane's
+/// `BROWSER` at it. A failure leaves panes as they were.
+pub(super) fn browser_shim(enabled: bool) {
+    use std::os::unix::fs::PermissionsExt as _;
+    if !enabled {
+        return;
+    }
+    let path = phux_config::instance::state_dir().join("phux-browser");
+    let written = std::fs::write(&path, BROWSER_SHIM)
+        .and_then(|()| std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)));
+    match written {
+        Ok(()) => phux_terminal_api::launch::set_pane_env(vec![("BROWSER".into(), path.into())]),
+        Err(err) => warn!("browser shim: could not write {}: {err}", path.display()),
+    }
+}

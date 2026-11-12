@@ -53,6 +53,7 @@ Every scalar knob with its shipped default, serialized from the schema itself, p
 | `defaults.approval-max-pending` | `64` |
 | `defaults.approval-max-pending-total` | `1024` |
 | `defaults.approval-ttl-secs` | `120` |
+| `defaults.browser-shim` | `false` |
 | `defaults.clipboard-write` | `"allow"` |
 | `defaults.cwd-inheritance` | `"inherit-focused"` |
 | `defaults.event-journal-bytes` | `1048576` |
@@ -162,6 +163,12 @@ event-journal-bytes = 1048576
 # starts. `phux config shell-integration SHELL` prints the same snippet to load
 # yourself instead.
 shell-integration = false
+
+# On a machine with no screen, a program that opens a browser (a sign-in,
+# `gh auth login`) goes nowhere. With this on, panes get a stand-in `BROWSER`
+# that prints the link in the pane and copies it to your clipboard. Nothing
+# opens by itself. Read when the server starts.
+browser-shim = false
 
 # Keep a pane inspectable after its program exits: its exit status, last
 # screen, and scrollback stay until they expire or are closed. Off by

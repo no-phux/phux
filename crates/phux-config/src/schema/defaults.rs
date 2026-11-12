@@ -6,6 +6,10 @@ use serde::{Deserialize, Serialize};
 /// `[defaults]` table. See `docs/reference/config.md` for shipped values.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(default, deny_unknown_fields)]
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "independent config switches, one key each"
+)]
 pub struct DefaultsCfg {
     /// Shell for new panes. `None` resolves `$SHELL`, then `/bin/sh`, once at
     /// server start; a wire `command` always wins.
@@ -49,6 +53,12 @@ pub struct DefaultsCfg {
     /// start.
     #[serde(rename = "shell-integration")]
     pub shell_integration: bool,
+
+    /// Give panes a stand-in `BROWSER` that prints a link and copies it to
+    /// the attached person's clipboard, for a machine with no screen. Read
+    /// at server start.
+    #[serde(rename = "browser-shim")]
+    pub browser_shim: bool,
 
     /// Whether a Terminal spawned without `retain_secs` stays in the
     /// inventory, exited, after its process exits (ADR-0124).
@@ -124,6 +134,7 @@ impl Default for DefaultsCfg {
             event_journal_entries: DEFAULT_EVENT_JOURNAL_ENTRIES,
             event_journal_bytes: DEFAULT_EVENT_JOURNAL_BYTES,
             shell_integration: false,
+            browser_shim: false,
             retain_on_exit: false,
             retain_on_exit_secs: DEFAULT_RETAIN_ON_EXIT_SECS,
             retain_on_exit_max_secs: DEFAULT_RETAIN_ON_EXIT_MAX_SECS,

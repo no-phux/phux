@@ -1691,7 +1691,7 @@ mod tests {
             mid.contains("\u{23ce} edit") && mid.contains("esc"),
             "{mid}"
         );
-        let status_end = mid.find("21").expect("status") + 2;
+        let status_end = mid.find("22").expect("status") + 2;
         let keys_start = mid.find('\u{23ce}').expect("legend");
         let gap = mid[status_end..keys_start].chars().count();
         assert!(gap >= 3, "gap {gap} in {mid}");

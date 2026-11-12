@@ -183,8 +183,10 @@ your local terminal allows it.
 
 **A program on another machine tries to open a browser and nothing
 happens.** A sign-in started in a pane on a server with no screen (`gh auth
-login`, a cloud CLI) has no browser to open. Give that machine a stand-in
-that hands the link to you instead. Save this as `~/.local/bin/phux-browser`
+login`, a cloud CLI) has no browser to open. phux can give its panes a
+stand-in that hands the link to you instead: set `browser-shim = true` under
+`[defaults]` in that machine's config and restart its server. To do the same
+by hand, or for a shell outside phux, save this as `~/.local/bin/phux-browser`
 there and make it executable:
 
 ```sh
