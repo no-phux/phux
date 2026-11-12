@@ -47,7 +47,7 @@ fn all_hosts_listing_groups_by_machine_and_keeps_a_down_host() {
         },
         project: None,
         project_link: None,
-        key: None,
+        ..Default::default()
     };
     let doc = HostListJson::new(vec![
         HostJson {
@@ -158,7 +158,7 @@ fn rows_show_lifetime_members_and_execution_states() {
         exec,
         project: None,
         project_link: None,
-        key: None,
+        ..Default::default()
     };
     assert_eq!(
         format_row(&row(

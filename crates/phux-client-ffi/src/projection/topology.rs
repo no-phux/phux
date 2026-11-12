@@ -154,6 +154,8 @@ pub struct Session {
     pub inbox: bool,
     /// Whether it is the attaching client's focused session.
     pub focused: bool,
+    /// The server's recency counter: higher is more recently used.
+    pub touched: Option<u64>,
 }
 
 /// One pane: a Terminal resource with a live handle, denormalized with its
@@ -340,6 +342,7 @@ pub fn session_graph(
             awaiting_organization: session.awaiting_organization,
             inbox: session.key.is_some() && session.key == intake,
             focused: session.id == focused_session,
+            touched: session.touched,
         })
         .collect();
     let panes = topology
