@@ -63,6 +63,34 @@ pub fn raise_descriptor_limit() -> Option<u64> {
         })
 }
 
+/// Append this binary's directory to `PATH` when no `phux` resolves on it.
+///
+/// Panes inherit the server's `PATH`, and agents in them run `phux` (the skill
+/// says to). The installer's `~/.local/bin` is often missing from a server an
+/// app or launchd started. Call before the server starts any thread.
+pub fn expose_own_cli() {
+    let Some(dir) = std::env::current_exe()
+        .ok()
+        .and_then(|exe| exe.parent().map(std::path::Path::to_path_buf))
+    else {
+        return;
+    };
+    let path = std::env::var_os("PATH").unwrap_or_default();
+    if let Some(joined) = path_with_cli(&path, &dir) {
+        // SAFETY: the caller runs this at startup, before any other thread
+        // exists to read the environment concurrently.
+        unsafe { std::env::set_var("PATH", joined) };
+    }
+}
+
+/// `path` with `dir` appended, or `None` when a `phux` already resolves.
+fn path_with_cli(path: &std::ffi::OsStr, dir: &std::path::Path) -> Option<std::ffi::OsString> {
+    if std::env::split_paths(path).any(|d| d.join("phux").is_file()) {
+        return None;
+    }
+    std::env::join_paths(std::env::split_paths(path).chain([dir.to_path_buf()])).ok()
+}
+
 /// The descriptor a descriptor-table entry names.
 fn descriptor_number(entry: &std::fs::DirEntry) -> Option<RawFd> {
     entry.file_name().to_str()?.parse().ok()
@@ -281,6 +309,22 @@ mod tests {
         assert_eq!(
             super::spawn_env(inherited.into_iter(), changes.into_iter()),
             ["A=x", "C=3"].map(OsString::from)
+        );
+    }
+
+    #[test]
+    fn panes_find_the_cli_only_when_path_lacks_one() {
+        let own = std::path::Path::new("/opt/phux Server.app/Contents/MacOS");
+        let joined = super::path_with_cli("/usr/bin:/bin".as_ref(), own).expect("appended");
+        assert_eq!(joined, "/usr/bin:/bin:/opt/phux Server.app/Contents/MacOS");
+
+        let bin = tempfile::tempdir().expect("tempdir");
+        std::fs::write(bin.path().join("phux"), "").expect("stub");
+        let with = std::env::join_paths([bin.path(), "/bin".as_ref()]).expect("joins");
+        assert_eq!(
+            super::path_with_cli(&with, own),
+            None,
+            "the person's own phux wins"
         );
     }
 }
