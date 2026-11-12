@@ -1,8 +1,8 @@
 // Resolve a GitHub Actions event to its changed paths.
 //
 // The caller checks out the event commit with fetch-depth 0; no API token or
-// fetch is needed. Missing or invalid history, schedule and dispatch request
-// every surface. A release-please version-field diff requests none.
+// fetch is needed. A merge group diffs its queue commit against its base.
+// Missing or invalid history, schedule and dispatch request every surface. A release-please version-field diff requests none.
 import { readFileSync } from "node:fs";
 import { describe, Failure } from "../lib/command.ts";
 import { git, show } from "../lib/git.ts";
@@ -18,6 +18,7 @@ export type Detection =
 
 const NO_LANES: Classification = {
   needed: new Set(),
+  runeDirect: false,
   docsOnly: false,
   perfIcountNeeded: false,
   mobileFfiNeeded: false,
@@ -39,6 +40,11 @@ function commit(value: unknown, cwd: string): string {
 function eventRange(name: string, event: unknown, cwd: string): [string, string] {
   if (!isTable(event)) throw new Failure("event payload must be an object");
   if (name === "push") return [commit(event["before"], cwd), commit(event["after"], cwd)];
+  if (name === "merge_group") {
+    // The queue's commit over current main: every change ahead of it lands.
+    const group = table(event["merge_group"]);
+    return [commit(group["base_sha"], cwd), commit(group["head_sha"], cwd)];
+  }
   if (name !== "pull_request") throw new Failure("event requests full validation");
   const pr = table(event["pull_request"]);
   const base = commit(table(pr["base"])["sha"], cwd);

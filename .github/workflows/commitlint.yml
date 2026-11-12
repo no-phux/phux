@@ -17,12 +17,19 @@
 #
 # `edited` is in the trigger list so fixing a bad PR title re-runs the gate
 # without needing a push.
+#
+# A merge queue waits for this context too. There the gate lints the commits
+# the queue built over main (merge_group base_sha..head_sha): exactly what
+# lands, including the squash commit whose subject is the already-linted
+# title plus " (#N)". No title step: the group has no PR payload.
 
 name: commitlint
 
 on:
   pull_request:
     types: [opened, edited, reopened, synchronize]
+  merge_group:
+    types: [checks_requested]
 
 permissions:
   contents: read
@@ -53,8 +60,8 @@ jobs:
 
       - name: Lint PR commits
         env:
-          BASE_SHA: ${{ github.event.pull_request.base.sha }}
-          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha || github.event.merge_group.head_sha }}
         run: |
           set -euo pipefail
           # Cockpit's one-time history import is intentionally reachable as a
@@ -70,6 +77,7 @@ jobs:
       # The title is passed through the environment, not interpolated into
       # the script, so backticks/quotes in a title cannot inject shell.
       - name: Lint PR title (the squash-merge subject)
+        if: github.event_name == 'pull_request'
         env:
           PR_TITLE: ${{ github.event.pull_request.title }}
         run: printf '%s\n' "$PR_TITLE" | npx commitlint --verbose

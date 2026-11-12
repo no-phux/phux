@@ -291,6 +291,14 @@ tests of its dependents. The required `ci`
 aggregate rejects a failed or cancelled lane. `just tools-check` tests the
 routes.
 
+`main` pushes and merge queue groups (`merge_group`) run main policy: the
+full Rust pool and every lane the diff needs. A `main` push whose tree a
+pull request or merge group already validated with the same lanes reuses
+that receipt (`tools/src/routing/receipt.ts`). With the repository variable
+`PHUX_MERGE_QUEUE=true`, a pull request that reaches Rune only through a
+root crate in its Cargo closure skips `rune / ios-native-simulator`. Its
+merge group still runs it, and its receipt never covers a `main` push.
+
 The test lanes compile once (`just test-archive`) and run the unit and e2e
 shards from that nextest archive. Pull requests restore caches and never
 save them; `main` pushes save one entry per lane under a 10 GB repository

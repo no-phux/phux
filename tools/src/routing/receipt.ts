@@ -1,6 +1,7 @@
-// A main push skips ci when a pull request already validated the identical
-// tree with the same lane coverage. A pull request's aggregate uploads the
-// receipt; the push's plan looks it up. Receipts are metadata, never
+// A main push skips ci when a pull request or a merge group already validated
+// the identical tree with the same lane coverage. Their aggregate uploads the
+// receipt; the push's plan looks it up. The merge queue fast-forwards main to
+// the group's own commit, so that push always finds its tree. Receipts are metadata, never
 // executable artifacts, and any API failure is a cache miss.
 import { lstatSync, mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -13,7 +14,7 @@ export interface Receipt extends Table {
   readonly schema: number;
   readonly tree: string;
   readonly workflow: string;
-  /** The pull-request lane set that ran; a push reuses only an equal one. */
+  /** The pull-request lane set (plus `rune_ios`); a push reuses only an equal one. */
   readonly coverage: string;
 }
 
@@ -40,7 +41,7 @@ export function artifactName(receipt: Receipt): string {
 function trustedRun(run: Table, repository: string, workflow: string): boolean {
   return (
     run["conclusion"] === "success" &&
-    run["event"] === "pull_request" &&
+    (run["event"] === "pull_request" || run["event"] === "merge_group") &&
     run["path"] === workflow &&
     typeof run["head_sha"] === "string" &&
     table(run["head_repository"])["full_name"] === repository &&
@@ -72,7 +73,8 @@ function matches(artifact: Table, expected: Receipt, repository: string, source:
   // Artifact JSON is not provenance. Bind it to the source run's immutable
   // commit through GitHub's Git database, including the workflow implementation
   // in that tree. For PRs this deliberately requires the head tree to equal
-  // the tested merge tree; a stale PR base is a safe cache miss.
+  // the tested merge tree; a stale PR base is a safe cache miss. A merge
+  // group's head is the commit it tested.
   const commit = source.json(`repos/${repository}/git/commits/${String(run["head_sha"])}`);
   if (table(table(commit)["tree"])["sha"] !== expected.tree) return false;
   return deepEqual(downloadReceipt(source, String(runId), artifactName(expected)), expected);
@@ -90,7 +92,7 @@ export function findValidation(
   return found === undefined ? undefined : Number(table(found["workflow_run"])["id"]);
 }
 
-/** Whether a pull request already validated `receipt`; failures are a miss. */
+/** Whether a PR or merge group already validated `receipt`; failures are a miss. */
 export function alreadyValidated(receipt: Receipt, repository: string): boolean {
   try {
     const run = findValidation(receipt, repository);

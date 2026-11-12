@@ -155,13 +155,22 @@ export const LANE_BUILDS: readonly [Surface, readonly BuildRoot[]][] = [
   ["rune", [{ dir: "clients/rune", dev: true }]],
 ];
 
-export function routes(root = ROOT): Route[] {
-  const crates = LANE_BUILDS.flatMap(([lane, builds]) =>
+/** The routes named above, without the Cargo closure of LANE_BUILDS. */
+export function directRoutes(): Route[] {
+  return [...Object.entries(DOC_INPUTS), ...Object.entries(ROUTES)];
+}
+
+/** Root crates each separately built lane compiles, routed to that lane. */
+export function closureRoutes(root = ROOT): Route[] {
+  return LANE_BUILDS.flatMap(([lane, builds]) =>
     [...pathClosure(builds, root)]
       .filter((dir) => dir.startsWith("crates/"))
       .map((dir): Route => [`${dir}/**`, [lane]]),
   );
-  return [...Object.entries(DOC_INPUTS), ...Object.entries(ROUTES), ...crates];
+}
+
+export function routes(root = ROOT): Route[] {
+  return [...directRoutes(), ...closureRoutes(root)];
 }
 
 const GLOBS = new Map<string, Bun.Glob>();

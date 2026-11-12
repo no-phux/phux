@@ -11,10 +11,11 @@ import { pathClosure, readManifest, workspaceMembers } from "../lib/cargo.ts";
 import { ROOT } from "../lib/repo.ts";
 import { strings, table } from "../lib/value.ts";
 import {
+  closureRoutes,
+  directRoutes,
   isDoc,
   matches,
   matchesAny,
-  routes,
   SURFACES,
   type Route,
   type Surface,
@@ -24,6 +25,12 @@ export type UnitMode = "workspace" | "rdeps" | "narrow" | "skip";
 
 export interface Classification {
   readonly needed: ReadonlySet<Surface>;
+  /**
+   * Rune is needed through a route of its own (its tree, workflow, recipes,
+   * shared toolchain inputs, or an unknown path), not only because a root
+   * crate is in its Cargo closure.
+   */
+  readonly runeDirect: boolean;
   readonly docsOnly: boolean;
   readonly perfIcountNeeded: boolean;
   readonly mobileFfiNeeded: boolean;
@@ -47,6 +54,7 @@ const WORKSPACE: UnitPlan = { unitMode: "workspace", unitTargets: "", e2eNeeded:
 /** An empty diff fails closed: every lane, the full pool. */
 const EVERYTHING: Classification = {
   needed: new Set(SURFACES),
+  runeDirect: true,
   docsOnly: false,
   perfIcountNeeded: true,
   mobileFfiNeeded: true,
@@ -99,12 +107,14 @@ function mobileFfiPaths(root: string): string[] {
 
 export class Classifier {
   private readonly table: Route[];
+  private readonly direct: Route[];
   private readonly mobileFfi: string[];
   private readonly uniffiCrates: ReadonlySet<string>;
   private readonly packages: { name: string; dir: string }[];
 
   constructor(private readonly root = ROOT) {
-    this.table = routes(root);
+    this.direct = directRoutes();
+    this.table = [...this.direct, ...closureRoutes(root)];
     this.mobileFfi = mobileFfiPaths(root);
     this.uniffiCrates = pathClosure(
       [{ dir: "crates/phux-client-ffi", dev: true, features: ["uniffi"], defaultFeatures: false }],
@@ -123,6 +133,7 @@ export class Classifier {
     const testFilterset = this.testFilterset(productive);
     return {
       needed: new Set(productive.flatMap((path) => this.surfaces(path))),
+      runeDirect: productive.some((path) => this.surfaces(path, this.direct).includes("rune")),
       docsOnly: productive.length === 0,
       perfIcountNeeded: files.some((path) => matchesAny(path, PERF_ICOUNT_PATHS)),
       mobileFfiNeeded: files.some((path) => matchesAny(path, this.mobileFfi)),
@@ -141,8 +152,8 @@ export class Classifier {
     });
   }
 
-  private surfaces(path: string): readonly Surface[] {
-    const matched = this.table.filter(([pattern]) => matches(path, pattern));
+  private surfaces(path: string, table = this.table): readonly Surface[] {
+    const matched = table.filter(([pattern]) => matches(path, pattern));
     // An explicit empty route is cheap (guards only); an unknown path
     // fails closed into every surface.
     const surfaces = matched.length === 0 ? SURFACES : matched.flatMap(([, lanes]) => lanes);
@@ -234,6 +245,7 @@ export function toOutputs(result: Classification): Record<string, string | boole
     ...Object.fromEntries(
       SURFACES.map((surface) => [`${surface}_needed`, result.needed.has(surface)]),
     ),
+    rune_direct: result.runeDirect,
     docs_only: result.docsOnly,
     perf_icount_needed: result.perfIcountNeeded,
     mobile_ffi_needed: result.mobileFfiNeeded,
