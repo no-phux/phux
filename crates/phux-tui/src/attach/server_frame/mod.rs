@@ -7,6 +7,7 @@
 
 mod engine_route;
 mod handler;
+pub(in crate::attach) use handler::set_new_tab_after_current;
 mod index;
 mod outcome;
 #[cfg(test)]

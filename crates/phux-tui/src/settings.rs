@@ -279,6 +279,7 @@ impl TuiSettings {
         plugin_panes: Vec<PluginPaneEntry>,
         plugin_sidebar: Vec<PluginSectionSpec>,
     ) -> Self {
+        crate::attach::set_new_tab_after_current(cfg.chrome.new_tab_after_current);
         Self {
             which_key: WhichKey {
                 enabled: keybindings.which_key,

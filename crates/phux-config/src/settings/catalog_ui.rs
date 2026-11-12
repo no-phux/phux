@@ -171,6 +171,15 @@ pub(super) const ROWS: &[SettingSpec] = &[
                  never yields.",
         applies: Applies::LiveReload,
     },
+    SettingSpec {
+        key: "chrome.new-tab-after-current",
+        section: SettingSection::Chrome,
+        kind: SettingKind::Bool,
+        summary: "Open a new tab next to the one in view",
+        detail: "A new tab normally goes to the end of the tab strip. With this on it opens \
+                 right after the tab you are looking at, the way a browser does.",
+        applies: Applies::LiveReload,
+    },
     // -- [notifications] ----------------------------------------------------
     SettingSpec {
         key: "notifications.mode",
