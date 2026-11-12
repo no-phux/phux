@@ -146,6 +146,7 @@ mod tests {
             keep_empty: true,
             created_at_unix_secs: created,
             key: None,
+            touched: None,
             lifetime: Some(SessionLifetime::Persistent),
             revision: None,
             members: 1,

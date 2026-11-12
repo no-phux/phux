@@ -184,6 +184,7 @@ mod tests {
             keep_empty: false,
             created_at_unix_secs: 0,
             key: None,
+            touched: None,
             lifetime: None,
             revision: None,
             members: 1,

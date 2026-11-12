@@ -34,6 +34,9 @@ pub struct SessionDescriptor {
     pub created_at_unix_secs: i64,
     /// The persistent key, when the server reports it.
     pub key: Option<SessionKey>,
+    /// How recently it was attached to or typed into: higher is more
+    /// recent. `None` when never used, or the server does not report it.
+    pub touched: Option<u64>,
     /// Whether it outlives its last member, when the server reports it.
     pub lifetime: Option<SessionLifetime>,
     /// The record's revision, from the organization replica.
@@ -175,6 +178,7 @@ impl Topology {
                 keep_empty: session.keep_empty,
                 created_at_unix_secs: session.created_at_unix_secs,
                 key: session.key,
+                touched: session.touched,
                 lifetime: session.lifetime,
                 revision: None,
                 members: u32::try_from(

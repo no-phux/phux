@@ -299,6 +299,7 @@ impl Desk {
         let prefs = rune::prefs::Prefs::open(PREFS_ID);
         let (file, file_error) = settings::load_file();
         let key_problems = crate::keys::bind(&file.keys);
+        phux_client_runtime::session_order::set_recent_first(file.recent_first.unwrap_or(false));
         let file_error = file_error.or_else(|| {
             (!key_problems.is_empty()).then(|| format!("[rune.keys] {}", key_problems.join("; ")))
         });

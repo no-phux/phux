@@ -82,7 +82,7 @@ impl Desk {
     /// rest as the server lists them.
     pub fn ordered_sessions(&self) -> Vec<&SessionDescriptor> {
         let mut sessions: Vec<_> = self.topology.iter().flat_map(|t| &t.sessions).collect();
-        session_order::sort(&mut sessions, &self.reorder.order, |s| s.key);
+        session_order::list(&mut sessions, &self.reorder.order, |s| s.key, |s| s.touched);
         sessions
     }
 

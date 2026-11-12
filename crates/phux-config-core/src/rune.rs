@@ -23,6 +23,8 @@ pub struct RuneCfg {
     pub copy_on_select: Option<bool>,
     /// Ask before closing a terminal or tab with something running.
     pub confirm_close: Option<bool>,
+    /// List the session used last first, instead of in the arranged order.
+    pub recent_first: Option<bool>,
     /// `[rune.keys]`: a chord such as `"cmd+shift+d"` and the command it
     /// runs, or `"none"` to take a built-in chord away.
     #[serde(skip_serializing_if = "std::collections::BTreeMap::is_empty")]
