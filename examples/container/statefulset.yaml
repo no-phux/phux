@@ -1,0 +1,46 @@
+# A phux server on Kubernetes: one pod whose sessions and config survive a
+# restart. Build and push the image from the Dockerfile beside this file,
+# then set `image` below.
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: phux
+spec:
+  serviceName: phux
+  replicas: 1 # one server owns its sessions; do not scale this up
+  selector:
+    matchLabels:
+      app: phux
+  template:
+    metadata:
+      labels:
+        app: phux
+    spec:
+      # Panes are child processes; sharing the pod's process namespace gives
+      # them an init that reaps them (what `docker run --init` does).
+      shareProcessNamespace: true
+      securityContext:
+        fsGroup: 1000 # the image's phux user, so it can write the volumes
+      containers:
+        - name: phux
+          image: phux:latest
+          volumeMounts:
+            - name: state
+              mountPath: /home/phux/.local/state/phux
+            - name: config
+              mountPath: /home/phux/.config/phux
+  volumeClaimTemplates:
+    - metadata:
+        name: state
+      spec:
+        accessModes: [ReadWriteOnce]
+        resources:
+          requests:
+            storage: 1Gi
+    - metadata:
+        name: config
+      spec:
+        accessModes: [ReadWriteOnce]
+        resources:
+          requests:
+            storage: 100Mi
