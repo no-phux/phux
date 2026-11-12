@@ -256,7 +256,9 @@ memory and go away shortly after you detach.
 
 The remote server's policy must allow the listener, and UDP must reach it.
 If it can't, phux says why and keeps your local client, carried through
-`ssh` itself, jump hosts and keys included. It doesn't roam. An SSH login
+`ssh` itself, jump hosts and keys included. It doesn't roam: when the
+network drops, phux logs in again (prompting once, if the host asks for a
+password or 2FA) and re-attaches. An SSH login
 failure, or a remote machine without phux, is an error, not a fallback.
 
 `--udp-ports 60000-61000` keeps the listener in a range one firewall rule
