@@ -588,7 +588,7 @@ impl SettingsOverlay {
         match parse_input(spec.kind, editor.buffer.trim()) {
             Ok(edit) => self.apply(spec, edit),
             Err(message) => {
-                self.status = Some(Status::Refused(format!("{}: {message}", spec.key)));
+                self.status = Some(Status::Refused(message));
                 // Keep the editor open with the text so the user can fix it.
                 self.editor = Some(editor);
                 OverlayCommand::Stay
@@ -1800,7 +1800,7 @@ mod tests {
 
         assert_eq!(edit(&mut page, "wide"), OverlayCommand::Stay);
         assert!(
-            matches!(page.status, Some(Status::Refused(_))),
+            matches!(&page.status, Some(Status::Refused(m)) if m.starts_with("exp")),
             "{:?}",
             page.status
         );
