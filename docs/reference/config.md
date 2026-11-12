@@ -582,6 +582,16 @@ exclusive = true
 # path = "~/code/site"
 # recipe = "~/.config/phux/recipes/site.toml"
 
+# Session colours: the colour every client that reads this file draws a
+# session in, by name, from the host palette (blue, violet, magenta, sky,
+# coral, olive, slate, copper, green, navy). A session with no entry keeps
+# its plain look, and any other colour name fails the load. An older phux
+# refuses a config with this table, so upgrade it first.
+#
+# [[sessions]]
+# name = "api"
+# color = "coral"
+
 [status]
 # Left: the window/tab bar. The `windows` widget renders one tab per
 # window from `format` (`{index}` and `{name}`); a window running an agent

@@ -11,7 +11,7 @@ use std::{fs, io};
 
 use serde::Deserialize;
 
-use crate::{ConfigError, OrganizeCfg, RemoteConfigEntry, RuneCfg, layer};
+use crate::{ConfigError, OrganizeCfg, RemoteConfigEntry, RuneCfg, SessionConfigEntry, layer};
 
 /// The config path: `$XDG_CONFIG_HOME/phux/config.toml`, else
 /// `$HOME/.config/phux/config.toml` (no I/O).
@@ -49,6 +49,8 @@ pub struct ClientConfig {
     pub remote: Vec<RemoteConfigEntry>,
     /// `[organize]`: the judge behind `phux organize`.
     pub organize: OrganizeCfg,
+    /// `[[sessions]]`: the colour each named session is drawn in.
+    pub sessions: Vec<SessionConfigEntry>,
     /// `[rune]`: the desktop app's file-managed settings.
     pub rune: RuneCfg,
 }

@@ -30,6 +30,7 @@ mod perf;
 mod pitch;
 mod pitlane;
 mod reef;
+mod session_color;
 mod standing;
 mod system_settings;
 mod theme;
