@@ -104,7 +104,7 @@ pub fn view(desk: &Desk, ink: &Ink, top: f32) -> El {
                 .child(rune::icon(glyph, 16.0).color(ink.accent).a11y_hidden())
                 .child(field),
         )
-        .child(el().w_full().h(1.0).fill(ink.separator))
+        .child(rune::rule(1.0, ink.separator).w_full().key("palette-header-rule"))
         .child(
             col()
                 .w_full()
@@ -117,7 +117,9 @@ pub fn view(desk: &Desk, ink: &Ink, top: f32) -> El {
                 .child(results),
         )
         // A phone taps its rows; the keys this footer teaches are a desktop's.
-        .children((!phone).then(|| el().w_full().h(1.0).fill(ink.separator)))
+        .children((!phone).then(|| {
+            rune::rule(1.0, ink.separator).w_full().key("palette-footer-rule")
+        }))
         .children((!phone).then(|| {
             row()
                 .w_full()

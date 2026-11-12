@@ -291,7 +291,7 @@ pub fn view(desk: &Desk, ink: &Ink) -> El {
                 )
                 .child(text(items.len().to_string()).font(CAPTION).color(ink.dim)),
         )
-        .child(el().w_full().h(1.0).fill(ink.separator))
+        .child(rune::rule(1.0, ink.separator).w_full().key("inbox-header-rule"))
         .child(
             col()
                 .w_full()
@@ -302,7 +302,7 @@ pub fn view(desk: &Desk, ink: &Ink) -> El {
                 })
                 .child(list),
         )
-        .child(el().w_full().h(1.0).fill(ink.separator))
+        .child(rune::rule(1.0, ink.separator).w_full().key("inbox-footer-rule"))
         .child(foot);
     el().key("inbox-scrim")
         .absolute(0.0, 0.0)

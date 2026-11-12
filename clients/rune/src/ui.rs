@@ -32,6 +32,9 @@ mod status;
 mod tabs;
 mod updates;
 
+#[cfg(test)]
+mod separator_tests;
+
 /// The app chord's modifier as shown beside an action.
 pub(crate) const MOD: &str = if cfg!(any(target_os = "macos", target_os = "ios")) {
     "⌘"
@@ -355,7 +358,7 @@ impl Sheet {
     pub(crate) fn build(self, aside: Option<El>, body: El, foot: El, p: &Ink) -> El {
         const MARGIN: f32 = 16.0;
         const MAX_H: f32 = 620.0;
-        let line = || el().w_full().h(1.0).fill(p.separator);
+        let line = || rune::rule(1.0, p.separator).w_full();
         let header = row()
             .w_full()
             .h(44.0)
@@ -388,7 +391,7 @@ impl Sheet {
             .shadow(18.0, 56.0, Color::BLACK.alpha(0.5))
             .transition(Transition::scale(0.97).combined(Transition::opacity()))
             .child(header)
-            .child(line())
+            .child(line().key("sheet-header-rule"))
             .child(
                 col()
                     .w_full()
@@ -399,7 +402,7 @@ impl Sheet {
                     })
                     .child(body),
             )
-            .child(line())
+            .child(line().key("sheet-footer-rule"))
             .child(el().w_full().px(14.0).py(10.0).child(foot));
         col()
             .key(format!("{}-scrim", self.key))

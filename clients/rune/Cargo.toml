@@ -23,9 +23,11 @@ phux-config-core = { path = "../../crates/phux-config-core" }
 phux-perf = { path = "../../crates/phux-perf" }
 phux-protocol = { path = "../../crates/phux-protocol" }
 # Rune has no releases; apps pin a `dev` revision (dev is fast-forward only).
-rune = { git = "https://github.com/anomalyco/rune", rev = "3675303d8be65a0e11dad2e8be00a470b4f03042" }
-rune-notify = { git = "https://github.com/anomalyco/rune", rev = "3675303d8be65a0e11dad2e8be00a470b4f03042" }
-rune-perf = { git = "https://github.com/anomalyco/rune", rev = "3675303d8be65a0e11dad2e8be00a470b4f03042" }
+# Phux supplies Inter and the terminal font through AppSpec::fonts. Keep
+# Rune's other defaults, but don't carry its unused embedded font copies.
+rune = { git = "https://github.com/anomalyco/rune", rev = "656af1d5a4d67af0c849dd25ec54e84a6736880b", default-features = false, features = ["accessibility", "dbus", "metal-backend", "ogg-audio", "svg"] }
+rune-notify = { git = "https://github.com/anomalyco/rune", rev = "656af1d5a4d67af0c849dd25ec54e84a6736880b" }
+rune-perf = { git = "https://github.com/anomalyco/rune", rev = "656af1d5a4d67af0c849dd25ec54e84a6736880b" }
 # Never called directly: Rune's decoder guesses the format, so these
 # features (unified with Rune's png/jpeg) let typed documents draw GIF/WebP.
 image = { version = "0.25", default-features = false, features = ["gif", "webp"] }
