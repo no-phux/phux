@@ -432,6 +432,7 @@ mod tests {
                 keep_empty: true,
                 created_at_unix_secs: 42,
                 key: Some(session_key()),
+                touched: None,
                 lifetime: Some(SessionLifetime::Persistent),
                 revision: Some(Revision::new(5)),
                 members: 2,

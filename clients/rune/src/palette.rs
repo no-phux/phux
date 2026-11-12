@@ -171,7 +171,7 @@ pub fn session_items(topology: Option<&Topology>, order: &[SessionKey]) -> Vec<I
         return Vec::new();
     };
     let mut sessions: Vec<_> = topology.sessions.iter().collect();
-    session_order::sort(&mut sessions, order, |s| s.key);
+    session_order::list(&mut sessions, order, |s| s.key, |s| s.touched);
     let item = |index: usize, project: Option<(&str, bool)>| {
         let session = sessions[index];
         let terminals = format!(
@@ -501,6 +501,7 @@ mod tests {
             keep_empty: false,
             created_at_unix_secs: 0,
             key: None,
+            touched: None,
             lifetime: None,
             revision: None,
             members: 1,
@@ -543,6 +544,7 @@ mod tests {
         let alpha = SessionKey::new([4; 16]);
         topology.sessions.push(SessionDescriptor {
             key: alpha,
+            touched: None,
             ..session(4, "alpha", None)
         });
         let titles: Vec<_> = session_items(Some(&topology), &[alpha.expect("nonzero")])

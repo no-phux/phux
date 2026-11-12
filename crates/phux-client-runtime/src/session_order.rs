@@ -58,11 +58,32 @@ fn arrange_by(
     order: &[SessionKey],
     recent_first: bool,
 ) {
+    list_by(sessions, order, recent_first, |s| s.key, |s| s.touched);
+}
+
+/// [`arrange`] for any row that has a key and a last-used counter.
+pub fn list<T>(
+    items: &mut [T],
+    order: &[SessionKey],
+    key: impl Fn(&T) -> Option<SessionKey>,
+    touched: impl Fn(&T) -> Option<u64>,
+) {
+    let recent = RECENT_FIRST.load(std::sync::atomic::Ordering::Relaxed);
+    list_by(items, order, recent, key, touched);
+}
+
+fn list_by<T>(
+    items: &mut [T],
+    order: &[SessionKey],
+    recent_first: bool,
+    key: impl Fn(&T) -> Option<SessionKey>,
+    touched: impl Fn(&T) -> Option<u64>,
+) {
     if recent_first {
         // Never used sorts last; the sort is stable, so those keep their order.
-        sessions.sort_by_key(|session| std::cmp::Reverse(session.touched));
+        items.sort_by_key(|item| std::cmp::Reverse(touched(item)));
     } else {
-        sort(sessions, order, |session| session.key);
+        sort(items, order, key);
     }
 }
 

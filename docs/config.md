@@ -277,6 +277,7 @@ notifications = true
 option-as-meta = false
 copy-on-select = true
 confirm-close = false
+recent-first = true     # list the session you used last first
 ```
 
 **Copy Settings as TOML** in Rune's command palette puts your current
