@@ -1,5 +1,11 @@
 use phux_protocol::input::key::{KeyAction, ModSet};
 
+use std::time::{Duration, Instant};
+
+use phux_protocol::ResourceId;
+
+use super::super::selection::SearchMatch;
+use super::click::REPEAT_CLICK;
 use super::*;
 
 fn press(key: PhysicalKey, mods: ModSet) -> KeyEvent {

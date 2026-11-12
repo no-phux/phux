@@ -37,6 +37,7 @@ pub const ACTION_NAMES: &[&str] = &[
     "show-help",
     "getting-started",
     "copy-mode",
+    "copy-mode-key",
     "detach",
     "next-pane",
     "previous-pane",
