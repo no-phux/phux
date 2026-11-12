@@ -122,7 +122,14 @@ fn native_field_ink_follows_live_themes_in_both_forms() {
                 .instances
                 .iter()
                 .find(|i| {
-                    (i.rect[0] / 2.0 - caret[0]).abs() < 1.0 && i.rect[2] <= 4.0 && i.rect[3] > 10.0
+                    // A thin terminal glyph can share this x coordinate;
+                    // only the rectangle inside the field is its caret.
+                    i.params[1] == rune::render::KIND_RECT
+                        && (i.rect[0] / 2.0 - caret[0]).abs() < 1.0
+                        && i.rect[1] / 2.0 >= caret[1] - 1.0
+                        && (i.rect[1] + i.rect[3]) / 2.0 <= caret[1] + caret[3] + 1.0
+                        && i.rect[2] <= 4.0
+                        && i.rect[3] > 10.0
                 })
                 .expect("drawn caret");
             assert_eq!(

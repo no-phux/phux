@@ -2,6 +2,47 @@
 
 use super::*;
 use phux_client_runtime::Transport;
+use phux_protocol::wire::frame::FrameKind;
+
+#[test]
+fn inactivity_finishes_a_runtime_field_composition_once_without_terminal_input() {
+    let (client, mut rt) = crate::grid::budget::input_fixture();
+    rt.state.phone = Some(crate::desk::phone::Phone::default());
+    rt.set_viewport((393.0, 852.0), 2.0);
+    rt.update(|state, tx| {
+        state.palette_open = true;
+        state.palette_query = rune::TextEdit::new("");
+        state.palette_query.focused = true;
+        tx.instant();
+    });
+    rt.frame(0.0);
+    let (x, y) = rt.find("palette-query").expect("palette field");
+    rt.pointer_down(x, y);
+    rt.pointer_up(x, y);
+    rt.frame(0.0);
+    let _ = client.take_outbound();
+    rt.ime(rune::Ime::Preedit("日本".into(), Some((0, 6))));
+    rt.frame(0.0);
+    assert_eq!(rt.state.palette_query.text, "");
+    assert!(rt.state.palette_query.preedit().is_some());
+    set_active(&mut rt, false);
+    rt.frame(0.0);
+    assert_eq!(rt.state.palette_query.text, "日本");
+    assert!(rt.state.palette_query.preedit().is_none());
+    set_active(&mut rt, true);
+    rt.frame(0.0);
+    assert_eq!(rt.state.palette_query.text, "日本");
+    for bytes in client.take_outbound() {
+        let frame = FrameKind::decode(&bytes).expect("outbound frame").0;
+        assert!(
+            matches!(
+                frame,
+                FrameKind::InputFocus { .. } | FrameKind::ResizeTerminal { .. }
+            ),
+            "lifecycle may report focus/fit, but never sends field text: {frame:?}"
+        );
+    }
+}
 
 #[test]
 fn relay_configuration_rejects_invalid_sni_without_dropping_it() {
