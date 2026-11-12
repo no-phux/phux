@@ -22,9 +22,13 @@ explains itself at the top.
 Linux CLI builds link against glibc 2.35 (built in an `ubuntu:22.04`
 container). Phux Rune does not inherit that promise ([Floors](#phux-rune)).
 Only CLI releases are GitHub's "Latest". The Homebrew tap discovers stable
-`vX.Y.Z` CLI releases every fifteen minutes, verifies artifact checksums,
-and renders the formula. Upstream tap credentials or dispatches are not
-required. The CLI formula body comes from
+`vX.Y.Z` CLI releases on a fifteen-minute schedule, verifies artifact
+checksums, and renders the formula. GitHub runs that schedule far less often
+under load (every 4-8 hours in November 2026), so `release.yml`'s announce
+job also sends the tap a best-effort `phux-release` dispatch through the
+release app. The tap re-resolves the release itself and ignores the payload;
+if the dispatch fails, the schedule still catches up, so neither credentials
+nor the dispatch are required for correctness. The CLI formula body comes from
 [`scripts/gen-formula.sh`](../scripts/gen-formula.sh); the tap copies that
 script and re-renders. The formula license is Apache-2.0, matching `LICENSE`
 and the workspace `Cargo.toml`. `release.yml` does not push the tap.
