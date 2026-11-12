@@ -165,6 +165,7 @@ impl Desk {
         let Some(new) = now else { return false };
         if client.send_focus(&new, FocusEvent::Gained) {
             self.focus_told = Some(new);
+            self.reclaim_fits();
             return false;
         }
         self.status == Status::Attached

@@ -211,6 +211,7 @@ impl Desk {
             return self.say(NoticeKind::Error, INPUT_PAUSED);
         }
         self.nudge_typing(&client);
+        self.reclaim_fits();
         if self.notice.as_ref().is_some_and(|n| n.text == INPUT_PAUSED) {
             self.notice = None;
         }
@@ -417,6 +418,7 @@ impl Desk {
         // large for acknowledged input goes as one atomic event, unreceipted.
         let receipt = client.with_control(|control| control.apply_user_paste(terminal, text));
         self.pastes.extend(receipt);
+        self.reclaim_fits();
         client.wake();
         true
     }
