@@ -63,7 +63,7 @@ impl ExecCounts {
 }
 
 /// One session's entry in the [`SessionListJson`] output.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SessionJson {
     /// Session name (what `phux attach <name>` matches against).
     pub name: String,
@@ -105,6 +105,10 @@ pub struct SessionJson {
     /// keeps no organization records.
     #[serde(default)]
     pub key: Option<String>,
+    /// The server's recency counter: higher is more recently used. Omitted
+    /// from a server that does not report it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub touched: Option<u64>,
 }
 
 /// One resource's row in [`SessionListJson::resources`]: canonical selector,
@@ -328,6 +332,7 @@ mod tests {
             }),
             project_link: Some("phux".to_owned()),
             key: Some("0123456789ABCDEFGHJKMNPQRS".to_owned()),
+            touched: None,
         }])
         .with_terminals(vec!["@7".to_owned(), "@9".to_owned()])
         .with_resources(vec![

@@ -349,7 +349,7 @@ mod tests {
                 exec: phux_core::session_list::ExecCounts::default(),
                 project: None,
                 project_link: None,
-                key: None,
+                ..Default::default()
             }],
         }
     }

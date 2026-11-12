@@ -68,6 +68,8 @@ pub struct SessionDescriptor {
     /// Whether this is the designated Intake session (legacy binding field name).
     pub inbox: bool,
     pub focused: bool,
+    /// The server's recency counter (higher is more recently used), when it reports one.
+    pub touched: Option<u64>,
 }
 
 impl From<topology::Session> for SessionDescriptor {
@@ -85,6 +87,7 @@ impl From<topology::Session> for SessionDescriptor {
             awaiting_organization: value.awaiting_organization,
             inbox: value.inbox,
             focused: value.focused,
+            touched: value.touched,
         }
     }
 }
