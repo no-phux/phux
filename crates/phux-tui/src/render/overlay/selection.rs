@@ -176,6 +176,8 @@ pub struct CopyMarks {
     pub selection: Option<SelectionRect>,
     /// Visible search hits other than the current one.
     pub matches: Vec<SelectionRect>,
+    /// Paint every unmarked cell faint (`[chrome] dim-unfocused`).
+    pub dim: bool,
 }
 
 /// How [`CopyMarks`] restyles one cell.
@@ -188,6 +190,8 @@ pub enum CellMark {
     Selected,
     /// Inside a search hit: underlined.
     Matched,
+    /// In an unfocused pane that dims: faint.
+    Dimmed,
 }
 
 impl CopyMarks {
@@ -197,6 +201,7 @@ impl CopyMarks {
         Self {
             selection,
             matches: Vec::new(),
+            dim: false,
         }
     }
 
@@ -207,6 +212,8 @@ impl CopyMarks {
             CellMark::Selected
         } else if self.matches.iter().any(|hit| hit.contains(row, col)) {
             CellMark::Matched
+        } else if self.dim {
+            CellMark::Dimmed
         } else {
             CellMark::None
         }
@@ -376,6 +383,7 @@ mod tests {
         let marks = CopyMarks {
             selection: Some(rect(0, 2)),
             matches: vec![rect(2, 4)],
+            dim: false,
         };
         assert_eq!(marks.mark(0, 1), CellMark::Selected);
         assert_eq!(marks.mark(0, 2), CellMark::Selected);

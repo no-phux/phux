@@ -47,6 +47,7 @@ Every scalar knob with its shipped default, serialized from the schema itself, p
 |---|---|
 | `chrome.compact-cols` | `64` |
 | `chrome.compact-rows` | `18` |
+| `chrome.dim-unfocused` | `false` |
 | `chrome.min-pane-cols` | `40` |
 | `chrome.new-tab-after-current` | `false` |
 | `defaults.agent-log-bytes` | `4194304` |
@@ -761,11 +762,15 @@ right = [
 # `new-tab-after-current`: a new tab opens right after the one in view
 # instead of at the end of the strip.
 #
+# `dim-unfocused`: in a tab with several panes, the ones without focus
+# are painted faint. How faint is up to your terminal.
+#
 # [chrome]
 # compact-cols = 64
 # compact-rows = 18
 # min-pane-cols = 40
 # new-tab-after-current = false
+# dim-unfocused = false
 
 # Agent notifications. The TUI
 # posts one when an agent becomes blocked or asks for you, and when an

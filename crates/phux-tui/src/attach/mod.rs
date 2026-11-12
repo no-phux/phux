@@ -90,6 +90,29 @@ pub(crate) fn set_new_tab_after_current(on: bool) {
     server_frame::set_new_tab_after_current(on);
 }
 
+// ponytail: process-wide flag, like the one above; thread it through the
+// driver's settings if a second attach ever shares the process.
+static DIM_UNFOCUSED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Set `[chrome] dim-unfocused`.
+pub(crate) fn set_dim_unfocused(on: bool) {
+    DIM_UNFOCUSED.store(on, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// Dim every pane but `focused` when `[chrome] dim-unfocused` is on (none
+/// otherwise). Returns whether any pane's dim changed and needs a repaint.
+fn sync_dim(
+    panes: &mut std::collections::HashMap<phux_protocol::ResourceId, pane_state::PaneSlot>,
+    focused: Option<&phux_protocol::ResourceId>,
+) -> bool {
+    let on = DIM_UNFOCUSED.load(std::sync::atomic::Ordering::Relaxed);
+    let mut changed = false;
+    for (id, slot) in panes {
+        changed |= slot.renderer.set_dim(on && Some(id) != focused);
+    }
+    changed
+}
+
 pub use crate::multi_pane;
 
 /// The output sink the attach driver composites into.

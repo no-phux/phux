@@ -268,7 +268,11 @@ it one:
 
 It belongs to that one tab: move to another tab and typing is ordinary
 there; come back and it is still on. phux says so each time it turns on or
-off. Mouse input always goes to the pane under the pointer.
+off, and while it is on each pane in the tab carries a `[sync]` mark in its
+title rule. Mouse input always goes to the pane under the pointer.
+
+To make the pane you are typing in stand out, `dim-unfocused = true` under
+`[chrome]` paints the other panes faint.
 
 ### Your own copy-mode keys
 
