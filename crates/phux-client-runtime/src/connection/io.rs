@@ -255,8 +255,21 @@ impl Io {
             } => {
                 let frames = read_stream_frames(reader, pending, quic.as_ref()).await?;
                 match (frames, child) {
+                    // A bridge that carried the session and closed is a lost
+                    // connection, a socket's EOF, so the caller reconnects
+                    // (an ssh lane closes when its network does). One that
+                    // closed before any frame failed to start: say why.
+                    (None, Some(child)) if child.carried => {
+                        let reason = child.closed().await;
+                        tracing::info!(%reason, "the stdio bridge closed");
+                        Ok(None)
+                    }
                     (None, Some(child)) => Err(LinkError::Read(child.closed().await)),
-                    (frames, _) => Ok(frames),
+                    (Some(frames), Some(child)) => {
+                        child.carried = true;
+                        Ok(Some(frames))
+                    }
+                    (frames, None) => Ok(frames),
                 }
             }
             Self::Ws {
@@ -280,8 +293,17 @@ impl Io {
                 reader,
                 pending,
                 quic,
+                child,
                 ..
-            } => try_read_stream_frames(reader, pending, quic.as_ref()),
+            } => {
+                let frames = try_read_stream_frames(reader, pending, quic.as_ref())?;
+                if let Some(child) = child
+                    && !frames.is_empty()
+                {
+                    child.carried = true;
+                }
+                Ok(frames)
+            }
             Self::Ws {
                 reader,
                 deferred_error,

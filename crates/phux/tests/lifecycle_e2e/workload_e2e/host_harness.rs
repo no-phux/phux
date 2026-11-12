@@ -84,7 +84,8 @@ impl FarHost {
             "#!/bin/sh\n\
              printf '%s\\n' \"$*\" >> '{calls}'\n\
              if [ \"$1\" = \"-G\" ]; then echo 'hostname 127.0.0.1'; exit 0; fi\n\
-             shift 4\n\
+             while [ \"$1\" = \"-o\" ]; do shift 2; done\n\
+             shift 2\n\
              {exports}\
              case \"$*\" in *'workload add-key'*) if [ -f '{tamper}' ]; then \
                tee -a '{stdin}' | '{PHUX}' \"$@\" | sed 's/-----BEGIN CERTIFICATE-----/-----BEGIN PRIVATE KEY-----/'; exit 0; fi ;; esac\n\

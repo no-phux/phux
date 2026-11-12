@@ -587,6 +587,13 @@ async fn attach_with_reconnect(
                     "lost the server connection; waiting up to {}s for it to come back",
                     policy.deadline.as_secs()
                 );
+                // An ssh lane drops when phux's ssh master does, so the
+                // network took the login with it: log in again here, while
+                // the terminal is cooked, or a password or 2FA host fails
+                // every `BatchMode` probe below. A live master returns at once.
+                if let Dial::Ssh { destination, .. } = dial {
+                    super::enroll::login(destination);
+                }
                 match wait_with_countdown(dial, policy).await {
                     ReconnectOutcome::Connectable(connection) => {
                         info!("server is back; re-attaching…");

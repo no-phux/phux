@@ -15,6 +15,9 @@ const EXIT_WAIT: Duration = Duration::from_millis(100);
 #[derive(Debug)]
 pub(crate) struct ChildLink {
     child: Child,
+    /// The bridge delivered a frame, so it started and a later close is a
+    /// lost connection rather than a failure to start.
+    pub(super) carried: bool,
     stderr: Option<tokio::task::JoinHandle<()>>,
     tail: Arc<Mutex<Vec<u8>>>,
 }
@@ -36,6 +39,7 @@ impl ChildLink {
         Ok((
             Self {
                 child,
+                carried: false,
                 stderr: Some(stderr),
                 tail,
             },
@@ -173,5 +177,26 @@ mod tests {
             .expect_err("failed bridge")
             .describe("WSL");
         assert!(error.contains("no WSL socket"), "{error}");
+    }
+
+    #[tokio::test]
+    async fn a_bridge_that_carried_frames_then_closed_is_a_clean_disconnect() {
+        let ping =
+            crate::control::encode(&phux_protocol::wire::frame::FrameKind::Ping { nonce: 7 });
+        let mut command = Command::new("sh");
+        // Echo one frame, then exit as ssh does when its connection drops.
+        command.args(["-c", &format!("head -c {}; exit 255", ping.len())]);
+        let mut link = super::super::Io::child(&mut command).expect("stdio lane");
+        link.write_frame(&ping).await.expect("send frame");
+        let deadline = Duration::from_secs(5);
+        let frames = tokio::time::timeout(deadline, link.read_frames())
+            .await
+            .expect("frame deadline")
+            .expect("read");
+        assert_eq!(frames.expect("frame batch").len(), 1);
+        let end = tokio::time::timeout(deadline, link.read_frames())
+            .await
+            .expect("close deadline");
+        assert!(matches!(end, Ok(None)), "a lost lane must read as a close");
     }
 }
