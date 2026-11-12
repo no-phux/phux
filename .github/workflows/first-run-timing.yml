@@ -35,18 +35,21 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-          fetch-depth: ${{ github.event_name == 'pull_request' && 0 || 1 }}
+      # A diff that cannot be computed counts as a change: the macOS run
+      # is skipped only on positive evidence that the installer is untouched.
       - name: Did the pull request touch the installer?
         id: changes
         if: github.event_name == 'pull_request'
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
         run: |
-          if git diff --name-only "$BASE_SHA" HEAD -- scripts/install.sh scripts/installer scripts/generate-install.sh scripts/first-run-timing.sh .github/workflows/first-run-timing.yml | grep -q .; then
-            echo installer=true >> "$GITHUB_OUTPUT"
-          else
-            echo installer=false >> "$GITHUB_OUTPUT"
-          fi
+          changed="$(git fetch --quiet --no-tags --depth=1 origin "$BASE_SHA" &&
+            git diff --name-only "$BASE_SHA" HEAD -- scripts/install.sh scripts/installer \
+              scripts/generate-install.sh scripts/first-run-timing.sh \
+              .github/workflows/first-run-timing.yml)" || changed="diff failed"
+          echo "installer inputs changed: ${changed:-none}"
+          if [ -n "$changed" ]; then installer=true; else installer=false; fi
+          echo "installer=$installer" >> "$GITHUB_OUTPUT"
       - name: Time install through a stub agent
         env:
           PHUX_INSTALL_URL: ${{ github.event_name == 'pull_request' && format('{0}/scripts/install.sh', github.workspace) || 'https://phux.sh/install' }}
