@@ -124,7 +124,7 @@ impl<'a> PeerInputs<'a> {
     fn ordered_sessions(&self) -> Vec<&SessionInfo> {
         let mut sessions: Vec<_> = self.sessions.iter().collect();
         sessions.sort_by_key(|s| s.id);
-        session_order::sort(&mut sessions, self.session_order, |s| s.key);
+        session_order::arrange(&mut sessions, self.session_order);
         sessions
     }
 }

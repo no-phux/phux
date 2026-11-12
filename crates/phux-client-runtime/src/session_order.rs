@@ -36,6 +36,36 @@ pub fn sort<T>(items: &mut [T], order: &[SessionKey], key: impl Fn(&T) -> Option
     items.sort_by_key(|item| rank(order, key(item)));
 }
 
+/// Whether sessions list most recently used first (`[sidebar] recent-first`).
+// ponytail: one flag for the process, set when the config loads; the lists
+// that sort are built far from any config.
+static RECENT_FIRST: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// List sessions most recently used first, or in the stored order.
+pub fn set_recent_first(on: bool) {
+    RECENT_FIRST.store(on, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// Put `sessions` in the order they are listed in: the stored order, or,
+/// when recent-first is on, the one used last on top.
+pub fn arrange(sessions: &mut [&phux_protocol::wire::info::SessionInfo], order: &[SessionKey]) {
+    let recent = RECENT_FIRST.load(std::sync::atomic::Ordering::Relaxed);
+    arrange_by(sessions, order, recent);
+}
+
+fn arrange_by(
+    sessions: &mut [&phux_protocol::wire::info::SessionInfo],
+    order: &[SessionKey],
+    recent_first: bool,
+) {
+    if recent_first {
+        // Never used sorts last; the sort is stable, so those keep their order.
+        sessions.sort_by_key(|session| std::cmp::Reverse(session.touched));
+    } else {
+        sort(sessions, order, |session| session.key);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -60,5 +90,31 @@ mod tests {
         assert_eq!(rank(&order, Some(key(9))), usize::MAX);
         assert!(decode(None).is_empty());
         assert!(decode(Some(b"not json")).is_empty());
+    }
+
+    #[test]
+    fn recent_first_puts_the_session_used_last_on_top() {
+        use phux_protocol::ids::SessionId;
+        use phux_protocol::wire::info::SessionInfo;
+        let session = |id, touched| {
+            SessionInfo::new(SessionId::new(id), format!("s{id}")).with_touched(touched)
+        };
+        let all = [
+            session(1, Some(4)),
+            session(2, None),
+            session(3, Some(9)),
+            session(4, None),
+        ];
+        let mut listed: Vec<&SessionInfo> = all.iter().collect();
+        arrange_by(&mut listed, &[], true);
+        let names: Vec<&str> = listed.iter().map(|s| s.name.as_str()).collect();
+        assert_eq!(names, ["s3", "s1", "s2", "s4"]);
+        arrange_by(&mut listed, &[], false);
+        let names: Vec<&str> = listed.iter().map(|s| s.name.as_str()).collect();
+        assert_eq!(
+            names,
+            ["s3", "s1", "s2", "s4"],
+            "no stored order: left as it was"
+        );
     }
 }

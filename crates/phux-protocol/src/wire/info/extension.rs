@@ -66,6 +66,9 @@ pub(super) fn encode_snapshot_extension(
                     encode_terminal_id(recent, e);
                 });
             }
+            if let Some(touched) = info.touched {
+                e.write_field(field::session_state::TOUCHED, &touched.to_be_bytes());
+            }
         });
     }
     block
@@ -176,6 +179,7 @@ pub(super) fn apply_session_state(
     let mut key = None;
     let mut attrs = Vec::new();
     let mut recent_input = None;
+    let mut touched = None;
     while let Some((field_id, v)) = dec.read_field()? {
         match field_id {
             field::session_state::LIFETIME => {
@@ -192,6 +196,9 @@ pub(super) fn apply_session_state(
             field::session_state::RECENT_INPUT => {
                 recent_input = decode_terminal_id(&mut Decoder::new(v)).ok();
             }
+            field::session_state::TOUCHED => {
+                touched = <[u8; 8]>::try_from(v).ok().map(u64::from_be_bytes);
+            }
             _ => {}
         }
     }
@@ -200,6 +207,7 @@ pub(super) fn apply_session_state(
         info.key = key;
         info.attrs = attrs;
         info.recent_input = recent_input;
+        info.touched = touched;
     }
     Ok(())
 }

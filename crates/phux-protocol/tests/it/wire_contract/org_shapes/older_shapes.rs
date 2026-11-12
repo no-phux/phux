@@ -63,6 +63,41 @@ fn actor_principals_trail_and_old_shapes_are_unchanged() {
     assert_eq!(with.principal(), PrincipalId::new([0x91; 16]));
 }
 
+/// How recently a session was used rides the same `SESSION_STATE` as a
+/// skippable field: it round-trips, and a snapshot without it reads `None`.
+#[test]
+fn session_recency_rides_the_extension_block() {
+    let snapshot = |touched| {
+        let session = SessionInfo::new(SessionId::new(1), "work")
+            .with_window_count(1)
+            .with_touched(touched);
+        SessionSnapshot::new(SessionId::new(1), WindowId::new(1), ResourceId::local(2))
+            .with_sessions(vec![session])
+            .with_resources(vec![ResourceInfo::new(
+                ResourceId::local(2),
+                WindowId::new(1),
+                80,
+                24,
+            )])
+    };
+    for touched in [Some(41), None] {
+        let frame = FrameKind::CommandResult {
+            request_id: 1,
+            result: CommandResult::OkWith(CommandValue::State(snapshot(touched))),
+        };
+        assert_round_trip(&frame);
+        let FrameKind::CommandResult {
+            result: CommandResult::OkWith(CommandValue::State(decoded)),
+            ..
+        } = decode(&encode(&frame)).unwrap()
+        else {
+            panic!("state reply");
+        };
+        assert_eq!(decoded.sessions[0].touched, touched);
+        assert_eq!(decoded.sessions[0].recent_input, None);
+    }
+}
+
 /// R05/R06: a snapshot whose sessions and resources report no organization
 /// state encodes exactly as before; reported state rides the extension block
 /// (fields 3 and 4) and round-trips, and `with_lifetime` keeps `keep_empty`

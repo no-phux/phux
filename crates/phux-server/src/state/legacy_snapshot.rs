@@ -110,7 +110,8 @@ impl ServerState {
                     .with_lifetime(Some(crate::org_wire::lifetime(record.lifetime)))
                     .with_key(phux_protocol::ids::SessionKey::new(*record.key.as_bytes()))
                     .with_attrs(crate::org_wire::attrs(&record.attrs))
-                    .with_recent_input(recent_input),
+                    .with_recent_input(recent_input)
+                    .with_touched(self.sessions.touched_at(sid)),
             );
             let Some(window_wire) = window_wire else {
                 continue;

@@ -280,6 +280,7 @@ impl TuiSettings {
         plugin_sidebar: Vec<PluginSectionSpec>,
     ) -> Self {
         crate::attach::set_new_tab_after_current(cfg.chrome.new_tab_after_current);
+        phux_client::session_order::set_recent_first(cfg.sidebar.recent_first);
         Self {
             which_key: WhichKey {
                 enabled: keybindings.which_key,

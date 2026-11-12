@@ -89,6 +89,7 @@ Every scalar knob with its shipped default, serialized from the schema itself, p
 | `sidebar.hosts` | `true` |
 | `sidebar.hosts-refresh-secs` | `10` |
 | `sidebar.position` | `"left"` |
+| `sidebar.recent-first` | `false` |
 | `sidebar.width` | `20` |
 | `status.position` | `"top"` |
 | `voice.timeout-secs` | unset — 30. Seconds before the transcriber is killed and the request refused |
@@ -726,11 +727,15 @@ right = [
 # placeholder. Set `agents-share = 0` to drop the panel and give Sessions the
 # whole strip.
 #
+# `recent-first = true` lists the session you used last on top instead of in
+# the order you arranged them.
+#
 # [sidebar]
 # enabled = true
 # width = 20
 # position = "left"
 # agents-share = 50
+# recent-first = false
 
 # Responsive-chrome breakpoints. The chrome adapts to small terminals
 # around three thresholds; these move them without moving the behaviour.
