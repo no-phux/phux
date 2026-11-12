@@ -63,6 +63,10 @@ impl super::SessionLoop {
         if crate::attach::sync_dim(&mut self.mirror.panes, focused) && !self.overlays.is_active() {
             self.repaint_view(out, sidebar, RepaintLevel::Panes);
         }
+        // The standing `[sync]` mark follows the tab in view.
+        if crate::attach::sync_input::settle(&self.mirror.workspace) && !self.overlays.is_active() {
+            self.repaint_view(out, sidebar, RepaintLevel::Chrome);
+        }
         // Re-derive outer mouse tracking from the focused pane's opt-out every
         // iteration; a no-op when nothing changed.
         let want_capture = desired_mouse_capture(

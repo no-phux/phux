@@ -268,7 +268,7 @@ pub(super) fn pane_label<'a>(
         // `panes`, the same lifetime as the title.
         host: key.host().map(phux_protocol::ids::SatelliteHost::as_str),
         unreachable: slot.satellite_down,
-        origin: origin_badge(slot, Instant::now()),
+        origin: origin_badge(slot, Instant::now()).or_else(super::sync_input::badge),
         scrolled_back: published_terminal(kernel, id).and_then(rows_scrolled_back),
     })
 }
