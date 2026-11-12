@@ -110,6 +110,63 @@ fn keys_continue_step_back_and_skip() {
 }
 
 #[test]
+fn a_grant_coming_through_moves_on_to_the_next() {
+    let perms = |granted: &[Service]| Permissions {
+        services: Service::ALL
+            .map(|s| {
+                let grant = if granted.contains(&s) {
+                    Grant::Granted
+                } else {
+                    Grant::Denied
+                };
+                (s, grant)
+            })
+            .to_vec(),
+        ..Permissions::default()
+    };
+    let mut rt = rune::Runtime::new(
+        desk(Prefs::memory()),
+        crate::ui::view,
+        (1100.0, 720.0),
+        rune::Env::new(true, 2.0),
+    );
+    rt.update(|d, tx| {
+        d.open_onboarding();
+        d.go_to(Step::Agents);
+        d.open_grant_sheet();
+        d.onboarding.pending = Some(Service::FullDiskAccess);
+        let answer = |d: &mut Desk, granted: &[Service]| {
+            d.onboarding
+                .done
+                .0
+                .send(Done::Permissions(Ok(perms(granted))))
+                .unwrap();
+        };
+        answer(d, &[Service::ScreenRecording]);
+        d.pump_onboarding(tx);
+        assert_eq!(
+            d.onboarding.pending,
+            Some(Service::FullDiskAccess),
+            "still waiting on it"
+        );
+        answer(d, &[Service::FullDiskAccess, Service::ScreenRecording]);
+        d.pump_onboarding(tx);
+        assert_eq!(d.onboarding.pending, None, "it came through");
+    });
+    for t in [0.0, 0.5, 1.0] {
+        rt.frame(t);
+    }
+    rt.update(|_, tx| assert_eq!(tx.focused(), Some("grant-accessibility")));
+    rt.update(|d, tx| {
+        d.onboarding.pending = Some(Service::Accessibility);
+        d.close_grant_sheet();
+        d.pump_onboarding(tx);
+        assert_eq!(d.onboarding.pending, None, "closing the sheet forgets it");
+    });
+}
+
+
+#[test]
 fn a_missing_command_reads_as_update_phux() {
     let probe: Probe<()> = Probe::from(Err("error: unrecognized subcommand 'skill'".into()));
     assert_eq!(probe, Probe::Unsupported);

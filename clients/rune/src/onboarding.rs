@@ -283,6 +283,25 @@ impl Permissions {
             .filter(|s| self.grant(*s) == Grant::Granted)
             .count()
     }
+
+    /// The first permission still to grant, in the sheet's order.
+    pub fn missing(&self) -> Option<Service> {
+        Service::ALL
+            .into_iter()
+            .find(|s| self.grant(*s) != Grant::Granted)
+    }
+
+    /// Whether Grant… asks macOS's own prompt rather than opening Settings:
+    /// the service has one, it was never asked, and the grant lands on the
+    /// app running as `exe` (the one the server is charged to). The prompt
+    /// adds that app to the list, so nothing needs dragging in.
+    pub fn prompts_here(&self, service: Service, exe: &Path) -> bool {
+        service != Service::FullDiskAccess
+            && self.grant(service) == Grant::NotDetermined
+            && self.responsible_path.as_deref().is_some_and(|app| {
+                Path::new(app).extension().is_some_and(|ext| ext == "app") && exe.starts_with(app)
+            })
+    }
 }
 
 pub fn parse_permissions(bytes: &[u8]) -> Result<Permissions, String> {
@@ -484,6 +503,44 @@ mod tests {
         assert_eq!(perms.granted(), 1);
         assert_eq!(perms.grant(Service::FullDiskAccess), Grant::Unknown);
         assert_eq!(perms.responsible_path, None);
+    }
+
+    #[test]
+    fn the_next_permission_and_who_asks_for_it() {
+        let perms = parse_permissions(
+            br#"{"responsible_path":"/Applications/Phux Rune.app","permissions":[
+            {"service":"full_disk_access","status":"granted"},
+            {"service":"screen_recording","status":"not_determined"},
+            {"service":"accessibility","status":"denied"}]}"#,
+        )
+        .unwrap();
+        assert_eq!(perms.missing(), Some(Service::ScreenRecording));
+        let all = Permissions {
+            services: Service::ALL.map(|s| (s, Grant::Granted)).to_vec(),
+            ..Permissions::default()
+        };
+        assert_eq!(all.missing(), None);
+
+        let rune = Path::new("/Applications/Phux Rune.app/Contents/MacOS/phux-rune");
+        assert!(perms.prompts_here(Service::ScreenRecording, rune));
+        assert!(
+            !perms.prompts_here(Service::Accessibility, rune),
+            "asked once already: Settings"
+        );
+        assert!(
+            !perms.prompts_here(Service::FullDiskAccess, rune),
+            "no prompt exists"
+        );
+        let other = Path::new("/Applications/Other.app/Contents/MacOS/other");
+        assert!(
+            !perms.prompts_here(Service::ScreenRecording, other),
+            "the prompt would name the wrong app"
+        );
+        let bare = Permissions {
+            responsible_path: Some("/usr/local/bin".into()),
+            ..perms.clone()
+        };
+        assert!(!bare.prompts_here(Service::ScreenRecording, Path::new("/usr/local/bin/x")));
     }
 
     #[test]

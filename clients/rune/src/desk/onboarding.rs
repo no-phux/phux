@@ -21,8 +21,9 @@ use super::{Desk, NoticeKind};
 mod fox;
 use crate::launch::run_for;
 use crate::onboarding::{
-    self as words, AgentSkill, Migration, Permissions, Service, Step, unsupported,
+    self as words, AgentSkill, Grant, Migration, Permissions, Service, Step, unsupported,
 };
+use crate::system_settings;
 
 mod dock;
 
@@ -92,6 +93,8 @@ pub struct Onboarding {
     pub shims: Option<Probe<Vec<String>>>,
     pub permissions: Probe<Permissions>,
     pub grant_sheet: bool,
+    /// The permission Grant… was last pressed for, until it comes through.
+    pending: Option<Service>,
     /// The server's app, to drag into a privacy list.
     pub bundle: Option<PathBuf>,
     pub migrate: Migrate,
@@ -116,6 +119,7 @@ impl Default for Onboarding {
             shims: None,
             permissions: Probe::Asking,
             grant_sheet: false,
+            pending: None,
             bundle: None,
             migrate: Migrate::Choosing,
             copied: false,
@@ -345,10 +349,22 @@ impl Desk {
         self.onboarding.grant_sheet = false;
     }
 
-    /// Open `service`'s System Settings pane; the server's app shows beside
-    /// the list to drag in, and the sheet moves out from under Settings.
+    /// macOS's own prompt for `service` when it has one and would name the
+    /// right app, else its System Settings pane; the server's app shows
+    /// beside the list to drag in, and the sheet moves out from under
+    /// Settings. Once it comes through, this window comes back.
     pub fn grant(&mut self, service: Service) {
+        self.onboarding.pending = Some(service);
         self.start_dock();
+        let prompt = std::env::current_exe().is_ok_and(|exe| {
+            self.onboarding
+                .permissions
+                .ready()
+                .is_some_and(|p| p.prompts_here(service, &exe))
+        });
+        if prompt && system_settings::request(service) {
+            return;
+        }
         self.ask(
             &["server", "permissions", "--open", service.id(), "--json"],
             QUICK,
@@ -427,8 +443,11 @@ impl Desk {
                 Done::Permissions(result) => {
                     self.onboarding.asking = false;
                     let probe = Probe::from(result);
-                    if let Some(path) = probe.ready().and_then(|p| p.responsible_path.clone()) {
-                        self.onboarding.bundle.get_or_insert(PathBuf::from(path));
+                    if let Some(perms) = probe.ready() {
+                        if let Some(path) = perms.responsible_path.clone() {
+                            self.onboarding.bundle.get_or_insert(PathBuf::from(path));
+                        }
+                        self.came_through(perms, tx);
                     }
                     self.onboarding.permissions = probe;
                 }
@@ -466,8 +485,30 @@ impl Desk {
             }
             self.tick_dock(tx);
             tx.wake_after(Duration::from_secs_f64(due.clamp(0.1, POLL_EVERY)));
+        } else {
+            self.onboarding.pending = None;
+            self.undock();
         }
         changed | self.tick_fox(tx)
+    }
+
+    /// The permission Grant… was pressed for is granted: this window goes
+    /// back where it was, in front, with the next one to grant focused.
+    fn came_through(&mut self, perms: &Permissions, tx: &mut Tx) {
+        let Some(service) = self.onboarding.pending else {
+            return;
+        };
+        if perms.grant(service) != Grant::Granted {
+            return;
+        }
+        self.onboarding.pending = None;
+        self.undock();
+        if let Some(window) = &self.onboarding.dock.window {
+            window.focus();
+        }
+        if let Some(next) = perms.missing() {
+            tx.focus(format!("grant-{}", next.id()), true);
+        }
     }
 }
 
