@@ -170,6 +170,10 @@ impl super::SessionLoop {
         let sidebar = self.sidebar();
         self.size_workspace_panes(conn, sidebar).await?;
         self.subscribe_bootstrap(conn, subscribe_layout).await?;
+        // First attach of this process: offer what a restart ended.
+        if let Some(job) = crate::attach::restore_hint::job(self.control_dial.as_deref()) {
+            let _ = self.jobs.start(job);
+        }
         // Initial ATTACHED bypasses fold_frame_outcome. Its declared agents
         // still need explicit streams, but only after the first close drain.
         let agents = self

@@ -41,6 +41,7 @@ mod notify;
 mod onboarding;
 pub mod paint;
 mod project_collapse;
+mod restore_hint;
 // `PaneSlot` and the client-local indices built over it. Shared
 // vocabulary the driver and its siblings both read; see the module doc.
 mod pane_state;
@@ -93,6 +94,11 @@ pub(crate) fn set_new_tab_after_current(on: bool) {
 // ponytail: process-wide flag, like the one above; thread it through the
 // driver's settings if a second attach ever shares the process.
 static DIM_UNFOCUSED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Set `[restore] on-start`, which silences the restore hint.
+pub(crate) fn set_server_restores(on: bool) {
+    restore_hint::set_server_restores(on);
+}
 
 /// Set `[chrome] dim-unfocused`.
 pub(crate) fn set_dim_unfocused(on: bool) {
