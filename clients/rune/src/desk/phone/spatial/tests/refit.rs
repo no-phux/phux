@@ -195,3 +195,20 @@ fn native_sub_threshold_and_scale_only_changes_keep_a_usable_measurement() {
     rt.update(|d, _| d.zoom(Some(d.font_size + 2.0)));
     assert!(!resizes(&client).is_empty());
 }
+
+#[test]
+fn using_the_desktop_takes_back_a_pane_another_client_resized() {
+    let (client, mut rt) = fixture(false);
+    let desk = &mut rt.state;
+    let (cols, rows) = desk.fitted[&id(1)].0;
+    // The fixture's server grid stays 80x24: some other client's size.
+    assert_ne!((cols, rows), (80, 24));
+    resizes(&client);
+    desk.fit();
+    assert!(
+        resizes(&client).is_empty(),
+        "a plain fit trusts its last proposal"
+    );
+    desk.reclaim_fits();
+    assert!(resizes(&client).contains(&(id(1), cols, rows)));
+}

@@ -103,6 +103,32 @@ impl Desk {
         }
     }
 
+    /// Using this window takes back panes another client resized (a phone,
+    /// say), as typing on the phone does: the size follows whoever is
+    /// driving. A fit the live grid no longer shows is forgotten and re-sent.
+    pub(super) fn reclaim_fits(&mut self) {
+        let Some(client) = self.client.clone() else {
+            return;
+        };
+        let stale: Vec<ResourceId> = self
+            .fitted
+            .iter()
+            .filter(|(terminal, (size, _))| {
+                self.view_of(terminal)
+                    .and_then(|view| client.acquire_view(view))
+                    .is_some_and(|frame| (frame.cols, frame.rows) != *size)
+            })
+            .map(|(terminal, _)| terminal.clone())
+            .collect();
+        if stale.is_empty() {
+            return;
+        }
+        for terminal in &stale {
+            self.fitted.remove(terminal);
+        }
+        self.fit();
+    }
+
     fn fit_terminal(
         &mut self,
         client: &Client,
