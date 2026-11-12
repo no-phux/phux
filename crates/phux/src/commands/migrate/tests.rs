@@ -182,6 +182,55 @@ fn advanced_takes_tmux_s_prefix_without_asking() {
 }
 
 #[test]
+fn beginner_mode_skips_unbinds_phux_already_makes_up_for() {
+    let home = run_home();
+    let only = [MigrateSource::Tmux];
+    let beginner = discover(&home, None, &only, None, &Setup::default());
+    let tmux = find(&beginner, MigrateSource::Tmux);
+    for text in [r#"unbind '"'"#, "unbind %"] {
+        assert!(
+            matches!(verdict(tmux, text), Verdict::Covered(r) if r.contains("advanced mode writes it")),
+            "{text}"
+        );
+    }
+    let advanced = Setup {
+        advanced: true,
+        ..Setup::default()
+    };
+    let advanced = discover(&home, None, &only, None, &advanced);
+    let tmux = find(&advanced, MigrateSource::Tmux);
+    assert!(matches!(
+        verdict(tmux, "unbind %"),
+        Verdict::Write { value, .. } if value.as_str() == Some("none")
+    ));
+}
+
+/// The acceptance case of issue #2255.
+#[test]
+fn the_issue_run_carries_the_setup_over_and_needs_little_of_me() {
+    let home = run_home();
+    let sources = discover(&home, None, &[], None, &Setup::default());
+    let tmux = find(&sources, MigrateSource::Tmux);
+    // A prefix question to ask: tmux's C-b against phux's C-a (the default).
+    assert_eq!(tmux.prefix.as_deref(), Some("C-b"));
+    assert!(matches!(
+        verdict(tmux, "set -g history-limit 100000"),
+        Verdict::Write { .. }
+    ));
+    assert!(matches!(
+        verdict(tmux, r#"bind r source-file ~/.tmux.conf \; display "tmux.conf reloaded""#),
+        Verdict::Write { value, .. } if value.as_str() == Some("reload-config")
+    ));
+    let needs_me: Vec<_> = sources
+        .iter()
+        .flat_map(|s| &s.rows)
+        .filter(|row| matches!(row.verdict, Verdict::Skip(_) | Verdict::Raw))
+        .map(|row| row.text.as_str())
+        .collect();
+    assert!(needs_me.len() <= 5, "{needs_me:?}");
+}
+
+#[test]
 fn lines_with_nothing_to_do_are_kept_apart_from_lost_ones() {
     let home = run_home();
     let sources = discover(&home, None, &[], None, &Setup::default());

@@ -82,9 +82,9 @@ Write every line marked "write" exactly as given, in the table it names, once. A
 - ~/.tmux.conf:10 `setw -g mode-keys vi`
   nothing to do: already phux's behavior: phux copy mode uses vi keys
 - ~/.tmux.conf:13 `unbind '"'`
-  write `'"' = "none"` in `[keybindings.prefix-table]` (replaces the phux default `{ action = "split-pane", direction = "horizontal" }`)
+  nothing to do: your own `-` does what phux's `"` does, and phux ships `-` already; removing `"` loses a key and gains nothing (advanced mode writes it)
 - ~/.tmux.conf:14 `unbind %`
-  write `"%" = "none"` in `[keybindings.prefix-table]` (replaces the phux default `{ action = "split-pane", direction = "vertical" }`)
+  nothing to do: your own `|` does what phux's `%` does, and phux ships `|` already; removing `%` loses a key and gains nothing (advanced mode writes it)
 - ~/.tmux.conf:15 `bind | split-window -h -c "#{pane_current_path}"`
   already phux's default, not written
 - ~/.tmux.conf:16 `bind - split-window -v -c "#{pane_current_path}"`

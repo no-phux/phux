@@ -4,12 +4,12 @@
 use std::collections::BTreeMap;
 use std::path::Path;
 
-use phux_config::keybind::parse_chord;
+use phux_config::keybind::{parse_chord, parse_chord_sequence};
 use toml::Value;
 
 use super::{
-    Class, Ctx, Line, Source, Table, Verdict, against_default, covered, expand, read_tree, skip,
-    tilde,
+    Class, Ctx, Line, Row, Source, Table, Verdict, against_default, covered, expand, read_tree,
+    skip, tilde,
 };
 use crate::commands::MigrateSource;
 use crate::commands::config::import_tmux::translate;
@@ -23,6 +23,9 @@ pub(super) fn read(path: &Path, ctx: &Ctx<'_>) -> Source {
     let mut decide =
         |file: &Path, line: &str| tmux_line(file, line, &mut prefix, &mut options, ctx);
     read_tree(path, &mut files, &mut rows, &mut decide);
+    if !ctx.setup.advanced {
+        redundant_unbinds(&mut rows, ctx);
+    }
     let chosen = ctx.prefix();
     let used = if options.contains_key("prefix") {
         format!("tmux's prefix was {prefix}")
@@ -49,6 +52,47 @@ pub(super) fn read(path: &Path, ctx: &Ctx<'_>) -> Source {
         rows,
         note,
         prefix: Some(prefix),
+    }
+}
+
+/// Beginner mode: an unbind of a phux default whose action the user's own
+/// config binds to a key phux already ships for it (`unbind '"'` beside
+/// `bind - split-window -v`) removes a key and gives nothing back.
+fn redundant_unbinds(rows: &mut [Row], ctx: &Ctx<'_>) {
+    let shipped = |table: Table, key: &str| {
+        let bindings = match table {
+            Table::Prefix => &ctx.defaults.prefix_table,
+            Table::Global => &ctx.defaults.global,
+            _ => return None,
+        };
+        let sequence = parse_chord_sequence(key).ok()?;
+        bindings
+            .iter()
+            .find(|(spelling, _)| parse_chord_sequence(spelling).ok().as_ref() == Some(&sequence))
+            .map(|(_, action)| action)
+    };
+    let kept: Vec<_> = rows
+        .iter()
+        .filter(|row| row.class == Class::Binding)
+        .filter_map(|row| match &row.verdict {
+            Verdict::Default { table, key } => Some((*table, shipped(*table, key)?, key.clone())),
+            _ => None,
+        })
+        .collect();
+    for row in rows.iter_mut().filter(|row| row.class == Class::Unbinding) {
+        let Verdict::Write { table, key, .. } = &row.verdict else {
+            continue;
+        };
+        let Some(action) = shipped(*table, key) else {
+            continue;
+        };
+        if let Some((_, _, by)) = kept.iter().find(|(t, a, _)| t == table && *a == action) {
+            row.verdict = Verdict::Covered(format!(
+                "your own `{by}` does what phux's `{key}` does, and phux ships `{by}` \
+                 already; removing `{key}` loses a key and gains nothing (advanced mode \
+                 writes it)"
+            ));
+        }
     }
 }
 

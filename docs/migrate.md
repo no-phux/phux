@@ -32,7 +32,10 @@ When it reads a tmux config, `phux migrate` asks two questions before it
 starts the agent. Enter takes the default.
 
 1. **Setup mode.** Beginner (the default) keeps phux's defaults wherever they
-   already do what your tmux did, and writes only real differences.
+   already do what your tmux did, and writes only real differences. An
+   `unbind '"'` beside your own `bind - split-window -v` is not written:
+   phux already ships <kbd>-</kbd> as that split, so removing <kbd>"</kbd>
+   would only lose a key.
    Advanced mirrors tmux as closely as phux allows: it writes your tmux
    unbinds, and tmux's prefix becomes the default answer to the next
    question. Your tmux bindings win over phux's defaults in both modes.
