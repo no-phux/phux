@@ -301,6 +301,7 @@ impl Desk {
             Shortcut::FindSelection => self.find_selection(),
             Shortcut::CopyMode => self.toggle_copy_mode(),
             Shortcut::CopyConfig => self.copy_config(tx),
+            Shortcut::RestoreSessions => self.restore_sessions(),
             Shortcut::Bare => self.toggle_bare(),
         }
     }

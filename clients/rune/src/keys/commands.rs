@@ -287,6 +287,7 @@ pub const COMMANDS: &[Command] = &[
     ),
     row!(Shortcut::Inbox, "Open Inbox", [m('i')], [l('i')]),
     row!(Shortcut::CopyConfig, "Copy Settings as TOML", [], []),
+    row!(Shortcut::RestoreSessions, "Restore Sessions", [], []),
     row!(Shortcut::Galaxy, "Open Galaxy", [], []),
     row!(Shortcut::Reef, "Open Reef", [], []),
     row!(Shortcut::Pitch, "Open Pitch", [], []),
