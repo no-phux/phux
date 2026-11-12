@@ -25,9 +25,9 @@ phux-protocol = { path = "../../crates/phux-protocol" }
 # Rune has no releases; apps pin a `dev` revision (dev is fast-forward only).
 # Phux supplies Inter and the terminal font through AppSpec::fonts. Keep
 # Rune's other defaults, but don't carry its unused embedded font copies.
-rune = { git = "https://github.com/anomalyco/rune", rev = "4fbd2d6ac4dd12595dd8ed0b7849b28a309c7c00", default-features = false, features = ["accessibility", "dbus", "metal-backend", "ogg-audio", "svg"] }
-rune-notify = { git = "https://github.com/anomalyco/rune", rev = "4fbd2d6ac4dd12595dd8ed0b7849b28a309c7c00" }
-rune-perf = { git = "https://github.com/anomalyco/rune", rev = "4fbd2d6ac4dd12595dd8ed0b7849b28a309c7c00" }
+rune = { git = "https://github.com/anomalyco/rune", rev = "01349dbf2dd01a4e0e1cf3e5aa6e9dc0521291a1", default-features = false, features = ["accessibility", "dbus", "metal-backend", "ogg-audio", "svg"] }
+rune-notify = { git = "https://github.com/anomalyco/rune", rev = "01349dbf2dd01a4e0e1cf3e5aa6e9dc0521291a1" }
+rune-perf = { git = "https://github.com/anomalyco/rune", rev = "01349dbf2dd01a4e0e1cf3e5aa6e9dc0521291a1" }
 # Never called directly: Rune's decoder guesses the format, so these
 # features (unified with Rune's png/jpeg) let typed documents draw GIF/WebP.
 image = { version = "0.25", default-features = false, features = ["gif", "webp"] }
@@ -41,10 +41,16 @@ url = "2"
 # The same digest the runtime uses, for a downloaded update.
 sha2 = "0.11"
 
-# The Dock count and System Settings' window, which Rune doesn't wrap; same objc2 as Rune's.
+# The Dock count and System Settings' window; same objc2 as Rune's. Rune's
+# taskbar badge still retains destroyed windows (see src/dock.rs).
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = "0.6.5"
 objc2-foundation = { version = "0.3.2", features = ["NSString"] }
+
+[patch.crates-io]
+# Rune's UAX #9 L1 fix for trailing whitespace and isolate boundaries. Git
+# dependencies do not inherit the upstream workspace's patch table.
+parley_engine = { git = "https://github.com/anomalyco/rune", rev = "01349dbf2dd01a4e0e1cf3e5aa6e9dc0521291a1" }
 
 [profile.release]
 lto = "thin"

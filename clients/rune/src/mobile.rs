@@ -336,7 +336,7 @@ fn with_target(target: Target, session: Option<String>) -> State {
 }
 
 pub fn set_active(rt: &mut rune::Runtime<State>, active: bool) {
-    rt.cancel_composition();
+    rt.finish_composition();
     rt.update(|state, tx| {
         state.preedit = None;
         let now = SystemTime::now();

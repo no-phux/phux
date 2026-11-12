@@ -1,5 +1,6 @@
-//! The Dock icon's count. Rune has no call for it, so this is unsafe (as is
-//! `system_settings`): a label on `NSApp.dockTile`.
+//! The Dock icon's count: a label on `NSApp.dockTile`. Keep this until Rune's
+//! `set_taskbar` drops destroyed windows from its summed badge map; otherwise
+//! recreating a host can retain the old count. See phux-bxvht.
 
 /// Show `count` on the Dock icon; zero clears it. Headless runs have no tile.
 #[cfg(target_os = "macos")]
