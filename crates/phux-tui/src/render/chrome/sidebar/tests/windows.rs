@@ -52,6 +52,23 @@ fn renders_each_window_label() {
     assert!(plain.contains('│'), "separator missing: {plain:?}");
 }
 
+/// Two tabs with one name get the strip's index so their rows differ;
+/// a unique name stays bare.
+#[test]
+fn only_a_shared_tab_name_carries_its_index() {
+    let mut p = SidebarPainter::new(Theme::default());
+    p.set_roster(vec![active_roster()]);
+    p.set_windows(vec![
+        win("home", false),
+        win("home", true),
+        win("logs", false),
+    ]);
+    let plain = strip_ansi(&paint_to_string(&mut p, r(0, 0, 20, 14)));
+    assert!(plain.contains("○ 0 home"), "{plain:?}");
+    assert!(plain.contains("● 1 home"), "{plain:?}");
+    assert!(plain.contains("○ logs"), "{plain:?}");
+}
+
 #[test]
 fn unchanged_repaint_is_a_no_op() {
     let mut p = SidebarPainter::new(Theme::default());

@@ -52,7 +52,7 @@ impl SidebarPainter {
     /// One window's row under its session: the agent badge (or a plain dot,
     /// filled when active, attention dot when asking), label, and branch
     /// right-aligned. The active row's bed is laid by [`Self::compose`].
-    pub(super) fn name_line(&self, w: &WindowInfo, text_w: u16) -> Line<'static> {
+    pub(super) fn name_line(&self, index: usize, w: &WindowInfo, text_w: u16) -> Line<'static> {
         let (glyph, glyph_style) = self.window_glyph(w);
         let exited = w.exited_marker();
         let exited_w = exited.as_ref().map_or(0, |marker| display_width(marker));
@@ -63,7 +63,16 @@ impl SidebarPainter {
             .saturating_sub(4) // nested indent + glyph + space
             .saturating_sub(if w.attention { 2 } else { 0 })
             .saturating_sub(exited_w);
-        let label = clip_text(&w.name, label_w);
+        // Two tabs with one name (both `home`) read as the same row; only
+        // then does the label carry the strip's index, so unique names keep
+        // their columns for the branch.
+        let shared = self.windows.iter().filter(|o| o.name == w.name).count() > 1;
+        let name = if shared {
+            format!("{index} {}", w.name)
+        } else {
+            w.name.clone()
+        };
+        let label = clip_text(&name, label_w);
         let style = if w.active {
             Style::default()
                 .fg(self.theme.accent)

@@ -134,7 +134,7 @@ impl SidebarPainter {
             SidebarRow::WindowName(i) => self
                 .windows
                 .get(i)
-                .map_or_else(|| Line::from(""), |w| self.name_line(w, text_w)),
+                .map_or_else(|| Line::from(""), |w| self.name_line(i, w, text_w)),
             SidebarRow::NeedsYou(j) => self
                 .needs_you
                 .get(j)
