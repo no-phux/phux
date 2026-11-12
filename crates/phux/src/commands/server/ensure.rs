@@ -1,10 +1,11 @@
 //! One-shot startup watchdog and ownership of its temporary service commands.
 
 use std::cell::RefCell;
+use std::fs::File;
 use std::io::{self, Read as _};
 use std::os::unix::process::CommandExt as _;
 use std::path::PathBuf;
-use std::process::{Child, Command, Output, Stdio};
+use std::process::{Child, Command, ExitStatus, Output, Stdio};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Duration;
 
@@ -164,19 +165,57 @@ async fn watch(socket_path: PathBuf, seed: bool) -> io::Result<super::EnsureDisp
 /// The daemon inherits nothing but the stdio set on `command`: a descriptor
 /// this process inherited would otherwise stay open for the server's lifetime,
 /// and a caller reading this process's output to EOF would wait on the server
-/// rather than on us (phux-5wxp.5).
-pub(super) fn spawn_daemon(command: &mut Command) -> io::Result<Child> {
+/// rather than on us (phux-5wxp.5). Its stdin and stdout are `/dev/null`;
+/// stderr is `log`, else `/dev/null`.
+pub(super) fn spawn_daemon(command: &mut Command, log: Option<File>) -> io::Result<Daemon> {
     phux_server::daemon::withhold_inherited_descriptors();
     HELPERS.with_borrow(|helpers| {
         let Some(helpers) = helpers else {
-            return command.spawn();
+            return spawn_detached(command, log);
         };
         let state = lock(helpers);
         state.check_active()?;
-        let child = command.spawn();
+        let daemon = spawn_detached(command, log);
         drop(state);
-        child
+        daemon
     })
+}
+
+/// A spawned daemon, watched without being owned: dropping it neither kills
+/// nor reaps it.
+pub(super) struct Daemon(Pid);
+
+impl Daemon {
+    /// A non-blocking `waitpid`, as `Child::try_wait`.
+    pub(super) fn try_wait(&self) -> io::Result<Option<ExitStatus>> {
+        use std::os::unix::process::ExitStatusExt as _;
+        let status = rustix::process::waitpid(Some(self.0), rustix::process::WaitOptions::NOHANG)?;
+        Ok(status.map(|(_, status)| ExitStatus::from_raw(status.as_raw())))
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+fn spawn_detached(command: &mut Command, log: Option<File>) -> io::Result<Daemon> {
+    let child = command
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(log.map_or_else(Stdio::null, Stdio::from))
+        .spawn()?;
+    let pid = Pid::from_child(&child);
+    Ok(Daemon(pid))
+}
+
+#[cfg(target_os = "macos")]
+#[allow(
+    clippy::needless_pass_by_value,
+    clippy::needless_pass_by_ref_mut,
+    reason = "the same signature as on other platforms"
+)]
+fn spawn_detached(command: &mut Command, log: Option<File>) -> io::Result<Daemon> {
+    let pid = phux_server::daemon::spawn_disclaimed(command, log.as_ref())?;
+    Pid::from_raw(pid)
+        .map(Daemon)
+        .ok_or_else(|| io::Error::other("posix_spawn returned no pid"))
 }
 
 /// Service commands have no useful stdout here. Capture stderr for `run_tool`'s
