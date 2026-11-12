@@ -125,7 +125,7 @@ pub(super) async fn apply(action: Option<ResolvedAction>, ctx: &mut DispatchCtx<
     match result {
         Ok(Management::Confirm(confirm)) => ctx.overlays.push(Box::new(confirm)),
         Ok(Management::Result(lines)) => notice(ctx, "Session result", lines),
-        Err(error) => notice(ctx, "Session management failed", vec![error]),
+        Err(error) => notice(ctx, "Session not changed", vec![error]),
     }
 }
 
@@ -177,7 +177,7 @@ async fn manage(
     .ok_or_else(|| "The selected session no longer exists; nothing changed.".to_owned())?;
     if deleting && record.members != 0 {
         return Err(format!(
-            "Session {:?} is not empty ({} members); delete never terminates work. Use Kill session… to end it.",
+            "Session {:?} still holds {}; deleting never ends work. Kill session… ends it.",
             record.name, record.members
         ));
     }
@@ -191,7 +191,7 @@ async fn manage(
             .await
             .map_err(|err| err.to_string())?;
         Ok(Management::Result(vec![format!(
-            "Deleted empty session {:?} (0 members).",
+            "Deleted empty session {:?}.",
             record.name
         )]))
     } else {
@@ -218,7 +218,7 @@ fn kill_result(name: &str, killed: Option<u32>) -> String {
     // a lost acknowledgement into a claim of success.
     killed.map_or_else(
         || "Kill request sent; outcome unconfirmed. Refresh the session list before taking further action.".to_owned(),
-        |count| format!("Killed session {name:?}; {count} members ended."),
+        |count| format!("Killed session {name:?}; {count} ended."),
     )
 }
 
@@ -245,27 +245,28 @@ fn confirmation(
             .args
             .insert("id".to_owned(), toml::Value::Integer(i64::from(id.get())));
     }
-    let mut lines = vec![format!(
-        "Session {:?}: {} members now.",
-        record.name, record.members
-    )];
-    lines.push(if deleting {
-        "Delete this empty session. No work will be terminated.".to_owned()
+    let mut lines = if deleting {
+        vec![format!(
+            "Delete empty session {:?}. Nothing is ended.",
+            record.name
+        )]
     } else {
-        "End ALL work in this session, INCLUDING resources added meanwhile, and delete the session. This affects other attached clients too.".to_owned()
-    });
+        vec![
+            format!(
+                "End session {:?} and everything in it ({} now).",
+                record.name, record.members
+            ),
+            "Anything added before this runs ends too, for every attached client.".to_owned(),
+        ]
+    };
     lines.extend(view.degradation.notices().iter().cloned());
-    lines.push("Enter confirm · Esc cancel".to_owned());
+    let (title, keys) = if deleting {
+        ("Delete empty session?", "⏎ delete · esc")
+    } else {
+        ("Kill session?", "⏎ kill · esc")
+    };
     Management::Confirm(SessionConfirm {
-        notice: ToastOverlay::new(
-            if deleting {
-                "Delete empty session?"
-            } else {
-                "Kill session?"
-            },
-            lines,
-            theme,
-        ),
+        notice: ToastOverlay::new(title, lines, theme).with_keys(keys),
         action,
     })
 }
@@ -393,10 +394,11 @@ mod tests {
             .collect();
         assert!(
             text.contains("work")
-                && text.contains("2 members now")
-                && text.contains("INCLUDING resources added")
-                && text.contains("meanwhile")
-                && text.contains("attached clients too"),
+                && text.contains("everything in it (2 now)")
+                && text.contains("Anything added before this runs")
+                && text.contains("attached client")
+                && text.contains("⏎ kill · esc")
+                && !text.contains("any key"),
             "{text}"
         );
         assert_eq!(
@@ -420,7 +422,7 @@ mod tests {
             panic!("result")
         };
         assert!(
-            lines.iter().any(|line| line.contains("2 members ended")),
+            lines.iter().any(|line| line.contains("\"work\"; 2 ended")),
             "{lines:?}"
         );
         drop(conn);
@@ -449,7 +451,7 @@ mod tests {
             .await
             .err()
             .unwrap();
-        assert!(error.contains("not empty (1 members)") && error.contains("never terminates"));
+        assert!(error.contains("still holds 1") && error.contains("never ends work"));
         drop(conn);
         assert!(edits(&server.await.unwrap()).is_empty());
     }
@@ -470,7 +472,7 @@ mod tests {
         else {
             panic!("result")
         };
-        assert!(lines[0].contains("0 members"));
+        assert!(lines[0].starts_with("Deleted"));
         drop(conn);
         assert!(matches!(
             edits(&server.await.unwrap()).as_slice(),
@@ -592,12 +594,12 @@ mod tests {
             .unwrap();
             let result = manage(&mut conn, confirmation.action, &Theme::default()).await;
             if deleting {
-                assert!(result.err().unwrap().contains("never terminates"));
+                assert!(result.err().unwrap().contains("never ends work"));
             } else {
                 let Management::Result(lines) = result.unwrap() else {
                     panic!("result")
                 };
-                assert!(lines[0].contains("1 members ended"), "{lines:?}");
+                assert!(lines[0].contains("; 1 ended"), "{lines:?}");
             }
             drop(conn);
             let seen = server.await.unwrap();
@@ -645,7 +647,7 @@ mod tests {
         let line = kill_result("work", None);
         assert!(line.contains("outcome unconfirmed"));
         assert!(!line.contains("Killed session"));
-        assert!(kill_result("work", Some(0)).contains("0 members ended"));
+        assert!(kill_result("work", Some(0)).contains("; 0 ended"));
     }
 
     #[tokio::test]
