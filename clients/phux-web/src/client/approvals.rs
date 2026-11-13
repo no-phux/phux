@@ -301,16 +301,13 @@ pub(super) fn retain_uncertainty(canvas: &HtmlCanvasElement, status: &str) {
     let Some(document) = canvas.owner_document() else {
         return;
     };
-    let Some(parent) = canvas.parent_element() else {
-        return;
-    };
     let notice = document
         .get_element_by_id("phux-approval-uncertainty")
         .or_else(|| {
             let notice = document.create_element("div").ok()?;
             notice.set_id("phux-approval-uncertainty");
             notice.set_attribute("role", "alert").ok()?;
-            parent.insert_before(&notice, Some(canvas)).ok()?;
+            mount_beside_canvas(&document, canvas, &notice).ok()?;
             Some(notice)
         });
     if let Some(notice) = notice {
@@ -428,6 +425,34 @@ mod tests {
         );
         assert!(notice.parent_element().is_some());
         parent.remove();
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    #[wasm_bindgen_test::wasm_bindgen_test]
+    fn a_detached_canvas_keeps_its_uncertain_decision_notice() {
+        let document = web_sys::window().unwrap().document().unwrap();
+        let canvas: HtmlCanvasElement = document
+            .create_element("canvas")
+            .unwrap()
+            .dyn_into()
+            .unwrap();
+        assert!(canvas.parent_element().is_none());
+        retain_uncertainty(
+            &canvas,
+            "Decision unconfirmed for detached request; never retried.",
+        );
+        let notice = document
+            .get_element_by_id("phux-approval-uncertainty")
+            .unwrap();
+        assert!(document.body().unwrap().contains(Some(&notice)));
+        retain_uncertainty(&canvas, "");
+        assert!(
+            notice
+                .text_content()
+                .unwrap()
+                .contains("unconfirmed for detached request")
+        );
+        notice.remove();
     }
 
     #[cfg(target_arch = "wasm32")]

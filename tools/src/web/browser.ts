@@ -57,6 +57,7 @@ export const REQUIRED_TESTS = [
   "approval_cards_render_untrusted_text_without_interpreting_html",
   "new_requests_keep_existing_decision_buttons_and_keyboard_focus",
   "uncertain_decisions_survive_connection_ui_replacement",
+  "a_detached_canvas_keeps_its_uncertain_decision_notice",
 ] as const;
 const AUTH_REQUIRED_TESTS = ["blackholed_wt_falls_back_to_authenticated_wss"];
 const TEST_TOKEN = "11".repeat(32);
