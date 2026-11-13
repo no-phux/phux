@@ -1,3 +1,4 @@
+# shellcheck shell=bash
 # Sourced by test-install.sh after its installing section: install.sh on Linux
 # offering `phux service install`. Uses its package, install_to and fail.
 # Its HOME is a temp dir; refuse anything else (phux-gh85y).
