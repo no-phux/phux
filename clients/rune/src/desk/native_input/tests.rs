@@ -408,6 +408,36 @@ fn native_fields_edit_synchronously_and_never_reach_the_terminal() {
 }
 
 #[test]
+fn native_session_filter_returns_to_the_first_result_after_scrolling() {
+    use phux_client_runtime::control::Topology;
+    use phux_protocol::ids::{ResourceId, SessionId, WindowId};
+    use phux_protocol::wire::info::{SessionInfo, SessionSnapshot};
+
+    let (client, mut rt, mut bridge) = field("phone-session-query");
+    let snapshot = SessionSnapshot::new(SessionId::new(1), WindowId::new(1), ResourceId::local(1))
+        .with_sessions(
+            (1..=20)
+                .map(|n| SessionInfo::new(SessionId::new(n), format!("session {n}")))
+                .collect(),
+        );
+    rt.update(|d, _| d.topology = Some(Topology::from_snapshot(&snapshot)));
+    rt.frame(0.0);
+    rt.update(|_, tx| tx.scroll_to_instant("phone-session-list", 0.0, 500.0));
+    rt.frame(0.0);
+    assert!(replace(&mut bridge, &mut rt, "session", 7, 7).unwrap());
+    rt.settle_all();
+    rt.frame(1.0);
+    let list = rt.presented("phone-session-list").unwrap().0;
+    let first = rt.presented("phone-session-1").unwrap().0;
+    assert!(
+        first[1] >= list[1] && first[1] - list[1] < 8.0,
+        "{first:?} vs {list:?}"
+    );
+    assert_eq!(bridge.snapshot(&rt).text, "session");
+    no_terminal_input(&client);
+}
+
+#[test]
 fn composition_is_staged_and_committed_once_with_native_selection() {
     let (_, mut rt, mut bridge) = field("settings-query");
     let snap = bridge.snapshot(&rt);
