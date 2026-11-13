@@ -161,3 +161,56 @@ fn phone_navigation_native_render_frames() {
         }
     }
 }
+
+#[test]
+fn retina_navigation_renders_in_native_safe_area_and_desktop_phone_viewports() {
+    let gpu = rune::render::Gpu::headless();
+    for (size, scale, native) in [
+        ((320, 568), 2, false),
+        ((393, 852), 3, false),
+        // UIKit has already removed the status/home safe areas and keyboard.
+        ((320, 340), 2, true),
+        ((393, 480), 3, true),
+    ] {
+        let (_, mut rt) = fixture();
+        detailed_inventory(&mut rt);
+        rt.set_viewport((size.0 as f32, size.1 as f32), scale as f32);
+        rt.set_system_reduced_motion(true);
+        rt.update(|d, _| {
+            if native {
+                d.native = Some(crate::mobile::Platform {
+                    target: phux_client_runtime::Target::uds("/tmp/not-used"),
+                    active: true,
+                    connection_requested: false,
+                    paste_requested: false,
+                    away_since: None,
+                });
+            }
+            d.open_phone_sessions();
+        });
+        settle_for_snapshot(&mut rt);
+        tap(&mut rt, "phone-session-query", 0.1);
+        rt.update(|d, tx| {
+            d.phone.as_mut().unwrap().query.replace_text("review");
+            d.phone_search_edited(tx);
+        });
+        settle_for_snapshot(&mut rt);
+        rt.update(|_, tx| tx.scroll_to_instant("phone-session-list", 0.0, 100_000.0));
+        settle_for_snapshot(&mut rt);
+        let pane = rt.presented("phone-session-pane-@2").unwrap().0;
+        let dock = rt.presented("phone-session-new").unwrap().0;
+        let list = rt.presented("phone-session-list").unwrap().0;
+        assert!(pane[1] >= list[1] && pane[1] + pane[3] <= dock[1]);
+        assert!(dock[1] + dock[3] <= size.1 as f32);
+        assert_eq!(rt.find("phone-keyboard").is_none(), native);
+        let mut renderer = rune::render::Renderer::new(&gpu.device, rune::render::OFFSCREEN_FORMAT);
+        let pixels = paint(
+            &gpu,
+            &mut renderer,
+            &mut rt,
+            (size.0 * scale, size.1 * scale),
+            &format!("retina-{scale}x-native-{native}"),
+        );
+        assert_eq!(pixels.len(), (size.0 * size.1 * scale * scale * 4) as usize);
+    }
+}
