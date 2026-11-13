@@ -130,6 +130,12 @@ pub(crate) enum Command {
     #[usage(help_heading = "Sessions", display_order = 15)]
     Rename(RenameArgs),
 
+    #[usage(help_heading = "Sessions", display_order = 16)]
+    Lock(LockArgs),
+
+    #[usage(help_heading = "Sessions", display_order = 16)]
+    Unlock(UnlockArgs),
+
     #[usage(help_heading = "Sessions", display_order = 17)]
     Rm(RmArgs),
 

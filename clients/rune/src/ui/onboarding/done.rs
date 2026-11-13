@@ -88,6 +88,15 @@ pub(super) fn done(desk: &Desk, p: &Ink) -> El {
                 .align(Align::Center),
         )
         .child(list)
+        // Optional: the phone app, from the same screen Settings shows.
+        .child(
+            el().w_full()
+                .max_w(400.0)
+                .radius(12.0)
+                .fill(p.raised.alpha(0.6))
+                .border(1.0, p.separator)
+                .child(super::super::pair::panel(desk, p, false)),
+        )
         .child(el().h(4.0))
         .child(primary(
             "onboarding-start",

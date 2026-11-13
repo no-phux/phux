@@ -154,10 +154,28 @@ fn every_step_renders_its_parts() {
     snap(&mut rt, "4b-migrating");
 
     let mut rt = window(Step::Done);
-    for key in ["done-key-0", "done-key-1", "done-key-2", "onboarding-start"] {
+    for key in [
+        "done-key-0",
+        "done-key-1",
+        "done-key-2",
+        "onboarding-start",
+        "pair-show",
+    ] {
         assert!(has(&rt, key), "{key}");
     }
     snap(&mut rt, "5-done");
+    // A fresh window: a second snap's renderer misses glyphs the first uploaded.
+    let mut rt = window(Step::Done);
+    rt.update(|d, _| d.pairing_fixture());
+    for t in [3.0, 4.0, 5.0] {
+        rt.frame(t);
+    }
+    rt.update(|_, tx| tx.scroll_into_view("pair-new"));
+    for t in [6.0, 7.0] {
+        rt.frame(t);
+    }
+    assert!(has(&rt, "pair-qr") && !has(&rt, "pair-devices"));
+    snap(&mut rt, "5-done-pair");
 }
 
 #[test]
@@ -237,4 +255,24 @@ fn the_glass_slider_steps_and_clamps() {
     rt.frame(0.3);
     assert_eq!(rt.state.settings.glass, 100);
     snap(&mut rt, "2b-look-glass");
+}
+
+#[test]
+fn skill_shows_installed_with_no_agent_found() {
+    let mut rt = window(Step::Agents);
+    rt.update(|d, _| {
+        let undetected = |agent, state| AgentSkill {
+            detected: false,
+            ..skill(agent, state)
+        };
+        d.onboarding.skills = Probe::Ready(vec![
+            undetected("claude", "missing"),
+            undetected("codex", "up_to_date"),
+        ]);
+    });
+    settle(&mut rt);
+    assert!(
+        !has(&rt, "onboarding-install"),
+        "the shared skill is in place"
+    );
 }

@@ -21,6 +21,17 @@ prunes its old arrangement entries atomically. Splits are binary, with finite
 ratios strictly between zero and one. Focus, selection, scroll and zoom are
 client-local; a shared layout edit must not take over human focus.
 
+A group can be **locked** (`ARRANGEMENT_LOCK`, behind `features_ext.TAB_LOCK`).
+While it is, terminating its last member, a legacy kill that would empty it,
+and an `ARRANGEMENT_REPLACE` that drops it are all refused with
+`INVALID_ARGUMENT` naming the tab, and nothing changes. A replacement
+never locks or unlocks: the server carries each lock over by group id, so a
+client that does not know the flag cannot clear it. `SESSION_KILL` overrides
+locks, because a locked tab guards against closing that tab, not against
+ending the session. A natural exit is not a close, so it isn't refused. The
+flag is stored in the arrangement record, so it survives a hot upgrade, and on
+the wire it is a trailing byte of the group record that older peers skip.
+
 The pure [core apply function](../crates/phux-core/src/apply.rs) owns these
 invariants; [arrangement validation](../crates/phux-core/src/arrangement.rs)
 owns tree validity. Expected revisions, operation ids and live activation

@@ -82,6 +82,9 @@ fn prepare_process(
         phux_server::daemon::withhold_inherited_descriptors();
     }
 
+    // Agents in panes run `phux`; make sure one resolves.
+    phux_server::daemon::expose_own_cli();
+
     let socket_path = socket.unwrap_or_else(default_socket_path);
     // Fail before the banner when the path cannot fit in a `sockaddr_un`.
     crate::commands::ensure_socket_path_fits(&socket_path)?;
@@ -239,7 +242,9 @@ fn listener_summary(
         };
         let addr = slot.addr.as_deref().unwrap_or("?");
         let _ = write!(extra, " + {scheme}{addr}");
-        if !slot.bound {
+        if let Some(error) = &slot.waiting {
+            let _ = write!(extra, " (waiting to bind: {error})");
+        } else if !slot.bound {
             let reason = slot.disabled_reason.map_or(
                 "unknown",
                 phux_protocol::wire::ListenerDisabledReason::as_str,

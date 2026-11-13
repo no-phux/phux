@@ -6,7 +6,10 @@
 //! the surface is listed and granted like any other mirror's. A hot upgrade
 //! carries the pane and the mirror re-adopts its surface by publishing; the
 //! resumed image's task finds the session by name and leaves it. A pane that
-//! exits is replaced after a backoff; a cold start recreates every one. A
+//! exits is replaced after a backoff; a cold start recreates every one. An
+//! adopted `phux` mirror or producer whose binary was replaced since it
+//! started (`phux update`) is restarted on the installed one, so new input
+//! intents reach it; it re-adopts the same surface. A
 //! config reload re-reads the entries: a removed entry's session is closed,
 //! a changed one restarted. On macOS the server's children cannot hold
 //! Screen Recording access (TCC), so the pane only holds the session and
@@ -17,13 +20,14 @@
 //! same loop: each entry's command runs in a `producer-<name>` session and
 //! is restarted, adopted and reloaded exactly like a mirror.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 use std::time::Instant;
 
 use phux_config::mirror::MIRROR_SESSION_PREFIX;
 use phux_config::producer::PRODUCER_SESSION_PREFIX;
 use phux_config::{MirrorConfigEntry, ProducerConfigEntry};
+use phux_terminal_api::actor::TerminalResource as _;
 use tokio::sync::Notify;
 use tokio_util::sync::CancellationToken;
 use tracing::{info, warn};
@@ -56,7 +60,15 @@ async fn supervise(
         state.with_mut(|s| s.mirror_demand_mut().config.clone_from(&entries.0));
         let mirrors = state.with(|s| s.mirror_demand().wanted());
         let units = units(&mirrors, &entries.1);
-        tick(&state, units, &mut slots, Instant::now(), &root_token);
+        let outdated = outdated(&state, &units, &slots).await;
+        tick(
+            &state,
+            units,
+            &mut slots,
+            &outdated,
+            Instant::now(),
+            &root_token,
+        );
         tokio::select! {
             () = root_token.cancelled() => return,
             () = tokio::time::sleep(TICK) => {}
@@ -109,10 +121,56 @@ fn units(
     wanted
 }
 
+/// The adopted (found running, not started here) `phux` sessions whose
+/// process runs a binary replaced since it started.
+async fn outdated(
+    state: &SharedState,
+    wanted: &BTreeMap<String, Vec<String>>,
+    slots: &BTreeMap<String, Slot>,
+) -> BTreeSet<String> {
+    let Ok(installed) = state.with(crate::state::ServerState::native_host_executable) else {
+        return BTreeSet::new();
+    };
+    let mut outdated = BTreeSet::new();
+    for (name, argv) in wanted {
+        let ours = argv.first().is_some_and(|word| word == "phux")
+            && !(cfg!(target_os = "macos") && name.starts_with(MIRROR_SESSION_PREFIX));
+        if !ours || slots.get(name).is_some_and(Slot::was_started) {
+            continue;
+        }
+        for terminal in terminals(state, name) {
+            let process = super::commands::query_process_facet(&terminal).await;
+            let Some(child) = process.and_then(|p| p.exit.is_none().then_some(p.child?)) else {
+                continue;
+            };
+            if phux_resource::proc_query::runs_replaced_executable(child.pid, &installed)
+                == Some(true)
+            {
+                outdated.insert(name.clone());
+            }
+        }
+    }
+    outdated
+}
+
+/// The terminal handles of `name`'s panes.
+fn terminals(state: &SharedState, name: &str) -> Vec<phux_terminal_api::actor::TerminalHandle> {
+    state.with(|s| {
+        let Some(session) = s.find_session_by_name(name) else {
+            return Vec::new();
+        };
+        s.session_terminals(session)
+            .into_iter()
+            .filter_map(|pane| s.resource_handle(pane)?.terminal().ok().cloned())
+            .collect()
+    })
+}
+
 fn tick(
     state: &SharedState,
     wanted: BTreeMap<String, Vec<String>>,
     slots: &mut BTreeMap<String, Slot>,
+    outdated: &BTreeSet<String>,
     now: Instant,
     root_token: &CancellationToken,
 ) {
@@ -133,8 +191,12 @@ fn tick(
     for (name, args) in wanted {
         let slot = slots.entry(name.clone()).or_default();
         let mut alive = live(state, &name);
-        if alive && slot.changed(&args) {
-            info!(session = %name, "standing mirror changed; restarting it");
+        if alive && (slot.changed(&args) || outdated.contains(&name)) {
+            if outdated.contains(&name) {
+                info!(session = %name, "standing session runs a replaced phux binary; restarting it");
+            } else {
+                info!(session = %name, "standing mirror changed; restarting it");
+            }
             stop(state, &name);
             *slot = Slot::default();
             alive = false;
@@ -306,11 +368,25 @@ mod tests {
                 let wanted = units(&[mirror], &producers);
                 assert_eq!(wanted.keys().map(String::as_str).collect::<Vec<_>>(), names);
                 let mut slots = BTreeMap::new();
-                tick(&state, wanted, &mut slots, Instant::now(), &token);
+                tick(
+                    &state,
+                    wanted,
+                    &mut slots,
+                    &BTreeSet::new(),
+                    Instant::now(),
+                    &token,
+                );
                 for name in names {
                     assert!(live(&state, name), "{name} started");
                 }
-                tick(&state, BTreeMap::new(), &mut slots, Instant::now(), &token);
+                tick(
+                    &state,
+                    BTreeMap::new(),
+                    &mut slots,
+                    &BTreeSet::new(),
+                    Instant::now(),
+                    &token,
+                );
                 let mut gone = false;
                 for _ in 0..100 {
                     gone =
@@ -321,6 +397,71 @@ mod tests {
                     tokio::time::sleep(std::time::Duration::from_millis(50)).await;
                 }
                 assert!(gone, "removed entries' sessions close");
+                token.cancel();
+            })
+            .await;
+    }
+
+    /// An adopted `phux` producer keeps running until `phux update` replaces
+    /// the binary under it; then it is restarted on the installed one. One
+    /// this supervisor started is left alone.
+    #[tokio::test(flavor = "current_thread")]
+    async fn an_adopted_producer_on_a_replaced_binary_restarts() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let dir = tempfile::tempdir().expect("tempdir");
+        let fake = dir.path().join("phux");
+        let sleep = ["/bin/sleep", "/usr/bin/sleep"]
+            .into_iter()
+            .find(|p| std::path::Path::new(p).exists())
+            .expect("sleep");
+        // macOS kills a copied system binary: link it, swap in a script.
+        std::os::unix::fs::symlink(sleep, &fake).expect("link");
+        let local = tokio::task::LocalSet::new();
+        local
+            .run_until(async move {
+                let state = SharedState::new();
+                state.set_terminal_engine(Arc::new(phux_terminal::TerminalEngine));
+                state.with_mut(|s| s.set_native_host_executable(Some(fake.clone())));
+                let token = CancellationToken::new();
+                let producer = ProducerConfigEntry {
+                    name: "feed".to_owned(),
+                    command: vec!["phux".to_owned(), "30".to_owned()],
+                };
+                let wanted = units(&[], &[producer]);
+                let name = "producer-feed";
+                let none = BTreeSet::new();
+                let mut started = BTreeMap::new();
+                tick(
+                    &state,
+                    wanted.clone(),
+                    &mut started,
+                    &none,
+                    Instant::now(),
+                    &token,
+                );
+                assert!(live(&state, name));
+                let panes = |state: &SharedState| {
+                    state.with(|s| s.session_terminals(s.find_session_by_name(name).unwrap()))
+                };
+                let first = panes(&state);
+                // A hot upgrade's supervisor has no slot for what it adopts.
+                let adopted = BTreeMap::new();
+                assert!(outdated(&state, &wanted, &adopted).await.is_empty());
+                let next = dir.path().join("phux.new");
+                std::fs::write(&next, "#!/bin/sh\nexec sleep 30\n").expect("write");
+                std::fs::set_permissions(&next, std::fs::Permissions::from_mode(0o755))
+                    .expect("chmod");
+                std::fs::rename(&next, &fake).expect("swap");
+                assert!(
+                    outdated(&state, &wanted, &started).await.is_empty(),
+                    "started here"
+                );
+                let found = outdated(&state, &wanted, &adopted).await;
+                assert_eq!(found.iter().map(String::as_str).collect::<Vec<_>>(), [name]);
+                let mut adopted = adopted;
+                tick(&state, wanted, &mut adopted, &found, Instant::now(), &token);
+                assert!(live(&state, name), "restarted");
+                assert_ne!(panes(&state), first, "on a new pane");
                 token.cancel();
             })
             .await;

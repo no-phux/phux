@@ -162,3 +162,20 @@ fn a_session_a_restart_ended_offers_to_restore_it() {
     let p = super::super::ink(true, rune::Color::WHITE, None);
     assert!(remedy(&Standing::Ended(2), false, &p).is_some());
 }
+
+#[test]
+fn a_missing_cli_is_installed_from_the_window_and_a_failure_says_why() {
+    let p = super::super::ink(true, rune::Color::WHITE, None);
+    assert_eq!(
+        words(&Standing::NoCli(None), "here", false).0,
+        "phux isn't installed"
+    );
+    assert!(remedy(&Standing::NoCli(None), false, &p).is_some());
+    let failed = words(
+        &Standing::NoCli(Some("no release".to_owned())),
+        "here",
+        false,
+    );
+    assert!(failed.1.contains("no release"), "{failed:?}");
+    assert!(remedy(&Standing::Installing, false, &p).is_none());
+}

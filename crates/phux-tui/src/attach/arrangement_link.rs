@@ -204,6 +204,7 @@ mod tests {
             work,
             WireDoc {
                 groups: vec![ArrangementGroup {
+                    locked: false,
                     id: [7; 16],
                     name: Some("main".to_owned()),
                     tree: ArrangementNode::Leaf(EntryRef {
@@ -282,6 +283,7 @@ mod tests {
             work,
             WireDoc {
                 groups: vec![ArrangementGroup {
+                    locked: false,
                     id: [7; 16],
                     name: Some("main".to_owned()),
                     tree: ArrangementNode::Leaf(EntryRef {

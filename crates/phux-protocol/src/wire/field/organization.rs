@@ -111,6 +111,10 @@ pub mod org {
     pub const LAUNCH_DIAGNOSTIC: u32 = 47;
     /// Whether executor evidence is still waiting for a durable store write (`bool`).
     pub const PERSISTENCE_PENDING: u32 = 48;
+    /// An arrangement group's id (16 bytes).
+    pub const GROUP: u32 = 49;
+    /// Whether a group is locked against close (`bool`).
+    pub const LOCKED: u32 = 50;
 }
 
 /// Fields of a `LaunchSpec` value (`docs/organization.md`).

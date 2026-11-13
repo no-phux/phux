@@ -178,11 +178,19 @@ fn words(standing: &Standing, machine: &str, remote: bool) -> (&'static str, Str
     };
     match standing {
         Standing::Starting => ("Starting phux…", String::new()),
-        Standing::NoCli => (
+        Standing::Installing => (
+            "Installing phux…",
+            "Downloading and checking the latest release. This takes a minute.".to_owned(),
+        ),
+        Standing::NoCli(None) => (
             "phux isn't installed",
-            "This app runs on the phux command-line tool. Install it, and this window connects \
-             on its own."
+            "This app runs on the phux command-line tool. Install it here, or paste the line \
+             below into Terminal; either way this window connects on its own."
                 .to_owned(),
+        ),
+        Standing::NoCli(Some(why)) => (
+            "phux didn't install",
+            format!("The installer said: {why}. Check your connection and try again."),
         ),
         // The server says which side is behind.
         Standing::Incompatible(words) if server_behind(words) && remote => (
@@ -269,7 +277,15 @@ fn said(desk: &Desk, standing: &Standing) -> (String, String) {
 /// whether this computer's can fix it.
 fn remedy(standing: &Standing, updates: bool, p: &Ink) -> Option<El> {
     Some(match standing {
-        Standing::Starting | Standing::Connecting(_) | Standing::Opening => return None,
+        Standing::Starting | Standing::Installing | Standing::Connecting(_) | Standing::Opening => {
+            return None;
+        }
+        Standing::NoCli(None) => {
+            action("Install phux", "placeholder-install", p, Desk::install_phux)
+        }
+        Standing::NoCli(Some(_)) => {
+            action("Try again", "placeholder-install", p, Desk::install_phux)
+        }
         Standing::NoSessions => action("New session", "placeholder-session", p, Desk::new_session),
         Standing::NoTerminals => action(
             "New terminal",
@@ -283,10 +299,7 @@ fn remedy(standing: &Standing, updates: bool, p: &Ink) -> Option<El> {
                 d.updater.check_now();
             })
         }
-        Standing::Incompatible(_)
-        | Standing::NoCli
-        | Standing::Unreachable(_)
-        | Standing::Closed(_) => retry(p),
+        Standing::Incompatible(_) | Standing::Unreachable(_) | Standing::Closed(_) => retry(p),
     })
 }
 
@@ -308,7 +321,7 @@ pub fn placeholder(desk: &Desk, p: &Ink) -> El {
     };
     let failed = matches!(
         standing,
-        Standing::Unreachable(_) | Standing::Incompatible(_)
+        Standing::Unreachable(_) | Standing::Incompatible(_) | Standing::NoCli(Some(_))
     );
     let color = if failed { p.danger } else { p.dim };
     let actions = repair
@@ -342,7 +355,7 @@ pub fn placeholder(desk: &Desk, p: &Ink) -> El {
         .px(if desk.phone.is_some() { 16.0 } else { 0.0 })
         .child(text(title).font(TextStyle::new(15.0, 600.0)).color(color))
         .child(text(detail).font(LABEL).color(p.dim).wrap())
-        .children((standing == Standing::NoCli).then(|| install_line(p)))
+        .children(matches!(standing, Standing::NoCli(_)).then(|| install_line(p)))
         .child(buttons)
 }
 

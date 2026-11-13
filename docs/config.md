@@ -296,6 +296,16 @@ every other app:
 quick-terminal = "ctrl+backquote"   # or "alt+space", "cmd+shift+t"; "none" is off
 ```
 
+`ssh-agent` names the socket of the SSH agent Rune's `ssh://` hosts use. An
+app opened from the Dock doesn't see your shell's `SSH_AUTH_SOCK`, so a key
+held only in an agent such as 1Password's is otherwise not offered
+([SSH](./ssh.md#keys-in-an-agent)):
+
+```toml
+[rune]
+ssh-agent = "~/Library/Group Containers/2BUA8C4S2C.com.1password/t/agent.sock"
+```
+
 `[rune.keys]` binds Rune's own shortcuts. The key is a chord and the value
 is a command, or `"none"` to take a built-in chord away:
 
@@ -315,7 +325,7 @@ are the app's own.
 The command names:
 
 - Tabs and panes: `new-terminal` (a new tab), `close-terminal`, `close-tab`,
-  `next-tab`, `previous-tab`, `tab-1` to `tab-9`, `rename-tab`,
+  `next-tab`, `previous-tab`, `tab-1` to `tab-9`, `rename-tab`, `lock-tab`,
   `split-right`, `split-down`, `zoom-pane`, `focus-left`, `focus-right`,
   `focus-up`, `focus-down`, `next-terminal`, `previous-terminal`.
 - Sessions and machines: `new-session`, `switch-session`, `rename-session`,

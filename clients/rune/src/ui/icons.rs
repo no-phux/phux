@@ -23,6 +23,11 @@ icon!(
 );
 icon!(CLOSE, "phux-close", "M4.5 4.5l7 7M11.5 4.5l-7 7");
 icon!(PLUS, "phux-plus", "M8 4v8M4 8h8");
+icon!(
+    LOCK,
+    "phux-lock",
+    "M4.5 7.5h7v6h-7zM5.5 7.5V5.5a2.5 2.5 0 0 1 5 0v2"
+);
 icon!(CHEVRON, "phux-chevron", "M4.5 6.5L8 10l3.5-3.5");
 icon!(
     CHEVRON_RIGHT,

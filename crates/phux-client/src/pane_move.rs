@@ -1044,14 +1044,14 @@ mod tests {
         fixture.arrangement(
             play,
             WireDoc {
-                groups: vec![ArrangementGroup {
-                    id: [3; 16],
-                    name: None,
-                    tree: ArrangementNode::Leaf(EntryRef {
+                groups: vec![ArrangementGroup::new(
+                    [3; 16],
+                    None,
+                    ArrangementNode::Leaf(EntryRef {
                         entry: [4; 16],
                         target: EntryTarget::Member(b),
                     }),
-                }],
+                )],
             },
         );
         let (pane_a, pane_b) = (fixture.live(&a).unwrap(), fixture.live(&b).unwrap());

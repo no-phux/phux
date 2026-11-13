@@ -160,7 +160,9 @@ pub fn command_rule(command: &Command) -> &'static Rule {
         Command::ResourceRelaunch { .. } => &C_RESOURCE_RELAUNCH,
         Command::OrganizationUndo { .. } => &C_ORGANIZATION_UNDO,
         Command::ArrangementGet { .. } => &C_ARRANGEMENT_GET,
-        Command::ArrangementReplace { .. } => &C_ARRANGEMENT_REPLACE,
+        Command::ArrangementReplace { .. } | Command::ArrangementLock { .. } => {
+            &C_ARRANGEMENT_REPLACE
+        }
         Command::DelegateAgent { .. } | Command::RevokeDelegation { .. } => &C_DELEGATION,
     }
 }

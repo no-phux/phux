@@ -93,6 +93,11 @@ The desktop app does this from **Add a machine** under the sidebar's machine
 switcher: it takes `me@host` or a machine from your tailnet and runs
 `phux host add --install` over your existing ssh access.
 
+A server that listens on its tailnet address and starts before Tailscale has
+that address, as at boot, keeps retrying the bind and starts listening as soon
+as the address appears, with no restart; `phux doctor` shows the listener as
+waiting to bind meanwhile.
+
 ## Using a machine
 
 ```sh
@@ -255,10 +260,14 @@ This prints a pairing link and a QR code. On the client:
 phux attach --remote mini --code 'https://phux.sh/connect?...'
 ```
 
-**The link is a secret.** Anyone who has it can connect. The token in it
-works until you revoke it, or until `--expires` if you set one. The
-enrollment ticket that comes with a QR code works once and expires after ten
-minutes. A printed or piped link needs `--enroll` to include one.
+**The link is a secret.** It works once: the device that pairs with it keeps
+working until you revoke it, and a link nobody used stops working after ten
+minutes. It carries a one-time enrollment ticket the phone gets its own
+certificate with. `--reusable` mints a token any device can use until
+revoked, `--expires 1h` one that stops then, and `--no-enroll` leaves the
+ticket out for a device already enrolled. The token
+and ticket sit after the `#`, so a link opened in a browser never sends them
+to phux.sh. The phone app reads that form from version 0.4.83.
 
 `phux pair --qr` shows only the QR code, for pairing a phone without showing
 the token on screen. `phux pair --secret-file PATH` writes the link to a
@@ -373,7 +382,7 @@ Minimal CLI, when `min` is neither on `PATH` nor in `~/.local/bin`.
 ## Managing credentials
 
 ```sh
-phux pair ls                     # tokens this server has issued
+phux pair ls                     # tokens issued: unused, active, expired
 phux pair revoke ID
 phux pair prune --unused-for 30d
 phux workload list               # enrolled client certificates

@@ -15,6 +15,33 @@ pub const USAGE: &str = "usage: phux-rune [--socket PATH] [--session NAME] [--ph
 /// The line that installs the CLI, for the window that can't find one.
 pub const INSTALL: &str = "curl -fsSL https://phux.sh/install | sh";
 
+/// The script `INSTALL` downloads, as this build was made with.
+const INSTALLER: &str = include_str!("../../../scripts/install.sh");
+
+/// Install the CLI, and on macOS phux Server.app, the way `INSTALL` would:
+/// the same verified download, `~/.local/bin`, and shell profile line.
+/// Blocks for as long as the download takes.
+pub fn install() -> Result<(), String> {
+    run_installer(INSTALLER)
+}
+
+/// Run `script` as `sh -c` and, when it fails, say why in its last words.
+fn run_installer(script: &str) -> Result<(), String> {
+    let out = Command::new("/bin/sh")
+        .args(["-c", script, "install.sh"])
+        .stdin(Stdio::null())
+        .output()
+        .map_err(|error| format!("could not run the installer: {error}"))?;
+    if out.status.success() {
+        return Ok(());
+    }
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    let last = stderr.lines().rfind(|line| !line.trim().is_empty());
+    Err(last
+        .map(|line| line.trim_start_matches("phux: error: ").trim().to_owned())
+        .unwrap_or_else(|| format!("The installer stopped ({}).", out.status)))
+}
+
 #[derive(Debug, Default)]
 pub struct Options {
     pub socket: Option<PathBuf>,
@@ -442,6 +469,15 @@ mod tests {
         let calls = std::fs::read_to_string(&log).unwrap();
         assert_eq!(calls, "--socket\n--socket\n");
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_failed_install_says_why_in_the_installer_s_last_words() {
+        assert_eq!(run_installer("exit 0"), Ok(()));
+        let why = "printf 'phux: info: fetching\\nphux: error: no release\\n\\n' >&2; exit 1";
+        assert_eq!(run_installer(why), Err("no release".to_owned()));
+        assert!(run_installer("exit 3").expect_err("fails").contains('3'));
     }
 
     #[cfg(unix)]

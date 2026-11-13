@@ -11,9 +11,9 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use phux_client_core::layout::{LayoutNode, SplitDir};
-use phux_client_runtime::control::{Observation, ProjectionFence, Status, Topology};
+use phux_client_runtime::control::{ProjectionFence, Status, Topology};
 use phux_client_runtime::publication::GridFrame;
-use phux_client_runtime::{Client, Listener, ViewId};
+use phux_client_runtime::{Client, ViewId};
 use phux_protocol::ids::{ArrangementKey, OperationId, ResourceId, SessionKey};
 use rune::{Tx, Waker};
 
@@ -63,20 +63,10 @@ mod worktree;
 
 pub use layout::SplitPath;
 pub use notice::{Notice, NoticeKind};
-pub use palette::{CONTEXT_MENU, with_menus};
+pub use palette::{CONTEXT_MENU, TAB_MENU, with_menus};
 pub use reorder::Grab;
 pub use settings::Category as SettingsCategory;
 pub use tabs::{Renaming, Tab};
-
-/// Wakes Rune's loop from the runtime's driver thread. Only posts; never
-/// re-enters the client.
-struct Wake(Waker);
-
-impl Listener for Wake {
-    fn on_activity(&self) {
-        (self.0)();
-    }
-}
 
 /// How long a requested terminal may stay missing from the server's list
 /// before the window gives up on it (a spawn's id lands before its listing).
@@ -238,6 +228,8 @@ pub struct Desk {
     font_epoch: u64,
     /// The window's device pixels per point, as the last view build saw it.
     pub scale: Cell<f32>,
+    /// The system appearance as the last view build saw it; `None` before.
+    pub system_dark: Cell<Option<bool>>,
     /// Each pane's grid area in points, from its last layout.
     areas: HashMap<ResourceId, [f32; 2]>,
     /// The size this window last asked the server for, per terminal.
@@ -389,6 +381,7 @@ impl Desk {
             font_family,
             font_epoch: rune::text::font_epoch(),
             scale: Cell::new(2.0),
+            system_dark: Cell::new(None),
             areas: HashMap::new(),
             fitted: HashMap::new(),
             layout: None,
@@ -439,7 +432,7 @@ impl Desk {
             | self.tick_fleet()
             | self.pump_link()
             | self.pump_links()
-            | self.follow_omarchy()
+            | self.pump_settings(tx)
             | self.pump_onboarding(tx)
             | self.expire_notice(tx);
         let Some(client) = self.client.clone() else {
@@ -481,38 +474,5 @@ impl Desk {
         self.fit();
         self.wake_phone_fit(tx);
         changed | self.blink(&client, tx) | self.tend_link(tx)
-    }
-
-    /// What an observation says about the connection itself. The topology
-    /// is only sampled when the batch can have changed it.
-    fn follow_connection(&mut self, client: &Client, observation: &mut Observation) -> bool {
-        let mut changed = observation.status != self.status;
-        if observation.connection_epoch != self.epoch {
-            self.retire_documents(client);
-            self.first_contact();
-            self.epoch = observation.connection_epoch;
-            self.focus_told = None;
-            changed |= self.reopen_after_reconnect(client);
-        }
-        self.status = observation.status;
-        let failure = observation.last_error.take();
-        if let Some(error) = failure.filter(|_| self.status.is_terminal()) {
-            changed |= self.error.as_ref() != Some(&error);
-            self.failed_with(&error);
-            self.error = Some(error);
-        }
-        if let Some(topology) = observation.topology.take()
-            && self.topology.as_ref() != Some(&topology)
-        {
-            self.topology = Some(topology);
-            changed = true;
-        }
-        if self.server.is_none() {
-            self.server = client.server().map(|info| format!("{info:?}"));
-        }
-        if changed || observation.events.iter().any(events::changes_resources) {
-            changed |= self.refresh_resources(client);
-        }
-        changed
     }
 }

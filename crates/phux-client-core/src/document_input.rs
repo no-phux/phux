@@ -59,15 +59,51 @@ pub fn scroll(view: [f32; 2], frame: [u32; 2], content: [f32; 2]) -> Option<Docu
 }
 
 /// The host clipboard text a reply to [`DocumentInput::CopyClipboard`]
-/// carries; `None` for any other reply.
+/// carries; `None` for any other reply, or an empty one (nothing copied).
 #[must_use]
 pub fn copied_text(result: &CommandResult) -> Option<String> {
     match result {
-        CommandResult::OkWith(CommandValue::Bytes(bytes)) => {
+        CommandResult::OkWith(CommandValue::Bytes(bytes)) if !bytes.is_empty() => {
             Some(String::from_utf8_lossy(bytes).into_owned())
         }
         _ => None,
     }
+}
+
+/// What a phone says when a copy came back empty.
+pub const NOTHING_COPIED: &str = "Nothing copied on the host";
+/// What a phone says when the host never answered a copy with text.
+pub const COPY_TOO_OLD: &str = "This host's mirror is too old to copy; update phux on the host";
+
+/// The reply to a copy (`CopyClipboard`, `CopySelection`): `Some(Ok)` with
+/// the text, `Some(Err)` with what to say instead, or `None` for a refusal
+/// the caller maps as for any intent (no grant, no producer).
+///
+/// An empty text is nothing copied, never a success. A bare `Ok`, an
+/// undecodable intent or a copy nobody answered (the server's timeout)
+/// means the server or the producer predates the intent.
+#[must_use]
+pub fn copy_outcome(result: &CommandResult) -> Option<Result<String, &'static str>> {
+    Some(match result {
+        CommandResult::OkWith(CommandValue::Bytes(bytes)) if bytes.is_empty() => {
+            Err(NOTHING_COPIED)
+        }
+        CommandResult::OkWith(CommandValue::Bytes(bytes)) => {
+            Ok(String::from_utf8_lossy(bytes).into_owned())
+        }
+        CommandResult::Error { code, message } => match code {
+            ErrorCode::Unsupported
+            | ErrorCode::InvalidCommand
+            | ErrorCode::MalformedMessage
+            | ErrorCode::UnknownMessageType => Err(COPY_TOO_OLD),
+            // The server's words when the producer never answers the copy.
+            ErrorCode::Unavailable if message.ends_with("did not answer the copy") => {
+                Err(COPY_TOO_OLD)
+            }
+            _ => return None,
+        },
+        _ => Err(COPY_TOO_OLD),
+    })
 }
 
 /// Why a document stopped taking this client's input.
@@ -298,5 +334,30 @@ mod tests {
         assert_eq!(inputs.copied(5, &text).as_deref(), Some("host"));
         assert_eq!(inputs.answer(5, &text), Ok(None));
         assert_eq!(inputs.copied(5, &text), None, "settled");
+    }
+
+    #[test]
+    fn an_empty_or_unanswered_copy_is_never_copied() {
+        let bytes = |text: &str| CommandResult::OkWith(CommandValue::Bytes(text.into()));
+        let error = |code, message: &str| CommandResult::Error {
+            code,
+            message: message.to_owned(),
+        };
+        assert_eq!(copy_outcome(&bytes("host")), Some(Ok("host".to_owned())));
+        assert_eq!(copy_outcome(&bytes("")), Some(Err(NOTHING_COPIED)));
+        assert_eq!(copied_text(&bytes("")), None, "Rune copies nothing either");
+        assert_eq!(copy_outcome(&CommandResult::Ok), Some(Err(COPY_TOO_OLD)));
+        let timeout = error(
+            ErrorCode::Unavailable,
+            "the surface's producer did not answer the copy",
+        );
+        assert_eq!(copy_outcome(&timeout), Some(Err(COPY_TOO_OLD)));
+        assert_eq!(
+            copy_outcome(&error(ErrorCode::Unsupported, "")),
+            Some(Err(COPY_TOO_OLD))
+        );
+        let producer = error(ErrorCode::Unavailable, NOTHING_COPIED);
+        assert_eq!(copy_outcome(&producer), None, "the producer's own words");
+        assert_eq!(copy_outcome(&error(ErrorCode::PermissionDenied, "")), None);
     }
 }

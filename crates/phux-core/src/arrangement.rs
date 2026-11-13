@@ -324,6 +324,11 @@ pub struct Group {
     pub name: Option<String>,
     /// The group's layout.
     pub tree: LayoutNode<EntryRef>,
+    /// Locked against close: no close of its last member, and no
+    /// replacement that drops it, until it is unlocked. Only
+    /// `ArrangementLock` changes it; a session kill still ends it.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub locked: bool,
 }
 
 /// One unnamed group showing `members` side by side, every leaf an even
@@ -348,6 +353,7 @@ pub fn first_group(members: &[ResourceKey], fresh: &mut dyn FreshKeys) -> Option
         id: fresh.fresh(),
         name: None,
         tree,
+        locked: false,
     })
 }
 
@@ -421,26 +427,69 @@ impl Arrangement {
     pub fn prune(&mut self, resource: ResourceKey) -> bool {
         let before = self.groups.len();
         let mut changed = false;
-        self.groups =
-            std::mem::take(&mut self.groups)
-                .into_iter()
-                .filter_map(|g| {
-                    if !g
-                        .tree
-                        .leaves()
-                        .iter()
-                        .any(|e| e.resource() == Some(resource))
-                    {
-                        return Some(g);
-                    }
-                    changed = true;
-                    let Group { id, name, tree } = g;
-                    collapse(tree, &|e: &EntryRef| e.resource() == Some(resource))
-                        .map(|tree| Group { id, name, tree })
+        self.groups = std::mem::take(&mut self.groups)
+            .into_iter()
+            .filter_map(|g| {
+                if !g
+                    .tree
+                    .leaves()
+                    .iter()
+                    .any(|e| e.resource() == Some(resource))
+                {
+                    return Some(g);
+                }
+                changed = true;
+                let Group {
+                    id,
+                    name,
+                    tree,
+                    locked,
+                } = g;
+                collapse(tree, &|e: &EntryRef| e.resource() == Some(resource)).map(|tree| Group {
+                    id,
+                    name,
+                    tree,
+                    locked,
                 })
-                .collect();
+            })
+            .collect();
         changed || before != self.groups.len()
     }
+}
+
+/// The locked tab closing `closing` would empty, by its label.
+///
+/// That is the first locked group of their sessions' arrangements whose
+/// every member entry is in `closing`; `None` when no locked tab would go.
+#[must_use]
+pub fn locked_tab_closed_by(org: &crate::org::Org, closing: &[ResourceKey]) -> Option<String> {
+    let sessions: HashSet<SessionKey> = closing
+        .iter()
+        .filter_map(|key| org.resource(key).map(|r| r.session))
+        .collect();
+    sessions.into_iter().find_map(|session| {
+        let key = org.session(&session)?.arrangement?;
+        let groups = &org.arrangement(&key)?.groups;
+        groups.iter().enumerate().find_map(|(index, group)| {
+            let members: Vec<_> = group
+                .tree
+                .leaves()
+                .into_iter()
+                .filter_map(EntryRef::resource)
+                .collect();
+            let emptied = !members.is_empty() && members.iter().all(|m| closing.contains(m));
+            (group.locked && emptied).then(|| tab_label(group, index))
+        })
+    })
+}
+
+/// How a refusal names a group: its name, else its position.
+#[must_use]
+pub fn tab_label(group: &Group, index: usize) -> String {
+    group
+        .name
+        .as_ref()
+        .map_or_else(|| format!("tab {index}"), |name| format!("tab {name:?}"))
 }
 
 /// [`Arrangement::validate`] over a bare group list.

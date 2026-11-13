@@ -7,6 +7,7 @@
 //! fall back to typing.
 
 use std::io::{Read as _, Write as _};
+use std::os::unix::process::CommandExt as _;
 use std::process::{Command, Stdio};
 
 use phux_client::attach::connection::Connection;
@@ -79,9 +80,13 @@ impl Clipboard {
             return Ok(());
         }
         // `wl-copy` stays behind to serve the selection: its output must not
-        // be a pipe this process waits on.
+        // be a pipe this process waits on, and it must not share the
+        // mirror's process group, which the server hangs up whenever the
+        // mirror's pane closes (a restart, an upgrade), emptying the
+        // clipboard.
         let mut child = self
             .command(&self.set)
+            .process_group(0)
             .stdin(Stdio::piped())
             .stdout(Stdio::null())
             .stderr(Stdio::null())
@@ -298,5 +303,32 @@ mod tests {
         dry.set("nope").unwrap();
         assert!(!dir.path().join("board").exists());
         assert!(dry.get().is_err());
+    }
+
+    /// What stays behind to serve the clipboard leaves the mirror's process
+    /// group, so closing the mirror's pane does not take the clipboard.
+    #[test]
+    fn the_clipboard_owner_outlives_the_mirrors_process_group() {
+        let dir = tempfile::tempdir().unwrap();
+        let pid_file = dir.path().join("owner");
+        let mut board = fake(dir.path(), "cat 'BOARD'");
+        board.set = vec![
+            "sh".to_owned(),
+            "-c".to_owned(),
+            format!(
+                "cat > /dev/null; sleep 30 & echo $! > '{}'",
+                pid_file.display()
+            ),
+        ];
+        board.set("text").unwrap();
+        let owner: i32 = std::fs::read_to_string(&pid_file)
+            .unwrap()
+            .trim()
+            .parse()
+            .unwrap();
+        let owner = rustix::process::Pid::from_raw(owner).unwrap();
+        let group = rustix::process::getpgid(Some(owner)).unwrap();
+        let _ = rustix::process::kill_process(owner, rustix::process::Signal::KILL);
+        assert_ne!(group, rustix::process::getpgrp());
     }
 }

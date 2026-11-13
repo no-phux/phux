@@ -560,4 +560,13 @@ pub static SERVER_METHODS: &[MethodSpec] = &[
             wire_name: ServerFeatureExt::SessionProject.wire_name(),
         })
     ),
+    method!(
+        "ARRANGEMENT_LOCK",
+        Carrier::Command(COMMAND_TAG_ARRANGEMENT_LOCK),
+        [C_ARRANGEMENT_REPLACE],
+        Some(FeatureGate::FeaturesExt {
+            mask: ServerFeatureExt::TabLock.mask(),
+            wire_name: ServerFeatureExt::TabLock.wire_name(),
+        })
+    ),
 ];

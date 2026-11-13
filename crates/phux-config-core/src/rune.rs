@@ -28,6 +28,10 @@ pub struct RuneCfg {
     /// Global chord that shows and hides the quick terminal, such as
     /// `"ctrl+backquote"`; unset or `"none"` leaves it off.
     pub quick_terminal: Option<String>,
+    /// Socket of the SSH agent `ssh://` hosts use, such as
+    /// `"~/.1password/agent.sock"`: an app opened from the Dock does not
+    /// see the shell's `SSH_AUTH_SOCK`.
+    pub ssh_agent: Option<String>,
     /// `[rune.keys]`: a chord such as `"cmd+shift+d"` and the command it
     /// runs, or `"none"` to take a built-in chord away.
     #[serde(skip_serializing_if = "std::collections::BTreeMap::is_empty")]

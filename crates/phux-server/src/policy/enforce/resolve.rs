@@ -296,6 +296,9 @@ fn arrangement_owner(s: &ServerState, request: Request<'_>) -> Option<Point> {
     let (Command::ArrangementGet { arrangement: key }
     | Command::ArrangementReplace {
         arrangement: key, ..
+    }
+    | Command::ArrangementLock {
+        arrangement: key, ..
     }) = command
     else {
         return None;

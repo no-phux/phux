@@ -9,6 +9,8 @@ use super::{Desk, NoticeKind};
 use crate::grid;
 use crate::theme::{self, Theme};
 
+pub mod pair;
+
 /// Settings destinations, separate from preferences and connection state.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Category {
@@ -59,6 +61,8 @@ pub struct SettingsUi {
     pub query: rune::TextEdit,
     /// The existing theme palette returns here on both accept and cancel.
     pub return_from_themes: bool,
+    /// Pair a phone: the code on screen and the devices that can connect.
+    pub pairing: pair::Pairing,
 }
 
 /// What the person chose, as stored.
@@ -117,6 +121,14 @@ pub(super) fn load_file() -> (RuneCfg, Option<String>) {
     match phux_config_core::loader::load_client() {
         Ok(config) => {
             crate::session_color::learn(config.sessions);
+            if let Some(socket) = config.rune.ssh_agent.as_deref().map(str::trim) {
+                let home = std::env::var_os("HOME").unwrap_or_default();
+                let socket = socket.strip_prefix("~/").map_or_else(
+                    || socket.into(),
+                    |rest| std::path::Path::new(&home).join(rest),
+                );
+                phux_client_runtime::connection::set_ssh_agent(socket);
+            }
             (config.rune, None)
         }
         Err(err) => (RuneCfg::default(), Some(err.to_string())),
@@ -252,6 +264,9 @@ impl Desk {
     }
 
     pub fn settings_category(&mut self, category: Category) {
+        if category == Category::RemoteHosts && self.phone.is_none() {
+            self.list_devices();
+        }
         self.settings_ui.category = Some(category);
         self.settings_ui.query.clear();
         self.settings_ui.query.focused = false;
@@ -331,14 +346,37 @@ impl Desk {
 
     /// Install the chosen palette on the runtime. Live panes repaint with it.
     pub(super) fn apply_theme(&mut self) {
-        if let Some(client) = &self.client {
-            client.set_terminal_theme(self.settings.theme.map(Theme::terminal));
-        }
+        self.install_terminal_theme();
         self.generation += 1;
     }
 
+    fn install_terminal_theme(&self) {
+        if let Some(client) = &self.client {
+            let dark = self.system_dark.get().unwrap_or(true);
+            client.set_terminal_theme(
+                self.settings
+                    .theme
+                    .map_or_else(|| Theme::system_terminal(dark), |t| Some(t.terminal())),
+            );
+        }
+    }
+
+    /// The view saw the system appearance: with no theme picked, the
+    /// terminal follows a change to it.
+    pub fn follow_appearance(&self, dark: bool) {
+        if self.system_dark.replace(Some(dark)) != Some(dark) && self.settings.theme.is_none() {
+            self.install_terminal_theme();
+        }
+    }
+
     /// Omarchy changed its theme: a window following it repaints.
-    pub(super) fn follow_omarchy(&mut self) -> bool {
+    /// Omarchy's theme and Pair a phone's answers. True when either changed
+    /// what is on screen.
+    pub(super) fn pump_settings(&mut self, tx: &mut Tx) -> bool {
+        self.follow_omarchy() | self.pump_pairing(tx)
+    }
+
+    fn follow_omarchy(&mut self) -> bool {
         let Some(shown) = self.settings.theme.filter(|t| t.id == "omarchy") else {
             return false;
         };

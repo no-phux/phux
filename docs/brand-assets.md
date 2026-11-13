@@ -21,6 +21,43 @@ in phux-brand, inspect its preview, and publish a new approved version.
 Consumer CI rejects edits that drift from the pin. Product code continues
 to own behavior, animation, and platform resource packaging.
 
+## Wordmark surfaces
+
+Brand release **1.5.0** supplies the original PHUX Grid wordmark. It is artwork,
+not a body font or an app icon. Its original
+grid-built letterforms belong in the brand library; do not recreate them with
+a system monospace font or copy another project's glyphs. A wordmark update
+does not select a different fox profile.
+
+| Surface | Consumer | Contract |
+| --- | --- | --- |
+| Repository README | `docs/assets/logo-light.svg`, `docs/assets/logo-dark.svg` | Light ink on dark backgrounds; dark ink by default, with plain `phux` alternative text. |
+| Compatibility documentation consumers | `docs/assets/logo.svg`, `docs/assets/logo.png` | Retained SVG/PNG wordmark paths, with light ink for dark backgrounds. |
+| Rune app and window icons | `clients/rune/packaging/AppIcon.{svg,png}` | Selected profile icon, not a wordmark. |
+| Rune onboarding | `clients/rune/src/desk/onboarding/fox.rs` | Fox illustrations and selected icon; keep these distinct from the wordmark. |
+| Rune fleet heading | `clients/rune/src/ui/galaxy.rs` | `PHUX // FLEET` is an interface label, not a hand-built logo. |
+| CLI help and diagnostics | `crates/phux/src/help.rs`, `crates/phux/src/output.rs` | Plain terminal text; no graphical or ASCII splash. |
+| TUI and native terminal attachment | `crates/phux-tui` | Terminal content and chrome; no wordmark splash. |
+
+The `logos/wordmark-light.svg` and `logos/wordmark-dark.svg` exports map to
+`docs/assets/logo-light.svg` and `docs/assets/logo-dark.svg` through
+`brand.config.json`. The README uses a `picture` with a dark-color-scheme
+source and a dark-ink fallback image, so the mark stays visible on either
+GitHub background. Both SVGs have a `0 0 34 14` view box (17:7 aspect ratio),
+including two grid units of clearspace; preserve that space when embedding.
+The existing `logos/docs-wordmark.svg` and `logos/docs-wordmark.png` exports
+remain mapped to the compatibility paths above. Import an
+approved wordmark revision with `brand-sync`; do not edit the installed asset
+bytes or their checksums by hand. The SVG is self-contained artwork, so README
+rendering does not depend on an installed font. Keep alternative text when
+embedding it, and keep ordinary product names and command output as text.
+
+No terminal-art export is required by the current CLI or TUI. If a future
+surface needs one, approve a terminal-safe representation in the brand library
+first and retain readable plain-text output for narrow or noninteractive
+terminals. Do not add decorative output to JSON, protocol, or diagnostic
+payloads as part of an artwork update.
+
 ## Choosing branding in the apps
 
 In the mobile app, open **Settings → Appearance → Brand profile** to choose Flat

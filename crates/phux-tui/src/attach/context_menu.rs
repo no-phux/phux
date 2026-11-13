@@ -53,19 +53,46 @@ pub(super) fn pane_menu(keybindings: Option<&KeybindingsCfg>, zoomed: bool) -> M
     }
 }
 
+/// [`window_menu`] for `ctx`'s active tab.
+pub(super) fn active_window_menu(ctx: &crate::attach::input_dispatch::DispatchCtx<'_>) -> MenuSpec {
+    let active = ctx.workspace.groups.get(ctx.workspace.active);
+    let label = match active {
+        Some(tab) if crate::attach::pane_state::auto_named(&tab.name) => {
+            format!("Tab {}", ctx.workspace.active)
+        }
+        Some(tab) => tab.name.clone(),
+        None => String::new(),
+    };
+    window_menu(
+        ctx.keybindings,
+        &label,
+        active.is_some_and(|tab| tab.locked),
+    )
+}
+
 /// The menu for a tab, titled `label` (the tab as the bar names it: its
 /// name, or `Tab N` for an auto-named one). The caller has already made
 /// that tab active (a right-click on a tab selects it first, exactly as a
 /// left click does), so the rows act on the active tab with no target arg.
-pub(super) fn window_menu(keybindings: Option<&KeybindingsCfg>, label: &str) -> MenuSpec {
-    let rows = vec![
+/// A `locked` tab offers Unlock and no Kill.
+pub(super) fn window_menu(
+    keybindings: Option<&KeybindingsCfg>,
+    label: &str,
+    locked: bool,
+) -> MenuSpec {
+    let mut rows = vec![
         row(keybindings, "New tab", "new-window", &[]),
         row(keybindings, "Rename…", "rename-window", &[]),
         int_row(keybindings, "Move left", "move-window", ("delta", -1)),
         int_row(keybindings, "Move right", "move-window", ("delta", 1)),
         MenuRow::Separator,
-        row(keybindings, "Kill…", "kill-window", &[]),
     ];
+    if locked {
+        rows.push(row(keybindings, "Unlock", "unlock-window", &[]));
+    } else {
+        rows.push(row(keybindings, "Lock", "lock-window", &[]));
+        rows.push(row(keybindings, "Kill…", "kill-window", &[]));
+    }
     MenuSpec {
         title: if label.is_empty() {
             "Tab".to_owned()
@@ -168,7 +195,7 @@ mod tests {
     fn menu_actions_are_dispatched_names() {
         let specs = [
             pane_menu(None, false),
-            window_menu(None, "editor"),
+            window_menu(None, "editor", false),
             session_menu(None, "work"),
         ];
         for spec in &specs {
@@ -186,7 +213,7 @@ mod tests {
     fn every_menu_opens_on_a_selectable_row() {
         for spec in [
             pane_menu(None, false),
-            window_menu(None, "editor"),
+            window_menu(None, "editor", false),
             session_menu(None, "work"),
         ] {
             assert!(
@@ -309,7 +336,7 @@ mod tests {
 
     #[test]
     fn a_nameless_target_still_gets_a_title() {
-        assert_eq!(window_menu(None, "").title, "Tab");
+        assert_eq!(window_menu(None, "", false).title, "Tab");
         assert_eq!(pane_menu(None, false).title, "Pane");
         assert_eq!(session_menu(None, "").title, "session");
     }

@@ -60,7 +60,7 @@ async fn a_failed_first_arrangement_read_never_overwrites_the_stored_record() {
     fixture.arrangement(
         ours,
         WireDoc {
-            groups: vec![ArrangementGroup {
+            groups: vec![ArrangementGroup { locked: false,
                 id: [7; 16],
                 name: Some("build".to_owned()),
                 tree: ArrangementNode::Leaf(EntryRef {

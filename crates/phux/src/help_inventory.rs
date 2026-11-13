@@ -162,6 +162,8 @@ fn long_help_has_one_complete_grouped_inventory() {
 /// It rose to 105 with `audit`: an operator checking who did what on a host
 /// looks for the word on the root page. It rose to 106 with `migrate`:
 /// someone arriving from tmux or Ghostty looks for the way in on the first page.
+/// It rose to 108 with `lock` and `unlock`: someone whose tab refuses to close
+/// looks for the way out on the first page.
 #[test]
 fn root_long_help_fits_eighty_columns_and_stays_short() {
     let long = root_long_help();
@@ -173,7 +175,7 @@ fn root_long_help_fits_eighty_columns_and_stays_short() {
     }
     let lines = long.lines().count();
     assert!(
-        lines <= 106,
+        lines <= 108,
         "root help grew to {lines} lines; the page is meant to be one screen"
     );
     assert!(

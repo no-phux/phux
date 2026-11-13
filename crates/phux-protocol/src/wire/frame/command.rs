@@ -132,7 +132,8 @@ impl Command {
             | Self::ResourceRelaunch { operation, .. }
             | Self::InboxResolve { operation, .. }
             | Self::OrganizationUndo { operation, .. }
-            | Self::ArrangementReplace { operation, .. } => Some(operation),
+            | Self::ArrangementReplace { operation, .. }
+            | Self::ArrangementLock { operation, .. } => Some(operation),
             _ => None,
         }
     }
@@ -165,6 +166,7 @@ impl Command {
                 | Self::OrganizationUndo { .. }
                 | Self::ArrangementGet { .. }
                 | Self::ArrangementReplace { .. }
+                | Self::ArrangementLock { .. }
         )
     }
 }

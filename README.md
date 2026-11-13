@@ -1,5 +1,8 @@
 <p align="center">
-  <img src="./docs/assets/logo.png" alt="phux" width="240">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="./docs/assets/logo-light.svg">
+    <img src="./docs/assets/logo-dark.svg" alt="phux" width="240">
+  </picture>
 </p>
 
 <p align="center">

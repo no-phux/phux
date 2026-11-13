@@ -12,6 +12,7 @@ use rune::Tx;
 use super::{Desk, NoticeKind, Pending};
 use crate::keys::{self, Shortcut, Typed};
 
+mod echo;
 mod modal;
 pub(super) mod selection;
 pub use modal::Modal;
@@ -80,6 +81,7 @@ impl Desk {
             self.modifiers_changed(event.mods.cmd);
             return false;
         }
+        phux_perf::echo_hop::record("stdin");
         let action = keys::shortcut(&event.key, event.mods, tx.physical_key());
         if let Some(modal) = self.modal() {
             self.modal_key(modal, event, action, tx);
@@ -215,6 +217,13 @@ impl Desk {
         if !sent {
             return self.say(NoticeKind::Error, INPUT_PAUSED);
         }
+        phux_perf::echo_hop::record("send");
+        // Only this computer's server echoes inside the wait; a remote
+        // one would stall every key for nothing.
+        let local = self.machines.current.is_none() && self.native.is_none();
+        if let Some(before) = frame.as_ref().filter(|_| local) {
+            echo::await_echo(&client, view, before);
+        }
         self.nudge_typing(&client);
         self.reclaim_fits();
         if self.notice.as_ref().is_some_and(|n| n.text == INPUT_PAUSED) {
@@ -260,6 +269,7 @@ impl Desk {
             Shortcut::Tab(index) => self.select_tab(usize::from(index)),
             Shortcut::RenameSession => self.rename_selected_session(),
             Shortcut::RenameTab => self.rename_active_tab(),
+            Shortcut::LockTab => self.toggle_tab_lock(),
             Shortcut::CloseSession => self.close_session(),
             Shortcut::NewSession => self.new_session(),
             Shortcut::NextTerminal => self.cycle(1),
@@ -293,6 +303,7 @@ impl Desk {
             Shortcut::CheckForUpdates => self.updater.check_now(),
             Shortcut::InstallUpdate => self.install_update(tx),
             Shortcut::Machines => self.toggle_machines(),
+            Shortcut::PairPhone => self.open_pairing(),
             Shortcut::RetryConnection => self.reconnect(),
             Shortcut::CopyDiagnostics => {
                 self.copy_diagnostics(tx);

@@ -30,6 +30,8 @@ pub struct Pointer {
     pub(super) held: Option<Held>,
     /// The context menu, while open, at its window point.
     pub menu: Option<PointerPress>,
+    /// The open menu is a tab's, not a pane's.
+    pub tab_menu: bool,
     /// The window's size in points, as the open menu last measured it.
     pub window: [f32; 2],
 }

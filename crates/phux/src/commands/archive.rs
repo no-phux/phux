@@ -963,13 +963,13 @@ fn imported_arrangement(windows: &[WorkspaceWindow], keys: &[Vec<ResourceKey>]) 
                 .and_then(|window| window.layout.as_ref())
                 .and_then(|node| wire_node_from_archive(node, row))
                 .or_else(|| wire_chain(row))?;
-            Some(ArrangementGroup {
-                id: phux_client::layout::fresh_id(),
-                name: window
-                    .map(|window| window.name.clone())
-                    .filter(|name| !name.is_empty()),
+            let name = window.map(|window| window.name.clone());
+            let name = name.filter(|name| !name.is_empty());
+            Some(ArrangementGroup::new(
+                phux_client::layout::fresh_id(),
+                name,
                 tree,
-            })
+            ))
         })
         .collect();
     WireDoc { groups }
@@ -1868,11 +1868,7 @@ mod tests {
             let a = fixture.shell(work);
             let b = fixture.shell(work);
             let groups = placed
-                .then(|| ArrangementGroup {
-                    id: [7; 16],
-                    name: name.map(str::to_owned),
-                    tree: member(a, 1),
-                })
+                .then(|| ArrangementGroup::new([7; 16], name.map(str::to_owned), member(a, 1)))
                 .into_iter()
                 .collect();
             fixture.arrangement(work, WireDoc { groups });

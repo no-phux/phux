@@ -85,6 +85,7 @@ impl ArrangementDoc {
                 name: g.name.clone(),
                 root: CborLayoutNode::from(tree),
                 focused_terminal: CborResourceId::from(focus),
+                locked: g.locked,
             });
         }
         let envelope = CborWorkspaceEnvelope {
@@ -126,6 +127,7 @@ impl ArrangementDoc {
             let tree = w.root.into_layout_node()?;
             let focus: ResourceId = w.focused_terminal.into();
             groups.push(Group {
+                locked: w.locked,
                 id: w.id,
                 name: w.name,
                 state: LayoutState {

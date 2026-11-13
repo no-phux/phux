@@ -73,3 +73,19 @@ fn uds_credential_failure_is_never_root_fallback() {
     .expect_err("missing authenticated credentials must fail closed");
     assert_eq!(error.kind(), io::ErrorKind::PermissionDenied);
 }
+
+/// A client that hangs up before the server accepts surfaces as
+/// `NotConnected` (Darwin's `getpeereid` answers ENOTCONN), which the accept
+/// loop logs as a peer that left, not a failed accept.
+#[cfg(target_os = "macos")]
+#[tokio::test]
+async fn a_peer_gone_before_accept_reads_as_not_connected() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("s");
+    let listener = UdsListener::new(tokio::net::UnixListener::bind(&path).unwrap());
+    drop(std::os::unix::net::UnixStream::connect(&path).unwrap());
+    let Err(err) = listener.accept().await else {
+        panic!("a gone peer has no identity to accept");
+    };
+    assert_eq!(err.kind(), io::ErrorKind::NotConnected);
+}

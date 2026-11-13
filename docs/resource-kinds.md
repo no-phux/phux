@@ -121,7 +121,8 @@ session, `mirror-` plus the target (`mirror-display`,
 list the surface under that session and a `display` or `window` grant
 applies as usual. A mirror that exits is restarted after a backoff (1 s,
 doubling to 60 s; a run over a minute resets it). `phux upgrade` keeps the
-pane and the mirror re-adopts its surface. A cold start recreates it.
+pane and the mirror re-adopts its surface, restarting on the new binary
+if `phux update` replaced it. A cold start recreates it.
 `phux config reload` starts new entries, restarts changed ones, closes
 `mirror-*` sessions no entry names. Do not name sessions of your own
 `mirror-*`.

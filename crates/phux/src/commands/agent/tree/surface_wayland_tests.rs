@@ -106,7 +106,8 @@ fn keymap_and_codes(op: &Op) -> (&str, &[u32]) {
             keymap,
             codes,
             mods: 0,
-        } => (keymap, codes),
+            held,
+        } if held.is_empty() => (keymap, codes),
         other => panic!("not keys: {other:?}"),
     }
 }
@@ -232,17 +233,24 @@ fn a_chord_holds_control_and_shift_for_a_terminal_on_a_real_key() {
             keymap,
             codes,
             mods,
+            held,
         } = chord(letter, shift)
         else {
             panic!("not keys");
         };
         assert_eq!((codes, mods), (vec![code], mask));
+        // Left Control (and Left Shift) go down first, as real keys.
+        assert_eq!(held, if shift { vec![29, 42] } else { vec![29] });
         let upper = letter.to_ascii_uppercase();
         let xkb = code + 8;
         for line in [
-            format!("maximum = {xkb};"),
+            format!("maximum = {};", xkb.max(50)),
             format!("<K> = {xkb};"),
             format!("key <K> {{[{letter}, {upper}]}};"),
+            "<LCTL> = 37;".to_owned(),
+            "<LFSH> = 50;".to_owned(),
+            "modifier_map Control { <LCTL> };".to_owned(),
+            "modifier_map Shift { <LFSH> };".to_owned(),
         ] {
             assert!(keymap.contains(&line), "{line} missing from\n{keymap}");
         }

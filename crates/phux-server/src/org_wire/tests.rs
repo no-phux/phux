@@ -55,6 +55,7 @@ fn keys_and_refusals_round_trip() {
 #[test]
 fn documents_round_trip() {
     let groups = vec![phux_core::Group {
+        locked: false,
         id: [1; 16],
         name: Some("main".to_owned()),
         tree: phux_core::LayoutNode::Split {

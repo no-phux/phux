@@ -70,6 +70,8 @@ pub(super) struct Fields {
     pub(super) project: Option<String>,
     pub(super) placement: Option<Box<super::CreatePlacement>>,
     pub(super) entry: Option<[u8; 16]>,
+    pub(super) group: Option<[u8; 16]>,
+    pub(super) locked: Option<bool>,
     pub(super) replayed: bool,
     pub(super) authority: Option<super::AuthorityId>,
 }
@@ -100,6 +102,8 @@ impl Fields {
                     out.placement = Some(Box::new(super::placement::decode(value)?));
                 }
                 field::org::ENTRY => out.entry = Some(key_bytes(value)?),
+                field::org::GROUP => out.group = Some(key_bytes(value)?),
+                field::org::LOCKED => out.locked = Some(Decoder::new(value).read_bool("locked")?),
                 field::org::REPLAYED => out.replayed = Decoder::new(value).read_bool("replayed")?,
                 field::org::PROJECT => {
                     out.project = Some(bounded_str(value, MAX_ORG_NAME_BYTES)?);

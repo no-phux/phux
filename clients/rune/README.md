@@ -50,7 +50,9 @@ set the primary selection. The clipboard uses the data-control
 protocol that wlroots compositors, Hyprland and KDE offer. On a compositor
 with XWayland, unsetting `WAYLAND_DISPLAY` for the app runs it on X11.
 
-The app needs the phux CLI (`curl -fsSL https://phux.sh/install | sh`).
+The app needs the phux CLI. When none is found it offers **Install phux**, which runs the
+same installer as `curl -fsSL https://phux.sh/install | sh` (CLI in `~/.local/bin`, phux
+Server.app on macOS, a PATH line in the shell profile) and then connects.
 From 0.1.0-alpha.6 it updates itself; earlier alphas need this one download.
 
 ## What it does
@@ -80,6 +82,14 @@ session (or `--session NAME`). It never creates a session on its own.
   access you already have. A window shows one machine at a time. On a new
   computer the local server is empty, so sessions living elsewhere appear
   only once that machine is added.
+- **Pair a phone.** Settings → **Remote Hosts**, **Pair a Phone** in the
+  palette, or the card on onboarding's last step shows a QR and a copyable
+  link from `phux pair --json --enroll`, with its expiry counting down and
+  **New code**. It says which network the phone uses (tailnet, local
+  network or relay). When remote access is off it says what turning it on
+  means and waits for **Allow phones to connect** (`--enable`). **Paired
+  devices** lists what `phux pair ls` says can connect; **Revoke** runs
+  `phux pair revoke` so that device can't connect again.
 - **Updates.** Settings → **About & Updates** controls automatic checks,
   local phux management, and the phux release channel. Downloads and server
   handoffs still need a click. [Updates and release channels](./UPDATES.md)

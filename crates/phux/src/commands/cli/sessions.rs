@@ -204,6 +204,42 @@ pub(crate) struct RenameArgs {
     pub(crate) remote: RemoteOpt,
 }
 
+/// Lock a tab against closing
+///
+/// `TAB` is `SESSION:N` (0-based) or `SESSION:NAME`. A locked tab refuses
+/// every close until `phux unlock` unlocks it: closing the tab or its last
+/// pane, `phux kill SESSION:N`, and every client's close keys, menus and
+/// buttons. Killing the whole session still ends it, after the usual
+/// confirmation.
+#[derive(Debug, Args)]
+pub(crate) struct LockArgs {
+    /// The tab: `SESSION:N` or `SESSION:NAME`.
+    #[usage(value_name = "TAB")]
+    pub(crate) target: String,
+
+    #[usage(flatten)]
+    pub(crate) json: JsonOpt,
+
+    #[usage(flatten)]
+    pub(crate) remote: RemoteOpt,
+}
+
+/// Unlock a tab so it can be closed again
+///
+/// `TAB` is `SESSION:N` (0-based) or `SESSION:NAME`, as for `phux lock`.
+#[derive(Debug, Args)]
+pub(crate) struct UnlockArgs {
+    /// The tab: `SESSION:N` or `SESSION:NAME`.
+    #[usage(value_name = "TAB")]
+    pub(crate) target: String,
+
+    #[usage(flatten)]
+    pub(crate) json: JsonOpt,
+
+    #[usage(flatten)]
+    pub(crate) remote: RemoteOpt,
+}
+
 /// Remove a stopped pane, or delete an empty session
 ///
 /// `TARGET` is a pane selector (`@N`, `name:N.M`, a key `^ab23cd`) whose

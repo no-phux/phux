@@ -10,7 +10,7 @@ use std::sync::mpsc::{Receiver, Sender, channel};
 use std::time::{Duration, Instant};
 
 use phux_client_runtime::control::Status;
-use phux_client_runtime::{Client, Target};
+use phux_client_runtime::{Client, Listener, Target};
 use phux_protocol::ids::SessionKey;
 use rune::Tx;
 
@@ -42,8 +42,9 @@ const HANDOFF_PATIENCE: Duration = Duration::from_secs(30);
 /// How the runtime renders a refusal of this client's protocol major.
 const INCOMPATIBLE: &str = "VersionIncompatible";
 
-/// A search's attempt number and what it found.
-type Found = (u64, Resolved);
+/// A search's attempt number and what it found, or why installing phux
+/// before it failed.
+type Found = (u64, Result<Resolved, String>);
 
 pub struct Link {
     /// The network path a remote attach rides, watched for a move.
@@ -53,6 +54,10 @@ pub struct Link {
     found: (Sender<Found>, Receiver<Found>),
     /// A search for the server is running.
     finding: bool,
+    /// That search installs phux first.
+    pub(super) installing: bool,
+    /// Why the last install failed, until a CLI turns up.
+    pub(super) install_failed: Option<String>,
     /// Automatic attempts since the last good connection.
     tries: u32,
     retry_at: Option<Instant>,
@@ -98,6 +103,8 @@ impl Default for Link {
             attempt: 0,
             found: channel(),
             finding: false,
+            installing: false,
+            install_failed: None,
             tries: 0,
             retry_at: None,
             down_since: None,
@@ -162,6 +169,17 @@ fn incompatible(error: &str) -> Option<String> {
     Some(words.trim_start_matches([':', ' ']).to_owned())
 }
 
+/// Wakes Rune's loop from the runtime's driver thread. Only posts; never
+/// re-enters the client.
+pub(super) struct Wake(pub(super) rune::Waker);
+
+impl Listener for Wake {
+    fn on_activity(&self) {
+        phux_perf::echo_hop::record("client_recv");
+        (self.0)();
+    }
+}
+
 impl Desk {
     /// Rune's setup hook: the window is about to open, so everything slow
     /// starts here, on workers. Even on a remote the local server is found,
@@ -192,7 +210,7 @@ impl Desk {
         self.waker = Some(waker.clone());
         self.inbox.alerts.listen(waker.clone());
         if let Some(client) = &self.client {
-            client.set_listener(std::sync::Arc::new(super::Wake(waker)));
+            client.set_listener(std::sync::Arc::new(Wake(waker)));
             client.watch_approvals();
         }
     }
@@ -260,8 +278,24 @@ impl Desk {
     }
 
     /// Ask the CLI for the local server on a worker. The answer is never
-    /// waited for: a stale one is dropped by `pump_link`.
+    /// waited for: a stale one is dropped by `pump_link`. An install under
+    /// way finds the server when it's done.
     pub(super) fn find_server(&mut self) {
+        if !self.link.installing {
+            self.search(false);
+        }
+    }
+
+    /// Install phux the way `curl … | sh` would, then find its server.
+    pub fn install_phux(&mut self) {
+        if !self.link.installing {
+            self.link.installing = true;
+            self.link.install_failed = None;
+            self.search(true);
+        }
+    }
+
+    fn search(&mut self, install: bool) {
         self.link.attempt += 1;
         self.link.finding = true;
         self.link.last_ensure = Some(Instant::now());
@@ -270,7 +304,12 @@ impl Desk {
         let sender = self.link.found.0.clone();
         let waker = self.waker.clone();
         std::thread::spawn(move || {
-            let _ = sender.send((attempt, launch.ensured()));
+            let found = if install {
+                crate::launch::install().map(|()| launch.ensured())
+            } else {
+                Ok(launch.ensured())
+            };
+            let _ = sender.send((attempt, found));
             if let Some(waker) = waker {
                 waker();
             }
@@ -295,7 +334,16 @@ impl Desk {
         while let Ok((attempt, found)) = self.link.found.1.try_recv() {
             if attempt == self.link.attempt {
                 self.link.finding = false;
-                self.adopt(found);
+                self.link.installing = false;
+                match found {
+                    Ok(found) => {
+                        if found.phux.is_some() {
+                            self.link.install_failed = None;
+                        }
+                        self.adopt(found);
+                    }
+                    Err(why) => self.link.install_failed = Some(why),
+                }
                 changed = true;
             }
         }

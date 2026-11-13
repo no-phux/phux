@@ -165,6 +165,7 @@ fn an_unknown_enum_inside_an_arrangement_reply_settles_the_request() {
         Revision::new(1),
         ArrangementDoc {
             groups: vec![ArrangementGroup {
+                locked: false,
                 id: [0x61; 16],
                 name: None,
                 tree: ArrangementNode::Split {

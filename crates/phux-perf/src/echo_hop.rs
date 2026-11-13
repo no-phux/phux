@@ -23,6 +23,13 @@ pub fn fast_path_enabled() -> bool {
     })
 }
 
+/// Whether [`PHUX_ECHO_HOPS`](self) is set, for a caller that installs a
+/// hook only to record hops.
+#[must_use]
+pub fn enabled() -> bool {
+    SINK.get_or_init(open_sink).is_some()
+}
+
 /// Record `hop` if [`PHUX_ECHO_HOPS`](self) is set.
 pub fn record(hop: &'static str) {
     let Some(sink) = SINK.get_or_init(open_sink).as_ref() else {

@@ -23,7 +23,7 @@ fn arrange(
                 owner: phux_core::ArrangementOwner::Session(session_key),
                 // Every session starts with an empty arrangement at revision 1.
                 expected: phux_core::Revision::FIRST,
-                groups: vec![phux_core::Group {
+                groups: vec![phux_core::Group { locked: false,
                     id: [9; 16],
                     name: None,
                     tree: phux_core::LayoutNode::Leaf(phux_core::EntryRef::member(

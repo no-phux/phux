@@ -35,6 +35,7 @@ fn the_active_tab_is_brought_whole_into_the_strip() {
     desk.settings_open = false;
     desk.tabs.list = (0..6u8)
         .map(|i| crate::desk::Tab {
+            locked: false,
             id: [i; 16],
             name: format!("a tab with a long name {i}"),
             resources: Vec::new(),

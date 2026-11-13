@@ -5,12 +5,14 @@ use crate::runtime::config::ServerError;
 use crate::runtime::connections::accept_loop;
 use crate::runtime::listeners::remote::{build_quic_listener_for, build_ws_listener};
 use crate::state::SharedState;
+use phux_protocol::wire::{ListenerDisabledReason, RemoteListenerSlot, RemoteListenerTransport};
 use std::future::Future;
 use std::net::SocketAddr;
 use tokio_util::sync::CancellationToken;
-use tracing::{debug, warn};
+use tracing::{debug, info, warn};
 
 pub(super) mod remote;
+mod retry;
 
 /// A boxed accept loop, so heterogeneous listeners can share one
 /// [`futures_util::future::select_all`] set.
@@ -68,10 +70,13 @@ impl ConfiguredListeners {
 }
 
 /// Bound WebSocket and QUIC listeners; each bind outcome is recorded for
-/// `GET_STATE`.
+/// `GET_STATE`. An address that fails to bind transiently (not assigned
+/// yet, port briefly held) is retried inside its accept loop and goes live
+/// there, with no restart.
 pub(in crate::runtime) struct RemoteListeners {
     pub(in crate::runtime) ws: Option<crate::transport::WsListener>,
     pub(in crate::runtime) quic: Option<crate::transport::quic::QuicListener>,
+    waiting: Vec<(RemoteListenerTransport, SocketAddr, std::io::ErrorKind)>,
 }
 
 impl RemoteListeners {
@@ -80,27 +85,24 @@ impl RemoteListeners {
         quic_addr: Option<SocketAddr>,
         state: &SharedState,
     ) -> Self {
-        let workload_mtls = state.with(crate::state::ServerState::workload_mtls_required);
-        let env = state.with(crate::state::ServerState::server_env);
-        let ws = match ws_addr {
-            Some(addr) => {
-                let (listener, slot) = build_ws_listener(addr, workload_mtls, &env).await;
-                state.with_mut(|s| s.record_remote_listener(slot));
-                listener
+        let mut waiting = Vec::new();
+        let mut not_bindable_yet = |transport, addr| {
+            let kind = transient_bind_error(transport, addr, state);
+            if let Some(kind) = kind {
+                waiting.push((transport, addr, kind));
             }
-            None => None,
+            kind.is_some()
         };
-        let quic = quic_addr.and_then(|addr| {
-            let (listener, slot) = build_quic_listener_for(addr, workload_mtls, &env);
-            state.with_mut(|s| s.record_remote_listener(slot));
-            // The configured listener adopts satellites that dial in
-            // (ADR-0182); it offers their ALPN only when it verifies
-            // workload certificates.
-            listener.map(|listener| {
-                listener.with_satellites(state.with(crate::state::ServerState::satellite_adopter))
-            })
-        });
-        Self { ws, quic }
+        let ws = match ws_addr {
+            Some(addr) if !not_bindable_yet(RemoteListenerTransport::Wss, addr) => {
+                bind_ws(addr, state).await
+            }
+            _ => None,
+        };
+        let quic = quic_addr
+            .filter(|&addr| !not_bindable_yet(RemoteListenerTransport::Quic, addr))
+            .and_then(|addr| bind_quic(addr, state));
+        Self { ws, quic, waiting }
     }
 
     pub(in crate::runtime) fn accept_loops<'a>(
@@ -126,8 +128,116 @@ impl RemoteListeners {
                 input_lane.cloned(),
             )));
         }
+        for &(transport, addr, first) in &self.waiting {
+            accepts.push(Box::pin(serve_when_bindable(
+                transport,
+                addr,
+                first,
+                state.clone(),
+                root_token.clone(),
+                input_lane.cloned(),
+            )));
+        }
         accepts
     }
+}
+
+/// Build the WebSocket listener for `addr` and record its slot.
+async fn bind_ws(addr: SocketAddr, state: &SharedState) -> Option<crate::transport::WsListener> {
+    let workload_mtls = state.with(crate::state::ServerState::workload_mtls_required);
+    let env = state.with(crate::state::ServerState::server_env);
+    let (listener, slot) = build_ws_listener(addr, workload_mtls, &env).await;
+    state.with_mut(|s| s.record_remote_listener(slot));
+    listener
+}
+
+/// Build the QUIC listener for `addr` and record its slot.
+fn bind_quic(
+    addr: SocketAddr,
+    state: &SharedState,
+) -> Option<crate::transport::quic::QuicListener> {
+    let workload_mtls = state.with(crate::state::ServerState::workload_mtls_required);
+    let env = state.with(crate::state::ServerState::server_env);
+    let (listener, slot) = build_quic_listener_for(addr, workload_mtls, &env);
+    state.with_mut(|s| s.record_remote_listener(slot));
+    // The configured listener adopts satellites that dial in (ADR-0182); it
+    // offers their ALPN only when it verifies workload certificates.
+    listener.map(|listener| {
+        listener.with_satellites(state.with(crate::state::ServerState::satellite_adopter))
+    })
+}
+
+fn record_waiting(
+    state: &SharedState,
+    transport: RemoteListenerTransport,
+    addr: SocketAddr,
+    err: &std::io::Error,
+) {
+    let slot = RemoteListenerSlot::waiting(transport, addr.to_string(), err.to_string());
+    state.with_mut(|s| s.record_remote_listener(slot));
+}
+
+/// Probe `addr`; when it fails for a reason that can clear by itself, log
+/// and record the listener as waiting and return the error kind.
+fn transient_bind_error(
+    transport: RemoteListenerTransport,
+    addr: SocketAddr,
+    state: &SharedState,
+) -> Option<std::io::ErrorKind> {
+    let err = retry::probe_bind(transport, addr)
+        .err()
+        .filter(retry::is_transient)?;
+    warn!(%transport, addr = %addr, error = %err, "remote listener address not bindable yet; retrying until it is");
+    record_waiting(state, transport, addr, &err);
+    Some(err.kind())
+}
+
+/// Retry a transiently failed bind for the life of the server, then serve
+/// it like any other accept loop. Giving up (a permanent error, a port held
+/// too long) records the listener disabled and parks on cancellation, so
+/// [`drive_accept_loops`] never reads it as a loop ending.
+async fn serve_when_bindable(
+    transport: RemoteListenerTransport,
+    addr: SocketAddr,
+    first: std::io::ErrorKind,
+    state: SharedState,
+    root_token: CancellationToken,
+    input_lane: Option<InputLane>,
+) -> Result<(), ServerError> {
+    let outcome = retry::retry_until_bindable(
+        first,
+        || retry::probe_bind(transport, addr),
+        |err| {
+            warn!(%transport, addr = %addr, error = %err, "remote listener still not bindable; retrying");
+            record_waiting(&state, transport, addr, err);
+        },
+        &root_token,
+    )
+    .await;
+    match outcome {
+        retry::Retried::Cancelled => return Ok(()),
+        retry::Retried::GaveUp(err) => {
+            warn!(%transport, addr = %addr, error = %err, "remote listener bind gave up; UDS only");
+            let slot = RemoteListenerSlot::disabled(
+                transport,
+                Some(addr.to_string()),
+                ListenerDisabledReason::BindFailed,
+            );
+            state.with_mut(|s| s.record_remote_listener(slot));
+        }
+        retry::Retried::Bindable => {
+            info!(%transport, addr = %addr, "remote listener address is bindable now; binding");
+            if transport == RemoteListenerTransport::Wss {
+                if let Some(ws) = bind_ws(addr, &state).await {
+                    return accept_loop(&ws, state, root_token, input_lane).await;
+                }
+            } else if let Some(quic) = bind_quic(addr, &state) {
+                return accept_loop(&quic, state, root_token, input_lane).await;
+            }
+        }
+    }
+    root_token.cancelled().await;
+    Ok(())
 }
 
 /// Run every accept loop concurrently. The first fatal result cancels the

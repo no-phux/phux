@@ -1045,14 +1045,14 @@ fn stored(revision: u64, name: &str) -> ArrangementValue {
         ArrangementOwner::Session(work()),
         Revision::new(revision),
         WireDoc {
-            groups: vec![ArrangementGroup {
-                id: [0x11; 16],
-                name: Some(name.to_owned()),
-                tree: ArrangementNode::Leaf(EntryRef {
+            groups: vec![ArrangementGroup::new(
+                [0x11; 16],
+                Some(name.to_owned()),
+                ArrangementNode::Leaf(EntryRef {
                     entry: [0x22; 16],
                     target: EntryTarget::Member(shell()),
                 }),
-            }],
+            )],
         },
     )
 }

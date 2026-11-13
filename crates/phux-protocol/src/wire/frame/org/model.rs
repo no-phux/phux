@@ -239,6 +239,23 @@ pub struct ArrangementGroup {
     pub name: Option<String>,
     /// The split tree.
     pub tree: ArrangementNode,
+    /// Locked against close (`features_ext.TAB_LOCK`): written as a trailing
+    /// byte only when set, so an older peer skips it and an unlocked group
+    /// encodes as it always did.
+    pub locked: bool,
+}
+
+impl ArrangementGroup {
+    /// An unlocked group.
+    #[must_use]
+    pub const fn new(id: [u8; 16], name: Option<String>, tree: ArrangementNode) -> Self {
+        Self {
+            id,
+            name,
+            tree,
+            locked: false,
+        }
+    }
 }
 
 /// A presentation of resources: ordered groups, each one split tree whose

@@ -189,6 +189,17 @@ impl ConnectionCap {
     }
 }
 
+/// A probe that hung up before accept (Darwin's `getpeereid` answers
+/// ENOTCONN) is not a failure; anything else is typically transient (EMFILE,
+/// ECONNABORTED).
+fn log_accept_error(transport: &'static str, err: &std::io::Error) {
+    if err.kind() == std::io::ErrorKind::NotConnected {
+        debug!(transport, "peer left before accept");
+    } else {
+        error!(error = %err, "accept failed");
+    }
+}
+
 /// Accept connections and spawn a local client task for each (ADR-0014).
 /// Root cancellation stops admission, then waits (bounded) for every client
 /// task to flush its shutdown `DETACHED`.
@@ -268,10 +279,7 @@ pub(crate) async fn accept_loop<L: Incoming>(
                             return Err(err.into());
                         }
                         match listener.accept_error_disposition(&err) {
-                            AcceptErrorDisposition::Default => {
-                                // Typically transient (EMFILE, ECONNABORTED).
-                                error!(error = %err, "accept failed");
-                            }
+                            AcceptErrorDisposition::Default => log_accept_error(listener.kind(), &err),
                             AcceptErrorDisposition::PeerRejected {
                                 stage,
                                 source_ip,

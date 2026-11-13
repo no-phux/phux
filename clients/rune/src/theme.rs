@@ -1,8 +1,9 @@
 //! Built-in themes: a terminal palette for the server-owned grids and the
 //! window's chrome drawn from the same colours.
 //!
-//! "System" installs nothing: programs keep the engine's defaults and the
-//! chrome follows the OS. A program's own OSC colours beat any theme. A
+//! "System" follows the OS: the chrome, and the terminal too, which keeps the
+//! engine's defaults when dark and takes Catppuccin Latte's palette when
+//! light. A program's own OSC colours beat any theme. A
 //! Ghostty config on this machine adds one more theme, read at launch, and
 //! Omarchy another, which follows Omarchy's theme changes and is the
 //! default until the person picks one.
@@ -161,6 +162,13 @@ impl Theme {
         THEMES[if dark { MOCHA } else { LATTE }].roles().marks
     }
 
+    /// The terminal palette with no theme picked: the engine's own (dark)
+    /// defaults, or Latte's in a light appearance so the grid matches the
+    /// chrome.
+    pub fn system_terminal(dark: bool) -> Option<TerminalTheme> {
+        (!dark).then(|| THEMES[LATTE].terminal())
+    }
+
     /// The system appearance's failure colour, from the same palettes.
     pub fn system_danger(dark: bool) -> Color {
         THEMES[if dark { MOCHA } else { LATTE }].roles().danger
@@ -243,6 +251,17 @@ fn read_config(path: &std::path::Path) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn system_terminal_matches_the_appearance() {
+        assert_eq!(
+            Theme::system_terminal(true),
+            None,
+            "dark keeps the engine's defaults"
+        );
+        let light = Theme::system_terminal(false).expect("light installs a palette");
+        assert!(light.background.iter().all(|&c| c > 0xc0), "a light ground");
+    }
 
     #[test]
     fn ids_are_distinct_and_found() {

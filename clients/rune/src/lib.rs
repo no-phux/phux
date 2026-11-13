@@ -24,6 +24,7 @@ mod links;
 mod machines;
 pub mod mobile;
 mod onboarding;
+mod pair;
 mod palette;
 mod paths;
 mod perf;
@@ -108,7 +109,7 @@ pub fn run_desktop() {
         .on_ime(|desk: &mut Desk, event, _| desk.ime(event))
         .on_focus(|desk: &mut Desk, focused, _| desk.focus_changed(focused))
         .on_frame_drawn(|rt: &rune::Runtime<Desk>| rt.state.drawn());
-    match perf::frame_recorder() {
+    match perf::frame_hook() {
         Some(record) => app.on_frame_encoded(record).run(),
         None => app.run(),
     }

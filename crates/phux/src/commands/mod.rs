@@ -30,6 +30,8 @@ pub(crate) fn verb_remote(command: &Command) -> Option<&str> {
         | Command::New(NewArgs { remote, .. })
         | Command::Kill(KillArgs { remote, .. })
         | Command::Rename(RenameArgs { remote, .. })
+        | Command::Lock(LockArgs { remote, .. })
+        | Command::Unlock(UnlockArgs { remote, .. })
         | Command::Detach(DetachArgs { remote, .. })
         | Command::Upload(UploadArgs { remote, .. })
         | Command::Download(DownloadArgs { remote, .. })

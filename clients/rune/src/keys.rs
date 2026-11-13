@@ -93,10 +93,14 @@ pub enum Shortcut {
     Tab(u8),
     RenameSession,
     RenameTab,
+    /// Lock the active tab against close, or unlock it.
+    LockTab,
     CloseSession,
     CheckForUpdates,
     InstallUpdate,
     Machines,
+    /// Show a code a phone scans to pair with this computer.
+    PairPhone,
     RetryConnection,
     CopyDiagnostics,
     ToggleFullScreen,
@@ -126,6 +130,7 @@ impl Shortcut {
                 | Self::PitLane
                 | Self::Hive
                 | Self::Settings
+                | Self::PairPhone
                 | Self::ChangeTheme
                 | Self::ZoomIn
                 | Self::ZoomOut

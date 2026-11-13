@@ -119,6 +119,9 @@ pub(in crate::attach) fn kill_window(
         ..
     }: ActionCall<'_, '_>,
 ) {
+    if crate::attach::input_dispatch::tab_lock::refuse_locked(ctx, effects, false) {
+        return;
+    }
     match confirmed_targets(resolved) {
         Some(targets) => kill_targets(ctx, effects, targets),
         None => confirm_kill_window(ctx, effects),

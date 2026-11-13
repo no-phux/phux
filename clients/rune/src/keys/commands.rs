@@ -321,10 +321,12 @@ pub const COMMANDS: &[Command] = &[
     row!(Shortcut::CheckForUpdates, "Check for Updates", [], []),
     row!(Shortcut::InstallUpdate, "Update Now", [], []),
     row!(Shortcut::Machines, "Switch or Add Machine", [], []),
+    row!(Shortcut::PairPhone, "Pair a Phone", [], []),
     row!(Shortcut::RetryConnection, "Retry Connection", [], []),
     row!(Shortcut::CopyDiagnostics, "Copy Diagnostics", [], []),
     row!(Shortcut::RenameSession, "Rename Session", [], []),
     row!(Shortcut::RenameTab, "Rename Tab", [], []),
+    row!(Shortcut::LockTab, "Lock or Unlock Tab", [], []),
     row!(Shortcut::CloseSession, "Close Session", [], []),
     row!(Shortcut::SplitRight, "Split Right", [m('d')], [l('d')]),
     row!(
