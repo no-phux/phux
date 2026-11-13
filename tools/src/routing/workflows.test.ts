@@ -6,6 +6,7 @@ import { repoPath } from "../lib/repo.ts";
 import { capture } from "../lib/process.ts";
 import { list, str, strings, table, type Table } from "../lib/value.ts";
 import {
+  action,
   job,
   jobs,
   needs,
@@ -21,6 +22,16 @@ import { classifyEvent } from "./detect.ts";
 import { LANE_RECIPES, LANES, plan, planOutputs } from "./plan.ts";
 
 const CI = workflow("ci.yml");
+
+/** A job's scripts, including one level of local composite action. */
+function executed(lane: Table): string {
+  return steps(lane)
+    .flatMap((step) => {
+      const local = /^\.\/\.github\/actions\/([^/@]+)$/.exec(uses(step))?.[1];
+      return local === undefined ? [run(step)] : steps(action(local)).map(run);
+    })
+    .join("\n");
+}
 const FFI = ["ffi-xcframework.yml", "ffi-android.yml"];
 const AFTER_LANES = ["ci", "content", "prune-build-cache"];
 
@@ -135,7 +146,7 @@ test("each lane is one job gated on its plan output that runs the lane's recipes
     expect([lane, owner === undefined]).toEqual([lane, false]);
     const called = uses(owner?.[1] ?? {}).replace("./.github/workflows/", "");
     const laneJobs = called === "" ? [owner?.[1] ?? {}] : Object.values(jobs(workflow(called)));
-    const commands = laneJobs.flatMap(steps).map(run).join("\n");
+    const commands = laneJobs.map(executed).join("\n");
     for (const argv of LANE_RECIPES[lane]) {
       const [recipe] = argv;
       expect([lane, recipe, recipe in RECIPES]).toEqual([lane, recipe, true]);
@@ -212,16 +223,37 @@ test("the merge queue gets both required checks", () => {
   expect(lint).toContain("github.event.merge_group.head_sha");
 });
 
-test("the Rune lane's iOS job follows the plan, gated on the merge queue variable", () => {
+test("ci runs Rune's Linux hosts, and rune-macos owns the Apple legs", () => {
   const rune = job(CI, "rune");
-  expect(withInput(rune, "ios")).toBe("${{ needs.plan.outputs.rune_ios == 'true' }}");
-  const planStep = steps(job(CI, "plan")).find((step) => run(step).includes("ci-plan"));
+  expect(withInput(rune, "hosts")).toBe("linux");
+  expect(withInput(rune, "ios")).toBe(false);
+  expect(workflowText("ci.yml")).not.toContain("rune_ios");
+  const mac = workflow("rune-macos.yml");
+  const build = job(mac, "build");
+  expect(withInput(build, "hosts")).toBe("macos");
+  expect(withInput(build, "ios")).toBe("${{ needs.plan.outputs.ios == 'true' }}");
+  expect(str(build["if"])).toContain("github.event_name != 'pull_request'");
+  expect(str(job(mac, "rune-macos")["name"])).toBe("rune-macos");
+  const planStep = steps(job(mac, "plan")).find((step) => run(step).includes("rune-macos-plan"));
   expect(table(planStep?.["env"])["PHUX_MERGE_QUEUE"]).toBe("${{ vars.PHUX_MERGE_QUEUE }}");
-  const build = workflow("rune-build.yml");
-  const input = table(table(table(table(build["on"])["workflow_call"])["inputs"])["ios"]);
+  const trigger = table(table(mac["on"])["merge_group"]);
+  expect(trigger["types"]).toEqual(["checks_requested"]);
+  const reusable = workflow("rune-build.yml");
+  const input = table(table(table(table(reusable["on"])["workflow_call"])["inputs"])["ios"]);
   // rune-client.yml calls it for a tag without inputs: the release keeps iOS.
   expect(input).toMatchObject({ type: "boolean", default: true });
-  expect(str(job(build, "ios-native")["if"])).toBe("inputs.ios");
+  expect(str(job(reusable, "ios-native")["if"])).toBe(
+    "inputs.ios && (inputs.hosts == 'all' || inputs.hosts == 'macos')",
+  );
+  expect(table(mac["concurrency"])["cancel-in-progress"]).toBe(
+    table(CI["concurrency"])["cancel-in-progress"],
+  );
+  const group = str(table(mac["concurrency"])["group"]) ?? "";
+  expect(group).toContain(
+    "github.event_name == 'push' && (github.actor == 'phux-release-bot[bot]' && github.sha || 'main-push')",
+  );
+  expect(group.endsWith(" || github.ref }}")).toBe(true);
+  expect(group).not.toContain("merge_group");
 });
 
 test("post-merge workflows follow ci on main pushes only", () => {
@@ -237,16 +269,16 @@ test("post-merge workflows follow ci on main pushes only", () => {
 // One line per way a macos-* or xcode-* leg enters the five-slot pool.
 // workflow_call does not start a run, so reusable workflows count through each caller.
 const MACOS_BUDGET = [
-  "cache-warm.yml rune → rune-build.yml build macos-arm64 on macos-26 | schedule 17 6 * * *, workflow_dispatch",
+  "cache-warm.yml rune → rune-build.yml macos (macos-arm64) on macos-26 | schedule 17 6 * * *, workflow_dispatch",
   "cache-warm.yml rune → rune-build.yml ios-native (ios-native-simulator) on macos-26 | schedule 17 6 * * *, workflow_dispatch",
-  "ci.yml rune → rune-build.yml build macos-arm64 on macos-26 | merge_group, pull_request, push branches main, workflow_dispatch",
-  "ci.yml rune → rune-build.yml ios-native (ios-native-simulator) on macos-26 | merge_group, pull_request, push branches main, workflow_dispatch",
   "ffi-xcframework.yml build on xcode-27 | workflow_dispatch",
   "first-run-timing.yml macos on macos-26 | pull_request, push branches main, workflow_dispatch",
   "next.yml cli → build-cli.yml build aarch64-apple-darwin on xcode-27 | workflow_dispatch, workflow_run ci",
   "release.yml cli-build → build-cli.yml build aarch64-apple-darwin on xcode-27 | schedule 5 15 * * *, workflow_dispatch, workflow_run ci",
-  "rune-client.yml build → rune-build.yml build macos-arm64 on macos-26 | push tags rune-v*",
+  "rune-client.yml build → rune-build.yml macos (macos-arm64) on macos-26 | push tags rune-v*",
   "rune-client.yml build → rune-build.yml ios-native (ios-native-simulator) on macos-26 | push tags rune-v*",
+  "rune-macos.yml build → rune-build.yml macos (macos-arm64) on macos-26 | merge_group, push branches main, schedule 47 11 * * *, workflow_dispatch",
+  "rune-macos.yml build → rune-build.yml ios-native (ios-native-simulator) on macos-26 | merge_group, push branches main, schedule 47 11 * * *, workflow_dispatch",
 ];
 
 test("macOS jobs stay on the budget", () => {
@@ -325,8 +357,8 @@ function macJobs(): MacBudget[] {
     for (const [id, lane] of Object.entries(jobs(workflow(file)))) {
       const called = calledWorkflow(uses(lane));
       if (called !== undefined) {
-        for (const leg of directApple(called, new Set())) {
-          scheduled.push(budgetEntry(file, id, leg, triggers));
+        for (const leg of directApple(called, new Set(), calledHosts(lane))) {
+          scheduled.push(budgetEntry(file, id, leg, poolTriggers(lane, triggers)));
         }
         continue;
       }
@@ -381,8 +413,28 @@ function legKey(entry: MacBudget): string {
   return `${file} ${id} ${entry.leg ?? ""} ${entry.runsOn}`;
 }
 
-function directApple(file: string, seen: Set<string>): Array<AppleLeg & { definedIn: string }> {
-  if (seen.has(file)) return [];
+function calledHosts(lane: Table): "all" | "linux" | "macos" {
+  const value = str(table(lane["with"])["hosts"]);
+  if (value === "linux" || value === "macos") return value;
+  return "all";
+}
+
+/** A caller that refuses pull_request does not put that event in the pool. */
+function poolTriggers(lane: Table, triggers: string[]): string[] {
+  const gate = str(lane["if"]) ?? "";
+  if (gate.includes("github.event_name != 'pull_request'")) {
+    return triggers.filter((label) => label !== "pull_request");
+  }
+  return triggers;
+}
+
+function directApple(
+  file: string,
+  seen: Set<string>,
+  hosts: "all" | "linux" | "macos" = "all",
+): Array<AppleLeg & { definedIn: string }> {
+  // linux calls of rune-build.yml do not take an Apple runner.
+  if (hosts === "linux" || seen.has(file)) return [];
   seen.add(file);
   const legs: Array<AppleLeg & { definedIn: string }> = [];
   for (const [id, lane] of Object.entries(jobs(workflow(file)))) {

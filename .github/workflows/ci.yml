@@ -6,7 +6,9 @@
 # affect is skipped; the `ci` aggregate (the required check) accepts a skip
 # and nothing else. A merge group plans like a main push. A main push whose
 # tree a pull request or merge group already validated with the same lanes
-# skips them all (tools/src/routing/receipt.ts).
+# skips them all (tools/src/routing/receipt.ts). Rune's macOS and iOS legs
+# are rune-macos.yml. This workflow's `rune` lane is the Linux hosts only,
+# and its receipt never claims macOS coverage.
 name: ci
 
 on:
@@ -35,8 +37,7 @@ concurrency:
   # `closed`, so the close still joins the in-flight run and cancels it.
   # Main pushes share one group: the running push always finishes
   # (release-please and next need its green), and a newer push replaces the
-  # one still pending, so main holds at most two runs' Rune macOS legs in
-  # the five-slot pool. A release-please commit keeps its own group:
+  # one still pending. A release-please commit keeps its own group:
   # release.yml publishes a draft only on a green ci for that exact commit.
   # A merge group has no PR payload; its queue ref names one entry.
   group: ci-${{ github.event_name == 'push' && (github.actor == 'phux-release-bot[bot]' && github.sha || 'main-push') || github.event_name == 'pull_request' && format('{0}-{1}', github.event.pull_request.head.repo.full_name, github.head_ref) || github.event_name == 'workflow_dispatch' && format('{0}-{1}', github.repository, github.ref_name) || github.ref }}
@@ -65,7 +66,6 @@ jobs:
       web: ${{ steps.plan.outputs.web }}
       native: ${{ steps.plan.outputs.native }}
       rune: ${{ steps.plan.outputs.rune }}
-      rune_ios: ${{ steps.plan.outputs.rune_ios }}
       docs_only: ${{ steps.plan.outputs.docs_only }}
       web_engine: ${{ steps.plan.outputs.web_engine }}
       content: ${{ steps.plan.outputs.content }}
@@ -83,9 +83,6 @@ jobs:
       - id: plan
         env:
           GH_TOKEN: ${{ github.token }}
-          # 'true' once the merge queue is on: a PR reaching Rune only through
-          # Cargo leaves the iOS simulator job to its merge group.
-          PHUX_MERGE_QUEUE: ${{ vars.PHUX_MERGE_QUEUE }}
         run: bun tools/main.ts ci-plan
 
   guards:
@@ -399,13 +396,14 @@ jobs:
       # `just native-smoke`, without installing just.
       - run: bash scripts/native-smoke.sh
 
-  # Rune has its own workspace; its workflow also builds the tagged release.
+  # Rune's Linux hosts. macOS and the iOS simulator are rune-macos.yml.
   rune:
     needs: plan
     if: needs.plan.outputs.rune == 'true'
     uses: ./.github/workflows/rune-build.yml
     with:
-      ios: ${{ needs.plan.outputs.rune_ios == 'true' }}
+      hosts: linux
+      ios: false
 
   # The required check. The ruleset matches this display name.
   ci:

@@ -301,10 +301,14 @@ without all its locks keeps normal routing.
 `main` pushes and merge queue groups (`merge_group`) run main policy: the
 full Rust pool and every lane the diff needs. A `main` push whose tree a
 pull request or merge group already validated with the same lanes reuses
-that receipt (`tools/src/routing/receipt.ts`). With the repository variable
-`PHUX_MERGE_QUEUE=true`, a pull request that reaches Rune only through a
-root crate in its Cargo closure skips `rune / ios-native-simulator`. Its
-merge group still runs it, and its receipt never covers a `main` push.
+that receipt (`tools/src/routing/receipt.ts`). The receipt never claims
+Rune's macOS coverage. `rune-macos.yml` runs `macos-arm64` and
+`ios-native-simulator` on the merge queue, on `main` pushes, and nightly.
+A pull request reports a passing `rune-macos` check and starts no macOS
+runner. With `PHUX_MERGE_QUEUE=true`, a pull request that reaches Rune only
+through a root crate leaves the iOS decision to the queue; the queue and
+`main` still run it. A red macOS result on a direct `main` push does not
+block `main`. It blocks a release whose closure includes Rune.
 
 The test lanes compile once (`just test-archive`) and run the unit and e2e
 shards from that nextest archive. Pull requests restore caches and never

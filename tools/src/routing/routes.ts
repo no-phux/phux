@@ -82,6 +82,7 @@ const ROUTES: Record<string, Surface[]> = {
   // The Rune client has its own workspace, lock and lane (rune-build.yml).
   "clients/rune/**": ["rune"],
   ".github/workflows/rune-build.yml": ["rune"],
+  ".github/workflows/rune-macos.yml": ["rune"],
   "just/rune.just": ["rune"],
   // What that lane packages and qualifies with, outside its tree.
   "scripts/check-binary-portability.sh": ["rune"],
