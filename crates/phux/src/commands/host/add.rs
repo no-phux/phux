@@ -300,6 +300,16 @@ pub(super) fn add_failure_error(
                 remedy,
             )
         }
+        EnrollFailure::SshUnreachable(detail)
+            if let Some(hint) =
+                phux_client_runtime::connection::ssh_failure_hint(detail, ssh_host) =>
+        {
+            CliError::new(
+                codes::REGISTRY,
+                format!("cannot reach {ssh_host} over ssh: {detail}"),
+                hint,
+            )
+        }
         EnrollFailure::SshUnreachable(detail) => {
             let check = format!(
                 "check that `ssh {ssh_host}` works from this machine, then rerun \

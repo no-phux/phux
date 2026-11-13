@@ -12,6 +12,16 @@ use tokio::process::{ChildStdin, ChildStdout, Command};
 const STDERR_TAIL: usize = 8 * 1024;
 const EXIT_WAIT: Duration = Duration::from_millis(100);
 
+/// Rewords a bridge's stderr when it fails before carrying a frame, so the
+/// program behind it (ssh) can say what the failure means.
+pub(crate) struct Explain(pub(crate) Box<dyn Fn(&str) -> String + Send + Sync>);
+
+impl std::fmt::Debug for Explain {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("Explain")
+    }
+}
+
 #[derive(Debug)]
 pub(crate) struct ChildLink {
     child: Child,
@@ -20,6 +30,7 @@ pub(crate) struct ChildLink {
     pub(super) carried: bool,
     stderr: Option<tokio::task::JoinHandle<()>>,
     tail: Arc<Mutex<Vec<u8>>>,
+    pub(super) explain: Option<Explain>,
 }
 
 impl ChildLink {
@@ -42,6 +53,7 @@ impl ChildLink {
                 carried: false,
                 stderr: Some(stderr),
                 tail,
+                explain: None,
             },
             reader,
             writer,
@@ -61,6 +73,10 @@ impl ChildLink {
         let detail = {
             let tail = self.tail.lock().unwrap_or_else(PoisonError::into_inner);
             String::from_utf8_lossy(&tail).trim().to_owned()
+        };
+        let detail = match &self.explain {
+            Some(Explain(explain)) if !self.carried => explain(&detail),
+            _ => detail,
         };
         let status = match status {
             Ok(Ok(status)) => status.to_string(),

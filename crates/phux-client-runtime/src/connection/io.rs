@@ -48,6 +48,7 @@ mod child;
 mod read;
 
 use child::ChildLink;
+pub(crate) use child::Explain;
 
 use read::{
     read_stream_frames, read_ws_frames, refused_or, try_read_stream_frames, try_read_ws_frame,
@@ -124,7 +125,7 @@ pub(crate) enum Io {
         /// The server's pid from Unix-socket peer credentials.
         peer_pid: Option<i32>,
         /// Own the stdio bridge and its stderr drainer for this link's life.
-        child: Option<ChildLink>,
+        child: Option<Box<ChildLink>>,
     },
     Ws {
         reader: WsReader,
@@ -200,7 +201,23 @@ impl Io {
         let (child, reader, writer) = ChildLink::spawn(command)?;
         let mut link = Self::framed(Box::new(reader), Box::new(writer), None, None);
         if let Self::Stream { child: owner, .. } = &mut link {
-            *owner = Some(child);
+            *owner = Some(Box::new(child));
+        }
+        Ok(link)
+    }
+
+    /// [`Self::child`], with `explain` rewording the bridge's stderr when it
+    /// fails before carrying a frame.
+    pub(crate) fn child_explained(
+        command: &mut tokio::process::Command,
+        explain: child::Explain,
+    ) -> std::io::Result<Self> {
+        let mut link = Self::child(command)?;
+        if let Self::Stream {
+            child: Some(child), ..
+        } = &mut link
+        {
+            child.explain = Some(explain);
         }
         Ok(link)
     }

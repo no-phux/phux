@@ -20,6 +20,26 @@ Without either, as from a script, phux never prompts, so the host needs a key
 that works on its own. phux keeps that key login open the same way, so the
 next connection skips the SSH handshake.
 
+A host block your tools generated, with its own `ControlMaster`,
+`ControlPath`, `ControlPersist` or `BatchMode`, works as is: phux's own
+options win on the command line. `BatchMode yes` does keep ssh from asking
+for a password or code, so phux can't ask either; if such a host refuses
+the login, phux says that's why.
+
+## Many connections at once
+
+Connections to one host from the same app wait for a single login and then
+share it. sshd also turns away logins over its `MaxStartups` limit before
+they start, which happens when many open at once; phux tries those again a
+few times after a short random pause. A refused password, key or host key
+is never retried. If every try is turned away, the error names
+`MaxStartups`, and if the host refuses more sessions on the shared login,
+it names `MaxSessions`.
+
+When ssh fails and says little more than "Connection closed", phux shows
+what ssh printed and a command to copy: the same `ssh` with phux's options
+and `-v`, so you can see where it stops.
+
 ## When the host key changes
 
 If the host's key changed, phux stops and prints the `ssh-keygen -R` command

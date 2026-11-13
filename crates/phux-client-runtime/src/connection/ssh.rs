@@ -3,11 +3,14 @@
 //! user on its own socket, so no token or pin is involved.
 
 use std::path::Path;
-use std::process::Stdio;
 
-use tokio::io::AsyncReadExt as _;
+use super::io::{Explain, Io};
 
-use super::io::Io;
+mod diagnose;
+mod master;
+
+pub use diagnose::failure_hint;
+pub use master::{pre_auth_drop, pre_auth_retry_delay, retry_login};
 
 /// Refuse a destination or program ssh would read as an option.
 fn validate(destination: &str, remote_phux: &str) -> std::io::Result<()> {
@@ -114,60 +117,8 @@ pub fn master_options(dir: &Path) -> Vec<String> {
 /// client's own executable knows to answer one prompt and exit.
 pub const ASKPASS_ENV: &str = "PHUX_ASKPASS";
 
-/// Log in to `destination` through `askpass` and keep the login as phux's
-/// ssh master, as the CLI does from a terminal, so the `BatchMode` lane
-/// rides it. Does nothing when a master is up or phux has no control
-/// directory.
-///
-/// `Err` is final, worded for the person: the sign-in was cancelled or
-/// refused, or ssh refused the host key. Asking again on the next attempt
-/// would bring the dialog straight back. Failing to reach the host is left
-/// to the dial, so a network that is down is waited out without a prompt.
-pub(super) async fn askpass_login(destination: &str, askpass: &Path) -> Result<(), String> {
-    let Some(dir) = phux_config_core::instance::ssh_control_dir(true) else {
-        return Ok(());
-    };
-    let alive = tokio::process::Command::new(program())
-        .args(["-o", &format!("ControlPath={}/%C", dir.display())])
-        .args(["-O", "check", "--", destination])
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()
-        .await
-        .is_ok_and(|status| status.success());
-    if alive {
-        return Ok(());
-    }
-    let Ok(mut child) = tokio::process::Command::new(program())
-        .args(master_options(&dir))
-        // `-f` backgrounds once authenticated; `-N` runs nothing remotely.
-        .args(["-f", "-N", "--", destination])
-        .env("SSH_ASKPASS", askpass)
-        .env("SSH_ASKPASS_REQUIRE", "force")
-        .env(ASKPASS_ENV, "1")
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::piped())
-        .kill_on_drop(true)
-        .spawn()
-    else {
-        return Ok(());
-    };
-    let stderr = child.stderr.take();
-    if child.wait().await.is_ok_and(|status| status.success()) {
-        // The master forked off holding stderr; nothing to read.
-        return Ok(());
-    }
-    let mut said = String::new();
-    if let Some(mut stderr) = stderr {
-        let _ = stderr.read_to_string(&mut said).await;
-    }
-    login_refusal(&said, destination).map_or(Ok(()), Err)
-}
-
 /// Before each attempt on an ssh target with an askpass program, sign in
-/// through it ([`askpass_login`]). `Some` ends the session: a refusal, or
+/// through it ([`master::ensure`]). `Some` ends the session: a refusal, or
 /// the consumer closing it meanwhile.
 pub(super) async fn sign_in(
     target: &super::Target,
@@ -179,21 +130,11 @@ pub(super) async fn sign_in(
         return None;
     };
     tokio::select! {
-        signed_in = askpass_login(destination, askpass) => {
+        signed_in = master::ensure(destination, Some(askpass)) => {
             signed_in.err().map(super::ConnectionEnd::Refused)
         }
         _ = close.wait_for(|closed| *closed) => Some(super::ConnectionEnd::Closed),
     }
-}
-
-/// The final reason in a failed login's stderr, if it has one.
-fn login_refusal(stderr: &str, destination: &str) -> Option<String> {
-    if let Some(remedy) = host_key_remedy(stderr, destination) {
-        return Some(format!("ssh refused {destination}'s host key: {remedy}"));
-    }
-    stderr.contains("Permission denied").then(|| {
-        format!("the ssh sign-in to {destination} was cancelled or refused; connect again to retry")
-    })
 }
 
 /// The ssh program: `$PHUX_SSH` when set, otherwise `ssh`.
@@ -265,27 +206,58 @@ fn remove_command(stderr: &str) -> String {
     }
 }
 
+/// Every option a lane's ssh runs with, before `--`.
+fn lane_options() -> Vec<String> {
+    // A password or 2FA login done once in the foreground (`phux attach
+    // --ssh`, `phux host add`) left a master this run rides; without one,
+    // this run leaves one for the next.
+    let mut options = batch_control_options();
+    // The pipes are the protocol's, and the terminal may be the TUI's: a
+    // login that must prompt fails here and is left to `ssh -t`. A dead
+    // path ends the link in about 45 s instead of hanging it.
+    options.extend(
+        [
+            "-T",
+            "-o",
+            "BatchMode=yes",
+            "-o",
+            "ClearAllForwardings=yes",
+            "-o",
+            "ServerAliveInterval=15",
+            "-o",
+            "ServerAliveCountMax=3",
+        ]
+        .map(str::to_owned),
+    );
+    options
+}
+
 fn command(destination: &str, remote_phux: &str) -> std::io::Result<tokio::process::Command> {
     validate(destination, remote_phux)?;
     let mut command = tokio::process::Command::new(program());
     command
-        // A password or 2FA login done once in the foreground (`phux attach
-        // --ssh`, `phux host add`) left a master this run rides; without
-        // one, this run leaves one for the next.
-        .args(batch_control_options())
-        // The pipes are the protocol's, and the terminal may be the TUI's:
-        // a login that must prompt fails here and is left to `ssh -t`.
-        .args(["-T", "-o", "BatchMode=yes", "-o", "ClearAllForwardings=yes"])
-        // A dead path ends the link in about 45 s instead of hanging it.
-        .args(["-o", "ServerAliveInterval=15", "-o", "ServerAliveCountMax=3"])
+        .args(lane_options())
         .arg("--")
         .arg(destination)
         .arg(remote_command(remote_phux));
     Ok(command)
 }
 
-pub(super) fn establish(destination: &str, remote_phux: &str) -> std::io::Result<Io> {
-    Io::child(&mut command(destination, remote_phux)?)
+/// Start the lane. Dials to one destination in this process take turns
+/// logging in, so the first becomes phux's master and the rest ride it,
+/// rather than all racing sshd's `MaxStartups` to be it.
+pub(super) async fn establish(destination: &str, remote_phux: &str) -> std::io::Result<Io> {
+    let mut command = command(destination, remote_phux)?;
+    // Without an askpass program this never fails; the lane reports.
+    let _ = master::ensure(destination, None).await;
+    let owned = destination.to_owned();
+    let diagnostic = diagnose::diagnostic_command(&lane_options(), destination);
+    Io::child_explained(
+        &mut command,
+        Explain(Box::new(move |stderr| {
+            diagnose::explain(stderr, &owned, &diagnostic)
+        })),
+    )
 }
 
 #[cfg(test)]
@@ -415,15 +387,79 @@ Host key verification failed.";
         );
     }
 
+    /// A generated per-host block, as a VM manager writes one, brings its
+    /// own master, `BatchMode` and host-key settings. Real ssh resolves the
+    /// options (`ssh -G`, no network): phux's master settings win, the
+    /// block's address and host-key choices stand, and its `BatchMode yes`
+    /// reaches phux's own login, which is why a refused password says so.
     #[test]
-    fn only_a_cancelled_or_refused_sign_in_ends_the_session() {
-        let denied = "me@box: Permission denied (publickey,keyboard-interactive).";
-        assert!(login_refusal(denied, "box").is_some_and(|why| why.contains("cancelled")));
-        let host_key = "Host key verification failed.";
-        assert!(login_refusal(host_key, "box").is_some_and(|why| why.contains("host key")));
-        // An unreachable host walks the ladder, so a down network heals.
-        let unreachable = "ssh: connect to host box port 22: No route to host";
-        assert_eq!(login_refusal(unreachable, "box"), None);
+    fn a_generated_host_block_keeps_its_address_and_loses_its_master() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let config = root.path().join("config");
+        std::fs::write(
+            &config,
+            "Host vm\n  HostName 127.0.0.1\n  Port 2222\n  User me\n  ControlMaster auto\n  \
+             ControlPath ~/.vm/ssh/%r@%h:%p\n  ControlPersist yes\n  BatchMode yes\n  \
+             UserKnownHostsFile /dev/null\n  StrictHostKeyChecking no\n",
+        )
+        .expect("write config");
+        let resolve = |options: &[String]| -> Option<String> {
+            let output = std::process::Command::new("ssh")
+                .arg("-G")
+                .arg("-F")
+                .arg(&config)
+                .args(options)
+                .arg("vm")
+                .stdin(std::process::Stdio::null())
+                .output()
+                .ok()
+                .filter(|output| output.status.success())?;
+            Some(String::from_utf8_lossy(&output.stdout).into_owned())
+        };
+        let dir = Path::new("/tmp/phux-ssh-test");
+        let Some(master) = resolve(&master_options(dir)) else {
+            return; // No ssh to resolve options with.
+        };
+        let lines =
+            |resolved: &str| -> Vec<String> { resolved.lines().map(str::to_owned).collect() };
+        let has = |resolved: &[String], line: &str| resolved.iter().any(|seen| seen == line);
+        let master = lines(&master);
+        for line in [
+            "hostname 127.0.0.1",
+            "port 2222",
+            "controlmaster auto",
+            "controlpersist 300",
+            "clearallforwardings yes",
+            "userknownhostsfile /dev/null",
+            "batchmode yes",
+        ] {
+            assert!(has(&master, line), "{line}: {master:?}");
+        }
+        assert!(
+            master
+                .iter()
+                .any(|line| line.starts_with("controlpath /tmp/phux-ssh-test/")),
+            "{master:?}"
+        );
+
+        let mut lane = client_options(Some(dir), true);
+        lane.extend(
+            lane_options()
+                .into_iter()
+                .skip_while(|option| option != "-T"),
+        );
+        let lane = lines(&resolve(&lane).expect("lane options resolve"));
+        for line in ["controlmaster auto", "controlpersist 300", "batchmode yes"] {
+            assert!(has(&lane, line), "{line}: {lane:?}");
+        }
+        assert!(
+            lane.iter()
+                .any(|line| line.starts_with("controlpath /tmp/phux-ssh-test/")),
+            "{lane:?}"
+        );
+
+        let client = lines(&resolve(&client_options(Some(dir), false)).expect("resolves"));
+        assert!(has(&client, "controlmaster false"), "{client:?}");
     }
 
     #[test]
