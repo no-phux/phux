@@ -259,7 +259,10 @@ fn a_copy_waits_for_its_producer_and_reaches_only_the_viewer_that_asked() {
             reply: 0,
             cut: true,
         });
-        let asked = tokio::task::spawn_local(async move { command(&mut viewer, 14, copy).await });
+        let asked = tokio::task::spawn_local(async move {
+            let failed = command(&mut viewer, 14, copy).await;
+            (viewer, failed)
+        });
         let reply = copy_relayed(&mut producer).await;
         let no_tool = Err("wl-paste is not installed here".to_owned());
         let taken = command(
@@ -272,7 +275,7 @@ fn a_copy_waits_for_its_producer_and_reaches_only_the_viewer_that_asked() {
         )
         .await;
         assert!(matches!(taken, CommandResult::Ok), "{taken:?}");
-        let failed = asked.await.unwrap();
+        let (viewer, failed) = asked.await.unwrap();
         assert!(
             matches!(
                 &failed,
@@ -281,6 +284,8 @@ fn a_copy_waits_for_its_producer_and_reaches_only_the_viewer_that_asked() {
             ),
             "{failed:?}"
         );
+
+        empty_copies_nothing(viewer, &mut producer, send).await;
         drop((producer, stranger));
         server.stop().await;
     });
@@ -366,6 +371,35 @@ fn a_paste_waits_briefly_for_its_producers_outcome() {
 }
 
 /// The server's token on the next copy relayed to `producer`.
+/// An older producer answers an empty clipboard with "": never a copy.
+async fn empty_copies_nothing(
+    mut viewer: tokio::net::UnixStream,
+    producer: &mut tokio::net::UnixStream,
+    send: impl Fn(DocumentInput) -> Command,
+) {
+    let copy = send(DocumentInput::CopySelection {
+        reply: 0,
+        cut: false,
+    });
+    let asked = tokio::task::spawn_local(async move { command(&mut viewer, 16, copy).await });
+    let reply = copy_relayed(producer).await;
+    let empty = send(DocumentInput::ClipboardText {
+        reply,
+        text: Ok(String::new()),
+    });
+    let taken = command(producer, 17, empty).await;
+    assert!(matches!(taken, CommandResult::Ok), "{taken:?}");
+    let nothing = asked.await.unwrap();
+    assert!(
+        matches!(
+            &nothing,
+            CommandResult::Error { code: ErrorCode::Unavailable, message }
+                if message == "Nothing copied on the host"
+        ),
+        "{nothing:?}"
+    );
+}
+
 async fn copy_relayed(producer: &mut tokio::net::UnixStream) -> u32 {
     wait_frame(producer, "copy", |frame| match frame {
         FrameKind::Event {

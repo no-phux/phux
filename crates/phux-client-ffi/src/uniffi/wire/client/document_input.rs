@@ -15,11 +15,11 @@ use phux_protocol::wire::frame::{
 use super::*;
 
 /// The control classes the session snapshots declared, and the sends
-/// awaiting a reply.
+/// awaiting a reply, each with whether it was a copy.
 #[derive(Default)]
 pub(super) struct DocumentInputState {
     inputs: DocumentInputs,
-    pending: HashMap<u32, ResourceId>,
+    pending: HashMap<u32, (ResourceId, bool)>,
 }
 
 /// The frame pixel under a touch at (`x`, `y`) in a `view_width` by
@@ -87,9 +87,13 @@ impl RemoteClient {
         let (Some(id), Some(client)) = (id::parse(&resource_id), self.runtime_client()) else {
             return 0;
         };
+        let copy = matches!(
+            intent,
+            DocumentInput::CopyClipboard { .. } | DocumentInput::CopySelection { .. }
+        );
         let request_id = client.send_command(DocumentInputs::command(&id, intent));
         let mut state = self.document_input.lock().unwrap();
-        state.pending.insert(request_id, id);
+        state.pending.insert(request_id, (id, copy));
         request_id
     }
 }
@@ -117,14 +121,14 @@ impl RemoteClient {
         match event {
             Event::TopologySnapshot { snapshot, .. } => state.inputs.note_snapshot(&snapshot),
             Event::CommandResult { request_id, result } => {
-                let Some(resource) = state.pending.remove(&request_id) else {
+                let Some((resource, copy)) = state.pending.remove(&request_id) else {
                     return Some(Event::CommandResult { request_id, result });
                 };
                 let control = state.inputs.control(&resource);
                 projected.push(WireEvent::DocumentInputResult {
                     request_id,
                     resource_id: id::encode(&resource),
-                    outcome: outcome(&result, control),
+                    outcome: outcome(&result, control, copy),
                 });
             }
             event => return Some(event),
@@ -162,11 +166,23 @@ impl RemoteClient {
     }
 }
 
-/// A reply as an outcome. A refused document with no control class was
-/// never controllable; with one, the refusal is a missing grant.
-fn outcome(result: &CommandResult, control: Option<ControlClass>) -> WireDocumentInputOutcome {
-    if let Some(text) = phux_client_core::document_input::copied_text(result) {
-        return WireDocumentInputOutcome::Copied { text };
+/// A reply as an outcome. A copy is `Copied` only with text: an empty one
+/// or an old host's is `Other` with why. A refused document with no
+/// control class was never controllable; with one, the refusal is a
+/// missing grant.
+fn outcome(
+    result: &CommandResult,
+    control: Option<ControlClass>,
+    copy: bool,
+) -> WireDocumentInputOutcome {
+    match copy.then(|| core_input::copy_outcome(result)).flatten() {
+        Some(Ok(text)) => return WireDocumentInputOutcome::Copied { text },
+        Some(Err(message)) => {
+            return WireDocumentInputOutcome::Other {
+                message: message.to_owned(),
+            };
+        }
+        None => {}
     }
     let CommandResult::Error { code, message } = result else {
         return WireDocumentInputOutcome::Sent;
