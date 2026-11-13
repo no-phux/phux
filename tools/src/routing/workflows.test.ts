@@ -65,6 +65,50 @@ test("ci.yml routes every event through plan, with no path filter", () => {
   expect(withInput(checkout ?? {}, "fetch-depth")).toBe(0);
 });
 
+/** The `format()` call one event contributes to ci.yml's concurrency group. */
+function concurrencyFormat(
+  group: string,
+  event: "pull_request" | "workflow_dispatch",
+): { pattern: string; args: string[] } {
+  const match = group.match(
+    new RegExp(String.raw`github\.event_name == '${event}' && format\('([^']*)', ([^)]*)\)`),
+  );
+  if (match === null) throw new Error(`ci.yml concurrency group has no ${event} key: ${group}`);
+  return {
+    pattern: match[1] ?? "",
+    args: (match[2] ?? "").split(",").map((arg) => arg.trim()),
+  };
+}
+
+/** GitHub `format('{0}-{1}', repo, branch)` with the pattern the workflow uses. */
+function concurrencyKey(pattern: string, repo: string, branch: string): string {
+  return pattern.replaceAll("{0}", repo).replaceAll("{1}", branch);
+}
+
+test("a pull request and a ci dispatch of its branch share one concurrency group", () => {
+  const group = str(table(CI["concurrency"])["group"]) ?? "";
+  // Push stays the main-push / release-bot SHA key. A merge group still falls
+  // through to github.ref, the queue ref that names one entry.
+  expect(group).toContain(
+    "github.event_name == 'push' && (github.actor == 'phux-release-bot[bot]' && github.sha || 'main-push')",
+  );
+  expect(group.endsWith(" || github.ref }}")).toBe(true);
+  expect(group).not.toContain("merge_group");
+  expect(group).not.toContain("pull_request.number");
+  expect(table(CI["concurrency"])["cancel-in-progress"]).toBe("${{ github.event_name != 'push' }}");
+
+  const pr = concurrencyFormat(group, "pull_request");
+  const dispatch = concurrencyFormat(group, "workflow_dispatch");
+  expect(pr.pattern).toBe(dispatch.pattern);
+  expect(pr.args).toEqual(["github.event.pull_request.head.repo.full_name", "github.head_ref"]);
+  expect(dispatch.args).toEqual(["github.repository", "github.ref_name"]);
+
+  const branch = "feat/onepassword-broker";
+  const upstream = concurrencyKey(dispatch.pattern, "no-phux/phux", branch);
+  expect(concurrencyKey(pr.pattern, "no-phux/phux", branch)).toBe(upstream);
+  expect(concurrencyKey(pr.pattern, "contributor/phux", branch)).not.toBe(upstream);
+});
+
 test("plan declares every output the planner writes, and jobs read only those", () => {
   const c = classifyEvent("workflow_dispatch", undefined);
   const written = [
