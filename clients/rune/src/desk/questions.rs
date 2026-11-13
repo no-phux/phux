@@ -108,6 +108,13 @@ impl Questions {
             || !view.capabilities.questions.is_supported()
     }
 
+    /// An enabled field in this exact live question owns text input.
+    pub fn field_focused(&self, terminal: &ResourceId, id: &str) -> bool {
+        self.open(terminal, id).is_some_and(|(view, draft)| {
+            !self.held(view, id) && draft.texts.values().any(|edit| edit.focused)
+        })
+    }
+
     pub fn text_mut(&mut self, question: &str, field: &str) -> &mut TextEdit {
         let Self { drafts, spare, .. } = self;
         match drafts.get_mut(question) {

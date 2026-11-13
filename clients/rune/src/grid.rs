@@ -444,6 +444,7 @@ pub fn ime_layer(
     preedit: Option<&str>,
     metrics: &Metrics,
     ink: (Color, Color),
+    option_as_meta: bool,
 ) -> El {
     let (fg, bg) = ink;
     let x = f32::from(frame.cursor.col) * metrics.cell_w;
@@ -452,7 +453,8 @@ pub fn ime_layer(
         .key("ime-caret")
         .absolute(x, y)
         .size(metrics.cell_w, metrics.cell_h)
-        .ime_cursor();
+        .ime_cursor()
+        .ime_option_as_alt(option_as_meta);
     let Some(composed) = preedit.filter(|t| !t.is_empty()) else {
         return anchor;
     };

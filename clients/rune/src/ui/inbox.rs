@@ -315,9 +315,16 @@ pub fn view(desk: &Desk, ink: &Ink) -> El {
         .child(row().w_full().h_full().child(el().grow(1.0)).child(drawer))
 }
 
+/// A visible inline question and its text-input ownership.
+pub struct AskCard {
+    pub content: El,
+    /// Only a field in the card actually shown can take the terminal's IME.
+    pub editing: bool,
+}
+
 /// A focused pane's agent is asking: the question over the pane's corner,
 /// answerable with a click. Hidden while find or the inbox covers it.
-pub fn ask_card(desk: &Desk, id: &ResourceId, area: [f32; 2], ink: &Ink) -> Option<El> {
+pub fn ask_card(desk: &Desk, id: &ResourceId, area: [f32; 2], ink: &Ink) -> Option<AskCard> {
     if desk.find.is_some() || desk.inbox.open {
         return None;
     }
@@ -343,19 +350,29 @@ pub fn ask_card(desk: &Desk, id: &ResourceId, area: [f32; 2], ink: &Ink) -> Opti
         .child(header(
             mark_color(Mark::Blocked, ink),
             who,
-            match (busy, ask.typed()) {
-                (true, _) => "sending…".to_owned(),
-                (false, true) => format!("{}I to reply", super::MOD),
-                (false, false) => "ACP".to_owned(),
-            },
+            ask_hint(busy, ask.typed()),
             ink,
         ))
         .child(text(ask.text.clone()).font(LABEL).color(ink.text).wrap());
     if !ask.typed() {
-        return Some(card.child(super::questions::panel(desk, id, &ask, ink)));
+        return Some(AskCard {
+            editing: desk.inbox.questions.field_focused(id, &ask.id),
+            content: card.child(super::questions::panel(desk, id, &ask, ink)),
+        });
     }
     if !ask.suggestions.is_empty() {
         card = card.child(chips(id, &ask, false, busy, ink));
     }
-    Some(card)
+    Some(AskCard {
+        content: card,
+        editing: false,
+    })
+}
+
+fn ask_hint(busy: bool, typed: bool) -> String {
+    match (busy, typed) {
+        (true, _) => "sending…".to_owned(),
+        (false, true) => format!("{}I to reply", super::MOD),
+        (false, false) => "ACP".to_owned(),
+    }
 }
