@@ -80,6 +80,14 @@ session (or `--session NAME`). It never creates a session on its own.
   access you already have. A window shows one machine at a time. On a new
   computer the local server is empty, so sessions living elsewhere appear
   only once that machine is added.
+- **Pair a phone.** Settings → **Remote Hosts**, **Pair a Phone** in the
+  palette, or the card on onboarding's last step shows a QR and a copyable
+  link from `phux pair --json --enroll`, with its expiry counting down and
+  **New code**. It says which network the phone uses (tailnet, local
+  network or relay). When remote access is off it says what turning it on
+  means and waits for **Allow phones to connect** (`--enable`). **Paired
+  devices** lists `phux workload list`'s enrolled devices; **Revoke** runs
+  `phux pair revoke` and disconnects that device now.
 - **Updates.** Settings → **About & Updates** controls automatic checks,
   local phux management, and the phux release channel. Downloads and server
   handoffs still need a click. [Updates and release channels](./UPDATES.md)

@@ -41,6 +41,8 @@ serde = { version = "1", features = ["derive"] }
 url = "2"
 # The same digest the runtime uses, for a downloaded update.
 sha2 = "0.11"
+# The Pair a phone QR; the version and features `phux pair` already uses.
+qrcode = { version = "0.14", default-features = false }
 
 # The Dock count and System Settings' window; same objc2 as Rune's. Rune's
 # taskbar badge still retains destroyed windows (see src/dock.rs).

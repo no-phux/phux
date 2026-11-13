@@ -288,6 +288,7 @@ impl Desk {
             Shortcut::CheckForUpdates => self.updater.check_now(),
             Shortcut::InstallUpdate => self.install_update(tx),
             Shortcut::Machines => self.toggle_machines(),
+            Shortcut::PairPhone => self.open_pairing(),
             Shortcut::RetryConnection => self.reconnect(),
             Shortcut::CopyDiagnostics => {
                 self.copy_diagnostics(tx);
