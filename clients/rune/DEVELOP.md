@@ -15,6 +15,13 @@ workspace and lock so Rune's graph stays out of the rest of phux. The
 [Rune upstream follower](../../scripts/rune-upstream/README.md) moves the pin
 twice a day.
 
+Keep all Rune dependencies and the four `[patch.crates-io]` entries on the
+same revision: Cargo does not inherit Rune's workspace patches. The `tooling`
+feature is required in release builds too: packaged qualification and the
+updater's GPU launch check use headless rendering. Desktop startup opts into
+Rune's orderly exit so window destruction still closes popup commands and
+releases server view leases.
+
 ```sh
 cd clients/rune
 cargo test

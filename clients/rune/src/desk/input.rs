@@ -231,7 +231,7 @@ impl Desk {
             return false;
         }
         match event {
-            rune::Ime::Preedit(text, _) => {
+            rune::Ime::Preedit(text, ..) => {
                 self.preedit = Some(text.clone()).filter(|t| !t.is_empty());
             }
             rune::Ime::Commit(text) => {
@@ -239,6 +239,8 @@ impl Desk {
                 self.restart_blink();
                 self.send_input(|control, terminal| control.send_text(terminal, text));
             }
+            // Select reconverts editable text, not server-owned terminal
+            // output. Enabled/Disabled aren't terminal input either.
             _ => return false,
         }
         true

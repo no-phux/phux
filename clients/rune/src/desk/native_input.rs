@@ -238,7 +238,7 @@ impl Bridge {
             }
             Action::Preedit { text, .. } => {
                 rt.update(|d, _| {
-                    d.ime(&rune::Ime::Preedit(text, None));
+                    d.ime(&rune::Ime::Preedit(text, None, Vec::new()));
                 });
             }
             Action::Cancel => rt.update(|d, _| d.preedit = None),
