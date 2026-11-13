@@ -26,6 +26,27 @@ phux only reads files. It never runs tmux or any other program, and it never
 edits your phux config itself: the agent does, and it backs up an existing
 file first.
 
+## Two questions
+
+When it reads a tmux config, `phux migrate` asks two questions before it
+starts the agent. Enter takes the default.
+
+1. **Setup mode.** Beginner (the default) keeps phux's defaults wherever they
+   already do what your tmux did, and writes only real differences. An
+   `unbind '"'` beside your own `bind - split-window -v` is not written:
+   phux already ships <kbd>-</kbd> as that split, so removing <kbd>"</kbd>
+   would only lose a key.
+   Advanced mirrors tmux as closely as phux allows: it writes your tmux
+   unbinds, and tmux's prefix becomes the default answer to the next
+   question. Your tmux bindings win over phux's defaults in both modes.
+2. **Prefix.** phux's prefix is <kbd>C-a</kbd>. When your tmux prefix is
+   different (tmux's own <kbd>C-b</kbd>, or your `set -g prefix`), keep
+   phux's or use tmux's.
+
+`--advanced` and `--prefix C-b` answer for a script. Without a terminal, and
+with `--print` or `--json`, phux takes the defaults: beginner, phux's prefix
+(tmux's with `--advanced`).
+
 ## What phux decides, and what the agent decides
 
 For tmux and Ghostty, phux writes a table with one row per line of your
@@ -33,16 +54,21 @@ files: the exact phux line to write, "already phux's default", or "not
 written" with the reason. tmux bindings use the same translator as
 [`phux config import-tmux`](./tmux-import.md); `-c "#{pane_current_path}"`
 is dropped because phux opens new panes in the focused pane's directory
-already. Ghostty keybinds become [global bindings](./keys.md#binding-a-key).
+already. tmux `mouse`, `history-limit`, `default-shell` and `status-position`
+become `[defaults]` and `[status]` settings, written only where they differ
+from phux's. Ghostty keybinds become [global bindings](./keys.md#binding-a-key).
 
 Some lines are never written:
 
-- Settings: theme, font, colours, mouse, status bar. Each one is reported on
-  its own line.
+- Terminal settings: font, colours. A Ghostty setting keeps working in
+  Ghostty.
 - A theme line. When you already picked a phux theme (`phux theme set`, or
-  `[theme] name` / `file` in your config), the line is reported as "kept your
-  phux theme"; otherwise it points you at `phux theme list` and `phux theme set`.
-- Any binding on Cmd. phux key bindings have no Cmd modifier, and the macOS
+  `[theme] name` / `file` in your config), the line is "nothing to do" and
+  reads "kept your phux theme"; otherwise it goes under "Could not migrate"
+  and points you at `phux theme list` and `phux theme set`.
+- Any binding on Cmd. phux key bindings have no Cmd modifier. A Ghostty Cmd
+  binding keeps working, but on Ghostty's own tabs and splits, not phux's.
+  The macOS
   system shortcuts (<kbd>Cmd</kbd>+<kbd>Q</kbd>, <kbd>Cmd</kbd>+<kbd>H</kbd>,
   <kbd>Cmd</kbd>+<kbd>M</kbd>, <kbd>Cmd</kbd>+<kbd>Tab</kbd>,
   <kbd>Cmd</kbd>+<kbd>Space</kbd>, <kbd>Cmd</kbd>+<kbd>Shift</kbd>+<kbd>3</kbd>/<kbd>4</kbd>/<kbd>5</kbd>,
@@ -58,9 +84,19 @@ When two sources bind the same key differently, the agent asks you once per
 pair of sources which one wins. It never decides alone.
 
 The agent then runs `phux config check` until the file is clean, `phux
-config reload`, and `phux config keys --json`, and reports four lists:
-Migrated, Replaced phux defaults, Conflicts between sources, and Could not
-migrate. Every line of your files lands in one of them. If its sandbox blocks
+config reload`, and `phux config keys --json`. It then checks intent, not
+just syntax: every binding you had is on its key in phux and does the same
+thing (written or already the default), no key it removed is one your
+config still binds, and no tmux line was left out that a phux action does
+exactly. It reports five lists:
+Migrated, Replaced phux defaults, Conflicts between sources, Nothing to do,
+and Could not migrate. Every line of your files lands in one of them.
+"Nothing to do" is grouped by reason: terminal settings that keep working
+in the terminal phux runs in (a Ghostty font, opacity or shader), and tmux
+options phux already behaves like (`mode-keys vi`, `renumber-windows on`,
+`set-clipboard on`, `escape-time`). "Could not migrate" is what you have to
+act on, one line each: a tmux `base-index 1` (phux numbers tabs from 0),
+status-bar formats, plugins. If its sandbox blocks
 the reload, it asks you once, or tells you the reload is pending.
 
 ## Where the agent runs
@@ -102,7 +138,9 @@ phux migrate --print | pbcopy
   "config_path": "/Users/me/.config/phux/config.toml",
   "theme": "tokyo-night",
   "launched": { "pane": "@12" },
-  "prompt_bytes": 15873
+  "prompt_bytes": 15873,
+  "prefix": { "chosen": "C-a", "tmux": "C-b", "phux": "C-a" },
+  "mode": "beginner"
 }
 ```
 
@@ -112,6 +150,10 @@ phux migrate --print | pbcopy
   for `[theme] file`), or `null` when none is selected.
 - `launched` is `{ "pane": "@N" }` for a split, `{ "session": "migrate",
   "pane": "@N" }` for a new session, and `null` when nothing started.
+- `mode` is `beginner` or `advanced`.
+- `prefix.chosen` is the prefix the migrated config ends up with,
+  `prefix.tmux` tmux's (`null` without a tmux config), `prefix.phux`
+  phux's own.
 - With nothing to migrate, `sources` is empty, `agent` and `launched` are
   `null`, and `prompt_bytes` is 0.
 - `--print --json` starts nothing: `launched` is `null`, `agent` is the one
@@ -120,4 +162,4 @@ phux migrate --print | pbcopy
 
 Failures use the [JSON error contract](./scripting.md#json-output-and-errors):
 `usage_error` (exit 2) when the agent is not installed, none is, or several
-are and `--agent` is missing.
+are and `--agent` is missing, or when `--prefix` is not a phux key.

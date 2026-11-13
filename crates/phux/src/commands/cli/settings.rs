@@ -426,6 +426,17 @@ pub(crate) struct MigrateArgs {
     #[usage(long, value_enum, value_name = "SOURCE")]
     pub(crate) source: Vec<MigrateSource>,
 
+    /// The phux prefix to use, such as tmux's `C-b`. Default: ask when
+    /// tmux's prefix differs from phux's; without a terminal, keep phux's.
+    #[usage(long, value_name = "CHORD")]
+    pub(crate) prefix: Option<String>,
+
+    /// Mirror tmux as closely as phux allows: write its unbinds, and take
+    /// its prefix unless `--prefix` says otherwise. Default: ask; without
+    /// a terminal, keep phux's defaults where they already match.
+    #[usage(long)]
+    pub(crate) advanced: bool,
+
     /// Emit one JSON document: the sources found, the agent, the config
     /// path and what was launched (with `--print`, the prompt too).
     #[usage(long)]

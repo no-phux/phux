@@ -162,3 +162,17 @@ fn refuses_malformed_acquisition_and_invalid_prefix() {
         }
     }
 }
+
+#[test]
+fn a_trailing_display_message_is_dropped_before_mapping() {
+    let plan = make_plan(
+        r#"bind-key -T prefix r source-file ~/.tmux.conf \; display-message "tmux.conf reloaded"
+bind-key -T prefix c new-window \; display hi \; kill-session
+"#,
+    );
+    let table = table(&plan);
+    let prefix = &table["keybindings"]["prefix-table"];
+    assert_eq!(prefix["r"].as_str(), Some("reload-config"));
+    // Only a chain that ends in the message: anything after it still refuses.
+    assert_eq!(prefix["c"].as_str(), Some("none"));
+}

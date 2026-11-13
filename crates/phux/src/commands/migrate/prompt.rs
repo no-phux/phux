@@ -6,7 +6,7 @@ use std::path::Path;
 
 use toml::Value;
 
-use super::sources::{Row, Source, Table, Verdict, identity, tilde};
+use super::sources::{Row, Source, Verdict, identity, tilde};
 use crate::commands::MigrateSource;
 
 const TEMPLATE: &str = include_str!("prompt.txt");
@@ -169,9 +169,9 @@ fn sections(sources: &[Source], ctx: &Context<'_>) -> String {
             let _ = writeln!(
                 out,
                 "\n### Every {program} line, one by one\nWrite every line marked \"write\" \
-                 exactly as given, in the table it names, once. A line marked \"not written\" \
-                 or \"already phux's default\" gets nothing. Each line goes in the report under \
-                 the list its marking names."
+                 exactly as given, in the table it names, once. A line marked \"not written\", \
+                 \"nothing to do\" or \"already phux's default\" gets nothing. Each line goes in \
+                 the report under the list its marking names."
             );
             for row in decided {
                 let _ = writeln!(out, "- {}\n  {}", quote(row, home), verdict(&row.verdict));
@@ -212,10 +212,10 @@ fn verdict(verdict: &Verdict) -> String {
             note,
             replaces,
         } => {
-            let written = if *table == Table::Keybindings {
-                format!("{key} = {value}")
-            } else {
+            let written = if table.binds_keys() {
                 line(key, value)
+            } else {
+                format!("{key} = {value}")
             };
             let mut out = format!("write `{written}` in `{}`", table.header());
             if let Some(note) = note {
@@ -228,6 +228,7 @@ fn verdict(verdict: &Verdict) -> String {
         }
         Verdict::Default { .. } => "already phux's default, not written".into(),
         Verdict::Skip(reason) => format!("not written: {reason}"),
+        Verdict::Covered(reason) => format!("nothing to do: {reason}"),
         Verdict::Raw => String::new(),
     }
 }

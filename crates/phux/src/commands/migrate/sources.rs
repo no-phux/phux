@@ -39,14 +39,46 @@ pub(super) struct Source {
     pub rows: Vec<Row>,
     /// Something the agent must know about the whole source.
     pub note: Option<String>,
+    /// The prefix the program used, for a program that has one (tmux).
+    pub prefix: Option<String>,
+}
+
+/// What `phux migrate` asked the user, or took from its flags.
+#[derive(Debug, Default)]
+pub(super) struct Setup {
+    /// The phux prefix chosen; `None` keeps phux's own.
+    pub prefix: Option<String>,
+    /// Mirror tmux as closely as phux allows, instead of keeping phux's
+    /// defaults wherever they already do what the user wanted.
+    pub advanced: bool,
+}
+
+impl Setup {
+    /// The phux prefix the migrated config ends up with.
+    pub(super) fn chosen_prefix(&self) -> String {
+        self.prefix
+            .clone()
+            .unwrap_or_else(|| shipped_bindings().prefix)
+    }
 }
 
 /// What every decider needs: `$HOME` (for `~`), the shipped bindings and
-/// the phux theme already selected, if any.
+/// the phux theme already selected, if any, and what the user chose.
 pub(super) struct Ctx<'a> {
     pub home: &'a Path,
     pub defaults: &'a KeybindingsCfg,
     pub theme: Option<&'a str>,
+    pub setup: &'a Setup,
+}
+
+impl Ctx<'_> {
+    /// The phux prefix the migrated config ends up with.
+    pub(super) fn prefix(&self) -> &str {
+        self.setup
+            .prefix
+            .as_deref()
+            .unwrap_or(&self.defaults.prefix)
+    }
 }
 
 /// One line of a source file.
@@ -76,6 +108,9 @@ pub(super) enum Table {
     Keybindings,
     Prefix,
     Global,
+    /// Settings, not bindings.
+    Defaults,
+    Status,
 }
 
 impl Table {
@@ -84,7 +119,14 @@ impl Table {
             Self::Keybindings => "[keybindings]",
             Self::Prefix => "[keybindings.prefix-table]",
             Self::Global => "[keybindings.global]",
+            Self::Defaults => "[defaults]",
+            Self::Status => "[status]",
         }
+    }
+
+    /// Whether its keys are key chords, not setting names.
+    pub(super) const fn binds_keys(self) -> bool {
+        matches!(self, Self::Prefix | Self::Global)
     }
 }
 
@@ -101,8 +143,12 @@ pub(super) enum Verdict {
     },
     /// phux already binds this key this way; nothing to write.
     Default { table: Table, key: String },
-    /// Nothing is written, for this reason.
+    /// Nothing is written and something is lost, for this reason: the user
+    /// has to know.
     Skip(String),
+    /// Nothing is written and nothing is lost, for this reason: the source
+    /// line keeps working, or phux already behaves that way.
+    Covered(String),
     /// The agent translates it.
     Raw,
 }
@@ -126,6 +172,7 @@ pub(super) fn discover(
     xdg: Option<&Path>,
     only: &[MigrateSource],
     theme: Option<&str>,
+    setup: &Setup,
 ) -> Vec<Source> {
     let config = xdg.map_or_else(|| home.join(".config"), Path::to_path_buf);
     let defaults = shipped_bindings();
@@ -133,6 +180,7 @@ pub(super) fn discover(
         home,
         defaults: &defaults,
         theme,
+        setup,
     };
     let wanted = |kind| only.is_empty() || only.contains(&kind);
     let first = |paths: Vec<PathBuf>| paths.into_iter().find(|p| p.is_file());
@@ -192,7 +240,7 @@ pub(super) fn shipped_bindings() -> KeybindingsCfg {
 /// Inside one source, the line the program loads last wins: earlier
 /// lines on the same key are not written.
 fn last_line_wins(source: &mut Source, home: &Path) {
-    let mut last: BTreeMap<(Table, Vec<KeyChord>), usize> = BTreeMap::new();
+    let mut last: BTreeMap<(Table, String, Vec<KeyChord>), usize> = BTreeMap::new();
     for (index, row) in source.rows.iter().enumerate() {
         if let Some(id) = identity(row) {
             last.insert(id, index);
@@ -210,20 +258,21 @@ fn last_line_wins(source: &mut Source, home: &Path) {
                 tilde(&by.file, home),
                 by.line
             );
-            source.rows[index].verdict = Verdict::Skip(reason);
+            source.rows[index].verdict = Verdict::Covered(reason);
         }
     }
 }
 
-/// The key a written (or already-default) row claims.
-pub(super) fn identity(row: &Row) -> Option<(Table, Vec<KeyChord>)> {
+/// The key a written (or already-default) row claims: a setting by name,
+/// a binding by the keys it means.
+pub(super) fn identity(row: &Row) -> Option<(Table, String, Vec<KeyChord>)> {
     let (Verdict::Write { table, key, .. } | Verdict::Default { table, key }) = &row.verdict else {
         return None;
     };
-    if *table == Table::Keybindings {
-        return Some((*table, Vec::new()));
+    if !table.binds_keys() {
+        return Some((*table, key.clone(), Vec::new()));
     }
-    Some((*table, parse_chord_sequence(key).ok()?))
+    Some((*table, String::new(), parse_chord_sequence(key).ok()?))
 }
 
 /// `~/...` when under `$HOME`, for the prompt.
@@ -285,16 +334,50 @@ pub(super) fn skip(class: Class, reason: impl Into<String>) -> Line {
 }
 
 /// A source's theme line. Never migrated: a phux theme already selected
-/// wins, and with none selected the user picks one.
+/// wins, so there is nothing to do; with none selected the user picks one.
 pub(super) fn theme(program: &str, value: &str, selected: Option<&str>) -> Line {
-    let reason = selected.map_or_else(
+    selected.map_or_else(
         || {
-            "the theme is not migrated; pick one with `phux theme list` and `phux theme set`"
-                .to_owned()
+            skip(
+                Class::Setting,
+                "the theme is not migrated; pick one with `phux theme list` and `phux theme set`",
+            )
         },
-        |name| format!("kept your phux theme `{name}`; {program}'s `{value}` is not applied"),
-    );
-    skip(Class::Setting, reason)
+        |name| {
+            covered(
+                Class::Setting,
+                format!("kept your phux theme `{name}`; {program}'s `{value}` is not applied"),
+            )
+        },
+    )
+}
+
+pub(super) fn covered(class: Class, reason: impl Into<String>) -> Line {
+    Line::Row(class, Verdict::Covered(reason.into()), None)
+}
+
+/// A phux setting from a source line, against the shipped config: the
+/// value phux already ships is `Default`, any other is written.
+fn setting(table: Table, key: &str, value: Value) -> Verdict {
+    let name = match table {
+        Table::Status => "status",
+        _ => "defaults",
+    };
+    let shipped = phux_config::parse_with_defaults("", Path::new("config.toml"))
+        .ok()
+        .and_then(|cfg| Value::try_from(&cfg).ok())
+        .and_then(|cfg| cfg.get(name)?.get(key).cloned());
+    let key = key.to_owned();
+    if shipped.as_ref() == Some(&value) {
+        return Verdict::Default { table, key };
+    }
+    Verdict::Write {
+        table,
+        key,
+        value,
+        note: None,
+        replaces: shipped.map(|v| v.to_string()),
+    }
 }
 
 /// Turn a translated key and value into a verdict against the shipped
@@ -310,6 +393,7 @@ pub(super) fn against_default(
     let shipped = match table {
         Table::Prefix => &defaults.prefix_table,
         Table::Global => &defaults.global,
+        Table::Defaults | Table::Status => return setting(table, &key, value),
         Table::Keybindings => {
             return if value.as_str() == Some(defaults.prefix.as_str()) {
                 Verdict::Default { table, key }
@@ -338,7 +422,7 @@ pub(super) fn against_default(
             note,
             replaces: Some(describe(action)),
         },
-        None if value.as_str() == Some("none") => Verdict::Skip(
+        None if value.as_str() == Some("none") => Verdict::Covered(
             "removes a binding; phux binds nothing on this key, so nothing is written".into(),
         ),
         None => Verdict::Write {

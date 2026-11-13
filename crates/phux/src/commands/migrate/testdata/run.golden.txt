@@ -1,0 +1,183 @@
+Move my terminal setup into phux, the terminal multiplexer I run.
+phux has already read my config files and translated every key binding and setting it
+could; the lines are below, decided one by one. Your job is to write them into my phux
+config, check the file, reload, and report. Do not read phux's documentation or source code and
+do not go looking for action names: everything you need is in this prompt. Run only the
+commands this prompt names.
+
+## Read these files, and nothing else in my home directory
+- tmux:
+  - ~/.tmux.conf
+  Found: 7 bindings, 2 unbindings, 9 settings.
+- Ghostty:
+  - ~/.config/ghostty/config
+  Found: 1 binding, 0 unbindings, 7 settings.
+
+You may also read the phux config file named below, and nothing else.
+
+## Write here
+/home/me/.config/phux/config.toml
+The file does not exist yet. Create it, and its directory if needed.
+
+## phux keys in brief
+- A key is zero or more modifiers and one key, joined with `-`: `C-a`, `M-Enter`,
+  `C-S-x`. `C-` is Ctrl, `M-` is Alt (`A-` means the same), `S-` is Shift. The letters
+  are uppercase: `Ctrl-a` and `ctrl+a` are not phux keys.
+- phux has no Cmd (Super) modifier. A source binding that uses cmd, super or command
+  gets no line and goes under "Could not migrate".
+- Named keys, case-sensitive: Tab, BackTab, Enter, Esc, Space, Backspace, Delete,
+  Insert, Up, Down, Left, Right, Home, End, PageUp, PageDown, F1 to F24. Any other key
+  is one letter, digit or ASCII punctuation character.
+- A key names the physical key on a US layout: a capital letter means Shift (`"X"` is
+  `"S-x"`), `"|"` is `"S-\\"` and `"?"` is `"S-/"`. Two spellings of the same key in
+  one file are an error.
+- Bindings live in tables. `[keybindings.prefix-table]` fires after the prefix
+  (`[keybindings] prefix`, `C-a` by default). `[keybindings.global]` fires on its
+  own and takes the key away from every program in every pane, so use it only where a
+  line below says so. `[keybindings.modes.<name>]` fires while that mode is on.
+- A value is an action name or an inline table with the action and its arguments:
+  `"v" = { action = "split-pane", direction = "vertical" }`. `"x" = "none"` removes a
+  binding, a phux default included.
+- Keys pressed one after another are one string with spaces: `"t s"` in the prefix
+  table is the prefix, then t, then s. A key either runs an action or starts a
+  sequence, never both.
+- Quote every key: `"|" = ...`, `'"' = ...`, `"\\" = ...`.
+- Bind only the actions under "Actions you may bind" at the end of this prompt.
+
+## Rules
+- Never bind a macOS system shortcut: cmd+q, cmd+h, cmd+m, cmd+tab, cmd+space,
+  cmd+shift+3, cmd+shift+4, cmd+shift+5 and ctrl+cmd+q. A source line on one of them,
+  whatever it does, gets no line and goes under "Could not migrate" with the reason
+  "macOS uses this key itself". Check every key in any modifier order (`shift+cmd+5` is
+  cmd+shift+5), after expanding a source's own names for modifiers or a leader key.
+- Where a source binding has no phux action, do not approximate it with a different
+  one. Leave it out and report it.
+- Merge, never replace: keep every line already in the target file. A line there
+  changes only when a source line wins a conflict you asked me about.
+- Write each key once per table. Never write two lines that leave the later to win.
+- Never decide a conflict yourself. When the lines below say to ask, ask me and wait.
+
+## tmux
+The table below decides every tmux line. Copy its lines; do not translate them again. tmux's prefix table becomes `[keybindings.prefix-table]` (after phux's prefix, `C-a` unless a line below sets it) and `bind -n` becomes `[keybindings.global]`.
+These files never set a prefix, so tmux used C-b. I chose to keep phux's own prefix, C-a: every prefix-table line below fires after it. Do not change `prefix`.
+
+### Every tmux line, one by one
+Write every line marked "write" exactly as given, in the table it names, once. A line marked "not written", "nothing to do" or "already phux's default" gets nothing. Each line goes in the report under the list its marking names.
+- ~/.tmux.conf:2 `set -g mouse on`
+  already phux's default, not written
+- ~/.tmux.conf:3 `set -g history-limit 100000`
+  write `history-limit = 100000` in `[defaults]` (replaces the phux default `50000`)
+- ~/.tmux.conf:4 `set -g base-index 1`
+  not written: phux numbers from 0 and cannot start at 1
+- ~/.tmux.conf:5 `setw -g pane-base-index 1`
+  not written: phux numbers from 0 and cannot start at 1
+- ~/.tmux.conf:6 `set -g renumber-windows on`
+  nothing to do: already phux's behavior: phux tabs are positions, never numbered with gaps
+- ~/.tmux.conf:7 `set -sg escape-time 0`
+  nothing to do: already phux's behavior: phux waits only 10 ms after a bare Escape
+- ~/.tmux.conf:8 `set -g status-position top`
+  already phux's default, not written
+- ~/.tmux.conf:9 `set -g set-clipboard on`
+  nothing to do: already phux's behavior: a pane sets the system clipboard (`defaults.clipboard-write`)
+- ~/.tmux.conf:10 `setw -g mode-keys vi`
+  nothing to do: already phux's behavior: phux copy mode uses vi keys
+- ~/.tmux.conf:13 `unbind '"'`
+  nothing to do: your own `-` does what phux's `"` does, and phux ships `-` already; removing `"` loses a key and gains nothing (advanced mode writes it)
+- ~/.tmux.conf:14 `unbind %`
+  nothing to do: your own `|` does what phux's `%` does, and phux ships `|` already; removing `%` loses a key and gains nothing (advanced mode writes it)
+- ~/.tmux.conf:15 `bind | split-window -h -c "#{pane_current_path}"`
+  already phux's default, not written
+- ~/.tmux.conf:16 `bind - split-window -v -c "#{pane_current_path}"`
+  already phux's default, not written
+- ~/.tmux.conf:18 `bind r source-file ~/.tmux.conf \; display "tmux.conf reloaded"`
+  write `"r" = "reload-config"` in `[keybindings.prefix-table]`; differs from the source: reloads phux config, not the tmux file
+- ~/.tmux.conf:20 `bind h select-pane -L`
+  already phux's default, not written
+- ~/.tmux.conf:21 `bind j select-pane -D`
+  already phux's default, not written
+- ~/.tmux.conf:22 `bind k select-pane -U`
+  already phux's default, not written
+- ~/.tmux.conf:23 `bind l select-pane -R`
+  already phux's default, not written
+
+## Ghostty
+Ghostty keybinds fire without a prefix, so they become `[keybindings.global]` lines. The table below decides every line it could; copy its lines and do not translate them again.
+
+### Every Ghostty line, one by one
+Write every line marked "write" exactly as given, in the table it names, once. A line marked "not written", "nothing to do" or "already phux's default" gets nothing. Each line goes in the report under the list its marking names.
+- ~/.config/ghostty/config:1 `theme = catppuccin-mocha`
+  not written: the theme is not migrated; pick one with `phux theme list` and `phux theme set`
+- ~/.config/ghostty/config:2 `font-family = JetBrains Mono`
+  nothing to do: the Ghostty setting font-family keeps working while phux runs inside Ghostty
+- ~/.config/ghostty/config:3 `font-size = 14`
+  nothing to do: the Ghostty setting font-size keeps working while phux runs inside Ghostty
+- ~/.config/ghostty/config:4 `background-opacity = 0.95`
+  nothing to do: the Ghostty setting background-opacity keeps working while phux runs inside Ghostty
+- ~/.config/ghostty/config:5 `window-padding-x = 8`
+  nothing to do: the Ghostty setting window-padding-x keeps working while phux runs inside Ghostty
+- ~/.config/ghostty/config:6 `cursor-style = block`
+  nothing to do: the Ghostty setting cursor-style keeps working while phux runs inside Ghostty
+- ~/.config/ghostty/config:7 `custom-shader = ~/.config/ghostty/crt.glsl`
+  nothing to do: the Ghostty setting custom-shader keeps working while phux runs inside Ghostty
+- ~/.config/ghostty/config:8 `keybind = cmd+d=new_split:right`
+  not written: phux key bindings have no Cmd key. It keeps working in Ghostty, but on Ghostty's own tabs and splits, not phux's
+
+## Conflicts between sources
+A source is one program with every file it loads. Inside one source the line the
+program loads last wins, as it does in that program; the tables above already apply
+that, so it is never a question. phux's own defaults are not a source: a line on a
+default key replaces the default and goes under "Replaced phux defaults". Lines already
+in the target file count as one more source, "my phux config".
+No key is bound differently by two of the sources above.
+If a line already in the target file binds a key that a line above binds differently, ask me once about all such keys the same way. Keys you translate yourself follow the same rule.
+
+## Check your work
+Run these commands exactly as written, paths and all: your shell may not have my
+terminal's environment, and a bare `phux` could be a different phux.
+1. Run `phux config check '/home/me/.config/phux/config.toml'`. It must exit 0 and print no problems. Fix the
+   file and run it again until it does.
+2. Compare the file with the tables above, line by line: every line marked "write" is
+   in its table exactly as given, once, and nothing is written for a line marked "not
+   written", "nothing to do" or "already phux's default". Fix the file until it matches.
+3. Run `phux config reload` once. Do not ask me first: I asked for this migration, and
+   nothing takes effect until the reload. If it fails with "operation not permitted" or
+   cannot connect, your sandbox blocked it: do not retry it and do not work around it.
+   If you can ask me to approve running one command outside your sandbox, ask once and
+   run it again on approval. Otherwise tell me in one line: "Your sandbox blocked the
+   reload; run `phux config reload` yourself." In the report, the reload is pending,
+   not failed.
+4. Run `phux config keys --json`. Its `skipped` list must be empty: each entry is a
+   binding phux will not use. Fix the file, run steps 1 and 3 again, and repeat until it
+   is empty.
+5. Check that my habits survived, not just the syntax. Steps 1 to 4 prove the file is
+   valid; this proves it does what my old setup did. Using the `bindings` from step 4
+   (a prefix-table key shows as the prefix, a space, then the key):
+   - Every source binding line marked "write" or "already phux's default" must be in
+     `bindings` on its phux key, with an action that does what the source line did.
+   - Every key the file sets to "none" must be one that no source line still binds.
+   - A tmux `bind` line marked "not written" whose command an action under "Actions you
+     may bind" does exactly is a mistake in the table.
+   Do not change the file for these. Report each one under "Could not migrate" as
+   "intent check:", the source line, and what phux does instead.
+
+## Report
+Keep it short. Do not print the file, a diff, or command output. Give the path of the
+file, then these five lists in this order, one line per entry, then one line each for
+config check, reload, keys and the intent check.
+- Migrated: each source line written, quoted with its file and line number, the phux
+  key it became and its action. A line marked "already phux's default" goes here with
+  "(phux default)".
+- Replaced phux defaults: one line per default a written line replaced, in words: what
+  the key did before, what it does now, and the source line that won.
+- Conflicts between sources: each key more than one source bound, which source won (by
+  my answer), and the losing line quoted with its file and line number.
+- Nothing to do: the lines marked "nothing to do". Group them by reason: one line per
+  reason, naming the lines by file and line numbers.
+- Could not migrate: every other source line, quoted as written with its file and line
+  number, and one sentence on why (the table's reason, where it gives one). These are
+  the lines I have to act on: each goes on its own line, never summarised together.
+Never drop a line silently: every line in the tables above appears in exactly one list.
+
+## Actions you may bind
+- `split-pane` (direction): Split the focused pane
+
