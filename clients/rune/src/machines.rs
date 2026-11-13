@@ -2,7 +2,7 @@
 //! registry, its Tailscale discovery, and `phux host add`, which owns
 //! enrollment and trust. This only reads the answers.
 
-use std::io::BufRead as _;
+use std::io::{BufRead as _, Write as _};
 use std::path::Path;
 use std::process::{Command, Stdio};
 use std::time::Duration;
@@ -64,17 +64,36 @@ pub struct Glance {
     pub running: u64,
 }
 
+/// A value that is never printed: a connect link carries a bearer token.
+#[derive(Clone, PartialEq, Eq)]
+pub struct Secret(pub String);
+
+impl std::fmt::Debug for Secret {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("Secret(..)")
+    }
+}
+
 /// What `phux host add` is asked to do.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Add {
+    /// The ssh destination; with `code`, the name to register.
     pub target: String,
     pub name: Option<String>,
     /// The tailnet vouches for the address, so a first host key is accepted.
     pub tailnet: bool,
+    /// A connect link to pair from instead of ssh, written to the CLI's
+    /// stdin so its token stays out of the process list.
+    pub code: Option<Secret>,
 }
 
 impl Add {
     fn args(&self) -> Vec<String> {
+        if self.code.is_some() {
+            return ["host", "add", self.target.as_str(), "--code", "-"]
+                .map(str::to_owned)
+                .to_vec();
+        }
         let mut args = vec![
             "host".to_owned(),
             "add".to_owned(),
@@ -239,15 +258,25 @@ fn failure(lines: &[String]) -> String {
 /// to `report` as the CLI prints it. stdin stays closed, so a machine that
 /// wants a password fails with ssh's words instead of hanging.
 pub fn add(phux: &Path, request: &Add, report: &dyn Fn(String)) -> Result<(), String> {
+    let stdin = if request.code.is_some() {
+        Stdio::piped()
+    } else {
+        Stdio::null()
+    };
     let mut child = Command::new(phux)
         .args(request.args())
         .env("NO_COLOR", "1")
         .env_remove("CLICOLOR_FORCE")
-        .stdin(Stdio::null())
+        .stdin(stdin)
         .stdout(Stdio::null())
         .stderr(Stdio::piped())
         .spawn()
         .map_err(|error| format!("could not run {}: {error}", phux.display()))?;
+    if let (Some(code), Some(mut stdin)) = (&request.code, child.stdin.take()) {
+        // Dropping stdin closes it, so the CLI reads to the end. A CLI that
+        // exits first fails below in its own words.
+        let _ = stdin.write_all(code.0.as_bytes());
+    }
     let mut lines = Vec::new();
     if let Some(stderr) = child.stderr.take() {
         for line in std::io::BufReader::new(stderr)
@@ -364,6 +393,7 @@ mod tests {
             target: target.to_owned(),
             name: name.map(str::to_owned),
             tailnet: false,
+            code: None,
         };
         let before = [host("a", Some("me@a"))];
         let new = [host("a", Some("me@a")), host("b", Some("me@b"))];
@@ -399,6 +429,7 @@ mod tests {
             target: "me@mini".to_owned(),
             name: None,
             tailnet,
+            code: None,
         };
         assert!(
             !add(false)
@@ -448,9 +479,42 @@ mod tests {
             target: "mini".to_owned(),
             name: None,
             tailnet: false,
+            code: None,
         };
         let result = add(&phux, &request, &|step| steps.lock().unwrap().push(step));
         assert_eq!(result.unwrap_err(), "phux: error: no route");
         assert_eq!(*steps.lock().unwrap(), ["dialing"]);
+    }
+
+    #[test]
+    fn a_link_goes_to_the_cli_on_stdin_never_in_its_arguments() {
+        let dir = std::env::temp_dir().join(format!("phux-rune-code-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let (phux, seen) = (dir.join("phux"), dir.join("seen"));
+        std::fs::write(
+            &phux,
+            format!(
+                "#!/bin/sh\necho \"$@\" > '{0}'\ncat >> '{0}'\n",
+                seen.display()
+            ),
+        )
+        .unwrap();
+        Command::new("/bin/chmod")
+            .arg("+x")
+            .arg(&phux)
+            .status()
+            .unwrap();
+        let link = "phux://connect?quic=quic://mini:8788#token=secret";
+        let request = Add {
+            target: "mini".to_owned(),
+            name: None,
+            tailnet: false,
+            code: Some(Secret(link.to_owned())),
+        };
+        assert!(!format!("{request:?}").contains("secret"));
+        add(&phux, &request, &|_| {}).unwrap();
+        let seen = std::fs::read_to_string(&seen).unwrap();
+        assert_eq!(seen, format!("host add mini --code -\n{link}"));
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 }

@@ -81,7 +81,11 @@ session (or `--session NAME`). It never creates a session on its own.
   machine from your tailnet and runs `phux host add --install` over the ssh
   access you already have. A window shows one machine at a time. On a new
   computer the local server is empty, so sessions living elsewhere appear
-  only once that machine is added.
+  only once that machine is added. Opening a `phux://connect?...` or
+  `https://phux.sh/connect?...` link from `phux pair` (relay links too)
+  pairs that machine through `phux host add NAME --code -` and moves the
+  window there; a bad or spent link says why in Machines. On Linux a later
+  launch hands its link to the running window.
 - **Updates.** Settings → **About & Updates** controls automatic checks,
   local phux management, and the phux release channel. Downloads and server
   handoffs still need a click. [Updates and release channels](./UPDATES.md)

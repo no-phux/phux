@@ -69,6 +69,10 @@ pub struct Machines {
     awaited: Option<u64>,
     done: (Sender<Done>, Receiver<Done>),
     waker: Option<Waker>,
+    /// The window, brought forward when a pairing link arrives.
+    pub window: Option<rune::AppHandle<Desk>>,
+    /// Links from the command line, opened once the window starts.
+    pub pending: Vec<String>,
 }
 
 impl Machines {
@@ -97,6 +101,8 @@ impl Machines {
             awaited: None,
             done: channel(),
             waker: None,
+            window: None,
+            pending: Vec::new(),
         }
     }
 
@@ -179,7 +185,12 @@ impl Machines {
         if self.adding.is_some() {
             return;
         }
-        self.adding = Some(format!("Setting up {}…", request.target));
+        let doing = if request.code.is_some() {
+            "Pairing"
+        } else {
+            "Setting up"
+        };
+        self.adding = Some(format!("{doing} {}…", request.target));
         self.error = None;
         self.outcome = None;
         self.request = Some(request.clone());
@@ -256,14 +267,47 @@ impl Desk {
             native.connection_requested = true;
             return;
         }
-        self.machines.open = !self.machines.open;
         if self.machines.open {
-            self.close_settings();
-            self.close_inbox();
-            self.machines.error = None;
+            self.machines.open = false;
+        } else {
+            self.show_machines();
             self.machines.field.clear();
             self.machines.field.focused = true;
-            self.machines.refresh();
+        }
+    }
+
+    fn show_machines(&mut self) {
+        self.machines.open = true;
+        self.close_settings();
+        self.close_inbox();
+        self.machines.error = None;
+        self.machines.refresh();
+    }
+
+    /// A connect link the system opened this app with (Rune's
+    /// `on_open_url`): bring the window forward with Machines open, pair
+    /// from the link, and move the window there once it is registered.
+    /// A link that can't be used says why in the sheet.
+    pub fn pair_from_link(&mut self, url: &str) {
+        if self.native.is_some() {
+            return;
+        }
+        if let Some(window) = &self.machines.window {
+            window.open();
+        }
+        self.show_machines();
+        match crate::connect::request(url) {
+            Err(why) => self.machines.error = Some(why),
+            Ok(_) if self.machines.adding.is_some() => {
+                self.machines.error = Some(
+                    "Another machine is still being set up. Open the link again once it finishes."
+                        .to_owned(),
+                );
+            }
+            Ok(request) => {
+                self.machines.outcome = None;
+                self.machines.add(request);
+            }
         }
     }
 
@@ -296,6 +340,7 @@ impl Desk {
             tailnet: peer.is_some(),
             target,
             name,
+            code: None,
         });
     }
 
@@ -338,6 +383,7 @@ impl Desk {
             target: peer.ssh_host.clone(),
             name: Some(peer.name.clone()),
             tailnet: true,
+            code: None,
         });
     }
 
@@ -353,6 +399,12 @@ impl Desk {
             self.close_machines();
             return;
         }
+        self.rebuild(machine, session);
+    }
+
+    /// Replace this window's connection with one to `machine`, even the
+    /// one it is on: a machine set up again has new credentials.
+    fn rebuild(&mut self, machine: Option<String>, session: Option<String>) {
         if let Some(Err(why)) = machine.as_ref().map(|m| Target::resolve(m, None)) {
             self.machines.error = Some(why);
             return;
@@ -403,8 +455,13 @@ impl Desk {
                             self.machines.awaited = Some(self.machines.refresh());
                         }
                         Err(error) => {
-                            self.machines.request = None;
-                            self.machines.outcome = Some(Err(error));
+                            let request = self.machines.request.take();
+                            let paired = request.is_some_and(|request| request.code.is_some());
+                            self.machines.outcome = Some(Err(if paired {
+                                pairing_failure(&error)
+                            } else {
+                                error
+                            }));
                         }
                     }
                 }
@@ -445,7 +502,7 @@ impl Desk {
             let offer = format!("{host} is set up. Switch to it from Machines.");
             return self.say(NoticeKind::Info, offer);
         }
-        self.switch_machine(Some(host.clone()));
+        self.rebuild(Some(host.clone()), None);
         self.machines.open = true;
         if self.machines.current.as_ref() == Some(&host) {
             self.machines.outcome = Some(Ok(format!("{host} is set up.")));
@@ -453,84 +510,16 @@ impl Desk {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn labels_the_local_server_by_where_it_is() {
-        assert_eq!(Machines::new(None, None).label(), machines::LOCAL);
-        assert_eq!(Machines::new(Some("mini".into()), None).label(), "mini");
+/// Why pairing from a link failed, in the CLI's words after a sentence
+/// saying what failed; a CLI from before `host add --code` is told to update.
+fn pairing_failure(error: &str) -> String {
+    if error.contains("'--code'") {
+        return "Couldn't pair from that link: this phux is too old to pair from a link. \
+                Update it with `phux update`, then open the link again."
+            .to_owned();
     }
-
-    #[test]
-    fn a_listing_moves_the_window_only_after_an_add() {
-        let host = |name: &str| Host {
-            name: name.to_owned(),
-            ssh: None,
-            ssh_only: false,
-            paused: false,
-        };
-        let mut list = Machines::new(None, None);
-        list.hosts = vec![host("a"), host("b")];
-        assert_eq!(list.take_added(1), None);
-        list.before = Some(vec![host("a")]);
-        list.awaited = Some(2);
-        list.request = Some(Add {
-            target: "me@b".to_owned(),
-            name: None,
-            tailnet: false,
-        });
-        // A listing from before the add finished can't speak for it.
-        assert_eq!(list.take_added(1), None);
-        assert_eq!(list.take_added(2).as_deref(), Some("b"));
-        assert_eq!(list.take_added(2), None);
-    }
-
-    fn desk() -> Desk {
-        Desk::open(&crate::launch::Resolved::offline("not launched"), None)
-    }
-
-    #[test]
-    fn this_machine_folds_and_the_others_open() {
-        let mut desk = desk();
-        desk.toggle_host(None);
-        assert!(desk.machines.folded);
-        desk.toggle_host(Some("mini".to_owned()));
-        assert!(desk.machines.expanded.contains(&Some("mini".to_owned())));
-        desk.toggle_host(Some("mini".to_owned()));
-        assert!(desk.machines.expanded.is_empty());
-    }
-
-    #[test]
-    fn a_slow_listing_cant_undo_a_newer_one() {
-        let mut desk = desk();
-        let list = |refresh, name: &str| {
-            let hosts = vec![Host {
-                name: name.to_owned(),
-                ssh: None,
-                ssh_only: false,
-                paused: false,
-            }];
-            Done::Listed(refresh, Ok(hosts), Vec::new())
-        };
-        let sender = desk.machines.done.0.clone();
-        sender.send(list(2, "new")).unwrap();
-        sender.send(list(1, "old")).unwrap();
-        desk.pump_machines();
-        assert_eq!(desk.machines.hosts[0].name, "new");
-    }
-
-    #[test]
-    fn an_add_finishing_behind_a_closed_sheet_stays_put_and_offers() {
-        let mut desk = desk();
-        desk.landed("mini".to_owned());
-        assert_eq!(desk.machines.current, None);
-        assert_eq!(
-            desk.machines.outcome,
-            Some(Ok("mini is set up.".to_owned()))
-        );
-        let notice = desk.notice.as_ref().map(|notice| notice.text.as_str());
-        assert_eq!(notice, Some("mini is set up. Switch to it from Machines."));
-    }
+    format!("Couldn't pair from that link.\n{error}")
 }
+
+#[cfg(test)]
+mod tests;
