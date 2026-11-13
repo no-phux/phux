@@ -107,8 +107,12 @@ impl<W: crate::attach::RenderSink> EventEnv<'_, '_, W> {
             return Ok(false);
         };
         // ADR-0124: a retained pane's process exited; there is nothing to
-        // type into, and the server would refuse it anyway.
+        // type into, and the server would refuse it anyway. A held popup
+        // failure closes on any key.
         if crate::attach::pane_state::pane_exited(self.panes, &pane) {
+            if matches!(ev, InputEvent::Key(_)) && self.dismiss_floating().await? {
+                return Ok(true);
+            }
             tracing::debug!(terminal = ?pane, "dropping input: the pane's process exited");
             return Ok(false);
         }

@@ -170,8 +170,9 @@ impl Theme {
     /// decision 5). Text rides `foreground` / `bright_foreground`, rules
     /// ride `muted`, the one focus hue is `accent`, agent lifecycle borrows
     /// the terminal's green / yellow, and panels fill with the raised shade
-    /// of the background (`lighter_background` on dark, `dark_background` on
-    /// light) so a panel reads as a surface against the terminal.
+    /// of the background (`lighter_background` on dark, the background a
+    /// shade darker on light) so a panel reads as a surface against the
+    /// terminal.
     #[must_use]
     pub fn from_colors(colors: &ThemeColors) -> Self {
         let rgb = |key: &str| {
@@ -187,7 +188,12 @@ impl Theme {
         let muted = rgb("muted");
         let surface = match colors.mode {
             ThemeMode::Dark => rgb("lighter_background"),
-            ThemeMode::Light => rgb("dark_background"),
+            // Not the derived `dark_background`: 25% towards black is a
+            // mid-grey that halves every hue's contrast.
+            ThemeMode::Light => colors.get("background").map_or(Color::Reset, |bg| {
+                let panel = bg.mix(phux_config::theme::Rgb { r: 0, g: 0, b: 0 }, 0.05);
+                Color::Rgb(panel.r, panel.g, panel.b)
+            }),
         };
         Self {
             accent,

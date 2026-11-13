@@ -229,7 +229,7 @@ fn every_slot_is_overridable_and_bad_entries_are_ignored() {
 }
 
 const LIGHT_COLORS: &str = "mode = \"light\"\naccent = \"#1e66f5\"\nselection = \"#ccd0da\"\n\
-    muted = \"#acb0be\"\nbackground = \"#eff1f5\"\ndark_background = \"#e3e4e8\"\n\
+    muted = \"#acb0be\"\nbackground = \"#eff1f5\"\n\
     lighter_background = \"#dce0e8\"\nforeground = \"#4c4f69\"\nbright_foreground = \"#4c4f69\"\n\
     red = \"#d20f39\"\nyellow = \"#df8e1d\"\ngreen = \"#40a02b\"\ncyan = \"#179299\"\n\
     blue = \"#1e66f5\"\nmagenta = \"#ea76cb\"\n";
@@ -259,8 +259,9 @@ impl Drop for ThemeDir {
 }
 
 /// `[theme] file` selects a palette; its semantic keys land on the slots
-/// per the documented mapping, a light theme fills panels with the
-/// darker shade, and explicit slot keys still win (ADR-0026 layering).
+/// per the documented mapping, a light theme fills panels with its
+/// background a shade darker (not the mid-grey derived `dark_background`),
+/// and explicit slot keys still win (ADR-0026 layering).
 #[test]
 fn a_selected_theme_maps_onto_the_slots_and_overrides_still_win() {
     let dir = ThemeDir::new("light", LIGHT_COLORS);
@@ -273,8 +274,8 @@ fn a_selected_theme_maps_onto_the_slots_and_overrides_still_win() {
     assert_eq!(t.attention, Color::Rgb(0xdf, 0x8e, 0x1d));
     assert_eq!(
         t.surface,
-        Color::Rgb(0xe3, 0xe4, 0xe8),
-        "light: dark_background"
+        Color::Rgb(0xe3, 0xe5, 0xe9),
+        "light: the background a shade darker"
     );
     assert_eq!(t.border, Color::Rgb(0xac, 0xb0, 0xbe));
     assert_eq!(t.selection_bg, Color::Rgb(0xcc, 0xd0, 0xda));

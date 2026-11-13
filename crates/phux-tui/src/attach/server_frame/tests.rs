@@ -31,6 +31,7 @@ use crate::layout::{ArrangementDoc, Group, LayoutState};
 use crate::predict::{PredictionState, PredictiveConfig};
 use crate::render::chrome::status_bar::NoticeSeverity;
 
+mod floating;
 mod history;
 
 // ---- fixtures --------------------------------------------------------------
@@ -2808,29 +2809,6 @@ fn the_floating_overlay_closes_with_its_process() {
         crate::attach::arrangement_shape(&ArrangementDoc::single(tid(1)))
     );
     assert_eq!(h.mirror.paint_focus(), Some(tid(1)));
-}
-
-/// A retained overlay (ADR-0124) closes on `Exited` and its Terminal is
-/// killed, silently.
-#[test]
-fn a_retained_floating_overlay_is_killed_when_its_process_exits() {
-    use phux_protocol::wire::frame::{ControlAction, ResourceLifecycle};
-    let mut h = floating_parked();
-    h.send(spawned(tid(2)));
-    let outcome = h.send(event(
-        &tid(2),
-        AgentEvent::TerminalControl {
-            lifecycle: ResourceLifecycle::Exited,
-            exit_status: Some(0),
-            input_holder: None,
-            action: ControlAction::Exited,
-            actor: None,
-        },
-    ));
-    assert_eq!(outcome.kill_orphans, vec![tid(2)]);
-    assert!(outcome.layout_replaced);
-    assert!(h.mirror.expected_closes.contains(&tid(2)));
-    assert!(!h.mirror.panes.contains_key(&tid(2)));
 }
 
 /// Under the overlay, a layout pane's output reaches its mirror but not the

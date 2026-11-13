@@ -2,10 +2,10 @@
 
 use super::{
     AttachClaim, AttachEnd, AttachError, AttachMoment, AttachTarget, Connection, DEFAULT_GROUP_ID,
-    FrameKind, FrameStep, LoopExit, Notice, RepaintAccumulator, Scope, SidebarReservation,
-    ToastOverlay, apply_initial_notice, attach_participants, detached_loop_exit,
-    emit_bootstrap_workspace_reflow, finish_onboarding_claim, layout_key, send_attach,
-    send_unless_peer_gone, undelivered_notices,
+    FrameKind, FrameStep, LoopExit, Notice, RepaintAccumulator, RepaintLevel, Scope,
+    SidebarReservation, ToastOverlay, apply_initial_notice, attach_participants,
+    detached_loop_exit, emit_bootstrap_workspace_reflow, finish_onboarding_claim, layout_key,
+    send_attach, send_unless_peer_gone, undelivered_notices,
 };
 
 impl super::SessionLoop {
@@ -61,7 +61,15 @@ impl super::SessionLoop {
         // Seed the tab strip and sidebar from the bootstrap layout; peer zones
         // start empty and fill as sweep replies land.
         self.refresh_chrome();
+        // Only a reconnect carries a notice, and it follows a server restart.
+        if initial_notice.is_some() {
+            crate::attach::restore_hint::look_again();
+        }
         self.seed_initial_notice(initial_notice, moment);
+        // No bootstrap stream will arrive to paint an empty session.
+        if self.mirror.workspace.groups.is_empty() {
+            self.repaint_view(out, sidebar, RepaintLevel::Full);
+        }
         self.show_intro(out, sidebar, moment);
         Ok(None)
     }
@@ -170,7 +178,8 @@ impl super::SessionLoop {
         let sidebar = self.sidebar();
         self.size_workspace_panes(conn, sidebar).await?;
         self.subscribe_bootstrap(conn, subscribe_layout).await?;
-        // First attach of this process: offer what a restart ended.
+        // First attach of this process or after a reconnect: offer what a
+        // restart ended.
         if let Some(job) = crate::attach::restore_hint::job(self.control_dial.as_deref()) {
             let _ = self.jobs.start(job);
         }

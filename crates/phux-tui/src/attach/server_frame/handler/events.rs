@@ -5,7 +5,7 @@ use phux_protocol::ids::{ClientId, ResourceId};
 use phux_protocol::wire::frame::{AgentEvent, ArrangementOwner, FrameKind, ResourceLifecycle};
 
 use super::closed::session_deleted;
-use super::spawned::{close_floating, window_holding_pane};
+use super::spawned::{close_floating, hold_failed_floating, window_holding_pane};
 use super::{FrameCtx, FrameOutcome, KernelRoute, input_authority_notice};
 use crate::render::chrome::status_bar::Notice;
 
@@ -205,8 +205,16 @@ fn fold_terminal_control<W: crate::attach::RenderSink>(
     let holder_changed = slot.input_holder != input_holder;
     slot.lifecycle = lifecycle;
     slot.input_holder = input_holder;
-    // ADR-0147: a retained floating overlay closes with its process.
+    // ADR-0147: a retained floating overlay closes with its process, or
+    // holds a failure on screen until a key dismisses it.
     if matches!(lifecycle, ResourceLifecycle::Exited) && slot.floating.is_some() {
+        let mark = crate::attach::pane_state::ExitMark {
+            status: exit_status,
+            signal: None,
+        };
+        if let Some(outcome) = hold_failed_floating(ctx, terminal, mark) {
+            return outcome;
+        }
         ctx.expected_closes.insert(terminal.clone());
         let mut outcome = close_floating(ctx, terminal).unwrap_or_default();
         outcome.kill_orphans.push(terminal.clone());

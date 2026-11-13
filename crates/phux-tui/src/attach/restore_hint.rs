@@ -6,8 +6,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use super::Dial;
 use super::jobs::{Job, JobDone, JobKind, Toast};
 
-/// Whether this process has already looked. Once is enough: the hint is for
-/// the first attach after a restart, not every session switch.
+/// Whether this process has already looked. Once per restart is enough: the
+/// hint is for the first attach after one, not every session switch.
 static LOOKED: AtomicBool = AtomicBool::new(false);
 /// `[restore] on-start`: the server brings panes back itself, so say nothing.
 static SERVER_RESTORES: AtomicBool = AtomicBool::new(false);
@@ -15,6 +15,11 @@ static SERVER_RESTORES: AtomicBool = AtomicBool::new(false);
 /// Set `[restore] on-start`.
 pub(in crate::attach) fn set_server_restores(on: bool) {
     SERVER_RESTORES.store(on, Ordering::Relaxed);
+}
+
+/// A reconnect follows a server restart: the next attach looks again.
+pub(in crate::attach) fn look_again() {
+    LOOKED.store(false, Ordering::Relaxed);
 }
 
 /// The job that counts what `phux restore` would relaunch and toasts the
@@ -72,5 +77,14 @@ mod tests {
             lines(3).as_deref(),
             Some("3 panes ended when the server restarted.")
         );
+    }
+
+    #[test]
+    fn a_reconnect_looks_again() {
+        let dial = Dial::uds(std::path::Path::new("/nonexistent"));
+        let _ = job(Some(&dial));
+        assert!(job(Some(&dial)).is_none(), "once per process");
+        look_again();
+        assert!(job(Some(&dial)).is_some(), "again after a restart");
     }
 }

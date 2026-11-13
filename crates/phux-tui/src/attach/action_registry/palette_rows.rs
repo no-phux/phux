@@ -374,7 +374,7 @@ pub(super) const PALETTE_ROWS: &[ActionSpec] = &[
     },
     ActionSpec {
         name: "popup",
-        description: "Run a command in a floating pane that closes when it exits",
+        description: "Run a command in a floating pane that closes when it succeeds",
         params: "`command?` (bare opens an interactive prompt); `cwd?`",
         palette: Palette::Row {
             title: "Popup…",
