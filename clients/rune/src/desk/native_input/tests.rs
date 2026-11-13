@@ -336,6 +336,10 @@ fn field(
         tx.instant();
         match key {
             "palette-query" => d.toggle_palette(),
+            "phone-session-query" => {
+                d.phone = Some(super::super::phone::Phone::default());
+                d.open_phone_sessions();
+            }
             "find-query" => d.open_find(),
             "settings-query" => {
                 d.toggle_settings();
@@ -386,6 +390,7 @@ fn replace(
 fn native_fields_edit_synchronously_and_never_reach_the_terminal() {
     for key in [
         "palette-query",
+        "phone-session-query",
         "find-query",
         "settings-query",
         "rename-field",

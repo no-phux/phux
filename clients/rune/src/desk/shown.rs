@@ -183,9 +183,14 @@ impl Desk {
             return None;
         }
         let target = sessions::default_pane(topology, session.id)
-            .or_else(|| self.default_document(session.id))?;
+            .or_else(|| self.default_document(session.id));
         self.pending_session = None;
-        Some(target)
+        if target.is_none() {
+            // An existing persistent session can be empty. Completing its
+            // attach must stop showing the previous session's terminal.
+            self.drop_shown(client);
+        }
+        target
     }
 
     /// Whether `terminal` is in a session this client doesn't stream yet.

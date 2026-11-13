@@ -15,6 +15,10 @@ pub(crate) fn editing(d: &Desk) -> bool {
 }
 
 pub(crate) fn done(d: &mut Desk, tx: &mut Tx) {
+    if d.modal() == Some(Modal::PhoneNavigation) {
+        d.blur_phone_search(tx);
+        return;
+    }
     if d.settings_open {
         d.blur_settings_search(tx);
         return;

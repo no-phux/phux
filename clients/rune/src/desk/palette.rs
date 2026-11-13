@@ -501,6 +501,13 @@ impl Desk {
             .map(|p| p.terminal_id.clone())
             .or_else(|| self.default_document(session.id));
         let Some(id) = id else {
+            if let Some(client) = &self.client {
+                client.attach_session(phux_protocol::wire::frame::AttachTarget::ByName(
+                    name.to_owned(),
+                ));
+                self.pending_session = Some(name.to_owned());
+                self.wanted = None;
+            }
             return;
         };
         self.show(id, name);

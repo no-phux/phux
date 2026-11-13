@@ -14,6 +14,7 @@ use crate::desk::phone::{Latch, Phone, Soft};
 use crate::keys::Shortcut;
 
 mod keyboard;
+mod navigation;
 use keyboard::keyboard;
 
 const TITLE: TextStyle = TextStyle::new(16.0, 600.0);
@@ -39,11 +40,12 @@ pub fn view(desk: &Desk, cx: &mut Cx<Desk>) -> El {
     let controls = if desk.settings_open { &p } else { &drawn };
     cx.foreground(p.text);
     let stage = phone_stage(desk, &p, cx);
+    let top = top_inset(desk, cx);
     let screen = col()
         .key("phone-screen")
         .w_full()
         .h_full()
-        .pt(top_inset(desk, cx))
+        .pt(top)
         .children((!desk.settings_open).then(|| top_bar(desk, controls)))
         .child(stage)
         .children(
@@ -60,6 +62,7 @@ pub fn view(desk: &Desk, cx: &mut Cx<Desk>) -> El {
         el().h(0.0).grow(1.0).w_full().min_h(0.0).child(screen),
         desk,
         &p,
+        top,
     );
     col()
         .key("phone")
@@ -119,8 +122,9 @@ pub(crate) fn edge_color(desk: &Desk) -> Color {
     edge_fill(desk, &ink(desk, accent))
 }
 
-fn overlays(root: El, desk: &Desk, p: &Ink) -> El {
-    root.children(status::banner(desk, p))
+fn overlays(root: El, desk: &Desk, p: &Ink, top: f32) -> El {
+    root.children(navigation::view(desk, p, top))
+        .children(status::banner(desk, p))
         .children(desk.inbox.open.then(|| inbox::view(desk, p)))
         .children(machines::sheet(desk, p))
         .children(desk.news.open.then(|| news::view(desk, p)))
@@ -217,7 +221,7 @@ fn top_bar(desk: &Desk, p: &Ink) -> El {
         .continuous_corners()
         .center()
         .fill(p.text.alpha(0.1))
-        .child(glyph(&icons::PROMPT, 15.0, p.marks.good));
+        .child(glyph(&icons::PROMPT, 15.0, focused_tone(desk, p)));
     let capsule = row()
         .key("phone-place")
         .grow(1.0)
@@ -231,8 +235,18 @@ fn top_bar(desk: &Desk, p: &Ink) -> El {
     let place = glass(capsule, p)
         .press(p.hover)
         .cursor(Cursor::Pointer)
-        .label("Change session")
-        .on_press_tx(|d: &mut Desk, tx| d.shortcut(Shortcut::SwitchSession, tx))
+        .label(if desk.shown.is_some() {
+            "Choose pane"
+        } else {
+            "Connections"
+        })
+        .on_press(|d: &mut Desk| {
+            if d.shown.is_some() {
+                d.phone_picker();
+            } else {
+                d.toggle_machines();
+            }
+        })
         .child(tile)
         .child(
             col()
@@ -245,18 +259,23 @@ fn top_bar(desk: &Desk, p: &Ink) -> El {
                         .gap(4.0)
                         .items_center()
                         .min_w(0.0)
-                        .child(text(session).font(SUBTITLE).color(p.dim).truncate())
+                        .child(
+                            text(place_detail(desk, &session))
+                                .font(SUBTITLE)
+                                .color(p.dim)
+                                .truncate(),
+                        )
                         .child(glyph(&icons::CHEVRON, 12.0, p.dim)),
                 ),
         );
     let trailing = spatial::minimap(desk, p).unwrap_or_else(|| {
         round(
             "phone-more",
-            "Commands",
+            "Terminal actions",
             glyph(&icons::MORE, 20.0, p.text),
             p,
         )
-        .on_press_tx(|d: &mut Desk, tx| d.shortcut(Shortcut::Palette, tx))
+        .on_press(Desk::open_phone_actions)
     });
     let bell = round(
         "phone-news",
@@ -282,11 +301,28 @@ fn top_bar(desk: &Desk, p: &Ink) -> El {
                 glyph(&icons::CHEVRON_LEFT, 18.0, p.text),
                 p,
             )
-            .on_press_tx(|d: &mut Desk, tx| d.shortcut(Shortcut::SwitchSession, tx)),
+            .on_press(Desk::open_phone_sessions),
         )
         .child(place)
         .child(bell)
         .child(trailing)
+}
+
+fn focused_tone(desk: &Desk, p: &Ink) -> Color {
+    desk.shown.as_ref().map_or(p.dim, |shown| {
+        super::sidebar::mark_color(desk.activities.mark(&shown.resource), p)
+    })
+}
+
+fn place_detail(desk: &Desk, session: &str) -> String {
+    let state = desk
+        .shown
+        .as_ref()
+        .map(|shown| desk.activities.mark(&shown.resource));
+    match state.filter(|mark| *mark != crate::activity::Mark::None) {
+        Some(mark) => format!("{session} · {}", mark.word()),
+        None => session.to_owned(),
+    }
 }
 
 /// The session's tabs by name, and a new one. A lone tab needs no strip:

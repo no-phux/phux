@@ -165,7 +165,9 @@ jobs:
     name: ios-native-simulator
     if: inputs.ios
     runs-on: macos-26
-    timeout-minutes: 60
+    # A cold macOS + simulator + device build still has to qualify both
+    # transports. Sixty minutes can expire after QUIC, during the WSS pass.
+    timeout-minutes: 90
     env:
       CARGO_INCREMENTAL: "0"
       CARGO_PROFILE_DEV_DEBUG: "0"

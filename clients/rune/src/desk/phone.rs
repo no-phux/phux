@@ -8,6 +8,7 @@ use super::Desk;
 use super::input::Modal;
 use crate::keys::{self, Typed};
 
+pub mod navigation;
 mod refit;
 pub mod spatial;
 pub mod touch;
@@ -38,6 +39,8 @@ pub struct Phone {
     pub stage: [f32; 2],
     pub travel: [f32; 2],
     pub picker: bool,
+    pub page: Option<navigation::Page>,
+    pub query: rune::TextEdit,
     navigation: Option<(phux_protocol::ids::ResourceId, bool)>,
     /// The finger on the terminal, and the coast it left behind.
     touch: Option<touch::Touch>,
@@ -66,6 +69,8 @@ impl Default for Phone {
             stage: [0.0; 2],
             travel: [0.0; 2],
             picker: false,
+            page: None,
+            query: rune::TextEdit::new(""),
             navigation: None,
             touch: None,
             fling: None,
@@ -187,6 +192,10 @@ impl Desk {
     /// synchronous, so closing a field cannot redirect a queued key behind it.
     pub fn soft(&mut self, soft: Soft, tx: &mut Tx) {
         self.stop_coast();
+        if self.modal() == Some(Modal::PhoneNavigation) {
+            self.phone_navigation_soft(soft, tx);
+            return;
+        }
         if self.native.is_some() && super::native_input::accessory(self, &soft, tx) {
             return;
         }
@@ -311,6 +320,9 @@ impl Desk {
 
     /// Settings owns its search keyboard without changing the terminal's choice.
     pub fn phone_keyboard_visible(&self) -> bool {
+        if self.modal() == Some(Modal::PhoneNavigation) {
+            return self.phone.as_ref().is_some_and(|phone| phone.query.focused);
+        }
         if self.settings_open {
             self.settings_search_focused()
         } else {
@@ -319,6 +331,10 @@ impl Desk {
     }
 
     pub fn toggle_keyboard(&mut self, tx: &mut Tx) {
+        if self.modal() == Some(Modal::PhoneNavigation) {
+            self.blur_phone_search(tx);
+            return;
+        }
         if self.settings_open {
             self.blur_settings_search(tx);
             return;
@@ -330,6 +346,11 @@ impl Desk {
 
     /// Accessory commands follow the same modal policy as native key chords.
     pub fn phone_commands(&mut self, tx: &mut Tx) {
+        if self.modal() == Some(Modal::PhoneNavigation) {
+            self.close_phone_navigation();
+            self.toggle_palette();
+            return;
+        }
         if self.settings_open {
             self.blur_settings_search(tx);
         } else if let Some(modal) = self.modal() {

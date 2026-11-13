@@ -27,6 +27,7 @@ pub enum Modal {
     /// A popup's command: typing is its own, and few commands reach past it.
     Popup,
     PhonePicker,
+    PhoneNavigation,
 }
 
 impl Modal {
@@ -61,6 +62,7 @@ impl Modal {
             | Self::Changes
             | Self::Rename
             | Self::Confirm
+            | Self::PhoneNavigation
             | Self::PhonePicker => false,
         }
     }
