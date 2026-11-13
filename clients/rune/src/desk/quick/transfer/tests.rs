@@ -10,6 +10,7 @@ use std::sync::{
 };
 
 mod fixture;
+mod placement;
 use fixture::*;
 
 fn refused(desk: &mut Desk) -> String {
@@ -154,7 +155,7 @@ fn only_the_successful_server_receipt_queues_the_tab_and_completes_once() {
     assert_eq!(result.try_recv().unwrap(), Ok(()));
     assert_eq!(client.selected_session(), Some(1));
     assert_eq!(desk.unplaced_splits.len(), 1);
-    assert_eq!(desk.unplaced_splits[0].0, terminal());
+    assert_eq!(desk.unplaced_splits[0].terminal, terminal());
     assert!(!desk.quick_move_outcome(&client, operation, &OrgOutcome::Accepted));
     assert!(result.try_recv().is_err(), "no duplicate completion");
 }

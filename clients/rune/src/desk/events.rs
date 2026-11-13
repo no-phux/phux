@@ -224,9 +224,9 @@ impl Desk {
             self.resources.producers.insert(new.clone(), source);
         }
         if let Some(new) = &id
-            && let Some(placement) = self.pending_splits.remove(&request)
+            && let Some((session, placement)) = self.pending_splits.remove(&request)
         {
-            self.place_split(client, new, placement);
+            self.place_split(client, new, placement, session);
             return true;
         }
         let ours =

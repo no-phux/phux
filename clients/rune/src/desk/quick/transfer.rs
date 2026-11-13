@@ -134,7 +134,7 @@ impl Desk {
             .and_then(|topology| topology.session_keyed(&pending.session))
             .ok_or("The quick terminal moved, but its destination is no longer listed. Check the server's panes.")?;
         client.attach_session(AttachTarget::ById(SessionId::new(session.id)));
-        self.place_split(client, &pending.terminal, None);
+        self.place_split(client, &pending.terminal, None, Some(pending.session));
         Ok(())
     }
 

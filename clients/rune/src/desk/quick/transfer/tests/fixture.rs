@@ -9,7 +9,7 @@ use phux_protocol::{
         BootstrapLimits, BootstrapProfile, ServerCapabilities, ServerFeatureExt,
         ServerFeatureExtSet,
     },
-    ids::{AuthorityId, ClientId, ResourceKey, ResourceKind, Revision, WindowId},
+    ids::{ArrangementKey, AuthorityId, ClientId, ResourceKey, ResourceKind, Revision, WindowId},
     wire::{
         frame::{
             Command, CommandValue, FrameKind, OrganizationPage, ResourceRecord, SessionRecord,
@@ -71,9 +71,11 @@ pub(super) fn connected() -> (Arc<Client>, Desk) {
     let page = OrganizationPage::new(AuthorityId::new([1; 16]).unwrap(), Revision::new(1), 0)
         .with_sessions(vec![
             SessionRecord::new(session(1), "work", Revision::new(1))
-                .with_live(Some(SessionId::new(1))),
+                .with_live(Some(SessionId::new(1)))
+                .with_arrangement(Some(arrangement(1))),
             SessionRecord::new(session(2), "quick", Revision::new(1))
                 .with_live(Some(SessionId::new(2)))
+                .with_arrangement(Some(arrangement(2)))
                 .with_members(1),
         ])
         .with_resources(vec![
@@ -157,4 +159,35 @@ pub(super) fn reply(desk: &mut Desk, client: &Client, request_id: u32, result: C
 
 pub(super) fn terminal() -> ResourceId {
     ResourceId::local(7)
+}
+
+pub(super) fn arrangement(n: u8) -> ArrangementKey {
+    ArrangementKey::new([n; 16]).unwrap()
+}
+
+pub(super) fn install_arrangement(client: &Client, n: u8) {
+    use phux_client_core::layout::{
+        ArrangementDoc,
+        wire::{EntryBinding, HandleMap, to_protocol},
+    };
+    use phux_protocol::wire::frame::{ArrangementOwner, ArrangementValue};
+    let request_id = client.fetch_arrangement(arrangement(n)).unwrap();
+    let document = to_protocol(
+        &ArrangementDoc::default(),
+        &HandleMap::new(),
+        &EntryBinding::default(),
+    )
+    .unwrap();
+    let value = ArrangementValue::new(
+        arrangement(n),
+        ArrangementOwner::Session(session(n)),
+        Revision::new(1),
+        document,
+    );
+    client
+        .feed(FrameKind::CommandResult {
+            request_id,
+            result: CommandResult::OkWith(CommandValue::Arrangement(Box::new(value))),
+        })
+        .unwrap();
 }
