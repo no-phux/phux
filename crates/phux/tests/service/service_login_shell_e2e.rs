@@ -128,7 +128,7 @@ fn service_managed_pane_resolves_a_profile_provided_command() {
     let _server = start_server(home.path(), &seed, true);
 
     let contents = read_result_file(&result_path, RESULT_DEADLINE);
-    let pane_path = contents.lines().next().unwrap_or_default().to_owned();
+    let pane_path = without_own_cli(contents.lines().next().unwrap_or_default());
 
     let login = probe_shell_path(home.path(), true);
     let plain = probe_shell_path(home.path(), false);
@@ -155,6 +155,20 @@ fn service_managed_pane_resolves_a_profile_provided_command() {
              command must resolve in the pane; got: {contents:?}\n{diagnostics}"
         );
     }
+}
+
+/// `pane_path` minus the directory the server appends so panes find its own
+/// `phux` (`phux_server::daemon::expose_own_cli`): the shells probed here do
+/// not run the server, so they never carry it.
+fn without_own_cli(pane_path: &str) -> String {
+    let own = Path::new(crate::runner::phux_bin())
+        .parent()
+        .and_then(|d| d.canonicalize().ok());
+    pane_path
+        .split(':')
+        .filter(|d| Path::new(d).canonicalize().ok() != own)
+        .collect::<Vec<_>>()
+        .join(":")
 }
 
 /// Whether this host's login shell reached the fixture's `~/.profile`.
@@ -244,7 +258,7 @@ fn ordinary_pane_does_not_source_the_profile_twice() {
     let _server = start_server(home.path(), &seed, false);
 
     let contents = read_result_file(&result_path, RESULT_DEADLINE);
-    let pane_path = contents.lines().next().unwrap_or_default().to_owned();
+    let pane_path = without_own_cli(contents.lines().next().unwrap_or_default());
 
     let login = probe_shell_path(home.path(), true);
     let plain = probe_shell_path(home.path(), false);
