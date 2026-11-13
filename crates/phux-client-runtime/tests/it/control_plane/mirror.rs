@@ -83,3 +83,34 @@ fn a_mirror_request_is_refused_by_an_older_server_and_answered_by_a_newer() {
         })
     ));
 }
+
+#[test]
+fn a_host_checklist_is_refused_by_an_older_server_and_answered_by_a_newer() {
+    use phux_client_runtime::control::ChecklistError;
+
+    let mut older = plane(&[]);
+    assert!(matches!(
+        older.host_checklist(),
+        Err(ChecklistError::Unsupported)
+    ));
+    assert!(older.take_outbound().is_empty());
+
+    let mut plane = plane(&[ServerFeatureExt::HostChecklist]);
+    let call = plane.host_checklist().unwrap();
+    let FrameKind::Command {
+        request_id,
+        command: Command::HostChecklist,
+    } = decode(&plane.take_outbound()[0])
+    else {
+        panic!("expected HOST_CHECKLIST");
+    };
+    plane
+        .feed(FrameKind::CommandResult {
+            request_id,
+            result: CommandResult::OkWith(CommandValue::Json(
+                r#"{"schema_version":1,"items":[]}"#.to_owned(),
+            )),
+        })
+        .unwrap();
+    assert_eq!(ready(call).unwrap()["schema_version"], 1);
+}

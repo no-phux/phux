@@ -27,7 +27,7 @@ fn read_settings(path: &Path) -> Result<Option<Value>, String> {
 
 /// Why phux leaves the hook to something else that already registers phux
 /// hooks in Claude Code.
-fn hook_owner(ctx: &Ctx) -> Option<String> {
+pub(super) fn hook_owner(ctx: &Ctx) -> Option<String> {
     if ctx.shim.as_ref().is_some_and(|shim| shim.exists()) {
         return Some(
             "the claude-in-phux shim (`phux agent install-claude`) registers phux hooks".to_owned(),

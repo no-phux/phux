@@ -16,12 +16,14 @@ use crate::commands::json_err::{self, CliError, codes};
 use crate::companion::is_executable;
 
 mod hook;
+mod integrations;
 #[cfg(test)]
 mod tests;
 
 #[cfg(test)]
 use hook::HOOK_COMMAND;
 use hook::hook_step;
+pub(crate) use integrations::{Integration, agent_integrations};
 
 /// An agent `phux skill setup` knows how to teach.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]

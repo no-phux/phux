@@ -74,7 +74,10 @@ enum CommandTag {
     /// `PUBLISH_RESOURCE_STATE`: replace a state-replicated resource's whole
     /// state, e.g. an accessibility tree snapshot.
     PublishResourceState = 0x42,
-    // 0x43..=0x47 left free for concurrent work.
+    /// `HOST_CHECKLIST`: what works on this host, each with the reason
+    /// and the fix (`phux doctor --json`'s `checklist`).
+    HostChecklist = 0x43,
+    // 0x44..=0x47 left free for concurrent work.
     /// `SEND_DOCUMENT_INPUT`: relay a viewer's input intent to a document's
     /// producer.
     SendDocumentInput = 0x48,
@@ -170,6 +173,8 @@ pub(crate) const COMMAND_TAG_SEND_DOCUMENT_INPUT: u8 = CommandTag::SendDocumentI
 pub(crate) const COMMAND_TAG_MIRROR: u8 = CommandTag::Mirror as u8;
 /// Wire tag for [`Command::MirrorProvide`].
 pub(crate) const COMMAND_TAG_MIRROR_PROVIDE: u8 = CommandTag::MirrorProvide as u8;
+/// Wire tag for [`Command::HostChecklist`].
+pub(crate) const COMMAND_TAG_HOST_CHECKLIST: u8 = CommandTag::HostChecklist as u8;
 /// Wire tag for [`Command::PrivacyStatus`].
 pub(crate) const COMMAND_TAG_PRIVACY_STATUS: u8 = CommandTag::PrivacyStatus as u8;
 /// Wire tag for [`Command::KillResourceIf`]: a new tag rather than a field on

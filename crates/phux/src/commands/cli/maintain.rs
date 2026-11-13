@@ -114,6 +114,10 @@ pub(crate) struct UpgradeArgs {
 ///
 /// Read-only. Exits 1 if any check failed; warnings alone exit 0,
 /// since a stopped server is a normal state and not a broken install.
+///
+/// It ends with "What works here": agent status, notifications, remote
+/// reach, file transfer, restore after restart and the agent skill, each
+/// with the reason and the fix. `--json` carries it as `checklist`.
 #[derive(Debug, Args)]
 pub(crate) struct DoctorArgs {
     /// Emit a stable JSON document instead of human text.

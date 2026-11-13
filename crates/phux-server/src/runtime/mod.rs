@@ -18,6 +18,7 @@ use tracing::trace;
 mod actor_conformance;
 mod api;
 pub(crate) mod apps;
+mod checklist;
 mod command_tasks;
 pub mod commands;
 mod committed_close;

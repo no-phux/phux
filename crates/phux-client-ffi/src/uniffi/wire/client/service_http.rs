@@ -16,6 +16,9 @@ use super::RemoteClient;
 // A host's screen mirrors: async calls of the same shape.
 mod mirror;
 
+// What works on the host: one async call of the same shape.
+mod checklist;
+
 /// One HTTP header, in order; names may repeat.
 #[derive(uniffi::Record, Clone, Debug, PartialEq, Eq)]
 pub struct WireServiceHttpHeader {

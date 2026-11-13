@@ -50,6 +50,7 @@ use crate::publication::Publication;
 mod agent_delivery;
 mod agents;
 mod approvals;
+mod checklist;
 mod checkout;
 mod clipboard;
 mod commands;
@@ -77,6 +78,7 @@ mod subscriptions;
 mod tab_lock;
 mod topology;
 
+pub use checklist::ChecklistError;
 pub use checkout::{CheckoutFailure, CheckoutOutcome, CheckoutResponse, MAX_CHECKOUT_ANSWERS};
 pub use error::ControlError;
 pub use events::{

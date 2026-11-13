@@ -342,6 +342,7 @@ fn rows(world: &mut World) -> Vec<Row> {
             &[&[&s("signal", &ta)], &[&s("signal", &gb)]],
         ),
         on_global(command(Command::DescribeApi), "inventory"),
+        on_global(command(Command::HostChecklist), "inventory"),
         // Filtered at the source: INVENTORY anywhere admits.
         row(
             command(Command::GetState {
