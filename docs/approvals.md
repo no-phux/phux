@@ -5,8 +5,8 @@ requests, see [1Password credentials](./onepassword.md). Those are separate
 from the grant-driven held actions below.
 
 A device or automation key enrolled with a held verb in its scope has those
-actions held by the server until a person approves or denies them. Nothing
-on this machine's own socket is ever held. Keys and scopes are in
+actions held by the server until a person approves or denies them. These
+grant-driven holds do not apply to this machine's own socket. Keys and scopes are in
 [Remote machines](./remote.md#who-can-do-what).
 
 ```sh
