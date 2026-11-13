@@ -51,9 +51,32 @@ test("Rune qualifies and releases on macOS and Linux", () => {
 
 test("closing a pull request cancels its in-flight ci run", () => {
   // `closed` joins the PR's latest-wins group and then runs nothing.
+  // Literal true cancels every event. The only expression is
+  // `github.event_name != 'push'`: false for a push, true for a pull
+  // request, a merge group, and a dispatch. Ordinary main pushes share
+  // `main-push`; a release-please push keeps its own sha.
   const ci = workflow("ci.yml");
+  const concurrency = table(ci["concurrency"]);
   expect(table(table(ci["on"])["pull_request"])["types"]).toContain("closed");
-  expect(table(ci["concurrency"])["cancel-in-progress"]).toBe(true);
+  const cancel = concurrency["cancel-in-progress"];
+  for (const event of ["pull_request", "merge_group", "workflow_dispatch"]) {
+    expect([event, cancelsInFlight(cancel, event)]).toEqual([event, true]);
+  }
+  if (cancel !== true) expect(cancelsInFlight(cancel, "push")).toBe(false);
+  expect(cancelsInFlight(true, "pull_request")).toBe(true);
+  expect(cancelsInFlight(true, "push")).toBe(true);
+  expect(cancelsInFlight(false, "pull_request")).toBe(false);
+  expect(cancelsInFlight(undefined, "pull_request")).toBe(false);
+  expect(cancelsInFlight("${{ github.event_name != 'push' }}", "pull_request")).toBe(true);
+  expect(cancelsInFlight("${{ github.event_name != 'push' }}", "merge_group")).toBe(true);
+  expect(cancelsInFlight("${{ github.event_name != 'push' }}", "push")).toBe(false);
+  expect(cancelsInFlight("${{ github.event_name == 'pull_request' }}", "pull_request")).toBe(false);
+  expect(cancelsInFlight("${{ github.event_name == 'push' }}", "pull_request")).toBe(false);
+  expect(cancelsInFlight("${{ true }}", "pull_request")).toBe(false);
+  expect(cancelsInFlight("${{ github.event_name != 'main' }}", "pull_request")).toBe(false);
+  expect(str(concurrency["group"])).toBe(
+    "ci-${{ github.event_name == 'push' && (github.actor == 'phux-release-bot[bot]' && github.sha || 'main-push') || github.event.pull_request.number || github.ref }}",
+  );
   for (const [id, lane] of Object.entries(jobs(ci))) {
     const gate = str(lane["if"]) ?? "";
     const reaches = needs(lane).length > 0 && !gate.includes("always()");
@@ -103,3 +126,18 @@ test("only main prunes the build cache", () => {
   expect(str(prune["if"])).toContain(`github.event_name == 'push' && ${MAIN}`);
   expect(table(prune["permissions"])["actions"]).toBe("write");
 });
+
+/** Literal `true`, or `${{ github.event_name != 'push' }}` (either quote, any space). */
+function cancelsInFlight(value: unknown, event: string): boolean {
+  if (value === true) return true;
+  if (typeof value !== "string") return false;
+  const body = value
+    .trim()
+    .replace(/^\$\{\{\s*/, "")
+    .replace(/\s*\}\}$/, "")
+    .replace(/\s+/g, "");
+  if (body === "github.event_name!='push'" || body === 'github.event_name!="push"') {
+    return event !== "push";
+  }
+  return false;
+}
