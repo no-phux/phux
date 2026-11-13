@@ -293,8 +293,12 @@ fn terminal_pane(desk: &Desk, id: &ResourceId, several: bool, ink: &Ink) -> El {
         // The exact frame this build paints, for the drawn receipt.
         desk.painting(view, &frame);
     }
-    let grid_layer = terminal_layer(desk, id, &frame, focused, ink);
     let area = desk.pane_area(id).unwrap_or([0.0, 0.0]);
+    let question = focused
+        .then(|| super::inbox::ask_card(desk, id, area, ink))
+        .flatten();
+    let editing = question.as_ref().is_some_and(|card| card.editing);
+    let grid_layer = terminal_layer(desk, id, &frame, focused, editing, ink);
     let ground = grid::background(&frame);
     let lit = if several && focused {
         Lit::Focused
@@ -305,7 +309,7 @@ fn terminal_pane(desk: &Desk, id: &ResourceId, several: bool, ink: &Ink) -> El {
         .child(grid_layer)
         .children(overlay::history(desk, id, &frame, area, ink))
         .children(overlay::find_bar(desk, id, area, ink))
-        .children(focused.then(|| super::inbox::ask_card(desk, id, area, ink)).flatten())
+        .children(question.map(|card| card.content))
         // Panes without the keyboard sit back a little.
         .children((several && !focused).then(|| el().absolute(0.0, 0.0).w_full().h_full().fill(ground.alpha(0.42)).inert()));
     float(id, framed(desk, host, ground, lit, ink))
@@ -325,6 +329,7 @@ fn terminal_layer(
     id: &ResourceId,
     frame: &phux_client_runtime::publication::GridFrame,
     focused: bool,
+    editing: bool,
     ink: &Ink,
 ) -> El {
     let metrics = desk.metrics();
@@ -338,12 +343,13 @@ fn terminal_layer(
             ink.selection,
         ))
         .children(overlay::link_underline(desk, id, &metrics, ink));
-    if keyboard && desk.modal().is_none() {
+    if keyboard && desk.modal().is_none() && !editing {
         layer = layer.child(grid::ime_layer(
             frame,
             desk.preedit.as_deref(),
             &metrics,
             (ink.text, ink.raised),
+            desk.settings.option_as_meta,
         ));
     }
     layer

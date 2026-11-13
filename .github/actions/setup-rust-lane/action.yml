@@ -13,9 +13,13 @@
 #      build-script run, and native (mold) link. The GitHub `objects` payload
 #      carries only what that lane's builds used or produced; saves are
 #      restricted to pushes to main so PR writes cannot thrash the shared
-#      10 GB LRU. The primary key excludes the commit: an exact hit skips the
-#      post-step export. The key changes with flake.lock, Cargo.lock, or the
-#      UTC day, and ci.yml's prune-build-cache keeps the newest entry per lane.
+#      10 GB LRU. cache-warm.yml's 00:10 UTC schedule dispatches its Linux
+#      jobs on main; record-main-cache enables the supported manual save
+#      input on that ref only, using the same key as a main push.
+#      The primary key excludes the commit: an exact hit skips
+#      the post-step export. The key changes with flake.lock, Cargo.lock, or
+#      the UTC day. After uploads, prune-build-cache keeps current-day keys
+#      and retires old copies without deleting the sole restore source early.
 #      A cold test build records "not looked up": mbx learns the key while
 #      compiling, then the save makes the next job a hit. Run 38451988937
 #      compiled the test profile in 10m 24s with 0 hits and stored a 2.3 GB
@@ -50,6 +54,12 @@ inputs:
     description: mbx (content-keyed objects store), deps (third-party dependency artifacts only), or none (a lane that runs prebuilt test binaries).
     required: false
     default: mbx
+  record-main-cache:
+    description: >
+      Permit a main workflow_dispatch to save the same key a main push saves.
+      This never changes the source event. Pull-request lanes leave it false.
+    required: false
+    default: "false"
 
 outputs:
   cache-hit:
@@ -58,6 +68,12 @@ outputs:
   cache-key:
     description: Primary objects-cache key. A failed main lane saves this same key.
     value: ${{ steps.mbx-env.outputs.cache_key }}
+  cache-save-reason:
+    description: Why mbx will or will not save. Empty when this lane is not using mbx.
+    value: ${{ steps.mbx.outputs.cache-save-reason }}
+  cache-save-eligible:
+    description: Whether the pinned mbx action permits a post-step save.
+    value: ${{ steps.mbx.outputs.cache-save-eligible }}
 
 runs:
   using: composite
@@ -132,6 +148,9 @@ runs:
       if: inputs.build-cache == 'mbx'
       id: mbx
       with:
+        # Node actions receive GITHUB_* from the runner's context, not an
+        # env override. Use the pinned action's supported dispatch input.
+        save-on-workflow-dispatch: ${{ inputs.record-main-cache == 'true' && github.ref == 'refs/heads/main' && github.event_name == 'workflow_dispatch' }}
         backend: github
         github-cache-mode: objects
         # Not `isolate-objects-cache`: v1.7.1's post step cannot delete the
@@ -185,10 +204,11 @@ runs:
       if: inputs.build-cache == 'deps'
       id: deps
       with:
-        shared-key: phux-${{ inputs.cache-lane }}
         # flake.lock pins the Zig and mold a dependency build script uses;
         # rust-cache already keys on rustc, Cargo.lock, and CARGO_* settings.
-        key: ${{ steps.deps-env.outputs.flake }}
-        # Pull requests restore only (see docs/development.md#ci).
-        save-if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+        # With shared-key set, v2.9.3 ignores key: put the flake hash here.
+        shared-key: phux-${{ inputs.cache-lane }}-${{ steps.deps-env.outputs.flake }}
+        # Pull requests restore only. The nightly Linux-only dispatch opts
+        # in explicitly on main, just like the mbx lanes.
+        save-if: ${{ github.ref == 'refs/heads/main' && (github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.record-main-cache == 'true')) }}
         cache-on-failure: "true"

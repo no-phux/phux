@@ -41,6 +41,9 @@ impl Desk {
 
     /// What survives any replacement of this window's connection.
     pub(in crate::desk) fn carry_into(&mut self, next: &mut Desk) {
+        self.cancel_quick_move("the main window's connection was replaced");
+        std::mem::swap(&mut next.quick, &mut self.quick);
+        std::mem::swap(&mut next.quick_chord, &mut self.quick_chord);
         next.native = self.native.take();
         next.phone = self.phone.take();
         if let Some(phone) = &mut next.phone {
