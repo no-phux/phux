@@ -229,8 +229,12 @@ async fn seed_created_layout(
     let Some(live) = inventory.session(&session).and_then(|record| record.live) else {
         return Ok(());
     };
-    LayoutOps::new(conn, live, 10)
+    match LayoutOps::new(conn, live, 10)
         .read_or_seed(ArrangementDoc::single(ResourceId::local(terminal)))
-        .await?;
-    Ok(())
+        .await
+    {
+        // The seed pane ended and took its session with it: nothing to seed.
+        Ok(_) | Err(LayoutOpsError::MissingLayout) => Ok(()),
+        Err(err) => Err(err.into()),
+    }
 }

@@ -14,6 +14,7 @@ use super::{
     validate_projection_key,
 };
 use crate::layout::adopt_unarranged_groups;
+use crate::layout::leaves;
 
 /// Layout client over a dedicated [`Connection`], allocating request ids from
 /// `first_request_id`. See the module docs for the two paths.
@@ -220,20 +221,47 @@ impl<'a> LayoutOps<'a> {
     /// The session's arrangement, seeded from `fallback` by
     /// compare-and-swap when it has no groups yet. An arrangement that has
     /// groups is returned unchanged.
+    ///
+    /// A seed pane can end before it is placed (its command exits at once,
+    /// or never executes): a `fallback` group naming a pane that is no
+    /// longer a live member is dropped, and a refusal is retried against a
+    /// fresh read, which no longer lists a member removed meanwhile.
     async fn seed_arrangement(
         &mut self,
         fallback: &ArrangementDoc,
     ) -> Result<ArrangementDoc, LayoutOpsError> {
+        let mut refused = None;
         for _ in 0..org::MAX_CAS_ATTEMPTS {
             let read = self.read_arrangement().await?;
             if !read.document.groups.is_empty() {
                 return Ok(read.document);
             }
-            let mut document = read.document.clone();
-            adopt_unarranged_groups(&mut document, fallback);
-            if let Some(written) = self.replace(&read, &document).await? {
-                return Ok(written);
+            let mut live = fallback.clone();
+            live.groups.retain(|group| {
+                group.state.tree.as_ref().is_some_and(|tree| {
+                    leaves(tree)
+                        .iter()
+                        .all(|pane| read.handles.key(pane).is_some())
+                })
+            });
+            if live.groups.is_empty() {
+                debug!(
+                    path = "arrangement",
+                    "seed pane already ended; nothing to seed"
+                );
+                return Ok(read.document);
             }
+            let mut document = read.document.clone();
+            adopt_unarranged_groups(&mut document, &live);
+            match self.replace(&read, &document).await {
+                Ok(Some(written)) => return Ok(written),
+                Ok(None) => {}
+                Err(err @ LayoutOpsError::Refused(_)) => refused = Some(err),
+                Err(err) => return Err(err),
+            }
+        }
+        if let Some(err) = refused {
+            return Err(err);
         }
         log_conflict_exhausted();
         Err(LayoutOpsError::Conflict)
