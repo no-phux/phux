@@ -442,7 +442,7 @@ the address.
 
 **`no answer within 5s; is UDP filtered?`** `phux host add` couldn't reach
 UDP 8788, so it registered an `ssh://` route instead. Attaching over it
-tries direct QUIC, then carries the client through `ssh`. Open the port,
+goes through `ssh` and retries UDP in the background. Open the port,
 or use a relay, for one that roams.
 
 **The token was revoked or the server's certificate authority changed.**

@@ -262,7 +262,8 @@ pub(crate) fn probe(
 }
 
 /// [`probe`] with its own deadline, for a dial that must not hold an attach
-/// up for long.
+/// up for long. A dial that connects, or gets no answer at all, is noted
+/// for [`super::udp_unanswered`].
 pub(crate) fn probe_within(
     target: &str,
     token: &str,
@@ -289,12 +290,18 @@ pub(crate) fn probe_within(
     .map_err(|refusal| format!("{refusal:?}"))?;
     rt.block_on(async {
         match tokio::time::timeout(deadline, Connection::connect_dial(&plan.dial)).await {
-            Ok(Ok(_connection)) => Ok(()),
+            Ok(Ok(_connection)) => {
+                super::unanswered::record(target, true);
+                Ok(())
+            }
             Ok(Err(err)) => Err(err.to_string()),
-            Err(_) => Err(format!(
-                "no answer within {}s; is UDP filtered?",
-                deadline.as_secs_f64()
-            )),
+            Err(_) => {
+                super::unanswered::record(target, false);
+                Err(format!(
+                    "no answer within {}s; is UDP filtered?",
+                    deadline.as_secs_f64()
+                ))
+            }
         }
     })
 }

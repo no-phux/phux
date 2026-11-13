@@ -87,6 +87,17 @@ pub(crate) fn run(args: SshAttach<'_>) -> ExitCode {
 
     // One prompt for the bootstrap, the stdio fallback and `ssh -t`.
     login(&args.destination);
+    let host = ssh_hostname(&args.destination);
+    if super::enroll::udp_unanswered(&host) {
+        recheck_udp(&args);
+        return fall_back(
+            &args,
+            &format!(
+                "UDP to {host} went unanswered on a recent attach; checking it again in the \
+                 background for next time"
+            ),
+        );
+    }
     info!("bootstrapping {} over ssh…", args.destination);
     let report = match bootstrap(&args) {
         Ok(report) => report,
@@ -97,7 +108,6 @@ pub(crate) fn run(args: SshAttach<'_>) -> ExitCode {
         Err(Failure::Fallback(message)) => return fall_back(&args, &message),
     };
 
-    let host = ssh_hostname(&args.destination);
     let target = authority(&host, report.port);
     if let Err(reason) = super::enroll::probe(
         &target,
@@ -122,6 +132,36 @@ pub(crate) fn run(args: SshAttach<'_>) -> ExitCode {
         args.identity,
         args.rec,
     )
+}
+
+/// While this attach rides ssh, bootstrap a listener without a prompt and
+/// probe it, so the next attach uses QUIC once UDP answers again
+/// ([`super::enroll::probe`] notes the outcome). Silent: the terminal is
+/// the attach's.
+fn recheck_udp(args: &SshAttach<'_>) {
+    let args = SshAttach {
+        destination: args.destination.clone(),
+        session: None,
+        remote_phux: args.remote_phux.clone(),
+        udp_ports: args.udp_ports.clone(),
+        identity: args.identity.clone(),
+        rec: None,
+    };
+    std::thread::spawn(move || {
+        let Ok((output, _)) = bootstrap_once(&ssh_program(), &args, true) else {
+            return;
+        };
+        let Ok(report) = parse_report(&String::from_utf8_lossy(&output.stdout)) else {
+            return;
+        };
+        let _ = super::enroll::probe(
+            &authority(&ssh_hostname(&args.destination), report.port),
+            &report.token,
+            Some(&report.cert_fingerprint),
+            &phux_client_runtime::target::AuthorityPin::default(),
+            args.identity,
+        );
+    });
 }
 
 /// Say why the direct path is unavailable, then attach through ssh: the
@@ -185,7 +225,7 @@ fn bootstrap(args: &SshAttach<'_>) -> Result<Report, Failure> {
     let program = ssh_program();
     let mut retry = 0;
     let (output, stderr) = loop {
-        let (output, stderr) = bootstrap_once(&program, args).map_err(|err| {
+        let (output, stderr) = bootstrap_once(&program, args, false).map_err(|err| {
             Failure::Fatal(format!(
                 "could not run {}: {err}",
                 program.to_string_lossy()
@@ -245,14 +285,23 @@ fn bootstrap(args: &SshAttach<'_>) -> Result<Report, Failure> {
 }
 
 /// One `phux bootstrap` run: its output, with stdout captured, and what
-/// ssh printed on stderr, which was copied through as it came.
+/// ssh printed on stderr, which was copied through as it came. `quiet`
+/// never prompts and copies nothing.
 fn bootstrap_once(
     program: &std::ffi::OsString,
     args: &SshAttach<'_>,
+    quiet: bool,
 ) -> std::io::Result<(std::process::Output, String)> {
     use std::io::{Read as _, Write as _};
-    let mut child = Command::new(program)
-        .args(phux_client_runtime::connection::ssh_control_options())
+    let mut command = Command::new(program);
+    if quiet {
+        command
+            .args(phux_client_runtime::connection::ssh_batch_control_options())
+            .args(["-o", "BatchMode=yes"]);
+    } else {
+        command.args(phux_client_runtime::connection::ssh_control_options());
+    }
+    let mut child = command
         .arg("-T")
         .arg("-o")
         .arg("ClearAllForwardings=yes")
@@ -268,7 +317,9 @@ fn bootstrap_once(
             let mut seen = Vec::new();
             let mut chunk = [0; 4096];
             while let Ok(count @ 1..) = pipe.read(&mut chunk) {
-                let _ = std::io::stderr().write_all(&chunk[..count]);
+                if !quiet {
+                    let _ = std::io::stderr().write_all(&chunk[..count]);
+                }
                 seen.extend_from_slice(&chunk[..count]);
             }
             String::from_utf8_lossy(&seen).into_owned()

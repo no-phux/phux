@@ -97,5 +97,11 @@ drops, phux logs in again (prompting once, if the host asks for a password
 or 2FA) and re-attaches. An SSH login failure, or a remote machine without
 phux, is an error, not a fallback.
 
+Telling filtered UDP from a slow host takes a 5 second wait. phux remembers
+a host whose UDP didn't answer for a day, so the next attach goes through
+`ssh` at once. It checks UDP again in the background meanwhile, and once
+UDP answers, attaches use QUIC again. The record is `udp-unanswered` in
+phux's state directory; delete it to forget every host.
+
 `--udp-ports 60000-61000` keeps the listener in a range one firewall rule
 can cover.
