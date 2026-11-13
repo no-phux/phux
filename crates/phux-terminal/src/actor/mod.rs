@@ -57,6 +57,7 @@ pub mod program_status;
 #[cfg(any(test, feature = "test-support"))]
 mod pty_fixture;
 pub mod requests;
+mod resume;
 mod run_loop;
 pub mod spawn;
 pub mod sync;
@@ -249,6 +250,8 @@ pub struct TerminalActor {
     program_status: program_status::ProgramStatus,
     /// Latest-state publication coalesces bursts without dropping a clear.
     program_status_sink: Option<watch::Sender<Vec<program_status::Record>>>,
+    /// The OSC 7501 `resume=` token, kept out of the records above.
+    resume: resume::Resume,
     /// Agent-state detector (ADR-0046), built in [`Self::run`] for PTY-backed
     /// actors with a sink and rules.
     agent_detect: Option<crate::agent_detect::AgentDetector>,

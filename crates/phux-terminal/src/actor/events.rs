@@ -68,6 +68,13 @@ impl TerminalActor {
         rx
     }
 
+    /// Subscribe to the OSC 7501 `resume=` token before starting this actor.
+    pub fn subscribe_resume(
+        &mut self,
+    ) -> tokio::sync::watch::Receiver<Option<phux_core::ResumeToken>> {
+        self.resume.subscribe()
+    }
+
     pub(super) fn publish_program_status(&self) {
         if let Some(sink) = &self.program_status_sink {
             sink.send_replace(self.program_status.snapshot());
@@ -234,6 +241,7 @@ impl TerminalActor {
     /// path.
     #[cfg(test)]
     pub(super) fn feed_for_test(&mut self, chunk: &[u8]) {
+        self.resume.observe(chunk);
         self.vt_write_for_test(chunk);
         self.source_events();
     }
@@ -303,8 +311,13 @@ impl TerminalActor {
                 effects::Effect::ProgramStatus(update) => {
                     changed |= self.program_status.apply(update.clone());
                 }
+                // ponytail: the write was scanned for `resume=` before its
+                // effects, so a token reported after a prompt in the same
+                // write is forgotten until the program reports again. Order
+                // the two when the engine reports the key itself.
                 effects::Effect::PromptStart => {
                     changed |= self.program_status.expire_active();
+                    self.resume.forget();
                 }
                 _ => {}
             }

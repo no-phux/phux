@@ -176,6 +176,7 @@ pub(super) fn build_server_config(
         window_size: defaults.window_size,
         keep_awake: defaults.keep_awake,
         voice,
+        restore: phux_config::RestoreCfg::default(),
         // Clamped up so the built-in agent-session record write always fits under
         // the generic metadata cap, whatever the config says.
         metadata_value_bytes: limits.metadata_value_bytes.max(
@@ -379,6 +380,7 @@ pub(crate) fn run_server(
         exit_after_idle,
     );
     cfg.policy_mode = config.policy.mode;
+    cfg.restore = config.restore.clone();
     cfg.plugin_startup = Some(Box::new(phux_server::plugin_startup::config_from(
         &config_loader::config_path(),
         &config.plugins,

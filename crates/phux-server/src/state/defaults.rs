@@ -57,6 +57,18 @@ impl ServerState {
         self.config.voice = voice;
     }
 
+    /// Set the `[restore]` settings. Called once at server startup to mirror
+    /// [`crate::runtime::ServerConfig::restore`].
+    pub fn set_restore(&mut self, restore: phux_config::RestoreCfg) {
+        self.config.restore = restore;
+    }
+
+    /// Read the `[restore]` settings set by [`Self::set_restore`].
+    #[must_use]
+    pub const fn restore(&self) -> &phux_config::RestoreCfg {
+        &self.config.restore
+    }
+
     /// Set the metadata value cap (ADR-0129).
     pub const fn set_metadata_value_bytes(&mut self, bytes: u32) {
         self.config.metadata_value_bytes = bytes;

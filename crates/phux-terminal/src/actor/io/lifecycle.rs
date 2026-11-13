@@ -49,6 +49,11 @@ impl TerminalActor {
         self.pty_rx = None;
         let exit = self.reap_child_if_any();
         self.record_exit(exit);
+        // The program quit on its own. A signal may be the server or the
+        // host going down, which is what the token is kept for.
+        if exit.status.is_some() {
+            self.resume.forget();
+        }
         if self.program_status.expire_active() {
             self.publish_program_status();
         }

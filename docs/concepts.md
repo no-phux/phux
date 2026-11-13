@@ -141,6 +141,20 @@ on-start = true
 The server then runs `phux restore` once it is listening. It starts
 programs again and resumes agents; it never types anything into them.
 
+Any other program can be resumed too, if it reports a token and you allow a
+command for it. The program names only the token; the command is yours:
+
+```toml
+[[restore.program]]
+app = "nvim"
+command = ["nvim", "-S", "${PHUX_RESUME_TOKEN}"]
+```
+
+A restored pane whose program reported a token as `app=nvim` then runs that
+command, without a shell, in place of what the pane first ran.
+[Resume](./program-protocol.md#resume) has the rules and what the command
+must not trust.
+
 To have the server start at login and come back by itself after a reboot:
 
 ```sh

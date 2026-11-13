@@ -31,7 +31,9 @@ Without `title` the name equals the kind, and `%name` can't address the pane.
 
 `clear` removes records; it is not a state phux displays. Other keys
 (`id`, `progress`, `msg`) are in the
-[protocol](./program-protocol.md#keys). A missing or unknown `state`
+[protocol](./program-protocol.md#keys). `resume` is a phux extension: a
+token that lets `phux restore` reopen what the program had open
+([Resume](./program-protocol.md#resume)). A missing or unknown `state`
 discards the report. Unknown keys are ignored.
 
 ## A shell function
