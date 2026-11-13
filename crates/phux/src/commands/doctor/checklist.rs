@@ -9,7 +9,7 @@ use std::path::Path;
 use phux_protocol::wire::{ListenerDisabledReason, RemoteListenersReport};
 
 use super::{Check, Status, cli_runtime};
-use crate::commands::service::Supervision;
+use crate::commands::service::supervision::Supervision;
 use crate::skill::setup::Integration;
 
 /// Version of the `checklist` document. Adding an item or a field is not a
@@ -127,7 +127,7 @@ pub(super) fn gather(socket_path: &Path, checks: &[Check]) -> Inputs {
         skill: find("skill"),
         reachable: find("remote-reachable"),
         server,
-        supervision: crate::commands::service::supervision(socket_path),
+        supervision: crate::commands::service::supervision::supervision(socket_path),
     }
 }
 
