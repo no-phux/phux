@@ -1,7 +1,7 @@
 # Ships Phux Rune releases with no human, the way phux-mobile's auto-release
 # ships TestFlight: every two hours, if feat/fix/perf commits touched
 # clients/rune since the last rune-v tag, open the next patch bump PR with
-# generated notes and auto-merge it. After a green push ci on main, tag a
+# generated notes and auto-merge it. After green ci and native proof on main, tag a
 # merged bump; rune-client.yml then builds, qualifies and publishes it.
 # Repository variable RUNE_AUTO_RELEASE=false stops it; docs/releasing.md's
 # hand steps still work. Logic: clients/rune/scripts/release.py.
@@ -15,7 +15,7 @@ on:
     # Every two hours, off the hour.
     - cron: "53 */2 * * *"
   workflow_run:
-    workflows: [ci]
+    workflows: [ci, rune-macos]
     types: [completed]
     branches: [main]
   workflow_dispatch:
@@ -33,6 +33,9 @@ jobs:
       vars.RUNE_AUTO_RELEASE != 'false'
       && (github.event_name != 'workflow_run'
           || (github.event.workflow_run.event == 'push'
+              && github.event.workflow_run.head_branch == 'main'
+              && github.event.workflow_run.head_repository.full_name == github.repository
+              && (github.event.workflow_run.name == 'ci' || github.event.workflow_run.name == 'rune-macos')
               && github.event.workflow_run.conclusion == 'success'))
     runs-on: ubuntu-24.04
     timeout-minutes: 10
@@ -52,7 +55,7 @@ jobs:
       - name: One step of the Rune train
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
-          # After ci, only tag; new bumps wait for the schedule.
+          # After ci or native completion, only tag; new bumps wait for the schedule.
           RUNE_RELEASE_TAG_ONLY: ${{ github.event_name == 'workflow_run' && '1' || '' }}
         run: |
           git config user.name "phux-release[bot]"

@@ -3,8 +3,8 @@ name: rune-macos
 # Rune's macOS legs, off the pull-request and main-push `ci` gate.
 #
 # A pull request reports a passing check named `rune-macos` and starts no
-# macOS runner, so the merge queue can require that name without holding the
-# pull request. The merge queue, a main push, a nightly run, and a dispatch
+# macOS runner. On the queue, ci.yml calls this workflow and requires its
+# result in the existing `ci` aggregate. A main push, a nightly run, and a dispatch
 # run macos-arm64 and the iOS simulator through rune-build.yml. A direct push
 # to main can land a red result: that blocks a release whose closure includes
 # Rune, and it does not block main.
@@ -15,19 +15,23 @@ on:
     types: [opened, synchronize, reopened, ready_for_review, closed]
   push:
     branches: [main]
-  merge_group:
-    types: [checks_requested]
+  # Only ci calls the queue leg, avoiding a duplicate standalone native run.
+  workflow_call:
   schedule:
     # After cache-warm's 06:17 UTC, so the two macOS passes do not start together.
     - cron: "47 11 * * *"
   workflow_dispatch:
 
 concurrency:
-  # Same key shape as ci.yml. Each main SHA keeps its own run. A pull request
-  # is latest-wins by number. A merge group, a dispatch, and the nightly use
-  # github.ref, so a dispatch does not join the pull request's group.
-  group: rune-macos-${{ github.event_name == 'push' && github.sha || github.event.pull_request.number || github.ref }}
-  cancel-in-progress: true
+  # Preserve every push SHA, including a pending native change followed by
+  # docs-only work. Neither actor identity nor a later push waives its proof.
+  # Prefix differs from the calling ci workflow, so it cannot cancel itself.
+  group: >-
+    rune-macos-${{ github.event_name == 'push' && github.sha
+    || github.event_name == 'pull_request' && format('{0}:refs/heads/{1}', github.event.pull_request.head.repo.full_name, github.head_ref)
+    || github.event_name == 'workflow_dispatch' && format('{0}:{1}', github.repository, github.ref)
+    || github.ref }}
+  cancel-in-progress: ${{ github.event_name != 'push' }}
 
 permissions:
   actions: read
@@ -53,10 +57,6 @@ jobs:
       - id: plan
         env:
           GH_TOKEN: ${{ github.token }}
-          # 'true' once the merge queue is on: a pull request that reaches
-          # Rune only through Cargo leaves the iOS decision to the queue.
-          # The pull request still does not launch a macOS runner.
-          PHUX_MERGE_QUEUE: ${{ vars.PHUX_MERGE_QUEUE }}
         run: bun tools/main.ts rune-macos-plan
 
   build:
@@ -82,7 +82,8 @@ jobs:
           RESULTS: ${{ toJSON(needs) }}
         run: |
           jq -r 'to_entries[] | "\(.value.result)\t\(.key)"' <<<"$RESULTS"
-          jq -e '.plan.result == "success" and ([.[].result] | all(. == "success" or . == "skipped"))' \
+          jq -e '.plan.result == "success" and ([.[].result] | all(. == "success" or . == "skipped"))
+            and (.plan.outputs.macos != "true" or .build.result == "success")' \
             <<<"$RESULTS" >/dev/null
       - name: write the validation receipt
         if: github.event_name == 'merge_group' && needs.plan.outputs.coverage != ''

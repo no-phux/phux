@@ -252,25 +252,31 @@ export function isReleaseBot(identity: string): boolean {
 
 /**
  * The commit whose rune-macos run proves this release, or undefined when
- * Rune is outside the closure. A release-bot commit uses its parent only
- * when that parent already has a green ci and itself builds Rune.
+ * Rune is outside the closure. Select the required evidence independently
+ * of its state: pending or failed parent ci must never erase the requirement.
  */
 export function runeMacosTarget(
   commit: RuneEvidence,
   parent: RuneEvidence | undefined,
-  parentCi: string,
 ): string | undefined {
   if (commit.rune) return commit.sha;
-  if (
-    commit.bot &&
-    parent !== undefined &&
-    commit.parent === parent.sha &&
-    parentCi === "success" &&
-    parent.rune
-  ) {
+  if (commit.bot && parent !== undefined && commit.parent === parent.sha && parent.rune) {
     return parent.sha;
   }
   return undefined;
+}
+
+/** Conjoin the inherited parent's ci and native proof; missing proof is not a waiver. */
+export function runeMacosProof(
+  commit: RuneEvidence,
+  parent: RuneEvidence | undefined,
+  parentCi: string,
+  native: string,
+): { evidence: string; state: string } | undefined {
+  const target = runeMacosTarget(commit, parent);
+  if (target === undefined) return undefined;
+  const state = target === commit.sha || parentCi === "success" ? native : parentCi;
+  return { evidence: target, state };
 }
 
 function evidence(sha: string): RuneEvidence {
@@ -294,9 +300,14 @@ function runeMacosOn(
   if (commit.rune) return { evidence: sha, state: runeMacosConclusion(repository, sha) };
   if (!commit.bot || commit.parent === undefined) return undefined;
   const parent = evidence(commit.parent);
-  const target = runeMacosTarget(commit, parent, ciConclusion(repository, commit.parent));
+  const target = runeMacosTarget(commit, parent);
   if (target === undefined) return undefined;
-  return { evidence: target, state: runeMacosConclusion(repository, target) };
+  return runeMacosProof(
+    commit,
+    parent,
+    ciConclusion(repository, commit.parent),
+    runeMacosConclusion(repository, target),
+  );
 }
 
 /**

@@ -108,13 +108,7 @@ export const commands: Record<string, Command> = {
       // Pull requests never launch macOS. Every other event plans as a push:
       // a dispatch or a nightly run qualifies the whole tree.
       const pullRequest = event === "pull_request";
-      const queued = pullRequest && process.env["PHUX_MERGE_QUEUE"] === "true";
-      const planned = runeMacosPlan(
-        c,
-        pullRequest ? "pull_request" : "push",
-        queued,
-        pullRequest ? "pull_request" : "push",
-      );
+      const planned = runeMacosPlan(c, pullRequest ? "pull_request" : "push");
       const tree = git(["rev-parse", "HEAD^{tree}"]).trim();
       const receipt: Receipt = {
         schema: 2,

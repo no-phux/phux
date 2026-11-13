@@ -189,10 +189,9 @@ test("ci runs Rune's Linux hosts, and rune-macos owns the Apple legs", () => {
   expect(withInput(build, "ios")).toBe("${{ needs.plan.outputs.ios == 'true' }}");
   expect(str(build["if"])).toContain("github.event_name != 'pull_request'");
   expect(str(job(mac, "rune-macos")["name"])).toBe("rune-macos");
-  const planStep = steps(job(mac, "plan")).find((step) => run(step).includes("rune-macos-plan"));
-  expect(table(planStep?.["env"])["PHUX_MERGE_QUEUE"]).toBe("${{ vars.PHUX_MERGE_QUEUE }}");
-  const trigger = table(table(mac["on"])["merge_group"]);
-  expect(trigger["types"]).toEqual(["checks_requested"]);
+  expect(steps(job(mac, "plan")).map(run).join("\n")).toContain("rune-macos-plan");
+  expect(uses(job(CI, "rune-macos"))).toBe("./.github/workflows/rune-macos.yml");
+  expect(table(mac["on"])["workflow_call"]).toBeDefined();
   const reusable = workflow("rune-build.yml");
   const input = table(table(table(table(reusable["on"])["workflow_call"])["inputs"])["ios"]);
   // rune-client.yml calls it for a tag without inputs: the release keeps iOS.
@@ -200,22 +199,20 @@ test("ci runs Rune's Linux hosts, and rune-macos owns the Apple legs", () => {
   expect(str(job(reusable, "ios-native")["if"])).toBe(
     "inputs.ios && (inputs.hosts == 'all' || inputs.hosts == 'macos')",
   );
-  // Each main SHA keeps its own run, the same way ci.yml does.
-  expect(table(mac["concurrency"])["cancel-in-progress"]).toBe(true);
-  expect(table(CI["concurrency"])["cancel-in-progress"]).toBe(true);
-  expect(str(table(mac["concurrency"])["group"])).toBe(
-    "rune-macos-${{ github.event_name == 'push' && github.sha || github.event.pull_request.number || github.ref }}",
+  expect(table(mac["concurrency"])["cancel-in-progress"]).toBe(
+    table(CI["concurrency"])["cancel-in-progress"],
   );
-  expect(str(table(CI["concurrency"])["group"])).toBe(
-    "ci-${{ github.event_name == 'push' && github.sha || github.event.pull_request.number || github.ref }}",
-  );
+  const group = str(table(mac["concurrency"])["group"]) ?? "";
+  expect(group).toContain("github.event_name == 'push' && github.sha");
+  expect(group.endsWith(" || github.ref }}")).toBe(true);
+  expect(group).not.toContain("merge_group");
 });
 
 test("post-merge workflows follow ci on main pushes only", () => {
   // A merge group's run is on gh-readonly-queue/main/*, never `main`.
   for (const name of ["release.yml", "next.yml", "rune-auto-release.yml"]) {
     const trigger = table(table(workflow(name)["on"])["workflow_run"]);
-    expect(trigger["workflows"]).toEqual(["ci"]);
+    expect(trigger["workflows"]).toEqual(name === "next.yml" ? ["ci"] : ["ci", "rune-macos"]);
     expect(trigger["branches"]).toEqual(["main"]);
     expect(workflowText(name)).toContain("github.event.workflow_run.event == 'push'");
   }

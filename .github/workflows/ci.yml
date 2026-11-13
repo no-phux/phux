@@ -25,12 +25,14 @@ on:
   workflow_dispatch:
 
 concurrency:
-  # PRs are latest-wins, keyed by number: a merged PR's `closed` event carries
-  # the base ref, not the PR's. Every main SHA keeps its own run: release.yml
-  # publishes a draft only on a green ci for that exact commit. A merge group
-  # has no PR payload; its queue ref names one entry.
-  group: ci-${{ github.event_name == 'push' && github.sha || github.event.pull_request.number || github.ref }}
-  cancel-in-progress: true
+  # Match the safe per-SHA admission and repository/full-ref keys in #2462.
+  # Per-push routing cannot replace A with docs-only B without losing A's work.
+  group: >-
+    ci-${{ github.event_name == 'push' && github.sha
+    || github.event_name == 'pull_request' && format('{0}:refs/heads/{1}', github.event.pull_request.head.repo.full_name, github.head_ref)
+    || github.event_name == 'workflow_dispatch' && format('{0}:{1}', github.repository, github.ref)
+    || github.ref }}
+  cancel-in-progress: ${{ github.event_name != 'push' }}
 
 permissions:
   actions: read
@@ -394,10 +396,16 @@ jobs:
       hosts: linux
       ios: false
 
+  # Keep Apple qualification inside the already-required queue check. Older
+  # queue entries still use their original ci; no ruleset cutover is needed.
+  rune-macos:
+    if: github.event_name == 'merge_group'
+    uses: ./.github/workflows/rune-macos.yml
+
   # The required check. The ruleset matches this display name.
   ci:
     name: ci
-    needs: [plan, guards, lint, test-build, tests, e2e, ffi, icount, integrations, web, native, rune]
+    needs: [plan, guards, lint, test-build, tests, e2e, ffi, icount, integrations, web, native, rune, rune-macos]
     # Same draft exception as plan: release-please heads always reach this gate.
     if: always() && github.event.action != 'closed' && (startsWith(github.head_ref, 'release-please--') || github.event.pull_request.draft != true)
     runs-on: ubuntu-24.04
@@ -406,9 +414,11 @@ jobs:
       - name: plan succeeded; every lane passed or was not needed
         env:
           RESULTS: ${{ toJSON(needs) }}
+          REQUIRE_APPLE: ${{ github.event_name == 'merge_group' }}
         run: |
           jq -r 'to_entries[] | "\(.value.result)\t\(.key)"' <<<"$RESULTS"
-          jq -e '.plan.result == "success" and ([.[].result] | all(. == "success" or . == "skipped"))' \
+          jq -e '.plan.result == "success" and ([.[].result] | all(. == "success" or . == "skipped"))
+            and (env.REQUIRE_APPLE != "true" or .["rune-macos"].result == "success")' \
             <<<"$RESULTS" >/dev/null
       - name: write the validation receipt
         if: github.event_name == 'pull_request' || github.event_name == 'merge_group'
