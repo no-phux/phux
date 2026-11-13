@@ -30,6 +30,7 @@ pub(crate) fn run_attach_stdio(
     let dial = Dial::Ssh {
         destination: destination.to_owned(),
         remote_phux: remote_phux.to_owned(),
+        askpass: None,
     };
     let default_name = resolved_default_session_name();
     let default = session

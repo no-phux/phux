@@ -191,6 +191,7 @@ impl Target {
             } => Ok(Dial::Ssh {
                 destination: destination.clone(),
                 remote_phux: remote_phux.clone(),
+                askpass: self.ssh_askpass.clone(),
             }),
             Transport::Ws(url) => {
                 let resolved = self.remote(url.clone(), Lane::Ws(url.clone()));

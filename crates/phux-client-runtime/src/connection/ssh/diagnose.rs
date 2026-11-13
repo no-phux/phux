@@ -37,11 +37,13 @@ fn hint(stderr: &str, destination: &str, batch_mode: impl FnOnce() -> bool) -> O
              the host's sshd_config"
         ));
     }
-    if stderr.contains("Session open refused by peer") {
+    if session_refused(stderr) {
         return Some(format!(
             "{destination}'s sshd refused another session on phux's shared ssh connection, \
-             which is what its MaxSessions limit (10 by default) does; close some, or raise \
-             MaxSessions in the host's sshd_config"
+             which is what its MaxSessions limit (10 by default) does, so ssh logged in again \
+             for this one and that login failed (a password or code needs a terminal or \
+             Rune's sign-in dialog); close some sessions, or raise MaxSessions in the host's \
+             sshd_config"
         ));
     }
     (stderr.contains("Permission denied") && batch_mode()).then(|| {
@@ -50,6 +52,18 @@ fn hint(stderr: &str, destination: &str, batch_mode: impl FnOnce() -> bool) -> O
              code or key tap, and phux cannot either; use a key that works without a prompt, \
              or remove BatchMode from that Host block"
         )
+    })
+}
+
+/// Whether ssh's stderr says the host refused a session on phux's shared
+/// master: sshd's `MaxSessions` (10 by default) is reached. ssh then logs
+/// that one run in on its own connection, so this only shows up as a
+/// failure when that login fails too.
+fn session_refused(stderr: &str) -> bool {
+    stderr.lines().any(|line| {
+        line.contains("mux_client_request_session: session request failed")
+            || line.contains("Session open refused by peer")
+            || (line.contains("administratively prohibited") && !line.contains("forward"))
     })
 }
 
@@ -166,6 +180,32 @@ mod tests {
         assert_eq!(said, refused);
     }
 
+    /// What ssh prints when phux's master is at sshd's `MaxSessions`, in
+    /// the words different ssh versions use; a refused port forward is not.
+    #[test]
+    fn a_session_the_full_master_refused_is_recognised() {
+        for full in [
+            "mux_client_request_session: session request failed: Session open refused by peer\n\
+             ControlSocket /tmp/phux-ssh-501/abc already exists, disabling multiplexing\n\
+             me@box: Permission denied (password).",
+            "mux_client_request_session: session request failed: Session open refused by peer",
+            "session request failed: Session open refused by peer",
+            "channel 3: open failed: administratively prohibited: open failed",
+        ] {
+            assert!(session_refused(full), "{full}");
+            let said = hint(full, "box", || false).expect("named");
+            assert!(said.contains("MaxSessions"), "{said}");
+        }
+        for other in [
+            "channel 2: open failed: administratively prohibited: port forwarding is disabled",
+            "me@box: Permission denied (publickey).",
+            "ssh: connect to host box port 22: Connection refused",
+            "",
+        ] {
+            assert!(!session_refused(other), "{other}");
+        }
+    }
+
     /// `BatchMode yes` in the user's config is why a password host refuses
     /// phux's prompt, so a refused login names it; nothing else does.
     #[test]
@@ -218,7 +258,7 @@ mod tests {
             }
         });
         let destination = format!("ssh://127.0.0.1:{port}");
-        let mut lane = super::super::establish(&destination, "phux")
+        let mut lane = super::super::establish(&destination, "phux", None)
             .await
             .expect("ssh starts");
         let said = lane

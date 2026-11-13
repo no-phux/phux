@@ -47,6 +47,9 @@ pub enum Dial {
         destination: String,
         /// The `phux` to run on the host.
         remote_phux: String,
+        /// [`Target::ssh_askpass`](crate::connection::Target::ssh_askpass):
+        /// how a login this lane makes itself asks.
+        askpass: Option<PathBuf>,
     },
     /// Dial a QUIC listener; the plan owns its bearer token.
     Quic(QuicDial),
