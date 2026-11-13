@@ -226,6 +226,45 @@ fn a_policy_refused_listener_names_the_mode() {
     );
 }
 
+/// A listener still retrying its bind warns with the bind error and says
+/// no restart is needed; one that gave up beside it still fails.
+#[test]
+fn a_listener_waiting_to_bind_warns_with_the_reason() {
+    use phux_protocol::wire::{
+        ListenerDisabledReason, RemoteListenerSlot, RemoteListenerTransport, RemoteListenersReport,
+    };
+
+    let waiting = RemoteListenerSlot::waiting(
+        RemoteListenerTransport::Quic,
+        "100.94.129.125:8788",
+        "Cannot assign requested address (os error 99)",
+    );
+    let report = RemoteListenersReport::new().with_listeners(vec![waiting.clone()]);
+    let check = remote_listeners_check(Some(&report), true);
+    assert_eq!(check.status, Status::Warn);
+    assert!(
+        check.detail.contains(
+            "quic at 100.94.129.125:8788 waiting to bind (Cannot assign requested address"
+        ),
+        "{}",
+        check.detail
+    );
+    assert!(check.hint.expect("hint").contains("no restart"));
+
+    let mixed = RemoteListenersReport::new().with_listeners(vec![
+        waiting,
+        RemoteListenerSlot::disabled(
+            RemoteListenerTransport::Wss,
+            Some("100.94.129.125:8787".into()),
+            ListenerDisabledReason::TlsSetupFailed,
+        ),
+    ]);
+    assert_eq!(
+        remote_listeners_check(Some(&mixed), true).status,
+        Status::Fail
+    );
+}
+
 /// A dead socket may still be called stale. A live incompatible server fails
 /// with the stop-and-start recovery and is not told to remove the socket.
 #[test]

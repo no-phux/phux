@@ -402,14 +402,11 @@ fn live_listeners(
             report
                 .unhealthy()
                 .map(|slot| {
-                    let reason = slot.disabled_reason.map_or(
-                        "unknown",
-                        phux_protocol::wire::ListenerDisabledReason::as_str,
-                    );
                     format!(
-                        "{} at {} disabled ({reason})",
+                        "{} at {} {}",
                         slot.transport,
-                        slot.addr.as_deref().unwrap_or("?")
+                        slot.addr.as_deref().unwrap_or("?"),
+                        slot.unbound_label()
                     )
                 })
                 .collect::<Vec<_>>()

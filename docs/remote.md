@@ -93,6 +93,11 @@ The desktop app does this from **Add a machine** under the sidebar's machine
 switcher: it takes `me@host` or a machine from your tailnet and runs
 `phux host add --install` over your existing ssh access.
 
+A server that listens on its tailnet address and starts before Tailscale has
+that address, as at boot, keeps retrying the bind and starts listening as soon
+as the address appears, with no restart; `phux doctor` shows the listener as
+waiting to bind meanwhile.
+
 ## Using a machine
 
 ```sh

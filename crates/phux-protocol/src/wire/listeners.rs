@@ -100,6 +100,12 @@ pub struct RemoteListenerSlot {
     /// Why `expected && !bound`, when the server knows.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub disabled_reason: Option<ListenerDisabledReason>,
+    /// Set while the server retries a bind that failed for a reason that
+    /// can clear by itself (the address is not assigned yet, the port is
+    /// briefly held): the last bind error. The listener goes live without
+    /// a restart once it binds.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub waiting: Option<String>,
 }
 
 impl RemoteListenerSlot {
@@ -112,6 +118,7 @@ impl RemoteListenerSlot {
             bound: true,
             addr: Some(addr.into()),
             disabled_reason: None,
+            waiting: None,
         }
     }
 
@@ -128,6 +135,38 @@ impl RemoteListenerSlot {
             bound: false,
             addr,
             disabled_reason: Some(reason),
+            waiting: None,
+        }
+    }
+
+    /// A transport whose bind failed transiently and is being retried.
+    /// Older readers see it as `bind_failed`.
+    #[must_use]
+    pub fn waiting(
+        transport: RemoteListenerTransport,
+        addr: impl Into<String>,
+        error: impl Into<String>,
+    ) -> Self {
+        Self {
+            waiting: Some(error.into()),
+            ..Self::disabled(
+                transport,
+                Some(addr.into()),
+                ListenerDisabledReason::BindFailed,
+            )
+        }
+    }
+
+    /// Why this row is not listening, for humans: `waiting to bind (<error>)`
+    /// or `disabled (<reason>)`.
+    #[must_use]
+    pub fn unbound_label(&self) -> String {
+        match (&self.waiting, self.disabled_reason) {
+            (Some(error), _) => format!("waiting to bind ({error})"),
+            (None, reason) => format!(
+                "disabled ({})",
+                reason.map_or("unknown", ListenerDisabledReason::as_str)
+            ),
         }
     }
 
@@ -216,6 +255,28 @@ mod tests {
             back.listeners[0].disabled_reason,
             Some(ListenerDisabledReason::TokenStoreLoadFailed)
         );
+    }
+
+    #[test]
+    fn waiting_slot_round_trips_and_reads_as_bind_failed_without_the_field() {
+        let slot = RemoteListenerSlot::waiting(
+            RemoteListenerTransport::Quic,
+            "100.64.0.2:8788",
+            "Cannot assign requested address (os error 99)",
+        );
+        let report = RemoteListenersReport::new().with_listeners(vec![slot.clone()]);
+        let back = RemoteListenersReport::from_json(&report.to_json()).expect("parse");
+        assert_eq!(back.listeners[0], slot);
+        assert!(slot.is_unhealthy());
+        assert_eq!(
+            slot.unbound_label(),
+            "waiting to bind (Cannot assign requested address (os error 99))"
+        );
+        let old = RemoteListenersReport::from_json(
+            r#"{"schema_version":1,"listeners":[{"transport":"quic","expected":true,"bound":false,"disabled_reason":"bind_failed"}]}"#,
+        )
+        .expect("parse");
+        assert_eq!(old.listeners[0].unbound_label(), "disabled (bind_failed)");
     }
 
     #[test]
