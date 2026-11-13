@@ -51,6 +51,8 @@ pub(in crate::attach) struct ActionEffects {
     pub(in crate::attach) move_pane: Option<PaneMoveIntent>,
     /// A session management request, prepared or confirmed on a control connection.
     pub(in crate::attach) session_management: Option<phux_config::keybind::ResolvedAction>,
+    /// A `lock-window` / `unlock-window`: the tab's group id and the lock.
+    pub(in crate::attach) tab_lock: Option<([u8; 16], bool)>,
     /// Background work to start off the input loop (ADR-0172): a plugin
     /// action or an organize run. Its result returns as a toast.
     pub(in crate::attach) job: Option<Job>,

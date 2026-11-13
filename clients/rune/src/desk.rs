@@ -63,7 +63,7 @@ mod worktree;
 
 pub use layout::SplitPath;
 pub use notice::{Notice, NoticeKind};
-pub use palette::{CONTEXT_MENU, with_menus};
+pub use palette::{CONTEXT_MENU, TAB_MENU, with_menus};
 pub use reorder::Grab;
 pub use settings::Category as SettingsCategory;
 pub use tabs::{Renaming, Tab};

@@ -201,6 +201,14 @@ pub(super) fn org_command() -> impl Strategy<Value = Command> {
                 document,
             }
         ),
+        (op(), arrangement_key(), any::<[u8; 16]>(), any::<bool>()).prop_map(
+            |(operation, arrangement, group, locked)| Command::ArrangementLock {
+                operation,
+                arrangement,
+                group,
+                locked,
+            }
+        ),
     ]
 }
 

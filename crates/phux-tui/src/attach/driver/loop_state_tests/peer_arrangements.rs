@@ -16,7 +16,7 @@ async fn peer_sweep_reads_arrangement_records_over_the_link() {
     fixture.arrangement(
         peer,
         WireDoc {
-            groups: vec![ArrangementGroup {
+            groups: vec![ArrangementGroup { locked: false,
                 id: [7; 16],
                 name: Some("build".to_owned()),
                 tree: ArrangementNode::Leaf(EntryRef {

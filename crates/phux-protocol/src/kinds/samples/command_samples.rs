@@ -61,10 +61,11 @@ const fn command_variant(command: &Command) -> usize {
         Command::Mirror { .. } => 56,
         Command::MirrorProvide { .. } => 57,
         Command::PrivacyStatus => 58,
+        Command::ArrangementLock { .. } => 59,
     }
 }
 
-const COMMAND_VARIANTS: usize = 59;
+const COMMAND_VARIANTS: usize = 60;
 
 fn operation() -> IdempotencyKey {
     IdempotencyKey::new([3; 16]).unwrap()
@@ -244,6 +245,15 @@ fn org_command_samples() -> Vec<(Command, &'static Rule)> {
                 arrangement,
                 expected: rev,
                 document: ArrangementDoc::default(),
+            },
+            &C_ARRANGEMENT_REPLACE,
+        ),
+        (
+            Command::ArrangementLock {
+                operation: operation(),
+                arrangement,
+                group: [9; 16],
+                locked: true,
             },
             &C_ARRANGEMENT_REPLACE,
         ),

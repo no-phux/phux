@@ -49,6 +49,7 @@ impl OrgFixture {
                         .with_resource(Some(resource))
                         .with_target(phux_client_core::org_ops::live_target(record));
                     groups.push(phux_protocol::wire::frame::ArrangementGroup {
+                        locked: false,
                         id: self.fresh(),
                         name: None,
                         tree: phux_protocol::wire::frame::ArrangementNode::Leaf(

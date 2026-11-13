@@ -348,6 +348,7 @@ impl World {
                 let groups = tree
                     .map(|tree| {
                         vec![Group {
+                            locked: false,
                             id: [self.entries; 16],
                             name: None,
                             tree,

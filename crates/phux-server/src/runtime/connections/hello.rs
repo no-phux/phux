@@ -231,6 +231,7 @@ const fn runtime_server_features_ext() -> ServerFeatureExtSet {
         ServerFeatureExt::NativeAgentLaunch,
         ServerFeatureExt::PerfControl,
         ServerFeatureExt::SessionProject,
+        ServerFeatureExt::TabLock,
         ServerFeatureExt::FileDownload,
         ServerFeatureExt::Checkout,
         ServerFeatureExt::HostServiceHttp,

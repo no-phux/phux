@@ -58,6 +58,7 @@ pub(super) fn place_created_resource(
     let entry = EntryRef::member(tx.fresh_key(fresh)?, resource);
     match placement {
         CreatePlacement::NewGroup => groups.push(Group {
+            locked: false,
             id: tx.fresh_key(fresh)?,
             name: None,
             tree: LayoutNode::Leaf(entry.clone()),

@@ -106,6 +106,7 @@ pub(super) async fn apply_action_effects<W: crate::attach::RenderSink>(
     ))
     .await;
     super::session_management::apply(effects.session_management, ctx).await;
+    super::tab_lock::apply(effects.tab_lock, ctx).await;
     start_job(effects.job, ctx);
     // Hand a `reload-config` up to the driver, which owns the
     // config-derived state (resolver, theme, keybindings snapshot, status

@@ -108,6 +108,7 @@ every_shortcut!(
     InsertPath,
     RenameSession,
     RenameTab,
+    LockTab,
     CloseSession,
     CheckForUpdates,
     InstallUpdate,

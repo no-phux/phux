@@ -425,7 +425,7 @@ static C_ARRANGEMENT_GET: Rule = Rule::verbs(
     Subject::ArrangementOwner,
 );
 static C_ARRANGEMENT_REPLACE: Rule = Rule::verbs(
-    "`ARRANGEMENT_REPLACE`",
+    "`ARRANGEMENT_REPLACE`, `ARRANGEMENT_LOCK`",
     &[Verb::Organize],
     Subject::ArrangementOwner,
 );

@@ -21,7 +21,12 @@ pub struct Tab {
     pub name: String,
     pub resources: Vec<ResourceId>,
     pub active: bool,
+    /// Locked against close (`ARRANGEMENT_LOCK`) until unlocked.
+    pub locked: bool,
 }
+
+/// Why a close of a locked tab did nothing.
+const LOCKED: &str = "This tab is locked. Unlock it to close it.";
 
 /// What the rename sheet is renaming.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -76,6 +81,7 @@ pub fn list(doc: &ArrangementDoc, listed: &[ResourceId]) -> Vec<Tab> {
                 name: group.name.clone(),
                 resources,
                 active: at == doc.active,
+                locked: group.locked,
             })
         })
         .collect()
@@ -212,6 +218,9 @@ impl Desk {
         let Some(tab) = self.tabs.list.get(index) else {
             return;
         };
+        if tab.locked {
+            return self.say(NoticeKind::Info, LOCKED);
+        }
         let terminals = tab.resources.clone();
         let (documents, terminals): (Vec<_>, Vec<_>) =
             terminals.into_iter().partition(|id| self.is_document(id));
@@ -262,6 +271,10 @@ impl Desk {
         if self.is_document(&terminal) {
             return self.hide_documents(&[terminal]);
         }
+        let last_of_locked = |tab: &Tab| tab.locked && tab.resources == [terminal.clone()];
+        if self.tabs.list.iter().any(last_of_locked) {
+            return self.say(NoticeKind::Info, LOCKED);
+        }
         if self.asks_to_close(&terminal) {
             self.pending = Some(Pending::Close(terminal));
         } else {
@@ -289,6 +302,29 @@ impl Desk {
         }
         if let Some(client) = &self.client {
             let _ = client.close_terminals(vec![terminal.clone()]);
+        }
+    }
+
+    /// Lock the active tab, or unlock it if it is locked.
+    pub fn toggle_tab_lock(&mut self) {
+        let Some(tab) = self.tabs.list.iter().find(|t| t.active) else {
+            return;
+        };
+        let (group, locked) = (tab.id, !tab.locked);
+        let session = self.client.as_ref().and_then(|client| {
+            let id = client.selected_session()?;
+            self.topology
+                .as_ref()?
+                .sessions
+                .iter()
+                .find(|s| s.id == id)?
+                .key
+        });
+        let (Some(client), Some(session)) = (&self.client, session) else {
+            return;
+        };
+        if let Err(error) = client.lock_group(session, group, locked) {
+            self.say(NoticeKind::Error, format!("Tab unchanged: {error}"));
         }
     }
 

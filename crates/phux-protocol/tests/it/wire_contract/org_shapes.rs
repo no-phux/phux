@@ -165,8 +165,18 @@ fn node() -> impl Strategy<Value = ArrangementNode> {
 }
 fn document() -> impl Strategy<Value = ArrangementDoc> {
     proptest::collection::vec(
-        (any::<[u8; 16]>(), proptest::option::of(name()), node())
-            .prop_map(|(id, name, tree)| ArrangementGroup { id, name, tree }),
+        (
+            any::<[u8; 16]>(),
+            proptest::option::of(name()),
+            node(),
+            any::<bool>(),
+        )
+            .prop_map(|(id, name, tree, locked)| ArrangementGroup {
+                id,
+                name,
+                tree,
+                locked,
+            }),
         0..3,
     )
     .prop_map(|groups| ArrangementDoc { groups })

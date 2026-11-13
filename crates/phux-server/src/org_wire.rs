@@ -424,6 +424,7 @@ pub fn document(groups: &[phux_core::Group]) -> frame::ArrangementDoc {
                     id: g.id,
                     name: g.name.clone(),
                     tree: node(&g.tree)?,
+                    locked: g.locked,
                 })
             })
             .collect(),
@@ -440,6 +441,7 @@ pub fn core_groups(doc: &frame::ArrangementDoc) -> Option<Vec<phux_core::Group>>
                 id: g.id,
                 name: g.name.clone(),
                 tree: core_node(&g.tree)?,
+                locked: g.locked,
             })
         })
         .collect()

@@ -5,7 +5,7 @@ use rune::{
 };
 
 use super::{CAPTION, Ink, LABEL, icons, pressable};
-use crate::desk::{CONTEXT_MENU, Desk};
+use crate::desk::{CONTEXT_MENU, Desk, TAB_MENU};
 use crate::keys::{self, Shortcut};
 use crate::palette::{Hit, Mode, Target};
 
@@ -180,7 +180,12 @@ fn fit(at: f32, size: f32, window: f32) -> f32 {
 
 /// The right-click menu over a pane, kept inside the window.
 pub fn context_menu(desk: &Desk, at: PointerPress, ink: &Ink) -> El {
-    let height = MENU_ROW * CONTEXT_MENU.len() as f32 + 2.0 * MENU_PAD;
+    let actions: &[Shortcut] = if desk.pointer.tab_menu {
+        &TAB_MENU
+    } else {
+        &CONTEXT_MENU
+    };
+    let height = MENU_ROW * actions.len() as f32 + 2.0 * MENU_PAD;
     let [window_w, window_h] = desk.pointer.window;
     let mut rows = col()
         .key("context-menu")
@@ -192,8 +197,9 @@ pub fn context_menu(desk: &Desk, at: PointerPress, ink: &Ink) -> El {
         .fill(ink.raised)
         .border(1.0, ink.separator)
         .shadow(8.0, 24.0, Color::BLACK.alpha(0.4));
-    for action in CONTEXT_MENU {
-        rows = rows.children(context_row(action, ink));
+    let locked = desk.tabs.list.iter().any(|tab| tab.active && tab.locked);
+    for &action in actions {
+        rows = rows.children(context_row(action, locked, ink));
     }
     el().key("context-scrim")
         .absolute(0.0, 0.0)
@@ -204,8 +210,14 @@ pub fn context_menu(desk: &Desk, at: PointerPress, ink: &Ink) -> El {
         .child(rows)
 }
 
-fn context_row(action: Shortcut, ink: &Ink) -> Option<El> {
+fn context_row(action: Shortcut, locked: bool, ink: &Ink) -> Option<El> {
     let command = keys::command(action)?;
+    // The lock row says which way it goes for the tab under it.
+    let title = match action {
+        Shortcut::LockTab if locked => "Unlock Tab",
+        Shortcut::LockTab => "Lock Tab",
+        _ => command.title,
+    };
     Some(
         pressable(format!("context-{action:?}"), ink)
             .w_full()
@@ -214,7 +226,7 @@ fn context_row(action: Shortcut, ink: &Ink) -> Option<El> {
             .radius(5.0)
             .items_center()
             .on_press_tx(move |d: &mut Desk, tx| d.context_pick(action, tx))
-            .child(text(command.title).font(LABEL).color(ink.text))
+            .child(text(title).font(LABEL).color(ink.text))
             .child(el().grow(1.0))
             .child(text(command.hint()).font(CAPTION).color(ink.dim)),
     )

@@ -218,7 +218,7 @@ fn deferred_edit_fixture(
         fixture.arrangement(
             session,
             WireDoc {
-                groups: vec![ArrangementGroup {
+                groups: vec![ArrangementGroup { locked: false,
                     id: [7; 16],
                     name: Some("stored".to_owned()),
                     tree: ArrangementNode::Leaf(EntryRef {

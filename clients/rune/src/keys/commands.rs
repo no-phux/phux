@@ -325,6 +325,7 @@ pub const COMMANDS: &[Command] = &[
     row!(Shortcut::CopyDiagnostics, "Copy Diagnostics", [], []),
     row!(Shortcut::RenameSession, "Rename Session", [], []),
     row!(Shortcut::RenameTab, "Rename Tab", [], []),
+    row!(Shortcut::LockTab, "Lock or Unlock Tab", [], []),
     row!(Shortcut::CloseSession, "Close Session", [], []),
     row!(Shortcut::SplitRight, "Split Right", [m('d')], [l('d')]),
     row!(

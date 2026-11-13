@@ -26,6 +26,7 @@ pub(in crate::wire) fn decode_org_command(
         crate::wire::frame::COMMAND_TAG_REVOKE_DELEGATION,
         crate::wire::frame::COMMAND_TAG_SESSION_KILL,
         crate::wire::frame::COMMAND_TAG_SESSION_SET_PROJECT,
+        crate::wire::frame::COMMAND_TAG_ARRANGEMENT_LOCK,
     ];
     if !(COMMAND_TAG_GET_ORGANIZATION..=COMMAND_TAG_ARRANGEMENT_REPLACE).contains(&tag)
         && !after_reserved.contains(&tag)
@@ -125,6 +126,12 @@ pub(in crate::wire) fn decode_org_command(
             arrangement: req(f.arrangement)?,
             expected: f.expected()?,
             document: req(f.document)?,
+        },
+        crate::wire::frame::COMMAND_TAG_ARRANGEMENT_LOCK => Command::ArrangementLock {
+            operation: f.operation()?,
+            arrangement: req(f.arrangement)?,
+            group: req(f.group)?,
+            locked: req(f.locked)?,
         },
         crate::wire::frame::COMMAND_TAG_DELEGATE_AGENT => Command::DelegateAgent {
             operation: f.operation()?,

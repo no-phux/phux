@@ -25,6 +25,7 @@ fn arranged() -> (OrgFixture, SessionKey, ResourceKey, ResourceKey) {
         work,
         WireDoc {
             groups: vec![ArrangementGroup {
+                locked: false,
                 id: [7; 16],
                 name: Some("main".to_owned()),
                 tree: member(a, 1),

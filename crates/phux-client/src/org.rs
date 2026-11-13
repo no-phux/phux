@@ -35,10 +35,10 @@ mod verbs;
 
 pub use inventory::{KeyMatch, KeyNames, OrgInventory, arrangement, fetch, fetch_from_socket};
 pub use verbs::{
-    BatchResult, create_resource, delete_session, inbox_resolve, intake_resolve, move_many,
-    move_resource, relaunch, remove_resource, rename_resource, replace_arrangement_of_member,
-    replace_session_arrangement, restore, restore_session_on, session_project_supported,
-    set_session_project, terminate, undo,
+    BatchResult, create_resource, delete_session, inbox_resolve, intake_resolve, lock_group,
+    move_many, move_resource, relaunch, remove_resource, rename_resource,
+    replace_arrangement_of_member, replace_session_arrangement, restore, restore_session_on,
+    session_project_supported, set_session_project, tab_lock_supported, terminate, undo,
 };
 
 /// Most attempts a compare-and-swap edit makes before reporting the

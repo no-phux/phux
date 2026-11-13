@@ -268,6 +268,16 @@ pub enum Op {
         /// The new document.
         groups: Vec<Group>,
     },
+    /// Lock or unlock one group of an owner's arrangement. Last writer
+    /// wins.
+    ArrangementLock {
+        /// Whose arrangement.
+        owner: ArrangementOwner,
+        /// The group's id.
+        group: [u8; 16],
+        /// Lock or unlock.
+        locked: bool,
+    },
     /// Executor report: the activation holds a live handle. System only.
     ActivationStarted {
         /// Target.

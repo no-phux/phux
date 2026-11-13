@@ -191,6 +191,15 @@ pub(super) fn command_fixtures() -> Vec<(&'static str, FrameKind)> {
             }),
         ),
         (
+            "snap_org_arrangement_lock",
+            command(Command::ArrangementLock {
+                operation: op(),
+                arrangement: arrangement(),
+                group: [7; 16],
+                locked: true,
+            }),
+        ),
+        (
             "snap_org_delegate_agent",
             command(Command::DelegateAgent {
                 operation: op(),

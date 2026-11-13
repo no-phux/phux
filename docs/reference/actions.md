@@ -36,6 +36,8 @@ The **Palette** column is the command-palette section the action is offered unde
 | `select-window` | — | `index` (0-based tab position) | Focus the tab at a given index |
 | `move-window` | — | `index` (0-based destination) or `delta` (signed slots, e.g. `-1`); clamped to the ends | Move the active tab to another position in the tab order |
 | `rename-window` | Tab | `name?` (bare opens an interactive prompt) | Rename the active tab (interactive prompt) |
+| `lock-window` | Tab |  | Lock the active tab: closing it or its last pane is refused until unlocked |
+| `unlock-window` | Tab |  | Unlock the active tab so it can be closed again |
 | `rename-session` | Session | `name?` (bare opens an interactive prompt) | Rename the current session (interactive prompt) |
 | `focus-direction` | Pane | `direction` = `left` \| `right` \| `up` \| `down` | Move focus to the pane on the left |
 | `resize-pane` | Pane | `direction` = `left` \| `right` \| `up` \| `down`; `amount` (cells) | Grow the focused pane to the left |

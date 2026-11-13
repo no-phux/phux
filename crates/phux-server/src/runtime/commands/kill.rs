@@ -18,6 +18,28 @@ pub(super) const fn kill_attribution(
     }
 }
 
+/// The refusal a kill gets when it would close a locked tab: one that would
+/// lose every member it shows. A whole batch is refused, killing nothing.
+// ponytail: checked under its own lock, not the kill's; a lock that lands
+// between the two is missed. Fold it into each kill's borrow if that matters.
+fn locked_tab_refusal(
+    state: &SharedState,
+    ids: &[phux_protocol::ids::ResourceId],
+) -> Option<CommandResult> {
+    let tab = state.with(|s| {
+        let keys: Vec<_> = ids
+            .iter()
+            .filter_map(|id| s.resource_from_wire(id))
+            .filter_map(|core| s.registry().resource_key(core))
+            .collect();
+        phux_core::arrangement::locked_tab_closed_by(s.org(), &keys)
+    })?;
+    Some(CommandResult::Error {
+        code: ErrorCode::PreconditionFailed,
+        message: format!("{tab} is locked; unlock it first"),
+    })
+}
+
 /// `KILL_RESOURCE`: close the pane through the same teardown a natural exit
 /// takes, so `RESOURCE_CLOSED` still fires.
 pub(super) fn handle_kill_terminal(
@@ -25,6 +47,9 @@ pub(super) fn handle_kill_terminal(
     terminal_id: &phux_protocol::ids::ResourceId,
     attribution: crate::state::CloseAttribution,
 ) -> CommandResult {
+    if let Some(refused) = locked_tab_refusal(state, std::slice::from_ref(terminal_id)) {
+        return refused;
+    }
     state
         .with(|s| s.resource_from_wire(terminal_id))
         .map_or_else(
@@ -54,6 +79,9 @@ pub(super) fn handle_kill_resource_if(
     precondition: &phux_protocol::wire::frame::KillPrecondition,
     attribution: crate::state::CloseAttribution,
 ) -> CommandResult {
+    if let Some(refused) = locked_tab_refusal(state, std::slice::from_ref(terminal_id)) {
+        return refused;
+    }
     let admitted = state.with_mut(|s| {
         let core = s.admit_conditional_kill(terminal_id, precondition)?;
         Ok(super::super::committed_close::commit_close(
@@ -96,6 +124,9 @@ pub(crate) async fn handle_kill_terminals(
     ids: &[phux_protocol::ids::ResourceId],
     operation_id: Option<phux_protocol::ids::IdempotencyKey>,
 ) -> CommandResult {
+    if let Some(refused) = locked_tab_refusal(state, ids) {
+        return refused;
+    }
     let partitions = satellite_partitions(ids);
     let attribution = kill_attribution(client_id, operation_id);
     let (killed, not_found) = kill_local_batch(state, ids, attribution, false);
@@ -129,6 +160,9 @@ pub(crate) fn handle_close_tab_resources(
     state: &SharedState,
     ids: &[phux_protocol::ids::ResourceId],
 ) -> CommandResult {
+    if let Some(refused) = locked_tab_refusal(state, ids) {
+        return refused;
+    }
     relay_close_tab_partitions(state, ids);
     let _ = kill_local_batch(state, ids, crate::state::CloseAttribution::default(), true);
     CommandResult::Ok

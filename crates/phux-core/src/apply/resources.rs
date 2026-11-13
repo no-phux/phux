@@ -54,6 +54,9 @@ pub(super) fn resource_terminate(
     mode: TerminateMode,
 ) -> Result<Out, Refusal> {
     let a = matching_activation(tx, resource, activation)?;
+    if let Some(tab) = crate::arrangement::locked_tab_closed_by(tx.org, &[resource]) {
+        return Err(locked_refusal(&tab));
+    }
     if !(a.state.is_current() || a.state == ExecState::Lost) {
         return Err(Refusal::Stale {
             current: Some(a.id),
@@ -153,9 +156,10 @@ pub(super) fn arrangement_replace(
         return Err(Refusal::Conflict { current });
     }
     validate_groups(groups, &s.members).map_err(|e| Refusal::invalid("groups", e.to_string()))?;
+    let groups = carry_locks(existing.and_then(|k| tx.arrangement(k)), groups)?;
     let (key, revision, created) = if let Some(key) = existing {
         let a = tx.arrangement_mut(key).ok_or(Refusal::NotFound)?;
-        a.groups = groups.to_vec();
+        a.groups = groups;
         (key, a.revision, None)
     } else {
         let key = ArrangementKey::from_bytes(tx.fresh_key(fresh)?);
@@ -164,7 +168,7 @@ pub(super) fn arrangement_replace(
             Some(Arrangement {
                 key,
                 owner,
-                groups: groups.to_vec(),
+                groups,
                 revision: Revision::FIRST,
             }),
         );
@@ -187,6 +191,78 @@ pub(super) fn arrangement_replace(
             entry: None,
         },
     ))
+}
+
+/// A replacement's groups with each lock as it stands: a replacement never
+/// locks or unlocks (only [`arrangement_lock`] does), so a client that does
+/// not know the flag cannot drop it. Refused when it would drop a locked
+/// group.
+fn carry_locks(current: Option<&Arrangement>, groups: &[Group]) -> Result<Vec<Group>, Refusal> {
+    let locked: Vec<(usize, &Group)> = current
+        .map(|a| {
+            a.groups
+                .iter()
+                .enumerate()
+                .filter(|(_, g)| g.locked)
+                .collect()
+        })
+        .unwrap_or_default();
+    if let Some((index, gone)) = locked
+        .iter()
+        .find(|(_, g)| !groups.iter().any(|n| n.id == g.id))
+    {
+        return Err(locked_refusal(&crate::arrangement::tab_label(gone, *index)));
+    }
+    Ok(groups
+        .iter()
+        .map(|g| Group {
+            locked: locked.iter().any(|(_, l)| l.id == g.id),
+            ..g.clone()
+        })
+        .collect())
+}
+
+/// The refusal a close of a locked tab gets.
+fn locked_refusal(tab: &str) -> Refusal {
+    Refusal::invalid("group", format!("{tab} is locked; unlock it first"))
+}
+
+pub(super) fn arrangement_lock(
+    tx: &mut Tx<'_>,
+    owner: ArrangementOwner,
+    group: [u8; 16],
+    locked: bool,
+) -> Result<Out, Refusal> {
+    let ArrangementOwner::Session(session) = owner else {
+        return Err(Refusal::Unsupported {
+            capability: "workspace".to_owned(),
+        });
+    };
+    let key = tx
+        .session(session)
+        .ok_or(Refusal::NotFound)?
+        .arrangement
+        .ok_or(Refusal::NotFound)?;
+    let a = tx.arrangement(key).ok_or(Refusal::NotFound)?;
+    let current = a
+        .groups
+        .iter()
+        .find(|g| g.id == group)
+        .ok_or(Refusal::NotFound)?;
+    if current.locked == locked {
+        return Ok(Out::ok(Some(a.revision)));
+    }
+    let a = tx.arrangement_mut(key).ok_or(Refusal::NotFound)?;
+    for g in a.groups.iter_mut().filter(|g| g.id == group) {
+        g.locked = locked;
+    }
+    let revision = a.revision;
+    tx.events.push(Event::ArrangementChanged {
+        key,
+        owner,
+        revision: Some(revision),
+    });
+    Ok(Out::ok(Some(revision)))
 }
 
 // ---- executor reports ------------------------------------------------------

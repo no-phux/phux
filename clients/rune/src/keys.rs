@@ -93,6 +93,8 @@ pub enum Shortcut {
     Tab(u8),
     RenameSession,
     RenameTab,
+    /// Lock the active tab against close, or unlock it.
+    LockTab,
     CloseSession,
     CheckForUpdates,
     InstallUpdate,

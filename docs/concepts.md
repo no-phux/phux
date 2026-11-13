@@ -39,6 +39,8 @@ phux ls           # every session, and which ones need you
 
 A pane closes when its program exits. To keep a finished pane's last screen and exit status around for a while, set `retain-on-exit = true` under `[defaults]` in your [config file](./config.md).
 
+**A tab can be locked against closing.** `phux lock api:0` (or Lock in the tab's menu, in the desktop app or the terminal UI) makes every close of that tab fail with "locked" until `phux unlock api:0`. That covers closing the tab, closing or killing its last pane, `phux kill api:0`, and every client's close keys, menus and buttons. A pane exiting on its own still ends, and killing the whole session (`phux kill api`, Close Session) still ends a locked tab, after its usual confirmation. A lock guards one tab, and doesn't make the session unkillable. The lock is kept by the server, so every client sees it and it survives a server upgrade.
+
 **A tab has three names.** The UI says "tab". Actions in the config file keep tmux's word "window" (`new-window`, `next-window`). Targets and `--help` text say "group". All three mean the same thing.
 
 ## Resources

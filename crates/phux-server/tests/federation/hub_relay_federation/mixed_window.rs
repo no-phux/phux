@@ -173,6 +173,7 @@ fn mixed_window(local: EntryTarget, a: &ResourceId, b: &ResourceId) -> Arrangeme
     };
     ArrangementDoc {
         groups: vec![ArrangementGroup {
+            locked: false,
             id: [9; 16],
             name: Some("mixed".to_owned()),
             tree,

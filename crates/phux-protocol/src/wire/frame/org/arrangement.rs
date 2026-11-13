@@ -12,7 +12,8 @@ pub(super) const NODE_LEAF: u8 = 0;
 pub(super) const NODE_SPLIT: u8 = 1;
 
 /// Write an arrangement document positionally: `u16 group_count`, then per
-/// group a record `id: bytes16 || name: optional<str> || node`; a node is a
+/// group a record `id: bytes16 || name: optional<str> || node || [locked:
+/// u8]`, the trailing byte present only when the group is locked; a node is a
 /// record `0x00 || entry: bytes16 || target` or `0x01 || dir: u8 || ratio:
 /// f32 || node || node`; a target is `0x00 || resource: bytes16` (a member)
 /// or `0x01 || host: str || id: u32` (a satellite resource). A record is
@@ -26,6 +27,9 @@ pub(in crate::wire) fn encode_arrangement_doc(doc: &ArrangementDoc, enc: &mut En
             }
             enc.write_option(group.name.as_deref(), Encoder::write_str);
             encode_node(&group.tree, enc);
+            if group.locked {
+                enc.write_u8(1);
+            }
         });
     }
 }
@@ -96,7 +100,13 @@ pub(super) fn decode_group(dec: &mut Decoder<'_>) -> Result<ArrangementGroup, De
         bounded_dec_str(d, MAX_ORG_NAME_BYTES)
     })?;
     let tree = decode_node(dec, 0)?;
-    Ok(ArrangementGroup { id, name, tree })
+    let locked = !dec.at_body_end() && dec.read_u8()? != 0;
+    Ok(ArrangementGroup {
+        id,
+        name,
+        tree,
+        locked,
+    })
 }
 
 pub(super) fn decode_node(

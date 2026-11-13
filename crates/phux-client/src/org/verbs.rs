@@ -2,7 +2,7 @@ use phux_client_core::org_ops::live_target;
 use phux_client_runtime::control::mint_operation;
 use phux_protocol::ResourceId;
 use phux_protocol::caps::ServerFeatureExt;
-use phux_protocol::ids::{ResourceKey, ResourceKind, SessionKey};
+use phux_protocol::ids::{ArrangementKey, ResourceKey, ResourceKind, SessionKey};
 use phux_protocol::wire::frame::{
     ArrangementDoc, Command, Committed, ExitPolicy, LaunchMode, LaunchSpec, MAX_ORG_BATCH,
     OrgFilter, ResourceRecord, TerminateMode,
@@ -361,4 +361,40 @@ pub async fn terminate(
         },
     )
     .await
+}
+
+/// Whether the server behind `conn` takes `ARRANGEMENT_LOCK`.
+#[must_use]
+pub fn tab_lock_supported(conn: &Connection) -> bool {
+    conn.negotiated_bootstrap().is_some_and(|negotiated| {
+        negotiated
+            .server_features_ext
+            .contains(ServerFeatureExt::TabLock)
+    })
+}
+
+/// `phux lock` / `phux unlock`: lock or unlock one group of an arrangement
+/// (`ARRANGEMENT_LOCK`; the last writer wins).
+///
+/// # Errors
+///
+/// [`OrgError::Unsupported`] unless the server advertises `TAB_LOCK`, with
+/// nothing sent; `NOT_FOUND` for a group the arrangement no longer holds;
+/// transport failures.
+pub async fn lock_group(
+    conn: &mut Connection,
+    arrangement: ArrangementKey,
+    group: [u8; 16],
+    locked: bool,
+) -> Result<Committed, OrgError> {
+    if !tab_lock_supported(conn) {
+        return Err(OrgError::Unsupported);
+    }
+    let command = Command::ArrangementLock {
+        operation: mint_operation(),
+        arrangement,
+        group,
+        locked,
+    };
+    commit(conn, FIRST_REQUEST_ID, command).await
 }

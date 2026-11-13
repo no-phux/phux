@@ -39,6 +39,7 @@ pub(super) const fn org_command_tag(command: &Command) -> Option<u8> {
         Command::RevokeDelegation { .. } => crate::wire::frame::COMMAND_TAG_REVOKE_DELEGATION,
         Command::SessionKill { .. } => crate::wire::frame::COMMAND_TAG_SESSION_KILL,
         Command::SessionSetProject { .. } => crate::wire::frame::COMMAND_TAG_SESSION_SET_PROJECT,
+        Command::ArrangementLock { .. } => crate::wire::frame::COMMAND_TAG_ARRANGEMENT_LOCK,
         _ => return None,
     })
 }
@@ -243,6 +244,17 @@ pub(in crate::wire) fn encode_org_command(command: &Command, enc: &mut Encoder<'
             write_u64(enc, field::org::EXPECTED, expected.get());
             write_key(enc, field::org::ARRANGEMENT, arrangement.as_bytes());
             write_document(enc, document);
+        }
+        Command::ArrangementLock {
+            operation,
+            arrangement,
+            group,
+            locked,
+        } => {
+            write_operation(enc, operation);
+            write_key(enc, field::org::ARRANGEMENT, arrangement.as_bytes());
+            write_key(enc, field::org::GROUP, group);
+            write_u8(enc, field::org::LOCKED, u8::from(*locked));
         }
         Command::DelegateAgent {
             operation,

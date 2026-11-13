@@ -240,6 +240,11 @@ fn dispatch(tx: &mut Tx<'_>, op: &Op, fresh: &mut dyn FreshKeys) -> Result<Out, 
             expected,
             groups,
         } => arrangement_replace(tx, fresh, *owner, *expected, groups),
+        Op::ArrangementLock {
+            owner,
+            group,
+            locked,
+        } => arrangement_lock(tx, *owner, *group, *locked),
         Op::ActivationStarted {
             resource,
             activation,
@@ -273,7 +278,7 @@ mod placement;
 use placement::{organization_undo, resource_create, resource_move, resource_move_many};
 mod resources;
 use resources::{
-    activation_ended, activation_lost, activation_started, arrangement_replace,
+    activation_ended, activation_lost, activation_started, arrangement_lock, arrangement_replace,
     resource_launch_reported, resource_relaunch, resource_remove, resource_rename,
     resource_terminate,
 };

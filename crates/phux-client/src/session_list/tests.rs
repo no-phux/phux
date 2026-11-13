@@ -73,6 +73,7 @@ async fn listing_counts_windows_from_each_arrangement_with_one_inventory() {
     let tabbed = fixture.session("tabbed", SessionLifetime::Persistent);
     let (a, b) = (fixture.shell(tabbed), fixture.shell(tabbed));
     let group = |n: u8, key| ArrangementGroup {
+        locked: false,
         id: [n; 16],
         name: None,
         tree: ArrangementNode::Leaf(EntryRef {

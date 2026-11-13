@@ -75,6 +75,7 @@ impl ServerState {
                 let tree = group.state.tree.as_ref()?;
                 let tree = self.core_tree(tree, &record.members, &mut fresh)?;
                 Some(phux_core::Group {
+                    locked: false,
                     id: group.id,
                     name: (!group.name.is_empty()).then(|| group.name.clone()),
                     tree,
