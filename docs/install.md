@@ -166,6 +166,8 @@ curl -fsSL https://phux.sh/install | sh
 
 The script downloads the release for your platform, checks its SHA-256 before unpacking anything, and puts `phux` and `phux-mcp` in `~/.local/bin`. If that directory isn't on your `PATH`, it adds it to your shell profile. On macOS a stable release also installs [phux Server](#macos-permissions), checked the same way.
 
+On Linux the script ends by offering to keep your sessions running after logout and reboot. Yes runs `phux service install --adopt`, which runs the server as a systemd user unit and turns on linger (`loginctl enable-linger`) so it starts at boot. No sudo is needed. Where your system's policy wants an administrator for linger, it prints the `sudo loginctl enable-linger` command to run. With no terminal to ask on, the script installs the service. `--no-service` or `PHUX_NO_SERVICE=1` skips it. `phux doctor` warns while the server is not supervised.
+
 Pass options after `sh -s --`:
 
 ```sh
@@ -180,6 +182,7 @@ curl -fsSL https://phux.sh/install | sh -s -- --dry-run
 | ------------------------------- | ------------------------------------------------------------- |
 | `--install-dir <dir>`           | install somewhere other than `~/.local/bin`                   |
 | `--no-modify-path`              | leave your shell profile alone                                |
+| `--service`, `--no-service`     | on Linux, install the systemd user service, or skip it, without asking |
 | `--version <X.Y.Z>`             | install a specific release instead of the latest             |
 | `--channel <stable\|next\|lts>`  | follow tagged releases (the default), every `main` build that passes CI, or the [long-term-support](./runbooks/lts.md) release |
 | `--rune`                        | install the desktop app, [Phux Rune](./clients.md#desktop), adding the CLI if missing |

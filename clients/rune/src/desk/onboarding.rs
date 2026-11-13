@@ -81,6 +81,7 @@ enum Done {
     Opened(Result<Option<String>, String>),
     Prompt(Result<String, String>),
     Migrated(String, Result<Migration, String>),
+    Service(Result<Vec<u8>, String>),
 }
 
 pub struct Onboarding {
@@ -99,6 +100,9 @@ pub struct Onboarding {
     pub bundle: Option<PathBuf>,
     pub migrate: Migrate,
     pub copied: bool,
+    /// Run the server as a systemd user service when onboarding finishes
+    /// (Linux). On unless switched off.
+    pub keep_alive: bool,
     /// Keeping the grant sheet clear of System Settings.
     pub dock: dock::Dock,
     /// When the grant sheet last asked, on the app clock, and whether that
@@ -123,6 +127,7 @@ impl Default for Onboarding {
             bundle: None,
             migrate: Migrate::Choosing,
             copied: false,
+            keep_alive: true,
             dock: dock::Dock::default(),
             asked_at: f64::NEG_INFINITY,
             asking: false,
@@ -232,6 +237,9 @@ impl Desk {
     /// The last step's button: a normal session, made if there is none.
     pub fn start_using(&mut self) {
         self.finish_onboarding();
+        if words::KEEP_ALIVE && self.onboarding.keep_alive {
+            self.ask(&["service", "install", "--adopt"], SLOW, Done::Service);
+        }
         let Some(topology) = &self.topology else {
             return;
         };
@@ -244,6 +252,10 @@ impl Desk {
             .or_else(|| std::env::current_dir().ok())
             .unwrap_or_default();
         self.create_session(words::session_name(&folder, &taken));
+    }
+
+    pub fn toggle_keep_alive(&mut self) {
+        self.onboarding.keep_alive = !self.onboarding.keep_alive;
     }
 
     /// Auto (`None`) follows the system with no theme; Light or Dark keeps
@@ -290,9 +302,15 @@ impl Desk {
         // ponytail: always this computer's server, even with the window on
         // another machine; a migration started then runs here, out of view.
         // `phux skill` never dials a server and refuses `--socket`.
-        // Neither do `agent install-shim`'s files.
+        // Neither do `agent install-shim`'s files, nor `service`, which
+        // supervises this computer's default server.
         let mut argv: Vec<String> = match &self.launch.socket {
-            Ok(socket) if !matches!(args, ["skill", ..] | ["agent", "install-shim", ..]) => {
+            Ok(socket)
+                if !matches!(
+                    args,
+                    ["skill" | "service", ..] | ["agent", "install-shim", ..]
+                ) =>
+            {
                 vec!["--socket".to_owned(), socket.display().to_string()]
             }
             _ => Vec::new(),
@@ -456,7 +474,11 @@ impl Desk {
                         self.onboarding.bundle = Some(PathBuf::from(path));
                     }
                 }
-                Done::Opened(Err(error)) | Done::Prompt(Err(error)) => {
+                Done::Service(Ok(_)) => self.say(
+                    NoticeKind::Info,
+                    "phux keeps your sessions running after logout and reboot.",
+                ),
+                Done::Opened(Err(error)) | Done::Prompt(Err(error)) | Done::Service(Err(error)) => {
                     let error = if unsupported(&error) {
                         "Update phux to enable this.".to_owned()
                     } else {

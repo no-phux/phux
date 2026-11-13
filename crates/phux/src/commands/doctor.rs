@@ -19,6 +19,7 @@ mod permissions;
 mod remote;
 mod remote_cert;
 mod server_health;
+mod supervision;
 
 #[cfg(test)]
 use agents::shim_check;
@@ -29,6 +30,7 @@ use permissions::check_permissions;
 use remote::{check_remote_listeners, check_remote_reachable};
 use remote_cert::{check_remote_cert, check_remote_cert_chain};
 use server_health::check_server_health;
+use supervision::check_supervision;
 
 /// The outcome of one check.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -113,6 +115,7 @@ pub(crate) fn run_doctor(json: bool, socket: Option<PathBuf>) -> ExitCode {
     ];
     // Several server-health conditions can hold at once; each is reported.
     checks.extend(check_server_health(&socket_path));
+    checks.extend(check_supervision(&socket_path));
     checks.extend(check_permissions(&socket_path));
     checks.extend([
         check_plugins(),

@@ -4,6 +4,8 @@
 # refused. The network is a fake curl. A macOS install needs a real signed
 # bundle, so this covers that path only as a dry run.
 set -euo pipefail
+# Never offer the host's systemd a service.
+export PHUX_NO_SERVICE=1
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT

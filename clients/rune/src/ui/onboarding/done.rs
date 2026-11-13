@@ -28,6 +28,25 @@ const KEYS: [Shortcut; 3] = [
     Shortcut::SplitRight,
 ];
 
+/// On by default: without it a reboot, or often a logout, ends every session.
+fn keep_alive(desk: &Desk, p: &Ink) -> El {
+    col()
+        .w_full()
+        .max_w(400.0)
+        .radius(12.0)
+        .fill(p.raised.alpha(0.6))
+        .border(1.0, p.separator)
+        .child(crate::ui::settings::toggle(
+            desk,
+            "onboarding-keep-alive",
+            "Keep sessions running after logout and reboot",
+            "Runs phux as a systemd user service.",
+            desk.onboarding.keep_alive,
+            Desk::toggle_keep_alive,
+            p,
+        ))
+}
+
 pub(super) fn done(desk: &Desk, p: &Ink) -> El {
     let mut list = col()
         .w_full()
@@ -88,6 +107,7 @@ pub(super) fn done(desk: &Desk, p: &Ink) -> El {
                 .align(Align::Center),
         )
         .child(list)
+        .children(words::KEEP_ALIVE.then(|| keep_alive(desk, p)))
         // Optional: the phone app, from the same screen Settings shows.
         .child(
             el().w_full()

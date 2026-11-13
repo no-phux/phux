@@ -13,8 +13,22 @@ use phux_config::socket::{self, SocketState};
 
 use crate::commands::sh_quote;
 
+mod adoption;
+mod linger;
 mod reconcile;
 mod unit;
+
+#[cfg(test)]
+use adoption::adoption_marker_is_spent;
+pub(crate) use adoption::{
+    ARMED_SUPERVISION_EXPLANATION, Handover, armed_adoption_unit, complete_pending_adoption,
+    sweep_stale_adoption_marker,
+};
+use adoption::{
+    Subject, SupervisionState, adoption_marker_path, clear_adoption_pending, mark_adoption_pending,
+    probe_unit, supervision_state, unit_is_running, unit_supervises,
+};
+pub(crate) use linger::probe_linger;
 
 pub(crate) use reconcile::{Reconcile, reconcile_unit};
 use reconcile::{plist_container_end, settled};
@@ -39,7 +53,7 @@ fn launchd_label() -> String {
 
 /// systemd's unit name for the active profile. See [`launchd_label`] for why
 /// the default profile keeps the bare name.
-fn systemd_unit() -> String {
+pub(crate) fn systemd_unit() -> String {
     systemd_unit_for(profile_suffix().as_deref())
 }
 
@@ -926,6 +940,10 @@ pub(crate) enum Takeover {
 
 /// `phux service install` — write the unit and hand it to the init system.
 /// Rerunning reloads an existing unit.
+#[expect(
+    clippy::too_many_lines,
+    reason = "the install's refusals and hand-over branches read in order; each is already one call"
+)]
 pub(crate) fn run_install(
     quic: Option<std::net::SocketAddr>,
     listen: Option<String>,
@@ -1007,6 +1025,10 @@ pub(crate) fn run_install(
         return ExitCode::FAILURE;
     }
 
+    if incumbent_live && already_supervised(manager, &plan) {
+        return ExitCode::SUCCESS;
+    }
+
     let unit_path = match manager.writable_unit_path(profile_suffix().as_deref()) {
         Ok(path) => path,
         Err(err) => {
@@ -1055,6 +1077,32 @@ pub(crate) fn run_install(
 
     report_install(manager, &plan, &unit_path);
     ExitCode::SUCCESS
+}
+
+/// `--adopt` over a server this unit already runs has nothing to hand over,
+/// so installers and onboarding can run it whatever state the host is in.
+/// Reports and ensures linger when so.
+fn already_supervised(manager: Manager, plan: &ServicePlan) -> bool {
+    let Ok(unit_path) = manager.unit_path(profile_suffix().as_deref()) else {
+        return false;
+    };
+    let supervises = std::fs::read_to_string(&unit_path)
+        .is_ok_and(|body| unit_supervises(manager, &body, &plan.socket_path));
+    if !supervises || !unit_is_running(manager) {
+        return false;
+    }
+    outln!("phux service already running (nothing to hand over).");
+    outln!("  unit    {}", unit_path.display());
+    report_linger_for(manager);
+    true
+}
+
+/// On Linux a user unit only outlives logout and starts at boot when the user
+/// lingers; turn it on (once, here, for every caller of `install`).
+fn report_linger_for(manager: Manager) {
+    if manager == Manager::Systemd {
+        linger::report_linger(linger::ensure_linger());
+    }
 }
 
 /// The listener-address variables a supervised server may inherit from the
@@ -1194,192 +1242,6 @@ fn start_armed_unit(manager: Manager, unit_path: &Path) -> Result<(), String> {
     }
 }
 
-/// Where an armed-but-unloaded unit is recorded (profile-scoped). A file,
-/// because an armed unit and a deliberately stopped one look identical on
-/// disk and to the init system.
-fn adoption_marker_path() -> PathBuf {
-    phux_server::telemetry::state_dir().join("service-adopt-pending")
-}
-
-/// Record that `unit_path` is armed and waiting for the incumbent to exit.
-fn mark_adoption_pending(unit_path: &Path) -> Result<(), String> {
-    let marker = adoption_marker_path();
-    if let Some(parent) = marker.parent() {
-        std::fs::create_dir_all(parent)
-            .map_err(|err| format!("could not create {}: {err}", parent.display()))?;
-    }
-    std::fs::write(&marker, format!("{}\n", unit_path.display())).map_err(|err| {
-        format!(
-            "unit armed, but {} could not be written ({err}), so the hand-over will not happen \
-             on its own",
-            marker.display()
-        )
-    })
-}
-
-/// Forget a pending adoption (best-effort).
-fn clear_adoption_pending() {
-    let _ = std::fs::remove_file(adoption_marker_path());
-}
-
-/// The user-facing explanation of an armed supervision unit, shared by
-/// `phux service status` and `phux doctor`. Prose without newlines, so each
-/// caller wraps it.
-pub(crate) const ARMED_SUPERVISION_EXPLANATION: &str = "the running server keeps its panes and stays unsupervised, so a crash before the \
-     hand-over is not caught by anything; supervision begins at the next login, or at the \
-     first `phux` command after that server exits, and `phux service uninstall` cancels it";
-
-/// Whose supervision a [`supervision_state`] question is about. A unit armed
-/// for another profile or `--socket` must not affect this server.
-#[derive(Clone, Copy)]
-enum Subject<'a> {
-    /// The instance that would bind `socket_path`.
-    Server(&'a Path),
-    /// This profile's unit, whatever socket it was installed against.
-    Unit,
-}
-
-/// What an adoption marker says about supervision (not whether the unit runs).
-enum SupervisionState {
-    /// No pending adoption for this subject.
-    NotArmed,
-    /// The marker's unit is gone; owners of the state sweep it.
-    MarkerWithoutUnit,
-    /// Armed: written and deliberately unloaded, waiting for the incumbent to exit.
-    Armed { manager: Manager, unit: PathBuf },
-}
-
-/// The single predicate behind every "is supervision armed?" question: a
-/// marker exists, its unit is readable, and (for a server subject) the unit's
-/// socket is that server's socket. Never sweeps; callers that own the state
-/// act on [`SupervisionState::MarkerWithoutUnit`].
-fn supervision_state(subject: Subject<'_>) -> SupervisionState {
-    if !adoption_marker_path().exists() {
-        return SupervisionState::NotArmed;
-    }
-    let Some(manager) = Manager::host() else {
-        return SupervisionState::NotArmed;
-    };
-    let Ok(unit) = manager.unit_path(profile_suffix().as_deref()) else {
-        return SupervisionState::NotArmed;
-    };
-    let Ok(body) = std::fs::read_to_string(&unit) else {
-        return SupervisionState::MarkerWithoutUnit;
-    };
-    match subject {
-        Subject::Unit => SupervisionState::Armed { manager, unit },
-        Subject::Server(socket_path) if unit_supervises(manager, &body, socket_path) => {
-            SupervisionState::Armed { manager, unit }
-        }
-        Subject::Server(_) => SupervisionState::NotArmed,
-    }
-}
-
-/// The unit an armed adoption is recorded against for the server on
-/// `socket_path`, for `phux doctor`. Read-only.
-pub(crate) fn armed_adoption_unit(socket_path: &Path) -> Option<PathBuf> {
-    match supervision_state(Subject::Server(socket_path)) {
-        SupervisionState::Armed { unit, .. } => Some(unit),
-        SupervisionState::NotArmed | SupervisionState::MarkerWithoutUnit => None,
-    }
-}
-
-/// Does `body` describe a unit whose server would bind `socket_path`?
-fn unit_supervises(manager: Manager, body: &str, socket_path: &Path) -> bool {
-    unit_socket_override(manager, body).unwrap_or_else(phux_server::runtime::default_socket_path)
-        == socket_path
-}
-
-/// Whether a pending-adoption record is spent: its unit vanished, or the init
-/// system is already running it.
-const fn adoption_marker_is_spent(state: &SupervisionState, unit_running: bool) -> bool {
-    match state {
-        SupervisionState::MarkerWithoutUnit => true,
-        SupervisionState::Armed { .. } => unit_running,
-        SupervisionState::NotArmed => false,
-    }
-}
-
-/// Ask the init system whether it is running this profile's unit.
-fn unit_is_running(manager: Manager) -> bool {
-    probe_unit(manager).is_ok_and(|output| output.status.success())
-}
-
-/// The captured init-system probe `phux service status` already ran.
-fn probe_unit(manager: Manager) -> std::io::Result<std::process::Output> {
-    match manager {
-        Manager::Launchd => std::process::Command::new("launchctl")
-            .args(["print", &launchd_target()])
-            .output(),
-        Manager::Systemd => std::process::Command::new("systemctl")
-            .args(["--user", "status", &systemd_unit()])
-            .output(),
-    }
-}
-
-/// Sweep an adoption marker that can no longer be pending for `socket_path`
-/// (login bootstrap starts the unit without going through
-/// [`complete_pending_adoption`]).
-pub(crate) fn sweep_stale_adoption_marker(socket_path: &Path) {
-    let state = supervision_state(Subject::Server(socket_path));
-    let running = match state {
-        SupervisionState::Armed { manager, .. } => unit_is_running(manager),
-        SupervisionState::MarkerWithoutUnit | SupervisionState::NotArmed => false,
-    };
-    if adoption_marker_is_spent(&state, running) {
-        clear_adoption_pending();
-    }
-}
-
-/// Outcome of trying to complete an armed adoption from the auto-spawn path.
-pub(crate) enum Handover {
-    /// The init system accepted the start; the caller must wait for the socket
-    /// rather than spawn a competing server.
-    Started,
-    /// Nothing was started; the caller auto-spawns as usual.
-    NotTaken,
-}
-
-/// Complete an armed adoption if one is pending for `socket_path`, called
-/// from the auto-spawn path once the incumbent has exited. Only a pending
-/// adoption diverts, and only once, so a deliberately stopped server stays
-/// stopped (ADR-0080). `quiet` honors the `--json` stderr contract.
-pub(crate) fn complete_pending_adoption(socket_path: &Path, quiet: bool) -> Handover {
-    let (manager, unit_path) = match supervision_state(Subject::Server(socket_path)) {
-        SupervisionState::Armed { manager, unit } => (manager, unit),
-        SupervisionState::MarkerWithoutUnit => {
-            clear_adoption_pending();
-            return Handover::NotTaken;
-        }
-        SupervisionState::NotArmed => return Handover::NotTaken,
-    };
-    match start_armed_unit(manager, &unit_path) {
-        Ok(()) => {
-            // Cleared once the start request succeeds; a supervised server that then
-            // fails is a crash-loop for `phux doctor`, not something to retrigger.
-            clear_adoption_pending();
-            if !quiet {
-                info!(
-                    "handing this server over to {} — the unit armed by `phux service \
-                     install --adopt` is now live",
-                    match manager {
-                        Manager::Launchd => "launchd",
-                        Manager::Systemd => "systemd",
-                    }
-                );
-            }
-            Handover::Started
-        }
-        Err(err) => {
-            // Fall through to an ordinary spawn; the marker stays for the next try.
-            if !quiet {
-                warn!("could not start the armed service unit ({err}); starting a server");
-            }
-            Handover::NotTaken
-        }
-    }
-}
-
 /// Report an `--adopt` install: what was written, what was not done, and when
 /// supervision begins. Must not read as "the running server is supervised".
 fn report_adopt(manager: Manager, plan: &ServicePlan, unit_path: &Path) {
@@ -1441,6 +1303,7 @@ fn report_adopt(manager: Manager, plan: &ServicePlan, unit_path: &Path) {
              server. Set PHUX_PROFILE={profile} to reach the server it starts."
         );
     }
+    report_linger_for(manager);
 }
 
 /// Write the unit file (and the wrapper, when `--restore` is on), creating
@@ -1610,6 +1473,7 @@ fn report_install(manager: Manager, plan: &ServicePlan, unit_path: &Path) {
         );
         outln!("Clear them with `phux service prune-logs`.");
     }
+    report_linger_for(manager);
 }
 
 /// `phux service uninstall` — unload the unit and remove what install wrote.

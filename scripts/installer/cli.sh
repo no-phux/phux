@@ -129,6 +129,33 @@ report_path() {
   printf 'PATH remedy: export PATH=%s:"$PATH"\n' "$(shell_quote "$dir")"
 }
 
+# On Linux a plain server is not restarted after a reboot and often ends at
+# logout. `phux service install --adopt` runs it as a systemd user unit and
+# turns on linger; --adopt never stops a running server, and is a no-op when
+# the unit already runs it. Without a terminal to ask on, install: a new
+# customer's sessions should survive a reboot without a second command.
+offer_service() {
+  [ "$service" != 0 ] && [ "$(uname -s)" = Linux ] || return 0
+  phux="${install_dir}/phux"
+  [ -x "$phux" ] || phux="$(command -v phux 2>/dev/null)" || return 0
+  if ! systemctl --user show-environment >/dev/null 2>&1; then
+    [ "$service" = ask ] || phux_message warn "no systemd user manager here; the server runs unsupervised"
+    return 0
+  fi
+  if [ "$service" = ask ] && [ -t 2 ] && { : </dev/tty; } 2>/dev/null; then
+    printf 'Keep phux sessions running after logout and reboot? (systemd user service) [Y/n] ' >&2
+    read -r answer </dev/tty || answer=""
+    case "$answer" in
+      [Nn]*)
+        echo "later: $(shell_quote "$phux") service install --adopt"
+        return 0
+        ;;
+    esac
+  fi
+  "$phux" service install --adopt \
+    || phux_message warn "the server is not supervised; retry with: $(shell_quote "$phux") service install --adopt"
+}
+
 # PIN and PIN_SHA256 pin the CLI; empty follows the channel.
 install_cli() {
   resolve phux "$target" "$1" "$2"

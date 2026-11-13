@@ -17,6 +17,7 @@ export HOME="$TMP/home" SHELL=/bin/zsh
 # would refuse this checkout's config without this.
 export MISE_TRUSTED_CONFIG_PATHS="$ROOT"
 unset ZDOTDIR XDG_CONFIG_HOME PHUX_NO_MODIFY_PATH PHUX_CHANNEL PHUX_INSTALL_DIR
+export PHUX_NO_SERVICE=1 # lib/test-install-service.sh opts back in
 mkdir -p "$HOME" "$TMP/bin" "$TMP/served"
 export SERVED="$TMP/served" CALLS="$TMP/calls" METER_CALLS="$TMP/meter-calls"
 
@@ -142,7 +143,10 @@ if installer --help | grep -Fq '\'; then fail "--help prints an escape"; fi
 
 package() { # ID: pack a release whose binaries say ID, and serve it
   mkdir -p "$TMP/build-$1"
-  for binary in phux phux-mcp; do printf '%s %s\n' "$binary" "$1" > "$TMP/build-$1/$binary"; done
+  for binary in phux phux-mcp; do
+    printf '#!/bin/sh\nprintf "%%s\\n" "$*" >> "${PHUX_CALLS:-/dev/null}"; exit "${PHUX_EXIT:-0}"\n%s %s\n' \
+      "$binary" "$1" > "$TMP/build-$1/$binary"
+  done
   chmod 755 "$TMP/build-$1/"*
   bash "$ROOT/scripts/pack-release.sh" --id "$1" --target "$TARGET" --bin-dir "$TMP/build-$1" --out-dir "$SERVED" >/dev/null 2>&1
   awk '{ print $1 }' "$SERVED/phux-$1-$TARGET.tar.gz.sha256"
@@ -356,5 +360,7 @@ out="$(PATH="$TMP/bin:/usr/bin:/bin" "$SH" "$ROOT/scripts/install-desktop.sh" --
 rm "$SERVED/install"
 if PATH="$TMP/bin:/usr/bin:/bin" "$SH" "$ROOT/scripts/install-desktop.sh" 2>"$TMP/err"; then fail "shim ran without an installer"; fi
 grep -Fq 'could not download' "$TMP/err" || fail "shim failure message"
+
+source "$ROOT/scripts/lib/test-install-service.sh"
 
 echo "installer tests passed"

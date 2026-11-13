@@ -13,6 +13,8 @@ os=""
 arch=""
 modify_path=1
 case "${PHUX_NO_MODIFY_PATH:-}" in '' | 0) ;; *) modify_path=0 ;; esac
+service=ask
+case "${PHUX_NO_SERVICE:-}" in '' | 0) ;; *) service=0 ;; esac
 
 while [ "$#" -gt 0 ]; do
   case "$1" in
@@ -39,10 +41,12 @@ while [ "$#" -gt 0 ]; do
     --rune) rune=1 ;;
     --dry-run) dry_run=1 ;;
     --no-modify-path) modify_path=0 ;;
+    --service) service=1 ;;
+    --no-service) service=0 ;;
     --help | -h) usage; exit 0 ;;
     *) die "unknown option: $1" ;;
   esac
-  case "$1" in --desktop | --rune | --dry-run | --no-modify-path) shift ;; *) shift 2 ;; esac
+  case "$1" in --desktop | --rune | --dry-run | --no-modify-path | --service | --no-service) shift ;; *) shift 2 ;; esac
 done
 
 if [ "$rune" -eq 1 ]; then
@@ -106,3 +110,4 @@ else
   install_cli "$pin" "$pin_sha256"
   [ "$dry_run" -eq 1 ] || report_path
 fi
+[ "$dry_run" -eq 1 ] || offer_service
