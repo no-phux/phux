@@ -130,6 +130,7 @@ async fn alive(dir: &Path, destination: &str) -> bool {
 /// dial reports that); otherwise what ssh said.
 async fn login(dir: &Path, destination: &str, askpass: Option<&Path>) -> Option<String> {
     let mut command = tokio::process::Command::new(program());
+    super::use_agent(&mut command);
     command.args(master_options(dir));
     match askpass {
         Some(askpass) => {

@@ -142,6 +142,33 @@ fn program() -> std::ffi::OsString {
     std::env::var_os("PHUX_SSH").unwrap_or_else(|| "ssh".into())
 }
 
+static AGENT: std::sync::OnceLock<std::path::PathBuf> = std::sync::OnceLock::new();
+
+/// Name the SSH agent socket every login from this process uses.
+///
+/// For an app that did not inherit a shell's `SSH_AUTH_SOCK`. The first call
+/// stands. An `IdentityAgent` in the user's ssh config still wins, as it
+/// does over the environment.
+pub fn set_agent(socket: std::path::PathBuf) {
+    let _ = AGENT.set(socket);
+}
+
+/// Whether a login from this process can reach an agent at all.
+fn agent_known() -> bool {
+    AGENT.get().is_some() || std::env::var_os("SSH_AUTH_SOCK").is_some()
+}
+
+/// Point `command`, an ssh that logs in, at the agent from [`set_agent`].
+fn use_agent(command: &mut tokio::process::Command) {
+    agent_env(command, AGENT.get().map(std::path::PathBuf::as_path));
+}
+
+fn agent_env(command: &mut tokio::process::Command, socket: Option<&Path>) {
+    if let Some(socket) = socket {
+        command.env("SSH_AUTH_SOCK", socket);
+    }
+}
+
 /// What ssh prints when it refuses a host key: a changed or revoked one, or
 /// under `BatchMode` one it has never seen.
 pub const HOST_KEY_REFUSED: &str = "Host key verification failed";
@@ -235,6 +262,7 @@ fn lane_options() -> Vec<String> {
 fn command(destination: &str, remote_phux: &str) -> std::io::Result<tokio::process::Command> {
     validate(destination, remote_phux)?;
     let mut command = tokio::process::Command::new(program());
+    use_agent(&mut command);
     command
         .args(lane_options())
         .arg("--")
@@ -460,6 +488,22 @@ Host key verification failed.";
 
         let client = lines(&resolve(&client_options(Some(dir), false)).expect("resolves"));
         assert!(has(&client, "controlmaster false"), "{client:?}");
+    }
+
+    #[test]
+    fn a_named_agent_replaces_the_inherited_one_and_none_leaves_it() {
+        let mut command = tokio::process::Command::new("ssh");
+        agent_env(&mut command, None);
+        assert_eq!(command.as_std().get_envs().count(), 0);
+        agent_env(&mut command, Some(Path::new("/run/agent.sock")));
+        let envs: Vec<_> = command.as_std().get_envs().collect();
+        assert_eq!(
+            envs,
+            [(
+                std::ffi::OsStr::new("SSH_AUTH_SOCK"),
+                Some(std::ffi::OsStr::new("/run/agent.sock"))
+            )]
+        );
     }
 
     #[test]
