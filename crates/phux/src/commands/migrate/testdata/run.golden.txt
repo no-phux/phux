@@ -74,11 +74,11 @@ Write every line marked "write" exactly as given, in the table it names, once. A
 - ~/.tmux.conf:6 `set -g renumber-windows on`
   nothing to do: already phux's behavior: phux tabs are positions, never numbered with gaps
 - ~/.tmux.conf:7 `set -sg escape-time 0`
-  nothing to do: already phux's behavior: phux waits only 10 ms after a bare Escape
+  not written: phux uses a fixed 10 ms wait after a bare Escape; escape-time 0 is not migrated
 - ~/.tmux.conf:8 `set -g status-position top`
   already phux's default, not written
 - ~/.tmux.conf:9 `set -g set-clipboard on`
-  nothing to do: already phux's behavior: a pane sets the system clipboard (`defaults.clipboard-write`)
+  already phux's default, not written
 - ~/.tmux.conf:10 `setw -g mode-keys vi`
   nothing to do: already phux's behavior: phux copy mode uses vi keys
 - ~/.tmux.conf:13 `unbind '"'`

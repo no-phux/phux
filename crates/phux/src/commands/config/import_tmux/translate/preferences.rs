@@ -33,6 +33,7 @@ const SETTINGS: &[(&str, &str, &str)] = &[
     ("default-shell", "defaults", "shell"),
     ("history-limit", "defaults", "history-limit"),
     ("status-position", "status", "position"),
+    ("set-clipboard", "defaults", "clipboard-write"),
 ];
 
 /// The phux setting a tmux option maps to, as `(table, key, value)`, with
@@ -95,6 +96,11 @@ fn default_preference(source: &str, value: &str) -> Option<Value> {
         "status-position" => {
             matches!(value, "top" | "bottom").then(|| Value::String(value.to_owned()))
         }
+        "set-clipboard" => match value {
+            "on" | "external" => Some(Value::String("allow".into())),
+            "off" => Some(Value::String("deny".into())),
+            _ => None,
+        },
         _ => (!value.is_empty()).then(|| Value::String(value.to_owned())),
     }
 }

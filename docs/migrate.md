@@ -54,9 +54,14 @@ files: the exact phux line to write, "already phux's default", or "not
 written" with the reason. tmux bindings use the same translator as
 [`phux config import-tmux`](./tmux-import.md); `-c "#{pane_current_path}"`
 is dropped because phux opens new panes in the focused pane's directory
-already. tmux `mouse`, `history-limit`, `default-shell` and `status-position`
-become `[defaults]` and `[status]` settings, written only where they differ
-from phux's. Ghostty keybinds become [global bindings](./keys.md#binding-a-key).
+already. tmux `mouse`, `history-limit`, `default-shell`, `status-position`
+and `set-clipboard` become `[defaults]` and `[status]` settings, written only
+where they differ from phux's. `set-clipboard off` becomes
+`defaults.clipboard-write = "deny"`;
+`on` and `external` keep phux's default `"allow"`.
+A trailing flag-free `display`/`display-message` with one literal message
+is cosmetic and can be dropped. Flags, targets and formats are not dropped.
+Ghostty keybinds become [global bindings](./keys.md#binding-a-key).
 
 Some lines are never written:
 
@@ -94,8 +99,10 @@ and Could not migrate. Every line of your files lands in one of them.
 "Nothing to do" is grouped by reason: terminal settings that keep working
 in the terminal phux runs in (a Ghostty font, opacity or shader), and tmux
 options phux already behaves like (`mode-keys vi`, `renumber-windows on`,
-`set-clipboard on`, `escape-time`). "Could not migrate" is what you have to
-act on, one line each: a tmux `base-index 1` (phux numbers tabs from 0),
+`escape-time 10`). Other Escape timings, including `0` and `500`, are not
+migrated: phux uses a fixed 10 ms wait.
+"Could not migrate" is what you have to act on, one line each: a tmux
+`base-index 1` (phux numbers tabs from 0),
 status-bar formats, plugins. If its sandbox blocks
 the reload, it asks you once, or tells you the reload is pending.
 

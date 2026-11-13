@@ -176,3 +176,50 @@ bind-key -T prefix c new-window \; display hi \; kill-session
     // Only a chain that ends in the message: anything after it still refuses.
     assert_eq!(prefix["c"].as_str(), Some("none"));
 }
+
+#[test]
+fn functional_display_tails_are_not_discarded_during_import() {
+    for tail in [
+        "display-message -I -t %1",
+        "display-message -I",
+        "display-message -t %1 hi",
+        "display -p hi",
+        "display-message -d 0 hi",
+        "display-message",
+        "display hi there",
+        "display-message '#(not-executed)'",
+        "display-message '#{pane_id}'",
+        "display hi \\; kill-session",
+    ] {
+        let plan = make_plan(&format!(
+            "bind-key -T prefix r source-file ~/.tmux.conf \\; {tail}\n"
+        ));
+        assert_eq!(
+            table(&plan)["keybindings"]["prefix-table"]["r"].as_str(),
+            Some("none"),
+            "{tail}"
+        );
+        assert!(
+            plan.entries.iter().any(|entry| {
+                entry.source.starts_with("bind-key") && entry.status == "unsupported"
+            }),
+            "{tail}"
+        );
+    }
+}
+
+#[test]
+fn clipboard_privacy_preferences_are_imported() {
+    for (source, expected) in [("off", "deny"), ("on", "allow"), ("external", "allow")] {
+        let plan = translate(&Snapshot {
+            session: format!("prefix C-b\nset-clipboard {source}\n"),
+            window: String::new(),
+            keys: String::new(),
+        })
+        .expect("translation");
+        assert_eq!(
+            table(&plan)["defaults"]["clipboard-write"].as_str(),
+            Some(expected)
+        );
+    }
+}

@@ -225,9 +225,17 @@ pub(super) fn discover(
         out.push(raw::rex(&path));
     }
     for source in &mut out {
-        last_line_wins(source, home);
+        finish_source(source, &ctx);
     }
     out
+}
+
+/// Settle overrides before policy drops any row's binding identity.
+fn finish_source(source: &mut Source, ctx: &Ctx<'_>) {
+    last_line_wins(source, ctx.home);
+    if source.kind == MigrateSource::Tmux && !ctx.setup.advanced {
+        tmux::redundant_unbinds(&mut source.rows, ctx);
+    }
 }
 
 /// The shipped prefix and global tables, to tell a default from a change.

@@ -6,6 +6,8 @@ use super::sources::{Setup, Source, Verdict, discover};
 use super::{agent_argv, decide, document, prompt, selected_theme, user_executable};
 use crate::commands::{MigrateAgent, MigrateSource};
 
+mod tmux;
+
 fn testdata() -> PathBuf {
     // Read at run time: a compiled-in checkout path defeats the build cache.
     PathBuf::from(std::env::var_os("CARGO_MANIFEST_DIR").expect("cargo sets CARGO_MANIFEST_DIR"))
@@ -245,17 +247,19 @@ fn lines_with_nothing_to_do_are_kept_apart_from_lost_ones() {
     let sources = discover(&home, None, &[], None, &Setup::default());
     let tmux = find(&sources, MigrateSource::Tmux);
     let ghostty = find(&sources, MigrateSource::Ghostty);
-    for text in [
-        "set -g renumber-windows on",
-        "set -sg escape-time 0",
-        "set -g set-clipboard on",
-        "setw -g mode-keys vi",
-    ] {
+    for text in ["set -g renumber-windows on", "setw -g mode-keys vi"] {
         assert!(
             matches!(verdict(tmux, text), Verdict::Covered(r) if r.starts_with("already phux's behavior")),
             "{text}"
         );
     }
+    assert!(matches!(
+        verdict(tmux, "set -g set-clipboard on"),
+        Verdict::Default { .. }
+    ));
+    assert!(
+        matches!(verdict(tmux, "set -sg escape-time 0"), Verdict::Skip(reason) if reason.contains("fixed 10 ms"))
+    );
     assert!(
         matches!(verdict(tmux, "set -g base-index 1"), Verdict::Skip(r) if r.contains("from 0"))
     );

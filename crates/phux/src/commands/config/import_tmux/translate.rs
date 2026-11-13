@@ -1,6 +1,6 @@
 //! A deliberately finite translator, not a tmux interpreter. Extra arguments,
 //! command chains, targets, formats and scripts must never disappear in a map.
-//! The one exception is a chain's trailing `display` message: it is cosmetic.
+//! The one exception is a chain's trailing literal, flag-free `display` message.
 
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -270,14 +270,7 @@ pub(crate) fn map_command(
     key: &str,
     prefix: &str,
 ) -> Option<(Value, Option<&'static str>)> {
-    // `bind r source-file ~/.tmux.conf \; display "reloaded"`: the message
-    // only confirms the command, and phux shows its own.
-    if let Some(at) = command.iter().position(|word| *word == ";")
-        && matches!(command.get(at + 1), Some(&("display" | "display-message")))
-        && !command[at + 1..].contains(&";")
-    {
-        return map_command(&command[..at], key, prefix);
-    }
+    let command = without_cosmetic_message(command);
     if let Some(mapped) = fixed_command(command) {
         return Some(mapped);
     }
@@ -302,6 +295,25 @@ pub(crate) fn map_command(
         _ => return adapted_prompt(command),
     };
     Some((value, None))
+}
+
+fn without_cosmetic_message<'a>(command: &'a [&'a str]) -> &'a [&'a str] {
+    let Some(at) = command.iter().position(|word| *word == ";") else {
+        return command;
+    };
+    let ["display" | "display-message", message] = &command[at + 1..] else {
+        return command;
+    };
+    // Flags can forward stdin (-I), select a target (-t), or print (-p).
+    // Formats can run shell commands. Only a literal message is cosmetic.
+    if message.starts_with('-')
+        || message.contains("#(")
+        || message.contains("#{")
+        || *message == ";"
+    {
+        return command;
+    }
+    &command[..at]
 }
 
 fn fixed_command(command: &[&str]) -> Option<(Value, Option<&'static str>)> {

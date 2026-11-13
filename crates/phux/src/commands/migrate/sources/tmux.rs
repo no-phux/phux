@@ -23,9 +23,6 @@ pub(super) fn read(path: &Path, ctx: &Ctx<'_>) -> Source {
     let mut decide =
         |file: &Path, line: &str| tmux_line(file, line, &mut prefix, &mut options, ctx);
     read_tree(path, &mut files, &mut rows, &mut decide);
-    if !ctx.setup.advanced {
-        redundant_unbinds(&mut rows, ctx);
-    }
     let chosen = ctx.prefix();
     let used = if options.contains_key("prefix") {
         format!("tmux's prefix was {prefix}")
@@ -58,7 +55,7 @@ pub(super) fn read(path: &Path, ctx: &Ctx<'_>) -> Source {
 /// Beginner mode: an unbind of a phux default whose action the user's own
 /// config binds to a key phux already ships for it (`unbind '"'` beside
 /// `bind - split-window -v`) removes a key and gives nothing back.
-fn redundant_unbinds(rows: &mut [Row], ctx: &Ctx<'_>) {
+pub(super) fn redundant_unbinds(rows: &mut [Row], ctx: &Ctx<'_>) {
     let shipped = |table: Table, key: &str| {
         let bindings = match table {
             Table::Prefix => &ctx.defaults.prefix_table,
@@ -329,11 +326,13 @@ fn behavior(name: &str, value: &str) -> Result<String, String> {
     let already = |what: &str| Ok(format!("already phux's behavior: {what}"));
     match (name, value) {
         ("renumber-windows", "on") => already("phux tabs are positions, never numbered with gaps"),
-        ("set-clipboard", "on" | "external") => {
-            already("a pane sets the system clipboard (`defaults.clipboard-write`)")
-        }
         ("mode-keys", "vi") => already("phux copy mode uses vi keys"),
-        ("escape-time", _) => already("phux waits only 10 ms after a bare Escape"),
+        ("escape-time", value) if value.parse::<u32>() == Ok(10) => {
+            already("phux uses the same fixed 10 ms wait after a bare Escape")
+        }
+        ("escape-time", value) => Err(format!(
+            "phux uses a fixed 10 ms wait after a bare Escape; escape-time {value} is not migrated"
+        )),
         ("base-index" | "pane-base-index", "0") => already("phux numbers from 0"),
         ("base-index" | "pane-base-index", _) => {
             Err(format!("phux numbers from 0 and cannot start at {value}"))

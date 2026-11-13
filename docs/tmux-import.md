@@ -68,13 +68,16 @@ The finite translator recognizes supported command forms exactly. Extra
 flags, targets, and command chains are not silently discarded. The one
 exception is a trailing `\; display "..."` message, which only confirms the
 command: `bind r source-file ~/.tmux.conf \; display "reloaded"` becomes
-`reload-config`, and phux shows its own reload message.
+`reload-config`, and phux shows its own reload message. This exception requires
+one literal message without flags or formats. A command such as
+`display-message -I -t %1` forwards input, so it is never discarded.
 
 | tmux setting or binding | phux result |
 | --- | --- |
 | `prefix` | `keybindings.prefix` |
 | `mouse`, `default-shell`, `history-limit` | Corresponding `[defaults]` values; phux's mouse behavior and history byte cap still apply |
 | `status-position` | `status.position` |
+| `set-clipboard off` / `on` / `external` | `defaults.clipboard-write = "deny"` / `"allow"` / `"allow"` |
 | `split-window` / `-h` / `-v` | Split with the same divider direction |
 | `select-pane -L/-R/-U/-D`, `last-pane`, `select-pane -t .+` / `.-` | Directional focus or pane cycling |
 | `resize-pane -L/-R/-U/-D [N]`, `resize-pane -Z` | Resize by cells, or toggle zoom |
