@@ -202,32 +202,62 @@ fn replies_settle_as_outcomes_and_others_pass_through() {
         ),
         (
             PAGE,
-            CommandResult::OkWith(CommandValue::Bytes(b"host text".to_vec())),
-            WireDocumentInputOutcome::Copied {
-                text: "host text".into(),
-            },
-        ),
-        (
-            PAGE,
-            CommandResult::Error {
-                code: ErrorCode::Unavailable,
-                message: "Nothing copied on the host".into(),
-            },
-            WireDocumentInputOutcome::Other {
-                message: "Nothing copied on the host".into(),
-            },
-        ),
-        (
-            PAGE,
             error(ErrorCode::Overflow),
             WireDocumentInputOutcome::Other {
                 message: "Overflow: no".into(),
             },
         ),
     ];
-    for (resource, result, outcome) in cases {
+    let cases = cases
+        .into_iter()
+        .map(|(r, result, outcome)| (r, click(), result, outcome));
+    let other = |message: &str| WireDocumentInputOutcome::Other {
+        message: message.into(),
+    };
+    let bytes = |text: &[u8]| CommandResult::OkWith(CommandValue::Bytes(text.to_vec()));
+    let copy = WireDocumentIntent::CopySelection;
+    let copies = [
+        (
+            bytes(b"host text"),
+            WireDocumentInputOutcome::Copied {
+                text: "host text".into(),
+            },
+        ),
+        // An old producer answered with nothing: not "Copied".
+        (bytes(b""), other(core_input::NOTHING_COPIED)),
+        (
+            CommandResult::Error {
+                code: ErrorCode::Unavailable,
+                message: "Nothing copied on the host".into(),
+            },
+            other("Nothing copied on the host"),
+        ),
+        // An old server takes the intent and answers no text.
+        (CommandResult::Ok, other(core_input::COPY_TOO_OLD)),
+        (
+            CommandResult::Error {
+                code: ErrorCode::Unavailable,
+                message: "the surface's producer did not answer the copy".into(),
+            },
+            other(core_input::COPY_TOO_OLD),
+        ),
+        (
+            error(ErrorCode::PermissionDenied),
+            WireDocumentInputOutcome::NoGrant,
+        ),
+    ]
+    .map(|(result, outcome)| (PAGE, copy.clone(), result, outcome));
+    // A 1 MiB copy comes back whole.
+    let big = "x".repeat(1 << 20);
+    let whole = (
+        PAGE,
+        WireDocumentIntent::CopyClipboard,
+        bytes(big.as_bytes()),
+        WireDocumentInputOutcome::Copied { text: big.clone() },
+    );
+    for (resource, intent, result, outcome) in cases.chain(copies).chain([whole]) {
         let resource_id = id::encode(&ResourceId::local(resource));
-        let request_id = remote.send_document_input(resource_id.clone(), click());
+        let request_id = remote.send_document_input(resource_id.clone(), intent);
         let mut projected = Vec::new();
         remote.project_event(
             None,

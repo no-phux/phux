@@ -188,6 +188,8 @@ async fn settle(
         };
     }
     match tokio::time::timeout(COPY_TIMEOUT, rx).await {
+        // A producer before phux 0.145 answers an empty clipboard with "".
+        Ok(Ok(Ok(text))) if text.is_empty() => unavailable("Nothing copied on the host".to_owned()),
         Ok(Ok(Ok(text))) => CommandResult::OkWith(CommandValue::Bytes(text.into_bytes())),
         Ok(Ok(Err(message))) => unavailable(message),
         Ok(Err(_)) | Err(_) => {

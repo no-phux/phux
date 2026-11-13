@@ -58,7 +58,8 @@ pub enum WireDocumentIntent {
 pub enum WireDocumentInputOutcome {
     /// The producer has the intent.
     Sent,
-    /// The host clipboard's text, the answer to a `CopyClipboard`.
+    /// The host clipboard's text, never empty, the answer to a copy. An
+    /// empty clipboard or a host too old to copy is `Other` with why.
     Copied { text: String },
     /// This device holds no control grant for the document's class.
     NoGrant,
