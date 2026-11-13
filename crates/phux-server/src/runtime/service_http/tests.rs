@@ -87,6 +87,40 @@ fn header<'a>(head: &'a ServiceHttpHead, name: &str) -> Option<&'a str> {
         .map(|(_, value)| value.as_str())
 }
 
+fn disallowed_upstream_header(seen: &str) -> Option<&str> {
+    // The fake echoes header fields, not arbitrary forbidden substrings:
+    // a random Host port or an allowed value can legitimately contain 999.
+    seen.lines().find_map(|line| {
+        let (name, value) = line.split_once(':')?;
+        if ["cookie", "proxy-authorization", "x-drop", "connection"]
+            .iter()
+            .any(|stripped| name.eq_ignore_ascii_case(stripped))
+        {
+            return Some(line);
+        }
+        (name.eq_ignore_ascii_case("content-length") && value.trim() == "999").then_some(line)
+    })
+}
+
+#[test]
+fn header_policy_assertions_ignore_ports_and_benign_values() {
+    let seen = "host: 127.0.0.1:37999\nx-keep: cookie connection 999\n";
+    assert!(disallowed_upstream_header(seen).is_none());
+    for forbidden in [
+        "cookie: a=b",
+        "Proxy-Authorization: stolen",
+        "x-drop: 1",
+        "connection: x-drop",
+        "content-length: 999",
+        "Content-Length: \t999 \t",
+    ] {
+        assert!(
+            disallowed_upstream_header(forbidden).is_some(),
+            "{forbidden}"
+        );
+    }
+}
+
 #[test]
 fn only_a_single_loopback_origin_line_is_an_origin() {
     for good in [
@@ -182,18 +216,10 @@ async fn a_stopped_service_is_started_and_headers_follow_the_policy() {
     );
     assert!(seen.contains(&format!("host: {}\n", fake.addr)), "{seen}");
     assert!(seen.contains("x-keep: kept\n"), "{seen}");
-    for stripped in [
-        "cookie",
-        "proxy-authorization",
-        "x-drop",
-        "connection",
-        "999",
-    ] {
-        assert!(
-            !seen.contains(stripped),
-            "{stripped} reached upstream: {seen}"
-        );
-    }
+    assert!(
+        disallowed_upstream_header(&seen).is_none(),
+        "a stripped header reached upstream: {seen}"
+    );
     assert_eq!(fake.pairs(), 1);
 }
 
