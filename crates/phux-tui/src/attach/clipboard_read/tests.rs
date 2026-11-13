@@ -127,6 +127,11 @@ fn the_prompt_allows_once_or_for_the_pane() {
         .on_read(&pane(1), C, true, ClipboardRead::Ask, now);
     let mut prompt =
         ClipboardReadOverlay::new(pane(1), C, "pane 1", Rc::clone(&shared), &Theme::default());
+    // Typed straight after it appears, a key that allows does nothing.
+    for key in [PhysicalKey::A, PhysicalKey::Enter, PhysicalKey::Y] {
+        assert_eq!(prompt.handle_key(&press(key)), OverlayCommand::Stay);
+    }
+    prompt.shown -= PROMPT_ARMING;
     assert_eq!(
         prompt.handle_key(&press(PhysicalKey::A)),
         OverlayCommand::Dismiss

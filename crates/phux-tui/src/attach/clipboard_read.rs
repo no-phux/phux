@@ -181,10 +181,15 @@ impl ClipboardReads {
     }
 }
 
+/// How long a new prompt ignores the keys that allow, so a word being typed
+/// or an Enter already on its way can't answer a read the person never saw.
+pub(in crate::attach) const PROMPT_ARMING: Duration = Duration::from_millis(500);
+
 /// The `ask` prompt. Enter or `y` allows once, `a` allows this pane for the
-/// rest of the attach, Esc or `n` denies.
+/// rest of the attach, Esc or `n` denies. Allowing waits out [`PROMPT_ARMING`].
 pub(in crate::attach) struct ClipboardReadOverlay {
     pane: ResourceId,
+    shown: Instant,
     selection: ClipboardSelection,
     reads: SharedClipboardReads,
     message: String,
@@ -206,6 +211,7 @@ impl ClipboardReadOverlay {
         };
         Self {
             pane,
+            shown: Instant::now(),
             selection,
             reads,
             message: format!("{label} wants to read your {what}"),
@@ -250,10 +256,11 @@ impl RenderOverlay for ClipboardReadOverlay {
         if key.action != KeyAction::Press {
             return OverlayCommand::Stay;
         }
+        let armed = self.shown.elapsed() >= PROMPT_ARMING;
         match key.key {
-            PhysicalKey::Enter | PhysicalKey::Y => self.decide(Choice::AllowOnce),
-            PhysicalKey::A => self.decide(Choice::AllowPane),
             PhysicalKey::Escape | PhysicalKey::N => self.decide(Choice::Deny),
+            PhysicalKey::Enter | PhysicalKey::Y if armed => self.decide(Choice::AllowOnce),
+            PhysicalKey::A if armed => self.decide(Choice::AllowPane),
             _ => OverlayCommand::Stay,
         }
     }

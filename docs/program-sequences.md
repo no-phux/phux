@@ -133,7 +133,9 @@ reply, so a program MUST NOT wait for one without a timeout.
 
 - The user's `defaults.clipboard-read` decides: `deny` (the default) never
   answers, `ask` shows a prompt naming the pane (allow once, allow this pane
-  until you detach, or deny), `allow` answers.
+  until you detach, or deny), `allow` answers. The prompt ignores the keys
+  that allow for its first half second, so typing or an Enter already on
+  its way can't answer it.
 - Only a read from live output of the pane the client has focused, while
   its window has focus, is considered. A read from any other pane is dropped
   without a prompt. A pane prompts at most once every 3 seconds, and one read

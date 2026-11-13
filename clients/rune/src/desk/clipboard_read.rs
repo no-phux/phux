@@ -4,7 +4,7 @@
 //! `deny` (the default) drops every read, `allow` answers with this
 //! machine's clipboard, `ask` holds the read as a question (Return allows
 //! once, A allows that terminal for as long as the window is open, Escape
-//! denies). Only the terminal with the keyboard, in a focused window, may
+//! denies; allowing waits out [`PROMPT_ARMING`]). Only the terminal with the keyboard, in a focused window, may
 //! read, and one terminal asks at most once per [`PROMPT_COOLDOWN`]. This
 //! machine has no primary selection, so a read of `p` is never answered.
 
@@ -20,6 +20,10 @@ use super::{Desk, Pending};
 
 /// The shortest time between two questions from one terminal.
 pub const PROMPT_COOLDOWN: Duration = Duration::from_secs(3);
+
+/// How long a new question ignores the keys that allow, so a word being
+/// typed or a Return already on its way can't answer a read nobody saw.
+pub const PROMPT_ARMING: Duration = Duration::from_millis(500);
 
 /// This window's grants and recent questions.
 #[derive(Default)]
@@ -116,13 +120,15 @@ impl Desk {
             return None;
         };
         let (terminal, selection) = (terminal.clone(), *selection);
+        let armed = (self.resources.clipboard_reads.asked.get(&terminal))
+            .is_none_or(|at| at.elapsed() >= PROMPT_ARMING);
         let for_terminal = match &event.key {
-            rune::Key::Enter => false,
-            rune::Key::Text(a) if a.eq_ignore_ascii_case("a") => true,
             rune::Key::Escape => {
                 self.pending = None;
                 return Some(true);
             }
+            rune::Key::Enter if armed => false,
+            rune::Key::Text(a) if armed && a.eq_ignore_ascii_case("a") => true,
             _ => return Some(false),
         };
         self.pending = None;
@@ -233,6 +239,16 @@ mod tests {
                 key: Key::Text("a".into()),
                 mods: Mods::default(),
             };
+            let enter = KeyEvent {
+                key: Key::Enter,
+                mods: Mods::default(),
+            };
+            // Typed straight after it appears, a key that allows does nothing.
+            assert_eq!(d.clipboard_read_key(&a, tx), Some(false));
+            assert_eq!(d.clipboard_read_key(&enter, tx), Some(false));
+            assert!(d.pending.is_some(), "still asking");
+            let asked = d.resources.clipboard_reads.asked.get_mut(&id(1)).unwrap();
+            *asked -= PROMPT_ARMING;
             assert_eq!(d.clipboard_read_key(&a, tx), Some(true));
             assert_eq!(d.pending, None);
             assert!(!d.clipboard_read(id(1), C, tx), "answered, not asked");
