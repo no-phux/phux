@@ -208,9 +208,60 @@ fn replies_settle_as_outcomes_and_others_pass_through() {
             },
         ),
     ];
-    let cases = cases
-        .into_iter()
-        .map(|(r, result, outcome)| (r, click(), result, outcome));
+    settle(
+        &remote,
+        cases
+            .into_iter()
+            .map(|(r, result, outcome)| (r, click(), result, outcome)),
+    );
+    let mut projected = Vec::new();
+    remote.project_event(
+        None,
+        Event::CommandResult {
+            request_id: 4242,
+            result: CommandResult::Ok,
+        },
+        &mut projected,
+    );
+    assert!(projected.is_empty(), "not a document input reply");
+}
+
+/// One send of a case's intent, settled by its reply.
+type Case = (
+    u32,
+    WireDocumentIntent,
+    CommandResult,
+    WireDocumentInputOutcome,
+);
+
+fn settle(remote: &RemoteClient, cases: impl IntoIterator<Item = Case>) {
+    for (resource, intent, result, outcome) in cases {
+        let resource_id = id::encode(&ResourceId::local(resource));
+        let request_id = remote.send_document_input(resource_id.clone(), intent);
+        let mut projected = Vec::new();
+        remote.project_event(
+            None,
+            Event::CommandResult { request_id, result },
+            &mut projected,
+        );
+        assert_eq!(
+            projected,
+            [WireEvent::DocumentInputResult {
+                request_id,
+                resource_id,
+                outcome
+            }]
+        );
+    }
+}
+
+#[test]
+fn a_copy_is_copied_only_with_text() {
+    let (remote, _) = remote();
+    let error = |code| CommandResult::Error {
+        code,
+        message: "no".into(),
+    };
     let other = |message: &str| WireDocumentInputOutcome::Other {
         message: message.into(),
     };
@@ -255,34 +306,7 @@ fn replies_settle_as_outcomes_and_others_pass_through() {
         bytes(big.as_bytes()),
         WireDocumentInputOutcome::Copied { text: big.clone() },
     );
-    for (resource, intent, result, outcome) in cases.chain(copies).chain([whole]) {
-        let resource_id = id::encode(&ResourceId::local(resource));
-        let request_id = remote.send_document_input(resource_id.clone(), intent);
-        let mut projected = Vec::new();
-        remote.project_event(
-            None,
-            Event::CommandResult { request_id, result },
-            &mut projected,
-        );
-        assert_eq!(
-            projected,
-            [WireEvent::DocumentInputResult {
-                request_id,
-                resource_id,
-                outcome
-            }]
-        );
-    }
-    let mut projected = Vec::new();
-    remote.project_event(
-        None,
-        Event::CommandResult {
-            request_id: 4242,
-            result: CommandResult::Ok,
-        },
-        &mut projected,
-    );
-    assert!(projected.is_empty(), "not a document input reply");
+    settle(&remote, copies.into_iter().chain([whole]));
 }
 
 #[test]
