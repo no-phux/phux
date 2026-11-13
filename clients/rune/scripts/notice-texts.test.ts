@@ -2,7 +2,7 @@ import { afterEach, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { canonicalLicenses, type Crate, renderNotices } from "./third-party.ts";
+import { canonicalLicenses, type Crate, electedLicense, renderNotices } from "./third-party.ts";
 import { runeNoticeReader } from "./notice-texts.ts";
 
 const dirs: string[] = [];
@@ -59,4 +59,12 @@ test("unrelated crates without license files still use the canonical fallback", 
   const texts = runeNoticeReader([rune, other], canonicalLicenses())(other);
   expect(texts.get("MIT, canonical text")).toContain("Copyright (c) The other authors");
   expect(texts.has("workspace/LICENSE")).toBe(false);
+});
+
+test("a plain alternative is elected past one with an exception, never past AND", () => {
+  expect(electedLicense("Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT")).toBe("Apache-2.0");
+  expect(electedLicense("Apache-2.0 WITH LLVM-exception OR MIT")).toBe("MIT");
+  expect(electedLicense("Apache-2.0 WITH LLVM-exception")).toBeUndefined();
+  expect(electedLicense("MIT AND Unicode-3.0")).toBeUndefined();
+  expect(electedLicense("(MIT OR Apache-2.0) AND Unicode-3.0")).toBeUndefined();
 });
