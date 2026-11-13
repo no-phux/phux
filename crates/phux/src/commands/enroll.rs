@@ -33,6 +33,7 @@ mod ssh;
 mod tests;
 #[cfg(test)]
 mod tests_pair;
+mod unanswered;
 mod workload;
 
 pub(crate) use events::{EnrollEvent, EnrollFailure, ServicePolicy, Supervision};
@@ -50,6 +51,7 @@ pub(crate) use server::ensure_remote_server;
 pub(crate) use ssh::{
     accept_new_host_keys, authority, destination_host, login, ssh_hostname, ssh_program,
 };
+pub(crate) use unanswered::udp_unanswered;
 pub(crate) use workload::{
     Settlement, TicketPins, enroll_client_certificate, enroll_with_ticket, settle_identity,
 };

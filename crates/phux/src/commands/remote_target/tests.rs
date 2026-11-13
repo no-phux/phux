@@ -14,7 +14,7 @@ fn entry(name: &str, endpoint: &str) -> RemoteEntry {
 /// relay-routed, or bare-ssh entry.
 #[test]
 fn quic_candidate_derives_the_route_a_wss_entry_moves_to() {
-    use super::quic_candidate;
+    use super::quic_upgrade::quic_candidate;
     let candidate = |endpoint: &str| quic_candidate(&entry("mini", endpoint));
     assert_eq!(
         candidate("wss://mini.ts.net:8787").as_deref(),

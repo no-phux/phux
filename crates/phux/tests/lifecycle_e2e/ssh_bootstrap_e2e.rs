@@ -133,6 +133,11 @@ impl Home {
     /// requires; reading on a thread keeps a quiet child from parking the
     /// test past its deadline.
     fn run_until(&self, args: &[&str], needle: &str) -> String {
+        self.run_until_then(args, needle, SETTLE)
+    }
+
+    /// [`Self::run_until`], reading on for `settle` after `needle`.
+    fn run_until_then(&self, args: &[&str], needle: &str, settle: Duration) -> String {
         let pty = native_pty_system()
             .openpty(PtySize {
                 rows: 24,
@@ -180,7 +185,7 @@ impl Home {
                 Ok(chunk) => {
                     seen.push_str(&String::from_utf8_lossy(&chunk));
                     if settle_until.is_none() && seen.contains(needle) {
-                        settle_until = Some(Instant::now() + SETTLE);
+                        settle_until = Some(Instant::now() + settle);
                     }
                 }
                 Err(_) => break,
@@ -335,6 +340,43 @@ fn attach_over_ssh_rides_the_stdio_bridge_when_udp_does_not_connect() {
     assert!(seen.contains("attaching through ssh instead"), "{seen}");
     assert!(seen.contains("\u{1b}[?1049h"), "the local TUI drew: {seen}");
     assert!(!seen.contains("FAKE SSH FALLBACK"), "{seen}");
+}
+
+/// A host whose UDP went unanswered on a recent attach rides the stdio
+/// bridge at once instead of waiting out another probe, and the probe that
+/// runs in the background meanwhile forgets the host once UDP answers.
+#[test]
+#[ignore = "spawns a PTY-backed binary; runs in the e2e lane"]
+fn attach_over_ssh_skips_the_probe_for_a_host_udp_left_unanswered() {
+    let home = Home::new(Remote::Current, "127.0.0.1");
+    let memory = home.dir.path().join("state/phux-dev/udp-unanswered");
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("clock")
+        .as_secs();
+    std::fs::create_dir_all(memory.parent().expect("parent")).expect("state dir");
+    std::fs::write(&memory, format!("{now} 127.0.0.1\n")).expect("seed");
+
+    let seen = home.run_until_then(
+        &["attach", "--ssh", "me@box"],
+        "\u{1b}[?1049h",
+        Duration::from_secs(3),
+    );
+    assert!(
+        seen.contains("went unanswered on a recent attach"),
+        "{seen}"
+    );
+    assert!(seen.contains("attaching through ssh instead"), "{seen}");
+    assert!(
+        !seen.contains("QUIC to"),
+        "no probe held the attach: {seen}"
+    );
+    assert!(seen.contains("\u{1b}[?1049h"), "the local TUI drew: {seen}");
+    let left = std::fs::read_to_string(&memory).unwrap_or_default();
+    assert!(!left.contains("127.0.0.1"), "UDP answered: {left:?}");
+
+    let seen = home.run_until(&["attach", "--ssh", "me@box"], "\u{1b}[?1049h");
+    assert!(seen.contains("attaching over QUIC to 127.0.0.1:"), "{seen}");
 }
 
 /// ssh itself failing is reported, not papered over with a fallback that
