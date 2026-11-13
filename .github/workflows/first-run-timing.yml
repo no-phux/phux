@@ -20,9 +20,12 @@ on:
 permissions:
   contents: read
 
+# On main a newer push replaces the older one's pending run (the running one
+# finishes), so main never stacks macOS jobs ahead of pull requests in the
+# five-slot pool.
 concurrency:
-  group: first-run-timing-${{ github.event_name == 'push' && github.sha || github.event.pull_request.number || github.ref }}
-  cancel-in-progress: true
+  group: first-run-timing-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   linux:
