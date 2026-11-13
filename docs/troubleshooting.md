@@ -35,7 +35,7 @@ What works here
 phux: error: Agent status          no agent integration for OpenCode
   fix: opencode plugin add @phux/opencode
 phux: ok:    Asks and notifications 1 phone gets notifications from this host
-phux: warn:  Remote reach          quic listener not bound: ...
+phux: warn:  Remote reach          quic listener waiting to bind: address not available yet
 phux: ok:    File transfer         files can be sent to this host and fetched from it
 phux: error: Restore after restart server not supervised, sessions end at logout
   fix: phux service install --adopt
@@ -68,7 +68,7 @@ In `--json` it is `checklist`, a versioned document:
 | Field | Meaning |
 | --- | --- |
 | `id` | `agent_status`, `notifications`, `remote_reach`, `file_transfer`, `restore`, `skill`, in that order. Later versions may add ids; skip ones you don't know. |
-| `status` | `ok`, `off` (does not work), `waiting` (will work without help, such as supervision armed for the next start), or `unknown` (could not be checked, such as with no server running). |
+| `status` | `ok`, `off` (does not work), `waiting` (will work without help: a listener retrying its bind, or supervision armed for the next start), or `unknown` (could not be checked, such as with no server running). |
 | `reason` | Why, in plain words. |
 | `fix_command` | What to run on the host, one command per line, or `null`. |
 | `fix_action` | What a client can do itself in one tap: `enable_notifications`, or `null`. |

@@ -83,7 +83,7 @@ fn the_checklist_document_is_the_versioned_contract() {
                     "id": "remote_reach",
                     "title": "Remote reach",
                     "status": "off",
-                    "reason": "quic listener not bound: the address could not be bound (in use, or not available yet)",
+                    "reason": "quic listener not bound: the address could not be bound; the server log says why",
                     "fix_command": "phux upgrade",
                     "fix_action": null,
                 },
@@ -178,4 +178,22 @@ fn a_missing_skill_points_at_skill_setup() {
     let item = skill(Some(&check));
     assert_eq!(item.verdict, Verdict::Off);
     assert_eq!(item.fix_command.as_deref(), Some("phux skill setup"));
+}
+
+/// A bind the server is retrying reads as waiting, in plain words, with no
+/// command: it heals by itself once the address exists.
+#[test]
+fn a_retried_bind_is_waiting_not_off() {
+    let quic = RemoteListenerSlot::waiting(
+        RemoteListenerTransport::Quic,
+        "100.64.0.1:8788",
+        "Cannot assign requested address (os error 99)",
+    );
+    let item = remote_reach(Some(&server(vec![quic], Vec::new())), None);
+    assert_eq!(item.verdict, Verdict::Waiting);
+    assert_eq!(
+        item.reason,
+        "quic listener waiting to bind: address not available yet"
+    );
+    assert_eq!(item.fix_command, None);
 }

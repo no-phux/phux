@@ -272,13 +272,19 @@ fn remote_reach(server: Option<&ServerInputs>, reachable: Option<&Check>) -> Ite
         let reasons: Vec<_> = unhealthy
             .iter()
             .map(|slot| {
-                let (words, waiting, command) = slot.disabled_reason.map_or(
-                    ("the reason is unknown", false, Some("phux upgrade")),
+                // A bind the server is retrying heals by itself (#2401).
+                if let Some(error) = &slot.waiting {
+                    return format!(
+                        "{} listener waiting to bind: {}",
+                        slot.transport,
+                        bind_words(error)
+                    );
+                }
+                verdict = Verdict::Off;
+                let (words, command) = slot.disabled_reason.map_or(
+                    ("the reason is unknown", Some("phux upgrade")),
                     listener_words,
                 );
-                if !waiting {
-                    verdict = Verdict::Off;
-                }
                 fix = fix.or(command);
                 format!("{} listener not bound: {words}", slot.transport)
             })
@@ -311,50 +317,43 @@ fn remote_reach(server: Option<&ServerInputs>, reachable: Option<&Check>) -> Ite
     )
 }
 
-/// A disabled listener in plain words: why, whether it is only waiting, and
-/// the command that re-binds it. `phux upgrade` re-binds with panes intact.
-///
-/// Hook for retried binds (#2401): a reason that means "will bind by itself
-/// once the address exists" returns `waiting = true`, which turns the item
-/// [`Verdict::Waiting`] instead of [`Verdict::Off`].
-const fn listener_words(
-    reason: ListenerDisabledReason,
-) -> (&'static str, bool, Option<&'static str>) {
+/// A retried bind's error in plain words.
+fn bind_words(error: &str) -> &str {
+    if error.contains("assign requested address") || error.contains("not available") {
+        "address not available yet"
+    } else if error.contains("in use") {
+        "the port is in use"
+    } else {
+        error
+    }
+}
+
+/// A disabled listener in plain words, and the command that re-binds it.
+/// `phux upgrade` re-binds with panes intact.
+const fn listener_words(reason: ListenerDisabledReason) -> (&'static str, Option<&'static str>) {
     use ListenerDisabledReason as R;
     match reason {
         R::BindFailed => (
-            "the address could not be bound (in use, or not available yet)",
-            false,
+            "the address could not be bound; the server log says why",
             Some("phux upgrade"),
         ),
         R::NoOverlayAddress => (
             "no private network address was found; start your VPN",
-            false,
             Some("phux upgrade"),
         ),
         R::OverlayGateClosed => (
             "listening on the private network is turned off (PHUX_NO_AUTO_LISTEN, or a non-default profile)",
-            false,
             None,
         ),
-        R::TlsSetupFailed => ("TLS setup failed", false, Some("phux upgrade")),
-        R::CertProvisionFailed => (
-            "the certificate could not be created",
-            false,
-            Some("phux upgrade"),
-        ),
-        R::TokenStoreLoadFailed => (
-            "the credential store did not load",
-            false,
-            Some("phux upgrade"),
-        ),
+        R::TlsSetupFailed => ("TLS setup failed", Some("phux upgrade")),
+        R::CertProvisionFailed => ("the certificate could not be created", Some("phux upgrade")),
+        R::TokenStoreLoadFailed => ("the credential store did not load", Some("phux upgrade")),
         R::PolicyModeRefused => (
             "[policy] mode admits no remote listener; set mode = \"paired\" in config.toml",
-            false,
             Some("phux upgrade"),
         ),
         // A reason newer than this binary.
-        _ => ("see the server log", false, Some("phux upgrade")),
+        _ => ("see the server log", Some("phux upgrade")),
     }
 }
 
