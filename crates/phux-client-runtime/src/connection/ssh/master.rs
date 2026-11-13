@@ -9,7 +9,7 @@ use std::time::Duration;
 
 use tokio::io::AsyncReadExt as _;
 
-use super::{ASKPASS_ENV, HOST_KEY_REFUSED, host_key_remedy, master_options, program};
+use super::{HOST_KEY_REFUSED, host_key_remedy, master_options, program};
 
 /// Whether ssh's stderr says sshd closed the connection before the login
 /// began: what sshd's `MaxStartups` does to connections over its limit,
@@ -133,12 +133,7 @@ async fn login(dir: &Path, destination: &str, askpass: Option<&Path>) -> Option<
     super::use_agent(&mut command);
     command.args(master_options(dir));
     match askpass {
-        Some(askpass) => {
-            command
-                .env("SSH_ASKPASS", askpass)
-                .env("SSH_ASKPASS_REQUIRE", "force")
-                .env(ASKPASS_ENV, "1");
-        }
+        Some(askpass) => super::askpass_env(&mut command, askpass),
         None => {
             command.args(["-o", "BatchMode=yes"]);
         }

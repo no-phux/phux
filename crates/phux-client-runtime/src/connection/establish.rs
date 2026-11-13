@@ -81,7 +81,8 @@ pub(crate) async fn establish(dial: &Dial) -> Result<Io, DialFailure> {
         Dial::Ssh {
             destination,
             remote_phux,
-        } => super::ssh::establish(destination, remote_phux)
+            askpass,
+        } => super::ssh::establish(destination, remote_phux, askpass.as_deref())
             .await
             .map_err(DialFailure::Ssh),
         Dial::Quic(plan) => establish_quic(plan).await,

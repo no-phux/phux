@@ -184,7 +184,12 @@ fn managed_target(dial: Dial) -> Target {
         Dial::Ssh {
             destination,
             remote_phux,
-        } => return Target::ssh(destination, remote_phux),
+            askpass,
+        } => {
+            let mut target = Target::ssh(destination, remote_phux);
+            target.ssh_askpass = askpass;
+            return target;
+        }
         Dial::Ws(ws) => {
             let mut target = Target::ws(ws.url);
             target.token = ws.token;

@@ -57,8 +57,13 @@ share it. sshd also turns away logins over its `MaxStartups` limit before
 they start, which happens when many open at once; phux tries those again a
 few times after a short random pause. A refused password, key or host key
 is never retried. If every try is turned away, the error names
-`MaxStartups`, and if the host refuses more sessions on the shared login,
-it names `MaxSessions`.
+`MaxStartups`.
+
+sshd also caps the sessions one login carries (`MaxSessions`, 10 by
+default). Past that, ssh logs the extra connection in on its own. A key
+host needs nothing more. A password or 2FA host asks again: in Rune's
+sign-in dialog, or, from a terminal, through `ssh -t`. If that login fails
+too, the error names `MaxSessions`.
 
 When ssh fails and says little more than "Connection closed", phux shows
 what ssh printed and a command to copy: the same `ssh` with phux's options
