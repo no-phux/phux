@@ -26,9 +26,11 @@ phux-protocol = { path = "../../crates/phux-protocol" }
 # Phux supplies Inter and the terminal font through AppSpec::fonts. Keep
 # Rune's other defaults, but don't carry its unused embedded font copies.
 # Packaged qualification and the updater's GPU launch check use headless tooling.
-rune = { git = "https://github.com/anomalyco/rune", rev = "726ccc363ad115c6cc8f603f397f101d04e7c8e9", default-features = false, features = ["accessibility", "dbus", "metal-backend", "ogg-audio", "svg", "tooling"] }
-rune-notify = { git = "https://github.com/anomalyco/rune", rev = "726ccc363ad115c6cc8f603f397f101d04e7c8e9" }
-rune-perf = { git = "https://github.com/anomalyco/rune", rev = "726ccc363ad115c6cc8f603f397f101d04e7c8e9" }
+# Stop before 740ecbc9: its automatic long press cancels terminal-owned holds.
+# MOBILE.md records the missing touch-ownership seam; long-hold tests guard it.
+rune = { git = "https://github.com/anomalyco/rune", rev = "2612be7c53918002c89a44355f6f8cc23fb5628d", default-features = false, features = ["accessibility", "dbus", "metal-backend", "ogg-audio", "svg", "tooling"] }
+rune-notify = { git = "https://github.com/anomalyco/rune", rev = "2612be7c53918002c89a44355f6f8cc23fb5628d" }
+rune-perf = { git = "https://github.com/anomalyco/rune", rev = "2612be7c53918002c89a44355f6f8cc23fb5628d" }
 # Never called directly: Rune's decoder guesses the format, so these
 # features (unified with Rune's png/jpeg) let typed documents draw GIF/WebP.
 image = { version = "0.25", default-features = false, features = ["gif", "webp"] }
@@ -59,10 +61,10 @@ skrifa = "0.44"
 [patch.crates-io]
 # Git dependencies do not inherit Rune's workspace patches. Track all four
 # at the same rev: native IME, text shaping/bidi, GPU and Windows accessibility.
-winit = { git = "https://github.com/anomalyco/rune", rev = "726ccc363ad115c6cc8f603f397f101d04e7c8e9" }
-parley_engine = { git = "https://github.com/anomalyco/rune", rev = "726ccc363ad115c6cc8f603f397f101d04e7c8e9" }
-wgpu-hal = { git = "https://github.com/anomalyco/rune", rev = "726ccc363ad115c6cc8f603f397f101d04e7c8e9" }
-accesskit_windows = { git = "https://github.com/anomalyco/rune", rev = "726ccc363ad115c6cc8f603f397f101d04e7c8e9" }
+winit = { git = "https://github.com/anomalyco/rune", rev = "2612be7c53918002c89a44355f6f8cc23fb5628d" }
+parley_engine = { git = "https://github.com/anomalyco/rune", rev = "2612be7c53918002c89a44355f6f8cc23fb5628d" }
+wgpu-hal = { git = "https://github.com/anomalyco/rune", rev = "2612be7c53918002c89a44355f6f8cc23fb5628d" }
+accesskit_windows = { git = "https://github.com/anomalyco/rune", rev = "2612be7c53918002c89a44355f6f8cc23fb5628d" }
 
 [profile.release]
 lto = "thin"

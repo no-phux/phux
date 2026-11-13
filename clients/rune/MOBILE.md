@@ -65,6 +65,12 @@ desktop one, so every CI build and release proves it draws a session.
 | Haptics only where the native host plays them: a hold and a copy | A haptics API | A tick on latch, tab switch and pad step |
 | No native Rune VoiceOver element bridge or file/image clipboard integration (text copy, paste and links go through the native host) | App/platform adapters over upstream's runtime | Qualify the native accessibility tree and service these through UIKit; desktop accessibility is not iOS evidence |
 
+Upstream `740ecbc9` adds automatic long press, but cancels an application-owned
+terminal drag at 500 ms and consumes its lift. It cannot replace the terminal's
+hold-to-select/program-drag policy without a touch-ownership seam. Keep the pin
+before that change until stationary holds, dragged holds and Shift-local holds
+all retain their selection/copy or program-button release.
+
 ## Next, no upstream needed
 
 | Piece | Today |
