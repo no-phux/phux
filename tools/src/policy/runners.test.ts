@@ -87,10 +87,17 @@ test("pull request lanes never write to the shared cache budget", () => {
     const name = uses(step).split("@")[0] ?? "";
     if (name === "actions/cache/save") expect(str(step["if"])).toContain(MAIN);
     if (name === "Swatinem/rust-cache") expect(str(withInput(step, "save-if"))).toContain(MAIN);
-    // mbx saves only from default-branch pushes unless an input opts in.
+    // The only extra save mode is an explicit main dispatch opt-in. The
+    // runner supplies the real source event; PRs cannot enter this mode.
     const inputs = Object.keys(table(step["with"]));
-    if (name === "jdx/mr-boxington-action")
-      expect(inputs.filter((key) => key.startsWith("save-on"))).toEqual([]);
+    if (name === "jdx/mr-boxington-action") {
+      expect(inputs.filter((key) => key.startsWith("save-on"))).toEqual([
+        "save-on-workflow-dispatch",
+      ]);
+      expect(withInput(step, "save-on-workflow-dispatch")).toBe(
+        "${{ inputs.record-main-cache == 'true' && github.ref == 'refs/heads/main' && github.event_name == 'workflow_dispatch' }}",
+      );
+    }
     // actions/cache saves on every event.
     expect(name).not.toBe("actions/cache");
     if (CACHE_WRITERS.has(name)) caches++;
@@ -105,11 +112,11 @@ test("only main prunes the build cache", () => {
   const warm = job(workflow("cache-warm.yml"), "prune-build-cache");
   const gate = str(warm["if"]) ?? "";
   expect(gate).toContain(MAIN);
-  expect(gate).toContain("10 0 * * *");
+  expect(gate).toContain("github.event_name == 'workflow_dispatch'");
   expect(table(warm["permissions"])["actions"]).toBe("write");
 });
 
-test("the mbx warm stays on Linux and only main reports a saving push", () => {
+test("the mbx warm stays on Linux and only main dispatches opt into saves", () => {
   const warm = workflow("cache-warm.yml");
   const rune = str(job(warm, "rune")["if"]) ?? "";
   expect(rune).toContain(MAIN);
@@ -119,19 +126,22 @@ test("the mbx warm stays on Linux and only main reports a saving push", () => {
     const lane = job(warm, id);
     expect(str(lane["runs-on"]) ?? "").toMatch(/^ubuntu-/);
     const gate = str(lane["if"]) ?? "";
-    expect(gate).toContain("10 0 * * *");
+    expect(gate).toBe("github.event_name == 'workflow_dispatch'");
     expect(gate).not.toContain("17 6 * * *");
   }
   const setup = action("setup-rust-lane");
   expect(str(table(table(setup["inputs"])["record-main-cache"])["default"])).toBe("false");
   const mbx = steps(setup).find((step) => uses(step).startsWith("jdx/mr-boxington-action"));
-  const event = str(table(mbx?.["env"])["GITHUB_EVENT_NAME"]) ?? "";
-  expect(event).toContain("inputs.record-main-cache == 'true'");
-  expect(event).toContain("'push'");
+  expect(table(mbx?.["env"])["GITHUB_EVENT_NAME"]).toBeUndefined();
+  const saveDispatch = str(withInput(mbx ?? {}, "save-on-workflow-dispatch")) ?? "";
+  expect(saveDispatch).toContain("inputs.record-main-cache == 'true'");
+  expect(saveDispatch).toContain(MAIN);
+  expect(saveDispatch).toContain("github.event_name == 'workflow_dispatch'");
   const deps = steps(setup).find((step) => uses(step).startsWith("Swatinem/rust-cache"));
   const saveIf = str(withInput(deps ?? {}, "save-if")) ?? "";
   expect(saveIf).toContain(MAIN);
-  expect(saveIf).toContain("github.event_name == 'schedule'");
+  expect(saveIf).toContain("github.event_name == 'workflow_dispatch'");
+  expect(saveIf).toContain("inputs.record-main-cache == 'true'");
   const opted = workflowNames().flatMap((name) =>
     Object.values(jobs(workflow(name)))
       .flatMap(steps)
@@ -139,5 +149,5 @@ test("the mbx warm stays on Linux and only main reports a saving push", () => {
       .filter((step) => str(withInput(step, "record-main-cache")) === "true")
       .map(() => name),
   );
-  expect(opted).toEqual(["cache-warm.yml", "cache-warm.yml", "cache-warm.yml"]);
+  expect(opted).toEqual(["cache-warm.yml", "cache-warm.yml", "cache-warm.yml", "cache-warm.yml"]);
 });

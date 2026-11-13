@@ -440,9 +440,9 @@ jobs:
     secrets:
       RELEASE_APP_PRIVATE_KEY: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
 
-  # mbx saves when its key changes (UTC day, Cargo.lock, flake.lock). Keep a
-  # current-day key and one restore source per prefix; cache-warm.yml fills
-  # the new UTC day at 00:10 and drops the previous mbx key before saving.
+  # mbx saves when its key changes (UTC day, Cargo.lock, flake.lock). After
+  # post-step uploads, prune only main entries with actual replacement proof;
+  # otherwise keep the newest older restore source for each known prefix.
   prune-build-cache:
     name: prune superseded build caches
     needs: [lint, test-build, ffi, icount]

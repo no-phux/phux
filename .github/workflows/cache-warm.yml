@@ -7,9 +7,9 @@ name: Cache warm
 #   dependency cache. Their mbx key is flake + Cargo.lock + the UTC day, so
 #   the first pull request of a day used to miss. This run restores the
 #   previous day, builds what a main push builds, and on main saves today's
-#   key. mr-boxington-action saves a default-branch push and refuses a
-#   schedule; record-main-cache reports that push. Off main the reported
-#   push is still restore-only, so a branch dispatch does not write a cache.
+#   key. A cheap scheduled job dispatches the Linux-only mode on main:
+#   mr-boxington-action supports opting into workflow_dispatch saves, not
+#   schedule saves. Off main the opt-in is false, so branches restore only.
 #
 #   06:17 UTC — the Rune lane, unchanged. Its job does not run at 00:10.
 #   An unchanged key restores exactly and saves nothing.
@@ -18,22 +18,43 @@ on:
     - cron: "10 0 * * *"
     - cron: "17 6 * * *"
   workflow_dispatch:
+    inputs:
+      linux-only:
+        description: Warm only Linux caches (used by the nightly dispatcher).
+        type: boolean
+        required: false
+        default: false
 
 permissions:
   contents: read
 
 concurrency:
-  group: cache-warm
+  # Isolate both clocks: the dispatcher never waits for its dispatched run,
+  # and a pending Rune warm cannot replace or block the Linux-only warm.
+  group: cache-warm-${{ github.ref }}-${{ inputs.linux-only == true && 'linux' || github.event_name == 'schedule' && github.event.schedule == '10 0 * * *' && 'dispatch' || 'rune' }}
   cancel-in-progress: false
 
 jobs:
+  dispatch-linux:
+    name: dispatch the Linux-only cache warm
+    if: github.ref == 'refs/heads/main' && github.event_name == 'schedule' && github.event.schedule == '10 0 * * *'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      actions: write
+    steps:
+      - env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: gh workflow run cache-warm.yml --repo "$GH_REPO" --ref main -f linux-only=true
+
   rune:
-    if: github.ref == 'refs/heads/main' && (github.event_name != 'schedule' || github.event.schedule == '17 6 * * *')
+    if: github.ref == 'refs/heads/main' && inputs.linux-only != true && (github.event_name != 'schedule' || github.event.schedule == '17 6 * * *')
     uses: ./.github/workflows/rune-build.yml
 
   rust-lint:
     name: warm rust lint
-    if: github.event_name != 'schedule' || github.event.schedule == '10 0 * * *'
+    if: github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 30
     permissions:
@@ -55,12 +76,12 @@ jobs:
       - name: Check the plugin index compiles
         run: nix develop -c cargo check --locked --manifest-path scripts/plugin-index/Cargo.toml
       - name: leave disk headroom for the objects save
-        if: steps.lane.outputs.cache-save-reason == 'default-branch push' && steps.lane.outputs.cache-hit != 'true'
+        if: steps.lane.outputs.cache-save-eligible == 'true' && steps.lane.outputs.cache-hit != 'true'
         run: bash scripts/ci/mbx-export-headroom.sh
 
   rust-test:
     name: warm rust test
-    if: github.event_name != 'schedule' || github.event.schedule == '10 0 * * *'
+    if: github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 30
     permissions:
@@ -86,12 +107,12 @@ jobs:
           PHUX_TEST_ARCHIVE: ${{ runner.temp }}/phux-tests.tar.zst
         run: nix develop -c just test-archive
       - name: leave disk headroom for the objects save
-        if: steps.lane.outputs.cache-save-reason == 'default-branch push' && steps.lane.outputs.cache-hit != 'true'
+        if: steps.lane.outputs.cache-save-eligible == 'true' && steps.lane.outputs.cache-hit != 'true'
         run: bash scripts/ci/mbx-export-headroom.sh
 
   rust-uniffi:
     name: warm rust uniffi
-    if: github.event_name != 'schedule' || github.event.schedule == '10 0 * * *'
+    if: github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 25
     permissions:
@@ -107,6 +128,7 @@ jobs:
           cachix-auth-token: ${{ secrets.CACHIX_AUTH_TOKEN }}
           cache-lane: uniffi
           build-cache: deps
+          record-main-cache: "true"
       - name: dependency-cache hit
         run: echo "hit=${{ steps.lane.outputs.cache-hit }}"
       - run: nix develop -c just binding-uniffi-test
@@ -114,7 +136,7 @@ jobs:
 
   rust-icount:
     name: warm rust icount
-    if: github.event_name != 'schedule' || github.event.schedule == '10 0 * * *'
+    if: github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     permissions:
@@ -136,18 +158,17 @@ jobs:
       - name: just perf-icount
         run: nix develop -c just perf-icount
       - name: leave disk headroom for the objects save
-        if: steps.lane.outputs.cache-save-reason == 'default-branch push' && steps.lane.outputs.cache-hit != 'true'
+        if: steps.lane.outputs.cache-save-eligible == 'true' && steps.lane.outputs.cache-hit != 'true'
         run: bash scripts/ci/mbx-export-headroom.sh
 
   # Job dependencies include post-step uploads. Only actual current-day
   # caches qualify retiring the last older restore source; a skipped/failed
   # upload must not destroy that fallback. A branch dispatch must not delete:
-  # this job's
-  # token can remove repository caches, and the ref gate is the boundary.
+  # this job's token can remove repository caches, and the ref is the boundary.
   prune-build-cache:
     name: prune superseded build caches
     needs: [rust-lint, rust-test, rust-uniffi, rust-icount]
-    if: always() && github.ref == 'refs/heads/main' && (github.event_name != 'schedule' || github.event.schedule == '10 0 * * *')
+    if: always() && github.ref == 'refs/heads/main' && github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     permissions:
