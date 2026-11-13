@@ -1,14 +1,26 @@
 import { readFileSync } from "node:fs";
 import { parseArgs } from "node:util";
 import { formatOutputs, writeOutputs } from "../lib/actions.ts";
-import { Failure, UsageError, type Command } from "../lib/command.ts";
+import { describe, Failure, UsageError, type Command } from "../lib/command.ts";
 import { git } from "../lib/git.ts";
 import { inherit } from "../lib/process.ts";
 import { ROOT } from "../lib/repo.ts";
 import { Classifier, toOutputs, type Classification } from "./classify.ts";
-import { classifyEvent, diffPaths } from "./detect.ts";
+import { classifyDetection, classifyEvent, detect, diffPaths } from "./detect.ts";
 import { checkMerge } from "./merge-check.ts";
-import { CI_ONLY, LANE_RECIPES, LANES, plan, planOutputs, reused, type Plan } from "./plan.ts";
+import {
+  CI_ONLY,
+  eventHasLabel,
+  LANE_RECIPES,
+  LANES,
+  PERF_BASELINE_LABEL,
+  plan,
+  planOutputs,
+  reused,
+  triggerFor,
+  type PathScope,
+  type Plan,
+} from "./plan.ts";
 import { alreadyValidated, artifactName, type Receipt } from "./receipt.ts";
 
 const print = (result: Classification) => console.log(formatOutputs(toOutputs(result)));
@@ -74,12 +86,32 @@ export const commands: Record<string, Command> = {
     summary: "Plan ci.yml for the current event: its lanes, test scope, and receipt.",
     run() {
       const event = process.env["GITHUB_EVENT_NAME"] ?? "";
+      const eventPath = process.env["GITHUB_EVENT_PATH"];
       const repository = process.env["GITHUB_REPOSITORY"] ?? "";
-      const c = classifyEvent(event, process.env["GITHUB_EVENT_PATH"]);
+      const detection = detect(event, eventPath);
+      const c = classifyDetection(detection);
       // A merge group is main's tree before it lands: main policy.
-      const main = event === "push" || event === "merge_group";
       const queued = event === "pull_request" && process.env["PHUX_MERGE_QUEUE"] === "true";
-      const p = plan(c, main ? "push" : "pull_request", queued);
+      const scope: PathScope =
+        detection.kind === "paths"
+          ? { kind: "diff", paths: detection.paths }
+          : detection.kind === "full"
+            ? { kind: "full" }
+            : { kind: "none" };
+      let perfBaseline = false;
+      if (event === "pull_request" && eventPath !== undefined) {
+        try {
+          perfBaseline = eventHasLabel(
+            JSON.parse(readFileSync(eventPath, "utf8")),
+            PERF_BASELINE_LABEL,
+          );
+        } catch (error) {
+          // The event file is how the label arrives. Unreadable means run the lane.
+          console.error(`perf-baseline label unreadable; running icount: ${describe(error)}`);
+          perfBaseline = true;
+        }
+      }
+      const p = plan(c, triggerFor(event), { mergeQueue: queued, scope, perfBaseline });
       const tree = git(["rev-parse", "HEAD^{tree}"]).trim();
       const receipt: Receipt = { schema: 2, tree, workflow: WORKFLOW, coverage: p.coverage };
       const validated =
@@ -120,7 +152,10 @@ export const commands: Record<string, Command> = {
         if (values.preflight) return 0;
       }
       const base = values.base ?? git(["merge-base", "origin/main", "HEAD"]).trim();
-      const p = plan(new Classifier().classify(workingChanges(base)), "pull_request");
+      const paths = workingChanges(base);
+      const p = plan(new Classifier().classify(paths), "pull_request", {
+        scope: { kind: "diff", paths },
+      });
       const lanes = LANES.filter((lane) => p.lanes.has(lane));
       const local = lanes.filter((lane) => !CI_ONLY.has(lane));
       const skipped = [

@@ -14,7 +14,11 @@ export interface Receipt extends Table {
   readonly schema: number;
   readonly tree: string;
   readonly workflow: string;
-  /** The pull-request lane set (plus `rune_ios`); a push reuses only an equal one. */
+  /**
+   * The pull-request lane set (plus `rune_ios`); a push reuses only an equal one.
+   * Native setup and rust icount are absent unless that pull request ran them.
+   * A push still runs both after a match.
+   */
   readonly coverage: string;
 }
 

@@ -291,7 +291,8 @@ tests of its dependents. The required `ci`
 aggregate rejects a failed or cancelled lane. `just tools-check` tests the
 routes.
 
-Release metadata alone runs guards without compile lanes. The classifier
+Release metadata alone runs guards without compile lanes. `native setup` and
+`rust icount` still run on a merge group and on `main`. The classifier
 compares both full documents: root workspace and lock versions, release
 manifest versions, skill version lines, changelogs, and top-level `version`
 in the five integration packages listed in `release-please-config.json`.
@@ -299,9 +300,15 @@ Any other package field, missing side, unlisted path, or workspace bump
 without all its locks keeps normal routing.
 
 `main` pushes and merge queue groups (`merge_group`) run main policy: the
-full Rust pool and every lane the diff needs. A `main` push whose tree a
-pull request or merge group already validated with the same lanes reuses
-that receipt (`tools/src/routing/receipt.ts`). With the repository variable
+full Rust pool, every lane the diff needs, and always `native setup` and
+`rust icount`. A pull request runs `native setup` for that job's inputs,
+including crate build scripts and C or linker sources, and `rust icount`
+for its baseline, benches, harness, or a push after the `perf-baseline`
+label. The `ci` aggregate accepts that deliberate skip
+on a pull request and rejects it on a merge group or `main` push. A `main`
+push whose tree a pull request or merge group already validated with the
+same lanes reuses that receipt (`tools/src/routing/receipt.ts`) and still
+runs those two jobs. With the repository variable
 `PHUX_MERGE_QUEUE=true`, a pull request that reaches Rune only through a
 root crate in its Cargo closure skips `rune / ios-native-simulator`. Its
 merge group still runs it, and its receipt never covers a `main` push.
@@ -322,8 +329,9 @@ reference. `just guards` lints them.
 `just perf-icount` counts instructions with callgrind on a fixed set of hot
 paths (VT apply, frame encode and decode, agent stream append, kernel
 history slice, PTY batch copy, one organization commit) and fails the
-`perf-icount` CI lane when a count rises more than five percent over
-`benchmarks/icount-baseline.json`. Run it inside `nix develop` on x86_64;
+`rust icount` CI lane when a count rises more than five percent over
+`benchmarks/icount-baseline.json`. The CI section says when the lane runs.
+Run it inside `nix develop` on x86_64;
 counts from another libc or architecture are not comparable.
 
 To accept a new baseline, run `just perf-icount --update` there, commit the
