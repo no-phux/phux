@@ -221,6 +221,10 @@ impl super::SessionLoop {
         // what it draws on top is no longer a view an in-place repaint fixes.
         self.paint_hold = None;
         self.painted_view = None;
+        // With nothing arranged, the empty state is the frame under a modal.
+        let empty = self
+            .paint_empty_state(out, sidebar, RepaintLevel::Full)
+            .unwrap_or(StatusBarPaint::NotPublished);
         let base = self
             .mirror
             .workspace
@@ -234,7 +238,7 @@ impl super::SessionLoop {
             &self.mirror.leaves,
         );
         let focus = self.mirror.paint_focus();
-        paint_active_overlay(
+        let painted = paint_active_overlay(
             out,
             &self.overlays,
             base.as_deref(),
@@ -242,7 +246,8 @@ impl super::SessionLoop {
             &self.mirror.engine_kernel,
             focus.as_ref(),
             &mut chrome,
-        )
+        );
+        if base.is_none() { empty } else { painted }
     }
 
     /// Repaint the overlay stack when the live overlay tagged `key` took the

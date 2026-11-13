@@ -291,3 +291,48 @@ async fn a_wheel_scroll_paints_the_history_rows_without_clearing() {
     drop(client);
     drop(server);
 }
+
+/// A kept session with nothing in it (a server restart ended its panes)
+/// paints its empty state at bootstrap, since no pane stream will, and keeps
+/// that frame under a modal instead of a stale or blank screen.
+#[tokio::test(flavor = "current_thread")]
+async fn an_empty_session_paints_at_bootstrap_and_under_a_modal() {
+    let (a, _b) = tokio::net::UnixStream::pair().unwrap();
+    let mut client = Connection::from_stream(a);
+    let negotiated = NegotiatedBootstrap {
+        profile: BootstrapProfile::SynthesizedVtRaw,
+        limits: BootstrapLimits::default(),
+        server_features: ServerFeatureSet::new(),
+        server_features_ext: phux_protocol::ServerFeatureExtSet::new(),
+    };
+    let mut state = SessionLoop::new(
+        negotiated,
+        PredictiveConfig::disabled(),
+        false,
+        None,
+        EntryPick::default(),
+        None,
+    )
+    .unwrap();
+    let attached = FrameKind::Attached {
+        attach_id: 1,
+        initial_client_id: ClientId::new(1),
+        snapshot: SessionSnapshot::new(SessionId::new(1), WindowId::new(1), ResourceId::local(1))
+            .with_sessions(vec![
+                SessionInfo::new(SessionId::new(1), "kept").with_keep_empty(true),
+            ]),
+    };
+    let mut out = Vec::new();
+    state
+        .bootstrap(&mut client, &mut out, attached, None)
+        .await
+        .unwrap();
+    assert!(String::from_utf8_lossy(&out).contains("Empty session"));
+
+    out.clear();
+    let toast = ToastOverlay::new("Restore sessions", vec![], &state.settings.theme);
+    state.overlays.push(Box::new(toast));
+    state.paint_overlay(&mut out, None);
+    let text = String::from_utf8_lossy(&out);
+    assert!(text.contains("Empty session") && text.contains("Restore sessions"));
+}
