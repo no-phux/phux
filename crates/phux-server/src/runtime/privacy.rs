@@ -4,13 +4,17 @@
 //! (or to the app responsible for it), so a CLI probing its own grants
 //! would report the terminal's. Every probe is a read that never prompts:
 //!
-//! - Full Disk Access: open the user's `TCC.db` read-only; a refusal means
-//!   denied.
+//! - Full Disk Access: open the system `TCC.db` read-only (the per-user one
+//!   is gone on newer macOS); a refusal means denied.
 //! - Screen Recording: `CGPreflightScreenCaptureAccess`.
 //! - Accessibility: `AXIsProcessTrusted`.
 //!
-//! The two preflights answer yes or no, so "denied" also covers "never
-//! asked". Off macOS every status is `unknown`.
+//! When one of those says no, TCC's own answer (`TCCAccessPreflight`)
+//! decides, which also tells "never asked" from "denied". The server lives
+//! for days: `AXIsProcessTrusted` caches its first answer until a
+//! distributed notification only a main run loop receives, which a daemon
+//! never runs, so on its own it never sees a grant given later (#2280).
+//! Off macOS every status is `unknown`.
 
 use std::path::{Path, PathBuf};
 
@@ -75,7 +79,7 @@ fn enclosing_app(path: &Path) -> PathBuf {
 
 #[cfg(target_os = "macos")]
 mod probe {
-    use std::ffi::OsString;
+    use std::ffi::{CStr, OsString, c_void};
     use std::os::unix::ffi::OsStringExt as _;
     use std::path::{Path, PathBuf};
 
@@ -95,16 +99,67 @@ mod probe {
 
     /// Full Disk Access, Screen Recording, Accessibility.
     pub(super) fn statuses() -> [&'static str; 3] {
-        let fda = std::env::var_os("HOME").map_or("unknown", |home| {
-            full_disk_access(
-                &Path::new(&home).join("Library/Application Support/com.apple.TCC/TCC.db"),
-            )
-        });
         [
-            fda,
-            yes_no(CGPreflightScreenCaptureAccess()),
-            yes_no(AXIsProcessTrusted()),
+            fresh(
+                full_disk_access(Path::new(
+                    "/Library/Application Support/com.apple.TCC/TCC.db",
+                )),
+                c"kTCCServiceSystemPolicyAllFiles",
+            ),
+            fresh(
+                yes_no(CGPreflightScreenCaptureAccess()),
+                c"kTCCServiceScreenCapture",
+            ),
+            fresh(yes_no(AXIsProcessTrusted()), c"kTCCServiceAccessibility"),
         ]
+    }
+
+    /// `public`, unless it says no and TCC answers for `service`.
+    ///
+    /// ponytail: a grant the public probe saw and the user then revoked
+    /// still reads granted (`AXIsProcessTrusted`'s cache) until the server
+    /// restarts; ask TCC first if revoking live matters.
+    fn fresh(public: &'static str, service: &CStr) -> &'static str {
+        if public == "granted" {
+            return public;
+        }
+        match preflight(service) {
+            Some(0) => "granted",
+            Some(1) => "denied",
+            Some(2) => "not_determined",
+            _ => public,
+        }
+    }
+
+    /// `TCCAccessPreflight(service, NULL)`: 0 granted, 1 denied, 2 never
+    /// asked. A private call that never prompts and asks `tccd` each time,
+    /// so it is resolved at run time and its absence is `None`.
+    fn preflight(service: &CStr) -> Option<i32> {
+        type Preflight = unsafe extern "C" fn(*const c_void, *const c_void) -> i32;
+        // SAFETY: loads (or re-references) a system framework and looks up
+        // two symbols in it; null answers are handled.
+        let (call, name) = unsafe {
+            let tcc = libc::dlopen(
+                c"/System/Library/PrivateFrameworks/TCC.framework/TCC".as_ptr(),
+                libc::RTLD_LAZY,
+            );
+            if tcc.is_null() {
+                return None;
+            }
+            (
+                libc::dlsym(tcc, c"TCCAccessPreflight".as_ptr()),
+                libc::dlsym(tcc, service.as_ptr()),
+            )
+        };
+        if call.is_null() || name.is_null() {
+            return None;
+        }
+        // SAFETY: the symbol has had this signature since macOS 10.9, and a
+        // `kTCCService…` symbol is a constant CFStringRef.
+        unsafe {
+            let call: Preflight = std::mem::transmute(call);
+            Some(call(*name.cast::<*const c_void>(), std::ptr::null()))
+        }
     }
 
     fn full_disk_access(tcc_db: &Path) -> &'static str {

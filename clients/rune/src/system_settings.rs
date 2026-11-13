@@ -115,6 +115,59 @@ pub fn frame() -> Option<([f32; 4], [f32; 4])> {
     None
 }
 
+/// Ask macOS's own prompt for `service`, for this app. True when asked;
+/// Full Disk Access has no prompt.
+#[cfg(target_os = "macos")]
+#[allow(unsafe_code)]
+pub fn request(service: crate::onboarding::Service) -> bool {
+    use objc2::msg_send;
+    use objc2::rc::Retained;
+    use objc2::runtime::{AnyClass, AnyObject};
+
+    use crate::onboarding::Service;
+
+    #[link(name = "ApplicationServices", kind = "framework")]
+    unsafe extern "C" {
+        static kAXTrustedCheckOptionPrompt: *const AnyObject;
+        fn AXIsProcessTrustedWithOptions(options: *const AnyObject) -> bool;
+    }
+    #[link(name = "CoreGraphics", kind = "framework")]
+    unsafe extern "C" {
+        fn CGRequestScreenCaptureAccess() -> bool;
+    }
+    // Safety: documented calls that show the system prompt and return; the
+    // options are a one-entry NSDictionary (toll-free a CFDictionary).
+    unsafe {
+        match service {
+            Service::FullDiskAccess => return false,
+            Service::ScreenRecording => {
+                CGRequestScreenCaptureAccess();
+            }
+            Service::Accessibility => {
+                let Some(yes): Option<Retained<AnyObject>> =
+                    AnyClass::get(c"NSNumber").map(|c| msg_send![c, numberWithBool: true])
+                else {
+                    return false;
+                };
+                let Some(options): Option<Retained<AnyObject>> =
+                    AnyClass::get(c"NSDictionary").map(|c| {
+                        msg_send![c, dictionaryWithObject: &*yes, forKey: kAXTrustedCheckOptionPrompt]
+                    })
+                else {
+                    return false;
+                };
+                AXIsProcessTrustedWithOptions(Retained::as_ptr(&options));
+            }
+        }
+    }
+    true
+}
+
+#[cfg(not(target_os = "macos"))]
+pub fn request(_: crate::onboarding::Service) -> bool {
+    false
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
