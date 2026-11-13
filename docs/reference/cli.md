@@ -1745,7 +1745,8 @@ Approve a held action
 
 Releases the held action ID once: the server runs it as the workload that asked,
 under that workload's own grant, and answers that workload. Asks on a terminal;
-pass `--yes` when stdin is not one.
+pass `--yes` when stdin is not one. Credential requests require interactive
+review of the exact references and identities; `--yes` cannot approve them.
 
 Usage: phux approve [--yes] [--json] <ID>
 
@@ -1753,7 +1754,7 @@ Arguments:
   <ID>  The approval id `phux approvals` lists.
 
 Flags:
-      --yes            Approve without asking.
+      --yes            Approve a noncredential held action without asking.
       --json           Emit stable, versioned JSON on stdout instead of the
                        human view. On failure, stdout stays empty and stderr
                        carries one JSON error object.

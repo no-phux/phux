@@ -41,6 +41,9 @@ impl CredentialBroker {
                 Err("credential provider name is already connected")
             };
         }
+        if self.providers.values().any(|provider| *provider == client) {
+            return Err("a credential provider connection may register only one name");
+        }
         if self.providers.len() >= 32 {
             return Err("too many credential providers");
         }
@@ -196,6 +199,33 @@ mod tests {
         assert!(reply.try_recv().is_err());
         assert!(broker.provider("mac").is_none());
         assert!(broker.pending.is_empty());
+    }
+
+    #[test]
+    fn one_connection_cannot_exhaust_provider_labels_and_disconnect_releases_its_slot() {
+        let mut broker = CredentialBroker::default();
+        broker.register("mac", ClientId(1)).unwrap();
+        for suffix in 0..32 {
+            assert!(
+                broker
+                    .register(&format!("alias-{suffix}"), ClientId(1))
+                    .is_err()
+            );
+        }
+        assert_eq!(broker.providers.len(), 1);
+        // Polling the bound label remains idempotent.
+        broker.register("mac", ClientId(1)).unwrap();
+        for client in 2..=32 {
+            broker
+                .register(&format!("device-{client}"), ClientId(client))
+                .unwrap();
+        }
+        assert!(broker.register("overflow", ClientId(33)).is_err());
+        broker.register("mac", ClientId(1)).unwrap();
+        broker.disconnect(ClientId(1));
+        broker.register("replacement", ClientId(33)).unwrap();
+        assert_eq!(broker.providers.len(), 32);
+        assert_eq!(broker.provider("device-2"), Some(ClientId(2)));
     }
 
     #[tokio::test(start_paused = true)]

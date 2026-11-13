@@ -8,6 +8,7 @@
 //! the workload that asked, under that workload's own grant; `deny` refuses
 //! it. The wire work is [`phux_client::approvals`].
 
+use std::io::IsTerminal;
 use std::path::PathBuf;
 use std::process::ExitCode;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -124,7 +125,7 @@ async fn prepare_decision(
     // Explicit --yes keeps the existing no-read, least-privilege automation
     // contract. Interactive clients offer credential review only after reading
     // and confirming the exact record; an opaque fallback cannot release secrets.
-    let mut conn = approval_connection(target, json, decision.as_str(), yes).await?;
+    let mut conn = approval_connection(target, json, decision.as_str(), false).await?;
     if decision == Decision::Approve && confirm_approval(&mut conn, id, yes, json).await? {
         conn.shutdown().await;
         return approval_connection(target, json, decision.as_str(), true).await;
@@ -168,6 +169,17 @@ async fn confirm_approval(
             2,
         ));
     };
+    if record.credential.is_some() && !std::io::stdin().is_terminal() {
+        return Err(json_err::emit(
+            json,
+            &CliError::new(
+                codes::CONFIRMATION_REQUIRED,
+                "credential approval requires interactive review",
+                "run `phux approve ID` in a terminal without --yes, or use a supported approval view",
+            ),
+            2,
+        ));
+    }
     confirm::confirmed_for(
         json,
         yes,
@@ -263,6 +275,8 @@ mod tests {
     use super::*;
     use phux_client::approvals::Requester;
 
+    mod live;
+
     #[test]
     fn a_line_names_the_requester_method_subjects_and_time_left() {
         let approval = Approval {
@@ -335,5 +349,35 @@ mod tests {
             peer.try_read(&mut byte).unwrap_err().kind(),
             std::io::ErrorKind::WouldBlock
         );
+    }
+
+    #[tokio::test]
+    async fn unattended_decisions_neither_offer_credential_review_nor_preread_metadata() {
+        use phux_client::testkit::{ScriptSpec, ScriptedServer};
+        use phux_protocol::wire::frame::{ErrorCode, FrameKind};
+        let dir = tempfile::tempdir().unwrap();
+        let socket = dir.path().join("approvals.sock");
+        let listener = tokio::net::UnixListener::bind(&socket).unwrap();
+        let id = ApprovalId::parse("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa").unwrap();
+        for decision in [Decision::Approve, Decision::Deny] {
+            let spec = ScriptSpec::new()
+                .refuse_metadata(ErrorCode::PermissionDenied, "no Global observation");
+            let server = ScriptedServer::accept(&listener, spec);
+            let client = async {
+                let target = ServerTarget::local(&socket);
+                let conn = prepare_decision(&target, id, decision, true, false)
+                    .await
+                    .unwrap();
+                conn.shutdown().await;
+            };
+            let (seen, ()) = tokio::join!(server, client);
+            assert!(
+                matches!(
+                    seen.as_slice(),
+                    [FrameKind::Hello { client_caps, .. }] if !client_caps.credential_approvals
+                ),
+                "unattended preparation must only send an opaque HELLO: {seen:?}"
+            );
+        }
     }
 }

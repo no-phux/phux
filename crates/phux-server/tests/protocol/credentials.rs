@@ -2,6 +2,7 @@
 
 mod common;
 mod privacy;
+mod provider_limits;
 mod remote;
 
 use std::sync::Arc;

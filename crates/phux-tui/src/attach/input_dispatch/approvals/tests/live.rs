@@ -13,7 +13,13 @@ fn real_credential_requests_can_be_reviewed_approved_denied_and_stale() {
         let socket = temp.path().join("approval.sock");
         let (shutdown, server) = spawn_server(socket.clone(), None);
         drop(wait_for_raw_socket(&socket, SOCKET_CONNECT_DEADLINE).await);
-        let mut owner = Connection::connect(&socket).await.unwrap();
+        let mut owner = phux_client::approvals::connect(
+            &phux_client::attach::connection::Dial::uds(&socket),
+            "phux approval review".to_owned(),
+            true,
+        )
+        .await
+        .unwrap();
         let mut provider = Connection::connect(&socket).await.unwrap();
         assert!(
             credentials::next(&mut provider, "desktop")

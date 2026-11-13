@@ -38,7 +38,7 @@ fn approvals_schema() -> Value {
 fn approve_schema() -> Value {
     schema(
         "phux_approve",
-        "Decide one held action. `approve` releases it: the server runs it once, as the workload that asked, under that workload's own grant. `deny` refuses it and nothing runs. Deciding needs the held verbs (`signal`, `terminate`, or `input`) un-held on the held action's subject. Approving requires confirm=true; a denial never does.",
+        "Decide one held action. `approve` releases it: the server runs it once, as the workload that asked, under that workload's own grant. `deny` refuses it and nothing runs. Deciding needs the held verbs (`signal`, `terminate`, or `input`) un-held on the held action's subject. Approving requires confirm=true; a denial never does. Credential requests may be denied but require a supported interactive review client to approve.",
         json!({
             "id": {
                 "type": "string",
@@ -111,5 +111,29 @@ fn approval_error(err: ApprovalError) -> ToolError {
             "use a caller with inventory and observe on Global approval records; deciding additionally requires the held verbs un-held on the subject",
             1,
         ),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use phux_client::testkit::{ScriptSpec, ScriptedServer};
+    use phux_protocol::wire::frame::FrameKind;
+
+    #[tokio::test]
+    async fn mcp_approval_connections_do_not_claim_interactive_credential_review() {
+        let dir = tempfile::tempdir().unwrap();
+        let socket = dir.path().join("approval.sock");
+        let listener = tokio::net::UnixListener::bind(&socket).unwrap();
+        let server = ScriptedServer::accept(&listener, ScriptSpec::new());
+        let client = async {
+            let conn = connect(&json!({ "socket": socket })).await.unwrap();
+            conn.shutdown().await;
+        };
+        let (seen, ()) = tokio::join!(server, client);
+        assert!(matches!(
+            seen.as_slice(),
+            [FrameKind::Hello { client_caps, .. }] if !client_caps.credential_approvals
+        ));
     }
 }

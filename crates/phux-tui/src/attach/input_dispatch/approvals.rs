@@ -36,9 +36,11 @@ pub(super) async fn apply(action: Option<ResolvedAction>, ctx: &mut DispatchCtx<
         let dial = ctx
             .control_dial
             .ok_or_else(|| "No dedicated approval control dial; nothing sent.".to_owned())?;
-        let mut conn = Connection::connect_dial(dial)
-            .await
-            .map_err(|err| err.to_string())?;
+        // Only this review UI offers credential approvals, not generic control verbs.
+        let mut conn =
+            phux_client::approvals::connect(dial, "phux approval review".to_owned(), true)
+                .await
+                .map_err(|err| err.to_string())?;
         manage(&mut conn, &action, ctx.theme).await
     })
     .await;

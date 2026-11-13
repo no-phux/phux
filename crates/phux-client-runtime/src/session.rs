@@ -100,11 +100,13 @@ use {
 
 /// The control-plane offer a verb negotiates by default: L3 metadata and
 /// the default bootstrap profile.
+///
+/// Credential review is opt-in: generic verbs
+/// and automation must not be able to approve an opaque credential request.
 #[must_use]
 pub const fn control_caps() -> ClientCapabilities {
     ClientCapabilities::new()
         .with_layers(LayerSet::with(&[Layer::L3]))
-        .with_credential_approvals(true)
         .with_resource_kinds(phux_client_core::session::KERNEL_RESOURCE_KINDS)
 }
 

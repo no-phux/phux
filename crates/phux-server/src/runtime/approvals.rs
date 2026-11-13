@@ -289,7 +289,7 @@ pub(super) async fn decide(
             .is_some_and(|pending| matches!(pending.command, Command::Credentials { .. }))
     });
     if decision == Decision::Approve && credential_request && !credential_details {
-        refuse(out_tx, request_id, ErrorCode::Unsupported, "upgrade this client to review 1Password references and provider identity before approving").await;
+        refuse(out_tx, request_id, ErrorCode::Unsupported, "review the exact 1Password references and provider identity in a supported client before approving; unattended credential approval is disabled").await;
         return;
     }
     let pending = state.with_mut(|s| s.close_approval(id, decision.outcome(), Some(client_id)));

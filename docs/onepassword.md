@@ -37,7 +37,8 @@ Provider names are labels, not authenticated host identities. A connected name
 cannot be taken over. Each request binds to the provider's actual connection
 and shows its client and authenticated credential when present. A disconnect
 ends that binding and fails its outstanding requests; no request transfers to
-a replacement provider.
+a replacement provider. Each connection may register one provider label; the
+server admits at most 32 connected providers.
 
 ## Run a program with approved credentials
 
@@ -75,6 +76,13 @@ allows this request once, not future requests. The provider then invokes
 prompt on the provider device. The program starts only after every field
 resolves. Values enter its environment, never its command-line arguments or
 a terminal paste. The program's exit status is preserved.
+
+Credential approval requires reviewing the exact request in a supported
+client. In the CLI, run `phux approve REQUEST_ID` on a terminal and confirm
+the displayed references and identities. `approve --yes`, MCP approval,
+and generic metadata commands cannot approve credential requests; they may
+still deny them. Ordinary noncredential held actions continue to support
+`--yes` without requiring permission to read Global approval details.
 
 ## What approval does and does not mean
 
@@ -138,6 +146,9 @@ Credential approvers must offer HELLO field 12 `CREDENTIAL_APPROVALS`
 (`u8`, exactly `1`; absent/other = false), declaring that they review the exact
 references and bound provider. Legacy clients may deny but receive
 `UNSUPPORTED` if they try to approve an opaque credential request.
+Generic one-shot connections do not offer this capability. The CLI offers it
+only on a new connection after interactive confirmation of that exact record;
+the TUI's approval-review connection explicitly offers it.
 
 ## Provider troubleshooting
 
