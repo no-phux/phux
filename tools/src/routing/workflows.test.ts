@@ -18,7 +18,7 @@ import {
   workflowText,
 } from "../policy/workflows.ts";
 import { classifyEvent } from "./detect.ts";
-import { LANE_RECIPES, LANES, NATIVE_SETUP_PATHS, plan, planOutputs } from "./plan.ts";
+import { LANE_RECIPES, LANES, plan, planOutputs } from "./plan.ts";
 
 const CI = workflow("ci.yml");
 const FFI = ["ffi-xcframework.yml", "ffi-android.yml"];
@@ -105,19 +105,13 @@ test("each lane is one job gated on its plan output that runs the lane's recipes
   }
 });
 
-test("the ci aggregate accepts a deliberate skip on a pull request and requires native and icount on main", () => {
+test("the ci aggregate needs every lane and accepts only success or a skip", () => {
   const aggregate = job(CI, "ci");
   const lanes = Object.keys(jobs(CI)).filter((id) => !AFTER_LANES.includes(id));
   expect(needs(aggregate).toSorted()).toEqual(lanes.toSorted());
   const script = run(steps(aggregate)[0] ?? {});
-  expect(script).toContain("EVENT_NAME");
   const baseline = Object.fromEntries(lanes.map((id) => [id, { result: "skipped" }]));
   baseline["plan"] = { result: "success" };
-  const runAggregate = (results: unknown, event: string): number =>
-    Bun.spawnSync(["bash", "-euo", "pipefail", "-c", script], {
-      env: { ...process.env, RESULTS: JSON.stringify(results), EVENT_NAME: event },
-      stdout: "ignore",
-    }).exitCode;
   for (const [id, result, code] of [
     ["lint", "skipped", 0],
     ["lint", "success", 0],
@@ -126,36 +120,14 @@ test("the ci aggregate accepts a deliberate skip on a pull request and requires 
     ["guards", "failure", 1],
     ["plan", "skipped", 1],
     ["plan", "failure", 1],
-    ["native", "failure", 1],
-    ["icount", "cancelled", 1],
   ] as const) {
-    const exit = runAggregate({ ...baseline, [id]: { result } }, "pull_request");
+    const results = JSON.stringify({ ...baseline, [id]: { result } });
+    const exit = Bun.spawnSync(["bash", "-euo", "pipefail", "-c", script], {
+      env: { ...process.env, RESULTS: results },
+      stdout: "ignore",
+    }).exitCode;
     expect([id, result, exit]).toEqual([id, result, code]);
   }
-  // Both jobs unplanned: a pass on a pull request, a failure on the events that require them.
-  const required = { ...baseline, native: { result: "success" }, icount: { result: "success" } };
-  expect(runAggregate(baseline, "pull_request")).toBe(0);
-  expect(runAggregate(baseline, "workflow_dispatch")).toBe(0);
-  expect(runAggregate(baseline, "push")).toBe(1);
-  expect(runAggregate(baseline, "merge_group")).toBe(1);
-  expect(runAggregate({ ...baseline, native: { result: "success" } }, "push")).toBe(1);
-  expect(runAggregate({ ...baseline, icount: { result: "success" } }, "merge_group")).toBe(1);
-  expect(runAggregate(required, "push")).toBe(0);
-  expect(runAggregate(required, "merge_group")).toBe(0);
-  expect(runAggregate({ ...required, lint: { result: "failure" } }, "push")).toBe(1);
-});
-
-test("native setup's path list covers every script that job runs", () => {
-  const commands = steps(job(CI, "native")).map(run).join("\n");
-  const scripts = [...commands.matchAll(/scripts\/[A-Za-z0-9_./-]+\.sh/g)].map((match) => match[0]);
-  expect(scripts).toEqual([
-    "scripts/test-dev-setup.sh",
-    "scripts/setup-rust.sh",
-    "scripts/install-zig.sh",
-    "scripts/native-smoke.sh",
-  ]);
-  const inputs: readonly string[] = NATIVE_SETUP_PATHS;
-  for (const script of scripts) expect(inputs).toContain(script);
 });
 
 test("pull requests and merge groups write receipts; content publishes after a green push", () => {

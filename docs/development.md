@@ -225,11 +225,7 @@ in `scripts/known-failing-tests.txt`.
 `just check` uses the same routing and recipes as `ci.yml`. Guards run on
 every change; Rust lint, unit, e2e, browser, Rune and integration lanes
 run when their inputs change. There is no run-everything recipe. `rust
-icount` and `native setup` are CI-only; stress testing is local. A pull
-request runs `native setup` only when that job's own scripts and pins change,
-and `rust icount` only for its baseline, its two bench sources, or the
-`perf-baseline` label. Merge groups and `main` always run both. A scoped
-pass is not a full CI pass.
+icount` and `native setup` are CI-only; stress testing is local. A scoped pass is not a full CI pass.
 
 Fetch `origin` before the preflight when other agents are landing changes.
 `just check` checks committed mergeability first and reports conflicting paths
@@ -292,26 +288,26 @@ paths fail closed and run everything; handwritten docs normally run only
 guards. Docs read by tests, including `docs/agents.md` and generated
 references, also select their Rust consumers. A library change runs the
 tests of its dependents. The required `ci`
-aggregate rejects a failed or cancelled lane, and on a merge group or `main`
-push it also rejects a skipped `native setup` or `rust icount`. `just tools-check` tests the
+aggregate rejects a failed or cancelled lane. `just tools-check` tests the
 routes.
 
-Release metadata alone runs guards without the other compile lanes. On a
-merge group and on `main`, `native setup` and `rust icount` still run. The
-classifier compares both full documents: root workspace and lock versions, release
+Release metadata alone runs guards without compile lanes. `native setup` and
+`rust icount` still run on a merge group and on `main`. The classifier
+compares both full documents: root workspace and lock versions, release
 manifest versions, skill version lines, changelogs, and top-level `version`
 in the five integration packages listed in `release-please-config.json`.
 Any other package field, missing side, unlisted path, or workspace bump
 without all its locks keeps normal routing.
 
 `main` pushes and merge queue groups (`merge_group`) run main policy: the
-full Rust pool and every lane the diff needs, and always `native setup` and
-`rust icount`. The required `ci` aggregate treats a lane that was deliberately
-not planned as a pass on a pull request, and rejects a skipped `native setup`
-or `rust icount` on a merge group or `main` push. A `main` push whose tree a
-pull request or merge group already validated with the same lanes reuses
-that receipt (`tools/src/routing/receipt.ts`) and still runs those two jobs.
-With the repository variable
+full Rust pool, every lane the diff needs, and always `native setup` and
+`rust icount`. A pull request runs `native setup` only for that job's own
+inputs and `rust icount` only for its baseline, its two bench sources, or
+the `perf-baseline` label. The `ci` aggregate accepts that deliberate skip
+on a pull request and rejects it on a merge group or `main` push. A `main`
+push whose tree a pull request or merge group already validated with the
+same lanes reuses that receipt (`tools/src/routing/receipt.ts`) and still
+runs those two jobs. With the repository variable
 `PHUX_MERGE_QUEUE=true`, a pull request that reaches Rune only through a
 root crate in its Cargo closure skips `rune / ios-native-simulator`. Its
 merge group still runs it, and its receipt never covers a `main` push.
@@ -332,11 +328,9 @@ reference. `just guards` lints them.
 paths (VT apply, frame encode and decode, agent stream append, kernel
 history slice, PTY batch copy, one organization commit) and fails the
 `rust icount` CI lane when a count rises more than five percent over
-`benchmarks/icount-baseline.json`. That lane runs on a pull request when the
-baseline, `crates/phux-server/benches/icount.rs`, or
-`crates/phux-terminal/benches/terminal_icount.rs` changes, or when the PR
-has the `perf-baseline` label. It runs on every merge group and `main` push.
-Run it inside `nix develop` on x86_64;
+`benchmarks/icount-baseline.json`. A pull request runs it for that file,
+the two icount benches, or the `perf-baseline` label; merge groups and
+`main` always run it. Run it inside `nix develop` on x86_64;
 counts from another libc or architecture are not comparable.
 
 To accept a new baseline, run `just perf-icount --update` there, commit the
