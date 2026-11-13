@@ -442,6 +442,7 @@ fn wired(
                 bundle.events,
                 bundle.agent_state,
                 bundle.program_status,
+                bundle.resume,
             ),
         })
     }

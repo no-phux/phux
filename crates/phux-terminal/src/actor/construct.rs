@@ -287,6 +287,7 @@ impl TerminalActor {
             last_progress: String::new(),
             program_status: super::program_status::ProgramStatus::default(),
             program_status_sink: None,
+            resume: super::resume::Resume::default(),
             agent_detect: None,
             agent_state_sink: None,
             live_session_probe: None,

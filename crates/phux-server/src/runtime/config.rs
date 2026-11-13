@@ -57,6 +57,8 @@ pub struct ServerConfig {
     pub keep_awake: phux_config::KeepAwake,
     /// `[voice]`: the transcriber behind `TRANSCRIBE`.
     pub voice: phux_config::VoiceCfg,
+    /// `[restore]`: the `[[restore.program]]` commands a relaunch may run.
+    pub restore: phux_config::RestoreCfg,
     /// `limits.metadata-value-bytes` (ADR-0129): largest L3 metadata value
     /// stored at one key.
     pub metadata_value_bytes: u32,
@@ -160,6 +162,7 @@ impl ServerConfig {
             window_size: phux_config::WindowSize::default(),
             keep_awake: phux_config::KeepAwake::default(),
             voice: phux_config::VoiceCfg::default(),
+            restore: phux_config::RestoreCfg::default(),
             metadata_value_bytes: phux_config::DEFAULT_METADATA_VALUE_BYTES,
             approval_ttl_secs: phux_config::DEFAULT_APPROVAL_TTL_SECS,
             approval_max_pending: phux_config::DEFAULT_APPROVAL_MAX_PENDING,

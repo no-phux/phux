@@ -174,7 +174,9 @@ const SECTIONS: &[Section] = &[
         key: "restore",
         header: "[restore]",
         summary: "Whether a starting server relaunches the panes the last \
-                  server stop ended, as `phux restore` does by hand.",
+                  server stop ended, as `phux restore` does by hand, and \
+                  the `[[restore.program]]` commands a relaunch may resume \
+                  a program with.",
     },
     Section {
         key: "rune",

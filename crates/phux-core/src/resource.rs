@@ -109,6 +109,61 @@ pub struct TerminalLaunch {
     /// at every activation, so a relaunch resumes the same conversation.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub restore: Option<Vec<u8>>,
+    /// What the program in the pane last asked to be resumed with. Never
+    /// sent to a client; a relaunch runs the user's `[[restore.program]]`
+    /// command for its app.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resume: Option<ResumeToken>,
+}
+
+/// An opaque id a program handed over (`resume=` on OSC 7501) so the
+/// command the user allowlisted for `app` can pick up where it left off.
+/// Untrusted: it names no command and is only ever one whole argument.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ResumeToken {
+    /// The OSC 7501 `app` that reported the token.
+    pub app: String,
+    /// The token.
+    pub token: String,
+}
+
+impl ResumeToken {
+    /// Longest accepted token, in bytes.
+    pub const MAX_TOKEN_BYTES: usize = 256;
+
+    /// `app` and `token` as a token, when both are well formed
+    /// ([`Self::is_valid`]).
+    #[must_use]
+    pub fn new(app: &str, token: &str) -> Option<Self> {
+        let resume = Self {
+            app: app.to_owned(),
+            token: token.to_owned(),
+        };
+        resume.is_valid().then_some(resume)
+    }
+
+    /// Whether `app` is 1 to 32 bytes of `[A-Za-z0-9_.+-]`.
+    #[must_use]
+    pub fn valid_app(app: &str) -> bool {
+        (1..=32).contains(&app.len())
+            && app
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b"_.+-".contains(&b))
+    }
+
+    /// Whether the app is well formed and the token is 1 to 256 bytes of
+    /// `[A-Za-z0-9_.+,/=-]` that do not start with `-`. A stored record is
+    /// checked again before use: the store is a file someone can edit.
+    #[must_use]
+    pub fn is_valid(&self) -> bool {
+        Self::valid_app(&self.app)
+            && (1..=Self::MAX_TOKEN_BYTES).contains(&self.token.len())
+            && !self.token.starts_with('-')
+            && self
+                .token
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b"_.+,/=-".contains(&b))
+    }
 }
 
 /// How an agent conversation binds to its harness.
@@ -268,5 +323,37 @@ impl ResourceDescriptor {
     #[must_use]
     pub const fn agent(&self) -> Option<&AgentFacet> {
         self.agent.as_ref()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{ResumeToken, TerminalLaunch};
+
+    #[test]
+    fn resume_tokens_are_bounded_plain_and_never_option_shaped() {
+        let longest = "a".repeat(ResumeToken::MAX_TOKEN_BYTES);
+        for token in ["abc123", "a/b_c.d+e,f=g-h", longest.as_str()] {
+            assert!(ResumeToken::new("nvim", token).is_some(), "{token}");
+        }
+        let too_long = format!("{longest}a");
+        for token in [
+            "", "-rf", "--help", "a b", "a;b", "a$b", "a\nb", "a:b", "é", &too_long,
+        ] {
+            assert!(ResumeToken::new("nvim", token).is_none(), "{token:?}");
+        }
+        let app = "a".repeat(33);
+        for app in ["", "my app", "a/b", "a,b", app.as_str()] {
+            assert!(ResumeToken::new(app, "abc").is_none(), "{app:?}");
+        }
+    }
+
+    /// A launch without a token is stored exactly as before the field.
+    #[test]
+    fn a_launch_without_a_token_serializes_without_the_field() {
+        let json = serde_json::to_string(&TerminalLaunch::default()).unwrap();
+        assert!(!json.contains("resume"), "{json}");
+        let launch: TerminalLaunch = serde_json::from_str(&json).unwrap();
+        assert_eq!(launch.resume, None);
     }
 }

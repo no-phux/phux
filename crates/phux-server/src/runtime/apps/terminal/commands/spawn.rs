@@ -162,9 +162,10 @@ pub(in crate::runtime) fn launch_pane_actor_with_failure_policy(
         events,
         agent_state,
         program_status,
+        resume,
         ..
     } = bundle;
-    let wiring = PaneWiring::new(events, agent_state, program_status);
+    let wiring = PaneWiring::new(events, agent_state, program_status, resume);
     let wire_terminal_id = state.with_mut(|s| {
         let wire = s
             .spawn_resource_actor(terminal, handle, terminal_token, run)
@@ -207,6 +208,8 @@ pub(crate) struct PaneWiring {
     /// Reliable OSC 7501 snapshots, shared by fresh and resumed panes.
     program_status:
         tokio::sync::watch::Receiver<Vec<phux_terminal_api::agent_detect::ProgramStatusRecord>>,
+    /// The OSC 7501 `resume=` token, for the pane's launch record.
+    resume: tokio::sync::watch::Receiver<Option<phux_core::ResumeToken>>,
 }
 
 pub(crate) fn engine_reports(
@@ -229,11 +232,13 @@ impl PaneWiring {
         program_status: tokio::sync::watch::Receiver<
             Vec<phux_terminal_api::agent_detect::ProgramStatusRecord>,
         >,
+        resume: tokio::sync::watch::Receiver<Option<phux_core::ResumeToken>>,
     ) -> Self {
         Self {
             events,
             agent_state,
             program_status,
+            resume,
         }
     }
     /// Start the detector's metadata drain for the pane at `wire`, and hand
@@ -250,6 +255,11 @@ impl PaneWiring {
             state.clone(),
             wire.clone(),
             self.program_status,
+        );
+        crate::runtime::apps::terminal::resume::spawn_drain(
+            state.clone(),
+            wire.clone(),
+            self.resume,
         );
         PaneEvents {
             wire: wire.clone(),
@@ -276,6 +286,7 @@ pub(crate) fn launch_of(
         cwd: cmd.get_cwd().map(std::path::PathBuf::from),
         env: Vec::new(),
         restore: None,
+        resume: None,
     }
 }
 

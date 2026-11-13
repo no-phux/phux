@@ -140,6 +140,7 @@ impl TerminalActor {
         // Three samples, three clock reads. Drop guards around the same
         // intervals read the clock again on the way out and fold that probe
         // into `pty.vt_apply`.
+        self.resume.observe(payload);
         let started = std::time::Instant::now();
         self.terminal.borrow_mut().vt_write(payload);
         let parsed = std::time::Instant::now();
