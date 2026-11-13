@@ -453,7 +453,7 @@ fn a_rename_retarget_and_closed_field_reject_held_callbacks() {
     rt.state
         .tabs
         .rename_field
-        .ime(&rune::Ime::Preedit("held".into(), None));
+        .ime(&rune::Ime::Preedit("held".into(), None, Vec::new()));
     rt.state.tabs.renaming = Some(super::super::Renaming::Tab([2; 16]));
     assert!(
         !bridge

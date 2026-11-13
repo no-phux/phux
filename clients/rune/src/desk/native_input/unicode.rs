@@ -54,10 +54,10 @@ pub(super) fn edit(edit: &mut TextEdit, action: Action) -> Result<(), String> {
             focus,
         } => {
             let (a, f) = (byte(&text, anchor)?, byte(&text, focus)?);
-            edit.ime(&Ime::Preedit(text, Some((a, f))));
+            edit.ime(&Ime::Preedit(text, Some((a, f)), Vec::new()));
         }
         Action::Cancel => {
-            edit.ime(&Ime::Preedit(String::new(), None));
+            edit.ime(&Ime::Preedit(String::new(), None, Vec::new()));
         }
         Action::Paste { text } => {
             edit.paste(&text);

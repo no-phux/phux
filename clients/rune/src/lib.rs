@@ -54,6 +54,10 @@ pub fn run_desktop() {
         return;
     }
     diag::install();
+    // Desk's destructor closes popup commands and releases server view leases;
+    // the performance recorder also flushes on drop. Rune now exits without
+    // destructors by default, so retain the window's orderly teardown.
+    rune::orderly_exit();
     // The window's Wayland app_id and X11 class: what matches the .desktop
     // entry, the icon, and a compositor's rules (Omarchy's terminal tag).
     rune::set_app_id(APP_ID);

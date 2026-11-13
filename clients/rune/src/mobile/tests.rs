@@ -5,6 +5,63 @@ use phux_client_runtime::Transport;
 use phux_protocol::wire::frame::FrameKind;
 
 #[test]
+fn ime_reconversion_replaces_only_the_focused_field_in_both_forms() {
+    for (phone, size) in [(false, (1100.0, 720.0)), (true, (393.0, 852.0))] {
+        let (client, mut rt) = crate::grid::budget::input_fixture();
+        rt.state.phone = phone.then(crate::desk::phone::Phone::default);
+        rt.set_viewport(size, 2.0);
+        rt.update(|state, tx| {
+            state.palette_open = true;
+            state.palette_query = rune::TextEdit::new("日本語 input");
+            state.palette_query.focused = true;
+            tx.instant();
+        });
+        rt.frame(0.0);
+        let (x, y) = rt.find("palette-query").expect("palette field");
+        rt.pointer_down(x, y);
+        rt.pointer_up(x, y);
+        rt.frame(0.0);
+        let _ = client.take_outbound();
+        rt.ime(rune::Ime::Select(0..9));
+        rt.frame(0.0);
+        assert_eq!(rt.state.palette_query.selected(), "日本語");
+        let clauses = vec![rune::Clause::new(0..6), rune::Clause::new(6..12).target()];
+        rt.ime(rune::Ime::Preedit(
+            "にほんご".into(),
+            Some((6, 12)),
+            clauses.clone(),
+        ));
+        rt.frame(0.0);
+        assert_eq!(rt.state.palette_query.text, "日本語 input");
+        assert_eq!(rt.state.palette_query.preedit_clauses(), clauses);
+        rt.ime(rune::Ime::Commit("にほんご".into()));
+        rt.frame(0.0);
+        assert_eq!(rt.state.palette_query.text, "にほんご input");
+        assert!(!rt.state.palette_query.is_composing());
+        for bytes in client.take_outbound() {
+            let frame = FrameKind::decode(&bytes).expect("outbound frame").0;
+            assert!(
+                matches!(
+                    frame,
+                    FrameKind::InputFocus { .. } | FrameKind::ResizeTerminal { .. }
+                ),
+                "field reconversion must not reach the terminal: {frame:?}"
+            );
+        }
+    }
+}
+
+#[test]
+fn terminal_rejects_reconversion_of_text_it_does_not_own() {
+    let (client, mut rt) = crate::grid::budget::input_fixture();
+    rt.frame(0.0);
+    let _ = client.take_outbound();
+    assert!(!rt.state.ime(&rune::Ime::Select(0..9)));
+    assert!(rt.state.preedit.is_none());
+    assert!(client.take_outbound().is_empty());
+}
+
+#[test]
 fn inactivity_finishes_a_runtime_field_composition_once_without_terminal_input() {
     let (client, mut rt) = crate::grid::budget::input_fixture();
     rt.state.phone = Some(crate::desk::phone::Phone::default());
@@ -21,7 +78,7 @@ fn inactivity_finishes_a_runtime_field_composition_once_without_terminal_input()
     rt.pointer_up(x, y);
     rt.frame(0.0);
     let _ = client.take_outbound();
-    rt.ime(rune::Ime::Preedit("日本".into(), Some((0, 6))));
+    rt.ime(rune::Ime::Preedit("日本".into(), Some((0, 6)), Vec::new()));
     rt.frame(0.0);
     assert_eq!(rt.state.palette_query.text, "");
     assert!(rt.state.palette_query.preedit().is_some());
