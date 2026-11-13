@@ -251,6 +251,9 @@ In a text field, use the native editing keys: ⌘C/V/A on macOS, plain
 Ctrl+C/V/A on Linux. Terminal clipboard chords never act on the terminal
 behind a focused Find field.
 
+On macOS, **Option as Meta** makes Option chords reach the terminal instead
+of composing layout characters. Native text fields keep normal Option input.
+
 A paste with line breaks into a program without bracketed paste would run
 each line; the window asks first (Return pastes, Esc cancels).
 

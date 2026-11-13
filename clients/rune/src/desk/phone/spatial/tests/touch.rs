@@ -184,6 +184,11 @@ fn a_hold_selects_by_words_and_lifting_copies_the_selection() {
         !word.is_empty(),
         "the hold selects the word under the finger"
     );
+    // A long stationary hold must keep the terminal's selection gesture,
+    // not become a second, competing context-menu gesture.
+    rt.frame(0.65);
+    tick(&mut rt, 1.7);
+    assert!(rt.state.pointer.menu.is_none());
     let tail = offset(&client, &rt);
     touch(&mut rt, Moved, x + 90.0, y + 17.0);
     touch(&mut rt, Ended, x + 90.0, y + 17.0);
@@ -209,6 +214,9 @@ fn a_hold_hands_a_tracking_program_its_drag_unless_shift_is_latched() {
         tick(rt, at);
         touch(rt, Started, x, y);
         tick(rt, at + 0.4);
+        rt.frame(0.65);
+        tick(rt, at + 0.7);
+        assert!(rt.state.pointer.menu.is_none());
         touch(rt, Moved, x + 90.0, y + 17.0);
         touch(rt, Ended, x + 90.0, y + 17.0);
     };
@@ -226,6 +234,22 @@ fn a_hold_hands_a_tracking_program_its_drag_unless_shift_is_latched() {
     hold_and_drag(&mut rt, 2.0);
     assert!(mice(&outbound(&client)).is_empty());
     assert!(rt.copy_request.take().is_some());
+}
+
+#[test]
+fn a_stationary_long_hold_copies_on_lift_without_opening_a_menu() {
+    let (client, mut rt) = fixture(true);
+    let (x, y) = in_grid(&rt);
+    touch(&mut rt, Started, x, y);
+    tick(&mut rt, 1.4);
+    rt.frame(0.65);
+    tick(&mut rt, 1.7);
+    touch(&mut rt, Ended, x, y);
+    assert!(rt.copy_request.take().is_some(), "lifting copies the word");
+    assert!(rt.state.pointer.menu.is_none());
+    assert!(rt.state.phone.as_ref().unwrap().touch.is_none());
+    assert_eq!(rt.state.gesture, 0);
+    no_input(&client);
 }
 
 #[test]
