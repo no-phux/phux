@@ -42,36 +42,20 @@ pub(super) enum Op {
     Button(bool),
     /// Scroll by layout pixels, down and right positive.
     Scroll { dx: f64, dy: f64 },
-    /// Load `keymap`, hold the modifiers in mask `mods` (none when 0),
-    /// then press and release each key code in order.
+    /// Load `keymap`, press the `held` key codes (modifier keys) and
+    /// hold the modifiers in mask `mods` (none when 0), then press and
+    /// release each key code in order.
     Keys {
         keymap: String,
         codes: Vec<u32>,
         mods: u32,
+        held: Vec<u32>,
     },
 }
 
-/// The Shift and Control bits of a modifier mask: xkb's first real
-/// modifiers, the same in every keymap.
-const SHIFT: u32 = 1;
-const CONTROL: u32 = 1 << 2;
-/// Ctrl (with `shift`, Ctrl+Shift) and `letter`, on a keymap of the real key.
-pub(super) fn chord(letter: char, shift: bool) -> Op {
-    let key = super::surface_input::letter_code(letter);
-    let code = key + 8;
-    let upper = letter.to_ascii_uppercase();
-    let keymap = format!(
-        "xkb_keymap {{\nxkb_keycodes \"phux\" {{\nminimum = 8;\nmaximum = {code};\n<K> = {code};\n}};\n\
-         xkb_types \"phux\" {{ include \"complete\" }};\n\
-         xkb_compatibility \"phux\" {{ include \"complete\" }};\n\
-         xkb_symbols \"phux\" {{\nkey <K> {{[{letter}, {upper}]}};\n}};\n}};\n"
-    );
-    Op::Keys {
-        keymap,
-        codes: vec![key],
-        mods: CONTROL | if shift { SHIFT } else { 0 },
-    }
-}
+#[path = "surface_wayland_chord.rs"]
+mod chord;
+pub(super) use chord::chord;
 
 /// The steps that carry out `input` on an `image`-sized frame placed at
 /// `place`, or why they cannot.
@@ -197,6 +181,7 @@ fn keys(syms: &[String], codes: Vec<u32>) -> Op {
         keymap,
         codes,
         mods: 0,
+        held: Vec::new(),
     }
 }
 
@@ -336,25 +321,34 @@ mod wire {
                         keymap,
                         codes,
                         mods,
+                        held,
                     } => {
                         let k = self.keyboard()?;
                         self.keymap(k, keymap)?;
+                        let key = |code: u32, state: u32| {
+                            message(k, 1, &[Arg::U(now()), Arg::U(code), Arg::U(state)])
+                        };
                         // modifiers(depressed, latched, locked, group)
                         let hold = |m| message(k, 2, &[Arg::U(m), Arg::U(0), Arg::U(0), Arg::U(0)]);
+                        // The modifier keys make this keyboard the active one
+                        // first, so the mask lands after its keymap.
+                        for code in held {
+                            self.put(&key(*code, 1))?;
+                        }
                         if *mods != 0 {
                             self.put(&hold(*mods))?;
+                            self.roundtrip()?;
                         }
                         for code in codes {
                             for state in [1, 0] {
-                                self.put(&message(
-                                    k,
-                                    1,
-                                    &[Arg::U(now()), Arg::U(*code), Arg::U(state)],
-                                ))?;
+                                self.put(&key(*code, state))?;
                             }
                         }
                         if *mods != 0 {
                             self.put(&hold(0))?;
+                        }
+                        for code in held.iter().rev() {
+                            self.put(&key(*code, 0))?;
                         }
                     }
                 }
