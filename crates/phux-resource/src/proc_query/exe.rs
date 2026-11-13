@@ -40,7 +40,10 @@ mod tests {
             .find(|p| Path::new(p).exists())
             .expect("sleep");
         std::os::unix::fs::symlink(sleep, &exe).expect("link");
-        let mut child = std::process::Command::new(&exe).arg("30").spawn().expect("spawn");
+        let mut child = std::process::Command::new(&exe)
+            .arg("30")
+            .spawn()
+            .expect("spawn");
         let pid = i32::try_from(child.id()).expect("pid");
         std::thread::sleep(std::time::Duration::from_millis(50));
         assert_eq!(runs_replaced_executable(pid, &exe), Some(false));
@@ -48,7 +51,10 @@ mod tests {
         std::fs::write(&next, "#!/bin/sh\n").expect("write");
         std::fs::rename(&next, &exe).expect("swap");
         assert_eq!(runs_replaced_executable(pid, &exe), Some(true));
-        assert_eq!(runs_replaced_executable(pid, &dir.path().join("gone")), None);
+        assert_eq!(
+            runs_replaced_executable(pid, &dir.path().join("gone")),
+            None
+        );
         assert!(matches!(child.try_wait(), Ok(None)), "still running");
         let _ = child.kill();
         let _ = child.wait();

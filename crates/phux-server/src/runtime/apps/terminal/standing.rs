@@ -61,7 +61,14 @@ async fn supervise(
         let mirrors = state.with(|s| s.mirror_demand().wanted());
         let units = units(&mirrors, &entries.1);
         let outdated = outdated(&state, &units, &slots).await;
-        tick(&state, units, &mut slots, &outdated, Instant::now(), &root_token);
+        tick(
+            &state,
+            units,
+            &mut slots,
+            &outdated,
+            Instant::now(),
+            &root_token,
+        );
         tokio::select! {
             () = root_token.cancelled() => return,
             () = tokio::time::sleep(TICK) => {}
@@ -361,11 +368,25 @@ mod tests {
                 let wanted = units(&[mirror], &producers);
                 assert_eq!(wanted.keys().map(String::as_str).collect::<Vec<_>>(), names);
                 let mut slots = BTreeMap::new();
-                tick(&state, wanted, &mut slots, &BTreeSet::new(), Instant::now(), &token);
+                tick(
+                    &state,
+                    wanted,
+                    &mut slots,
+                    &BTreeSet::new(),
+                    Instant::now(),
+                    &token,
+                );
                 for name in names {
                     assert!(live(&state, name), "{name} started");
                 }
-                tick(&state, BTreeMap::new(), &mut slots, &BTreeSet::new(), Instant::now(), &token);
+                tick(
+                    &state,
+                    BTreeMap::new(),
+                    &mut slots,
+                    &BTreeSet::new(),
+                    Instant::now(),
+                    &token,
+                );
                 let mut gone = false;
                 for _ in 0..100 {
                     gone =
@@ -410,7 +431,14 @@ mod tests {
                 let name = "producer-feed";
                 let none = BTreeSet::new();
                 let mut started = BTreeMap::new();
-                tick(&state, wanted.clone(), &mut started, &none, Instant::now(), &token);
+                tick(
+                    &state,
+                    wanted.clone(),
+                    &mut started,
+                    &none,
+                    Instant::now(),
+                    &token,
+                );
                 assert!(live(&state, name));
                 let panes = |state: &SharedState| {
                     state.with(|s| s.session_terminals(s.find_session_by_name(name).unwrap()))
@@ -424,7 +452,10 @@ mod tests {
                 std::fs::set_permissions(&next, std::fs::Permissions::from_mode(0o755))
                     .expect("chmod");
                 std::fs::rename(&next, &fake).expect("swap");
-                assert!(outdated(&state, &wanted, &started).await.is_empty(), "started here");
+                assert!(
+                    outdated(&state, &wanted, &started).await.is_empty(),
+                    "started here"
+                );
                 let found = outdated(&state, &wanted, &adopted).await;
                 assert_eq!(found.iter().map(String::as_str).collect::<Vec<_>>(), [name]);
                 let mut adopted = adopted;
