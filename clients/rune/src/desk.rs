@@ -269,6 +269,8 @@ pub struct Desk {
     pub bare: Option<bare::Bare>,
     /// The quick terminal's own part, when this window is it.
     pub quick: Option<quick::Panel>,
+    /// The main window's move request, until its server receipt settles.
+    quick_move: Option<quick::Transfer>,
     /// The quick terminal's chord, which the main window registers.
     pub quick_chord: quick::Chord,
     pub native: Option<crate::mobile::Platform>,
@@ -397,6 +399,7 @@ impl Desk {
             phone: None,
             bare: None,
             quick: None,
+            quick_move: None,
             quick_chord: quick::Chord::default(),
             native: None,
             file,

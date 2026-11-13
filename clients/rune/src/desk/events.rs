@@ -116,7 +116,8 @@ impl Desk {
                     | self.resource_closed(client, &terminal_id, exit_status)
             }
             Event::OrganizationOperation { operation, outcome } => {
-                self.layout_outcome(client, operation, outcome)
+                self.quick_move_outcome(client, operation, &outcome)
+                    | self.layout_outcome(client, operation, outcome)
             }
             // OSC 52 only from the terminal on screen, while the window has
             // focus; never retained for later.

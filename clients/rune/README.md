@@ -140,7 +140,10 @@ session (or `--session NAME`). It never creates a session on its own.
   this window, and hides it again; so does clicking away. Recording a new
   chord applies at once, and a chord something else holds is refused with
   who holds it, when that's known. It holds the `quick` session on this
-  computer, which the sidebar and palette leave out. `quick-terminal-size`
+  computer. Rune reserves that session name: an existing session named
+  `quick` is reused, and sessions with that name are left out of the main
+  window's sidebar and palette even when the quick terminal is off. Rename
+  unrelated sessions to keep them listed. `quick-terminal-size`
   and `quick-terminal-edge` size it and pick the top or bottom of the
   display. **Move to a Tab** in its palette moves the terminal into this
   window's session. While the chord is on, closing this window keeps the app

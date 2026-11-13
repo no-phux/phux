@@ -10,17 +10,18 @@
 
 use phux_config_core::RuneCfg;
 use phux_config_core::rune::QuickTerminalEdge;
-use phux_protocol::ids::ResourceId;
 use rune::{
     Align, AppHandle, DisplayTarget, OverlayPlacement, ScreenEdge, Tx, WindowOptions, WindowSpec,
 };
 
-use super::{Desk, NoticeKind};
+use super::Desk;
 use crate::launch::Resolved;
 
 mod chord;
+mod transfer;
 
 pub use chord::{Chord, refusal};
+pub(super) use transfer::Transfer;
 
 /// The session the panel shows, made again if its last terminal exits.
 pub const SESSION: &str = "quick";
@@ -43,6 +44,8 @@ pub struct Panel {
     /// A panel off at launch connects the first time it's shown, so a chord
     /// nobody set never makes the session.
     dialed: bool,
+    /// A move requested from this panel, until the main window's receipt.
+    moving: bool,
 }
 
 /// Whether `session` is the quick terminal's, which the main window doesn't
@@ -57,7 +60,12 @@ impl Desk {
         let mut desk = Self::open(resolved, None);
         desk.launch.session = Some(SESSION.to_owned());
         let dialed = chord::at_launch(&desk.file, &desk.prefs).0;
-        desk.quick = Some(Panel { me, main, dialed });
+        desk.quick = Some(Panel {
+            me,
+            main,
+            dialed,
+            moving: false,
+        });
         // It opens hidden, so nothing of it has the keyboard yet.
         desk.focused = false;
         desk
@@ -66,60 +74,6 @@ impl Desk {
     /// A panel nobody has shown yet, which stays off the server.
     pub(super) fn quick_idle(&self) -> bool {
         self.quick.as_ref().is_some_and(|panel| !panel.dialed)
-    }
-
-    /// The panel's terminal moves into the main window's selected session as
-    /// a new tab, and the main window comes forward on it. The quick session
-    /// gets a fresh shell for the next time the panel shows.
-    pub fn move_to_tab(&mut self) {
-        let (Some(panel), Some(shown)) = (&self.quick, &self.shown) else {
-            return;
-        };
-        let terminal = shown.resource.clone();
-        panel.me.hide();
-        panel
-            .main
-            .update(move |desk, _| desk.adopt_quick(&terminal));
-        panel.main.open();
-    }
-
-    /// The main window takes `terminal` into its selected session as a tab.
-    fn adopt_quick(&mut self, terminal: &ResourceId) {
-        if self.machines.current.is_some() {
-            return self.say(
-                NoticeKind::Error,
-                "This window is on another machine, so the quick terminal stays where it is.",
-            );
-        }
-        let Some(client) = self.client.clone() else {
-            return;
-        };
-        let session = client.selected_session().and_then(|id| {
-            let topology = self.topology.as_ref()?;
-            topology.sessions.iter().find(|s| s.id == id)?.key
-        });
-        let resource = client
-            .organization()
-            .resource_by_live(terminal)
-            .map(|r| r.key);
-        let (Some(session), Some(resource)) = (session, resource) else {
-            return self.say(
-                NoticeKind::Error,
-                "Open a session here first, then move the quick terminal to it.",
-            );
-        };
-        match client.move_resource(resource, session) {
-            Ok(_) => {
-                self.place_split(&client, terminal, None);
-                if let Some(panel) = &self.quick_chord.panel {
-                    panel.update(|desk, _| desk.refill_quick());
-                }
-            }
-            Err(error) => self.say(
-                NoticeKind::Error,
-                format!("Couldn't move the quick terminal: {error}"),
-            ),
-        }
     }
 
     /// The panel's terminal became a tab: a fresh shell for next time.
