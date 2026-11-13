@@ -334,16 +334,22 @@ pub(super) fn skip(class: Class, reason: impl Into<String>) -> Line {
 }
 
 /// A source's theme line. Never migrated: a phux theme already selected
-/// wins, and with none selected the user picks one.
+/// wins, so there is nothing to do; with none selected the user picks one.
 pub(super) fn theme(program: &str, value: &str, selected: Option<&str>) -> Line {
-    let reason = selected.map_or_else(
+    selected.map_or_else(
         || {
-            "the theme is not migrated; pick one with `phux theme list` and `phux theme set`"
-                .to_owned()
+            skip(
+                Class::Setting,
+                "the theme is not migrated; pick one with `phux theme list` and `phux theme set`",
+            )
         },
-        |name| format!("kept your phux theme `{name}`; {program}'s `{value}` is not applied"),
-    );
-    skip(Class::Setting, reason)
+        |name| {
+            covered(
+                Class::Setting,
+                format!("kept your phux theme `{name}`; {program}'s `{value}` is not applied"),
+            )
+        },
+    )
 }
 
 pub(super) fn covered(class: Class, reason: impl Into<String>) -> Line {

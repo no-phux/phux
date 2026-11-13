@@ -60,7 +60,7 @@ Ghostty keybinds fire without a prefix, so they become `[keybindings.global]` li
 ### Every Ghostty line, one by one
 Write every line marked "write" exactly as given, in the table it names, once. A line marked "not written", "nothing to do" or "already phux's default" gets nothing. Each line goes in the report under the list its marking names.
 - ~/.config/ghostty/config:1 `theme = dark:TokyoNight Storm,light:Catppuccin Latte`
-  not written: kept your phux theme `tokyo-night`; Ghostty's `dark:TokyoNight Storm,light:Catppuccin Latte` is not applied
+  nothing to do: kept your phux theme `tokyo-night`; Ghostty's `dark:TokyoNight Storm,light:Catppuccin Latte` is not applied
 - ~/.config/ghostty/config:2 `keybind = ctrl+shift+t=new_tab`
   write `"C-S-t" = "new-window"` in `[keybindings.global]`
 

@@ -63,8 +63,9 @@ Some lines are never written:
 - Terminal settings: font, colours. A Ghostty setting keeps working in
   Ghostty.
 - A theme line. When you already picked a phux theme (`phux theme set`, or
-  `[theme] name` / `file` in your config), the line is reported as "kept your
-  phux theme"; otherwise it points you at `phux theme list` and `phux theme set`.
+  `[theme] name` / `file` in your config), the line is "nothing to do" and
+  reads "kept your phux theme"; otherwise it goes under "Could not migrate"
+  and points you at `phux theme list` and `phux theme set`.
 - Any binding on Cmd. phux key bindings have no Cmd modifier. A Ghostty Cmd
   binding keeps working, but on Ghostty's own tabs and splits, not phux's.
   The macOS

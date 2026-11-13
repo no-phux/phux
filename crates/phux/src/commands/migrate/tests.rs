@@ -152,13 +152,13 @@ fn a_selected_phux_theme_is_kept_over_ghostty_s() {
         "kept your phux theme `tokyo-night`; Ghostty's `dark:TokyoNight Storm,light:Catppuccin Latte` is not applied"
     ));
     assert!(!text.contains("pick one"));
-    // Never written: the row is a skip, not a write.
+    // Never written, and nothing for me to do: the row is covered.
     let row = sources[0]
         .rows
         .iter()
         .find(|row| row.text.starts_with("theme ="))
         .expect("theme row");
-    assert!(matches!(row.verdict, Verdict::Skip(_)));
+    assert!(matches!(row.verdict, Verdict::Covered(_)));
     // No config, no theme.
     assert_eq!(selected_theme(&home.join("missing.toml")), None);
 }
@@ -221,13 +221,22 @@ fn the_issue_run_carries_the_setup_over_and_needs_little_of_me() {
         verdict(tmux, r#"bind r source-file ~/.tmux.conf \; display "tmux.conf reloaded""#),
         Verdict::Write { value, .. } if value.as_str() == Some("reload-config")
     ));
-    let needs_me: Vec<_> = sources
-        .iter()
-        .flat_map(|s| &s.rows)
-        .filter(|row| matches!(row.verdict, Verdict::Skip(_) | Verdict::Raw))
-        .map(|row| row.text.as_str())
-        .collect();
-    assert!(needs_me.len() <= 5, "{needs_me:?}");
+    let needs_me = |sources: &[Source]| -> Vec<String> {
+        sources
+            .iter()
+            .flat_map(|s| &s.rows)
+            .filter(|row| matches!(row.verdict, Verdict::Skip(_) | Verdict::Raw))
+            .map(|row| row.text.clone())
+            .collect()
+    };
+    // No phux theme selected in this run: the theme pointer is one of them.
+    let lines = needs_me(&sources);
+    assert!(lines.len() <= 5, "{lines:?}");
+    assert!(lines.iter().any(|l| l.starts_with("theme =")), "{lines:?}");
+    // With a phux theme selected, the theme line leaves the list.
+    let themed = discover(&home, None, &[], Some("tokyo-night"), &Setup::default());
+    let lines = needs_me(&themed);
+    assert!(!lines.iter().any(|l| l.starts_with("theme =")), "{lines:?}");
 }
 
 #[test]
@@ -413,7 +422,7 @@ fn every_source_is_found_under_a_temp_home() {
     assert_eq!(themes.len(), 2, "{themes:?}");
     for row in themes {
         assert!(
-            matches!(&row.verdict, Verdict::Skip(r) if r.starts_with("kept your phux theme `mine`")),
+            matches!(&row.verdict, Verdict::Covered(r) if r.starts_with("kept your phux theme `mine`")),
             "{row:?}"
         );
     }
