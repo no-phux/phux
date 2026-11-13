@@ -24,11 +24,14 @@ on:
 
 concurrency:
   # PRs are latest-wins, keyed by number: a merged PR's `closed` event carries
-  # the base ref, not the PR's. Every main SHA keeps its own run: release.yml
-  # publishes a draft only on a green ci for that exact commit. A merge group
-  # has no PR payload; its queue ref names one entry.
-  group: ci-${{ github.event_name == 'push' && github.sha || github.event.pull_request.number || github.ref }}
-  cancel-in-progress: true
+  # the base ref, not the PR's. Main pushes share one group: the running push
+  # always finishes (release-please and next need its green), and a newer push
+  # replaces the one still pending, so main holds at most two runs' Rune macOS
+  # legs in the five-slot pool. A release-please commit keeps its own group:
+  # release.yml publishes a draft only on a green ci for that exact commit.
+  # A merge group has no PR payload; its queue ref names one entry.
+  group: ci-${{ github.event_name == 'push' && (github.actor == 'phux-release-bot[bot]' && github.sha || 'main-push') || github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name != 'push' }}
 
 permissions:
   actions: read
