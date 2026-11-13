@@ -9,6 +9,7 @@ import { writeOutputs } from "../lib/actions.ts";
 import { git } from "../lib/git.ts";
 import { api, gh, ghLines } from "../lib/github.ts";
 import { list, str, table, type Table } from "../lib/value.ts";
+import { classifyRange } from "../routing/detect.ts";
 
 export type Version = readonly [number, number, number];
 
@@ -183,11 +184,26 @@ export function splitLanes(tags: readonly string[]): {
   return lanes;
 }
 
-function ciConclusion(repository: string, sha: string): string {
+const CI_WORKFLOW = ".github/workflows/ci.yml";
+const RUNE_MACOS_WORKFLOW = ".github/workflows/rune-macos.yml";
+const RELEASE_BOT = /^(?:phux-release-bot\[bot\]|phux-release\[bot\])$/m;
+
+function workflowConclusion(repository: string, sha: string, file: string, path: string): string {
   const query = new URLSearchParams({ head_sha: sha, event: "push", per_page: "20" });
-  const path = `repos/${repository}/actions/workflows/ci.yml/runs?${query.toString()}`;
-  const runs = list(table(api.json(path))["workflow_runs"]);
-  return validationState(runs, sha, ".github/workflows/ci.yml");
+  const runs = list(
+    table(api.json(`repos/${repository}/actions/workflows/${file}/runs?${query.toString()}`))[
+      "workflow_runs"
+    ],
+  );
+  return validationState(runs, sha, path);
+}
+
+function ciConclusion(repository: string, sha: string): string {
+  return workflowConclusion(repository, sha, "ci.yml", CI_WORKFLOW);
+}
+
+function runeMacosConclusion(repository: string, sha: string): string {
+  return workflowConclusion(repository, sha, "rune-macos.yml", RUNE_MACOS_WORKFLOW);
 }
 
 /** Why `sha` must not ship, or undefined when main's ci passed on that exact commit. */
@@ -197,11 +213,141 @@ export function ciRefusal(state: string, sha: string): string | undefined {
   return `ci.yml is ${state} on main for ${sha}`;
 }
 
+/** Why `sha` must not ship, or undefined when that commit's rune-macos push run passed. */
+export function runeMacosRefusal(state: string, sha: string): string | undefined {
+  if (state === "success") return undefined;
+  if (PENDING.has(state))
+    return `no finished rune-macos push run on main for ${sha}; rerun when green`;
+  return `rune-macos is ${state} on main for ${sha}`;
+}
+
+/**
+ * ci and, when `runeSha` is set, rune-macos. ci is always the release commit.
+ * `runeSha` is that commit or, for a release-bot version bump that does not
+ * itself build Rune, the parent whose ci already passed.
+ */
+export function releaseRefusal(
+  ci: string,
+  sha: string,
+  rune: string,
+  runeSha: string | undefined,
+): string | undefined {
+  const ciNo = ciRefusal(ci, sha);
+  if (ciNo !== undefined) return ciNo;
+  if (runeSha === undefined) return undefined;
+  return runeMacosRefusal(rune, runeSha);
+}
+
+export interface RuneEvidence {
+  readonly sha: string;
+  readonly bot: boolean;
+  readonly rune: boolean;
+  readonly parent?: string;
+}
+
+/** True when `identity` is the release app (`git log --format=%an%n%ae`). */
+export function isReleaseBot(identity: string): boolean {
+  return RELEASE_BOT.test(identity);
+}
+
+/**
+ * The commit whose rune-macos run proves this release, or undefined when
+ * Rune is outside the closure. A release-bot commit uses its parent only
+ * when that parent already has a green ci and itself builds Rune.
+ */
+export function runeMacosTarget(
+  commit: RuneEvidence,
+  parent: RuneEvidence | undefined,
+  parentCi: string,
+): string | undefined {
+  if (commit.rune) return commit.sha;
+  if (
+    commit.bot &&
+    parent !== undefined &&
+    commit.parent === parent.sha &&
+    parentCi === "success" &&
+    parent.rune
+  ) {
+    return parent.sha;
+  }
+  return undefined;
+}
+
+function evidence(sha: string): RuneEvidence {
+  const identity = git(["log", "-1", "--format=%an%n%ae", sha]).trim();
+  let parent: string | undefined;
+  try {
+    parent = git(["rev-parse", "--verify", `${sha}^`]).trim();
+  } catch {
+    parent = undefined;
+  }
+  const rune = parent === undefined ? true : classifyRange(parent, sha).needed.has("rune");
+  const row: RuneEvidence = { sha, bot: isReleaseBot(identity), rune };
+  return parent === undefined ? row : { ...row, parent };
+}
+
+function runeMacosOn(
+  repository: string,
+  sha: string,
+): { evidence: string; state: string } | undefined {
+  const commit = evidence(sha);
+  if (commit.rune) return { evidence: sha, state: runeMacosConclusion(repository, sha) };
+  if (!commit.bot || commit.parent === undefined) return undefined;
+  const parent = evidence(commit.parent);
+  const target = runeMacosTarget(commit, parent, ciConclusion(repository, commit.parent));
+  if (target === undefined) return undefined;
+  return { evidence: target, state: runeMacosConclusion(repository, target) };
+}
+
+/**
+ * Drop or hold tags whose rune-macos proof is missing. A pending or red
+ * proof of the event's own commit stops the whole publish, the way ci does.
+ * Any other draft stays a draft and is named on `blocked`.
+ */
+export function applyRuneGate(
+  plan: Plan,
+  strictSha: string | undefined,
+  lookup: (sha: string) => { evidence: string; state: string } | undefined,
+  shaOf: (tag: string) => string,
+): Plan {
+  if (plan.fail !== undefined || plan.wait) return plan;
+  if (strictSha !== undefined) {
+    const own = plan.publish.filter((tag) => shaOf(tag) === strictSha);
+    if (own.length > 0) {
+      const rune = lookup(strictSha);
+      if (rune !== undefined && rune.state !== "success") {
+        if (PENDING.has(rune.state)) return { ...plan, publish: [], wait: true };
+        return {
+          ...plan,
+          publish: [],
+          fail: `rune-macos is ${rune.state} for ${rune.evidence}; not publishing ${own.join(", ")}`,
+        };
+      }
+    }
+  }
+  const publish: string[] = [];
+  const held: string[] = [];
+  for (const tag of plan.publish) {
+    const rune = lookup(shaOf(tag));
+    if (rune === undefined || rune.state === "success") publish.push(tag);
+    else held.push(`${tag} (rune-macos ${rune.state} for ${rune.evidence})`);
+  }
+  const note = held.length === 0 ? "" : `still draft, rune-macos is not green: ${held.join("; ")}`;
+  const blocked = note === "" ? plan.blocked : plan.blocked ? `${plan.blocked}; ${note}` : note;
+  return { ...plan, publish, blocked };
+}
+
 /** Fail a tag whose commit main hasn't proved: rune-client.yml's preflight. */
 export function ciGreen(sha: string): number {
   const repository = process.env["GITHUB_REPOSITORY"];
   if (!repository) throw new Failure("GITHUB_REPOSITORY is unset");
-  const refusal = ciRefusal(ciConclusion(repository, sha), sha);
+  const rune = runeMacosOn(repository, sha);
+  const refusal = releaseRefusal(
+    ciConclusion(repository, sha),
+    sha,
+    rune?.state ?? "success",
+    rune?.evidence,
+  );
   if (refusal === undefined) return 0;
   console.error(`::error::${refusal}`);
   return 1;
@@ -229,10 +375,14 @@ export function main(): number {
   const eventSha =
     env["GITHUB_EVENT_NAME"] === "workflow_run" && sha && !dispatch ? sha : undefined;
 
-  const plan = decide(releases(repository), (commit) => ciConclusion(repository, commit), {
+  const decided = decide(releases(repository), (commit) => ciConclusion(repository, commit), {
     eventSha,
     dispatchTag: dispatch || undefined,
   });
+  const strict =
+    eventSha ?? (dispatch && decided.fail === undefined ? tagSha(dispatch) : undefined);
+  const waitingOnCi = decided.wait;
+  const plan = applyRuneGate(decided, strict, (commit) => runeMacosOn(repository, commit), tagSha);
   for (const tag of plan.delete) {
     gh(["release", "delete", tag, "--repo", repository, "--yes"]);
     console.log(`deleted superseded draft ${tag}`);
@@ -247,7 +397,9 @@ export function main(): number {
     phux_tag: lanes.phux,
     integration_tags: JSON.stringify(lanes.integration),
   });
-  if (plan.wait) console.log(`ci.yml still running for ${eventSha}; publish retries when it ends`);
+  if (waitingOnCi)
+    console.log(`ci.yml still running for ${eventSha}; publish retries when it ends`);
+  else if (plan.wait) console.log("rune-macos still running; publish retries when it ends");
   else console.log(`publishing ${plan.publish.join(", ") || "nothing"}`);
   if (plan.blocked) console.log(`::warning::${plan.blocked}`);
   return 0;

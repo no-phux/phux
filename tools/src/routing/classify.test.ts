@@ -127,6 +127,7 @@ test.each<[string[], Surface[]]>([
   [["clients/rune/README.md"], []],
   [["just/rune.just"], ["rune"]],
   [[".github/workflows/rune-build.yml"], ["rune"]],
+  [[".github/workflows/rune-macos.yml"], ["rune"]],
   [[".github/workflows/rune-client.yml"], []],
   [["crates/phux-client-runtime/src/lib.rs"], ["phux", "web", "rune"]],
   [["docs/development.md", "scripts/doctor.sh"], ["native"]],

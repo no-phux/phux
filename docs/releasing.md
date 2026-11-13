@@ -97,18 +97,24 @@ By hand:
    (every Rune build is `--locked`), and rewrite
    `clients/rune/RELEASE_NOTES.md`, whose first words must be
    `**Phux Rune VERSION**`. Merge it.
-2. Wait for `ci` on that exact `main` commit, then push `rune-vVERSION`.
+2. Wait for `ci` on that exact `main` commit, and for `rune-macos` when the
+   commit's closure includes Rune (a release-bot commit that does not itself
+   build Rune can use its parent's green `rune-macos`, once that parent's
+   `ci` passed). Then push `rune-vVERSION`.
 3. `rune-client.yml` refuses the tag unless clients can read it, it matches
-   `Cargo.toml` and the notes, and that commit has a green push `ci` on `main`.
-   If `ci` was still running, rerun the failed job. Tags can't be deleted or
-   moved, so a tag refused for its version or notes costs that number: fix the
-   tree and take the next one.
+   `Cargo.toml` and the notes, and that commit has a green push `ci` on
+   `main` plus a green `rune-macos` when Rune is in the closure. If either
+   was still running, rerun the failed job. Tags can't be deleted or moved,
+   so a tag refused for its version or notes costs that number: fix the tree
+   and take the next one.
 4. `rune-build.yml` tests, packages, signs and notarizes, then launches the
    final archive against a same-source server on a temp socket
    (`clients/rune/scripts/qualify.sh`). That checks the licenses in the
    archive, what the binary links, its version, and that a frame shows the
    session; on Linux it also opens a window under Xvfb and lavapipe. Pull
-   requests run the same build as the `rune` lane of `ci`, unsigned.
+   requests run the Linux hosts as the `rune` lane of `ci`. macOS and the
+   iOS simulator run in `rune-macos.yml` on the merge queue and on main,
+   unsigned until this tag.
 5. The release goes up with `--latest=false`, a prerelease only if the version
    is one, and the feed moves last. Rerunning an older tag leaves the feed alone.
 

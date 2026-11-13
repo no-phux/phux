@@ -16,7 +16,8 @@ export const commands: Record<string, Command> = {
     run: () => publishPlan(),
   },
   "ci-green": {
-    summary: "Fail unless SHA has a successful push ci.yml run on main.",
+    summary:
+      "Fail unless SHA has a green push ci on main, and rune-macos when Rune is in the closure.",
     usage: "SHA",
     run(args) {
       const [sha, ...extra] = parseArgs({ args, allowPositionals: true }).positionals;
