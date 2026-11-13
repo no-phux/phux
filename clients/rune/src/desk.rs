@@ -13,7 +13,7 @@ use std::time::{Duration, Instant};
 use phux_client_core::layout::{LayoutNode, SplitDir};
 use phux_client_runtime::control::{Observation, ProjectionFence, Status, Topology};
 use phux_client_runtime::publication::GridFrame;
-use phux_client_runtime::{Client, Listener, ViewId};
+use phux_client_runtime::{Client, ViewId};
 use phux_protocol::ids::{ArrangementKey, OperationId, ResourceId, SessionKey};
 use rune::{Tx, Waker};
 
@@ -67,17 +67,6 @@ pub use palette::{CONTEXT_MENU, with_menus};
 pub use reorder::Grab;
 pub use settings::Category as SettingsCategory;
 pub use tabs::{Renaming, Tab};
-
-/// Wakes Rune's loop from the runtime's driver thread. Only posts; never
-/// re-enters the client.
-struct Wake(Waker);
-
-impl Listener for Wake {
-    fn on_activity(&self) {
-        phux_perf::echo_hop::record("client_recv");
-        (self.0)();
-    }
-}
 
 /// How long a requested terminal may stay missing from the server's list
 /// before the window gives up on it (a spawn's id lands before its listing).

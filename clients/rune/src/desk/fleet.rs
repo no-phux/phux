@@ -12,8 +12,9 @@ use phux_client_runtime::{Client, ClientOptions, Runtime, Target};
 use phux_protocol::ids::ResourceId;
 use phux_protocol::wire::frame::RolePolicy;
 
+use super::Desk;
 use super::galaxy::Star;
-use super::{Desk, Wake};
+use super::link::Wake;
 use crate::activity::Activities;
 use crate::creature::{self, Stats};
 

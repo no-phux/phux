@@ -10,7 +10,7 @@ use std::sync::mpsc::{Receiver, Sender, channel};
 use std::time::{Duration, Instant};
 
 use phux_client_runtime::control::Status;
-use phux_client_runtime::{Client, Target};
+use phux_client_runtime::{Client, Listener, Target};
 use phux_protocol::ids::SessionKey;
 use rune::Tx;
 
@@ -159,6 +159,17 @@ fn incompatible(error: &str) -> Option<String> {
     Some(words.trim_start_matches([':', ' ']).to_owned())
 }
 
+/// Wakes Rune's loop from the runtime's driver thread. Only posts; never
+/// re-enters the client.
+pub(super) struct Wake(pub(super) rune::Waker);
+
+impl Listener for Wake {
+    fn on_activity(&self) {
+        phux_perf::echo_hop::record("client_recv");
+        (self.0)();
+    }
+}
+
 impl Desk {
     /// Rune's setup hook: the window is about to open, so everything slow
     /// starts here, on workers. Even on a remote the local server is found,
@@ -189,7 +200,7 @@ impl Desk {
         self.waker = Some(waker.clone());
         self.inbox.alerts.listen(waker.clone());
         if let Some(client) = &self.client {
-            client.set_listener(std::sync::Arc::new(super::Wake(waker)));
+            client.set_listener(std::sync::Arc::new(Wake(waker)));
             client.watch_approvals();
         }
     }
