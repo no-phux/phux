@@ -196,3 +196,35 @@ pub(crate) fn complete_pending_adoption(socket_path: &Path, quiet: bool) -> Hand
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use std::path::PathBuf;
+
+    use super::{Manager, SupervisionState, adoption_marker_is_spent};
+
+    /// The live-server path sweeps spent records and leaves a pending adopt alone.
+    #[test]
+    fn a_spent_adoption_marker_is_the_live_path_sweep() {
+        let armed = || SupervisionState::Armed {
+            manager: Manager::Systemd,
+            unit: PathBuf::from("/tmp/phux-test.service"),
+        };
+        assert!(
+            adoption_marker_is_spent(&SupervisionState::MarkerWithoutUnit, false),
+            "a marker whose unit has vanished can never complete"
+        );
+        assert!(
+            adoption_marker_is_spent(&armed(), true),
+            "armed + running is the completed login hand-over"
+        );
+        assert!(
+            !adoption_marker_is_spent(&armed(), false),
+            "armed + not-running is still waiting for the incumbent"
+        );
+        assert!(
+            !adoption_marker_is_spent(&SupervisionState::NotArmed, true),
+            "no marker means there is nothing to sweep, even if a unit is running"
+        );
+    }
+}

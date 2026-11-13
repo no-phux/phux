@@ -19,8 +19,6 @@ mod reconcile;
 mod unit;
 pub(crate) mod supervision;
 
-#[cfg(test)]
-use adoption::adoption_marker_is_spent;
 pub(crate) use adoption::{
     ARMED_SUPERVISION_EXPLANATION, Handover, armed_adoption_unit, complete_pending_adoption,
     sweep_stale_adoption_marker,
@@ -1755,7 +1753,7 @@ mod tests {
     use super::reconcile::tests::{LEGACY_PLIST, LEGACY_UNIT, patched};
     use super::unit::tests::plan;
     use super::{
-        HubEnsure, Manager, Reconcile, SupervisionState, adoption_marker_is_spent, arm_unit,
+        HubEnsure, Manager, Reconcile, arm_unit,
         config_home_from, dry_run_text, ensure_hub_in_unit, ensure_hub_in_wrapper,
         ensure_paired_policy, home_dir_from, render_launchd_plist, render_systemd_unit,
         render_unit, render_wrapper_script, report_policy_reach_with, resolve_plan,
@@ -1904,31 +1902,6 @@ mod tests {
             !report.text.contains("state armed"),
             "a completed hand-over must not still read as armed: {}",
             report.text
-        );
-    }
-
-    /// The live-server path sweeps spent records and leaves a pending adopt alone.
-    #[test]
-    fn a_spent_adoption_marker_is_the_live_path_sweep() {
-        let armed = || SupervisionState::Armed {
-            manager: Manager::Systemd,
-            unit: PathBuf::from("/tmp/phux-test.service"),
-        };
-        assert!(
-            adoption_marker_is_spent(&SupervisionState::MarkerWithoutUnit, false),
-            "a marker whose unit has vanished can never complete"
-        );
-        assert!(
-            adoption_marker_is_spent(&armed(), true),
-            "armed + running is the completed login hand-over"
-        );
-        assert!(
-            !adoption_marker_is_spent(&armed(), false),
-            "armed + not-running is still waiting for the incumbent"
-        );
-        assert!(
-            !adoption_marker_is_spent(&SupervisionState::NotArmed, true),
-            "no marker means there is nothing to sweep, even if a unit is running"
         );
     }
 
