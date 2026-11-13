@@ -1,20 +1,25 @@
 # Prove install, the first launch, and a stub agent session finish in under
 # 60 seconds. The script owns the clock and the pass/fail line. On a pull
 # request the installer is this checkout's scripts/install.sh (the binary
-# is still the latest release). Pushes and manual runs use
-# https://phux.sh/install. The job summary names which installer ran.
+# is still the latest release). Pushes, the nightly schedule, and manual
+# runs use https://phux.sh/install. The job summary names which installer ran.
 # Linux is the gate. macOS uses the same script on the macos-26 runner
 # this repository already uses for Rune CI. A pull request installs the
 # latest release binary, so its only macOS-specific input is the installer
-# and this harness: the macOS job runs on a pull request only when one of
-# those changed, and on every main push. That keeps it out of the five-slot
-# macOS pool for the other pull requests.
+# and this harness. The macOS job runs when a pull request or a main push
+# changes that input, on the nightly schedule, and on a manual run. That
+# keeps it out of the five-slot macOS pool for the other pull requests and
+# for main pushes that leave the installer untouched.
 name: first-run timing
 
 on:
   pull_request:
   push:
     branches: [main]
+  # Nightly at 04:29 UTC, clear of the 06:17 cache-warm macOS run, so a day
+  # of pushes that leave the installer untouched still times phux.sh/install.
+  schedule:
+    - cron: "29 4 * * *"
   workflow_dispatch:
 
 permissions:
@@ -22,7 +27,7 @@ permissions:
 
 # On main a newer push replaces the older one's pending run (the running one
 # finishes), so main never stacks macOS jobs ahead of pull requests in the
-# five-slot pool.
+# five-slot pool. Schedule and manual runs share that main group (#2429).
 concurrency:
   group: first-run-timing-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
@@ -33,7 +38,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     outputs:
-      installer: ${{ steps.changes.outputs.installer }}
+      installer: ${{ steps.changes.outputs.installer || steps.push_changes.outputs.installer }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -53,6 +58,27 @@ jobs:
           echo "installer inputs changed: ${changed:-none}"
           if [ -n "$changed" ]; then installer=true; else installer=false; fi
           echo "installer=$installer" >> "$GITHUB_OUTPUT"
+      # Same path set as the pull request step (#2340). before..after is the
+      # push range. A zero before SHA is a new ref, and counts as a change.
+      - name: Did the push touch the installer?
+        id: push_changes
+        if: github.event_name == 'push'
+        env:
+          BEFORE_SHA: ${{ github.event.before }}
+          AFTER_SHA: ${{ github.event.after }}
+        run: |
+          if [ -z "$BEFORE_SHA" ] || [ "$BEFORE_SHA" = "0000000000000000000000000000000000000000" ]; then
+            echo "installer inputs changed: zero or new-branch before SHA"
+            echo "installer=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          changed="$(git fetch --quiet --no-tags --depth=1 origin "$BEFORE_SHA" &&
+            git diff --name-only "$BEFORE_SHA" "$AFTER_SHA" -- scripts/install.sh scripts/installer \
+              scripts/generate-install.sh scripts/first-run-timing.sh \
+              .github/workflows/first-run-timing.yml)" || changed="diff failed"
+          echo "installer inputs changed: ${changed:-none}"
+          if [ -n "$changed" ]; then installer=true; else installer=false; fi
+          echo "installer=$installer" >> "$GITHUB_OUTPUT"
       - name: Time install through a stub agent
         env:
           PHUX_INSTALL_URL: ${{ github.event_name == 'pull_request' && format('{0}/scripts/install.sh', github.workspace) || 'https://phux.sh/install' }}
@@ -61,7 +87,7 @@ jobs:
   macos:
     name: macos install to first agent
     needs: linux
-    if: ${{ !cancelled() && (github.event_name != 'pull_request' || needs.linux.outputs.installer == 'true') }}
+    if: ${{ !cancelled() && ((github.event_name == 'pull_request' && needs.linux.outputs.installer == 'true') || (github.event_name == 'push' && needs.linux.outputs.installer == 'true') || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') }}
     runs-on: macos-26
     timeout-minutes: 10
     steps:
