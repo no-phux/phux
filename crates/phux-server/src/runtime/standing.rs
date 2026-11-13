@@ -77,6 +77,12 @@ impl Slot {
         self.args = Some(args);
     }
 
+    /// Whether this supervisor started it, rather than adopting it.
+    #[must_use]
+    pub const fn was_started(&self) -> bool {
+        self.args.is_some()
+    }
+
     /// Whether a running mirror was started with other arguments than
     /// `args`, so a reload changed it.
     #[must_use]

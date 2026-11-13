@@ -243,7 +243,7 @@ fn reconcile_process_exit(
 
 /// Ask a Terminal's actor for its typed process facet; `None` when it cannot
 /// answer.
-async fn query_process_facet(
+pub(in crate::runtime) async fn query_process_facet(
     terminal: &phux_terminal_api::actor::TerminalHandle,
 ) -> Option<phux_core::process::TerminalProcessState> {
     let (reply, reply_rx) = oneshot::channel();

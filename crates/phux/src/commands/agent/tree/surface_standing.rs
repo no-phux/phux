@@ -7,7 +7,9 @@
 //! runs this command; the mirrors it starts are Rune's descendants and the
 //! grant prompts name Rune (`docs/resource-kinds.md#standing-mirrors`).
 //! Every tick it reports this host's capture targets (`MIRROR_PROVIDE`)
-//! and is answered with the mirrors to run.
+//! and is answered with the mirrors to run. Once `phux update` replaces
+//! its binary it stops its mirrors and exits; Rune starts the new binary,
+//! whose mirrors re-adopt their surfaces.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -47,7 +49,7 @@ pub(super) fn run_standing(socket: Option<PathBuf>) -> ExitCode {
         eprintln!("another `phux agent surface standing` runs this server's mirrors");
         return ExitCode::SUCCESS;
     };
-    let exe = match std::env::current_exe() {
+    let exe = match phux_config::instance::running_executable() {
         Ok(exe) => exe,
         Err(err) => {
             eprintln!("phux agent surface standing: {err}");
@@ -61,6 +63,11 @@ pub(super) fn run_standing(socket: Option<PathBuf>) -> ExitCode {
     let mut wanted = Vec::new();
     let mut runs: BTreeMap<String, Run> = BTreeMap::new();
     loop {
+        if replaced(&exe) {
+            eprintln!("phux was updated; restarting the mirrors on the new binary");
+            runs.values_mut().for_each(Run::stop);
+            return ExitCode::SUCCESS;
+        }
         match rt.block_on(provide(&socket)) {
             Ok(mirrors) => wanted = mirrors,
             Err(err) => {
@@ -70,6 +77,12 @@ pub(super) fn run_standing(socket: Option<PathBuf>) -> ExitCode {
         tick(&exe, &socket, &wanted, &mut runs, Instant::now());
         std::thread::sleep(TICK);
     }
+}
+
+/// Whether `exe` (this process's own binary) was replaced since it started.
+fn replaced(exe: &Path) -> bool {
+    let pid = i32::try_from(std::process::id()).unwrap_or(0);
+    phux_resource::proc_query::runs_replaced_executable(pid, exe) == Some(true)
 }
 
 /// Report this host's targets; the server answers with `(session, mirror
