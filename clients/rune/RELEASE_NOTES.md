@@ -1,12 +1,6 @@
-**Phux Rune 0.1.21**: 10 changes since 0.1.20.
+**Phux Rune 0.1.22**: 4 changes since 0.1.21.
 
-- Keep the server running across logout and reboot by default (#2426)
-- Give phone navigation real sessions and actions (#2419)
-- Opt-in OSC 52 clipboard reads, answered by the controlling client (#2392)
-- Permission rows go Granted live; prompt first, come back after (#2280) (#2306)
-- Pair a phone from settings and onboarding (#2425)
-- Lock a tab against closing (#2395)
-- Trace keystroke-echo hops and draw a local echo in the key's frame (#2381)
-- First-run fixes from fresh-vm walk (#2338)
-- Install phux from the window when it is missing (#2423)
-- Name the ssh agent rune's ssh hosts use (#2418)
+- Set the quick terminal's chord in Settings, size it, and move it to a tab (#2438)
+- A character no font has no longer turns later symbols into boxes (#2435)
+- Wake the key's echo wait on publish; key-to-pixels bench against Ghostty (#2439)
+- Show an indeterminate bar while phux installs and starts (#2437)
