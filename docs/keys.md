@@ -80,8 +80,9 @@ keys that your programs don't use.
 ### A command in a popup
 
 `popup` runs one command in a floating box over your panes, in the focused
-pane's directory. The box closes when the command exits, or on the next
-phux action:
+pane's directory. The box closes when the command succeeds, or on the
+next phux action. If the command fails, the box stays open with its output
+and exit status until you press a key:
 
 ```toml
 [keybindings.prefix-table]

@@ -69,7 +69,7 @@ The **Palette** column is the command-palette section the action is offered unde
 | `restore-sessions` | Session |  | Relaunch the panes a server restart ended, resuming their agents |
 | `url-picker` | Pane |  | List the links in the focused pane and copy the one you choose |
 | `copy-text` | — | `text` | Copy the given text to the clipboard |
-| `popup` | Pane | `command?` (bare opens an interactive prompt); `cwd?` | Run a command in a floating pane that closes when it exits |
+| `popup` | Pane | `command?` (bare opens an interactive prompt); `cwd?` | Run a command in a floating pane that closes when it succeeds |
 | `last-session` | Session |  | Switch back to the previous session |
 | `next-session` | Session |  | Switch to the next session by name |
 | `previous-session` | Session |  | Switch to the previous session by name |

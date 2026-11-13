@@ -1,8 +1,9 @@
-//! `popup`: one command in a floating box over the panes, gone when it exits.
+//! `popup`: one command in a floating box over the panes, gone when it
+//! succeeds and held on a failure until a key.
 
 use phux_client::layout_ops::DEFAULT_LAYOUT_GROUP_ID as DEFAULT_GROUP_ID;
 use phux_protocol::ids::SatelliteHost;
-use phux_protocol::wire::frame::FrameKind;
+use phux_protocol::wire::frame::{FrameKind, SpawnResource};
 
 use crate::attach::floating::floating_box;
 use crate::attach::input_dispatch::args::str_arg;
@@ -13,7 +14,9 @@ use super::{ActionCall, bind_satellite_spawn, spawn_place};
 
 /// Run `command` through `sh -c` in a floating pane, in the focused pane's
 /// directory and on its machine, or prompt for the command. The box is the
-/// one plugin overlay panes use: any action or the command's exit closes it.
+/// one plugin overlay panes use: any action or the command's success closes
+/// it. Retained so a failure stays readable; a server without retention
+/// closes it on any exit.
 pub(in crate::attach) fn popup(
     ActionCall {
         resolved,
@@ -43,7 +46,7 @@ pub(in crate::attach) fn popup(
             let inner = floating_box(content).inner;
             Some((inner.w, inner.h))
         }),
-        resource: None,
+        resource: Some(Box::new(SpawnResource::default().with_retain_secs(Some(0)))),
     };
     bind_satellite_spawn(&mut frame);
     effects.spawn_floating = Some((request_id, command, frame));
@@ -73,9 +76,13 @@ mod tests {
         let effects = run_action(&action, &mut ctx, None, &panes);
         let (_, title, frame) = effects.spawn_floating.expect("a floating spawn");
         assert_eq!(title, "lazygit");
-        let FrameKind::SpawnResource { command, .. } = frame else {
+        let FrameKind::SpawnResource {
+            command, resource, ..
+        } = frame
+        else {
             panic!("not a spawn: {frame:?}");
         };
+        assert_eq!(resource.and_then(|r| r.retain_secs), Some(0), "retained");
         assert_eq!(
             command,
             Some(vec!["/bin/sh".into(), "-c".into(), "lazygit".into()])

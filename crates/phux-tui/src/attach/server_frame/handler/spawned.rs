@@ -187,6 +187,28 @@ pub(super) fn close_floating<W: crate::attach::RenderSink>(
     })
 }
 
+/// The retained floating overlay's process failed: keep its last screen up,
+/// titled with the exit and `any key`, so a popup's error can be read (tmux
+/// `-EE`). Any key or action dismisses it, killing the Terminal. `None` when
+/// `terminal_id` is not the floating pane or the process succeeded.
+pub(super) fn hold_failed_floating<W: crate::attach::RenderSink>(
+    ctx: &mut FrameCtx<'_, W>,
+    terminal_id: &ResourceId,
+    mark: crate::attach::pane_state::ExitMark,
+) -> Option<FrameOutcome> {
+    let slot = ctx.panes.get_mut(terminal_id)?;
+    let title = slot.floating.as_mut()?;
+    if mark.status == Some(0) || slot.exited.is_some() {
+        return None;
+    }
+    *title = format!("{title} · {} · any key", mark.label());
+    slot.exited = Some(mark);
+    Some(FrameOutcome {
+        layout_replaced: true,
+        ..FrameOutcome::default()
+    })
+}
+
 /// Log why a split's spawn failed, by error kind.
 fn log_split_spawn_error(request_id: u32, err: &SpawnError) {
     match err {

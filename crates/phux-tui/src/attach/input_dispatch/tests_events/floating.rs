@@ -160,3 +160,26 @@ async fn the_pointer_inside_reaches_the_overlay_and_a_press_outside_dismisses() 
     assert_eq!(kills(&sent.frames), vec![tid(9)]);
     assert!(sent.repainted && !env.panes.contains_key(&tid(9)));
 }
+
+/// A held failure (its process exited) closes on any key, which kills its
+/// Terminal and reaches no pane.
+#[tokio::test]
+async fn any_key_dismisses_a_held_floating_failure() {
+    let mut env = env_with_floating();
+    env.panes.get_mut(&tid(9)).expect("overlay slot").exited =
+        Some(crate::attach::pane_state::ExitMark {
+            status: Some(1),
+            signal: None,
+        });
+    let sent = env.dispatch(vec![press(PhysicalKey::Q, Some("q"))]).await;
+    assert_eq!(kills(&sent.frames), vec![tid(9)]);
+    assert!(
+        !sent
+            .frames
+            .iter()
+            .any(|frame| matches!(frame, FrameKind::InputKey { .. })),
+        "{:?}",
+        sent.frames
+    );
+    assert!(sent.repainted && !env.panes.contains_key(&tid(9)));
+}
