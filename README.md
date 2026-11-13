@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="./docs/assets/logo.png" alt="phux" width="240">
+  <img src="./docs/assets/logo.svg" alt="phux" width="240">
 </p>
 
 <p align="center">

@@ -21,6 +21,36 @@ in phux-brand, inspect its preview, and publish a new approved version.
 Consumer CI rejects edits that drift from the pin. Product code continues
 to own behavior, animation, and platform resource packaging.
 
+## Wordmark surfaces
+
+The PHUX wordmark is artwork, not a body font or an app icon. Its original
+grid-built letterforms belong in the brand library; do not recreate them with
+a system monospace font or copy another project's glyphs. A wordmark update
+does not select a different fox profile.
+
+| Surface | Consumer | Contract |
+| --- | --- | --- |
+| Repository README | `docs/assets/logo.svg` | Scalable canonical wordmark, with plain `phux` alternative text. |
+| Raster documentation consumers | `docs/assets/logo.png` | PNG counterpart of the same approved wordmark. |
+| Rune app and window icons | `clients/rune/packaging/AppIcon.{svg,png}` | Selected profile icon, not a wordmark. |
+| Rune onboarding | `clients/rune/src/desk/onboarding/fox.rs` | Fox illustrations and selected icon; keep these distinct from the wordmark. |
+| Rune fleet heading | `clients/rune/src/ui/galaxy.rs` | `PHUX // FLEET` is an interface label, not a hand-built logo. |
+| CLI help and diagnostics | `crates/phux/src/help.rs`, `crates/phux/src/output.rs` | Plain terminal text; no graphical or ASCII splash. |
+| TUI and native terminal attachment | `crates/phux-tui` | Terminal content and chrome; no wordmark splash. |
+
+The existing `logos/docs-wordmark.svg` and `logos/docs-wordmark.png` exports
+map to the documentation paths above through `brand.config.json`. Import an
+approved wordmark revision with `brand-sync`; do not edit the installed asset
+bytes or their checksums by hand. The SVG is self-contained artwork, so README
+rendering does not depend on an installed font. Keep alternative text when
+embedding it, and keep ordinary product names and command output as text.
+
+No terminal-art export is required by the current CLI or TUI. If a future
+surface needs one, approve a terminal-safe representation in the brand library
+first and retain readable plain-text output for narrow or noninteractive
+terminals. Do not add decorative output to JSON, protocol, or diagnostic
+payloads as part of an artwork update.
+
 ## Choosing branding in the apps
 
 In the mobile app, open **Settings → Appearance → Brand profile** to choose Flat
