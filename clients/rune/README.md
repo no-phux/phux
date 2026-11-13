@@ -50,7 +50,9 @@ set the primary selection. The clipboard uses the data-control
 protocol that wlroots compositors, Hyprland and KDE offer. On a compositor
 with XWayland, unsetting `WAYLAND_DISPLAY` for the app runs it on X11.
 
-The app needs the phux CLI (`curl -fsSL https://phux.sh/install | sh`).
+The app needs the phux CLI. When none is found it offers **Install phux**, which runs the
+same installer as `curl -fsSL https://phux.sh/install | sh` (CLI in `~/.local/bin`, phux
+Server.app on macOS, a PATH line in the shell profile) and then connects.
 From 0.1.0-alpha.6 it updates itself; earlier alphas need this one download.
 
 ## What it does

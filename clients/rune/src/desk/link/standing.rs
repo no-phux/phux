@@ -82,8 +82,10 @@ pub fn plainly_on_phone(error: &str, name: &str) -> String {
 pub enum Standing {
     /// `phux server --ensure` is running.
     Starting,
-    /// No CLI to start a server with.
-    NoCli,
+    /// phux is being installed from this window.
+    Installing,
+    /// No CLI to start a server with, and why installing one failed.
+    NoCli(Option<String>),
     /// The server speaks another protocol major.
     Incompatible(String),
     /// Nothing answered, and this keeps trying unless retrying can't help.
@@ -125,9 +127,10 @@ impl Desk {
             _ if self.link.handing_off() && !self.link_is_up() => {
                 Standing::Connecting("The server is updating.".to_owned())
             }
+            (None, _) if self.link.installing => Standing::Installing,
             (None, _) if self.link.finding => Standing::Starting,
             (None, _) if self.machines.current.is_none() && self.launch.missing_cli() => {
-                Standing::NoCli
+                Standing::NoCli(self.link.install_failed.clone())
             }
             (None, _) | (Some(_), Status::Failed) => {
                 Standing::Unreachable(self.hinted(why(), true))

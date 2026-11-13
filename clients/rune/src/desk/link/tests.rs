@@ -480,3 +480,27 @@ fn a_protocol_refusal_keeps_the_servers_words() {
     );
     assert_eq!(incompatible("server error Unknown: no"), None);
 }
+
+#[test]
+fn a_window_without_phux_installs_it_and_says_why_an_install_failed() {
+    let mut desk = Desk::open(&launch::Resolved::offline("no phux"), None);
+    assert_eq!(desk.standing(), Standing::NoCli(None));
+    // What `install_phux` sets before its worker runs the real installer.
+    desk.link.installing = true;
+    desk.link.finding = true;
+    assert_eq!(desk.standing(), Standing::Installing);
+    // A retry while installing waits for the install's own search.
+    let attempt = desk.link.attempt;
+    desk.reconnect();
+    assert_eq!(desk.link.attempt, attempt);
+    desk.link
+        .found
+        .0
+        .send((attempt, Err("no release".to_owned())))
+        .unwrap();
+    assert!(desk.pump_link());
+    assert_eq!(
+        desk.standing(),
+        Standing::NoCli(Some("no release".to_owned()))
+    );
+}
