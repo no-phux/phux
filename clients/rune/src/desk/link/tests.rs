@@ -504,3 +504,22 @@ fn a_window_without_phux_installs_it_and_says_why_an_install_failed() {
         Standing::NoCli(Some("no release".to_owned()))
     );
 }
+
+#[test]
+fn an_install_shows_a_moving_bar_until_it_ends() {
+    let mut desk = Desk::open(&launch::Resolved::offline("no phux"), None);
+    desk.link.installing = true;
+    desk.link.finding = true;
+    let mut rt = rune::Runtime::new(
+        desk,
+        crate::ui::view,
+        (900.0, 600.0),
+        rune::Env::new(false, 1.0),
+    );
+    rt.frame(0.0);
+    assert!(rt.find("placeholder-progress").is_some());
+    rt.state.link.installing = false;
+    rt.state.link.finding = false;
+    rt.frame(1.0);
+    assert!(rt.find("placeholder-progress").is_none());
+}
