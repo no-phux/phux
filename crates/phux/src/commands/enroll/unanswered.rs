@@ -27,7 +27,7 @@ pub(crate) fn udp_unanswered(route: &str) -> bool {
 
 /// Note what a probe to `route` found: `answered`, or no answer at all.
 /// Best effort: a state directory that cannot be written costs a wait.
-pub(super) fn record(route: &str, answered: bool) {
+pub(crate) fn record(route: &str, answered: bool) {
     let path = file();
     let text = std::fs::read_to_string(&path).unwrap_or_default();
     let next = updated(&text, host_of(route), answered, now());

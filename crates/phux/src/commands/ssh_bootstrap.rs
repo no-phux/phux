@@ -23,6 +23,9 @@ use super::attach;
 use super::enroll::{authority, login, ssh_hostname, ssh_program};
 use super::rec::RecordSpec;
 
+mod quic_probe;
+use quic_probe::probe;
+
 /// ssh's exit status when ssh itself failed (resolution, connection,
 /// authentication), as opposed to the remote command.
 const SSH_FAILED: i32 = 255;
@@ -109,29 +112,23 @@ pub(crate) fn run(args: SshAttach<'_>) -> ExitCode {
     };
 
     let target = authority(&host, report.port);
-    if let Err(reason) = super::enroll::probe(
-        &target,
-        &report.token,
-        Some(&report.cert_fingerprint),
-        // The leaf pin arrived over ssh this second; nothing to learn.
-        &phux_client_runtime::target::AuthorityPin::default(),
-        args.identity.clone(),
-    ) {
-        return fall_back(
-            &args,
-            &format!("QUIC to {target} did not connect: {reason}"),
-        );
-    }
+    let rt = match super::cli_runtime() {
+        Ok(rt) => rt,
+        Err(code) => return code,
+    };
+    // The probe's connection is the attach's first, so the attach does not
+    // pay a second QUIC handshake and HELLO.
+    let (plan, first) = match probe(&rt, &target, &report, args.identity.clone()) {
+        Ok(probed) => probed,
+        Err(reason) => {
+            return fall_back(
+                &args,
+                &format!("QUIC to {target} did not connect: {reason}"),
+            );
+        }
+    };
     info!("attaching over QUIC to {target}; ssh is out of the path");
-    attach::run_attach_quic(
-        args.session,
-        target,
-        Some(report.token),
-        Some(report.cert_fingerprint),
-        None,
-        args.identity,
-        args.rec,
-    )
+    attach::attach_quic_planned(&rt, plan, &target, args.session, args.rec, Some(first)).code
 }
 
 /// While this attach rides ssh, bootstrap a listener without a prompt and
