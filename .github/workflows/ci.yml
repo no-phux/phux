@@ -24,14 +24,11 @@ on:
 
 concurrency:
   # PR updates/closes and dispatches share repo:head-ref; queue refs stay unique.
-  # Ordinary main pushes coalesce only while pending. Release commits retain
-  # exact-SHA CI, even on a manual merge. No push cancels a running push.
+  # Every main SHA retains its push CI: routing is per-push, so replacing a
+  # pending push would drop its validation and content publication work.
   # Contracts and key boundaries: docs/ci.md#concurrency.
   group: >-
-    ci-${{ github.event_name == 'push' && ((github.actor == 'phux-release-bot[bot]'
-    || startsWith(github.event.head_commit.message, 'chore: release ')
-    || startsWith(github.event.head_commit.message, 'chore(rune): release '))
-    && github.sha || 'main-push')
+    ci-${{ github.event_name == 'push' && github.sha
     || github.event_name == 'pull_request' && format('{0}:refs/heads/{1}', github.event.pull_request.head.repo.full_name, github.head_ref)
     || github.event_name == 'workflow_dispatch' && format('{0}:{1}', github.repository, github.ref)
     || github.ref }}

@@ -1,10 +1,12 @@
 // Evaluate the workflow's actual, deliberately JS-compatible expressions.
 // This is not a general GitHub expression interpreter: these fixtures use
-// only boolean operators, format(), startsWith(), and populated contexts.
+// only boolean operators, format(), and populated contexts.
 import { expect, test } from "bun:test";
 import { runInNewContext } from "node:vm";
 import { capture } from "../lib/process.ts";
 import { str, table, type Table } from "../lib/value.ts";
+import { Classifier } from "../routing/classify.ts";
+import { plan, planOutputs } from "../routing/plan.ts";
 import { job, run, steps, workflow } from "./workflows.ts";
 
 function context(event: string, overrides: Table = {}): Table {
@@ -35,7 +37,6 @@ function evaluate(value: unknown, github: Table, needs: Table = {}): unknown {
     github,
     needs,
     cancelled: () => false,
-    startsWith: (text: string, prefix: string) => text.startsWith(prefix),
     format: (pattern: string, ...args: string[]) =>
       pattern.replace(/\{(\d+)\}/g, (_, index: string) => String(args[Number(index)])),
   });
@@ -50,18 +51,38 @@ function group(owner: Table, github: Table): string {
 const CI = workflow("ci.yml");
 const FIRST_RUN = workflow("first-run-timing.yml");
 
-test("ordinary pushes coalesce, release pushes retain exact-SHA CI, and no push cancels", () => {
+test("every main SHA retains its routed work and exact-SHA CI; no push cancels", () => {
   const push = context("push", { ref: "refs/heads/main", ref_name: "main" });
   const newer = { ...push, sha: "b".repeat(40) };
-  expect(group(CI, push)).toBe(group(CI, newer));
+  // A installer/content push followed by a docs-only or Rust-only push
+  // must not lose its independent validation/publication admission.
+  expect(group(CI, push)).not.toBe(group(CI, newer));
   for (const message of ["chore: release main (#1)", "chore(rune): release 1.2.3 (#2)"]) {
     const release = { ...push, event: { head_commit: { message } } };
-    expect(group(CI, release)).not.toBe(group(CI, push));
+    expect(group(CI, release)).toBe(group(CI, push));
     expect(group(CI, release)).not.toBe(group(CI, { ...release, sha: newer.sha }));
   }
   const bot = { ...push, actor: "phux-release-bot[bot]" };
-  expect(group(CI, bot)).not.toBe(group(CI, push));
+  expect(group(CI, bot)).toBe(group(CI, push));
   expect(evaluate(table(CI["concurrency"])["cancel-in-progress"], push)).toBe(false);
+});
+
+test.each<[string, string, string]>([
+  ["docs/install.md", "crates/phux-server/src/lib.rs", "content"],
+  ["crates/phux-server/src/lib.rs", "docs/install.md", "lint"],
+])("pending %s retains %s-independent routed work", (first, second, required) => {
+  const classifier = new Classifier();
+  const a = context("push", { sha: "a".repeat(40) });
+  const b = context("push", { sha: "b".repeat(40) });
+  const before = classifier.classify([first]);
+  const after = classifier.classify([second]);
+  const admitted = new Map([
+    [group(CI, a), planOutputs(plan(before, "push"), before)],
+    [group(CI, b), planOutputs(plan(after, "push"), after)],
+  ]);
+  expect(admitted.size).toBe(2);
+  expect(admitted.get(group(CI, a))?.[required]).toBe(true);
+  expect(admitted.get(group(CI, b))?.[required]).toBe(false);
 });
 
 test("PR updates, close and dispatch share a group without crossing repo/ref boundaries", () => {

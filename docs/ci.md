@@ -32,12 +32,13 @@ merge group still runs it, and its receipt never covers a `main` push.
 
 ## Concurrency
 
-Ordinary main pushes share one CI concurrency group: a running push finishes,
-and a newer push replaces only the pending one. Release App pushes and
-conventional `chore: release ...` / `chore(rune): release ...` commits retain
-per-SHA groups, including manual merges. A manually tagged ordinary commit
-whose pending push was superseded still needs its own push CI rerun before
-it can release; a dispatch or another commit's green cannot substitute.
+Every main push retains its per-SHA CI group, and never cancels a running
+push. Routing compares that push's own before/after range: replacing a
+pending push would lose its routed validation and content publication, even
+if a later commit goes green. Coalescing main workflow admission is unsafe
+without cumulative routing and publication coverage. This also preserves
+exact-push-SHA release evidence; a dispatch or another commit's green cannot
+substitute.
 
 PR updates, closes and a dispatch of the same repository branch share a
 latest-wins group. A merged PR's closed event carries the base ref, so its
