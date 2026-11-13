@@ -1,23 +1,182 @@
 name: Cache warm
 
 # Pull requests restore Rust caches but never save them (a PR entry is
-# restorable only from that PR, and it evicts main's). The Rune lane runs on a
-# main push only when Rune changes, so its cache is saved here: the lane
-# itself, run on main once a day. An unchanged key restores exactly and saves
-# nothing.
+# restorable only from that PR, and it evicts main's). Two clocks:
+#
+#   00:10 UTC — the Linux mbx lanes (check, test, icount) and the uniffi
+#   dependency cache. Their mbx key is flake + Cargo.lock + the UTC day, so
+#   the first pull request of a day used to miss. This run restores the
+#   previous day, builds what a main push builds, and on main saves today's
+#   key. A cheap scheduled job dispatches the Linux-only mode on main:
+#   mr-boxington-action supports opting into workflow_dispatch saves, not
+#   schedule saves. Off main the opt-in is false, so branches restore only.
+#
+#   06:17 UTC — the Rune lane, unchanged. Its job does not run at 00:10.
+#   An unchanged key restores exactly and saves nothing.
 on:
   schedule:
+    - cron: "10 0 * * *"
     - cron: "17 6 * * *"
   workflow_dispatch:
+    inputs:
+      linux-only:
+        description: Warm only Linux caches (used by the nightly dispatcher).
+        type: boolean
+        required: false
+        default: false
 
 permissions:
   contents: read
 
 concurrency:
-  group: cache-warm
+  # Isolate both clocks: the dispatcher never waits for its dispatched run,
+  # and a pending Rune warm cannot replace or block the Linux-only warm.
+  group: cache-warm-${{ github.ref }}-${{ inputs.linux-only == true && 'linux' || github.event_name == 'schedule' && github.event.schedule == '10 0 * * *' && 'dispatch' || 'rune' }}
   cancel-in-progress: false
 
 jobs:
+  dispatch-linux:
+    name: dispatch the Linux-only cache warm
+    if: github.ref == 'refs/heads/main' && github.event_name == 'schedule' && github.event.schedule == '10 0 * * *'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      actions: write
+    steps:
+      - env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: gh workflow run cache-warm.yml --repo "$GH_REPO" --ref main -f linux-only=true
+
   rune:
-    if: github.ref == 'refs/heads/main'
+    if: github.ref == 'refs/heads/main' && inputs.linux-only != true && (github.event_name != 'schedule' || github.event.schedule == '17 6 * * *')
     uses: ./.github/workflows/rune-build.yml
+
+  rust-lint:
+    name: warm rust lint
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 30
+    permissions:
+      actions: write
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup-rust-lane
+        id: lane
+        with:
+          cachix-auth-token: ${{ secrets.CACHIX_AUTH_TOKEN }}
+          cache-lane: check
+          record-main-cache: "true"
+      - name: mbx save decision
+        run: echo "hit=${{ steps.lane.outputs.cache-hit }} reason=${{ steps.lane.outputs.cache-save-reason }} key=${{ steps.lane.outputs.cache-key }}"
+      - run: nix develop -c just rust-lint
+      - name: Check the plugin index compiles
+        run: nix develop -c cargo check --locked --manifest-path scripts/plugin-index/Cargo.toml
+      - name: leave disk headroom for the objects save
+        if: steps.lane.outputs.cache-save-eligible == 'true' && steps.lane.outputs.cache-hit != 'true'
+        run: bash scripts/ci/mbx-export-headroom.sh
+
+  rust-test:
+    name: warm rust test
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 30
+    permissions:
+      actions: write
+      contents: read
+    env:
+      CARGO_INCREMENTAL: "0"
+      CARGO_PROFILE_DEV_DEBUG: "0"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup-rust-lane
+        id: lane
+        with:
+          cachix-auth-token: ${{ secrets.CACHIX_AUTH_TOKEN }}
+          cache-lane: test
+          record-main-cache: "true"
+      - name: mbx save decision
+        run: echo "hit=${{ steps.lane.outputs.cache-hit }} reason=${{ steps.lane.outputs.cache-save-reason }} key=${{ steps.lane.outputs.cache-key }}"
+      - name: just test-archive
+        env:
+          PHUX_TEST_ARCHIVE: ${{ runner.temp }}/phux-tests.tar.zst
+        run: nix develop -c just test-archive
+      - name: leave disk headroom for the objects save
+        if: steps.lane.outputs.cache-save-eligible == 'true' && steps.lane.outputs.cache-hit != 'true'
+        run: bash scripts/ci/mbx-export-headroom.sh
+
+  rust-uniffi:
+    name: warm rust uniffi
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 25
+    permissions:
+      actions: read
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup-rust-lane
+        id: lane
+        with:
+          cachix-auth-token: ${{ secrets.CACHIX_AUTH_TOKEN }}
+          cache-lane: uniffi
+          build-cache: deps
+          record-main-cache: "true"
+      - name: dependency-cache hit
+        run: echo "hit=${{ steps.lane.outputs.cache-hit }}"
+      - run: nix develop -c just binding-uniffi-test
+      - run: nix develop -c just ffi-abi
+
+  rust-icount:
+    name: warm rust icount
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      actions: write
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: ./.github/actions/setup-rust-lane
+        id: lane
+        with:
+          cachix-auth-token: ${{ secrets.CACHIX_AUTH_TOKEN }}
+          cache-lane: icount
+          record-main-cache: "true"
+      - name: mbx save decision
+        run: echo "hit=${{ steps.lane.outputs.cache-hit }} reason=${{ steps.lane.outputs.cache-save-reason }} key=${{ steps.lane.outputs.cache-key }}"
+      - name: just perf-icount
+        run: nix develop -c just perf-icount
+      - name: leave disk headroom for the objects save
+        if: steps.lane.outputs.cache-save-eligible == 'true' && steps.lane.outputs.cache-hit != 'true'
+        run: bash scripts/ci/mbx-export-headroom.sh
+
+  # Job dependencies include post-step uploads. Only actual current-day
+  # caches qualify retiring the last older restore source; a skipped/failed
+  # upload must not destroy that fallback. A branch dispatch must not delete:
+  # this job's token can remove repository caches, and the ref is the boundary.
+  prune-build-cache:
+    name: prune superseded build caches
+    needs: [rust-lint, rust-test, rust-uniffi, rust-icount]
+    if: always() && github.ref == 'refs/heads/main' && github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      actions: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - env:
+          GH_TOKEN: ${{ github.token }}
+        run: bash scripts/ci/prune-build-cache.sh
