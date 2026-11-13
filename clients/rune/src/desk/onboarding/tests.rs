@@ -165,7 +165,6 @@ fn a_grant_coming_through_moves_on_to_the_next() {
     });
 }
 
-
 #[test]
 fn a_missing_command_reads_as_update_phux() {
     let probe: Probe<()> = Probe::from(Err("error: unrecognized subcommand 'skill'".into()));
