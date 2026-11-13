@@ -35,6 +35,7 @@ mod reef;
 #[cfg(any(target_os = "linux", test))]
 #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 mod scheme;
+mod screenshot;
 mod session_color;
 mod standing;
 mod system_settings;

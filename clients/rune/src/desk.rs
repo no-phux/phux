@@ -56,6 +56,7 @@ pub mod quick;
 pub mod reef;
 mod reorder;
 pub mod resources;
+mod screenshot;
 mod sessions;
 mod settings;
 mod shown;
@@ -187,6 +188,8 @@ pub struct Desk {
     /// How this run started, for moving between machines.
     launch: Resolved,
     waker: Option<Waker>,
+    /// A screenshot being taken, and the terminal it is for.
+    capture: Option<screenshot::Capture>,
     /// Image uploads on their way, and the terminal each is for.
     uploads: Vec<(u64, ResourceId)>,
     /// User pastes the server hasn't answered yet.
@@ -357,6 +360,7 @@ impl Desk {
             link: link::Link::default(),
             launch: resolved.clone(),
             waker: None,
+            capture: None,
             uploads: Vec::new(),
             pastes: HashSet::new(),
             prefs,
@@ -426,6 +430,7 @@ impl Desk {
             | self.tick_fleet()
             | self.pump_link()
             | self.pump_links()
+            | self.finish_screenshot()
             | self.pump_settings(tx)
             | self.pump_onboarding(tx)
             | self.expire_notice(tx);

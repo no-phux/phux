@@ -48,6 +48,7 @@ impl Desk {
             Shortcut::ChangeTheme => self.open_themes(),
             Shortcut::SwitchSession => self.switch_sessions(),
             Shortcut::InsertPath => self.open_paths(),
+            Shortcut::Screenshot => self.screenshot(),
             Shortcut::CheckForUpdates => self.updater.check_now(),
             Shortcut::InstallUpdate => self.install_update(tx),
             Shortcut::Machines => self.toggle_machines(),
