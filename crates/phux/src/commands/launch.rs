@@ -218,9 +218,7 @@ fn run_list(config_path: &std::path::Path, mode: LaunchMode, json: bool) -> Exit
         return crate::output::json(&payload);
     }
     if integrations.is_empty() {
-        outln!(
-            "No agent integrations available. Install a plugin with `phux plugin install SOURCE`."
-        );
+        outln!("No agent integrations available. {GET_INTEGRATIONS}");
         return ExitCode::SUCCESS;
     }
     for item in &integrations {
@@ -436,12 +434,18 @@ const fn spawn_resource_frame(
     }
 }
 
+/// Where launch templates come from: a fresh install enables none, and the
+/// starter layer bundled in the binary carries agent-tools (no git needed).
+const GET_INTEGRATIONS: &str = "Launch templates for Claude Code, Codex, OpenCode, pi and \
+     other agents ship with phux: run `phux config distro use starter` to turn them on. Any \
+     agent also runs in a plain pane: `phux new -- opencode`. Per-agent setup: \
+     https://docs.phux.sh/agents#agent-setup";
+
 fn launch_error_text(err: &LaunchError) -> String {
     match err {
-        LaunchError::NotFound { name, available } if available.is_empty() => format!(
-            "no launchable integration named {name:?} in any enabled plugin \
-             (install one, then `phux plugin enable`)"
-        ),
+        LaunchError::NotFound { name, available } if available.is_empty() => {
+            format!("no launchable integration named {name:?}: no agent integrations are enabled")
+        }
         LaunchError::NotFound { name, available } => {
             format!(
                 "no launchable integration named {name:?}; available: {}",
@@ -449,7 +453,7 @@ fn launch_error_text(err: &LaunchError) -> String {
             )
         }
         LaunchError::NoLaunchCommand { name } => {
-            format!("integration {name:?} declares no `[launch]` command")
+            format!("no enabled plugin has a terminal launch template for {name:?}")
         }
         other => format!("launch failed: {other}"),
     }
@@ -457,6 +461,12 @@ fn launch_error_text(err: &LaunchError) -> String {
 
 fn report_launch_error(json: bool, err: &LaunchError) -> ExitCode {
     let (code, remedy) = match err {
+        LaunchError::NotFound { available, .. } if available.is_empty() => {
+            (json_err::codes::UNKNOWN_INTEGRATION, GET_INTEGRATIONS)
+        }
+        // A fresh install knows `opencode` (its ACP template) but has no
+        // terminal template for it until agent-tools is enabled.
+        LaunchError::NoLaunchCommand { .. } => (json_err::codes::REGISTRY, GET_INTEGRATIONS),
         LaunchError::NotFound { .. } => (
             json_err::codes::UNKNOWN_INTEGRATION,
             "`phux launch --list` names what is launchable; `phux plugin list` shows what is enabled",

@@ -101,7 +101,8 @@ hooks, reports its state to phux as it changes.
 | Claude Code | `claude plugin marketplace add no-phux/phux`, then `claude plugin install phux@phux` |
 | pi | `pi install npm:@phux/pi` |
 | Oh My Pi | `omp plugin install @phux/omp` |
-| OpenCode | `opencode plugin add @phux/opencode` |
+| OpenCode 2.2 or newer | `opencode plugin add @phux/opencode` |
+| OpenCode 1.x | Register `phux mcp` ([how](../integrations/opencode-v2/README.md#opencode-1x)). |
 | fx | Use the built-in `fx acp` profile ([ACP sessions](./acp.md)); for terminal fx, register `phux mcp` in fx. |
 | Grok | `grok plugin marketplace add no-phux/phux`, then `grok plugin install phux@phux --trust` |
 | Anything that speaks MCP | See [MCP](#mcp). |
@@ -194,9 +195,11 @@ They filter the current inventory; they are not a completion gate.
 
 ## Driving an agent in a pane
 
-Address an agent's pane by `%name` or `@N`:
+Address an agent's pane by `%name` or `@N`. `%` refuses a kind name like
+`opencode`, so name the pane first:
 
 ```sh
+phux agent set @3 --name reviewer --kind opencode          # once
 phux agent wait --until blocked --timeout 600 %reviewer   # until it needs you
 phux agent prompt %reviewer 'run the tests again'          # hand it one line of work
 phux agent answer --id Q7 --choice 2 %reviewer             # answer its question
@@ -232,8 +235,8 @@ phux launch claude-code -- --model opus   # extra arguments follow --
 pane beside an existing one. `--split horizontal` puts it to the right;
 `--split vertical` puts it below.
 
-Launch commands come from plugins. The starter distribution includes them for
-the agents above; `phux config init --distro starter` turns it on.
+A fresh install enables no launch commands. `phux config distro use starter`
+turns on the bundled ones for the agents above and keeps your config.
 
 `phux agent start` starts an agent in a shell pane you already have, and
 returns once the agent is ready for input:
