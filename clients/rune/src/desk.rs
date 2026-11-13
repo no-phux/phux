@@ -11,7 +11,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use phux_client_core::layout::{LayoutNode, SplitDir};
-use phux_client_runtime::control::{Observation, ProjectionFence, Status, Topology};
+use phux_client_runtime::control::{ProjectionFence, Status, Topology};
 use phux_client_runtime::publication::GridFrame;
 use phux_client_runtime::{Client, Listener, ViewId};
 use phux_protocol::ids::{ArrangementKey, OperationId, ResourceId, SessionKey};
@@ -484,38 +484,5 @@ impl Desk {
         self.fit();
         self.wake_phone_fit(tx);
         changed | self.blink(&client, tx) | self.tend_link(tx)
-    }
-
-    /// What an observation says about the connection itself. The topology
-    /// is only sampled when the batch can have changed it.
-    fn follow_connection(&mut self, client: &Client, observation: &mut Observation) -> bool {
-        let mut changed = observation.status != self.status;
-        if observation.connection_epoch != self.epoch {
-            self.retire_documents(client);
-            self.first_contact();
-            self.epoch = observation.connection_epoch;
-            self.focus_told = None;
-            changed |= self.reopen_after_reconnect(client);
-        }
-        self.status = observation.status;
-        let failure = observation.last_error.take();
-        if let Some(error) = failure.filter(|_| self.status.is_terminal()) {
-            changed |= self.error.as_ref() != Some(&error);
-            self.failed_with(&error);
-            self.error = Some(error);
-        }
-        if let Some(topology) = observation.topology.take()
-            && self.topology.as_ref() != Some(&topology)
-        {
-            self.topology = Some(topology);
-            changed = true;
-        }
-        if self.server.is_none() {
-            self.server = client.server().map(|info| format!("{info:?}"));
-        }
-        if changed || observation.events.iter().any(events::changes_resources) {
-            changed |= self.refresh_resources(client);
-        }
-        changed
     }
 }
