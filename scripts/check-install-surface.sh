@@ -30,6 +30,12 @@ for client in scripts/install.sh scripts/install-windows.ps1 crates/phux-client-
   fi
 done
 
+# install.sh appends to the invoking shell's profile; a test that runs it
+# against the real home leaves PATH lines behind (phux-gh85y).
+for test in $(grep -lE 'install(-desktop|-rune)?\.sh|installer/' scripts/test-*.sh); do
+  grep -qE '^export HOME="\$TMP' "$test" || fail "$test runs an installer; export HOME=\"\$TMP/...\" first"
+done
+
 [[ $failures -eq 0 ]] || { phux_error "install surface check failed"; exit 1; }
 
 bash scripts/check-product-skills-export.sh
