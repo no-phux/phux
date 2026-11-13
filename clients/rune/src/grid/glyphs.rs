@@ -8,7 +8,7 @@ use phux_client_runtime::draw::TextRun;
 use phux_client_runtime::draw::boxes::{self, Bend, Piece, Rect};
 use rune::{Color, El, TextStyle, el, text};
 
-use super::{Metrics, faint};
+use super::{Metrics, faint, missing};
 use crate::perf;
 
 /// How far back a piece looks for one to join: a double line alternates
@@ -56,7 +56,11 @@ impl<'m> Marks<'m> {
             return;
         }
         if run.lone {
-            self.glyph(content, run.col, run.cells, style, color);
+            if content.chars().any(missing::nothing_draws) {
+                self.empty_box(run.col, run.cells, color);
+            } else {
+                self.glyph(content, run.col, run.cells, style, color);
+            }
             return;
         }
         let mut plain: Option<(usize, u16)> = None;
@@ -68,7 +72,9 @@ impl<'m> Marks<'m> {
             if let Some((from, first)) = plain.take() {
                 self.ascii(&content[from..at], first, style, color);
             }
-            if !self.drawn(ch, col, color) {
+            if missing::nothing_draws(ch) {
+                self.empty_box(col, 1, color);
+            } else if !self.drawn(ch, col, color) {
                 let end = at + ch.len_utf8();
                 self.glyph(&content[at..end], col, 1, style, color);
             }
@@ -107,6 +113,29 @@ impl<'m> Marks<'m> {
                 .clip_rounded(0.0)
                 .child(text(content).font(style).color(color).single_line()),
         );
+    }
+
+    /// What a character no face has looks like: an empty box in its cells,
+    /// drawn here so it is never shaped (`missing`).
+    fn empty_box(&mut self, col: u16, cells: u16, color: Color) {
+        let m = self.metrics;
+        let device = |points: f32| (points * m.scale).round() as i32;
+        let (left, right) = (
+            device(f32::from(col) * m.cell_w),
+            device(f32::from(col + cells) * m.cell_w),
+        );
+        let inset = ((right - left) / 6).max(1);
+        let (left, right) = (left + inset, right - inset);
+        let (top, bottom) = (device(m.cell_h * 0.2), device(m.cell_h * 0.8));
+        let line = device(1.0).max(1);
+        for rect in [
+            (left, top, right, top + line),
+            (left, bottom - line, right, bottom),
+            (left, top, left + line, bottom),
+            (right - line, top, right, bottom),
+        ] {
+            self.quads.push(Quad { rect, color });
+        }
     }
 
     /// Draw `ch` from its cell's edges, when it is drawn rather than set.
@@ -215,6 +244,20 @@ mod tests {
         assert_eq!(marks(&m, "ab→cd→", false).els.len(), 4);
         assert_eq!(marks(&m, "  ", false).els.len(), 0);
         assert_eq!(marks(&m, "é✓", true).els.len(), 1);
+    }
+
+    /// A character no face has is boxed, not shaped, and the symbol after it
+    /// still shapes: shaping it would put the last-resort font ahead of every
+    /// later symbol's face.
+    #[cfg(target_vendor = "apple")]
+    #[test]
+    fn a_character_no_face_has_is_boxed_and_never_shaped() {
+        let m = Metrics::new(13.0, 2.0);
+        let row = marks(&m, "\u{378}⏵", false);
+        assert_eq!(row.quads.len(), 4, "a box of four sides");
+        assert_eq!(row.els.len(), 1, "only ⏵ is shaped");
+        let lone = marks(&m, "\u{FDD0}", true);
+        assert_eq!((lone.quads.len(), lone.els.len()), (4, 0));
     }
 
     #[test]

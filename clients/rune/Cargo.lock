@@ -2696,6 +2696,8 @@ version = "0.1.20"
 dependencies = [
  "image",
  "objc2 0.6.5",
+ "objc2-core-foundation",
+ "objc2-core-text",
  "objc2-foundation 0.3.2",
  "phux-client-core",
  "phux-client-runtime",
@@ -2710,6 +2712,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2",
+ "skrifa",
  "tiny-skia",
  "url",
 ]

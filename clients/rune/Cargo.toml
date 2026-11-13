@@ -50,6 +50,12 @@ qrcode = { version = "0.14", default-features = false }
 objc2 = "0.6.5"
 objc2-foundation = { version = "0.3.2", features = ["NSString"] }
 
+# Asking CoreText which face covers a character (grid/missing.rs).
+[target.'cfg(target_vendor = "apple")'.dependencies]
+objc2-core-foundation = "0.3"
+objc2-core-text = { version = "0.3.2", default-features = false, features = ["std", "CTFont"] }
+skrifa = "0.44"
+
 [patch.crates-io]
 # Git dependencies do not inherit Rune's workspace patches. Track all four
 # at the same rev: native IME, text shaping/bidi, GPU and Windows accessibility.
