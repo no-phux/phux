@@ -10,8 +10,12 @@ terminals only where a terminal is the point.
 opencode plugin add @phux/opencode
 ```
 
-This needs `@phux/opencode` 0.4.0 or newer; 0.3.0 and earlier are the retired
-OpenCode V1 adapter.
+This needs OpenCode 2.2 or newer (`npm i -g @opencode/cli`) and
+`@phux/opencode` 0.4.0 or newer; 0.3.0 and earlier are the retired OpenCode V1
+adapter. The `opencode.ai/install` script installs OpenCode 1.x, whose
+`opencode plugin @phux/opencode` installs this package without loading it. On
+1.x, register `phux mcp` as an MCP server instead
+([OpenCode 1.x](../../docs/agents.md#opencode-1x)).
 
 The CLI automatically loads the terminal companion from the server plugin.
 Leave the version off so updates reach

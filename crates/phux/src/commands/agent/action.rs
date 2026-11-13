@@ -29,8 +29,9 @@ pub(crate) enum AgentAction {
     /// The third column is the pane's `%name` address, `-` when it has no
     /// agent record, or why its record name is listed but not
     /// `%`-addressable (a name outside `[a-z][a-z0-9_-]`, a per-kind constant
-    /// like `claude`, or one several panes share). JSON carries `address`
-    /// and `address_refusal`.
+    /// like `claude`, or one several panes share). A per-kind name shows the
+    /// `phux agent set` that names the pane. JSON carries `address` and
+    /// `address_refusal`.
     #[usage(alias = "ls")]
     List {
         #[usage(flatten)]
