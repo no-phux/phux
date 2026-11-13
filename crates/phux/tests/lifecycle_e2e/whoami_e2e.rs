@@ -212,6 +212,55 @@ fn pairing_uses_explicit_overlay_addresses_without_fabricating_a_route() {
     }
 }
 
+/// A `paired` secure loopback QUIC listener with an enrolled client and a
+/// token `phux pair` minted, registered as [`REMOTE`]. Returns the server,
+/// the client, the owner socket, and the bound QUIC address.
+fn serve_paired_remote(dir: &Path) -> (Server, paired::Enrolled, String, String) {
+    prepare_dirs(dir);
+    paired_policy(dir);
+    let enrolled = paired::enroll_client(dir, |args, stdin| phux_with(dir, args, stdin, &[]));
+
+    // Start the listener first: `phux pair` mints only against a server
+    // with a bound remote listener (ADR-0141), and the server re-reads its
+    // token store at the next dial. Retried until the server answers; a
+    // refused mint writes nothing.
+    // A fixed port, as an installed server has: an upgraded image re-binds
+    // the configured address rather than inheriting the socket.
+    let port = std::net::UdpSocket::bind("127.0.0.1:0")
+        .and_then(|probe| probe.local_addr())
+        .expect("free udp port")
+        .port();
+    let server = start_server(
+        dir,
+        &["--quic", &format!("127.0.0.1:{port}")],
+        &[("PHUX_WS_SECURE", "1")],
+    );
+    let socket = dir.join("s.sock");
+    let quic = listeners::bound_listener_addr(&socket, listeners::RemoteListenerTransport::Quic)
+        .to_string();
+    let socket = socket.to_str().expect("utf-8 socket path").to_owned();
+    let paired = json_doc(&await_success(
+        dir,
+        &["--socket", &socket, "pair", "--json"],
+    ));
+    assert_eq!(paired["quic_addr"], quic.as_str(), "{paired}");
+    let token = paired["token"].as_str().expect("token");
+    let token_file = dir.join("loop.token");
+    std::fs::write(&token_file, format!("{token}\n")).expect("write token");
+
+    // Appended: an upgraded server re-reads this file and must still find
+    // the `paired` mode.
+    let config = dir.join("config/phux/config.toml");
+    let toml = format!(
+        "{}[[remote]]\nname = \"{REMOTE}\"\nendpoint = \"quic://{quic}\"\n\
+             token-file = \"{}\"\n",
+        std::fs::read_to_string(&config).expect("read config"),
+        token_file.display()
+    );
+    std::fs::write(&config, toml).expect("write registry");
+    (server, enrolled, socket, quic)
+}
+
 /// Over `--remote`: a `paired` secure loopback QUIC listener admits the dial
 /// by an enrolled certificate behind the token `phux pair` minted, and
 /// whoami reports the certificate's credential back with no peer uid.
@@ -219,43 +268,7 @@ fn pairing_uses_explicit_overlay_addresses_without_fabricating_a_route() {
 #[ignore = "spawns a real server with a QUIC listener; runs in the e2e lane"]
 fn whoami_over_remote_reports_the_workload_credential() {
     let dir = TempDir::new().expect("tempdir");
-    prepare_dirs(dir.path());
-    paired_policy(dir.path());
-    let enrolled = paired::enroll_client(dir.path(), |args, stdin| {
-        phux_with(dir.path(), args, stdin, &[])
-    });
-
-    // Start the listener first: `phux pair` mints only against a server
-    // with a bound remote listener (ADR-0141), and the server re-reads its
-    // token store at the next dial. Retried until the server answers; a
-    // refused mint writes nothing.
-    let _server = start_server(
-        dir.path(),
-        &["--quic", listeners::LOOPBACK_ANY_PORT],
-        &[("PHUX_WS_SECURE", "1")],
-    );
-    let socket = dir.path().join("s.sock");
-    let quic = listeners::bound_listener_addr(&socket, listeners::RemoteListenerTransport::Quic)
-        .to_string();
-    let socket = socket.to_str().expect("utf-8 socket path");
-    let paired = json_doc(&await_success(
-        dir.path(),
-        &["--socket", socket, "pair", "--json"],
-    ));
-    assert_eq!(paired["quic_addr"], quic.as_str(), "{paired}");
-    let token = paired["token"].as_str().expect("token");
-    let token_file = dir.path().join("loop.token");
-    std::fs::write(&token_file, format!("{token}\n")).expect("write token");
-
-    std::fs::write(
-        dir.path().join("config/phux/config.toml"),
-        format!(
-            "[[remote]]\nname = \"{REMOTE}\"\nendpoint = \"quic://{quic}\"\n\
-             token-file = \"{}\"\n",
-            token_file.display()
-        ),
-    )
-    .expect("write registry");
+    let (_server, enrolled, _socket, _quic) = serve_paired_remote(dir.path());
 
     let whoami = ["whoami", "--remote", REMOTE, "--json"];
     let doc = json_doc(&await_success_with(dir.path(), &whoami, &enrolled.env()));
@@ -267,4 +280,37 @@ fn whoami_over_remote_reports_the_workload_credential() {
         serde_json::Value::Null,
         "a network route has no kernel peer uid: {doc}"
     );
+}
+
+/// A paired client keeps working across a real in-place upgrade: the
+/// resumed image inherits the QUIC listener on the same address and admits
+/// the same token and certificate (phux-wa4vy: phones came back unpaired).
+#[test]
+#[ignore = "spawns a real server and re-execs it in place; runs in the e2e lane"]
+fn a_paired_remote_client_survives_an_upgrade() {
+    let dir = TempDir::new().expect("tempdir");
+    let (_server, enrolled, socket, quic) = serve_paired_remote(dir.path());
+    let whoami = ["whoami", "--remote", REMOTE, "--json"];
+    let before = json_doc(&await_success_with(dir.path(), &whoami, &enrolled.env()));
+
+    let upgrade = phux(dir.path(), &["--socket", &socket, "upgrade"]);
+    assert!(
+        upgrade.status.success(),
+        "upgrade: {}",
+        String::from_utf8_lossy(&upgrade.stderr)
+    );
+    await_success(dir.path(), &["--socket", &socket, "ls"]);
+    let after_addr = listeners::bound_listener_addr(
+        Path::new(&socket),
+        listeners::RemoteListenerTransport::Quic,
+    );
+    assert_eq!(
+        after_addr.to_string(),
+        quic,
+        "the listener kept its address"
+    );
+
+    let after = json_doc(&await_success_with(dir.path(), &whoami, &enrolled.env()));
+    assert_eq!(after["credential_id"], before["credential_id"], "{after}");
+    assert_eq!(after["auth_route"], "bearer-quic", "{after}");
 }
