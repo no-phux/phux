@@ -102,30 +102,12 @@ hooks, reports its state to phux as it changes.
 | pi | `pi install npm:@phux/pi` |
 | Oh My Pi | `omp plugin install @phux/omp` |
 | OpenCode 2.2 or newer | `opencode plugin add @phux/opencode` |
-| OpenCode 1.x | Register `phux mcp` ([below](#opencode-1x)); state comes from screen rules. |
+| OpenCode 1.x | Register `phux mcp` ([how](../integrations/opencode-v2/README.md#opencode-1x)); the plugin needs 2.2. |
 | fx | Use the built-in `fx acp` profile ([ACP sessions](./acp.md)); for terminal fx, register `phux mcp` in fx. |
 | Grok | `grok plugin marketplace add no-phux/phux`, then `grok plugin install phux@phux --trust` |
 | Anything that speaks MCP | See [MCP](#mcp). |
 
 Start a new agent session inside a phux pane to use it.
-
-### OpenCode 1.x
-
-`@phux/opencode` is built for OpenCode 2.2 and newer, which installs with
-`npm i -g @opencode/cli`. The `opencode.ai/install` script installs OpenCode
-1.x, where `opencode plugin @phux/opencode` (1.x has no `add`) installs the
-package but OpenCode never loads it. On 1.x, phux still tracks the pane's
-state from its screen. Give OpenCode the phux tools by adding phux as an MCP
-server in `opencode.json`:
-
-```json
-{
-  "$schema": "https://opencode.ai/config.json",
-  "mcp": { "phux": { "type": "local", "command": ["phux", "mcp"] } }
-}
-```
-
-`opencode mcp list` should show `phux connected`.
 
 The OpenCode plugin also adds phux to OpenCode Desktop: a side panel with
 every pane and its agent's state, a live view of any pane you can type into,
@@ -213,10 +195,8 @@ They filter the current inventory; they are not a completion gate.
 
 ## Driving an agent in a pane
 
-Address an agent's pane by `%name` or `@N`. A detected agent is named after
-its kind (`opencode`), which `%` refuses because a second OpenCode pane would
-change what it means. Name the pane once, and `phux agent list` shows the
-address:
+Address an agent's pane by `%name` or `@N`. `%` refuses a kind name like
+`opencode`, so name the pane first:
 
 ```sh
 phux agent set @3 --name reviewer --kind opencode
