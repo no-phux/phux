@@ -181,6 +181,7 @@ fn every_step_renders_its_parts() {
         let mut rt = window(Step::Done);
         assert!(rt.state.onboarding.keep_alive, "on by default");
         assert!(rt.accessibility_action("onboarding-keep-alive", Action::Click, None));
+        settle(&mut rt);
         assert!(!rt.state.onboarding.keep_alive, "the switch turns it off");
     }
 }
