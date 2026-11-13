@@ -128,7 +128,7 @@ phux: error: theme /path/to/colors.toml: missing `red` (and nothing to derive it
 | `muted` | Rules, borders, unfocused pane dividers |
 | `selection` | The selected row's background |
 | `green`, `yellow`, `red` | Key chords and working agents; agents that need you; errors |
-| `lighter_background` (dark) or `dark_background` (light) | The sidebar, status bar, and popup panels |
+| `lighter_background` (dark) or `background` a shade darker (light) | The sidebar, status bar, and popup panels |
 
 ## Overriding one colour
 
