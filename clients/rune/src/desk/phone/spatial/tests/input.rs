@@ -77,7 +77,7 @@ fn picker_is_compact_named_and_traps_physical_soft_and_paste_input() {
     rt.frame(1.0 / 60.0);
     tap(&mut rt, "phone-cap-120");
     rt.update(|d, tx| {
-        d.ime(&rune::Ime::Preedit("composing".into(), None));
+        d.ime(&rune::Ime::Preedit("composing".into(), None, Vec::new()));
         d.ime(&rune::Ime::Commit("IME sentinel".into()));
         d.key(
             &KeyEvent {
