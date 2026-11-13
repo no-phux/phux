@@ -412,6 +412,7 @@ fn samples(world: &World, agent: &WireResourceId) -> Vec<FrameKind> {
         }),
         command(Command::DescribeApi),
         command(Command::PrivacyStatus),
+        command(Command::HostChecklist),
         command(Command::GetState {
             scope: StateScope::Server,
         }),

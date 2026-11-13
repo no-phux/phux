@@ -25,7 +25,8 @@ impl ServerFeatureExtSet {
         | ServerFeatureExt::PrivacyStatus as u32
         | ServerFeatureExt::DurableResourceInspection as u32
         | ServerFeatureExt::TabLock as u32
-        | ServerFeatureExt::ClipboardRead as u32;
+        | ServerFeatureExt::ClipboardRead as u32
+        | ServerFeatureExt::HostChecklist as u32;
 
     /// Known extended features in this set, in bit order.
     pub fn iter(self) -> impl Iterator<Item = ServerFeatureExt> {

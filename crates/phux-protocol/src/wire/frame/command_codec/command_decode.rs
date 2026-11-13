@@ -43,6 +43,9 @@ pub(in crate::wire) fn decode_command(dec: &mut Decoder<'_>) -> Result<Command, 
     if tag == crate::wire::frame::COMMAND_TAG_DESCRIBE_API {
         return Ok(Command::DescribeApi);
     }
+    if tag == crate::wire::frame::COMMAND_TAG_HOST_CHECKLIST {
+        return Ok(Command::HostChecklist);
+    }
     if tag == crate::wire::frame::COMMAND_TAG_PRIVACY_STATUS {
         return Ok(Command::PrivacyStatus);
     }

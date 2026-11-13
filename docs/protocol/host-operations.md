@@ -3,6 +3,7 @@
 File transfer and Git checkout methods share the [protocol](../protocol.md)
 command envelope and authenticated dispatch, but have distinct filesystem reach.
 [Background push](#background-push) is the one request the server makes itself.
+[Host checklist](#host-checklist) says what works on the host.
 
 ## File transfer
 
@@ -133,3 +134,13 @@ A gateway MUST refuse a notice whose `action` it does not know rather than
 alert it as an ask. Sends are not retried. The
 [push module](../../crates/phux-server/src/push/mod.rs) owns the limits and
 the exchange.
+
+## Host checklist
+
+`features_ext.HOST_CHECKLIST` (`0x0080_0000`) gates `HOST_CHECKLIST` (command
+tag `0x43`, no body), answered `OkWith(Json)` with what works on the host:
+the `checklist` document of its `phux doctor --json`
+([What works here](../troubleshooting.md#what-works-here)). It needs
+`INVENTORY` on the server, like `GET_STATE`; a failure to build the list is
+`UNAVAILABLE` with the reason. An older server never advertises the bit, and
+a client must not send the tag without it.

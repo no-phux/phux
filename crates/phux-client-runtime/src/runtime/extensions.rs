@@ -160,6 +160,17 @@ impl Client {
         call.await
     }
 
+    /// What works on the connected host: the `checklist` document of its
+    /// `phux doctor --json` (`docs/troubleshooting.md#what-works-here`).
+    pub async fn host_checklist(
+        &self,
+    ) -> Result<serde_json::Value, crate::control::ChecklistError> {
+        let call = self
+            .inner
+            .with(crate::control::ControlPlane::host_checklist)?;
+        call.await
+    }
+
     /// Close `exchange`, ending a read in flight. Idempotent.
     pub async fn service_http_close(&self, exchange: u64) -> Result<(), ServiceHttpError> {
         let call = self

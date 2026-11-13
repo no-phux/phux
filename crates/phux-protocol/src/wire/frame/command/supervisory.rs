@@ -18,6 +18,13 @@ macro_rules! supervisory_commands {
     /// Gated on
     /// [`ServerFeatureExt::PrivacyStatus`](crate::caps::ServerFeatureExt::PrivacyStatus).
     PrivacyStatus,
+    /// What works on this host: agent status, notifications, remote reach,
+    /// file transfer, restore after restart, the agent skill, each with a
+    /// status, the reason and the fix. Answered `OkWith(Json)` with the
+    /// `checklist` document of `phux doctor --json`
+    /// (`docs/troubleshooting.md#what-works-here`). Gated on
+    /// [`ServerFeatureExt::HostChecklist`](crate::caps::ServerFeatureExt::HostChecklist).
+    HostChecklist,
     /// Dedicated SDK-owned `AgentSession` broker request. The wire body is
     /// length-prefixed JSON bounded by `MAX_NATIVE_PAYLOAD_BYTES`; controller
     /// requests additionally require exclusive binding proof and generation.
