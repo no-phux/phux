@@ -8,13 +8,13 @@ import { tmpdir } from "node:os";
 import { join, parse } from "node:path";
 import { describe } from "../lib/command.ts";
 import { api, gh } from "../lib/github.ts";
-import { deepEqual, list, table, type Table } from "../lib/value.ts";
+import { deepEqual, list, str, table, type Table } from "../lib/value.ts";
 
 export interface Receipt extends Table {
   readonly schema: number;
   readonly tree: string;
   readonly workflow: string;
-  /** The pull-request lane set (plus `rune_ios`); a push reuses only an equal one. */
+  /** The pull-request lane set. macOS coverage lives on rune-macos.yml, not here. */
   readonly coverage: string;
 }
 
@@ -38,11 +38,32 @@ export function artifactName(receipt: Receipt): string {
   return `validation-${parse(receipt.workflow).name}-${receipt.tree}`;
 }
 
+function receiptWorkflow(run: Table, repository: string, workflow: string): boolean {
+  if (run["path"] === workflow) return true;
+  // A reusable workflow's run is recorded under its caller. Only ci's
+  // merge-group run can attest its required Rune Apple child; all other
+  // workflows/events still need their own path. The immutable tree and
+  // exact receipt coverage are checked below, never inferred from a label.
+  if (
+    workflow !== ".github/workflows/rune-macos.yml" ||
+    run["event"] !== "merge_group" ||
+    run["path"] !== ".github/workflows/ci.yml"
+  )
+    return false;
+  return list(run["referenced_workflows"])
+    .map(table)
+    .some(
+      (child) =>
+        child["sha"] === run["head_sha"] &&
+        (str(child["path"]) ?? "").startsWith(`${repository}/${workflow}@`),
+    );
+}
+
 function trustedRun(run: Table, repository: string, workflow: string): boolean {
   return (
     run["conclusion"] === "success" &&
     (run["event"] === "pull_request" || run["event"] === "merge_group") &&
-    run["path"] === workflow &&
+    receiptWorkflow(run, repository, workflow) &&
     typeof run["head_sha"] === "string" &&
     table(run["head_repository"])["full_name"] === repository &&
     table(run["repository"])["full_name"] === repository

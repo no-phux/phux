@@ -2,10 +2,10 @@
 //
 // A pull request runs exactly what its diff can affect. A push to main or a
 // merge group widens the Rust lanes to the full pool (a non-strict merge can
-// combine two green diffs into a red tree). With the merge queue on, a pull
-// request that reaches Rune only through the Cargo closure leaves the iOS
-// simulator job to the queue. `just check` runs the pull-request plan
-// locally, through the same recipes the jobs call.
+// combine two green diffs into a red tree). Rune's macOS and iOS legs are
+// not lanes here: rune-macos.yml owns them, and a ci receipt must not claim
+// coverage they never ran. `just check` runs the pull-request plan locally,
+// through the same recipes the jobs call.
 import type { Classification } from "./classify.ts";
 
 export const LANES = [
@@ -46,12 +46,10 @@ export const CI_ONLY: ReadonlySet<Lane> = new Set(["icount", "native"]);
 
 export interface Plan {
   readonly lanes: ReadonlySet<Lane>;
-  /** The Rune lane runs its iOS simulator job. */
-  readonly runeIos: boolean;
   /**
-   * The pull-request lane set, plus `rune_ios` when that job ran: what an
-   * identical tree's receipt must cover. Main policy always counts iOS, so
-   * a pull request that skipped it never stands in for a main push.
+   * The pull-request lane set: what an identical tree's receipt must cover.
+   * macOS is absent on purpose, so a main push cannot reuse a receipt that
+   * claims a leg this workflow did not run.
    */
   readonly coverage: string;
   readonly unitMode: Classification["unitMode"];
@@ -80,17 +78,11 @@ function needed(c: Classification, trigger: Trigger): Record<Lane, boolean> {
 const chosen = (flags: Record<Lane, boolean>): Set<Lane> =>
   new Set(LANES.filter((lane) => flags[lane]));
 
-/**
- * `mergeQueue`: a pull request's diff is validated again by the merge queue
- * (`vars.PHUX_MERGE_QUEUE`), so a closure-only Rune change skips iOS here.
- */
-export function plan(c: Classification, trigger: Trigger, mergeQueue = false): Plan {
+export function plan(c: Classification, trigger: Trigger): Plan {
   const push = trigger === "push";
-  const runeIos = c.needed.has("rune") && (push || !mergeQueue || c.runeDirect);
   return {
     lanes: chosen(needed(c, trigger)),
-    runeIos,
-    coverage: [...chosen(needed(c, "pull_request")), ...(runeIos ? ["rune_ios"] : [])].join(","),
+    coverage: [...chosen(needed(c, "pull_request"))].join(","),
     unitMode: push ? "workspace" : c.unitMode,
     unitTargets: push ? "" : c.unitTargets,
     testFilterset: push ? "" : c.testFilterset,
@@ -110,7 +102,6 @@ export function reused(p: Plan): Plan {
 export function planOutputs(p: Plan, c: Classification): Record<string, string | boolean> {
   return {
     ...Object.fromEntries(LANES.map((lane) => [lane, p.lanes.has(lane)])),
-    rune_ios: p.lanes.has("rune") && p.runeIos,
     docs_only: c.docsOnly,
     web_engine: p.lanes.has("web") && c.needed.has("web_engine"),
     content: c.contentNeeded,
