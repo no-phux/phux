@@ -135,7 +135,7 @@ mod tests {
         .await;
         assert!(matches!(outcome, Retried::Bindable));
         // Capped at 30s: 200 attempts take under two hours, not 2^200 s.
-        assert!(start.elapsed() < Duration::from_secs(200 * 30));
+        assert!(start.elapsed() < Duration::from_mins(100));
     }
 
     #[tokio::test(start_paused = true)]
