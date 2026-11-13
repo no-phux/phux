@@ -83,6 +83,9 @@ pub enum ServerFeatureExt {
     /// OSC 52 clipboard read (`docs/program-sequences.md#clipboard-osc-52`).
     /// A client MUST see the bit first.
     ClipboardRead = 0x0040_0000,
+    /// The server answers `HOST_CHECKLIST`: what works on its host, with
+    /// reasons and fixes.
+    HostChecklist = 0x0080_0000,
     /// Explicitly approved, ephemeral 1Password credential exchanges.
     Credentials = 0x0100_0000,
 }
@@ -113,6 +116,7 @@ impl ServerFeatureExt {
         Self::DurableResourceInspection,
         Self::TabLock,
         Self::ClipboardRead,
+        Self::HostChecklist,
         Self::Credentials,
     ];
 
@@ -143,6 +147,7 @@ impl ServerFeatureExt {
             Self::DurableResourceInspection => "DURABLE_RESOURCE_INSPECTION",
             Self::TabLock => "TAB_LOCK",
             Self::ClipboardRead => "CLIPBOARD_READ",
+            Self::HostChecklist => "HOST_CHECKLIST",
             Self::Credentials => "CREDENTIALS",
         }
     }

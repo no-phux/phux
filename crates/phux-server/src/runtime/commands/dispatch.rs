@@ -69,6 +69,7 @@ pub(super) async fn dispatch_local(
         Command::DescribeApi => super::super::api::describe(state),
         Command::PrivacyStatus => super::super::privacy::handle(state, client_id),
         Command::Credentials { op } => super::super::credentials::handle(ctx, op).await,
+        Command::HostChecklist => super::super::checklist::handle(state).await,
         Command::PerfControl { op } => super::super::perf_control::handle(state, op).await,
         Command::KillResources { ids, operation_id } => {
             handle_kill_terminals(state, client_id, &ids, operation_id).await

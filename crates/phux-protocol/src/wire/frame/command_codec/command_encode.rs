@@ -36,6 +36,7 @@ pub(in crate::wire) fn encode_command(command: &Command, enc: &mut Encoder<'_>) 
             );
             enc.write_bytes(&bytes);
         }
+        Command::HostChecklist => enc.write_u8(crate::wire::frame::COMMAND_TAG_HOST_CHECKLIST),
         Command::NativeAgent { request } => {
             enc.write_u8(crate::wire::frame::COMMAND_TAG_NATIVE_AGENT);
             enc.write_bytes(request.encoded());

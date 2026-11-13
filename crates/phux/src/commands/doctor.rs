@@ -14,6 +14,7 @@ use crate::commands::{cli_runtime, plugin::valid_manifest_count};
 
 mod agents;
 mod audit;
+mod checklist;
 mod credentials;
 mod permissions;
 mod remote;
@@ -131,11 +132,15 @@ pub(crate) fn run_doctor(json: bool, socket: Option<PathBuf>) -> ExitCode {
         check_audit(&socket_path),
     ]);
     checks.extend(check_remote_cert_chain());
+    let checklist = checklist::items(&checklist::gather(&socket_path, &checks));
 
     if json {
-        return report_json(&checks);
+        return report_json(&checks, &checklist);
     }
-    report_human(&checks)
+    let code = report_human(&checks);
+    let color = crate::output::color_enabled(std::io::IsTerminal::is_terminal(&std::io::stdout()));
+    out!("{}", checklist::render_human(&checklist, color));
+    code
 }
 
 // ---------------------------------------------------------------------------
@@ -446,7 +451,7 @@ fn render_human(checks: &[Check], color: bool) -> String {
     out
 }
 
-fn report_json(checks: &[Check]) -> ExitCode {
+fn report_json(checks: &[Check], checklist: &[checklist::Item]) -> ExitCode {
     let rows: Vec<_> = checks
         .iter()
         .map(|check| {
@@ -464,6 +469,7 @@ fn report_json(checks: &[Check]) -> ExitCode {
         "ok": failed == 0,
         "failed": failed,
         "checks": rows,
+        "checklist": checklist::to_json(checklist),
     });
     match serde_json::to_string_pretty(&doc) {
         Ok(rendered) => {

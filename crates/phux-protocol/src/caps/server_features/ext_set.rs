@@ -26,6 +26,7 @@ impl ServerFeatureExtSet {
         | ServerFeatureExt::DurableResourceInspection as u32
         | ServerFeatureExt::TabLock as u32
         | ServerFeatureExt::ClipboardRead as u32
+        | ServerFeatureExt::HostChecklist as u32
         | ServerFeatureExt::Credentials as u32;
 
     /// Known extended features in this set, in bit order.

@@ -8,12 +8,7 @@ fn rows(world: &mut World) -> Vec<Row> {
     let child = agent_child(world);
     let native = native_samples(world, &child);
     let t = world.alpha.clone();
-    let beta_group = world
-        .state
-        .find_session_by_name("beta")
-        .and_then(|session| world.state.idspace.session_wire(session))
-        .unwrap()
-        .get();
+    let beta_group = session_group_id(world, "beta");
     let s = |verbs: &str, selector: &str| format!("{verbs}@{selector}");
     let ta = format!("terminal:{}", local_id(&t));
     let tb = format!("terminal:{}", local_id(&world.beta));
@@ -23,7 +18,7 @@ fn rows(world: &mut World) -> Vec<Row> {
     let upload = FileUploadId::new([1; 16]).unwrap();
     let focus = InputEvent::Focus(FocusEvent::Gained);
 
-    // A named-Terminal row needing `verbs`: the Terminal, its Group, and
+    // A named-Terminal row needing `verbs`: the Terminal, its Group and
     // the local host admit; the other Terminal and a satellite do not.
     let on_terminal = |frame: FrameKind, verbs: &str| -> Row {
         let (on_t, on_g) = (s(verbs, &ta), s(verbs, &ga));
@@ -322,7 +317,7 @@ fn rows(world: &mut World) -> Vec<Row> {
             }),
             "input",
         ),
-        // All-or-nothing: a grant on one of the two named Terminals fails.
+        // All-or-nothing: a grant on one of two named Terminals fails.
         row(
             command(Command::KillResources {
                 ids: vec![t.clone(), world.beta.clone()],
@@ -342,6 +337,7 @@ fn rows(world: &mut World) -> Vec<Row> {
             &[&[&s("signal", &ta)], &[&s("signal", &gb)]],
         ),
         on_global(command(Command::DescribeApi), "inventory"),
+        on_global(command(Command::HostChecklist), "inventory"),
         // Filtered at the source: INVENTORY anywhere admits.
         row(
             command(Command::GetState {
@@ -441,7 +437,7 @@ fn rows(world: &mut World) -> Vec<Row> {
             &[&[&s("signal", &gb)], &[&s("signal", &ta)]],
         ),
         on_global(command(Command::DetachClients { session: None }), "signal"),
-        // Owner-socket rows: no remote grant reaches them.
+        // Owner-socket rows: no remote grant admits.
         denied(command(Command::Shutdown)),
         denied(command(Command::PrivacyStatus)),
         denied(command(Command::OpenListener {
@@ -460,7 +456,7 @@ fn rows(world: &mut World) -> Vec<Row> {
         })),
         on_global(command(Command::GetPerf { reset: false }), "observe"),
         on_global(command(Command::GetPerf { reset: true }), "observe,bind"),
-        // Through the parent alone: a grant naming only the child fails.
+        // Through the parent: a grant naming only the child fails.
         row(
             command(Command::AppendResourceOutput {
                 terminal_id: child.clone(),
@@ -478,7 +474,7 @@ fn rows(world: &mut World) -> Vec<Row> {
             &[&[&s("bind,input", &tc)], &[&s("bind,input", &tb)]],
         ),
     ];
-    // The other members of shared rows, each checked like the first.
+    // The other members of shared rows, each checked as the first.
     for frame in [
         FrameKind::InputPaste {
             terminal_id: t.clone(),

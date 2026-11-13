@@ -33,6 +33,7 @@ pub mod app;
 pub mod approvals;
 pub mod ask;
 pub mod attach;
+pub mod checklist;
 // Conditional kills bound to the server's instance token (ADR-0109).
 pub mod conditional_kill;
 pub mod credentials;

@@ -242,6 +242,7 @@ const fn runtime_server_features_ext() -> ServerFeatureExtSet {
         ServerFeatureExt::PrivacyStatus,
         ServerFeatureExt::ClipboardRead,
         ServerFeatureExt::Credentials,
+        ServerFeatureExt::HostChecklist,
     ])
 }
 

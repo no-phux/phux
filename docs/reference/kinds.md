@@ -22,6 +22,7 @@ Addressed to the server or the connection rather than to one resource.
 | `GET_CREATION` | command `0x41` | INVENTORY | no | `api_description` (features_ext) | shipped |
 | `DESCRIBE_API` | command `0x40` | INVENTORY | no | `api_description` (features_ext) | shipped |
 | `PRIVACY_STATUS` | command `0x4c` | INVENTORY (owner socket only) | no | `privacy_status` (features_ext) | shipped |
+| `HOST_CHECKLIST` | command `0x43` | INVENTORY | no | `host_checklist` (features_ext) | shipped |
 | `HELLO` | frame `0x01` | exempt: handshake | no | none | shipped |
 | `PING` | frame `0x7f` | exempt: liveness | no | none | shipped |
 | `ATTACH` | frame `0x02` | OBSERVE, CREATE, BIND | yes | none | shipped |
@@ -352,6 +353,7 @@ Every command nested in `COMMAND` lands on exactly one row; the envelope alone g
 | `MIRROR_PROVIDE` | OBSERVE + owner-UDS transport | `Global { owner_uds_only: true }` |
 | `PRIVACY_STATUS` | INVENTORY + owner-UDS transport | `Global { owner_uds_only: true }` |
 | `CREDENTIALS` | BIND+INPUT | `Global { owner_uds_only: false }` |
+| `HOST_CHECKLIST` | INVENTORY | `Global { owner_uds_only: false }` |
 | `NATIVE_AGENT { type: spawn }` | CREATE+BIND | `KeyedSession` |
 | `NATIVE_AGENT { type: list_integrations }` | INVENTORY | `OrganizationView` |
 | `NATIVE_AGENT { type: launch_integration }` | CREATE+BIND+INPUT | `KeyedSession` |

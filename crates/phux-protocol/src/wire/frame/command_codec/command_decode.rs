@@ -62,6 +62,9 @@ pub(in crate::wire) fn decode_command(dec: &mut Decoder<'_>) -> Result<Command, 
             .map_err(|_| DecodeError::InvalidCredentialPayload)?;
         return Ok(Command::Credentials { op });
     }
+    if tag == crate::wire::frame::COMMAND_TAG_HOST_CHECKLIST {
+        return Ok(Command::HostChecklist);
+    }
     if tag == crate::wire::frame::COMMAND_TAG_PRIVACY_STATUS {
         return Ok(Command::PrivacyStatus);
     }

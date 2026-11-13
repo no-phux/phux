@@ -66,6 +66,7 @@ include!("kinds/classification_types.rs");
 include!("kinds/rules.rs");
 include!("kinds/classifiers.rs");
 include!("kinds/method_catalog.rs");
+include!("kinds/kind_spec.rs");
 include!("kinds/resource_catalog.rs");
 include!("kinds/contracts.rs");
 

@@ -124,6 +124,15 @@ fn agent_child(world: &mut World) -> WireResourceId {
     world.state.intern_resource_wire(child)
 }
 
+fn session_group_id(world: &World, name: &str) -> u32 {
+    world
+        .state
+        .find_session_by_name(name)
+        .and_then(|session| world.state.idspace.session_wire(session))
+        .unwrap()
+        .get()
+}
+
 fn local_id(wire: &WireResourceId) -> u32 {
     match wire {
         WireResourceId::Local { id } | WireResourceId::Satellite { id, .. } => *id,
@@ -419,6 +428,7 @@ fn samples(world: &World, agent: &WireResourceId) -> Vec<FrameKind> {
         command(Command::DescribeApi),
         command(Command::PrivacyStatus),
         credential_sample(),
+        command(Command::HostChecklist),
         command(Command::GetState {
             scope: StateScope::Server,
         }),

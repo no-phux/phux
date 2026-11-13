@@ -38,6 +38,18 @@ fn upload() -> FileUploadId {
     FileUploadId::new([1; 16]).unwrap()
 }
 
+fn operation() -> IdempotencyKey {
+    IdempotencyKey::new([3; 16]).unwrap()
+}
+
+fn session_key() -> crate::ids::SessionKey {
+    crate::ids::SessionKey::new([4; 16]).unwrap()
+}
+
+fn resource_key() -> crate::ids::ResourceKey {
+    crate::ids::ResourceKey::new([5; 16]).unwrap()
+}
+
 include!("samples/command_samples.rs");
 include!("samples/frame_samples.rs");
 
