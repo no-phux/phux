@@ -81,7 +81,13 @@ session (or `--session NAME`). It never creates a session on its own.
   machine from your tailnet and runs `phux host add --install` over the ssh
   access you already have. A window shows one machine at a time. On a new
   computer the local server is empty, so sessions living elsewhere appear
-  only once that machine is added.
+  only once that machine is added. Opening a `phux://connect?...` or
+  `https://phux.sh/connect?...` link from `phux pair` (relay links too)
+  opens Machines asking to pair with where it dials; **Pair** runs
+  `phux host add NAME --code -` and moves the window there, and a bad or
+  spent link says why. On Linux a later plain launch, or one a link
+  starts, goes to the running window instead of opening another; runs
+  given `--session`, `--socket` or `--phux` still open their own.
 - **Pair a phone.** Settings → **Remote Hosts**, **Pair a Phone** in the
   palette, or the card on onboarding's last step shows a QR and a copyable
   link from `phux pair --json --enroll`, with its expiry counting down and

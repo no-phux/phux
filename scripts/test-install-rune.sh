@@ -30,6 +30,11 @@ done
 cp "$SERVED/${url##*/}" "$out"
 EOF
 chmod 755 "$TMP/bin/curl"
+# The desktop's handler tools, recording what they were asked.
+for tool in xdg-mime update-desktop-database; do
+  printf '#!/bin/sh\necho "%s $*" >> "$SERVED/handler"\n' "$tool" > "$TMP/bin/$tool"
+  chmod 755 "$TMP/bin/$tool"
+done
 
 fail() { echo "FAIL: $*" >&2; exit 1; }
 installer() {
@@ -123,7 +128,12 @@ grep -Fq 'without its release signature' "$TMP/err" || fail "an unsigned install
 [[ "$("$HOME/.local/bin/phux-rune")" == "phux-rune $VERSION" ]] || fail "launcher does not run"
 entry="$XDG_DATA_HOME/applications/sh.phux.rune.desktop"
 real="$(cd "$bundle" && pwd -P)"
-grep -Fxq "Exec=\"$real/phux-rune\"" "$entry" || fail "Exec: $(cat "$entry")"
+grep -Fxq "Exec=\"$real/phux-rune\" %u" "$entry" || fail "Exec: $(cat "$entry")"
+grep -Fxq "MimeType=x-scheme-handler/phux;" "$entry" || fail "MimeType: $(cat "$entry")"
+grep -Fxq "update-desktop-database $XDG_DATA_HOME/applications" "$SERVED/handler" \
+  || fail "desktop database: $(cat "$SERVED/handler")"
+grep -Fxq "xdg-mime default sh.phux.rune.desktop x-scheme-handler/phux" "$SERVED/handler" \
+  || fail "phux:// handler: $(cat "$SERVED/handler")"
 grep -Fxq "Icon=$real/sh.phux.rune.png" "$entry" || fail "Icon: $(cat "$entry")"
 
 # An update replaces everything; nothing is left beside it.

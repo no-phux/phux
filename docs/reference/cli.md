@@ -2868,11 +2868,16 @@ host add NAME quic://HOST:PORT --token-file PATH --cert-fingerprint FP`
 entry, so repeat the credential flags when re-adding a name. `--role satellite`
 registers a peer this hub dials for its users instead of a server you attach to.
 
+`phux host add NAME --code LINK` registers NAME from the connect link `phux
+pair` printed on the other machine, relay links included, without ssh and
+without attaching.
+
 Usage: phux host add [FLAGS] <TARGET> [ENDPOINT]
 
 Arguments:
-  <TARGET>    `[USER@]HOST[:PORT]` to set up over ssh, or an endpoint URI
-              (`quic://`, `wss://`, `ssh://`) to register as is.
+  <TARGET>    `[USER@]HOST[:PORT]` to set up over ssh, an endpoint URI
+              (`quic://`, `wss://`, `ssh://`) to register as is, or with
+              `--code` the name to register the link under.
   [ENDPOINT]  Manual form: the endpoint URI to register, with TARGET as the
               entry's name.
 
@@ -2938,6 +2943,15 @@ Flags:
                                  prints). Every dial runs end to end with that
                                  server inside the relayed stream, so the relay
                                  sees only ciphertext.
+      --code <LINK>              Pair from a connect link instead of over ssh,
+                                 registering TARGET as the name: the
+                                 `https://phux.sh/connect?...` link `phux pair`
+                                 prints (or its `phux://connect?...` spelling),
+                                 relay links included. `-` reads the link from
+                                 stdin, which keeps its token out of the process
+                                 list. A link's single-use enrollment ticket
+                                 must redeem, or nothing is registered. Phux
+                                 Rune runs this for a link it is opened with.
       --session <NAME>           Session to attach on arrival (`--role remote`
                                  only). Omitted: the remote server's own
                                  last-attach memory decides.
