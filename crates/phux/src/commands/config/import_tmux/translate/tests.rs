@@ -210,7 +210,7 @@ fn functional_display_tails_are_not_discarded_during_import() {
 
 #[test]
 fn clipboard_privacy_preferences_are_imported() {
-    for (source, expected) in [("off", "deny"), ("on", "allow"), ("external", "allow")] {
+    for (source, expected) in [("off", "deny"), ("on", "allow"), ("external", "deny")] {
         let plan = translate(&Snapshot {
             session: format!("prefix C-b\nset-clipboard {source}\n"),
             window: String::new(),

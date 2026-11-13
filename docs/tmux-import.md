@@ -77,7 +77,7 @@ one literal message without flags or formats. A command such as
 | `prefix` | `keybindings.prefix` |
 | `mouse`, `default-shell`, `history-limit` | Corresponding `[defaults]` values; phux's mouse behavior and history byte cap still apply |
 | `status-position` | `status.position` |
-| `set-clipboard off` / `on` / `external` | `defaults.clipboard-write = "deny"` / `"allow"` / `"allow"` |
+| `set-clipboard off` / `on` / `external` | `defaults.clipboard-write = "deny"` / `"allow"` / `"deny"` |
 | `split-window` / `-h` / `-v` | Split with the same divider direction |
 | `select-pane -L/-R/-U/-D`, `last-pane`, `select-pane -t .+` / `.-` | Directional focus or pane cycling |
 | `resize-pane -L/-R/-U/-D [N]`, `resize-pane -Z` | Resize by cells, or toggle zoom |
@@ -92,6 +92,12 @@ Bindings from tmux's `prefix` and `root` tables become prefix and global
 bindings. Repeat bindings are reported as approximate: tmux's repeat
 timing is not imported. Key spellings that collapse to one physical phux
 key are disabled and reported rather than choosing one arbitrarily.
+
+`set-clipboard external` allows tmux's own copy, not application OSC 52
+writes. In phux's TUI, `"deny"` preserves that application-write restriction;
+manual copy still writes to the host outside this policy. Native clients have
+their own enforcement paths: Rune's current pane clipboard path does not
+enforce this setting.
 
 The layer disables phux's shipped prefix bindings before importing tmux
 keys, so a tmux key does not accidentally invoke an unrelated phux

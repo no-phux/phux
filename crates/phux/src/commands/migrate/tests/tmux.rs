@@ -117,17 +117,17 @@ fn functional_display_tails_are_not_discarded_during_migration() {
 
 #[test]
 fn clipboard_denial_is_written_and_allowance_remains_the_default() {
-    let tmux = source("set -g set-clipboard off\n", false);
-    assert!(
-        matches!(verdict(&tmux, "set -g set-clipboard off"), Verdict::Write { table: Table::Defaults, key, value, .. } if key == "clipboard-write" && value.as_str() == Some("deny"))
-    );
-    for value in ["on", "external"] {
+    for value in ["off", "external"] {
         let line = format!("set -g set-clipboard {value}");
         let tmux = source(&line, false);
         assert!(
-            matches!(verdict(&tmux, &line), Verdict::Default { table: Table::Defaults, key } if key == "clipboard-write")
+            matches!(verdict(&tmux, &line), Verdict::Write { table: Table::Defaults, key, value, .. } if key == "clipboard-write" && value.as_str() == Some("deny"))
         );
     }
+    let tmux = source("set -g set-clipboard on\n", false);
+    assert!(
+        matches!(verdict(&tmux, "set -g set-clipboard on"), Verdict::Default { table: Table::Defaults, key } if key == "clipboard-write")
+    );
 }
 
 #[test]

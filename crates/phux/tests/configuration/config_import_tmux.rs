@@ -227,6 +227,42 @@ bind R source-file ~/.tmux.conf \; display-message "reloaded"
 }
 
 #[test]
+fn external_clipboard_mode_denies_pane_writes_in_migrate_and_import() {
+    let dir = fixture();
+    let script = std::fs::read_to_string(dir.path().join("tmux")).expect("script");
+    std::fs::write(
+        dir.path().join("tmux"),
+        script.replace("'prefix2 None'", "'set-clipboard external'"),
+    )
+    .expect("script");
+    let out = run(dir.path(), &["config", "import-tmux", "--json"]);
+    assert!(out.status.success(), "{out:?}");
+    let preview: serde_json::Value = serde_json::from_slice(&out.stdout).expect("JSON");
+    let table: toml::Table =
+        toml::from_str(preview["toml"].as_str().expect("TOML")).expect("parse");
+    assert_eq!(table["defaults"]["clipboard-write"].as_str(), Some("deny"));
+
+    std::fs::write(
+        dir.path().join(".tmux.conf"),
+        "set -g set-clipboard external\n",
+    )
+    .expect("config");
+    let out = crate::common::phux_cmd(crate::runner::phux_bin())
+        .env("HOME", dir.path())
+        .env("XDG_CONFIG_HOME", dir.path().join("xdg"))
+        .args(["migrate", "--print", "--json", "--source", "tmux"])
+        .output()
+        .expect("phux");
+    assert!(out.status.success(), "{out:?}");
+    let doc: serde_json::Value = serde_json::from_slice(&out.stdout).expect("JSON");
+    assert!(doc["prompt"].as_str().expect("prompt").contains(
+        "set -g set-clipboard external`\n  write `clipboard-write = \"deny\"` in `[defaults]`"
+    ));
+    assert!(doc["launched"].is_null());
+    assert!(!dir.path().join("xdg").exists());
+}
+
+#[test]
 fn import_tmux_bounds_output_and_inspection_time_before_writing() {
     let dir = fixture();
     for (script, expected) in [

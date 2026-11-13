@@ -97,8 +97,10 @@ fn default_preference(source: &str, value: &str) -> Option<Value> {
             matches!(value, "top" | "bottom").then(|| Value::String(value.to_owned()))
         }
         "set-clipboard" => match value {
-            "on" | "external" => Some(Value::String("allow".into())),
-            "off" => Some(Value::String("deny".into())),
+            "on" => Some(Value::String("allow".into())),
+            // tmux's own copy still reaches the host with `external`, but
+            // applications cannot write it. TUI manual copy bypasses this gate.
+            "off" | "external" => Some(Value::String("deny".into())),
             _ => None,
         },
         _ => (!value.is_empty()).then(|| Value::String(value.to_owned())),
@@ -180,6 +182,14 @@ mod tests {
             Some(("defaults", "shell", None))
         );
         assert_eq!(setting("status-left", "custom"), None);
+        assert_eq!(
+            setting("set-clipboard", "external"),
+            Some((
+                "defaults",
+                "clipboard-write",
+                Some(Value::String("deny".into()))
+            ))
+        );
     }
 
     #[test]
