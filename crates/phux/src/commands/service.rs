@@ -1313,11 +1313,15 @@ fn supervision_state(subject: Subject<'_>) -> SupervisionState {
 }
 
 /// The unit an armed adoption is recorded against for the server on
-/// `socket_path`, for `phux doctor`. Read-only.
+/// `socket_path`, for `phux doctor`. Read-only: a marker whose unit the init
+/// system already runs (it started at boot) is spent, not armed, though nothing
+/// has swept it yet.
 pub(crate) fn armed_adoption_unit(socket_path: &Path) -> Option<PathBuf> {
     match supervision_state(Subject::Server(socket_path)) {
-        SupervisionState::Armed { unit, .. } => Some(unit),
-        SupervisionState::NotArmed | SupervisionState::MarkerWithoutUnit => None,
+        SupervisionState::Armed { manager, unit } if !unit_is_running(manager) => Some(unit),
+        SupervisionState::Armed { .. }
+        | SupervisionState::NotArmed
+        | SupervisionState::MarkerWithoutUnit => None,
     }
 }
 

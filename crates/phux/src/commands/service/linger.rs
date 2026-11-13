@@ -36,7 +36,14 @@ pub(crate) fn ensure_linger() -> Result<(), String> {
         "loginctl",
         &["--no-ask-password".to_owned(), "enable-linger".to_owned()],
     )
-    .map_err(|err| format!("{err}\n  run: sudo loginctl enable-linger {}", user_name()))
+    // logind can record the linger and still fail starting the manager.
+    .or_else(|err| {
+        if probe_linger() {
+            Ok(())
+        } else {
+            Err(format!("{err}\n  run: sudo loginctl enable-linger {}", user_name()))
+        }
+    })
 }
 
 fn user_name() -> String {
