@@ -68,6 +68,7 @@ pub(super) async fn dispatch_local(
         Command::GetPerf { reset } => handle_get_perf(state, reset),
         Command::DescribeApi => super::super::api::describe(state),
         Command::PrivacyStatus => super::super::privacy::handle(state, client_id),
+        Command::Credentials { op } => super::super::credentials::handle(ctx, op).await,
         Command::HostChecklist => super::super::checklist::handle(state).await,
         Command::PerfControl { op } => super::super::perf_control::handle(state, op).await,
         Command::KillResources { ids, operation_id } => {

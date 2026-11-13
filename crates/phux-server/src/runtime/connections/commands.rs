@@ -157,6 +157,9 @@ pub(in crate::runtime) fn route(command: &Command, input_lane: Option<&InputLane
     if matches!(
         command,
         Command::Checkout { .. }
+            | Command::Credentials {
+                op: phux_protocol::credentials::CredentialOp::Request(_)
+            }
             | Command::Mirror { .. }
             | Command::SendDocumentInput {
                 intent: phux_protocol::wire::frame::DocumentInput::CopyClipboard { .. }

@@ -26,6 +26,16 @@ mod transport;
 /// A hanging wait is the defect under test, so every round trip is capped.
 const WEDGE_TIMEOUT: Duration = Duration::from_secs(20);
 
+#[test]
+fn generic_control_connections_do_not_offer_credential_review() {
+    assert!(!control_caps().credential_approvals);
+    assert!(
+        control_caps()
+            .with_credential_approvals(true)
+            .credential_approvals
+    );
+}
+
 fn block_on<F: std::future::Future>(fut: F) -> F::Output {
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()

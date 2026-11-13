@@ -18,6 +18,7 @@ Addressed to the server or the connection rather than to one resource.
 
 | Method | Carrier | Requires | Mutating | Gate | Status |
 |---|---|---|---|---|---|
+| `CREDENTIALS` | command `0x4e` | BIND, INPUT | yes | `credentials` (features_ext) | shipped |
 | `GET_CREATION` | command `0x41` | INVENTORY | no | `api_description` (features_ext) | shipped |
 | `DESCRIBE_API` | command `0x40` | INVENTORY | no | `api_description` (features_ext) | shipped |
 | `PRIVACY_STATUS` | command `0x4c` | INVENTORY (owner socket only) | no | `privacy_status` (features_ext) | shipped |
@@ -351,6 +352,7 @@ Every command nested in `COMMAND` lands on exactly one row; the envelope alone g
 | `MIRROR` | OBSERVE on a control selector | `ControlledDocument` |
 | `MIRROR_PROVIDE` | OBSERVE + owner-UDS transport | `Global { owner_uds_only: true }` |
 | `PRIVACY_STATUS` | INVENTORY + owner-UDS transport | `Global { owner_uds_only: true }` |
+| `CREDENTIALS` | BIND+INPUT | `Global { owner_uds_only: false }` |
 | `HOST_CHECKLIST` | INVENTORY | `Global { owner_uds_only: false }` |
 | `NATIVE_AGENT { type: spawn }` | CREATE+BIND | `KeyedSession` |
 | `NATIVE_AGENT { type: list_integrations }` | INVENTORY | `OrganizationView` |

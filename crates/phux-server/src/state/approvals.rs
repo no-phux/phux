@@ -154,8 +154,27 @@ impl ServerState {
             return Err(HoldRefusal::TooManyPending);
         }
         let id = self.mint_approval_id()?;
-        let ttl = self.approvals.ttl;
-        let record = approval_record(&self.clients.actor_ref(requester), id, command, ttl);
+        let ttl = if matches!(command, Command::Credentials { .. }) {
+            self.approvals.ttl.min(Duration::from_secs(120))
+        } else {
+            self.approvals.ttl
+        };
+        let provider = match command {
+            Command::Credentials {
+                op: phux_protocol::credentials::CredentialOp::Request(request),
+            } => self
+                .credentials
+                .provider(&request.provider)
+                .map(|client| self.clients.actor_ref(client)),
+            _ => None,
+        };
+        let record = approval_record(
+            &self.clients.actor_ref(requester),
+            id,
+            command,
+            ttl,
+            provider.as_ref(),
+        );
         let _ = self.metadata_set(&Scope::Global, &id.record_key(), record);
         let (sender, decision) = oneshot::channel();
         self.approvals.pending.insert(
@@ -337,6 +356,7 @@ fn approval_record(
     id: ApprovalId,
     command: &Command,
     ttl: Duration,
+    provider: Option<&ActorRef>,
 ) -> Vec<u8> {
     let requested_at_ms = super::now_unix_ms();
     let ttl_ms = u64::try_from(ttl.as_millis()).unwrap_or(u64::MAX);
@@ -351,6 +371,13 @@ fn approval_record(
     });
     if let Command::SignalTerminal { signal, .. } = command {
         record["signal"] = Value::from(signal_name(*signal));
+    }
+    if let Command::Credentials {
+        op: phux_protocol::credentials::CredentialOp::Request(request),
+    } = command
+        && let Some(provider) = provider
+    {
+        record["credential"] = json!({ "request": request, "provider": actor_json(provider) });
     }
     serde_json::to_vec(&record).unwrap_or_default()
 }

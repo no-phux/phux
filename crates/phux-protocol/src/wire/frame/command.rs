@@ -175,6 +175,8 @@ impl Command {
 #[derive(Debug, Clone, PartialEq)]
 #[non_exhaustive]
 pub enum CommandValue {
+    /// One-use credential delivery, never metadata or a replayable receipt.
+    CredentialSecrets(crate::credentials::SecretValues),
     /// A Terminal identifier (e.g. the result of a spawn).
     ResourceId(ResourceId),
     /// A Group identifier (opaque grouping key).

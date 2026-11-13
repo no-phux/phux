@@ -25,8 +25,8 @@ use std::path::{Path, PathBuf};
 const ALLOWLIST: &[(&str, usize, &str)] = &[
     (
         "mod.rs",
-        40,
-        "the shared `command_on`/`request_command` helpers, plus matches on the CLI's own `Command` enum (`phux archive`'s socketless-verb arm is the 31st; `Command::Upload` in verb_remote is the 32nd; the `mail`/`claim` socketless-verb arms are the 33rd; `Command::Project` (link/unlink) in verb_remote is the 34th; `Command::Download` in verb_remote is the 35th; `Command::Idea` in the socketless-verb arm is the 36th; `Command::Omarchy` in the socketless-verb arm is the 37th; `Command::Audit` in the socketless-verb arm is the 38th; `Command::Lock` and `Command::Unlock` in verb_remote are the 39th and 40th; none is a wire command)",
+        41,
+        "the shared `command_on`/`request_command` helpers, plus matches on the CLI's own `Command` enum (`phux archive`'s socketless-verb arm is the 31st; `Command::Upload` in verb_remote is the 32nd; the `mail`/`claim` socketless-verb arms are the 33rd; `Command::Project` (link/unlink) in verb_remote is the 34th; `Command::Download` in verb_remote is the 35th; `Command::Idea` in the socketless-verb arm is the 36th; `Command::Omarchy` in the socketless-verb arm is the 37th; `Command::Audit` in the socketless-verb arm is the 38th; `Command::Lock` and `Command::Unlock` in verb_remote are the 39th and 40th; `Command::Credentials` in the socketless-verb arm is the 41st; none is a wire command)",
     ),
     (
         "server_target.rs",

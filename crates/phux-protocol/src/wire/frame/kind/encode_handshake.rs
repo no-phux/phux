@@ -88,6 +88,9 @@ impl FrameKind {
         enc.write_field_with(field::hello::RESOURCE_KINDS, |e| {
             e.write_u64_be(client_caps.resource_kinds.as_wire());
         });
+        if client_caps.credential_approvals {
+            u8_field(enc, field::hello::CREDENTIAL_APPROVALS, 1);
+        }
     }
 
     /// Write the exact protocol version `HELLO_OK` admits the peer at.

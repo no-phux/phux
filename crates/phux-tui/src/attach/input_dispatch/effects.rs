@@ -57,35 +57,19 @@ pub(super) async fn apply_action_effects<W: crate::attach::RenderSink>(
         predict,
         panes,
     );
-    if effects.set_metadata {
-        broadcast_layout(conn, ctx).await?;
-    }
-    if effects.bell {
-        let _ = actions::write_bell(out);
-    }
-    if let Some(text) = effects.clipboard {
-        let _ = out.write_all(&crate::attach::copy::osc52_set_clipboard(&text));
-        let _ = out.flush();
-    }
+    broadcast_changed_layout(effects.set_metadata, conn, ctx).await?;
+    write_local_output(out, effects.bell, effects.clipboard);
     send_detach(effects.detach, conn, ctx.detach_pending).await?;
-    send_parked_spawns(
+    send_spawn_requests(
         effects.spawn_terminal,
         effects.spawn_window,
+        effects.spawn_floating,
         conn,
-        ctx.pending_splits,
-        ctx.pending_windows,
+        ctx,
     )
     .await?;
-    if let Some((request_id, title, frame)) = effects.spawn_floating {
-        // Parked before the send: the reply can race back before it returns.
-        ctx.pending_floating.insert(request_id, title);
-        conn.send(&frame).await?;
-    }
     send_directory_request(effects.list_directory, conn, ctx.pending_directory).await?;
-    if let Some((pending, frame)) = effects.query_path {
-        *ctx.pending_path = Some(pending);
-        conn.send(&frame).await?;
-    }
+    send_path_query(effects.query_path, conn, ctx.pending_path).await?;
     send_path_insert(effects.insert_path, out, conn, ctx).await?;
     send_kill_frames(
         effects.kill_frames,
@@ -107,22 +91,15 @@ pub(super) async fn apply_action_effects<W: crate::attach::RenderSink>(
     .await;
     super::session_management::apply(effects.session_management, ctx).await;
     super::tab_lock::apply(effects.tab_lock, ctx).await;
+    super::approvals::apply(effects.approval, ctx).await;
     start_job(effects.job, ctx);
-    // Hand a `reload-config` up to the driver, which owns the
-    // config-derived state (resolver, theme, keybindings snapshot, status
-    // bar) this batch is still borrowing.
-    if effects.reload_config {
-        *ctx.reload_request = true;
-    }
-    if effects.switch_host.is_some() {
-        *ctx.host_switch_request = effects.switch_host;
-    }
-    if effects.toggle_project.is_some() {
-        *ctx.project_toggle_request = effects.toggle_project;
-    }
-    if effects.agents_filter.is_some() {
-        *ctx.agents_filter_request = effects.agents_filter;
-    }
+    queue_driver_requests(
+        effects.reload_config,
+        effects.switch_host,
+        effects.toggle_project,
+        effects.agents_filter,
+        ctx,
+    );
     record_reattach_request(
         effects.reattach,
         ctx.switch_request,
@@ -131,6 +108,91 @@ pub(super) async fn apply_action_effects<W: crate::attach::RenderSink>(
     );
     send_session_rename(effects.rename_session, conn, ctx).await?;
     Ok(layout_changed)
+}
+
+fn write_local_output<W: crate::attach::RenderSink>(
+    out: &mut W,
+    bell: bool,
+    clipboard: Option<String>,
+) {
+    if bell {
+        let _ = actions::write_bell(out);
+    }
+    if let Some(text) = clipboard {
+        let _ = out.write_all(&crate::attach::copy::osc52_set_clipboard(&text));
+        let _ = out.flush();
+    }
+}
+
+#[allow(clippy::future_not_send, reason = "current-thread TUI connection")]
+async fn broadcast_changed_layout(
+    changed: bool,
+    conn: &mut Connection,
+    ctx: &mut DispatchCtx<'_>,
+) -> Result<(), AttachError> {
+    if changed {
+        broadcast_layout(conn, ctx).await?;
+    }
+    Ok(())
+}
+
+#[allow(clippy::future_not_send, reason = "current-thread TUI connection")]
+async fn send_spawn_requests(
+    terminal: Option<(u32, actions::PendingSplit, FrameKind)>,
+    window: Option<(u32, actions::PendingWindow, FrameKind)>,
+    floating: Option<(u32, String, FrameKind)>,
+    conn: &mut Connection,
+    ctx: &mut DispatchCtx<'_>,
+) -> Result<(), AttachError> {
+    send_parked_spawns(
+        terminal,
+        window,
+        conn,
+        ctx.pending_splits,
+        ctx.pending_windows,
+    )
+    .await?;
+    if let Some((request_id, title, frame)) = floating {
+        // Parked before sending: the reply can race back before the send returns.
+        ctx.pending_floating.insert(request_id, title);
+        conn.send(&frame).await?;
+    }
+    Ok(())
+}
+
+#[allow(clippy::future_not_send, reason = "current-thread TUI connection")]
+async fn send_path_query(
+    query: Option<(crate::attach::path_picker::PendingPath, FrameKind)>,
+    conn: &mut Connection,
+    pending_path: &mut Option<crate::attach::path_picker::PendingPath>,
+) -> Result<(), AttachError> {
+    if let Some((pending, frame)) = query {
+        *pending_path = Some(pending);
+        conn.send(&frame).await?;
+    }
+    Ok(())
+}
+
+/// Leave driver-owned configuration and navigation changes for after this batch.
+fn queue_driver_requests(
+    reload: bool,
+    host: Option<(String, String)>,
+    project: Option<String>,
+    filter: Option<crate::render::chrome::sidebar::FilterRequest>,
+    ctx: &mut DispatchCtx<'_>,
+) {
+    if reload {
+        *ctx.reload_request = true;
+    }
+    if host.is_some() {
+        *ctx.host_switch_request = host;
+    }
+    if project.is_some() {
+        *ctx.project_toggle_request = project;
+    }
+    if filter.is_some() {
+        *ctx.agents_filter_request = filter;
+    }
 }
 
 /// Paste a picked path into its target pane as untrusted input, never a

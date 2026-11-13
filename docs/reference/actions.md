@@ -14,6 +14,9 @@ The **Palette** column is the command-palette section the action is offered unde
 
 | Action | Palette | Parameters | Description |
 |---|---|---|---|
+| `approvals` | Session |  | Review pending credential requests and held actions on the attached server |
+| `approval-review` | — | `id` (approval identity) | Read and review one pending approval before deciding |
+| `approval-decide` | — | `id`, `decision` = `approve` \| `deny` | Submit one explicit approval decision without retrying |
 | `split-pane` | Pane | `direction` = `horizontal` \| `vertical`; `host?` (satellite); `resource?` (`@N` or `host/@N`) | Split the focused pane side-by-side (vertical divider) |
 | `move-pane` | Pane | `target` (local Terminal id; picker-supplied) | Move the focused pane beside another pane… |
 | `kill-pane` | Pane | `terminals?` (selector the confirm committed; omitted opens the confirm) | Kill the focused pane's terminal… |
@@ -88,6 +91,8 @@ The **Palette** column is the command-palette section the action is offered unde
 
 Why the dash rows have no palette entry:
 
+- `approval-review` — opened from the approvals picker.
+- `approval-decide` — committed by the approval review overlay.
 - `copy-mode-key` — it only means something as an entry of `[keybindings.modes.copy-mode]`.
 - `copy-text` — it is what a row of the link picker does; on its own it has no text to copy.
 - `command-palette` — it is an entry alias for the finder, so listing it inside the finder would recurse.

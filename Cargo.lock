@@ -3108,6 +3108,7 @@ dependencies = [
  "phux-server",
  "phux-server-testkit",
  "portable-pty",
+ "serde",
  "serde_json",
  "tempfile",
  "thiserror 2.0.21",
@@ -3313,6 +3314,7 @@ dependencies = [
  "serde_json",
  "tempfile",
  "thiserror 2.0.21",
+ "zeroize",
 ]
 
 [[package]]

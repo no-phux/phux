@@ -30,6 +30,21 @@ const CONFIRM_ID: u32 = 2;
 /// The correlation id of the key listing.
 const LIST_ID: u32 = 1;
 
+/// Connect for approval review with an explicit credential-details offer.
+/// An opaque fallback must pass `false`, so it can deny but never release secrets.
+///
+/// # Errors
+/// The target could not be reached.
+pub async fn connect(
+    dial: &crate::attach::connection::Dial,
+    client_name: String,
+    credential_details: bool,
+) -> Result<Connection, AttachError> {
+    let caps =
+        phux_client_runtime::session::control_caps().with_credential_approvals(credential_details);
+    Connection::connect_dial_with_hello(dial, client_name, caps).await
+}
+
 /// Why listing or deciding failed.
 #[derive(Debug, thiserror::Error)]
 pub enum ApprovalError {
@@ -93,6 +108,15 @@ async fn read_record(
     Approval::parse(&bytes)
         .map(Some)
         .map_err(|err| ApprovalError::Malformed(format!("approval record: {err}")))
+}
+
+/// Read one pending approval without requiring Global inventory permission.
+///
+/// # Errors
+/// Unsupported server, denied Global observation, malformed record, or transport failure.
+pub async fn get(conn: &mut Connection, id: ApprovalId) -> Result<Option<Approval>, ApprovalError> {
+    require_approvals(conn).await?;
+    read_record(conn, LIST_ID, id.record_key()).await
 }
 
 /// Decide the held action `id` names.

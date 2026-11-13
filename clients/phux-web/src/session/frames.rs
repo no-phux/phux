@@ -13,6 +13,9 @@ impl Connection {
         if self.failed {
             return Outcome::default();
         }
+        if let Some(outcome) = self.approvals.on_frame(&frame) {
+            return outcome;
+        }
         if frame_resource_id(&frame).is_some_and(|id| self.retiring_panes.contains(id))
             && !matches!(&frame, FrameKind::ResourceClosed { .. })
         {
@@ -95,6 +98,7 @@ impl Connection {
                 protocol_patch,
                 selected_profile,
                 bootstrap_limits,
+                server_caps,
                 ..
             } => {
                 if self.kernel.is_some() {
@@ -141,12 +145,18 @@ impl Connection {
                     terminal: None,
                     after_seq: None,
                 });
+                let mut send = vec![subscribe, self.discovery_request()];
+                send.extend(
+                    self.approvals
+                        .negotiate(server_caps.features.contains(ServerFeature::Approvals)),
+                );
                 Outcome {
                     // Subscribe before taking the attach snapshot: a child
                     // created during bootstrap must not fall into a discovery gap.
                     // The kernel's post-ready subscription is idempotent. The
                     // discovery reply chooses the session and sends the ATTACH.
-                    send: vec![subscribe, self.discovery_request()],
+                    send,
+                    approvals: true,
                     ..Outcome::default()
                 }
             }

@@ -57,6 +57,12 @@ struct World {
     approval: phux_protocol::ids::ApprovalId,
 }
 
+fn credential_sample() -> FrameKind {
+    command(Command::Credentials {
+        op: phux_protocol::credentials::CredentialOp::Next { provider: "desktop".into() },
+    })
+}
+
 fn world() -> World {
     let mut state = ServerState::new();
     let (alpha_session, alpha_core) = state.seed_session("alpha");
@@ -116,6 +122,15 @@ fn agent_child(world: &mut World) -> WireResourceId {
         )
         .unwrap();
     world.state.intern_resource_wire(child)
+}
+
+fn session_group_id(world: &World, name: &str) -> u32 {
+    world
+        .state
+        .find_session_by_name(name)
+        .and_then(|session| world.state.idspace.session_wire(session))
+        .unwrap()
+        .get()
 }
 
 fn local_id(wire: &WireResourceId) -> u32 {
@@ -412,6 +427,7 @@ fn samples(world: &World, agent: &WireResourceId) -> Vec<FrameKind> {
         }),
         command(Command::DescribeApi),
         command(Command::PrivacyStatus),
+        credential_sample(),
         command(Command::HostChecklist),
         command(Command::GetState {
             scope: StateScope::Server,

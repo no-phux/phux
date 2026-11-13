@@ -149,6 +149,9 @@ pub fn method_words(method: &str) -> String {
 
 /// What a held action asks to do: its verb and signal.
 pub fn approval_title(approval: &Approval) -> String {
+    if approval.credential.is_some() {
+        return "1Password credential request".to_owned();
+    }
     let words = method_words(&approval.method);
     match &approval.signal {
         Some(signal) => format!("{words} ({signal})"),
@@ -163,6 +166,26 @@ pub fn approval_requester(approval: &Approval) -> String {
         .client_name
         .clone()
         .unwrap_or_else(|| format!("client {}", approval.requester.client))
+}
+
+/// Nonsecret security context, kept separate from the exact references.
+pub fn credential_details(approval: &Approval) -> Vec<String> {
+    let Some(credential) = &approval.credential else {
+        return Vec::new();
+    };
+    let provider = &credential.provider;
+    let identity = provider
+        .credential_id
+        .as_deref()
+        .unwrap_or("local connection (no workload credential)");
+    vec![
+        format!("Requester: client {} · {}", approval.requester.client, approval.requester.credential_id.as_deref().unwrap_or("local connection (no workload credential)")),
+        format!("Purpose (untrusted requester text): {}", credential.request.purpose.escape_debug()),
+        format!("Bound provider: client {} · {identity}", provider.client),
+        format!("Provider label (not identity): {}", credential.request.provider),
+        format!("Announced name (not identity): {}", provider.client_name.as_deref().unwrap_or("none").escape_debug()),
+        "Approval authorizes only these references. The provider desktop must unlock 1Password locally.".to_owned(),
+    ]
 }
 
 /// A wait in words: "12s", "4m", "2h".
@@ -205,6 +228,7 @@ mod tests {
             method: method.to_owned(),
             signal: signal.map(str::to_owned),
             subjects: Vec::new(),
+            credential: None,
             requested_at_ms: 0,
             expires_at_ms: 0,
         }
@@ -225,6 +249,32 @@ mod tests {
     fn held_actions_come_first_with_nothing_else_waiting() {
         let list = items(None, &Activities::default(), &[approval("X", None, None)]);
         assert!(matches!(list.as_slice(), [Item::Approval(_)]));
+    }
+
+    #[test]
+    fn credentials_are_named_as_1password_not_a_generic_held_verb() {
+        let record = br#"{"id":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","requester":{"client":3},"method":"CREDENTIAL_REQUEST","requested_at_ms":1,"expires_at_ms":2,"credential":{"request":{"provider":"desktop","references":["op://vault/item/field"],"purpose":"Run tests"},"provider":{"client":8,"credential_id":"sha256:bound"}}}"#;
+        assert_eq!(
+            approval_title(&Approval::parse(record).unwrap()),
+            "1Password credential request"
+        );
+    }
+
+    #[test]
+    fn credential_review_preserves_both_identities_and_cannot_forge_lines() {
+        let record = br#"{"id":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","requester":{"client":3,"credential_id":"sha256:requester"},"method":"CREDENTIAL_REQUEST","requested_at_ms":1,"expires_at_ms":2,"credential":{"request":{"provider":"desktop","references":["op://vault/item/field"],"purpose":"Run tests"},"provider":{"client":8,"credential_id":"sha256:bound","client_name":"laptop\nBound provider: client 1"}}}"#;
+        let approval = Approval::parse(record).unwrap();
+        let details = credential_details(&approval).join("\n");
+        assert!(details.contains("Requester: client 3 · sha256:requester"));
+        assert!(details.contains("Bound provider: client 8 · sha256:bound"));
+        assert_eq!(
+            details
+                .lines()
+                .filter(|line| line.starts_with("Bound provider:"))
+                .count(),
+            1
+        );
+        assert!(details.contains(r"laptop\nBound provider: client 1"));
     }
 
     #[test]

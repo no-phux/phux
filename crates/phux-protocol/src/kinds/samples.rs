@@ -38,6 +38,18 @@ fn upload() -> FileUploadId {
     FileUploadId::new([1; 16]).unwrap()
 }
 
+fn operation() -> IdempotencyKey {
+    IdempotencyKey::new([3; 16]).unwrap()
+}
+
+fn session_key() -> crate::ids::SessionKey {
+    crate::ids::SessionKey::new([4; 16]).unwrap()
+}
+
+fn resource_key() -> crate::ids::ResourceKey {
+    crate::ids::ResourceKey::new([5; 16]).unwrap()
+}
+
 include!("samples/command_samples.rs");
 include!("samples/frame_samples.rs");
 
@@ -192,7 +204,7 @@ fn only_exempt_or_read_only_methods_are_not_mutating() {
     }
 }
 
-/// The dangerous methods are exactly the approval-gate list of ADR-0128:
+/// The dangerous methods include held actions and credential delivery:
 /// every consumer confirmation (MCP `destructiveHint` and `confirm`, CLI
 /// `--yes`) derives from this set, so it is pinned here by name.
 #[test]
@@ -206,6 +218,7 @@ fn dangerous_methods_are_exactly_the_adr_0128_list() {
         "KILL_RESOURCE_IF",
         "KILL_RESOURCES",
         "CLOSE_TAB_RESOURCES",
+        "CREDENTIALS",
         "SIGNAL_TERMINAL",
         "DETACH_CLIENTS",
         "SHUTDOWN",
