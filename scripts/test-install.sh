@@ -17,6 +17,8 @@ export HOME="$TMP/home" SHELL=/bin/zsh
 # would refuse this checkout's config without this.
 export MISE_TRUSTED_CONFIG_PATHS="$ROOT"
 unset ZDOTDIR XDG_CONFIG_HOME PHUX_NO_MODIFY_PATH PHUX_CHANNEL PHUX_INSTALL_DIR
+# Never offer the host's systemd a service; the service tests below opt back in.
+export PHUX_NO_SERVICE=1
 mkdir -p "$HOME" "$TMP/bin" "$TMP/served"
 export SERVED="$TMP/served" CALLS="$TMP/calls" METER_CALLS="$TMP/meter-calls"
 
@@ -142,7 +144,11 @@ if installer --help | grep -Fq '\'; then fail "--help prints an escape"; fi
 
 package() { # ID: pack a release whose binaries say ID, and serve it
   mkdir -p "$TMP/build-$1"
-  for binary in phux phux-mcp; do printf '%s %s\n' "$binary" "$1" > "$TMP/build-$1/$binary"; done
+  # Each binary records its arguments and exits; the ID line follows.
+  for binary in phux phux-mcp; do
+    printf '#!/bin/sh\nprintf "%%s\\n" "$*" >> "${PHUX_CALLS:-/dev/null}"; exit "${PHUX_EXIT:-0}"\n%s %s\n' \
+      "$binary" "$1" > "$TMP/build-$1/$binary"
+  done
   chmod 755 "$TMP/build-$1/"*
   bash "$ROOT/scripts/pack-release.sh" --id "$1" --target "$TARGET" --bin-dir "$TMP/build-$1" --out-dir "$SERVED" >/dev/null 2>&1
   awk '{ print $1 }' "$SERVED/phux-$1-$TARGET.tar.gz.sha256"
@@ -356,5 +362,35 @@ out="$(PATH="$TMP/bin:/usr/bin:/bin" "$SH" "$ROOT/scripts/install-desktop.sh" --
 rm "$SERVED/install"
 if PATH="$TMP/bin:/usr/bin:/bin" "$SH" "$ROOT/scripts/install-desktop.sh" 2>"$TMP/err"; then fail "shim ran without an installer"; fi
 grep -Fq 'could not download' "$TMP/err" || fail "shim failure message"
+
+# --- keeping the server running (Linux) -----------------------------------------
+
+# A fake uname says Linux and a fake systemctl stands in for the user manager;
+# the installed phux records what it was asked. Nothing reaches real systemd.
+mkdir -p "$TMP/svc-bin"
+printf '#!/bin/sh\necho Linux\n' > "$TMP/svc-bin/uname"
+printf '#!/bin/sh\nexit "${NO_SYSTEMD:-0}"\n' > "$TMP/svc-bin/systemctl"
+chmod 755 "$TMP/svc-bin/"*
+export PHUX_CALLS="$TMP/phux-calls"
+svc() {
+  : > "$PHUX_CALLS"
+  TEST_PATH="$TMP/svc-bin:/usr/bin:/bin" PHUX_NO_SERVICE="${NO_SERVICE:-}" \
+    install_to "$TMP/svc" --no-modify-path "$@" >"$TMP/out" 2>"$TMP/err"
+}
+# No terminal to ask on: install, without a prompt.
+svc || fail "service install: $(cat "$TMP/err")"
+grep -Fxq 'service install --adopt' "$PHUX_CALLS" || fail "no tty installs the service: $(cat "$PHUX_CALLS")"
+if grep -Fq '[Y/n]' "$TMP/err"; then fail "prompted without a terminal"; fi
+svc --service && grep -Fxq 'service install --adopt' "$PHUX_CALLS" || fail "--service"
+for opt_out in --no-service NO_SERVICE=1; do
+  if [[ $opt_out == --* ]]; then svc "$opt_out"; else NO_SERVICE=1 svc; fi
+  [[ ! -s $PHUX_CALLS ]] || fail "$opt_out still ran: $(cat "$PHUX_CALLS")"
+done
+# No user manager (a container, WSL without systemd): skip, quietly unless asked.
+NO_SYSTEMD=1 svc && [[ ! -s $PHUX_CALLS ]] && ! grep -Fq 'systemd' "$TMP/err" || fail "no systemd, default"
+NO_SYSTEMD=1 svc --service && grep -Fq 'no systemd user manager' "$TMP/err" || fail "no systemd, --service"
+# A failed service install never fails the install, and says how to retry.
+PHUX_EXIT=1 svc || fail "a failed service install failed the install"
+grep -Fq 'retry with:' "$TMP/err" && grep -Fxq 'phux v9.8.7' "$TMP/svc/phux" || fail "service failure: $(cat "$TMP/err")"
 
 echo "installer tests passed"

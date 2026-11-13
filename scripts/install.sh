@@ -43,6 +43,10 @@ only when none is found.
   --install-dir <dir>             Where phux, phux-mcp and the phux-rune launcher go
                                   (default: $PHUX_INSTALL_DIR, or ~/.local/bin).
   --no-modify-path                Leave the shell profile alone (also $PHUX_NO_MODIFY_PATH=1).
+  --service, --no-service         On Linux, run (or skip) `phux service install` without
+                                  asking: a systemd user unit plus linger, so sessions
+                                  survive logout and reboot. Default: ask on a terminal,
+                                  install otherwise (also $PHUX_NO_SERVICE=1).
   --rune                          Install Phux Rune from its own feed; takes no channel or pin.
   --desktop                       The same as --rune (the GPUI desktop is retired).
   --applications-dir <dir>        Desktop destination (default: /Applications if writable,
@@ -459,6 +463,33 @@ report_path() {
   printf 'PATH remedy: export PATH=%s:"$PATH"\n' "$(shell_quote "$dir")"
 }
 
+# On Linux a plain server is not restarted after a reboot and often ends at
+# logout. `phux service install --adopt` runs it as a systemd user unit and
+# turns on linger; --adopt never stops a running server, and is a no-op when
+# the unit already runs it. Without a terminal to ask on, install: a new
+# customer's sessions should survive a reboot without a second command.
+offer_service() {
+  [ "$service" != 0 ] && [ "$(uname -s)" = Linux ] || return 0
+  phux="${install_dir}/phux"
+  [ -x "$phux" ] || phux="$(command -v phux 2>/dev/null)" || return 0
+  if ! systemctl --user show-environment >/dev/null 2>&1; then
+    [ "$service" = ask ] || phux_message warn "no systemd user manager here; the server runs unsupervised"
+    return 0
+  fi
+  if [ "$service" = ask ] && [ -t 2 ] && { : </dev/tty; } 2>/dev/null; then
+    printf 'Keep phux sessions running after logout and reboot? (systemd user service) [Y/n] ' >&2
+    read -r answer </dev/tty || answer=""
+    case "$answer" in
+      [Nn]*)
+        echo "later: $(shell_quote "$phux") service install --adopt"
+        return 0
+        ;;
+    esac
+  fi
+  "$phux" service install --adopt \
+    || phux_message warn "the server is not supervised; retry with: $(shell_quote "$phux") service install --adopt"
+}
+
 # PIN and PIN_SHA256 pin the CLI; empty follows the channel.
 install_cli() {
   resolve phux "$target" "$1" "$2"
@@ -775,6 +806,8 @@ os=""
 arch=""
 modify_path=1
 case "${PHUX_NO_MODIFY_PATH:-}" in '' | 0) ;; *) modify_path=0 ;; esac
+service=ask
+case "${PHUX_NO_SERVICE:-}" in '' | 0) ;; *) service=0 ;; esac
 
 while [ "$#" -gt 0 ]; do
   case "$1" in
@@ -801,10 +834,12 @@ while [ "$#" -gt 0 ]; do
     --rune) rune=1 ;;
     --dry-run) dry_run=1 ;;
     --no-modify-path) modify_path=0 ;;
+    --service) service=1 ;;
+    --no-service) service=0 ;;
     --help | -h) usage; exit 0 ;;
     *) die "unknown option: $1" ;;
   esac
-  case "$1" in --desktop | --rune | --dry-run | --no-modify-path) shift ;; *) shift 2 ;; esac
+  case "$1" in --desktop | --rune | --dry-run | --no-modify-path | --service | --no-service) shift ;; *) shift 2 ;; esac
 done
 
 if [ "$rune" -eq 1 ]; then
@@ -868,3 +903,4 @@ else
   install_cli "$pin" "$pin_sha256"
   [ "$dry_run" -eq 1 ] || report_path
 fi
+[ "$dry_run" -eq 1 ] || offer_service

@@ -13,8 +13,11 @@ use phux_config::socket::{self, SocketState};
 
 use crate::commands::sh_quote;
 
+mod linger;
 mod reconcile;
 mod unit;
+
+pub(crate) use linger::probe_linger;
 
 pub(crate) use reconcile::{Reconcile, reconcile_unit};
 use reconcile::{plist_container_end, settled};
@@ -39,7 +42,7 @@ fn launchd_label() -> String {
 
 /// systemd's unit name for the active profile. See [`launchd_label`] for why
 /// the default profile keeps the bare name.
-fn systemd_unit() -> String {
+pub(crate) fn systemd_unit() -> String {
     systemd_unit_for(profile_suffix().as_deref())
 }
 
@@ -926,6 +929,10 @@ pub(crate) enum Takeover {
 
 /// `phux service install` — write the unit and hand it to the init system.
 /// Rerunning reloads an existing unit.
+#[expect(
+    clippy::too_many_lines,
+    reason = "the install's refusals and hand-over branches read in order; each is already one call"
+)]
 pub(crate) fn run_install(
     quic: Option<std::net::SocketAddr>,
     listen: Option<String>,
@@ -1007,6 +1014,10 @@ pub(crate) fn run_install(
         return ExitCode::FAILURE;
     }
 
+    if incumbent_live && already_supervised(manager, &plan) {
+        return ExitCode::SUCCESS;
+    }
+
     let unit_path = match manager.writable_unit_path(profile_suffix().as_deref()) {
         Ok(path) => path,
         Err(err) => {
@@ -1055,6 +1066,32 @@ pub(crate) fn run_install(
 
     report_install(manager, &plan, &unit_path);
     ExitCode::SUCCESS
+}
+
+/// `--adopt` over a server this unit already runs has nothing to hand over,
+/// so installers and onboarding can run it whatever state the host is in.
+/// Reports and ensures linger when so.
+fn already_supervised(manager: Manager, plan: &ServicePlan) -> bool {
+    let Ok(unit_path) = manager.unit_path(profile_suffix().as_deref()) else {
+        return false;
+    };
+    let supervises = std::fs::read_to_string(&unit_path)
+        .is_ok_and(|body| unit_supervises(manager, &body, &plan.socket_path));
+    if !supervises || !unit_is_running(manager) {
+        return false;
+    }
+    outln!("phux service already running (nothing to hand over).");
+    outln!("  unit    {}", unit_path.display());
+    report_linger_for(manager);
+    true
+}
+
+/// On Linux a user unit only outlives logout and starts at boot when the user
+/// lingers; turn it on (once, here, for every caller of `install`).
+fn report_linger_for(manager: Manager) {
+    if manager == Manager::Systemd {
+        linger::report_linger(linger::ensure_linger());
+    }
 }
 
 /// The listener-address variables a supervised server may inherit from the
@@ -1441,6 +1478,7 @@ fn report_adopt(manager: Manager, plan: &ServicePlan, unit_path: &Path) {
              server. Set PHUX_PROFILE={profile} to reach the server it starts."
         );
     }
+    report_linger_for(manager);
 }
 
 /// Write the unit file (and the wrapper, when `--restore` is on), creating
@@ -1610,6 +1648,7 @@ fn report_install(manager: Manager, plan: &ServicePlan, unit_path: &Path) {
         );
         outln!("Clear them with `phux service prune-logs`.");
     }
+    report_linger_for(manager);
 }
 
 /// `phux service uninstall` — unload the unit and remove what install wrote.

@@ -228,3 +228,44 @@ fn a_live_incompatible_socket_is_not_told_to_remove_it() {
         assert!(!text.contains(forbidden), "{forbidden} in {text}");
     }
 }
+
+#[test]
+fn a_server_outside_its_systemd_unit_warns_with_the_adopt_fix() {
+    use super::supervision::supervision_check;
+    let scope = "0::/user.slice/user-1000.slice/session-3.scope\n";
+    let check = supervision_check(Some(42), Some(scope), "phux.service", || {
+        unreachable!("linger is moot for an unsupervised server")
+    });
+    assert_eq!(check.status, Status::Warn);
+    assert!(check.detail.contains("pid 42"), "{}", check.detail);
+    assert!(check.hint.unwrap().contains("phux service install --adopt"));
+
+    // Another profile's unit is not this server's supervisor.
+    let dev = "0::/user.slice/user-1000.slice/user@1000.service/app.slice/phux-dev.service\n";
+    let check = supervision_check(None, Some(dev), "phux.service", || true);
+    assert_eq!(check.status, Status::Warn);
+}
+
+#[test]
+fn a_supervised_server_passes_only_with_linger() {
+    use super::supervision::supervision_check;
+    let unit = "0::/user.slice/user-1000.slice/user@1000.service/app.slice/phux.service\n";
+    let check = supervision_check(Some(7), Some(unit), "phux.service", || true);
+    assert_eq!(check.status, Status::Pass, "{}", check.detail);
+
+    let check = supervision_check(Some(7), Some(unit), "phux.service", || false);
+    assert_eq!(check.status, Status::Warn);
+    assert!(check.hint.unwrap().contains("loginctl enable-linger"));
+
+    // cgroup v1 names the unit on the systemd hierarchy's line.
+    let v1 = "12:pids:/user.slice\n1:name=systemd:/user.slice/user-1000.slice/user@1000.service/phux.service\n";
+    let check = supervision_check(Some(7), Some(v1), "phux.service", || true);
+    assert_eq!(check.status, Status::Pass);
+
+    let check = supervision_check(Some(7), None, "phux.service", || true);
+    assert_eq!(
+        check.status,
+        Status::Warn,
+        "unverifiable is a warning, never a pass"
+    );
+}

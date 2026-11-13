@@ -147,7 +147,7 @@ To have the server start at login and come back by itself after a reboot:
 phux service install
 ```
 
-This writes a launchd agent on macOS or a systemd user unit on Linux. `phux service uninstall` removes it. [phux vs tmux, Herdr, and cmux](./compare.md#what-survives-what) compares this with the others.
+This writes a launchd agent on macOS or a systemd user unit on Linux, and on Linux turns on linger so the unit starts at boot and keeps running after logout. The Linux installer and Phux Rune's onboarding offer it. `phux service uninstall` removes it. [phux vs tmux, Herdr, and cmux](./compare.md#what-survives-what) compares this with the others.
 
 ## Agents
 

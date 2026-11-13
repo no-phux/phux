@@ -76,6 +76,10 @@ impl Step {
 /// Whether this computer has the privacy panes the permissions card is about.
 pub const PERMISSIONS: bool = cfg!(target_os = "macos");
 
+/// Whether the server outlives logout and reboot only as a systemd user
+/// service (`phux service install`), so the last step offers one.
+pub const KEEP_ALIVE: bool = cfg!(target_os = "linux");
+
 /// The agents the migration can hand the work to, in tile order.
 pub const MIGRATORS: [&str; 3] = ["claude", "codex", "opencode"];
 

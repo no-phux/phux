@@ -42,6 +42,10 @@ only when none is found.
   --install-dir <dir>             Where phux, phux-mcp and the phux-rune launcher go
                                   (default: $PHUX_INSTALL_DIR, or ~/.local/bin).
   --no-modify-path                Leave the shell profile alone (also $PHUX_NO_MODIFY_PATH=1).
+  --service, --no-service         On Linux, run (or skip) `phux service install` without
+                                  asking: a systemd user unit plus linger, so sessions
+                                  survive logout and reboot. Default: ask on a terminal,
+                                  install otherwise (also $PHUX_NO_SERVICE=1).
   --rune                          Install Phux Rune from its own feed; takes no channel or pin.
   --desktop                       The same as --rune (the GPUI desktop is retired).
   --applications-dir <dir>        Desktop destination (default: /Applications if writable,

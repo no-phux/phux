@@ -4,7 +4,7 @@ use rune::accesskit::Action;
 use rune::{Env, Key, KeyEvent, Mods, Runtime};
 
 use super::*;
-use crate::onboarding::{AgentSkill, Permissions};
+use crate::onboarding::{AgentSkill, KEEP_ALIVE, Permissions};
 
 const SIZE: (f32, f32) = (1100.0, 720.0);
 const SCALE: f32 = 2.0;
@@ -163,6 +163,7 @@ fn every_step_renders_its_parts() {
     ] {
         assert!(has(&rt, key), "{key}");
     }
+    assert_eq!(has(&rt, "onboarding-keep-alive"), KEEP_ALIVE, "Linux only");
     snap(&mut rt, "5-done");
     // A fresh window: a second snap's renderer misses glyphs the first uploaded.
     let mut rt = window(Step::Done);
@@ -176,6 +177,12 @@ fn every_step_renders_its_parts() {
     }
     assert!(has(&rt, "pair-qr") && !has(&rt, "pair-devices"));
     snap(&mut rt, "5-done-pair");
+    if KEEP_ALIVE {
+        let mut rt = window(Step::Done);
+        assert!(rt.state.onboarding.keep_alive, "on by default");
+        assert!(rt.accessibility_action("onboarding-keep-alive", Action::Click, None));
+        assert!(!rt.state.onboarding.keep_alive, "the switch turns it off");
+    }
 }
 
 #[test]

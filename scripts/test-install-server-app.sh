@@ -4,6 +4,8 @@
 # Support/sh.phux/Server, pruning all but the previous release. The network
 # is a fake curl serving $SERVED by basename; HOME is a temp directory.
 set -euo pipefail
+# Never offer the host's systemd a service.
+export PHUX_NO_SERVICE=1
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
