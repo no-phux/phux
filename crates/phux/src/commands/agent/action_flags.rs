@@ -236,3 +236,43 @@ pub(crate) struct WaitFlags {
     #[usage(long)]
     pub(crate) json: bool,
 }
+
+/// `phux agent install-claude` flags.
+#[derive(Debug, usage::Args)]
+pub(crate) struct InstallClaudeFlags {
+    /// Shell rc file to activate (auto-detected from SHELL).
+    #[usage(long, choices("zsh", "bash", "fish"))]
+    pub(crate) shell: Option<String>,
+    /// Absolute path to the real Claude executable (auto-detected from PATH).
+    #[usage(long, value_name = "PATH")]
+    pub(crate) real: Option<std::path::PathBuf>,
+}
+
+/// `phux agent install-shim` flags.
+#[derive(Debug, usage::Args)]
+pub(crate) struct InstallShimFlags {
+    /// Only this agent (repeatable).
+    #[usage(long, value_enum, value_name = "AGENT")]
+    pub(crate) agent: Vec<crate::skill::setup::SkillAgent>,
+    /// Every agent installed on this machine; one not on `PATH` is
+    /// skipped.
+    #[usage(long)]
+    pub(crate) all: bool,
+    /// Shell rc file to activate (auto-detected from SHELL).
+    #[usage(long, choices("zsh", "bash", "fish"))]
+    pub(crate) shell: Option<String>,
+    /// Print the per-agent result as JSON (`phux.agent-shims/v1`).
+    #[usage(long)]
+    pub(crate) json: bool,
+}
+
+/// `phux agent uninstall-shim` flags.
+#[derive(Debug, usage::Args)]
+pub(crate) struct UninstallShimFlags {
+    /// Only this agent (repeatable). Default: all of them.
+    #[usage(long, value_enum, value_name = "AGENT")]
+    pub(crate) agent: Vec<crate::skill::setup::SkillAgent>,
+    /// Print the per-agent result as JSON (`phux.agent-shims/v1`).
+    #[usage(long)]
+    pub(crate) json: bool,
+}

@@ -85,6 +85,33 @@ fn skill_card(desk: &Desk, p: &Ink) -> El {
     }
 }
 
+/// Opt-in: it adds a line to the shell rc, so it is never the accent.
+fn shim_card(desk: &Desk, p: &Ink) -> El {
+    let card = card("onboarding-shims", &icons::WINDOW, "Open agents in phux", p)
+        .child(note(
+            "Plain claude, codex, opencode and pi start inside phux. Adds one line to your shell config.",
+            p,
+        ))
+        .child(el().grow(1.0));
+    match &desk.onboarding.shims {
+        None => card.child(quiet("onboarding-shim", "Set up", p).on_press(Desk::install_shims)),
+        Some(Probe::Asking) => card.child(note("Setting up…", p)),
+        Some(Probe::Unsupported) => card.child(note(UPDATE, p)),
+        Some(Probe::Failed(why)) => card
+            .child(note(why.clone(), p))
+            .child(quiet("onboarding-shim", "Try again", p).on_press(Desk::install_shims)),
+        Some(Probe::Ready(agents)) if agents.is_empty() => {
+            card.child(note("No agents found on this computer.", p))
+        }
+        Some(Probe::Ready(agents)) => card
+            .child(note(
+                format!("{}. Open a new terminal to use them.", agents.join(", ")),
+                p,
+            ))
+            .child(good("Set up", p)),
+    }
+}
+
 fn permissions_card(desk: &Desk, p: &Ink) -> El {
     let card = card(
         "onboarding-permissions",
@@ -138,6 +165,7 @@ pub(super) fn agents(desk: &Desk, p: &Ink) -> El {
                 .flex_wrap()
                 .justify_center()
                 .child(skill_card(desk, p))
+                .child(shim_card(desk, p))
                 .children(PERMISSIONS.then(|| permissions_card(desk, p))),
         )
 }

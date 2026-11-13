@@ -75,6 +75,7 @@ pub enum Migrate {
 enum Done {
     Skills(Result<Vec<AgentSkill>, String>),
     Installed(Result<Vec<AgentSkill>, String>),
+    Shimmed(Result<Vec<String>, String>),
     Permissions(Result<Permissions, String>),
     Opened(Result<Option<String>, String>),
     Prompt(Result<String, String>),
@@ -86,6 +87,9 @@ pub struct Onboarding {
     pub step: Step,
     pub skills: Probe<Vec<AgentSkill>>,
     pub installing: bool,
+    /// The agents now launching inside phux; `None` until asked (opt-in:
+    /// it edits the shell rc).
+    pub shims: Option<Probe<Vec<String>>>,
     pub permissions: Probe<Permissions>,
     pub grant_sheet: bool,
     /// The server's app, to drag into a privacy list.
@@ -109,6 +113,7 @@ impl Default for Onboarding {
             step: Step::Welcome,
             skills: Probe::Asking,
             installing: false,
+            shims: None,
             permissions: Probe::Asking,
             grant_sheet: false,
             bundle: None,
@@ -281,8 +286,9 @@ impl Desk {
         // ponytail: always this computer's server, even with the window on
         // another machine; a migration started then runs here, out of view.
         // `phux skill` never dials a server and refuses `--socket`.
+        // Neither do `agent install-shim`'s files.
         let mut argv: Vec<String> = match &self.launch.socket {
-            Ok(socket) if args.first() != Some(&"skill") => {
+            Ok(socket) if !matches!(args, ["skill", ..] | ["agent", "install-shim", ..]) => {
                 vec!["--socket".to_owned(), socket.display().to_string()]
             }
             _ => Vec::new(),
@@ -309,6 +315,17 @@ impl Desk {
         }
         self.ask(&["skill", "setup", "--json"], SLOW, |out| {
             Done::Installed(out.and_then(|b| words::parse_skills(&b)))
+        });
+    }
+
+    /// Make plain `claude`, `codex`, `opencode` and `pi` open inside phux.
+    pub fn install_shims(&mut self) {
+        if matches!(self.onboarding.shims, Some(Probe::Asking)) {
+            return;
+        }
+        self.onboarding.shims = Some(Probe::Asking);
+        self.ask(&["agent", "install-shim", "--all", "--json"], SLOW, |out| {
+            Done::Shimmed(out.and_then(|b| words::parse_shims(&b)))
         });
     }
 
@@ -406,6 +423,7 @@ impl Desk {
                         probe => self.onboarding.skills = probe,
                     }
                 }
+                Done::Shimmed(result) => self.onboarding.shims = Some(Probe::from(result)),
                 Done::Permissions(result) => {
                     self.onboarding.asking = false;
                     let probe = Probe::from(result);
@@ -454,121 +472,4 @@ impl Desk {
 }
 
 #[cfg(test)]
-mod tests {
-    use rune::prefs::Prefs;
-
-    use super::*;
-    use crate::launch::Resolved;
-
-    fn desk(prefs: Prefs) -> Desk {
-        let mut desk = Desk::new(&Resolved::offline("onboarding"));
-        desk.prefs = prefs;
-        desk.launch.aimed = false;
-        desk
-    }
-
-    fn skills(detected: &[&str]) -> Probe<Vec<AgentSkill>> {
-        Probe::Ready(
-            detected
-                .iter()
-                .map(|agent| AgentSkill {
-                    agent: (*agent).to_owned(),
-                    detected: true,
-                    ..AgentSkill::default()
-                })
-                .collect(),
-        )
-    }
-
-    #[test]
-    fn quitting_mid_way_resumes_at_the_step() {
-        let dir = std::env::temp_dir().join(format!("phux-rune-onb-{}", std::process::id()));
-        let file = dir.join("prefs.json");
-        let mut first = desk(Prefs::at(&file));
-        first.first_run();
-        assert!(first.onboarding.open);
-        assert_eq!(first.onboarding.step, Step::Welcome);
-        first.onboarding_continue();
-        first.onboarding_continue();
-        assert_eq!(first.onboarding.step, Step::Agents);
-        drop(first);
-
-        let mut again = desk(Prefs::at(&file));
-        again.first_run();
-        assert!(again.onboarding.open);
-        assert_eq!(
-            again.onboarding.step,
-            Step::Agents,
-            "picks up where it was left"
-        );
-        again.skip_onboarding();
-        drop(again);
-
-        let mut after = desk(Prefs::at(&file));
-        after.first_run();
-        assert!(!after.onboarding.open, "never opens on its own once done");
-        assert!(after.notice.is_some(), "the tour's tip instead");
-        after.open_onboarding();
-        assert_eq!(
-            after.onboarding.step,
-            Step::Welcome,
-            "reopening starts over"
-        );
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    #[test]
-    fn a_development_run_never_opens_it_on_its_own() {
-        let mut desk = desk(Prefs::memory());
-        desk.launch.aimed = true;
-        desk.first_run();
-        assert!(!desk.onboarding.open);
-    }
-
-    #[test]
-    fn bringing_your_setup_shows_only_with_an_agent() {
-        let mut desk = desk(Prefs::memory());
-        desk.open_onboarding();
-        desk.go_to(Step::Agents);
-        desk.onboarding.skills = skills(&["pi"]);
-        desk.onboarding_continue();
-        assert_eq!(desk.onboarding.step, Step::Done, "no agent to do it");
-        desk.onboarding_back();
-        assert_eq!(desk.onboarding.step, Step::Agents);
-        desk.onboarding.skills = skills(&["codex"]);
-        desk.onboarding_continue();
-        assert_eq!(desk.onboarding.step, Step::Migrate);
-        assert_eq!(desk.onboarding.migrators(), ["codex"]);
-    }
-
-    #[test]
-    fn keys_continue_step_back_and_skip() {
-        let key = |key| KeyEvent {
-            key,
-            mods: rune::Mods::default(),
-        };
-        let mut desk = desk(Prefs::memory());
-        desk.open_onboarding();
-        assert!(desk.onboarding_key(&key(Key::Enter)));
-        assert_eq!(desk.onboarding.step, Step::Look);
-        desk.open_grant_sheet();
-        assert!(desk.onboarding_key(&key(Key::Escape)));
-        assert!(
-            !desk.onboarding.grant_sheet,
-            "Escape closes the sheet first"
-        );
-        assert_eq!(desk.onboarding.step, Step::Look);
-        assert!(desk.onboarding_key(&key(Key::Escape)));
-        assert_eq!(desk.onboarding.step, Step::Welcome);
-        assert!(desk.onboarding_key(&key(Key::Escape)));
-        assert!(!desk.onboarding.open, "Escape on the first step skips");
-    }
-
-    #[test]
-    fn a_missing_command_reads_as_update_phux() {
-        let probe: Probe<()> = Probe::from(Err("error: unrecognized subcommand 'skill'".into()));
-        assert_eq!(probe, Probe::Unsupported);
-        let probe: Probe<()> = Probe::from(Err("timed out".into()));
-        assert_eq!(probe, Probe::Failed("timed out".into()));
-    }
-}
+mod tests;

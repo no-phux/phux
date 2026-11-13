@@ -1,21 +1,26 @@
-//! Install the `claude` adoption shim: plain `claude` becomes a phux session.
+//! Install the agent adoption shims: plain `claude` (or `codex`, `opencode`,
+//! `pi`) becomes a phux session.
 //!
 //! The shim is deliberately installed into a phux-owned directory and activated
-//! by one bounded shell-rc block. It never overwrites the real Claude binary.
+//! by one bounded shell-rc block. It never overwrites the real agent binary.
 
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
+mod agents;
 mod install;
 mod rc;
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod tests_agents;
 #[cfg(test)]
 mod tests_install;
 #[cfg(test)]
 mod tests_stream;
 mod wrapper;
 
+pub(super) use agents::{run_install_shim, run_uninstall_shim};
 pub(crate) use install::{atomic_write, installed_shim_path, installed_shim_schema};
 use install::{install_claude, uninstall_claude};
 

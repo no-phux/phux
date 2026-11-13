@@ -110,6 +110,7 @@ fn every_step_renders_its_parts() {
 
     let mut rt = window(Step::Agents);
     assert!(has(&rt, "onboarding-skill") && has(&rt, "onboarding-install"));
+    assert!(has(&rt, "onboarding-shims") && has(&rt, "onboarding-shim"));
     assert_eq!(
         has(&rt, "onboarding-permissions"),
         PERMISSIONS,

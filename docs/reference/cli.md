@@ -146,6 +146,8 @@ Commands:
   explain           Explain the evidence behind one pane's state.
   install-claude    Make plain `claude` launch inside phux and declare its
                     identity.
+  install-shim      Make plain agent commands (`claude`, `codex`, `opencode`,
+                    `pi`) launch inside phux.
   list              List every pane's detected or declared agent and current
                     state. [aliases: ls]
   log               Read a pane's agent session stream.
@@ -179,6 +181,8 @@ Commands:
                     --until TEXT` waits on it. Needs a server that advertises
                     `ACCESSIBILITY_TREE`.
   uninstall-claude  Remove the claude-in-phux shim and shell activation.
+  uninstall-shim    Remove agent shims; the shell rc block goes with the last
+                    one.
   usage             Show the AI plan limits this host can see.
   wait              Block until a pane's agent TRANSITIONS into a lifecycle
                     state.
@@ -581,6 +585,35 @@ Flags:
                        [possible values: zsh, bash, fish]
       --real <PATH>    Absolute path to the real Claude executable
                        (auto-detected from PATH).
+  -h, --help           Print help
+
+Global flags:
+      --socket <PATH>  Server socket to dial (default: `$PHUX_SOCKET`)
+```
+
+## `phux agent install-shim`
+
+```text
+Make plain agent commands (`claude`, `codex`, `opencode`, `pi`) launch inside
+phux.
+
+Claude gets the same hook-fed shim as `install-claude`. Codex, `OpenCode` and pi
+get a launch-only shim that declares the pane's agent identity; their state
+comes from phux's screen-detection rules. One-shot runs (`codex exec`, `opencode
+run`, `pi -p`, `--help`, piped I/O) go straight to the real binary. Every shim
+lives in `~/.local/share/phux/shims`, activated by one shell rc block.
+
+Usage: phux agent install-shim [FLAGS]
+
+Flags:
+      --agent <AGENT>  Only this agent (repeatable).
+                       [possible values: claude, codex, opencode, pi]
+      --all            Every agent installed on this machine; one not on `PATH`
+                       is skipped.
+      --shell <SHELL>  Shell rc file to activate (auto-detected from SHELL).
+                       [possible values: zsh, bash, fish]
+      --json           Print the per-agent result as JSON
+                       (`phux.agent-shims/v1`).
   -h, --help           Print help
 
 Global flags:
@@ -1574,6 +1607,24 @@ Remove the claude-in-phux shim and shell activation.
 Usage: phux agent uninstall-claude
 
 Flags:
+  -h, --help           Print help
+
+Global flags:
+      --socket <PATH>  Server socket to dial (default: `$PHUX_SOCKET`)
+```
+
+## `phux agent uninstall-shim`
+
+```text
+Remove agent shims; the shell rc block goes with the last one.
+
+Usage: phux agent uninstall-shim [--agent <AGENT>] [--json]
+
+Flags:
+      --agent <AGENT>  Only this agent (repeatable). Default: all of them.
+                       [possible values: claude, codex, opencode, pi]
+      --json           Print the per-agent result as JSON
+                       (`phux.agent-shims/v1`).
   -h, --help           Print help
 
 Global flags:

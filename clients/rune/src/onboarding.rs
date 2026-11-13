@@ -5,6 +5,7 @@
 //!
 //! - `phux skill setup|status --json`: per agent
 //!   `{agent, detected, skill:{path, state}, hook:{state, reason?}}`.
+//! - `phux agent install-shim --all --json`: per agent `{agent, state}`.
 //! - `phux server permissions --json`: `{bundle, responsible_path, permissions:[{service,
 //!   status}]}`, or the bare array.
 //! - `phux server permissions --open SERVICE`: prints the server's bundle.
@@ -181,6 +182,21 @@ pub fn parse_skills(bytes: &[u8]) -> Result<Vec<AgentSkill>, String> {
                 reason: string(&row["hook"], "reason"),
             })
         })
+        .collect())
+}
+
+/// The agents `phux agent install-shim --json` left launching inside phux.
+pub fn parse_shims(bytes: &[u8]) -> Result<Vec<String>, String> {
+    let value = json(bytes)?;
+    Ok(list(&value, &["agents"])
+        .iter()
+        .filter(|row| {
+            matches!(
+                row["state"].as_str(),
+                Some("installed" | "upgraded" | "reinstalled")
+            )
+        })
+        .filter_map(|row| string(row, "agent"))
         .collect())
 }
 
@@ -375,6 +391,16 @@ pub fn session_name(folder: &Path, taken: &[String]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn shims_name_only_the_agents_now_launching_in_phux() {
+        let out = br#"{"schema":"phux.agent-shims/v1","action":"install","agents":[
+            {"agent":"claude","state":"reinstalled"},
+            {"agent":"codex","state":"installed"},
+            {"agent":"opencode","state":"skipped","reason":"not on PATH"}]}"#;
+        assert_eq!(parse_shims(out).unwrap(), ["claude", "codex"]);
+        assert!(parse_shims(b"usage: phux agent").is_err());
+    }
 
     #[test]
     fn bringing_your_setup_is_skipped_without_an_agent() {

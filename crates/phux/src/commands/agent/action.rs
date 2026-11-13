@@ -345,15 +345,29 @@ pub(crate) enum AgentAction {
     },
     /// Make plain `claude` launch inside phux and declare its identity.
     InstallClaude {
-        /// Shell rc file to activate (auto-detected from SHELL).
-        #[usage(long, choices("zsh", "bash", "fish"))]
-        shell: Option<String>,
-        /// Absolute path to the real Claude executable (auto-detected from PATH).
-        #[usage(long, value_name = "PATH")]
-        real: Option<PathBuf>,
+        #[usage(flatten)]
+        flags: super::action_flags::InstallClaudeFlags,
     },
     /// Remove the claude-in-phux shim and shell activation.
     UninstallClaude,
+    /// Make plain agent commands (`claude`, `codex`, `opencode`, `pi`)
+    /// launch inside phux.
+    ///
+    /// Claude gets the same hook-fed shim as `install-claude`. Codex,
+    /// `OpenCode` and pi get a launch-only shim that declares the pane's
+    /// agent identity; their state comes from phux's screen-detection
+    /// rules. One-shot runs (`codex exec`, `opencode run`, `pi -p`,
+    /// `--help`, piped I/O) go straight to the real binary. Every shim lives
+    /// in `~/.local/share/phux/shims`, activated by one shell rc block.
+    InstallShim {
+        #[usage(flatten)]
+        flags: super::action_flags::InstallShimFlags,
+    },
+    /// Remove agent shims; the shell rc block goes with the last one.
+    UninstallShim {
+        #[usage(flatten)]
+        flags: super::action_flags::UninstallShimFlags,
+    },
     /// Show the AI plan limits this host can see.
     ///
     /// Reads each signed-in subscription's limit windows from the vendor's
