@@ -258,7 +258,9 @@ phux attach --remote mini --code 'https://phux.sh/connect?...'
 **The link is a secret.** Anyone who has it can connect. The token in it
 works until you revoke it, or until `--expires` if you set one. The
 enrollment ticket that comes with a QR code works once and expires after ten
-minutes. A printed or piped link needs `--enroll` to include one.
+minutes. A printed or piped link needs `--enroll` to include one. The token
+and ticket sit after the `#`, so a link opened in a browser never sends them
+to phux.sh. The phone app reads that form from version 0.4.83.
 
 `phux pair --qr` shows only the QR code, for pairing a phone without showing
 the token on screen. `phux pair --secret-file PATH` writes the link to a

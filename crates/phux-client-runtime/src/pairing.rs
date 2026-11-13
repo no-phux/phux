@@ -60,6 +60,11 @@ impl ConnectLink {
 
 /// Parse the exact known link prefixes, tolerating unknown additive query keys.
 ///
+/// The fields may continue after one `#`: `phux pair` puts the token and the
+/// enrollment ticket in the fragment, which a browser never sends to the site
+/// the link names. Older links carry them in the query. Query and fragment are
+/// one field list, so a field named in both is a duplicate.
+///
 /// Literal `+` stays `+` (this is a URI query, not HTML form encoding).
 /// Shell quoting and outer whitespace remain accepted for CLI pastes.
 ///
@@ -98,8 +103,8 @@ fn connect_query(link: &str) -> Result<&str, String> {
     if trimmed.chars().any(char::is_control) || trimmed.chars().any(char::is_whitespace) {
         return Err("connect code contains control characters or unescaped whitespace".into());
     }
-    if trimmed.contains('#') {
-        return Err("connect code must not contain an outer URI fragment".into());
+    if trimmed.matches('#').count() > 1 {
+        return Err("connect code must not contain more than one URI fragment".into());
     }
     [
         CONNECT_URI_PREFIX,
@@ -150,7 +155,7 @@ struct ConnectFields {
 fn parse_connect_fields(query: &str) -> Result<ConnectFields, String> {
     let mut fields = ConnectFields::default();
     let mut seen = HashSet::new();
-    for pair in query.split('&').filter(|pair| !pair.is_empty()) {
+    for pair in query.split(['&', '#']).filter(|pair| !pair.is_empty()) {
         let (key, raw) = pair
             .split_once('=')
             .ok_or("connect code field has no value")?;
@@ -375,9 +380,32 @@ mod tests {
         ] {
             assert!(parse_connect_link(&DIRECT.replace(CONNECT_URI_PREFIX, prefix)).is_err());
         }
-        for suffix in ["#fragment", "#", "\0", "&name=raw space", "&token=\nsecret"] {
+        for suffix in [
+            "#fragment",
+            "#token=again",
+            "#a=1#b=2",
+            "\0",
+            "&name=raw space",
+            "&token=\nsecret",
+        ] {
             assert!(parse_connect_link(&format!("{DIRECT}{suffix}")).is_err());
         }
+    }
+
+    #[test]
+    fn pairing_reads_secrets_from_the_fragment() {
+        let query = "https://phux.sh/connect?url=wss://mini:8787&fp=AB&enroll=ticket&token=t";
+        let fragment = "https://phux.sh/connect?url=wss://mini:8787&fp=AB#enroll=ticket&token=t";
+        let parsed = parse_connect_link(fragment).unwrap();
+        assert_eq!(parsed, parse_connect_link(query).unwrap());
+        assert_eq!(parsed.token, "t");
+        assert_eq!(parsed.enrollment_ticket.as_deref(), Some("ticket"));
+        assert_eq!(
+            parse_connect_link(&fragment.replace(CONNECT_URI_PREFIX, LEGACY_CONNECT_URI_PREFIX))
+                .unwrap(),
+            parsed
+        );
+        assert!(parse_connect_link("phux://connect#url=wss://mini:8787&token=t").is_err());
     }
 
     #[test]

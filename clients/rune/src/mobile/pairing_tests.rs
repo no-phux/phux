@@ -44,6 +44,14 @@ fn pairing_imports_current_phone_qr_without_merging_old_identity() {
             imported
         );
     }
+    // `phux pair` puts the secrets after `#`, out of the request a browser sends.
+    let fragment = phone_invite().replace("&token=", "#token=");
+    for prefix in ["https://phux.sh/connect", "phux-rune://connect"] {
+        assert_eq!(
+            parse_pairing_invite(&fragment.replace("https://phux.sh/connect", prefix)).unwrap(),
+            imported
+        );
+    }
 }
 
 #[test]
@@ -150,7 +158,8 @@ fn pairing_rejects_malformed_input_without_echoing_secrets() {
         "\0",
         "\n",
         "\t",
-        "#",
+        "#token=other",
+        "#a=1#b=2",
         "&token=other",
         "&t%6fken=other",
         "&name=duplicate",

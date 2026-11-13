@@ -24,6 +24,8 @@ pub(crate) use phux_client_runtime::pairing::{ConnectLink, parse_connect_link};
 
 #[cfg(test)]
 mod endpoint_tests;
+#[cfg(test)]
+mod link_tests;
 use phux_config::overlay::MagicDns;
 
 use usage::Subcommands;
@@ -142,7 +144,9 @@ fn build_relay_connect_link(
     link
 }
 
-/// Append the fields every link ends with, in the documented order.
+/// Append the fields every link ends with, in the documented order. The
+/// secrets (`enroll`, `token`) go after `#`: a browser never sends the
+/// fragment, so a link opened on the web page leaves them on the device.
 fn push_link_credentials(link: &mut String, name: Option<&str>, pins: ServerPins<'_>, token: &str) {
     if let Some(name) = name {
         link.push_str("&name=");
@@ -156,16 +160,18 @@ fn push_link_credentials(link: &mut String, name: Option<&str>, pins: ServerPins
         link.push_str("&ca=");
         link.push_str(ca);
     }
+    link.push('#');
     if let Some(ticket) = pins.enrollment {
-        link.push_str("&enroll=");
+        link.push_str("enroll=");
         link.push_str(ticket);
+        link.push('&');
     }
-    link.push_str("&token=");
+    link.push_str("token=");
     link.push_str(token);
 }
 
 /// Respell an https connect link with [`LEGACY_CONNECT_URI_PREFIX`], carrying
-/// the query byte-for-byte. `None` for anything else.
+/// the query and fragment byte-for-byte. `None` for anything else.
 fn legacy_connect_link(link: &str) -> Option<String> {
     link.strip_prefix(CONNECT_URI_PREFIX)
         .map(|query| format!("{LEGACY_CONNECT_URI_PREFIX}{query}"))
@@ -1690,7 +1696,7 @@ fn present_human_secret(secret: &HumanSecret<'_>) -> ExitCode {
         }
         if secret.qr {
             match secret.link {
-                Some(link) if print_camera_qr(link) => {}
+                Some(link) if print_camera_qr(link) => print_app_floor(),
                 Some(_) => failed = true,
                 None => {
                     warn!("pair: no connect link to render; nothing scannable was printed");
@@ -1790,13 +1796,26 @@ fn print_connect_link(link: &str) {
     outln!();
     // App builds without the Universal Link entitlement cannot claim the
     // https form and would open it in a browser; the custom-scheme spelling
-    // of the same credentials reaches them. Same secret, same query.
+    // of the same credentials reaches them. Same secret, same query and fragment.
     if let Some(legacy) = legacy_connect_link(link) {
         outln!("Same link for app builds that predate Universal Link support:");
         outln!("  {legacy}");
         outln!();
     }
+    print_app_floor();
 }
+
+/// The link keeps its secrets after `#` (#2396); app builds older than this
+/// read only the query and refuse it as malformed. Say so where it is seen.
+fn print_app_floor() {
+    outln!(
+        "The phone app needs version {MIN_FRAGMENT_APP} or newer to read this link; an older one says \"not a phux link\" until it is updated."
+    );
+    outln!();
+}
+
+/// The first phux iOS and Android release that reads secrets from the fragment.
+const MIN_FRAGMENT_APP: &str = "0.4.83";
 
 fn print_camera_qr(link: &str) -> bool {
     let columns = stdout_columns();
@@ -2215,7 +2234,7 @@ mod tests {
         // url + token are the floor.
         assert_eq!(
             build_connect_link("wss://h:1", None, None, None, "deadbeef"),
-            "https://phux.sh/connect?url=wss://h:1&token=deadbeef"
+            "https://phux.sh/connect?url=wss://h:1#token=deadbeef"
         );
         // Full house, in the order the mobile parser documents.
         assert_eq!(
@@ -2226,12 +2245,12 @@ mod tests {
                 Some("AB:CD"),
                 "deadbeef"
             ),
-            "https://phux.sh/connect?url=wss://10.0.0.2:8787&quic=quic://10.0.0.2:8788&name=mini&fp=AB:CD&token=deadbeef"
+            "https://phux.sh/connect?url=wss://10.0.0.2:8787&quic=quic://10.0.0.2:8788&name=mini&fp=AB:CD#token=deadbeef"
         );
         // No fingerprint — the fp param is absent, not empty.
         assert_eq!(
             build_connect_link("wss://h:1", None, Some("mini"), None, "deadbeef"),
-            "https://phux.sh/connect?url=wss://h:1&name=mini&token=deadbeef"
+            "https://phux.sh/connect?url=wss://h:1&name=mini#token=deadbeef"
         );
     }
 
@@ -2242,7 +2261,7 @@ mod tests {
         assert_eq!(percent_encode("a&b=c"), "a%26b%3Dc");
         assert_eq!(
             build_connect_link("wss://h:1", None, Some("studio mini"), None, "aa"),
-            "https://phux.sh/connect?url=wss://h:1&name=studio%20mini&token=aa"
+            "https://phux.sh/connect?url=wss://h:1&name=studio%20mini#token=aa"
         );
     }
 
@@ -2444,7 +2463,7 @@ mod tests {
         assert_eq!(
             link,
             "https://phux.sh/connect?url=wss://studio.tail9a8b.ts.net:8787\
-             &quic=quic://studio.tail9a8b.ts.net:8788&name=studio&fp=AB:CD&token=deadbeef"
+             &quic=quic://studio.tail9a8b.ts.net:8788&name=studio&fp=AB:CD#token=deadbeef"
         );
         let parsed = parse_connect_link(&link).expect("parse");
         assert_eq!(
@@ -2701,52 +2720,6 @@ mod tests {
     }
 
     #[test]
-    fn renders_a_nonempty_qr_for_a_realistic_payload() {
-        // A real 32-byte hex token + SHA-256 fingerprint is well within QR
-        // capacity; the renderer must produce non-empty half-block art.
-        let link = build_connect_link(
-            "wss://100.64.0.2:8787",
-            Some("quic://100.64.0.2:8788"),
-            Some("mini"),
-            Some("CD:".repeat(31).trim_end_matches(':')),
-            &"ab".repeat(32),
-        );
-        let art = super::render_qr_scaled(&link, 1).expect("QR should encode");
-        assert!(!art.is_empty(), "QR render must be non-empty");
-        // Dense1x2 uses half-block glyphs; at least one must appear.
-        assert!(
-            art.chars().any(|c| matches!(c, '█' | '▀' | '▄' | ' ')),
-            "QR render must contain half-block glyphs",
-        );
-    }
-
-    #[test]
-    fn a_larger_qr_is_wider_and_the_scale_stays_inside_the_terminal() {
-        let link = build_connect_link(
-            "wss://100.64.0.2:8787",
-            None,
-            Some("studio"),
-            Some("AB:CD"),
-            &"ab".repeat(32),
-        );
-        let small = super::render_qr_scaled(&link, 1).expect("scale 1");
-        let large = super::render_qr_scaled(&link, 2).expect("scale 2");
-        let width = |art: &str| {
-            art.lines()
-                .map(|line| line.chars().count())
-                .max()
-                .unwrap_or(0)
-        };
-        assert_eq!(width(&large), width(&small) * 2);
-        let columns = u16::try_from(width(&small)).unwrap();
-        assert_eq!(super::qr_scale_that_fits(&link, columns), 1);
-        assert_eq!(
-            super::qr_scale_that_fits(&link, columns.saturating_mul(2)),
-            2
-        );
-    }
-
-    #[test]
     fn camera_and_secret_file_output_omit_the_bearer() {
         use std::os::unix::fs::PermissionsExt;
         let token = "ab".repeat(32);
@@ -2830,7 +2803,7 @@ mod tests {
         assert_eq!(
             link,
             format!(
-                "https://phux.sh/connect?url=wss://100.64.0.2:8787&fp=AB:CD&ca={authority}&token=deadbeef"
+                "https://phux.sh/connect?url=wss://100.64.0.2:8787&fp=AB:CD&ca={authority}#token=deadbeef"
             )
         );
         let parsed = parse_connect_link(&link).expect("parse");
@@ -2914,7 +2887,7 @@ mod tests {
         let legacy = legacy_connect_link(&link).expect("built links always respell");
         assert_eq!(
             legacy,
-            "phux://connect?url=wss://mini:8787&name=studio%20mini&fp=AB:CD&token=tok"
+            "phux://connect?url=wss://mini:8787&name=studio%20mini&fp=AB:CD#token=tok"
         );
         assert_eq!(
             parse_connect_link(&legacy).expect("legacy parse"),
@@ -3016,7 +2989,7 @@ mod tests {
         assert_eq!(
             link,
             "https://phux.sh/connect?quic=quic://relay.example:4433&sni=mini-route\
-             &name=mini%20box&fp=AB:CD&token=deadbeef"
+             &name=mini%20box&fp=AB:CD#token=deadbeef"
         );
         let parsed = parse_connect_link(&link).expect("parse");
         assert_eq!(parsed.url, None);

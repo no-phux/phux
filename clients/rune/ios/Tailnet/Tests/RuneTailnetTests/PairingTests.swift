@@ -117,11 +117,13 @@ final class PairingTests: XCTestCase {
         let link = try PairingDocument.link(json: document(["connect_link": good]), peer: peer)
         XCTAssertTrue(link.contains("fp=from-link"))
         XCTAssertFalse(link.contains("wss"))
+        let fragment = good.replacingOccurrences(of: "&enroll=", with: "#enroll=")
+        XCTAssertEqual(try PairingDocument.link(json: document(["connect_link": fragment]), peer: peer), link)
         for bad in [
             good.replacingOccurrences(of: "mini.example.ts.net", with: "attacker.test"),
             good.replacingOccurrences(of: "100.64.1.2", with: "100.64.1.3"),
             good.replacingOccurrences(of: "https://phux.sh", with: "https://attacker.test"),
-            good + "&token=duplicate", good + "#fragment", good + "&sni=relay"
+            good + "&token=duplicate", good + "#fragment", good + "#token=duplicate", good + "&sni=relay"
         ] {
             XCTAssertThrowsError(try PairingDocument.link(json: document(["connect_link": bad]), peer: peer))
         }

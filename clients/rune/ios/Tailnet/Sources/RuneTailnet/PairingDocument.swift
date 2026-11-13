@@ -46,8 +46,12 @@ struct PairingDocument: Decodable {
 
     private static func fields(_ link: String?) throws -> [String: String] {
         guard let link else { return [:] }
+        // `phux pair` puts the token and ticket after `#`; older hosts put them
+        // in the query. One field list, so a field named in both is refused.
         guard let parts = canonicalConnectURL(link),
-              let items = parts.queryItems, !items.isEmpty
+              case let items = (parts.queryItems ?? []) + (parts.percentEncodedFragment
+                  .flatMap { URLComponents(string: "?" + $0)?.queryItems } ?? []),
+              !items.isEmpty
         else { throw TailnetPairingError.invalidPairing }
         let allowed: Set<String> = ["url", "quic", "name", "fp", "ca", "enroll", "token"]
         var result: [String: String] = [:]
@@ -63,7 +67,7 @@ struct PairingDocument: Decodable {
     private static func canonicalConnectURL(_ link: String) -> URLComponents? {
         guard link.utf8.count <= 65_536, let parts = URLComponents(string: link) else { return nil }
         guard parts.scheme == "https", parts.host == "phux.sh", parts.path == "/connect",
-              parts.user == nil, parts.password == nil, parts.port == nil, parts.fragment == nil
+              parts.user == nil, parts.password == nil, parts.port == nil
         else { return nil }
         return parts
     }
