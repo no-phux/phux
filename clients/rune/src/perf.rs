@@ -11,10 +11,12 @@
 //! add per sample. Three environment variables read it out, none on by
 //! default: `RUNE_PERF_HUD` draws a line over the terminal area,
 //! `RUNE_PERF_JSON=FILE` keeps a report in `FILE`, and `RUNE_PERF_DIR=DIR`
-//! records every frame's timing there with `rune-perf`.
+//! records every frame's timing there with `rune-perf`. `PHUX_ECHO_HOPS`
+//! adds Rune's hops to the keystroke-echo trace (DEVELOP.md).
 
 use std::path::PathBuf;
 use std::sync::LazyLock;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 use phux_perf::{Counter, Histogram, Metric, Unit};
@@ -77,30 +79,54 @@ pub fn report_to_file() {
     });
 }
 
-/// The `rune-perf` recorder `RUNE_PERF_DIR` asks for, and the hook that feeds
-/// it each frame.
-pub fn frame_recorder() -> Option<impl FnMut(&FrameEncoded) + 'static> {
-    let directory = path_from("RUNE_PERF_DIR")?;
-    let config = rune_perf::Config::new(directory, "phux-rune").build(crate::updates::VERSION);
-    let recorder = match rune_perf::Recorder::start(config) {
-        Ok(recorder) => recorder,
-        Err(error) => {
-            eprintln!("RUNE_PERF_DIR: {error}");
-            return None;
-        }
-    };
+/// The focused pane's last built publication, and whether a frame has
+/// drawn it yet: the keystroke-echo trace's `build` and `stdout` hops.
+static BUILT_SEQ: AtomicU64 = AtomicU64::new(u64::MAX);
+static UNDRAWN: AtomicBool = AtomicBool::new(false);
+
+/// The focused pane built a frame: `build` when it carries a publication
+/// the last build didn't, so a cursor blink is not an echo.
+pub fn built(last_seq: u64) {
+    if BUILT_SEQ.swap(last_seq, Ordering::Relaxed) != last_seq {
+        phux_perf::echo_hop::record("build");
+        UNDRAWN.store(true, Ordering::Relaxed);
+    }
+}
+
+/// The hook for every frame the window ran: `stdout` once a drawn frame
+/// shows the last `build` (window: right after present; headless: after
+/// submit), and the `rune-perf` recorder `RUNE_PERF_DIR` asks for.
+pub fn frame_hook() -> Option<impl FnMut(&FrameEncoded) + 'static> {
+    let hops = phux_perf::echo_hop::enabled();
+    let recorder = frame_recorder();
+    if !hops && recorder.is_none() {
+        return None;
+    }
     Some(move |frame: &FrameEncoded| {
         let outcome = match frame.outcome() {
             FrameOutcome::Drawn => rune_perf::Outcome::Drawn,
             FrameOutcome::Unchanged => rune_perf::Outcome::Unchanged,
             _ => rune_perf::Outcome::Skipped,
         };
-        recorder.record(
-            rune_perf::Frame::new(1, frame.seq(), outcome)
-                .update_ms(frame.update_ms())
-                .render_ms(frame.encode_ms()),
-        );
+        if hops && outcome == rune_perf::Outcome::Drawn && UNDRAWN.swap(false, Ordering::Relaxed) {
+            phux_perf::echo_hop::record("stdout");
+        }
+        if let Some(recorder) = &recorder {
+            recorder.record(
+                rune_perf::Frame::new(1, frame.seq(), outcome)
+                    .update_ms(frame.update_ms())
+                    .render_ms(frame.encode_ms()),
+            );
+        }
     })
+}
+
+fn frame_recorder() -> Option<rune_perf::Recorder> {
+    let directory = path_from("RUNE_PERF_DIR")?;
+    let config = rune_perf::Config::new(directory, "phux-rune").build(crate::updates::VERSION);
+    rune_perf::Recorder::start(config)
+        .inspect_err(|error| eprintln!("RUNE_PERF_DIR: {error}"))
+        .ok()
 }
 
 /// What the last view build came to, for `RUNE_PERF_HUD`. It redraws only

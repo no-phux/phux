@@ -12,6 +12,7 @@ use rune::Tx;
 use super::{Desk, NoticeKind, Pending};
 use crate::keys::{self, Shortcut, Typed};
 
+mod echo;
 mod modal;
 pub(super) mod selection;
 pub use modal::Modal;
@@ -79,6 +80,7 @@ impl Desk {
             self.modifiers_changed(event.mods.cmd);
             return false;
         }
+        phux_perf::echo_hop::record("stdin");
         let action = keys::shortcut(&event.key, event.mods, tx.physical_key());
         if let Some(modal) = self.modal() {
             self.modal_key(modal, event, action, tx);
@@ -209,6 +211,13 @@ impl Desk {
         });
         if !sent {
             return self.say(NoticeKind::Error, INPUT_PAUSED);
+        }
+        phux_perf::echo_hop::record("send");
+        // Only this computer's server echoes inside the wait; a remote
+        // one would stall every key for nothing.
+        let local = self.machines.current.is_none() && self.native.is_none();
+        if let Some(before) = frame.as_ref().filter(|_| local) {
+            echo::await_echo(&client, view, before);
         }
         self.nudge_typing(&client);
         self.reclaim_fits();
