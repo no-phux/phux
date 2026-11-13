@@ -6,7 +6,7 @@ import { git } from "../lib/git.ts";
 import { inherit } from "../lib/process.ts";
 import { ROOT } from "../lib/repo.ts";
 import { Classifier, toOutputs, type Classification } from "./classify.ts";
-import { classifyEvent, detect, diffPaths } from "./detect.ts";
+import { classifyDetection, classifyEvent, detect, diffPaths } from "./detect.ts";
 import { checkMerge } from "./merge-check.ts";
 import {
   CI_ONLY,
@@ -89,7 +89,7 @@ export const commands: Record<string, Command> = {
       const eventPath = process.env["GITHUB_EVENT_PATH"];
       const repository = process.env["GITHUB_REPOSITORY"] ?? "";
       const detection = detect(event, eventPath);
-      const c = classifyEvent(event, eventPath);
+      const c = classifyDetection(detection);
       // A merge group is main's tree before it lands: main policy.
       const queued = event === "pull_request" && process.env["PHUX_MERGE_QUEUE"] === "true";
       const scope: PathScope =

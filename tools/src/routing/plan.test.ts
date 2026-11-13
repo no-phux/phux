@@ -38,9 +38,8 @@ function lanes(
 test.each<[string[], Trigger, Lane[]]>([
   [["docs/RELEASING.md"], "pull_request", ["guards"]],
   [["docs/RELEASING.md"], "push", ["guards", "icount", "native"]],
-  // ci.yml is the native setup job, so that lane runs. icount stays off until
-  // main: this file is not a bench source and the pull request has no label.
-  [[".github/workflows/ci.yml"], "pull_request", LANES.filter((lane) => lane !== "icount")],
+  // ci.yml defines both jobs, so a pull request that edits it runs every lane.
+  [[".github/workflows/ci.yml"], "pull_request", [...LANES]],
   [[".github/workflows/release.yml"], "pull_request", ["guards"]],
   [[".github/ISSUE_TEMPLATE/bug.yml"], "pull_request", ["guards"]],
   [["clients/rune/src/main.rs"], "pull_request", ["guards", "rune"]],
@@ -141,14 +140,23 @@ describe("native setup and rust icount", () => {
   test("the native setup list is the job's scripts, the files they read, and ci.yml", () => {
     expect([...NATIVE_SETUP_PATHS]).toEqual([
       ".github/workflows/ci.yml",
+      "Cargo.toml",
+      "Cargo.lock",
+      ".cargo/**",
       "rust-toolchain.toml",
       "mise.toml",
       ".config/zig-toolchain.json",
       "clients/phux-web/Cargo.toml",
+      "crates/**/build.rs",
+      "crates/**/*.c",
+      "crates/**/*.h",
+      "crates/**/*.ld",
+      "crates/**/*.lds",
       "scripts/test-dev-setup.sh",
       "scripts/setup-rust.sh",
       "scripts/install-zig.sh",
       "scripts/native-smoke.sh",
+      "scripts/test-env-runner.sh",
       "scripts/doctor.sh",
       "scripts/check-docs.sh",
       "scripts/build-vt-wasm.sh",
@@ -164,6 +172,10 @@ describe("native setup and rust icount", () => {
       "benchmarks/icount-baseline.json",
       "crates/phux-server/benches/icount.rs",
       "crates/phux-terminal/benches/terminal_icount.rs",
+      "scripts/ci/perf-icount.sh",
+      "just/perf.just",
+      "tools/src/perf/**",
+      ".github/workflows/ci.yml",
     ]);
   });
 
@@ -171,7 +183,38 @@ describe("native setup and rust icount", () => {
     expect(lanes(["docs/RELEASING.md"], "pull_request")).toEqual(["guards"]);
     expect(lanes(["crates/phux-server/src/lib.rs"], "pull_request")).not.toContain("icount");
     expect(lanes(["crates/phux-server/src/lib.rs"], "pull_request")).not.toContain("native");
-    expect(lanes(["Cargo.toml"], "pull_request")).not.toContain("native");
+  });
+
+  test("Cargo.lock, the root Cargo.toml, .cargo, and the test env runner trigger native setup on a pull request", () => {
+    for (const path of [
+      "Cargo.lock",
+      "Cargo.toml",
+      ".cargo/config.toml",
+      ".cargo/nested/config.toml",
+      "scripts/test-env-runner.sh",
+    ]) {
+      expect(lanes([path], "pull_request")).toContain("native");
+    }
+  });
+
+  test("a pull request touching only a crate C file runs native setup", () => {
+    expect(lanes(["crates/phux/src/term.c"], "pull_request")).toContain("native");
+    expect(lanes(["crates/phux/include/phux.h"], "pull_request")).toContain("native");
+    expect(lanes(["crates/phux/link.ld"], "pull_request")).toContain("native");
+    expect(lanes(["crates/phux/link.lds"], "pull_request")).toContain("native");
+  });
+
+  test("a pull request touching only a crate build.rs runs native setup", () => {
+    expect(lanes(["crates/phux/build.rs"], "pull_request")).toContain("native");
+  });
+
+  test("a pull request touching only a crate Cargo.toml skips native setup", () => {
+    expect(lanes(["crates/phux-protocol/Cargo.toml"], "pull_request")).not.toContain("native");
+    expect(lanes(["crates/phux/Cargo.toml"], "pull_request")).not.toContain("native");
+    expect(lanes(["crates/phux-protocol/Cargo.toml"], "push")).toContain("native");
+    expect(lanes(["crates/phux-protocol/Cargo.toml"], triggerFor("merge_group"))).toContain(
+      "native",
+    );
   });
 
   test("a pull request that changes a native-setup input runs native setup only", () => {
@@ -182,10 +225,18 @@ describe("native setup and rust icount", () => {
     expect(lanes(["scripts/lib/dev-toolchain.sh"], "pull_request")).toContain("native");
   });
 
-  test("a pull request that changes a baseline or bench file runs icount", () => {
-    for (const path of ICOUNT_PR_PATHS) {
-      const chosen = lanes([path], "pull_request");
-      expect(chosen).toContain("icount");
+  test("a pull request that changes a baseline, bench, or icount harness runs icount", () => {
+    for (const path of [
+      "benchmarks/icount-baseline.json",
+      "crates/phux-server/benches/icount.rs",
+      "crates/phux-terminal/benches/terminal_icount.rs",
+      "scripts/ci/perf-icount.sh",
+      "just/perf.just",
+      "tools/src/perf/icount.ts",
+      "tools/src/perf/nested/extra.ts",
+      ".github/workflows/ci.yml",
+    ]) {
+      expect(lanes([path], "pull_request")).toContain("icount");
     }
     // The baseline is not a setup input, so native setup stays off.
     expect(lanes(["benchmarks/icount-baseline.json"], "pull_request")).not.toContain("native");

@@ -64,13 +64,17 @@ export function eventHasLabel(event: unknown, label: string): boolean {
 /**
  * Files the `native setup` job actually executes or reads.
  *
- * Derived from `.github/workflows/ci.yml`'s `native` job, not from the broader
- * `native` surface. That job is a clean machine: it runs `test-dev-setup.sh`,
- * `setup-rust.sh`, `install-zig.sh`, and `native-smoke.sh`, and those scripts
- * source or copy the rest of this list. `native-smoke.sh` also compiles
- * `phux-core`, `phux-protocol`, `phux`, and `phux-mcp`; those crate inputs are
- * not listed here. A pull request that only changes them is covered by the
- * Rust lanes, and merge_group and main still run this job.
+ * Derived from `.github/workflows/ci.yml`'s `native` job. That job is a clean
+ * machine: apt, `setup-rust.sh` (rustup), and `install-zig.sh`, then
+ * `native-smoke.sh`. It does not use Nix. The Nix Rust lanes do not cover
+ * these inputs.
+ *
+ * `native-smoke.sh` compiles with that rustup toolchain, so the lock, the
+ * root manifest, `.cargo`, and crate build scripts, C sources, headers, and
+ * linker scripts are inputs. A crate `Cargo.toml` is not: `Cargo.lock` is
+ * what moves dependencies. `cargo test` on that machine runs
+ * `scripts/test-env-runner.sh` through `.cargo/config.toml`. Merge groups and
+ * main always run the job.
  *
  * `scripts/lib/apple-toolchain-env.sh` is copied into the setup fixture and
  * never sourced. The copy fails if the file is gone, so it stays on the list.
@@ -79,14 +83,23 @@ export function eventHasLabel(event: unknown, label: string): boolean {
  */
 export const NATIVE_SETUP_PATHS = [
   ".github/workflows/ci.yml",
+  "Cargo.toml",
+  "Cargo.lock",
+  ".cargo/**",
   "rust-toolchain.toml",
   "mise.toml",
   ".config/zig-toolchain.json",
   "clients/phux-web/Cargo.toml",
+  "crates/**/build.rs",
+  "crates/**/*.c",
+  "crates/**/*.h",
+  "crates/**/*.ld",
+  "crates/**/*.lds",
   "scripts/test-dev-setup.sh",
   "scripts/setup-rust.sh",
   "scripts/install-zig.sh",
   "scripts/native-smoke.sh",
+  "scripts/test-env-runner.sh",
   "scripts/doctor.sh",
   "scripts/check-docs.sh",
   "scripts/build-vt-wasm.sh",
@@ -100,16 +113,22 @@ export const NATIVE_SETUP_PATHS = [
 ] as const;
 
 /**
- * Bench sources and the baseline `rust icount` compares. The job builds
- * `phux-server`'s `icount` bench and `phux-terminal`'s `terminal_icount` bench
- * (`scripts/ci/perf-icount.sh`) and reads `benchmarks/icount-baseline.json`.
- * A pull request runs the job when one of these changes. Other hot-path edits
- * wait for merge_group and main, which always run it.
+ * Bench sources, the baseline, and the harness `rust icount` runs. The job
+ * builds `phux-server`'s `icount` bench and `phux-terminal`'s `terminal_icount`
+ * bench through `scripts/ci/perf-icount.sh` (`just perf-icount`) and compares
+ * them to `benchmarks/icount-baseline.json`. A pull request also runs the job
+ * when `ci.yml` changes or the PR has the `perf-baseline` label. Adding that
+ * label does not start a run; the next push does. Other hot-path edits wait
+ * for merge_group and main, which always run the job.
  */
 export const ICOUNT_PR_PATHS = [
   "benchmarks/icount-baseline.json",
   "crates/phux-server/benches/icount.rs",
   "crates/phux-terminal/benches/terminal_icount.rs",
+  "scripts/ci/perf-icount.sh",
+  "just/perf.just",
+  "tools/src/perf/**",
+  ".github/workflows/ci.yml",
 ] as const;
 
 /** What the diff is, for the two lanes a pull request may deliberately skip. */

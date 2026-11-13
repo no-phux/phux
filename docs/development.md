@@ -301,9 +301,10 @@ without all its locks keeps normal routing.
 
 `main` pushes and merge queue groups (`merge_group`) run main policy: the
 full Rust pool, every lane the diff needs, and always `native setup` and
-`rust icount`. A pull request runs `native setup` only for that job's own
-inputs and `rust icount` only for its baseline, its two bench sources, or
-the `perf-baseline` label. The `ci` aggregate accepts that deliberate skip
+`rust icount`. A pull request runs `native setup` for that job's inputs,
+including crate build scripts and C or linker sources, and `rust icount`
+for its baseline, benches, harness, or a push after the `perf-baseline`
+label. The `ci` aggregate accepts that deliberate skip
 on a pull request and rejects it on a merge group or `main` push. A `main`
 push whose tree a pull request or merge group already validated with the
 same lanes reuses that receipt (`tools/src/routing/receipt.ts`) and still
@@ -328,9 +329,8 @@ reference. `just guards` lints them.
 paths (VT apply, frame encode and decode, agent stream append, kernel
 history slice, PTY batch copy, one organization commit) and fails the
 `rust icount` CI lane when a count rises more than five percent over
-`benchmarks/icount-baseline.json`. A pull request runs it for that file,
-the two icount benches, or the `perf-baseline` label; merge groups and
-`main` always run it. Run it inside `nix develop` on x86_64;
+`benchmarks/icount-baseline.json`. The CI section says when the lane runs.
+Run it inside `nix develop` on x86_64;
 counts from another libc or architecture are not comparable.
 
 To accept a new baseline, run `just perf-icount --update` there, commit the
