@@ -17,12 +17,20 @@
 # it with post-keys.swift, which needs the Accessibility permission. The
 # window takes focus for the run; `stdout` is then the frame's present.
 #
-# Usage: rune-echo.sh [--window] PHUX_BIN RUNE_BIN [KEYS] [GAP_MS] [FPS]
+# --photon (macOS) also opens a window, and times each key from its post to
+# the changed pixels on screen with key-photon.swift, then does the same to
+# Ghostty (/Applications/Ghostty.app) running the same shell at the same
+# font size, on the same display. Needs Screen Recording and Accessibility,
+# an unlocked screen, and both windows uncovered for the run.
+#
+# Usage: rune-echo.sh [--window|--photon] PHUX_BIN RUNE_BIN [KEYS] [GAP_MS] [FPS]
 # PHUX_ECHO_FAST=0 is passed through for a before/after of the server's
 # fast paths. Prints the trace's path and keeps the scratch directory.
 set -euo pipefail
 WINDOW=0
+PHOTON=0
 if [[ ${1:-} == --window ]]; then WINDOW=1; shift; fi
+if [[ ${1:-} == --photon ]]; then WINDOW=1; PHOTON=1; shift; fi
 PHUX_BIN=$1; RUNE_BIN=$2; KEYS=${3:-200}; GAP_MS=${4:-120}; FPS=${5:-1000}
 HERE=$(cd "$(dirname "$0")" && pwd)
 abs() { case $1 in /*) echo "$1" ;; *) echo "$(pwd)/$1" ;; esac; }
@@ -46,14 +54,27 @@ for _ in $(seq 1 150); do [[ -S $SOCK ]] && break; sleep 0.1; done
 [[ -S $SOCK ]] || { echo "server never listened: $(cat "$H/server.log")" >&2; exit 1; }
 
 if [[ $WINDOW == 1 ]]; then
-    swiftc -O "$HERE/post-keys.swift" -o "$H/post-keys"
+    TOOL=post-keys
+    [[ $PHOTON == 1 ]] && TOOL=key-photon
+    swiftc -O "$HERE/$TOOL.swift" -o "$H/$TOOL"
     "${ISO[@]}" "$RUNE_BIN" --socket "$SOCK" --session bench >"$H/rune.log" 2>&1 &
     RUNE=$!
     trap 'kill "$RUNE" "$SRV" 2>/dev/null || true; wait "$RUNE" "$SRV" 2>/dev/null || true' EXIT
     # Attach and draw the prompt first.
     sleep 3
-    "$H/post-keys" "$RUNE" "$KEYS" "$GAP_MS"
+    "$H/$TOOL" "$RUNE" "$KEYS" "$GAP_MS"
     sleep 0.5
+    kill "$RUNE" 2>/dev/null || true
+    if [[ $PHOTON == 1 ]]; then
+        # The same shell and prompt at Rune's default 13 pt, without the
+        # user's config; a blinking cursor would read as an echo.
+        "${ISO[@]}" /Applications/Ghostty.app/Contents/MacOS/ghostty --config-default-files=false \
+            --font-size=13 --cursor-style-blink=false --command=/bin/sh >"$H/ghostty.log" 2>&1 &
+        GHOSTTY=$!
+        trap 'kill "$GHOSTTY" "$SRV" 2>/dev/null || true; wait "$GHOSTTY" "$SRV" 2>/dev/null || true' EXIT
+        sleep 3
+        "$H/$TOOL" "$GHOSTTY" "$KEYS" "$GAP_MS"
+    fi
     python3 "$HERE/echo-hops.py" "$TRACE"
     echo "trace: $TRACE"
     exit 0

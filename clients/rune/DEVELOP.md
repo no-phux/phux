@@ -94,15 +94,22 @@ echo wait below, for a before/after with one build.
 
 A key runs inside a frame that Rune presents, so an echo that lands after
 it waits for the display's next opportunity, a refresh or more. The key's
-frame therefore holds up to 4 ms for the runtime's next publication
-(`desk/input/echo.rs`), and a local server's echo draws in that same frame.
+frame therefore holds up to 4 ms for the view's next publication, woken by
+the runtime's publish rather than polling (`desk/input/echo.rs`,
+`TerminalPublication::wait_past`), and a local server's echo draws in that
+same frame.
 
-The trace stops at the present. Photons need a camera: a high-speed camera
-(240 fps or more) on the keyboard and screen, or a Typometer-style tool that
-injects a key and watches the screen's pixels, run against Rune and a
-native terminal on the same display, with the same font size, shell and
-prompt. Compare medians over 100 or more keys; the refresh rate bounds the
-resolution of any such test.
+The trace stops at the present. `just perf-rune-photon` (or
+`rune-echo.sh --photon`) goes on to the screen: `key-photon.swift` posts
+each key to the window's process with `CGEvent.postToPid`, so nothing else
+receives it, watches that window's pixels with ScreenCaptureKit at the
+display's refresh rate, and prints key-to-changed-pixels p50 and p99, for
+Rune and then for Ghostty running the same shell at the same font size on
+the same display. It needs the Screen Recording and Accessibility
+permissions for the app that runs it, an unlocked screen with the display
+awake, and both windows uncovered. The display's scanout and panel response
+come after the captured frame and are the same for both apps; every number
+rounds up to a refresh interval, so compare medians over 100 or more keys.
 
 On macOS, notifications need the signed bundle (`rune_notify::available`);
 `cargo run` can't post, and Settings says so. On Linux any build posts while
