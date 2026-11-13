@@ -24,6 +24,7 @@ mod links;
 mod machines;
 pub mod mobile;
 mod onboarding;
+mod pair;
 mod palette;
 mod paths;
 mod perf;

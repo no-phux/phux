@@ -113,6 +113,7 @@ every_shortcut!(
     CheckForUpdates,
     InstallUpdate,
     Machines,
+    PairPhone,
     RetryConnection,
     CopyDiagnostics,
     ToggleFullScreen,

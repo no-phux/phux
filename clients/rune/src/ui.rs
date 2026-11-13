@@ -17,6 +17,7 @@ mod machines;
 mod news;
 mod onboarding;
 mod overlay;
+mod pair;
 mod palette;
 mod panes;
 pub(crate) use panes::DIVIDER;

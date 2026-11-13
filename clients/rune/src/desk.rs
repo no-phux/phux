@@ -432,7 +432,7 @@ impl Desk {
             | self.tick_fleet()
             | self.pump_link()
             | self.pump_links()
-            | self.follow_omarchy()
+            | self.pump_settings(tx)
             | self.pump_onboarding(tx)
             | self.expire_notice(tx);
         let Some(client) = self.client.clone() else {

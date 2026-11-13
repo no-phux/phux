@@ -25,7 +25,7 @@ const FIRST: [Shortcut; 12] = [
 ];
 
 /// What needs a desktop's window, sidebar, updater or keyboard.
-const DESKTOP: [Shortcut; 9] = [
+const DESKTOP: [Shortcut; 10] = [
     Shortcut::Popup,
     Shortcut::ToggleSidebar,
     Shortcut::ToggleFullScreen,
@@ -35,6 +35,7 @@ const DESKTOP: [Shortcut; 9] = [
     Shortcut::CheckForUpdates,
     Shortcut::InstallUpdate,
     Shortcut::InsertPath,
+    Shortcut::PairPhone,
 ];
 
 /// A command's row with no chord beside it. A native phone pairs with one

@@ -16,13 +16,14 @@ pub(super) enum Entry {
     OptionMeta,
     Notifications,
     Hosts,
+    PairPhone,
     Diagnostics,
     GetStarted,
     Updates,
 }
 
 impl Entry {
-    const ALL: [Self; 11] = [
+    const ALL: [Self; 12] = [
         Self::Theme,
         Self::TextSize,
         Self::Font,
@@ -31,6 +32,7 @@ impl Entry {
         Self::OptionMeta,
         Self::Notifications,
         Self::Hosts,
+        Self::PairPhone,
         Self::Diagnostics,
         Self::GetStarted,
         Self::Updates,
@@ -45,7 +47,7 @@ impl Entry {
             | Self::ConfirmClose
             | Self::OptionMeta => Category::Terminal,
             Self::Notifications => Category::Notifications,
-            Self::Hosts => Category::RemoteHosts,
+            Self::Hosts | Self::PairPhone => Category::RemoteHosts,
             Self::Diagnostics => Category::Developer,
             Self::GetStarted | Self::Updates => Category::About,
         }
@@ -61,6 +63,7 @@ impl Entry {
             Self::OptionMeta => "Option as Meta",
             Self::Notifications => "Notifications",
             Self::Hosts => "Machines",
+            Self::PairPhone => "Pair a phone",
             Self::Diagnostics => "Copy diagnostics",
             Self::GetStarted => "Get started",
             Self::Updates => "Updates",
@@ -87,6 +90,7 @@ impl Entry {
             Self::Hosts => {
                 "Connect to a remote host, add a machine or manage your existing machines."
             }
+            Self::PairPhone => super::super::pair::DETAIL,
             Self::Diagnostics => "Copy local logs and app state. Nothing is sent anywhere.",
             Self::GetStarted => {
                 "The look, the phux agent skill, permissions and your key bindings, step by step."
@@ -111,6 +115,10 @@ impl Entry {
             Self::OptionMeta => on(desk.settings.option_as_meta),
             Self::Notifications => on(desk.settings.notifications),
             Self::Hosts => desk.machines.label().to_owned(),
+            Self::PairPhone => match &desk.settings_ui.pairing.devices {
+                Some(Ok(devices)) => format!("{} paired", devices.len()),
+                _ => String::new(),
+            },
             Self::Diagnostics => "Local only".to_owned(),
             Self::GetStarted => String::new(),
             Self::Updates => format!(
@@ -148,6 +156,7 @@ impl Entry {
             Self::ConfirmClose => "confirmation closing safety",
             Self::Notifications => "alerts bell",
             Self::Hosts => "remote ssh connection",
+            Self::PairPhone => "mobile iphone android qr code scan link devices revoke tailnet",
             Self::Diagnostics => "logs debug troubleshooting",
             Self::GetStarted => "onboarding welcome setup skill permissions migrate import",
             Self::Updates => {
@@ -180,6 +189,7 @@ impl Entry {
                 Desk::toggle_machines,
                 ink,
             ),
+            Self::PairPhone => super::super::pair::panel(desk, ink, true),
             Self::Diagnostics => diagnostics(desk, ink),
             Self::GetStarted => self.link(
                 "settings-get-started",
@@ -370,6 +380,8 @@ pub(super) fn matching(desk: &Desk) -> Vec<(Category, Vec<Entry>)> {
             let entries: Vec<_> = Entry::ALL
                 .into_iter()
                 .filter(|entry| !matches!(entry, Entry::OptionMeta) || cfg!(target_os = "macos"))
+                // A phone doesn't pair a phone.
+                .filter(|entry| !matches!(entry, Entry::PairPhone) || desk.phone.is_none())
                 .filter(|entry| entry.category() == category)
                 .filter(|entry| entry.matches(desk, &query))
                 .collect();

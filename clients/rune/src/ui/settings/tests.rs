@@ -302,6 +302,7 @@ fn render(
     rt.frame(1.0);
     rt.frame(1.0);
     let target = rune::render::Offscreen::new(&gpu.device, size.0, size.1);
+    renderer.upload_images(&gpu.device, &gpu.queue, &mut rt.images);
     renderer.prepare(
         &gpu.device,
         &gpu.queue,
@@ -416,6 +417,77 @@ fn settings_native_render_frames() {
             );
         }
     }
+}
+
+#[test]
+fn pair_a_phone_shows_a_code_devices_and_the_explicit_choice() {
+    let gpu = rune::render::Gpu::headless();
+    for (size, name) in [((1100, 720), "pair"), ((640, 360), "pair-min")] {
+        let mut rt = runtime((size.0 as f32, size.1 as f32), false);
+        let mut renderer = rune::render::Renderer::new(&gpu.device, rune::render::OFFSCREEN_FORMAT);
+        rt.update(|d, tx| {
+            tx.instant();
+            d.resources.images = Some(rune::ImageCache::new(std::sync::Arc::new(|| {})));
+            d.settings_category(Category::RemoteHosts);
+            d.pairing_fixture();
+        });
+        rt.frame(0.0);
+        for key in [
+            "pair-qr",
+            "pair-expiry",
+            "pair-network",
+            "pair-copy",
+            "pair-new",
+        ] {
+            assert!(rt.find(key).is_some(), "{key}");
+        }
+        assert!(rt.find("pair-revoke-1").is_some());
+        let expiry = rt.accessibility_json().to_string();
+        assert!(expiry.contains("Expires in 9:0"), "counts down");
+        assert!(expiry.contains("Over your tailnet"));
+        render(&gpu, &mut renderer, &mut rt, size, name);
+        // Revealing the device list scrolls past the code.
+        rt.update(|_, tx| tx.scroll_into_view("pair-revoke-1"));
+        render(
+            &gpu,
+            &mut renderer,
+            &mut rt,
+            size,
+            &format!("{name}-devices"),
+        );
+
+        // Remote access off: a code only after the explicit choice.
+        rt.update(|d, tx| {
+            tx.instant();
+            d.settings_ui.pairing.code = Some(Err(
+                "the server at /s has no remote listener bound because [policy] mode is unset"
+                    .to_owned(),
+            ));
+        });
+        rt.frame(0.0);
+        assert!(rt.find("pair-allow").is_some());
+        assert!(rt.find("pair-qr").is_none());
+        rt.update(|_, tx| tx.scroll_into_view("pair-allow"));
+        render(
+            &gpu,
+            &mut renderer,
+            &mut rt,
+            size,
+            &format!("{name}-enable"),
+        );
+    }
+}
+
+#[test]
+fn search_finds_pairing_and_a_phone_never_offers_it() {
+    let mut rt = runtime((1100.0, 720.0), false);
+    rt.update(|d, _| d.settings_ui.query = rune::TextEdit::new("pair"));
+    rt.frame(0.0);
+    assert!(rt.find("pair-phone").is_some());
+    let mut rt = runtime((393.0, 852.0), true);
+    rt.update(|d, _| d.settings_category(Category::RemoteHosts));
+    rt.frame(0.0);
+    assert!(rt.find("pair-phone").is_none());
 }
 
 fn theme_scene(desk: &Desk, cx: &mut Cx<Desk>) -> El {
