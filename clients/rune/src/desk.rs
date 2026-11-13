@@ -14,7 +14,7 @@ use phux_client_core::layout::{LayoutNode, SplitDir};
 use phux_client_runtime::control::{ProjectionFence, Status, Topology};
 use phux_client_runtime::publication::GridFrame;
 use phux_client_runtime::{Client, ViewId};
-use phux_protocol::ids::{ArrangementKey, OperationId, ResourceId};
+use phux_protocol::ids::{ArrangementKey, OperationId, ResourceId, SessionKey};
 use rune::{Tx, Waker};
 
 use crate::grid::{self, Metrics};
@@ -233,12 +233,12 @@ pub struct Desk {
     pub(crate) dragging: Option<(SplitPath, f32)>,
     /// Spawned splits and tabs waiting for the session's arrangement: the
     /// new terminal, where it goes, and since when.
-    unplaced_splits: Vec<(ResourceId, Placement, Instant)>,
+    unplaced_splits: Vec<splits::Unplaced>,
     /// Arrangement writes this window made, to report a refusal.
     layout_ops: HashSet<OperationId>,
     /// Spawns that become splits (the pane split and the direction) or, with
     /// `None`, tabs.
-    pending_splits: HashMap<u32, Placement>,
+    pending_splits: HashMap<u32, (Option<SessionKey>, Placement)>,
     /// The pane the wheel last moved, owning `wheel_rows`.
     wheel_pane: Option<ResourceId>,
     /// The pane whose program took the last press, and that press as it last
@@ -269,6 +269,8 @@ pub struct Desk {
     pub bare: Option<bare::Bare>,
     /// The quick terminal's own part, when this window is it.
     pub quick: Option<quick::Panel>,
+    /// The main window's move request, until its server receipt settles.
+    quick_move: Option<quick::Transfer>,
     /// The quick terminal's chord, which the main window registers.
     pub quick_chord: quick::Chord,
     pub native: Option<crate::mobile::Platform>,
@@ -397,6 +399,7 @@ impl Desk {
             phone: None,
             bare: None,
             quick: None,
+            quick_move: None,
             quick_chord: quick::Chord::default(),
             native: None,
             file,

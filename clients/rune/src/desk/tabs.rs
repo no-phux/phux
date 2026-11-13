@@ -174,7 +174,8 @@ impl Desk {
             session_id: client.selected_session(),
             initial_size: None,
         });
-        self.pending_splits.insert(request, None);
+        self.pending_splits
+            .insert(request, (self.placement_session(client), None));
         self.zoomed = None;
     }
 
