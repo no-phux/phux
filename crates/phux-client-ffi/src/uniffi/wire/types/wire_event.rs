@@ -13,6 +13,15 @@ use super::*;
 /// them onto its own status vocabulary.
 #[derive(uniffi::Enum, Clone, PartialEq, Eq)]
 pub enum WireEvent {
+    /// Re-read `approvals_json`; no secret values are carried here.
+    ApprovalsChanged,
+    /// Decision confirmation shared with C. Status: decided/stale/refused/unconfirmed.
+    ApprovalDecision {
+        id: String,
+        decision: String,
+        status: String,
+        message: String,
+    },
     /// The session graph changed (a fresh ATTACHED arrived) — re-read
     /// `topology()`.
     TopologyChanged,
@@ -297,6 +306,8 @@ impl core::fmt::Debug for WireEvent {
             };
         }
         debug_events! {
+            ApprovalsChanged,
+            ApprovalDecision { id, decision, status, message },
             OrganizationUnavailable { message },
             OrganizationOperation {
                 operation, status, refusal, refusal_word, conflict_revision,

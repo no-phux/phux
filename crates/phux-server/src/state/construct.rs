@@ -43,6 +43,7 @@ impl ServerState {
             remote_listeners: phux_protocol::wire::RemoteListenersReport::new(),
             operation_dedupe: crate::runtime::operation_dedupe::OperationDedupe::default(),
             approvals: super::approvals::ApprovalTable::default(),
+            credentials: super::credentials::CredentialBroker::default(),
             app_slots: super::app_slots::AppSlots::default(),
         }
     }

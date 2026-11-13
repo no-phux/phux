@@ -18,6 +18,12 @@ macro_rules! supervisory_commands {
     /// Gated on
     /// [`ServerFeatureExt::PrivacyStatus`](crate::caps::ServerFeatureExt::PrivacyStatus).
     PrivacyStatus,
+    /// Ephemeral 1Password exchange, gated on `features_ext.CREDENTIALS`.
+    /// Requests always need an explicit approval, including on the owner socket.
+    Credentials {
+        /// Exact operation; secrets have redacted Debug output.
+        op: crate::credentials::CredentialOp,
+    },
     /// Dedicated SDK-owned `AgentSession` broker request. The wire body is
     /// length-prefixed JSON bounded by `MAX_NATIVE_PAYLOAD_BYTES`; controller
     /// requests additionally require exclusive binding proof and generation.

@@ -83,6 +83,8 @@ pub enum ServerFeatureExt {
     /// OSC 52 clipboard read (`docs/program-sequences.md#clipboard-osc-52`).
     /// A client MUST see the bit first.
     ClipboardRead = 0x0040_0000,
+    /// Explicitly approved, ephemeral 1Password credential exchanges.
+    Credentials = 0x0100_0000,
 }
 
 impl ServerFeatureExt {
@@ -111,6 +113,7 @@ impl ServerFeatureExt {
         Self::DurableResourceInspection,
         Self::TabLock,
         Self::ClipboardRead,
+        Self::Credentials,
     ];
 
     /// The `docs/protocol.md#handshake` constant, e.g. `"PATH_QUERY"`.
@@ -140,6 +143,7 @@ impl ServerFeatureExt {
             Self::DurableResourceInspection => "DURABLE_RESOURCE_INSPECTION",
             Self::TabLock => "TAB_LOCK",
             Self::ClipboardRead => "CLIPBOARD_READ",
+            Self::Credentials => "CREDENTIALS",
         }
     }
 

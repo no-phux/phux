@@ -13,53 +13,8 @@
 //! (`phux approvals`, MCP) and the control plane's live projection
 //! ([`crate::control::ControlPlane::watch_approvals`]) share them.
 
+pub use phux_client_core::approvals::{Approval, CredentialApproval, Requester};
 use phux_protocol::wire::frame::{APPROVAL_APPROVE, APPROVAL_DENY, ErrorCode};
-use serde::{Deserialize, Serialize};
-
-/// One action awaiting a decision: its `phux.approval/v1/<id>` record.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct Approval {
-    /// The approval id, 32 lowercase hex digits.
-    pub id: String,
-    /// The connection whose command is held.
-    pub requester: Requester,
-    /// The held command's catalog name, e.g. `KILL_RESOURCE`.
-    pub method: String,
-    /// The signal, for a held `SIGNAL_TERMINAL`.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub signal: Option<String>,
-    /// The subjects it names, in the registry selector grammar.
-    #[serde(default)]
-    pub subjects: Vec<String>,
-    /// When it was held, Unix milliseconds.
-    pub requested_at_ms: u64,
-    /// When it expires unless decided, Unix milliseconds.
-    pub expires_at_ms: u64,
-}
-
-impl Approval {
-    /// Parse a `phux.approval/v1/<id>` value.
-    ///
-    /// # Errors
-    ///
-    /// The value is not the record's JSON object.
-    pub fn parse(bytes: &[u8]) -> Result<Self, serde_json::Error> {
-        serde_json::from_slice(bytes)
-    }
-}
-
-/// Who asked: the requester's connection as the journal names an actor.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct Requester {
-    /// The connection's wire client id.
-    pub client: u32,
-    /// The workload credential it authenticated with, if any.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub credential_id: Option<String>,
-    /// The name it announced in `HELLO`, if any.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub client_name: Option<String>,
-}
 
 /// A decision on one held action.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -148,6 +103,28 @@ mod tests {
         let approval = Approval::parse(bare).unwrap_or_else(|err| panic!("{err}"));
         assert!(approval.subjects.is_empty());
         assert_eq!(approval.requester.credential_id, None);
+        assert_eq!(approval.credential, None);
+    }
+
+    #[test]
+    fn credential_record_preserves_exact_references_and_bound_identity() {
+        let record = br#"{"id":"0123456789abcdef0123456789abcdef","requester":{"client":3},"method":"CREDENTIAL_REQUEST","requested_at_ms":1,"expires_at_ms":2,"credential":{"request":{"provider":"desktop","references":["op://vault/item/field"],"purpose":"Run tests"},"provider":{"client":8,"credential_id":"sha256:bound","client_name":"desktop label"}}}"#;
+        let approval = Approval::parse(record).unwrap();
+        let credential = approval.credential.as_ref().unwrap();
+        assert_eq!(credential.request.references, ["op://vault/item/field"]);
+        assert_eq!(credential.request.purpose, "Run tests");
+        assert_eq!(credential.provider.client, 8);
+        assert_eq!(
+            credential.provider.credential_id.as_deref(),
+            Some("sha256:bound")
+        );
+        assert_eq!(
+            Approval::parse(&serde_json::to_vec(&approval).unwrap()).unwrap(),
+            approval
+        );
+        let mut object = serde_json::to_value(approval).unwrap();
+        object["credential"] = serde_json::Value::Null;
+        assert!(Approval::parse(&serde_json::to_vec(&object).unwrap()).is_err());
     }
 
     #[test]

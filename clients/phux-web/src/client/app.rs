@@ -140,6 +140,7 @@ impl App {
         }
         self.failure_reason.replace(Some(message.to_owned()));
         self.session.fail_protocol(message);
+        super::approvals::retain_uncertainty(&self.canvas, self.session.approval_status());
         let refused = self.session.is_version_refused();
         if refused {
             mark_incompatible(&self.canvas, message);

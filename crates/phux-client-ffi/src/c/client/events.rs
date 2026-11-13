@@ -96,6 +96,14 @@ impl Client {
     }
 
     pub(crate) fn process_runtime_event(&mut self, event: Event) -> Result<bool, BridgeError> {
+        if let Some(decision) = crate::projection::approvals::decision(&event) {
+            if self.approval_decisions.len() < 128 {
+                self.approval_decisions.push(decision);
+            } else {
+                self.approval_decisions_dropped = true;
+            }
+            return Ok(false);
+        }
         if matches!(
             event,
             Event::ConnectionLost { .. } | Event::ConnectionOpened { .. }

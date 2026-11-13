@@ -62,10 +62,11 @@ const fn command_variant(command: &Command) -> usize {
         Command::MirrorProvide { .. } => 57,
         Command::PrivacyStatus => 58,
         Command::ArrangementLock { .. } => 59,
+        Command::Credentials { .. } => 60,
     }
 }
 
-const COMMAND_VARIANTS: usize = 60;
+const COMMAND_VARIANTS: usize = 61;
 
 fn operation() -> IdempotencyKey {
     IdempotencyKey::new([3; 16]).unwrap()
@@ -531,6 +532,7 @@ fn command_samples() -> Vec<(Command, &'static Rule)> {
         ),
         (Command::DescribeApi, &C_API_DESCRIBE),
         (Command::PrivacyStatus, &C_PRIVACY_STATUS),
+        (Command::Credentials { op: crate::credentials::CredentialOp::Next { provider: "mac".into() } }, &C_CREDENTIALS),
         (Command::GetCreation { operation: operation(), session: session_key() }, &C_GET_CREATION),
         (Command::GetPerf { reset: false }, &C_GET_PERF),
         (Command::GetPerf { reset: true }, &C_GET_PERF_RESET),

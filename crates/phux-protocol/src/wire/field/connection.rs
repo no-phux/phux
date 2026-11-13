@@ -24,6 +24,8 @@ pub mod hello {
     /// Resource kinds the client decodes (`u64`, bit `1 << kind tag`);
     /// absent = `ResourceKindSet::LEGACY`.
     pub const RESOURCE_KINDS: u32 = 11;
+    /// Client reviews credential request details (`u8` boolean); absent = false.
+    pub const CREDENTIAL_APPROVALS: u32 = 12;
 }
 
 /// `HELLO_OK` body fields (`docs/protocol.md#handshake`).

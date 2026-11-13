@@ -81,6 +81,7 @@ phux-protocol.workspace = true
 # ABI and the UniFFI surface carry them as JSON lines again, so the same
 # workspace-pinned encoder re-emits them. No new crate enters the lockfile.
 serde_json.workspace = true
+serde.workspace = true
 # The C ABI re-encodes the bridge's decoded records as JSON-line bytes.
 # Optional: `c-abi` only, see [features].
 bytes = { workspace = true, optional = true }

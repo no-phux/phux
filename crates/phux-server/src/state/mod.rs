@@ -28,6 +28,7 @@ mod client_table;
 mod conditional_kill;
 mod config;
 mod construct;
+pub(crate) mod credentials;
 mod cwd;
 mod defaults;
 mod delegations;
@@ -236,6 +237,7 @@ pub struct ServerState {
     operation_dedupe: crate::runtime::operation_dedupe::OperationDedupe,
     /// Held `SIGNAL` actions awaiting a decision (ADR-0128).
     approvals: approvals::ApprovalTable,
+    pub(crate) credentials: credentials::CredentialBroker,
     /// Each app's own state, which the host holds without knowing its
     /// type; see [`app_slots`].
     app_slots: app_slots::AppSlots,

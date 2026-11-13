@@ -301,7 +301,8 @@ mod tests {
     }
 
     /// The dangerous methods, pinned by name (ADR-0128).
-    const DANGEROUS: [&str; 15] = [
+    const DANGEROUS: [&str; 16] = [
+        "CREDENTIALS",
         "KILL_RESOURCE",
         "KILL_RESOURCE_IF",
         "KILL_RESOURCES",
@@ -334,7 +335,11 @@ mod tests {
     ];
 
     /// The dangerous methods no CLI verb asks before, and why.
-    const CLI_UNGATED: [(&str, &str); 5] = [
+    const CLI_UNGATED: [(&str, &str); 6] = [
+        (
+            "CREDENTIALS",
+            "every request is held by the server for separate, exact approval; no MCP tool requests or provides values",
+        ),
         (
             "CLOSE_TAB_RESOURCES",
             "no CLI verb or MCP tool sends it; a native client's explicit Close Tab is the act",

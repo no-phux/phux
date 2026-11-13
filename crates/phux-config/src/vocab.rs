@@ -9,6 +9,9 @@ use crate::Action;
 /// Canonical names of every action the TUI dispatcher handles. phux-tui's
 /// action registry declares each exactly once (ADR-0172, test-pinned).
 pub const ACTION_NAMES: &[&str] = &[
+    "approvals",
+    "approval-review",
+    "approval-decide",
     "split-pane",
     "move-pane",
     "kill-pane",

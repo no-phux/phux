@@ -54,6 +54,10 @@ export const REQUIRED_TESTS = [
   "closed_ws_send_and_repeated_reconnect_teardown_release_every_app",
   "a_version_refusal_marks_the_canvas_and_never_redials",
   "dropping_polled_establishment_disposes_app_reader_and_transport",
+  "approval_cards_render_untrusted_text_without_interpreting_html",
+  "new_requests_keep_existing_decision_buttons_and_keyboard_focus",
+  "uncertain_decisions_survive_connection_ui_replacement",
+  "a_detached_canvas_keeps_its_uncertain_decision_notice",
 ] as const;
 const AUTH_REQUIRED_TESTS = ["blackholed_wt_falls_back_to_authenticated_wss"];
 const TEST_TOKEN = "11".repeat(32);
