@@ -111,3 +111,37 @@ fn a_document_slot_shares_the_generation_and_never_reads_as_a_grid() {
     assert_eq!(handle.generation(), 2);
     assert_eq!(first.bytes, b"{}");
 }
+
+#[test]
+fn wait_past_wakes_on_publish_and_removal_and_is_bounded() {
+    use std::time::{Duration, Instant};
+    let table = Arc::new(Publication::new());
+    let id = ResourceId::local(9);
+    table.publish(&id, frame(&id, b"a"));
+    let handle = table.slot(&id).expect("slot");
+    assert!(handle.wait_past(0, Duration::ZERO), "already past");
+    let start = Instant::now();
+    assert!(!handle.wait_past(1, Duration::from_millis(20)));
+    assert!(start.elapsed() >= Duration::from_millis(20));
+
+    for remove in [false, true] {
+        let publisher = Arc::clone(&table);
+        let key = id.clone();
+        let generation = handle.generation();
+        let thread = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(5));
+            if remove {
+                publisher.remove(&key);
+            } else {
+                publisher.publish(&key, frame(&key, b"b"));
+            }
+        });
+        let start = Instant::now();
+        assert!(handle.wait_past(generation, Duration::from_secs(10)));
+        assert!(
+            start.elapsed() < Duration::from_secs(5),
+            "woken, not timed out"
+        );
+        thread.join().expect("publisher");
+    }
+}

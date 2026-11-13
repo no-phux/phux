@@ -37,7 +37,8 @@
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, PoisonError, RwLock};
+use std::sync::{Arc, Condvar, Mutex, PoisonError, RwLock};
+use std::time::Duration;
 
 use crate::ViewId;
 pub use phux_client_core::grid::{
@@ -126,6 +127,9 @@ struct Slot {
     /// acquire catches up.
     stale: AtomicBool,
     frame: RwLock<Option<Published>>,
+    /// Signalled after every publish and on removal, for
+    /// [`TerminalPublication::wait_past`].
+    changed: (Mutex<()>, Condvar),
 }
 
 impl Slot {
@@ -137,7 +141,17 @@ impl Slot {
             read: AtomicBool::new(false),
             stale: AtomicBool::new(false),
             frame: RwLock::new(None),
+            changed: (Mutex::new(()), Condvar::new()),
         }
+    }
+
+    /// Wake every [`TerminalPublication::wait_past`]. Taking the lock
+    /// after the change orders it before a waiter's check, so no wake is
+    /// lost.
+    fn signal(&self) {
+        let (lock, changed) = &self.changed;
+        drop(lock.lock().unwrap_or_else(PoisonError::into_inner));
+        changed.notify_all();
     }
 
     fn current(&self) -> Option<Published> {
@@ -221,6 +235,32 @@ impl TerminalPublication {
     #[must_use]
     pub fn acquire(&self) -> Option<Arc<GridFrame>> {
         self.slot.acquire().and_then(Published::into_grid)
+    }
+
+    /// Block until a generation past `generation` is published or the slot
+    /// is removed, for at most `timeout`; whether either happened. Never on
+    /// the owner thread, which is the one that publishes.
+    #[must_use]
+    pub fn wait_past(&self, generation: u64, timeout: Duration) -> bool {
+        let (lock, changed) = &self.slot.changed;
+        let pending = || {
+            self.generation() <= generation
+                && self
+                    .slot
+                    .frame
+                    .read()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .is_some()
+        };
+        let waited = changed
+            .wait_timeout_while(
+                lock.lock().unwrap_or_else(PoisonError::into_inner),
+                timeout,
+                |()| pending(),
+            )
+            .unwrap_or_else(PoisonError::into_inner)
+            .1;
+        !waited.timed_out()
     }
 }
 
@@ -450,6 +490,7 @@ impl Publication {
             drop(current);
             previous
         };
+        slot.signal();
         (generation, previous)
     }
 
@@ -475,6 +516,7 @@ impl Publication {
                 .write()
                 .unwrap_or_else(PoisonError::into_inner)
                 .take();
+            slot.signal();
         }
     }
 }
