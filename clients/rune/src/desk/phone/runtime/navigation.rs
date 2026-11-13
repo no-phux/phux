@@ -177,3 +177,28 @@ fn the_native_browser_never_offers_a_nonexistent_local_mac() {
     assert!(rt.state.native.as_ref().unwrap().connection_requested);
     assert!(rt.state.phone_page().is_none());
 }
+
+#[test]
+fn navigation_reserves_desktop_traffic_lights_but_not_a_second_native_safe_area() {
+    let (_, mut rt) = fixture();
+    rt.set_titlebar_inset(80.0);
+    rt.update(|d, _| d.open_phone_sessions());
+    settle(&mut rt);
+    let close = rt.presented("phone-navigation-close").unwrap().0;
+    let inset = rt.presented("phone-top").unwrap().0[1];
+    assert!(inset > 0.0);
+    assert!(close[1] >= inset);
+    rt.update(|d, tx| {
+        d.native = Some(crate::mobile::Platform {
+            target: phux_client_runtime::Target::uds("/tmp/not-used"),
+            active: true,
+            connection_requested: false,
+            paste_requested: false,
+            away_since: None,
+        });
+        tx.instant();
+    });
+    settle(&mut rt);
+    let close = rt.presented("phone-navigation-close").unwrap().0;
+    assert!(close[1] < inset, "UIKit already owns the safe area");
+}

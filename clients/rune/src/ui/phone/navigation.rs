@@ -9,7 +9,7 @@ use crate::desk::phone::navigation::Page;
 use crate::keys::{self, Shortcut};
 use crate::ui::{icons, pressable, sidebar};
 
-pub(super) fn view(desk: &Desk, p: &Ink) -> Option<El> {
+pub(super) fn view(desk: &Desk, p: &Ink, top: f32) -> Option<El> {
     let page = desk.phone_page()?;
     let title = match page {
         Page::Sessions => "Sessions",
@@ -36,6 +36,7 @@ pub(super) fn view(desk: &Desk, p: &Ink) -> Option<El> {
             .absolute(0.0, 0.0)
             .w_full()
             .h_full()
+            .pt(top)
             .fill(p.bg)
             .modal(true, Desk::close_phone_navigation)
             .on_key(|d: &mut Desk, event, _| d.phone_navigation_key(event))
@@ -362,7 +363,7 @@ fn other_hosts(mut list: El, desk: &Desk, query: &str, p: &Ink) -> El {
                     let (host, name) = (host.clone(), session.name.clone());
                     list = list.child(
                         button(
-                            &format!("phone-remote-{label}-{name}"),
+                            &remote_key(&host, &name),
                             &format!("{name} · {} terminals", session.terminals),
                             p,
                             move |d, _| {
@@ -382,6 +383,13 @@ fn other_hosts(mut list: El, desk: &Desk, query: &str, p: &Ink) -> El {
         }
     }
     list
+}
+
+fn remote_key(host: &Option<String>, session: &str) -> String {
+    format!(
+        "phone-remote-{}",
+        serde_json::to_string(&(host, session)).expect("string tuple")
+    )
 }
 
 fn actions(desk: &Desk, p: &Ink) -> El {
@@ -431,4 +439,31 @@ fn actions(desk: &Desk, p: &Ink) -> El {
             stick_bottom: false,
         })
         .child(list)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn remote_row_identity_keeps_host_and_session_boundaries() {
+        assert_ne!(
+            remote_key(&Some("a".into()), "b-c"),
+            remote_key(&Some("a-b".into()), "c")
+        );
+        assert_ne!(
+            remote_key(&None, "work"),
+            remote_key(&Some(crate::machines::LOCAL.into()), "work")
+        );
+    }
+
+    #[test]
+    fn session_search_matches_words_across_inventory_fields() {
+        assert!(matches(
+            "API CLAUDE",
+            &["api", "Claude Code", "/src/server"]
+        ));
+        assert!(matches("日本", &["日本語"]));
+        assert!(!matches("api missing", &["api", "Claude Code"]));
+    }
 }

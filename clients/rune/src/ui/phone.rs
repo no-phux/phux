@@ -40,11 +40,12 @@ pub fn view(desk: &Desk, cx: &mut Cx<Desk>) -> El {
     let controls = if desk.settings_open { &p } else { &drawn };
     cx.foreground(p.text);
     let stage = phone_stage(desk, &p, cx);
+    let top = top_inset(desk, cx);
     let screen = col()
         .key("phone-screen")
         .w_full()
         .h_full()
-        .pt(top_inset(desk, cx))
+        .pt(top)
         .children((!desk.settings_open).then(|| top_bar(desk, controls)))
         .child(stage)
         .children(
@@ -61,6 +62,7 @@ pub fn view(desk: &Desk, cx: &mut Cx<Desk>) -> El {
         el().h(0.0).grow(1.0).w_full().min_h(0.0).child(screen),
         desk,
         &p,
+        top,
     );
     col()
         .key("phone")
@@ -120,8 +122,8 @@ pub(crate) fn edge_color(desk: &Desk) -> Color {
     edge_fill(desk, &ink(desk, accent))
 }
 
-fn overlays(root: El, desk: &Desk, p: &Ink) -> El {
-    root.children(navigation::view(desk, p))
+fn overlays(root: El, desk: &Desk, p: &Ink, top: f32) -> El {
+    root.children(navigation::view(desk, p, top))
         .children(status::banner(desk, p))
         .children(desk.inbox.open.then(|| inbox::view(desk, p)))
         .children(machines::sheet(desk, p))
