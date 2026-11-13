@@ -8,6 +8,7 @@ mod addressable;
 mod alerts;
 mod askpass;
 mod changes;
+mod connect;
 mod creature;
 mod desk;
 mod diag;
@@ -31,6 +32,9 @@ mod perf;
 mod pitch;
 mod pitlane;
 mod reef;
+#[cfg(any(target_os = "linux", test))]
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+mod scheme;
 mod session_color;
 mod standing;
 mod system_settings;
@@ -43,6 +47,15 @@ use rune::{AppSpec, Chrome};
 
 /// The desktop entry's name, and what `phux omarchy setup` tags as a terminal.
 const APP_ID: &str = "sh.phux.rune";
+
+/// Which running process a later launch hands its links to (Linux; macOS
+/// keeps one process per bundle itself). A development build has its own,
+/// so `cargo run` never hands its arguments to the installed app.
+const INSTANCE_ID: &str = if cfg!(debug_assertions) {
+    "sh.phux.rune.dev"
+} else {
+    APP_ID
+};
 
 pub fn run_desktop() {
     // ssh runs this executable to ask for a password or 2FA code.
@@ -74,6 +87,17 @@ pub fn run_desktop() {
     // The window opens first; `Desk::listen` finds the server on a worker.
     let resolved = launch::resolve(&options);
     let phone = options.phone;
+    if !accept_launch(&options, &resolved) {
+        return;
+    }
+    // Rune hands `on_open_url` the links among a Linux or Windows launch's
+    // arguments; macOS sends its links as Apple events, so a link on a
+    // bare binary's command line is handed over here.
+    let argv_links = if cfg!(target_os = "macos") {
+        options.links.iter().map(|link| link.0.clone()).collect()
+    } else {
+        Vec::new()
+    };
     let (size, min_size) = if phone {
         ((393.0, 852.0), (320.0, 568.0))
     } else {
@@ -92,7 +116,9 @@ pub fn run_desktop() {
     let app = app
         .init(move || {
             let mut desk = Desk::new(&resolved).with_phone(phone);
+            desk.machines.window = Some(window.clone());
             desk.onboarding.dock.window = Some(window);
+            desk.machines.pending = argv_links;
             desk
         })
         .chrome(Chrome {
@@ -119,11 +145,30 @@ pub fn run_desktop() {
         .modifier_keys()
         .on_ime(|desk: &mut Desk, event, _| desk.ime(event))
         .on_focus(|desk: &mut Desk, focused, _| desk.focus_changed(focused))
+        .on_open_url(|desk: &mut Desk, url, _| desk.pair_from_link(url))
         .on_frame_drawn(|rt: &rune::Runtime<Desk>| rt.state.drawn());
     match perf::frame_hook() {
         Some(record) => app.on_frame_encoded(record).run(),
         None => app.run(),
     }
+}
+
+/// Keep an aimed run separate; hand a plain launch to the running window.
+fn accept_launch(options: &launch::Options, resolved: &launch::Resolved) -> bool {
+    // One window takes pairing links. A run aimed at a server or a session,
+    // the phone form and headless tooling stand alone.
+    let plain =
+        !resolved.aimed && options.session.is_none() && !options.phone && !rune::is_headless();
+    if plain && !rune::single_instance(INSTANCE_ID) {
+        return false;
+    }
+    // An older installed entry gains the link handler; development builds
+    // leave the installed app's entry alone.
+    #[cfg(target_os = "linux")]
+    if plain && !cfg!(debug_assertions) {
+        std::thread::spawn(scheme::repair);
+    }
+    true
 }
 
 pub(crate) fn app_spec(size: (f32, f32), min_size: (f32, f32)) -> AppSpec<Desk> {

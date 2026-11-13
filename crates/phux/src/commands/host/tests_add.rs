@@ -25,6 +25,7 @@ pub(super) fn opts() -> AddOpts {
         cert_fingerprint: None,
         tls_server_name: None,
         ca_fingerprint: None,
+        code: None,
         session: None,
         disabled: false,
         json: JsonOpt { json: false },
@@ -444,4 +445,64 @@ pub(super) fn walkdir_tokens(root: &Path) -> impl Iterator<Item = PathBuf> + use
     let mut out = Vec::new();
     visit(root, &mut out);
     out.into_iter()
+}
+
+/// `NAME --code LINK` is its own form: the link names the endpoint and every
+/// credential, so a flag that names one too, or the ssh form's, is refused.
+#[test]
+fn add_mode_code_form_takes_only_a_name() {
+    let code = || AddOpts {
+        code: Some("-".to_owned()),
+        ..opts()
+    };
+    assert_eq!(
+        AddMode::classify("mini", None, &code()).expect("code"),
+        AddMode::Code {
+            name: "mini".to_owned()
+        }
+    );
+    let refused = [
+        ("an ENDPOINT", Some("quic://mini:8788"), code()),
+        (
+            "--install",
+            None,
+            AddOpts {
+                install: true,
+                ..code()
+            },
+        ),
+        (
+            "--name",
+            None,
+            AddOpts {
+                name: Some("x".to_owned()),
+                ..code()
+            },
+        ),
+        (
+            "--role satellite",
+            None,
+            AddOpts {
+                role: HostRole::Satellite,
+                ..code()
+            },
+        ),
+        (
+            "a manual credential flag",
+            None,
+            AddOpts {
+                ca_fingerprint: Some("sha256:00".to_owned()),
+                ..code()
+            },
+        ),
+    ];
+    for (conflict, endpoint, opts) in refused {
+        let err = AddMode::classify("mini", endpoint, &opts).expect_err(conflict);
+        assert!(
+            err.message.contains(conflict),
+            "{conflict}: {}",
+            err.message
+        );
+        assert!(err.remedy.contains("--code LINK"), "{}", err.remedy);
+    }
 }

@@ -2,8 +2,9 @@
 Type=Application
 Name=Phux Rune
 Comment=Your phux sessions and agents in one window
-Exec=phux-rune
+Exec=phux-rune %u
 Icon=sh.phux.rune
 Terminal=false
 StartupWMClass=sh.phux.rune
 Categories=Development;
+MimeType=x-scheme-handler/phux;
