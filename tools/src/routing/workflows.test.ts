@@ -1,13 +1,12 @@
-// ci.yml runs the plan the way plan.ts promises: jobs gated on the plan's
-// own output, running the recipes `just check` runs locally. A lane is one
-// job, except web, which is two parallel jobs.
+// ci.yml runs the plan the way plan.ts promises: one job per lane, gated on
+// the plan's own output, running the recipes `just check` runs locally.
+// The web lane is the exception: two jobs. web-lane.test.ts checks that split.
 import { expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { repoPath } from "../lib/repo.ts";
 import { capture } from "../lib/process.ts";
 import { list, str, strings, table, type Table } from "../lib/value.ts";
 import {
-  action,
   job,
   jobs,
   needs,
@@ -91,13 +90,13 @@ test("each lane's jobs are gated on its plan output and together run its recipes
     );
     const owners = gated.filter(([id]) => id !== "test-build");
     expect([lane, owners.length]).toEqual([lane, lane === "web" ? 2 : 1]);
-    if (lane === "web") {
-      expect(owners.map(([, laneJob]) => str(laneJob["name"]) ?? "").toSorted()).toEqual([
-        "web (client + browser)",
-        "web (vt)",
-      ]);
-    }
-    const commands = owners.flatMap(([, laneJob]) => jobCommands(laneJob)).join("\n");
+    const commands = owners
+      .flatMap(([, laneJob]) => {
+        const called = uses(laneJob).replace("./.github/workflows/", "");
+        const laneJobs = called === "" ? [laneJob] : Object.values(jobs(workflow(called)));
+        return laneJobs.flatMap(steps).map(run);
+      })
+      .join("\n");
     for (const argv of LANE_RECIPES[lane]) {
       const [recipe] = argv;
       expect([lane, recipe, recipe in RECIPES]).toEqual([lane, recipe, true]);
@@ -110,66 +109,6 @@ test("each lane's jobs are gated on its plan output and together run its recipes
     }
   }
 });
-
-const WEB_CHECKS = [
-  'if [[ "${PHUX_WEB_ENGINE:-0}" == 1 ]]; then bash scripts/build-vt-wasm.sh --check; fi',
-  "node --test scripts/test-vt-wasm.mjs",
-  "(cd clients/phux-vt-web && wasm-pack test --node --locked)",
-  "(cd clients/phux-web && wasm-pack test --node --locked)",
-  "(cd clients/phux-web && wasm-pack build --target web --release --out-dir pkg --locked)",
-  "bun tools/main.ts web-browser",
-];
-
-test("just web-check runs both web halves, and those halves are the old checks", () => {
-  const dumped = table(
-    JSON.parse(capture(["just", "--dump", "--dump-format", "json"], { cwd: repoPath(".") })),
-  );
-  const webCheck = table(table(dumped["recipes"])["web-check"]);
-  const dependencies = list(webCheck["dependencies"]).map((dep) => str(table(dep)["recipe"]));
-  expect(dependencies).toEqual(LANE_RECIPES.web.map(([recipe]) => recipe));
-  const checks = LANE_RECIPES.web.flatMap(([recipe]) =>
-    (RECIPES[recipe] ?? []).filter(
-      (line) => line !== "#!/usr/bin/env bash" && line !== "set -euo pipefail",
-    ),
-  );
-  expect(checks).toEqual(WEB_CHECKS);
-});
-
-test("the web jobs cache cargo dependencies and save them only from main", () => {
-  const pin = steps(action("setup-rust-lane"))
-    .map(uses)
-    .find((used) => used.startsWith("Swatinem/rust-cache@"));
-  expect(pin).toContain("Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0");
-  const cached = [
-    ["web-vt", "phux-web-vt-", "clients/phux-vt-web"],
-    ["web-client", "phux-web-client-", "clients/phux-web"],
-  ] as const;
-  for (const [id, shared, workspace] of cached) {
-    const step = steps(job(CI, id)).find((candidate) =>
-      uses(candidate).startsWith("Swatinem/rust-cache@"),
-    );
-    expect([id, uses(step ?? {})]).toEqual([id, pin ?? ""]);
-    const saveIf = str(withInput(step ?? {}, "save-if")) ?? "";
-    expect(saveIf).toContain("github.event_name == 'push'");
-    expect(saveIf).toContain("github.ref == 'refs/heads/main'");
-    const sharedKey = str(withInput(step ?? {}, "shared-key")) ?? "";
-    expect(sharedKey).toContain(shared);
-    expect(sharedKey).toContain("steps.web-cache.outputs.flake");
-    expect(str(withInput(step ?? {}, "workspaces"))).toContain(workspace);
-    expect(withInput(step ?? {}, "cache-all-crates")).toBeUndefined();
-    expect(withInput(step ?? {}, "cache-workspace-crates")).toBeUndefined();
-  }
-  const client = steps(job(CI, "web-client")).find((candidate) =>
-    uses(candidate).startsWith("Swatinem/rust-cache@"),
-  );
-  expect(str(withInput(client ?? {}, "workspaces"))).toContain("target/web-native");
-});
-
-function jobCommands(laneJob: Table): string[] {
-  const called = uses(laneJob).replace("./.github/workflows/", "");
-  const laneJobs = called === "" ? [laneJob] : Object.values(jobs(workflow(called)));
-  return laneJobs.flatMap(steps).map(run);
-}
 
 test("the ci aggregate needs every lane and accepts only success or a skip", () => {
   const aggregate = job(CI, "ci");

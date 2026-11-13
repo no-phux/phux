@@ -345,11 +345,7 @@ jobs:
       # `just agent-integrations-check`, without installing just.
       - run: bash scripts/ci/agent-integrations.sh
 
-  # Two halves of the old web job. `just web-check` still runs both.
-  # Dependency cache, same policy as the ffi lane: Swatinem/rust-cache keeps
-  # third-party artifacts, keys on rustc and the workspace Cargo.lock, and
-  # saves only from main. `shared-key` replaces the job id and ignores `key`,
-  # so the flake.lock hash lives in `shared-key`.
+  # `just web-check` still runs both. The cache action saves only from main.
   web-vt:
     name: web (vt)
     needs: plan
@@ -360,30 +356,11 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: DeterminateSystems/nix-installer-action@3138316df39ed29be04236d7ffc686fa525866aa # v23
-      - uses: cachix/cachix-action@38b082610b782e7e93e209c35fd730d399dee866 # v17
+      - uses: ./.github/actions/setup-web-cache
         with:
-          name: phux
-          authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
-          pushFilter: '(-source$|nixpkgs\.tar\.gz$)'
-      - name: expose the browser shell's rustc
-        id: web-cache
-        run: |
-          set -euo pipefail
-          # Through a file: the shellHook greets on stdout.
-          nix develop .#browser -c bash -c 'dirname "$(command -v rustc)" > "$1"' _ "$RUNNER_TEMP/rustc-path"
-          cat "$RUNNER_TEMP/rustc-path" >> "$GITHUB_PATH"
-          {
-            echo "CARGO_INCREMENTAL=0"
-            echo "CARGO_PROFILE_DEV_DEBUG=0"
-          } >> "$GITHUB_ENV"
-          echo "flake=$(sha256sum flake.lock | cut -c1-12)" >> "$GITHUB_OUTPUT"
-      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
-        with:
-          shared-key: phux-web-vt-${{ steps.web-cache.outputs.flake }}
+          cachix-auth-token: ${{ secrets.CACHIX_AUTH_TOKEN }}
+          cache-key: phux-web-vt
           workspaces: clients/phux-vt-web
-          save-if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
-          cache-on-failure: "true"
       - name: just web-vt-check
         env:
           PHUX_WEB_ENGINE: ${{ needs.plan.outputs.web_engine == 'true' && '1' || '0' }}
@@ -400,32 +377,13 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: DeterminateSystems/nix-installer-action@3138316df39ed29be04236d7ffc686fa525866aa # v23
-      - uses: cachix/cachix-action@38b082610b782e7e93e209c35fd730d399dee866 # v17
+      - uses: ./.github/actions/setup-web-cache
         with:
-          name: phux
-          authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
-          pushFilter: '(-source$|nixpkgs\.tar\.gz$)'
-      - name: expose the browser shell's rustc
-        id: web-cache
-        run: |
-          set -euo pipefail
-          # Through a file: the shellHook greets on stdout.
-          nix develop .#browser -c bash -c 'dirname "$(command -v rustc)" > "$1"' _ "$RUNNER_TEMP/rustc-path"
-          cat "$RUNNER_TEMP/rustc-path" >> "$GITHUB_PATH"
-          {
-            echo "CARGO_INCREMENTAL=0"
-            echo "CARGO_PROFILE_DEV_DEBUG=0"
-          } >> "$GITHUB_ENV"
-          echo "flake=$(sha256sum flake.lock | cut -c1-12)" >> "$GITHUB_OUTPUT"
-      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
-        with:
-          shared-key: phux-web-client-${{ steps.web-cache.outputs.flake }}
+          cachix-auth-token: ${{ secrets.CACHIX_AUTH_TOKEN }}
+          cache-key: phux-web-client
           workspaces: |
             clients/phux-web
             . -> target/web-native
-          save-if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
-          cache-on-failure: "true"
       - name: just web-client-check
         run: nix develop .#browser -c just web-client-check
 
