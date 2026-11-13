@@ -1,6 +1,6 @@
 //! Keep the machine awake while agents work (`defaults.keep-awake`).
 //!
-//! A ticker on the server's `LocalSet` decides every [`TICK`] whether an
+//! A ticker on the server's `LocalSet` decides every 15 seconds whether an
 //! idle-sleep inhibitor should be held, and starts or stops it. The inhibitor
 //! is a child process that watches the server's pid, so it exits by itself
 //! if the server dies: `caffeinate` on macOS, `systemd-inhibit` on Linux,
