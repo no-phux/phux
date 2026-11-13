@@ -90,6 +90,160 @@ fn set_cloexec(fd: RawFd) {
     }
 }
 
+/// Spawn `command` as a daemon that disclaims responsibility for itself.
+///
+/// macOS then asks the server, not the app that started it, for privacy grants
+/// and keeps them on the server. Returns its pid; nothing owns or reaps it.
+/// `Command` cannot set that spawn attribute, so this is `posix_spawn` with
+/// the same program, arguments and environment changes, and what `Command`
+/// would set up: default signals and mask, and only stdio inherited. Stdin and
+/// stdout are `/dev/null`; stderr is `log`, else `/dev/null`. The command's
+/// own stdio and working directory are not read.
+#[cfg(target_os = "macos")]
+pub fn spawn_disclaimed(
+    command: &std::process::Command,
+    log: Option<&std::fs::File>,
+) -> std::io::Result<libc::pid_t> {
+    use std::ffi::CString;
+    use std::io;
+    use std::os::fd::AsRawFd as _;
+    use std::os::unix::ffi::OsStrExt as _;
+
+    unsafe extern "C" {
+        // libSystem, macOS 10.14+; Terminal-style apps use it for their children.
+        fn responsibility_spawnattrs_setdisclaim(
+            attr: *mut libc::posix_spawnattr_t,
+            disclaim: libc::c_int,
+        ) -> libc::c_int;
+    }
+    fn c(bytes: &[u8]) -> io::Result<CString> {
+        CString::new(bytes).map_err(io::Error::other)
+    }
+    fn check(code: libc::c_int) -> io::Result<()> {
+        if code == 0 {
+            Ok(())
+        } else {
+            Err(io::Error::from_raw_os_error(code))
+        }
+    }
+
+    let program = c(command.get_program().as_bytes())?;
+    let words = c_strings(std::iter::once(command.get_program()).chain(command.get_args()))?;
+    let pairs = spawn_env(std::env::vars_os(), command.get_envs());
+    let pairs = c_strings(pairs.iter().map(std::ffi::OsString::as_os_str))?;
+    let argv = null_terminated(&words);
+    let envp = null_terminated(&pairs);
+    let null = c(b"/dev/null")?;
+    let flags = libc::POSIX_SPAWN_CLOEXEC_DEFAULT
+        | libc::POSIX_SPAWN_SETSIGMASK
+        | libc::POSIX_SPAWN_SETSIGDEF;
+    let flags = libc::c_short::try_from(flags).map_err(io::Error::other)?;
+
+    let mut pid: libc::pid_t = 0;
+    // SAFETY: every pointer passed outlives the calls, and the attribute and
+    // file-action objects are initialised before use and destroyed after.
+    unsafe {
+        let mut actions: libc::posix_spawn_file_actions_t = std::ptr::null_mut();
+        check(libc::posix_spawn_file_actions_init(&raw mut actions))?;
+        let mut attr: libc::posix_spawnattr_t = std::ptr::null_mut();
+        if let Err(err) = check(libc::posix_spawnattr_init(&raw mut attr)) {
+            libc::posix_spawn_file_actions_destroy(&raw mut actions);
+            return Err(err);
+        }
+        let result = (|| {
+            let a = &raw mut actions;
+            check(libc::posix_spawn_file_actions_addopen(
+                a,
+                0,
+                null.as_ptr(),
+                libc::O_RDONLY,
+                0,
+            ))?;
+            check(libc::posix_spawn_file_actions_addopen(
+                a,
+                1,
+                null.as_ptr(),
+                libc::O_WRONLY,
+                0,
+            ))?;
+            check(log.map_or_else(
+                || libc::posix_spawn_file_actions_addopen(a, 2, null.as_ptr(), libc::O_WRONLY, 0),
+                |file| libc::posix_spawn_file_actions_adddup2(a, file.as_raw_fd(), 2),
+            ))?;
+            let mut none: libc::sigset_t = 0;
+            libc::sigemptyset(&raw mut none);
+            let mut pipe: libc::sigset_t = 0;
+            libc::sigemptyset(&raw mut pipe);
+            libc::sigaddset(&raw mut pipe, libc::SIGPIPE);
+            check(libc::posix_spawnattr_setsigmask(
+                &raw mut attr,
+                &raw const none,
+            ))?;
+            check(libc::posix_spawnattr_setsigdefault(
+                &raw mut attr,
+                &raw const pipe,
+            ))?;
+            check(libc::posix_spawnattr_setflags(&raw mut attr, flags))?;
+            check(responsibility_spawnattrs_setdisclaim(&raw mut attr, 1))?;
+            check(libc::posix_spawnp(
+                &raw mut pid,
+                program.as_ptr(),
+                &raw const actions,
+                &raw const attr,
+                argv.as_ptr(),
+                envp.as_ptr(),
+            ))
+        })();
+        libc::posix_spawnattr_destroy(&raw mut attr);
+        libc::posix_spawn_file_actions_destroy(&raw mut actions);
+        result?;
+    }
+    Ok(pid)
+}
+
+#[cfg(target_os = "macos")]
+fn c_strings<'a>(
+    items: impl Iterator<Item = &'a std::ffi::OsStr>,
+) -> std::io::Result<Vec<std::ffi::CString>> {
+    use std::os::unix::ffi::OsStrExt as _;
+    items
+        .map(|item| std::ffi::CString::new(item.as_bytes()).map_err(std::io::Error::other))
+        .collect()
+}
+
+/// The `char *const[]` `posix_spawn` takes, borrowing `strings`.
+#[cfg(target_os = "macos")]
+fn null_terminated(strings: &[std::ffi::CString]) -> Vec<*mut libc::c_char> {
+    strings
+        .iter()
+        .map(|s| s.as_ptr().cast_mut())
+        .chain([std::ptr::null_mut()])
+        .collect()
+}
+
+/// `inherited` with `changes` applied as `Command` applies them (a value sets,
+/// `None` removes), as `KEY=VALUE` pairs.
+#[cfg(target_os = "macos")]
+fn spawn_env<'a>(
+    inherited: impl Iterator<Item = (std::ffi::OsString, std::ffi::OsString)>,
+    changes: impl Iterator<Item = (&'a std::ffi::OsStr, Option<&'a std::ffi::OsStr>)>,
+) -> Vec<std::ffi::OsString> {
+    let mut env: std::collections::BTreeMap<_, _> = inherited.collect();
+    for (key, value) in changes {
+        match value {
+            Some(value) => env.insert(key.to_owned(), value.to_owned()),
+            None => env.remove(key),
+        };
+    }
+    env.into_iter()
+        .map(|(mut pair, value)| {
+            pair.push("=");
+            pair.push(value);
+            pair
+        })
+        .collect()
+}
+
 // Exercised end to end, in its own process, by the service suite's
 // `the_spawned_daemon_does_not_hold_the_callers_descriptors`. A unit test here
 // would flip descriptor flags process-wide under `cargo test`, racing the
@@ -111,5 +265,22 @@ mod tests {
         assert!(raised > 256);
         assert_eq!(getrlimit(Resource::Nofile).current, Some(raised));
         let _ = setrlimit(Resource::Nofile, before);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn spawn_env_sets_and_removes_over_the_inherited_environment() {
+        use std::ffi::{OsStr, OsString};
+        let inherited =
+            [("A", "1"), ("B", "2")].map(|(k, v)| (OsString::from(k), OsString::from(v)));
+        let changes = [
+            (OsStr::new("B"), None),
+            (OsStr::new("C"), Some(OsStr::new("3"))),
+            (OsStr::new("A"), Some(OsStr::new("x"))),
+        ];
+        assert_eq!(
+            super::spawn_env(inherited.into_iter(), changes.into_iter()),
+            ["A=x", "C=3"].map(OsString::from)
+        );
     }
 }

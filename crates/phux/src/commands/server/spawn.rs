@@ -1,7 +1,6 @@
 //! Auto-spawning a server for a client verb, and handing an older one over.
 
 use std::path::Path;
-use std::process::Stdio;
 use std::time::Instant;
 
 use phux_config::socket::{self, SocketState};
@@ -87,8 +86,6 @@ pub(crate) fn maybe_auto_spawn_server(
         .arg("--socket")
         .arg(socket_path)
         .arg("--daemonize")
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
         // A `switch-host` successor's hand-off marker describes its own
         // terminal; the server and every pane it spawns must not inherit it.
         .env_remove(phux_tui::attach::hosts::ALT_SCREEN_HANDOFF_ENV);
@@ -112,18 +109,10 @@ pub(crate) fn maybe_auto_spawn_server(
     if let Some(secs) = auto_spawn_idle_limit(quiet) {
         cmd.arg("--exit-after-idle").arg(secs.to_string());
     }
-    match log {
-        Some(file) => {
-            cmd.stderr(file);
-        }
-        None => {
-            cmd.stderr(Stdio::null());
-        }
-    }
 
     // `--daemonize` only calls `setsid`, so this is the server process itself.
     // It is dropped (not killed) once accepting: it owns its own lifecycle.
-    let mut child = ensure::spawn_daemon(&mut cmd)?;
+    let child = ensure::spawn_daemon(&mut cmd, log)?;
 
     wait_until_accepting(socket_path, "auto-spawned server", &log_path, || {
         // `try_wait` is a non-blocking `waitpid`: watching the daemon this way
