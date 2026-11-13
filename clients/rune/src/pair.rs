@@ -1,4 +1,4 @@
-//! Pairing a phone: what `phux pair --json` and `phux workload --json list`
+//! Pairing a phone: what `phux pair --json --enroll` and `phux pair ls --json`
 //! say, in the words the Pair a phone screen shows. The state lives in
 //! `desk::settings::pair`, the view in `ui::pair`.
 
@@ -15,6 +15,11 @@ pub struct Code {
     /// When it stops pairing a new phone, in Unix seconds; `None` when the
     /// CLI names no expiry.
     pub expires_at: Option<i64>,
+    /// One phone at most: a single-use link, or a single-use enrollment
+    /// ticket in it.
+    pub once: bool,
+    /// The credential the link carries, which `pair ls` lists.
+    pub credential: String,
     pub network: Network,
 }
 
@@ -47,20 +52,19 @@ impl Network {
     }
 }
 
-/// A device enrolled with this computer's server.
+/// A credential `phux pair ls` lists as able to connect.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Device {
-    /// The `sha256:` credential id `phux pair revoke` takes.
+    /// The credential id `phux pair revoke` takes.
     pub id: String,
-    /// When its certificate runs out, in Unix seconds.
-    pub expires_at: Option<i64>,
+    /// When it last connected, in Unix seconds.
+    pub last_seen: Option<i64>,
 }
 
 impl Device {
-    /// A short name: the registry keeps no device names.
+    /// A short name: the store keeps no device names.
     pub fn name(&self) -> String {
-        let digest = self.id.strip_prefix("sha256:").unwrap_or(&self.id);
-        format!("Device {}", &digest[..digest.len().min(8)])
+        format!("Device {}", &self.id[..self.id.len().min(8)])
     }
 }
 
@@ -74,8 +78,9 @@ fn json(bytes: &[u8]) -> Result<Value, String> {
     serde_json::from_slice(bytes).map_err(|error| format!("phux printed no JSON: {error}"))
 }
 
-/// A `phux pair --json` mint. The code expires with the sooner of the
-/// credential and its enrollment ticket: past either, a new phone can't pair.
+/// A `phux pair --json --enroll` mint. The code expires with the soonest of
+/// the link, the credential and its enrollment ticket: past any, a new phone
+/// can't pair. A CLI that names none of them shows no countdown.
 pub fn parse_code(bytes: &[u8]) -> Result<Code, String> {
     let doc = json(bytes)?;
     let link = doc["connect_link"]
@@ -83,10 +88,14 @@ pub fn parse_code(bytes: &[u8]) -> Result<Code, String> {
         .filter(|link| !link.is_empty())
         .ok_or("phux made no link a phone can open: the server has no address to give it")?
         .to_owned();
-    let expires_at = [&doc["expires_at"], &doc["enrollment_expires_at"]]
-        .into_iter()
-        .filter_map(instant)
-        .min();
+    let expires_at = [
+        &doc["link_expires_at"],
+        &doc["expires_at"],
+        &doc["enrollment_expires_at"],
+    ]
+    .into_iter()
+    .filter_map(instant)
+    .min();
     let network = if doc["relay"].is_object() {
         Network::Relay
     } else {
@@ -95,6 +104,8 @@ pub fn parse_code(bytes: &[u8]) -> Result<Code, String> {
     Ok(Code {
         link,
         expires_at,
+        once: doc["single_use"] == true || doc["enrollment_ticket_id"].is_string(),
+        credential: doc["credential_id"].as_str().unwrap_or_default().to_owned(),
         network,
     })
 }
@@ -169,8 +180,9 @@ fn tailnet(ip: IpAddr) -> bool {
     }
 }
 
-/// The people's devices `phux workload --json list` holds: active, held by a
-/// person, and not an organization's to manage.
+/// The devices `phux pair ls --json` says can connect. A CLI that reports
+/// `status` marks a paired phone `active` with no `link_expires_at`; an
+/// older one says only whether a credential is revoked.
 pub fn parse_devices(bytes: &[u8]) -> Result<Vec<Device>, String> {
     let doc = json(bytes)?;
     let rows = doc["credentials"]
@@ -178,12 +190,14 @@ pub fn parse_devices(bytes: &[u8]) -> Result<Vec<Device>, String> {
         .ok_or("phux listed no credentials")?;
     Ok(rows
         .iter()
-        .filter(|row| row["status"] == "active" && row["principal"] == "human")
-        .filter(|row| row["managed"].is_null())
+        .filter(|row| match row["status"].as_str() {
+            Some(status) => status == "active" && row["link_expires_at"].is_null(),
+            None => row["revoked"] == false,
+        })
         .filter_map(|row| {
             Some(Device {
-                id: row["credential_id"].as_str()?.to_owned(),
-                expires_at: row["expires_at"].as_i64(),
+                id: row["id"].as_str()?.to_owned(),
+                last_seen: instant(&row["last_seen"]),
             })
         })
         .collect())
@@ -218,13 +232,14 @@ pub fn countdown(left: i64) -> Option<String> {
     })
 }
 
-/// How long a device's access lasts, from `now`.
-pub fn access_left(expires_at: Option<i64>, now: i64) -> String {
-    match expires_at.map(|at| (at - now) / 86_400) {
-        None => "Access does not expire".to_owned(),
-        Some(days) if days < 1 => "Access ends today".to_owned(),
-        Some(1) => "Access for 1 more day".to_owned(),
-        Some(days) => format!("Access for {days} more days"),
+/// When a device last connected, from `now`.
+pub fn last_seen(at: Option<i64>, now: i64) -> String {
+    match at.map(|at| (now - at).max(0)) {
+        None => "Not connected yet".to_owned(),
+        Some(ago) if ago < 3600 => "Connected in the last hour".to_owned(),
+        Some(ago) if ago < 86_400 => "Last connected today".to_owned(),
+        Some(ago) if ago < 2 * 86_400 => "Last connected yesterday".to_owned(),
+        Some(ago) => format!("Last connected {} days ago", ago / 86_400),
     }
 }
 
@@ -276,6 +291,18 @@ mod tests {
         // The ticket (02:48:20Z) runs out before the credential (02:53:20Z).
         assert_eq!(code.expires_at, Some(1_794_538_100));
         assert_eq!(code.network, Network::Tailnet);
+        assert!(code.once, "the enrollment ticket is single use");
+        assert_eq!(code.credential, "00f5");
+        let next = MINT.replace(
+            r#""credential_id""#,
+            r#""single_use": true, "link_expires_at": "2026-11-13T02:40:00Z", "credential_id""#,
+        );
+        let code = parse_code(next.as_bytes()).unwrap();
+        assert_eq!(
+            code.expires_at,
+            Some(1_794_537_600),
+            "the link runs out first"
+        );
     }
 
     #[test]
@@ -283,6 +310,7 @@ mod tests {
         let doc = r#"{"connect_link":"https://phux.sh/connect?url=wss://192.168.1.4:8787&token=t","expires_at":null}"#;
         let code = parse_code(doc.as_bytes()).unwrap();
         assert_eq!(code.expires_at, None);
+        assert!(!code.once);
         assert_eq!(code.network, Network::Lan);
     }
 
@@ -323,17 +351,24 @@ mod tests {
     }
 
     #[test]
-    fn devices_are_active_unmanaged_people() {
-        let doc = r#"{"credentials":[
-          {"credential_id":"sha256:84b11329e12c","status":"active","principal":"human","expires_at":100,"managed":null},
-          {"credential_id":"sha256:1895","status":"revoked","principal":"human","managed":null},
-          {"credential_id":"sha256:aaaa","status":"active","principal":"agent","managed":null},
-          {"credential_id":"sha256:bbbb","status":"active","principal":"human","managed":{"org":"x"}}
+    fn devices_are_paired_phones_or_unrevoked_credentials_on_an_older_cli() {
+        let next = r#"{"credentials":[
+          {"id":"84b11329e12c","status":"active","link_expires_at":null,"last_seen":"2026-11-12T00:00:00Z"},
+          {"id":"aaaa","status":"unused","link_expires_at":"2026-11-13T03:00:00Z","last_seen":null},
+          {"id":"bbbb","status":"expired","link_expires_at":null},
+          {"id":"cccc","status":"revoked","link_expires_at":null}
         ]}"#;
-        let devices = parse_devices(doc.as_bytes()).unwrap();
+        let devices = parse_devices(next.as_bytes()).unwrap();
         assert_eq!(devices.len(), 1);
         assert_eq!(devices[0].name(), "Device 84b11329");
-        assert_eq!(devices[0].expires_at, Some(100));
+        assert_eq!(devices[0].last_seen, Some(1_794_441_600));
+        let today = r#"{"credentials":[
+          {"id":"1f3b","revoked":false,"last_seen":null},
+          {"id":"a410","revoked":true,"last_seen":"2026-10-07T21:09:31.062219+00:00"}
+        ]}"#;
+        let devices = parse_devices(today.as_bytes()).unwrap();
+        assert_eq!(devices.len(), 1);
+        assert_eq!(devices[0].last_seen, None);
     }
 
     #[test]
@@ -350,11 +385,11 @@ mod tests {
         assert_eq!(countdown(545).as_deref(), Some("9:05"));
         assert_eq!(countdown(3723).as_deref(), Some("1:02:03"));
         assert_eq!(countdown(0), None);
-        assert_eq!(access_left(None, 0), "Access does not expire");
-        assert_eq!(access_left(Some(3600), 0), "Access ends today");
+        assert_eq!(last_seen(None, 0), "Not connected yet");
+        assert_eq!(last_seen(Some(0), 600), "Connected in the last hour");
         assert_eq!(
-            access_left(Some(86_400 * 2 + 5), 0),
-            "Access for 2 more days"
+            last_seen(Some(0), 86_400 * 3 + 5),
+            "Last connected 3 days ago"
         );
     }
 

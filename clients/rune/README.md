@@ -86,8 +86,8 @@ session (or `--session NAME`). It never creates a session on its own.
   **New code**. It says which network the phone uses (tailnet, local
   network or relay). When remote access is off it says what turning it on
   means and waits for **Allow phones to connect** (`--enable`). **Paired
-  devices** lists `phux workload list`'s enrolled devices; **Revoke** runs
-  `phux pair revoke` and disconnects that device now.
+  devices** lists what `phux pair ls` says can connect; **Revoke** runs
+  `phux pair revoke` so that device can't connect again.
 - **Updates.** Settings → **About & Updates** controls automatic checks,
   local phux management, and the phux release channel. Downloads and server
   handoffs still need a click. [Updates and release channels](./UPDATES.md)

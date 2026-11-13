@@ -7,7 +7,7 @@ use rune::{El, TextStyle, col, el, row, text};
 use super::settings::{primary, secondary};
 use super::{CAPTION, Ink, pressable};
 use crate::desk::Desk;
-use crate::pair::{self, access_left, countdown, needs_enable};
+use crate::pair::{self, countdown, last_seen, needs_enable};
 
 const TITLE: TextStyle = TextStyle::new(13.0, 500.0);
 const COPY: TextStyle = TextStyle::new(12.0, 450.0).lh(16.0);
@@ -101,7 +101,8 @@ fn code(desk: &Desk, ink: &Ink) -> El {
             let left = code.expires_at.map(|at| countdown(at - now));
             let expired = matches!(left, Some(None));
             let status = match left {
-                Some(Some(left)) => format!("Expires in {left}. Works once."),
+                Some(Some(left)) if code.once => format!("Expires in {left}. Works once."),
+                Some(Some(left)) => format!("Expires in {left}."),
                 Some(None) => "This code expired.".to_owned(),
                 None => "Works until you make a new one or revoke it.".to_owned(),
             };
@@ -163,15 +164,22 @@ fn devices(desk: &Desk, ink: &Ink) -> Option<El> {
             .role("heading")
             .level(3),
     );
-    let devices = match listed {
-        Err(error) => return Some(list.child(words(error.clone(), desk, ink))),
-        Ok(devices) if devices.is_empty() => {
-            return Some(list.child(words("No devices yet.", desk, ink)));
-        }
-        Ok(devices) => devices,
-    };
     let now = pair::now();
-    for (at, device) in devices.iter().enumerate() {
+    let devices: Vec<_> = match listed {
+        Err(error) => return Some(list.child(words(error.clone(), desk, ink))),
+        // An older CLI lists the code on screen too, until a phone uses it.
+        Ok(devices) => devices
+            .iter()
+            .filter(|d| {
+                let shown = desk.settings_ui.pairing.live_code(now);
+                d.last_seen.is_some() || shown.is_none_or(|code| code.credential != d.id)
+            })
+            .collect(),
+    };
+    if devices.is_empty() {
+        return Some(list.child(words("No devices yet.", desk, ink)));
+    }
+    for (at, device) in devices.into_iter().enumerate() {
         let id = device.id.clone();
         let name = device.name();
         list = list.child(
@@ -191,7 +199,7 @@ fn devices(desk: &Desk, ink: &Ink) -> Option<El> {
                                 .font(primary(desk, TITLE))
                                 .color(ink.text),
                         )
-                        .child(words(access_left(device.expires_at, now), desk, ink)),
+                        .child(words(last_seen(device.last_seen, now), desk, ink)),
                 )
                 .child(
                     button("pair-revoke", "Revoke", false, ink, desk)
@@ -202,8 +210,7 @@ fn devices(desk: &Desk, ink: &Ink) -> Option<El> {
         );
     }
     Some(list.child(words(
-        "Phones and computers enrolled with this one. Revoking a device disconnects it now; \
-         it can pair again with a new code.",
+        "Revoking a device stops it connecting again; it can pair again with a new code.",
         desk,
         ink,
     )))

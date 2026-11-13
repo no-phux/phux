@@ -1,5 +1,5 @@
 //! Pair a phone: the code on screen, the devices that can connect, and the
-//! `phux pair` / `phux workload` calls behind them. The words and parsing
+//! `phux pair` calls behind them. The words and parsing
 //! live in `crate::pair`; the view in `ui::pair`.
 //!
 //! ponytail: like onboarding, always this computer's server, even with the
@@ -130,7 +130,7 @@ impl Desk {
             return;
         }
         self.settings_ui.pairing.listed_at = self.clock;
-        self.pair_ask(&["workload", "--json", "list"], false, QUICK, |out| {
+        self.pair_ask(&["pair", "ls", "--json"], false, QUICK, |out| {
             Done::Devices(out.and_then(|bytes| pair::parse_devices(&bytes)))
         });
     }
@@ -188,13 +188,14 @@ impl Desk {
                 }
                 Done::Devices(result) => {
                     self.settings_ui.pairing.listing = false;
-                    let before = match &self.settings_ui.pairing.devices {
-                        Some(Ok(devices)) => Some(devices.clone()),
-                        _ => None,
+                    // The code's own credential has connected: a phone used it.
+                    let paired = match (self.settings_ui.pairing.live_code(pair::now()), &result) {
+                        (Some(code), Ok(devices)) => devices
+                            .iter()
+                            .any(|d| d.id == code.credential && d.last_seen.is_some()),
+                        _ => false,
                     };
-                    let paired = matches!((&before, &result), (Some(before), Ok(after))
-                        if after.iter().any(|d| !before.contains(d)));
-                    if paired && self.settings_ui.pairing.live_code(pair::now()).is_some() {
+                    if paired {
                         // The code is single use: it did its job.
                         self.settings_ui.pairing.code = None;
                         self.settings_ui.pairing.qr = None;
@@ -204,7 +205,11 @@ impl Desk {
                         Some(result.map_err(|error| pair::reason(&error)));
                 }
                 Done::Revoked(_, Ok(())) => {
-                    self.say(NoticeKind::Info, "Revoked. That device is disconnected.");
+                    self.say(
+                        NoticeKind::Info,
+                        "Revoked. That device can't connect again; one already connected \
+                         stays until it disconnects.",
+                    );
                     self.list_devices();
                 }
                 Done::Revoked(id, Err(error)) => {
@@ -248,6 +253,8 @@ impl Desk {
         self.settings_ui.pairing.code = Some(Ok(Code {
             link: link.to_owned(),
             expires_at: Some(now + 542),
+            once: true,
+            credential: "00f52232cc292e87b6695a8b67d363f6".to_owned(),
             network: pair::Network::Tailnet,
         }));
         self.settings_ui.pairing.qr = self.resources.images.as_ref().map(|cache| {
@@ -258,12 +265,12 @@ impl Desk {
         });
         self.settings_ui.pairing.devices = Some(Ok(vec![
             Device {
-                id: "sha256:84b11329e12c1d8ee514eb29e5b390d8".to_owned(),
-                expires_at: Some(now + 86_400 * 54),
+                id: "84b11329e12c1d8ee514eb29e5b390d8".to_owned(),
+                last_seen: Some(now - 1200),
             },
             Device {
-                id: "sha256:5df67277173a46c6b482089d2743ed59".to_owned(),
-                expires_at: Some(now + 86_400 * 344),
+                id: "5df67277173a46c6b482089d2743ed59".to_owned(),
+                last_seen: Some(now - 86_400 * 4),
             },
         ]));
     }
