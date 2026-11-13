@@ -27,6 +27,12 @@ fn a_phone_takes_its_sheets_from_the_theme_or_the_ground_never_the_system() {
     desk.settings.theme = light;
     let sheets = ink(&desk, Color::WHITE);
     assert_eq!(crate::theme::on_fill(sheets.raised), Color::BLACK);
+    desk.open_phone_sessions();
+    assert_eq!(
+        edge_color(&desk),
+        sheets.bg,
+        "UIKit continues the navigation page's theme"
+    );
 }
 
 #[test]

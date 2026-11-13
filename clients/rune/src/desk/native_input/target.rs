@@ -138,10 +138,11 @@ impl Field {
         })
     }
 
-    pub(super) fn changed(&self, d: &mut Desk) {
+    pub(super) fn changed(&self, d: &mut Desk, tx: &mut Tx) {
         match self {
             Self::Palette => d.palette_edited(),
             Self::Find => d.run_search(),
+            Self::PhoneSessions => d.phone_search_edited(tx),
             _ => {}
         }
     }
@@ -191,7 +192,7 @@ impl Field {
                 tx.blur();
             }
             if edit.text != before {
-                self.changed(d);
+                self.changed(d, tx);
             }
         }
     }
