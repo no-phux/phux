@@ -40,12 +40,12 @@ impl Modal {
             // reach the app too; they must never address the terminal behind it.
             Self::FindField => !matches!(
                 action,
-                Shortcut::Copy | Shortcut::Paste | Shortcut::SelectAll
+                Shortcut::Copy | Shortcut::Paste | Shortcut::SelectAll | Shortcut::Screenshot
             ),
             Self::Palette => matches!(action, Shortcut::Palette),
             Self::Popup => matches!(
                 action,
-                Shortcut::Copy | Shortcut::Paste | Shortcut::CloseTerminal
+                Shortcut::Copy | Shortcut::Paste | Shortcut::Screenshot | Shortcut::CloseTerminal
             ),
             Self::Onboarding => matches!(action, Shortcut::Palette) || action.works_over_sheets(),
             Self::Settings => matches!(action, Shortcut::Find) || action.works_over_sheets(),

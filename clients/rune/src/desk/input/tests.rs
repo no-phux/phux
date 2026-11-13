@@ -11,7 +11,12 @@ fn nothing_pastes_past_a_question() {
 fn the_find_field_leaves_commands_running() {
     assert!(Modal::FindField.allows(Shortcut::FindNext));
     assert!(Modal::FindField.allows(Shortcut::FindPrevious));
-    for action in [Shortcut::Copy, Shortcut::Paste, Shortcut::SelectAll] {
+    for action in [
+        Shortcut::Copy,
+        Shortcut::Paste,
+        Shortcut::SelectAll,
+        Shortcut::Screenshot,
+    ] {
         assert!(!Modal::FindField.allows(action));
     }
 }
