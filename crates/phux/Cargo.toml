@@ -69,6 +69,8 @@ phux-tui.workspace = true
 # In-process performance telemetry: `phux perf` renders a `PerfReport`.
 phux-perf.workspace = true
 phux-config.workspace = true
+# `phux agent surface standing` exits once `phux update` replaced its binary.
+phux-resource.workspace = true
 # `phux mission`: the mission documents, and the work store's keeper and
 # client. A client composition; no server or protocol type is involved.
 phux-mission.workspace = true

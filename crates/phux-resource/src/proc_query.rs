@@ -552,6 +552,10 @@ mod identity;
 use identity::parse_boot_id;
 pub use identity::{boot_id, proc_identity};
 
+mod exe;
+
+pub use exe::runs_replaced_executable;
+
 mod tree;
 
 pub use tree::background_descendant;

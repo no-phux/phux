@@ -30,12 +30,13 @@ impl ServerState {
         self.config.native_host_executable = executable;
     }
 
-    /// [`Self::set_native_host_executable`], else the running binary.
+    /// [`Self::set_native_host_executable`], else the running binary's path
+    /// (the installed file, after `phux update` replaced it).
     pub(crate) fn native_host_executable(&self) -> Result<std::path::PathBuf, std::io::Error> {
         self.config
             .native_host_executable
             .clone()
-            .map_or_else(std::env::current_exe, Ok)
+            .map_or_else(phux_config::instance::running_executable, Ok)
     }
 }
 
