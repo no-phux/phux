@@ -42,48 +42,11 @@ permissions:
   contents: read
 
 jobs:
-  build:
-    name: ${{ matrix.name }}
-    # A caller names the hosts it wants. macOS is its own job: a job-level
-    # `if` cannot read `matrix`, so this matrix is Linux only. It runs when
-    # the caller qualifies: both archives, then the packaged launch.
-    if: inputs.qualify && (inputs.hosts == 'all' || inputs.hosts == 'linux')
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - os: ubuntu-24.04
-            name: linux-x86_64
-          - os: ubuntu-24.04-arm
-            name: linux-aarch64
-    runs-on: ${{ matrix.os }}
-    timeout-minutes: 60
-    # Debug builds only (clippy, tests, the qualification CLI): fewer bytes to
-    # compile and cache. The packaged release build keeps its own profile.
-    env:
-      CARGO_INCREMENTAL: "0"
-      CARGO_PROFILE_DEV_DEBUG: "0"
-    steps:
-      # Checkout before the local action: the runner resolves it from this
-      # workspace, and a missing checkout cannot see action.yml.
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      - uses: ./.github/actions/rune-host
-        with:
-          name: ${{ matrix.name }}
-          qualify: ${{ inputs.qualify }}
-          apple_developer_id_p12: ${{ secrets.APPLE_DEVELOPER_ID_P12 }}
-          apple_developer_id_password: ${{ secrets.APPLE_DEVELOPER_ID_PASSWORD }}
-          apple_notary_key_p8: ${{ secrets.APPLE_NOTARY_KEY_P8 }}
-          apple_notary_key_id: ${{ secrets.APPLE_NOTARY_KEY_ID }}
-          apple_notary_issuer_id: ${{ secrets.APPLE_NOTARY_ISSUER_ID }}
-
-  # The pull-request leg. Mutually exclusive with build: qualify false runs
-  # check.sh and cargo-deny here, and does not start linux-aarch64.
-  linux-check:
+  # Static names: a skipped matrix job never expands, so `matrix.name` would
+  # be published as the literal check `matrix.name`.
+  linux-x86_64:
     name: linux-x86_64
-    if: inputs.qualify == false && (inputs.hosts == 'all' || inputs.hosts == 'linux')
+    if: inputs.hosts == 'all' || inputs.hosts == 'linux'
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     env:
@@ -96,7 +59,34 @@ jobs:
       - uses: ./.github/actions/rune-host
         with:
           name: linux-x86_64
-          qualify: false
+          qualify: ${{ inputs.qualify }}
+          apple_developer_id_p12: ${{ secrets.APPLE_DEVELOPER_ID_P12 }}
+          apple_developer_id_password: ${{ secrets.APPLE_DEVELOPER_ID_PASSWORD }}
+          apple_notary_key_p8: ${{ secrets.APPLE_NOTARY_KEY_P8 }}
+          apple_notary_key_id: ${{ secrets.APPLE_NOTARY_KEY_ID }}
+          apple_notary_issuer_id: ${{ secrets.APPLE_NOTARY_ISSUER_ID }}
+
+  linux-aarch64:
+    name: linux-aarch64
+    if: inputs.qualify && (inputs.hosts == 'all' || inputs.hosts == 'linux')
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 60
+    env:
+      CARGO_INCREMENTAL: "0"
+      CARGO_PROFILE_DEV_DEBUG: "0"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/rune-host
+        with:
+          name: linux-aarch64
+          qualify: ${{ inputs.qualify }}
+          apple_developer_id_p12: ${{ secrets.APPLE_DEVELOPER_ID_P12 }}
+          apple_developer_id_password: ${{ secrets.APPLE_DEVELOPER_ID_PASSWORD }}
+          apple_notary_key_p8: ${{ secrets.APPLE_NOTARY_KEY_P8 }}
+          apple_notary_key_id: ${{ secrets.APPLE_NOTARY_KEY_ID }}
+          apple_notary_issuer_id: ${{ secrets.APPLE_NOTARY_ISSUER_ID }}
 
   macos:
     name: macos-arm64

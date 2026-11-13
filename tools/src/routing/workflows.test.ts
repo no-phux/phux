@@ -191,7 +191,8 @@ test("ci runs Rune's Linux hosts, and rune-macos owns the Apple legs", () => {
   expect(str(build["if"])).toContain("github.event_name != 'pull_request'");
   expect(str(job(mac, "rune-macos")["name"])).toBe("rune-macos");
   expect(steps(job(mac, "plan")).map(run).join("\n")).toContain("rune-macos-plan");
-  expect(uses(job(CI, "rune-macos"))).toBe("./.github/workflows/rune-macos.yml");
+  expect(uses(job(CI, "queue-apple"))).toBe("./.github/workflows/rune-macos.yml");
+  expect(str(job(CI, "queue-apple")["name"])).toBe("queue-apple");
   expect(table(mac["on"])["workflow_call"]).toBeDefined();
   const reusable = workflow("rune-build.yml");
   const inputs = table(table(table(reusable["on"])["workflow_call"])["inputs"]);
@@ -200,11 +201,10 @@ test("ci runs Rune's Linux hosts, and rune-macos owns the Apple legs", () => {
   // and Linux qualification.
   expect(input).toMatchObject({ type: "boolean", default: true });
   expect(table(inputs["qualify"])).toMatchObject({ type: "boolean", default: true });
-  expect(str(job(reusable, "build")["if"])).toBe(
+  expect(str(job(reusable, "linux-x86_64")["name"])).toBe("linux-x86_64");
+  expect(str(job(reusable, "linux-aarch64")["name"])).toBe("linux-aarch64");
+  expect(str(job(reusable, "linux-aarch64")["if"])).toBe(
     "inputs.qualify && (inputs.hosts == 'all' || inputs.hosts == 'linux')",
-  );
-  expect(str(job(reusable, "linux-check")["if"])).toBe(
-    "inputs.qualify == false && (inputs.hosts == 'all' || inputs.hosts == 'linux')",
   );
   expect(str(job(reusable, "ios-native")["if"])).toBe(
     "inputs.ios && (inputs.hosts == 'all' || inputs.hosts == 'macos')",

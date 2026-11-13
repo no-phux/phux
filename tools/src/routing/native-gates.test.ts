@@ -3,7 +3,18 @@ import { expect, test } from "bun:test";
 import { runInNewContext } from "node:vm";
 import { capture } from "../lib/process.ts";
 import { str, table, type Table } from "../lib/value.ts";
-import { action, job, needs, run, steps, uses, workflow, withInput } from "../policy/workflows.ts";
+import {
+  action,
+  job,
+  jobs,
+  needs,
+  run,
+  steps,
+  uses,
+  workflow,
+  workflowNames,
+  withInput,
+} from "../policy/workflows.ts";
 import { Classifier } from "./classify.ts";
 import { runeMacosPlan } from "./rune-macos.ts";
 
@@ -81,11 +92,15 @@ test("the split preserves real native, trust, transport and signed-byte qualific
   const uploads = host.filter((step) => uses(step).startsWith("actions/upload-artifact@"));
   expect(uploads.length).toBe(2);
   for (const step of uploads) expect(str(step["if"])).toContain("inputs.qualify == 'true'");
-  const check = job(build, "linux-check");
-  expect(str(check["runs-on"])).toBe("ubuntu-24.04");
+  const x86 = job(build, "linux-x86_64");
+  const arm = job(build, "linux-aarch64");
+  expect(str(x86["name"])).toBe("linux-x86_64");
+  expect(str(arm["name"])).toBe("linux-aarch64");
+  expect(str(arm["runs-on"])).toBe("ubuntu-24.04-arm");
+  expect(str(arm["if"])).toContain("inputs.qualify");
   expect(
-    withInput(steps(check).find((step) => uses(step).includes("rune-host")) ?? {}, "qualify"),
-  ).toBe(false);
+    withInput(steps(x86).find((step) => uses(step).includes("rune-host")) ?? {}, "qualify"),
+  ).toBe("${{ inputs.qualify }}");
   // A tag and the nightly call pass no qualify input, so the default stays on.
   expect(withInput(job(workflow("rune-client.yml"), "build"), "qualify")).toBeUndefined();
   expect(withInput(job(workflow("cache-warm.yml"), "rune"), "qualify")).toBeUndefined();
@@ -135,12 +150,36 @@ test.each(["ci.yml", "rune-macos.yml"])(
   },
 );
 
+test("only rune-macos.yml publishes a check named rune-macos", () => {
+  // GitHub uses a job's name, or its id when name is absent. A skipped caller
+  // with either set to rune-macos posts that exact check and can mask the
+  // real one. An unevaluated ${{ }} name is not a substitute for a real name.
+  const found: string[] = [];
+  for (const file of workflowNames()) {
+    for (const [id, lane] of Object.entries(jobs(workflow(file)))) {
+      const display = str(lane["name"]);
+      const published = display === undefined || display.includes("${{") ? id : display;
+      const exact = published === "rune-macos" || id === "rune-macos" || display === "rune-macos";
+      if (!exact) continue;
+      if (file === "rune-macos.yml" && id === "rune-macos" && display === "rune-macos") continue;
+      found.push(`${file} ${id} → ${display ?? id}`);
+    }
+  }
+  expect(found).toEqual([]);
+  for (const id of ["linux-x86_64", "linux-aarch64"] as const) {
+    const name = str(job(workflow("rune-build.yml"), id)["name"]);
+    expect(name?.includes("matrix.")).toBe(false);
+    expect(name).toBe(id);
+  }
+});
+
 test("the existing required ci check depends on real Apple qualification on the queue", () => {
   const ci = workflow("ci.yml");
-  const apple = job(ci, "rune-macos");
+  const apple = job(ci, "queue-apple");
+  expect(str(apple["name"])).toBe("queue-apple");
   expect(uses(apple)).toBe("./.github/workflows/rune-macos.yml");
   expect(str(apple["if"])).toBe("github.event_name == 'merge_group'");
-  expect(needs(job(ci, "ci"))).toContain("rune-macos");
+  expect(needs(job(ci, "ci"))).toContain("queue-apple");
   const mac = workflow("rune-macos.yml");
   expect(table(mac["on"])["workflow_call"]).toBeDefined();
   // Only ci calls the queue leg: no second standalone native queue build.
@@ -151,7 +190,7 @@ test("the existing required ci check depends on real Apple qualification on the 
 
 test("ci rejects a failed or cancelled native queue dependency", () => {
   const script = run(steps(job(workflow("ci.yml"), "ci"))[0] ?? {});
-  expect(needs(job(workflow("ci.yml"), "ci"))).toContain("rune-macos");
+  expect(needs(job(workflow("ci.yml"), "ci"))).toContain("queue-apple");
   for (const state of ["success", "failure", "cancelled", "skipped"]) {
     const proc = Bun.spawnSync(["bash", "-euo", "pipefail", "-c", script], {
       env: {
@@ -159,7 +198,7 @@ test("ci rejects a failed or cancelled native queue dependency", () => {
         REQUIRE_APPLE: "true",
         RESULTS: JSON.stringify({
           plan: { result: "success" },
-          "rune-macos": { result: state },
+          "queue-apple": { result: state },
         }),
       },
       stdout: "ignore",

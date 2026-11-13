@@ -404,14 +404,17 @@ jobs:
 
   # Keep Apple qualification inside the already-required queue check. Older
   # queue entries still use their original ci; no ruleset cutover is needed.
-  rune-macos:
+  # The job id is not `rune-macos`: a skipped caller with that id publishes
+  # a check of the same name and can mask rune-macos.yml's own check.
+  queue-apple:
+    name: queue-apple
     if: github.event_name == 'merge_group'
     uses: ./.github/workflows/rune-macos.yml
 
   # The required check. The ruleset matches this display name.
   ci:
     name: ci
-    needs: [plan, guards, lint, test-build, tests, e2e, ffi, icount, integrations, web, native, rune, rune-macos]
+    needs: [plan, guards, lint, test-build, tests, e2e, ffi, icount, integrations, web, native, rune, queue-apple]
     # Same draft exception as plan: release-please heads always reach this gate.
     if: always() && github.event.action != 'closed' && (startsWith(github.head_ref, 'release-please--') || github.event.pull_request.draft != true)
     runs-on: ubuntu-24.04
@@ -424,7 +427,7 @@ jobs:
         run: |
           jq -r 'to_entries[] | "\(.value.result)\t\(.key)"' <<<"$RESULTS"
           jq -e '.plan.result == "success" and ([.[].result] | all(. == "success" or . == "skipped"))
-            and (env.REQUIRE_APPLE != "true" or .["rune-macos"].result == "success")' \
+            and (env.REQUIRE_APPLE != "true" or .["queue-apple"].result == "success")' \
             <<<"$RESULTS" >/dev/null
       - name: write the validation receipt
         if: github.event_name == 'pull_request' || github.event_name == 'merge_group'
