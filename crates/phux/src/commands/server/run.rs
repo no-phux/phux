@@ -82,6 +82,9 @@ fn prepare_process(
         phux_server::daemon::withhold_inherited_descriptors();
     }
 
+    // Agents in panes run `phux`; make sure one resolves.
+    phux_server::daemon::expose_own_cli();
+
     let socket_path = socket.unwrap_or_else(default_socket_path);
     // Fail before the banner when the path cannot fit in a `sockaddr_un`.
     crate::commands::ensure_socket_path_fits(&socket_path)?;

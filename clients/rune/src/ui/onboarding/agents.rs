@@ -48,7 +48,11 @@ fn skill_card(desk: &Desk, p: &Ink) -> El {
     if ob.installing {
         return card.child(note("Installing…", p));
     }
-    let wanted: Vec<_> = skills.iter().filter(|s| s.detected).collect();
+    // With no agent installed yet, the shared skill setup writes still counts.
+    let mut wanted: Vec<_> = skills.iter().filter(|s| s.detected).collect();
+    if wanted.is_empty() {
+        wanted = skills.iter().filter(|s| s.installed()).collect();
+    }
     let all = !wanted.is_empty() && wanted.iter().all(|s| s.installed());
     let rows = wanted.iter().filter(|_| !all).map(|s| {
         row()

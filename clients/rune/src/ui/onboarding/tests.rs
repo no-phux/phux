@@ -238,3 +238,23 @@ fn the_glass_slider_steps_and_clamps() {
     assert_eq!(rt.state.settings.glass, 100);
     snap(&mut rt, "2b-look-glass");
 }
+
+#[test]
+fn skill_shows_installed_with_no_agent_found() {
+    let mut rt = window(Step::Agents);
+    rt.update(|d, _| {
+        let undetected = |agent, state| AgentSkill {
+            detected: false,
+            ..skill(agent, state)
+        };
+        d.onboarding.skills = Probe::Ready(vec![
+            undetected("claude", "missing"),
+            undetected("codex", "up_to_date"),
+        ]);
+    });
+    settle(&mut rt);
+    assert!(
+        !has(&rt, "onboarding-install"),
+        "the shared skill is in place"
+    );
+}
