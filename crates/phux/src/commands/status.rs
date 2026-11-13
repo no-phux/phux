@@ -5,7 +5,8 @@
 //! Sources, with no wire change: pid from the UDS peer credentials; since from
 //! the socket file's mtime (survives graceful upgrade); protocol from a real
 //! HELLO; clients, sessions, and degradation from `GET_STATE`; log paths from
-//! `phux_server::telemetry`.
+//! `phux_server::telemetry`; keep-awake from the Global metadata key the
+//! server publishes.
 //!
 //! With no server: the human path prints the shared no-server diagnostic;
 //! `--json` answers `{"running": false, ...}` on stdout (exit 1) using the
@@ -61,6 +62,9 @@ pub(crate) struct StatusReport {
     server_log: PathBuf,
     /// The directory holding the per-pid `client-<pid>.log` files.
     client_log_dir: PathBuf,
+    /// The server's keep-awake record (`phux_server::keep_awake::STATUS_KEY`);
+    /// `None` when `defaults.keep-awake` is `off` or the server predates it.
+    keep_awake: Option<serde_json::Value>,
 }
 
 /// `phux status` — report the running server: pid, up-since, protocol,
@@ -97,9 +101,12 @@ async fn collect(socket_path: &Path) -> Result<StatusReport, AttachError> {
         .await?
         .unwrap_or_default();
     let view = phux_client::session_list::listing_view(&mut conn).await?;
+    let keep_awake =
+        phux_client::global_metadata::read(&mut conn, &[phux_server::keep_awake::STATUS_KEY])
+            .await?;
     drop(conn);
     let (snapshot, degradation) = view.into_parts();
-    Ok(build_report(
+    let mut report = build_report(
         socket_path,
         pid,
         socket_mtime_unix_secs(socket_path),
@@ -107,7 +114,13 @@ async fn collect(socket_path: &Path) -> Result<StatusReport, AttachError> {
         features,
         &snapshot,
         &degradation,
-    ))
+    );
+    // An absent, refused or unreadable value reads as "not reported".
+    report.keep_awake = keep_awake
+        .into_iter()
+        .flatten()
+        .find_map(|bytes| serde_json::from_slice(&bytes).ok());
+    Ok(report)
 }
 
 /// Assemble the [`StatusReport`] from its collected parts. Split from
@@ -145,6 +158,20 @@ fn build_report(
         unreachable: degradation.notices().to_vec(),
         server_log: phux_server::telemetry::server_log_path(),
         client_log_dir: phux_server::telemetry::state_dir(),
+        keep_awake: None,
+    }
+}
+
+/// `keep awake: on (2 agents working)` / `idle` / `unavailable`, from the
+/// server's record.
+fn keep_awake_line(record: &serde_json::Value) -> String {
+    let state = record["state"].as_str().unwrap_or("unknown");
+    match record["working"].as_u64() {
+        Some(n) if n > 0 && state != "idle" => {
+            let plural = if n == 1 { "" } else { "s" };
+            format!("keep awake: {state} ({n} agent{plural} working)")
+        }
+        _ => format!("keep awake: {state}"),
     }
 }
 
@@ -222,6 +249,9 @@ fn render_human(report: &StatusReport, now_unix_secs: i64) -> Vec<String> {
     for notice in &report.unreachable {
         lines.push(format!("  partial view: {notice}"));
     }
+    if let Some(record) = &report.keep_awake {
+        lines.push(keep_awake_line(record));
+    }
     lines.push(format!(
         "logs: server {}; clients {}",
         report.server_log.display(),
@@ -292,6 +322,7 @@ fn status_document(report: &StatusReport) -> serde_json::Value {
         })).collect::<Vec<_>>(),
         "satellite_terminals": report.satellite_terminals,
         "unreachable": report.unreachable,
+        "keep_awake": report.keep_awake,
         "logs": {
             "server": report.server_log.display().to_string(),
             "client_dir": report.client_log_dir.display().to_string(),

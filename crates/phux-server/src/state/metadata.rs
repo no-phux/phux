@@ -109,6 +109,13 @@ impl MetadataStore {
         group.chain(global)
     }
 
+    /// Every Resource-scope value stored at `key`.
+    pub(crate) fn resource_values<'a>(&'a self, key: &'a str) -> impl Iterator<Item = &'a [u8]> {
+        self.terminal
+            .values()
+            .filter_map(move |values| values.get(key).map(Vec::as_slice))
+    }
+
     /// Get the value at `(scope, key)`, if any.
     #[must_use]
     pub fn get(&self, scope: &Scope, key: &str) -> Option<Vec<u8>> {

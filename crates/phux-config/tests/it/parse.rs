@@ -269,6 +269,12 @@ session-name-template = "phux-${cwd-basename}"
     assert_eq!(cfg.defaults.window_size, WindowSize::Largest);
     let cfg = parse_and_round_trip("[defaults]\nwindow-size = \"active\"\n");
     assert_eq!(cfg.defaults.window_size, WindowSize::Active);
+    assert_eq!(cfg.defaults.keep_awake, phux_config::KeepAwake::Off);
+    let cfg = parse_and_round_trip("[defaults]\nkeep-awake = \"while-agents-work\"\n");
+    assert_eq!(
+        cfg.defaults.keep_awake,
+        phux_config::KeepAwake::WhileAgentsWork
+    );
 }
 
 /// Replace the `:COL:` in `path:LINE:COL: message` with `:<col>:` so

@@ -382,6 +382,9 @@ impl UpgradePlan {
                 &self.socket_path,
                 self.flags.clone(),
             ));
+        // The inhibitor watches this pid, which `execve` keeps: it would
+        // outlive the image that could stop it.
+        crate::keep_awake::release();
         command.exec()
     }
 }

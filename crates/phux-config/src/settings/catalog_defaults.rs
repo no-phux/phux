@@ -4,7 +4,7 @@
 use super::{
     AGENT_LOG_BYTES_MAX, APPROVAL_MAX_PENDING_MAX, APPROVAL_MAX_PENDING_TOTAL_MAX,
     APPROVAL_TTL_MAX, Applies, CLIPBOARD_WRITE, CWD_INHERITANCE, EVENT_JOURNAL_BYTES_MAX,
-    EVENT_JOURNAL_ENTRIES_MAX, HISTORY_BYTES_MAX, RETAIN_ON_EXIT_MAX_MAX, SettingKind,
+    EVENT_JOURNAL_ENTRIES_MAX, HISTORY_BYTES_MAX, KEEP_AWAKE, RETAIN_ON_EXIT_MAX_MAX, SettingKind,
     SettingSection, SettingSpec, U32_MAX, WINDOW_SIZE,
 };
 
@@ -291,6 +291,18 @@ pub(super) const ROWS: &[SettingSpec] = &[
                  another letterboxes rather than reflowing. smallest never crops (tmux's \
                  default); largest lets smaller views clamp; latest tracks the most recent \
                  resize; manual holds a size set only by phux resize.",
+        applies: Applies::NextSpawn,
+    },
+    SettingSpec {
+        key: "defaults.keep-awake",
+        section: SettingSection::Defaults,
+        kind: SettingKind::Choice(KEEP_AWAKE),
+        summary: "Keep the machine from idle-sleeping while agents work",
+        detail: "while-agents-work holds an idle-sleep inhibitor (caffeinate on macOS, \
+                 systemd-inhibit on Linux) while any agent's state is working and drops it \
+                 within about 15 seconds of the last one stopping; always holds it for as \
+                 long as the server runs. The display may still sleep, and closing a laptop \
+                 lid still sleeps it. phux status shows the current state.",
         applies: Applies::NextSpawn,
     },
 ];

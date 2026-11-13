@@ -157,4 +157,15 @@ impl ServerState {
     pub const fn window_size(&self) -> phux_config::WindowSize {
         self.config.window_size
     }
+
+    /// Set when the server holds an idle-sleep inhibitor.
+    pub const fn set_keep_awake(&mut self, keep_awake: phux_config::KeepAwake) {
+        self.config.keep_awake = keep_awake;
+    }
+
+    /// Read the keep-awake mode set by [`Self::set_keep_awake`].
+    #[must_use]
+    pub const fn keep_awake(&self) -> phux_config::KeepAwake {
+        self.config.keep_awake
+    }
 }

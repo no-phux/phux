@@ -32,7 +32,35 @@ fn fabricated() -> StatusReport {
         unreachable: Vec::new(),
         server_log: PathBuf::from("/state/phux/server.log"),
         client_log_dir: PathBuf::from("/state/phux"),
+        keep_awake: None,
     }
+}
+
+/// The keep-awake line appears only when the server reports the state.
+#[test]
+fn keep_awake_renders_when_the_server_reports_it() {
+    let line = |record: serde_json::Value| {
+        let mut report = fabricated();
+        report.keep_awake = Some(record);
+        let lines = render_human(&report, 0);
+        lines[lines.len() - 2].clone()
+    };
+    assert_eq!(
+        line(serde_json::json!({ "state": "on", "working": 2 })),
+        "keep awake: on (2 agents working)"
+    );
+    assert_eq!(
+        line(serde_json::json!({ "state": "on", "working": 0 })),
+        "keep awake: on"
+    );
+    assert_eq!(
+        line(serde_json::json!({ "state": "idle", "working": 0 })),
+        "keep awake: idle"
+    );
+    assert_eq!(
+        line(serde_json::json!({ "state": "unavailable", "working": 1 })),
+        "keep awake: unavailable (1 agent working)"
+    );
 }
 
 /// The six-line human report, pinned exactly: labeled server / since /
