@@ -22,6 +22,9 @@
 # <sha>`), which only uploads workflow artifacts (the attach step is guarded
 # on RELEASE_TAG). Main pushes no longer build it: each build is 45 minutes
 # on the five-slot macOS pool, and most push builds were never pinned.
+#
+# An ubuntu preflight runs before the xcode-27 job and skips it when that
+# commit is already built, so a second dispatch does not take another slot.
 
 name: ffi-xcframework
 
@@ -41,6 +44,7 @@ on:
 
 permissions:
   contents: read
+  actions: read
 
 # Keyed on the built commit, never on a branch. A group admits one running and
 # ONE pending run, so a ref-keyed group let a third push on main replace the
@@ -52,8 +56,53 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  # ubuntu, before the build. Skips that build only when this exact commit
+  # is already built. A tag dispatch skips only when the release already has
+  # every archive this workflow attaches, each zip matches its sha256, and
+  # provenance names the tag commit: attach is a step in the build job, and
+  # unsuffixed workflow artifacts do not identify which tag was built.
+  # notify-mobile still runs on that skip; it only sends the tag.
+  # A dispatch without a tag skips when a successful earlier run of this
+  # workflow still has the unexpired artifacts this run would upload. The
+  # build runs in every other case, including when the lookup cannot tell.
+  preflight:
+    name: check for an existing build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      actions: read
+      contents: read
+    outputs:
+      skip: ${{ steps.decide.outputs.skip }}
+    steps:
+      # The guard comes from the workflow revision, never the older mobile pin.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Decide whether this commit is already built
+        id: decide
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ inputs.tag }}
+          COMMIT_INPUT: ${{ inputs.commit }}
+          WORKFLOW_FILE: ffi-xcframework.yml
+          PREFLIGHT_LABEL: native xcframeworks
+          BARE_ARTIFACTS: PhuxFFI-xcframework PhuxMobileFFI-xcframework
+          RELEASE_SPECS: |
+            PhuxFFI-|.xcframework.zip|.provenance|phux-rev
+            PhuxMobileFFI-|.xcframework.zip|.provenance|phux_rev=
+        run: bash scripts/ci/ffi-build-preflight.sh
+
   build:
     name: build native xcframeworks
+    needs: preflight
+    # Only skip=false builds. A failed preflight does not start xcode-27:
+    # artifacts from a red workflow are not a pin phux-mobile will fetch.
+    # An uncertain lookup records skip=false and the build runs as before.
+    if: needs.preflight.outputs.skip != 'true'
     # Standard xcode-27 is an arm64 GitHub-hosted runner with Xcode 27 and the
     # iOS SDK; device and simulator slices need both.
     runs-on: xcode-27
@@ -231,9 +280,14 @@ jobs:
   # Tell it one was just attached instead of leaving it to its six-hour poll.
   # Best effort: the poll still catches a missed event, so a failed dispatch
   # must not fail the release build.
+  # needs.build.result == 'skipped' is the tag replay whose release already
+  # verified. !cancelled() is required: without a status function GitHub
+  # prepends success(), and a skipped build would suppress the dispatch.
+  # The job still sends only client_payload[tag]. It does not read build
+  # outputs or artifacts, and continue-on-error stays as it was.
   notify-mobile:
-    needs: build
-    if: inputs.tag != '' && needs.build.result == 'success'
+    needs: [preflight, build]
+    if: ${{ !cancelled() && inputs.tag != '' && (needs.build.result == 'success' || (needs.build.result == 'skipped' && needs.preflight.outputs.skip == 'true')) }}
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     continue-on-error: true
