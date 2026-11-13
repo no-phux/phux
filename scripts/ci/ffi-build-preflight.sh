@@ -60,53 +60,81 @@ say_skip() {
     exit 0
 }
 
-check_archive() {
-    local dir="$1" zip="$2" sum="$3" prov="$4" line_prefix="$5"
-    local zip_path="$dir/$zip" sum_path="$dir/$sum" prov_path="$dir/$prov"
-    local count digest name actual want
-    if [[ ! -f "$zip_path" || ! -f "$sum_path" || ! -f "$prov_path" ]]; then
-        release_reason="Download of \`${zip}\` was incomplete. The build will run."
-        return 1
-    fi
-    count="$(awk 'NF { n++; if (NF != 2) bad = 1 } END { print bad ? -1 : n + 0 }' "$sum_path")"
-    digest="$(awk 'NF { print tolower($1); exit }' "$sum_path")"
-    name="$(awk 'NF { print $2; exit }' "$sum_path")"
+check_checksum() {
+    local zip_path="$1" sum_path="$2" zip="$3" sum="$4"
+    local count digest name actual
+    # These functions run in conditionals, where Bash disables errexit/ERR.
+    # Never accept stdout from an evidence command that also reports failure.
+    count="$(awk 'NF { n++; if (NF != 2) bad = 1 } END { print bad ? -1 : n + 0 }' "$sum_path")" || return 1
+    digest="$(awk 'NF { print tolower($1); exit }' "$sum_path")" || return 1
+    name="$(awk 'NF { print $2; exit }' "$sum_path")" || return 1
     name="${name#\*}"
     if [[ "$count" != "1" || "$name" != "$zip" || ! "$digest" =~ ^[0-9a-f]{64}$ ]]; then
         release_reason="Checksum \`${sum}\` does not name \`${zip}\` as one sha256 line. The build will run."
         return 1
     fi
-    actual="$(sha256sum "$zip_path" | awk '{ print $1 }')"
+    actual="$(sha256sum "$zip_path" | awk '{ print $1 }')" || return 1
     if [[ "$actual" != "$digest" ]]; then
         release_reason="\`${zip}\` does not match its sha256 sidecar. The build will run and replace it."
         return 1
     fi
-    if [[ "$line_prefix" == *= ]]; then
-        want="${line_prefix}${expected}"
-    else
-        want="${line_prefix} ${expected}"
+}
+
+check_archive() {
+    local dir="$1" zip="$2" sum="$3" prov="$4" line_prefix="$5"
+    local zip_path="$dir/$zip" sum_path="$dir/$sum" prov_path="$dir/$prov"
+    local actual want
+    if [[ ! -f "$zip_path" || ! -f "$sum_path" || ! -f "$prov_path" ]]; then
+        release_reason="Download of \`${zip}\` was incomplete. The build will run."
+        return 1
     fi
-    if ! grep -qx -- "$want" "$prov_path"; then
-        release_reason="Provenance \`${prov}\` does not name \`${expected}\`. The build will run and replace it."
+    check_checksum "$zip_path" "$sum_path" "$zip" "$sum" || return 1
+    if [[ "$line_prefix" != *= ]]; then
+        line_prefix+=" "
+    fi
+    want="${line_prefix}${expected}"
+    if ! actual="$(awk -v prefix="$line_prefix" '
+        index($0, prefix) == 1 { n++; line = $0 }
+        END { if (n != 1) exit 1; print line }
+    ' "$prov_path")" || [[ "$actual" != "$want" ]]; then
+        release_reason="Provenance \`${prov}\` must name \`${expected}\` in exactly one revision field. The build will run and replace it."
         return 1
     fi
 }
 
 verify_release() {
-    local view draft target names prefix zip_suffix prov_suffix line_prefix
-    local zip prov sum dir proof spec
-    local -a specs=()
+    local view draft target names proof
     if ! view="$(gh release view "$RELEASE_TAG" --repo "$GH_REPO" --json isDraft,targetCommitish,assets)"; then
         release_reason="No GitHub release \`${RELEASE_TAG}\` exists yet. The build will run and attach once it does, as it does today."
         return 1
     fi
-    draft="$(jq -r '.isDraft' <<<"$view")"
-    target="$(jq -r '.targetCommitish' <<<"$view")"
+    draft="$(jq -r '.isDraft' <<<"$view")" || return 1
+    target="$(jq -r '.targetCommitish' <<<"$view")" || return 1
     if [[ "$target" != "$expected" ]]; then
         release_reason="Release \`${RELEASE_TAG}\` records target \`${target}\`, not \`${expected}\`. phux-mobile's fetcher requires \`target_commitish\` to be that commit, so the build will run."
         return 1
     fi
-    names="$(jq -r '.assets[].name' <<<"$view")"
+    names="$(jq -r '.assets[].name' <<<"$view")" || return 1
+    check_release_archives "$names" || return 1
+    {
+        printf 'Skipping the %s build for %s.\n\n' "$PREFLIGHT_LABEL" "$expected"
+        printf 'Release [%s](https://github.com/%s/releases/tag/%s) already has verified archives for this commit:\n\n' \
+            "$RELEASE_TAG" "$GH_REPO" "$RELEASE_TAG"
+        printf '%s\n' "$proof"
+        if [[ "$draft" == "true" ]]; then
+            echo "The release is still a draft. The archives already verify, so the build is skipped anyway."
+            echo
+        fi
+        echo "Attach is a step inside the build job and would upload these same bytes again (\`--clobber\`, then \`cmp\`). Skipping the build skips that step because the release already holds them."
+        echo
+        echo "\`notify-mobile\` still runs. It only sends \`client_payload[tag]\` and does not read the build job's outputs or artifacts."
+    }
+}
+
+check_release_archives() {
+    local names="$1" prefix zip_suffix prov_suffix line_prefix
+    local zip prov sum dir spec
+    local -a specs=()
     while IFS='|' read -r prefix zip_suffix prov_suffix line_prefix; do
         [[ -n "$prefix" ]] || continue
         zip="${prefix}${RELEASE_TAG}${zip_suffix}"
@@ -124,10 +152,11 @@ verify_release() {
         release_reason="Preflight has no release archive specs. The build will run."
         return 1
     fi
-    dir="$(mktemp -d)"
+    dir="$(mktemp -d)" || return 1
+    # Set verify_release's local proof in the current shell, like release_reason.
     proof=""
     for spec in "${specs[@]}"; do
-        IFS='|' read -r prefix zip_suffix prov_suffix line_prefix <<<"$spec"
+        IFS='|' read -r prefix zip_suffix prov_suffix line_prefix <<<"$spec" || return 1
         zip="${prefix}${RELEASE_TAG}${zip_suffix}"
         prov="${prefix}${RELEASE_TAG}${prov_suffix}"
         sum="${zip}.sha256"
@@ -144,36 +173,21 @@ verify_release() {
         proof+="- \`${zip}\` sha256 matches, and provenance names \`${expected}\`"$'\n'
     done
     rm -rf "$dir"
-    {
-        printf 'Skipping the %s build for %s.\n\n' "$PREFLIGHT_LABEL" "$expected"
-        printf 'Release [%s](https://github.com/%s/releases/tag/%s) already has verified archives for this commit:\n\n' \
-            "$RELEASE_TAG" "$GH_REPO" "$RELEASE_TAG"
-        printf '%s\n' "$proof"
-        if [[ "$draft" == "true" ]]; then
-            echo "The release is still a draft. The archives already verify, so the build is skipped anyway."
-            echo
-        fi
-        echo "Attach is a step inside the build job and would upload these same bytes again (\`--clobber\`, then \`cmp\`). Skipping the build skips that step because the release already holds them."
-        echo
-        echo "\`notify-mobile\` still runs. It only sends \`client_payload[tag]\` and does not read the build job's outputs or artifacts."
-    }
 }
 
 run_has_artifacts() {
     local run_id="$1" head="$2"
-    local payload count name untagged
-    local -a bare_names=() want=()
+    local payload count name
+    local -a bare_names=()
     if ! payload="$(gh api "repos/${GH_REPO}/actions/runs/${run_id}/artifacts?per_page=100")"; then
         echo "preflight: could not list artifacts for run ${run_id}" >&2
         return 1
     fi
-    read -r -a bare_names <<<"$BARE_ARTIFACTS"
-    for name in "${bare_names[@]}"; do
-        want+=("${name}${suffix}")
-    done
+    read -r -a bare_names <<<"$BARE_ARTIFACTS" || return 1
     matched_names=""
-    for name in "${want[@]}"; do
-        count="$(jq -r --arg n "$name" '[.artifacts[] | select(.name == $n and .expired == false)] | length' <<<"$payload")"
+    for name in "${bare_names[@]}"; do
+        name+="${suffix}"
+        count="$(jq -r --arg n "$name" '[.artifacts[] | select(.name == $n and .expired == false)] | length' <<<"$payload")" || return 1
         [[ "$count" == "1" ]] || return 1
         matched_names+="${name}"$'\n'
     done
@@ -182,15 +196,20 @@ run_has_artifacts() {
         # Require positive proof this run did not build a tag. Historical
         # Android runs lack the marker entirely; absence is not an untagged
         # build, because run headSha can differ from the tag's built commit.
-        if ! untagged="$(gh api "repos/${GH_REPO}/actions/runs/${run_id}/jobs?per_page=100" \
-            --jq '[.jobs[].steps[]? | select(.name == "Validate release tag") | .conclusion] == ["skipped"]')"; then
-            echo "preflight: could not read jobs for run ${run_id}" >&2
-            return 1
-        fi
-        if [[ "$untagged" != "true" ]]; then
-            echo "preflight: run ${run_id} has no unique untagged-build proof; ignoring its unsuffixed artifacts" >&2
-            return 1
-        fi
+        run_is_untagged "$run_id" || return 1
+    fi
+}
+
+run_is_untagged() {
+    local run_id="$1" untagged
+    if ! untagged="$(gh api "repos/${GH_REPO}/actions/runs/${run_id}/jobs?per_page=100" \
+        --jq '[.jobs[].steps[]? | select(.name == "Validate release tag") | .conclusion] == ["skipped"]')"; then
+        echo "preflight: could not read jobs for run ${run_id}" >&2
+        return 1
+    fi
+    if [[ "$untagged" != "true" ]]; then
+        echo "preflight: run ${run_id} has no unique untagged-build proof; ignoring its unsuffixed artifacts" >&2
+        return 1
     fi
 }
 
@@ -216,7 +235,7 @@ find_run() {
         | unique_by(.databaseId)
         | .[]
         | [.databaseId, .headSha, .event, .url] | @tsv
-    ' <(printf '%s\n' "$commit_json") <(printf '%s\n' "$main_json"))"; then
+    ' <<<"${commit_json}"$'\n'"${main_json}")"; then
         return 2
     fi
     while IFS=$'\t' read -r run_id head event url; do
@@ -262,10 +281,17 @@ if [[ -z "${RELEASE_TAG}" && -n "${COMMIT_INPUT}" && "${COMMIT_INPUT}" != "${GIT
 fi
 
 if [[ -n "${RELEASE_TAG}" ]]; then
-    proof_file="$(mktemp)"
+    if ! proof_file="$(mktemp)"; then
+        say_build "Could not create the release proof file. The build will run."
+    fi
     # Current shell, not a substitution: release_reason has to survive a miss.
     if verify_release >"$proof_file"; then
-        say_skip "$(cat "$proof_file")"
+        if ! proof="$(cat "$proof_file")"; then
+            rm -f "$proof_file"
+            say_build "Could not read the release proof file. The build will run."
+        fi
+        rm -f "$proof_file"
+        say_skip "$proof"
     fi
     rm -f "$proof_file"
     say_build "${release_reason:-Release \`${RELEASE_TAG}\` is not a verified build of \`${expected}\`. The build will run and attach.}"

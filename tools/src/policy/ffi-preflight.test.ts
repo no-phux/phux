@@ -15,7 +15,19 @@ const PIN = "a".repeat(40);
 const OTHER = "b".repeat(40);
 const TAG = "v1.2.3";
 const MOCK_GH = `
-gh() {
+evidence() {
+    command "$@"
+    local status=$?
+    [[ "$status" -eq 0 ]] || return "$status"
+    if [[ "$1" == "$FAIL_COMMAND" && "$*" == *"$FAIL_MATCH"* ]]; then
+        return 1
+    fi
+}
+jq() { evidence jq "$@"; }
+awk() { evidence awk "$@"; }
+sha256sum() { evidence sha256sum "$@"; }
+mktemp() { evidence mktemp "$@"; }
+mock_gh() {
     case "$1 $2" in
         "run list")
             test "$FAIL_API" != list || return 1
@@ -47,6 +59,10 @@ gh() {
             esac ;;
         *) echo "unexpected gh: $*" >&2; return 2 ;;
     esac
+}
+gh() {
+    mock_gh "$@" || return $?
+    [[ "$FAIL_COMMAND" != gh || "$*" != *"$FAIL_MATCH"* ]]
 }
 source "$PREFLIGHT_SCRIPT"
 `;
@@ -93,6 +109,8 @@ function fixture(
         RELEASE_FILES: join(dir, "release"),
         PREFLIGHT_SCRIPT: repoPath("scripts/ci/ffi-build-preflight.sh"),
         FAIL_API: "",
+        FAIL_COMMAND: "",
+        FAIL_MATCH: "",
         FIXTURE_PIN: PIN,
         FIXTURE_RELEASE: "{}",
         FIXTURE_RUNS: JSON.stringify([
@@ -162,6 +180,25 @@ test.each(WORKFLOWS)("%s rejects missing or expired artifacts", (name) => {
   expect(fixture(name, { FIXTURE_ARTIFACTS: artifacts(name, "", true) })).toBe(false);
 });
 
+test.each(WORKFLOWS)("%s rejects artifact JSON followed by malformed JSON", (name) => {
+  expect(fixture(name, { FIXTURE_ARTIFACTS: artifacts(name) + "\n{" })).toBe(false);
+});
+
+test.each(WORKFLOWS)("%s rejects artifact jq output when jq exits nonzero", (name) => {
+  expect(fixture(name, { FAIL_COMMAND: "jq", FAIL_MATCH: ".artifacts[]" })).toBe(false);
+});
+
+for (const [command, match] of [
+  ["gh", "run list"],
+  ["gh", "/artifacts"],
+  ["gh", "/jobs"],
+  ["jq", "add"],
+]) {
+  test.each(WORKFLOWS)(`%s rejects valid run evidence from failing ${command} ${match}`, (name) => {
+    expect(fixture(name, { FAIL_COMMAND: command ?? "", FAIL_MATCH: match ?? "" })).toBe(false);
+  });
+}
+
 test.each(WORKFLOWS)("%s rejects wrong-head bare artifacts and duplicate tag evidence", (name) => {
   expect(
     fixture(name, {
@@ -222,6 +259,8 @@ for (const corruption of [
   "checksum",
   "checksum-fields",
   "provenance",
+  "provenance-duplicate",
+  "provenance-conflicting",
   "target",
 ]) {
   test.each(WORKFLOWS)(`%s release replay checks ${corruption}`, (name) => {
@@ -238,6 +277,14 @@ for (const corruption of [
     if (corruption === "checksum-fields")
       files[`${zip}.sha256`] = files[`${zip}.sha256`]?.trim() + " extra\n";
     if (corruption === "provenance") files[prov] = `phux_rev=${OTHER}\n`;
+    if (corruption.startsWith("provenance-")) {
+      for (const file of names.filter((file) => file.endsWith(".provenance"))) {
+        const original = files[file] ?? "";
+        files[file] =
+          original +
+          (corruption === "provenance-duplicate" ? original : original.replace(PIN, OTHER));
+      }
+    }
     const view = {
       isDraft: false,
       targetCommitish: corruption === "target" ? OTHER : PIN,
@@ -247,4 +294,75 @@ for (const corruption of [
       corruption === "none",
     );
   });
+}
+
+for (const [command, match] of [
+  ["jq", ".isDraft"],
+  ["jq", ".targetCommitish"],
+  ["jq", ".assets[].name"],
+  ["awk", "n++"],
+  ["awk", "tolower"],
+  ["awk", "print $2"],
+  ["sha256sum", ""],
+  ["awk", "print $1"],
+  ["awk", "index($0"],
+  ["mktemp", "-d"],
+  ["gh", "release view"],
+  ["gh", "release download"],
+  ["gh", "/commits/"],
+]) {
+  test.each(WORKFLOWS)(`%s rejects release evidence from failing ${command} ${match}`, (name) => {
+    const files = releaseFiles(name);
+    const view = {
+      isDraft: false,
+      targetCommitish: PIN,
+      assets: Object.keys(files).map((file) => ({ name: file })),
+    };
+    expect(
+      fixture(
+        name,
+        {
+          RELEASE_TAG: TAG,
+          FIXTURE_RELEASE: JSON.stringify(view),
+          FAIL_COMMAND: command ?? "",
+          FAIL_MATCH: match ?? "",
+        },
+        files,
+      ),
+    ).toBe(false);
+  });
+}
+
+test.each(WORKFLOWS)("%s rejects release JSON followed by malformed JSON", (name) => {
+  const files = releaseFiles(name);
+  const view = {
+    isDraft: false,
+    targetCommitish: PIN,
+    assets: Object.keys(files).map((file) => ({ name: file })),
+  };
+  expect(
+    fixture(name, { RELEASE_TAG: TAG, FIXTURE_RELEASE: JSON.stringify(view) + "\n{" }, files),
+  ).toBe(false);
+});
+
+for (const duplicate of [PIN, OTHER]) {
+  for (const name of WORKFLOWS) {
+    for (const prov of Object.keys(releaseFiles(name)).filter((file) =>
+      file.endsWith(".provenance"),
+    )) {
+      test(`${name} rejects an extra ${duplicate === PIN ? "identical" : "conflicting"} field in ${prov}`, () => {
+        const files = releaseFiles(name);
+        const original = files[prov] ?? "";
+        files[prov] = original + original.replace(PIN, duplicate);
+        const view = {
+          isDraft: false,
+          targetCommitish: PIN,
+          assets: Object.keys(files).map((file) => ({ name: file })),
+        };
+        expect(
+          fixture(name, { RELEASE_TAG: TAG, FIXTURE_RELEASE: JSON.stringify(view) }, files),
+        ).toBe(false);
+      });
+    }
+  }
 }
