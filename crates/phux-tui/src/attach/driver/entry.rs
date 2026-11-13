@@ -473,6 +473,7 @@ async fn reattach_on_same_connection(
             host: _,
         } => create_session_target(name, directory),
     };
+    super::session_io::create_persistent_session(conn, &attach_target).await;
     let attach_id = send_attach(conn, attach_target).await?;
     let attached = wait_for_attached(conn, attach_id).await?;
     tracing::info!("attach loop: re-attach handshake complete");

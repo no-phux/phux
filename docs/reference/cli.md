@@ -4271,10 +4271,10 @@ Auto-starts a server if none is running. A name already in use is an error; omit
 the name to take the configured `session-name-template`, disambiguated with
 fresh `${random-name}` picks when the template draws one, then a numeric suffix.
 
-A session you name is persistent: it stays, empty, after its last process exits,
-until `phux rm` or `phux kill` deletes it. A session whose name was generated,
-like the one bare `phux` starts, is ephemeral: it ends with its last process.
-`--ephemeral` makes a named session ephemeral too.
+The session is persistent, named or not: it stays, empty, after its last tab
+closes or its last process exits, until `phux rm` or `phux kill` deletes it.
+`--ephemeral` makes it end with its last process instead, like the session bare
+`phux` starts.
 
 With `--json`, creates the session *without* attaching and prints the seed
 pane's id as JSON instead. This neither attaches nor resizes, and the create is
@@ -4326,7 +4326,7 @@ Flags:
                                   new session is attached and shows an empty
                                   state; open a window from there.
       --ephemeral                 Make the session ephemeral: it ends when its
-                                  last process exits, even though you named it.
+                                  last process exits.
   -h, --help                      Print help
 
 Global flags:

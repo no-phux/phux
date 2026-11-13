@@ -6,7 +6,7 @@
 use phux_client_runtime::Client;
 use phux_client_runtime::control::{SessionDescriptor, SessionRecovery, Status, Topology};
 use phux_protocol::ids::SessionKey;
-use phux_protocol::wire::frame::AttachTarget;
+use phux_protocol::wire::frame::{AttachTarget, SessionLifetime};
 
 use super::{Desk, link};
 
@@ -92,6 +92,12 @@ impl Desk {
             if std::mem::take(&mut self.link.creating) {
                 client.with_control(|c| c.set_session_recovery(SessionRecovery::CallerValidated));
             }
+            if self.link.keep.as_ref() == Some(&session.name)
+                && let Some(key) = session.key
+            {
+                self.link.keep = None;
+                keep(client, session, key);
+            }
             return false;
         }
         if self.pending_session.is_some() || !link::seeded(client, self.link.org_unavailable) {
@@ -127,6 +133,20 @@ impl Desk {
     }
 }
 
+/// Make a session this window created persistent, unless it already is (a
+/// worktree's session, which the CLI made).
+fn keep(client: &Client, session: &SessionDescriptor, key: SessionKey) {
+    if session.lifetime == Some(SessionLifetime::Persistent) {
+        return;
+    }
+    if let Err(error) = client.set_session_lifetime(key, SessionLifetime::Persistent) {
+        eprintln!(
+            "phux-rune: could not keep session {}: {error:?}",
+            session.name
+        );
+    }
+}
+
 /// The Intake session's name: from the topology when it lists the Intake,
 /// else from the organization replica's record.
 fn inbox_name(client: &Client, topology: &Topology) -> Option<String> {
@@ -142,7 +162,6 @@ mod tests {
     use super::*;
     use phux_client_core::layout::wire::HandleMap;
     use phux_protocol::ids::ResourceId;
-    use phux_protocol::wire::frame::SessionLifetime;
 
     fn session(id: u32, name: &str, created: i64) -> SessionDescriptor {
         SessionDescriptor {
