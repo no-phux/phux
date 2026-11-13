@@ -347,6 +347,7 @@ pub use ssh::{
     control_options as ssh_control_options, failure_hint as ssh_failure_hint, host_key_remedy,
     master_options as ssh_master_options, pre_auth_drop as ssh_pre_auth_drop,
     pre_auth_retry_delay as ssh_pre_auth_retry_delay, retry_login as ssh_retry_login,
+    set_agent as set_ssh_agent,
 };
 
 pub use driver::run_session;

@@ -14,6 +14,18 @@ use super::{pre_auth_drop, program, shell_quote};
 #[must_use]
 pub fn failure_hint(stderr: &str, destination: &str) -> Option<String> {
     hint(stderr, destination, || batch_mode_configured(destination))
+        .or_else(|| no_agent_hint(stderr, super::agent_known()))
+}
+
+/// A key refused with no agent in reach: the usual cause in an app opened
+/// from the Dock, which never sees the shell's `SSH_AUTH_SOCK`.
+fn no_agent_hint(stderr: &str, agent_known: bool) -> Option<String> {
+    (stderr.contains("Permission denied (publickey)") && !agent_known).then(|| {
+        "no SSH agent is in reach (SSH_AUTH_SOCK is unset, as in an app opened from the Dock), \
+         so a key held only in an agent is not offered; set `IdentityAgent` in ~/.ssh/config, \
+         or for Rune `ssh-agent` under `[rune]` in config.toml"
+            .to_owned()
+    })
 }
 
 fn hint(stderr: &str, destination: &str, batch_mode: impl FnOnce() -> bool) -> Option<String> {
@@ -156,6 +168,20 @@ mod tests {
 
     /// `BatchMode yes` in the user's config is why a password host refuses
     /// phux's prompt, so a refused login names it; nothing else does.
+    #[test]
+    fn a_refused_key_with_no_agent_in_reach_names_the_setting() {
+        let denied = "me@box: Permission denied (publickey).";
+        let hint = no_agent_hint(denied, false).expect("a hint");
+        assert!(
+            hint.contains("ssh-agent") && hint.contains("IdentityAgent"),
+            "{hint}"
+        );
+        assert_eq!(no_agent_hint(denied, true), None);
+        // Another method was on offer, so the key was not the only way in.
+        let either = "me@box: Permission denied (publickey,password).";
+        assert_eq!(no_agent_hint(either, false), None);
+    }
+
     #[test]
     fn a_refused_login_under_batch_mode_says_so() {
         assert!(batch_mode_in("user me\nbatchmode yes\nport 22\n"));

@@ -26,6 +26,30 @@ options win on the command line. `BatchMode yes` does keep ssh from asking
 for a password or code, so phux can't ask either; if such a host refuses
 the login, phux says that's why.
 
+## Keys in an agent
+
+phux's `ssh` finds your agent the way any `ssh` does: through
+`IdentityAgent` in `~/.ssh/config`, or else the `SSH_AUTH_SOCK` it inherits.
+A terminal has that variable; an app opened from the Dock doesn't, so in
+Rune a key held only in an agent (1Password, Secretive, a hardware-key
+agent) is not offered and the host answers `Permission denied (publickey)`.
+Either line fixes it:
+
+```
+# ~/.ssh/config
+Host *
+    IdentityAgent ~/.1password/agent.sock
+```
+
+```toml
+# config.toml
+[rune]
+ssh-agent = "~/.1password/agent.sock"
+```
+
+`IdentityAgent` wins when both are set. When a key is refused and no agent
+is in reach, the error names these two settings.
+
 ## Many connections at once
 
 Connections to one host from the same app wait for a single login and then

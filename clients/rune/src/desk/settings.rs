@@ -117,6 +117,14 @@ pub(super) fn load_file() -> (RuneCfg, Option<String>) {
     match phux_config_core::loader::load_client() {
         Ok(config) => {
             crate::session_color::learn(config.sessions);
+            if let Some(socket) = config.rune.ssh_agent.as_deref().map(str::trim) {
+                let home = std::env::var_os("HOME").unwrap_or_default();
+                let socket = socket.strip_prefix("~/").map_or_else(
+                    || socket.into(),
+                    |rest| std::path::Path::new(&home).join(rest),
+                );
+                phux_client_runtime::connection::set_ssh_agent(socket);
+            }
             (config.rune, None)
         }
         Err(err) => (RuneCfg::default(), Some(err.to_string())),
