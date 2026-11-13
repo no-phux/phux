@@ -31,11 +31,7 @@ pub fn request(url: &str) -> Result<Offer, String> {
     let link = parse_connect_link(url)
         .map_err(|why| format!("This pairing link can't be used: {why}."))?;
     let name = name(&link).ok_or("This pairing link names no machine to register.")?;
-    let endpoint = link.registry_endpoint().unwrap_or_default();
-    let peer = link.tls_server_name.as_ref().map_or_else(
-        || endpoint.to_owned(),
-        |route| format!("{route} via {endpoint}"),
-    );
+    let peer = destinations(&link);
     let request = Add {
         target: name,
         name: None,
@@ -43,6 +39,26 @@ pub fn request(url: &str) -> Result<Offer, String> {
         code: Some(Secret(url.trim().to_owned())),
     };
     Ok(Offer { request, peer })
+}
+
+/// Show every transport a direct link can contact, not only its registry
+/// endpoint: enrollment uses QUIC even when the entry prefers WebSocket.
+fn destinations(link: &ConnectLink) -> String {
+    let endpoint = link.registry_endpoint().unwrap_or_default();
+    if let Some(route) = &link.tls_server_name {
+        return format!("{route} via {endpoint}");
+    }
+    match (link.url.as_deref(), link.quic.as_deref()) {
+        (Some(url), Some(quic)) => {
+            let label = if link.enrollment_ticket.is_some() {
+                "Enrollment/QUIC"
+            } else {
+                "QUIC"
+            };
+            format!("{label}: {quic}; WebSocket: {url}")
+        }
+        _ => endpoint.to_owned(),
+    }
 }
 
 /// What the machine is called here: the name `phux pair --name` gave it,
@@ -101,7 +117,10 @@ mod tests {
         ] {
             let url = format!("{prefix}?{query}");
             let offer = request(&url).expect(prefix);
-            assert_eq!(offer.peer, "wss://mini.tail.ts.net:8787");
+            assert_eq!(
+                offer.peer,
+                "QUIC: quic://mini.tail.ts.net:8788; WebSocket: wss://mini.tail.ts.net:8787"
+            );
             let add = offer.request;
             assert_eq!(add.target, "mini.tail.ts.net");
             assert_eq!(
@@ -110,6 +129,22 @@ mod tests {
             );
             assert!(!add.tailnet && add.name.is_none());
         }
+    }
+
+    #[test]
+    fn a_ticket_link_discloses_both_distinct_destinations_without_its_secrets() {
+        let ticket = "ef".repeat(32);
+        let url = format!(
+            "phux://connect?url=wss://trusted.example:8787&quic=quic://other.example:8788\
+             &fp={FP}&ca=sha256:{FP}#token={TOKEN}&enroll={ticket}"
+        );
+        let offer = request(&url).expect("different transport hosts are allowed");
+        assert_eq!(
+            offer.peer,
+            "Enrollment/QUIC: quic://other.example:8788; WebSocket: wss://trusted.example:8787"
+        );
+        assert!(!format!("{offer:?}").contains(TOKEN));
+        assert!(!format!("{offer:?}").contains(&ticket));
     }
 
     #[test]

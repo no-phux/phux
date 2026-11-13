@@ -146,3 +146,28 @@ fn a_failed_pairing_says_what_failed() {
     let old = pairing_failure("phux: error: unexpected argument '--code' found");
     assert!(old.contains("phux update"), "{old}");
 }
+
+#[test]
+fn a_different_host_ticket_offer_can_be_cancelled_without_starting_pairing() {
+    let mut desk = desk();
+    desk.machines.phux = Some(PathBuf::from("/nonexistent/phux"));
+    let direct = LINK.replace(
+        "quic=quic://relay.example:4433&sni=mini-route",
+        "url=wss://trusted.example:8787&quic=quic://other.example:8788",
+    );
+    let ticket = "ef".repeat(32);
+    desk.pair_from_link(&format!("{direct}&enroll={ticket}"));
+    let offer = desk.machines.offer.as_ref().expect("confirmation");
+    assert!(
+        offer
+            .peer
+            .contains("Enrollment/QUIC: quic://other.example:8788")
+    );
+    assert!(offer.peer.contains("WebSocket: wss://trusted.example:8787"));
+    assert!(!format!("{offer:?}").contains(&ticket));
+    assert!(desk.machines.adding.is_none() && desk.machines.request.is_none());
+    desk.decline_pairing();
+    assert!(desk.machines.offer.is_none());
+    assert!(desk.machines.adding.is_none() && desk.machines.request.is_none());
+    assert!(desk.machines.error.is_none() && desk.machines.outcome.is_none());
+}
