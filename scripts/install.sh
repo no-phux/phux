@@ -618,15 +618,37 @@ register_desktop_entry() {
   mkdir -p "$entries" || return 1
   [ ! -d "${entries}/$2.desktop" ] || return 1
   entry="$(mktemp "${entries}/.phux-desktop.XXXXXX")" || return 1
+  # The executable is replaced; the field codes after it (`%u`) stay.
   if PHUX_DESKTOP_EXEC="\"${executable}\"" PHUX_DESKTOP_ICON="$icon" awk '
-    /^Exec=/ { print "Exec=" ENVIRON["PHUX_DESKTOP_EXEC"]; next }
+    /^Exec=/ { codes = $0; sub(/^Exec=[^ ]*/, "", codes); print "Exec=" ENVIRON["PHUX_DESKTOP_EXEC"] codes; next }
     /^Icon=/ { print "Icon=" ENVIRON["PHUX_DESKTOP_ICON"]; next }
     { print }
   ' "$desktop_source" > "$entry" && chmod 644 "$entry" && mv -f "$entry" "${entries}/$2.desktop"; then
+    register_scheme_handler "$entries" "$2.desktop"
     return 0
   fi
   rm -f "$entry"
   return 1
+}
+
+# phux://connect links open the app: the entry's MimeType names the scheme,
+# and the desktop's own tools make it the handler. Without them a desktop
+# still reads the entry when it next scans; nothing here is fatal.
+register_scheme_handler() {
+  if command -v update-desktop-database >/dev/null 2>&1; then
+    update-desktop-database "$1" >/dev/null 2>&1 || true
+  fi
+  if command -v xdg-mime >/dev/null 2>&1; then
+    xdg-mime default "$2" x-scheme-handler/phux >/dev/null 2>&1 \
+      || phux_message warn "could not make Phux Rune open phux:// links; run: xdg-mime default $2 x-scheme-handler/phux"
+  fi
+}
+
+# Launch Services learns a bundle's schemes when it is first opened; register
+# it now so a phux://connect link opens it before then.
+register_bundle_macos() {
+  lsregister=/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister
+  [ ! -x "$lsregister" ] || "$lsregister" -f "$1" >/dev/null 2>&1 || true
 }
 
 # The update feed names one version, with a digest per target. Sets build_id,
@@ -694,6 +716,7 @@ install_rune_macos() {
   unpack_rune_macos
   lock_applications
   publish_rune_macos
+  register_bundle_macos "$installed"
   phux_message ok "installed Phux Rune ${build_id} to ${applications_dir}"
   printf 'next: open %s\n' "$(shell_quote "$(cd "$applications_dir" && pwd -P)/Phux Rune.app")"
 }

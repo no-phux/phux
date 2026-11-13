@@ -10,7 +10,8 @@ use std::process::{Command, Stdio};
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
-pub const USAGE: &str = "usage: phux-rune [--socket PATH] [--session NAME] [--phux PATH] [--phone]";
+pub const USAGE: &str =
+    "usage: phux-rune [--socket PATH] [--session NAME] [--phux PATH] [--phone] [CONNECT-LINK]";
 
 /// The line that installs the CLI, for the window that can't find one.
 pub const INSTALL: &str = "curl -fsSL https://phux.sh/install | sh";
@@ -49,6 +50,9 @@ pub struct Options {
     pub phux: Option<PathBuf>,
     /// The phone form: a phone-sized window with a drawn keyboard.
     pub phone: bool,
+    /// Connect links to pair from (`phux://connect?...`), as a desktop
+    /// entry's `%u` passes them.
+    pub links: Vec<crate::machines::Secret>,
 }
 
 impl Options {
@@ -69,6 +73,9 @@ impl Options {
                 // macOS passes a process serial number to apps Finder opens.
                 arg if arg.starts_with("-psn_") => {}
                 "-h" | "--help" => return Err(USAGE.to_owned()),
+                link if crate::connect::is_link(link) => {
+                    options.links.push(crate::machines::Secret(link.to_owned()));
+                }
                 other => return Err(format!("unknown argument {other:?}\n{USAGE}")),
             }
         }
@@ -359,6 +366,15 @@ mod tests {
     #[test]
     fn ignores_the_finder_serial_number() {
         assert!(parse(&["-psn_0_12345"]).is_ok());
+    }
+
+    #[test]
+    fn keeps_the_link_a_desktop_entry_passes() {
+        let link = "phux://connect?quic=quic://mini:8788#token=private-bearer";
+        let options = parse(&["--phone", link]).expect("a link");
+        assert_eq!(options.links, [crate::machines::Secret(link.to_owned())]);
+        assert!(!format!("{options:?}").contains("private-bearer"));
+        assert!(parse(&["work"]).is_err(), "a bare word is no link");
     }
 
     #[test]
