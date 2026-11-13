@@ -430,3 +430,50 @@ fn a_relay_route_attaches_from_a_link_and_from_the_registry() {
         stderr(&out)
     );
 }
+
+/// What Phux Rune runs for a link it is opened with: `host add NAME --code -`
+/// reads a relay link from stdin, redeems its ticket, and registers the
+/// routed entry, which then reaches the server through the relay. The same
+/// link again is spent, so it is refused and registers nothing.
+#[test]
+#[ignore = "spawns a real relay and server; runs in the e2e lane"]
+fn host_add_code_registers_a_relay_link_from_stdin_once() {
+    let topology = Topology::start();
+    let doc = topology.pair();
+    let link = doc["connect_link"].as_str().expect("a relay link");
+    let ticket = doc["enrollment_ticket"].as_str().expect("a ticket");
+
+    let linked = Home::new();
+    let add = |name: &str| {
+        paired::output_with_stdin(
+            linked.command(&["host", "add", name, "--code", "-", "--json"]),
+            link.as_bytes(),
+        )
+    };
+    let out = add("mini");
+    assert!(out.status.success(), "host add --code: {}", stderr(&out));
+    let added: serde_json::Value = serde_json::from_slice(&out.stdout).expect("JSON");
+    assert_eq!(added["host"]["tls_server_name"], ROUTE, "{added}");
+    assert_eq!(added["enrollment"]["status"], "enrolled", "{added}");
+    for secret in [ticket, doc["token"].as_str().expect("token")] {
+        assert!(
+            !stdout(&out).contains(secret) && !stderr(&out).contains(secret),
+            "no secret is echoed"
+        );
+    }
+    let listed = list_over_relay(&linked, "mini");
+    assert!(listed["sessions"].is_array(), "{listed}");
+
+    let again = add("again");
+    assert!(!again.status.success(), "a spent link must be refused");
+    assert!(
+        stderr(&again).contains("single-use ticket"),
+        "{}",
+        stderr(&again)
+    );
+    assert!(
+        !linked.config().contains("name = \"again\""),
+        "a refused link registers nothing: {}",
+        linked.config()
+    );
+}

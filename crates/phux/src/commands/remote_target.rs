@@ -19,6 +19,8 @@
 
 mod code;
 
+pub(crate) use code::pair_from_code;
+
 use std::process::ExitCode;
 use std::time::Duration;
 
@@ -453,27 +455,6 @@ pub(crate) fn resolve(
     // `ssh` takes the typed `user@host` spelling as its destination.
     register_over_ssh(target, &target.registry_name(), None).map_err(|err| {
         unregistered_message(target, Some(&format!("{}\n{}", err.message, err.remedy)))
-    })
-}
-
-/// Read back the entry just registered, so a write that did not round-trip
-/// fails here; falls back to the synthesized entry if the config is unreadable.
-fn registered_entry(target: &RemoteTarget, new: &remote::NewRemote) -> RemoteEntry {
-    find_entry(target).unwrap_or_else(|| RemoteEntry {
-        index: 0,
-        name: new.name.clone(),
-        endpoint: new.endpoint.clone(),
-        token_file: new.token_file.clone(),
-        cert_fingerprint: new.cert_fingerprint.clone(),
-        tls_server_name: new.tls_server_name.clone(),
-        session: None,
-        ssh: None,
-        direct: new.direct.clone(),
-        remote_phux: new.remote_phux.clone(),
-        client_cert: new.client_cert.clone(),
-        client_key: new.client_key.clone(),
-        color: None,
-        paused: false,
     })
 }
 

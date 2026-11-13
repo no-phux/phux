@@ -10,6 +10,7 @@ use super::super::remote_target::endpoint_host;
 use super::super::satellite as satellite_registry;
 
 use super::HostRole;
+use super::add_code::run_add_from_code;
 use super::add_ssh::run_add_over_ssh;
 use super::args::AddOpts;
 use super::enrollment::{EnrollmentReport, report_registered};
@@ -49,6 +50,8 @@ pub(super) enum AddMode {
     Manual { name: String, endpoint: String },
     /// Set `target` up over ssh.
     Ssh { target: String },
+    /// Register `name` from the `--code` connect link.
+    Code { name: String },
 }
 
 impl AddMode {
@@ -59,6 +62,9 @@ impl AddMode {
         endpoint: Option<&str>,
         opts: &AddOpts,
     ) -> Result<Self, CliError> {
+        if opts.code.is_some() {
+            return Self::code(target, endpoint, opts);
+        }
         let manual = if let Some(endpoint) = endpoint {
             if opts.name.is_some() {
                 return Err(CliError::new(
@@ -85,11 +91,7 @@ impl AddMode {
         };
 
         let Some((name, endpoint)) = manual else {
-            if opts.token_file.is_some()
-                || opts.cert_fingerprint.is_some()
-                || opts.tls_server_name.is_some()
-                || opts.ca_fingerprint.is_some()
-            {
+            if manual_credentials_given(opts) {
                 return Err(CliError::new(
                     codes::REGISTRY,
                     "--token-file, --cert-fingerprint, --tls-server-name, and --ca-fingerprint belong to the manual form, which registers an endpoint you already hold credentials for",
@@ -116,6 +118,44 @@ impl AddMode {
         }
         Ok(Self::Manual { name, endpoint })
     }
+
+    /// `NAME --code LINK`: the link carries the endpoint and every
+    /// credential, so nothing that names them too is taken.
+    fn code(target: &str, endpoint: Option<&str>, opts: &AddOpts) -> Result<Self, CliError> {
+        let conflict = if endpoint.is_some() {
+            Some("an ENDPOINT")
+        } else if opts.role != HostRole::Remote {
+            Some("--role satellite")
+        } else if opts.name.is_some() {
+            Some("--name")
+        } else if opts.session.is_some() {
+            Some("--session")
+        } else if manual_credentials_given(opts) {
+            Some("a manual credential flag")
+        } else {
+            ssh_form_flag_given(opts)
+        };
+        if let Some(conflict) = conflict {
+            return Err(CliError::new(
+                codes::REGISTRY,
+                format!(
+                    "--code does not combine with {conflict}: the link carries the endpoint and its credentials"
+                ),
+                "pass only the name to register and the link: `phux host add NAME --code LINK`",
+            ));
+        }
+        Ok(Self::Code {
+            name: target.to_owned(),
+        })
+    }
+}
+
+/// Whether a flag only the manual form takes names a credential or route.
+const fn manual_credentials_given(opts: &AddOpts) -> bool {
+    opts.token_file.is_some()
+        || opts.cert_fingerprint.is_some()
+        || opts.tls_server_name.is_some()
+        || opts.ca_fingerprint.is_some()
 }
 
 /// The first ssh-form flag present on a manual invocation, by its spelling.
@@ -161,6 +201,7 @@ pub(super) fn run_add(target: &str, endpoint: Option<&str>, opts: &AddOpts) -> E
         Err(err) => json_err::emit(json, &err, 2),
         Ok(AddMode::Manual { name, endpoint }) => run_add_manual(&name, &endpoint, opts),
         Ok(AddMode::Ssh { target }) => run_add_over_ssh(&target, opts),
+        Ok(AddMode::Code { name }) => run_add_from_code(&name, opts),
     }
 }
 
