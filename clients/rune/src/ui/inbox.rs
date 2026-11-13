@@ -180,6 +180,19 @@ fn approval_card(approval: &Approval, ink: &Ink) -> El {
             .color(ink.dim)
             .truncate(),
     );
+    if let Some(credential) = &approval.credential {
+        for detail in inbox::credential_details(approval) {
+            card = card.child(text(detail).font(CAPTION).color(ink.text).wrap());
+        }
+        for reference in &credential.request.references {
+            card = card.child(
+                text(reference.clone())
+                    .font(CAPTION.family(Family::SystemMono))
+                    .color(ink.text)
+                    .wrap(),
+            );
+        }
+    }
     for subject in &approval.subjects {
         card = card.child(
             text(subject.clone())

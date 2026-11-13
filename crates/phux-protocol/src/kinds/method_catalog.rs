@@ -266,6 +266,8 @@ const MIRRORS: Option<FeatureGate> = Some(FeatureGate::FeaturesExt {
 /// and the Global metadata keys with entries of their own
 /// ([`Carrier::Metadata`]).
 pub static SERVER_METHODS: &[MethodSpec] = &[
+    dangerous(method!("CREDENTIALS", Carrier::Command(crate::wire::frame::COMMAND_TAG_CREDENTIALS), [C_CREDENTIALS],
+        Some(FeatureGate::FeaturesExt { mask: ServerFeatureExt::Credentials.mask(), wire_name: ServerFeatureExt::Credentials.wire_name() }))),
     method!("GET_CREATION", Carrier::Command(crate::wire::frame::COMMAND_TAG_GET_CREATION), [C_GET_CREATION],
         Some(FeatureGate::FeaturesExt { mask: ServerFeatureExt::ApiDescription.mask(), wire_name: ServerFeatureExt::ApiDescription.wire_name() })),
     method!("DESCRIBE_API", Carrier::Command(crate::wire::frame::COMMAND_TAG_DESCRIBE_API), [C_API_DESCRIBE],

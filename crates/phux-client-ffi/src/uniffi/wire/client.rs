@@ -12,6 +12,7 @@ use phux_client_runtime::control::{Observation, SpawnRequest};
 use crate::uniffi::engine;
 
 mod agent_control;
+mod approvals;
 use agent_control::project_agent_control;
 #[cfg(test)]
 mod agent_records;
@@ -22,6 +23,7 @@ mod organization;
 mod publication;
 #[cfg(test)]
 mod quic_live;
+mod runtime_access;
 mod search;
 mod selection;
 mod service_http;
@@ -981,20 +983,6 @@ impl RemoteClient {
 }
 
 impl RemoteClient {
-    fn runtime_client(&self) -> Option<Client> {
-        self.client.lock().unwrap().clone()
-    }
-
-    fn with_terminal<T>(
-        &self,
-        terminal_id: &str,
-        call: impl FnOnce(&Client, &ResourceId) -> T,
-    ) -> Option<T> {
-        let id = id::parse(terminal_id)?;
-        let client = self.runtime_client()?;
-        Some(call(&client, &id))
-    }
-
     fn apply_acknowledged(
         &self,
         terminal_id: &str,
@@ -1023,6 +1011,9 @@ impl RemoteClient {
     /// bookkeeping) or a fact with no Swift
     /// vocabulary.
     fn project_event(&self, client: Option<&Client>, event: Event, projected: &mut Vec<WireEvent>) {
+        if Self::project_approval(&event, projected) {
+            return;
+        }
         let event = match event::terminal_signal(event) {
             Ok(signal) => return projected.extend(Option::<WireEvent>::from(signal)),
             Err(event) => event,

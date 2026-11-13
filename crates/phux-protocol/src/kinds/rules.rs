@@ -451,12 +451,15 @@ static C_PRIVACY_STATUS: Rule = Rule::verbs(
     &[Verb::Inventory],
     GLOBAL_OWNER_UDS,
 );
+// Full Global control, never pane-scoped agent keys or control-class grants.
+// Every Request also goes through the mandatory per-exchange approval gate.
+static C_CREDENTIALS: Rule = Rule::verbs("`CREDENTIALS`", &[Verb::Bind, Verb::Input], GLOBAL);
 static C_UNCLASSIFIED: Rule = Rule::deny("Unknown, retired, or otherwise unclassified command tag");
 
 /// The nested-command table of workload-auth §6, in spec row order.
 ///
 /// [`classify_command`] returns one of these rows for every decoded command.
-pub static COMMAND_RULES: [&Rule; 59] = [
+pub static COMMAND_RULES: [&Rule; 60] = [
     &C_SPAWN,
     &C_ATTACH_RESOURCE,
     &C_DETACH_RESOURCE,
@@ -493,6 +496,7 @@ pub static COMMAND_RULES: [&Rule; 59] = [
     &C_MIRROR,
     &C_MIRROR_PROVIDE,
     &C_PRIVACY_STATUS,
+    &C_CREDENTIALS,
     &C_NATIVE_SPAWN,
     &C_NATIVE_LIST,
     &C_NATIVE_LAUNCH,

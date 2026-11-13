@@ -57,6 +57,12 @@ struct World {
     approval: phux_protocol::ids::ApprovalId,
 }
 
+fn credential_sample() -> FrameKind {
+    command(Command::Credentials {
+        op: phux_protocol::credentials::CredentialOp::Next { provider: "desktop".into() },
+    })
+}
+
 fn world() -> World {
     let mut state = ServerState::new();
     let (alpha_session, alpha_core) = state.seed_session("alpha");
@@ -412,6 +418,7 @@ fn samples(world: &World, agent: &WireResourceId) -> Vec<FrameKind> {
         }),
         command(Command::DescribeApi),
         command(Command::PrivacyStatus),
+        credential_sample(),
         command(Command::GetState {
             scope: StateScope::Server,
         }),

@@ -40,6 +40,7 @@
 #![deny(rustdoc::private_intra_doc_links)]
 
 pub mod agent_record;
+pub mod approvals;
 pub mod ask;
 pub mod document_input;
 pub mod document_view;

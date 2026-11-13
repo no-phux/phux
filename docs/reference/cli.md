@@ -66,6 +66,7 @@ Agents:
   approvals     List actions held for approval
   approve       Approve a held action
   deny          Deny a held action
+  credentials   Use 1Password credentials with one-time approval
 
 Machines:
   host          Add and manage the machines phux reaches [aliases: machine]
@@ -2642,6 +2643,95 @@ Flags:
 
 Global flags:
       --socket <PATH>  Server socket to dial (default: `$PHUX_SOCKET`)
+```
+
+## `phux credentials`
+
+```text
+Use 1Password credentials with one-time approval
+
+Start `serve` on the machine with the 1Password desktop app. `run` starts a
+LOCAL process only after approval and provider completion. Review requests with
+`phux approvals`; decide them with `phux approve ID` or `phux deny ID`.
+
+Usage: phux credentials <SUBCOMMAND>
+
+Commands:
+  run    Execute a LOCAL command with approved secrets injected into its
+         environment.
+  serve  Serve approved requests using the local 1Password desktop integration.
+  help   Print this message or the help of the given subcommand(s)
+
+Flags:
+  -h, --help           Print help
+
+Global flags:
+      --socket <PATH>  Server socket to dial (default: `$PHUX_SOCKET`)
+```
+
+## `phux credentials run`
+
+```text
+Execute a LOCAL command with approved secrets injected into its environment.
+
+Usage: phux credentials run <FLAGS> <COMMAND>…
+
+Arguments:
+  <COMMAND>…  Local executable and arguments, after --. Never use a secret as an
+              argument.
+
+Flags:
+      --provider <NAME>           Provider name on the connected broker.
+      --env <NAME=op://VAULT/ITEM/FIELD>  Environment assignment to a reference;
+                                  repeat for multiple variables.
+      --purpose <TEXT>            Human-readable reason shown in the approval
+                                  request.
+      --remote <[USER@]HOST[:PORT]>  Run against the phux server on another
+                                  machine instead of the local socket,
+                                  ssh-style: `--remote me@mini`. Same target
+                                  and resolution as `phux attach --remote`: a
+                                  registered host is dialed directly over
+                                  QUIC or WSS, and an unregistered one is
+                                  paired over your ssh trust first and
+                                  remembered (except `upload`, `download`,
+                                  and calls with `--json`: these never pair
+                                  and refuse unregistered hosts, naming
+                                  remedies). PORT defaults to 8788. Cannot
+                                  combine with `--socket`.
+  -h, --help                      Print help
+
+Global flags:
+      --socket <PATH>             Server socket to dial (default:
+                                  `$PHUX_SOCKET`)
+```
+
+## `phux credentials serve`
+
+```text
+Serve approved requests using the local 1Password desktop integration.
+
+Usage: phux credentials serve <FLAGS>
+
+Flags:
+      --name <NAME>               Provider name requesters select.
+      --account <ACCOUNT>         1Password account selector (not a secret).
+      --remote <[USER@]HOST[:PORT]>  Run against the phux server on another
+                                  machine instead of the local socket,
+                                  ssh-style: `--remote me@mini`. Same target
+                                  and resolution as `phux attach --remote`: a
+                                  registered host is dialed directly over
+                                  QUIC or WSS, and an unregistered one is
+                                  paired over your ssh trust first and
+                                  remembered (except `upload`, `download`,
+                                  and calls with `--json`: these never pair
+                                  and refuse unregistered hosts, naming
+                                  remedies). PORT defaults to 8788. Cannot
+                                  combine with `--socket`.
+  -h, --help                      Print help
+
+Global flags:
+      --socket <PATH>             Server socket to dial (default:
+                                  `$PHUX_SOCKET`)
 ```
 
 ## `phux deny`

@@ -31,6 +31,7 @@ pub mod wire;
 pub mod api;
 pub mod caps;
 pub mod checkout;
+pub mod credentials;
 pub mod enroll;
 pub mod ids;
 pub mod kinds;

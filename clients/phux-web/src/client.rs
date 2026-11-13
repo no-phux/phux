@@ -47,6 +47,7 @@ use crate::touch::{TouchGesture, TouchMode, TouchStep};
 use crate::{Mark, Metrics, Overlay, render_cursor_row_appearance, render_selected_appearance};
 
 mod app;
+mod approvals;
 mod connect;
 mod documents;
 mod find;
@@ -188,6 +189,7 @@ struct AppBindings {
     input: Option<InputBinding>,
     find: Option<find::FindBinding>,
     path_picker: Option<path_picker::PickerBinding>,
+    approvals: Option<approvals::ApprovalBinding>,
     blink: Option<BlinkBinding>,
     frame: Option<FrameBinding>,
     bootstrap_expiry: Option<BlinkBinding>,
