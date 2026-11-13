@@ -1,12 +1,21 @@
 name: Cache warm
 
 # Pull requests restore Rust caches but never save them (a PR entry is
-# restorable only from that PR, and it evicts main's). The Rune lane runs on a
-# main push only when Rune changes, so its cache is saved here: the lane
-# itself, run on main once a day. An unchanged key restores exactly and saves
-# nothing.
+# restorable only from that PR, and it evicts main's). Two clocks:
+#
+#   00:10 UTC — the Linux mbx lanes (check, test, icount) and the uniffi
+#   dependency cache. Their mbx key is flake + Cargo.lock + the UTC day, so
+#   the first pull request of a day used to miss. This run restores the
+#   previous day, builds what a main push builds, and on main saves today's
+#   key. mr-boxington-action saves a default-branch push and refuses a
+#   schedule; record-main-cache reports that push. Off main the reported
+#   push is still restore-only, so a branch dispatch does not write a cache.
+#
+#   06:17 UTC — the Rune lane, unchanged. Its job does not run at 00:10.
+#   An unchanged key restores exactly and saves nothing.
 on:
   schedule:
+    - cron: "10 0 * * *"
     - cron: "17 6 * * *"
   workflow_dispatch:
 
@@ -19,5 +28,147 @@ concurrency:
 
 jobs:
   rune:
-    if: github.ref == 'refs/heads/main'
+    if: github.ref == 'refs/heads/main' && (github.event_name != 'schedule' || github.event.schedule == '17 6 * * *')
     uses: ./.github/workflows/rune-build.yml
+
+  rust-lint:
+    name: warm rust lint
+    if: github.event_name != 'schedule' || github.event.schedule == '10 0 * * *'
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 30
+    permissions:
+      actions: write
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup-rust-lane
+        id: lane
+        with:
+          cachix-auth-token: ${{ secrets.CACHIX_AUTH_TOKEN }}
+          cache-lane: check
+          record-main-cache: "true"
+      - name: mbx save decision
+        run: echo "hit=${{ steps.lane.outputs.cache-hit }} reason=${{ steps.lane.outputs.cache-save-reason }} key=${{ steps.lane.outputs.cache-key }}"
+      - run: nix develop -c just rust-lint
+      - name: Check the plugin index compiles
+        run: nix develop -c cargo check --locked --manifest-path scripts/plugin-index/Cargo.toml
+      - name: free disk and the previous day's key before the objects save
+        if: steps.lane.outputs.cache-save-reason == 'default-branch push' && steps.lane.outputs.cache-hit != 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PREFIX: linux-arm64-mbx-phux-check-
+        run: |
+          bash scripts/ci/mbx-export-headroom.sh
+          bash scripts/ci/prune-build-cache.sh --replace-prefix "$PREFIX"
+
+  rust-test:
+    name: warm rust test
+    if: github.event_name != 'schedule' || github.event.schedule == '10 0 * * *'
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 30
+    permissions:
+      actions: write
+      contents: read
+    env:
+      CARGO_INCREMENTAL: "0"
+      CARGO_PROFILE_DEV_DEBUG: "0"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup-rust-lane
+        id: lane
+        with:
+          cachix-auth-token: ${{ secrets.CACHIX_AUTH_TOKEN }}
+          cache-lane: test
+          record-main-cache: "true"
+      - name: mbx save decision
+        run: echo "hit=${{ steps.lane.outputs.cache-hit }} reason=${{ steps.lane.outputs.cache-save-reason }} key=${{ steps.lane.outputs.cache-key }}"
+      - name: just test-archive
+        env:
+          PHUX_TEST_ARCHIVE: ${{ runner.temp }}/phux-tests.tar.zst
+        run: nix develop -c just test-archive
+      - name: free disk and the previous day's key before the objects save
+        if: steps.lane.outputs.cache-save-reason == 'default-branch push' && steps.lane.outputs.cache-hit != 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PREFIX: linux-arm64-mbx-phux-test-
+        run: |
+          bash scripts/ci/mbx-export-headroom.sh
+          bash scripts/ci/prune-build-cache.sh --replace-prefix "$PREFIX"
+
+  rust-uniffi:
+    name: warm rust uniffi
+    if: github.event_name != 'schedule' || github.event.schedule == '10 0 * * *'
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 25
+    permissions:
+      actions: read
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup-rust-lane
+        id: lane
+        with:
+          cachix-auth-token: ${{ secrets.CACHIX_AUTH_TOKEN }}
+          cache-lane: uniffi
+          build-cache: deps
+      - name: dependency-cache hit
+        run: echo "hit=${{ steps.lane.outputs.cache-hit }}"
+      - run: nix develop -c just binding-uniffi-test
+      - run: nix develop -c just ffi-abi
+
+  rust-icount:
+    name: warm rust icount
+    if: github.event_name != 'schedule' || github.event.schedule == '10 0 * * *'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      actions: write
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: ./.github/actions/setup-rust-lane
+        id: lane
+        with:
+          cachix-auth-token: ${{ secrets.CACHIX_AUTH_TOKEN }}
+          cache-lane: icount
+          record-main-cache: "true"
+      - name: mbx save decision
+        run: echo "hit=${{ steps.lane.outputs.cache-hit }} reason=${{ steps.lane.outputs.cache-save-reason }} key=${{ steps.lane.outputs.cache-key }}"
+      - name: just perf-icount
+        run: nix develop -c just perf-icount
+      - name: free disk and the previous day's key before the objects save
+        if: steps.lane.outputs.cache-save-reason == 'default-branch push' && steps.lane.outputs.cache-hit != 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PREFIX: linux-x64-mbx-phux-icount-
+        run: |
+          bash scripts/ci/mbx-export-headroom.sh
+          bash scripts/ci/prune-build-cache.sh --replace-prefix "$PREFIX"
+
+  # After today's keys exist, drop the previous day and any superseded
+  # Rune rust-cache entry. A branch dispatch must not delete: this job's
+  # token can remove repository caches, and the ref gate is the boundary.
+  prune-build-cache:
+    name: prune superseded build caches
+    needs: [rust-lint, rust-test, rust-uniffi, rust-icount]
+    if: always() && github.ref == 'refs/heads/main' && (github.event_name != 'schedule' || github.event.schedule == '10 0 * * *')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      actions: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - env:
+          GH_TOKEN: ${{ github.token }}
+        run: bash scripts/ci/prune-build-cache.sh

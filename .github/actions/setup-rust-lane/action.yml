@@ -13,9 +13,13 @@
 #      build-script run, and native (mold) link. The GitHub `objects` payload
 #      carries only what that lane's builds used or produced; saves are
 #      restricted to pushes to main so PR writes cannot thrash the shared
-#      10 GB LRU. The primary key excludes the commit: an exact hit skips the
-#      post-step export. The key changes with flake.lock, Cargo.lock, or the
-#      UTC day, and ci.yml's prune-build-cache keeps the newest entry per lane.
+#      10 GB LRU. A schedule does not save. cache-warm.yml's 00:10 UTC run
+#      sets record-main-cache, and this action then reports a push so the
+#      save uses the same key a main push would. Any other ref stays
+#      restore-only. The primary key excludes the commit: an exact hit skips
+#      the post-step export. The key changes with flake.lock, Cargo.lock, or
+#      the UTC day. prune-build-cache keeps a current-day key and drops the
+#      previous one, so the new day does not stack a second copy on the cap.
 #      A cold test build records "not looked up": mbx learns the key while
 #      compiling, then the save makes the next job a hit. Run 38451988937
 #      compiled the test profile in 10m 24s with 0 hits and stored a 2.3 GB
@@ -50,6 +54,13 @@ inputs:
     description: mbx (content-keyed objects store), deps (third-party dependency artifacts only), or none (a lane that runs prebuilt test binaries).
     required: false
     default: mbx
+  record-main-cache:
+    description: >
+      Report a push to mr-boxington-action so a main schedule or dispatch
+      saves the same objects key a main push saves. The action still refuses
+      every ref except the default branch. Pull-request lanes leave this false.
+    required: false
+    default: "false"
 
 outputs:
   cache-hit:
@@ -58,6 +69,9 @@ outputs:
   cache-key:
     description: Primary objects-cache key. A failed main lane saves this same key.
     value: ${{ steps.mbx-env.outputs.cache_key }}
+  cache-save-reason:
+    description: Why mbx will or will not save. Empty when this lane is not using mbx.
+    value: ${{ steps.mbx.outputs.cache-save-reason }}
 
 runs:
   using: composite
@@ -131,6 +145,12 @@ runs:
     - uses: jdx/mr-boxington-action@88acf2bb50552c7c508cbac13e5f8c576b95b1de # v1.7.3
       if: inputs.build-cache == 'mbx'
       id: mbx
+      env:
+        # v1.7.3 saves a default-branch push and refuses a schedule. The
+        # explicit cache-key is unchanged, so the saved entry is the UTC-day
+        # key, not a per-run key. Off the default branch the reported push
+        # is still restore-only.
+        GITHUB_EVENT_NAME: ${{ inputs.record-main-cache == 'true' && 'push' || github.event_name }}
       with:
         backend: github
         github-cache-mode: objects
@@ -189,6 +209,7 @@ runs:
         # flake.lock pins the Zig and mold a dependency build script uses;
         # rust-cache already keys on rustc, Cargo.lock, and CARGO_* settings.
         key: ${{ steps.deps-env.outputs.flake }}
-        # Pull requests restore only (see docs/development.md#ci).
-        save-if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+        # Pull requests restore only (see docs/development.md#ci). A main
+        # schedule saves too: cache-warm.yml refills this lane at 00:10 UTC.
+        save-if: ${{ (github.event_name == 'push' || github.event_name == 'schedule') && github.ref == 'refs/heads/main' }}
         cache-on-failure: "true"

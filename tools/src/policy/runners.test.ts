@@ -102,4 +102,42 @@ test("only main prunes the build cache", () => {
   const prune = job(workflow("ci.yml"), "prune-build-cache");
   expect(str(prune["if"])).toContain(`github.event_name == 'push' && ${MAIN}`);
   expect(table(prune["permissions"])["actions"]).toBe("write");
+  const warm = job(workflow("cache-warm.yml"), "prune-build-cache");
+  const gate = str(warm["if"]) ?? "";
+  expect(gate).toContain(MAIN);
+  expect(gate).toContain("10 0 * * *");
+  expect(table(warm["permissions"])["actions"]).toBe("write");
+});
+
+test("the mbx warm stays on Linux and only main reports a saving push", () => {
+  const warm = workflow("cache-warm.yml");
+  const rune = str(job(warm, "rune")["if"]) ?? "";
+  expect(rune).toContain(MAIN);
+  expect(rune).toContain("17 6 * * *");
+  expect(rune).not.toContain("10 0 * * *");
+  for (const id of ["rust-lint", "rust-test", "rust-uniffi", "rust-icount"]) {
+    const lane = job(warm, id);
+    expect(str(lane["runs-on"]) ?? "").toMatch(/^ubuntu-/);
+    const gate = str(lane["if"]) ?? "";
+    expect(gate).toContain("10 0 * * *");
+    expect(gate).not.toContain("17 6 * * *");
+  }
+  const setup = action("setup-rust-lane");
+  expect(str(table(table(setup["inputs"])["record-main-cache"])["default"])).toBe("false");
+  const mbx = steps(setup).find((step) => uses(step).startsWith("jdx/mr-boxington-action"));
+  const event = str(table(mbx?.["env"])["GITHUB_EVENT_NAME"]) ?? "";
+  expect(event).toContain("inputs.record-main-cache == 'true'");
+  expect(event).toContain("'push'");
+  const deps = steps(setup).find((step) => uses(step).startsWith("Swatinem/rust-cache"));
+  const saveIf = str(withInput(deps ?? {}, "save-if")) ?? "";
+  expect(saveIf).toContain(MAIN);
+  expect(saveIf).toContain("github.event_name == 'schedule'");
+  const opted = workflowNames().flatMap((name) =>
+    Object.values(jobs(workflow(name)))
+      .flatMap(steps)
+      .filter((step) => uses(step) === "./.github/actions/setup-rust-lane")
+      .filter((step) => str(withInput(step, "record-main-cache")) === "true")
+      .map(() => name),
+  );
+  expect(opted).toEqual(["cache-warm.yml", "cache-warm.yml", "cache-warm.yml"]);
 });
