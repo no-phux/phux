@@ -7,8 +7,10 @@
 //! and the id the phone knows this server by. When an agent asks and the
 //! connection that wrote a grant is gone, the server posts a content-free
 //! notice (host, pane, question id, action) to that gateway, which forwards it
-//! to APNs. A grant that opts in (`"finished": true`) also hears, the same
-//! way, that an agent finished the turn it was working on. The server never
+//! to APNs. An agent whose block is known only from its screen (no ask
+//! behind it) is pushed the same way when its record turns `blocked`. A
+//! grant that opts in (`"finished": true`) also hears that an agent finished
+//! the turn it was working on. The server never
 //! holds APNs credentials; the gateway never sees terminal bytes; a phone
 //! that is still connected gets nothing here, because it already sees both
 //! itself.
@@ -186,12 +188,28 @@ impl PushGrants {
     }
 }
 
-/// The grants to push to: every registered device whose writing connection
-/// is gone. `Some(ask_id)` is an ask, pushed once per ask id; `None` is a
-/// finished agent, pushed only to grants that opted in (its once-per-run
-/// rule is the transition itself, [`on_agent_record`]). A key whose value no
-/// longer parses (rewritten by hand) is skipped, not refused.
-pub(crate) fn targets(s: &mut ServerState, ask_id: Option<&str>) -> Vec<GrantValue> {
+/// What a notice is about. The wire spelling is in [`send`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Notice<'a> {
+    /// A structured ask, pushed once per ask id per device.
+    Ask(&'a str),
+    /// The agent is blocked on the person with no structured ask behind it
+    /// (a screen rule matched a prompt). Every device hears it; once per
+    /// episode, because only the edge into `blocked` sends it.
+    Blocked,
+    /// An agent finished its turn; only grants that opted in hear it.
+    Finished,
+}
+
+/// The ask id a [`Notice::Blocked`] carries: the gateway wants a question
+/// for an alert, and no real ask exists to name. A reply pinned to it is
+/// refused by the phone (no question has this id), which then opens the pane.
+pub(crate) const BLOCKED_QUESTION: &str = "blocked";
+
+/// The grants to push `notice` to: every registered device whose writing
+/// connection is gone, filtered by [`Notice`]. A key whose value no longer
+/// parses (rewritten by hand) is skipped, not refused.
+pub(crate) fn targets(s: &mut ServerState, notice: Notice<'_>) -> Vec<GrantValue> {
     let keys: Vec<String> = s
         .metadata()
         .list(&Scope::Global)
@@ -215,9 +233,10 @@ pub(crate) fn targets(s: &mut ServerState, ask_id: Option<&str>) -> Vec<GrantVal
         if live {
             continue;
         }
-        let wanted = match ask_id {
-            Some(ask_id) => s.push_grants_mut().claim(&key, ask_id),
-            None => grant.finished,
+        let wanted = match notice {
+            Notice::Ask(ask_id) => s.push_grants_mut().claim(&key, ask_id),
+            Notice::Blocked => true,
+            Notice::Finished => grant.finished,
         };
         if !wanted {
             continue;
@@ -229,19 +248,25 @@ pub(crate) fn targets(s: &mut ServerState, ask_id: Option<&str>) -> Vec<GrantVal
 
 /// An ask was broadcast for `pane`: post it to every absent device.
 pub(crate) fn on_asked(state: &SharedState, pane: &WireResourceId, ask_id: &str) {
-    let targets = state.with_mut(|s| targets(s, Some(ask_id)));
-    post(targets, pane, Some(ask_id));
+    let targets = state.with_mut(|s| targets(s, Notice::Ask(ask_id)));
+    post(targets, pane, Notice::Ask(ask_id));
 }
 
-/// The pane's agent record is about to change from `before` to `after`:
-/// post "an agent finished" to every absent device that opted in, when the
-/// write is the end of a turn. That is `working` straight to `done` and
-/// nothing else: `blocked` is the ask push's, `unknown` is a record cleared
-/// or a pane closing, and a second `done` (or `done`, `idle`, `done`) has no
-/// `working` before it, so one run pushes once with no ledger to keep.
+/// The pane's agent record is about to change from `before` to `after`.
+///
+/// Into `blocked`, with no structured ask pending on the pane: every absent
+/// device hears that the agent needs the person. An agent known only by its
+/// screen (a rule matched a permission prompt) never sends an ask, so this
+/// is the only way its block reaches a phone that is not connected. With an
+/// ask pending, [`on_asked`] already sent it.
+///
+/// `working` straight to `done`: devices that opted in hear the agent
+/// finished. `unknown` is a record cleared or a pane closing, and a second
+/// `done` (or `done`, `idle`, `done`) has no `working` before it, so one run
+/// pushes once with no ledger to keep.
 /// ponytail: `idle` after `working` is not counted, because the screen rules
 /// fall back to `idle` and flicker; an agent known only by its screen never
-/// pushes. Count `idle` behind a debounce if that turns out to matter.
+/// pushes a finish. Count `idle` behind a debounce if that turns out to matter.
 pub(crate) fn on_agent_record(
     s: &mut ServerState,
     pane: &WireResourceId,
@@ -249,18 +274,29 @@ pub(crate) fn on_agent_record(
     after: &[u8],
 ) {
     use phux_agent_session::state::stored_state;
-    if stored_state(before).as_deref() != Some("working")
-        || stored_state(Some(after)).as_deref() != Some("done")
-    {
-        return;
-    }
-    let targets = targets(s, None);
-    post(targets, pane, None);
+    let before = stored_state(before);
+    let after = stored_state(Some(after));
+    let notice = match (before.as_deref(), after.as_deref()) {
+        (Some("blocked"), _) => return,
+        (_, Some("blocked")) => {
+            let asked = s
+                .resource_from_wire(pane)
+                .is_some_and(|terminal| s.agent_is_asked(terminal));
+            if asked {
+                return;
+            }
+            Notice::Blocked
+        }
+        (Some("working"), Some("done")) => Notice::Finished,
+        _ => return,
+    };
+    let targets = targets(s, notice);
+    post(targets, pane, notice);
 }
 
 /// One send per target, each its own task; nothing here waits. Off a runtime
 /// (a test driving the store directly) nothing is sent.
-fn post(targets: Vec<GrantValue>, pane: &WireResourceId, question: Option<&str>) {
+fn post(targets: Vec<GrantValue>, pane: &WireResourceId, notice: Notice<'_>) {
     if targets.is_empty() {
         return;
     }
@@ -268,18 +304,29 @@ fn post(targets: Vec<GrantValue>, pane: &WireResourceId, question: Option<&str>)
         return;
     };
     let pane = encode_pane(pane);
+    let (action, question) = wire_notice(notice);
     for target in targets {
         let pane = pane.clone();
         let question = question.map(str::to_owned);
         runtime.spawn(async move {
-            match send(&target, &pane, question.as_deref()).await {
+            match send(&target, &pane, action, question.as_deref()).await {
                 Ok(status) if (200..300).contains(&status) => {
-                    debug!(host = %target.host, %pane, "push: delivered to gateway");
+                    debug!(host = %target.host, %pane, action, "push: delivered to gateway");
                 }
-                Ok(status) => warn!(host = %target.host, status, "push: gateway refused"),
-                Err(err) => warn!(host = %target.host, %err, "push: send failed"),
+                Ok(status) => warn!(host = %target.host, status, action, "push: gateway refused"),
+                Err(err) => warn!(host = %target.host, %err, action, "push: send failed"),
             }
         });
+    }
+}
+
+/// The notice's `action` and `question` on the wire. An ask asks for a
+/// reply; a block opens the pane; a finish names no question at all.
+const fn wire_notice(notice: Notice<'_>) -> (&'static str, Option<&str>) {
+    match notice {
+        Notice::Ask(ask_id) => ("reply", Some(ask_id)),
+        Notice::Blocked => ("open", Some(BLOCKED_QUESTION)),
+        Notice::Finished => ("finished", None),
     }
 }
 
@@ -301,12 +348,13 @@ fn encode_pane(id: &WireResourceId) -> String {
 /// ponytail: no redirects, no keep-alive, no body parse; switch to a real
 /// client if the gateway contract grows past one POST.
 ///
-/// `question` is the ask id; `None` is a finished agent, which has no
-/// question to name and says so in `action`. A gateway that predates
-/// `finished` refuses the notice (400) instead of alerting it as an ask.
+/// `action` and `question` come from [`wire_notice`]. A gateway that
+/// predates `finished` refuses that notice (400) instead of alerting it as
+/// an ask.
 pub(crate) async fn send(
     target: &GrantValue,
     pane: &str,
+    action: &str,
     question: Option<&str>,
 ) -> Result<u16, String> {
     let gateway = Gateway::parse(&target.gateway)?;
@@ -314,11 +362,10 @@ pub(crate) async fn send(
         "schema_version": 1,
         "host": target.host,
         "pane": pane,
-        "action": "finished",
+        "action": action,
     });
     if let Some(question) = question {
         body["question"] = question.into();
-        body["action"] = "reply".into();
     }
     let body = body.to_string();
     let request = format!(
