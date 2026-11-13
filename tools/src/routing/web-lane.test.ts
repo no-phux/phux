@@ -1,10 +1,11 @@
 // The web lane's own checks. workflows.test.ts is at the file-size ratchet,
 // so the split and its cache policy are asserted here.
 import { expect, test } from "bun:test";
+import { readFileSync } from "node:fs";
 import { capture } from "../lib/process.ts";
 import { repoPath } from "../lib/repo.ts";
 import { list, str, table } from "../lib/value.ts";
-import { action, job, steps, uses, withInput, workflow } from "../policy/workflows.ts";
+import { action, job, run, steps, uses, withInput, workflow } from "../policy/workflows.ts";
 import { LANE_RECIPES } from "./plan.ts";
 
 const WEB_CHECKS = [
@@ -70,4 +71,27 @@ test("the web jobs cache cargo dependencies and save them only from main", () =>
     (candidate) => uses(candidate) === "./.github/actions/setup-web-cache",
   );
   expect(str(withInput(client ?? {}, "workspaces"))).toContain("target/web-native");
+});
+
+test("both web halves fail the aggregate on failure or cancellation", () => {
+  const gate = run(steps(job(workflow("ci.yml"), "ci"))[0] ?? {});
+  for (const id of ["web-vt", "web-client"]) {
+    for (const result of ["success", "failure", "cancelled"]) {
+      const exit = Bun.spawnSync(["bash", "-euo", "pipefail", "-c", gate], {
+        env: {
+          ...process.env,
+          RESULTS: JSON.stringify({ plan: { result: "success" }, [id]: { result } }),
+        },
+        stdout: "ignore",
+      }).exitCode;
+      expect([id, result, exit]).toEqual([id, result, result === "success" ? 0 : 1]);
+    }
+  }
+});
+
+test("the new web cache series participate in bounded repository retention", () => {
+  const prune = readFileSync(repoPath("scripts/ci/prune-build-cache.sh"), "utf8");
+  for (const prefix of ["v0-rust-phux-web-vt-", "v0-rust-phux-web-client-"]) {
+    expect(prune).toContain(prefix);
+  }
 });

@@ -14,6 +14,7 @@ keep_newest() {
 }
 for prefix in linux-arm64-mbx-phux-check- linux-arm64-mbx-phux-test- \
     v0-rust-phux-uniffi-Linux- linux-x64-mbx-phux-icount- v0-rust-ffi-android-Linux-x64- \
+    v0-rust-phux-web-vt- v0-rust-phux-web-client- \
     v0-rust-release-deps-Linux-x64- v0-rust-release-deps-Linux-arm64- \
     v0-rust-release-deps-Darwin-arm64- v0-rust-mini-v1-desktop-release- \
     mini-v1-ffi-xcframework-zig- \
