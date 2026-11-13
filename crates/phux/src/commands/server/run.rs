@@ -171,6 +171,7 @@ pub(super) fn build_server_config(
         shell,
         login_shell,
         window_size: defaults.window_size,
+        keep_awake: defaults.keep_awake,
         voice,
         // Clamped up so the built-in agent-session record write always fits under
         // the generic metadata cap, whatever the config says.

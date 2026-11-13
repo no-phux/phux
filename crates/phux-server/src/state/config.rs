@@ -34,6 +34,8 @@ pub(super) struct ServerConfig {
     /// How a Terminal shared by differently sized clients picks its PTY size
     /// (`defaults.window-size`).
     pub(super) window_size: phux_config::WindowSize,
+    /// When to hold an idle-sleep inhibitor (`defaults.keep-awake`).
+    pub(super) keep_awake: phux_config::KeepAwake,
     /// HELLO authorization engine (ADR-0072); the `local` engine unless
     /// configured.
     pub(super) policy_engine: std::sync::Arc<dyn crate::policy::PolicyEngine>,
@@ -67,6 +69,7 @@ impl Default for ServerConfig {
             server_socket_path: None,
             native_host_executable: None,
             window_size: phux_config::WindowSize::default(),
+            keep_awake: phux_config::KeepAwake::default(),
             policy_engine: std::sync::Arc::new(crate::policy::ScopedPolicy::local()),
             policy_posture: crate::policy::PolicyPosture::Local,
             attach_create_seeds_pty: false,

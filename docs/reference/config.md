@@ -62,6 +62,7 @@ Every scalar knob with its shipped default, serialized from the schema itself, p
 | `defaults.event-journal-entries` | `4096` |
 | `defaults.history-bytes` | `10485760` |
 | `defaults.history-limit` | `50000` |
+| `defaults.keep-awake` | `"off"` |
 | `defaults.mouse` | `true` |
 | `defaults.retain-on-exit` | `false` |
 | `defaults.retain-on-exit-max` | `256` |
@@ -220,6 +221,16 @@ session-name-template = "${cwd-basename}"
 #              desktop and it fits the desktop again
 #   "manual"   keep the current size
 window-size = "smallest"
+
+# Keep the machine from going to sleep by itself while agents are busy:
+#   "off"               never (the default)
+#   "while-agents-work" while any agent is working; sleep is allowed again
+#                       about 15 seconds after the last one stops
+#   "always"            for as long as the phux server runs
+# Uses caffeinate on macOS and systemd-inhibit on Linux. The screen may
+# still turn off, and closing a laptop lid still puts it to sleep.
+# `phux status` shows whether sleep is being held off. Read at server start.
+keep-awake = "off"
 
 [keybindings]
 # The prefix. Press it, then a key from the prefix table below.

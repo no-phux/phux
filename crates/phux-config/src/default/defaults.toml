@@ -117,3 +117,13 @@ session-name-template = "${cwd-basename}"
 #   "manual"   keep the current size
 window-size = "smallest"
 
+# Keep the machine from going to sleep by itself while agents are busy:
+#   "off"               never (the default)
+#   "while-agents-work" while any agent is working; sleep is allowed again
+#                       about 15 seconds after the last one stops
+#   "always"            for as long as the phux server runs
+# Uses caffeinate on macOS and systemd-inhibit on Linux. The screen may
+# still turn off, and closing a laptop lid still puts it to sleep.
+# `phux status` shows whether sleep is being held off. Read at server start.
+keep-awake = "off"
+

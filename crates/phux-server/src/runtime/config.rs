@@ -53,6 +53,8 @@ pub struct ServerConfig {
     /// How a Terminal shared by clients of differing sizes picks its PTY
     /// geometry (`defaults.window-size`).
     pub window_size: phux_config::WindowSize,
+    /// When the server holds an idle-sleep inhibitor (`defaults.keep-awake`).
+    pub keep_awake: phux_config::KeepAwake,
     /// `[voice]`: the transcriber behind `TRANSCRIBE`.
     pub voice: phux_config::VoiceCfg,
     /// `limits.metadata-value-bytes` (ADR-0129): largest L3 metadata value
@@ -156,6 +158,7 @@ impl ServerConfig {
             shell: phux_config::shell::resolve_shell(None),
             login_shell: false,
             window_size: phux_config::WindowSize::default(),
+            keep_awake: phux_config::KeepAwake::default(),
             voice: phux_config::VoiceCfg::default(),
             metadata_value_bytes: phux_config::DEFAULT_METADATA_VALUE_BYTES,
             approval_ttl_secs: phux_config::DEFAULT_APPROVAL_TTL_SECS,

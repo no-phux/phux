@@ -214,6 +214,7 @@ const CWD_INHERITANCE: &[&str] = &[
     "last-cwd-per-window",
 ];
 const WINDOW_SIZE: &[&str] = &["smallest", "largest", "latest", "active", "manual"];
+const KEEP_AWAKE: &[&str] = &["off", "while-agents-work", "always"];
 const STATUS_POSITION: &[&str] = &["bottom", "top"];
 const SIDEBAR_POSITION: &[&str] = &["left", "right"];
 const NOTIFY_MODE: &[&str] = &["terminal", "system", "bell", "off"];

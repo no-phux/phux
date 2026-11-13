@@ -25,6 +25,7 @@ pub mod health; // phux-zomb.6 (server start history: crash-loop is reportable)
 pub mod hooks;
 pub mod hub;
 pub mod id_bridge;
+pub mod keep_awake;
 pub mod org_scale;
 pub mod org_store;
 pub mod org_wire;

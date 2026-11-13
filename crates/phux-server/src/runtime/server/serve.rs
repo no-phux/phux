@@ -262,6 +262,7 @@ impl ServerRuntime {
                         cold_start,
                     );
                 }
+                crate::keep_awake::spawn(&state, &root_token);
                 // Overlay detection shells out, so it runs inside the accept
                 // set (see `serve_auto_overlay_listeners`); only the cheap gate
                 // is evaluated here.

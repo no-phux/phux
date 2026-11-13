@@ -121,6 +121,11 @@ pub struct DefaultsCfg {
     /// applies (ADR-0062).
     #[serde(rename = "window-size")]
     pub window_size: WindowSize,
+
+    /// Whether the server holds an idle-sleep inhibitor (`caffeinate`,
+    /// `systemd-inhibit`) so a working agent is not put to sleep.
+    #[serde(rename = "keep-awake")]
+    pub keep_awake: KeepAwake,
 }
 
 impl Default for DefaultsCfg {
@@ -148,6 +153,7 @@ impl Default for DefaultsCfg {
             spawn_on_attach: None,
             session_name_template: "${cwd-basename}".to_owned(),
             window_size: WindowSize::default(),
+            keep_awake: KeepAwake::default(),
         }
     }
 }
@@ -301,4 +307,18 @@ pub enum WindowSize {
     Active,
     /// A fixed size set only by an explicit `RESIZE_TERMINAL` (ADR-0062).
     Manual,
+}
+
+/// When the server keeps the machine from idle-sleeping
+/// (`defaults.keep-awake`).
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[serde(rename_all = "kebab-case")]
+pub enum KeepAwake {
+    /// Never (default).
+    #[default]
+    Off,
+    /// While at least one agent's state is `working`.
+    WhileAgentsWork,
+    /// For as long as the server runs.
+    Always,
 }
