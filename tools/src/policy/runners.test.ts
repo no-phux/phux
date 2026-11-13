@@ -65,6 +65,7 @@ test("closing a pull request cancels its in-flight ci run", () => {
       id,
       reaches ||
         gate.includes("github.event.action != 'closed'") ||
+        gate.includes("event_name == 'merge_group'") ||
         gate.includes("event_name == 'push'"),
     ]).toEqual([id, true]);
   }

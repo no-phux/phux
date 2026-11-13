@@ -31,7 +31,7 @@ name: release
 
 on:
   workflow_run:
-    workflows: [ci]
+    workflows: [ci, rune-macos]
     types: [completed]
     branches: [main]
   # Backstop for a missed event, and the stuck-release check.
@@ -58,7 +58,10 @@ jobs:
     name: release PRs and tags
     if: >-
       github.event_name == 'workflow_run'
+      && github.event.workflow_run.name == 'ci'
       && github.event.workflow_run.event == 'push'
+      && github.event.workflow_run.head_branch == 'main'
+      && github.event.workflow_run.head_repository.full_name == github.repository
       && github.event.workflow_run.conclusion == 'success'
     runs-on: ubuntu-24.04
     timeout-minutes: 10
@@ -80,7 +83,12 @@ jobs:
   plan:
     name: choose drafts
     needs: release-please
-    if: ${{ !cancelled() && (github.event_name != 'workflow_run' || github.event.workflow_run.event == 'push') }}
+    if: >-
+      !cancelled() && (github.event_name != 'workflow_run'
+      || (github.event.workflow_run.event == 'push'
+      && github.event.workflow_run.head_branch == 'main'
+      && github.event.workflow_run.head_repository.full_name == github.repository
+      && (github.event.workflow_run.name == 'ci' || github.event.workflow_run.name == 'rune-macos')))
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     permissions:

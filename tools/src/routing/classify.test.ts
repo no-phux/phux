@@ -73,7 +73,7 @@ test.each<[string[], Surface[]]>([
   [["crates/phux/build.rs"], ["phux", "web", "native"]],
   [["Cargo.toml"], ["phux", "web", "native", "rune"]],
   [["Cargo.lock"], ["phux", "web", "native"]],
-  [[".config/zig-toolchain.json"], ["phux", "web", "web_engine", "native"]],
+  [[".config/zig-toolchain.json"], ["phux", "web", "web_engine", "native", "rune"]],
   [["scripts/install-zig.sh"], ["web_engine", "native", "rune"]],
   [["scripts/setup-rust.sh"], ["native", "rune"]],
   [["scripts/install-windows.ps1"], []],

@@ -8,6 +8,7 @@ import {
   parseTag,
   releaseRefusal,
   runeMacosRefusal,
+  runeMacosProof,
   runeMacosTarget,
   splitLanes,
   validationState,
@@ -174,7 +175,7 @@ test("release-bot identity is the app, not a person who mentions it", () => {
 
 test("rune-macos is required on the release commit when Rune is in its closure", () => {
   const commit = evidence("bump", true, true, "parent");
-  expect(runeMacosTarget(commit, evidence("parent", true), "success")).toBe("bump");
+  expect(runeMacosTarget(commit, evidence("parent", true))).toBe("bump");
   expect(runeMacosRefusal("success", "bump")).toBeUndefined();
   expect(runeMacosRefusal("pending", "bump")).toContain("rune-macos");
   expect(runeMacosRefusal("failure", "bump")).toContain("failure");
@@ -186,13 +187,76 @@ test("rune-macos is required on the release commit when Rune is in its closure",
 test("a release-bot commit without Rune uses its validated parent", () => {
   const commit = evidence("bump", false, true, "parent");
   const parent = evidence("parent", true);
-  expect(runeMacosTarget(commit, parent, "success")).toBe("parent");
-  expect(runeMacosTarget(commit, parent, "pending")).toBeUndefined();
-  expect(runeMacosTarget(commit, evidence("parent", false), "success")).toBeUndefined();
-  expect(
-    runeMacosTarget(evidence("human", false, false, "parent"), parent, "success"),
-  ).toBeUndefined();
-  expect(runeMacosTarget(evidence("bump", false, true), parent, "success")).toBeUndefined();
+  expect(runeMacosTarget(commit, parent)).toBe("parent");
+  expect(runeMacosTarget(commit, evidence("parent", false))).toBeUndefined();
+  expect(runeMacosTarget(evidence("human", false, false, "parent"), parent)).toBeUndefined();
+  expect(runeMacosTarget(evidence("bump", false, true), parent)).toBeUndefined();
+});
+
+test.each(["pending", "failure", "cancelled", "success"])(
+  "inherited native proof remains required when parent ci is %s",
+  (parentCi) => {
+    const commit = evidence("bump", false, true, "parent");
+    const proof = runeMacosProof(commit, evidence("parent", true), parentCi, "failure");
+    expect(proof?.evidence).toBe("parent");
+    expect(proof?.state).toBe(parentCi === "success" ? "failure" : parentCi);
+    // These are the actual shared decisions behind tag preflight and draft publication.
+    expect(
+      releaseRefusal("success", "bump", proof?.state ?? "success", proof?.evidence),
+    ).toBeDefined();
+    const plan: Plan = {
+      publish: ["v1.2.3"],
+      delete: [],
+      wait: false,
+      fail: undefined,
+      blocked: "",
+    };
+    const gated = applyRuneGate(
+      plan,
+      "bump",
+      () => proof,
+      () => "bump",
+    );
+    expect(gated.publish).toEqual([]);
+    expect(gated.wait || gated.fail !== undefined).toBe(true);
+  },
+);
+
+test.each(["pending", "failure", "cancelled", "missing", "success"])(
+  "both tag and publication gates require inherited native state %s to be green",
+  (native) => {
+    const proof = runeMacosProof(
+      evidence("bump", false, true, "parent"),
+      evidence("parent", true),
+      "success",
+      native,
+    );
+    expect(proof).toEqual({ evidence: "parent", state: native });
+    const refusal = releaseRefusal("success", "bump", proof?.state ?? "success", proof?.evidence);
+    expect(refusal === undefined).toBe(native === "success");
+    const plan: Plan = {
+      publish: ["v1.2.3"],
+      delete: [],
+      wait: false,
+      fail: undefined,
+      blocked: "",
+    };
+    const gated = applyRuneGate(
+      plan,
+      "bump",
+      () => proof,
+      () => "bump",
+    );
+    expect(gated.publish).toEqual(native === "success" ? ["v1.2.3"] : []);
+  },
+);
+
+test("direct native proof and genuinely unrelated changes are not confused with inheritance", () => {
+  expect(runeMacosProof(evidence("native", true), undefined, "pending", "success")).toEqual({
+    evidence: "native",
+    state: "success",
+  });
+  expect(runeMacosProof(evidence("docs", false), undefined, "pending", "failure")).toBeUndefined();
 });
 
 describe("applyRuneGate", () => {

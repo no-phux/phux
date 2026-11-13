@@ -9,14 +9,16 @@ import { jobs, uses, workflow, workflowNames } from "../policy/workflows.ts";
 const MACOS_BUDGET = [
   "cache-warm.yml rune → rune-build.yml macos (macos-arm64) on macos-26 | schedule 17 6 * * *, workflow_dispatch",
   "cache-warm.yml rune → rune-build.yml ios-native (ios-native-simulator) on macos-26 | schedule 17 6 * * *, workflow_dispatch",
+  "ci.yml rune-macos → rune-build.yml macos (macos-arm64) on macos-26 | merge_group",
+  "ci.yml rune-macos → rune-build.yml ios-native (ios-native-simulator) on macos-26 | merge_group",
   "ffi-xcframework.yml build on xcode-27 | workflow_dispatch",
   "first-run-timing.yml macos on macos-26 | pull_request, push branches main, workflow_dispatch",
   "next.yml cli → build-cli.yml build aarch64-apple-darwin on xcode-27 | workflow_dispatch, workflow_run ci",
-  "release.yml cli-build → build-cli.yml build aarch64-apple-darwin on xcode-27 | schedule 5 15 * * *, workflow_dispatch, workflow_run ci",
+  "release.yml cli-build → build-cli.yml build aarch64-apple-darwin on xcode-27 | schedule 5 15 * * *, workflow_dispatch, workflow_run ci rune-macos",
   "rune-client.yml build → rune-build.yml macos (macos-arm64) on macos-26 | push tags rune-v*",
   "rune-client.yml build → rune-build.yml ios-native (ios-native-simulator) on macos-26 | push tags rune-v*",
-  "rune-macos.yml build → rune-build.yml macos (macos-arm64) on macos-26 | merge_group, push branches main, schedule 47 11 * * *, workflow_dispatch",
-  "rune-macos.yml build → rune-build.yml ios-native (ios-native-simulator) on macos-26 | merge_group, push branches main, schedule 47 11 * * *, workflow_dispatch",
+  "rune-macos.yml build → rune-build.yml macos (macos-arm64) on macos-26 | push branches main, schedule 47 11 * * *, workflow_dispatch",
+  "rune-macos.yml build → rune-build.yml ios-native (ios-native-simulator) on macos-26 | push branches main, schedule 47 11 * * *, workflow_dispatch",
 ];
 
 test("macOS jobs stay on the budget", () => {
@@ -160,6 +162,9 @@ function calledHosts(lane: Table): "all" | "linux" | "macos" {
 /** A caller that refuses pull_request does not put that event in the pool. */
 function poolTriggers(lane: Table, triggers: string[]): string[] {
   const gate = str(lane["if"]) ?? "";
+  if (gate === "github.event_name == 'merge_group'") {
+    return triggers.filter((label) => label === "merge_group");
+  }
   if (gate.includes("github.event_name != 'pull_request'")) {
     return triggers.filter((label) => label !== "pull_request");
   }
@@ -178,7 +183,7 @@ function directApple(
   for (const [id, lane] of Object.entries(jobs(workflow(file)))) {
     const called = calledWorkflow(uses(lane));
     if (called !== undefined) {
-      legs.push(...directApple(called, seen));
+      legs.push(...directApple(called, seen, calledHosts(lane)));
       continue;
     }
     for (const leg of appleLegs(id, lane)) legs.push({ ...leg, definedIn: file });
@@ -248,6 +253,7 @@ function callOnly(file: string): boolean {
 function triggerLabels(file: string): string[] {
   const on = events(workflow(file));
   return Object.keys(on)
+    .filter((event) => event !== "workflow_call")
     .map((event) => formatTrigger(event, on[event]))
     .toSorted();
 }

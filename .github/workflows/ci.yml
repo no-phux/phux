@@ -25,22 +25,13 @@ on:
   workflow_dispatch:
 
 concurrency:
-  # A pull request and a workflow_dispatch of that branch share one group, so
-  # a dispatch cannot book a second pair of macOS legs beside the PR run. The
-  # PR key is the head repo full name plus head_ref; the dispatch key is
-  # github.repository plus github.ref_name. A fork head repo keeps its branch
-  # name from colliding with the same name on this repo. Both cancel in
-  # progress, so the latest run wins.
-  # A merged PR's `closed` event carries the base ref in github.ref (an
-  # unmerged close carries refs/pull/N/merge). This key does not read
-  # github.ref: github.head_ref and head.repo.full_name stay the PR head on
-  # `closed`, so the close still joins the in-flight run and cancels it.
-  # Main pushes share one group: the running push always finishes
-  # (release-please and next need its green), and a newer push replaces the
-  # one still pending. A release-please commit keeps its own group:
-  # release.yml publishes a draft only on a green ci for that exact commit.
-  # A merge group has no PR payload; its queue ref names one entry.
-  group: ci-${{ github.event_name == 'push' && (github.actor == 'phux-release-bot[bot]' && github.sha || 'main-push') || github.event_name == 'pull_request' && format('{0}-{1}', github.event.pull_request.head.repo.full_name, github.head_ref) || github.event_name == 'workflow_dispatch' && format('{0}-{1}', github.repository, github.ref_name) || github.ref }}
+  # Match the safe per-SHA admission and repository/full-ref keys in #2462.
+  # Per-push routing cannot replace A with docs-only B without losing A's work.
+  group: >-
+    ci-${{ github.event_name == 'push' && github.sha
+    || github.event_name == 'pull_request' && format('{0}:refs/heads/{1}', github.event.pull_request.head.repo.full_name, github.head_ref)
+    || github.event_name == 'workflow_dispatch' && format('{0}:{1}', github.repository, github.ref)
+    || github.ref }}
   cancel-in-progress: ${{ github.event_name != 'push' }}
 
 permissions:
@@ -405,10 +396,16 @@ jobs:
       hosts: linux
       ios: false
 
+  # Keep Apple qualification inside the already-required queue check. Older
+  # queue entries still use their original ci; no ruleset cutover is needed.
+  rune-macos:
+    if: github.event_name == 'merge_group'
+    uses: ./.github/workflows/rune-macos.yml
+
   # The required check. The ruleset matches this display name.
   ci:
     name: ci
-    needs: [plan, guards, lint, test-build, tests, e2e, ffi, icount, integrations, web, native, rune]
+    needs: [plan, guards, lint, test-build, tests, e2e, ffi, icount, integrations, web, native, rune, rune-macos]
     # Same draft exception as plan: release-please heads always reach this gate.
     if: always() && github.event.action != 'closed' && (startsWith(github.head_ref, 'release-please--') || github.event.pull_request.draft != true)
     runs-on: ubuntu-24.04
@@ -417,9 +414,11 @@ jobs:
       - name: plan succeeded; every lane passed or was not needed
         env:
           RESULTS: ${{ toJSON(needs) }}
+          REQUIRE_APPLE: ${{ github.event_name == 'merge_group' }}
         run: |
           jq -r 'to_entries[] | "\(.value.result)\t\(.key)"' <<<"$RESULTS"
-          jq -e '.plan.result == "success" and ([.[].result] | all(. == "success" or . == "skipped"))' \
+          jq -e '.plan.result == "success" and ([.[].result] | all(. == "success" or . == "skipped"))
+            and (env.REQUIRE_APPLE != "true" or .["rune-macos"].result == "success")' \
             <<<"$RESULTS" >/dev/null
       - name: write the validation receipt
         if: github.event_name == 'pull_request' || github.event_name == 'merge_group'
