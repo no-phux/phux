@@ -48,6 +48,8 @@ pub struct Resources {
     pub(super) pasting: Option<u32>,
     /// The screen and window picker.
     pub screens: screens::Screens,
+    /// OSC 52 reads: this window's grants and recent questions.
+    pub(super) clipboard_reads: super::clipboard_read::ClipboardReads,
 }
 
 struct PendingDocument {

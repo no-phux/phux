@@ -127,11 +127,34 @@ and kitty's OSC 5522 writes are treated the same way.
   the clipboard, `ask` shows the size and asks first, `deny` drops it.
 - phux passes the text on to the user's terminal as OSC 52, which may have
   its own policy.
-- **Clipboard reads are never answered.** An `OSC 52 ; c ; ? ST` query gets
-  no reply, so a program MUST NOT wait for one without a timeout.
 
-What clients other than the TUI do with a clipboard write is not defined
-here.
+`OSC 52 ; c ; ? ST` asks to read the clipboard. By default it gets no
+reply, so a program MUST NOT wait for one without a timeout.
+
+- The user's `defaults.clipboard-read` decides: `deny` (the default) never
+  answers, `ask` shows a prompt naming the pane (allow once, allow this pane
+  until you detach, or deny), `allow` answers. The prompt ignores the keys
+  that allow for its first half second, so typing or an Enter already on
+  its way can't answer it.
+- Only a read from live output of the pane the client has focused, while
+  its window has focus, is considered. A read from any other pane is dropped
+  without a prompt. A pane prompts at most once every 3 seconds, and one read
+  is answered at a time.
+- Only selection `c`, and `p` where the user's machine has a primary
+  selection, is answered. Any other selection, several at once, or OSC 5522
+  gets no reply.
+- The answer is the clipboard of the client that controls the pane: the TUI
+  asks the user's terminal with OSC 52 (that terminal may have its own
+  policy, and may not answer), Rune reads its own clipboard. The client sends
+  it as `CLIPBOARD_REPLY`, and the server writes it to the asking pane only,
+  as `OSC 52 ; c ; base64 ST`, and only from a client that may type into
+  that pane (not a viewer, not blocked by another client's input lease).
+- The server records each answered read in the [audit log](./audit.md) as
+  `clipboard.read`, with the pane and size, never the text.
+- A client or server without `CLIPBOARD_READ` (older ones, the mobile apps)
+  leaves reads unanswered, as before.
+
+What other clients do with a clipboard write is not defined here.
 
 ## Working folder (OSC 7)
 

@@ -32,6 +32,7 @@ check the log against a key the host cannot quietly replace.
 | `credential.added`, `credential.removed` | A workload credential appears in, leaves, or is revoked from the registry. |
 | `file.get`, `file.put` | Each authorized `GET_FILE` or `PUT_FILE` chunk, with its offset and size. |
 | `input.lease` | A Terminal's input lease is taken or given back. |
+| `clipboard.read` | A client answers a pane's OSC 52 clipboard read, with the pane, selection, and byte count. |
 
 An authorized keystroke, paste, input command, or resize is not recorded.
 Taking input is recorded once, as `input.lease`. A denied one is recorded,
@@ -39,8 +40,8 @@ and an uncorrelated denial at most once a second per connection.
 
 ## What is never recorded
 
-Terminal output, keystrokes, paste payloads, file contents, pairing tokens,
-and upload ids never reach the log. A record names the command, its target
+Terminal output, keystrokes, paste payloads, clipboard text, file contents,
+pairing tokens, and upload ids never reach the log. A record names the command, its target
 (`terminal:3`, a path, a credential id), and small facts such as an offset or
 a byte count.
 

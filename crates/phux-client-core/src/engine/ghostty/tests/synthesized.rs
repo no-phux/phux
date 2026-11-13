@@ -170,6 +170,52 @@ fn clipboard_writes_fire_from_live_output_only() {
     assert!(clipboard(&effects).is_empty(), "a write fires once");
 }
 
+/// An OSC 52 read is reported from live output only, never from history,
+/// and the replica itself writes no answer anywhere.
+#[test]
+fn clipboard_reads_fire_from_live_output_only() {
+    let read = b"\x1b]52;c;?\x07".as_slice();
+    let reads = |effects: &EngineEffectBuffer| -> Vec<crate::engine::ClipboardSelection> {
+        effects
+            .as_slice()
+            .iter()
+            .filter_map(|effect| match effect {
+                EngineEffect::Status(crate::engine::EngineStatus::ClipboardRead(selection)) => {
+                    Some(*selection)
+                }
+                _ => None,
+            })
+            .collect()
+    };
+    let mut adapter = native_adapter();
+    let mut replica = adapter
+        .start_replica(BootstrapStreamProfile::SynthesizedVtRaw, geometry())
+        .unwrap();
+    let mut effects = EngineEffectBuffer::new();
+    adapter
+        .apply_bootstrap_chunk(&mut replica, read, &mut effects)
+        .unwrap();
+    adapter
+        .finish_bootstrap(&mut replica, &mut effects)
+        .unwrap();
+    assert!(reads(&effects).is_empty(), "replayed history never reads");
+
+    effects.clear();
+    adapter
+        .apply_output(&mut replica, read, &mut effects)
+        .unwrap();
+    assert_eq!(
+        reads(&effects),
+        [crate::engine::ClipboardSelection::Clipboard]
+    );
+
+    effects.clear();
+    adapter
+        .apply_output(&mut replica, b"\x1b]52;s;?\x07", &mut effects)
+        .unwrap();
+    assert!(reads(&effects).is_empty(), "only c and p are reads");
+}
+
 fn assert_live_bell(
     adapter: &mut GhosttyAdapter,
     replica: &mut GhosttyReplica,

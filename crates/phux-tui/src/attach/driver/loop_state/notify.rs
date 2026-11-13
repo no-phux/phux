@@ -32,6 +32,7 @@ impl super::SessionLoop {
             if let InputEvent::Focus(focus) = event {
                 let gained = matches!(focus, FocusEvent::Gained);
                 self.notifier.set_client_focused(gained);
+                self.clipboard_reads.borrow_mut().set_window_focused(gained);
                 focused = Some(gained);
             }
         }

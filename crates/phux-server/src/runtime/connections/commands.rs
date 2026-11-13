@@ -44,6 +44,7 @@ const fn requires_terminal_stream(frame: &FrameKind) -> bool {
             | FrameKind::InputFocus { .. }
             | FrameKind::InputPaste { .. }
             | FrameKind::InputTerminalReply { .. }
+            | FrameKind::ClipboardReply { .. }
             | FrameKind::FrameAck { .. }
             | FrameKind::HistoryRequest { .. }
     )

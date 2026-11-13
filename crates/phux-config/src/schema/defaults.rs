@@ -1,6 +1,7 @@
 //! `[defaults]` and `[limits]`: pane defaults, history and journal budgets,
 //! and the ceilings the server enforces.
 
+pub use phux_config_core::ClipboardRead;
 use serde::{Deserialize, Serialize};
 
 /// `[defaults]` table. See `docs/reference/config.md` for shipped values.
@@ -101,6 +102,11 @@ pub struct DefaultsCfg {
     #[serde(rename = "clipboard-write")]
     pub clipboard_write: ClipboardWrite,
 
+    /// What the client does with an OSC 52 clipboard read from the pane it
+    /// is focused on (`docs/program-sequences.md#clipboard-osc-52`).
+    #[serde(rename = "clipboard-read")]
+    pub clipboard_read: ClipboardRead,
+
     /// How a freshly-spawned pane chooses its working directory.
     #[serde(rename = "cwd-inheritance")]
     pub cwd_inheritance: CwdInheritance,
@@ -149,6 +155,7 @@ impl Default for DefaultsCfg {
             approval_max_pending_total: DEFAULT_APPROVAL_MAX_PENDING_TOTAL,
             mouse: true,
             clipboard_write: ClipboardWrite::default(),
+            clipboard_read: ClipboardRead::default(),
             cwd_inheritance: CwdInheritance::default(),
             spawn_on_attach: None,
             session_name_template: "${cwd-basename}".to_owned(),

@@ -142,6 +142,19 @@ macro_rules! connection_frames {
         bytes: bytes::Bytes,
     },
 
+    /// `CLIPBOARD_REPLY` — the client's clipboard, answering an OSC 52 read
+    /// from `terminal_id` that its user allowed
+    /// (`docs/program-sequences.md#clipboard-osc-52`). The server writes it
+    /// to that terminal as one OSC 52 reply. Gated by `CLIPBOARD_READ`.
+    ClipboardReply {
+        /// Attached target terminal: the pane that asked.
+        terminal_id: ResourceId,
+        /// The OSC 52 selection answered: `b'c'` or `b'p'`.
+        selection: u8,
+        /// At most `MAX_CLIPBOARD_TEXT` bytes of UTF-8.
+        text: ClipboardData,
+    },
+
     /// `FRAME_ACK` — cumulative acknowledgement (`docs/protocol.md`),
     /// valid only for the `SynthesizedVtStateSync` profile.
     FrameAck {

@@ -240,6 +240,7 @@ const fn runtime_server_features_ext() -> ServerFeatureExtSet {
         ServerFeatureExt::TypedDocument,
         ServerFeatureExt::Mirrors,
         ServerFeatureExt::PrivacyStatus,
+        ServerFeatureExt::ClipboardRead,
     ])
 }
 

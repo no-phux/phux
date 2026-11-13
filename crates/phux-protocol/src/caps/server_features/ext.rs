@@ -79,6 +79,10 @@ pub enum ServerFeatureExt {
     /// [`Self::Organization`]; a client MUST see the bit before sending the
     /// command.
     TabLock = 0x0020_0000,
+    /// The server accepts `CLIPBOARD_REPLY`: a client's answer to a pane's
+    /// OSC 52 clipboard read (`docs/program-sequences.md#clipboard-osc-52`).
+    /// A client MUST see the bit first.
+    ClipboardRead = 0x0040_0000,
 }
 
 impl ServerFeatureExt {
@@ -106,6 +110,7 @@ impl ServerFeatureExt {
         Self::PrivacyStatus,
         Self::DurableResourceInspection,
         Self::TabLock,
+        Self::ClipboardRead,
     ];
 
     /// The `docs/protocol.md#handshake` constant, e.g. `"PATH_QUERY"`.
@@ -134,6 +139,7 @@ impl ServerFeatureExt {
             Self::PrivacyStatus => "PRIVACY_STATUS",
             Self::DurableResourceInspection => "DURABLE_RESOURCE_INSPECTION",
             Self::TabLock => "TAB_LOCK",
+            Self::ClipboardRead => "CLIPBOARD_READ",
         }
     }
 

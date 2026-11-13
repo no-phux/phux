@@ -139,6 +139,7 @@ The kind's facet.
 | `INPUT_FOCUS` | frame `0x14` | INPUT | yes | none | shipped |
 | `INPUT_RAW` | frame `0x13` | INPUT | yes | none | spec-only |
 | `INPUT_TERMINAL_REPLY` | frame `0x17` | INPUT | yes | `terminal_reply` | shipped |
+| `CLIPBOARD_REPLY` | frame `0x18` | INPUT | yes | `clipboard_read` (features_ext) | shipped |
 | `RESIZE_TERMINAL` | frame `0x23` | BIND | yes | none | shipped |
 | `HISTORY_REQUEST` | frame `0x16` | OBSERVE | no | none | shipped |
 | `FRAME_ACK` | frame `0x21` | OBSERVE | no | none | shipped |
@@ -274,7 +275,7 @@ Every client-originated frame lands on exactly one row.
 | `FRAME_ACK` | OBSERVE | `NamedTerminal` |
 | `COMMAND` | nested | `None` |
 | `SUBSCRIBE` (unallocated) | deny | `None` |
-| `INPUT_KEY`, `INPUT_PASTE`, `INPUT_MOUSE`, `INPUT_RAW`, `INPUT_FOCUS`, `INPUT_TERMINAL_REPLY` | INPUT | `NamedTerminal` |
+| `INPUT_KEY`, `INPUT_PASTE`, `INPUT_MOUSE`, `INPUT_RAW`, `INPUT_FOCUS`, `INPUT_TERMINAL_REPLY`, `CLIPBOARD_REPLY` | INPUT | `NamedTerminal` |
 | `VIEWPORT_RESIZE` | BIND | `AttachedTerminals` |
 | `SPAWN_RESOURCE { satellite: Some, owner_terminal: None }` | CREATE | `SatelliteHost` |
 | `SPAWN_RESOURCE { satellite: None, owner_terminal: None }` | CREATE | `PayloadGroup` |

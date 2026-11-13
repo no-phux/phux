@@ -187,6 +187,9 @@ pub(super) fn terminal_frame_matches(
         | FrameKind::InputTerminalReply {
             terminal_id: id, ..
         }
+        | FrameKind::ClipboardReply {
+            terminal_id: id, ..
+        }
         | FrameKind::ResizeTerminal {
             terminal_id: id, ..
         } => id == *terminal_id,

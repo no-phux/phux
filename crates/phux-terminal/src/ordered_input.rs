@@ -119,6 +119,9 @@ impl LaneEncoderSet {
                 PasteOutcome::Encoded(bytes) => Ok(Some(bytes.to_vec())),
                 PasteOutcome::Rejected => Ok(None),
             },
+            TerminalInput::ClipboardReply { selection, text } => {
+                Ok(Some(clipboard_reply_bytes(*selection, &text.0)))
+            }
         }
     }
 }
@@ -157,4 +160,24 @@ impl LaneEncoder for LaneEncoderSet {
         }
         Ok(PreparedInput::new(bytes, true))
     }
+}
+
+/// One OSC 52 clipboard reply: `ESC ] 52 ; selection ; base64 ESC \`.
+pub(crate) fn clipboard_reply_bytes(selection: u8, text: &str) -> Vec<u8> {
+    use base64::Engine as _;
+    let mut bytes = b"\x1b]52;".to_vec();
+    bytes.push(selection);
+    bytes.push(b';');
+    let mut encoded = String::new();
+    base64::engine::general_purpose::STANDARD.encode_string(text, &mut encoded);
+    bytes.extend_from_slice(encoded.as_bytes());
+    bytes.extend_from_slice(b"\x1b\\");
+    bytes
+}
+
+#[cfg(test)]
+#[test]
+fn clipboard_reply_is_one_osc_52_with_base64_text() {
+    assert_eq!(clipboard_reply_bytes(b'c', "hi"), b"\x1b]52;c;aGk=\x1b\\");
+    assert_eq!(clipboard_reply_bytes(b'p', ""), b"\x1b]52;p;\x1b\\");
 }

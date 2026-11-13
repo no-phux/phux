@@ -53,6 +53,8 @@ pub struct ClientConfig {
     pub sessions: Vec<SessionConfigEntry>,
     /// `[rune]`: the desktop app's file-managed settings.
     pub rune: RuneCfg,
+    /// `[defaults]`: the few keys a client applies itself.
+    pub defaults: crate::ClientDefaults,
 }
 
 /// Parse `user_input` and its `extends` layers into a [`ClientConfig`].

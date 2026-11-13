@@ -149,7 +149,8 @@ impl ResourceApp for TerminalApp {
             FrameKind::InputKey { .. }
             | FrameKind::InputMouse { .. }
             | FrameKind::InputFocus { .. }
-            | FrameKind::InputPaste { .. } => FrameAdmission::AttachedInput,
+            | FrameKind::InputPaste { .. }
+            | FrameKind::ClipboardReply { .. } => FrameAdmission::AttachedInput,
             FrameKind::FrameAck { .. } => FrameAdmission::Subscription,
             _ => FrameAdmission::Unrestricted,
         }

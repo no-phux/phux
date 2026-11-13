@@ -369,3 +369,38 @@ fn input_to_a_stalled_pane_waits_and_arrives_whole() {
 }
 
 mod later;
+
+/// `CLIPBOARD_REPLY` reaches the pane's program as one OSC 52 answer with
+/// the text in base64 (`docs/program-sequences.md#clipboard-osc-52`).
+#[test]
+fn a_clipboard_reply_reaches_the_program_as_one_osc_52_answer() {
+    run_local(async {
+        let tmp = TempDir::new().unwrap();
+        let ((shutdown, server), mut stream) = seeded(&tmp, sh("stty -echo; exec cat -v")).await;
+        let pane = attach(&mut stream).await;
+        let reply = FrameKind::ClipboardReply {
+            terminal_id: pane.clone(),
+            selection: b'c',
+            text: phux_protocol::input::paste::ClipboardData("hi".to_owned()),
+        };
+        send_frame(&mut stream, &reply).await;
+        let enter = FrameKind::InputKey {
+            terminal_id: pane.clone(),
+            event: named_key(PhysicalKey::Enter),
+        };
+        send_frame(&mut stream, &enter).await;
+        let want = b"^[]52;c;aGk=^[\\";
+        let deadline = tokio::time::Instant::now() + WIRE_RECV_TIMEOUT;
+        let mut acc = Vec::new();
+        while !acc.windows(want.len()).any(|w| w == want) {
+            let Ok(Some((_, frame))) = try_recv_typed_before(&mut stream, deadline).await else {
+                panic!("no OSC 52 answer reached the program: {acc:?}");
+            };
+            if let FrameKind::ResourceOutput { bytes, .. } = frame {
+                acc.extend_from_slice(&bytes);
+            }
+        }
+        drop(stream);
+        join_after_shutdown(shutdown, server).await;
+    });
+}

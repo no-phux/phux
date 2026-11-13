@@ -112,7 +112,7 @@ fn retained_engine_effect_bytes(capacity: usize, effects: &[EngineEffect]) -> us
             EngineEffect::Status(EngineStatus::Title(title)) => title.capacity(),
             EngineEffect::Status(EngineStatus::ClipboardWrite(text)) => text.0.capacity(),
             EngineEffect::Damage(_)
-            | EngineEffect::Status(EngineStatus::Bell)
+            | EngineEffect::Status(EngineStatus::Bell | EngineStatus::ClipboardRead(_))
             | EngineEffect::Job(_) => 0,
         };
         total.saturating_add(owned)

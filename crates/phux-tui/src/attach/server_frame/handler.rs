@@ -253,8 +253,10 @@ pub(in crate::attach) fn handle_server_frame<W: crate::attach::RenderSink>(
         frame_span: &frame_span,
     };
     let clipboard_writes = std::mem::take(&mut kernel_route.clipboard_writes);
+    let clipboard_reads = std::mem::take(&mut kernel_route.clipboard_reads);
     let mut outcome = dispatch_frame(&mut ctx, frame, kernel_route)?;
     outcome.clipboard_writes = clipboard_writes;
+    outcome.clipboard_reads = clipboard_reads;
     outcome.chrome_dirty |= history_chrome_dirty;
     Ok(outcome)
 }

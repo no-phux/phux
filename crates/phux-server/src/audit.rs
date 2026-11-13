@@ -85,6 +85,9 @@ pub enum Kind {
     /// A Terminal's input lease was taken or given back.
     #[serde(rename = "input.lease")]
     InputLease,
+    /// A client answered a pane's OSC 52 clipboard read.
+    #[serde(rename = "clipboard.read")]
+    ClipboardRead,
 }
 
 /// How the decision came out.

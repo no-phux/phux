@@ -262,6 +262,9 @@ impl ControlPlane {
                         text,
                     });
                 }
+                phux_client_core::engine::EngineStatus::ClipboardRead(selection) => {
+                    self.note_clipboard_read(key.terminal_id, selection);
+                }
                 phux_client_core::engine::EngineStatus::Title(title) => {
                     if let Some(relabel) = self.relabel_in_flight(&key.terminal_id) {
                         relabel.title = Some(title.clone());

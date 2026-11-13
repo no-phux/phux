@@ -28,7 +28,11 @@ impl super::super::SessionLoop {
         }
         let mut events = std::mem::take(&mut self.input_events);
         self.parser.feed_into(&self.stdin_buf[..n], &mut events);
-        self.dispatch_batch(conn, out, sidebar, events).await
+        self.send_clipboard_reply(conn).await?;
+        let step = self.dispatch_batch(conn, out, sidebar, events).await?;
+        // A prompt answered in this batch may have allowed a read.
+        self.flush_clipboard_query(out)?;
+        Ok(step)
     }
 
     /// The bare-ESC flush runs the same batch handling as a stdin read.

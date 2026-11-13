@@ -8,7 +8,9 @@
 //! associated text; hyper folds into SUPER and meta into ALT), SGR / X10 /
 //! urxvt-1015 mouse reports (0-indexed cells as integer `f64`, re-quantised
 //! by the server's encoder), focus reports, and bracketed paste. DCS / OSC /
-//! SOS / PM / APC strings are absorbed and dropped.
+//! SOS / PM / APC strings are absorbed and dropped, except that the host
+//! terminal's OSC 52 clipboard answer is kept for
+//! [`StdinParser::take_clipboard_reply`].
 //!
 //! A bare ESC is ambiguous with the start of a sequence, so the parser stays
 //! timer-free: the driver arms an idle timer while [`StdinParser::esc_pending`]
@@ -21,6 +23,7 @@ use phux_protocol::input::paste::{PasteEvent, PasteTrust};
 
 mod csi;
 mod key;
+mod osc52;
 
 use self::csi::{dispatch_csi, dispatch_legacy_mouse};
 use self::key::{c0_or_ascii_to_key, utf8_continuation_count};
@@ -62,6 +65,8 @@ pub struct StdinParser {
     buf: Vec<u8>,
     /// Accumulated bracketed-paste payload.
     paste_buf: Vec<u8>,
+    /// The host terminal's OSC 52 clipboard answer, if one is arriving.
+    osc52: osc52::Osc52Capture,
 }
 
 impl Default for StdinParser {
@@ -78,6 +83,7 @@ impl StdinParser {
             state: State::Ground,
             buf: Vec::new(),
             paste_buf: Vec::new(),
+            osc52: osc52::Osc52Capture::new(),
         }
     }
 
@@ -106,6 +112,12 @@ impl StdinParser {
                 ModSet::empty(),
             )));
         }
+    }
+
+    /// The base64 payload of the last OSC 52 clipboard answer the host
+    /// terminal sent (`ESC ] 52 ; c ; <base64> ST`), once.
+    pub const fn take_clipboard_reply(&mut self) -> Option<Vec<u8>> {
+        self.osc52.take()
     }
 
     /// Feed `bytes` and return any complete events.
@@ -169,6 +181,7 @@ impl StdinParser {
             }
             // DCS / OSC / SOS / PM / APC — absorb until ST or BEL.
             b'P' | b']' | b'X' | b'^' | b'_' => {
+                self.osc52.begin(b == b']');
                 self.state = State::StringTerm { esc: false };
             }
             0x1B => {
@@ -265,12 +278,15 @@ impl StdinParser {
 
     /// BEL ends the string; so does the byte after an ESC (ST is `ESC \`,
     /// and a malformed terminator ends it just the same).
-    const fn feed_string_term(&mut self, b: u8, esc: bool) {
-        self.state = if esc || b == 0x07 {
-            State::Ground
+    fn feed_string_term(&mut self, b: u8, esc: bool) {
+        if esc || b == 0x07 {
+            self.osc52.finish();
+            self.state = State::Ground;
+        } else if b == 0x1B {
+            self.state = State::StringTerm { esc: true };
         } else {
-            State::StringTerm { esc: b == 0x1B }
-        };
+            self.osc52.push(b);
+        }
     }
 
     fn feed_utf8(&mut self, b: u8, expected: u8, out: &mut Vec<InputEvent>) {

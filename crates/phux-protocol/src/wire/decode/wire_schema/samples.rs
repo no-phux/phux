@@ -164,6 +164,11 @@ pub(super) fn input_samples() -> Vec<FrameKind> {
             terminal_id: terminal(),
             bytes: Bytes::from_static(b"\x1b[0n"),
         },
+        FrameKind::ClipboardReply {
+            terminal_id: terminal(),
+            selection: b'c',
+            text: crate::input::paste::ClipboardData("clip".to_owned()),
+        },
         FrameKind::ViewportResize {
             viewport: ViewportInfo::new(80, 24),
         },

@@ -6,6 +6,7 @@ use super::{
     sync_agent_meta_subscriptions, unexplained_unreachable_notices,
 };
 
+pub(super) mod answers;
 mod graph;
 
 impl super::SessionLoop {

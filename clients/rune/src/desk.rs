@@ -14,7 +14,7 @@ use phux_client_core::layout::{LayoutNode, SplitDir};
 use phux_client_runtime::control::{ProjectionFence, Status, Topology};
 use phux_client_runtime::publication::GridFrame;
 use phux_client_runtime::{Client, ViewId};
-use phux_protocol::ids::{ArrangementKey, OperationId, ResourceId, SessionKey};
+use phux_protocol::ids::{ArrangementKey, OperationId, ResourceId};
 use rune::{Tx, Waker};
 
 use crate::grid::{self, Metrics};
@@ -23,6 +23,7 @@ use crate::launch::Resolved;
 mod attach;
 pub(crate) mod bare;
 pub mod changes;
+mod clipboard_read;
 mod copy_mode;
 mod events;
 mod find;
@@ -44,6 +45,8 @@ pub mod news;
 mod notice;
 pub mod onboarding;
 mod palette;
+mod pending;
+pub use pending::Pending;
 pub mod phone;
 pub mod pitch;
 pub mod pitlane;
@@ -88,21 +91,6 @@ pub struct Painted {
 /// A size this window asked for: a terminal's cells and the cell's device
 /// pixels.
 type Fitted = ((u16, u16), (u16, u16));
-
-/// What waits on the user's Return or Escape.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Pending {
-    /// Explicit consent to start a supervised read-only mirror producer.
-    Mirror(resources::Source, String),
-    /// A line-breaking paste, and the terminal it was meant for.
-    Paste(ResourceId, String),
-    /// Closing a terminal that is running a command.
-    Close(ResourceId),
-    /// Closing every terminal of a tab.
-    CloseTab(Vec<ResourceId>),
-    /// Ending a session and everything in it.
-    CloseSession(SessionKey, String),
-}
 
 /// Where a spawned terminal goes in the arrangement.
 type Placement = Option<(ResourceId, SplitDir)>;

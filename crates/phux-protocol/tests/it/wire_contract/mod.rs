@@ -5,6 +5,7 @@
 //! live there.
 
 mod bootstrap_wire;
+mod clipboard_reply_wire;
 mod input_terminal_reply_wire;
 mod journal_shapes;
 mod keyed_signal_shapes;

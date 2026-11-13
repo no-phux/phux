@@ -174,6 +174,10 @@ pub(in crate::attach) struct FrameOutcome {
     /// the driver applies `defaults.clipboard-write`.
     pub(in crate::attach) clipboard_writes:
         Vec<(ResourceId, phux_client_core::engine::ClipboardText)>,
+    /// OSC 52 reads this frame's live output raised, by pane; the driver
+    /// applies `defaults.clipboard-read`.
+    pub(in crate::attach) clipboard_reads:
+        Vec<(ResourceId, phux_client_core::engine::ClipboardSelection)>,
 }
 
 /// Payload-free label for the dispatch span's `kind` field.

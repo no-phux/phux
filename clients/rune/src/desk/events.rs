@@ -126,6 +126,10 @@ impl Desk {
                 tx.copy(text.0);
                 false
             }
+            Event::ClipboardRead {
+                terminal_id,
+                selection,
+            } => self.clipboard_read(terminal_id, selection, tx),
             Event::CommandResult {
                 request_id,
                 ref result,
@@ -134,7 +138,7 @@ impl Desk {
         }
     }
 
-    fn terminal_has_keyboard(&self, id: &ResourceId) -> bool {
+    pub(super) fn terminal_has_keyboard(&self, id: &ResourceId) -> bool {
         let keyboard = self.keyboard();
         self.focused && keyboard.is_some_and(|(has, view)| has == id && view.is_some())
     }

@@ -295,6 +295,15 @@ pub static KINDS: [KindSpec; 5] = [
                 Some(FeatureGate::Features(ServerFeature::TerminalReply))
             ),
             method!(
+                "CLIPBOARD_REPLY",
+                Carrier::Frame(TYPE_CLIPBOARD_REPLY),
+                [F_INPUT],
+                Some(FeatureGate::FeaturesExt {
+                    mask: ServerFeatureExt::ClipboardRead.mask(),
+                    wire_name: ServerFeatureExt::ClipboardRead.wire_name(),
+                })
+            ),
+            method!(
                 "RESIZE_TERMINAL",
                 Carrier::Frame(TYPE_RESIZE_TERMINAL),
                 [F_RESIZE_TERMINAL]

@@ -220,6 +220,11 @@ impl EngineAdapter for GhosttyAdapter {
                 crate::engine::EngineStatus::ClipboardWrite(crate::engine::ClipboardText(text)),
             ));
         }
+        if let Some(selection) = replica.pending.clipboard_reads.borrow_mut().feed(payload) {
+            effects.push(EngineEffect::Status(
+                crate::engine::EngineStatus::ClipboardRead(selection),
+            ));
+        }
         effects.push(EngineEffect::Damage(EngineDamage::Full));
         Ok(())
     }

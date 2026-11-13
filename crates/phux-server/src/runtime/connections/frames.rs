@@ -373,6 +373,7 @@ const fn is_input_frame(frame: &FrameKind) -> bool {
             | FrameKind::InputFocus { .. }
             | FrameKind::InputPaste { .. }
             | FrameKind::InputTerminalReply { .. }
+            | FrameKind::ClipboardReply { .. }
     )
 }
 
@@ -409,6 +410,7 @@ pub(super) const fn frame_resource(frame: &FrameKind) -> Option<&WireResourceId>
         | FrameKind::InputFocus { terminal_id, .. }
         | FrameKind::InputPaste { terminal_id, .. }
         | FrameKind::InputTerminalReply { terminal_id, .. }
+        | FrameKind::ClipboardReply { terminal_id, .. }
         | FrameKind::ResizeTerminal { terminal_id, .. }
         | FrameKind::FrameAck { terminal_id, .. }
         | FrameKind::HistoryRequest { terminal_id, .. } => Some(terminal_id),

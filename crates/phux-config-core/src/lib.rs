@@ -10,6 +10,7 @@
 #![deny(missing_docs)]
 #![deny(rustdoc::private_intra_doc_links)]
 
+mod clipboard;
 mod error;
 pub mod host_color;
 pub mod instance;
@@ -23,6 +24,7 @@ pub mod server_bundle;
 pub mod session_color;
 pub mod socket;
 
+pub use clipboard::{ClientDefaults, ClipboardRead};
 pub use error::{ConfigError, byte_offset_to_line_col};
 pub use layer::{ConfigProvenance, KeyOrigin, LayerSource, MAX_EXTENDS_DEPTH};
 pub use loader::ClientConfig;

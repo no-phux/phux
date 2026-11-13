@@ -5,7 +5,7 @@ use phux_protocol::ClientId;
 use phux_protocol::input::focus::FocusEvent;
 use phux_protocol::input::key::KeyEvent;
 use phux_protocol::input::mouse::MouseEvent;
-use phux_protocol::input::paste::PasteEvent;
+use phux_protocol::input::paste::{ClipboardData, PasteEvent};
 use phux_protocol::wire::frame::TerminalSignal;
 use phux_resource::LeaseChange;
 use tokio::sync::oneshot;
@@ -21,6 +21,14 @@ pub enum TerminalInput {
     Focus(FocusEvent),
     /// A bracketed paste (`INPUT_PASTE` — `docs/protocol.md#input`).
     Paste(PasteEvent),
+    /// A client's answer to the pane's OSC 52 clipboard read
+    /// (`CLIPBOARD_REPLY`), written as one `OSC 52 ; selection ; base64 ST`.
+    ClipboardReply {
+        /// The selection answered: `b'c'` or `b'p'`.
+        selection: u8,
+        /// The clipboard text.
+        text: ClipboardData,
+    },
 }
 
 /// A supervisory request to a Terminal's actor (ADR-0033).

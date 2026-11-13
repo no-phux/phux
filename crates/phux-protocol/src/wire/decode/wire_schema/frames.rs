@@ -3,7 +3,7 @@
 use super::FrameKind;
 
 /// Number of [`FrameKind`] variants; [`frame_entry`] indexes them `0..`.
-pub(super) const FRAME_VARIANTS: usize = 49;
+pub(super) const FRAME_VARIANTS: usize = 50;
 
 /// `(variant index, spec name, field.rs module)` for one frame. Exhaustive,
 /// so a new variant is a compile error here until it is named.
@@ -64,6 +64,7 @@ pub(super) const fn frame_entry(frame: &FrameKind) -> (usize, &'static str, &'st
         FrameKind::CommandResult { .. } => (46, "COMMAND_RESULT", "command_result"),
         FrameKind::SubscribeEvents { .. } => (47, "SUBSCRIBE_EVENTS", "subscribe_events"),
         FrameKind::Event { .. } => (48, "EVENT", "event"),
+        FrameKind::ClipboardReply { .. } => (49, "CLIPBOARD_REPLY", "clipboard_reply"),
     }
 }
 

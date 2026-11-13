@@ -373,3 +373,65 @@ async fn unavailable_history_preserves_the_negotiated_codec_first_outcome() {
         })
         .await;
 }
+
+/// `CLIPBOARD_REPLY` reaches the pane only from a client with input
+/// authority on it (not leased by another client, not observe-only), and
+/// only for selection `c` or `p`. An admitted reply is audited by size,
+/// never by text.
+#[tokio::test(flavor = "current_thread")]
+async fn clipboard_replies_need_input_authority_and_a_known_selection() {
+    LocalSet::new()
+        .run_until(async {
+            for (leased, authorized, selection, delivered) in [
+                (false, true, b'c', true),
+                (false, true, b'p', true),
+                (false, true, b's', false),
+                (true, true, b'c', false),
+                (false, false, b'c', false),
+            ] {
+                clipboard_reply_case(leased, authorized, selection, delivered).await;
+            }
+        })
+        .await;
+}
+
+async fn clipboard_reply_case(leased: bool, authorized: bool, selection: u8, delivered: bool) {
+    use crate::runtime::apps::terminal::test_support::{TerminalResource as _, stub_terminal};
+
+    let dir = tempfile::tempdir().unwrap();
+    crate::audit::capture_for_test(dir.path(), crate::audit::ROTATE_BYTES);
+    let state = SharedState::new();
+    let (handle, _received) = stub_terminal();
+    let input = handle.terminal().unwrap().input.clone();
+    let capacity = input.capacity();
+    let wire = state.with_mut(|s| {
+        let (_, pane) = s.seed_session("clipboard");
+        let wire = s
+            .register_resource_handle(pane, handle, CancellationToken::new())
+            .unwrap();
+        for client in [DESKTOP, CLIENT] {
+            s.set_peer_identity(client, owner_peer());
+            let (out, _rx) = tokio::sync::mpsc::channel(8);
+            s.attach_default_caps(client, "clipboard", out).unwrap();
+        }
+        configure_focus_admission(s, pane, leased, false, authorized);
+        wire
+    });
+    let reply = FrameKind::ClipboardReply {
+        terminal_id: wire,
+        selection,
+        text: phux_protocol::input::paste::ClipboardData("hunter2".to_owned()),
+    };
+    exchange_inspecting(&state, hello("clipboard"), vec![reply], || {
+        assert_eq!(
+            input.capacity(),
+            capacity - usize::from(delivered),
+            "leased={leased} authorized={authorized} selection={selection}"
+        );
+    })
+    .await;
+    crate::audit::release_test_capture();
+    let log = std::fs::read_to_string(dir.path().join("audit.jsonl")).unwrap_or_default();
+    assert_eq!(log.contains("\"clipboard.read\""), delivered, "{log}");
+    assert!(!log.contains("hunter2"), "the text never reaches the log");
+}

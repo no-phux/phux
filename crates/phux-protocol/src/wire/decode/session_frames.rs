@@ -95,6 +95,31 @@ impl Decoder<'_> {
         })
     }
 
+    pub(super) fn decode_clipboard_reply(&mut self) -> Result<FrameKind, DecodeError> {
+        use field::clipboard_reply as f;
+        let mut terminal_id: Option<ResourceId> = None;
+        let mut selection: Option<u8> = None;
+        let mut text: Option<String> = None;
+        while let Some((id, value)) = self.read_field()? {
+            match id {
+                f::TERMINAL_ID => terminal_id = Some(sub!(value, decode_terminal_id)),
+                f::SELECTION => selection = Some(sub!(value, Decoder::read_u8)),
+                f::TEXT => {
+                    if value.len() > crate::wire::frame::MAX_CLIPBOARD_TEXT {
+                        return Err(DecodeError::LengthOverflow);
+                    }
+                    text = Some(utf8_value(value)?);
+                }
+                _ => {}
+            }
+        }
+        Ok(FrameKind::ClipboardReply {
+            terminal_id: req(terminal_id)?,
+            selection: req(selection)?,
+            text: crate::input::paste::ClipboardData(req(text)?),
+        })
+    }
+
     pub(super) fn decode_frame_ack(&mut self) -> Result<FrameKind, DecodeError> {
         use field::frame_ack as f;
         let mut terminal_id: Option<ResourceId> = None;

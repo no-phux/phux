@@ -146,6 +146,9 @@ impl TerminalActor {
                     PasteOutcome::Rejected => Ok(None),
                 }
             }
+            TerminalInput::ClipboardReply { selection, text } => Ok(Some(
+                crate::ordered_input::clipboard_reply_bytes(*selection, &text.0),
+            )),
         }
     }
 

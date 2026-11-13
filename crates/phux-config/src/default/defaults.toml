@@ -84,8 +84,12 @@ mouse = true
 
 # What happens when a program copies to the clipboard (OSC 52): "allow"
 # copies, "ask" asks first, "deny" ignores it. Only the focused pane can
-# copy, and programs can never read your clipboard.
+# copy.
 clipboard-write = "allow"
+
+# Whether a program may read your clipboard (OSC 52): "deny" never answers,
+# "ask" asks first, "allow" answers. Only the focused pane can read.
+clipboard-read = "deny"
 
 # Where a new pane starts:
 #   "inherit-focused"     the focused pane's directory (like tmux)

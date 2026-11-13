@@ -52,6 +52,7 @@ pub(super) const fn terminal_target(frame: &FrameKind) -> Option<&ResourceId> {
         | FrameKind::InputFocus { terminal_id, .. }
         | FrameKind::InputPaste { terminal_id, .. }
         | FrameKind::InputTerminalReply { terminal_id, .. }
+        | FrameKind::ClipboardReply { terminal_id, .. }
         | FrameKind::FrameAck { terminal_id, .. }
         | FrameKind::HistoryRequest { terminal_id, .. }
         | FrameKind::ResizeTerminal { terminal_id, .. } => Some(terminal_id),

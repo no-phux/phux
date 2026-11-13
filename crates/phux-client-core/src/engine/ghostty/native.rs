@@ -48,12 +48,15 @@ pub(super) struct PendingEffects {
     pub(super) bell: Cell<bool>,
     /// The latest clipboard write; an earlier one in the same chunk loses.
     pub(super) clipboard: RefCell<Option<String>>,
+    /// Finds OSC 52 reads in live output across chunks.
+    pub(super) clipboard_reads: RefCell<crate::engine::osc52_read::Osc52ReadScanner>,
 }
 
 impl PendingEffects {
     pub(super) fn clear(&self) {
         self.bell.set(false);
         self.clipboard.take();
+        self.clipboard_reads.take();
     }
 }
 

@@ -51,6 +51,7 @@ mod agent_delivery;
 mod agents;
 mod approvals;
 mod checkout;
+mod clipboard;
 mod commands;
 mod error;
 mod events;

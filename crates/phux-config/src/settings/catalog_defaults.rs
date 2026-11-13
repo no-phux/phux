@@ -3,9 +3,9 @@
 
 use super::{
     AGENT_LOG_BYTES_MAX, APPROVAL_MAX_PENDING_MAX, APPROVAL_MAX_PENDING_TOTAL_MAX,
-    APPROVAL_TTL_MAX, Applies, CLIPBOARD_WRITE, CWD_INHERITANCE, EVENT_JOURNAL_BYTES_MAX,
-    EVENT_JOURNAL_ENTRIES_MAX, HISTORY_BYTES_MAX, KEEP_AWAKE, RETAIN_ON_EXIT_MAX_MAX, SettingKind,
-    SettingSection, SettingSpec, U32_MAX, WINDOW_SIZE,
+    APPROVAL_TTL_MAX, Applies, CLIPBOARD_READ, CLIPBOARD_WRITE, CWD_INHERITANCE,
+    EVENT_JOURNAL_BYTES_MAX, EVENT_JOURNAL_ENTRIES_MAX, HISTORY_BYTES_MAX, KEEP_AWAKE,
+    RETAIN_ON_EXIT_MAX_MAX, SettingKind, SettingSection, SettingSpec, U32_MAX, WINDOW_SIZE,
 };
 
 /// The `[defaults]` rows, in field order.
@@ -243,8 +243,20 @@ pub(super) const ROWS: &[SettingSpec] = &[
         summary: "What a program's OSC 52 clipboard write does",
         detail: "allow sets the host clipboard (Ghostty and tmux behavior); ask shows a \
                  prompt first; deny drops it. Only the pane this client is focused on can \
-                 write, only from live output, and at most 1 MiB. Clipboard reads are \
-                 never answered (ADR-0158).",
+                 write, only from live output, and at most 1 MiB (ADR-0158). Reads follow \
+                 defaults.clipboard-read.",
+        applies: Applies::LiveReload,
+    },
+    SettingSpec {
+        key: "defaults.clipboard-read",
+        section: SettingSection::Defaults,
+        kind: SettingKind::Choice(CLIPBOARD_READ),
+        summary: "Whether a program may read your clipboard with OSC 52",
+        detail: "deny (the default) never answers a read; ask shows a prompt (allow once, \
+                 allow for this pane, or deny); allow answers with this client's \
+                 clipboard. Only the pane this client is focused on can read, only \
+                 selection c (or p), and the server records each answered read in the \
+                 audit log without its text.",
         applies: Applies::LiveReload,
     },
     SettingSpec {
