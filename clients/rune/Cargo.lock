@@ -2692,7 +2692,7 @@ dependencies = [
 
 [[package]]
 name = "phux-rune"
-version = "0.1.19"
+version = "0.1.20"
 dependencies = [
  "image",
  "objc2 0.6.5",
