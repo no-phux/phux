@@ -39,6 +39,7 @@ pub(crate) fn run_attach_stdio(
         .flatten();
     let result = rt.block_on(attach_with_reconnect(
         &dial,
+        None,
         requested_attach_target(session),
         predictive_config_for(&dial),
         default,

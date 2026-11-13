@@ -340,6 +340,9 @@ fn attach_over_ssh_rides_the_stdio_bridge_when_udp_does_not_connect() {
     assert!(seen.contains("attaching through ssh instead"), "{seen}");
     assert!(seen.contains("\u{1b}[?1049h"), "the local TUI drew: {seen}");
     assert!(!seen.contains("FAKE SSH FALLBACK"), "{seen}");
+    let memory = std::fs::read_to_string(home.dir.path().join("state/phux-dev/udp-unanswered"))
+        .unwrap_or_default();
+    assert!(memory.contains(" 192.0.2.1\n"), "remembered: {memory:?}");
 }
 
 /// A host whose UDP went unanswered on a recent attach rides the stdio

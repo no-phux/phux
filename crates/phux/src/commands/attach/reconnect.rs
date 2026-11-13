@@ -2,11 +2,20 @@
 //! each lane waits, the cooked-terminal countdown, the probes, and the
 //! report when nothing comes back.
 
+use std::cell::RefCell;
+use std::rc::Rc;
 use std::time::{Duration, Instant};
 
 use phux_client::attach::connection::Connection;
-use phux_client::attach::{AttachError, Dial};
+use phux_client::attach::{AttachEnd, AttachError, Dial, InputReplayJournal};
+use phux_client::predict::PredictiveConfig;
 use phux_client_runtime::reconnect::Ladder;
+use phux_protocol::wire::frame::AttachTarget;
+use phux_record::cast::CastVersion;
+use phux_tui::attach::{record::SessionRecorder, status_bar::Notice};
+
+use super::{AttachAttempt, RecorderHandle, ReplayHandle, close_recorder};
+use crate::commands::rec::RecordSpec;
 
 /// How long a vanished server is given to come back and how hard to poll,
 /// per dial lane (see [`reconnect_policy`]).
@@ -210,6 +219,135 @@ pub(super) async fn wait_until_connectable(
         }
         backoff = policy.ladder.next(backoff);
     }
+}
+
+/// Drive an attach, reconnecting if the server vanishes mid-session (the
+/// ADR-0032 blink). A clean detach returns `Ok`. On `Disconnected` a live
+/// countdown runs on the cooked terminal; a recovery re-attaches with a
+/// status-bar notice, and a gone or never-accepting socket prints its failure
+/// report HERE and returns `Err(Disconnected)`, so callers must not print a
+/// second remedy. `default_name = Some` enables one lookup-only `ByName` retry
+/// after a refused `Last`.
+#[allow(
+    clippy::future_not_send,
+    reason = "client-side libghostty Terminal is !Send; ADR-0003 binds us to current-thread"
+)]
+pub(super) async fn attach_with_reconnect(
+    dial: &Dial,
+    first: Option<Box<Connection>>,
+    target: AttachTarget,
+    predict_cfg: PredictiveConfig,
+    default_name: Option<&str>,
+    rec: Option<&RecordSpec>,
+) -> Result<AttachEnd, AttachError> {
+    // ADR-0140: a local-socket attach is this machine. A registered remote
+    // recorded its name before dialing; an ad-hoc `--quic`/`--ws` dial
+    // records nothing, so its sidebar shows only the attached server.
+    if matches!(dial, Dial::Uds(_)) {
+        phux_tui::attach::hosts::set_attach_origin(phux_tui::attach::hosts::AttachOrigin::Local);
+    }
+    // Created once, outside the loop: a reconnect must continue the SAME
+    // recording, and a bad path is reported on the cooked terminal.
+    let recorder: Option<RecorderHandle> = match rec {
+        // v2 and not v3: v3 is not backward compatible, and every consumer
+        // that reads v3 also reads v2 (ADR-0060). The interactive surface has
+        // no version knob, so the interoperable one is the only defensible
+        // choice; `phux rec --cast-version 3` is where a user opts in.
+        Some(spec) => Some(Rc::new(RefCell::new(SessionRecorder::create(
+            &spec.cast_path,
+            None,
+            CastVersion::V2,
+        )?))),
+        None => None,
+    };
+
+    // ADR-0053: one replay journal per invocation, so an operation unresolved
+    // when the socket died is resent under its idempotent id. Remote lanes only;
+    // the UDS blink restarts the server with a fresh incarnation.
+    let input_replay: Option<ReplayHandle> = match dial {
+        Dial::Uds(_) => None,
+        _ => Some(Rc::new(RefCell::new(InputReplayJournal::new()))),
+    };
+
+    // Set after a successful reconnect so the next attach's status bar
+    // announces the recovery (a cooked eprintln would be alt-screened over).
+    let mut initial_notice: Option<Notice> = None;
+    let mut reconnect_connection = first;
+    let attempt = AttachAttempt {
+        dial,
+        target: &target,
+        predict_cfg,
+        default_name,
+        recorder: recorder.as_ref(),
+        input_replay: input_replay.as_ref(),
+    };
+    let outcome = loop {
+        let result =
+            Box::pin(attempt.run(reconnect_connection.take(), initial_notice.take())).await;
+        match result {
+            Ok(end) => break Ok(end),
+            Err(AttachError::Disconnected) => {
+                // The in-flight correlation died with the socket; the
+                // journaled operations themselves survive for the next
+                // attempt to re-decide.
+                if let Some(journal) = input_replay.as_ref() {
+                    journal.borrow_mut().connection_lost();
+                }
+                // The RawModeGuard dropped on the unwind out of the attach,
+                // so this whole window runs on the cooked primary screen —
+                // an honest, visible countdown instead of ~10 s of blank
+                // terminal (phux-i0e8.2.3).
+                let policy = reconnect_policy(dial);
+                warn!(
+                    "lost the server connection; waiting up to {}s for it to come back",
+                    policy.deadline.as_secs()
+                );
+                match wait_with_countdown(dial, policy).await {
+                    ReconnectOutcome::Connectable(connection) => {
+                        info!("server is back; re-attaching…");
+                        // Those two lines live on the primary screen. The alt
+                        // screen hides them until quit, which is when they
+                        // reappear under the prompt.
+                        erase_reconnect_banner();
+                        initial_notice = Some(Notice::info(RECONNECT_NOTICE_TEXT));
+                        reconnect_connection = connection;
+                    }
+                    outcome @ (ReconnectOutcome::SocketGone
+                    | ReconnectOutcome::TimedOut
+                    | ReconnectOutcome::Refused(_)
+                    | ReconnectOutcome::HostKey(_)) => {
+                        // Fully reported here — the call sites map a
+                        // `Disconnected` breaking out of this loop straight
+                        // to the failure exit code without a second remedy
+                        // block (see `run_naked` / `run_attach`).
+                        crate::output::error_block(
+                            reconnect_failure_lines(&outcome, policy.deadline)
+                                .iter()
+                                .map(String::as_str),
+                        );
+                        break Err(AttachError::Disconnected);
+                    }
+                }
+            }
+            Err(other) => break Err(other),
+        }
+    };
+    drop(reconnect_connection);
+
+    // ADR-0053: whatever is still journaled when the loop gives up resolves
+    // here, on the cooked terminal: an attempted paste is unknown, a never-sent one
+    // is a safe refusal.
+    if let Some(journal) = input_replay.as_ref() {
+        for report in journal
+            .borrow_mut()
+            .drain_unresolved("the connection could not be re-established")
+        {
+            warn!("{}", report.notice_line());
+        }
+    }
+
+    close_recorder(recorder);
+    outcome
 }
 
 async fn probe_connectability(dial: &Dial) -> ProbeAttempt {
