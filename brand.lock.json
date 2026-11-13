@@ -11,11 +11,19 @@
     },
     "logos/docs-wordmark.png": {
       "destination": "docs/assets/logo.png",
-      "sha256": "cb98b384bc38c309edcff441d845fd2232bf3d0e9ae66cf528c21808c4f51a18"
+      "sha256": "d690fa9f7eae902ecd561bc02e7f06bb499e8a141cba5c861fc1b35f7d96e833"
     },
     "logos/docs-wordmark.svg": {
       "destination": "docs/assets/logo.svg",
-      "sha256": "6bc7d8192283ea1dfb9dc9ab9da82af5846cfdb18b77770924304311b4694c59"
+      "sha256": "a0d8ffc6944a28a83cbcc09689e513aed84dc29d9a597d73b8c1b0913562ee66"
+    },
+    "logos/wordmark-dark.svg": {
+      "destination": "docs/assets/logo-dark.svg",
+      "sha256": "4a283c7410801826945507e1eb9ae856a66a37212340196b6e43e413d7ddf42f"
+    },
+    "logos/wordmark-light.svg": {
+      "destination": "docs/assets/logo-light.svg",
+      "sha256": "a0d8ffc6944a28a83cbcc09689e513aed84dc29d9a597d73b8c1b0913562ee66"
     },
     "playground/fox/atlas.json": {
       "destination": "clients/rune/assets/brand/fox/atlas.json",
@@ -39,8 +47,8 @@
     }
   },
   "schema": 1,
-  "sha256": "8995194fb14065225e886c3db9edba9a520d540002c88fcd05f4adfdfda1f320",
-  "source_revision": "786354266582d7144de749b4b4a19bfc57b96a38",
-  "url": "https://phux.sh/brand/releases/1.4.0/phux-brand.zip",
-  "version": "1.4.0"
+  "sha256": "2e5f120f4d8705663e11ad9a601d1d6adb8a00273ac5092ac74e870b11f847ab",
+  "source_revision": "d3fc8adf97ac57c363d951950eebe2647828d47d",
+  "url": "https://phux.sh/brand/releases/1.5.0/phux-brand.zip",
+  "version": "1.5.0"
 }
