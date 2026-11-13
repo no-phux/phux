@@ -328,14 +328,6 @@ is read-only, needs `INVENTORY` on the original destination session, and
 returns a retained creation receipt or `NOT_FOUND`. A missing receipt cannot
 establish that the original mutation never ran. See the [public contract](./public-api.md).
 
-`features_ext.HOST_CHECKLIST` (`0x0080_0000`) gates `HOST_CHECKLIST` (command
-tag `0x43`, no body), answered `OkWith(Json)` with what works on the host:
-the `checklist` document of its `phux doctor --json`
-([What works here](./troubleshooting.md#what-works-here)). It needs
-`INVENTORY` on the server, like `GET_STATE`; a failure to build the list is
-`UNAVAILABLE` with the reason. An older server never advertises the bit, and
-a client must not send the tag without it.
-
 [File transfer and checkout methods](./protocol-files.md) have their own page.
 
 ## Minimal client
