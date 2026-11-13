@@ -190,9 +190,8 @@ test("post-merge workflows follow ci on main pushes only", () => {
   }
 });
 
-// Every macos-* / xcode-* leg the workflows actually schedule, one line per
-// way it enters the five-slot pool. Reusable workflows count through each
-// caller, because workflow_call does not start a run.
+// One line per way a macos-* or xcode-* leg enters the five-slot pool.
+// workflow_call does not start a run, so reusable workflows count through each caller.
 const MACOS_BUDGET = [
   "cache-warm.yml rune → rune-build.yml build macos-arm64 on macos-26 | schedule 17 6 * * *, workflow_dispatch",
   "cache-warm.yml rune → rune-build.yml ios-native (ios-native-simulator) on macos-26 | schedule 17 6 * * *, workflow_dispatch",
@@ -207,9 +206,7 @@ const MACOS_BUDGET = [
 ];
 
 test("macOS jobs stay on the budget", () => {
-  // The macos-26 and xcode-27 pool has five slots. It saturated on 13 Nov
-  // 2026. A job whose runs-on resolves to macos-* or xcode-* and is not
-  // named here fails until someone adds a budget entry.
+  // The five-slot macos-26/xcode-27 pool saturated on 13 Nov 2026.
   const found = macJobs().map(budgetLine).toSorted();
   const extra = found.filter((line) => !MACOS_BUDGET.includes(line));
   expect(extra.map((line) => `add a budget entry for ${line}`)).toEqual([]);
@@ -217,9 +214,7 @@ test("macOS jobs stay on the budget", () => {
 });
 
 test("tag, release, and workflow_run runs are not cancelled", () => {
-  // Cancelling one of these drops that commit's publish. false, or no
-  // cancel-in-progress, keeps the run. true fails, and so does an expression,
-  // even one that would evaluate to false.
+  // Cancelling one drops that commit's publish. true, or any expression, fails.
   const held = workflowNames().filter(releaseRun);
   for (const name of [
     "agent-integration-release.yml",
@@ -249,8 +244,7 @@ test("tag, release, and workflow_run runs are not cancelled", () => {
 });
 
 test("pull request ci stays latest-wins", () => {
-  // Literal true cancels the older pull request. So does
-  // `${{ github.event_name != 'push' }}`: a pull_request is not a push.
+  // Literal true, and `${{ github.event_name != 'push' }}`: a pull_request is not a push.
   const value = table(workflow("ci.yml")["concurrency"])["cancel-in-progress"];
   expect(events(workflow("ci.yml"))["pull_request"]).not.toBeUndefined();
   expect(cancelsOnPullRequest(value)).toBe(true);
@@ -343,7 +337,6 @@ function legKey(entry: MacBudget): string {
   return `${file} ${id} ${entry.leg ?? ""} ${entry.runsOn}`;
 }
 
-/** Apple legs defined in `file`, following a called workflow to the job that owns runs-on. */
 function directApple(file: string, seen: Set<string>): Array<AppleLeg & { definedIn: string }> {
   if (seen.has(file)) return [];
   seen.add(file);
@@ -464,9 +457,7 @@ function asStrings(value: unknown): string[] {
 }
 
 function releaseRun(name: string): boolean {
-  // Dispatch-only publishers (lts, the auto-release pair, agent integrations,
-  // ffi-*) never cancel either. Anything else triggered by tags, a release,
-  // or workflow_run joins them.
+  // Dispatch-only publishers join the tag, release, and workflow_run runs.
   const base = name.replace(/\.ya?ml$/, "");
   const named =
     base === "release" ||
@@ -494,111 +485,11 @@ function shown(value: unknown): string {
 function cancelsOnPullRequest(value: unknown): boolean {
   if (value === true) return true;
   if (typeof value !== "string") return false;
-  const expr = /^\s*\$\{\{\s*([\s\S]*?)\s*\}\}\s*$/.exec(value)?.[1];
-  if (expr === undefined) return false;
-  try {
-    return evaluate(tokenize(expr), "pull_request");
-  } catch {
-    return false;
-  }
-}
-
-function tokenize(expr: string): string[] {
-  const tokens: string[] = [];
-  let index = 0;
-  while (index < expr.length) {
-    const ch = expr[index];
-    if (ch === undefined) break;
-    if (ch === " " || ch === "\n" || ch === "\t") {
-      index++;
-      continue;
-    }
-    if (
-      expr.startsWith("&&", index) ||
-      expr.startsWith("||", index) ||
-      expr.startsWith("==", index) ||
-      expr.startsWith("!=", index)
-    ) {
-      tokens.push(expr.slice(index, index + 2));
-      index += 2;
-      continue;
-    }
-    if (ch === "!" || ch === "(" || ch === ")") {
-      tokens.push(ch);
-      index++;
-      continue;
-    }
-    if (ch === "'" || ch === '"') {
-      const end = expr.indexOf(ch, index + 1);
-      if (end < 0) throw new Error("unterminated string");
-      tokens.push(expr.slice(index, end + 1));
-      index = end + 1;
-      continue;
-    }
-    const ident = /^[A-Za-z_][\w.]*/.exec(expr.slice(index))?.[0];
-    if (ident === undefined) throw new Error(`unexpected ${ch}`);
-    tokens.push(ident);
-    index += ident.length;
-  }
-  return tokens;
-}
-
-function evaluate(tokens: string[], eventName: string): boolean {
-  const at = { i: 0 };
-  const value = parseOr(tokens, at, eventName);
-  if (at.i !== tokens.length) throw new Error("trailing");
-  return value;
-}
-
-function parseOr(tokens: string[], at: { i: number }, eventName: string): boolean {
-  let left = parseAnd(tokens, at, eventName);
-  while (tokens[at.i] === "||") {
-    at.i++;
-    const right = parseAnd(tokens, at, eventName);
-    left = left || right;
-  }
-  return left;
-}
-
-function parseAnd(tokens: string[], at: { i: number }, eventName: string): boolean {
-  let left = parseUnary(tokens, at, eventName);
-  while (tokens[at.i] === "&&") {
-    at.i++;
-    const right = parseUnary(tokens, at, eventName);
-    left = left && right;
-  }
-  return left;
-}
-
-function parseUnary(tokens: string[], at: { i: number }, eventName: string): boolean {
-  if (tokens[at.i] === "!") {
-    at.i++;
-    return !parseUnary(tokens, at, eventName);
-  }
-  return parsePrimary(tokens, at, eventName);
-}
-
-function parsePrimary(tokens: string[], at: { i: number }, eventName: string): boolean {
-  const token = tokens[at.i];
-  if (token === "(") {
-    at.i++;
-    const value = parseOr(tokens, at, eventName);
-    if (tokens[at.i] !== ")") throw new Error("paren");
-    at.i++;
-    return value;
-  }
-  if (token === "true" || token === "false") {
-    at.i++;
-    return token === "true";
-  }
-  if (token !== "github.event_name") throw new Error(token ?? "empty");
-  at.i++;
-  const op = tokens[at.i];
-  if (op !== "==" && op !== "!=") throw new Error(op ?? "empty");
-  at.i++;
-  const raw = tokens[at.i];
-  if (raw === undefined || (raw[0] !== "'" && raw[0] !== '"')) throw new Error("string");
-  at.i++;
-  const literal = raw.slice(1, -1);
-  return op === "==" ? eventName === literal : eventName !== literal;
+  const expr = value.replace(/\s+/g, "");
+  return (
+    expr === "${{github.event_name!='push'}}" ||
+    expr === '${{github.event_name!="push"}}' ||
+    expr === "${{github.event_name=='pull_request'}}" ||
+    expr === '${{github.event_name=="pull_request"}}'
+  );
 }
