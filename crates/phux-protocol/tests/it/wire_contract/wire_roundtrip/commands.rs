@@ -84,6 +84,7 @@ fn command_variants_round_trip() {
         Command::Upgrade,
         Command::Shutdown,
         Command::PrivacyStatus,
+        Command::HostChecklist,
         Command::ReleaseInput {
             terminal_id: ResourceId::local(7),
         },

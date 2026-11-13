@@ -273,6 +273,9 @@ pub static SERVER_METHODS: &[MethodSpec] = &[
     // The macOS privacy grants the server holds; owner socket only.
     method!("PRIVACY_STATUS", Carrier::Command(crate::wire::frame::COMMAND_TAG_PRIVACY_STATUS), [C_PRIVACY_STATUS],
         Some(FeatureGate::FeaturesExt { mask: ServerFeatureExt::PrivacyStatus.mask(), wire_name: ServerFeatureExt::PrivacyStatus.wire_name() })),
+    // What works on the host, with reasons and fixes.
+    method!("HOST_CHECKLIST", Carrier::Command(crate::wire::frame::COMMAND_TAG_HOST_CHECKLIST), [C_HOST_CHECKLIST],
+        Some(FeatureGate::FeaturesExt { mask: ServerFeatureExt::HostChecklist.mask(), wire_name: ServerFeatureExt::HostChecklist.wire_name() })),
     method!("HELLO", Carrier::Frame(TYPE_HELLO), [F_HELLO]),
     method!("PING", Carrier::Frame(TYPE_PING), [F_PING]),
     method!(

@@ -291,6 +291,13 @@ tests of its dependents. The required `ci`
 aggregate rejects a failed or cancelled lane. `just tools-check` tests the
 routes.
 
+Release metadata alone runs guards without compile lanes. The classifier
+compares both full documents: root workspace and lock versions, release
+manifest versions, skill version lines, changelogs, and top-level `version`
+in the five integration packages listed in `release-please-config.json`.
+Any other package field, missing side, unlisted path, or workspace bump
+without all its locks keeps normal routing.
+
 `main` pushes and merge queue groups (`merge_group`) run main policy: the
 full Rust pool and every lane the diff needs. A `main` push whose tree a
 pull request or merge group already validated with the same lanes reuses

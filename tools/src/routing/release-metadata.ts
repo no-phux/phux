@@ -40,6 +40,7 @@ function versionOnly(format: "toml" | "json", pattern: RegExp, path: string[] = 
 }
 
 export const workspaceManifestOnly = versionOnly("toml", SEMVER, ["workspace", "package"]);
+const integrationManifestOnly = versionOnly("json", SEMVER);
 
 /** Path packages by name and registry packages in order, or undefined if malformed. */
 function splitLock(text: string): { path: Map<string, Table>; registry: Table[] } | undefined {
@@ -101,6 +102,12 @@ const CHECKS: Record<string, Check> = {
   [ROOT_TRAIN.manifest]: manifestOnly,
   ".agents/skills/using-phux/SKILL.md": skillOnly,
   ".agents/skills/using-phux-mcp/SKILL.md": skillOnly,
+  // Node release packages in release-please-config.json, not arbitrary package.json files.
+  "integrations/pi/package.json": integrationManifestOnly,
+  "integrations/opencode-v2/package.json": integrationManifestOnly,
+  "integrations/omp/package.json": integrationManifestOnly,
+  "integrations/grok/package.json": integrationManifestOnly,
+  "integrations/claude/package.json": integrationManifestOnly,
 };
 
 export type ReadPair = (

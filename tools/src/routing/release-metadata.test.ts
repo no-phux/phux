@@ -1,4 +1,6 @@
 import { expect, test } from "bun:test";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import {
   manifestOnly,
   releaseMetadataOnly,
@@ -7,6 +9,7 @@ import {
   workspaceManifestOnly,
 } from "./release-metadata.ts";
 import { WORKSPACE_LOCKS } from "../cargo/release-orchestration.ts";
+import { ROOT } from "../lib/repo.ts";
 
 const REGISTRY = 'source = "registry+https://github.com/rust-lang/crates.io-index"\n';
 const MANIFEST = '[workspace.package]\nversion = "0.1.0"\n[workspace.dependencies]\nserde = "1"\n';
@@ -75,4 +78,76 @@ test("an unknown path, a missing side or an empty diff fails closed", () => {
   expect(releaseMetadataOnly(["Cargo.toml"], () => undefined)).toBe(false);
   expect(releaseMetadataOnly(["Cargo.toml"], () => [undefined, pair[1]])).toBe(false);
   expect(releaseMetadataOnly([], () => pair)).toBe(false);
+});
+
+test.each(["pi", "opencode-v2", "omp", "grok", "claude"])(
+  "%s release package allows only its top-level version to change",
+  (integration) => {
+    const path = `integrations/${integration}/package.json`;
+    const before = readFileSync(join(ROOT, path), "utf8");
+    const document = JSON.parse(before) as Record<string, unknown>;
+    const version = String(document["version"]).replace(/\d+$/, (patch) =>
+      String(Number(patch) + 1),
+    );
+    const after: Record<string, unknown> = { ...document, version };
+    expect(releaseMetadataOnly([path], () => [before, JSON.stringify(after)])).toBe(true);
+    // Read both full documents: nested dependency versions, scripts and runtime
+    // entrypoints must not disappear behind the package's release version.
+    for (const [key, value] of Object.entries({
+      name: "@phux/other",
+      dependencies: { injected: "1.0.0" },
+      devDependencies: { injected: "1.0.0" },
+      peerDependencies: { injected: "1.0.0" },
+      overrides: { injected: "1.0.0" },
+      scripts: { build: "run-something-else" },
+      exports: { ".": "./other.js" },
+      main: "./other.js",
+      files: ["other.js"],
+      type: "commonjs",
+    })) {
+      const changed = JSON.stringify({ ...after, [key]: value });
+      expect(releaseMetadataOnly([path], () => [before, changed])).toBe(false);
+      expect(releaseMetadataOnly([path], () => [changed, before])).toBe(false);
+    }
+    const withoutScripts = { ...after };
+    delete withoutScripts["scripts"];
+    expect(releaseMetadataOnly([path], () => [before, JSON.stringify(withoutScripts)])).toBe(false);
+    expect(releaseMetadataOnly([path], () => [undefined, JSON.stringify(after)])).toBe(false);
+    expect(releaseMetadataOnly([path], () => [before, undefined])).toBe(false);
+  },
+);
+
+test.each([
+  "{",
+  "null",
+  "[]",
+  '[{"version":"0.9.2"}]',
+  "{}",
+  '{"version":null}',
+  '{"version":9}',
+  '{"version":"0.9"}',
+  '{"version":"v0.9.2"}',
+  '{"version":"0.9.2-alpha.1"}',
+  '{"version":"0.9.2+build"}',
+  '{"nested":{"version":"0.9.2"}}',
+])("invalid integration manifest fails closed: %s", (invalid) => {
+  const path = "integrations/opencode-v2/package.json";
+  const valid = '{"version":"0.9.1"}';
+  expect(releaseMetadataOnly([path], () => [valid, invalid])).toBe(false);
+  expect(releaseMetadataOnly([path], () => [invalid, valid])).toBe(false);
+});
+
+test.each([
+  "package.json",
+  "tools/package.json",
+  "integrations/runtime/package.json",
+  "integrations/muse/package.json",
+  "integrations/new-package/package.json",
+  "integrations/opencode-v2/nested/package.json",
+  "integrations/opencode-v2/package-lock.json",
+  "integrations/opencode-v2/bun.lock",
+])("unlisted package or lock keeps normal routing: %s", (path) => {
+  expect(releaseMetadataOnly([path], () => ['{"version":"0.9.1"}', '{"version":"0.9.2"}'])).toBe(
+    false,
+  );
 });

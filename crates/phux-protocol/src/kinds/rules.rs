@@ -451,12 +451,15 @@ static C_PRIVACY_STATUS: Rule = Rule::verbs(
     &[Verb::Inventory],
     GLOBAL_OWNER_UDS,
 );
+// What works on the host, for a person deciding what to fix: inventory, so a
+// paired phone reads it like `GET_STATE`.
+static C_HOST_CHECKLIST: Rule = Rule::verbs("`HOST_CHECKLIST`", &[Verb::Inventory], GLOBAL);
 static C_UNCLASSIFIED: Rule = Rule::deny("Unknown, retired, or otherwise unclassified command tag");
 
 /// The nested-command table of workload-auth §6, in spec row order.
 ///
 /// [`classify_command`] returns one of these rows for every decoded command.
-pub static COMMAND_RULES: [&Rule; 59] = [
+pub static COMMAND_RULES: [&Rule; 60] = [
     &C_SPAWN,
     &C_ATTACH_RESOURCE,
     &C_DETACH_RESOURCE,
@@ -493,6 +496,7 @@ pub static COMMAND_RULES: [&Rule; 59] = [
     &C_MIRROR,
     &C_MIRROR_PROVIDE,
     &C_PRIVACY_STATUS,
+    &C_HOST_CHECKLIST,
     &C_NATIVE_SPAWN,
     &C_NATIVE_LIST,
     &C_NATIVE_LAUNCH,

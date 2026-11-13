@@ -96,22 +96,58 @@ test("a rename reports both sides", () => {
   });
 });
 
-test("a release-please version bump requests no compile lane", () => {
-  const lock = 'version = 3\n\n[[package]]\nname = "phux"\nversion = "0.1.0"\n';
+test("PR2406's root and OpenCode release metadata requests no compile lane", () => {
+  const lock = 'version = 3\n\n[[package]]\nname = "phux"\nversion = "0.145.0"\n';
+  const skill = '  version: "0.145.0" # x-release-please-version\n';
+  const pkg = JSON.stringify({
+    name: "@phux/opencode",
+    version: "0.9.1",
+    scripts: { compile: "bun scripts/build.mjs" },
+    dependencies: { "@opencode/plugin": "2.2.6" },
+    exports: { ".": { import: "./index.js" } },
+  });
   const files: Record<string, string> = {
     "CHANGELOG.md": "# changelog\n",
-    "Cargo.toml": '[workspace.package]\nversion = "0.1.0"\n',
+    "Cargo.toml": '[workspace.package]\nversion = "0.145.0"\n',
     ...Object.fromEntries(WORKSPACE_LOCKS.map((path) => [path, lock])),
-    ".release-please-manifest.json": `${JSON.stringify({ ".": "0.1.0" })}\n`,
-    ".agents/skills/using-phux/SKILL.md": '  version: "0.1.0" # x-release-please-version\n',
+    ".release-please-manifest.json": `${JSON.stringify({
+      ".": "0.145.0",
+      "integrations/opencode-v2": "0.9.1",
+      "integrations/pi": "0.9.2",
+    })}\n`,
+    ".agents/skills/using-phux/SKILL.md": skill,
+    ".agents/skills/using-phux-mcp/SKILL.md": skill,
+    "integrations/opencode-v2/package.json": pkg,
+    "integrations/opencode-v2/CHANGELOG.md": "# changelog\n",
   };
   const before = commitFiles(files);
   const bumped = Object.fromEntries(
-    Object.entries(files).map(([path, text]) => [path, text.replaceAll("0.1.0", "0.2.0")]),
+    Object.entries(files).map(([path, text]) => [
+      path,
+      text.replaceAll("0.145.0", "0.146.0").replaceAll("0.9.1", "0.9.2"),
+    ]),
   );
-  expect(push(before, commitFiles(bumped, before))).toEqual({ kind: "release-metadata" });
-  const touched = commitFiles({ ...bumped, "crates/phux/src/main.rs": "fn main() {}\n" }, before);
-  expect(push(before, touched).kind).toBe("paths");
+  bumped["CHANGELOG.md"] = "# changelog\n\n## 0.146.0\n";
+  bumped["integrations/opencode-v2/CHANGELOG.md"] = "# changelog\n\n## 0.9.2\n";
+  const head = commitFiles(bumped, before);
+  expect(push(before, head)).toEqual({ kind: "release-metadata" });
+  expect(
+    run("pull_request", { pull_request: { base: { sha: before }, head: { sha: head } } }),
+  ).toEqual({ kind: "release-metadata" });
+  expect(run("merge_group", { merge_group: { base_sha: before, head_sha: head } })).toEqual({
+    kind: "release-metadata",
+  });
+  for (const path of [
+    "crates/phux/src/main.rs",
+    "crates/phux-protocol/src/wire.rs",
+    "build.rs",
+    "integrations/opencode-v2/index.js",
+    "release-please-config.json",
+    ".github/workflows/ci.yml",
+  ]) {
+    const touched = commitFiles({ ...bumped, [path]: "runtime or policy change\n" }, before);
+    expect(push(before, touched).kind).toBe("paths");
+  }
   // A bump that leaves a lock behind fails --locked builds: run them.
   const stale = commitFiles({ ...bumped, "clients/rune/Cargo.lock": lock }, before);
   expect(push(before, stale).kind).toBe("paths");

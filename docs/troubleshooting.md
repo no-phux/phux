@@ -25,6 +25,72 @@ phux: warn: no failures, 1 warning(s)
 0, because a stopped server is normal. `--json` prints the same checks as a
 document.
 
+### What works here
+
+Doctor ends with a checklist of what you can expect from this host, each
+with the reason and the fix:
+
+```text
+What works here
+phux: error: Agent status          no agent integration for OpenCode
+  fix: opencode plugin add @phux/opencode
+phux: ok:    Asks and notifications 1 phone gets notifications from this host
+phux: warn:  Remote reach          quic listener waiting to bind: address not available yet
+phux: ok:    File transfer         files can be sent to this host and fetched from it
+phux: error: Restore after restart server not supervised, sessions end at logout
+  fix: phux service install --adopt
+phux: ok:    Agent skill           phux skill installed for claude, codex
+```
+
+phux mobile shows the same list for each host: it asks the server
+(`HOST_CHECKLIST`), and the server answers with the `checklist` of its own
+`phux doctor --json`. The checklist never changes doctor's exit code.
+
+In `--json` it is `checklist`, a versioned document:
+
+```json
+{
+  "schema_version": 1,
+  "items": [
+    {
+      "id": "notifications",
+      "title": "Asks and notifications",
+      "status": "off",
+      "reason": "no phone has turned on notifications for this host",
+      "fix_command": null,
+      "fix_action": "enable_notifications",
+      "push_devices": []
+    }
+  ]
+}
+```
+
+| Field | Meaning |
+| --- | --- |
+| `id` | `agent_status`, `notifications`, `remote_reach`, `file_transfer`, `restore`, `skill`, in that order. Later versions may add ids; skip ones you don't know. |
+| `status` | `ok`, `off` (does not work), `waiting` (will work without help: a listener retrying its bind, or supervision armed for the next start), or `unknown` (could not be checked, such as with no server running). |
+| `reason` | Why, in plain words. |
+| `fix_command` | What to run on the host, one command per line, or `null`. |
+| `fix_action` | What a client can do itself in one tap: `enable_notifications`, or `null`. |
+| `push_devices` | `notifications` only: the device ids holding a push grant (`phux.push/v1/<device>`), so a phone can tell whether it is one of them. |
+
+Adding an item or a field keeps `schema_version`; renaming or removing one
+bumps it.
+
+What each item checks:
+
+- **Agent status**: every coding agent found on the host has the phux
+  integration that reports its state ([Agent setup](./agents.md#agent-setup)),
+  and the `phux agent install-claude` wrapper is current. An agent with no
+  integration yet is read from the screen.
+- **Asks and notifications**: at least one phone holds a push grant.
+- **Remote reach**: the server's remote listeners are bound, and its routable
+  WebSocket listener answers.
+- **File transfer**: the server serves `phux upload` and `phux download`.
+- **Restore after restart**: launchd or systemd supervises the server; on
+  Linux, lingering is on so the user's units outlive the login session.
+- **Agent skill**: `phux skill setup` has taught your agents about phux.
+
 ## Inspecting state
 
 ```sh
