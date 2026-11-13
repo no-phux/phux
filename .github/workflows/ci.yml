@@ -23,12 +23,19 @@ on:
   workflow_dispatch:
 
 concurrency:
-  # PRs are latest-wins, keyed by number: a merged PR's `closed` event carries
-  # the base ref, not the PR's. Every main SHA keeps its own run: release.yml
-  # publishes a draft only on a green ci for that exact commit. A merge group
-  # has no PR payload; its queue ref names one entry.
-  group: ci-${{ github.event_name == 'push' && github.sha || github.event.pull_request.number || github.ref }}
-  cancel-in-progress: true
+  # PR updates/closes and dispatches share repo:head-ref; queue refs stay unique.
+  # Ordinary main pushes coalesce only while pending. Release commits retain
+  # exact-SHA CI, even on a manual merge. No push cancels a running push.
+  # Contracts and key boundaries: docs/ci.md#concurrency.
+  group: >-
+    ci-${{ github.event_name == 'push' && ((github.actor == 'phux-release-bot[bot]'
+    || startsWith(github.event.head_commit.message, 'chore: release ')
+    || startsWith(github.event.head_commit.message, 'chore(rune): release '))
+    && github.sha || 'main-push')
+    || github.event_name == 'pull_request' && format('{0}:refs/heads/{1}', github.event.pull_request.head.repo.full_name, github.head_ref)
+    || github.event_name == 'workflow_dispatch' && format('{0}:{1}', github.repository, github.ref)
+    || github.ref }}
+  cancel-in-progress: ${{ github.event_name != 'push' }}
 
 permissions:
   actions: read
