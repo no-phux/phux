@@ -5,6 +5,8 @@
     "desktop/AppIcon.svg": "clients/rune/packaging/AppIcon.svg",
     "logos/docs-wordmark.svg": "docs/assets/logo.svg",
     "logos/docs-wordmark.png": "docs/assets/logo.png",
+    "logos/wordmark-light.svg": "docs/assets/logo-light.svg",
+    "logos/wordmark-dark.svg": "docs/assets/logo-dark.svg",
     "tooling/brand.py": "scripts/brand.py",
     "desktop/AppIcon.png": "clients/rune/packaging/AppIcon.png",
     "playground/fox/idle.png": "clients/rune/assets/brand/fox/idle.png",
