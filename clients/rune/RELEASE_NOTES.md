@@ -1,6 +1,5 @@
-**Phux Rune 0.1.22**: 4 changes since 0.1.21.
+**Phux Rune 0.1.23**: 3 changes since 0.1.22.
 
-- Set the quick terminal's chord in Settings, size it, and move it to a tab (#2438)
-- A character no font has no longer turns later symbols into boxes (#2435)
-- Wake the key's echo wait on publish; key-to-pixels bench against Ghostty (#2439)
-- Show an indeterminate bar while phux installs and starts (#2437)
+- Honor option as meta on rune dev 2612be7 (#2442)
+- Wait for the quick terminal move receipt (#2447)
+- Open phux://connect links to pair and attach (#2432)
