@@ -2,7 +2,7 @@
 //! waits in, and what stands in for a terminal that isn't there.
 
 use phux_client_runtime::control::Status;
-use rune::{Color, El, Family, TextStyle, col, el, row, text};
+use rune::{Color, El, Family, LoopSpec, TextStyle, col, el, row, text};
 
 use super::{
     CAPTION, Ink, LABEL, LABEL_STRONG, TITLEBAR_H, button, icon_press, icons, keep_from_pane,
@@ -144,6 +144,28 @@ fn words(standing: &Standing, machine: &str, remote: bool) -> (&'static str, Str
     }
 }
 
+/// An indeterminate bar for a wait with no known end, as the platform draws
+/// a download it can't measure: a segment sweeping a track on the render
+/// clock. Reduced motion holds it at the midpoint.
+fn progress(label: &'static str, p: &Ink) -> El {
+    const TRACK: f32 = 200.0;
+    const SEGMENT: f32 = 60.0;
+    el().key("placeholder-progress")
+        .role("progressbar")
+        .label(label)
+        .size(TRACK, 4.0)
+        .radius(2.0)
+        .fill(p.separator)
+        .clip_rounded(2.0)
+        .child(
+            el().absolute(0.0, 0.0)
+                .size(SEGMENT, 4.0)
+                .radius(2.0)
+                .fill(p.accent)
+                .looping(LoopSpec::slide(1.4, [-1.0, 0.0], [TRACK / SEGMENT, 0.0])),
+        )
+}
+
 /// The install line, to copy.
 fn install_line(p: &Ink) -> El {
     row()
@@ -265,6 +287,11 @@ pub fn placeholder(desk: &Desk, p: &Ink) -> El {
         .px(if desk.phone.is_some() { 16.0 } else { 0.0 })
         .child(text(title).font(TextStyle::new(15.0, 600.0)).color(color))
         .child(text(detail).font(LABEL).color(p.dim).wrap())
+        .children(match standing {
+            Standing::Installing => Some(progress("Installing phux", p)),
+            Standing::Starting => Some(progress("Starting phux", p)),
+            _ => None,
+        })
         .children(matches!(standing, Standing::NoCli(_)).then(|| install_line(p)))
         .child(buttons)
 }
