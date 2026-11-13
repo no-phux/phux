@@ -1,9 +1,10 @@
 //! Connect links the system opens this app with: `phux://connect?...`, or
 //! the `https://phux.sh/connect?...` link `phux pair` prints. The link comes
 //! from anyone who can run `open` or `xdg-open`, so it is parsed with the
-//! shared parser before anything runs, and handed to `phux host add NAME
-//! --code -` on stdin, which owns enrollment and the registry: its token
-//! never reaches an argument list.
+//! shared parser and offered for the person to accept before anything
+//! runs. Accepted, it goes to `phux host add NAME --code -` on stdin, which
+//! owns enrollment and the registry: its token never reaches an argument
+//! list.
 
 use phux_client_runtime::pairing::{ConnectLink, parse_connect_link};
 use phux_client_runtime::target::endpoint_host;
@@ -16,18 +17,32 @@ pub fn is_link(arg: &str) -> bool {
     !arg.starts_with('-') && arg.contains("://")
 }
 
-/// The add a link asks for, or why the link can't be used. Errors never
-/// repeat the link: it carries a bearer token.
-pub fn request(url: &str) -> Result<Add, String> {
+/// A link waiting for the person to accept it: the add it asks for, and
+/// where it dials, to show before anything is contacted or registered.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Offer {
+    pub request: Add,
+    pub peer: String,
+}
+
+/// What a link offers, or why it can't be used. Errors never repeat the
+/// link: it carries a bearer token.
+pub fn request(url: &str) -> Result<Offer, String> {
     let link = parse_connect_link(url)
         .map_err(|why| format!("This pairing link can't be used: {why}."))?;
     let name = name(&link).ok_or("This pairing link names no machine to register.")?;
-    Ok(Add {
+    let endpoint = link.registry_endpoint().unwrap_or_default();
+    let peer = link.tls_server_name.as_ref().map_or_else(
+        || endpoint.to_owned(),
+        |route| format!("{route} via {endpoint}"),
+    );
+    let request = Add {
         target: name,
         name: None,
         tailnet: false,
         code: Some(Secret(url.trim().to_owned())),
-    })
+    };
+    Ok(Offer { request, peer })
 }
 
 /// What the machine is called here: the name `phux pair --name` gave it,
@@ -71,7 +86,7 @@ mod tests {
     const TOKEN: &str = "cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd";
 
     fn target(url: &str) -> Result<String, String> {
-        request(url).map(|add| add.target)
+        request(url).map(|offer| offer.request.target)
     }
 
     #[test]
@@ -85,7 +100,9 @@ mod tests {
             "phux://connect",
         ] {
             let url = format!("{prefix}?{query}");
-            let add = request(&url).expect(prefix);
+            let offer = request(&url).expect(prefix);
+            assert_eq!(offer.peer, "wss://mini.tail.ts.net:8787");
+            let add = offer.request;
             assert_eq!(add.target, "mini.tail.ts.net");
             assert_eq!(
                 add.code.as_ref().map(|code| code.0.as_str()),
@@ -102,6 +119,9 @@ mod tests {
             "https://phux.sh/connect?quic=quic://relay.example:4433&sni=mini-route&fp={FP}&ca={ca}#enroll={TOKEN}&token={TOKEN}"
         );
         assert_eq!(target(&relay).as_deref(), Ok("mini-route"));
+        let offer = request(&relay).expect("relay");
+        assert_eq!(offer.peer, "mini-route via quic://relay.example:4433");
+        assert!(!format!("{offer:?}").contains(TOKEN));
         let named = relay.replace("&fp=", "&name=Paul%27s%20Mac%20mini&fp=");
         assert_eq!(target(&named).as_deref(), Ok("Paul-s-Mac-mini"));
     }

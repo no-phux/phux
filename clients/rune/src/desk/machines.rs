@@ -73,6 +73,8 @@ pub struct Machines {
     pub window: Option<rune::AppHandle<Desk>>,
     /// Links from the command line, opened once the window starts.
     pub pending: Vec<String>,
+    /// A link waiting for the person to accept pairing with it.
+    pub offer: Option<crate::connect::Offer>,
 }
 
 impl Machines {
@@ -103,6 +105,7 @@ impl Machines {
             waker: None,
             window: None,
             pending: Vec::new(),
+            offer: None,
         }
     }
 
@@ -285,9 +288,10 @@ impl Desk {
     }
 
     /// A connect link the system opened this app with (Rune's
-    /// `on_open_url`): bring the window forward with Machines open, pair
-    /// from the link, and move the window there once it is registered.
-    /// A link that can't be used says why in the sheet.
+    /// `on_open_url`): bring the window forward with Machines open and offer
+    /// to pair. Any web page can open a link, so nothing is contacted or
+    /// registered until the person accepts. A link that can't be used says
+    /// why in the sheet.
     pub fn pair_from_link(&mut self, url: &str) {
         if self.native.is_some() {
             return;
@@ -296,19 +300,30 @@ impl Desk {
             window.open();
         }
         self.show_machines();
+        self.machines.outcome = None;
         match crate::connect::request(url) {
-            Err(why) => self.machines.error = Some(why),
-            Ok(_) if self.machines.adding.is_some() => {
-                self.machines.error = Some(
-                    "Another machine is still being set up. Open the link again once it finishes."
-                        .to_owned(),
-                );
+            Err(why) => {
+                self.machines.offer = None;
+                self.machines.error = Some(why);
             }
-            Ok(request) => {
-                self.machines.outcome = None;
-                self.machines.add(request);
-            }
+            Ok(offer) => self.machines.offer = Some(offer),
         }
+    }
+
+    /// The offered link was accepted: pair, then move the window there.
+    pub fn accept_pairing(&mut self) {
+        if self.machines.adding.is_some() {
+            self.machines.error =
+                Some("Another machine is still being set up. Pair once it finishes.".to_owned());
+            return;
+        }
+        if let Some(offer) = self.machines.offer.take() {
+            self.machines.add(offer.request);
+        }
+    }
+
+    pub fn decline_pairing(&mut self) {
+        self.machines.offer = None;
     }
 
     pub fn close_machines(&mut self) {

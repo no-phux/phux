@@ -257,6 +257,44 @@ fn field(desk: &Desk, ink: &Ink) -> El {
         )
 }
 
+/// A pairing link waiting to be accepted: where it dials and the name it
+/// registers, and whether that replaces a machine already set up.
+fn offer(desk: &Desk, ink: &Ink) -> Option<El> {
+    let offer = desk.machines.offer.as_ref()?;
+    let name = &offer.request.target;
+    let mut ask = col().w_full().gap(4.0).pb(8.0).child(
+        text(format!("Pair with {} as {name}?", offer.peer))
+            .font(LABEL_STRONG)
+            .color(ink.text)
+            .wrap(),
+    );
+    if desk.machines.hosts.iter().any(|host| &host.name == name) {
+        ask = ask.child(
+            text(format!(
+                "This replaces the machine already named {name} and its credentials."
+            ))
+            .font(CAPTION)
+            .color(ink.danger)
+            .wrap(),
+        );
+    }
+    let buttons = row()
+        .gap(8.0)
+        .child(chip(
+            "Pair",
+            "machine-pair-yes".to_owned(),
+            ink,
+            Desk::accept_pairing,
+        ))
+        .child(chip(
+            "Cancel",
+            "machine-pair-no".to_owned(),
+            ink,
+            Desk::decline_pairing,
+        ));
+    Some(ask.child(buttons))
+}
+
 pub fn sheet(desk: &Desk, ink: &Ink) -> Option<El> {
     let list = &desk.machines;
     if !list.open {
@@ -266,6 +304,7 @@ pub fn sheet(desk: &Desk, ink: &Ink) -> Option<El> {
         .w_full()
         .padding(16.0)
         .gap(6.0)
+        .children(offer(desk, ink))
         .child(local_machine(desk, ink))
         .children(picker(LOCAL, desk, ink));
     for host in &list.hosts {

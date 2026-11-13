@@ -60,7 +60,13 @@ pub(crate) fn pair_from_code(
     } else {
         CertificateStatus::Skipped
     };
-    let new = save(new, &link, identity.as_ref())?;
+    let new = save(new, &link, identity.as_ref()).inspect_err(|_| {
+        // Nothing names the identity this enrolled: it must not outlive the refusal.
+        if let Some(files) = &identity {
+            let _ = std::fs::remove_file(&files.certificate);
+            let _ = std::fs::remove_file(&files.private_key);
+        }
+    })?;
     Ok((registered_entry(target, &new), status))
 }
 

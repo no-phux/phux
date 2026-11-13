@@ -83,9 +83,11 @@ session (or `--session NAME`). It never creates a session on its own.
   computer the local server is empty, so sessions living elsewhere appear
   only once that machine is added. Opening a `phux://connect?...` or
   `https://phux.sh/connect?...` link from `phux pair` (relay links too)
-  pairs that machine through `phux host add NAME --code -` and moves the
-  window there; a bad or spent link says why in Machines. On Linux a later
-  launch hands its link to the running window.
+  opens Machines asking to pair with where it dials; **Pair** runs
+  `phux host add NAME --code -` and moves the window there, and a bad or
+  spent link says why. On Linux a later plain launch, or one a link
+  starts, goes to the running window instead of opening another; runs
+  given `--session`, `--socket` or `--phux` still open their own.
 - **Updates.** Settings → **About & Updates** controls automatic checks,
   local phux management, and the phux release channel. Downloads and server
   handoffs still need a click. [Updates and release channels](./UPDATES.md)

@@ -31,6 +31,9 @@ mod perf;
 mod pitch;
 mod pitlane;
 mod reef;
+#[cfg(any(target_os = "linux", test))]
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+mod scheme;
 mod session_color;
 mod standing;
 mod system_settings;
@@ -85,10 +88,17 @@ pub fn run_desktop() {
     let phone = options.phone;
     // One window takes the pairing links: a later plain launch, or one an
     // `xdg-open phux://connect?...` starts, goes to the running process.
-    // A run aimed at a server, the phone form and headless tooling stand
-    // alone.
-    if !resolved.aimed && !phone && !rune::is_headless() && !rune::single_instance(INSTANCE_ID) {
+    // A run aimed at a server or a session, the phone form and headless
+    // tooling stand alone.
+    let plain = !resolved.aimed && options.session.is_none() && !phone && !rune::is_headless();
+    if plain && !rune::single_instance(INSTANCE_ID) {
         return;
+    }
+    // An entry an older install registered gains the link handler; a
+    // development build leaves the installed app's entry alone.
+    #[cfg(target_os = "linux")]
+    if plain && !cfg!(debug_assertions) {
+        std::thread::spawn(scheme::repair);
     }
     // Rune hands `on_open_url` the links among a Linux or Windows launch's
     // arguments; macOS sends its links as Apple events, so a link on a

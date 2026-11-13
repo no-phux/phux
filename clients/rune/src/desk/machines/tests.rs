@@ -99,25 +99,34 @@ fn a_bad_link_opens_machines_and_says_why() {
 }
 
 #[test]
-fn a_link_pairs_through_the_cli_with_the_sheet_open() {
+fn a_link_pairs_only_once_accepted() {
     let mut desk = desk();
     desk.pair_from_link(LINK);
+    assert!(desk.machines.open);
+    // Any page can open a link: nothing runs until the person accepts.
+    assert!(desk.machines.adding.is_none() && desk.machines.request.is_none());
+    let offer = desk.machines.offer.clone().expect("an offer");
+    assert_eq!(offer.peer, "mini-route via quic://relay.example:4433");
+    desk.decline_pairing();
+    assert!(desk.machines.offer.is_none());
+
+    desk.pair_from_link(LINK);
+    desk.accept_pairing();
     assert_eq!(
         desk.machines.error.as_deref(),
         Some("Install the phux CLI to add a machine.")
     );
     desk.machines.phux = Some(PathBuf::from("/nonexistent/phux"));
     desk.pair_from_link(LINK);
-    assert!(
-        desk.machines.open,
-        "landing moves the window only with it open"
-    );
+    desk.accept_pairing();
+    assert!(desk.machines.offer.is_none());
     assert_eq!(desk.machines.adding.as_deref(), Some("Pairing mini-route…"));
     let request = desk.machines.request.clone().expect("an add");
     assert_eq!(request.target, "mini-route");
     assert_eq!(request.code.map(|code| code.0).as_deref(), Some(LINK));
-    // One at a time: a second link while the first pairs is refused.
+    // One at a time: a second link while the first pairs waits its turn.
     desk.pair_from_link(LINK);
+    desk.accept_pairing();
     assert!(
         desk.machines
             .error
