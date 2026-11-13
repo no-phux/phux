@@ -32,7 +32,6 @@ pub(super) fn await_echo(client: &Client, view: ViewId, before: &Arc<GridFrame>)
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
     use std::time::{Duration, Instant};
 
     use phux_protocol::ids::{BootstrapId, StreamId};
@@ -50,24 +49,23 @@ mod tests {
         await_echo(&client, view, &before);
         let silent = start.elapsed();
         assert!(silent >= ECHO_WAIT && silent < ECHO_WAIT + Duration::from_millis(50));
-        // An echo published mid-wait wakes it.
-        let server = Arc::clone(&client);
-        let echo = std::thread::spawn(move || {
-            std::thread::sleep(Duration::from_millis(1));
-            server
-                .feed(FrameKind::ResourceOutput {
-                    terminal_id,
-                    stream_id: StreamId::new(1).unwrap(),
-                    bootstrap_id: BootstrapId::new(1).unwrap(),
-                    seq: 1,
-                    bytes: b"x".to_vec().into(),
-                })
-                .unwrap();
-        });
+        // An echo already published ends it at once. The engine's owner
+        // thread publishes it; the runtime's tests cover a publish waking a
+        // wait in progress.
+        client
+            .feed(FrameKind::ResourceOutput {
+                terminal_id,
+                stream_id: StreamId::new(1).unwrap(),
+                bootstrap_id: BootstrapId::new(1).unwrap(),
+                seq: 1,
+                bytes: b"x".to_vec().into(),
+            })
+            .unwrap();
+        let slot = client.view_slot(view).unwrap();
+        assert!(slot.wait_past(before.generation, Duration::from_secs(10)));
         let start = Instant::now();
         await_echo(&client, view, &before);
         assert!(start.elapsed() < ECHO_WAIT);
-        echo.join().unwrap();
         assert!(client.acquire_view(view).unwrap().text().ends_with('x'));
     }
 }
