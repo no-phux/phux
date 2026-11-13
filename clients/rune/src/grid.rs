@@ -26,6 +26,7 @@ use crate::perf;
 use crate::theme::Selection;
 
 mod glyphs;
+mod missing;
 
 /// Inter, which replacing Rune's built-in fonts has to name again, and a
 /// Nerd Font, for the private-use icons no system face has.
