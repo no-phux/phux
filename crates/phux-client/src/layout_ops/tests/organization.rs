@@ -2,7 +2,7 @@ use phux_protocol::caps::{ServerFeatureExt, ServerFeatureExtSet};
 use phux_protocol::ids::{ResourceKey, SessionKey};
 use phux_protocol::wire::frame::{
     ArrangementDoc as WireDoc, ArrangementGroup, ArrangementNode, Command, EntryRef, EntryTarget,
-    SessionLifetime,
+    ExecState, Refusal, SessionLifetime,
 };
 
 use super::*;
@@ -184,5 +184,63 @@ async fn a_missing_arrangement_is_an_error_not_a_legacy_write() {
             .iter()
             .any(|frame| matches!(frame, FrameKind::SetMetadata { .. })),
         "no legacy metadata write: {seen:?}"
+    );
+}
+
+/// A seed pane that ended before it was placed (#2403) is not placed: the
+/// seed answers the empty arrangement without writing, rather than failing
+/// on a pane with no live handle.
+#[tokio::test]
+async fn a_seed_pane_that_already_ended_is_not_placed() {
+    let mut fixture = OrgFixture::new();
+    let work = fixture.session("work", SessionLifetime::Persistent);
+    let failed = fixture.resource(work, Some(ExecState::Failed));
+    fixture.arrangement(work, WireDoc { groups: Vec::new() });
+    let session = fixture.live_session(&work).unwrap();
+    assert!(fixture.live(&failed).is_none());
+    let (mut conn, server, _dir) = connect(fixture).await;
+    let seeded = LayoutOps::new(&mut conn, session, 10)
+        .read_or_seed(ArrangementDoc::single(ResourceId::local(1)))
+        .await
+        .unwrap();
+    assert!(seeded.groups.is_empty());
+    drop(conn);
+    assert!(
+        replaces(&server.await.unwrap()).is_empty(),
+        "nothing written"
+    );
+}
+
+/// A seed refused because its pane left between the read and the write is
+/// retried against a fresh read.
+#[tokio::test]
+async fn a_refused_seed_is_retried_against_a_fresh_read() {
+    let mut fixture = OrgFixture::new();
+    let work = fixture.session("work", SessionLifetime::Persistent);
+    let a = fixture.shell(work);
+    fixture.arrangement(work, WireDoc { groups: Vec::new() });
+    let session = fixture.live_session(&work).unwrap();
+    let pane = fixture.live(&a).unwrap();
+    let fixture = fixture.refuse_next(
+        "arrangement_replace",
+        Refusal::InvalidArgument {
+            field: "groups".to_owned(),
+            reason: "entry names a non-member resource".to_owned(),
+        },
+    );
+    let (mut conn, server, _dir) = connect(fixture).await;
+    let seeded = LayoutOps::new(&mut conn, session, 10)
+        .read_or_seed(ArrangementDoc::single(pane.clone()))
+        .await
+        .unwrap();
+    assert_eq!(
+        leaves(seeded.groups[0].state.tree.as_ref().unwrap()),
+        vec![pane]
+    );
+    drop(conn);
+    assert_eq!(
+        replaces(&server.await.unwrap()).len(),
+        2,
+        "refused, then written"
     );
 }

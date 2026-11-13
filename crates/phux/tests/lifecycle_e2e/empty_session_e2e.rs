@@ -20,10 +20,11 @@ use std::process::{Output, Stdio};
 /// daemon this test fails to reap cannot outlive it.
 fn phux(args: &[&str], socket: &Path) -> Output {
     let (key, value) = common::AutoSpawnedServer::IDLE_BACKSTOP;
+    // Ahead of the verb: anything after a `--` is the seed's argv.
     common::phux_cmd(crate::runner::phux_bin())
-        .args(args)
         .arg("--socket")
         .arg(socket)
+        .args(args)
         .env(key, value)
         .stdin(Stdio::null())
         .output()
@@ -119,6 +120,42 @@ fn new_json_for_a_taken_name_is_a_json_error() {
                 .is_some_and(|r| r.contains("phux attach taken")),
             "{doc}"
         );
+    }
+
+    drop(server);
+    drop(dir);
+}
+
+/// A seed pane that ends before its layout is stored (a command that exits
+/// at once, or one that never executes) still makes `phux new --json`
+/// answer success with the terminal id (#2403). The race is timing
+/// dependent, so it is run many times.
+#[test]
+#[ignore = "spawns a real phux server; run via `just e2e`."]
+fn new_json_with_a_seed_that_ends_at_once_succeeds() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let socket = dir.path().join("phux.sock");
+    let first = phux(&["new", "--empty", "--json", "-s", "parked"], &socket);
+    let mut server = common::AutoSpawnedServer::new(crate::runner::phux_bin(), socket.clone());
+    assert!(first.status.success(), "{first:?}");
+    server.capture_pid();
+
+    for i in 0..40 {
+        let name = format!("brief{i}");
+        let seed = if i % 2 == 0 {
+            "true"
+        } else {
+            "/nonexistent/phux-seed"
+        };
+        let out = phux(&["new", "--json", "-s", &name, "--", seed], &socket);
+        assert!(
+            out.status.success(),
+            "{name} ({seed}) must be created.\nstderr: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        let doc: serde_json::Value = serde_json::from_slice(&out.stdout).expect("new json");
+        assert_eq!(doc["session"], name.as_str(), "{doc}");
+        assert!(doc["terminal_id"].is_u64(), "{doc}");
     }
 
     drop(server);
