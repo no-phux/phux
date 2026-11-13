@@ -2,9 +2,12 @@
 //
 // A pull request runs exactly what its diff can affect. A push to main or a
 // merge group widens the Rust lanes to the full pool (a non-strict merge can
-// combine two green diffs into a red tree). With the merge queue on, a pull
-// request that reaches Rune only through the Cargo closure leaves the iOS
-// simulator job to the queue. `just check` runs the pull-request plan
+// combine two green diffs into a red tree). Rune's macOS and iOS legs are
+// not lanes here: rune-macos.yml owns them, and a ci receipt must not claim
+// coverage they never ran. A pull request's Rune lane is check.sh and
+// cargo-deny on linux-x86_64. Packaging and linux-aarch64 run only when the
+// plan qualifies Linux, and the receipt names that coverage so a pull
+// request cannot stand in for it. `just check` runs the pull-request plan
 // locally, through the same recipes the jobs call.
 import type { Classification } from "./classify.ts";
 
@@ -44,14 +47,21 @@ export const LANE_RECIPES: Record<Lane, readonly (readonly [string, ...string[]]
 /** Lanes a workstation cannot reproduce: x86_64 valgrind, a clean machine. */
 export const CI_ONLY: ReadonlySet<Lane> = new Set(["icount", "native"]);
 
+/** Coverage a Linux-qualifying run adds. A pull request never writes these. */
+export const LINUX_QUALIFY = ["linux-aarch64", "packaging"] as const;
+
 export interface Plan {
   readonly lanes: ReadonlySet<Lane>;
-  /** The Rune lane runs its iOS simulator job. */
-  readonly runeIos: boolean;
   /**
-   * The pull-request lane set, plus `rune_ios` when that job ran: what an
-   * identical tree's receipt must cover. Main policy always counts iOS, so
-   * a pull request that skipped it never stands in for a main push.
+   * Package every selected Linux host and launch the archives, including
+   * linux-aarch64. False on a pull request.
+   */
+  readonly runeQualify: boolean;
+  /**
+   * The pull-request lane set, plus `linux-aarch64` and `packaging` when
+   * this run qualified Linux. A pull request omits those tokens, so its
+   * receipt cannot satisfy a main push. macOS is absent on purpose, so a
+   * receipt cannot claim a leg this workflow did not run.
    */
   readonly coverage: string;
   readonly unitMode: Classification["unitMode"];
@@ -81,16 +91,22 @@ const chosen = (flags: Record<Lane, boolean>): Set<Lane> =>
   new Set(LANES.filter((lane) => flags[lane]));
 
 /**
- * `mergeQueue`: a pull request's diff is validated again by the merge queue
- * (`vars.PHUX_MERGE_QUEUE`), so a closure-only Rune change skips iOS here.
+ * `qualify`: package and launch both Linux hosts. Defaults on for a push
+ * (and therefore a merge group). A caller turns it on for a dispatch too;
+ * a pull request leaves it off.
  */
-export function plan(c: Classification, trigger: Trigger, mergeQueue = false): Plan {
+export function plan(
+  c: Classification,
+  trigger: Trigger,
+  qualify = trigger !== "pull_request",
+): Plan {
   const push = trigger === "push";
-  const runeIos = c.needed.has("rune") && (push || !mergeQueue || c.runeDirect);
+  const prLanes = chosen(needed(c, "pull_request"));
+  const runeQualify = qualify && prLanes.has("rune");
   return {
     lanes: chosen(needed(c, trigger)),
-    runeIos,
-    coverage: [...chosen(needed(c, "pull_request")), ...(runeIos ? ["rune_ios"] : [])].join(","),
+    runeQualify,
+    coverage: [...prLanes, ...(runeQualify ? LINUX_QUALIFY : [])].join(","),
     unitMode: push ? "workspace" : c.unitMode,
     unitTargets: push ? "" : c.unitTargets,
     testFilterset: push ? "" : c.testFilterset,
@@ -110,7 +126,7 @@ export function reused(p: Plan): Plan {
 export function planOutputs(p: Plan, c: Classification): Record<string, string | boolean> {
   return {
     ...Object.fromEntries(LANES.map((lane) => [lane, p.lanes.has(lane)])),
-    rune_ios: p.lanes.has("rune") && p.runeIos,
+    rune_qualify: p.lanes.has("rune") && p.runeQualify,
     docs_only: c.docsOnly,
     web_engine: p.lanes.has("web") && c.needed.has("web_engine"),
     content: c.contentNeeded,

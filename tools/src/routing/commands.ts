@@ -10,9 +10,11 @@ import { classifyEvent, diffPaths } from "./detect.ts";
 import { checkMerge } from "./merge-check.ts";
 import { CI_ONLY, LANE_RECIPES, LANES, plan, planOutputs, reused, type Plan } from "./plan.ts";
 import { alreadyValidated, artifactName, type Receipt } from "./receipt.ts";
+import { reusedMacos, runeMacosPlan } from "./rune-macos.ts";
 
 const print = (result: Classification) => console.log(formatOutputs(toOutputs(result)));
 const WORKFLOW = ".github/workflows/ci.yml";
+const RUNE_MACOS = ".github/workflows/rune-macos.yml";
 
 /** Files that differ between `base` and the working tree, untracked included. */
 function workingChanges(base: string): string[] {
@@ -77,9 +79,11 @@ export const commands: Record<string, Command> = {
       const repository = process.env["GITHUB_REPOSITORY"] ?? "";
       const c = classifyEvent(event, process.env["GITHUB_EVENT_PATH"]);
       // A merge group is main's tree before it lands: main policy.
+      // A pull request does not qualify Linux. A dispatch does, without
+      // widening the lane set past the pull-request plan.
+      const qualify = event !== "pull_request";
       const main = event === "push" || event === "merge_group";
-      const queued = event === "pull_request" && process.env["PHUX_MERGE_QUEUE"] === "true";
-      const p = plan(c, main ? "push" : "pull_request", queued);
+      const p = plan(c, main ? "push" : "pull_request", qualify);
       const tree = git(["rev-parse", "HEAD^{tree}"]).trim();
       const receipt: Receipt = { schema: 2, tree, workflow: WORKFLOW, coverage: p.coverage };
       const validated =
@@ -87,12 +91,47 @@ export const commands: Record<string, Command> = {
       const run = validated ? reused(p) : p;
       const outputs = planOutputs(run, c);
       console.error(
-        `${validated ? "Tree already validated; lanes: " : "Lanes: "}${[...run.lanes].join(" ")}` +
-          (outputs["rune_ios"] === true ? " (rune with iOS)" : ""),
+        `${validated ? "Tree already validated; lanes: " : "Lanes: "}${[...run.lanes].join(" ")}`,
       );
       writeOutputs({
         ...outputs,
         validated,
+        receipt: JSON.stringify(receipt),
+        receipt_name: artifactName(receipt),
+      });
+      return 0;
+    },
+  },
+  "rune-macos-plan": {
+    summary: "Plan rune-macos.yml: macOS and iOS legs, and the receipt of what ran.",
+    run() {
+      const event = process.env["GITHUB_EVENT_NAME"] ?? "";
+      const repository = process.env["GITHUB_REPOSITORY"] ?? "";
+      const c = classifyEvent(event, process.env["GITHUB_EVENT_PATH"]);
+      // Pull requests never launch macOS. Every other event plans as a push:
+      // a dispatch or a nightly run qualifies the whole tree.
+      const pullRequest = event === "pull_request";
+      const planned = runeMacosPlan(c, pullRequest ? "pull_request" : "push");
+      const tree = git(["rev-parse", "HEAD^{tree}"]).trim();
+      const receipt: Receipt = {
+        schema: 2,
+        tree,
+        workflow: RUNE_MACOS,
+        coverage: planned.coverage,
+      };
+      const validated =
+        event === "push" &&
+        repository !== "" &&
+        planned.coverage !== "" &&
+        alreadyValidated(receipt, repository);
+      const run = validated ? reusedMacos(planned) : planned;
+      console.error(
+        `${validated ? "Tree already validated; " : ""}rune-macos: ${run.macos ? "macos" : "skip"}${run.ios ? " ios" : ""}`,
+      );
+      writeOutputs({
+        macos: run.macos,
+        ios: run.ios,
+        coverage: planned.coverage,
         receipt: JSON.stringify(receipt),
         receipt_name: artifactName(receipt),
       });
@@ -125,7 +164,7 @@ export const commands: Record<string, Command> = {
       const local = lanes.filter((lane) => !CI_ONLY.has(lane));
       const skipped = [
         ...lanes.filter((lane) => CI_ONLY.has(lane)),
-        ...(p.runeIos ? ["rune iOS simulator"] : []),
+        ...(p.lanes.has("rune") ? ["rune macOS and iOS simulator (rune-macos.yml)"] : []),
       ];
       console.log(`changes since ${base.slice(0, 12)} need: ${lanes.join(", ")}`);
       if (skipped.length > 0) console.log(`CI only, not run here: ${skipped.join(", ")}`);

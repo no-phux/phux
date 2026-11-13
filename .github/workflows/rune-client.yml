@@ -1,9 +1,10 @@
 name: Rune client
 
 # A `rune-vVERSION` tag publishes the Rune client (clients/rune): a tag clients
-# can read, on a commit main already proved, builds in rune-build.yml and
-# becomes a GitHub release. Pull requests and main reach the same build as
-# ci.yml's `rune` lane, so the required check never waits on a path filter.
+# can read, on a commit main already proved (`ci`, and `rune-macos` when the
+# commit builds Rune), builds in rune-build.yml and becomes a GitHub release.
+# Pull requests run the Linux half of that build as ci.yml's `rune` lane.
+# macOS and the iOS simulator run in rune-macos.yml.
 on:
   push:
     tags: ["rune-v*"]
@@ -26,14 +27,17 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          # The preflight classifies this commit against its parent, and a
+          # release-bot commit may prove rune-macos from that parent.
+          fetch-depth: 0
           persist-credentials: false
       - uses: ./.github/actions/setup-bun
       - name: The tag, Cargo.toml and the release notes agree
         env:
           TAG: ${{ github.ref_name }}
         run: python3 clients/rune/scripts/feed.py preflight "$TAG" clients/rune/Cargo.toml clients/rune/RELEASE_NOTES.md
-      # Tag after ci finishes on main; rerun this job if it was still going.
-      - name: The commit is on main with a green ci
+      # Tag after ci and rune-macos finish on main; rerun this job if either was still going.
+      - name: The commit is on main with green ci and rune-macos
         env:
           GH_TOKEN: ${{ github.token }}
         run: bun tools/main.ts ci-green "$GITHUB_SHA"

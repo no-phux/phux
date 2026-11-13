@@ -16,8 +16,11 @@
 #   marks one ready every two hours (which runs ci) and auto-merges it;
 #   squash-merging it cuts the stable release.
 # - A draft ships only on a green ci push run for its own commit
-#   (tools/src/release/publish-plan.ts). Every run reconciles every draft, so
-#   a run superseded while pending loses nothing.
+#   (tools/src/release/publish-plan.ts). When Rune is in that commit's
+#   closure, rune-macos must be green on it too; a release-bot commit that
+#   does not itself build Rune uses its parent's green rune-macos once that
+#   parent's ci has passed. Every run reconciles every draft, so a run
+#   superseded while pending loses nothing.
 # - Only the CLI is GitHub Latest: the Homebrew tap and pre-manifest binaries
 #   resolve through it. Nothing publishes unsigned (ADR-0178): artifact
 #   checksums and the stable.json manifest both get a .minisig.
@@ -28,7 +31,7 @@ name: release
 
 on:
   workflow_run:
-    workflows: [ci]
+    workflows: [ci, rune-macos]
     types: [completed]
     branches: [main]
   # Backstop for a missed event, and the stuck-release check.
@@ -55,7 +58,10 @@ jobs:
     name: release PRs and tags
     if: >-
       github.event_name == 'workflow_run'
+      && github.event.workflow_run.name == 'ci'
       && github.event.workflow_run.event == 'push'
+      && github.event.workflow_run.head_branch == 'main'
+      && github.event.workflow_run.head_repository.full_name == github.repository
       && github.event.workflow_run.conclusion == 'success'
     runs-on: ubuntu-24.04
     timeout-minutes: 10
@@ -77,7 +83,12 @@ jobs:
   plan:
     name: choose drafts
     needs: release-please
-    if: ${{ !cancelled() && (github.event_name != 'workflow_run' || github.event.workflow_run.event == 'push') }}
+    if: >-
+      !cancelled() && (github.event_name != 'workflow_run'
+      || (github.event.workflow_run.event == 'push'
+      && github.event.workflow_run.head_branch == 'main'
+      && github.event.workflow_run.head_repository.full_name == github.repository
+      && (github.event.workflow_run.name == 'ci' || github.event.workflow_run.name == 'rune-macos')))
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     permissions:

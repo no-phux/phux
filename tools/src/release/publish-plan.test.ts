@@ -1,13 +1,21 @@
 // Publish decisions stay deterministic: no network, no clock.
 import { describe, expect, test } from "bun:test";
 import {
+  applyRuneGate,
   ciRefusal,
   decide,
+  isReleaseBot,
   parseTag,
+  releaseRefusal,
+  runeMacosRefusal,
+  runeMacosProof,
+  runeMacosTarget,
   splitLanes,
   validationState,
   type CiState,
+  type Plan,
   type Release,
+  type RuneEvidence,
 } from "./publish-plan.ts";
 
 const rel = (tag: string, draft: boolean, sha: string): Release => ({ tag, draft, sha });
@@ -151,4 +159,162 @@ test("a tag needs a finished green ci on main", () => {
   expect(ciRefusal("pending", "abc")).toContain("rerun when green");
   expect(ciRefusal("failure", "abc")).toContain("failure");
   expect(ciRefusal("cancelled", "abc")).toContain("cancelled");
+});
+
+const evidence = (sha: string, rune: boolean, bot = false, parent?: string): RuneEvidence =>
+  parent === undefined ? { sha, bot, rune } : { sha, bot, rune, parent };
+
+test("release-bot identity is the app, not a person who mentions it", () => {
+  expect(
+    isReleaseBot("phux-release-bot[bot]\n305320402+phux-release-bot[bot]@users.noreply.github.com"),
+  ).toBe(true);
+  expect(isReleaseBot("phux-release[bot]\nphux-release[bot]@users.noreply.github.com")).toBe(true);
+  expect(isReleaseBot("Release Test\nrelease@example.com")).toBe(false);
+  expect(isReleaseBot("note phux-release-bot[bot] in the message")).toBe(false);
+});
+
+test("rune-macos is required on the release commit when Rune is in its closure", () => {
+  const commit = evidence("bump", true, true, "parent");
+  expect(runeMacosTarget(commit, evidence("parent", true))).toBe("bump");
+  expect(runeMacosRefusal("success", "bump")).toBeUndefined();
+  expect(runeMacosRefusal("pending", "bump")).toContain("rune-macos");
+  expect(runeMacosRefusal("failure", "bump")).toContain("failure");
+  expect(releaseRefusal("success", "bump", "failure", "bump")).toContain("rune-macos is failure");
+  expect(releaseRefusal("failure", "bump", "success", "bump")).toContain("ci.yml is failure");
+  expect(releaseRefusal("success", "bump", "pending", undefined)).toBeUndefined();
+});
+
+test("a release-bot commit without Rune uses its validated parent", () => {
+  const commit = evidence("bump", false, true, "parent");
+  const parent = evidence("parent", true);
+  expect(runeMacosTarget(commit, parent)).toBe("parent");
+  expect(runeMacosTarget(commit, evidence("parent", false))).toBeUndefined();
+  expect(runeMacosTarget(evidence("human", false, false, "parent"), parent)).toBeUndefined();
+  expect(runeMacosTarget(evidence("bump", false, true), parent)).toBeUndefined();
+});
+
+test.each(["pending", "failure", "cancelled", "success"])(
+  "inherited native proof remains required when parent ci is %s",
+  (parentCi) => {
+    const commit = evidence("bump", false, true, "parent");
+    const proof = runeMacosProof(commit, evidence("parent", true), parentCi, "failure");
+    expect(proof?.evidence).toBe("parent");
+    expect(proof?.state).toBe(parentCi === "success" ? "failure" : parentCi);
+    // These are the actual shared decisions behind tag preflight and draft publication.
+    expect(
+      releaseRefusal("success", "bump", proof?.state ?? "success", proof?.evidence),
+    ).toBeDefined();
+    const plan: Plan = {
+      publish: ["v1.2.3"],
+      delete: [],
+      wait: false,
+      fail: undefined,
+      blocked: "",
+    };
+    const gated = applyRuneGate(
+      plan,
+      "bump",
+      () => proof,
+      () => "bump",
+    );
+    expect(gated.publish).toEqual([]);
+    expect(gated.wait || gated.fail !== undefined).toBe(true);
+  },
+);
+
+test.each(["pending", "failure", "cancelled", "missing", "success"])(
+  "both tag and publication gates require inherited native state %s to be green",
+  (native) => {
+    const proof = runeMacosProof(
+      evidence("bump", false, true, "parent"),
+      evidence("parent", true),
+      "success",
+      native,
+    );
+    expect(proof).toEqual({ evidence: "parent", state: native });
+    const refusal = releaseRefusal("success", "bump", proof?.state ?? "success", proof?.evidence);
+    expect(refusal === undefined).toBe(native === "success");
+    const plan: Plan = {
+      publish: ["v1.2.3"],
+      delete: [],
+      wait: false,
+      fail: undefined,
+      blocked: "",
+    };
+    const gated = applyRuneGate(
+      plan,
+      "bump",
+      () => proof,
+      () => "bump",
+    );
+    expect(gated.publish).toEqual(native === "success" ? ["v1.2.3"] : []);
+  },
+);
+
+test("direct native proof and genuinely unrelated changes are not confused with inheritance", () => {
+  expect(runeMacosProof(evidence("native", true), undefined, "pending", "success")).toEqual({
+    evidence: "native",
+    state: "success",
+  });
+  expect(runeMacosProof(evidence("docs", false), undefined, "pending", "failure")).toBeUndefined();
+});
+
+describe("applyRuneGate", () => {
+  const ready = (publish: string[], extra: Partial<Plan> = {}): Plan => ({
+    publish,
+    delete: [],
+    wait: false,
+    fail: undefined,
+    blocked: "",
+    ...extra,
+  });
+  const shaOf = (tag: string): string => (tag.startsWith("pi-") ? "other" : "event");
+  const lookup = (state: string) => (sha: string) =>
+    sha === "quiet" ? undefined : { evidence: sha, state };
+
+  test("a green proof publishes, and a commit outside the closure needs nothing", () => {
+    expect(applyRuneGate(ready(["v0.1.0"]), "event", lookup("success"), shaOf).publish).toEqual([
+      "v0.1.0",
+    ]);
+    const quiet = applyRuneGate(
+      ready(["v0.1.0"]),
+      undefined,
+      () => undefined,
+      () => "quiet",
+    );
+    expect(quiet.publish).toEqual(["v0.1.0"]);
+    expect(quiet.fail).toBeUndefined();
+  });
+
+  test("the event's own commit waits on rune-macos and fails when it is red", () => {
+    const waiting = applyRuneGate(
+      ready(["v0.1.0", "pi-v0.2.0"]),
+      "event",
+      lookup("pending"),
+      shaOf,
+    );
+    expect([waiting.publish, waiting.wait, waiting.fail]).toEqual([[], true, undefined]);
+    const failed = applyRuneGate(ready(["v0.1.0"]), "event", lookup("failure"), shaOf);
+    expect(failed.publish).toEqual([]);
+    expect(failed.fail).toContain("rune-macos is failure for event");
+    expect(failed.fail).toContain("v0.1.0");
+  });
+
+  test("another draft's red rune-macos stays a draft and does not fail the run", () => {
+    const plan = applyRuneGate(
+      ready(["v0.1.0", "pi-v0.2.0"]),
+      "event",
+      (sha) => ({ evidence: sha, state: sha === "event" ? "success" : "failure" }),
+      shaOf,
+    );
+    expect(plan.publish).toEqual(["v0.1.0"]);
+    expect(plan.fail).toBeUndefined();
+    expect(plan.blocked).toContain("pi-v0.2.0");
+    expect(plan.blocked).toContain("rune-macos failure for other");
+  });
+
+  test("a run already waiting on ci is left to that wait", () => {
+    const waiting = ready([], { wait: true });
+    expect(applyRuneGate(waiting, "event", lookup("failure"), shaOf)).toEqual(waiting);
+  });
 });
