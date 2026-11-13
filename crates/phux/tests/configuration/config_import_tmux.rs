@@ -164,6 +164,105 @@ fn import_tmux_missing_tool_has_structured_error_and_no_files() {
 }
 
 #[test]
+fn import_tmux_preserves_clipboard_denial_and_functional_display_commands() {
+    let dir = fixture();
+    std::fs::write(
+        dir.path().join("tmux"),
+        r#"#!/bin/sh
+case "$*" in
+  'show-options -g') printf '%s\n' 'prefix C-b' 'set-clipboard off';;
+  'show-options -gw') printf '\n';;
+  'list-keys')
+    printf '%s\n' \
+      'bind-key -T prefix r source-file ~/.tmux.conf \; display-message -I -t %1' \
+      'bind-key -T prefix R source-file ~/.tmux.conf \; display-message "reloaded"';;
+  *) exit 43;;
+esac
+"#,
+    )
+    .expect("script");
+    let out = run(dir.path(), &["config", "import-tmux", "--json"]);
+    assert!(out.status.success(), "{out:?}");
+    let preview: serde_json::Value = serde_json::from_slice(&out.stdout).expect("JSON");
+    let table: toml::Table =
+        toml::from_str(preview["toml"].as_str().expect("TOML")).expect("parse");
+    assert_eq!(table["defaults"]["clipboard-write"].as_str(), Some("deny"));
+    let prefix = &table["keybindings"]["prefix-table"];
+    assert_eq!(prefix["r"].as_str(), Some("none"));
+    assert_eq!(prefix["R"].as_str(), Some("reload-config"));
+    assert!(!dir.path().join("xdg").exists());
+}
+
+#[test]
+fn migrate_print_preserves_overrides_privacy_and_functional_commands() {
+    let dir = tempfile::tempdir().expect("home");
+    std::fs::write(
+        dir.path().join(".tmux.conf"),
+        r#"bind '"' new-window
+unbind '"'
+bind - split-window -v
+set -g set-clipboard off
+set -sg escape-time 500
+bind r source-file ~/.tmux.conf \; display-message -I -t %1
+bind R source-file ~/.tmux.conf \; display-message "reloaded"
+"#,
+    )
+    .expect("config");
+    let out = crate::common::phux_cmd(crate::runner::phux_bin())
+        .env("HOME", dir.path())
+        .env("XDG_CONFIG_HOME", dir.path().join("xdg"))
+        .args(["migrate", "--print", "--json", "--source", "tmux"])
+        .output()
+        .expect("phux");
+    assert!(out.status.success(), "{out:?}");
+    let doc: serde_json::Value = serde_json::from_slice(&out.stdout).expect("JSON");
+    let prompt = doc["prompt"].as_str().expect("prompt");
+    assert!(prompt.contains("bind '\"' new-window`\n  nothing to do:"));
+    assert!(prompt.contains("clipboard-write = \"deny\""));
+    assert!(prompt.contains("escape-time 500 is not migrated"));
+    assert!(prompt.contains("display-message -I -t %1`\n  not written:"));
+    assert!(prompt.contains("\"R\" = \"reload-config\""));
+    assert!(doc["launched"].is_null());
+    assert!(!dir.path().join("xdg").exists());
+}
+
+#[test]
+fn external_clipboard_mode_denies_pane_writes_in_migrate_and_import() {
+    let dir = fixture();
+    let script = std::fs::read_to_string(dir.path().join("tmux")).expect("script");
+    std::fs::write(
+        dir.path().join("tmux"),
+        script.replace("'prefix2 None'", "'set-clipboard external'"),
+    )
+    .expect("script");
+    let out = run(dir.path(), &["config", "import-tmux", "--json"]);
+    assert!(out.status.success(), "{out:?}");
+    let preview: serde_json::Value = serde_json::from_slice(&out.stdout).expect("JSON");
+    let table: toml::Table =
+        toml::from_str(preview["toml"].as_str().expect("TOML")).expect("parse");
+    assert_eq!(table["defaults"]["clipboard-write"].as_str(), Some("deny"));
+
+    std::fs::write(
+        dir.path().join(".tmux.conf"),
+        "set -g set-clipboard external\n",
+    )
+    .expect("config");
+    let out = crate::common::phux_cmd(crate::runner::phux_bin())
+        .env("HOME", dir.path())
+        .env("XDG_CONFIG_HOME", dir.path().join("xdg"))
+        .args(["migrate", "--print", "--json", "--source", "tmux"])
+        .output()
+        .expect("phux");
+    assert!(out.status.success(), "{out:?}");
+    let doc: serde_json::Value = serde_json::from_slice(&out.stdout).expect("JSON");
+    assert!(doc["prompt"].as_str().expect("prompt").contains(
+        "set -g set-clipboard external`\n  write `clipboard-write = \"deny\"` in `[defaults]`"
+    ));
+    assert!(doc["launched"].is_null());
+    assert!(!dir.path().join("xdg").exists());
+}
+
+#[test]
 fn import_tmux_bounds_output_and_inspection_time_before_writing() {
     let dir = fixture();
     for (script, expected) in [

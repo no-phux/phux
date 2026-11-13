@@ -48,6 +48,7 @@ pub(super) fn zellij(path: &Path, selected: Option<&str>) -> Source {
         files,
         rows,
         note: None,
+        prefix: None,
     }
 }
 
@@ -88,6 +89,7 @@ pub(super) fn herdr(path: &Path, selected: Option<&str>) -> Source {
         files,
         rows,
         note: None,
+        prefix: None,
     }
 }
 
@@ -117,5 +119,6 @@ pub(super) fn rex(path: &Path) -> Source {
         files,
         rows,
         note: None,
+        prefix: None,
     }
 }

@@ -4,11 +4,12 @@
 use std::collections::BTreeMap;
 use std::path::Path;
 
-use phux_config::keybind::parse_chord;
+use phux_config::keybind::{parse_chord, parse_chord_sequence};
 use toml::Value;
 
 use super::{
-    Class, Ctx, Line, Source, Table, Verdict, against_default, expand, read_tree, skip, tilde,
+    Class, Ctx, Line, Row, Source, Table, Verdict, against_default, covered, expand, read_tree,
+    skip, tilde,
 };
 use crate::commands::MigrateSource;
 use crate::commands::config::import_tmux::translate;
@@ -22,19 +23,78 @@ pub(super) fn read(path: &Path, ctx: &Ctx<'_>) -> Source {
     let mut decide =
         |file: &Path, line: &str| tmux_line(file, line, &mut prefix, &mut options, ctx);
     read_tree(path, &mut files, &mut rows, &mut decide);
-    let note = (!options.contains_key("prefix")).then(|| {
-        format!(
-            "These files never set a prefix, so tmux used C-b. phux keeps its own prefix, {}: \
-             every prefix-table line below fires after it. Do not change `prefix` unless I ask.",
-            ctx.defaults.prefix
-        )
-    });
+    let chosen = ctx.prefix();
+    let used = if options.contains_key("prefix") {
+        format!("tmux's prefix was {prefix}")
+    } else {
+        "These files never set a prefix, so tmux used C-b".to_owned()
+    };
+    let row_writes_it = options.contains_key("prefix") && same_key(&prefix, chosen);
+    let note = if !row_writes_it && !same_key(chosen, &ctx.defaults.prefix) {
+        Some(format!(
+            "{used}. I chose {chosen} as my phux prefix: write `prefix = \"{chosen}\"` in \
+             `[keybindings]`. Every prefix-table line below fires after it."
+        ))
+    } else if !same_key(&prefix, chosen) {
+        Some(format!(
+            "{used}. I chose to keep phux's own prefix, {chosen}: every prefix-table line below \
+             fires after it. Do not change `prefix`."
+        ))
+    } else {
+        None
+    };
     Source {
         kind: MigrateSource::Tmux,
         files,
         rows,
         note,
+        prefix: Some(prefix),
     }
+}
+
+/// Beginner mode: an unbind of a phux default whose action the user's own
+/// config binds to a key phux already ships for it (`unbind '"'` beside
+/// `bind - split-window -v`) removes a key and gives nothing back.
+pub(super) fn redundant_unbinds(rows: &mut [Row], ctx: &Ctx<'_>) {
+    let shipped = |table: Table, key: &str| {
+        let bindings = match table {
+            Table::Prefix => &ctx.defaults.prefix_table,
+            Table::Global => &ctx.defaults.global,
+            _ => return None,
+        };
+        let sequence = parse_chord_sequence(key).ok()?;
+        bindings
+            .iter()
+            .find(|(spelling, _)| parse_chord_sequence(spelling).ok().as_ref() == Some(&sequence))
+            .map(|(_, action)| action)
+    };
+    let kept: Vec<_> = rows
+        .iter()
+        .filter(|row| row.class == Class::Binding)
+        .filter_map(|row| match &row.verdict {
+            Verdict::Default { table, key } => Some((*table, shipped(*table, key)?, key.clone())),
+            _ => None,
+        })
+        .collect();
+    for row in rows.iter_mut().filter(|row| row.class == Class::Unbinding) {
+        let Verdict::Write { table, key, .. } = &row.verdict else {
+            continue;
+        };
+        let Some(action) = shipped(*table, key) else {
+            continue;
+        };
+        if let Some((_, _, by)) = kept.iter().find(|(t, a, _)| t == table && *a == action) {
+            row.verdict = Verdict::Covered(format!(
+                "your own `{by}` does what phux's `{key}` does, and phux ships `{by}` \
+                 already; removing `{key}` loses a key and gains nothing (advanced mode \
+                 writes it)"
+            ));
+        }
+    }
+}
+
+fn same_key(a: &str, b: &str) -> bool {
+    parse_chord(a).ok() == parse_chord(b).ok()
 }
 
 fn tmux_line(
@@ -70,7 +130,7 @@ fn tmux_line(
             } else {
                 format!("loads {}, which does not exist", tilde(&include, ctx.home))
             };
-            Line::Row(Class::Other, Verdict::Skip(reason), Some(include))
+            Line::Row(Class::Other, Verdict::Covered(reason), Some(include))
         }
         "run" | "run-shell" if line.contains("tpm") => skip(
             Class::Setting,
@@ -210,6 +270,13 @@ fn tmux_set(
             return skip(Class::Setting, format!("phux cannot spell the key {value}"));
         };
         prefix.clone_from(&key);
+        let chosen = ctx.prefix();
+        if !same_key(&key, chosen) {
+            return covered(
+                Class::Setting,
+                format!("I chose {chosen} as my phux prefix, not tmux's {key}"),
+            );
+        }
         let verdict = against_default(
             ctx,
             Table::Keybindings,
@@ -219,10 +286,60 @@ fn tmux_set(
         );
         return Line::Row(Class::Setting, verdict, None);
     }
-    let reason = if name.starts_with('@') {
-        "a tmux plugin option; tmux plugins are not migrated".to_owned()
-    } else {
-        format!("the tmux option {name} is a setting; this migration moves key bindings only")
-    };
-    skip(Class::Setting, reason)
+    if name.starts_with('@') {
+        return skip(
+            Class::Setting,
+            "a tmux plugin option; tmux plugins are not migrated",
+        );
+    }
+    if let Some((table, key, setting)) = translate::setting(name, &value) {
+        let table = if table == "status" {
+            Table::Status
+        } else {
+            Table::Defaults
+        };
+        return setting.map_or_else(
+            || {
+                skip(
+                    Class::Setting,
+                    format!("phux has no equivalent for {name} {value}"),
+                )
+            },
+            |setting| {
+                Line::Row(
+                    Class::Setting,
+                    against_default(ctx, table, key.into(), setting, None),
+                    None,
+                )
+            },
+        );
+    }
+    match behavior(name, &value) {
+        Ok(reason) => covered(Class::Setting, reason),
+        Err(reason) => skip(Class::Setting, reason),
+    }
+}
+
+/// A tmux option phux has no setting for: `Ok` when phux already behaves
+/// the way it asks, `Err` when it is lost.
+fn behavior(name: &str, value: &str) -> Result<String, String> {
+    let already = |what: &str| Ok(format!("already phux's behavior: {what}"));
+    match (name, value) {
+        ("renumber-windows", "on") => already("phux tabs are positions, never numbered with gaps"),
+        ("mode-keys", "vi") => already("phux copy mode uses vi keys"),
+        ("escape-time", value) if value.parse::<u32>() == Ok(10) => {
+            already("phux uses the same fixed 10 ms wait after a bare Escape")
+        }
+        ("escape-time", value) => Err(format!(
+            "phux uses a fixed 10 ms wait after a bare Escape; escape-time {value} is not migrated"
+        )),
+        ("base-index" | "pane-base-index", "0") => already("phux numbers from 0"),
+        ("base-index" | "pane-base-index", _) => {
+            Err(format!("phux numbers from 0 and cannot start at {value}"))
+        }
+        ("status-left" | "status-right", _) => Err(
+            "phux's status bar is built from its own slots; tmux formats are not translated".into(),
+        ),
+        _ => Err(format!("the tmux option {name} is not migrated")),
+    }
 }

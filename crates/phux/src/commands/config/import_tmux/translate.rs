@@ -1,5 +1,6 @@
 //! A deliberately finite translator, not a tmux interpreter. Extra arguments,
 //! command chains, targets, formats and scripts must never disappear in a map.
+//! The one exception is a chain's trailing literal, flag-free `display` message.
 
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -9,6 +10,10 @@ use serde::Serialize;
 use toml::{Table, Value};
 
 use super::snapshot::Snapshot;
+
+mod preferences;
+pub(crate) use preferences::setting;
+use preferences::{parse_options, preferences};
 
 #[derive(Debug, Serialize)]
 pub(super) struct Entry {
@@ -106,126 +111,6 @@ pub(super) fn translate(snapshot: &Snapshot) -> Result<Plan, String> {
         ));
     }
     Ok(plan)
-}
-
-fn parse_options(input: &str) -> Result<BTreeMap<String, String>, String> {
-    input
-        .lines()
-        .filter(|line| !line.trim().is_empty())
-        .map(|line| {
-            let words =
-                shell_words::split(line).map_err(|e| format!("cannot decode tmux option: {e}"))?;
-            match words.as_slice() {
-                [key, value] => Ok((key.clone(), value.clone())),
-                // tmux represents an empty array (e.g. pane-colours) by its
-                // name alone. An explicit empty string is quoted instead.
-                [key] => Ok((key.clone(), String::new())),
-                _ => Err(format!(
-                    "cannot decode tmux option: {}",
-                    line.escape_debug()
-                )),
-            }
-        })
-        .collect()
-}
-
-fn preferences(
-    options: &BTreeMap<String, String>,
-    window: &BTreeMap<String, String>,
-    root: &mut Table,
-    plan: &mut Plan,
-) {
-    let mut defaults = Table::new();
-    for (source, target) in [
-        ("mouse", "mouse"),
-        ("default-shell", "shell"),
-        ("history-limit", "history-limit"),
-    ] {
-        let Some(value) = options.get(source) else {
-            continue;
-        };
-        let converted = default_preference(source, value);
-        if let Some(value) = converted {
-            defaults.insert(target.into(), value);
-            plan.record(source, "mapped", format!("defaults.{target}"));
-        } else {
-            plan.record(source, "unsupported", "value has no direct phux equivalent");
-        }
-    }
-    root.insert("defaults".into(), Value::Table(defaults));
-    if let Some(position) = options
-        .get("status-position")
-        .filter(|v| matches!(v.as_str(), "top" | "bottom"))
-    {
-        root.insert(
-            "status".into(),
-            Value::Table(Table::from_iter([(
-                "position".into(),
-                Value::String(position.clone()),
-            )])),
-        );
-        plan.record("status-position", "mapped", "status.position");
-    }
-    unsupported_preferences(options, window, plan);
-}
-
-fn default_preference(source: &str, value: &str) -> Option<Value> {
-    match source {
-        "mouse" => match value {
-            "on" => Some(Value::Boolean(true)),
-            "off" => Some(Value::Boolean(false)),
-            _ => None,
-        },
-        "history-limit" => value
-            .parse::<u32>()
-            .ok()
-            .map(|n| Value::Integer(i64::from(n))),
-        _ => (!value.is_empty()).then(|| Value::String(value.to_owned())),
-    }
-}
-
-fn unsupported_preferences(
-    options: &BTreeMap<String, String>,
-    window: &BTreeMap<String, String>,
-    plan: &mut Plan,
-) {
-    for key in [
-        "prefix2",
-        "base-index",
-        "default-command",
-        "status-left",
-        "status-right",
-        "status",
-        "status-style",
-    ] {
-        if let Some(value) = options.get(key)
-            && !value.is_empty()
-            && !value.eq_ignore_ascii_case("none")
-        {
-            plan.record(
-                format!("{key} {value}"),
-                "unsupported",
-                "kept phux behavior; no automatic equivalent",
-            );
-        }
-    }
-    for (key, value) in options.iter().filter(|(key, _)| key.starts_with('@')) {
-        plan.record(
-            format!("{key} {value}"),
-            "unsupported",
-            "tmux plugin/user option; plugins are not ported",
-        );
-    }
-    for key in ["mode-keys", "pane-base-index"] {
-        if let Some(value) = window.get(key) {
-            plan.record(
-                format!("{key} {value}"),
-                "unsupported",
-                "copy-mode keys and pane numbering differ in phux",
-            );
-        }
-    }
-    plan.notes.push("Other tmux options retain phux defaults. Mouse behavior, scrollback byte limits, new-pane working directories, prompts, and copy-mode navigation differ; this is not a compatibility runtime.".into());
 }
 
 #[derive(Debug)]
@@ -385,6 +270,7 @@ pub(crate) fn map_command(
     key: &str,
     prefix: &str,
 ) -> Option<(Value, Option<&'static str>)> {
+    let command = without_cosmetic_message(command);
     if let Some(mapped) = fixed_command(command) {
         return Some(mapped);
     }
@@ -409,6 +295,25 @@ pub(crate) fn map_command(
         _ => return adapted_prompt(command),
     };
     Some((value, None))
+}
+
+fn without_cosmetic_message<'a>(command: &'a [&'a str]) -> &'a [&'a str] {
+    let Some(at) = command.iter().position(|word| *word == ";") else {
+        return command;
+    };
+    let ["display" | "display-message", message] = &command[at + 1..] else {
+        return command;
+    };
+    // Flags can forward stdin (-I), select a target (-t), or print (-p).
+    // Formats can run shell commands. Only a literal message is cosmetic.
+    if message.starts_with('-')
+        || message.contains("#(")
+        || message.contains("#{")
+        || *message == ";"
+    {
+        return command;
+    }
+    &command[..at]
 }
 
 fn fixed_command(command: &[&str]) -> Option<(Value, Option<&'static str>)> {
