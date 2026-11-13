@@ -51,9 +51,11 @@ test("Rune qualifies and releases on macOS and Linux", () => {
 
 test("closing a pull request cancels its in-flight ci run", () => {
   // `closed` joins the PR's latest-wins group and then runs nothing.
+  // Anything but a push cancels, so a close still drops the in-flight run.
+  // A push leaves the running run (release-please and next need its green).
   const ci = workflow("ci.yml");
   expect(table(table(ci["on"])["pull_request"])["types"]).toContain("closed");
-  expect(table(ci["concurrency"])["cancel-in-progress"]).toBe(true);
+  expect(table(ci["concurrency"])["cancel-in-progress"]).toBe("${{ github.event_name != 'push' }}");
   for (const [id, lane] of Object.entries(jobs(ci))) {
     const gate = str(lane["if"]) ?? "";
     const reaches = needs(lane).length > 0 && !gate.includes("always()");
