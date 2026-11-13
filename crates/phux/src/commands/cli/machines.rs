@@ -102,11 +102,19 @@ pub(crate) struct PairArgs {
 
     /// Absolute expiry for the minted credential (`30d`, `24h`, `15m`,
     /// `45s`, or a bare number of seconds), from 1 second through 30
-    /// days. Omitted: the credential does not expire. The human output
-    /// always states which of those is true. Admission fails after the
-    /// instant; revocation still works.
+    /// days; any device may use it until then. Omitted: a printed link
+    /// (and a `--json --enroll` mint) is single use: unused after ten
+    /// minutes it stops working, and the device that pairs first keeps
+    /// it until it is revoked. A plain `--json` mint does not expire. The
+    /// human output always states which of those is true. Admission
+    /// fails after the instant; revocation still works.
     #[usage(long, value_name = "DURATION")]
     pub(crate) expires: Option<String>,
+
+    /// Mint a credential any device may use until it is revoked, instead
+    /// of a single-use link.
+    #[usage(long, conflicts("--expires"))]
+    pub(crate) reusable: bool,
 
     /// Do not render the QR a terminal mint prints beneath the connect
     /// link by default. The link is still printed as text.
@@ -156,11 +164,17 @@ pub(crate) struct PairArgs {
     /// Also mint a single-use enrollment ticket into the link, so a
     /// device without ssh (a phone) enrolls a workload certificate for a
     /// key it generates and keeps. Needed to reach a server in `paired`
-    /// policy mode. A QR shown on a terminal implies this, including
-    /// through a relay. The ticket expires in ten minutes. With
+    /// policy mode. Every link a terminal mint prints, QR or not,
+    /// implies this, including through a relay; `--json` needs it
+    /// spelled out. The ticket expires in ten minutes. With
     /// `--relay-route` the device enrolls end to end through the relay.
     #[usage(long)]
     pub(crate) enroll: bool,
+
+    /// Leave the enrollment ticket out of the link, for a device that is
+    /// already enrolled.
+    #[usage(long, conflicts("--enroll"))]
+    pub(crate) no_enroll: bool,
 
     /// When no remote listener is bound because `[policy] mode` is unset,
     /// write `mode = "paired"` and restart the server (`phux upgrade`,

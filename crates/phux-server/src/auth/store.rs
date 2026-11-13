@@ -79,6 +79,7 @@ impl TokenStore {
             let verifier = decode_verifier(&record.verifier).ok();
             let active = record.revoked_at.is_none()
                 && record.expires_at.is_none_or(|expiry| now < expiry)
+                && record.first_use_by.is_none_or(|deadline| now < deadline)
                 && record.issued_at <= now;
             let is_match = verifier
                 .as_ref()
@@ -119,6 +120,9 @@ impl TokenStore {
         };
         if record.revoked_at.is_some() {
             return Standing::Revoked;
+        }
+        if record.first_use_by.is_some_and(|deadline| now >= deadline) {
+            return Standing::Expired;
         }
         match record.expires_at {
             Some(expiry) if now >= expiry => Standing::Expired,

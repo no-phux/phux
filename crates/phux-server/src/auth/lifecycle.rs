@@ -49,6 +49,7 @@ pub(super) fn mint_credential_unlocked(
         revoked_at: None,
         generation: 1,
         last_seen: None,
+        first_use_by: None,
     });
     let commit = atomic_write(path, &file)?;
     Ok(MintedCredential {
@@ -88,7 +89,8 @@ pub(super) fn rotate_credential_at(
     if latest.revoked_at.is_some() {
         return Err(AuthError::CredentialRevoked(id.to_owned()));
     }
-    if latest.expires_at.is_some_and(|expiry| now >= expiry) {
+    let lapsed = |at: Option<DateTime<Utc>>| at.is_some_and(|at| now >= at);
+    if lapsed(latest.expires_at) || lapsed(latest.first_use_by) {
         return Err(AuthError::CredentialExpired(id.to_owned()));
     }
     let overlap_until = now + overlap.max(Duration::zero());
@@ -114,6 +116,7 @@ pub(super) fn rotate_credential_at(
         revoked_at: None,
         generation,
         last_seen: None,
+        first_use_by: latest.first_use_by,
     });
     let commit = atomic_write_with_fault(path, &file, fault)?;
     Ok(MintedCredential {
@@ -128,12 +131,14 @@ pub(super) fn rotate_credential_at(
 ///
 /// `replacing` revokes any live credential whose bearer matches that hex
 /// secret in the same rewrite. `expires_at` bounds later admission; `None`
-/// leaves the credential valid until it is revoked. The bearer is returned
-/// once and stored only as a verifier.
+/// leaves the credential valid until it is revoked. `first_use_by` makes it a
+/// single-use link: unused by then it expires, and the first admission lifts
+/// the deadline. The bearer is returned once and stored only as a verifier.
 pub fn mint_terminal_credential(
     path: &Path,
     replacing: Option<&str>,
     expires_at: Option<DateTime<Utc>>,
+    first_use_by: Option<DateTime<Utc>>,
 ) -> Result<MintedCredential, AuthError> {
     with_store_lock(path, || {
         let previous = replacing.map(decode_secret).transpose()?;
@@ -159,6 +164,7 @@ pub fn mint_terminal_credential(
             revoked_at: None,
             generation: 1,
             last_seen: None,
+            first_use_by,
         });
         let commit = atomic_write(path, &file)?;
         Ok(MintedCredential {
@@ -229,6 +235,8 @@ fn summarize_credentials(file: &CredentialFile) -> Vec<CredentialSummary> {
                 last_seen: record.last_seen,
                 revoked: record.revoked_at.is_some(),
                 generation: record.generation,
+                expires_at: record.expires_at,
+                first_use_by: record.first_use_by,
             });
         if record.issued_at < entry.issued_at {
             entry.issued_at = record.issued_at;
@@ -240,7 +248,11 @@ fn summarize_credentials(file: &CredentialFile) -> Vec<CredentialSummary> {
             (None, None) => None,
         };
         entry.revoked &= record.revoked_at.is_some();
-        entry.generation = entry.generation.max(record.generation);
+        if record.generation > entry.generation {
+            entry.generation = record.generation;
+            entry.expires_at = record.expires_at;
+        }
+        entry.first_use_by = entry.first_use_by.or(record.first_use_by);
     }
     by_id.into_values().collect()
 }
@@ -282,6 +294,12 @@ fn record_credential_seen_unlocked(
     else {
         return Ok(());
     };
+    // The first admission claims a single-use link: its deadline goes, on
+    // every generation, and is written whatever the throttle says.
+    let mut claimed = false;
+    for record in file.credentials.iter_mut().filter(|record| record.id == id) {
+        claimed |= record.first_use_by.take().is_some();
+    }
     let Some(record) = file
         .credentials
         .iter_mut()
@@ -289,9 +307,10 @@ fn record_credential_seen_unlocked(
     else {
         return Ok(());
     };
-    if record
-        .last_seen
-        .is_some_and(|seen| now - seen < Duration::seconds(60))
+    if !claimed
+        && record
+            .last_seen
+            .is_some_and(|seen| now - seen < Duration::seconds(60))
     {
         return Ok(());
     }
