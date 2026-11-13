@@ -334,3 +334,29 @@ fn active_policy_follows_the_view_last_used() {
         "other policies ignore use"
     );
 }
+
+/// `active`: a phone that returns to the foreground announces its viewport
+/// again, and that alone takes the pane back; the desktop regains it on use.
+#[test]
+fn active_policy_counts_a_returning_view_as_used() {
+    use phux_config::WindowSize;
+    let state = SharedState::new();
+    let (_, pane) = state.with_mut(|s| s.seed_session("home"));
+    let mut receiver = register_stub(&state, pane);
+    state.with_mut(|s| s.set_window_size(WindowSize::Active));
+    let desk = attach_client(&state, "home");
+    let phone = attach_client(&state, "home");
+    handle_viewport_resize(&state, desk, &ViewportInfo::new(160, 48));
+    handle_viewport_resize(&state, phone, &ViewportInfo::new(44, 30));
+    // The phone locks; the desktop is used meanwhile.
+    handle_client_activity(&state, desk);
+    while receiver.resize.try_recv().is_ok() {}
+    let dims = || state.with(|s| s.registry().terminal(pane).unwrap().dims);
+    assert_eq!(dims(), (160, 48));
+
+    // The phone resumes: the same viewport again, and no input.
+    handle_viewport_resize(&state, phone, &ViewportInfo::new(44, 30));
+    assert_eq!(dims(), (44, 30), "the returning phone");
+    handle_client_activity(&state, desk);
+    assert_eq!(dims(), (160, 48), "the desktop, used again");
+}
