@@ -282,6 +282,19 @@ fn picker(desk: &Desk, all: &[(ResourceId, Rect)], focus: &ResourceId, ink: &Ink
     }
     list = list.child(
         picker_button(
+            "phone-picker-actions",
+            "Terminal actions",
+            "Terminal actions…",
+            ink,
+            |d| {
+                d.close_phone_picker();
+                d.open_phone_actions();
+            },
+        )
+        .w_full(),
+    );
+    list = list.child(
+        picker_button(
             "phone-picker-close",
             "Close pane picker",
             "Done",

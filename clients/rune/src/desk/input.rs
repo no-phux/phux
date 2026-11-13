@@ -54,6 +54,7 @@ impl Desk {
             (self.changes.open, Modal::Changes),
             (self.settings_open, Modal::Settings),
             (self.tabs.renaming.is_some(), Modal::Rename),
+            (self.phone_page().is_some(), Modal::PhoneNavigation),
             (self.palette_open, Modal::Palette),
             // A question outranks the field: the bar says what its keys do.
             (self.pending.is_some(), Modal::Confirm),
@@ -109,6 +110,10 @@ impl Desk {
         tx: &mut Tx,
     ) {
         let escape = event.key == rune::Key::Escape;
+        if modal == Modal::PhoneNavigation {
+            self.phone_navigation_key(event);
+            return;
+        }
         match modal {
             Modal::ContextMenu if escape => self.close_menu(),
             Modal::Rename if escape => self.cancel_rename(),
@@ -281,7 +286,7 @@ impl Desk {
             Shortcut::Hive => self.toggle_hive(),
             Shortcut::Settings => self.toggle_settings(),
             Shortcut::ChangeTheme => self.open_themes(),
-            Shortcut::SwitchSession => self.open_palette(crate::palette::Mode::Sessions),
+            Shortcut::SwitchSession => self.switch_sessions(),
             Shortcut::InsertPath => self.open_paths(),
             Shortcut::CheckForUpdates => self.updater.check_now(),
             Shortcut::InstallUpdate => self.install_update(tx),

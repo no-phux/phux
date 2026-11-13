@@ -7,6 +7,7 @@ use rune::{Runtime, TouchPhase};
 
 use super::*;
 
+mod navigation;
 mod settings;
 mod sheets;
 

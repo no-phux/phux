@@ -12,6 +12,7 @@ pub(super) enum Field {
     Rename,
     Inbox,
     Machine,
+    PhoneSessions,
     Question {
         terminal: ResourceId,
         question: String,
@@ -29,6 +30,12 @@ pub(super) enum Target {
 
 impl Field {
     pub(super) fn resolve(d: &Desk, key: &str) -> Option<(Self, String)> {
+        if key == "phone-session-query"
+            && d.modal() == Some(Modal::PhoneNavigation)
+            && d.phone_page() == Some(super::super::phone::navigation::Page::Sessions)
+        {
+            return Some((Self::PhoneSessions, "phone-sessions".into()));
+        }
         let found = match (key, d.modal()) {
             ("palette-query", Some(Modal::Palette)) => {
                 (Self::Palette, format!("{:?}", d.palette_mode))
@@ -103,6 +110,7 @@ impl Field {
             Self::Rename => &d.tabs.rename_field,
             Self::Inbox => &d.inbox.reply,
             Self::Machine => &d.machines.field,
+            Self::PhoneSessions => &d.phone.as_ref()?.query,
             Self::Question {
                 question, field, ..
             } => d.inbox.questions.drafts.get(question)?.texts.get(field)?,
@@ -117,6 +125,7 @@ impl Field {
             Self::Rename => &mut d.tabs.rename_field,
             Self::Inbox => &mut d.inbox.reply,
             Self::Machine => &mut d.machines.field,
+            Self::PhoneSessions => &mut d.phone.as_mut()?.query,
             Self::Question {
                 question, field, ..
             } => d
@@ -148,21 +157,29 @@ impl Field {
     }
 
     pub(super) fn key(&self, d: &mut Desk, event: &KeyEvent, tx: &mut Tx) {
-        let taken = match self {
+        if self.navigation_key(d, event, tx) {
+            return;
+        }
+        if event.key == Key::Enter && !self.multiline() {
+            return self.submit(d, tx);
+        }
+        self.edit_key(d, event, tx);
+    }
+
+    fn navigation_key(&self, d: &mut Desk, event: &KeyEvent, tx: &mut Tx) -> bool {
+        match self {
             Self::Palette => d.palette_key(event, tx),
             Self::Find => d.find_key(event, tx),
             Self::Settings => d.settings_field_key(event, tx),
             Self::Rename => d.rename_key(event, tx),
             Self::Inbox => d.inbox_key(event, tx),
             Self::Machine => d.machines_key(event, tx),
+            Self::PhoneSessions => d.phone_navigation_key(event),
             Self::Question { .. } => false,
-        };
-        if taken {
-            return;
         }
-        if event.key == Key::Enter && !self.multiline() {
-            return self.submit(d, tx);
-        }
+    }
+
+    fn edit_key(&self, d: &mut Desk, event: &KeyEvent, tx: &mut Tx) {
         if let Some(edit) = self.edit_mut(d) {
             let before = edit.text.clone();
             let outcome = edit.key(event, None);
@@ -184,6 +201,7 @@ impl Field {
             Self::Palette => d.palette_run(None, tx),
             Self::Rename => d.submit_rename(tx),
             Self::Machine => d.add_typed_machine(),
+            Self::PhoneSessions => d.blur_phone_search(tx),
             Self::Question {
                 terminal, question, ..
             } => d.answer_question(terminal, question, None),
@@ -245,6 +263,11 @@ fn control(d: &Desk, connection: &str) -> Option<Target> {
     let owner = match d.modal()? {
         Modal::Confirm => format!("confirm:{:?}", d.pending),
         Modal::PhonePicker => "picker".into(),
+        Modal::PhoneNavigation
+            if d.phone_page() == Some(super::super::phone::navigation::Page::Actions) =>
+        {
+            "phone-actions".into()
+        }
         _ => return None,
     };
     Some(Target::Control(format!("{connection}:{owner}")))
