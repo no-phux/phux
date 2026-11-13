@@ -143,6 +143,31 @@ fn both_units_restart_only_on_failure_and_throttle() {
 }
 
 #[test]
+fn a_tailnet_listen_address_orders_the_unit_after_the_overlay_daemon() {
+    const ORDERING: &str = "After=tailscaled.service\nWants=tailscaled.service\n";
+    // The fixture binds 0.0.0.0: no overlay ordering.
+    assert!(!render_systemd_unit(&plan()).contains("tailscaled"));
+    for (quic, listen) in [
+        (Some("100.94.129.125:8788"), None),
+        (None, Some("[fd7a:115c:a1e0::1]:8787")),
+    ] {
+        let mut plan = plan();
+        plan.quic = quic.map(str::to_owned);
+        plan.listen = listen.map(str::to_owned);
+        let unit = render_systemd_unit(&plan);
+        let unit_section = unit.split("[Service]").next().unwrap_or_default();
+        assert!(unit_section.contains(ORDERING), "{unit}");
+        assert!(!unit.contains("Requires="), "{unit}");
+        // A rerun renders the same bytes.
+        assert_eq!(unit, render_systemd_unit(&plan));
+    }
+    let mut outside = plan();
+    outside.quic = Some("100.128.0.1:8788".to_owned());
+    outside.listen = Some("[fd7a:115c:a1e1::1]:8787".to_owned());
+    assert!(!render_systemd_unit(&outside).contains("tailscaled"));
+}
+
+#[test]
 fn omitted_listeners_emit_no_environment_key() {
     let mut plan = plan();
     plan.quic = None;

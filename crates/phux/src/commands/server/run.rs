@@ -238,7 +238,9 @@ fn listener_summary(
         };
         let addr = slot.addr.as_deref().unwrap_or("?");
         let _ = write!(extra, " + {scheme}{addr}");
-        if !slot.bound {
+        if let Some(error) = &slot.waiting {
+            let _ = write!(extra, " (waiting to bind: {error})");
+        } else if !slot.bound {
             let reason = slot.disabled_reason.map_or(
                 "unknown",
                 phux_protocol::wire::ListenerDisabledReason::as_str,

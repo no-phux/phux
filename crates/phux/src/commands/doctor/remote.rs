@@ -116,20 +116,20 @@ pub(super) fn remote_listeners_check(
     let detail = unhealthy
         .iter()
         .map(|slot| {
-            let reason = slot.disabled_reason.map_or(
-                "unknown",
-                phux_protocol::wire::ListenerDisabledReason::as_str,
-            );
             let addr = slot.addr.as_deref().unwrap_or("?");
-            format!("{} at {addr} disabled ({reason})", slot.transport)
+            format!("{} at {addr} {}", slot.transport, slot.unbound_label())
         })
         .collect::<Vec<_>>()
         .join("; ");
-    Check::fail(
-        "remote-listeners",
-        format!("remote surface down: {detail}"),
-        remote_listeners_hint(&unhealthy, token_store_ok),
-    )
+    let headline = format!("remote surface down: {detail}");
+    let hint = remote_listeners_hint(&unhealthy, token_store_ok);
+    // A listener still retrying its bind heals by itself; only a given-up
+    // one needs the operator.
+    if unhealthy.iter().all(|slot| slot.waiting.is_some()) {
+        Check::warn("remote-listeners", headline, hint)
+    } else {
+        Check::fail("remote-listeners", headline, hint)
+    }
 }
 
 /// The remedy for the listeners `unhealthy` names, most specific cause first.
@@ -157,6 +157,11 @@ pub(super) fn remote_listeners_hint(
             "fix the credential store (remove a pre-versioned file and pair again), \
              then restart or `phux upgrade` the server"
         };
+    }
+    if unhealthy.iter().any(|slot| slot.waiting.is_some()) {
+        return "the server retries the bind by itself and listens as soon as it succeeds: \
+                bring up the network or overlay that owns the address (or free the port); \
+                no restart is needed";
     }
     "check the server log for the bind error, then restart or `phux upgrade` after fixing it"
 }

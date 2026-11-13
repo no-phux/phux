@@ -108,6 +108,15 @@ fn cgnat_range_boundaries() {
 }
 
 #[test]
+fn tailnet_ranges_cover_both_families() {
+    assert!(is_tailnet(ip("100.94.129.125")));
+    assert!(is_tailnet(ip("fd7a:115c:a1e0:ab12::1")));
+    assert!(!is_tailnet(ip("fd7a:115c:a1e1::1")));
+    assert!(!is_tailnet(ip("100.128.0.0")));
+    assert!(!is_tailnet(ip("0.0.0.0")));
+}
+
+#[test]
 fn tailscale_output_wins_without_consulting_the_probe() {
     let addrs = detect_with(
         || Some("100.99.98.97\n".to_owned()),

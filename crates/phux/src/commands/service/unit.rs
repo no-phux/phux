@@ -75,6 +75,16 @@ impl ServicePlan {
         env
     }
 
+    /// Whether a listener binds a tailnet address, which exists only once
+    /// the overlay daemon is up.
+    pub(super) fn listens_on_tailnet(&self) -> bool {
+        [&self.quic, &self.listen]
+            .into_iter()
+            .flatten()
+            .filter_map(|addr| addr.parse::<std::net::SocketAddr>().ok())
+            .any(|addr| phux_config::overlay::is_tailnet(addr.ip()))
+    }
+
     /// The argv the unit executes: the server directly, or `sh` on the
     /// generated wrapper when `--restore` brackets it with save/restore.
     pub(super) fn program_arguments(&self) -> Vec<String> {
@@ -209,6 +219,13 @@ pub(crate) fn render_systemd_unit(plan: &ServicePlan) -> String {
     out.push_str("Description=phux terminal control plane server\n");
     out.push_str("Documentation=https://github.com/no-phux/phux\n");
     out.push_str("After=network-online.target\n");
+    // A tailnet address appears only once the overlay daemon is up. `Wants`,
+    // not `Requires`: the server still serves its socket without it, and
+    // retries the bind until the address exists. A user manager does not see
+    // system units, so there the retry is what brings the listener back.
+    if plan.listens_on_tailnet() {
+        out.push_str("After=tailscaled.service\nWants=tailscaled.service\n");
+    }
     for line in systemd_unit_policy_lines() {
         let _ = writeln!(out, "{line}");
     }
