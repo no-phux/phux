@@ -168,6 +168,7 @@ pub(crate) fn write_test_credential(path: &Path, secret: &[u8; TOKEN_LEN]) {
             revoked_at: None,
             generation: 1,
             last_seen: None,
+            first_use_by: None,
         }],
     };
     atomic_write(path, &file).unwrap();

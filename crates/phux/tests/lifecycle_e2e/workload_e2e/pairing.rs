@@ -183,6 +183,10 @@ fn a_connect_code_with_a_ticket_enrolls_once_and_reaches_a_paired_server() {
     let field = |name: &str| paired[name].as_str().unwrap_or_default().to_owned();
     let ticket = field("enrollment_ticket");
     assert_eq!(ticket.len(), 64, "{paired}");
+    // A phone's link is single use (#2398): it lapses unused, and the
+    // first admission below lifts that.
+    assert_eq!(paired["single_use"], true, "{paired}");
+    assert!(paired["link_expires_at"].is_string(), "{paired}");
     let quic = field("quic_addr");
     // A loopback listener gets no device link, so build the one a device
     // would scan, from the same document.
@@ -231,6 +235,10 @@ fn a_connect_code_with_a_ticket_enrolls_once_and_reaches_a_paired_server() {
         whoami["credential_id"], listed["credentials"][0]["credential_id"],
         "{whoami}"
     );
+    let bearers = json_doc(&phux(dir.path(), &["pair", "ls", "--json"]));
+    let bearer = &bearers["credentials"][0];
+    assert_eq!(bearer["status"], "active", "the paired device claimed it: {bearers}");
+    assert!(bearer["link_expires_at"].is_null(), "{bearers}");
 
     let second = attach("mini2");
     assert!(

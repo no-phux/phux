@@ -26,6 +26,8 @@ pub(crate) use phux_client_runtime::pairing::{ConnectLink, parse_connect_link};
 mod endpoint_tests;
 #[cfg(test)]
 mod link_tests;
+mod manage;
+use manage::{parse_expires, run_credential_action};
 use phux_config::overlay::MagicDns;
 
 use usage::Subcommands;
@@ -34,7 +36,8 @@ const DEFAULT_ROTATION_OVERLAP_SECONDS: i64 = 300;
 
 #[derive(Debug, Subcommands)]
 pub(crate) enum PairAction {
-    /// List credentials in the store (id, minted, last seen, revoked).
+    /// List credentials in the store (id, minted, last seen, status:
+    /// unused, active, expired, or revoked, with when it stops working).
     Ls,
     /// Revoke credentials unused for at least DURATION.
     Prune {
@@ -823,6 +826,7 @@ pub(crate) fn run_pair(
     replace_token: Option<String>,
     door: Door,
     enable: bool,
+    lifetime: Lifetime,
 ) -> ExitCode {
     let tokens = tokens
         .or_else(|| std::env::var_os("PHUX_WS_TOKENS").map(PathBuf::from))
@@ -858,6 +862,7 @@ pub(crate) fn run_pair(
     }
     let socket = socket.unwrap_or_else(phux_server::runtime::default_socket_path);
     let expires_at = expires_for.map(|duration| chrono::Utc::now() + duration);
+    let first_use_by = lifetime.first_use_by(expires_at.is_some(), json, &door);
     let output = LinkOutput {
         name: name.as_deref(),
         qr,
@@ -869,6 +874,8 @@ pub(crate) fn run_pair(
         secret_file: secret_file.as_deref(),
         expires_at,
         expires_label: expires.as_deref(),
+        first_use_by,
+        no_enroll: lifetime.no_enroll,
     };
     let enroll = match door {
         Door::Listener { enroll } => enroll,
@@ -915,7 +922,7 @@ pub(crate) fn run_pair(
     }
 
     let Some((minted, ticket)) =
-        mint_pairing_bundle(&tokens, replace_token.as_deref(), expires_at, enroll)
+        mint_pairing_bundle(&tokens, replace_token.as_deref(), output, enroll)
     else {
         return ExitCode::FAILURE;
     };
@@ -987,7 +994,7 @@ fn present_listener_credential(
             minted.generation,
             expires_text.as_deref(),
         );
-        add_pins_to_document(&mut document, authority.as_deref(), ticket);
+        add_pins_to_document(&mut document, authority.as_deref(), ticket, output);
         return crate::output::json(&document);
     }
 
@@ -998,6 +1005,7 @@ fn present_listener_credential(
         link: link.as_deref(),
         expires_at: output.expires_at,
         expires_label: output.expires_label,
+        first_use_by: output.first_use_by,
         qr: output.qr,
         default_qr: output.default_qr,
         secret_file: output.secret_file,
@@ -1037,10 +1045,43 @@ pub(crate) enum Door {
     },
 }
 
-/// Any QR actually shown to a phone must let it enroll; without a link the
-/// implicit QR is skipped. Piped, JSON and secret-file mints remain opt-in.
+/// A server with a remote listener is in `paired` mode and admits only
+/// enrolled devices, so every link a human mint prints, QR or not, lets a
+/// phone enroll (#2397). `--json` enrolls only on `--enroll`; `--no-enroll`
+/// opts out of all of it.
 const fn phone_enrollment_requested(enroll: bool, output: LinkOutput<'_>, has_link: bool) -> bool {
-    enroll || output.qr || (output.default_qr && has_link)
+    !output.no_enroll && (enroll || output.qr || (!output.json && has_link))
+}
+
+/// A single-use link's window, the enrollment ticket's (#2398).
+const LINK_SECONDS: i64 = phux_server::workload::tickets::DEFAULT_TICKET_SECONDS;
+
+/// `--reusable` and `--no-enroll`: what a mint leaves out of its link.
+#[derive(Debug, Clone, Copy, Default)]
+pub(crate) struct Lifetime {
+    /// Mint the bearer valid until revoked (or `--expires`).
+    pub(crate) reusable: bool,
+    /// Leave the phone enrollment ticket out.
+    pub(crate) no_enroll: bool,
+}
+
+impl Lifetime {
+    /// A printed link, or any mint meant for a phone, is single use (#2398);
+    /// `--expires`, `--reusable`, and a plain `--json` mint (`phux host add`)
+    /// keep a bearer any holder may use.
+    fn first_use_by(
+        self,
+        expires: bool,
+        json: bool,
+        door: &Door,
+    ) -> Option<chrono::DateTime<chrono::Utc>> {
+        let enroll = matches!(
+            door,
+            Door::Listener { enroll: true } | Door::Relay { enroll: true, .. }
+        );
+        (!self.reusable && !expires && (!json || enroll))
+            .then(|| chrono::Utc::now() + chrono::Duration::seconds(LINK_SECONDS))
+    }
 }
 
 /// Why phone enrollment refuses a server certificate no workload CA issued.
@@ -1048,22 +1089,28 @@ const ENROLL_NEEDS_AUTHORITY: &str = "phone enrollment needs a server certificat
      workload CA, but this certificate predates the CA or was supplied separately; nothing was \
      minted. `phux workload authority --rotate` then `phux upgrade` repairs an auto-provisioned \
      legacy certificate, but rotates the CA: every paired device must re-pair and every workload \
-     credential must re-enroll. Operator-supplied certificates must be replaced by their owner";
+     credential must re-enroll. Operator-supplied certificates must be replaced by their owner. \
+     `--no-enroll` mints a link for a device that is already enrolled";
 
 const ENROLL_NEEDS_QUIC: &str = "phone pairing needs a device-dialable QUIC listener to enroll \
      its certificate; none was minted. Bind one with `phux server --quic ADDR` (or use the \
      overlay auto-listener), then retry. A loopback or wildcard bind without an overlay \
-     address cannot be advertised to a phone";
+     address cannot be advertised to a phone. `--no-enroll` mints a link for a device that is \
+     already enrolled";
 
 /// The fields a mint document gained after its first schema: the CA pin
-/// (ADR-0153) and an enrollment ticket (ADR-0154). Additive: `phux host add`
-/// reads them, and older readers ignore them.
+/// (ADR-0153), an enrollment ticket (ADR-0154), and the single-use link
+/// deadline (#2398). Additive: `phux host add` reads them, and older readers
+/// ignore them.
 fn add_pins_to_document(
     document: &mut serde_json::Value,
     authority: Option<&str>,
     ticket: Option<&phux_server::workload::tickets::MintedTicket>,
+    output: LinkOutput<'_>,
 ) {
     document["ca_fingerprint"] = serde_json::json!(authority);
+    document["single_use"] = serde_json::json!(output.first_use_by.is_some());
+    document["link_expires_at"] = serde_json::json!(output.first_use_by.map(format_rfc3339));
     if let Some(ticket) = ticket {
         document["enrollment_ticket"] = serde_json::json!(ticket.secret_hex);
         document["enrollment_ticket_id"] = serde_json::json!(ticket.id);
@@ -1083,6 +1130,10 @@ pub(crate) struct RelayRoute {
 
 /// How a mint presents its link.
 #[derive(Debug, Clone, Copy)]
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "one independent CLI flag per bool"
+)]
 struct LinkOutput<'a> {
     /// The label the link carries.
     name: Option<&'a str>,
@@ -1098,6 +1149,10 @@ struct LinkOutput<'a> {
     expires_at: Option<chrono::DateTime<chrono::Utc>>,
     /// The duration the operator typed (`15m`), for the expiry line.
     expires_label: Option<&'a str>,
+    /// Single-use link: unused by then, the bearer stops working.
+    first_use_by: Option<chrono::DateTime<chrono::Utc>>,
+    /// `--no-enroll`.
+    no_enroll: bool,
 }
 
 /// Mint a credential that reaches this server through a relay route, and
@@ -1143,9 +1198,7 @@ fn mint_relay_link(
         );
         return ExitCode::FAILURE;
     };
-    let Some((minted, ticket)) =
-        mint_pairing_bundle(tokens, replace_token, output.expires_at, enroll)
-    else {
+    let Some((minted, ticket)) = mint_pairing_bundle(tokens, replace_token, output, enroll) else {
         return ExitCode::FAILURE;
     };
     let token = minted.secret().to_owned();
@@ -1177,7 +1230,7 @@ fn mint_relay_link(
             "endpoint": connector.relay,
             "route": relay.route,
         });
-        add_pins_to_document(&mut doc, Some(authority.as_str()), ticket.as_ref());
+        add_pins_to_document(&mut doc, Some(authority.as_str()), ticket.as_ref(), output);
         return crate::output::json(&doc);
     }
     if !hide_bearer {
@@ -1205,6 +1258,7 @@ fn mint_relay_link(
         link: Some(&link),
         expires_at: output.expires_at,
         expires_label: output.expires_label,
+        first_use_by: output.first_use_by,
         qr: output.qr,
         default_qr: output.default_qr,
         secret_file: output.secret_file,
@@ -1418,7 +1472,7 @@ fn provision_pairing_certificate(certificate: &CertificatePaths, advertised: &[S
 fn mint_pairing_bundle(
     tokens: &Path,
     replace_token: Option<&str>,
-    expires_at: Option<chrono::DateTime<chrono::Utc>>,
+    output: LinkOutput<'_>,
     enroll: bool,
 ) -> Option<(
     phux_server::auth::MintedCredential,
@@ -1430,7 +1484,7 @@ fn mint_pairing_bundle(
     } else {
         None
     };
-    let Some(credential) = mint_pairing_credential(tokens, replace_token, expires_at) else {
+    let Some(credential) = mint_pairing_credential(tokens, replace_token, output) else {
         if let Some(ticket) = ticket.as_ref() {
             let path = tickets::tickets_path(&WorkloadPaths::from_env().registry);
             if let Err(err) = tickets::revoke_ticket(&path, &ticket.id) {
@@ -1448,12 +1502,13 @@ fn mint_pairing_bundle(
 fn mint_pairing_credential(
     tokens: &std::path::Path,
     replace_token: Option<&str>,
-    expires_at: Option<chrono::DateTime<chrono::Utc>>,
+    output: LinkOutput<'_>,
 ) -> Option<phux_server::auth::MintedCredential> {
-    let minted = if replace_token.is_none() && expires_at.is_none() {
+    let (expires_at, first_use_by) = (output.expires_at, output.first_use_by);
+    let minted = if replace_token.is_none() && expires_at.is_none() && first_use_by.is_none() {
         phux_server::auth::mint_token(tokens)
     } else {
-        phux_server::auth::mint_terminal_credential(tokens, replace_token, expires_at)
+        phux_server::auth::mint_terminal_credential(tokens, replace_token, expires_at, first_use_by)
     };
     let minted = match minted {
         Ok(minted) => minted,
@@ -1644,6 +1699,7 @@ struct HumanSecret<'a> {
     link: Option<&'a str>,
     expires_at: Option<chrono::DateTime<chrono::Utc>>,
     expires_label: Option<&'a str>,
+    first_use_by: Option<chrono::DateTime<chrono::Utc>>,
     qr: bool,
     /// Render the QR beneath the text link (never with `hide_bearer`).
     default_qr: bool,
@@ -1652,12 +1708,7 @@ struct HumanSecret<'a> {
 }
 
 fn present_human_secret(secret: &HumanSecret<'_>) -> ExitCode {
-    print_expiry_banner(
-        secret.credential_id,
-        secret.expires_at,
-        secret.expires_label,
-        secret.hide_bearer,
-    );
+    print_expiry_banner(secret);
     if secret.hide_bearer {
         outln!(
             "Credential ID (not the token; revoke with `phux pair revoke {}`):",
@@ -1720,22 +1771,13 @@ fn present_human_secret(secret: &HumanSecret<'_>) -> ExitCode {
     ExitCode::SUCCESS
 }
 
-fn print_expiry_banner(
-    credential_id: &str,
-    expires_at: Option<chrono::DateTime<chrono::Utc>>,
-    expires_label: Option<&str>,
-    loud: bool,
-) {
-    let line = match (expires_at.map(format_rfc3339), expires_label) {
-        (Some(stamp), Some(label)) => format!("EXPIRES {stamp} ({label} from mint)"),
-        (Some(stamp), None) => format!("EXPIRES {stamp}"),
-        (None, _) => format!("EXPIRES NEVER — valid until `phux pair revoke {credential_id}`"),
-    };
-    if loud {
+fn print_expiry_banner(secret: &HumanSecret<'_>) {
+    let line = expiry_line(secret);
+    if secret.hide_bearer {
         outln!("================================================================");
         outln!("PAIRING — the bearer is not printed on this screen.");
         outln!("{line}");
-        if expires_at.is_none() {
+        if secret.expires_at.is_none() && secret.first_use_by.is_none() {
             outln!("Do not film a credential that does not expire.");
         }
         outln!("================================================================");
@@ -1744,6 +1786,25 @@ fn print_expiry_banner(
     }
     outln!("{line}");
     outln!();
+}
+
+/// When the credential stops working, in words (#2398).
+fn expiry_line(secret: &HumanSecret<'_>) -> String {
+    let id = secret.credential_id;
+    if let Some(deadline) = secret.first_use_by {
+        let minutes = LINK_SECONDS / 60;
+        return format!(
+            "SINGLE USE — EXPIRES {} ({minutes} minutes) unless a device pairs with it first.\n\
+             The device that pairs keeps working until `phux pair revoke {id}`.\n\
+             (`--reusable` or `--expires DURATION` mints a link any device can use.)",
+            format_rfc3339(deadline)
+        );
+    }
+    match (secret.expires_at.map(format_rfc3339), secret.expires_label) {
+        (Some(stamp), Some(label)) => format!("EXPIRES {stamp} ({label} from mint)"),
+        (Some(stamp), None) => format!("EXPIRES {stamp}"),
+        (None, _) => format!("EXPIRES NEVER — valid until `phux pair revoke {id}`"),
+    }
 }
 
 fn secret_file_body(secret: &HumanSecret<'_>) -> String {
@@ -1760,6 +1821,9 @@ fn secret_file_body(secret: &HumanSecret<'_>) -> String {
          token={}\n",
         secret.credential_id, secret.token
     );
+    if let Some(deadline) = secret.first_use_by {
+        let _ = writeln!(body, "link_expires_at={}", format_rfc3339(deadline));
+    }
     if let Some(link) = secret.link {
         let _ = writeln!(body, "connect_link={link}");
         if let Some(legacy) = legacy_connect_link(link) {
@@ -1874,240 +1938,6 @@ fn qr_scale_that_fits(payload: &str, columns: u16) -> u32 {
         }
     }
     1
-}
-
-fn run_credential_action(tokens: &std::path::Path, action: PairAction, json: bool) -> ExitCode {
-    match action {
-        PairAction::Ls => run_pair_ls(tokens, json),
-        PairAction::Prune { unused_for } => run_pair_prune(tokens, &unused_for, json),
-        PairAction::Rotate {
-            credential_id,
-            overlap_seconds,
-        } => run_pair_rotate(tokens, &credential_id, overlap_seconds, json),
-        PairAction::Revoke { credential_id } => run_pair_revoke(tokens, &credential_id, json),
-    }
-}
-
-fn run_pair_ls(tokens: &std::path::Path, json: bool) -> ExitCode {
-    let rows = match phux_server::auth::list_credentials(tokens) {
-        Ok(rows) => rows,
-        Err(error) => {
-            error!("pair ls: {error}");
-            return ExitCode::FAILURE;
-        }
-    };
-    if json {
-        let credentials: Vec<serde_json::Value> = rows
-            .iter()
-            .map(|row| {
-                serde_json::json!({
-                    "id": row.id,
-                    "issued_at": row.issued_at.to_rfc3339(),
-                    "last_seen": row.last_seen.map(|t| t.to_rfc3339()),
-                    "revoked": row.revoked,
-                    "generation": row.generation,
-                })
-            })
-            .collect();
-        return crate::output::json(&serde_json::json!({
-            "schema_version": 1,
-            "operation": "ls",
-            "tokens_path": tokens.display().to_string(),
-            "credentials": credentials,
-        }));
-    }
-    if rows.is_empty() {
-        outln!("No credentials in {}.", tokens.display());
-        return ExitCode::SUCCESS;
-    }
-    outln!(
-        "{:<36}  {:<20}  {:<20}  {}",
-        "ID",
-        "MINTED",
-        "LAST SEEN",
-        "STATUS"
-    );
-    for row in rows {
-        let minted = row.issued_at.format("%Y-%m-%d %H:%M:%S").to_string();
-        let seen = row.last_seen.map_or_else(
-            || "never".to_owned(),
-            |t| t.format("%Y-%m-%d %H:%M:%S").to_string(),
-        );
-        let status = if row.revoked { "revoked" } else { "active" };
-        outln!("{:<36}  {:<20}  {:<20}  {}", row.id, minted, seen, status);
-    }
-    ExitCode::SUCCESS
-}
-
-fn run_pair_prune(tokens: &std::path::Path, unused_for: &str, json: bool) -> ExitCode {
-    let duration = match parse_unused_for(unused_for) {
-        Ok(duration) => duration,
-        Err(error) => {
-            error!("pair prune: {error}");
-            return ExitCode::FAILURE;
-        }
-    };
-    let outcome = match phux_server::auth::prune_unused(tokens, duration) {
-        Ok(outcome) => outcome,
-        Err(error) => {
-            error!("pair prune: {error}");
-            return ExitCode::FAILURE;
-        }
-    };
-    if !outcome.is_durable() {
-        warn!(
-            "pair prune: revocation is active, but the store directory could not be synced; do not retry"
-        );
-    }
-    if json {
-        return crate::output::json(&serde_json::json!({
-            "schema_version": 1,
-            "operation": "prune",
-            "unused_for": unused_for,
-            "revoked": outcome.revoked_ids,
-            "tokens_path": tokens.display().to_string(),
-        }));
-    }
-    if outcome.revoked_ids.is_empty() {
-        outln!("No unused credentials to prune in {}.", tokens.display());
-    } else {
-        outln!(
-            "Revoked {} unused credential(s):",
-            outcome.revoked_ids.len()
-        );
-        for id in &outcome.revoked_ids {
-            outln!("  {id}");
-        }
-    }
-    ExitCode::SUCCESS
-}
-
-fn run_pair_rotate(
-    tokens: &std::path::Path,
-    credential_id: &str,
-    overlap_seconds: i64,
-    json: bool,
-) -> ExitCode {
-    let overlap = chrono::Duration::seconds(overlap_seconds);
-    let rotated = match phux_server::auth::rotate_credential(tokens, credential_id, overlap) {
-        Ok(rotated) => rotated,
-        Err(error) => {
-            error!("pair rotate: {error}");
-            return ExitCode::FAILURE;
-        }
-    };
-    if !rotated.is_durable() {
-        warn!(
-            "pair rotate: rotation is active, but the store directory could not be synced; do not retry"
-        );
-    }
-    if json {
-        return crate::output::json(&serde_json::json!({
-            "schema_version": 1,
-            "operation": "rotate",
-            "credential_id": rotated.id,
-            "generation": rotated.generation,
-            "token": rotated.secret(),
-            "overlap_seconds": overlap_seconds,
-            "tokens_path": tokens.display().to_string(),
-        }));
-    }
-    outln!(
-        "Rotated credential {} to generation {}.",
-        rotated.id,
-        rotated.generation
-    );
-    outln!(
-        "Previous generations remain valid for at most {overlap_seconds} seconds and never beyond their absolute expiry."
-    );
-    outln!(
-        "Live sessions still on a previous generation are disconnected when that overlap ends; rotate with --overlap-seconds (up to 86400) to give devices longer to pick up the new token."
-    );
-    outln!();
-    outln!("Pairing token (a secret — give it to the device once):");
-    outln!("  {}", rotated.secret());
-    outln!();
-    outln!("Token written to {}", tokens.display());
-    ExitCode::SUCCESS
-}
-
-fn run_pair_revoke(tokens: &std::path::Path, credential_id: &str, json: bool) -> ExitCode {
-    // Bearer ids never carry the digest prefix; an enrolled certificate's
-    // always does. Its revocation lives in the workload registry.
-    if credential_id.starts_with("sha256:") {
-        return super::workload::run(
-            super::workload::WorkloadAction::Revoke {
-                credential_id: credential_id.to_owned(),
-            },
-            json,
-        );
-    }
-    let outcome = match phux_server::auth::revoke_credential(tokens, credential_id) {
-        Ok(outcome) => outcome,
-        Err(error) => {
-            error!("pair revoke: {error}");
-            return ExitCode::FAILURE;
-        }
-    };
-    if !outcome.is_durable() {
-        warn!(
-            "pair revoke: revocation is active, but the store directory could not be synced; do not retry"
-        );
-    }
-    if json {
-        return crate::output::json(&serde_json::json!({
-            "schema_version": 1,
-            "operation": "revoke",
-            "credential_id": credential_id,
-            "tokens_path": tokens.display().to_string(),
-        }));
-    }
-    outln!("Revoked credential {credential_id} for new connections.");
-    outln!("Established sessions remain active until disconnected.");
-    ExitCode::SUCCESS
-}
-
-/// Parse `--expires`: same spellings as `--unused-for`, capped at 30 days.
-fn parse_expires(raw: &str) -> Result<chrono::Duration, String> {
-    let duration = parse_duration(raw, "--expires")?;
-    let max = chrono::Duration::days(30);
-    if duration > max {
-        return Err("--expires must be at most 30 days".to_owned());
-    }
-    Ok(duration)
-}
-
-/// Parse `--unused-for`: `30d`, `24h`, `90m`, `45s`, or a bare number of seconds.
-fn parse_unused_for(raw: &str) -> Result<chrono::Duration, String> {
-    parse_duration(raw, "--unused-for")
-}
-
-fn parse_duration(raw: &str, flag: &str) -> Result<chrono::Duration, String> {
-    let raw = raw.trim();
-    if raw.is_empty() {
-        return Err(format!("{flag} needs a duration (e.g. 30d, 24h, 90m, 45s)"));
-    }
-    let split = raw.find(|c: char| !c.is_ascii_digit()).unwrap_or(raw.len());
-    let (digits, unit) = raw.split_at(split);
-    if digits.is_empty() {
-        return Err(format!("invalid {flag} duration: {raw:?}"));
-    }
-    let value: i64 = digits
-        .parse()
-        .map_err(|_| format!("invalid {flag} duration: {raw:?}"))?;
-    if value <= 0 {
-        return Err(format!("{flag} must be greater than zero"));
-    }
-    let seconds = match unit {
-        "" | "s" => value,
-        "m" => value.saturating_mul(60),
-        "h" => value.saturating_mul(3600),
-        "d" => value.saturating_mul(86400),
-        _ => {
-            return Err(format!("invalid {flag} unit in {raw:?}; use s, m, h, or d"));
-        }
-    };
-    Ok(chrono::Duration::seconds(seconds))
 }
 
 /// The `phux pair --json` document. Pure, so the shape (including
@@ -2541,28 +2371,35 @@ mod tests {
         assert!(!shows_default_qr(true, false));
     }
 
+    /// Every printed link lets a phone enroll (#2397); `--json` only on
+    /// `--enroll`, and `--no-enroll` opts out of all of it.
     #[test]
-    fn camera_pairing_enrolls_without_an_extra_flag_but_machine_mints_do_not() {
-        for (enroll, qr, default_qr, has_link, expected) in [
-            (false, true, false, true, true),
-            (false, true, false, false, true),
-            (false, false, true, true, true),
-            (true, false, false, false, true),
-            (false, false, true, false, false),
-            (false, false, false, true, false),
+    fn every_printed_link_enrolls_but_machine_mints_do_not() {
+        for (enroll, qr, json, no_enroll, has_link, expected) in [
+            (false, false, false, false, true, true),
+            (false, true, false, false, false, true),
+            (true, false, false, false, false, true),
+            (false, false, false, false, false, false),
+            (false, false, true, false, true, false),
+            (true, false, true, false, true, true),
+            (false, true, false, true, true, false),
+            (false, false, false, true, true, false),
         ] {
             let output = LinkOutput {
                 name: None,
                 qr,
-                default_qr,
-                json: false,
+                default_qr: false,
+                json,
                 secret_file: None,
                 expires_at: None,
                 expires_label: None,
+                first_use_by: None,
+                no_enroll,
             };
             assert_eq!(
                 phone_enrollment_requested(enroll, output, has_link),
-                expected
+                expected,
+                "enroll={enroll} qr={qr} json={json} no_enroll={no_enroll} link={has_link}"
             );
         }
     }
@@ -2731,6 +2568,7 @@ mod tests {
             link: Some(&link),
             expires_at: None,
             expires_label: None,
+            first_use_by: None,
             qr: true,
             default_qr: false,
             secret_file: Some(Path::new("/tmp/pair-secret")),
@@ -2757,9 +2595,9 @@ mod tests {
             super::prepare_secret_file(&path).is_err(),
             "refuse to overwrite"
         );
-        assert!(super::parse_expires("15m").is_ok());
-        assert!(super::parse_expires("31d").is_err());
-        assert!(super::parse_expires("0s").is_err());
+        assert!(super::manage::parse_expires("15m").is_ok());
+        assert!(super::manage::parse_expires("31d").is_err());
+        assert!(super::manage::parse_expires("0s").is_err());
     }
 
     /// The parser is the builder's exact inverse; the shape is a cross-repo

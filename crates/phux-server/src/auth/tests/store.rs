@@ -169,6 +169,7 @@ fn expiry_and_revocation_fail_closed() {
         revoked_at: None,
         generation: 1,
         last_seen: None,
+        first_use_by: None,
     };
     let store = TokenStore {
         file: CredentialFile {
@@ -341,7 +342,7 @@ fn mint_replacing_revokes_the_previous_secret() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("credentials");
     let first = mint_token(&path).unwrap();
-    let second = mint_terminal_credential(&path, Some(first.secret()), None).unwrap();
+    let second = mint_terminal_credential(&path, Some(first.secret()), None, None).unwrap();
     assert_ne!(first.id, second.id);
     assert_ne!(first.secret(), second.secret());
     let store = TokenStore::load(&path).unwrap();
@@ -375,4 +376,35 @@ fn authenticate_and_touch_records_last_seen() {
     let listed = list_credentials(&path).unwrap();
     let row = listed.iter().find(|row| row.id == minted.id).unwrap();
     assert!(row.last_seen.is_some());
+}
+
+#[test]
+fn a_single_use_link_expires_unused_and_its_first_admission_keeps_it() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("credentials");
+    let deadline = Utc::now() + Duration::minutes(10);
+    let unused = mint_terminal_credential(&path, None, None, Some(deadline)).unwrap();
+    let used = mint_terminal_credential(&path, None, None, Some(deadline)).unwrap();
+    let after = deadline + Duration::seconds(1);
+
+    let store = ReloadingTokenStore::load(path.clone()).unwrap();
+    assert!(store.authenticate_and_touch(&secret(&used)).is_some());
+
+    let snapshot = TokenStore::load(&path).unwrap();
+    assert!(snapshot.authenticate_at(&secret(&unused), after).is_none());
+    assert_eq!(
+        snapshot.standing_at(&unused.id, 1, after),
+        Standing::Expired
+    );
+    assert!(snapshot.authenticate_at(&secret(&used), after).is_some());
+    assert_eq!(
+        snapshot.standing_at(&used.id, 1, after),
+        Standing::Active { expires_at: None }
+    );
+
+    let listed = list_credentials(&path).unwrap();
+    let row = |id: &str| listed.iter().find(|row| row.id == id).unwrap().clone();
+    assert_eq!(row(&unused.id).first_use_by, Some(deadline));
+    assert_eq!(row(&used.id).first_use_by, None);
+    assert!(row(&used.id).last_seen.is_some());
 }

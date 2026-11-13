@@ -42,6 +42,10 @@ pub(super) struct CredentialRecord {
     /// used (or an older store).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(super) last_seen: Option<DateTime<Utc>>,
+    /// A single-use pairing link's deadline: unused by then, the credential
+    /// is expired. The first admission clears it on every generation.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) first_use_by: Option<DateTime<Utc>>,
 }
 
 /// One credential as listed by `phux pair ls`: identity, mint time, last
@@ -58,6 +62,10 @@ pub struct CredentialSummary {
     pub revoked: bool,
     /// Highest generation number currently on disk for this id.
     pub generation: u64,
+    /// The newest generation's absolute expiry, if any.
+    pub expires_at: Option<DateTime<Utc>>,
+    /// Still unused single-use link: admission fails after this instant.
+    pub first_use_by: Option<DateTime<Utc>>,
 }
 
 /// Outcome of [`prune_unused`]: which credential ids were revoked.

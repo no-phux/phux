@@ -72,3 +72,39 @@ fn a_larger_qr_is_wider_and_the_scale_stays_inside_the_terminal() {
         2
     );
 }
+
+/// A single-use link says when it lapses and that pairing keeps it (#2398);
+/// `--reusable` still says it never expires.
+#[test]
+fn the_expiry_line_states_a_single_use_deadline_plainly() {
+    let deadline = chrono::DateTime::from_timestamp(1_800_000_000, 0).unwrap();
+    let mut secret = super::HumanSecret {
+        credential_id: "cred",
+        token: "ab",
+        fingerprint: None,
+        link: Some("https://phux.sh/connect?url=wss://h:1#token=ab"),
+        expires_at: None,
+        expires_label: None,
+        first_use_by: Some(deadline),
+        qr: false,
+        default_qr: false,
+        secret_file: None,
+        hide_bearer: false,
+    };
+    let line = super::expiry_line(&secret);
+    assert!(
+        line.starts_with("SINGLE USE — EXPIRES 2027-01-15T08:00:00Z (10 minutes)"),
+        "{line}"
+    );
+    assert!(
+        line.contains("keeps working until `phux pair revoke cred`"),
+        "{line}"
+    );
+    let body = super::secret_file_body(&secret);
+    assert!(
+        body.contains("link_expires_at=2027-01-15T08:00:00Z\n"),
+        "{body}"
+    );
+    secret.first_use_by = None;
+    assert!(super::expiry_line(&secret).starts_with("EXPIRES NEVER"));
+}
