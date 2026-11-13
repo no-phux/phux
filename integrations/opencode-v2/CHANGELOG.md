@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.9.2](https://github.com/no-phux/phux/compare/opencode-plugin-v0.9.1...opencode-plugin-v0.9.2) (2026-11-13)
+
+
+### Bug Fixes
+
+* **agent:** unstick opencode setup on a fresh install ([#2414](https://github.com/no-phux/phux/issues/2414)) ([20eafcc](https://github.com/no-phux/phux/commit/20eafcc14ac6be57450c8a7fffb813369711b5db))
+
 ## [0.9.1](https://github.com/no-phux/phux/compare/opencode-plugin-v0.9.0...opencode-plugin-v0.9.1) (2026-11-11)
 
 
