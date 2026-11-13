@@ -694,9 +694,8 @@ impl SessionLoop {
             conditional_kill_supported,
             pending_directory: None,
             vcs: VcsIndex::default(),
-            sidebar_painter: SidebarPainter::new(settings.theme)
-                .with_plugin_specs(settings.plugin_sidebar.clone())
-                .with_agents_share(settings.sidebar.agents_share)
+            sidebar_painter: settings
+                .sidebar_painter()
                 .with_agent_filter(crate::attach::agent_filter_state::load()),
             jobs: Jobs::new(),
             bind_reflow_owed: false,

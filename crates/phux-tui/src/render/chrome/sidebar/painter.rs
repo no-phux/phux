@@ -2,8 +2,10 @@
 
 use std::io::{self, Write};
 
+use phux_config::SessionConfigEntry;
 use phux_config::widget::WindowInfo;
 use ratatui::buffer::Buffer;
+use ratatui::style::Color;
 
 use crate::layout::Rect;
 use crate::render::Theme;
@@ -42,6 +44,8 @@ pub struct SidebarPainter {
     /// `[sidebar] agents-share`: percent of the body the Agents area
     /// reserves while any agent needs a human; `0` drops it.
     agents_share: u8,
+    /// `[[sessions]]`: the colour each named session's dot is drawn in.
+    session_colors: Vec<SessionConfigEntry>,
     /// Window index under a live row drag, painted as the insertion
     /// marker. `None` when no window drag is over this strip.
     pub(super) drop_at: Option<usize>,
@@ -93,6 +97,7 @@ impl SidebarPainter {
             dirty: true,
             rule: SidebarRule::Trailing,
             agents_share: DEFAULT_AGENTS_SHARE,
+            session_colors: Vec::new(),
             drop_at: None,
             junctions: Vec::new(),
         }
@@ -233,6 +238,20 @@ impl SidebarPainter {
     pub const fn with_agents_share(mut self, agents_share: u8) -> Self {
         self.agents_share = agents_share;
         self
+    }
+
+    /// The `[[sessions]]` colours the roster paints, for construction sites.
+    #[must_use]
+    pub fn with_session_colors(mut self, sessions: Vec<SessionConfigEntry>) -> Self {
+        self.session_colors = sessions;
+        self
+    }
+
+    /// The colour configured for the session called `name`, if any.
+    // ponytail: the palette's own RGB on every theme; ease it toward the
+    // surface's contrast, as the desktop does, if a theme makes one hard to read.
+    pub(super) fn session_color(&self, name: &str) -> Option<Color> {
+        phux_config::session_color::color_of(&self.session_colors, name).map(Color::from_u32)
     }
 
     /// Replace the plugin sections' projected rows. Same change-report

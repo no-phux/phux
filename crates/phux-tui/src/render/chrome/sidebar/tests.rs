@@ -17,6 +17,7 @@ mod bounds;
 mod frame;
 mod hit_test;
 mod row_model;
+mod session_colors;
 mod windows;
 
 const fn r(x: u16, y: u16, w: u16, h: u16) -> Rect {

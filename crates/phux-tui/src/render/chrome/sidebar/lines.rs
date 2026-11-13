@@ -225,8 +225,15 @@ impl SidebarPainter {
     /// panes that need a human (`●1 ◆2`) in the same glyphs and colours as
     /// agent badges. A satellite session paints a dim dot and no counts: its
     /// metadata is not subscribable here (`docs/protocol.md#commands-events-resources`).
+    /// A quiet dot takes the session's `[[sessions]]` colour; one that needs
+    /// you keeps its state colour.
     pub(super) fn roster_line(&self, s: &SessionRosterEntry, text_w: u16) -> Line<'static> {
         let (dot, color) = self.roster_badge(s);
+        let quiet = s.satellite || s.top_rank() < 3;
+        let color = self
+            .session_color(&s.name)
+            .filter(|_| quiet)
+            .unwrap_or(color);
         let counts = self.roster_histogram(s);
         let counts_w: usize = counts.iter().map(|span| display_width(&span.content)).sum();
         let indent = roster_indent(s);

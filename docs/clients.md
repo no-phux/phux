@@ -139,6 +139,26 @@ and whether an `override` chose it) and this machine under `local`. The
 desktop's Machines sheet sets the same override, and a desktop window's
 sessions, tabs and focused terminal take its machine's colour.
 
+## Session colours
+
+A session takes a colour from the same palette when your `config.toml`
+names it:
+
+```toml
+[[sessions]]
+name = "api"
+color = "coral"
+```
+
+The colour lives in your config, not on the server, so it shows wherever
+that file is read and nowhere else. The terminal UI and the desktop draw
+the session's mark in the sidebar in that colour, and the desktop puts a
+dot of it before the name of a session with several terminals. A mark that
+is asking for you (blocked, done) keeps its state colour. A session with no entry looks as it always did: nothing is hashed. The name must match exactly, the first entry for a name wins, and
+a colour outside the palette fails the config load with the names to use.
+`phux config reload` applies an edit to an attached terminal UI; the
+desktop reads the table when it starts.
+
 ## Your own
 
 To put a phux terminal in your own app, see

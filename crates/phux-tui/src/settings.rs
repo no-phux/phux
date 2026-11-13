@@ -27,6 +27,7 @@ use crate::attach::paint::SidebarEdge;
 use crate::attach::plugin_actions::{self, PluginActionEntry};
 use crate::attach::plugin_panes::{self, PluginPaneEntry};
 use crate::attach::plugin_sidebar;
+use crate::render::chrome::sidebar::SidebarPainter;
 use crate::render::chrome::sidebar_sections::PluginSectionSpec;
 use crate::render::chrome::status_bar::StatusBarPainter;
 use crate::render::{ChromeBreakpoints, Theme};
@@ -80,6 +81,9 @@ pub struct TuiSettings {
     pub plugin_panes: Vec<PluginPaneEntry>,
     /// Enabled plugins' `[[sidebar]]` sections (ADR-0148).
     pub plugin_sidebar: Vec<PluginSectionSpec>,
+    /// `[[sessions]]`: the colour each named session is drawn in. Live on
+    /// reload.
+    pub sessions: Vec<phux_config::SessionConfigEntry>,
     /// The which-key popup knobs.
     pub which_key: WhichKey,
     /// `[sidebar]` geometry; attach-time only.
@@ -107,6 +111,7 @@ impl std::fmt::Debug for TuiSettings {
             .field("plugin_actions", &self.plugin_actions.len())
             .field("plugin_panes", &self.plugin_panes.len())
             .field("plugin_sidebar", &self.plugin_sidebar.len())
+            .field("sessions", &self.sessions.len())
             .field("which_key", &self.which_key)
             .field("sidebar", &self.sidebar)
             .field("hosts", &self.hosts)
@@ -139,6 +144,15 @@ impl TuiSettings {
         Self::strict_from(&cfg)
     }
 
+    /// A cache-cold sidebar painter carrying everything the config gives it.
+    #[must_use]
+    pub fn sidebar_painter(&self) -> SidebarPainter {
+        SidebarPainter::new(self.theme)
+            .with_plugin_specs(self.plugin_sidebar.clone())
+            .with_agents_share(self.sidebar.agents_share)
+            .with_session_colors(self.sessions.clone())
+    }
+
     /// Re-read `path` and swap the reloadable subset in, or leave `self`
     /// untouched.
     ///
@@ -162,6 +176,7 @@ impl TuiSettings {
         self.plugin_actions = new.plugin_actions;
         self.plugin_panes = new.plugin_panes;
         self.plugin_sidebar = new.plugin_sidebar;
+        self.sessions = new.sessions;
         self.which_key = new.which_key;
         self.clipboard_write = new.clipboard_write;
         self.notifications = new.notifications;
@@ -296,6 +311,7 @@ impl TuiSettings {
             plugin_actions,
             plugin_panes,
             plugin_sidebar,
+            sessions: cfg.sessions.clone(),
             sidebar: SidebarSettings {
                 enabled: cfg.sidebar.enabled,
                 width: cfg.sidebar.width,

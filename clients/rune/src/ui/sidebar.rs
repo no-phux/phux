@@ -49,10 +49,12 @@ fn row_color(mark: Mark, ink: &Ink, host: Color) -> Color {
 
 /// A ring while work is under way, a solid dot otherwise; never animated,
 /// so a busy agent costs no frames. A plain shell gets a faint speck, so
-/// names line up without a column of loud nothing.
-fn dot(mark: Mark, color: Color, ink: &Ink) -> El {
-    let dot = match mark {
-        Mark::None => el().size(4.0, 4.0).radius(2.0).fill(ink.dim.alpha(0.45)),
+/// names line up without a column of loud nothing; a session's own colour
+/// lights it.
+fn dot(mark: Mark, color: Color, session: Option<u32>, ink: &Ink) -> El {
+    let dot = match (mark, session) {
+        (Mark::None, Some(rgb)) => host_color::mark(rgb, 6.0, ink.sidebar),
+        (Mark::None, None) => el().size(4.0, 4.0).radius(2.0).fill(ink.dim.alpha(0.45)),
         _ if mark.live() || mark == Mark::Background => {
             el().size(8.0, 8.0).radius(4.0).border(1.5, color)
         }
@@ -134,6 +136,8 @@ struct Header<'a> {
     waiting: usize,
     /// A satellite session's machine, and its colour so a recolour redraws.
     host: Option<(&'a str, u32)>,
+    /// The session's `[[sessions]]` colour.
+    color: Option<u32>,
     /// A linked worktree, marked under its project's primary checkout.
     branch: bool,
     /// A dragged session would land here.
@@ -169,6 +173,7 @@ fn session_header(session: &Header, ink: &Ink) -> El {
             }
         })
         .children((session.host).map(|(host, _)| host_color::dot(host, 6.0, ink.sidebar)))
+        .children((session.color).map(|rgb| host_color::mark(rgb, 6.0, ink.sidebar)))
         .children(session.branch.then(|| branch_mark(ink)))
         .child(
             text(session.name.to_owned())
@@ -196,6 +201,8 @@ struct Row<'a> {
     selected: bool,
     /// The terminal's machine and its colour, so a recolour redraws.
     host: (&'a str, u32),
+    /// A one-terminal session's `[[sessions]]` colour, for its quiet mark.
+    color: Option<u32>,
     /// A one-terminal session that is a linked worktree.
     branch: bool,
     /// A dragged session would land on this lone row's.
@@ -219,7 +226,10 @@ fn pane_row(pane: &Row, ink: &Ink) -> El {
     let (mark, selected) = (pane.mark, pane.selected);
     let (id, session) = (pane.id.clone(), pane.session.to_owned());
     let host = host_color::on(pane.host.0, ink.sidebar);
-    let accent = row_color(mark, ink, host);
+    let tone = pane
+        .color
+        .map_or(host, |rgb| host_color::eased(rgb, ink.sidebar));
+    let accent = row_color(mark, ink, tone);
     let (key, label) = (pane.rename, pane.name.clone());
     let detail = pane.detail().map(|(words, tinted)| {
         text(words)
@@ -248,7 +258,7 @@ fn pane_row(pane: &Row, ink: &Ink) -> El {
             }
         })
         .children(pane.branch.then(|| branch_mark(ink)))
-        .child(dot(mark, accent, ink))
+        .child(dot(mark, accent, pane.color, ink))
         .child(
             col()
                 .grow(1.0)
@@ -300,6 +310,7 @@ fn session_list(desk: &Desk, waiting: &HashMap<u32, usize>, ink: &Ink) -> El {
         let mut out = Vec::new();
         let rows: Vec<_> = all.iter().filter(|r| r.session_id == session.id).collect();
         let alone = rows.len() == 1;
+        let color = crate::session_color::of(&session.name);
         if !alone {
             let header = Header {
                 id: session.id,
@@ -308,6 +319,7 @@ fn session_list(desk: &Desk, waiting: &HashMap<u32, usize>, ink: &Ink) -> El {
                 current: current.as_deref() == Some(session.name.as_str()),
                 waiting: waiting_in(session.id),
                 host: None,
+                color,
                 branch,
                 target,
             };
@@ -338,6 +350,7 @@ fn session_list(desk: &Desk, waiting: &HashMap<u32, usize>, ink: &Ink) -> El {
                 mark: desk.activities.mark(id),
                 selected: shown == Some(id),
                 host,
+                color: color.filter(|_| alone),
                 branch: branch && alone,
                 target: target && alone,
             };
@@ -381,6 +394,7 @@ fn satellite_list(desk: &Desk, topology: &Topology, ink: &Ink) -> El {
             current: session.members.iter().any(|id| shown == Some(id)),
             waiting: 0,
             host: Some(host),
+            color: crate::session_color::of(&session.name),
             branch: false,
             target: false,
         };
@@ -422,6 +436,7 @@ fn satellite_list(desk: &Desk, topology: &Topology, ink: &Ink) -> El {
                 mark: desk.activities.mark(id),
                 selected: shown == Some(id),
                 host,
+                color: None,
                 branch: false,
                 target: false,
             };

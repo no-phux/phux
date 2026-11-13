@@ -40,8 +40,8 @@ pub use mirror::MirrorConfigEntry;
 use phux_config_core::layer;
 pub use phux_config_core::{
     ConfigError, ConfigProvenance, KeyOrigin, LayerSource, MAX_EXTENDS_DEPTH, OrganizeCfg,
-    RemoteConfigEntry, RuneCfg, byte_offset_to_line_col, host_color, instance, known_authorities,
-    remote, server_bundle, socket,
+    RemoteConfigEntry, RuneCfg, SessionConfigEntry, byte_offset_to_line_col, host_color, instance,
+    known_authorities, remote, server_bundle, session_color, socket,
 };
 pub use producer::ProducerConfigEntry;
 pub use project::ProjectConfigEntry;
@@ -250,5 +250,6 @@ mod tests {
         let full = super::parse_with_defaults("", path).expect("defaults load");
         assert_eq!(full.remote, ClientConfig::default().remote);
         assert_eq!(full.organize, ClientConfig::default().organize);
+        assert_eq!(full.sessions, ClientConfig::default().sessions);
     }
 }

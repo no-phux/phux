@@ -75,10 +75,7 @@ pub(super) fn adopt_config_reload(
             // A fresh painter carries the new theme and repaints everything.
             // The Agents filter is the user's runtime choice, not config.
             let agent_filter = sidebar_painter.agent_filter().clone();
-            *sidebar_painter = SidebarPainter::new(settings.theme)
-                .with_plugin_specs(settings.plugin_sidebar.clone())
-                .with_agents_share(settings.sidebar.agents_share)
-                .with_agent_filter(agent_filter);
+            *sidebar_painter = settings.sidebar_painter().with_agent_filter(agent_filter);
             true
         }
         Err(msg) => {

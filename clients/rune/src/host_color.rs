@@ -98,7 +98,8 @@ pub fn on(name: &str, ground: Color) -> Color {
     eased(entry(name).0, ground)
 }
 
-fn eased(rgb: u32, ground: Color) -> Color {
+/// The palette colour `rgb`, eased the same way.
+pub fn eased(rgb: u32, ground: Color) -> Color {
     let end = if on_fill(ground) == Color::WHITE {
         0xff_ffff
     } else {
@@ -126,9 +127,14 @@ pub fn stripe(color: Color) -> El {
 
 /// A round mark in `name`'s colour.
 pub fn dot(name: &str, size: f32, ground: Color) -> El {
+    mark(entry(name).0, size, ground)
+}
+
+/// A round mark in the palette colour `rgb`, eased for `ground`.
+pub fn mark(rgb: u32, size: f32, ground: Color) -> El {
     el().size(size, size)
         .radius(size / 2.0)
-        .fill(on(name, ground))
+        .fill(eased(rgb, ground))
         .a11y_hidden()
 }
 

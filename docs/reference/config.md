@@ -30,6 +30,7 @@ The configuration surface of `~/.config/phux/config.toml`. The loader layers you
 | `[[remote]]` | Remote phux servers this machine attaches to, written by `phux host add` and resolved by `phux attach <name>`; `color` overrides a host's automatic colour. |
 | `[host]` | This machine as clients draw it: `color` overrides its automatic colour (`phux host color --local`). |
 | `[[projects]]` | Named projects `phux project open <name>` resolves: a checkout path and an optional out-of-repo recipe. |
+| `[[sessions]]` | A colour for a session by name, drawn beside it in the sidebar: `color` is one of the host palette's ids. |
 | `[theme]` | Free-form color slots (`slot = "color"`) consumed by the renderer. |
 | `[experimental]` | Opt-in unstable knobs; anything here may change or disappear without notice. |
 | `[policy]` | The authorization posture read at server start: `local` (owner socket only) or `paired` (workload mTLS, scope ceilings enforced at dispatch). |
@@ -581,6 +582,16 @@ exclusive = true
 # name = "site"
 # path = "~/code/site"
 # recipe = "~/.config/phux/recipes/site.toml"
+
+# Session colours: the colour every client that reads this file draws a
+# session in, by name, from the host palette (blue, violet, magenta, sky,
+# coral, olive, slate, copper, green, navy). A session with no entry keeps
+# its plain look, and any other colour name fails the load. An older phux
+# refuses a config with this table, so upgrade it first.
+#
+# [[sessions]]
+# name = "api"
+# color = "coral"
 
 [status]
 # Left: the window/tab bar. The `windows` widget renders one tab per

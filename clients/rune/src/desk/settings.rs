@@ -108,13 +108,17 @@ impl Settings {
 }
 
 /// `config.toml`'s `[rune]` table, and what was wrong with the file if it
-/// did not load. Tests never read the real file.
+/// did not load; its `[[sessions]]` colours are learned on the way. Tests
+/// never read the real file.
 pub(super) fn load_file() -> (RuneCfg, Option<String>) {
     if cfg!(test) {
         return (RuneCfg::default(), None);
     }
     match phux_config_core::loader::load_client() {
-        Ok(config) => (config.rune, None),
+        Ok(config) => {
+            crate::session_color::learn(config.sessions);
+            (config.rune, None)
+        }
         Err(err) => (RuneCfg::default(), Some(err.to_string())),
     }
 }

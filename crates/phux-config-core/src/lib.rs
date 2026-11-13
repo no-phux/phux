@@ -1,8 +1,8 @@
 //! phux-config-core: the client-neutral half of `config.toml`.
 //!
 //! Where the file lives, how its `extends` layers merge (ADR-0039), the
-//! tables every client reads (`[[remote]]`, `[organize]`), and the per-user
-//! instance paths. The TUI's schema, its shipped `default.toml` and the
+//! tables every client reads (`[[remote]]`, `[[sessions]]`, `[organize]`),
+//! and the per-user instance paths. The TUI's schema, its shipped `default.toml` and the
 //! status-bar widgets live in `phux-config`, which re-exports this crate, so
 //! a client that only dials (the desktop) never builds them.
 
@@ -20,6 +20,7 @@ mod organize;
 pub mod remote;
 pub mod rune;
 pub mod server_bundle;
+pub mod session_color;
 pub mod socket;
 
 pub use error::{ConfigError, byte_offset_to_line_col};
@@ -28,3 +29,4 @@ pub use loader::ClientConfig;
 pub use organize::OrganizeCfg;
 pub use remote::RemoteConfigEntry;
 pub use rune::RuneCfg;
+pub use session_color::SessionConfigEntry;
