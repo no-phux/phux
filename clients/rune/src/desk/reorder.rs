@@ -79,9 +79,12 @@ fn moved(mut keys: Vec<SessionKey>, from: SessionKey, to: SessionKey) -> Option<
 
 impl Desk {
     /// The sessions as the sidebar lists them: the stored order, then the
-    /// rest as the server lists them.
+    /// rest as the server lists them. The quick terminal's is the panel's.
     pub fn ordered_sessions(&self) -> Vec<&SessionDescriptor> {
-        let mut sessions: Vec<_> = self.topology.iter().flat_map(|t| &t.sessions).collect();
+        let all = self.topology.iter().flat_map(|t| &t.sessions);
+        let listed =
+            |s: &&SessionDescriptor| self.quick.is_some() || !super::quick::hidden(&s.name);
+        let mut sessions: Vec<_> = all.filter(listed).collect();
         session_order::list(&mut sessions, &self.reorder.order, |s| s.key, |s| s.touched);
         sessions
     }

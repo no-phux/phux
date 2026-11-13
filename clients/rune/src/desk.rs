@@ -267,8 +267,10 @@ pub struct Desk {
     pub phone: Option<phone::Phone>,
     /// The bare window: one pane, the terminal UI in it, no chrome.
     pub bare: Option<bare::Bare>,
-    /// The quick terminal's own handle, when this window is it.
-    pub quick: Option<rune::AppHandle<Desk>>,
+    /// The quick terminal's own part, when this window is it.
+    pub quick: Option<quick::Panel>,
+    /// The quick terminal's chord, which the main window registers.
+    pub quick_chord: quick::Chord,
     pub native: Option<crate::mobile::Platform>,
 }
 
@@ -395,6 +397,7 @@ impl Desk {
             phone: None,
             bare: None,
             quick: None,
+            quick_chord: quick::Chord::default(),
             native: None,
             file,
         };

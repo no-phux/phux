@@ -29,6 +29,8 @@ phux-protocol = { path = "../../crates/phux-protocol" }
 rune = { git = "https://github.com/anomalyco/rune", rev = "726ccc363ad115c6cc8f603f397f101d04e7c8e9", default-features = false, features = ["accessibility", "dbus", "metal-backend", "ogg-audio", "svg", "tooling"] }
 rune-notify = { git = "https://github.com/anomalyco/rune", rev = "726ccc363ad115c6cc8f603f397f101d04e7c8e9" }
 rune-perf = { git = "https://github.com/anomalyco/rune", rev = "726ccc363ad115c6cc8f603f397f101d04e7c8e9" }
+# The quick terminal's shortcut recorder in Settings.
+rune-kit = { git = "https://github.com/anomalyco/rune", rev = "726ccc363ad115c6cc8f603f397f101d04e7c8e9" }
 # Never called directly: Rune's decoder guesses the format, so these
 # features (unified with Rune's png/jpeg) let typed documents draw GIF/WebP.
 image = { version = "0.25", default-features = false, features = ["gif", "webp"] }

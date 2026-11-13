@@ -80,8 +80,11 @@ impl Desk {
         let org = self.client.as_ref().map(|client| client.organization());
         let mut all = list(topology);
         all.retain_mut(|r| {
-            // A popup's terminal is its box's, never a place to go.
-            if self.popup.terminal() == Some(&r.id) {
+            // A popup's terminal is its box's, never a place to go; the quick
+            // terminal's is the panel's.
+            if self.popup.terminal() == Some(&r.id)
+                || (self.quick.is_none() && crate::desk::quick::hidden(&r.session))
+            {
                 return false;
             }
             if !r.kind.is_terminal() {

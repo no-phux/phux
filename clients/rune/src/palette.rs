@@ -26,6 +26,7 @@ pub enum Target {
     },
     Session(String),
     Action(Shortcut),
+    MoveToTab,
     /// A theme by id; `None` is System.
     Theme(Option<&'static str>),
     /// A session to create, by the name typed.
@@ -174,7 +175,11 @@ pub fn session_items(topology: Option<&Topology>, order: &[SessionKey]) -> Vec<I
     let Some(topology) = topology else {
         return Vec::new();
     };
-    let mut sessions: Vec<_> = topology.sessions.iter().collect();
+    let listed = topology
+        .sessions
+        .iter()
+        .filter(|s| !crate::desk::quick::hidden(&s.name));
+    let mut sessions: Vec<_> = listed.collect();
     session_order::list(&mut sessions, order, |s| s.key, |s| s.touched);
     let item = |index: usize, project: Option<(&str, bool)>| {
         let session = sessions[index];

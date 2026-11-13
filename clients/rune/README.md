@@ -134,11 +134,18 @@ session (or `--session NAME`). It never creates a session on its own.
   from here. A diff over 2,000 lines shows its start and says so.
 - **Popup.** **Popup…** in the palette runs a command you type in a floating
   terminal, in the focused terminal's folder, until it exits or you press ⌘W.
-- **Quick terminal.** With `quick-terminal = "ctrl+backquote"` (any chord)
-  in `[rune]`, that chord drops a terminal from the top of the screen over
-  whatever app is in front, without switching to this window, and hides it
-  again; so does clicking away. It holds the `quick` session on this
-  computer ([config](../../docs/config.md#rune)).
+- **Quick terminal.** Turn it on in Settings › Terminal (or set
+  `quick-terminal = "ctrl+backquote"`, any chord, in `[rune]`), and that
+  chord drops a terminal over whatever app is in front, without switching to
+  this window, and hides it again; so does clicking away. Recording a new
+  chord applies at once, and a chord something else holds is refused with
+  who holds it, when that's known. It holds the `quick` session on this
+  computer, which the sidebar and palette leave out. `quick-terminal-size`
+  and `quick-terminal-edge` size it and pick the top or bottom of the
+  display. **Move to a Tab** in its palette moves the terminal into this
+  window's session. While the chord is on, closing this window keeps the app
+  for the chord, and the Dock brings it back
+  ([config](../../docs/config.md#rune)).
 - **Insert Path.** ⌥; (or ⇧⌘I) opens a picker at the cursor that searches
   the focused pane's folder on the machine it runs on. Return types the path at the prompt as one shell word, relative to
   that folder and quoted only when it must be.

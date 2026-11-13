@@ -28,6 +28,11 @@ pub struct RuneCfg {
     /// Global chord that shows and hides the quick terminal, such as
     /// `"ctrl+backquote"`; unset or `"none"` leaves it off.
     pub quick_terminal: Option<String>,
+    /// The quick terminal's height as a fraction of the display's, 0.2 to
+    /// 0.9; 0.4 when unset.
+    pub quick_terminal_size: Option<f32>,
+    /// The display edge the quick terminal drops from: `"top"` or `"bottom"`.
+    pub quick_terminal_edge: Option<QuickTerminalEdge>,
     /// Socket of the SSH agent `ssh://` hosts use, such as
     /// `"~/.1password/agent.sock"`: an app opened from the Dock does not
     /// see the shell's `SSH_AUTH_SOCK`.
@@ -36,6 +41,17 @@ pub struct RuneCfg {
     /// runs, or `"none"` to take a built-in chord away.
     #[serde(skip_serializing_if = "std::collections::BTreeMap::is_empty")]
     pub keys: std::collections::BTreeMap<String, String>,
+}
+
+/// `[rune] quick-terminal-edge`: where the quick terminal opens.
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum QuickTerminalEdge {
+    /// Across the top of the display.
+    #[default]
+    Top,
+    /// Across the bottom of the display.
+    Bottom,
 }
 
 impl RuneCfg {
@@ -68,5 +84,12 @@ mod tests {
         let keyed = "[rune.keys]\n\"cmd+d\" = \"none\"\n";
         let parsed = crate::loader::parse_client(keyed, std::path::Path::new("config.toml"));
         assert_eq!(parsed.expect("parses").rune.keys["cmd+d"], "none");
+        let quick = "[rune]\nquick-terminal-size = 0.5\nquick-terminal-edge = \"bottom\"\n";
+        let parsed = crate::loader::parse_client(quick, std::path::Path::new("config.toml"));
+        let rune = parsed.expect("parses").rune;
+        assert_eq!(rune.quick_terminal_size, Some(0.5));
+        assert_eq!(rune.quick_terminal_edge, Some(QuickTerminalEdge::Bottom));
+        let sideways = "[rune]\nquick-terminal-edge = \"left\"\n";
+        assert!(crate::loader::parse_client(sideways, std::path::Path::new("c.toml")).is_err());
     }
 }

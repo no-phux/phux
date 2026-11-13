@@ -7,6 +7,7 @@ use super::*;
 use crate::desk::updates::Work;
 
 mod overflow;
+mod quick;
 
 fn surface(desk: &Desk, cx: &mut Cx<Desk>) -> El {
     let ink = super::super::ink(cx.system_dark(), cx.accent(), desk.settings.theme);

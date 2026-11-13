@@ -177,11 +177,12 @@ const ALTERNATIVE = /\s+OR\s+|\s*\/\s*/;
 /**
  * The license with a canonical text that `expression` lets the app be
  * distributed under: Apache-2.0 when offered (its text names no copyright
- * holder), else MIT, CC0 or MPL. Compound terms (AND, WITH, parentheses) elect nothing.
+ * holder), else MIT, CC0 or MPL. An alternative with an exception (WITH) is
+ * passed over for a plain one; AND and parentheses elect nothing.
  */
 export function electedLicense(expression: string): keyof CanonicalLicenses | undefined {
   const options = expression.trim().split(ALTERNATIVE);
-  if (options.some((option) => /[\s()]/.test(option))) return undefined;
+  if (options.some((option) => /[()]|\sAND\s/.test(option))) return undefined;
   return ELECTABLE.find((id) => options.includes(id));
 }
 

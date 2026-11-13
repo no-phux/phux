@@ -250,6 +250,22 @@ mod tests {
     }
 
     #[test]
+    fn the_main_window_lists_no_quick_session() {
+        let graph = topology(vec![session(1, "work", 10), session(2, "quick", 30)]);
+        let items = crate::palette::session_items(Some(&graph), &[]);
+        let titles: Vec<_> = items.into_iter().map(|item| item.title).collect();
+        assert_eq!(titles, ["work"], "the palette");
+        let mut desk = Desk::settings_test_fixture();
+        desk.topology = Some(graph);
+        let names: Vec<_> = desk
+            .ordered_sessions()
+            .iter()
+            .map(|s| s.name.clone())
+            .collect();
+        assert_eq!(names, ["work"], "the sidebar and session stepping");
+    }
+
+    #[test]
     fn nothing_to_open_never_invents_a_default() {
         assert_eq!(choose(None, &topology(Vec::new()), None), Home::Nothing);
     }
