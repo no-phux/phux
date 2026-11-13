@@ -58,18 +58,40 @@ test("a reused main tree still qualifies the binding, and nothing else", () => {
   expect([...reused(docs).lanes]).toEqual([]);
 });
 
-test("the ci receipt has no macOS coverage on a pull request or a main push", () => {
+test("the ci receipt has no macOS coverage, and a pull request claims no Linux packaging", () => {
   // The Linux rune lane still runs. macOS coverage would let a main push
-  // reuse a pull request that never started a macOS runner.
+  // reuse a pull request that never started a macOS runner. Packaging
+  // coverage would let it reuse a pull request that never built the archive
+  // or started linux-aarch64.
   const closure = classifier.classify(["crates/phux-protocol/src/lib.rs"]);
   const pr = plan(closure, "pull_request");
   const main = plan(closure, "push");
   expect(pr.lanes.has("rune")).toBe(true);
   expect(main.lanes.has("rune")).toBe(true);
-  expect(pr.coverage).toBe(main.coverage);
-  expect(pr.coverage.split(",")).not.toContain("rune_ios");
-  expect(pr.coverage.split(",")).not.toContain("macos");
+  for (const coverage of [pr.coverage, main.coverage]) {
+    expect(coverage.split(",")).not.toContain("rune_ios");
+    expect(coverage.split(",")).not.toContain("macos");
+  }
+  expect(pr.coverage.split(",")).not.toContain("linux-aarch64");
+  expect(pr.coverage.split(",")).not.toContain("packaging");
+  expect(main.coverage).toBe(`${pr.coverage},linux-aarch64,packaging`);
+  expect(planOutputs(pr, closure)).toMatchObject({ rune: true, rune_qualify: false });
+  expect(planOutputs(main, closure)).toMatchObject({ rune: true, rune_qualify: true });
   expect(planOutputs(pr, closure)).not.toHaveProperty("rune_ios");
-  expect(planOutputs(reused(main), closure)).not.toHaveProperty("rune_ios");
+  expect(planOutputs(reused(main), closure)).toMatchObject({ rune: false, rune_qualify: false });
   expect([...reused(main).lanes]).not.toContain("rune");
+});
+
+test("a dispatch qualifies Linux without widening a direct Rune diff", () => {
+  const direct = classifier.classify(["clients/rune/src/main.rs"]);
+  const pr = plan(direct, "pull_request");
+  const dispatch = plan(direct, "pull_request", true);
+  expect(pr.coverage).toBe("guards,rune");
+  expect(pr.runeQualify).toBe(false);
+  expect(dispatch.coverage).toBe("guards,rune,linux-aarch64,packaging");
+  expect([...dispatch.lanes]).toEqual([...pr.lanes]);
+  expect(plan(direct, "push").coverage).toBe(dispatch.coverage);
+  const docs = plan(classifier.classify(["docs/SETUP.md"]), "push");
+  expect(docs.runeQualify).toBe(false);
+  expect(docs.coverage.split(",")).not.toContain("packaging");
 });

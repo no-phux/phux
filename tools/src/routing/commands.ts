@@ -79,8 +79,11 @@ export const commands: Record<string, Command> = {
       const repository = process.env["GITHUB_REPOSITORY"] ?? "";
       const c = classifyEvent(event, process.env["GITHUB_EVENT_PATH"]);
       // A merge group is main's tree before it lands: main policy.
+      // A pull request does not qualify Linux. A dispatch does, without
+      // widening the lane set past the pull-request plan.
+      const qualify = event !== "pull_request";
       const main = event === "push" || event === "merge_group";
-      const p = plan(c, main ? "push" : "pull_request");
+      const p = plan(c, main ? "push" : "pull_request", qualify);
       const tree = git(["rev-parse", "HEAD^{tree}"]).trim();
       const receipt: Receipt = { schema: 2, tree, workflow: WORKFLOW, coverage: p.coverage };
       const validated =

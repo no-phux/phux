@@ -182,6 +182,7 @@ test("ci runs Rune's Linux hosts, and rune-macos owns the Apple legs", () => {
   const rune = job(CI, "rune");
   expect(withInput(rune, "hosts")).toBe("linux");
   expect(withInput(rune, "ios")).toBe(false);
+  expect(withInput(rune, "qualify")).toBe("${{ needs.plan.outputs.rune_qualify == 'true' }}");
   expect(workflowText("ci.yml")).not.toContain("rune_ios");
   const mac = workflow("rune-macos.yml");
   const build = job(mac, "build");
@@ -193,9 +194,18 @@ test("ci runs Rune's Linux hosts, and rune-macos owns the Apple legs", () => {
   expect(uses(job(CI, "rune-macos"))).toBe("./.github/workflows/rune-macos.yml");
   expect(table(mac["on"])["workflow_call"]).toBeDefined();
   const reusable = workflow("rune-build.yml");
-  const input = table(table(table(table(reusable["on"])["workflow_call"])["inputs"])["ios"]);
-  // rune-client.yml calls it for a tag without inputs: the release keeps iOS.
+  const inputs = table(table(table(reusable["on"])["workflow_call"])["inputs"]);
+  const input = table(inputs["ios"]);
+  // rune-client.yml calls it for a tag without inputs: the release keeps iOS
+  // and Linux qualification.
   expect(input).toMatchObject({ type: "boolean", default: true });
+  expect(table(inputs["qualify"])).toMatchObject({ type: "boolean", default: true });
+  expect(str(job(reusable, "build")["if"])).toBe(
+    "inputs.qualify && (inputs.hosts == 'all' || inputs.hosts == 'linux')",
+  );
+  expect(str(job(reusable, "linux-check")["if"])).toBe(
+    "inputs.qualify == false && (inputs.hosts == 'all' || inputs.hosts == 'linux')",
+  );
   expect(str(job(reusable, "ios-native")["if"])).toBe(
     "inputs.ios && (inputs.hosts == 'all' || inputs.hosts == 'macos')",
   );

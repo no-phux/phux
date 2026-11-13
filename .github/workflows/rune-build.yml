@@ -20,6 +20,12 @@ on:
       hosts:
         type: string
         default: all
+      # Package and launch every selected host, including linux-aarch64.
+      # A pull request passes false: check.sh and cargo-deny on linux-x86_64.
+      # A tag, the cache warm, and a dispatch pass nothing, so they qualify.
+      qualify:
+        type: boolean
+        default: true
     secrets:
       APPLE_DEVELOPER_ID_P12:
         required: false
@@ -39,8 +45,9 @@ jobs:
   build:
     name: ${{ matrix.name }}
     # A caller names the hosts it wants. macOS is its own job: a job-level
-    # `if` cannot read `matrix`, so this matrix is Linux only.
-    if: inputs.hosts == 'all' || inputs.hosts == 'linux'
+    # `if` cannot read `matrix`, so this matrix is Linux only. It runs when
+    # the caller qualifies: both archives, then the packaged launch.
+    if: inputs.qualify && (inputs.hosts == 'all' || inputs.hosts == 'linux')
     strategy:
       fail-fast: false
       matrix:
@@ -65,11 +72,31 @@ jobs:
       - uses: ./.github/actions/rune-host
         with:
           name: ${{ matrix.name }}
+          qualify: ${{ inputs.qualify }}
           apple_developer_id_p12: ${{ secrets.APPLE_DEVELOPER_ID_P12 }}
           apple_developer_id_password: ${{ secrets.APPLE_DEVELOPER_ID_PASSWORD }}
           apple_notary_key_p8: ${{ secrets.APPLE_NOTARY_KEY_P8 }}
           apple_notary_key_id: ${{ secrets.APPLE_NOTARY_KEY_ID }}
           apple_notary_issuer_id: ${{ secrets.APPLE_NOTARY_ISSUER_ID }}
+
+  # The pull-request leg. Mutually exclusive with build: qualify false runs
+  # check.sh and cargo-deny here, and does not start linux-aarch64.
+  linux-check:
+    name: linux-x86_64
+    if: inputs.qualify == false && (inputs.hosts == 'all' || inputs.hosts == 'linux')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    env:
+      CARGO_INCREMENTAL: "0"
+      CARGO_PROFILE_DEV_DEBUG: "0"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/rune-host
+        with:
+          name: linux-x86_64
+          qualify: false
 
   macos:
     name: macos-arm64
@@ -86,6 +113,7 @@ jobs:
       - uses: ./.github/actions/rune-host
         with:
           name: macos-arm64
+          qualify: ${{ inputs.qualify }}
           apple_developer_id_p12: ${{ secrets.APPLE_DEVELOPER_ID_P12 }}
           apple_developer_id_password: ${{ secrets.APPLE_DEVELOPER_ID_PASSWORD }}
           apple_notary_key_p8: ${{ secrets.APPLE_NOTARY_KEY_P8 }}

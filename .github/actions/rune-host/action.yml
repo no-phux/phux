@@ -4,6 +4,10 @@ inputs:
   name:
     description: Host name for the cache key and the artifacts (linux-x86_64, linux-aarch64, or macos-arm64).
     required: true
+  qualify:
+    description: Package this host and launch the archive. False keeps check.sh and, on linux-x86_64, cargo-deny.
+    required: false
+    default: "true"
   apple_developer_id_p12:
     description: Developer ID certificate, set on a rune-v tag.
     required: false
@@ -76,7 +80,7 @@ runs:
         PATH="${RUNNER_TEMP}/cargo-deny-${version}-x86_64-unknown-linux-musl:$PATH"
         cargo-deny --manifest-path clients/rune/Cargo.toml --config clients/rune/deny.toml --locked check
     - name: Require Apple signing configuration before building
-      if: runner.os == 'macOS' && startsWith(github.ref, 'refs/tags/rune-v')
+      if: inputs.qualify == 'true' && runner.os == 'macOS' && startsWith(github.ref, 'refs/tags/rune-v')
       shell: bash
       env:
         APPLE_DEVELOPER_ID_P12: ${{ inputs.apple_developer_id_p12 }}
@@ -86,6 +90,7 @@ runs:
         APPLE_NOTARY_ISSUER_ID: ${{ inputs.apple_notary_issuer_id }}
       run: bash scripts/ci/sign-macos-desktop.sh --check-config
     - name: Package
+      if: inputs.qualify == 'true'
       shell: bash
       run: |
         version="$(sed -n 's/^version = "\(.*\)"/\1/p' clients/rune/Cargo.toml | head -1)"
@@ -94,7 +99,7 @@ runs:
     # notarized and stapled, so it opens from Finder without a Gatekeeper
     # override.
     - name: Sign, notarize and staple the macOS app
-      if: runner.os == 'macOS' && startsWith(github.ref, 'refs/tags/rune-v')
+      if: inputs.qualify == 'true' && runner.os == 'macOS' && startsWith(github.ref, 'refs/tags/rune-v')
       shell: bash
       env:
         APPLE_DEVELOPER_ID_P12: ${{ inputs.apple_developer_id_p12 }}
@@ -122,6 +127,7 @@ runs:
     # Last before upload, on the final bytes: a build that can't open its
     # window never reaches a client, whose updater only ever moves forward.
     - name: Launch the packaged app against a same-source server
+      if: inputs.qualify == 'true'
       shell: bash
       run: |
         set -euo pipefail
@@ -129,13 +135,14 @@ runs:
         archive="$(find "$RUNNER_TEMP/dist" -name 'phux-rune-*' ! -name '*.sha256' ! -name '*.dmg')"
         bash clients/rune/scripts/qualify.sh "$archive" target/debug/phux "$RUNNER_TEMP/qualification"
     - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-      if: always()
+      if: always() && inputs.qualify == 'true'
       with:
         name: qualification-${{ inputs.name }}
         path: ${{ runner.temp }}/qualification
         if-no-files-found: warn
         retention-days: 14
     - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+      if: inputs.qualify == 'true'
       with:
         name: rune-${{ inputs.name }}
         path: ${{ runner.temp }}/dist/*

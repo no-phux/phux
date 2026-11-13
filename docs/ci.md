@@ -27,9 +27,16 @@ that receipt (`tools/src/routing/receipt.ts`).
 
 ## Native Apple qualification
 
-`ci.yml` runs the Linux Rune hosts. A pull request reports a passing
-`rune-macos` check without starting Apple runners; that receipt covers no
-Apple work. `rune-macos.yml` runs macOS and the native iOS simulator/device
+`ci.yml`'s `rune` lane is Linux. A pull request runs `check.sh` and cargo-deny
+on `linux-x86_64` only: no package, no packaged launch, and no
+`linux-aarch64`. Its receipt omits `linux-aarch64` and `packaging`, so a
+main push cannot reuse it for those. The merge queue, a main push, and a
+manual `ci` dispatch package and launch both Linux hosts. Nightly
+`cache-warm.yml` does the same with the default inputs. `rune-client.yml`
+does too, and its preflight still requires the green main `ci` that carried
+that qualification. A pull request reports a passing `rune-macos` check
+without starting Apple runners; that receipt covers no Apple work.
+`rune-macos.yml` runs macOS and the native iOS simulator/device
 qualification on main pushes, nightly, and manually. Every Rune-affecting
 queue group runs both Apple legs, whether reached directly or through Cargo.
 

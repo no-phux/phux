@@ -46,7 +46,14 @@ test("Rune qualifies and releases on macOS and Linux", () => {
   const matrix = table(table(job(rune, "build")["strategy"])["matrix"]);
   const runners = list(matrix["include"]).map((entry) => table(entry)["os"]);
   expect(runners).toContain("ubuntu-24.04");
+  expect(runners).toContain("ubuntu-24.04-arm");
   expect(runners).not.toContain("macos-26");
+  // The arm leg lives only on the qualifying matrix. A pull request uses the
+  // x86_64 check job and does not select ubuntu-24.04-arm.
+  expect(str(job(rune, "build")["if"])).toContain("inputs.qualify");
+  const check = job(rune, "linux-check");
+  expect(str(check["runs-on"])).toBe("ubuntu-24.04");
+  expect(str(check["if"])).toContain("inputs.qualify == false");
   expect(str(job(rune, "macos")["runs-on"])).toBe("macos-26");
   expect(str(job(rune, "macos")["if"])).toContain("inputs.hosts == 'macos'");
 });

@@ -7,8 +7,10 @@
 # and nothing else. A merge group plans like a main push. A main push whose
 # tree a pull request or merge group already validated with the same lanes
 # skips them all (tools/src/routing/receipt.ts). Rune's macOS and iOS legs
-# are rune-macos.yml. This workflow's `rune` lane is the Linux hosts only,
-# and its receipt never claims macOS coverage.
+# are rune-macos.yml. This workflow's `rune` lane is the Linux hosts. A pull
+# request runs check.sh and cargo-deny on linux-x86_64, and its receipt does
+# not claim linux-aarch64 or packaging. The merge queue, a main push, and a
+# dispatch still qualify both Linux hosts. The receipt never claims macOS.
 name: ci
 
 on:
@@ -57,6 +59,7 @@ jobs:
       web: ${{ steps.plan.outputs.web }}
       native: ${{ steps.plan.outputs.native }}
       rune: ${{ steps.plan.outputs.rune }}
+      rune_qualify: ${{ steps.plan.outputs.rune_qualify }}
       docs_only: ${{ steps.plan.outputs.docs_only }}
       web_engine: ${{ steps.plan.outputs.web_engine }}
       content: ${{ steps.plan.outputs.content }}
@@ -387,7 +390,9 @@ jobs:
       # `just native-smoke`, without installing just.
       - run: bash scripts/native-smoke.sh
 
-  # Rune's Linux hosts. macOS and the iOS simulator are rune-macos.yml.
+  # Rune's Linux hosts. A pull request runs check.sh and cargo-deny on
+  # linux-x86_64. Package, launch, and linux-aarch64 follow rune_qualify
+  # (merge queue, main push, dispatch). macOS and iOS are rune-macos.yml.
   rune:
     needs: plan
     if: needs.plan.outputs.rune == 'true'
@@ -395,6 +400,7 @@ jobs:
     with:
       hosts: linux
       ios: false
+      qualify: ${{ needs.plan.outputs.rune_qualify == 'true' }}
 
   # Keep Apple qualification inside the already-required queue check. Older
   # queue entries still use their original ci; no ruleset cutover is needed.

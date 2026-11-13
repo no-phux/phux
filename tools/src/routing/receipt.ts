@@ -14,7 +14,7 @@ export interface Receipt extends Table {
   readonly schema: number;
   readonly tree: string;
   readonly workflow: string;
-  /** The pull-request lane set. macOS coverage lives on rune-macos.yml, not here. */
+  /** Pull-request lanes, plus linux-aarch64 and packaging when that run qualified Linux. macOS coverage lives on rune-macos.yml. */
   readonly coverage: string;
 }
 

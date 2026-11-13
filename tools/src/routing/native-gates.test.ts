@@ -65,6 +65,30 @@ test("the split preserves real native, trust, transport and signed-byte qualific
   const inputs = table(table(table(build["on"])["workflow_call"])["inputs"]);
   expect(table(inputs["hosts"])["default"]).toBe("all");
   expect(table(inputs["ios"])["default"]).toBe(true);
+  expect(table(inputs["qualify"])["default"]).toBe(true);
+  const host = steps(action("rune-host"));
+  const packaged = host.filter((step) => {
+    const name = str(step["name"]) ?? "";
+    return name === "Package" || name.startsWith("Launch the packaged app");
+  });
+  expect(packaged.map((step) => str(step["if"]))).toEqual([
+    "inputs.qualify == 'true'",
+    "inputs.qualify == 'true'",
+  ]);
+  const signing = host.filter((step) => run(step).includes("sign-macos-desktop.sh"));
+  expect(signing.length).toBe(2);
+  for (const step of signing) expect(str(step["if"])).toContain("inputs.qualify == 'true'");
+  const uploads = host.filter((step) => uses(step).startsWith("actions/upload-artifact@"));
+  expect(uploads.length).toBe(2);
+  for (const step of uploads) expect(str(step["if"])).toContain("inputs.qualify == 'true'");
+  const check = job(build, "linux-check");
+  expect(str(check["runs-on"])).toBe("ubuntu-24.04");
+  expect(
+    withInput(steps(check).find((step) => uses(step).includes("rune-host")) ?? {}, "qualify"),
+  ).toBe(false);
+  // A tag and the nightly call pass no qualify input, so the default stays on.
+  expect(withInput(job(workflow("rune-client.yml"), "build"), "qualify")).toBeUndefined();
+  expect(withInput(job(workflow("cache-warm.yml"), "rune"), "qualify")).toBeUndefined();
 });
 
 test.each(["ci.yml", "rune-macos.yml"])(

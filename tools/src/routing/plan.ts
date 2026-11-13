@@ -4,8 +4,11 @@
 // merge group widens the Rust lanes to the full pool (a non-strict merge can
 // combine two green diffs into a red tree). Rune's macOS and iOS legs are
 // not lanes here: rune-macos.yml owns them, and a ci receipt must not claim
-// coverage they never ran. `just check` runs the pull-request plan locally,
-// through the same recipes the jobs call.
+// coverage they never ran. A pull request's Rune lane is check.sh and
+// cargo-deny on linux-x86_64. Packaging and linux-aarch64 run only when the
+// plan qualifies Linux, and the receipt names that coverage so a pull
+// request cannot stand in for it. `just check` runs the pull-request plan
+// locally, through the same recipes the jobs call.
 import type { Classification } from "./classify.ts";
 
 export const LANES = [
@@ -44,12 +47,21 @@ export const LANE_RECIPES: Record<Lane, readonly (readonly [string, ...string[]]
 /** Lanes a workstation cannot reproduce: x86_64 valgrind, a clean machine. */
 export const CI_ONLY: ReadonlySet<Lane> = new Set(["icount", "native"]);
 
+/** Coverage a Linux-qualifying run adds. A pull request never writes these. */
+export const LINUX_QUALIFY = ["linux-aarch64", "packaging"] as const;
+
 export interface Plan {
   readonly lanes: ReadonlySet<Lane>;
   /**
-   * The pull-request lane set: what an identical tree's receipt must cover.
-   * macOS is absent on purpose, so a main push cannot reuse a receipt that
-   * claims a leg this workflow did not run.
+   * Package every selected Linux host and launch the archives, including
+   * linux-aarch64. False on a pull request.
+   */
+  readonly runeQualify: boolean;
+  /**
+   * The pull-request lane set, plus `linux-aarch64` and `packaging` when
+   * this run qualified Linux. A pull request omits those tokens, so its
+   * receipt cannot satisfy a main push. macOS is absent on purpose, so a
+   * receipt cannot claim a leg this workflow did not run.
    */
   readonly coverage: string;
   readonly unitMode: Classification["unitMode"];
@@ -78,11 +90,23 @@ function needed(c: Classification, trigger: Trigger): Record<Lane, boolean> {
 const chosen = (flags: Record<Lane, boolean>): Set<Lane> =>
   new Set(LANES.filter((lane) => flags[lane]));
 
-export function plan(c: Classification, trigger: Trigger): Plan {
+/**
+ * `qualify`: package and launch both Linux hosts. Defaults on for a push
+ * (and therefore a merge group). A caller turns it on for a dispatch too;
+ * a pull request leaves it off.
+ */
+export function plan(
+  c: Classification,
+  trigger: Trigger,
+  qualify = trigger !== "pull_request",
+): Plan {
   const push = trigger === "push";
+  const prLanes = chosen(needed(c, "pull_request"));
+  const runeQualify = qualify && prLanes.has("rune");
   return {
     lanes: chosen(needed(c, trigger)),
-    coverage: [...chosen(needed(c, "pull_request"))].join(","),
+    runeQualify,
+    coverage: [...prLanes, ...(runeQualify ? LINUX_QUALIFY : [])].join(","),
     unitMode: push ? "workspace" : c.unitMode,
     unitTargets: push ? "" : c.unitTargets,
     testFilterset: push ? "" : c.testFilterset,
@@ -102,6 +126,7 @@ export function reused(p: Plan): Plan {
 export function planOutputs(p: Plan, c: Classification): Record<string, string | boolean> {
   return {
     ...Object.fromEntries(LANES.map((lane) => [lane, p.lanes.has(lane)])),
+    rune_qualify: p.lanes.has("rune") && p.runeQualify,
     docs_only: c.docsOnly,
     web_engine: p.lanes.has("web") && c.needed.has("web_engine"),
     content: c.contentNeeded,
