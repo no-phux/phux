@@ -104,6 +104,7 @@ use {
 pub const fn control_caps() -> ClientCapabilities {
     ClientCapabilities::new()
         .with_layers(LayerSet::with(&[Layer::L3]))
+        .with_credential_approvals(true)
         .with_resource_kinds(phux_client_core::session::KERNEL_RESOURCE_KINDS)
 }
 

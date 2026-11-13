@@ -133,6 +133,7 @@ impl Decoder<'_> {
         let mut ssh_origin = None;
         let mut quic_streams = false;
         let mut resource_kinds = crate::caps::ResourceKindSet::LEGACY;
+        let mut credential_approvals = false;
         while let Some((id, value)) = self.read_field()? {
             match id {
                 f::CLIENT_NAME => client_name = Some(utf8_value(value)?),
@@ -148,6 +149,9 @@ impl Decoder<'_> {
                 }
                 f::SSH_ORIGIN => ssh_origin = crate::wire::ssh_origin::decode_ssh_origin(value),
                 f::QUIC_STREAMS => quic_streams = sub!(value, Decoder::read_u8) != 0,
+                f::CREDENTIAL_APPROVALS => {
+                    credential_approvals = sub!(value, Decoder::read_u8) == 1;
+                }
                 f::RESOURCE_KINDS => {
                     resource_kinds =
                         crate::caps::ResourceKindSet::from_wire(sub!(value, Decoder::read_u64_be));
@@ -166,6 +170,7 @@ impl Decoder<'_> {
         }
         client_caps = client_caps
             .with_quic_streams(quic_streams)
+            .with_credential_approvals(credential_approvals)
             .with_resource_kinds(resource_kinds);
         Ok(FrameKind::Hello {
             client_name: req(client_name)?,

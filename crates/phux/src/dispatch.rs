@@ -83,6 +83,7 @@ pub(crate) fn dispatch(
         Some(Command::Approvals(commands::ApprovalsArgs { json })) => {
             commands::approvals::run_approvals(json.json, socket)
         }
+        Some(Command::Credentials(args)) => commands::credentials::run(args, socket),
         Some(Command::Approve(commands::ApproveArgs { id, yes, json })) => {
             commands::approvals::run_approve(&id, yes, json.json, socket)
         }

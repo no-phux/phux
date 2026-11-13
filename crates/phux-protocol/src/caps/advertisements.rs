@@ -77,6 +77,9 @@ pub struct ClientCapabilities {
     /// [`ResourceKindSet::LEGACY`]; a client that decodes a later kind lists
     /// it explicitly.
     pub resource_kinds: ResourceKindSet,
+    /// The client can review exact credential references and bound provider identity.
+    /// Explicit HELLO offer: legacy clients cannot approve opaque credential requests.
+    pub credential_approvals: bool,
 }
 
 /// Effective default colors reported by the client's outer terminal.
@@ -116,7 +119,15 @@ impl ClientCapabilities {
             ssh_origin: None,
             quic_streams: false,
             resource_kinds: ResourceKindSet::LEGACY,
+            credential_approvals: false,
         }
+    }
+
+    /// Builder setter for [`Self::credential_approvals`].
+    #[must_use]
+    pub const fn with_credential_approvals(mut self, enabled: bool) -> Self {
+        self.credential_approvals = enabled;
+        self
     }
 
     /// Builder setter for [`Self::resource_kinds`].

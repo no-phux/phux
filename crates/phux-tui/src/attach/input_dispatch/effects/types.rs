@@ -53,6 +53,8 @@ pub(in crate::attach) struct ActionEffects {
     pub(in crate::attach) session_management: Option<phux_config::keybind::ResolvedAction>,
     /// A `lock-window` / `unlock-window`: the tab's group id and the lock.
     pub(in crate::attach) tab_lock: Option<([u8; 16], bool)>,
+    /// Approval listing, review, or an explicitly confirmed decision.
+    pub(in crate::attach) approval: Option<phux_config::keybind::ResolvedAction>,
     /// Background work to start off the input loop (ADR-0172): a plugin
     /// action or an organize run. Its result returns as a toast.
     pub(in crate::attach) job: Option<Job>,

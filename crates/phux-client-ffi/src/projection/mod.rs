@@ -10,6 +10,7 @@
 //! model differs. A new reading either encoder needs belongs here.
 
 pub mod agent;
+pub mod approvals;
 // Only the encoders re-emit agent records; a no-encoder build (the native
 // desktop app) has no reader for it.
 #[cfg(any(feature = "c-abi", feature = "uniffi"))]

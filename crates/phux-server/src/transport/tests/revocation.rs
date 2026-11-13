@@ -1,4 +1,5 @@
 use super::*;
+mod credentials;
 
 /// ADR-0116: revoking a bearer ends its established session with the
 /// workload-auth §7 goodbye, refuses reconnection, and cleans up state.

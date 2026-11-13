@@ -145,6 +145,7 @@ pub fn command_rule(command: &Command) -> &'static Rule {
         Command::GetOrganization { .. } => &C_GET_ORGANIZATION,
         Command::DescribeApi => &C_API_DESCRIBE,
         Command::PrivacyStatus => &C_PRIVACY_STATUS,
+        Command::Credentials { .. } => &C_CREDENTIALS,
         Command::HostChecklist => &C_HOST_CHECKLIST,
         Command::GetCreation { .. } => &C_GET_CREATION,
         Command::SessionCreate { .. } => &C_SESSION_CREATE,
