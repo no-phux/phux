@@ -352,6 +352,13 @@ impl Desk {
             }
             Mode::All => {
                 let mut items = self.resource_items();
+                // The quick terminal's own action.
+                items.extend(self.quick.is_some().then(|| palette::Item {
+                    title: "Move to a Tab".to_owned(),
+                    detail: "into the main window".to_owned(),
+                    kind: "action",
+                    target: Target::MoveToTab,
+                }));
                 items.extend(palette::items(
                     topology,
                     &self.addressable(),
@@ -473,6 +480,7 @@ impl Desk {
             Target::Terminal { id, session } => self.show(id, &session),
             Target::Session(name) => self.show_session(&name),
             Target::Action(action) => self.shortcut(action, tx),
+            Target::MoveToTab => self.move_to_tab(),
             Target::Theme(id) => self.choose_theme(id.and_then(crate::theme::find)),
             Target::NewSession(name) => self.create_session(name),
             Target::NewWorktree(branch) => self.new_worktree(&branch),

@@ -14,6 +14,8 @@ pub(super) enum Entry {
     CopySelect,
     ConfirmClose,
     OptionMeta,
+    QuickTerminal,
+    QuickChord,
     Notifications,
     Hosts,
     PairPhone,
@@ -23,13 +25,15 @@ pub(super) enum Entry {
 }
 
 impl Entry {
-    const ALL: [Self; 12] = [
+    const ALL: [Self; 14] = [
         Self::Theme,
         Self::TextSize,
         Self::Font,
         Self::CopySelect,
         Self::ConfirmClose,
         Self::OptionMeta,
+        Self::QuickTerminal,
+        Self::QuickChord,
         Self::Notifications,
         Self::Hosts,
         Self::PairPhone,
@@ -45,7 +49,9 @@ impl Entry {
             | Self::Font
             | Self::CopySelect
             | Self::ConfirmClose
-            | Self::OptionMeta => Category::Terminal,
+            | Self::OptionMeta
+            | Self::QuickTerminal
+            | Self::QuickChord => Category::Terminal,
             Self::Notifications => Category::Notifications,
             Self::Hosts | Self::PairPhone => Category::RemoteHosts,
             Self::Diagnostics => Category::Developer,
@@ -61,6 +67,8 @@ impl Entry {
             Self::CopySelect => "Copy on select",
             Self::ConfirmClose => "Confirm before closing",
             Self::OptionMeta => "Option as Meta",
+            Self::QuickTerminal => "Quick terminal",
+            Self::QuickChord => "Quick terminal shortcut",
             Self::Notifications => "Notifications",
             Self::Hosts => "Machines",
             Self::PairPhone => "Pair a phone",
@@ -83,6 +91,13 @@ impl Entry {
                  choose, only a terminal an agent runs in asks."
             }
             Self::OptionMeta => "Option sends Esc-prefixed keys instead of typing å and ∑.",
+            Self::QuickTerminal => {
+                "A shortcut drops a terminal over any app, holding the quick session on this \
+                 computer. It works in every app, so it's off until you turn it on."
+            }
+            Self::QuickChord => {
+                "Click, then press the keys. Escape cancels; Backspace turns it off."
+            }
             Self::Notifications => crate::alerts::notifications_detail(
                 crate::alerts::available(),
                 cfg!(target_os = "macos"),
@@ -113,6 +128,8 @@ impl Entry {
             Self::CopySelect => on(desk.settings.copy_on_select),
             Self::ConfirmClose => on(desk.settings.confirm_close),
             Self::OptionMeta => on(desk.settings.option_as_meta),
+            Self::QuickTerminal => on(desk.quick_chord.on),
+            Self::QuickChord => desk.quick_chord.recorder.keycaps().concat(),
             Self::Notifications => on(desk.settings.notifications),
             Self::Hosts => desk.machines.label().to_owned(),
             Self::PairPhone => match &desk.settings_ui.pairing.devices {
@@ -153,6 +170,9 @@ impl Entry {
             Self::Font => "typeface family monospace",
             Self::CopySelect => "clipboard selection",
             Self::OptionMeta => "alt keyboard escape",
+            Self::QuickTerminal | Self::QuickChord => {
+                "global hotkey shortcut drop down dropdown panel quake visor"
+            }
             Self::ConfirmClose => "confirmation closing safety",
             Self::Notifications => "alerts bell",
             Self::Hosts => "remote ssh connection",
@@ -202,6 +222,15 @@ impl Entry {
                 .w_full()
                 .padding(16.0)
                 .child(updates::settings(desk, ink)),
+            Self::QuickChord => {
+                let managed = desk.file.quick_terminal.is_some();
+                let detail = if managed {
+                    "Set in config.toml"
+                } else {
+                    self.detail()
+                };
+                controls::shortcut(desk, self.title(), detail, ink)
+            }
             _ => self.toggle(desk, ink),
         }
     }
@@ -226,6 +255,12 @@ impl Entry {
                 desk.settings.option_as_meta,
                 Desk::toggle_option_as_meta,
                 file.option_as_meta.is_some(),
+            ),
+            Self::QuickTerminal => (
+                "set-quick-terminal",
+                desk.quick_chord.on,
+                Desk::toggle_quick_terminal,
+                file.quick_terminal.is_some(),
             ),
             _ => (
                 "set-notifications",
@@ -380,6 +415,11 @@ pub(super) fn matching(desk: &Desk) -> Vec<(Category, Vec<Entry>)> {
             let entries: Vec<_> = Entry::ALL
                 .into_iter()
                 .filter(|entry| !matches!(entry, Entry::OptionMeta) || cfg!(target_os = "macos"))
+                // Only a window with a quick terminal sets one up.
+                .filter(|entry| {
+                    !matches!(entry, Entry::QuickTerminal | Entry::QuickChord)
+                        || desk.quick_chord.available()
+                })
                 // A phone doesn't pair a phone.
                 .filter(|entry| !matches!(entry, Entry::PairPhone) || desk.phone.is_none())
                 .filter(|entry| entry.category() == category)

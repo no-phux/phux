@@ -82,10 +82,13 @@ pub fn run_desktop() {
     let spec = app_spec(size, min_size);
     perf::report_to_file();
     let mut app = desk::with_menus(rune::App::new(spec));
-    if let Some(chord) = desk::quick::configured().filter(|_| !phone) {
-        desk::quick::add(&mut app, &chord, resolved.clone());
-    }
+    // The quick terminal's panel is always there; its chord, once the file or
+    // Settings turns it on, is registered when the windows have started.
+    let panel = (!phone).then(|| desk::quick::add(&mut app, resolved.clone()));
     let window = app.handle();
+    if let Some(panel) = panel {
+        window.update(move |desk, _| desk.arm_quick(panel));
+    }
     let app = app
         .init(move || {
             let mut desk = Desk::new(&resolved).with_phone(phone);
@@ -98,6 +101,14 @@ pub fn run_desktop() {
             drag_regions: true,
         })
         .standard_menus()
+        // With the quick terminal's chord set, closing the window keeps the
+        // app for the chord; the Dock brings the window back.
+        .keep_running()
+        .on_close(|desk: &mut Desk, tx| {
+            if !desk.keeps_running() {
+                tx.quit();
+            }
+        })
         // Transparent so the glass slider can show Liquid Glass behind the
         // chrome; the root paints it solid until glass is turned up.
         .window_options(rune::WindowOptions {

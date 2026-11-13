@@ -100,6 +100,64 @@ pub(in crate::ui) fn toggle(
         .child(switch(on, ink).a11y_hidden())
 }
 
+/// A row with a shortcut recorder: the quick terminal's chord, live, and
+/// what holds it when it's refused. Off, or set in the file, it's dimmed.
+pub(super) fn shortcut(desk: &Desk, title: &'static str, detail: &'static str, ink: &Ink) -> El {
+    let quick = &desk.quick_chord;
+    let owner = quick.owner.clone();
+    let words = move |error: &rune::ShortcutError, chord: Option<&rune::Shortcut>| {
+        crate::desk::quick::refusal(error, chord, owner.as_deref())
+    };
+    let recorder =
+        rune_kit::ShortcutRecorder::new("set-quick-chord", &quick.recorder, |d: &mut Desk| {
+            &mut d.quick_chord.recorder
+        })
+        .label(title)
+        .on_change(|d: &mut Desk, next, _| d.record_quick_chord(next))
+        .error_message(words)
+        .width(150.0)
+        .disabled(!quick.on || desk.file.quick_terminal.is_some())
+        .build(&kit(ink));
+    row()
+        .key("quick-chord")
+        .w_full()
+        .min_h(60.0)
+        .px(16.0)
+        .py(10.0)
+        .gap(12.0)
+        .items_center()
+        .child(
+            col()
+                .grow(1.0)
+                .min_w(0.0)
+                .gap(3.0)
+                .child(
+                    text(title)
+                        .font(super::primary(desk, TextStyle::new(13.0, 500.0)))
+                        .color(ink.text)
+                        .wrap(),
+                )
+                .child(
+                    text(detail)
+                        .font(super::secondary(desk, CAPTION.lh(15.0)))
+                        .color(ink.dim)
+                        .wrap(),
+                )
+                .a11y_hidden(),
+        )
+        .child(recorder)
+}
+
+/// The recorder's kit in this window's colours.
+fn kit(ink: &Ink) -> rune_kit::Kit {
+    let mut kit = rune_kit::Kit::neutral(crate::theme::on_fill(ink.bg) == rune::Color::WHITE);
+    let c = &mut kit.c;
+    (c.bg_base, c.border_base, c.border_focus) = (ink.bg, ink.separator, ink.accent);
+    (c.text_muted, c.text_faint, c.layer_03) = (ink.text, ink.dim, ink.hover);
+    (c.danger.fg, c.danger.border) = (ink.danger, ink.danger);
+    kit
+}
+
 pub(super) fn stepper(desk: &Desk, ink: &Ink) -> El {
     let step = |glyph: &'static str, name, key: &'static str, press: fn(&mut Desk)| {
         pressable(key, ink)

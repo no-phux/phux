@@ -283,18 +283,28 @@ recent-first = true     # list the session you used last first
 **Copy Settings as TOML** in Rune's command palette puts your current
 choices on the clipboard as this table. Rune reads the file at launch.
 
-`quick-terminal` names a global chord that drops a terminal from the top of
-the screen over whatever app is in front, on the current Space, without
-switching to Rune's window. The same chord, or clicking away, hides it. It
-shows a session of its own called `quick` on this computer, so what runs
-there keeps running while it's hidden, and `phux attach quick` reaches it
-too. It's off until you name a chord, because a global chord is taken from
-every other app:
+`quick-terminal` names a global chord that drops a terminal over whatever
+app is in front, on the current Space, without switching to Rune's window.
+The same chord, or clicking away, hides it. It shows a session of its own
+called `quick` on this computer, so what runs there keeps running while it's
+hidden, and `phux attach quick` reaches it too. Rune's sidebar and palette
+leave that session out. It's off until you turn it on, because a global
+chord is taken from every other app. **Settings › Terminal** turns it on and
+records the chord, and a change applies at once; set here, the file wins:
 
 ```toml
 [rune]
 quick-terminal = "ctrl+backquote"   # or "alt+space", "cmd+shift+t"; "none" is off
+quick-terminal-size = 0.4           # share of the display's height, 0.2 to 0.9
+quick-terminal-edge = "top"         # or "bottom"
 ```
+
+The panel is 960 points wide, centred on that edge of the display under the
+pointer; on Linux it keeps its default height. **Move to a Tab** in the
+panel's palette moves its terminal into the main window's session as a new
+tab, and the quick session starts a fresh shell for next time. On macOS,
+while the chord is on, closing the main window keeps Rune running for the
+chord; clicking its Dock icon brings the window back.
 
 `ssh-agent` names the socket of the SSH agent Rune's `ssh://` hosts use. An
 app opened from the Dock doesn't see your shell's `SSH_AUTH_SOCK`, so a key

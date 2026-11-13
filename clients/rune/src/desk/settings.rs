@@ -137,7 +137,7 @@ pub(super) fn load_file() -> (RuneCfg, Option<String>) {
 
 impl Desk {
     /// True, with a word on why, when `config.toml` owns a setting.
-    fn file_managed(&mut self, set: bool) -> bool {
+    pub(super) fn file_managed(&mut self, set: bool) -> bool {
         if set {
             self.say(
                 NoticeKind::Info,

@@ -197,7 +197,9 @@ impl Desk {
         }
         crate::theme::watch_omarchy(waker.clone());
         self.watch(waker);
-        self.dial();
+        if !self.quick_idle() {
+            self.dial();
+        }
         if !self.launch.can_ensure() {
             self.start_updater();
         } else if self.machines.current.is_some() {
@@ -457,6 +459,9 @@ impl Desk {
     /// Once per poll: keep trying while the connection is down. True when
     /// the window should redraw.
     pub(super) fn tend_link(&mut self, tx: &mut Tx) -> bool {
+        if self.quick_idle() {
+            return false;
+        }
         if self.link_is_up() {
             let was_down = self.link.down_since.is_some();
             self.link.up();
