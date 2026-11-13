@@ -54,14 +54,9 @@ jobs:
       - run: nix develop -c just rust-lint
       - name: Check the plugin index compiles
         run: nix develop -c cargo check --locked --manifest-path scripts/plugin-index/Cargo.toml
-      - name: free disk and the previous day's key before the objects save
+      - name: leave disk headroom for the objects save
         if: steps.lane.outputs.cache-save-reason == 'default-branch push' && steps.lane.outputs.cache-hit != 'true'
-        env:
-          GH_TOKEN: ${{ github.token }}
-          PREFIX: linux-arm64-mbx-phux-check-
-        run: |
-          bash scripts/ci/mbx-export-headroom.sh
-          bash scripts/ci/prune-build-cache.sh --replace-prefix "$PREFIX"
+        run: bash scripts/ci/mbx-export-headroom.sh
 
   rust-test:
     name: warm rust test
@@ -90,14 +85,9 @@ jobs:
         env:
           PHUX_TEST_ARCHIVE: ${{ runner.temp }}/phux-tests.tar.zst
         run: nix develop -c just test-archive
-      - name: free disk and the previous day's key before the objects save
+      - name: leave disk headroom for the objects save
         if: steps.lane.outputs.cache-save-reason == 'default-branch push' && steps.lane.outputs.cache-hit != 'true'
-        env:
-          GH_TOKEN: ${{ github.token }}
-          PREFIX: linux-arm64-mbx-phux-test-
-        run: |
-          bash scripts/ci/mbx-export-headroom.sh
-          bash scripts/ci/prune-build-cache.sh --replace-prefix "$PREFIX"
+        run: bash scripts/ci/mbx-export-headroom.sh
 
   rust-uniffi:
     name: warm rust uniffi
@@ -145,17 +135,14 @@ jobs:
         run: echo "hit=${{ steps.lane.outputs.cache-hit }} reason=${{ steps.lane.outputs.cache-save-reason }} key=${{ steps.lane.outputs.cache-key }}"
       - name: just perf-icount
         run: nix develop -c just perf-icount
-      - name: free disk and the previous day's key before the objects save
+      - name: leave disk headroom for the objects save
         if: steps.lane.outputs.cache-save-reason == 'default-branch push' && steps.lane.outputs.cache-hit != 'true'
-        env:
-          GH_TOKEN: ${{ github.token }}
-          PREFIX: linux-x64-mbx-phux-icount-
-        run: |
-          bash scripts/ci/mbx-export-headroom.sh
-          bash scripts/ci/prune-build-cache.sh --replace-prefix "$PREFIX"
+        run: bash scripts/ci/mbx-export-headroom.sh
 
-  # After today's keys exist, drop the previous day and any superseded
-  # Rune rust-cache entry. A branch dispatch must not delete: this job's
+  # Job dependencies include post-step uploads. Only actual current-day
+  # caches qualify retiring the last older restore source; a skipped/failed
+  # upload must not destroy that fallback. A branch dispatch must not delete:
+  # this job's
   # token can remove repository caches, and the ref gate is the boundary.
   prune-build-cache:
     name: prune superseded build caches

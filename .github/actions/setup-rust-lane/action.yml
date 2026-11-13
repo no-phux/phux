@@ -18,8 +18,8 @@
 #      save uses the same key a main push would. Any other ref stays
 #      restore-only. The primary key excludes the commit: an exact hit skips
 #      the post-step export. The key changes with flake.lock, Cargo.lock, or
-#      the UTC day. prune-build-cache keeps a current-day key and drops the
-#      previous one, so the new day does not stack a second copy on the cap.
+#      the UTC day. After uploads, prune-build-cache keeps current-day keys
+#      and retires old copies without deleting the sole restore source early.
 #      A cold test build records "not looked up": mbx learns the key while
 #      compiling, then the save makes the next job a hit. Run 38451988937
 #      compiled the test profile in 10m 24s with 0 hits and stored a 2.3 GB
@@ -150,7 +150,7 @@ runs:
         # explicit cache-key is unchanged, so the saved entry is the UTC-day
         # key, not a per-run key. Off the default branch the reported push
         # is still restore-only.
-        GITHUB_EVENT_NAME: ${{ inputs.record-main-cache == 'true' && 'push' || github.event_name }}
+        GITHUB_EVENT_NAME: ${{ inputs.record-main-cache == 'true' && github.ref == 'refs/heads/main' && (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && 'push' || github.event_name }}
       with:
         backend: github
         github-cache-mode: objects
@@ -205,10 +205,10 @@ runs:
       if: inputs.build-cache == 'deps'
       id: deps
       with:
-        shared-key: phux-${{ inputs.cache-lane }}
         # flake.lock pins the Zig and mold a dependency build script uses;
         # rust-cache already keys on rustc, Cargo.lock, and CARGO_* settings.
-        key: ${{ steps.deps-env.outputs.flake }}
+        # With shared-key set, v2.9.3 ignores key: put the flake hash here.
+        shared-key: phux-${{ inputs.cache-lane }}-${{ steps.deps-env.outputs.flake }}
         # Pull requests restore only (see docs/development.md#ci). A main
         # schedule saves too: cache-warm.yml refills this lane at 00:10 UTC.
         save-if: ${{ (github.event_name == 'push' || github.event_name == 'schedule') && github.ref == 'refs/heads/main' }}
