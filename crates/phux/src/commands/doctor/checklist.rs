@@ -296,9 +296,11 @@ fn remote_reach(server: Option<&ServerInputs>, reachable: Option<&Check>) -> Ite
         .listeners
         .iter()
         .filter(|slot| slot.bound)
-        .map(|slot| match &slot.addr {
-            Some(addr) => format!("{} {addr}", slot.transport),
-            None => slot.transport.to_string(),
+        .map(|slot| {
+            slot.addr.as_ref().map_or_else(
+                || slot.transport.to_string(),
+                |addr| format!("{} {addr}", slot.transport),
+            )
         })
         .collect::<Vec<_>>();
     Item::new(

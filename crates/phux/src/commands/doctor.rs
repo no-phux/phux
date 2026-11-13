@@ -138,8 +138,7 @@ pub(crate) fn run_doctor(json: bool, socket: Option<PathBuf>) -> ExitCode {
         return report_json(&checks, &checklist);
     }
     let code = report_human(&checks);
-    use std::io::IsTerminal as _;
-    let color = crate::output::color_enabled(std::io::stdout().is_terminal());
+    let color = crate::output::color_enabled(std::io::IsTerminal::is_terminal(&std::io::stdout()));
     out!("{}", checklist::render_human(&checklist, color));
     code
 }
