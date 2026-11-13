@@ -2,6 +2,7 @@
 
 File transfer and Git checkout methods share the [protocol](../protocol.md)
 command envelope and authenticated dispatch, but have distinct filesystem reach.
+[Background push](#background-push) is the one request the server makes itself.
 
 ## File transfer
 
@@ -73,3 +74,54 @@ The [request and answer types](../../crates/phux-protocol/src/checkout.rs), the
 [server handler](../../crates/phux-server/src/runtime/apps/terminal/checkout.rs), and the
 shared [`phux-git`](../../crates/phux-git/src/checkout.rs) module own the
 details.
+
+## Background push
+
+A phone that is not connected can still be told that an agent needs it. The
+phone registers a **push grant**: `SET_METADATA` at `Global` scope under
+`phux.push/v1/<device>`, a UTF-8 JSON object.
+
+```json
+{"gateway":"https://push.example/v1/push","grant":"<secret>","host":"mini","finished":true}
+```
+
+| Field | Value |
+| --- | --- |
+| `gateway` | Where the server posts. `https://`, or `http://` on loopback only; at most 512 bytes. |
+| `grant` | The bearer secret the gateway minted for the device: 16 to 256 URL-safe ASCII bytes. |
+| `host` | The id the device knows this server by, 1 to 128 bytes, echoed so a tap routes. |
+| `finished` | Optional, off when absent. `true` also asks for the finished notice below. |
+
+Unknown fields are ignored, so a server that predates `finished` stores the
+grant and sends asks only. A value that does not parse is not stored. A
+server keeps at most 32 grants and remembers which connection wrote each.
+Deleting the key withdraws the grant.
+
+The server posts a notice only to grants whose writing connection is gone; a
+connected device sees the same thing live. The request is one `POST` to
+`gateway` with `Authorization: Bearer <grant>` and a JSON body:
+
+```json
+{"schema_version":1,"host":"mini","pane":"local:7","question":"q1","action":"reply"}
+{"schema_version":1,"host":"mini","pane":"local:7","action":"finished"}
+```
+
+`pane` is `local:<id>`, or `satellite:<host>:<id>` on a hub. Nothing else
+leaves the host: no agent name, session name, question text, or screen
+content. The gateway chooses the alert's words.
+
+- **An agent asked** (`"action":"reply"`): sent to every grant, once per
+  question id, when an `asked` event is raised for the pane.
+- **An agent finished** (`"action":"finished"`, no `question`): sent only to
+  grants with `"finished": true`, when the pane's
+  [agent record](../program-sequences.md#the-agent-record) goes from
+  `working` straight to `done`. `working` to `blocked` is the ask's; a
+  record that is cleared, a pane that closes, a second `done`, and `done`,
+  `idle`, `done` with no `working` between send nothing, so one run sends
+  once. `working` to `idle` sends nothing either: an agent phux knows only
+  by its screen reads as `idle` at its prompt and never as `done`.
+
+A gateway MUST refuse a notice whose `action` it does not know rather than
+alert it as an ask. Sends are not retried. The
+[push module](../../crates/phux-server/src/push/mod.rs) owns the limits and
+the exchange.
