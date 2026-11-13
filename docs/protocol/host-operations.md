@@ -103,6 +103,7 @@ connected device sees the same thing live. The request is one `POST` to
 
 ```json
 {"schema_version":1,"host":"mini","pane":"local:7","question":"q1","action":"reply"}
+{"schema_version":1,"host":"mini","pane":"local:7","question":"blocked","action":"open"}
 {"schema_version":1,"host":"mini","pane":"local:7","action":"finished"}
 ```
 
@@ -112,10 +113,17 @@ content. The gateway chooses the alert's words.
 
 - **An agent asked** (`"action":"reply"`): sent to every grant, once per
   question id, when an `asked` event is raised for the pane.
+- **An agent is blocked** (`"action":"open"`, `"question":"blocked"`): sent
+  to every grant when the pane's agent record turns `blocked` from any other
+  state while no ask is pending on the pane. This is how an agent known only
+  by its screen (a rule matched its permission prompt) reaches a phone: it
+  never raises `asked`. Staying `blocked` sends nothing; leaving and
+  re-entering it sends again. `blocked` is not a real question id, so an
+  answer pinned to it is refused and the phone opens the pane instead.
 - **An agent finished** (`"action":"finished"`, no `question`): sent only to
   grants with `"finished": true`, when the pane's
   [agent record](../program-sequences.md#the-agent-record) goes from
-  `working` straight to `done`. `working` to `blocked` is the ask's; a
+  `working` straight to `done`. `working` to `blocked` is the block's; a
   record that is cleared, a pane that closes, a second `done`, and `done`,
   `idle`, `done` with no `working` between send nothing, so one run sends
   once. `working` to `idle` sends nothing either: an agent phux knows only
