@@ -106,6 +106,21 @@ const fn is_live_terminal_input(input: &TerminalInput) -> bool {
     )
 }
 
+/// Whether `event` is typing, which names the pane's controller.
+const fn is_typed_input(event: &InputEvent) -> bool {
+    matches!(event, InputEvent::Key(_) | InputEvent::Paste(_))
+}
+
+/// Record `client_id` as the connection typing into the pane
+/// (`phux.controller/v1`); a no-op unless it changed.
+fn note_typed(
+    state: &SharedState,
+    client_id: ClientId,
+    terminal_id: &phux_protocol::ids::ResourceId,
+) {
+    state.with_mut(|server| server.note_controller(terminal_id, client_id));
+}
+
 fn note_input_activity(
     gate: &mut ActivityGate,
     state: &SharedState,

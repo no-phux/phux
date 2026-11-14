@@ -5,7 +5,9 @@ use phux_protocol::ids::{ResourceId, SessionId, WindowId};
 use phux_protocol::wire::frame::{CommandResult, CommandValue};
 use phux_protocol::wire::info::{ResourceInfo, SessionInfo, SessionSnapshot};
 
+mod layout;
 mod render;
+mod review;
 
 fn inventory(rt: &mut Runtime<Desk>) {
     let session = SessionId::new(1);
@@ -20,6 +22,10 @@ fn inventory(rt: &mut Runtime<Desk>) {
                 .with_session(Some(session))
                 .with_title(Some("editor".into())),
         ]);
+    set_inventory(rt, snapshot);
+}
+
+fn set_inventory(rt: &mut Runtime<Desk>, snapshot: SessionSnapshot) {
     let client = rt.state.client.clone().unwrap();
     let request_id = client.refresh_topology().unwrap();
     client
@@ -29,6 +35,51 @@ fn inventory(rt: &mut Runtime<Desk>) {
         })
         .unwrap();
     rt.update(|d, _| d.topology = Some(Topology::from_snapshot(&snapshot)));
+}
+
+fn detailed_inventory(rt: &mut Runtime<Desk>) {
+    let session = SessionId::new(1);
+    let window = WindowId::new(1);
+    let pane = |n, session, title: &str, cwd: &str| {
+        ResourceInfo::new(ResourceId::local(n), window, 80, 24)
+            .with_session(Some(SessionId::new(session)))
+            .with_title(Some(title.into()))
+            .with_cwd(Some(cwd.into()))
+    };
+    set_inventory(
+        rt,
+        SessionSnapshot::new(session, window, ResourceId::local(1))
+            .with_sessions(vec![
+                SessionInfo::new(session, "phux"),
+                SessionInfo::new(SessionId::new(2), "api — authentication and permissions"),
+                SessionInfo::new(SessionId::new(3), "notes"),
+            ])
+            .with_resources(vec![
+                pane(1, 1, "editor", "/workspace/phux"),
+                pane(2, 1, "Review session navigation", "/workspace/phux"),
+                pane(3, 1, "Build and test", "/workspace/phux"),
+                pane(4, 2, "Investigate reconnect behavior", "/workspace/api"),
+                pane(5, 2, "shell", "/workspace/api"),
+            ]),
+    );
+    rt.update(|d, _| {
+        for (id, name, state) in [
+            (2, "Claude", "blocked"),
+            (3, "Codex", "working"),
+            (4, "OpenCode", "done"),
+        ] {
+            d.activities.apply(
+                &phux_client_runtime::control::Event::AgentMetadata {
+                    terminal_id: ResourceId::local(id),
+                    value: Some(
+                        serde_json::to_vec(&serde_json::json!({"name":name,"state":state}))
+                            .unwrap(),
+                    ),
+                },
+                &[],
+            );
+        }
+    });
 }
 
 #[test]

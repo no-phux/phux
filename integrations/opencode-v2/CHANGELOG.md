@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.9.3](https://github.com/no-phux/phux/compare/opencode-plugin-v0.9.2...opencode-plugin-v0.9.3) (2026-11-13)
+
+
+### Bug Fixes
+
+* **rune:** honor option as meta on rune dev 2612be7 ([#2442](https://github.com/no-phux/phux/issues/2442)) ([3ed78fb](https://github.com/no-phux/phux/commit/3ed78fbe3c36cfe156758b63d111cca6bc33f9e8))
+
 ## [0.9.2](https://github.com/no-phux/phux/compare/opencode-plugin-v0.9.1...opencode-plugin-v0.9.2) (2026-11-13)
 
 

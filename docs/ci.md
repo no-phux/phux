@@ -68,6 +68,9 @@ prefix differs from its calling `ci`, preventing self-cancellation.
 
 The test lanes compile once (`just test-archive`) and run the unit and e2e
 shards from that nextest archive. Pull requests restore caches and never
-save them; main pushes save one entry per lane under a 10 GB repository
-budget, pruned by `prune-build-cache`, warmed by `cache-warm.yml`.
-Runners are free hosted Ubuntu x64 and arm64, macOS 26 and `xcode-27`.
+save them. `main` pushes and the 00:10 UTC cache-warm run save one entry per
+Linux Rust lane under the 10 GB budget. `prune-build-cache` drops superseded
+entries and never a key from the current UTC day. `cache-warm.yml` warms
+those Linux lanes at 00:10 UTC and the Rune lane at 06:17 UTC.
+Runners are the free hosted ones:
+Ubuntu x64 and arm64, and macOS 26 plus the `xcode-27` image.

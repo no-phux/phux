@@ -88,6 +88,10 @@ pub(crate) fn with_attached_input_destination<R>(
         // The host checked before dispatch; the input lane may have waited.
         // Recheck the same authority under the lock held through delivery.
         let (pane, resource) = attached_input_resource(s, client_id, wire_terminal_id)?;
+        // Typing only: a focus report or another view's pointer is not it.
+        if matches!(frame_label, "INPUT_KEY" | "INPUT_PASTE") {
+            s.note_controller(wire_terminal_id, client_id);
+        }
         let touched_session = s.attached().get(&client_id).map(|c| c.session);
         if let Some(session) = touched_session {
             s.touch_session(session);

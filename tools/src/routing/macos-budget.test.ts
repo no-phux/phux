@@ -7,8 +7,8 @@ import { jobs, uses, workflow, workflowNames } from "../policy/workflows.ts";
 // One line per way a macos-* or xcode-* leg enters the five-slot pool.
 // workflow_call does not start a run, so reusable workflows count through each caller.
 const MACOS_BUDGET = [
-  "cache-warm.yml rune → rune-build.yml macos (macos-arm64) on macos-26 | schedule 17 6 * * *, workflow_dispatch",
-  "cache-warm.yml rune → rune-build.yml ios-native (ios-native-simulator) on macos-26 | schedule 17 6 * * *, workflow_dispatch",
+  "cache-warm.yml rune → rune-build.yml macos (macos-arm64) on macos-26 | schedule 10 0 * * * 17 6 * * *, workflow_dispatch",
+  "cache-warm.yml rune → rune-build.yml ios-native (ios-native-simulator) on macos-26 | schedule 10 0 * * * 17 6 * * *, workflow_dispatch",
   "ci.yml rune-macos → rune-build.yml macos (macos-arm64) on macos-26 | merge_group",
   "ci.yml rune-macos → rune-build.yml ios-native (ios-native-simulator) on macos-26 | merge_group",
   "ffi-xcframework.yml build on xcode-27 | workflow_dispatch",

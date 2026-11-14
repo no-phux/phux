@@ -173,6 +173,7 @@ so the user finds a record afterwards.
 | `app` | `[A-Za-z0-9_.+-]{1,32}` | A stable program identifier such as `cargo` or `terraform`. A value outside the set is treated as absent. A record without `app` takes it from its nearest ancestor that has one, when read. |
 | `title` | base64 UTF-8 | A short label. phux uses the active record's title as the pane's agent name. Empty is absent. |
 | `msg` | base64 UTF-8 | One line: what the record is doing, waiting for, or finished. phux shows it but reads no meaning into it. Empty is absent. |
+| `resume` | `[A-Za-z0-9_.+,/=-]{1,256}`, not starting with `-` | A phux extension, not part of the Program Status Protocol; other terminals ignore it as an unknown key. See [Resume](#resume). |
 
 ### Limits
 
@@ -245,6 +246,57 @@ is the empty string). A record is `{"id", "state", "kind", "progress",
 "app", "title", "msg"}`, with absent keys omitted and `app` resolved
 through inheritance. No client can write either key.
 
+### Resume
+
+`resume` is a phux extension. A program hands phux an opaque token, and
+after a crash or a reboot `phux restore` starts the pane with a command the
+user wrote for that program, with the token as one argument. The program
+never names a command.
+
+```sh
+#!/bin/sh
+# notes: keeps a draft open; `notes ID` picks it up again.
+id=${1:-$(date +%s)}
+case $id in */* | .*) echo "notes: bad id" >&2; exit 2 ;; esac   # the id is untrusted
+report() { printf '\033]7501;state=%s:app=notes:resume=%s\033\\' "$1" "$2" > /dev/tty; }
+report working "$id"            # from now on, a restore reopens this draft
+"${EDITOR:-vi}" "$HOME/.notes/$id"
+report idle ""                  # finished: nothing left to resume
+```
+
+The user allows it in `config.toml`, read when the server starts:
+
+```toml
+[[restore.program]]
+app = "notes"
+command = ["notes", "${PHUX_RESUME_TOKEN}"]
+```
+
+- A token counts only when the same report carries a valid `app`. A token
+  that breaks the grammar is ignored and the previous one stays. `resume=`
+  with an empty value withdraws it. A report without `resume` changes
+  nothing, so a program does not have to repeat it.
+- phux reads `app` and `resume` itself, apart from the record: a token is
+  taken from a report even when the rest of it is discarded, and it does
+  not belong to an `id`. A pane holds one token.
+- phux forgets the token when the program withdraws it, when a shell
+  prompt starts (OSC 133 `A`), and when the pane's process exits with a
+  status while the server is running. It keeps the token when the server
+  is stopped, upgraded, or killed, and when the machine reboots.
+- At relaunch, phux looks up `[[restore.program]]` by `app`. With an entry,
+  it runs that `command` in the pane's recorded directory, as the pane's
+  process, in place of the recorded command. No shell is involved: each
+  element that is exactly `${PHUX_RESUME_TOKEN}` becomes the token, and
+  nothing else is substituted. Without an entry the pane starts as it
+  always did. A pane that resumes an agent session through its integration
+  does that instead.
+- An entry is refused when the config is read unless `command` starts with
+  a program name and has `${PHUX_RESUME_TOKEN}` as a whole element, never
+  inside a longer one. `app` may be listed once.
+- If a prompt starts and the program reports a token in the same burst of
+  output, phux may forget the token. The program's next report with
+  `resume` restores it.
+
 ### Security
 
 Everything in a report is untrusted input from a program that already
@@ -267,6 +319,15 @@ controls the pane.
 - Any client that can read the pane's metadata can read its records,
   including remote clients the server admits. Do not put secrets in `msg`
   or `title`.
+- A `resume` token is the exception: it is not metadata, no client can read
+  it, and it is not sent to a hub. It is stored in the server's own records
+  on disk, so it is still not a place for a secret.
+- Any writer to the pane can set a token for any `app`, so a
+  `[[restore.program]]` command MUST treat the token as untrusted input: it
+  may contain `/` and `..`, and it may name something the user never
+  opened. The command should look the token up among things it created,
+  not open it as a path. phux guarantees only its shape: one argument, the
+  listed bytes, no leading `-`.
 
 ### Examples
 
@@ -325,3 +386,4 @@ Read the reply from the terminal in raw mode; an answer starting
 | Date | Revision | Changes |
 | --- | --- | --- |
 | 2026-10-21 | 1 | First version. Describes phux's implementation of Program Status Protocol 0.4. |
+| 2026-11-13 | 2 | Adds `resume`, a phux extension. |

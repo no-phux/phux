@@ -185,6 +185,7 @@ fn json(phux: &Path, args: &[&str]) -> Result<Value, String> {
 pub fn registered(phux: &Path) -> Result<Vec<Host>, String> {
     let doc = json(phux, &["host", "ls", "--json"])?;
     crate::host_color::learn(&doc);
+    crate::handoff::learn(&doc);
     Ok(parse_hosts(&doc))
 }
 

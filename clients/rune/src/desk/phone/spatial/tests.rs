@@ -1,6 +1,7 @@
 use super::*;
 
 mod fixture;
+mod ime;
 mod input;
 mod refit;
 mod touch;
