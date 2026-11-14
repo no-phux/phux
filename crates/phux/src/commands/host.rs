@@ -31,7 +31,8 @@
 //!   ],
 //!   "local": {
 //!     "name": "studio",
-//!     "color": {"id": "violet", "hex": "#9A78E8", "override": true}
+//!     "color": {"id": "violet", "hex": "#9A78E8", "override": true},
+//!     "cert_fingerprint": "AB:CD:..32 bytes.."
 //!   }
 //! }
 //! ```
@@ -42,7 +43,8 @@
 //! key chose it rather than the name hash. A name in both registries with a
 //! `color` on only one role reports that colour in both.
 //! `local` is this machine under its short host name, coloured by
-//! `[host] color`. `phux host color` sets any of them. The client identity is named
+//! `[host] color`, with the certificate pin its server presents (`null`
+//! before one exists). `phux host color` sets any of them. The client identity is named
 //! by path only; the key bytes never appear. `host add --json` and `host
 //! renew --json` wrap one such object under `"host"`, beside an
 //! `"enrollment"` object (`status`, `error`, `credential_id`, `expires_at`,

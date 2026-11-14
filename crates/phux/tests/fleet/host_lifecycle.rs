@@ -316,6 +316,7 @@ fn host_color_overrides_the_hash_and_ls_reports_it() {
     let auto = serde_json::json!({"id": "magenta", "hex": "#D9629F", "override": false});
     assert_eq!(ls["hosts"][0]["color"], auto);
     assert!(ls["local"]["name"].is_string());
+    assert!(ls["local"].get("cert_fingerprint").is_some());
 
     let set = color(&["host", "color", "mini", "violet", "--json"]);
     assert_eq!(set["host"]["color"]["id"], "violet");

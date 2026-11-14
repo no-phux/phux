@@ -135,7 +135,8 @@ do about a bad release.
 | `links` | OSC 8 hyperlinks and written URLs under a cell |
 | `activity` | per-terminal agent state, questions, commands and bells, and what needs you |
 | `inbox` | what is waiting on you, most urgent first |
-| `alerts`, `dock` | system notifications, their clicks, and the Dock count (`dock` is the crate's only `unsafe`) |
+| `alerts`, `dock` | system notifications, their clicks, and the Dock count |
+| `handoff` | the pane in front as an `NSUserActivity` (`sh.phux.pane`) the phone app continues; advertised only from the signed bundle |
 | `theme` | built-in terminal palettes and the chrome drawn from them |
 | `palette` | palette items and fuzzy ranking |
 | `onboarding`, `desk/onboarding`, `ui/onboarding` | first-run steps: the CLI's `--json` answers parsed, step state in settings, the view |
