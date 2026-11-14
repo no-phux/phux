@@ -128,6 +128,13 @@ mod resync_debounce_tests {
         ResyncDebounce::idle()
     }
 
+    /// Take the owed resync, which must exist; nothing is owed afterwards.
+    fn owed(debounce: &mut ResyncDebounce) -> (ResyncReason, ResyncAudience) {
+        let owed = debounce.take().expect("a resync is owed");
+        assert!(!debounce.is_owed(), "taking it clears the debt");
+        owed
+    }
+
     fn pump(owner: u64) -> ResyncTarget {
         ResyncTarget {
             owner,
@@ -169,7 +176,7 @@ mod resync_debounce_tests {
 
         debounce.arm(gap_for(pump(0)), sleep.as_mut());
         let first_deadline = sleep.deadline();
-        assert!(debounce.pending);
+        assert!(debounce.is_owed());
 
         for round in 0..20_u64 {
             // Faster than the debounce, which is exactly the starving case.
@@ -188,7 +195,7 @@ mod resync_debounce_tests {
             sleep.deadline() <= tokio::time::Instant::now(),
             "the coalesced snapshot must have become due despite the request storm",
         );
-        let (reason, audience) = debounce.take();
+        let (reason, audience) = owed(&mut debounce);
         assert_eq!(reason, ResyncReason::OutboundGap);
         let expected: Vec<_> = (0..10).map(pump).collect();
         assert_eq!(
@@ -212,7 +219,7 @@ mod resync_debounce_tests {
             first_deadline,
             "including a queued gap request at EOF must not wait another debounce",
         );
-        let (reason, audience) = debounce.take();
+        let (reason, audience) = owed(&mut debounce);
         assert_eq!(reason, ResyncReason::OutboundGap);
         assert_eq!(
             audience,
@@ -231,7 +238,7 @@ mod resync_debounce_tests {
         debounce.arm(gap_for(pump(1)), sleep.as_mut());
         debounce.arm(gap_for(pump(2)), sleep.as_mut());
         debounce.arm(gap_for(pump(1)), sleep.as_mut());
-        let (reason, audience) = debounce.take();
+        let (reason, audience) = owed(&mut debounce);
         assert_eq!(reason, ResyncReason::OutboundGap);
         assert_eq!(
             audience,
@@ -241,7 +248,7 @@ mod resync_debounce_tests {
 
         debounce.arm(gap_for(pump(3)), sleep.as_mut());
         assert_eq!(
-            debounce.take().1,
+            owed(&mut debounce).1,
             ResyncAudience::Only(vec![pump(3)].into())
         );
     }
@@ -257,7 +264,7 @@ mod resync_debounce_tests {
         debounce.arm(gap_for(pump(1)), sleep.as_mut());
         debounce.arm(resize(), sleep.as_mut());
         assert_eq!(
-            debounce.take(),
+            owed(&mut debounce),
             (ResyncReason::Resize, ResyncAudience::Everyone)
         );
 
@@ -265,7 +272,7 @@ mod resync_debounce_tests {
         debounce.arm(resize(), sleep.as_mut());
         debounce.arm(gap_for(pump(1)), sleep.as_mut());
         assert_eq!(
-            debounce.take(),
+            owed(&mut debounce),
             (ResyncReason::Resize, ResyncAudience::Everyone)
         );
 
@@ -273,7 +280,7 @@ mod resync_debounce_tests {
         debounce.arm(gap_for(pump(1)), sleep.as_mut());
         debounce.arm(gap(), sleep.as_mut());
         assert_eq!(
-            debounce.take(),
+            owed(&mut debounce),
             (ResyncReason::OutboundGap, ResyncAudience::Everyone)
         );
     }
@@ -308,7 +315,7 @@ mod resync_debounce_tests {
         debounce.arm(resize(), sleep.as_mut());
 
         assert!(sleep.deadline() > gap_deadline);
-        assert_eq!(debounce.take().0, ResyncReason::Resize);
+        assert_eq!(owed(&mut debounce).0, ResyncReason::Resize);
     }
 }
 
