@@ -159,8 +159,12 @@ mutate next ".products.phux.artifacts[\"$TARGET\"].sha256 = \"$digest_next\""
 install_to() { local dir="$1"; shift; installer --os linux --arch x86_64 --install-dir "$dir" "$@"; }
 
 : > "$CALLS"
-install_to "$TMP/stable" 2>"$TMP/err" >/dev/null
-grep -Fq 'installed phux 9.8.7' "$TMP/err" || fail "stable install: $(cat "$TMP/err")"
+install_to "$TMP/stable" 2>"$TMP/err" >"$TMP/out"
+# A default install says one plain line and nothing on stderr; --verbose says more.
+[[ ! -s $TMP/err ]] || fail "a default install said more: $(cat "$TMP/err")"
+[[ $(wc -l <"$TMP/out") -eq 1 ]] && grep -Eq '^phux is installed' "$TMP/out" || fail "stable install: $(cat "$TMP/out")"
+install_to "$TMP/stable" --verbose 2>"$TMP/err" >/dev/null
+grep -Fq 'installed phux 9.8.7' "$TMP/err" || fail "verbose install: $(cat "$TMP/err")"
 grep -Fxq 'phux v9.8.7' "$TMP/stable/phux" && grep -Fxq stable "$TMP/stable/.phux-channel" || fail "stable files"
 if grep -Fq .sha256 "$CALLS"; then fail "a manifest install fetched a sidecar"; fi
 if grep -Eq '^1 ' "$METER_CALLS" || grep -Fq 'phux-update: verifying' "$TMP/err"; then fail "progress must be opt-in"; fi
@@ -335,21 +339,24 @@ rm -rf "$HOME" && mkdir "$HOME"
 mkdir -p "$TMP/on-path" "$TMP/shadow"
 on="$(cd "$TMP/on-path" && pwd -P)"
 out="$(TEST_PATH="$on:/usr/bin:/bin" install_to "$on" 2>/dev/null)"
-grep -Fxq 'next: phux' <<<"$out" && ! grep -Fq 'PATH remedy' <<<"$out" || fail "on PATH: $out"
+grep -Fxq 'phux is installed. Run `phux` to start.' <<<"$out" || fail "on PATH: $out"
 printf '#!/bin/sh\n' > "$TMP/shadow/phux"
 chmod 755 "$TMP/shadow/phux"
 out="$(TEST_PATH="$TMP/shadow:$on:/usr/bin:/bin" install_to "$on" 2>/dev/null)"
-grep -Fq "next: $on/phux" <<<"$out" && grep -Fq 'PATH remedy' <<<"$out" || fail "shadowed: $out"
+grep -Fq "but $TMP/shadow/phux comes first on PATH. Run $on/phux" <<<"$out" || fail "shadowed: $out"
 [[ ! -e $HOME/.zshrc ]] || fail "an on-PATH install edited the profile"
 mkdir -p "$TMP/off-path"
 off="$(cd "$TMP/off-path" && pwd -P)"
-install_to "$off" >/dev/null 2>&1
+out="$(install_to "$off" 2>/dev/null)"
+grep -Fxq 'phux is installed. Open a new terminal and run `phux` (~/.zshrc now adds it to PATH).' <<<"$out" \
+  || fail "off PATH: $out"
 install_to "$off" >/dev/null 2>&1
 [[ $(grep -cFx "export PATH=$off:\"\$PATH\"" "$HOME/.zshrc") -eq 1 ]] || fail "zsh profile line"
 SHELL=/usr/bin/fish install_to "$off" >/dev/null 2>&1
 grep -Fxq "fish_add_path -g $off" "$HOME/.config/fish/conf.d/phux.fish" || fail "fish profile line"
 rm -rf "$HOME/.zshrc"
-PHUX_NO_MODIFY_PATH=1 install_to "$off" >/dev/null 2>&1
+out="$(PHUX_NO_MODIFY_PATH=1 install_to "$off" 2>/dev/null)"
+grep -Fq "Add it to PATH with export PATH=$off:" <<<"$out" || fail "opted out: $out"
 install_to "$off" --no-modify-path >/dev/null 2>&1
 [[ ! -e $HOME/.zshrc ]] || fail "an opted-out install edited the profile"
 

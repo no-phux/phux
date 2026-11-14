@@ -25,6 +25,10 @@ die() {
   phux_message error "$*"
   exit 1
 }
+# A step worth knowing about only with --verbose: versions, places, checks.
+detail() {
+  [ "${verbose:-0}" -eq 0 ] || phux_message "$@"
+}
 
 usage() {
   cat <<'EOF'
@@ -55,12 +59,22 @@ only when none is found.
   --os <darwin|linux>, --arch <arm64|x86_64>
                                   Override platform detection.
   --dry-run                       Print what would be downloaded and where it would go.
+  --verbose                       Also say what was installed where, and how it was checked.
   --help                          Show this help.
 
 With minisign on PATH, the release checksum's signature, and the channel
 manifest's (required on lts), are verified against the phux release keys. Set PHUX_REQUIRE_SIGNATURE=1 to refuse to install
 without that check (0, the default, falls back to the SHA-256 alone).
 EOF
+}
+
+# PATH for reading: ~ for HOME. Not for a command line; shell_quote is.
+pretty_path() {
+  # shellcheck disable=SC2088 # a ~ to read, never expanded
+  case "${HOME:-}:$1" in
+    ?*:"${HOME:-}"/*) printf '~/%s' "${1#"$HOME"/}" ;;
+    *) printf '%s' "$1" ;;
+  esac
 }
 
 # POSIX stand-in for `printf %q`: bare when no shell treats a character
@@ -291,7 +305,7 @@ verify_signature() {
   if ! command -v minisign >/dev/null 2>&1; then
     [ "${PHUX_REQUIRE_SIGNATURE:-0}" = 0 ] \
       || die "PHUX_REQUIRE_SIGNATURE=1 but minisign is not on PATH; nothing was installed"
-    phux_message info "minisign not found; checking the SHA-256 without its release signature"
+    detail info "minisign not found; checking the SHA-256 without its release signature"
     return 0
   fi
   download "${asset_url}.sha256" "${work}/signed.sha256" \
@@ -439,14 +453,15 @@ add_to_profile() {
   printf '%s\n' "$profile"
 }
 
+# The installer's last words: that phux is in, and the one thing to do next.
 report_path() {
   dir="$(cd "$install_dir" && pwd -P)"
   found="$(command -v phux 2>/dev/null || true)"
   if [ "${found#/}" != "$found" ] && [ "$(cd "$(dirname "$found")" && pwd -P)/phux" = "${dir}/phux" ]; then
-    echo "next: phux"
+    # shellcheck disable=SC2016 # backticks mark the command, not a substitution
+    echo 'phux is installed. Run `phux` to start.'
     return
   fi
-  printf 'next: %s\n' "$(shell_quote "${dir}/phux")"
   on_path=0
   old_ifs="$IFS"
   IFS=:
@@ -456,11 +471,16 @@ report_path() {
   done
   set +f
   IFS="$old_ifs"
-  if [ "$on_path" -eq 0 ] && [ "$modify_path" -eq 1 ] && profile="$(add_to_profile "$dir")"; then
-    printf 'added %s to PATH in %s; new terminals find phux\n' "$(shell_quote "$dir")" "$(shell_quote "$profile")"
+  # shellcheck disable=SC2016 # backticks mark a command; the PATH line expands when it runs
+  if [ "$on_path" -eq 1 ]; then
+    printf 'phux is installed in %s, but %s comes first on PATH. Run %s, or move %s first on PATH.\n' \
+      "$(pretty_path "$dir")" "$found" "$(shell_quote "${dir}/phux")" "$(pretty_path "$dir")"
+  elif [ "$modify_path" -eq 1 ] && profile="$(add_to_profile "$dir")"; then
+    printf 'phux is installed. Open a new terminal and run `phux` (%s now adds it to PATH).\n' "$(pretty_path "$profile")"
+  else
+    printf 'phux is installed in %s. Add it to PATH with export PATH=%s:"$PATH", then run `phux`.\n' \
+      "$(pretty_path "$dir")" "$(shell_quote "$dir")"
   fi
-  # shellcheck disable=SC2016 # the remedy expands when the user runs it
-  printf 'PATH remedy: export PATH=%s:"$PATH"\n' "$(shell_quote "$dir")"
 }
 
 # On Linux a plain server is not restarted after a reboot and often ends at
@@ -501,7 +521,7 @@ install_cli() {
   fetch_verified
   unpack_cli
   publish_cli
-  phux_message ok "installed phux ${build_id} for ${target} to ${install_dir}"
+  detail ok "installed phux ${build_id} for ${target} to ${install_dir}"
   if [ "$target" = aarch64-apple-darwin ] && [ "$channel" != next ]; then
     # Best effort, in a subshell so a failure cannot undo the CLI install.
     (install_server_app) || phux_message warn "phux Server.app was not installed; the server runs from ${install_dir}/phux"
@@ -556,7 +576,7 @@ install_server_app() {
       *) rm -rf "$entry" ;;
     esac
   done
-  phux_message ok "installed phux Server.app ${build_id} to ${versions}/Current"
+  detail ok "installed phux Server.app ${build_id} to ${versions}/Current"
 }
 
 # --- Phux Rune ---------------------------------------------------------------
@@ -717,8 +737,8 @@ install_rune_macos() {
   lock_applications
   publish_rune_macos
   register_bundle_macos "$installed"
-  phux_message ok "installed Phux Rune ${build_id} to ${applications_dir}"
-  printf 'next: open %s\n' "$(shell_quote "$(cd "$applications_dir" && pwd -P)/Phux Rune.app")"
+  detail ok "installed Phux Rune ${build_id} to ${applications_dir}"
+  rune_installed="Phux Rune is installed. Open Phux Rune from $(pretty_path "$(cd "$applications_dir" && pwd -P)")."
 }
 
 rune_member() {
@@ -786,8 +806,9 @@ install_rune_linux() {
   fi
   register_desktop_entry "${installed}/sh.phux.rune.desktop" sh.phux.rune phux-rune sh.phux.rune.png \
     || phux_message warn "could not register the menu entry; run ${bundle}/phux-rune"
-  phux_message ok "installed Phux Rune ${build_id} to ${installed}"
-  printf 'next: %s\n' "$(shell_quote "${bundle}/phux-rune")"
+  detail ok "installed Phux Rune ${build_id} to ${installed}"
+  if [ -x "${install_dir}/phux-rune" ]; then run="phux-rune"; else run="$(shell_quote "${bundle}/phux-rune")"; fi
+  rune_installed="Phux Rune is installed. Open Phux Rune from your apps (or run \`${run}\`)."
 }
 
 # On its own feed: there is no channel to pick and nothing to pin, and the
@@ -800,7 +821,7 @@ install_rune() {
   [ "$target" != aarch64-apple-darwin ] || [ "$dry_run" -eq 1 ] || [ "$(uname -s)" = Darwin ] \
     || die "the macOS build of Phux Rune installs only on macOS"
   if ! has_cli; then
-    phux_message info "phux CLI not found; installing it first"
+    detail info "phux CLI not found; installing it first"
     install_cli "" ""
   fi
   resolve_rune
@@ -825,6 +846,7 @@ install_dir="${PHUX_INSTALL_DIR:-${HOME:-}/.local/bin}"
 applications_dir="${PHUX_DESKTOP_APPLICATIONS_DIR:-}"
 rune=0
 dry_run=0
+verbose=0
 os=""
 arch=""
 modify_path=1
@@ -856,13 +878,14 @@ while [ "$#" -gt 0 ]; do
       ;;
     --rune) rune=1 ;;
     --dry-run) dry_run=1 ;;
+    --verbose) verbose=1 ;;
     --no-modify-path) modify_path=0 ;;
     --service) service=1 ;;
     --no-service) service=0 ;;
     --help | -h) usage; exit 0 ;;
     *) die "unknown option: $1" ;;
   esac
-  case "$1" in --desktop | --rune | --dry-run | --no-modify-path | --service | --no-service) shift ;; *) shift 2 ;; esac
+  case "$1" in --desktop | --rune | --dry-run | --verbose | --no-modify-path | --service | --no-service) shift ;; *) shift 2 ;; esac
 done
 
 if [ "$rune" -eq 1 ]; then
@@ -920,10 +943,17 @@ cleanup() {
 trap cleanup EXIT
 trap_signals
 
+rune_installed=""
 if [ "$rune" -eq 1 ]; then
   install_rune
 else
   install_cli "$pin" "$pin_sha256"
-  [ "$dry_run" -eq 1 ] || report_path
 fi
 [ "$dry_run" -eq 1 ] || offer_service
+if [ "$dry_run" -eq 1 ]; then
+  :
+elif [ -n "$rune_installed" ]; then
+  printf '%s\n' "$rune_installed"
+else
+  report_path
+fi

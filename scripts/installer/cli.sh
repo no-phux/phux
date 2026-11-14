@@ -105,14 +105,15 @@ add_to_profile() {
   printf '%s\n' "$profile"
 }
 
+# The installer's last words: that phux is in, and the one thing to do next.
 report_path() {
   dir="$(cd "$install_dir" && pwd -P)"
   found="$(command -v phux 2>/dev/null || true)"
   if [ "${found#/}" != "$found" ] && [ "$(cd "$(dirname "$found")" && pwd -P)/phux" = "${dir}/phux" ]; then
-    echo "next: phux"
+    # shellcheck disable=SC2016 # backticks mark the command, not a substitution
+    echo 'phux is installed. Run `phux` to start.'
     return
   fi
-  printf 'next: %s\n' "$(shell_quote "${dir}/phux")"
   on_path=0
   old_ifs="$IFS"
   IFS=:
@@ -122,11 +123,16 @@ report_path() {
   done
   set +f
   IFS="$old_ifs"
-  if [ "$on_path" -eq 0 ] && [ "$modify_path" -eq 1 ] && profile="$(add_to_profile "$dir")"; then
-    printf 'added %s to PATH in %s; new terminals find phux\n' "$(shell_quote "$dir")" "$(shell_quote "$profile")"
+  # shellcheck disable=SC2016 # backticks mark a command; the PATH line expands when it runs
+  if [ "$on_path" -eq 1 ]; then
+    printf 'phux is installed in %s, but %s comes first on PATH. Run %s, or move %s first on PATH.\n' \
+      "$(pretty_path "$dir")" "$found" "$(shell_quote "${dir}/phux")" "$(pretty_path "$dir")"
+  elif [ "$modify_path" -eq 1 ] && profile="$(add_to_profile "$dir")"; then
+    printf 'phux is installed. Open a new terminal and run `phux` (%s now adds it to PATH).\n' "$(pretty_path "$profile")"
+  else
+    printf 'phux is installed in %s. Add it to PATH with export PATH=%s:"$PATH", then run `phux`.\n' \
+      "$(pretty_path "$dir")" "$(shell_quote "$dir")"
   fi
-  # shellcheck disable=SC2016 # the remedy expands when the user runs it
-  printf 'PATH remedy: export PATH=%s:"$PATH"\n' "$(shell_quote "$dir")"
 }
 
 # On Linux a plain server is not restarted after a reboot and often ends at
@@ -167,7 +173,7 @@ install_cli() {
   fetch_verified
   unpack_cli
   publish_cli
-  phux_message ok "installed phux ${build_id} for ${target} to ${install_dir}"
+  detail ok "installed phux ${build_id} for ${target} to ${install_dir}"
   if [ "$target" = aarch64-apple-darwin ] && [ "$channel" != next ]; then
     # Best effort, in a subshell so a failure cannot undo the CLI install.
     (install_server_app) || phux_message warn "phux Server.app was not installed; the server runs from ${install_dir}/phux"
@@ -222,5 +228,5 @@ install_server_app() {
       *) rm -rf "$entry" ;;
     esac
   done
-  phux_message ok "installed phux Server.app ${build_id} to ${versions}/Current"
+  detail ok "installed phux Server.app ${build_id} to ${versions}/Current"
 }
