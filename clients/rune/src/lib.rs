@@ -32,10 +32,12 @@ mod paths;
 mod perf;
 mod pitch;
 mod pitlane;
+mod quick_look;
 mod reef;
 #[cfg(any(target_os = "linux", test))]
 #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 mod scheme;
+mod services;
 mod session_color;
 mod standing;
 mod system_settings;
@@ -111,6 +113,13 @@ pub fn run_desktop() {
     // Settings turns it on, is registered when the windows have started.
     let panel = (!phone).then(|| desk::quick::add(&mut app, resolved.clone()));
     let window = app.handle();
+    // Finder's service needs the running app; headless tooling has none.
+    #[cfg(target_os = "macos")]
+    if !rune::is_headless() {
+        let services = app.handle();
+        app.handle()
+            .update(move |_, _| services::register(services));
+    }
     if let Some(panel) = panel {
         window.update(move |desk, _| desk.arm_quick(panel));
     }

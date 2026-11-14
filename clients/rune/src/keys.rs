@@ -89,6 +89,8 @@ pub enum Shortcut {
     SwitchSession,
     /// A path on the pane's host, inserted at its prompt.
     InsertPath,
+    /// Preview the file a path in the output names.
+    QuickLook,
     /// The tab at this index.
     Tab(u8),
     RenameSession,

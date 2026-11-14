@@ -182,7 +182,9 @@ pub fn view(desk: &Desk, cx: &mut Cx<Desk>) -> El {
                 .h_full()
                 .min_w(0.0)
                 .min_h(0.0)
-                .child(status::title_bar(desk, &p, lights))
+                .children(
+                    (!desk.settings.hover_toolbar).then(|| status::title_bar(desk, &p, lights)),
+                )
                 .child(
                     col()
                         .grow(1.0)
@@ -204,7 +206,8 @@ pub fn view(desk: &Desk, cx: &mut Cx<Desk>) -> El {
                                 .children(status::confirm_bar(desk, &p))
                                 .children(overlay::toast(desk, &p)),
                         ),
-                ),
+                )
+                .children(status::hover_toolbar(desk, &p, lights)),
         );
     // No root paste hook: it would read the clipboard before anything here
     // saw the key. ⌘V and Edit ▸ Paste come to `Desk::key` instead, which

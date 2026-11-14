@@ -76,6 +76,8 @@ pub struct Settings {
     pub confirm_close: bool,
     /// How much Liquid Glass shows through the window chrome, 0 to 100.
     pub glass: u8,
+    /// The toolbar hides until the pointer reaches the window's top edge.
+    pub hover_toolbar: bool,
 }
 
 impl Settings {
@@ -92,6 +94,7 @@ impl Settings {
             copy_on_select: prefs.get("copy_on_select").unwrap_or(false),
             confirm_close: prefs.get("confirm_close").unwrap_or(false),
             glass: prefs.get::<u8>("glass").unwrap_or(0).min(100),
+            hover_toolbar: prefs.get("hover_toolbar").unwrap_or(false),
         }
     }
 
@@ -107,6 +110,7 @@ impl Settings {
             copy_on_select: file.copy_on_select.unwrap_or(self.copy_on_select),
             confirm_close: file.confirm_close.unwrap_or(self.confirm_close),
             glass: self.glass,
+            hover_toolbar: self.hover_toolbar,
         }
     }
 }
@@ -413,6 +417,13 @@ impl Desk {
             .prefs
             .set("theme", &theme.map_or(String::new(), |t| t.id.to_owned()));
         self.apply_theme();
+    }
+
+    pub fn toggle_hover_toolbar(&mut self) {
+        self.settings.hover_toolbar = !self.settings.hover_toolbar;
+        let _ = self
+            .prefs
+            .set("hover_toolbar", &self.settings.hover_toolbar);
     }
 
     pub fn toggle_notifications(&mut self) {

@@ -123,6 +123,7 @@ pub fn with_menus(app: App<Desk>) -> App<Desk> {
         item!(TERMINAL, FindSelection),
         item!(TERMINAL, CopyMode),
         item!(TERMINAL, InsertPath),
+        item!(TERMINAL, QuickLook),
         item!(TERMINAL, NextTab),
         item!(TERMINAL, PreviousTab),
         item!(TERMINAL, NextTerminal),
