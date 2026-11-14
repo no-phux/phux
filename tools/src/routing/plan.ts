@@ -175,6 +175,15 @@ function touches(scope: PathScope | undefined, patterns: readonly string[]): boo
   return scope.paths.some((path) => matchesAny(path, patterns));
 }
 
+/** Main always qualifies these lanes; only PRs may use their path scope. */
+function qualificationRequired(
+  trigger: Trigger,
+  scope: PathScope | undefined,
+  patterns: readonly string[],
+): boolean {
+  return trigger === "push" || touches(scope, patterns);
+}
+
 function needed(c: Classification, trigger: Trigger, options: PlanOptions): Record<Lane, boolean> {
   const push = trigger === "push";
   const rust = c.needed.has("phux");
@@ -182,8 +191,9 @@ function needed(c: Classification, trigger: Trigger, options: PlanOptions): Reco
   // Pull requests run these two only for their own inputs. Main policy always
   // runs them, including a docs-only or release-metadata push: the aggregate
   // rejects a skip there.
-  const icount = push || options.perfBaseline === true || touches(options.scope, ICOUNT_PR_PATHS);
-  const native = push || touches(options.scope, NATIVE_SETUP_PATHS);
+  const icount =
+    options.perfBaseline === true || qualificationRequired(trigger, options.scope, ICOUNT_PR_PATHS);
+  const native = qualificationRequired(trigger, options.scope, NATIVE_SETUP_PATHS);
   return {
     guards: true,
     lint: rust,
