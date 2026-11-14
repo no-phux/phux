@@ -136,14 +136,7 @@ fn instance_is_dangerous(method: &str, payload: Payload, args: &Value) -> bool {
 }
 
 fn signal_arg(args: &Value) -> Option<TerminalSignal> {
-    match args.get("signal").and_then(Value::as_str)? {
-        "interrupt" => Some(TerminalSignal::Interrupt),
-        "freeze" => Some(TerminalSignal::Freeze),
-        "resume" => Some(TerminalSignal::Resume),
-        "terminate" => Some(TerminalSignal::Terminate),
-        "kill" => Some(TerminalSignal::Kill),
-        _ => None,
-    }
+    crate::tools::signals::signal_named(args.get("signal").and_then(Value::as_str)?)
 }
 
 /// The decision frame a `phux_approve` call sends, on a placeholder id.

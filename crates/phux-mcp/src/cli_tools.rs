@@ -105,7 +105,7 @@ pub(crate) fn signal_schema() -> Value {
         "Send a process-group signal to exactly one target. terminate/kill/interrupt require confirm=true.",
         json!({
             "target": string_schema(),
-            "signal": { "type": "string", "enum": ["interrupt", "freeze", "resume", "terminate", "kill"] },
+            "signal": { "type": "string", "enum": crate::tools::signals::signal_names() },
             "confirm": { "type": "boolean", "description": "Required true for interrupt, terminate, and kill." },
             "idempotency_key": {
                 "type": "string",

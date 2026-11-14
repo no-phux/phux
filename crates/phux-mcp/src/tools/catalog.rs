@@ -61,7 +61,7 @@ pub(crate) fn catalog() -> Value {
                     "target": { "type": "string", "description": TARGET_DESC },
                     "path": { "type": "string", "minLength": 1, "description": "Local path on the calling MCP server filesystem." },
                     "extension": { "type": "string", "pattern": "^[A-Za-z0-9]{1,16}$" },
-                    "timeout_secs": { "type": "integer", "minimum": 1, "maximum": 3600, "description": "Overall resolution/read/upload deadline. Default 60 seconds." },
+                    "timeout_secs": { "type": "integer", "minimum": 1, "maximum": crate::tools::MAX_TIMEOUT_SECS, "description": "Overall resolution/read/upload deadline. Default 60 seconds." },
                     "socket": { "type": "string" }
                 },
                 "required": ["target", "path"],
@@ -90,7 +90,7 @@ pub(crate) fn catalog() -> Value {
                 "properties": {
                     "target": { "type": "string", "description": TARGET_DESC },
                     "command": { "type": "string" },
-                    "timeout_secs": { "type": "number", "minimum": 1, "maximum": 3600, "description": "Give up after this many seconds. Default 600; bounded to 1..=3600." },
+                    "timeout_secs": { "type": "integer", "minimum": 1, "maximum": crate::tools::MAX_TIMEOUT_SECS, "description": "Give up after this many seconds. Default 600; bounded to 1..=3600." },
                     "force": { "type": "boolean", "description": "Skip the available-shell precondition and type the command line whatever is running in the pane. Default false." },
                     "socket": { "type": "string" }
                 },

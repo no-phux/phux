@@ -65,12 +65,7 @@ fn upload_extension(args: &Value) -> Result<Option<String>, ToolError> {
 }
 
 fn upload_timeout_secs(args: &Value) -> Result<u64, ToolError> {
-    args.get("timeout_secs").map_or(Ok(60), |value| {
-        value
-            .as_u64()
-            .filter(|secs| (1..=3600).contains(secs))
-            .ok_or_else(|| ToolError::new("`timeout_secs` must be an integer in 1..=3600"))
-    })
+    crate::tools::bounded_timeout_secs(args, Some(60))
 }
 
 fn upload_document(receipt: &phux_client::upload::UploadReceipt) -> Result<Value, ToolError> {
