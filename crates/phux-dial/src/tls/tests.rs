@@ -231,6 +231,39 @@ async fn require_paired_refuses_a_server_that_did_not_ask_for_the_certificate() 
     }
 }
 
+/// The same refusal for a key the client cannot read: a held identity that
+/// requires paired authority refuses a server that did not ask, and an
+/// unrequired one connects either way.
+#[tokio::test]
+async fn a_held_identity_that_requires_pairing_refuses_a_server_that_did_not_ask() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let (certificate, private_key) = client_pair(dir.path());
+    let held = HeldIdentity {
+        chain: crate::cert::load_certs(&certificate).expect("chain"),
+        key: rustls::crypto::ring::sign::any_supported_type(
+            &crate::cert::load_key(&private_key).expect("key"),
+        )
+        .expect("signing key"),
+    };
+    let required = TlsClientIdentity::HeldRequirePaired(held.clone());
+
+    let downgraded = handshake(false, &required)
+        .await
+        .expect_err("a server that did not ask is a downgrade");
+    assert!(downgraded.contains(DOWNGRADE_REFUSED), "{downgraded}");
+    handshake(true, &required)
+        .await
+        .expect("a server that asks is paired");
+    for server_asks in [false, true] {
+        handshake(server_asks, &TlsClientIdentity::Held(held.clone()))
+            .await
+            .expect("an unrequired held identity connects either way");
+    }
+    let unpinned = client_config_with_identity(&CertTrust::SkipVerify, &required, None)
+        .expect_err("requiring pairing needs a pinned server");
+    assert!(unpinned.to_string().contains("skip-verify"), "{unpinned}");
+}
+
 /// A CA and a leaf it issued for server authentication, as rcgen
 /// certificates, plus the leaf's key.
 struct Issued {

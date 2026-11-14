@@ -32,7 +32,9 @@
 //! Binding crates translate these into their language and hold no state
 //! machine of their own.
 
-#![forbid(unsafe_code)]
+// Denied, not forbidden: `hardware_key::enclave` alone reloads a Secure
+// Enclave key through Security.framework, which has no safe binding for it.
+#![deny(unsafe_code)]
 #![deny(missing_docs)]
 #![deny(rustdoc::private_intra_doc_links)]
 
@@ -45,6 +47,7 @@ pub mod draw;
 pub mod engine;
 pub mod enroll;
 pub mod handshake;
+pub mod hardware_key;
 pub mod organize;
 pub mod pairing;
 pub mod perf;

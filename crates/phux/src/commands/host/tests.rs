@@ -278,6 +278,45 @@ fn table_renders_role_state_and_auth_columns() {
     assert!(edge.contains("satellite") && edge.contains("disabled") && edge.contains("ssh"));
 }
 
+/// `host ls` says where each client key is: a PEM file, this machine's
+/// hardware, or nowhere; the JSON row carries the same word.
+#[test]
+fn the_listing_names_where_each_client_key_is() {
+    use super::list::row_json;
+    let dir = tempfile::tempdir().expect("tempdir");
+    let (pem, held) = (dir.path().join("a.key"), dir.path().join("b.key"));
+    std::fs::write(&pem, "-----BEGIN PRIVATE KEY-----\nAAAA\n").expect("pem");
+    let header = phux_client_runtime::hardware_key::HEADER;
+    std::fs::write(&held, format!("{header}\n00ff\n")).expect("hardware key file");
+    let keyed = |name: &str, key: Option<&std::path::Path>| HostRow {
+        client_key: key.map(std::path::Path::to_path_buf),
+        ..row(name, HostRole::Remote)
+    };
+    let rows = [
+        keyed("file", Some(&pem)),
+        keyed("hard", Some(&held)),
+        keyed("none", None),
+    ];
+    let kinds: Vec<_> = rows
+        .iter()
+        .map(|row| row_json(row)["client_key_kind"].clone())
+        .collect();
+    assert_eq!(
+        kinds,
+        [
+            serde_json::json!("file"),
+            serde_json::json!("hardware"),
+            serde_json::Value::Null
+        ]
+    );
+    let table = render_table(&rows);
+    let lines: Vec<&str> = table.lines().collect();
+    assert!(lines[0].trim_end().ends_with("KEY"), "{table}");
+    for (line, kind) in lines[1..].iter().zip(["file", "hardware", "-"]) {
+        assert!(line.trim_end().ends_with(kind), "{table}");
+    }
+}
+
 /// The empty states teach the one command that fills the table — the
 /// ssh form, with the role flag under a satellite filter.
 #[test]

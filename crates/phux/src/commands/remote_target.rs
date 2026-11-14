@@ -323,10 +323,7 @@ fn register_over_ssh(
         previous_token: previous.token.as_deref(),
         previous_fingerprint: previous.fingerprint.as_deref(),
         previous_identity: previous.identity.as_ref(),
-        workload: Some(enroll::WorkloadEnrollment {
-            dir: &remotes_dir,
-            name: &name,
-        }),
+        workload: Some(previous.held.replacement(&remotes_dir, &name, false)),
     };
     let (entry, outcome) = host::enroll_remote_over_ssh(
         &name,

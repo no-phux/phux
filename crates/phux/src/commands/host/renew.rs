@@ -4,7 +4,6 @@ use std::process::ExitCode;
 
 use super::super::enroll::{
     self, CertificateStatus, ClientIdentityFiles, EnrollEvent, FarHost, HeldIdentity,
-    WorkloadEnrollment,
 };
 use super::super::json_err::{self, CliError, codes};
 use super::super::remote::{self, Endpoint, RemoteEntry};
@@ -23,11 +22,16 @@ use super::manage::find_host;
 /// before the rewrite leaves the entry on its current certificate. The new
 /// certificate must come from the authority that issued the held one, so a
 /// destination that reaches a different machine changes nothing.
-pub(super) fn run_renew(name: &str, remote_phux: &str, json: bool) -> ExitCode {
+/// `--hardware-key` makes the new key in this machine's hardware; the file
+/// key it replaces is removed with the rest of the old pair.
+pub(super) fn run_renew(name: &str, remote_phux: &str, hardware_key: bool, json: bool) -> ExitCode {
     let plan = match RenewPlan::for_entry(name) {
         Ok(plan) => plan,
         Err((err, code)) => return json_err::emit(json, &err, code),
     };
+    if let Err(err) = super::add::hardware_key_ready(hardware_key) {
+        return json_err::emit(json, &err, 1);
+    }
     let ssh_host = plan.entry.ssh_destination();
     // `--remote-phux` left at its default defers to the one the entry
     // recorded at enrollment.
@@ -42,10 +46,8 @@ pub(super) fn run_renew(name: &str, remote_phux: &str, json: bool) -> ExitCode {
         remote_phux,
     };
     let remotes_dir = phux_server::telemetry::state_dir().join("remotes");
-    let workload = WorkloadEnrollment {
-        dir: &remotes_dir,
-        name,
-    };
+    // An entry already on a hardware key stays on one.
+    let workload = plan.held.replacement(&remotes_dir, name, hardware_key);
     let mut warnings = Vec::new();
     let mut narrate = |event: EnrollEvent| {
         if event.is_warning() {
