@@ -70,6 +70,7 @@ mod native_agent;
 mod options;
 mod org_plane;
 pub mod organization;
+mod private_upload;
 mod responses;
 mod roster;
 mod service_http;
@@ -100,6 +101,7 @@ pub use options::{
 };
 pub use org_plane::{ArrangementSubmitError, mint_operation};
 pub use organization::{InboxView, IntakeView, OrganizationReplica, ReplicaAction, ReplicaState};
+pub use private_upload::PrivateUploadDestination;
 pub use service_http::{MAX_SERVICE_HTTP_IN_FLIGHT, ServiceHttpCall, ServiceHttpError};
 pub use topology::{
     AgentSessionDescriptor, DocumentDescriptor, PaneDescriptor, ResourceDescriptor,

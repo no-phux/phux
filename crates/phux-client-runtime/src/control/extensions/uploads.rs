@@ -5,10 +5,38 @@ use phux_protocol::wire::frame::{Command, CommandResult, CommandValue, ErrorCode
 
 use super::{
     COMPLETED_UPLOADS_KEPT, ControlPlane, FileUploadOutcome, FileUploadReceipt, Pending,
-    ServerFeature, TranscribeOutcome, TranscribeReceipt, UPLOAD_CHUNK_BYTES,
+    PendingUpload, ServerFeature, TranscribeOutcome, TranscribeReceipt, UPLOAD_CHUNK_BYTES,
 };
 
+impl std::fmt::Debug for PendingUpload {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PendingUpload")
+            .field("terminal_id", &self.terminal_id)
+            .field("bytes", &self.data.len())
+            .field("next_offset", &self.next_offset)
+            .finish_non_exhaustive()
+    }
+}
+
 impl ControlPlane {
+    pub(in crate::control) fn cancel_private_uploads(&mut self) {
+        let ids: Vec<_> = self
+            .extensions
+            .uploads
+            .iter()
+            .filter_map(|(id, upload)| upload.destination.as_ref().map(|_| *id))
+            .collect();
+        for id in ids {
+            self.finish_upload(
+                id,
+                self.upload_failure_outcome(id),
+                None,
+                None,
+                "private image cancelled because the connection ended",
+            );
+        }
+    }
+
     pub(super) fn upload_failure_outcome(&self, transfer_id: u64) -> FileUploadOutcome {
         if self
             .extensions
@@ -50,6 +78,20 @@ impl ControlPlane {
                 self.extensions.upload_order.pop_front();
                 continue;
             };
+            if upload
+                .destination
+                .as_ref()
+                .is_some_and(|destination| !self.private_upload_destination_is_current(destination))
+            {
+                self.finish_upload(
+                    transfer_id,
+                    self.upload_failure_outcome(transfer_id),
+                    None,
+                    None,
+                    "private image destination is no longer verified",
+                );
+                continue;
+            }
             if upload.created_at.elapsed() >= INPUT_RETRY_HORIZON {
                 self.finish_upload(
                     transfer_id,
@@ -119,6 +161,22 @@ impl ControlPlane {
     }
 
     pub(super) fn resolve_upload(&mut self, transfer_id: u64, result: CommandResult) {
+        if self
+            .extensions
+            .uploads
+            .get(&transfer_id)
+            .and_then(|upload| upload.destination.as_ref())
+            .is_some_and(|destination| !self.private_upload_destination_is_current(destination))
+        {
+            self.finish_upload(
+                transfer_id,
+                self.upload_failure_outcome(transfer_id),
+                None,
+                None,
+                "private image destination changed before completion",
+            );
+            return;
+        }
         match result {
             CommandResult::OkWith(CommandValue::FileUpload(ack)) => {
                 let Some(upload) = self.extensions.uploads.get(&transfer_id) else {

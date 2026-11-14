@@ -33,9 +33,10 @@ impl PathSearch {
 pub const TAB_MENU: [Shortcut; 3] = [Shortcut::LockTab, Shortcut::RenameTab, Shortcut::CloseTab];
 
 /// What right-clicking a pane offers, in order.
-pub const CONTEXT_MENU: [Shortcut; 7] = [
+pub const CONTEXT_MENU: [Shortcut; 8] = [
     Shortcut::Copy,
     Shortcut::Paste,
+    Shortcut::Screenshot,
     Shortcut::SelectAll,
     Shortcut::Find,
     Shortcut::SplitRight,
@@ -123,6 +124,7 @@ pub fn with_menus(app: App<Desk>) -> App<Desk> {
         item!(TERMINAL, FindSelection),
         item!(TERMINAL, CopyMode),
         item!(TERMINAL, InsertPath),
+        item!(TERMINAL, Screenshot),
         item!(TERMINAL, NextTab),
         item!(TERMINAL, PreviousTab),
         item!(TERMINAL, NextTerminal),

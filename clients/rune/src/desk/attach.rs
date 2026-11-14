@@ -88,7 +88,7 @@ impl Desk {
 
     /// Whether what has the keyboard lets a paste through. A paste is a
     /// command like any other, and it must not replace a held question.
-    fn pastes_allowed(&self) -> bool {
+    pub(super) fn pastes_allowed(&self) -> bool {
         self.modal()
             .is_none_or(|modal| modal.allows(Shortcut::Paste))
     }
@@ -118,7 +118,7 @@ impl Desk {
             return;
         };
         let transfer = client.put_file(terminal.clone(), "png".to_owned(), png);
-        self.uploads.push((transfer, terminal.clone()));
+        self.uploads.push((transfer, terminal.clone(), None));
         self.say(NoticeKind::Info, "Uploading image…");
     }
 
@@ -143,16 +143,20 @@ impl Desk {
             let Some(at) = self
                 .uploads
                 .iter()
-                .position(|(transfer, _)| *transfer == receipt.transfer_id)
+                .position(|(transfer, _, _)| *transfer == receipt.transfer_id)
             else {
                 continue;
             };
-            let (_, terminal) = self.uploads.remove(at);
+            let (_, terminal, destination) = self.uploads.remove(at);
             match (receipt.outcome, receipt.path) {
                 (FileUploadOutcome::Completed, Some(path)) => {
                     self.end_uploading_notice();
                     let line = format!("{} ", quoted(Path::new(&path)));
-                    if !self.deliver_paste(&terminal, &line) {
+                    let sent = match destination {
+                        Some(destination) => self.deliver_private_image(&destination, &line),
+                        None => self.deliver_paste(&terminal, &line),
+                    };
+                    if !sent {
                         self.say(
                             NoticeKind::Error,
                             format!("Image saved at {path}; not pasted."),
@@ -267,7 +271,7 @@ mod tests {
     #[test]
     fn uploading_stays_until_the_last_upload_ends() {
         let mut desk = desk();
-        desk.uploads.push((2, ResourceId::local(1)));
+        desk.uploads.push((2, ResourceId::local(1), None));
         desk.say(NoticeKind::Info, "Uploading image…");
         desk.end_uploading_notice();
         assert!(desk.notice.is_some(), "one is still on its way");

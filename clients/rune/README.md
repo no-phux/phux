@@ -173,7 +173,20 @@ session (or `--session NAME`). It never creates a session on its own.
   for the selection. The match is selected and scrolled to.
 - **Images and files.** Paste an image and it uploads to the server and types
   its path, for agents that read images. Files pasted or dropped on a pane
-  type as quoted paths.
+  type as quoted paths. **Screenshot to Terminal** (⇧⌘O, Ctrl+Shift+O on
+  Linux, or right-click a pane) opens the system's region picker and sends
+  the shot like a pasted image, to the pane that had the keyboard. macOS asks
+  for Screen Recording the first time; Linux uses `slurp` and `grim` on
+  Wayland, `maim` on X11, or `gnome-screenshot` or `spectacle`. Screenshots
+  require a directly connected host with live organization and execution
+  identity; older servers and hub satellite panes refuse before opening a
+  picker. A disconnect, changed execution or session move cancels delivery;
+  private uploads and their pasted paths are never replayed on reconnect.
+  A lost connection may leave the path's delivery uncertain: look before
+  retrying. Captures are bounded to 64 MiB, 8192 pixels per side and 256 MiB
+  decoded; the private local folder is removed, and closing the main window
+  or quitting cancels and reaps its picker. The uploaded file follows ordinary server
+  upload retention.
 - **Links.** Hold ⌘ over a URL (or an OSC 8 hyperlink) to underline it and
   see where it goes in the title bar; ⌘-click opens it. On the phone form a
   tap on a link opens it, and a drag across one still selects. URLs wrapped
