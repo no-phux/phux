@@ -100,3 +100,7 @@ A failed write never blocks or fails a command. The server logs a warning and
 counts the failure. `phux doctor` warns while the count is above zero, and
 `phux perf` shows it as `audit.write_failures`. The usual causes are a full
 disk or a changed directory mode.
+
+One server writes a chain. A second server started against the same state
+directory waits up to 3 seconds for the first to exit, then runs without an
+audit log and counts the failure, so the chain never forks.
