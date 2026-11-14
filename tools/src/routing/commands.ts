@@ -104,7 +104,7 @@ export const commands: Record<string, Command> = {
     run() {
       const event = process.env["GITHUB_EVENT_NAME"] ?? "";
       const repository = process.env["GITHUB_REPOSITORY"] ?? "";
-      const c = classifyEvent(event, process.env["GITHUB_EVENT_PATH"]);
+      const c = classifyEvent(event, process.env["GITHUB_EVENT_PATH"], "qualify-rune");
       // Pull requests never launch macOS. Every other event plans as a push:
       // a dispatch or a nightly run qualifies the whole tree.
       const pullRequest = event === "pull_request";

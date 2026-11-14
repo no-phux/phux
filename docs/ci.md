@@ -32,6 +32,9 @@ that receipt (`tools/src/routing/receipt.ts`).
 Apple work. `rune-macos.yml` runs macOS and the native iOS simulator/device
 qualification on main pushes, nightly, and manually. Every Rune-affecting
 queue group runs both Apple legs, whether reached directly or through Cargo.
+Recognized release metadata also selects both native legs, even when ordinary
+CI skips its compile lanes. This qualifies the metadata release's own tree,
+including native code behind any intervening documentation-only commits.
 
 On `merge_group`, **the already-required `ci` aggregate calls and requires
 the Apple workflow**. It rejects a skipped, failed, or cancelled child.
@@ -44,8 +47,24 @@ A main push can reuse the exact native receipt from its successful queue
 revision, workflow and both-leg
 coverage. PR and Linux-only receipts cannot attest Apple work.
 Nightly and manual runs always qualify the full tree.
-A red Apple result on a direct main push does not block main; it blocks
-publication when Rune is in that release's closure. See [releasing](./releasing.md).
+Native main pushes upload full-coverage receipts after the aggregate succeeds.
+Every stable draft and Rune tag requires that exact release SHA's successful
+main push plus full native receipt: same tree, workflow and both-leg coverage.
+A skipped/cheap green, ancestor receipt, other SHA, PR or dispatch cannot
+substitute. Missing or expired proof blocks publication.
+
+This deliberately qualifies even integration-only metadata releases rather
+than introducing ancestry tracking or product-specific exemptions. Arbitrary
+tags at unqualified docs-only commits are refused; use a normal version bump.
+A red Apple result on a direct main push does not block main, but cannot ship.
+See [releasing](./releasing.md).
+
+Missing or expired receipts hold a draft; rerunning the original qualified
+push can refresh its proof. A batch merge may produce a push only for its
+final commit. Intermediate version commits without their own push run remain
+blocked under the exact-push policy. Another batch SHA, arbitrary queue/PR
+green or a dispatch is not a substitute; qualified intermediate-main
+eligibility is a separate policy decision.
 
 ## Concurrency
 
@@ -68,9 +87,8 @@ prefix differs from its calling `ci`, preventing self-cancellation.
 
 The test lanes compile once (`just test-archive`) and run the unit and e2e
 shards from that nextest archive. Pull requests restore caches and never
-save them. `main` pushes and the 00:10 UTC cache-warm run save one entry per
-Linux Rust lane under the 10 GB budget. `prune-build-cache` drops superseded
-entries and never a key from the current UTC day. `cache-warm.yml` warms
-those Linux lanes at 00:10 UTC and the Rune lane at 06:17 UTC.
-Runners are the free hosted ones:
-Ubuntu x64 and arm64, and macOS 26 plus the `xcode-27` image.
+save them. Main pushes and the 00:10 UTC Linux-only cache-warm dispatch
+save per-lane caches under the 10 GB budget. Post-upload pruning keeps
+current-day keys and never deletes the sole older restore source before
+a stored replacement exists. Rune warming keeps its separate 06:17 clock.
+Runners are free hosted Ubuntu x64 and arm64, macOS 26 and `xcode-27`.

@@ -1,8 +1,8 @@
 name: Rune client
 
 # A `rune-vVERSION` tag publishes the Rune client (clients/rune): a tag clients
-# can read, on a commit main already proved (`ci`, and `rune-macos` when the
-# commit builds Rune), builds in rune-build.yml and becomes a GitHub release.
+# can read, on a commit main already proved (`ci` and qualified `rune-macos`
+# on that exact SHA/tree), builds in rune-build.yml and becomes a GitHub release.
 # Pull requests run the Linux half of that build as ci.yml's `rune` lane.
 # macOS and the iOS simulator run in rune-macos.yml.
 on:
@@ -27,8 +27,8 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          # The preflight classifies this commit against its parent, and a
-          # release-bot commit may prove rune-macos from that parent.
+          # Preflight binds full native proof to this release SHA/tree, not
+          # its last diff or an ancestor; history also resolves the tag.
           fetch-depth: 0
           persist-credentials: false
       - uses: ./.github/actions/setup-bun

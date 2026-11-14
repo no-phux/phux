@@ -59,10 +59,22 @@ function receiptWorkflow(run: Table, repository: string, workflow: string): bool
     );
 }
 
-function trustedRun(run: Table, repository: string, workflow: string): boolean {
+function trustedEvent(run: Table, pushSha: string | undefined): boolean {
+  if (pushSha !== undefined) {
+    return run["event"] === "push" && run["head_branch"] === "main" && run["head_sha"] === pushSha;
+  }
+  return run["event"] === "pull_request" || run["event"] === "merge_group";
+}
+
+function trustedRun(
+  run: Table,
+  repository: string,
+  workflow: string,
+  pushSha: string | undefined,
+): boolean {
   return (
     run["conclusion"] === "success" &&
-    (run["event"] === "pull_request" || run["event"] === "merge_group") &&
+    trustedEvent(run, pushSha) &&
     receiptWorkflow(run, repository, workflow) &&
     typeof run["head_sha"] === "string" &&
     table(run["head_repository"])["full_name"] === repository &&
@@ -84,13 +96,19 @@ function downloadReceipt(source: Source, runId: string, name: string): unknown {
   }
 }
 
-function matches(artifact: Table, expected: Receipt, repository: string, source: Source): boolean {
+function matches(
+  artifact: Table,
+  expected: Receipt,
+  repository: string,
+  source: Source,
+  pushSha: string | undefined,
+): boolean {
   const size = artifact["size_in_bytes"] ?? 0;
   const runId = table(artifact["workflow_run"])["id"];
   if (artifact["expired"] || typeof size !== "number" || size > 65536) return false;
   if (typeof runId !== "number") return false;
   const run = table(source.json(`repos/${repository}/actions/runs/${runId}`));
-  if (!trustedRun(run, repository, expected.workflow)) return false;
+  if (!trustedRun(run, repository, expected.workflow, pushSha)) return false;
   // Artifact JSON is not provenance. Bind it to the source run's immutable
   // commit through GitHub's Git database, including the workflow implementation
   // in that tree. For PRs this deliberately requires the head tree to equal
@@ -101,15 +119,22 @@ function matches(artifact: Table, expected: Receipt, repository: string, source:
   return deepEqual(downloadReceipt(source, String(runId), artifactName(expected)), expected);
 }
 
-/** The id of the run that already validated `expected`, or undefined. */
+/**
+ * The run that validated this exact tree/workflow/coverage.
+ * Normally reuse only PR/queue evidence. A release supplies pushSha to require
+ * a main push on that exact commit instead; a dispatch or another SHA cannot substitute.
+ */
 export function findValidation(
   expected: Receipt,
   repository: string,
   source = ghSource(repository),
+  pushSha?: string,
 ): number | undefined {
   const path = `repos/${repository}/actions/artifacts?name=${artifactName(expected)}&per_page=100`;
   const artifacts = list(table(source.json(path))["artifacts"]).map(table);
-  const found = artifacts.find((artifact) => matches(artifact, expected, repository, source));
+  const found = artifacts.find((artifact) =>
+    matches(artifact, expected, repository, source, pushSha),
+  );
   return found === undefined ? undefined : Number(table(found["workflow_run"])["id"]);
 }
 

@@ -77,32 +77,29 @@ export function detect(eventName: string, eventPath: string | undefined, cwd = R
     : { kind: "paths", paths };
 }
 
-/**
- * Classify the diff `base..head`. Release metadata is no lanes. A missing
- * commit or a diff that cannot be named fails closed into every surface.
- */
-export function classifyRange(base: string, head: string, cwd = ROOT): Classification {
-  try {
-    git(["cat-file", "-e", `${base}^{commit}`], cwd);
-    git(["cat-file", "-e", `${head}^{commit}`], cwd);
-    const paths = diffPaths(base, head, cwd);
-    const readPair = (path: string) => [show(base, path, cwd), show(head, path, cwd)] as const;
-    if (paths.length > 0 && releaseMetadataOnly(paths, readPair)) return NO_LANES;
-    return new Classifier().classify(paths);
-  } catch (error) {
-    console.error(`Full validation: ${describe(error)}`);
-    return new Classifier().classify([]);
-  }
-}
-
-/** Classify the current event, logging why it skips or widens routing. */
-export function classifyEvent(eventName: string, eventPath: string | undefined): Classification {
-  const detection = detect(eventName, eventPath);
+/** Metadata stays compile-free in ci, but releases need full native proof on their own SHA. */
+export function classifyDetection(
+  detection: Detection,
+  metadata: "skip" | "qualify-rune" = "skip",
+): Classification {
   if (detection.kind === "paths") return new Classifier().classify(detection.paths);
   if (detection.kind === "full") {
     console.error(`Full validation: ${detection.reason}`);
     return new Classifier().classify([]);
   }
-  console.error("Release metadata only; compile lanes skipped");
+  if (metadata === "qualify-rune") {
+    console.error("Release metadata: qualify both Rune Apple legs on this release tree");
+    return { ...NO_LANES, needed: new Set(["rune"]), runeDirect: true };
+  }
+  console.error("Release metadata only; ci compile lanes skipped");
   return NO_LANES;
+}
+
+/** Classify the complete event range, not only the head commit's parent diff. */
+export function classifyEvent(
+  eventName: string,
+  eventPath: string | undefined,
+  metadata: "skip" | "qualify-rune" = "skip",
+): Classification {
+  return classifyDetection(detect(eventName, eventPath), metadata);
 }

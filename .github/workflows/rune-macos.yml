@@ -6,8 +6,9 @@ name: rune-macos
 # macOS runner. On the queue, ci.yml calls this workflow and requires its
 # result in the existing `ci` aggregate. A main push, a nightly run, and a dispatch
 # run macos-arm64 and the iOS simulator through rune-build.yml. A direct push
-# to main can land a red result: that blocks a release whose closure includes
-# Rune, and it does not block main.
+# to main can land a red result: it blocks stable/Rune publication, not main.
+# Metadata release commits qualify BOTH legs on their own tree. A parent or
+# an intervening docs commit never stands in for the code that will ship.
 on:
   pull_request:
     # `closed` runs nothing; it joins the pull request's group and cancels
@@ -86,14 +87,14 @@ jobs:
             and (.plan.outputs.macos != "true" or .build.result == "success")' \
             <<<"$RESULTS" >/dev/null
       - name: write the validation receipt
-        if: github.event_name == 'merge_group' && needs.plan.outputs.coverage != ''
+        if: (github.event_name == 'merge_group' || github.event_name == 'push') && needs.plan.outputs.coverage != ''
         env:
           RECEIPT: ${{ needs.plan.outputs.receipt }}
         run: |
           mkdir -p "$RUNNER_TEMP/receipt"
           printf '%s\n' "$RECEIPT" > "$RUNNER_TEMP/receipt/receipt.json"
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        if: github.event_name == 'merge_group' && needs.plan.outputs.coverage != ''
+        if: (github.event_name == 'merge_group' || github.event_name == 'push') && needs.plan.outputs.coverage != ''
         with:
           name: ${{ needs.plan.outputs.receipt_name }}
           path: ${{ runner.temp }}/receipt/receipt.json

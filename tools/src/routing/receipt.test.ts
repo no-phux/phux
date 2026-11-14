@@ -27,9 +27,9 @@ const source: Source = {
     for (const [file, text] of Object.entries(files)) writeFileSync(join(dir, file), text);
   },
 };
-const find = (receipt = expected): unknown => {
+const find = (receipt = expected, pushSha?: string): unknown => {
   requested = receipt;
-  return findValidation(receipt, "owner/project", source);
+  return findValidation(receipt, "owner/project", source, pushSha);
 };
 
 beforeEach(() => {
@@ -84,6 +84,34 @@ test("the required ci merge-group caller attests only the exact native child rec
   files["receipt.json"] = JSON.stringify(apple);
   run["conclusion"] = "failure";
   expect(find(apple)).toBeUndefined();
+});
+
+test("release qualification needs a full native receipt from the exact main push SHA", () => {
+  const apple = {
+    ...expected,
+    workflow: ".github/workflows/rune-macos.yml",
+    coverage: "macos,rune_ios",
+  };
+  files["receipt.json"] = JSON.stringify(apple);
+  run["path"] = apple.workflow;
+  run["event"] = "push";
+  run["head_branch"] = "main";
+  const sha = String(run["head_sha"]);
+  expect(find(apple, sha)).toBe(3);
+  // The normal reuse path must still reject a push: no proof chains.
+  expect(find(apple)).toBeUndefined();
+  expect(find(apple, "d".repeat(40))).toBeUndefined();
+  run["head_branch"] = "topic";
+  expect(find(apple, sha)).toBeUndefined();
+  run["head_branch"] = "main";
+  run["event"] = "workflow_dispatch";
+  expect(find(apple, sha)).toBeUndefined();
+  run["event"] = "push";
+  files["receipt.json"] = JSON.stringify({ ...apple, coverage: "macos" });
+  expect(find(apple, sha)).toBeUndefined();
+  files["receipt.json"] = JSON.stringify(apple);
+  commitTree = "f".repeat(40);
+  expect(find(apple, sha)).toBeUndefined();
 });
 
 test.each<[string, () => void]>([
