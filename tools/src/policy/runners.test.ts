@@ -4,6 +4,7 @@ import { expect, test } from "bun:test";
 import { list, str, table, type Table } from "../lib/value.ts";
 import {
   action,
+  actionNames,
   job,
   jobs,
   needs,
@@ -79,7 +80,7 @@ test("pull request lanes never write to the shared cache budget", () => {
     .map((ref) => workflow(ref.replace("./.github/workflows/", "")));
   const pullRequest = [...triggered, ...called];
   const all: Table[] = [
-    ...steps(action("setup-rust-lane")),
+    ...actionNames().flatMap((name) => steps(action(name))),
     ...pullRequest.flatMap((document) => Object.values(jobs(document)).flatMap(steps)),
   ];
   let caches = 0;

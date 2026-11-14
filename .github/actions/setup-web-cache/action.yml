@@ -1,0 +1,51 @@
+# Nix, Cachix, and a dependency-only cargo cache for ci.yml's web jobs.
+# Same policy as setup-rust-lane's deps cache: Swatinem/rust-cache keeps
+# third-party artifacts, keys on rustc and each workspace Cargo.lock, and
+# saves only from main. `shared-key` replaces the job id and ignores `key`,
+# so the flake.lock hash is part of `shared-key`.
+name: setup-web-cache
+description: Browser devshell plus a main-only cargo dependency cache for the web lane.
+
+inputs:
+  cachix-auth-token:
+    description: Cachix auth token (secrets are not implicitly visible to composite actions).
+    required: true
+  cache-key:
+    description: Stable cache name. The flake.lock hash is appended.
+    required: true
+  workspaces:
+    description: rust-cache workspaces, one per line. `root -> target` selects a target directory.
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - uses: DeterminateSystems/nix-installer-action@3138316df39ed29be04236d7ffc686fa525866aa # v23
+
+    - uses: cachix/cachix-action@38b082610b782e7e93e209c35fd730d399dee866 # v17
+      with:
+        name: phux
+        authToken: ${{ inputs.cachix-auth-token }}
+        pushFilter: '(-source$|nixpkgs\.tar\.gz$)'
+
+    - name: expose the browser shell's rustc
+      id: web-cache
+      shell: bash
+      run: |
+        set -euo pipefail
+        # Through a file: the shellHook greets on stdout.
+        nix develop .#browser -c bash -c 'dirname "$(command -v rustc)" > "$1"' _ "$RUNNER_TEMP/rustc-path"
+        cat "$RUNNER_TEMP/rustc-path" >> "$GITHUB_PATH"
+        {
+          echo "CARGO_INCREMENTAL=0"
+          echo "CARGO_PROFILE_DEV_DEBUG=0"
+        } >> "$GITHUB_ENV"
+        echo "flake=$(sha256sum flake.lock | cut -c1-12)" >> "$GITHUB_OUTPUT"
+
+    - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+      with:
+        shared-key: ${{ inputs.cache-key }}-${{ steps.web-cache.outputs.flake }}
+        workspaces: ${{ inputs.workspaces }}
+        # Pull requests restore only (see docs/development.md#ci).
+        save-if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+        cache-on-failure: "true"

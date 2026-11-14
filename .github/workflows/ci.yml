@@ -1,8 +1,9 @@
 # The one validation workflow: every pull request, merge group and main push.
 #
-# `plan` routes the diff (tools/src/routing) to lanes. Each lane is one job
-# that sets up its environment and runs the just recipes plan.ts names for
-# it, so `just check` locally runs the same commands. A lane the diff cannot
+# `plan` routes the diff (tools/src/routing) to lanes. Each lane is one job,
+# except web, which is two parallel jobs. A lane sets up its environment and
+# runs the just recipes plan.ts names for it, so `just check` locally runs
+# the same commands. A lane the diff cannot
 # affect is skipped; the `ci` aggregate (the required check) accepts a skip
 # and nothing else. A merge group plans like a main push. A main push whose
 # tree a pull request or merge group already validated with the same lanes
@@ -344,8 +345,9 @@ jobs:
       # `just agent-integrations-check`, without installing just.
       - run: bash scripts/ci/agent-integrations.sh
 
-  web:
-    name: web
+  # `just web-check` still runs both. The cache action saves only from main.
+  web-vt:
+    name: web (vt)
     needs: plan
     if: needs.plan.outputs.web == 'true'
     runs-on: ubuntu-24.04
@@ -354,17 +356,36 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: DeterminateSystems/nix-installer-action@3138316df39ed29be04236d7ffc686fa525866aa # v23
-      - uses: cachix/cachix-action@38b082610b782e7e93e209c35fd730d399dee866 # v17
+      - uses: ./.github/actions/setup-web-cache
         with:
-          name: phux
-          authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
-          pushFilter: '(-source$|nixpkgs\.tar\.gz$)'
-      - name: just web-check
+          cachix-auth-token: ${{ secrets.CACHIX_AUTH_TOKEN }}
+          cache-key: phux-web-vt
+          workspaces: clients/phux-vt-web
+      - name: just web-vt-check
         env:
           PHUX_WEB_ENGINE: ${{ needs.plan.outputs.web_engine == 'true' && '1' || '0' }}
           PHUX_TOOLCHAIN_DIR: ${{ runner.temp }}/phux-toolchains
-        run: nix develop .#browser -c just web-check
+        run: nix develop .#browser -c just web-vt-check
+
+  web-client:
+    name: web (client + browser)
+    needs: plan
+    if: needs.plan.outputs.web == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup-web-cache
+        with:
+          cachix-auth-token: ${{ secrets.CACHIX_AUTH_TOKEN }}
+          cache-key: phux-web-client
+          workspaces: |
+            clients/phux-web
+            . -> target/web-native
+      - name: just web-client-check
+        run: nix develop .#browser -c just web-client-check
 
   # A clean contributor machine: rustup, the pinned Zig, no Nix, no cache.
   native:
@@ -398,7 +419,7 @@ jobs:
   # The required check. The ruleset matches this display name.
   ci:
     name: ci
-    needs: [plan, guards, lint, test-build, tests, e2e, ffi, icount, integrations, web, native, rune]
+    needs: [plan, guards, lint, test-build, tests, e2e, ffi, icount, integrations, web-vt, web-client, native, rune]
     # Same draft exception as plan: release-please heads always reach this gate.
     if: always() && github.event.action != 'closed' && (startsWith(github.head_ref, 'release-please--') || github.event.pull_request.draft != true)
     runs-on: ubuntu-24.04
