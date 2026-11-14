@@ -124,10 +124,8 @@ pub struct SettingsOverlay {
     path: PathBuf,
     /// The path as the header shows it (`~` for the home directory).
     display_path: String,
-    /// The resolved layer stack, or `None` when the file does not load.
-    snapshot: Option<SettingsSnapshot>,
-    /// Why the snapshot is `None`.
-    load_error: Option<String>,
+    /// The resolved layer stack, or why the file does not load.
+    snapshot: Result<SettingsSnapshot, String>,
     /// Every setting the page offers: the schema catalogue plus the
     /// renderer's theme slots, in section order.
     specs: Vec<&'static SettingSpec>,
@@ -161,7 +159,7 @@ impl std::fmt::Debug for SettingsOverlay {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("SettingsOverlay")
             .field("path", &self.path)
-            .field("loaded", &self.snapshot.is_some())
+            .field("loaded", &self.snapshot.is_ok())
             .field("section", &SettingSection::ALL[self.section])
             .field("query", &self.query)
             .field("selected", &self.selected)
@@ -169,6 +167,17 @@ impl std::fmt::Debug for SettingsOverlay {
             .field("status", &self.status)
             .finish_non_exhaustive()
     }
+}
+
+/// Read the config file at `path` and resolve the layer stack; a missing
+/// file loads as empty, any other failure is the message the page shows.
+fn load_snapshot(path: &std::path::Path) -> Result<SettingsSnapshot, String> {
+    let text = match std::fs::read_to_string(path) {
+        Ok(text) => text,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => String::new(),
+        Err(err) => return Err(format!("cannot read {}: {err}", path.display())),
+    };
+    SettingsSnapshot::load(&text, path).map_err(|err| err.to_string())
 }
 
 impl SettingsOverlay {
@@ -183,11 +192,11 @@ impl SettingsOverlay {
         }
         let home = std::env::var("HOME").ok();
         let display_path = display_path_for(&path, home.as_deref());
-        let mut page = Self {
+        let snapshot = load_snapshot(&path);
+        Self {
             path,
             display_path,
-            snapshot: None,
-            load_error: None,
+            snapshot,
             specs,
             section: 0,
             query: String::new(),
@@ -200,9 +209,7 @@ impl SettingsOverlay {
             theme: *theme,
             breakpoints: ChromeBreakpoints::default(),
             geometry: Cell::new(Geometry::default()),
-        };
-        page.reload_snapshot();
-        page
+        }
     }
 
     /// Show `text` in the header instead of the real path (tests: the temp
@@ -238,25 +245,7 @@ impl SettingsOverlay {
 
     /// Re-read the file and resolve the layer stack.
     fn reload_snapshot(&mut self) {
-        let text = match std::fs::read_to_string(&self.path) {
-            Ok(text) => text,
-            Err(err) if err.kind() == std::io::ErrorKind::NotFound => String::new(),
-            Err(err) => {
-                self.snapshot = None;
-                self.load_error = Some(format!("cannot read {}: {err}", self.path.display()));
-                return;
-            }
-        };
-        match SettingsSnapshot::load(&text, &self.path) {
-            Ok(snapshot) => {
-                self.snapshot = Some(snapshot);
-                self.load_error = None;
-            }
-            Err(err) => {
-                self.snapshot = None;
-                self.load_error = Some(err.to_string());
-            }
-        }
+        self.snapshot = load_snapshot(&self.path);
     }
 
     /// The settings the list shows: the current section's rows while the
@@ -305,7 +294,7 @@ impl SettingsOverlay {
     /// The effective value at `key`, or `None` when unset (or the file
     /// does not load).
     fn value_at(&self, key: &str) -> Option<toml::Value> {
-        self.snapshot.as_ref()?.value_at(key).cloned()
+        self.snapshot.as_ref().ok()?.value_at(key).cloned()
     }
 
     /// The value the setting behaves as: the merged value, or a theme slot's
@@ -326,12 +315,12 @@ impl SettingsOverlay {
                 .slot(spec.leaf())
                 .map(|color| toml::Value::String(crate::render::theme::color_to_string(color)));
         }
-        self.snapshot.as_ref()?.default_at(spec.key).cloned()
+        self.snapshot.as_ref().ok()?.default_at(spec.key).cloned()
     }
 
     /// The layer above the defaults that set `key`, if any.
     fn origin_at(&self, key: &str) -> Option<LayerSource> {
-        self.snapshot.as_ref()?.origin_at(key).cloned()
+        self.snapshot.as_ref().ok()?.origin_at(key).cloned()
     }
 
     /// Count of settings in `section` that a layer overrides.
@@ -833,7 +822,7 @@ impl SettingsOverlay {
     ) -> Vec<Line<'static>> {
         let dim = Style::default().fg(self.theme.dim);
         let text = Style::default().fg(self.theme.text);
-        if let Some(err) = &self.load_error {
+        if let Err(err) = &self.snapshot {
             return vec![
                 Line::from(Span::styled(
                     clip_text(&format!("config does not load: {err}"), width),
@@ -1708,7 +1697,7 @@ mod tests {
     #[test]
     fn opens_on_the_first_section_with_the_schema_and_theme_rows() {
         let (_dir, page) = page_over("");
-        assert!(page.snapshot.is_some());
+        assert!(page.snapshot.is_ok());
         assert_eq!(page.section, 0);
         let rows = page.visible_specs();
         assert!(rows.iter().all(|s| s.section == SettingSection::Defaults));
@@ -2020,8 +2009,7 @@ mod tests {
     #[test]
     fn a_config_that_does_not_load_shows_the_error_instead_of_rows() {
         let (_dir, mut page) = page_over("this is [not toml");
-        assert!(page.snapshot.is_none());
-        assert!(page.load_error.is_some());
+        assert!(page.snapshot.is_err());
         assert_eq!(
             page.handle_key(&press(PhysicalKey::Enter, None)),
             OverlayCommand::Stay
