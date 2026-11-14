@@ -7,7 +7,7 @@ import {
   contextAwarenessEnabled,
   normalizeTerminalIdentity,
 } from "../../runtime/src/awareness.js";
-import { deletedSessionId, applyServerEvent } from "./events.js";
+import { applyServerEvent, applyV1Event, deletedSessionId } from "./events.js";
 import { OpenCodeLifecycle } from "./lifecycle.js";
 import { createPhuxTools, type PhuxToolDefinition, type ToolContext, type ToolResult } from "../../runtime/src/tools.js";
 import { PARENT_PANE_RULE, parentPane } from "./parent.js";
@@ -45,7 +45,7 @@ export interface PhuxOpenCodeV2Options {
  * programs, processes the user watches, and other agents' panes. Panes the
  * agent spawns are owned by its session and closed with it.
  */
-export default Plugin.define({
+const plugin = Plugin.define({
   id: "phux",
   async setup(ctx) {
     const options = readOptions(ctx.options);
@@ -163,6 +163,47 @@ export default Plugin.define({
     };
   },
 });
+
+/**
+ * OpenCode 1.x server plugin: 1.x calls `server`, 2.2+ calls `setup`, so one
+ * definition serves both. 1.x has no TUI plugin for phux, so this reports
+ * the hosting pane's sessions, state and asks, and registers `phux mcp` for
+ * the phux tools unless the config already names a `phux` MCP server.
+ */
+async function server(_input: unknown, value?: unknown): Promise<V1Hooks> {
+  const options = readOptions(value);
+  const config: V1Hooks["config"] = async (cfg) => {
+    cfg.mcp ??= {};
+    cfg.mcp.phux ??= { type: "local", command: [options.executable ?? "phux", "mcp"] };
+  };
+  const parent = parentPane(process.env.PHUX_TERMINAL_ID);
+  // A shared `opencode serve` inherits whichever pane started it.
+  if (process.env.PHUX_AGENT_REPORTING === "0" || parent === null || process.argv.includes("serve")) return { config };
+  const lifecycle = new OpenCodeLifecycle({
+    cli: new PhuxCli(cliOptions(options, process.env)),
+    target: () => parent,
+    ...(options.lifecycleTimeoutMs === undefined ? {} : { timeoutMs: options.lifecycleTimeoutMs }),
+    onError: (error) => console.error("phux OpenCode presence:", error),
+  });
+  return {
+    config,
+    event: ({ event }) => applyV1Event(lifecycle, event),
+    "tool.execute.before": (input) => lifecycle.toolStart(input.sessionID, input.tool, input.callID),
+    "tool.execute.after": (input) => lifecycle.toolEnd(input.sessionID, input.tool, input.callID),
+    dispose: () => lifecycle.dispose(),
+  };
+}
+
+/** The OpenCode 1.x hooks this plugin uses (`@opencode-ai/plugin` `Hooks`). */
+interface V1Hooks {
+  config?: (cfg: { mcp?: Record<string, unknown> }) => Promise<void>;
+  event?: (input: { event: { type?: unknown; properties?: unknown } }) => Promise<void>;
+  "tool.execute.before"?: (input: { tool: string; sessionID: string; callID: string }) => Promise<void>;
+  "tool.execute.after"?: (input: { tool: string; sessionID: string; callID: string }) => Promise<void>;
+  dispose?: () => Promise<void>;
+}
+
+export default { ...plugin, server };
 
 /**
  * The shared catalog minus what OpenCode already does better or what invites

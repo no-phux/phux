@@ -2268,6 +2268,45 @@ function permissionData(data) {
     ...question === undefined ? {} : { question }
   };
 }
+function applyV1Event(lifecycle, event) {
+  const props = record2(event.properties);
+  if (props === undefined)
+    return Promise.resolve();
+  if (event.type === "session.deleted") {
+    const id = record2(props.info)?.id;
+    return typeof id === "string" ? lifecycle.deleteSession(id) : Promise.resolve();
+  }
+  const sessionID = props.sessionID;
+  if (typeof sessionID !== "string")
+    return Promise.resolve();
+  const id = typeof props.id === "string" ? { id: props.id } : {};
+  switch (event.type) {
+    case "permission.asked":
+    case "permission.updated": {
+      const what = typeof props.permission === "string" ? props.permission : props.type;
+      const patterns = [props.patterns ?? props.pattern].flat().filter((item) => typeof item === "string");
+      const title = typeof props.title === "string" ? props.title : [what, ...patterns].filter(Boolean).join(": ");
+      return lifecycle.ask(sessionID, { kind: "permission", ...id, ...title ? { question: title } : {} });
+    }
+    case "question.asked": {
+      const first = record2([props.questions].flat()[0]);
+      const question = typeof first?.question === "string" ? first.question : undefined;
+      const options = Array.isArray(first?.options) ? first.options : [];
+      const suggestions = options.map((option) => record2(option)?.label).filter((label) => typeof label === "string");
+      return lifecycle.ask(sessionID, {
+        kind: "question",
+        ...id,
+        ...question === undefined ? {} : { question },
+        ...suggestions.length === 0 ? {} : { suggestions }
+      });
+    }
+    default:
+      return applyServerEvent(lifecycle, { type: event.type, data: props });
+  }
+}
+function record2(value) {
+  return value !== null && typeof value === "object" && !Array.isArray(value) ? value : undefined;
+}
 
 // src/lifecycle.ts
 class OpenCodeLifecycle {
@@ -2392,7 +2431,7 @@ class OpenCodeLifecycle {
       if (source.kind !== "agent_record")
         return false;
       const owner = parseOwner(source.observed);
-      return owner?.name === "opencode" && owner.kind === "opencode" && owner.session === binding.owner;
+      return /^opencode(-\d+)?$/.test(owner?.name ?? "") && owner?.kind === "opencode" && owner.session === binding.owner;
     }));
     if (pane === undefined)
       return;
@@ -3305,7 +3344,7 @@ function describe(error) {
 }
 
 // src/index.ts
-var src_default = Plugin.define({
+var plugin = Plugin.define({
   id: "phux",
   async setup(ctx) {
     const options = readOptions(ctx.options);
@@ -3418,6 +3457,30 @@ var src_default = Plugin.define({
     };
   }
 });
+async function server(_input, value) {
+  const options = readOptions(value);
+  const config = async (cfg) => {
+    cfg.mcp ??= {};
+    cfg.mcp.phux ??= { type: "local", command: [options.executable ?? "phux", "mcp"] };
+  };
+  const parent = parentPane(process.env.PHUX_TERMINAL_ID);
+  if (process.env.PHUX_AGENT_REPORTING === "0" || parent === null || process.argv.includes("serve"))
+    return { config };
+  const lifecycle = new OpenCodeLifecycle({
+    cli: new PhuxCli(cliOptions(options, process.env)),
+    target: () => parent,
+    ...options.lifecycleTimeoutMs === undefined ? {} : { timeoutMs: options.lifecycleTimeoutMs },
+    onError: (error) => console.error("phux OpenCode presence:", error)
+  });
+  return {
+    config,
+    event: ({ event }) => applyV1Event(lifecycle, event),
+    "tool.execute.before": (input) => lifecycle.toolStart(input.sessionID, input.tool, input.callID),
+    "tool.execute.after": (input) => lifecycle.toolEnd(input.sessionID, input.tool, input.callID),
+    dispose: () => lifecycle.dispose()
+  };
+}
+var src_default = { ...plugin, server };
 var SHARED_TOOLS = [
   "phux_panes",
   "phux_run",

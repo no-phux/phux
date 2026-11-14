@@ -29,6 +29,10 @@
       "types": "./index.d.ts",
       "import": "./index.js"
     },
+    "./server": {
+      "types": "./index.d.ts",
+      "import": "./index.js"
+    },
     "./tui": "./tui.js",
     "./gui-experimental": "./dist/gui-experimental.cjs"
   },
