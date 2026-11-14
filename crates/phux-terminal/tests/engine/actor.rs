@@ -14,10 +14,10 @@ use phux_resource::ResourceHandle;
 use phux_terminal::actor::{
     ConsumerAckRequest, ConsumerAttachRequest, ConsumerDetachRequest, DEFAULT_TICK_INTERVAL,
     ProcessFacetRequest, ResizeRequest, ResourceOutput, SnapshotRequest, TerminalActor,
-    default_shell_command,
 };
 use phux_terminal::grid::SnapshotBytes;
 use phux_terminal::{Outbound, TerminalInput};
+use phux_terminal_api::launch::default_shell_command;
 use tokio::sync::{broadcast, mpsc, oneshot, watch};
 use tokio::time::timeout;
 

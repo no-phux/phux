@@ -2,6 +2,7 @@
 //! Also the trampoline cache and non-strict fallback decision.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 use super::*;
+use phux_terminal_api::launch::LaunchCommand;
 use std::os::unix::fs::PermissionsExt as _;
 use std::sync::OnceLock;
 
@@ -48,7 +49,7 @@ fn spawn_pane_child_routes_a_missing_trampoline_through_strict_cwd() {
     // fallback spawn failed there with ENOENT rather than testing the route.
     let mut strict = CommandBuilder::new("/bin/sh");
     strict.args(["-c", "exit 0"]);
-    strict.env(super::super::spawn::STRICT_CWD_KEY, "1");
+    strict.env(STRICT_CWD_KEY, "1");
     match spawn(&strict) {
         Err(LaunchDiagnostic {
             stage: LaunchStage::Spawn,
@@ -61,6 +62,12 @@ fn spawn_pane_child_routes_a_missing_trampoline_through_strict_cwd() {
     loose.args(["-c", "exit 0"]);
     let mut spawned = spawn(&loose).unwrap();
     assert_eq!(spawned.wait().exit_code(), 0);
+}
+
+/// `intent` pinned to `cwd` with no fallback, as the server's restore does.
+fn strict_cwd_command(mut intent: LaunchCommand, cwd: &Path) -> CommandBuilder {
+    phux_terminal_api::launch::apply_strict_spawn_cwd(&mut intent, cwd);
+    crate::engine::command(&intent)
 }
 
 fn spawn(cmd: &CommandBuilder) -> Result<Spawned, LaunchDiagnostic> {
@@ -80,13 +87,13 @@ fn relative_executable_uses_effective_directory() {
     let program = dir.path().join("only-here");
     std::fs::write(&program, "#!/bin/sh\nexit 0\n").unwrap();
     std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o700)).unwrap();
-    let mut cmd = CommandBuilder::new("./only-here");
-    super::super::spawn::apply_strict_spawn_cwd(&mut cmd, dir.path());
-    assert!(!spawn_envp(&cmd).unwrap().iter().any(|entry| {
-        entry
-            .as_bytes()
-            .starts_with(super::super::spawn::STRICT_CWD_KEY.as_bytes())
-    }));
+    let cmd = strict_cwd_command(LaunchCommand::new("./only-here"), dir.path());
+    assert!(
+        !spawn_envp(&cmd)
+            .unwrap()
+            .iter()
+            .any(|entry| { entry.as_bytes().starts_with(STRICT_CWD_KEY.as_bytes()) })
+    );
     assert_eq!(spawn(&cmd).unwrap().wait().exit_code(), 0);
 }
 
@@ -132,9 +139,9 @@ fn vanished_directory_reports_cwd_without_running_in_home() {
     let dir = tempfile::tempdir().unwrap();
     let missing = dir.path().join("removed");
     let marker = dir.path().join("must-not-run");
-    let mut cmd = CommandBuilder::new("/usr/bin/touch");
-    cmd.arg(&marker);
-    super::super::spawn::apply_strict_spawn_cwd(&mut cmd, &missing);
+    let mut intent = LaunchCommand::new("/usr/bin/touch");
+    intent.arg(&marker);
+    let cmd = strict_cwd_command(intent, &missing);
     let error = spawn(&cmd).err().expect("cwd must fail");
     assert_eq!(
         error,

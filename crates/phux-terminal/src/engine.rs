@@ -6,7 +6,10 @@ use phux_terminal_api::{
 #[derive(Debug, Default)]
 pub struct TerminalEngine;
 
-fn command(intent: &phux_terminal_api::launch::LaunchCommand) -> portable_pty::CommandBuilder {
+/// The PTY spawn of launch `intent`, exactly as a fresh pane gets it.
+pub(crate) fn command(
+    intent: &phux_terminal_api::launch::LaunchCommand,
+) -> portable_pty::CommandBuilder {
     let mut command = portable_pty::CommandBuilder::from_argv(intent.get_argv().clone());
     // portable-pty supplies SHELL from passwd when it was not inherited. Preserve
     // that fallback, but never resurrect an explicitly removed environment key.
