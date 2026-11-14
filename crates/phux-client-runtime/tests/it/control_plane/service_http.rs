@@ -33,7 +33,7 @@ fn info() -> ServiceHttpRequest {
 }
 
 /// The value a resolved call holds; panics while it is still pending.
-fn ready<T>(call: impl Future<Output = T>) -> T {
+pub(super) fn ready<T>(call: impl Future<Output = T>) -> T {
     let mut call = pin!(call);
     match call.as_mut().poll(&mut Context::from_waker(Waker::noop())) {
         Poll::Ready(value) => value,
@@ -41,7 +41,7 @@ fn ready<T>(call: impl Future<Output = T>) -> T {
     }
 }
 
-fn sent_request_id(plane: &mut ControlPlane) -> (u32, Command) {
+pub(super) fn sent_request_id(plane: &mut ControlPlane) -> (u32, Command) {
     match decode(&plane.take_outbound()[0]) {
         FrameKind::Command {
             request_id,

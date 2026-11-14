@@ -37,6 +37,21 @@ full Rust pool and every lane the diff needs. A `main` push whose tree a
 pull request or merge group already validated with the same lanes reuses
 that receipt (`tools/src/routing/receipt.ts`).
 
+## After the merge
+
+The live `main` ruleset currently has no merge queue, so required `ci`
+uses full PR qualification as described above. A pull request merges once
+its required `ci` and `commitlint` checks pass on its own diff; the ruleset
+does not make it re-run against a newer `main`. Main's push validates the
+resulting tree too. Releases still need green exact-SHA main and native
+proof, so a red `main` blocks a release, not an already-qualified PR merge.
+
+When a `ci` or `rune-macos` push run on `main` fails,
+[`main-red.yml`](../.github/workflows/main-red.yml) opens one `ci/main-red`
+issue listing the commits since that workflow's last green push; later
+failures comment on it. It closes once every tracked workflow's latest
+`main` push is green. Fix forward or revert the suspect; do not pile on.
+
 ## Native Apple qualification
 
 `ci.yml`'s `rune` lane is Linux. A queue-verified pull request runs `check.sh` and cargo-deny

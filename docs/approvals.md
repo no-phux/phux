@@ -33,3 +33,8 @@ Approving runs the held action once, as the key that asked, under that
 key's own grant as it stands then. Deciding needs the held verbs un-held on
 the same subject; the owner socket always may. An action nobody decides
 within `defaults.approval-ttl-secs` is refused as expired and never runs.
+
+A phone with [background push](./protocol/host-operations.md#background-push)
+set up hears each hold while it is away and can approve or deny from the
+notification. A connected client sees the pending record live under
+`phux.approval/v1/<id>`.

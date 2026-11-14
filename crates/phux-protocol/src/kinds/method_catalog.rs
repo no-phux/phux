@@ -254,12 +254,6 @@ const fn dangerous(method: MethodSpec) -> MethodSpec {
     }
 }
 
-/// The gate on `MIRROR` and `MIRROR_PROVIDE`.
-const MIRRORS: Option<FeatureGate> = Some(FeatureGate::FeaturesExt {
-    mask: ServerFeatureExt::Mirrors.mask(),
-    wire_name: ServerFeatureExt::Mirrors.wire_name(),
-});
-
 /// Methods addressed to the server or the connection, not to one resource.
 ///
 /// These are the handshake, session attach, server lifecycle, telemetry,
@@ -357,6 +351,11 @@ pub static SERVER_METHODS: &[MethodSpec] = &[
             wire_name: ServerFeatureExt::HostServiceHttp.wire_name(),
         })
     ),
+    // TCP port forwarding (`docs/forwarding.md`).
+    forward!("FORWARD_OPEN", COMMAND_TAG_FORWARD_OPEN),
+    forward!("FORWARD_READ", COMMAND_TAG_FORWARD_READ),
+    forward!("FORWARD_WRITE", COMMAND_TAG_FORWARD_WRITE),
+    forward!("FORWARD_CLOSE", COMMAND_TAG_FORWARD_CLOSE),
     dangerous(method!(
         "UPGRADE",
         Carrier::Command(COMMAND_TAG_UPGRADE),

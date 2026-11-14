@@ -341,8 +341,8 @@ mod tests {
         result
     }
 
-    /// `%name` (ADR-0075) tags exactly the named pane; a kind constant is a
-    /// typed refusal, not the plain miss the set-valued path reported.
+    /// `%name` (ADR-0075) tags exactly the named pane, a name equal to its
+    /// kind included; a miss is a typed refusal.
     #[tokio::test]
     async fn apply_resolves_percent_name_through_the_agent_resolver() {
         use crate::agent_meta::{AgentRecord, RESOURCE_AGENT_KEY};
@@ -369,11 +369,10 @@ mod tests {
             vec![(ResourceId::local(2), vec!["ci".to_owned()])]
         );
 
-        let refused = apply_on(named(2, "claude", Some("claude")), "%claude", TagOp::List).await;
-        assert!(
-            matches!(&refused, Err(TagError::Agent(err)) if err.code() == "invalid_agent_name"),
-            "{refused:?}"
-        );
+        let kind_named = apply_on(named(2, "claude", Some("claude")), "%claude", TagOp::List)
+            .await
+            .expect("tag ls %claude");
+        assert_eq!(kind_named.rows.len(), 1, "{kind_named:?}");
         let unknown = apply_on(named(2, "build", None), "%ghost", TagOp::List).await;
         assert!(
             matches!(&unknown, Err(TagError::Agent(err)) if err.exit_code() == 1),

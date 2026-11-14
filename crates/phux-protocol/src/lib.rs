@@ -32,6 +32,7 @@ pub mod api;
 pub mod caps;
 pub mod checkout;
 pub mod enroll;
+pub mod forward;
 pub mod ids;
 pub mod kinds;
 pub mod native_agent;

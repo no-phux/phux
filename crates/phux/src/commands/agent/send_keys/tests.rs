@@ -93,4 +93,13 @@ fn names_and_kinds_compare_trimmed_and_case_insensitively() {
         identity_mismatch(&record("reviewer", None), None, Some("claude")).is_some(),
         "a record with no kind cannot satisfy --expect-kind"
     );
+    // A second OpenCode pane is `opencode-2`; `--expect-agent opencode` still holds.
+    assert_eq!(
+        identity_mismatch(
+            &record("opencode-2", Some("opencode")),
+            Some("opencode"),
+            None
+        ),
+        None
+    );
 }

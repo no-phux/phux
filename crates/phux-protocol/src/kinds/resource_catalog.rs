@@ -3,6 +3,12 @@ const ORGANIZATION: Option<FeatureGate> = Some(FeatureGate::FeaturesExt {
     mask: ServerFeatureExt::Organization.mask(),
     wire_name: ServerFeatureExt::Organization.wire_name(),
 });
+/// The gate on `MIRROR` and `MIRROR_PROVIDE`.
+const MIRRORS: Option<FeatureGate> = Some(FeatureGate::FeaturesExt {
+    mask: ServerFeatureExt::Mirrors.mask(),
+    wire_name: ServerFeatureExt::Mirrors.wire_name(),
+});
+
 const ACCESSIBILITY_TREE: FeatureGate = FeatureGate::FeaturesExt {
     mask: ServerFeatureExt::AccessibilityTree.mask(),
     wire_name: ServerFeatureExt::AccessibilityTree.wire_name(),

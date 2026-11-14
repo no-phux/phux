@@ -204,12 +204,28 @@ fn mirrors_need_an_observe_grant_of_the_target_class() {
 }
 
 /// The `MIRROR` rows: only a control grant (`mirrors_need_...` above)
-/// reaches them, so the §6 table sees them refused.
+/// reaches them, so the §6 table sees them refused. And the `FORWARD_*`
+/// row: `INPUT` on Global, so a grant scoped to the host, a session, or a
+/// Terminal is refused.
 fn mirror_rows() -> Vec<Row> {
     let provide = Command::MirrorProvide {
         targets: "[]".to_owned(),
     };
+    let forward = Command::Forward {
+        op: phux_protocol::forward::ForwardOp::Open {
+            addr: "localhost".to_owned(),
+            port: 3000,
+        },
+    };
+    let scoped: [&[&str]; 4] = [
+        &["input@host"],
+        &["*@group:1"],
+        &["*@terminal:1"],
+        &["observe,bind@global"],
+    ];
     [mirror(None, phux_protocol::wire::frame::MirrorOp::Targets), provide]
         .map(|op| row(command(op), &[], &[&["*@global"]]))
-        .into()
+        .into_iter()
+        .chain([row(command(forward), &[&["input@global"]], &scoped)])
+        .collect()
 }

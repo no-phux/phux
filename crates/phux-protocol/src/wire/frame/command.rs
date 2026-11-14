@@ -196,6 +196,11 @@ pub enum CommandValue {
     ServiceHttpHead(crate::service_http::ServiceHttpHead),
     /// Response body bytes (reply to `SERVICE_HTTP_READ`).
     ServiceHttpChunk(crate::service_http::ServiceHttpChunk),
+    /// The id of a dialed forward (reply to `FORWARD_OPEN`). Never reused
+    /// by the server that issued it.
+    ForwardOpened(u64),
+    /// Bytes the forward's target sent (reply to `FORWARD_READ`).
+    ForwardChunk(crate::forward::ForwardChunk),
     /// One page of the organization (reply to `GET_ORGANIZATION`).
     OrganizationPage(Box<OrganizationPage>),
     /// An arrangement and its revision (reply to `ARRANGEMENT_GET`).

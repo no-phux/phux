@@ -1,0 +1,54 @@
+# How a red main surfaces. Pull requests merge on the fast Linux gate; slow
+# lanes first run on main's push (docs/ci.md#after-the-merge). When a tracked
+# push run ends red, scripts/ci/main-red.sh opens the ci/main-red issue with
+# the suspect commits; once every tracked workflow is green again, it closes
+# that issue.
+#
+# workflow_run runs this file and the script from the default branch, never a
+# pull request's copy. It reads run metadata and commit subjects and writes
+# only the issue: it checks out and runs none of the reported run's code.
+name: main-red
+
+on:
+  workflow_run:
+    workflows: [ci, rune-macos]
+    types: [completed]
+    branches: [main]
+
+permissions:
+  contents: read
+
+# One at a time: two reds finishing together must not both open an issue.
+concurrency:
+  group: main-red
+  cancel-in-progress: false
+
+jobs:
+  report:
+    name: report main's push CI
+    if: >-
+      github.event.workflow_run.event == 'push'
+      && github.event.workflow_run.head_branch == 'main'
+      && github.event.workflow_run.head_repository.full_name == github.repository
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      actions: read
+      contents: read
+      issues: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          sparse-checkout: scripts/ci/main-red.sh
+          sparse-checkout-cone-mode: false
+      - name: open, update or close the ci/main-red issue
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          WORKFLOW_NAME: ${{ github.event.workflow_run.name }}
+          RUN_URL: ${{ github.event.workflow_run.html_url }}
+          RUN_CREATED_AT: ${{ github.event.workflow_run.created_at }}
+          CONCLUSION: ${{ github.event.workflow_run.conclusion }}
+          HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+        run: bash scripts/ci/main-red.sh

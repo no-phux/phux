@@ -95,6 +95,9 @@ pub(in crate::wire) fn decode_command(dec: &mut Decoder<'_>) -> Result<Command, 
     if let Some(command) = super::mirror::decode_command(tag, dec)? {
         return Ok(command);
     }
+    if let Some(op) = super::forward::decode_op(tag, dec)? {
+        return Ok(Command::Forward { op });
+    }
     Err(DecodeError::unknown_enum("Command", tag))
 }
 

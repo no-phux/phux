@@ -27,6 +27,7 @@ pub mod delegation;
 mod directory;
 mod download;
 mod ephemeral_listener;
+pub(crate) mod forward;
 pub mod idempotent_create;
 pub mod keyed_ops;
 pub mod operation_dedupe;

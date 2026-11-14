@@ -106,6 +106,7 @@ connected device sees the same thing live. The request is one `POST` to
 {"schema_version":1,"host":"mini","pane":"local:7","question":"q1","action":"reply"}
 {"schema_version":1,"host":"mini","pane":"local:7","question":"blocked","action":"open"}
 {"schema_version":1,"host":"mini","pane":"local:7","action":"finished"}
+{"schema_version":1,"host":"mini","pane":"server","question":"<approval id>","action":"approve"}
 ```
 
 `pane` is `local:<id>`, or `satellite:<host>:<id>` on a hub. Nothing else
@@ -129,6 +130,14 @@ content. The gateway chooses the alert's words.
   `idle`, `done` with no `working` between send nothing, so one run sends
   once. `working` to `idle` sends nothing either: an agent phux knows only
   by its screen reads as `idle` at its prompt and never as `done`.
+
+- **An action is held** (`"action":"approve"`): sent to every grant when
+  the server holds an action for approval
+  ([held actions](../approvals.md)). `question` is the approval id; the
+  device reads `phux.approval/v1/<id>` and decides by writing `approve` or
+  `deny` to `phux.approval.decide/v1/<id>`. `pane` is the action's one
+  Terminal, or `server` when it names none or several. Each approval id
+  is new, so each hold sends once.
 
 A gateway MUST refuse a notice whose `action` it does not know rather than
 alert it as an ask. Sends are not retried. The

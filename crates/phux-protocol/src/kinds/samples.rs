@@ -38,6 +38,30 @@ fn upload() -> FileUploadId {
     FileUploadId::new([1; 16]).unwrap()
 }
 
+/// One sample per `FORWARD_*` op; all four share a row.
+fn forward_samples() -> Vec<(Command, &'static Rule)> {
+    use crate::forward::ForwardOp;
+    [
+        ForwardOp::Open {
+            addr: "localhost".to_owned(),
+            port: 3000,
+        },
+        ForwardOp::Read {
+            id: 1,
+            max_bytes: 1,
+        },
+        ForwardOp::Write {
+            id: 1,
+            bytes: vec![1],
+            fin: false,
+        },
+        ForwardOp::Close { id: 1 },
+    ]
+    .into_iter()
+    .map(|op| (Command::Forward { op }, &C_FORWARD))
+    .collect()
+}
+
 include!("samples/command_samples.rs");
 include!("samples/frame_samples.rs");
 

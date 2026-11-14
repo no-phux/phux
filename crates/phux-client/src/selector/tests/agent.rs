@@ -52,8 +52,8 @@ fn agent_address_says_which_listed_names_percent_cannot_reach() {
     );
     assert_eq!(
         agent_address(&ResourceId::local(100), &snap, &constant),
-        Some(Err("invalid_agent_name")),
-        "a per-kind constant is listed but not addressable, even when unique",
+        Some(Ok("%claude".to_owned())),
+        "the server gives each pane of a kind its own name, so a kind name addresses",
     );
 
     let partial = index_of(
@@ -92,14 +92,6 @@ fn agent_resolve_errors_carry_their_contract_codes() {
                 candidates: vec![],
             },
             "selector_not_single",
-            2,
-        ),
-        (
-            AgentResolveError::KindConstant {
-                name: "a".into(),
-                candidates: vec![],
-            },
-            "invalid_agent_name",
             2,
         ),
         (
@@ -211,30 +203,35 @@ fn resolve_agent_refuses_a_miss_an_ambiguity_and_a_partial_index_distinctly() {
     assert_eq!(default.exit_code(), 3);
 }
 
-/// A manifest kind constant (`name == kind`) refuses on one pane exactly
-/// as on many, whoever wrote it; a name merely containing a kind is fine.
+/// A name equal to its kind resolves like a chosen one: the server names
+/// each pane of a kind uniquely (`claude`, `claude-2`), and records that
+/// still share a name (an older server) are ambiguous, never guessed.
 #[test]
-fn resolve_agent_refuses_a_manifest_kind_constant_even_when_it_is_unique() {
+fn resolve_agent_reaches_a_kind_named_pane_and_refuses_a_shared_one() {
     let snap = fixture();
-    let lone = index_of(
-        &[(
-            101,
-            record("claude", Some("claude"), AgentMetaState::Working),
-        )],
+    let fleet = index_of(
+        &[
+            (
+                101,
+                record("claude", Some("claude"), AgentMetaState::Working),
+            ),
+            (
+                102,
+                record("claude-2", Some("claude"), AgentMetaState::Idle),
+            ),
+        ],
         true,
     );
-    let err = resolve_agent("claude", &snap, &lone).unwrap_err();
     assert_eq!(
-        err,
-        AgentResolveError::KindConstant {
-            name: "claude".to_owned(),
-            candidates: ids(&[101]),
-        }
+        resolve_agent("claude", &snap, &fleet).unwrap().terminal,
+        ResourceId::local(101)
     );
-    assert_eq!(err.exit_code(), 2);
-    assert!(err.to_string().contains("phux agent set"), "{err}");
+    assert_eq!(
+        resolve_agent("claude-2", &snap, &fleet).unwrap().terminal,
+        ResourceId::local(102)
+    );
 
-    let fleet = index_of(
+    let shared = index_of(
         &[
             (
                 100,
@@ -244,32 +241,12 @@ fn resolve_agent_refuses_a_manifest_kind_constant_even_when_it_is_unique() {
         ],
         true,
     );
-    let err = resolve_agent("claude", &snap, &fleet).unwrap_err();
-    assert!(matches!(err, AgentResolveError::KindConstant { .. }));
+    let err = resolve_agent("claude", &snap, &shared).unwrap_err();
+    assert!(
+        matches!(err, AgentResolveError::Ambiguous { .. }),
+        "{err:?}"
+    );
     assert!(err.to_string().contains("@102"));
-
-    let by_hand = index_of(
-        &[(101, record("codex", Some("Codex"), AgentMetaState::Idle))],
-        true,
-    );
-    assert!(matches!(
-        resolve_agent("codex", &snap, &by_hand),
-        Err(AgentResolveError::KindConstant { .. })
-    ));
-
-    let chosen = index_of(
-        &[(
-            101,
-            record("claude-review", Some("claude"), AgentMetaState::Working),
-        )],
-        true,
-    );
-    assert_eq!(
-        resolve_agent("claude-review", &snap, &chosen)
-            .unwrap()
-            .terminal,
-        ResourceId::local(101)
-    );
 }
 
 /// The write guard is the withdrawn shape (a `kind` and `state:

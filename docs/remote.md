@@ -106,9 +106,9 @@ phux new --remote mini scratch   # create a session there
 phux host ls                     # registered machines
 ```
 
-`ls`, `new`, `kill`, `rename`, `detach`, `upload`, `download`, and `whoami`
-take `--remote NAME`. Pane commands such as `snapshot`, `send-keys`, `run`,
-and `wait` act on the server they connect to. To script panes on another
+`ls`, `new`, `kill`, `rename`, `detach`, `upload`, `download`, `whoami`, and
+[`forward`](./forwarding.md) take `--remote NAME`. Pane commands
+(`snapshot`, `send-keys`) act on their own server. To script panes on another
 machine, run `phux` there over SSH, or [link the machines](#linking-machines)
 so its panes show up here as `mini/@7`.
 

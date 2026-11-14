@@ -63,10 +63,11 @@ const fn command_variant(command: &Command) -> usize {
         Command::PrivacyStatus => 58,
         Command::ArrangementLock { .. } => 59,
         Command::HostChecklist => 60,
+        Command::Forward { .. } => 61,
     }
 }
 
-const COMMAND_VARIANTS: usize = 61;
+const COMMAND_VARIANTS: usize = 62;
 
 fn operation() -> IdempotencyKey {
     IdempotencyKey::new([3; 16]).unwrap()
@@ -613,5 +614,6 @@ fn command_samples() -> Vec<(Command, &'static Rule)> {
     ]
     .into_iter()
     .chain(org_command_samples())
+    .chain(forward_samples())
     .collect()
 }

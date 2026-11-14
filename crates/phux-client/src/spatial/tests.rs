@@ -112,11 +112,9 @@ async fn percent_name_resolves_through_the_agent_resolver() {
     let by_id = local(plan_on(swap("@1", "@2")).await.unwrap());
     assert_eq!(named.mutation, by_id.mutation);
 
-    let constant = plan_on(swap("%claude", "@1")).await.unwrap_err();
-    assert_eq!(
-        (constant.code, constant.exit_code),
-        ("invalid_agent_name", 2)
-    );
+    let kind_named = local(plan_on(swap("%claude", "@1")).await.unwrap());
+    let kind_by_id = local(plan_on(swap("@2", "@1")).await.unwrap());
+    assert_eq!(kind_named.mutation, kind_by_id.mutation);
     let unknown = plan_on(swap("@1", "%ghost")).await.unwrap_err();
     assert_eq!((unknown.code, unknown.exit_code), ("no_such_target", 1));
     assert!(

@@ -76,13 +76,17 @@ pub struct Config {
     /// `[restore]`: whether a starting server relaunches what the last one
     /// ended.
     pub restore: RestoreCfg,
+    /// `[forward]`: what `phux forward` may reach from this server.
+    pub forward: ForwardCfg,
 }
 
 mod defaults;
+mod forward;
 mod keybindings;
 mod restore;
 
 pub use defaults::*;
+pub use forward::*;
 pub use keybindings::*;
 pub use restore::*;
 

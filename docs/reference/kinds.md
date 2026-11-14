@@ -36,6 +36,10 @@ Addressed to the server or the connection rather than to one resource.
 | `SERVICE_HTTP_OPEN` | command `0x3d` | INPUT | yes | `host_service_http` (features_ext) | shipped |
 | `SERVICE_HTTP_READ` | command `0x3e` | INPUT | yes | `host_service_http` (features_ext) | shipped |
 | `SERVICE_HTTP_CLOSE` | command `0x3f` | INPUT | yes | `host_service_http` (features_ext) | shipped |
+| `FORWARD_OPEN` | command `0x44` | INPUT | yes | `forward_tcp` (features_ext) | shipped |
+| `FORWARD_READ` | command `0x45` | INPUT | yes | `forward_tcp` (features_ext) | shipped |
+| `FORWARD_WRITE` | command `0x46` | INPUT | yes | `forward_tcp` (features_ext) | shipped |
+| `FORWARD_CLOSE` | command `0x47` | INPUT | yes | `forward_tcp` (features_ext) | shipped |
 | `UPGRADE` | command `0x0e` | SIGNAL | yes | none | shipped |
 | `SHUTDOWN` | command `0x16` | SIGNAL (owner socket only) | yes | `shutdown` | shipped |
 | `OPEN_LISTENER` | command `0x1c` | SIGNAL (owner socket only) | yes | `open_listener` | shipped |
@@ -338,6 +342,7 @@ Every command nested in `COMMAND` lands on exactly one row; the envelope alone g
 | `GET_FILE` | INPUT | `Global { owner_uds_only: false }` |
 | `CHECKOUT` | INPUT | `NamedTerminal` |
 | `SERVICE_HTTP_OPEN`, `SERVICE_HTTP_READ`, `SERVICE_HTTP_CLOSE` | INPUT | `Global { owner_uds_only: false }` |
+| `FORWARD_OPEN`, `FORWARD_READ`, `FORWARD_WRITE`, `FORWARD_CLOSE` | INPUT | `Global { owner_uds_only: false }` |
 | `TRANSCRIBE` | INPUT | `NamedTerminal` |
 | `DETACH_CLIENTS { session: Some }` | SIGNAL | `ResolvedGroup` |
 | `DETACH_CLIENTS { session: None }` | SIGNAL | `Global { owner_uds_only: false }` |

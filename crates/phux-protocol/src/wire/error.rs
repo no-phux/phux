@@ -123,6 +123,11 @@ pub enum DecodeError {
     #[error("SERVICE_HTTP payload exceeds protocol limits")]
     ServiceHttpLimitExceeded,
 
+    /// A `FORWARD_*` address, read size, or chunk exceeded its bound
+    /// (`crate::forward`).
+    #[error("FORWARD payload exceeds protocol limits")]
+    ForwardLimitExceeded,
+
     /// A well-formed JSON payload named an operation, variant, or field this
     /// build does not know: newer, not malformed. A receiver refuses it
     /// with `Unsupported` and keeps the connection.

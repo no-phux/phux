@@ -154,8 +154,7 @@ async fn resolve_target_with(
 ///
 /// Every variant is a refusal to guess (ADR-0075 point 3), so each lands on
 /// a distinct code: a miss is `no_such_target` (1); two records or two
-/// sessions sharing the name are `selector_not_single` (2); a kind constant
-/// is `invalid_agent_name` (2); a withdrawn record on an input verb is
+/// sessions sharing the name are `selector_not_single` (2); a withdrawn record on an input verb is
 /// `agent_withdrawn` (2); an index that did not finish is `partial_view` —
 /// exit 3, or 1 when `keep_status` for the verbs whose status is already
 /// spoken for.
@@ -184,7 +183,6 @@ pub(super) const fn agent_resolve_code(
         AgentResolveError::Ambiguous { .. } | AgentResolveError::AmbiguousSession { .. } => {
             json_err::codes::SELECTOR_NOT_SINGLE
         }
-        AgentResolveError::KindConstant { .. } => json_err::codes::INVALID_AGENT_NAME,
         AgentResolveError::Withdrawn { .. } => json_err::codes::AGENT_WITHDRAWN,
         AgentResolveError::PartialIndex { .. } => json_err::codes::PARTIAL_VIEW,
     }

@@ -295,6 +295,27 @@ static C_SERVICE_HTTP: Rule = Rule::verbs(
     &[Verb::Input],
     GLOBAL,
 );
+// The server dials as the serving user, which an `INPUT` holder on this
+// server can already do from any shell (`nc`): `INPUT` on the server.
+static C_FORWARD: Rule = Rule::verbs(
+    "`FORWARD_OPEN`, `FORWARD_READ`, `FORWARD_WRITE`, `FORWARD_CLOSE`",
+    &[Verb::Input],
+    GLOBAL,
+);
+/// One `FORWARD_*` method: all four share a row and a gate.
+macro_rules! forward {
+    ($name:expr, $tag:expr) => {
+        method!(
+            $name,
+            Carrier::Command($tag),
+            [C_FORWARD],
+            Some(FeatureGate::FeaturesExt {
+                mask: ServerFeatureExt::ForwardTcp.mask(),
+                wire_name: ServerFeatureExt::ForwardTcp.wire_name(),
+            })
+        )
+    };
+}
 static C_TRANSCRIBE: Rule = Rule::verbs("`TRANSCRIBE`", &[Verb::Input], Subject::NamedTerminal);
 static C_DETACH_CLIENTS_SESSION: Rule = Rule::verbs(
     "`DETACH_CLIENTS { session: Some }`",
@@ -459,7 +480,7 @@ static C_UNCLASSIFIED: Rule = Rule::deny("Unknown, retired, or otherwise unclass
 /// The nested-command table of workload-auth §6, in spec row order.
 ///
 /// [`classify_command`] returns one of these rows for every decoded command.
-pub static COMMAND_RULES: [&Rule; 60] = [
+pub static COMMAND_RULES: [&Rule; 61] = [
     &C_SPAWN,
     &C_ATTACH_RESOURCE,
     &C_DETACH_RESOURCE,
@@ -482,6 +503,7 @@ pub static COMMAND_RULES: [&Rule; 60] = [
     &C_GET_FILE,
     &C_CHECKOUT,
     &C_SERVICE_HTTP,
+    &C_FORWARD,
     &C_TRANSCRIBE,
     &C_DETACH_CLIENTS_SESSION,
     &C_DETACH_CLIENTS_ALL,

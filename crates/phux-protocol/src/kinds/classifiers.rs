@@ -129,6 +129,7 @@ pub fn command_rule(command: &Command) -> &'static Rule {
         Command::ServiceHttpOpen { .. }
         | Command::ServiceHttpRead { .. }
         | Command::ServiceHttpClose { .. } => &C_SERVICE_HTTP,
+        Command::Forward { .. } => &C_FORWARD,
         Command::DetachClients { session: Some(_) } => &C_DETACH_CLIENTS_SESSION,
         Command::DetachClients { session: None } => &C_DETACH_CLIENTS_ALL,
         Command::Shutdown => &C_SHUTDOWN,

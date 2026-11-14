@@ -70,6 +70,14 @@ records explain history; [look them up deliberately](./architecture.md#historica
   the only gate, `INPUT` on the server as for `GET_FILE`, so revoking a
   device revokes its OpenCode access and no service credential reaches it
   ([host services](./host-services.md)).
+- A TCP port is forwarded through the phux connection as commands on the
+  control lane (open, pull, acknowledged write, close), not a new stream
+  type, so every transport carries it unchanged; a stream path waits for a
+  measured need. The server dials only its own loopback unless its
+  `[forward] allow` lists a target, and never resolves a client's name.
+  `INPUT` on the server as for `GET_FILE`: a holder can already run
+  commands there, so loopback-only limits mistakes, not a determined
+  holder ([port forwarding](./forwarding.md)).
 
 **Public operations**
 
@@ -98,6 +106,11 @@ records explain history; [look them up deliberately](./architecture.md#historica
 
 - The server derives agent state. A host's lifecycle stream outranks the
   detector; an occupant-bounded declaration outranks both.
+- The server names agent panes. A record whose name is its kind gets a name
+  unique on the server (`opencode`, `opencode-2`) that the pane keeps while
+  its record stays, so `%name` reaches a detected or launched agent with no
+  naming step and never moves to another pane. Chosen names are stored as
+  written; a shared one is ambiguous, never guessed.
 - The ordinary owner socket has full same-UID authority; delegated sockets
   only narrow it. Remote consumer ingress requires scoped mTLS plus bearer
   admission; reverse federation grants the trusted hub satellite-owner
