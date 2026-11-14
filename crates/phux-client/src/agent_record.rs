@@ -58,12 +58,13 @@ pub async fn set_record(
     record: &AgentRecord,
 ) -> Result<(Answer<Option<AgentRecord>>, Degradation), AttachError> {
     let mut record = record.clone();
-    let mut prefetch = Degradation::default();
-    if record.kind.is_none() {
+    let prefetch = if record.kind.is_none() {
         let (current, degradation) = get_record(conn, pane, request_id.wrapping_add(2)).await?;
         record.kind = current.ok().flatten().and_then(|current| current.kind);
-        prefetch = degradation;
-    }
+        degradation
+    } else {
+        Degradation::default()
+    };
     conn.send(&FrameKind::SetMetadata {
         request_id,
         scope: Scope::Resource(pane.clone()),

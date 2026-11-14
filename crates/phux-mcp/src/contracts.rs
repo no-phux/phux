@@ -74,7 +74,7 @@ pub(crate) fn enhance(catalog: &mut Value) {
 
 /// Drop the `format` words a Rust schema generator writes for integer widths
 /// (`uint32`, `int64`, `double`): JSON Schema does not define them, and MCP
-/// clients that validate with Ajv print a warning per word, which OpenCode
+/// clients that validate with Ajv print a warning per word, which `OpenCode`
 /// 1.x paints over its own screen.
 fn drop_numeric_formats(schema: &mut Value) {
     match schema {
