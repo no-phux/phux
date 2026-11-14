@@ -2,6 +2,9 @@
 // This is not a general GitHub expression interpreter: these fixtures use
 // only boolean operators, format(), and populated contexts.
 import { expect, test } from "bun:test";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { runInNewContext } from "node:vm";
 import { capture } from "../lib/process.ts";
 import { str, table, type Table } from "../lib/value.ts";
@@ -152,20 +155,30 @@ test("first-run push classifier fails closed for unknown history or failed diffs
     const pr = steps(job(FIRST_RUN, "linux")).find((step) => step["id"] === "changes");
     expect(run(pr ?? {})).toContain(path);
   }
-  for (const [before, failedFetch, failedDiff, changed, installer] of [
-    ["", "0", "0", "", "true"],
-    ["0".repeat(40), "0", "0", "", "true"],
-    ["a".repeat(40), "1", "0", "", "true"],
-    ["a".repeat(40), "0", "1", "", "true"],
-    ["a".repeat(40), "0", "0", "scripts/install.sh", "true"],
-    ["a".repeat(40), "0", "0", "", "false"],
-  ]) {
-    const output = capture(
-      [
-        "bash",
-        "-e",
-        "-c",
-        `
+  // Actions appends step outputs to the file in $GITHUB_OUTPUT. /dev/stdout
+  // cannot stand in for that file: bash opens `>>` with O_APPEND, and Linux
+  // returns ENXIO when the target is the pipe Bun uses to capture stdout.
+  const directory = mkdtempSync(join(tmpdir(), "phux-first-run-output-"));
+  try {
+    const cases = [
+      ["", "0", "0", "", "true", "zero or new-branch before SHA"],
+      ["0".repeat(40), "0", "0", "", "true", "zero or new-branch before SHA"],
+      ["a".repeat(40), "1", "0", "", "true", "diff failed"],
+      ["a".repeat(40), "0", "1", "", "true", "diff failed"],
+      ["a".repeat(40), "0", "0", "scripts/install.sh", "true", "scripts/install.sh"],
+      ["a".repeat(40), "0", "0", "", "false", "none"],
+    ] as const;
+    for (const [
+      index,
+      [before, failedFetch, failedDiff, changed, installer, detail],
+    ] of cases.entries()) {
+      const outputPath = join(directory, String(index));
+      const stdout = capture(
+        [
+          "bash",
+          "-e",
+          "-c",
+          `
         git() {
           if [ "$1" = fetch ]; then return "$FAILED_FETCH"; fi
           if [ "$FAILED_DIFF" != 0 ]; then return "$FAILED_DIFF"; fi
@@ -173,19 +186,23 @@ test("first-run push classifier fails closed for unknown history or failed diffs
       }
       ${script}
     `,
-      ],
-      {
-        env: {
-          ...process.env,
-          BEFORE_SHA: before,
-          AFTER_SHA: "b".repeat(40),
-          FAILED_FETCH: failedFetch,
-          FAILED_DIFF: failedDiff,
-          CHANGED: changed,
-          GITHUB_OUTPUT: "/dev/stdout",
+        ],
+        {
+          env: {
+            ...process.env,
+            BEFORE_SHA: before,
+            AFTER_SHA: "b".repeat(40),
+            FAILED_FETCH: failedFetch,
+            FAILED_DIFF: failedDiff,
+            CHANGED: changed,
+            GITHUB_OUTPUT: outputPath,
+          },
         },
-      },
-    );
-    expect(output).toContain(`installer=${installer}`);
+      );
+      expect(readFileSync(outputPath, "utf8")).toBe(`installer=${installer}\n`);
+      expect(stdout).toBe(`installer inputs changed: ${detail}\n`);
+    }
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
   }
 });
