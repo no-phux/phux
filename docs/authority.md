@@ -96,8 +96,11 @@ naming the hub.
 
 The satellite believes this only from its owner socket (an `ssh://` or
 uplink hub) or a credential holding every verb on `global`, the
-full-control ceiling `phux host add` pairs a hub with. From anything
-narrower, such as an automation key, it is ignored. The log always names
+full-control ceiling `phux host add` pairs a hub with. A hub paired as a
+person's device before `organize` and `terminate` existed holds the older
+six-verb ceiling (`inventory,observe,create,bind,input,signal@global`) and
+is believed too. From anything narrower, such as an automation key, it is
+ignored. The log always names
 the link's own credential next to the claim. The relayed identity is never
 used to authorize: the satellite still checks the hub's link credential,
 and the hub checks the sender's grants.
