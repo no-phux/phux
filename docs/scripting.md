@@ -250,9 +250,9 @@ phux watch --until asked --timeout 600 @7        # the pane's agent asked a ques
 ```
 
 The events are `agent_state`, `asked`, `bell`, `command_finished`,
-`command_started`, `cwd_changed`, `dirty`, `idle`, `journal_gap`,
-`pane_closed`, `pane_spawned`, `source_gap`, `terminal_control`,
-`title_changed`, and `unknown`. `command_started` and `command_finished`
+`command_started`, `controller_changed`, `cwd_changed`, `dirty`, `idle`,
+`journal_gap`, `pane_closed`, `pane_spawned`, `source_gap`,
+`terminal_control`, `title_changed`, and `unknown`. `command_started` and `command_finished`
 need a shell with OSC 133 integration. A timeout exits 124. If the server
 closes the stream before the event arrives, `watch` exits 1.
 

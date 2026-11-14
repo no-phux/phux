@@ -5931,12 +5931,17 @@ Global flags:
 Show one resource: kind, lifecycle, exit, process, tags, agent.
 
 Prints `key: value` lines, or with `--json` the stable document. Read-only:
-never attaches or resizes.
+never attaches or resizes. `controller` is the connection that last typed into a
+pane: its client id, the name it gave itself, the route it connected by, and
+whether that route is remote. It is `null` when nobody has typed or that
+connection has closed.
 
-Usage: phux resource show [--json] <TARGET>
+Usage: phux resource show [--json] [TARGET]
 
 Arguments:
-  <TARGET>  Target selector. A direct id (`@N`, `host/@N`) is read as given.
+  [TARGET]  Target selector. A direct id (`@N`, `host/@N`) is read as given.
+            Omit it inside a pane to show that pane (`$PHUX_TERMINAL_ID`);
+            elsewhere the default is the most-recently-focused pane.
 
 Flags:
       --json           Emit stable, versioned JSON on stdout instead of the
@@ -7456,10 +7461,10 @@ Flags:
                         Repeatable; any one of them satisfies the watch. The
                         vocabulary is the one this stream prints: `agent_state`,
                         `asked`, `bell`, `command_finished`, `command_started`,
-                        `cwd_changed`, `dirty`, `idle`, `journal_gap`,
-                        `pane_closed`, `pane_spawned`, `source_gap`,
-                        `terminal_control`, `title_changed`, `unknown`.
-                        `unknown` also matches `cwd_changed`,
+                        `controller_changed`, `cwd_changed`, `dirty`, `idle`,
+                        `journal_gap`, `pane_closed`, `pane_spawned`,
+                        `source_gap`, `terminal_control`, `title_changed`,
+                        `unknown`. `unknown` also matches `cwd_changed`,
                         `terminal_control`, `journal_gap`, and `source_gap`,
                         which printed as `unknown` before they had names, so an
                         existing `--until unknown` keeps working. An

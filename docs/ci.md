@@ -57,7 +57,9 @@ qualification, and nightly/manual jobs have separate groups.
 
 The test lanes compile once (`just test-archive`) and run the unit and e2e
 shards from that nextest archive. Pull requests restore caches and never
-save them; `main` pushes save one entry per lane under a 10 GB repository
-budget, pruned by `prune-build-cache`, warmed by `cache-warm.yml`.
+save them. `main` pushes and the 00:10 UTC cache-warm run populate Linux Rust
+lane entries under the 10 GB budget. After uploads, `prune-build-cache` protects
+current-day main entries and retains the newest older fallback if no current-day
+replacement exists. PR and topic-ref entries are outside its deletion scope.
 Runners are the free hosted ones:
 Ubuntu x64 and arm64, and macOS 26 plus the `xcode-27` image.

@@ -116,7 +116,8 @@ impl Desk {
                     | self.resource_closed(client, &terminal_id, exit_status)
             }
             Event::OrganizationOperation { operation, outcome } => {
-                self.layout_outcome(client, operation, outcome)
+                self.quick_move_outcome(client, operation, &outcome)
+                    | self.layout_outcome(client, operation, outcome)
             }
             // OSC 52 only from the terminal on screen, while the window has
             // focus; never retained for later.
@@ -223,9 +224,9 @@ impl Desk {
             self.resources.producers.insert(new.clone(), source);
         }
         if let Some(new) = &id
-            && let Some(placement) = self.pending_splits.remove(&request)
+            && let Some((session, placement)) = self.pending_splits.remove(&request)
         {
-            self.place_split(client, new, placement);
+            self.place_split(client, new, placement, session);
             return true;
         }
         let ours =

@@ -247,9 +247,10 @@ pub(crate) struct WatchArgs {
     /// Exit 0 as soon as an event with this name arrives. Repeatable;
     /// any one of them satisfies the watch. The vocabulary is the one
     /// this stream prints: `agent_state`, `asked`, `bell`,
-    /// `command_finished`, `command_started`, `cwd_changed`, `dirty`,
-    /// `idle`, `journal_gap`, `pane_closed`, `pane_spawned`,
-    /// `source_gap`, `terminal_control`, `title_changed`, `unknown`.
+    /// `command_finished`, `command_started`, `controller_changed`,
+    /// `cwd_changed`, `dirty`, `idle`, `journal_gap`, `pane_closed`,
+    /// `pane_spawned`, `source_gap`, `terminal_control`, `title_changed`,
+    /// `unknown`.
     /// `unknown` also matches `cwd_changed`, `terminal_control`,
     /// `journal_gap`, and `source_gap`, which printed as `unknown` before
     /// they had names, so an existing `--until unknown` keeps working. An

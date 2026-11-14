@@ -56,7 +56,7 @@ pub use process::{ExitOutcome, TerminalProcessState};
 pub use registry::{Committed, Registry};
 pub use resource::{
     AgentFacet, AgentLaunch, LaunchSpec, Provenance, Resource, ResourceDescriptor, ResourceKind,
-    TerminalLaunch,
+    ResumeToken, TerminalLaunch,
 };
 pub use screen::{CursorState, SCHEMA_VERSION, ScreenState};
 pub use session::{Attrs, Session};

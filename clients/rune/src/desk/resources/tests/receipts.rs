@@ -357,7 +357,9 @@ fn an_unobserved_intermediate_socket_does_not_borrow_the_previous_hello_identity
     step(&mut rt); // no HELLO yet; the remembered server identity is stale.
     reattach(&client, 2); // the UI never observes this server's identity.
     let request = client.spawn_terminal(phux_client_runtime::control::SpawnRequest::default());
-    rt.state.pending_splits.insert(request, None);
+    rt.state
+        .pending_splits
+        .insert(request, (Some(session()), None));
     answer_spawn(&client, request);
     client.with_control(ControlPlane::connection_opened);
     reattach(&client, 1); // back to the original server, reusing @2.

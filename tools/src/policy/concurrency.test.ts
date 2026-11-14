@@ -2,6 +2,9 @@
 // This is not a general GitHub expression interpreter: these fixtures use
 // only boolean operators, format(), and populated contexts.
 import { expect, test } from "bun:test";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { runInNewContext } from "node:vm";
 import { capture } from "../lib/process.ts";
 import { str, table, type Table } from "../lib/value.ts";
@@ -152,20 +155,24 @@ test("first-run push classifier fails closed for unknown history or failed diffs
     const pr = steps(job(FIRST_RUN, "linux")).find((step) => step["id"] === "changes");
     expect(run(pr ?? {})).toContain(path);
   }
-  for (const [before, failedFetch, failedDiff, changed, installer] of [
-    ["", "0", "0", "", "true"],
-    ["0".repeat(40), "0", "0", "", "true"],
-    ["a".repeat(40), "1", "0", "", "true"],
-    ["a".repeat(40), "0", "1", "", "true"],
-    ["a".repeat(40), "0", "0", "scripts/install.sh", "true"],
-    ["a".repeat(40), "0", "0", "", "false"],
-  ]) {
-    const output = capture(
-      [
-        "bash",
-        "-e",
-        "-c",
-        `
+  const dir = mkdtempSync(join(tmpdir(), "phux-first-run-output-"));
+  const outputPath = join(dir, "output");
+  try {
+    for (const [before, failedFetch, failedDiff, changed, installer] of [
+      ["", "0", "0", "", "true"],
+      ["0".repeat(40), "0", "0", "", "true"],
+      ["a".repeat(40), "1", "0", "", "true"],
+      ["a".repeat(40), "0", "1", "", "true"],
+      ["a".repeat(40), "0", "0", "scripts/install.sh", "true"],
+      ["a".repeat(40), "0", "0", "", "false"],
+    ]) {
+      writeFileSync(outputPath, "");
+      const output = capture(
+        [
+          "bash",
+          "-e",
+          "-c",
+          `
         git() {
           if [ "$1" = fetch ]; then return "$FAILED_FETCH"; fi
           if [ "$FAILED_DIFF" != 0 ]; then return "$FAILED_DIFF"; fi
@@ -173,19 +180,24 @@ test("first-run push classifier fails closed for unknown history or failed diffs
       }
       ${script}
     `,
-      ],
-      {
-        env: {
-          ...process.env,
-          BEFORE_SHA: before,
-          AFTER_SHA: "b".repeat(40),
-          FAILED_FETCH: failedFetch,
-          FAILED_DIFF: failedDiff,
-          CHANGED: changed,
-          GITHUB_OUTPUT: "/dev/stdout",
+        ],
+        {
+          env: {
+            ...process.env,
+            BEFORE_SHA: before,
+            AFTER_SHA: "b".repeat(40),
+            FAILED_FETCH: failedFetch,
+            FAILED_DIFF: failedDiff,
+            CHANGED: changed,
+            GITHUB_OUTPUT: outputPath,
+          },
         },
-      },
-    );
-    expect(output).toContain(`installer=${installer}`);
+      );
+      // GitHub step outputs belong to its output file, not the captured log.
+      expect(output).not.toMatch(/^installer=(?:true|false)$/m);
+      expect(readFileSync(outputPath, "utf8")).toBe(`installer=${installer}\n`);
+    }
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
   }
 });

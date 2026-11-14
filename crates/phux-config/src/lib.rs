@@ -55,8 +55,9 @@ pub use schema::{
     HookEntry, KeepAwake, KeybindingsCfg, LimitsCfg, MAX_AGENT_LOG_BYTES, MAX_APPROVAL_MAX_PENDING,
     MAX_APPROVAL_MAX_PENDING_TOTAL, MAX_APPROVAL_TTL_SECS, MAX_EVENT_JOURNAL_BYTES,
     MAX_EVENT_JOURNAL_ENTRIES, MAX_HISTORY_BYTES, MAX_RETAIN_ON_EXIT_MAX, NotificationsCfg,
-    NotifyMode, NotifyProtocol, ParamAction, PolicyCfg, PolicyMode, ScrollbackLimits, SidebarCfg,
-    SidebarPosition, StatusCfg, StatusPosition, ThemeCfg, VoiceCfg, Widget, WidgetSpec, WindowSize,
+    NotifyMode, NotifyProtocol, ParamAction, PolicyCfg, PolicyMode, RESUME_TOKEN_PLACEHOLDER,
+    RestoreCfg, RestoreProgram, ScrollbackLimits, SidebarCfg, SidebarPosition, StatusCfg,
+    StatusPosition, ThemeCfg, VoiceCfg, Widget, WidgetSpec, WindowSize,
 };
 pub use session_name::{
     NameRng, RANDOM_NAME_PLACEHOLDER, random_name, render_session_name_template_with,

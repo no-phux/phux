@@ -37,7 +37,11 @@ pub fn view(desk: &Desk, cx: &mut Cx<Desk>) -> El {
     // Glass floats beside the terminal, which may not have taken a newly
     // chosen theme yet: its ink contrasts with the ground actually drawn.
     let drawn = ground_ink(terminal_ground(desk), cx.accent(), desk.settings.theme);
-    let controls = if desk.settings_open { &p } else { &drawn };
+    let controls = if desk.settings_open || desk.phone_page().is_some() {
+        &p
+    } else {
+        &drawn
+    };
     cx.foreground(p.text);
     let stage = phone_stage(desk, &p, cx);
     let top = top_inset(desk, cx);
@@ -64,11 +68,8 @@ pub fn view(desk: &Desk, cx: &mut Cx<Desk>) -> El {
         &p,
         top,
     );
-    col()
-        .key("phone")
-        .w_full()
-        .h_full()
-        .fill(fill)
+    let root = col().key("phone").w_full().h_full();
+    super::chrome_ground(root, desk.glass(), fill)
         .child(content)
         .children(bar)
         .children(
@@ -110,6 +111,8 @@ fn ink(desk: &Desk, accent: Color) -> Ink {
 fn edge_fill(desk: &Desk, p: &Ink) -> Color {
     if desk.settings_open {
         p.sidebar
+    } else if desk.phone_page().is_some() {
+        p.bg
     } else {
         terminal_ground(desk)
     }
@@ -172,9 +175,9 @@ fn phone_stage(desk: &Desk, p: &Ink, cx: &mut Cx<Desk>) -> El {
         .children(desk.palette_open.then(|| palette::view(desk, p, 8.0)))
 }
 
-/// Tinted glass under a rim lit from above and a soft lift. Every surface
-/// sits beside the terminal on its flat ground, never over its text, so
-/// there is nothing behind one for a backdrop blur to show.
+/// A light rim and restrained lift, shared by the floating controls. Only
+/// surfaces over changing content opt into backdrop blur: blurring flat
+/// ground adds GPU passes without changing a pixel.
 fn glass(surface: El, p: &Ink) -> El {
     surface
         .continuous_corners()

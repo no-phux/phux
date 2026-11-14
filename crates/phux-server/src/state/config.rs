@@ -14,6 +14,8 @@ pub(super) struct ServerConfig {
     pub(super) agent_log_bytes: u32,
     /// `[voice]` transcriber settings behind `TRANSCRIBE`.
     pub(super) voice: phux_config::VoiceCfg,
+    /// `[restore]`: the commands a relaunch may resume a program with.
+    pub(super) restore: phux_config::RestoreCfg,
     /// Largest stored L3 metadata value (`limits.metadata-value-bytes`,
     /// ADR-0129).
     pub(super) metadata_value_bytes: u32,
@@ -61,6 +63,7 @@ impl Default for ServerConfig {
             scrollback: phux_config::DefaultsCfg::default().scrollback_limits(),
             agent_log_bytes: phux_config::DEFAULT_AGENT_LOG_BYTES,
             voice: phux_config::VoiceCfg::default(),
+            restore: phux_config::RestoreCfg::default(),
             metadata_value_bytes: phux_config::DEFAULT_METADATA_VALUE_BYTES,
             cwd_inheritance: phux_config::CwdInheritance::default(),
             term: phux_config::DefaultsCfg::default().term,

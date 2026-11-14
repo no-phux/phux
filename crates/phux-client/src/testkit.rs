@@ -250,10 +250,11 @@ impl ScriptedServer {
             }
             if subscribed && self.spec.end == EndOfScript::HangUp {
                 // Half-close so the client sees a clean EOF rather than
-                // ECONNRESET from unread frames; give one racing frame a
-                // bounded chance to land, without waiting for the close.
+                // ECONNRESET from unread frames; give racing frames (a
+                // watch subscribes to more than one key) a bounded chance
+                // to land, without waiting for the close.
                 self.link.close_output().await;
-                if let Ok(Some(frame)) =
+                while let Ok(Some(frame)) =
                     tokio::time::timeout(std::time::Duration::from_millis(50), self.link.recv())
                         .await
                 {

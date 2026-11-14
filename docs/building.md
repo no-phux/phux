@@ -60,6 +60,62 @@ that command makes billable model calls on the operator's own agent logins.
 CI runs that harness against a stub only. A table of real Mac numbers is
 not checked in.
 
+## Who is typing
+
+Several clients can share a pane. The server records, per pane, the
+connection that last typed into it (a key or a paste, attached or through
+`phux send-keys`). A program reads that record without parsing the screen.
+
+`phux resource show --json` carries it as `controller`:
+
+```json
+{ "client": 7, "client_name": "phux-mobile", "route": "bearer-quic", "remote": true }
+```
+
+- `client` is the server's id for the connection, the same number
+  `input_holder` and `viewers` use.
+- `client_name` is the name the client gave itself when it connected, such
+  as `phux-mobile`, `phux-cli/0.148.0`, or `null`.
+- `route` is the `auth_route` word [`phux whoami`](./remote.md#who-can-do-what)
+  reports for that connection.
+- `remote` is `false` for the owner's Unix socket and the loopback
+  listeners, and `true` for every other route.
+
+`controller` is `null` when nobody has typed, or when the connection that
+typed has closed. A `phux send-keys` run is one short connection, so its
+record is gone as soon as the command returns.
+
+Inside a pane, `phux resource show` needs no target: it reads the pane it
+runs in from `PHUX_TERMINAL_ID`. A helper that a `sudo` wrapper or a PAM
+rule can call to skip a local fingerprint prompt when the person typing is
+on another device:
+
+```sh
+remote=$(phux resource show --json | jq -r '.controller.remote')
+if [ "$remote" = true ]; then
+  exit 0   # typed from another device: do not prompt on this screen
+fi
+exit 1
+```
+
+`phux watch --json @7` prints a line when the record changes, and
+`--until controller_changed` waits for one:
+
+```json
+{"event":"controller_changed","terminal":"@7","controller":{"client":7,"client_name":"phux-mobile","route":"bearer-quic","remote":true}}
+```
+
+The record is a hint for convenience. It is not an authentication fact. A
+client reports its own name, an `ssh-stdio` route is a label the connecting
+side reported, and any client attached to the pane can type. Do not grant
+anything on the strength of it; use it to choose which prompt to show.
+
+There is no platform field. A client does not report its operating system
+or device class when it connects, so the record carries only the name it
+chose. On a pane reached through a hub, the pane's own server sees the hub
+as the client, so the record there names the hub (`phux-hub`), not the
+person's device. The record is not copied onto the hub.
+
 ## Not shipped
 
 There is no public SDK. [Call phux from a program](./agent-quickstart.md#call-phux-from-a-program)

@@ -169,7 +169,8 @@ impl Desk {
                 ..SpawnRequest::default()
             })
         });
-        self.pending_splits.insert(request, None);
+        self.pending_splits
+            .insert(request, (self.placement_session(client), None));
         self.resources.starting.insert(request, source);
         self.say(NoticeKind::Info, "Starting a dedicated producer terminal. Its output shows prerequisites and failures; Ctrl-C there stops the mirror. Open the published document from the palette.");
     }
