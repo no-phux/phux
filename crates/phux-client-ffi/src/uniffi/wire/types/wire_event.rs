@@ -161,7 +161,8 @@ pub enum WireEvent {
     /// backgrounded job, or a command an idle agent left watching. The
     /// server-owned `phux.pane-occupant/v1` record's `background` flag, read
     /// on attach, followed live, and re-read after gaps; an older server
-    /// that omits it reads as `false`.
+    /// that omits it reads as `false`. The same record's foreground names
+    /// the pane, so the pane's `PaneDescriptor.label` may have moved too.
     BackgroundWork { terminal_id: String, running: bool },
     /// An exact SDK intent's outcome. Queued is submission, not provider
     /// consumption; Unknown requires reconciliation and must not be replayed.

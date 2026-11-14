@@ -326,26 +326,10 @@ pub fn essential_items() -> Vec<Item> {
     out
 }
 
-/// A terminal's name, else its title, else its folder.
+/// A terminal's name, else what runs in it and where (`claude · phux`):
+/// the one rule every client shares (`PaneDescriptor::label`).
 pub fn pane_label(pane: &PaneDescriptor) -> String {
-    let nonempty = |s: &Option<String>| s.clone().filter(|s| !s.trim().is_empty());
-    nonempty(&pane.name)
-        // An ask borrows the title to reach the server; it isn't a name.
-        .or_else(|| {
-            nonempty(&pane.title).filter(|t| phux_client_core::ask::parse_ask_title(t).is_none())
-        })
-        .or_else(|| {
-            nonempty(&pane.cwd).map(|cwd| {
-                let trimmed = cwd.trim_end_matches('/');
-                trimmed
-                    .rsplit('/')
-                    .next()
-                    .filter(|s| !s.is_empty())
-                    .unwrap_or("/")
-                    .to_owned()
-            })
-        })
-        .unwrap_or_else(|| "terminal".to_owned())
+    pane.label()
 }
 
 /// Fuzzy subsequence match of `query` in `text`, case-insensitive. Rewards

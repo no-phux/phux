@@ -116,6 +116,9 @@ pub(super) struct PaneSlot {
     /// The cached OSC 0/2 title (empty ⇒ none): the only identity a plain
     /// agent CLI emits, diffed so a change refreshes the chrome.
     pub last_title: String,
+    /// The foreground program (`phux.pane-occupant/v1`), which names an
+    /// auto-numbered window after what runs in it.
+    pub foreground: Option<String>,
     /// The attention ladder's "looked at" bit: set while focused, cleared when
     /// an unfocused pane's agent record changes, so "finished, unread" ranks
     /// above "working" until visited.
@@ -192,6 +195,7 @@ impl PaneSlot {
             cwd: None,
             last_exit: None,
             last_title: String::new(),
+            foreground: None,
             seen: false,
             satellite_down: false,
             history_degraded: false,
@@ -310,7 +314,8 @@ pub(in crate::attach) fn cwd_basename(cwd: &str) -> Option<String> {
 
 /// What a window is called wherever the chrome names it (the tab bar, the
 /// tab picker): a user-given name as is; an auto-numbered one prefers
-/// context, from the focused pane's agent, its title, then its cwd.
+/// context, from the focused pane's agent, then the label every client
+/// gives the pane (what runs in it and where, else its title or cwd).
 pub(in crate::attach) fn display_window_name(
     name: &str,
     focus: Option<&ResourceId>,
@@ -325,13 +330,14 @@ pub(in crate::attach) fn display_window_name(
         .and_then(|fid| agent_meta.get(fid))
         .map(|record| record.name.clone())
         .or_else(|| {
-            slot.map(|slot| slot.last_title.trim())
-                .filter(|title| !title.is_empty())
-                .map(ToOwned::to_owned)
-        })
-        .or_else(|| {
-            slot.and_then(|slot| slot.cwd.as_deref())
-                .and_then(cwd_basename)
+            slot.and_then(|slot| {
+                phux_client_core::pane_label::pane_label(
+                    None,
+                    Some(slot.last_title.as_str()),
+                    slot.foreground.as_deref(),
+                    slot.cwd.as_deref(),
+                )
+            })
         })
         .unwrap_or_else(|| name.to_owned())
 }

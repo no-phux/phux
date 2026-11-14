@@ -248,7 +248,9 @@ impl ControlPlane {
         // name for another session before this socket reconnects. Numeric IDs
         // are stable within an incarnation and requalified on a server change.
         self.attach_target = Some(AttachTarget::ById(snapshot.focused_session));
-        self.topology = Some(self.project_topology(snapshot));
+        let mut topology = self.project_topology(snapshot);
+        topology.keep_foregrounds(self.topology.as_ref());
+        self.topology = Some(topology);
         self.error = None;
         self.apply_engine(EngineEvent::AttachStarted {
             attach_id,

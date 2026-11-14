@@ -182,9 +182,11 @@ impl Desk {
                 outcome,
                 ..
             } => self.paste_delivered(delivery_id, outcome),
+            // A new foreground renames the pane in the sidebar.
             Event::StatusChanged(_)
             | Event::TopologyChanged
             | Event::OrganizationChanged
+            | Event::BackgroundWork { .. }
             | Event::Attached { .. } => true,
             other => self.apply_document_subscription(client, other),
         }

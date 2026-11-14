@@ -25,6 +25,9 @@ pub(in crate::attach) struct AgentMetaIndex {
     /// [`Self::pending`]: the value is the byte `1`, which is not an agent
     /// record and must not clear one (ADR-0136).
     pub(in crate::attach) asked_pending: HashMap<u32, ResourceId>,
+    /// In-flight `GET_METADATA` of `phux.pane-occupant/v1`, whose
+    /// foreground lands on the pane's slot.
+    pub(in crate::attach) occupant_pending: HashMap<u32, ResourceId>,
     /// Terminals with a live `SUBSCRIBE_METADATA` on the agent key.
     pub(in crate::attach) subscribed: std::collections::HashSet<ResourceId>,
     /// Terminal → when its record last actually changed. The attention

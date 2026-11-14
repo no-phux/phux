@@ -264,6 +264,7 @@ mod tests {
             name: None,
             activation: None,
             exec: None,
+            foreground: None,
         }
     }
 
