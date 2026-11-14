@@ -42,9 +42,10 @@ phux: error: Restore after restart server not supervised, sessions end at logout
 phux: ok:    Agent skill           phux skill installed for claude, codex
 ```
 
-phux mobile shows the same list for each host: it asks the server
-(`HOST_CHECKLIST`), and the server answers with the `checklist` of its own
-`phux doctor --json`. The checklist never changes doctor's exit code.
+phux mobile shows the same list for each host, and so does the desktop app
+(What works on a machine's row in Machines, or What Works Here in the
+palette): it asks the server (`HOST_CHECKLIST`), and the server answers with
+the `checklist` of its own `phux doctor --json`. The checklist never changes doctor's exit code.
 
 In `--json` it is `checklist`, a versioned document:
 

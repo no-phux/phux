@@ -423,6 +423,7 @@ impl Desk {
         let updated = self.pump_updates(tx)
             | self.finish_document_images()
             | self.pump_machines()
+            | self.pump_checklist()
             | self.tick_fleet()
             | self.pump_link()
             | self.pump_links()

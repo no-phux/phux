@@ -114,6 +114,7 @@ every_shortcut!(
     CheckForUpdates,
     InstallUpdate,
     Machines,
+    WhatWorksHere,
     PairPhone,
     RetryConnection,
     CopyDiagnostics,

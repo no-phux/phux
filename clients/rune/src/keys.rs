@@ -101,6 +101,8 @@ pub enum Shortcut {
     CheckForUpdates,
     InstallUpdate,
     Machines,
+    /// This machine's checklist: what works here, why not, and the fix.
+    WhatWorksHere,
     /// Show a code a phone scans to pair with this computer.
     PairPhone,
     RetryConnection,

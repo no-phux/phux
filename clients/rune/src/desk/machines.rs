@@ -13,6 +13,8 @@ use rune::{Key, KeyEvent, TextEdit, Tx, Waker};
 use super::{Desk, NoticeKind};
 use crate::machines::{self, Add, Glance, Host, Peer};
 
+pub mod checklist;
+
 /// How often an expanded machine's sessions are listed again, in seconds.
 const GLANCE_EVERY: f64 = 30.0;
 
@@ -75,6 +77,8 @@ pub struct Machines {
     pub pending: Vec<String>,
     /// A link waiting for the person to accept pairing with it.
     pub offer: Option<crate::connect::Offer>,
+    /// What works here, out under one machine's row.
+    pub checklist: Option<checklist::Checklist>,
 }
 
 impl Machines {
@@ -106,6 +110,7 @@ impl Machines {
             window: None,
             pending: Vec::new(),
             offer: None,
+            checklist: None,
         }
     }
 
