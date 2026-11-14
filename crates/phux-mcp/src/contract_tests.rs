@@ -168,8 +168,20 @@ async fn exact_resource_id_does_not_require_an_inventory_connection() {
 fn tool_schemas_carry_no_integer_width_formats() {
     let catalog = crate::tools::catalog();
     let text = catalog.to_string();
-    for word in ["\"uint32\"", "\"uint64\"", "\"int64\"", "\"uint\"", "\"double\""] {
-        assert!(!text.contains(&format!("\"format\":{word}")), "{word} survives");
+    for word in [
+        "\"uint32\"",
+        "\"uint64\"",
+        "\"int64\"",
+        "\"uint\"",
+        "\"double\"",
+    ] {
+        assert!(
+            !text.contains(&format!("\"format\":{word}")),
+            "{word} survives"
+        );
     }
-    assert!(text.contains("\"format\":{"), "a property named format is kept");
+    assert!(
+        text.contains("\"format\":{"),
+        "a property named format is kept"
+    );
 }

@@ -79,13 +79,17 @@ pub(crate) fn enhance(catalog: &mut Value) {
 fn drop_numeric_formats(schema: &mut Value) {
     match schema {
         Value::Object(object) => {
-            if object.get("format").and_then(Value::as_str).is_some_and(|word| {
-                matches!(word, "double" | "float")
-                    || word
-                        .trim_start_matches('u')
-                        .strip_prefix("int")
-                        .is_some_and(|bits| bits.bytes().all(|b| b.is_ascii_digit()))
-            }) {
+            if object
+                .get("format")
+                .and_then(Value::as_str)
+                .is_some_and(|word| {
+                    matches!(word, "double" | "float")
+                        || word
+                            .trim_start_matches('u')
+                            .strip_prefix("int")
+                            .is_some_and(|bits| bits.bytes().all(|b| b.is_ascii_digit()))
+                })
+            {
                 object.remove("format");
             }
             object.values_mut().for_each(drop_numeric_formats);
