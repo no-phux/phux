@@ -1,5 +1,6 @@
 // ci.yml runs the plan the way plan.ts promises: one job per lane, gated on
 // the plan's own output, running the recipes `just check` runs locally.
+// The web lane is the exception: two jobs. web-lane.test.ts checks that split.
 import { expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { repoPath } from "../lib/repo.ts";
@@ -82,16 +83,20 @@ test("plan declares every output the planner writes, and jobs read only those", 
   expect(read.filter((key) => !declared.includes(key ?? ""))).toEqual([]);
 });
 
-test("each lane is one job gated on its plan output that runs the lane's recipes", () => {
+test("each lane's jobs are gated on its plan output and together run its recipes", () => {
   for (const lane of LANES) {
     const gated = Object.entries(jobs(CI)).filter(([, lane_job]) =>
       (str(lane_job["if"]) ?? "").includes(`needs.plan.outputs.${lane} == 'true'`),
     );
-    const owner = gated.find(([id]) => id !== "test-build");
-    expect([lane, owner === undefined]).toEqual([lane, false]);
-    const called = uses(owner?.[1] ?? {}).replace("./.github/workflows/", "");
-    const laneJobs = called === "" ? [owner?.[1] ?? {}] : Object.values(jobs(workflow(called)));
-    const commands = laneJobs.flatMap(steps).map(run).join("\n");
+    const owners = gated.filter(([id]) => id !== "test-build");
+    expect([lane, owners.length]).toEqual([lane, lane === "web" ? 2 : 1]);
+    const commands = owners
+      .flatMap(([, laneJob]) => {
+        const called = uses(laneJob).replace("./.github/workflows/", "");
+        const laneJobs = called === "" ? [laneJob] : Object.values(jobs(workflow(called)));
+        return laneJobs.flatMap(steps).map(run);
+      })
+      .join("\n");
     for (const argv of LANE_RECIPES[lane]) {
       const [recipe] = argv;
       expect([lane, recipe, recipe in RECIPES]).toEqual([lane, recipe, true]);

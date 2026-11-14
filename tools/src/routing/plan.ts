@@ -24,9 +24,10 @@ export type Lane = (typeof LANES)[number];
 export type Trigger = "pull_request" | "push";
 
 /**
- * The just recipes one lane's job runs, in order. CI gives each its own step:
+ * The just recipes a lane runs, in order. CI gives each its own step:
  * Bun leaves a shared stdout non-blocking, and a Cargo build that follows it
- * in one process panics on EAGAIN (os error 35).
+ * in one process panics on EAGAIN (os error 35). The web lane runs its two
+ * recipes as parallel jobs; `just web-check` still runs both, in this order.
  */
 export const LANE_RECIPES: Record<Lane, readonly (readonly [string, ...string[]])[]> = {
   guards: [["guards"]],
@@ -36,7 +37,7 @@ export const LANE_RECIPES: Record<Lane, readonly (readonly [string, ...string[]]
   ffi: [["binding-uniffi-test"], ["ffi-abi"]],
   icount: [["perf-icount"]],
   integrations: [["agent-integrations-check"]],
-  web: [["web-check"]],
+  web: [["web-vt-check"], ["web-client-check"]],
   native: [["native-smoke"]],
   rune: [["rune-check"], ["rune-deny"]],
 };
