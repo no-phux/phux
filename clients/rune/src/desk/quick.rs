@@ -114,7 +114,7 @@ fn toggle(desk: &mut Desk, _: &mut Tx) {
         return;
     }
     let dial = !std::mem::replace(&mut panel.dialed, true);
-    let area = display_under_pointer().map(|[_, _, w, h]| (w, h));
+    let area = visible_area_under_pointer();
     panel
         .me
         .place(DisplayTarget::UnderPointer, placement(&desk.file, area));
@@ -124,12 +124,12 @@ fn toggle(desk: &mut Desk, _: &mut Tx) {
     }
 }
 
-/// Where the panel opens on a display of `area` points: its default width,
-/// `quick-terminal-size` of the height, centred on the chosen edge. An
-/// unknown display keeps the window's size.
-fn placement(file: &RuneCfg, area: Option<(f32, f32)>) -> OverlayPlacement {
+/// Where the panel opens in `area`, `[x, y, w, h]` points from the display's
+/// top-left: its default width, `quick-terminal-size` of the height, centred
+/// on the chosen edge. An unknown display keeps the window's size.
+fn placement(file: &RuneCfg, area: Option<[f32; 4]>) -> OverlayPlacement {
     let bottom = file.quick_terminal_edge == Some(QuickTerminalEdge::Bottom);
-    let Some((w, h)) = area else {
+    let Some([left, top, w, h]) = area else {
         let edge = if bottom {
             ScreenEdge::Bottom
         } else {
@@ -148,63 +148,47 @@ fn placement(file: &RuneCfg, area: Option<(f32, f32)>) -> OverlayPlacement {
     let width = SIZE.0.min(w);
     let height = (h * fraction).max(MIN_SIZE.1).min(h);
     OverlayPlacement::Rect {
-        x: (w - width) / 2.0,
-        y: if bottom { h - height } else { 0.0 },
+        x: left + (w - width) / 2.0,
+        y: top + if bottom { h - height } else { 0.0 },
         width,
         height,
     }
 }
 
-/// The bounds of the display under the pointer, `[x, y, w, h]` in global
-/// points. Rune's placement picks the same display.
+/// The part of the display under the pointer that the menu bar and the Dock
+/// leave free, `[x, y, w, h]` points from that display's top-left. Rune's
+/// placement picks the same display.
 #[cfg(target_os = "macos")]
 #[allow(unsafe_code)]
-fn display_under_pointer() -> Option<[f32; 4]> {
-    use std::ffi::c_void;
-    #[repr(C)]
-    struct Point {
-        x: f64,
-        y: f64,
-    }
-    #[repr(C)]
-    struct Rect {
-        x: f64,
-        y: f64,
-        w: f64,
-        h: f64,
-    }
-    #[link(name = "CoreGraphics", kind = "framework")]
-    unsafe extern "C" {
-        fn CGEventCreate(source: *const c_void) -> *mut c_void;
-        fn CGEventGetLocation(event: *const c_void) -> Point;
-        fn CGGetDisplaysWithPoint(at: Point, max: u32, ids: *mut u32, count: *mut u32) -> i32;
-        fn CGDisplayBounds(display: u32) -> Rect;
-    }
-    #[link(name = "CoreFoundation", kind = "framework")]
-    unsafe extern "C" {
-        fn CFRelease(object: *const c_void);
-    }
-    // Safety: CoreGraphics queries with no shared state; the event is a +1
-    // CFType released once its location is read.
+fn visible_area_under_pointer() -> Option<[f32; 4]> {
+    use objc2::rc::Retained;
+    use objc2::runtime::AnyObject;
+    use objc2::{class, msg_send};
+    use objc2_foundation::{NSArray, NSPoint, NSRect};
+
+    // Safety: AppKit's screen list, read on the main thread (the chord's
+    // handler runs on Rune's loop). Both rects are in the same global space,
+    // whose y grows upwards.
     unsafe {
-        let event = CGEventCreate(std::ptr::null());
-        if event.is_null() {
-            return None;
-        }
-        let at = CGEventGetLocation(event);
-        CFRelease(event);
-        let (mut display, mut found) = (0, 0);
-        if CGGetDisplaysWithPoint(at, 1, &mut display, &mut found) != 0 || found == 0 {
-            return None;
-        }
-        let r = CGDisplayBounds(display);
-        Some([r.x as f32, r.y as f32, r.w as f32, r.h as f32])
+        let at: NSPoint = msg_send![class!(NSEvent), mouseLocation];
+        let screens: Retained<NSArray<AnyObject>> = msg_send![class!(NSScreen), screens];
+        screens.iter().find_map(|screen| {
+            let frame: NSRect = msg_send![&screen, frame];
+            let free: NSRect = msg_send![&screen, visibleFrame];
+            let inside = (frame.origin.x..frame.origin.x + frame.size.width).contains(&at.x)
+                && (frame.origin.y..=frame.origin.y + frame.size.height).contains(&at.y);
+            inside.then(|| {
+                let top = frame.origin.y + frame.size.height - (free.origin.y + free.size.height);
+                let left = free.origin.x - frame.origin.x;
+                [left, top, free.size.width, free.size.height].map(|v| v as f32)
+            })
+        })
     }
 }
 
 /// Elsewhere the panel keeps its default size at the chosen edge.
 #[cfg(not(target_os = "macos"))]
-fn display_under_pointer() -> Option<[f32; 4]> {
+fn visible_area_under_pointer() -> Option<[f32; 4]> {
     None
 }
 
@@ -212,7 +196,7 @@ fn display_under_pointer() -> Option<[f32; 4]> {
 mod tests {
     use super::*;
 
-    fn rect(file: &RuneCfg, area: (f32, f32)) -> [f32; 4] {
+    fn rect(file: &RuneCfg, area: [f32; 4]) -> [f32; 4] {
         match placement(file, Some(area)) {
             OverlayPlacement::Rect {
                 x,
@@ -227,7 +211,7 @@ mod tests {
     #[test]
     fn the_panel_takes_its_share_of_the_display_at_its_edge() {
         let mut file = RuneCfg::default();
-        let area = (1920.0, 1080.0);
+        let area = [0.0, 0.0, 1920.0, 1080.0];
         assert_eq!(rect(&file, area), [480.0, 0.0, 960.0, 432.0], "0.4, top");
         file.quick_terminal_size = Some(0.75);
         file.quick_terminal_edge = Some(QuickTerminalEdge::Bottom);
@@ -238,7 +222,29 @@ mod tests {
         assert_eq!(rect(&file, area)[3], 1080.0 * 0.2, "held to 0.2");
         // A small display: the panel fits its width, and keeps its least
         // height.
-        assert_eq!(rect(&file, (800.0, 600.0)), [0.0, 440.0, 800.0, 160.0]);
+        assert_eq!(
+            rect(&file, [0.0, 0.0, 800.0, 600.0]),
+            [0.0, 440.0, 800.0, 160.0]
+        );
+    }
+
+    #[test]
+    fn the_panel_stays_clear_of_the_menu_bar_and_the_dock() {
+        // A 1440-point display with a 30-point menu bar and a 70-point Dock.
+        let free = [0.0, 30.0, 3440.0, 1340.0];
+        let mut file = RuneCfg {
+            quick_terminal_size: Some(0.5),
+            ..RuneCfg::default()
+        };
+        assert_eq!(rect(&file, free), [1240.0, 30.0, 960.0, 670.0], "top");
+        file.quick_terminal_edge = Some(QuickTerminalEdge::Bottom);
+        assert_eq!(
+            rect(&file, free),
+            [1240.0, 700.0, 960.0, 670.0],
+            "ends at the Dock"
+        );
+        // A Dock on the left shifts the centre right.
+        assert_eq!(rect(&file, [80.0, 30.0, 3360.0, 1410.0])[0], 1280.0);
     }
 
     #[test]
