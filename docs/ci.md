@@ -100,5 +100,9 @@ save them. Main pushes and the 00:10 UTC Linux-only cache-warm dispatch
 save per-lane caches under the 10 GB budget. Post-upload pruning keeps
 current-day keys and never deletes the sole older restore source before
 a stored replacement exists. Rune warming keeps its separate 06:17 clock.
+The same nightly Linux dispatch warms both browser dependency caches using
+the CI web recipes. It explicitly enables saves on this repository's `main`;
+PRs and merge groups stay restore-only. This seeds the caches even when an
+exact-tree queue receipt skips the web jobs on the subsequent `main` push.
 PR and topic-ref entries are outside the pruner's deletion scope.
 Runners are free hosted Ubuntu x64 and arm64, macOS 26 and `xcode-27`.

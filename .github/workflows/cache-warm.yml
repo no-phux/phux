@@ -4,12 +4,15 @@ name: Cache warm
 # restorable only from that PR, and it evicts main's). Two clocks:
 #
 #   00:10 UTC — the Linux mbx lanes (check, test, icount) and the uniffi
-#   dependency cache. Their mbx key is flake + Cargo.lock + the UTC day, so
+#   dependency cache, plus both browser dependency caches. The mbx key is
+#   flake + Cargo.lock + the UTC day, so
 #   the first pull request of a day used to miss. This run restores the
 #   previous day, builds what a main push builds, and on main saves today's
 #   key. A cheap scheduled job dispatches the Linux-only mode on main:
 #   mr-boxington-action supports opting into workflow_dispatch saves, not
 #   schedule saves. Off main the opt-in is false, so branches restore only.
+#   Browser warms qualify the same recipes as CI and seed caches even when
+#   the merge queue's exact-tree receipt skips the main-push web jobs.
 #
 #   06:17 UTC — the Rune lane, unchanged. Its job does not run at 00:10.
 #   An unchanged key restores exactly and saves nothing.
@@ -161,13 +164,49 @@ jobs:
         if: steps.lane.outputs.cache-save-eligible == 'true' && steps.lane.outputs.cache-hit != 'true'
         run: bash scripts/ci/mbx-export-headroom.sh
 
+  web-vt:
+    name: warm web vt
+    if: github.repository == 'no-phux/phux' && github.ref == 'refs/heads/main' && github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup-web-cache
+        with:
+          cachix-auth-token: ${{ secrets.CACHIX_AUTH_TOKEN }}
+          cache-key: phux-web-vt
+          workspaces: clients/phux-vt-web
+          record-main-cache: "true"
+      - run: nix develop .#browser -c just web-vt-check
+
+  web-client:
+    name: warm web client and browser
+    if: github.repository == 'no-phux/phux' && github.ref == 'refs/heads/main' && github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup-web-cache
+        with:
+          cachix-auth-token: ${{ secrets.CACHIX_AUTH_TOKEN }}
+          cache-key: phux-web-client
+          workspaces: |
+            clients/phux-web
+            . -> target/web-native
+          record-main-cache: "true"
+      - run: nix develop .#browser -c just web-client-check
+
   # Job dependencies include post-step uploads. Only actual current-day
   # caches qualify retiring the last older restore source; a skipped/failed
   # upload must not destroy that fallback. A branch dispatch must not delete:
   # this job's token can remove repository caches, and the ref is the boundary.
   prune-build-cache:
     name: prune superseded build caches
-    needs: [rust-lint, rust-test, rust-uniffi, rust-icount]
+    needs: [rust-lint, rust-test, rust-uniffi, rust-icount, web-vt, web-client]
     if: always() && github.ref == 'refs/heads/main' && github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-24.04
     timeout-minutes: 10
