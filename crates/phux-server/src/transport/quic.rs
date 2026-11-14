@@ -62,6 +62,9 @@ pub(crate) struct QuicListener {
     admissions: super::Admissions<QuicAccepted>,
     /// Refused preambles, warned about at a bounded rate.
     refusals: Arc<super::RefusalWarnings>,
+    /// `[policy] tailnet-owner`: admit the owner's own tailnet devices
+    /// without a certificate or token ([`Self::with_tailnet_owner`]).
+    tailnet_owner: bool,
 }
 
 /// Whom a [`QuicListener`] admits.
@@ -104,6 +107,7 @@ impl QuicListener {
             satellites: None,
             admissions: super::Admissions::new(),
             refusals: Arc::new(super::RefusalWarnings::new()),
+            tailnet_owner: false,
         })
     }
 
@@ -138,6 +142,16 @@ impl QuicListener {
     #[must_use]
     pub(crate) fn with_satellites(mut self, adopter: crate::hub::adopt::SatelliteAdopter) -> Self {
         self.satellites = Some(adopter);
+        self
+    }
+
+    /// Admit the owner's own tailnet devices that present no client
+    /// certificate, with no token (`[policy] tailnet-owner`). Takes effect
+    /// only with a workload registry (`paired`) and on a listener bound to
+    /// this machine's tailnet address; every other connection is unchanged.
+    #[must_use]
+    pub(crate) const fn with_tailnet_owner(mut self, on: bool) -> Self {
+        self.tailnet_owner = on;
         self
     }
 }
@@ -343,6 +357,9 @@ impl Incoming for QuicListener {
                     self.satellites
                         .clone()
                         .map(|adopter| (adopter, self.endpoint.clone())),
+                    self.tailnet_owner
+                        .then(|| self.endpoint.local_addr().ok().map(|addr| addr.ip()))
+                        .flatten(),
                 );
                 Ok(Box::pin(async move { admission.await.map(Ok) })
                     as super::Admission<QuicAccepted>)

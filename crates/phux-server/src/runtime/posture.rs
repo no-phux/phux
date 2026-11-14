@@ -98,7 +98,9 @@ pub(in crate::runtime) fn posture_policy_engine(
         PolicyPosture::Paired => {
             let authority = workload_auth::WorkloadAuth::configured(&cfg.env)
                 .map_err(ServerError::PolicyMaterial)?;
-            std::sync::Arc::new(ScopedPolicy::paired(authority.registry))
+            std::sync::Arc::new(
+                ScopedPolicy::paired(authority.registry).with_tailnet_owner(cfg.tailnet_owner),
+            )
         }
     };
     Ok(Some(engine))
@@ -118,14 +120,17 @@ pub(in crate::runtime) const fn remote_listener_configured(
 }
 
 /// Mirror the posture into shared state: whether TLS listeners require a
-/// workload certificate, and the engine that mints each connection's grant.
+/// workload certificate, whether they admit the owner's tailnet devices
+/// (`paired` only), and the engine that mints each connection's grant.
 pub(in crate::runtime) fn install_policy_posture(
     state: &SharedState,
     posture: crate::policy::PolicyPosture,
     engine: Option<std::sync::Arc<dyn crate::policy::PolicyEngine>>,
+    tailnet_owner: bool,
 ) {
     state.with_mut(|s| {
         s.set_policy_posture(posture);
+        s.set_tailnet_owner(tailnet_owner && posture.requires_workload_mtls());
         if let Some(engine) = engine {
             s.set_policy_engine(engine);
         }

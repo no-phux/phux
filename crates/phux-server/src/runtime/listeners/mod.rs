@@ -165,7 +165,9 @@ fn bind_quic(
     // The configured listener adopts satellites that dial in (ADR-0182); it
     // offers their ALPN only when it verifies workload certificates.
     listener.map(|listener| {
-        listener.with_satellites(state.with(crate::state::ServerState::satellite_adopter))
+        listener
+            .with_satellites(state.with(crate::state::ServerState::satellite_adopter))
+            .with_tailnet_owner(state.with(crate::state::ServerState::tailnet_owner))
     })
 }
 

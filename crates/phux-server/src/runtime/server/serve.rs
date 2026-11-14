@@ -135,7 +135,7 @@ impl ServerRuntime {
         });
 
         mirror_config_into_state(&self.cfg, &socket_path, &state);
-        install_policy_posture(&state, posture, posture_engine);
+        install_policy_posture(&state, posture, posture_engine, self.cfg.tailnet_owner);
         record_refused_listeners(&state, &refused_listeners);
         let mode_unset = self.cfg.policy_mode.is_none();
 

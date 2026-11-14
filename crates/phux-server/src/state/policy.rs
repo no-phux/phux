@@ -301,6 +301,18 @@ impl ServerState {
         self.config.policy_posture
     }
 
+    /// Record whether QUIC listeners admit the owner's own tailnet devices
+    /// (`[policy] tailnet-owner` under `paired`). Set once at startup.
+    pub const fn set_tailnet_owner(&mut self, on: bool) {
+        self.config.tailnet_owner = on;
+    }
+
+    /// Whether QUIC listeners admit the owner's own tailnet devices.
+    #[must_use]
+    pub const fn tailnet_owner(&self) -> bool {
+        self.config.tailnet_owner
+    }
+
     /// Whether TLS listeners must require a workload client certificate.
     #[must_use]
     pub const fn workload_mtls_required(&self) -> bool {

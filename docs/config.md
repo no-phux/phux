@@ -374,6 +374,39 @@ The setting is read when you attach. After changing it, detach and run
 `phux attach` again; neither `phux config reload` nor an automatic
 reconnect turns off prediction in a session that already has it.
 
+## Tailnet owner devices
+
+With [Tailscale](https://tailscale.com), your own phone and computers can
+reach this machine's phux with no pairing at all:
+
+```toml
+[policy]
+mode = "paired"
+tailnet-owner = true
+```
+
+A device then connects by its host name alone (`quic://mini.tail1234.ts.net:8788`)
+when the local Tailscale client says it belongs to the same Tailscale user
+as this machine. It gets what a phone paired with `phux pair` gets.
+
+- **It's off by default**, and only works under `mode = "paired"`.
+- Only the QUIC listener on this machine's tailnet address takes it, never
+  a listener on a LAN or public address, and never WebSocket.
+- Tagged devices, devices shared in from another tailnet, and other
+  people on your tailnet still need `phux pair`. So does a device that
+  presents a client certificate: that certificate decides, so a device
+  you revoked stays out.
+- If Tailscale can't answer, or this machine is itself tagged, nobody gets
+  in this way.
+- Each connection is recorded in the [audit log](./audit.md) as
+  `tailnet:<your login>` with the device's address. `phux pair ls` says
+  when the mode is on.
+
+The phone pins this machine's certificate authority the first time it
+connects, so a later impostor at the same name is refused. Restart the
+server after changing the setting. To keep a device out, remove it from
+your tailnet or turn the setting off.
+
 ## Debugging
 
 - `phux config check` lists every problem in the file, with key paths.

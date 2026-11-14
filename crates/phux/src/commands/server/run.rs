@@ -195,6 +195,7 @@ pub(super) fn build_server_config(
             .min(phux_config::MAX_APPROVAL_MAX_PENDING_TOTAL),
         policy_engine: None,
         policy_mode: None,
+        tailnet_owner: false,
         hook_catalog,
         // Ephemeral lifetime (ADR-0063); absent by default.
         exit_after_idle: exit_after_idle.map(Duration::from_secs),
@@ -381,6 +382,7 @@ pub(crate) fn run_server(
         exit_after_idle,
     );
     cfg.policy_mode = config.policy.mode;
+    cfg.tailnet_owner = config.policy.tailnet_owner;
     cfg.restore = config.restore.clone();
     cfg.forward = config.forward.clone();
     cfg.plugin_startup = Some(Box::new(phux_server::plugin_startup::config_from(

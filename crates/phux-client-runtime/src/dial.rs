@@ -116,6 +116,61 @@ pub async fn plan_quic_with_token(
     })
 }
 
+/// The certificate authority the phux server at `authority` (`HOST:PORT`)
+/// presents, to pin before dialing a machine on your tailnet that was never
+/// paired (`docs/config.md#tailnet-owner-devices`).
+///
+/// Only a name that resolves to a tailnet address is probed: the tailnet
+/// already vouches for the address, as `phux host add
+/// --accept-new-host-key` relies on, and the pin then guards every later
+/// dial. Nothing is sent: the handshake is refused on a pin no authority
+/// matches, and the refusal names the presented one.
+///
+/// # Errors
+///
+/// A name off the tailnet, an unreachable server, or one presenting no
+/// authority.
+pub async fn tailnet_authority(authority: &str) -> Result<String, String> {
+    let (bare, addr) = resolve_quic_addr(authority, authority).await?;
+    if !phux_config_core::remote::is_tailnet(addr.ip()) {
+        return Err(format!(
+            "{bare} is not on your tailnet; pair it with phux pair instead"
+        ));
+    }
+    let dial = QuicDial {
+        addr,
+        server_name: quic_server_name(bare),
+        token: None,
+        trust: CertTrust::Authority {
+            ca: format!("sha256:{}", "0".repeat(64)),
+        },
+        inner: None,
+        identity: Some(phux_dial::TlsClientIdentity::None),
+    };
+    let probe = phux_dial::quic::connect_with_alpn(&dial, phux_protocol::policy::QUIC_ALPN);
+    match tokio::time::timeout(DIAL_TIMEOUT, probe).await {
+        Ok(Err(DialError::AuthorityChanged(change))) => change.presented.ok_or_else(|| {
+            format!("{bare} presents no certificate authority; pair it with phux pair instead")
+        }),
+        Ok(Err(err)) => Err(format!("{bare}: {err}")),
+        Ok(Ok(_)) => Err(format!("{bare}: the probe was not refused")),
+        Err(_) => Err(format!("{bare} did not answer; is phux running there?")),
+    }
+}
+
+/// [`tailnet_authority`] on a runtime of its own, for an embedder's thread.
+///
+/// # Errors
+///
+/// As [`tailnet_authority`], or no runtime.
+pub fn tailnet_authority_blocking(authority: &str) -> Result<String, String> {
+    tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(|err| format!("probe runtime: {err}"))?
+        .block_on(tailnet_authority(authority))
+}
+
 /// The end-to-end session a relayed dial runs to the server (ADR-0180), or
 /// `None` for a direct one. A QUIC dial that offers a TLS server name goes
 /// through a relay route, and it is refused without the server's CA pinned
