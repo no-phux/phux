@@ -74,14 +74,18 @@ test("the web jobs cache cargo dependencies and save them only from main", () =>
 });
 
 test("both web halves fail the aggregate on failure or cancellation", () => {
-  const gate = run(steps(job(workflow("ci.yml"), "ci"))[0] ?? {});
+  const gate = run(steps(job(workflow("ci.yml"), "ci")).find((step) => run(step) !== "") ?? {});
   for (const id of ["web-vt", "web-client"]) {
     for (const result of ["success", "failure", "cancelled"]) {
       const exit = Bun.spawnSync(["bash", "-euo", "pipefail", "-c", gate], {
+        cwd: repoPath("."),
         env: {
           ...process.env,
           EVENT_NAME: "pull_request",
-          RESULTS: JSON.stringify({ plan: { result: "success" }, [id]: { result } }),
+          RESULTS: JSON.stringify({
+            plan: { result: "success", outputs: { queue_verified: "true" } },
+            [id]: { result },
+          }),
         },
         stdout: "ignore",
       }).exitCode;

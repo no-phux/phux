@@ -17,22 +17,25 @@ import {
 } from "../policy/workflows.ts";
 import { Classifier } from "./classify.ts";
 import { runeMacosPlan } from "./rune-macos.ts";
+import { repoPath } from "../lib/repo.ts";
 
-function evaluate(value: unknown, github: Table): unknown {
+function evaluate(value: unknown, github: Table, extra: Table = {}): unknown {
   if (typeof value !== "string") return value;
   return runInNewContext(value.replace(/^\$\{\{\s*|\s*\}\}$/g, ""), {
     github,
+    inputs: { qualify: false },
     vars: { RUNE_AUTO_RELEASE: "true" },
     cancelled: () => false,
     format: (pattern: string, ...args: string[]) =>
       pattern.replace(/\{(\d+)\}/g, (_, index: string) => String(args[Number(index)])),
+    ...extra,
   });
 }
 
-function group(file: string, github: Table): string {
+function group(file: string, github: Table, extra: Table = {}): string {
   const value = str(table(workflow(file)["concurrency"])["group"]) ?? "";
   return value.replace(/\$\{\{([\s\S]*?)\}\}/g, (_, body: string) =>
-    String(evaluate(body, github)),
+    String(evaluate(body, github, extra)),
   );
 }
 
@@ -178,7 +181,9 @@ test("the existing required ci check depends on real Apple qualification on the 
   const apple = job(ci, "queue-apple");
   expect(str(apple["name"])).toBe("queue-apple");
   expect(uses(apple)).toBe("./.github/workflows/rune-macos.yml");
-  expect(str(apple["if"])).toBe("github.event_name == 'merge_group'");
+  expect(str(apple["if"])).toContain("github.event_name == 'merge_group'");
+  expect(str(apple["if"])).toContain("needs.plan.outputs.queue_verified != 'true'");
+  expect(withInput(apple, "qualify")).toBe(true);
   expect(needs(job(ci, "ci"))).toContain("queue-apple");
   const mac = workflow("rune-macos.yml");
   expect(table(mac["on"])["workflow_call"]).toBeDefined();
@@ -188,11 +193,77 @@ test("the existing required ci check depends on real Apple qualification on the 
   expect(table(mac["on"])["workflow_dispatch"]).toBeDefined();
 });
 
+test("required fallback PR Apple admission and concurrency cannot be satisfied by the cheap check", () => {
+  const pr = {
+    ...push,
+    event_name: "pull_request",
+    head_ref: "topic",
+    event: { pull_request: { head: { repo: { full_name: "no-phux/phux" } } } },
+  };
+  const apple = job(workflow("ci.yml"), "queue-apple");
+  for (const [verified, rune, want] of [
+    ["true", "true", false],
+    ["false", "true", true],
+    ["", "true", true],
+    ["false", "false", false],
+  ] as const) {
+    expect(
+      evaluate(apple["if"], pr, {
+        needs: { plan: { outputs: { queue_verified: verified, rune } } },
+      }),
+    ).toBe(want);
+  }
+  const mac = workflow("rune-macos.yml");
+  const selected = { needs: { plan: { outputs: { macos: "true" } } } };
+  expect(evaluate(job(mac, "build")["if"], pr, selected)).toBe(false);
+  const required = { ...selected, inputs: { qualify: true } };
+  expect(evaluate(job(mac, "build")["if"], pr, required)).toBe(true);
+  expect(group("rune-macos.yml", pr, required)).not.toBe(group("rune-macos.yml", pr));
+  expect(group("rune-macos.yml", pr, required)).not.toBe(group("ci.yml", pr));
+});
+
+test("fallback fork PR qualification grants no signing, release or provisioning authority", () => {
+  const ci = workflow("ci.yml");
+  const mac = workflow("rune-macos.yml");
+  expect(ci["permissions"]).toEqual({ actions: "read", contents: "read" });
+  expect(mac["permissions"]).toEqual({ actions: "read", contents: "read" });
+  for (const caller of [job(ci, "queue-apple"), job(mac, "build")]) {
+    expect(caller["secrets"]).toBeUndefined();
+    expect(caller["permissions"]).toBeUndefined();
+  }
+  const fork = {
+    ...push,
+    event_name: "pull_request",
+    ref: "refs/pull/42/merge",
+    event: { pull_request: { head: { repo: { full_name: "fork/phux" } } } },
+  };
+  const signing = steps(action("rune-host")).filter((step) =>
+    run(step).includes("sign-macos-desktop.sh"),
+  );
+  expect(signing).toHaveLength(2);
+  for (const step of signing) {
+    expect(
+      evaluate(step["if"], fork, {
+        inputs: { qualify: "true" },
+        runner: { os: "macOS" },
+        startsWith: (value: string, prefix: string) => value.startsWith(prefix),
+      }),
+    ).toBe(false);
+  }
+  const ios = steps(job(workflow("rune-build.yml"), "ios-native"))
+    .map(run)
+    .join("\n");
+  expect(ios).not.toContain("package_ota.py");
+  expect(ios).not.toContain("secrets.");
+  expect(ios).not.toContain("--provision");
+});
+
 test("ci rejects a failed or cancelled native queue dependency", () => {
-  const script = run(steps(job(workflow("ci.yml"), "ci"))[0] ?? {});
+  const script = run(steps(job(workflow("ci.yml"), "ci")).find((step) => run(step) !== "") ?? {});
   expect(needs(job(workflow("ci.yml"), "ci"))).toContain("queue-apple");
   for (const state of ["success", "failure", "cancelled", "skipped"]) {
     const proc = Bun.spawnSync(["bash", "-euo", "pipefail", "-c", script], {
+      cwd: repoPath("."),
       env: {
         ...process.env,
         EVENT_NAME: "merge_group",

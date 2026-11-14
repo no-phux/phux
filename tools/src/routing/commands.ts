@@ -6,7 +6,7 @@ import { git } from "../lib/git.ts";
 import { inherit } from "../lib/process.ts";
 import { ROOT } from "../lib/repo.ts";
 import { Classifier, toOutputs, type Classification } from "./classify.ts";
-import { classifyDetection, classifyEvent, detect, diffPaths } from "./detect.ts";
+import { classifyDetection, classifyEvent, detect, diffPaths, type Detection } from "./detect.ts";
 import { checkMerge } from "./merge-check.ts";
 import {
   CI_ONLY,
@@ -23,6 +23,7 @@ import {
 } from "./plan.ts";
 import { alreadyValidated, artifactName, type Receipt } from "./receipt.ts";
 import { reusedMacos, runeMacosPlan } from "./rune-macos.ts";
+import { mergeQueueVerified } from "./queue-policy.ts";
 
 const print = (result: Classification) => console.log(formatOutputs(toOutputs(result)));
 const WORKFLOW = ".github/workflows/ci.yml";
@@ -58,6 +59,30 @@ function preflight(base: string, only: boolean): void {
   console.log(`committed branch merges cleanly with ${base} (${result.target.slice(0, 12)})`);
 }
 
+function perfBaselineLabel(event: string, eventPath: string | undefined): boolean {
+  if (event !== "pull_request" || eventPath === undefined) return false;
+  try {
+    return eventHasLabel(JSON.parse(readFileSync(eventPath, "utf8")), PERF_BASELINE_LABEL);
+  } catch (error) {
+    console.error(`perf-baseline label unreadable; running icount: ${describe(error)}`);
+    return true;
+  }
+}
+
+function pathScope(detection: Detection): PathScope {
+  if (detection.kind === "paths") return { kind: "diff", paths: detection.paths };
+  return { kind: detection.kind === "full" ? "full" : "none" };
+}
+
+function validatedPush(event: string, repository: string, receipt: Receipt): boolean {
+  return (
+    event === "push" &&
+    repository !== "" &&
+    receipt.coverage !== "" &&
+    alreadyValidated(receipt, repository)
+  );
+}
+
 export const commands: Record<string, Command> = {
   classify: {
     summary: "Route changed paths (one per line on stdin, or a git range) to CI surfaces.",
@@ -90,37 +115,21 @@ export const commands: Record<string, Command> = {
       const event = process.env["GITHUB_EVENT_NAME"] ?? "";
       const eventPath = process.env["GITHUB_EVENT_PATH"];
       const repository = process.env["GITHUB_REPOSITORY"] ?? "";
+      const queueVerified = event === "pull_request" && mergeQueueVerified(repository, eventPath);
       const detection = detect(event, eventPath);
-      const c = classifyDetection(detection);
+      const fallback = event === "pull_request" && !queueVerified;
+      const c = classifyDetection(detection, fallback ? "qualify-rune" : "skip");
       // A merge group is main's tree before it lands: main policy.
-      const scope: PathScope =
-        detection.kind === "paths"
-          ? { kind: "diff", paths: detection.paths }
-          : detection.kind === "full"
-            ? { kind: "full" }
-            : { kind: "none" };
-      let perfBaseline = false;
-      if (event === "pull_request" && eventPath !== undefined) {
-        try {
-          perfBaseline = eventHasLabel(
-            JSON.parse(readFileSync(eventPath, "utf8")),
-            PERF_BASELINE_LABEL,
-          );
-        } catch (error) {
-          // The event file is how the label arrives. Unreadable means run the lane.
-          console.error(`perf-baseline label unreadable; running icount: ${describe(error)}`);
-          perfBaseline = true;
-        }
-      }
+      const scope = pathScope(detection);
       const p = plan(c, triggerFor(event), {
         scope,
-        perfBaseline,
+        perfBaseline: perfBaselineLabel(event, eventPath),
+        queueVerified: !fallback,
         runeQualify: event !== "pull_request",
       });
       const tree = git(["rev-parse", "HEAD^{tree}"]).trim();
       const receipt: Receipt = { schema: 2, tree, workflow: WORKFLOW, coverage: p.coverage };
-      const validated =
-        event === "push" && repository !== "" && alreadyValidated(receipt, repository);
+      const validated = validatedPush(event, repository, receipt);
       const run = validated ? reused(p) : p;
       const outputs = planOutputs(run, c);
       console.error(
@@ -128,6 +137,7 @@ export const commands: Record<string, Command> = {
       );
       writeOutputs({
         ...outputs,
+        queue_verified: queueVerified,
         validated,
         receipt: JSON.stringify(receipt),
         receipt_name: artifactName(receipt),
@@ -141,9 +151,9 @@ export const commands: Record<string, Command> = {
       const event = process.env["GITHUB_EVENT_NAME"] ?? "";
       const repository = process.env["GITHUB_REPOSITORY"] ?? "";
       const c = classifyEvent(event, process.env["GITHUB_EVENT_PATH"], "qualify-rune");
-      // Pull requests never launch macOS. Every other event plans as a push:
-      // a dispatch or a nightly run qualifies the whole tree.
-      const pullRequest = event === "pull_request";
+      // Only ci's required fallback child qualifies a PR; the standalone PR
+      // check stays cheap. The caller supplies the one policy decision.
+      const pullRequest = event === "pull_request" && process.env["PHUX_RUNE_QUALIFY"] !== "true";
       const planned = runeMacosPlan(c, pullRequest ? "pull_request" : "push");
       const tree = git(["rev-parse", "HEAD^{tree}"]).trim();
       const receipt: Receipt = {
@@ -152,11 +162,7 @@ export const commands: Record<string, Command> = {
         workflow: RUNE_MACOS,
         coverage: planned.coverage,
       };
-      const validated =
-        event === "push" &&
-        repository !== "" &&
-        planned.coverage !== "" &&
-        alreadyValidated(receipt, repository);
+      const validated = validatedPush(event, repository, receipt);
       const run = validated ? reusedMacos(planned) : planned;
       console.error(
         `${validated ? "Tree already validated; " : ""}rune-macos: ${run.macos ? "macos" : "skip"}${run.ios ? " ios" : ""}`,

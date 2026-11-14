@@ -5,18 +5,20 @@ import { expect, test } from "bun:test";
 import { job, jobs, run, steps, workflow } from "../policy/workflows.ts";
 import { NATIVE_SETUP_PATHS, plan, planOutputs, reused, triggerFor } from "./plan.ts";
 import { classifyDetection } from "./detect.ts";
+import { repoPath } from "../lib/repo.ts";
 
 const CI = workflow("ci.yml");
 const AFTER = ["ci", "content", "prune-build-cache"];
-const script = run(steps(job(CI, "ci"))[0] ?? {});
+const script = run(steps(job(CI, "ci")).find((step) => run(step) !== "") ?? {});
 const lanes = Object.keys(jobs(CI)).filter((id) => !AFTER.includes(id));
 const baseline = {
   ...Object.fromEntries(lanes.map((id) => [id, { result: "skipped" }])),
-  plan: { result: "success" },
+  plan: { result: "success", outputs: { queue_verified: "true" } },
   "queue-apple": { result: "success" },
 };
 const aggregate = (results: unknown, event: string): number =>
   Bun.spawnSync(["bash", "-euo", "pipefail", "-c", script], {
+    cwd: repoPath("."),
     env: { ...process.env, RESULTS: JSON.stringify(results), EVENT_NAME: event },
     stdout: "ignore",
   }).exitCode;

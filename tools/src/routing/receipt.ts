@@ -45,12 +45,12 @@ export function artifactName(receipt: Receipt): string {
 function receiptWorkflow(run: Table, repository: string, workflow: string): boolean {
   if (run["path"] === workflow) return true;
   // A reusable workflow's run is recorded under its caller. Only ci's
-  // merge-group run can attest its required Rune Apple child; all other
+  // queue or fallback PR run can attest its required Rune Apple child; all other
   // workflows/events still need their own path. The immutable tree and
   // exact receipt coverage are checked below, never inferred from a label.
   if (
     workflow !== ".github/workflows/rune-macos.yml" ||
-    run["event"] !== "merge_group" ||
+    !["merge_group", "pull_request"].includes(String(run["event"])) ||
     run["path"] !== ".github/workflows/ci.yml"
   )
     return false;

@@ -2,8 +2,9 @@ name: rune-macos
 
 # Rune's macOS legs, off the pull-request and main-push `ci` gate.
 #
-# A pull request reports a passing check named `rune-macos` and starts no
-# macOS runner. On the queue, ci.yml calls this workflow and requires its
+# A standalone pull request reports a cheap check named `rune-macos`. When
+# queue enforcement is unverified, ci calls the required qualifying PR child.
+# On the queue, ci.yml calls this workflow and requires its
 # result in the existing `ci` aggregate. A main push, a nightly run, and a dispatch
 # run macos-arm64 and the iOS simulator through rune-build.yml. A direct push
 # to main can land a red result: it blocks stable/Rune publication, not main.
@@ -18,6 +19,11 @@ on:
     branches: [main]
   # Only ci calls the queue leg, avoiding a duplicate standalone native run.
   workflow_call:
+    inputs:
+      qualify:
+        description: Required ci child; qualify this PR without relying on a merge queue.
+        type: boolean
+        default: false
   schedule:
     # After cache-warm's 06:17 UTC, so the two macOS passes do not start together.
     - cron: "47 11 * * *"
@@ -28,7 +34,7 @@ concurrency:
   # docs-only work. Neither actor identity nor a later push waives its proof.
   # Prefix differs from the calling ci workflow, so it cannot cancel itself.
   group: >-
-    rune-macos-${{ github.event_name == 'push' && github.sha
+    rune-macos-${{ github.event_name == 'pull_request' && inputs.qualify && 'required-' || '' }}${{ github.event_name == 'push' && github.sha
     || github.event_name == 'pull_request' && format('{0}:refs/heads/{1}', github.event.pull_request.head.repo.full_name, github.head_ref)
     || github.event_name == 'workflow_dispatch' && format('{0}:{1}', github.repository, github.ref)
     || github.ref }}
@@ -58,14 +64,14 @@ jobs:
       - id: plan
         env:
           GH_TOKEN: ${{ github.token }}
+          PHUX_RUNE_QUALIFY: ${{ inputs.qualify }}
         run: bun tools/main.ts rune-macos-plan
 
   build:
     needs: plan
-    # The event check is the hard stop. The plan's macos output is the
-    # second: a pull request's plan is false, and a main push whose tree a
-    # merge group already covered is false too.
-    if: github.event_name != 'pull_request' && needs.plan.outputs.macos == 'true'
+    # Only ci's explicit qualifying child can build for a PR. Standalone PR
+    # plans stay false; an exact-tree validated main push can skip too.
+    if: (github.event_name != 'pull_request' || inputs.qualify) && needs.plan.outputs.macos == 'true'
     uses: ./.github/workflows/rune-build.yml
     with:
       hosts: macos
@@ -87,14 +93,14 @@ jobs:
             and (.plan.outputs.macos != "true" or .build.result == "success")' \
             <<<"$RESULTS" >/dev/null
       - name: write the validation receipt
-        if: (github.event_name == 'merge_group' || github.event_name == 'push') && needs.plan.outputs.coverage != ''
+        if: (github.event_name == 'merge_group' || github.event_name == 'push' || inputs.qualify) && needs.plan.outputs.coverage != ''
         env:
           RECEIPT: ${{ needs.plan.outputs.receipt }}
         run: |
           mkdir -p "$RUNNER_TEMP/receipt"
           printf '%s\n' "$RECEIPT" > "$RUNNER_TEMP/receipt/receipt.json"
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        if: (github.event_name == 'merge_group' || github.event_name == 'push') && needs.plan.outputs.coverage != ''
+        if: (github.event_name == 'merge_group' || github.event_name == 'push' || inputs.qualify) && needs.plan.outputs.coverage != ''
         with:
           name: ${{ needs.plan.outputs.receipt_name }}
           path: ${{ runner.temp }}/receipt/receipt.json

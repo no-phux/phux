@@ -84,6 +84,7 @@ test("plan declares every output the planner writes, and jobs read only those", 
     "validated",
     "receipt",
     "receipt_name",
+    "queue_verified",
   ];
   const declared = Object.keys(table(job(CI, "plan")["outputs"]));
   const read = [...workflowText("ci.yml").matchAll(/needs\.plan\.outputs\.(\w+)/g)].map(
@@ -98,7 +99,7 @@ test("each lane's jobs are gated on its plan output and together run its recipes
     const gated = Object.entries(jobs(CI)).filter(([, lane_job]) =>
       (str(lane_job["if"]) ?? "").includes(`needs.plan.outputs.${lane} == 'true'`),
     );
-    const owners = gated.filter(([id]) => id !== "test-build");
+    const owners = gated.filter(([id]) => !["test-build", "queue-apple"].includes(id));
     expect([lane, owners.length]).toEqual([lane, lane === "web" ? 2 : 1]);
     const commands = owners
       .flatMap(([, laneJob]) => {
@@ -124,9 +125,11 @@ test("the ci aggregate needs every lane and accepts only success or a skip", () 
   const aggregate = job(CI, "ci");
   const lanes = Object.keys(jobs(CI)).filter((id) => !AFTER_LANES.includes(id));
   expect(needs(aggregate).toSorted()).toEqual(lanes.toSorted());
-  const script = run(steps(aggregate)[0] ?? {});
-  const baseline = Object.fromEntries(lanes.map((id) => [id, { result: "skipped" }]));
-  baseline["plan"] = { result: "success" };
+  const script = run(steps(aggregate).find((step) => run(step) !== "") ?? {});
+  expect(script).toBe("bash scripts/ci/check-lanes.sh");
+  const baseline: Record<string, { result: string; outputs?: Record<string, string> }> =
+    Object.fromEntries(lanes.map((id) => [id, { result: "skipped" }]));
+  baseline["plan"] = { result: "success", outputs: { queue_verified: "true" } };
   for (const [id, result, code] of [
     ["lint", "skipped", 0],
     ["lint", "success", 0],
@@ -138,6 +141,7 @@ test("the ci aggregate needs every lane and accepts only success or a skip", () 
   ] as const) {
     const results = JSON.stringify({ ...baseline, [id]: { result } });
     const exit = Bun.spawnSync(["bash", "-euo", "pipefail", "-c", script], {
+      cwd: repoPath("."),
       env: { ...process.env, RESULTS: results, EVENT_NAME: "pull_request" },
       stdout: "ignore",
     }).exitCode;
@@ -146,7 +150,7 @@ test("the ci aggregate needs every lane and accepts only success or a skip", () 
 });
 
 test("pull requests and merge groups write receipts; content publishes after a green push", () => {
-  for (const step of steps(job(CI, "ci")).slice(1)) {
+  for (const step of steps(job(CI, "ci")).slice(2)) {
     expect(str(step["if"])).toBe(
       "github.event_name == 'pull_request' || github.event_name == 'merge_group'",
     );
@@ -192,7 +196,7 @@ test("ci runs Rune's Linux hosts, and rune-macos owns the Apple legs", () => {
   const build = job(mac, "build");
   expect(withInput(build, "hosts")).toBe("macos");
   expect(withInput(build, "ios")).toBe("${{ needs.plan.outputs.ios == 'true' }}");
-  expect(str(build["if"])).toContain("github.event_name != 'pull_request'");
+  expect(str(build["if"])).toContain("github.event_name != 'pull_request' || inputs.qualify");
   expect(str(job(mac, "rune-macos")["name"])).toBe("rune-macos");
   expect(steps(job(mac, "plan")).map(run).join("\n")).toContain("rune-macos-plan");
   expect(uses(job(CI, "queue-apple"))).toBe("./.github/workflows/rune-macos.yml");
