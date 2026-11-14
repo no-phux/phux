@@ -76,6 +76,39 @@ impl Step {
 /// Whether this computer has the privacy panes the permissions card is about.
 pub const PERMISSIONS: bool = cfg!(target_os = "macos");
 
+/// What the steps promise, naming permissions only where there are some.
+#[derive(Debug, Clone, Copy)]
+pub struct Promise {
+    pub welcome: &'static str,
+    pub agents_title: &'static str,
+    pub agents_lead: &'static str,
+    /// Settings → Get started.
+    pub get_started: &'static str,
+}
+
+pub const PROMISE: Promise = promise(PERMISSIONS);
+
+pub const fn promise(permissions: bool) -> Promise {
+    if permissions {
+        Promise {
+            welcome: "Pick a look, give your agents the phux skill and the permissions they \
+                      need, and bring your key bindings with you.",
+            agents_title: "Agents & permissions",
+            agents_lead: "Give your agents the phux skill, and phux the access they ask for.",
+            get_started: "The look, the phux agent skill, permissions and your key bindings, \
+                          step by step.",
+        }
+    } else {
+        Promise {
+            welcome: "Pick a look, give your agents the phux skill and bring your key \
+                      bindings with you.",
+            agents_title: "Agents",
+            agents_lead: "Give your agents the phux skill so they can drive phux.",
+            get_started: "The look, the phux agent skill and your key bindings, step by step.",
+        }
+    }
+}
+
 /// Whether the server outlives logout and reboot only as a systemd user
 /// service (`phux service install`), so the last step offers one.
 pub const KEEP_ALIVE: bool = cfg!(target_os = "linux");

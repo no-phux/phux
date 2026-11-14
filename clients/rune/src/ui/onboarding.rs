@@ -270,14 +270,11 @@ fn welcome(desk: &Desk, p: &Ink) -> El {
                 .level(1),
         )
         .child(
-            text(
-                "Pick a look, give your agents the phux skill and the permissions they \
-                 need, and bring your key bindings with you.",
-            )
-            .font(LEAD)
-            .color(p.dim)
-            .align(Align::Center)
-            .wrap(),
+            text(words::PROMISE.welcome)
+                .font(LEAD)
+                .color(p.dim)
+                .align(Align::Center)
+                .wrap(),
         )
         .child(el().h(6.0))
         .child(primary(

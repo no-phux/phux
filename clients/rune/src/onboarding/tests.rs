@@ -184,3 +184,14 @@ fn a_session_is_named_after_the_folder() {
     assert_eq!(session_name(Path::new("/home/a b@c"), &[]), "a-b-c");
     assert_eq!(session_name(Path::new("/"), &[]), "home");
 }
+
+#[test]
+fn only_a_computer_with_permissions_promises_them() {
+    for permissions in [true, false] {
+        let p = promise(permissions);
+        for words in [p.welcome, p.agents_title, p.agents_lead, p.get_started] {
+            let promises = words.contains("permission") || words.contains("access");
+            assert_eq!(promises, permissions, "{words}");
+        }
+    }
+}

@@ -107,9 +107,7 @@ impl Entry {
             }
             Self::PairPhone => super::super::pair::DETAIL,
             Self::Diagnostics => "Copy local logs and app state. Nothing is sent anywhere.",
-            Self::GetStarted => {
-                "The look, the phux agent skill, permissions and your key bindings, step by step."
-            }
+            Self::GetStarted => crate::onboarding::PROMISE.get_started,
             Self::Updates => {
                 "Phux Rune version, Check now, Check automatically, Update phux with Phux Rune, phux release channel: Follow installed, Stable or Next, local installation, package manager, server and protocol compatibility."
             }
@@ -178,7 +176,10 @@ impl Entry {
             Self::Hosts => "remote ssh connection",
             Self::PairPhone => "mobile iphone android qr code scan link devices revoke tailnet",
             Self::Diagnostics => "logs debug troubleshooting",
-            Self::GetStarted => "onboarding welcome setup skill permissions migrate import",
+            Self::GetStarted if crate::onboarding::PERMISSIONS => {
+                "onboarding welcome setup skill permissions migrate import"
+            }
+            Self::GetStarted => "onboarding welcome setup skill migrate import",
             Self::Updates => {
                 "upgrade version automatic release channel stable next preview install"
             }
