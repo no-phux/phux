@@ -10,10 +10,11 @@ use std::time::Duration;
 use phux_client_runtime::Target;
 use rune::{Key, KeyEvent, TextEdit, Tx, Waker};
 
-use super::{Desk, NoticeKind};
+use super::Desk;
 use crate::machines::{self, Add, Glance, Host, Peer};
 
 pub mod checklist;
+pub mod ssh;
 
 /// How often an expanded machine's sessions are listed again, in seconds.
 const GLANCE_EVERY: f64 = 30.0;
@@ -79,6 +80,7 @@ pub struct Machines {
     pub offer: Option<crate::connect::Offer>,
     /// What works here, out under one machine's row.
     pub checklist: Option<checklist::Checklist>,
+    pub ssh: ssh::Ssh,
 }
 
 impl Machines {
@@ -111,6 +113,7 @@ impl Machines {
             pending: Vec::new(),
             offer: None,
             checklist: None,
+            ssh: ssh::Ssh::default(),
         }
     }
 
@@ -141,6 +144,7 @@ impl Machines {
     fn refresh(&mut self) -> u64 {
         self.refreshes += 1;
         let refresh = self.refreshes;
+        self.ssh.hosts = crate::ssh_config::read();
         if let Some(phux) = self.phux.clone() {
             self.worker(move |send| {
                 let hosts = machines::registered(&phux);
@@ -475,7 +479,7 @@ impl Desk {
                             self.machines.awaited = Some(self.machines.refresh());
                         }
                         Err(error) => {
-                            let request = self.machines.request.take();
+                            let request = self.machines.take_failed(&error);
                             let paired = request.is_some_and(|request| request.code.is_some());
                             self.machines.outcome = Some(Err(if paired {
                                 pairing_failure(&error)
@@ -509,24 +513,8 @@ impl Desk {
                 }
             }
         }
+        self.machines.next_queued();
         changed
-    }
-
-    /// An add finished. With the sheet still open that's a wish to go there,
-    /// and the sheet says so. With it closed the person has gone back to
-    /// work, so the window stays and only offers: moving it would send their
-    /// next keys to another computer.
-    fn landed(&mut self, host: String) {
-        if !self.machines.open {
-            self.machines.outcome = Some(Ok(format!("{host} is set up.")));
-            let offer = format!("{host} is set up. Switch to it from Machines.");
-            return self.say(NoticeKind::Info, offer);
-        }
-        self.rebuild(Some(host.clone()), None);
-        self.machines.open = true;
-        if self.machines.current.as_ref() == Some(&host) {
-            self.machines.outcome = Some(Ok(format!("{host} is set up.")));
-        }
     }
 }
 
