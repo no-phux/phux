@@ -11,6 +11,7 @@
 //! have no live handle (a completed, retained resource; a lost activation).
 
 use phux_client_core::layout::{self, ArrangementDoc};
+use phux_client_runtime::activation::{core_exec_state, core_lifetime};
 use phux_client_runtime::control::{AgentSessionDescriptor, OrganizationReplica, Topology};
 use phux_protocol::ResourceId;
 use phux_protocol::ResourceKind;
@@ -24,24 +25,13 @@ use super::id;
 /// The stable word for a session lifetime.
 #[must_use]
 pub const fn lifetime_word(lifetime: SessionLifetime) -> &'static str {
-    match lifetime {
-        SessionLifetime::Persistent => "persistent",
-        SessionLifetime::Ephemeral => "ephemeral",
-    }
+    core_lifetime(lifetime).as_str()
 }
 
 /// The stable word for an activation's execution state.
 #[must_use]
 pub const fn exec_word(state: ExecState) -> &'static str {
-    match state {
-        ExecState::Starting => "starting",
-        ExecState::Running => "running",
-        ExecState::Stopping => "stopping",
-        ExecState::Completed => "completed",
-        ExecState::Failed => "failed",
-        ExecState::Lost => "lost",
-        ExecState::Abandoned => "abandoned",
-    }
+    core_exec_state(state).as_str()
 }
 
 /// The stable word for a resource kind (`terminal`, `agent_session`,

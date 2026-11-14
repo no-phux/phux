@@ -6,13 +6,14 @@
 //! and the MCP `phux_ls` tool returns it in-process, so the two cannot
 //! drift (ADR-0022 §5).
 
-use phux_core::activation::{ExecState as CoreExecState, SessionLifetime as CoreLifetime};
+use phux_client_runtime::activation::{core_exec_state, core_lifetime};
+use phux_core::activation::ExecState as CoreExecState;
 use phux_core::session_list::{
     ExecCounts, HostJson, HostSessionJson, ResourceExitJson, ResourceJson, SessionJson,
     SessionListJson,
 };
 use phux_protocol::SessionId;
-use phux_protocol::wire::frame::{ExecState, OrgFilter, ResourceLifecycle, SessionLifetime};
+use phux_protocol::wire::frame::{OrgFilter, ResourceLifecycle, SessionLifetime};
 use phux_protocol::wire::info::{
     ExitFacet, HostInventory, HostSessionInfo, SessionInfo, SessionSnapshot,
 };
@@ -311,25 +312,6 @@ pub fn session_json(
             .map(str::to_owned),
         key: record.map(|record| record.key.to_string()),
         touched: s.touched,
-    }
-}
-
-const fn core_lifetime(lifetime: SessionLifetime) -> CoreLifetime {
-    match lifetime {
-        SessionLifetime::Persistent => CoreLifetime::Persistent,
-        SessionLifetime::Ephemeral => CoreLifetime::Ephemeral,
-    }
-}
-
-const fn core_exec_state(state: ExecState) -> CoreExecState {
-    match state {
-        ExecState::Starting => CoreExecState::Starting,
-        ExecState::Running => CoreExecState::Running,
-        ExecState::Stopping => CoreExecState::Stopping,
-        ExecState::Completed => CoreExecState::Completed,
-        ExecState::Failed => CoreExecState::Failed,
-        ExecState::Lost => CoreExecState::Lost,
-        ExecState::Abandoned => CoreExecState::Abandoned,
     }
 }
 
