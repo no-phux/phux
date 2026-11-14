@@ -398,7 +398,7 @@ fn place(desk: &Desk, p: &Ink) -> El {
 /// With "Show toolbar on hover", a strip along the top edge that grows into
 /// the toolbar while the pointer is over it. It floats over the panes, so
 /// showing it never resizes a terminal.
-pub fn hover_toolbar(desk: &Desk, p: &Ink, lights: f32) -> Option<El> {
+pub fn hover_toolbar(desk: &Desk, p: &Ink, lights: f32, trailing: f32) -> Option<El> {
     const EDGE: f32 = 6.0;
     let shown = desk.pointer.toolbar;
     desk.settings.hover_toolbar.then(|| {
@@ -407,13 +407,14 @@ pub fn hover_toolbar(desk: &Desk, p: &Ink, lights: f32) -> Option<El> {
             .w_full()
             .h(if shown { TITLEBAR_H } else { EDGE })
             .on_hover_change(|d: &mut Desk, over, _| d.pointer.toolbar = over)
-            .children(shown.then(|| title_bar(desk, p, lights).fill(p.sidebar)))
+            .children(shown.then(|| title_bar(desk, p, lights, trailing).fill(p.sidebar)))
     })
 }
 
 /// The band over the terminal: draggable, under the traffic lights when the
-/// sidebar is folded, and holding what a status line would.
-pub fn title_bar(desk: &Desk, p: &Ink, lights: f32) -> El {
+/// sidebar is folded, clear of the caption buttons Rune draws on Linux
+/// (`trailing`), and holding what a status line would.
+pub fn title_bar(desk: &Desk, p: &Ink, lights: f32, trailing: f32) -> El {
     let geometry = desk
         .client
         .as_ref()
@@ -469,7 +470,7 @@ pub fn title_bar(desk: &Desk, p: &Ink, lights: f32) -> El {
         .w_full()
         .h(TITLEBAR_H)
         .pl(if folded { lights + 8.0 } else { 2.0 })
-        .pr(10.0)
+        .pr(10.0 + trailing)
         .gap(8.0)
         .items_center()
         .window_drag()

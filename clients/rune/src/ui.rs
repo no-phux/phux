@@ -25,6 +25,7 @@ mod phone;
 pub(crate) use phone::edge_color as phone_edge_color;
 mod pitch;
 mod pitlane;
+mod playground;
 mod popup;
 mod questions;
 mod reef;
@@ -45,8 +46,9 @@ pub(crate) const MOD: &str = if cfg!(any(target_os = "macos", target_os = "ios")
     "Ctrl+Shift+"
 };
 pub(crate) const SIDEBAR_W: f32 = 236.0;
-/// The band the macOS traffic lights sit in when they draw over content.
-const TITLEBAR_H: f32 = 38.0;
+/// The band the macOS traffic lights sit in when they draw over content,
+/// and the titlebar Rune frames on Linux where the compositor draws none.
+pub(crate) const TITLEBAR_H: f32 = 38.0;
 /// Space between the terminal area's edge and its grid.
 pub(crate) const PAD: f32 = 10.0;
 /// The gap around and between the terminal cards, and how round they are.
@@ -159,11 +161,14 @@ pub fn view(desk: &Desk, cx: &mut Cx<Desk>) -> El {
     cx.foreground(p.text);
     cx.help_look(tooltip(&p, dark));
     // `titlebar_inset` is the traffic lights' width; zero when the system
-    // draws its own titlebar.
-    let lights = cx.titlebar_inset();
+    // draws its own titlebar. On Linux, where Rune draws the window's own
+    // frame (GNOME), its caption buttons take the theme's ink and their room.
+    cx.caption_color(p.text);
+    let insets = cx.chrome_insets();
+    let lights = cx.titlebar_inset().max(insets.leading);
     let band = if lights > 0.0 { TITLEBAR_H } else { 12.0 };
     if desk.bare.is_some() || desk.quick.is_some() {
-        return bare(desk, &p, lights, band, cx);
+        return bare(desk, &p, lights.max(insets.height), band, cx);
     }
     let main = row()
         .key("main")
@@ -184,7 +189,8 @@ pub fn view(desk: &Desk, cx: &mut Cx<Desk>) -> El {
                 .min_w(0.0)
                 .min_h(0.0)
                 .children(
-                    (!desk.settings.hover_toolbar).then(|| status::title_bar(desk, &p, lights)),
+                    (!desk.settings.hover_toolbar)
+                        .then(|| status::title_bar(desk, &p, lights, insets.trailing)),
                 )
                 .child(
                     col()
@@ -208,7 +214,7 @@ pub fn view(desk: &Desk, cx: &mut Cx<Desk>) -> El {
                                 .children(overlay::toast(desk, &p)),
                         ),
                 )
-                .children(status::hover_toolbar(desk, &p, lights)),
+                .children(status::hover_toolbar(desk, &p, lights, insets.trailing)),
         );
     // No root paste hook: it would read the clipboard before anything here
     // saw the key. ⌘V and Edit ▸ Paste come to `Desk::key` instead, which
@@ -265,7 +271,7 @@ fn floating(root: El, desk: &Desk, p: &Ink, band: f32, cx: &mut Cx<Desk>) -> El 
     root.children(status::banner(desk, p))
         .children(updates::card(desk, p, band))
         .children(desk.inbox.open.then(|| inbox::view(desk, p)))
-        .children(playground(desk, p, cx))
+        .children(playground::open(desk, p, cx))
         .children(desk.settings_open.then(|| settings::view(desk, p)))
         .children(machines::sheet(desk, p))
         .children(desk.news.open.then(|| news::view(desk, p)))
@@ -278,49 +284,6 @@ fn floating(root: El, desk: &Desk, p: &Ink, band: f32, cx: &mut Cx<Desk>) -> El 
                 .menu
                 .map(|at| palette::context_menu(desk, at, p)),
         )
-}
-
-/// A playground view: whether it is open, how it draws, how it closes.
-type View = (bool, fn(&Desk, &Ink, &mut Cx<Desk>) -> El, fn(&mut Desk));
-
-/// The open playground view, if any, with the way out every one of them
-/// shows. A new view is one more row here.
-fn playground(desk: &Desk, p: &Ink, cx: &mut Cx<Desk>) -> Option<El> {
-    let views: [View; 6] = [
-        (desk.galaxy.open, galaxy::view, Desk::close_galaxy),
-        (desk.reef.open, reef::view, Desk::close_reef),
-        (desk.pitch.open, pitch::view, Desk::close_pitch),
-        (desk.kitchen.open, kitchen::view, Desk::close_kitchen),
-        (desk.pitlane.open, pitlane::view, Desk::close_pitlane),
-        (desk.hive.open, hive::view, Desk::close_hive),
-    ];
-    let (_, view, close) = views.into_iter().find(|v| v.0)?;
-    // A child of the view: the view is modal, so anything beside it is inert.
-    Some(view(desk, p, cx).child(esc_chip(p, close)))
-}
-
-/// A frosted key cap, top right in the titlebar band clear of every view's
-/// own chrome: `esc` closes this. Escape lets go of a pick first; a press
-/// here always closes.
-fn esc_chip(p: &Ink, close: fn(&mut Desk)) -> El {
-    pressable("playground-esc", p)
-        .pin(None, Some(9.0), Some(16.0), None)
-        .h(24.0)
-        .pl(4.0)
-        .pr(9.0)
-        .gap(6.0)
-        .items_center()
-        .radius(8.0)
-        .continuous_corners()
-        .backdrop_blur(FROST)
-        .fill(p.raised.alpha(0.72))
-        .border(1.0, p.text.alpha(0.14))
-        .shadow(4.0, 14.0, p.shade)
-        .hover(p.text.alpha(0.08))
-        .label("Close, Escape")
-        .on_press(close)
-        .child(keycap("esc", p))
-        .child(text("close").font(CAPTION).color(p.dim).a11y_hidden())
 }
 
 /// The bare window: the pane edge to edge under a band the traffic lights

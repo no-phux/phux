@@ -123,6 +123,11 @@ pub fn run_desktop() {
     if let Some(panel) = panel {
         window.update(move |desk, _| desk.arm_quick(panel));
     }
+    // Linux: the titlebar is the app's own. Where the compositor draws no
+    // frame (GNOME), Rune takes its bar away and adds the caption buttons;
+    // KDE, Hyprland and X11 keep theirs.
+    #[cfg(target_os = "linux")]
+    let app = app.titlebar(rune::Titlebar::new(ui::TITLEBAR_H));
     let app = app
         .init(move || {
             let mut desk = Desk::new(&resolved).with_phone(phone);
