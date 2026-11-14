@@ -2,17 +2,28 @@ name: Rune build
 
 # The Rune client (clients/rune): desktop archives on macOS/Linux, plus real
 # native iOS simulator/device builds and simulator input qualification.
-# Its own Cargo workspace is tested and packaged. ci.yml calls this as the
-# `rune` lane; rune-client.yml calls it for a tag, when the macOS app is also
-# signed and the archives go on to publication. It is separate because a
-# called workflow can't ask for more than ci.yml grants, and publishing needs
-# `contents: write`.
+# Its own Cargo workspace is tested and packaged. ci.yml calls this for the
+# Linux hosts; rune-macos.yml calls it for macOS and the iOS simulator.
+# rune-client.yml calls it for a tag (every host, iOS included), when the
+# macOS app is also signed and the archives go on to publication. It is
+# separate because a called workflow can't ask for more than its caller
+# grants, and publishing needs `contents: write`.
 on:
   workflow_call:
     inputs:
-      # ci.yml's plan turns this off for a pull request that reaches Rune
-      # only through the root Cargo closure, once the merge queue runs it.
+      # Off for ci.yml's Linux lane. rune-macos.yml's plan sets it. A tag
+      # passes nothing, so the release keeps the simulator leg.
       ios:
+        type: boolean
+        default: true
+      # all (the default a tag and the cache warm use), linux, or macos.
+      hosts:
+        type: string
+        default: all
+      # Package and launch every selected host, including linux-aarch64.
+      # A pull request passes false: check.sh and cargo-deny on linux-x86_64.
+      # A tag, the cache warm, and a dispatch pass nothing, so they qualify.
+      qualify:
         type: boolean
         default: true
     secrets:
@@ -31,22 +42,13 @@ permissions:
   contents: read
 
 jobs:
-  build:
-    name: ${{ matrix.name }}
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - os: macos-26
-            name: macos-arm64
-          - os: ubuntu-24.04
-            name: linux-x86_64
-          - os: ubuntu-24.04-arm
-            name: linux-aarch64
-    runs-on: ${{ matrix.os }}
+  # Static names: a skipped matrix job never expands, so `matrix.name` would
+  # be published as the literal check `matrix.name`.
+  linux-x86_64:
+    name: linux-x86_64
+    if: inputs.hosts == 'all' || inputs.hosts == 'linux'
+    runs-on: ubuntu-24.04
     timeout-minutes: 60
-    # Debug builds only (clippy, tests, the qualification CLI): fewer bytes to
-    # compile and cache. The packaged release build keeps its own profile.
     env:
       CARGO_INCREMENTAL: "0"
       CARGO_PROFILE_DEV_DEBUG: "0"
@@ -54,116 +56,63 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - name: Linux build and qualification dependencies
-        if: runner.os == 'Linux'
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y build-essential pkg-config mold libxkbcommon-dev libwayland-dev \
-            libxkbcommon-x11-0 mesa-vulkan-drivers xvfb xauth weston \
-            sway wtype wl-clipboard grim jq fcitx5 fcitx5-chinese-addons dbus
-          icd="$(find /usr/share/vulkan/icd.d -name 'lvp_icd*.json' -print -quit)"
-          test -n "$icd"
-          echo "VK_DRIVER_FILES=$icd" >> "$GITHUB_ENV"
-          echo 'WGPU_BACKEND=vulkan' >> "$GITHUB_ENV"
-      - name: Toolchains
-        run: |
-          bash scripts/setup-rust.sh core
-          bash scripts/install-zig.sh "$RUNNER_TEMP/phux-toolchains" >> "$GITHUB_PATH"
-      # Cold, a leg compiled Rune's graph three ways (clippy, test, release)
-      # plus the root `phux` CLI: 15 to 18 minutes (run 41886269436). The
-      # third-party artifacts of both workspaces are kept; saves come from
-      # main (ci.yml's push lane and cache-warm.yml), never a PR or a tag.
-      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+      - uses: ./.github/actions/rune-host
         with:
-          workspaces: |
-            clients/rune -> target
-            . -> target
-          shared-key: rune-${{ matrix.name }}
-          save-if: ${{ github.ref == 'refs/heads/main' }}
-          cache-on-failure: "true"
-      - uses: ./.github/actions/setup-bun
-      # `just rune-check`, without installing just.
-      - run: bash clients/rune/scripts/check.sh
-      # `just rune-deny`, on one leg: the verdict doesn't depend on the host.
-      - name: Check Rune's lockfile
-        if: matrix.name == 'linux-x86_64'
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          version=0.20.2
-          archive="cargo-deny-${version}-x86_64-unknown-linux-musl.tar.gz"
-          # Through the API: releases/download can 504 one asset for hours.
-          gh release download "$version" --repo EmbarkStudios/cargo-deny --pattern "$archive" --dir "$RUNNER_TEMP"
-          echo "9f12ed4c49936e09b48bf862b595cde2fe64fcbd9d74dfacac6131ca824c8d5f  ${RUNNER_TEMP}/${archive}" | sha256sum -c -
-          tar -xzf "${RUNNER_TEMP}/${archive}" -C "${RUNNER_TEMP}"
-          PATH="${RUNNER_TEMP}/cargo-deny-${version}-x86_64-unknown-linux-musl:$PATH"
-          cargo-deny --manifest-path clients/rune/Cargo.toml --config clients/rune/deny.toml --locked check
-      - name: Require Apple signing configuration before building
-        if: runner.os == 'macOS' && startsWith(github.ref, 'refs/tags/rune-v')
-        env:
-          APPLE_DEVELOPER_ID_P12: ${{ secrets.APPLE_DEVELOPER_ID_P12 }}
-          APPLE_DEVELOPER_ID_PASSWORD: ${{ secrets.APPLE_DEVELOPER_ID_PASSWORD }}
-          APPLE_NOTARY_KEY_P8: ${{ secrets.APPLE_NOTARY_KEY_P8 }}
-          APPLE_NOTARY_KEY_ID: ${{ secrets.APPLE_NOTARY_KEY_ID }}
-          APPLE_NOTARY_ISSUER_ID: ${{ secrets.APPLE_NOTARY_ISSUER_ID }}
-        run: bash scripts/ci/sign-macos-desktop.sh --check-config
-      - name: Package
-        run: |
-          version="$(sed -n 's/^version = "\(.*\)"/\1/p' clients/rune/Cargo.toml | head -1)"
-          bash clients/rune/scripts/package.sh "$version" "$RUNNER_TEMP/dist" "$RUNNER_TEMP/app"
-      # Releases ship the app Developer ID signed with the hardened runtime,
-      # notarized and stapled, so it opens from Finder without a Gatekeeper
-      # override.
-      - name: Sign, notarize and staple the macOS app
-        if: runner.os == 'macOS' && startsWith(github.ref, 'refs/tags/rune-v')
-        env:
-          APPLE_DEVELOPER_ID_P12: ${{ secrets.APPLE_DEVELOPER_ID_P12 }}
-          APPLE_DEVELOPER_ID_PASSWORD: ${{ secrets.APPLE_DEVELOPER_ID_PASSWORD }}
-          APPLE_NOTARY_KEY_P8: ${{ secrets.APPLE_NOTARY_KEY_P8 }}
-          APPLE_NOTARY_KEY_ID: ${{ secrets.APPLE_NOTARY_KEY_ID }}
-          APPLE_NOTARY_ISSUER_ID: ${{ secrets.APPLE_NOTARY_ISSUER_ID }}
-        run: |
-          set -euo pipefail
-          version="$(sed -n 's/^version = "\(.*\)"/\1/p' clients/rune/Cargo.toml | head -1)"
-          archive="phux-rune-$version-macos-arm64.zip"
-          dmg="phux-rune-$version-macos-arm64.dmg"
-          rm "$RUNNER_TEMP/dist/$archive" "$RUNNER_TEMP/dist/$archive.sha256"
-          bash scripts/ci/sign-macos-desktop.sh "$RUNNER_TEMP/app/Phux Rune.app" \
-            "$RUNNER_TEMP/signed/$archive" "$RUNNER_TEMP/signed/$dmg"
-          mv "$RUNNER_TEMP/signed/$archive" "$RUNNER_TEMP/signed/$dmg" "$RUNNER_TEMP/dist/"
-          cd "$RUNNER_TEMP/dist"
-          shasum -a 256 "$archive" > "$archive.sha256"
-          shasum -a 256 "$dmg" > "$dmg.sha256"
-          # What a download gets: the stapled ticket, and Gatekeeper's yes.
-          mkdir "$RUNNER_TEMP/verify"
-          ditto -x -k "$archive" "$RUNNER_TEMP/verify"
-          xcrun stapler validate "$RUNNER_TEMP/verify/Phux Rune.app"
-          spctl --assess --type execute --verbose=2 "$RUNNER_TEMP/verify/Phux Rune.app"
-      # Last before upload, on the final bytes: a build that can't open its
-      # window never reaches a client, whose updater only ever moves forward.
-      - name: Launch the packaged app against a same-source server
-        run: |
-          set -euo pipefail
-          cargo build --locked -p phux
-          archive="$(find "$RUNNER_TEMP/dist" -name 'phux-rune-*' ! -name '*.sha256' ! -name '*.dmg')"
-          bash clients/rune/scripts/qualify.sh "$archive" target/debug/phux "$RUNNER_TEMP/qualification"
-      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        if: always()
+          name: linux-x86_64
+          qualify: ${{ inputs.qualify }}
+          apple_developer_id_p12: ${{ secrets.APPLE_DEVELOPER_ID_P12 }}
+          apple_developer_id_password: ${{ secrets.APPLE_DEVELOPER_ID_PASSWORD }}
+          apple_notary_key_p8: ${{ secrets.APPLE_NOTARY_KEY_P8 }}
+          apple_notary_key_id: ${{ secrets.APPLE_NOTARY_KEY_ID }}
+          apple_notary_issuer_id: ${{ secrets.APPLE_NOTARY_ISSUER_ID }}
+
+  linux-aarch64:
+    name: linux-aarch64
+    if: inputs.qualify && (inputs.hosts == 'all' || inputs.hosts == 'linux')
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 60
+    env:
+      CARGO_INCREMENTAL: "0"
+      CARGO_PROFILE_DEV_DEBUG: "0"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          name: qualification-${{ matrix.name }}
-          path: ${{ runner.temp }}/qualification
-          if-no-files-found: warn
-          retention-days: 14
-      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+          persist-credentials: false
+      - uses: ./.github/actions/rune-host
         with:
-          name: rune-${{ matrix.name }}
-          path: ${{ runner.temp }}/dist/*
-          if-no-files-found: error
-          retention-days: 14
+          name: linux-aarch64
+          qualify: ${{ inputs.qualify }}
+          apple_developer_id_p12: ${{ secrets.APPLE_DEVELOPER_ID_P12 }}
+          apple_developer_id_password: ${{ secrets.APPLE_DEVELOPER_ID_PASSWORD }}
+          apple_notary_key_p8: ${{ secrets.APPLE_NOTARY_KEY_P8 }}
+          apple_notary_key_id: ${{ secrets.APPLE_NOTARY_KEY_ID }}
+          apple_notary_issuer_id: ${{ secrets.APPLE_NOTARY_ISSUER_ID }}
+
+  macos:
+    name: macos-arm64
+    if: inputs.hosts == 'all' || inputs.hosts == 'macos'
+    runs-on: macos-26
+    timeout-minutes: 60
+    env:
+      CARGO_INCREMENTAL: "0"
+      CARGO_PROFILE_DEV_DEBUG: "0"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/rune-host
+        with:
+          name: macos-arm64
+          qualify: ${{ inputs.qualify }}
+          apple_developer_id_p12: ${{ secrets.APPLE_DEVELOPER_ID_P12 }}
+          apple_developer_id_password: ${{ secrets.APPLE_DEVELOPER_ID_PASSWORD }}
+          apple_notary_key_p8: ${{ secrets.APPLE_NOTARY_KEY_P8 }}
+          apple_notary_key_id: ${{ secrets.APPLE_NOTARY_KEY_ID }}
+          apple_notary_issuer_id: ${{ secrets.APPLE_NOTARY_ISSUER_ID }}
 
   ios-native:
     name: ios-native-simulator
-    if: inputs.ios
+    if: inputs.ios && (inputs.hosts == 'all' || inputs.hosts == 'macos')
     runs-on: macos-26
     # A cold macOS + simulator + device build still has to qualify both
     # transports. Sixty minutes can expire after QUIC, during the WSS pass.

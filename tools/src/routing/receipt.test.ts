@@ -15,6 +15,7 @@ let run: Table;
 let artifact: Table;
 let files: Record<string, string>;
 let commitTree: string;
+let requested: Receipt;
 const source: Source = {
   json(path) {
     if (path.endsWith("/runs/3")) return run;
@@ -22,11 +23,14 @@ const source: Source = {
     return { artifacts: [artifact] };
   },
   download(runId, name, dir) {
-    expect([runId, name]).toEqual(["3", artifactName(expected)]);
+    expect([runId, name]).toEqual(["3", artifactName(requested)]);
     for (const [file, text] of Object.entries(files)) writeFileSync(join(dir, file), text);
   },
 };
-const find = (): unknown => findValidation(expected, "owner/project", source);
+const find = (receipt = expected): unknown => {
+  requested = receipt;
+  return findValidation(receipt, "owner/project", source);
+};
 
 beforeEach(() => {
   run = {
@@ -53,6 +57,33 @@ test("a successful exact tree is reused", () => {
 test("a merge group that validated the exact tree is reused", () => {
   run["event"] = "merge_group";
   expect(find()).toBe(3);
+});
+
+test("the required ci merge-group caller attests only the exact native child receipt", () => {
+  const apple = {
+    ...expected,
+    workflow: ".github/workflows/rune-macos.yml",
+    coverage: "macos,rune_ios",
+  };
+  files["receipt.json"] = JSON.stringify(apple);
+  run["event"] = "merge_group";
+  expect(find(apple)).toBeUndefined();
+  const child = {
+    path: `owner/project/${apple.workflow}@refs/heads/gh-readonly-queue/main/pr-1`,
+    sha: run["head_sha"],
+  };
+  run["referenced_workflows"] = [{ ...child, sha: "d".repeat(40) }];
+  expect(find(apple)).toBeUndefined();
+  run["referenced_workflows"] = [child];
+  expect(find(apple)).toBe(3);
+  run["event"] = "pull_request";
+  expect(find(apple)).toBeUndefined();
+  run["event"] = "merge_group";
+  files["receipt.json"] = JSON.stringify({ ...apple, coverage: "macos" });
+  expect(find(apple)).toBeUndefined();
+  files["receipt.json"] = JSON.stringify(apple);
+  run["conclusion"] = "failure";
+  expect(find(apple)).toBeUndefined();
 });
 
 test.each<[string, () => void]>([

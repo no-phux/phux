@@ -1,7 +1,7 @@
 // Workflows use free public compute and spend the shared cache budget only
 // from main.
 import { expect, test } from "bun:test";
-import { list, str, table, type Table } from "../lib/value.ts";
+import { str, table, type Table } from "../lib/value.ts";
 import {
   action,
   actionNames,
@@ -43,18 +43,25 @@ test("all runner selectors are standard public capacity", () => {
 });
 
 test("Rune qualifies and releases on macOS and Linux", () => {
-  const rune = job(workflow("rune-build.yml"), "build");
-  const matrix = table(table(rune["strategy"])["matrix"]);
-  const runners = list(matrix["include"]).map((entry) => table(entry)["os"]);
-  expect(runners).toContain("macos-26");
-  expect(runners).toContain("ubuntu-24.04");
+  const rune = workflow("rune-build.yml");
+  const x86 = job(rune, "linux-x86_64");
+  const arm = job(rune, "linux-aarch64");
+  expect(str(x86["runs-on"])).toBe("ubuntu-24.04");
+  expect(str(arm["runs-on"])).toBe("ubuntu-24.04-arm");
+  expect(str(x86["name"])).toBe("linux-x86_64");
+  expect(str(arm["name"])).toBe("linux-aarch64");
+  expect(str(arm["if"])).toContain("inputs.qualify");
+  expect(str(job(rune, "macos")["runs-on"])).toBe("macos-26");
+  expect(str(job(rune, "macos")["if"])).toContain("inputs.hosts == 'macos'");
 });
 
 test("closing a pull request cancels its in-flight ci run", () => {
   // `closed` joins the PR's latest-wins group and then runs nothing.
+  // Anything but a push cancels, so a close still drops the in-flight run.
+  // A push leaves the running run (release-please and next need its green).
   const ci = workflow("ci.yml");
   expect(table(table(ci["on"])["pull_request"])["types"]).toContain("closed");
-  expect(table(ci["concurrency"])["cancel-in-progress"]).toBe(true);
+  expect(table(ci["concurrency"])["cancel-in-progress"]).toBe("${{ github.event_name != 'push' }}");
   for (const [id, lane] of Object.entries(jobs(ci))) {
     const gate = str(lane["if"]) ?? "";
     const reaches = needs(lane).length > 0 && !gate.includes("always()");
@@ -62,6 +69,7 @@ test("closing a pull request cancels its in-flight ci run", () => {
       id,
       reaches ||
         gate.includes("github.event.action != 'closed'") ||
+        gate.includes("event_name == 'merge_group'") ||
         gate.includes("event_name == 'push'"),
     ]).toEqual([id, true]);
   }
@@ -79,6 +87,7 @@ test("pull request lanes never write to the shared cache budget", () => {
     .filter((ref) => ref.startsWith("./.github/workflows/"))
     .map((ref) => workflow(ref.replace("./.github/workflows/", "")));
   const pullRequest = [...triggered, ...called];
+  // Enumerate every local composite, including Rune and both web caches.
   const all: Table[] = [
     ...actionNames().flatMap((name) => steps(action(name))),
     ...pullRequest.flatMap((document) => Object.values(jobs(document)).flatMap(steps)),

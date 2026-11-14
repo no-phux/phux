@@ -77,6 +77,24 @@ export function detect(eventName: string, eventPath: string | undefined, cwd = R
     : { kind: "paths", paths };
 }
 
+/**
+ * Classify the diff `base..head`. Release metadata is no lanes. A missing
+ * commit or a diff that cannot be named fails closed into every surface.
+ */
+export function classifyRange(base: string, head: string, cwd = ROOT): Classification {
+  try {
+    git(["cat-file", "-e", `${base}^{commit}`], cwd);
+    git(["cat-file", "-e", `${head}^{commit}`], cwd);
+    const paths = diffPaths(base, head, cwd);
+    const readPair = (path: string) => [show(base, path, cwd), show(head, path, cwd)] as const;
+    if (paths.length > 0 && releaseMetadataOnly(paths, readPair)) return NO_LANES;
+    return new Classifier().classify(paths);
+  } catch (error) {
+    console.error(`Full validation: ${describe(error)}`);
+    return new Classifier().classify([]);
+  }
+}
+
 /** Classify the current event, logging why it skips or widens routing. */
 export function classifyEvent(eventName: string, eventPath: string | undefined): Classification {
   const detection = detect(eventName, eventPath);
