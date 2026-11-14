@@ -105,12 +105,7 @@ pub fn with_menus(app: App<Desk>) -> App<Desk> {
         item!(VIEW, CopyConfig),
         item!(VIEW, RestoreSessions),
         item!(VIEW, Inbox),
-        item!(VIEW, Galaxy),
-        item!(VIEW, Reef),
-        item!(VIEW, Pitch),
-        item!(VIEW, Kitchen),
-        item!(VIEW, PitLane),
-        item!(VIEW, Hive),
+        item!(VIEW, Playground),
         item!(VIEW, Palette),
         item!(VIEW, KeyboardShortcuts),
         item!(VIEW, EssentialShortcuts),
@@ -370,6 +365,7 @@ impl Desk {
             Mode::Screens => self.screen_hits(query),
             Mode::Shortcuts => palette::rank(palette::shortcut_items(), query),
             Mode::Essentials => palette::rank(palette::essential_items(), query),
+            Mode::Playground => palette::rank(palette::action_items(keys::PLAYGROUND), query),
             Mode::Themes => palette::rank(palette::theme_items(), query),
             Mode::Sessions => {
                 let mut hits = palette::rank(

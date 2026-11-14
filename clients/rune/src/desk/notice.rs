@@ -7,6 +7,9 @@ use rune::Tx;
 
 use super::Desk;
 
+/// Set once the "New here?" tip has been shown, or onboarding taught its keys.
+pub(super) const TOUR_OFFERED: &str = "tour_offered";
+
 /// What kind of thing a notice says.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NoticeKind {
@@ -66,10 +69,10 @@ impl Desk {
     /// Shortcuts: Essentials` reopens the list any time.
     pub(crate) fn offer_tour(&mut self) {
         // The tour teaches chords; a phone has the accessory bar instead.
-        if self.phone.is_some() || self.prefs.get::<bool>("tour_offered").unwrap_or(false) {
+        if self.phone.is_some() || self.prefs.get::<bool>(TOUR_OFFERED).unwrap_or(false) {
             return;
         }
-        let _ = self.prefs.set("tour_offered", &true);
+        let _ = self.prefs.set(TOUR_OFFERED, &true);
         self.offer(
             "New here? A few keys do most of the work.",
             "Show me",

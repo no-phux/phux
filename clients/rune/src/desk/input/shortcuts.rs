@@ -44,6 +44,7 @@ impl Desk {
             Shortcut::Kitchen => self.toggle_kitchen(),
             Shortcut::PitLane => self.toggle_pitlane(),
             Shortcut::Hive => self.toggle_hive(),
+            Shortcut::Playground => self.open_palette(crate::palette::Mode::Playground),
             Shortcut::Settings => self.toggle_settings(),
             Shortcut::ChangeTheme => self.open_themes(),
             Shortcut::SwitchSession => self.switch_sessions(),

@@ -10,7 +10,7 @@ use rune::{Key, Mods, PhysicalKeyCode};
 mod commands;
 #[cfg(all(test, not(target_os = "macos")))]
 mod linux_tests;
-pub use commands::{COMMANDS, Command, ESSENTIALS, bind, command};
+pub use commands::{COMMANDS, Command, ESSENTIALS, PLAYGROUND, bind, command};
 use commands::{Cap, Chord};
 
 /// What a key press should do in the terminal.
@@ -82,6 +82,8 @@ pub enum Shortcut {
     PitLane,
     /// The fleet as beehives: machines as comb frames, agents as bees.
     Hive,
+    /// The palette over the six scenes above, as View's Playground.
+    Playground,
     Settings,
     /// The themes, previewed live as the highlight moves.
     ChangeTheme,

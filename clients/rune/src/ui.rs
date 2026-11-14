@@ -145,18 +145,19 @@ fn ink(dark: bool, accent: Color, theme: Option<&Theme>) -> Ink {
 }
 
 pub fn view(desk: &Desk, cx: &mut Cx<Desk>) -> El {
-    desk.follow_appearance(cx.system_dark());
+    let dark = crate::theme::system_dark(cx.system_dark());
+    desk.follow_appearance(dark);
     if desk.phone.is_some() {
         return phone::view(desk, cx);
     }
-    let p = ink(cx.system_dark(), cx.accent(), desk.settings.theme);
+    let p = ink(dark, cx.accent(), desk.settings.theme);
     let p = Ink {
         host: crate::host_color::on(desk.machines.label(), p.sidebar),
         ..p
     };
     // Native fields inherit a readable caret and selection in light themes too.
     cx.foreground(p.text);
-    cx.help_look(tooltip(&p, cx.system_dark()));
+    cx.help_look(tooltip(&p, dark));
     // `titlebar_inset` is the traffic lights' width; zero when the system
     // draws its own titlebar.
     let lights = cx.titlebar_inset();

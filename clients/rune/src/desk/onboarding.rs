@@ -237,6 +237,8 @@ impl Desk {
     /// The last step's button: a normal session, made if there is none.
     pub fn start_using(&mut self) {
         self.finish_onboarding();
+        // Onboarding just taught the keys, so no "New here?" tip after it.
+        let _ = self.prefs.set(super::notice::TOUR_OFFERED, &true);
         if words::KEEP_ALIVE && self.onboarding.keep_alive {
             self.ask(&["service", "install", "--adopt"], SLOW, Done::Service);
         }

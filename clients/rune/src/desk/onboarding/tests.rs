@@ -25,6 +25,18 @@ fn skills(detected: &[&str]) -> Probe<Vec<AgentSkill>> {
     )
 }
 
+/// Finishing onboarding taught the keys, so the "New here?" tip stays away;
+/// skipping it still gets the tip (`quitting_mid_way_resumes_at_the_step`).
+#[test]
+fn finishing_onboarding_skips_the_tour_tip() {
+    let mut desk = desk(Prefs::memory());
+    desk.onboarding.keep_alive = false;
+    desk.start_using();
+    desk.first_run();
+    assert!(!desk.onboarding.open);
+    assert!(desk.notice.is_none(), "no tip after onboarding");
+}
+
 #[test]
 fn quitting_mid_way_resumes_at_the_step() {
     let dir = std::env::temp_dir().join(format!("phux-rune-onb-{}", std::process::id()));
