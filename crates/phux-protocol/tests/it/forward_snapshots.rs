@@ -94,6 +94,34 @@ fn fixtures() -> Vec<(&'static str, FrameKind)> {
             "snap_command_forward_close",
             command(0x24, ForwardOp::Close { id: 0x0102 }),
         ),
+        // AGENT_OFFER (tag 0x4f): no body.
+        (
+            "snap_command_agent_offer",
+            command(0x25, ForwardOp::AgentOffer),
+        ),
+        // AGENT_REPLY (tag 0x50): SSH_AGENT_FAILURE for request 0x0102.
+        (
+            "snap_command_agent_reply",
+            command(
+                0x26,
+                ForwardOp::AgentReply {
+                    id: 0x0102,
+                    message: vec![5],
+                },
+            ),
+        ),
+        // agent_request (event tag 0x21): SSH_AGENTC_REQUEST_IDENTITIES.
+        (
+            "snap_event_agent_request",
+            FrameKind::Event {
+                terminal: None,
+                event: phux_protocol::wire::frame::AgentEvent::SshAgentRequest {
+                    id: 0x0102,
+                    message: vec![11],
+                },
+                stamp: None,
+            },
+        ),
         // FORWARD_OPENED (CommandValue 0x0f).
         (
             "snap_command_result_forward_opened",

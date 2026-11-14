@@ -32,6 +32,7 @@ check the log against a key the host cannot quietly replace.
 | `credential.added`, `credential.removed` | A workload credential appears in, leaves, or is revoked from the registry. |
 | `file.get`, `file.put` | Each authorized `GET_FILE` or `PUT_FILE` chunk, with its offset and size. |
 | `forward.open`, `forward.close` | A [forwarded](./forwarding.md) TCP connection is dialed, then ends, with its target, the bytes each way, and the reason. |
+| `forward.agent.offer`, `forward.agent.sign` | A client offers its [ssh-agent](./forwarding.md#ssh-agent) to the server's panes; a pane asks it to sign, with the key's fingerprint and whether it was signed. Never the data. |
 | `input.lease` | A Terminal's input lease is taken or given back. |
 | `clipboard.read` | A client answers a pane's OSC 52 clipboard read, with the pane, selection, and byte count. |
 

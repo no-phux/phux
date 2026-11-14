@@ -40,6 +40,8 @@ Addressed to the server or the connection rather than to one resource.
 | `FORWARD_READ` | command `0x45` | INPUT | yes | `forward_tcp` (features_ext) | shipped |
 | `FORWARD_WRITE` | command `0x46` | INPUT | yes | `forward_tcp` (features_ext) | shipped |
 | `FORWARD_CLOSE` | command `0x47` | INPUT | yes | `forward_tcp` (features_ext) | shipped |
+| `AGENT_OFFER` | command `0x4f` | INPUT | yes | `forward_agent` (features_ext) | shipped |
+| `AGENT_REPLY` | command `0x50` | INPUT | yes | `forward_agent` (features_ext) | shipped |
 | `UPGRADE` | command `0x0e` | SIGNAL | yes | none | shipped |
 | `SHUTDOWN` | command `0x16` | SIGNAL (owner socket only) | yes | `shutdown` | shipped |
 | `OPEN_LISTENER` | command `0x1c` | SIGNAL (owner socket only) | yes | `open_listener` | shipped |
@@ -127,6 +129,7 @@ Answered by every resource kind.
 | `pane_closed` | `0x05` |
 | `source_gap` | `0x0c` |
 | `document_input` | `0x20` |
+| `agent_request` | `0x21` |
 
 ## Kind `TERMINAL`
 
@@ -342,7 +345,7 @@ Every command nested in `COMMAND` lands on exactly one row; the envelope alone g
 | `GET_FILE` | INPUT | `Global { owner_uds_only: false }` |
 | `CHECKOUT` | INPUT | `NamedTerminal` |
 | `SERVICE_HTTP_OPEN`, `SERVICE_HTTP_READ`, `SERVICE_HTTP_CLOSE` | INPUT | `Global { owner_uds_only: false }` |
-| `FORWARD_OPEN`, `FORWARD_READ`, `FORWARD_WRITE`, `FORWARD_CLOSE` | INPUT | `Global { owner_uds_only: false }` |
+| `FORWARD_OPEN`, `FORWARD_READ`, `FORWARD_WRITE`, `FORWARD_CLOSE`, `AGENT_OFFER`, `AGENT_REPLY` | INPUT | `Global { owner_uds_only: false }` |
 | `TRANSCRIBE` | INPUT | `NamedTerminal` |
 | `DETACH_CLIENTS { session: Some }` | SIGNAL | `ResolvedGroup` |
 | `DETACH_CLIENTS { session: None }` | SIGNAL | `Global { owner_uds_only: false }` |

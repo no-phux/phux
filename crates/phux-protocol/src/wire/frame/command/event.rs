@@ -354,6 +354,17 @@ pub enum AgentEvent {
         /// What the viewer asked for.
         intent: super::DocumentInput,
     },
+    /// One ssh-agent request from a pane on this server, sent only to the
+    /// connection that offered its agent (`AGENT_OFFER`), which answers
+    /// with `AGENT_REPLY`. Unjournaled and server-scoped: no stamp, no
+    /// resource.
+    SshAgentRequest {
+        /// Names the request in the reply.
+        id: u64,
+        /// The ssh-agent request, without its length prefix: always
+        /// `SSH_AGENTC_REQUEST_IDENTITIES` or `SSH_AGENTC_SIGN_REQUEST`.
+        message: Vec<u8>,
+    },
     /// An event tag this build does not know, body kept verbatim. Produced
     /// only by the decoder.
     Unknown {

@@ -92,6 +92,11 @@ pub enum ServerFeatureExt {
     /// for the client (`docs/forwarding.md`). Not advertised when
     /// `[forward] tcp = false`.
     ForwardTcp = 0x0200_0000,
+    /// The server answers `AGENT_OFFER` and `AGENT_REPLY`: it brokers
+    /// ssh-agent requests from its panes to a client that offered its
+    /// agent (`docs/forwarding.md#ssh-agent`). Advertised only with
+    /// `[forward] agent = true`.
+    ForwardAgent = 0x0400_0000,
 }
 
 impl ServerFeatureExt {
@@ -122,6 +127,7 @@ impl ServerFeatureExt {
         Self::ClipboardRead,
         Self::HostChecklist,
         Self::ForwardTcp,
+        Self::ForwardAgent,
     ];
 
     /// The `docs/protocol.md#handshake` constant, e.g. `"PATH_QUERY"`.
@@ -153,6 +159,7 @@ impl ServerFeatureExt {
             Self::ClipboardRead => "CLIPBOARD_READ",
             Self::HostChecklist => "HOST_CHECKLIST",
             Self::ForwardTcp => "FORWARD_TCP",
+            Self::ForwardAgent => "FORWARD_AGENT",
         }
     }
 

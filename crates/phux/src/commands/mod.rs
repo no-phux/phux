@@ -62,6 +62,7 @@ pub(crate) mod doctor;
 pub(crate) mod download;
 pub(crate) mod enroll;
 pub(crate) mod forward;
+mod forward_agent;
 pub(crate) mod gen_reference_docs;
 pub(crate) mod git;
 pub(crate) mod host;

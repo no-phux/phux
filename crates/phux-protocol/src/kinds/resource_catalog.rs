@@ -236,6 +236,10 @@ pub static SUBSTRATE_EVENTS: &[EventSpec] = &[
         name: "document_input",
         tag: EVENT_TAG_DOCUMENT_INPUT,
     },
+    EventSpec {
+        name: "agent_request",
+        tag: EVENT_TAG_AGENT_REQUEST,
+    },
 ];
 
 /// Every resource kind this build serves, in wire-tag order.

@@ -328,34 +328,28 @@ pub static SERVER_METHODS: &[MethodSpec] = &[
         "SERVICE_HTTP_OPEN",
         Carrier::Command(COMMAND_TAG_SERVICE_HTTP_OPEN),
         [C_SERVICE_HTTP],
-        Some(FeatureGate::FeaturesExt {
-            mask: ServerFeatureExt::HostServiceHttp.mask(),
-            wire_name: ServerFeatureExt::HostServiceHttp.wire_name(),
-        })
+        SERVICE_HTTP
     ),
     method!(
         "SERVICE_HTTP_READ",
         Carrier::Command(COMMAND_TAG_SERVICE_HTTP_READ),
         [C_SERVICE_HTTP],
-        Some(FeatureGate::FeaturesExt {
-            mask: ServerFeatureExt::HostServiceHttp.mask(),
-            wire_name: ServerFeatureExt::HostServiceHttp.wire_name(),
-        })
+        SERVICE_HTTP
     ),
     method!(
         "SERVICE_HTTP_CLOSE",
         Carrier::Command(COMMAND_TAG_SERVICE_HTTP_CLOSE),
         [C_SERVICE_HTTP],
-        Some(FeatureGate::FeaturesExt {
-            mask: ServerFeatureExt::HostServiceHttp.mask(),
-            wire_name: ServerFeatureExt::HostServiceHttp.wire_name(),
-        })
+        SERVICE_HTTP
     ),
     // TCP port forwarding (`docs/forwarding.md`).
     forward!("FORWARD_OPEN", COMMAND_TAG_FORWARD_OPEN),
     forward!("FORWARD_READ", COMMAND_TAG_FORWARD_READ),
     forward!("FORWARD_WRITE", COMMAND_TAG_FORWARD_WRITE),
     forward!("FORWARD_CLOSE", COMMAND_TAG_FORWARD_CLOSE),
+    // ssh-agent forwarding (`docs/forwarding.md#ssh-agent`).
+    forward!("AGENT_OFFER", COMMAND_TAG_AGENT_OFFER, ForwardAgent),
+    forward!("AGENT_REPLY", COMMAND_TAG_AGENT_REPLY, ForwardAgent),
     dangerous(method!(
         "UPGRADE",
         Carrier::Command(COMMAND_TAG_UPGRADE),

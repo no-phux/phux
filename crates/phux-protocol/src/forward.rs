@@ -6,7 +6,10 @@
 //! what the target sends with repeated `FORWARD_READ`s (each answered with
 //! `CommandValue::ForwardChunk`), pushes bytes to it with `FORWARD_WRITE`
 //! (answered once the server has written them), and ends it with
-//! `FORWARD_CLOSE`. The decoder enforces every bound here with
+//! `FORWARD_CLOSE`. ssh-agent forwarding (`features_ext.FORWARD_AGENT`)
+//! is brokered messages instead: a client offers its agent with
+//! `AGENT_OFFER`, receives each request as an `agent_request` event, and
+//! answers with `AGENT_REPLY`. The decoder enforces every bound here with
 //! [`DecodeError::ForwardLimitExceeded`](crate::wire::DecodeError::ForwardLimitExceeded).
 
 /// The most bytes one `FORWARD_READ` may ask for and one `FORWARD_WRITE`
@@ -52,6 +55,54 @@ pub enum ForwardOp {
         /// The forward `FORWARD_OPEN` named.
         id: u64,
     },
+    /// `AGENT_OFFER`: this connection serves its local ssh-agent to the
+    /// server's panes until it ends (`features_ext.FORWARD_AGENT`). The
+    /// newest offer on a server replaces the one before it.
+    AgentOffer,
+    /// `AGENT_REPLY`: the answer to one `agent_request` event.
+    AgentReply {
+        /// The request the event named.
+        id: u64,
+        /// The ssh-agent response, without its length prefix: at most
+        /// [`MAX_AGENT_MESSAGE_BYTES`].
+        message: Vec<u8>,
+    },
+}
+
+/// The largest ssh-agent message either way, without its length prefix:
+/// the bound ssh-agent itself enforces.
+pub const MAX_AGENT_MESSAGE_BYTES: usize = 256 * 1024;
+/// How long the server holds a pane's ssh-agent request for the offering
+/// client's answer, the user's approval included.
+pub const AGENT_REQUEST_SECS: u64 = 60;
+/// `SSH_AGENT_FAILURE`, the whole body of a refusal.
+pub const SSH_AGENT_FAILURE: u8 = 5;
+/// `SSH_AGENTC_REQUEST_IDENTITIES`: list the agent's keys.
+pub const SSH_AGENTC_REQUEST_IDENTITIES: u8 = 11;
+/// `SSH_AGENT_IDENTITIES_ANSWER`.
+pub const SSH_AGENT_IDENTITIES_ANSWER: u8 = 12;
+/// `SSH_AGENTC_SIGN_REQUEST`: sign with one of the agent's keys.
+pub const SSH_AGENTC_SIGN_REQUEST: u8 = 13;
+/// `SSH_AGENT_SIGN_RESPONSE`.
+pub const SSH_AGENT_SIGN_RESPONSE: u8 = 14;
+
+/// The response type that answers ssh-agent `request`, or `None` when the
+/// request is not one of the two that are ever forwarded.
+#[must_use]
+pub fn agent_answer_type(request: &[u8]) -> Option<u8> {
+    match *request.first()? {
+        SSH_AGENTC_REQUEST_IDENTITIES => Some(SSH_AGENT_IDENTITIES_ANSWER),
+        SSH_AGENTC_SIGN_REQUEST => Some(SSH_AGENT_SIGN_RESPONSE),
+        _ => None,
+    }
+}
+
+/// The public key blob a `SSH_AGENTC_SIGN_REQUEST` asks to sign with.
+#[must_use]
+pub fn sign_request_key(request: &[u8]) -> Option<&[u8]> {
+    let rest = request.strip_prefix(&[SSH_AGENTC_SIGN_REQUEST])?;
+    let (len, rest) = rest.split_first_chunk::<4>()?;
+    rest.get(..usize::try_from(u32::from_be_bytes(*len)).ok()?)
 }
 
 /// Bytes read from a forward's target (`CommandValue::ForwardChunk`).
@@ -74,6 +125,7 @@ pub fn op_fits(op: &ForwardOp) -> bool {
             usize::try_from(*max_bytes).is_ok_and(|max| max <= MAX_FORWARD_CHUNK_BYTES)
         }
         ForwardOp::Write { bytes, .. } => bytes.len() <= MAX_FORWARD_CHUNK_BYTES,
-        ForwardOp::Close { .. } => true,
+        ForwardOp::Close { .. } | ForwardOp::AgentOffer => true,
+        ForwardOp::AgentReply { message, .. } => message.len() <= MAX_AGENT_MESSAGE_BYTES,
     }
 }

@@ -182,8 +182,9 @@ const SECTIONS: &[Section] = &[
         key: "forward",
         header: "[forward]",
         summary: "What `phux forward` may reach from this server: whether \
-                  it serves TCP forwarding at all, and the targets a client \
-                  may reach besides the server's own loopback.",
+                  it serves TCP forwarding at all, the targets a client \
+                  may reach besides the server's own loopback, and whether \
+                  it brokers ssh-agent requests from its panes.",
     },
     Section {
         key: "rune",

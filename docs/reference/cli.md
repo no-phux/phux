@@ -75,7 +75,7 @@ Machines:
   relay         Run a standalone relay, or enroll a route with it
   workload      Manage the mTLS workload authority
   download      Download a file from a server or one of its satellites
-  forward       Forward a local TCP port to a port on the server's machine
+  forward       Forward a port or your ssh-agent to the server's machine
 
 Maintain:
   status        Report the running server: pid, uptime, clients
@@ -2803,11 +2803,24 @@ dials only its own loopback (`localhost`, `127.0.0.1`, `::1`) unless its
 phux connection drops, open connections are closed, the listener stays, and new
 connections are served once it reconnects.
 
-Usage: phux forward <-L <SPEC>> [--remote <[USER@]HOST[:PORT]>]
+`--agent` serves this machine's ssh-agent to the panes on that server instead,
+like `ssh -A`, when the server has `[forward] agent = true`: `ssh` and `git` in
+a pane there can list your keys and ask for signatures, and every signature is
+shown here for a yes or no first. Nothing can add or remove keys. Runs in the
+foreground until Ctrl-C.
+
+Usage: phux forward [FLAGS]
 
 Flags:
   -L <SPEC>                       What to forward:
                                   `[BIND_ADDR:]LOCAL_PORT:REMOTE_HOST:REMOTE_PORT`.
+      --agent                     Serve this machine's ssh-agent
+                                  (`SSH_AUTH_SOCK`) to the server's panes,
+                                  asking here before each signature.
+      --yes                       With `--agent`: sign without asking. Any
+                                  process in any pane on that server can then
+                                  use your keys while this runs, the same risk
+                                  as `ssh -A`.
       --remote <[USER@]HOST[:PORT]>  Run against the phux server on another
                                   machine instead of the local socket,
                                   ssh-style: `--remote me@mini`. Same target

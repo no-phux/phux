@@ -247,10 +247,11 @@ macro_rules! supervisory_commands {
         /// The exchange [`CommandValue::ServiceHttpHead`] named.
         exchange: u64,
     },
-    /// One step of a TCP forward (`docs/forwarding.md`), gated on
-    /// `features_ext.FORWARD_TCP`.
+    /// One step of a TCP forward, gated on `features_ext.FORWARD_TCP`, or
+    /// of ssh-agent forwarding, gated on `features_ext.FORWARD_AGENT`
+    /// (`docs/forwarding.md`).
     Forward {
-        /// Open, read, write, or close.
+        /// Open, read, write, or close; or an ssh-agent offer or reply.
         op: crate::forward::ForwardOp,
     },
     /// Report that an agent in `terminal_id` is blocked on a question

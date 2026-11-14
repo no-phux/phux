@@ -6,8 +6,9 @@ use crate::wire::decode::Decoder;
 use crate::wire::encode::Encoder;
 use crate::wire::error::DecodeError;
 use crate::wire::frame::{
-    COMMAND_TAG_FORWARD_CLOSE, COMMAND_TAG_FORWARD_OPEN, COMMAND_TAG_FORWARD_READ,
-    COMMAND_TAG_FORWARD_WRITE, COMMAND_VALUE_TAG_FORWARD_CHUNK,
+    COMMAND_TAG_AGENT_OFFER, COMMAND_TAG_AGENT_REPLY, COMMAND_TAG_FORWARD_CLOSE,
+    COMMAND_TAG_FORWARD_OPEN, COMMAND_TAG_FORWARD_READ, COMMAND_TAG_FORWARD_WRITE,
+    COMMAND_VALUE_TAG_FORWARD_CHUNK,
 };
 
 pub(super) fn encode_op(op: &ForwardOp, enc: &mut Encoder<'_>) {
@@ -32,6 +33,12 @@ pub(super) fn encode_op(op: &ForwardOp, enc: &mut Encoder<'_>) {
             enc.write_u8(COMMAND_TAG_FORWARD_CLOSE);
             enc.write_u64_be(*id);
         }
+        ForwardOp::AgentOffer => enc.write_u8(COMMAND_TAG_AGENT_OFFER),
+        ForwardOp::AgentReply { id, message } => {
+            enc.write_u8(COMMAND_TAG_AGENT_REPLY);
+            enc.write_u64_be(*id);
+            enc.write_bytes(message);
+        }
     }
 }
 
@@ -53,6 +60,11 @@ pub(super) fn decode_op(tag: u8, dec: &mut Decoder<'_>) -> Result<Option<Forward
         },
         COMMAND_TAG_FORWARD_CLOSE => ForwardOp::Close {
             id: dec.read_u64_be()?,
+        },
+        COMMAND_TAG_AGENT_OFFER => ForwardOp::AgentOffer,
+        COMMAND_TAG_AGENT_REPLY => ForwardOp::AgentReply {
+            id: dec.read_u64_be()?,
+            message: read_chunk_bytes(dec)?,
         },
         _ => return Ok(None),
     };
@@ -76,7 +88,19 @@ pub(super) fn decode_chunk(dec: &mut Decoder<'_>) -> Result<ForwardChunk, Decode
     })
 }
 
-/// A chunk, refused before it is copied when over the bound.
+/// An `agent_request` event body: the request's id, then the ssh-agent
+/// message.
+pub(super) fn encode_agent_request(id: u64, message: &[u8], enc: &mut Encoder<'_>) {
+    enc.write_u64_be(id);
+    enc.write_bytes(message);
+}
+
+pub(super) fn decode_agent_request(dec: &mut Decoder<'_>) -> Result<(u64, Vec<u8>), DecodeError> {
+    Ok((dec.read_u64_be()?, read_chunk_bytes(dec)?))
+}
+
+/// A chunk or an ssh-agent message (the two bounds are equal), refused
+/// before it is copied when over the bound.
 fn read_chunk_bytes(dec: &mut Decoder<'_>) -> Result<Vec<u8>, DecodeError> {
     let bytes = dec.read_bytes()?;
     if bytes.len() > MAX_FORWARD_CHUNK_BYTES {

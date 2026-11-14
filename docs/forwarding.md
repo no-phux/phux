@@ -1,4 +1,8 @@
-# Port forwarding
+# Port and ssh-agent forwarding
+
+`phux forward` does two things `ssh` does, through the phux connection you
+already have: `-L` carries a TCP port, below, and `--agent` lends your
+[ssh-agent](#ssh-agent) to the panes on a server.
 
 `phux forward -L` reaches a TCP port on the machine a phux server runs on
 through the phux connection you already have, the way `ssh -L` does, with no
@@ -26,8 +30,8 @@ the local listener stays, and new connections are served once phux
 reconnects. A transfer cut off this way ends early rather than with an
 error, so check a length or a checksum where it matters.
 
-Only `-L` exists. There is no remote (`-R`) or dynamic (`-D`) forward, no
-UDP, and a forward is not remembered across runs. A forward reaches the
+For ports only `-L` exists. There is no remote (`-R`) or dynamic (`-D`)
+forward, no UDP, and a forward is not remembered across runs. A forward reaches the
 server you connect to; it is not relayed on to a
 [linked machine](./remote.md#linking-machines) behind it.
 
@@ -50,6 +54,7 @@ The server's [configuration](./reference/config.md) widens or removes that:
 [forward]
 tcp = true                      # false: not advertised, every command refused
 allow = ["db.internal:5432", "10.0.0.5:80", "[fd00::1]:22"]
+agent = false                   # true: broker ssh-agent requests, see below
 ```
 
 An `allow` entry is one `host:port` or `ip:port`, matched exactly against
@@ -135,4 +140,124 @@ second on a local socket, less over a slow link.
 
 The [wire types](../crates/phux-protocol/src/forward.rs) and the
 [server module](../crates/phux-server/src/runtime/forward/mod.rs) own the
+details.
+
+## ssh-agent
+
+```sh
+phux forward --agent --remote mini
+```
+
+While that runs, `ssh` and `git` in a pane on `mini` can use the keys in
+the ssh-agent on this machine, as with `ssh -A`. It runs in the foreground
+until Ctrl-C and needs `SSH_AUTH_SOCK` set here. Each signature a pane asks
+for is shown first:
+
+```text
+phux: let mini sign with SHA256:Xr0... (me@laptop)? [y/N]
+```
+
+Anything but `y` refuses it, and the pane's `ssh` sees an agent that
+declined. Listing your public keys is not asked about. With stdin not a
+terminal there is nobody to ask, so every signature is refused. `--yes`
+signs without asking; see the risk below before using it.
+
+Both sides must opt in. The server does nothing until its
+[configuration](./reference/config.md) says `[forward] agent = true`
+(restart it to apply), and a client serves its agent only while someone
+runs `phux forward --agent` against that server.
+
+### What it does to panes
+
+With `agent = true` the server listens on one Unix socket, owner-only
+(`0600`), beside its own socket (`phux.sock.ssh-agent` in the runtime
+directory), and starts every pane with `SSH_AUTH_SOCK` naming it. That has
+consequences worth knowing before turning it on:
+
+- `SSH_AUTH_SOCK` is fixed when a pane starts. A pane started before the
+  server ran with `agent = true` keeps what it had and never sees a
+  forwarded agent; start a new pane.
+- A pane started with it on gets the broker socket whether or not a client
+  is serving, **in place of** any agent the server's own environment
+  named. With nobody serving, `ssh-add -l` there fails at once. A pane
+  that wants the host's own agent sets `SSH_AUTH_SOCK` back itself.
+- The path does not change across a server restart or upgrade, so a pane
+  that outlives one keeps working once a client serves again. `phux
+  forward --agent` offers again by itself after it reconnects.
+
+With `agent = false`, the default, there is no socket, panes inherit
+`SSH_AUTH_SOCK` as they always did, the bit is not advertised, and the
+commands are refused.
+
+### What can and cannot cross
+
+The server speaks the ssh-agent protocol on that socket but holds no key.
+It passes on exactly two requests, listing keys
+(`SSH_AGENTC_REQUEST_IDENTITIES`, 11) and signing
+(`SSH_AGENTC_SIGN_REQUEST`, 13), and answers every other one with
+`SSH_AGENT_FAILURE` itself: `ssh-add KEY`, `ssh-add -d`, `ssh-add -D`,
+locking, and extensions never reach a client. The client checks the same
+two types again before touching its agent, refuses a signature with a key
+its agent does not hold, and never trusts the server to have filtered. A
+message over 256 KiB either way is refused.
+
+A request with no client serving fails at once. One a client does not
+answer within 60 s fails then, which is also how long you have at the
+prompt; a yes after that signs nothing. If the serving client disconnects,
+what was waiting on it fails at once.
+
+One client serves a server at a time: the newest offer wins. A client that
+was serving is not told it was replaced, still answers what it had already
+been sent, and is not fallen back to when the newer one leaves; run it
+again.
+
+### Security
+
+Offering needs `input` on the whole server (`input@global`), as `-L` does.
+
+Once a client serves, **any process in any pane on that server, run by
+anyone who can reach that server's user account, can ask your agent to
+sign** with any key it holds. The socket is owner-only, but that owner is
+the user the server runs as, and root there. That is the risk of `ssh -A`,
+unchanged, and the reason for the default: the per-signature question is
+the mitigation, and it is only as good as your reading of it. The question
+names the server and the key, not what is being signed or which pane
+asked, so say yes only when you expect a request from there at that
+moment. `--yes` removes the question and leaves you with exactly `ssh -A`:
+use it only against a machine where you would run that.
+
+Keys never leave your machine; a holder of the socket gets signatures only
+while the command runs. The [audit log](./audit.md) on the server records
+`forward.agent.offer` and, for each signature asked for,
+`forward.agent.sign` with the key's fingerprint and whether it was signed;
+never the data, and not listings.
+
+There is no GPG agent forwarding, no choosing which keys a server may use,
+and nothing is remembered across runs. Requests reach the server you
+connect to, not a [linked machine](./remote.md#linking-machines) behind it.
+
+### Protocol
+
+Behind `features_ext.FORWARD_AGENT` (`0x0400_0000`), advertised only with
+`agent = true`. Both commands are `INPUT` on the server and are answered on
+the dispatcher.
+
+| Message | Tag | Body | Answer |
+| --- | --- | --- | --- |
+| `AGENT_OFFER` | command `0x4f` | none | `Ok`; this connection serves until it ends |
+| `agent_request` | event `0x21` | `id` (u64), the ssh-agent request (at most 262144 bytes) | the client sends `AGENT_REPLY` |
+| `AGENT_REPLY` | command `0x50` | `id` (u64), the ssh-agent response (at most 262144 bytes) | `Ok`, or `NOT_FOUND` once the server stopped waiting |
+
+`agent_request` is sent only to the serving connection, unjournaled, with
+no resource and no stamp, like `document_input`. Messages are ssh-agent
+bodies without the four-byte length. The server hands a pane the reply
+only if it is the answer type the request calls for
+(`SSH_AGENT_IDENTITIES_ANSWER` or `SSH_AGENT_SIGN_RESPONSE`); anything
+else, a refusal included, reaches the pane as `SSH_AGENT_FAILURE`. Request
+ids are never reused within a server process. At most 64 requests wait at
+once and 64 connections to the socket are served at once. `UNSUPPORTED`
+answers either command with `agent = false`; an older server answers the
+unknown tags `Unsupported`, and an older client ignores the unknown event,
+which it is never sent. The
+[broker](../crates/phux-server/src/runtime/forward/agent.rs) owns the
 details.

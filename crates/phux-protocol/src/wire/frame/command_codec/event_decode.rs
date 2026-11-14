@@ -90,6 +90,16 @@ pub(in crate::wire) fn decode_agent_event(
                 |intent| AgentEvent::DocumentInput { intent },
             )
         }
+        // An over-long or truncated request stays opaque.
+        crate::wire::frame::EVENT_TAG_AGENT_REQUEST => {
+            super::forward::decode_agent_request(&mut body_dec).map_or_else(
+                |_| AgentEvent::Unknown {
+                    tag,
+                    body: body.to_vec(),
+                },
+                |(id, message)| AgentEvent::SshAgentRequest { id, message },
+            )
+        }
 
         // An organization event whose body is malformed or names an unknown
         // enum value is kept opaque rather than failing the frame.

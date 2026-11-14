@@ -120,6 +120,8 @@ host first. phux never removes or accepts a key for you.
 
 [`phux forward -L`](./forwarding.md) does what `ssh -L` does through the
 phux connection, with no SSH session to keep open.
+[`phux forward --agent`](./forwarding.md#ssh-agent) does what `ssh -A`
+does, asking before each signature.
 
 ## Attaching over SSH
 

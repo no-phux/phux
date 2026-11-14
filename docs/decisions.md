@@ -78,6 +78,13 @@ records explain history; [look them up deliberately](./architecture.md#historica
   `INPUT` on the server as for `GET_FILE`: a holder can already run
   commands there, so loopback-only limits mistakes, not a determined
   holder ([port forwarding](./forwarding.md)).
+- An ssh-agent is forwarded as brokered messages, not a byte stream: the
+  server parses each request from a pane and passes on only a key listing
+  or a signature, so nothing can add, remove, or lock keys. Both sides opt
+  in (`[forward] agent`, off by default, because turning it on replaces
+  `SSH_AUTH_SOCK` in new panes; `phux forward --agent` on the client), and
+  the client asks its user before each signature, since any process on
+  the server can ask ([ssh-agent forwarding](./forwarding.md#ssh-agent)).
 
 **Public operations**
 

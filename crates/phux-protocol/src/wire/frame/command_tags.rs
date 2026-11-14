@@ -93,6 +93,11 @@ enum CommandTag {
     PrivacyStatus = 0x4c,
     /// `ARRANGEMENT_LOCK`: lock or unlock one group of an arrangement.
     ArrangementLock = 0x4d,
+    // 0x4e left free for concurrent work.
+    /// `AGENT_OFFER`, `AGENT_REPLY`: ssh-agent forwarding
+    /// (`docs/forwarding.md#ssh-agent`).
+    AgentOffer = 0x4f,
+    AgentReply = 0x50,
 }
 
 // `Command` tags (SPEC §5.1). `0x00`, `0x04`, and `0x06` are reserved catalog
@@ -158,6 +163,10 @@ pub(crate) const COMMAND_TAG_FORWARD_READ: u8 = CommandTag::ForwardRead as u8;
 pub(crate) const COMMAND_TAG_FORWARD_WRITE: u8 = CommandTag::ForwardWrite as u8;
 /// Wire tag for [`Command::Forward`] carrying `ForwardOp::Close`.
 pub(crate) const COMMAND_TAG_FORWARD_CLOSE: u8 = CommandTag::ForwardClose as u8;
+/// Wire tag for [`Command::Forward`] carrying `ForwardOp::AgentOffer`.
+pub(crate) const COMMAND_TAG_AGENT_OFFER: u8 = CommandTag::AgentOffer as u8;
+/// Wire tag for [`Command::Forward`] carrying `ForwardOp::AgentReply`.
+pub(crate) const COMMAND_TAG_AGENT_REPLY: u8 = CommandTag::AgentReply as u8;
 /// Wire tag for [`Command::DescribeApi`].
 pub(crate) const COMMAND_TAG_DESCRIBE_API: u8 = CommandTag::DescribeApi as u8;
 /// Wire tag for [`Command::GetCreation`].

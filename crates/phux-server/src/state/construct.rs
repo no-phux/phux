@@ -29,6 +29,7 @@ impl ServerState {
             config: super::ServerConfig::default(),
             hub: HubState::new(),
             uplinks: crate::uplink::Uplinks::default(),
+            forward_agent: crate::runtime::forward::agent::Broker::default(),
             hook_dispatcher: None,
             plugin_startup: None,
             standing_mirrors: None,

@@ -3,7 +3,8 @@
 //!
 //! Each call is one correlated command whose answer resolves a
 //! [`ForwardCall`], and [`relay`] pumps one local connection through a
-//! forward. Forward ids are the server's and live as long as the
+//! forward. The ssh-agent calls (`AGENT_OFFER`, `AGENT_REPLY`, behind
+//! `features_ext.FORWARD_AGENT`) share the plumbing. Forward ids are the server's and live as long as the
 //! connection; after a reconnect every call on an earlier forward is
 //! answered `NOT_FOUND`.
 
@@ -26,8 +27,9 @@ pub enum ForwardError {
     /// Nothing was sent: the connection is not established.
     #[error("not connected")]
     NotConnected,
-    /// Nothing was sent: the server does not advertise `FORWARD_TCP`.
-    #[error("this server does not forward TCP ports")]
+    /// Nothing was sent: the server does not advertise the feature
+    /// (`FORWARD_TCP`, or `FORWARD_AGENT` for the ssh-agent calls).
+    #[error("this server does not serve that kind of forwarding")]
     Unsupported,
     /// Nothing was sent: the call exceeds the wire bounds.
     #[error("the call exceeds the FORWARD bounds")]
@@ -112,6 +114,30 @@ impl ControlPlane {
         self.send_forward(ForwardOp::Close { id }, done)
     }
 
+    /// Whether the connected server advertises `FORWARD_AGENT`.
+    #[must_use]
+    pub fn forward_agent_supported(&self) -> bool {
+        self.method_advertised("AGENT_OFFER")
+    }
+
+    /// Offer this machine's ssh-agent to the server's panes for as long as
+    /// this connection lasts. Each request then arrives as an event
+    /// [`agent_request`] reads, to be answered with [`Self::agent_reply`]. A reconnect is a new connection: offer again.
+    pub fn agent_offer(&mut self) -> Result<ForwardCall<()>, ForwardError> {
+        self.send_forward(ForwardOp::AgentOffer, done)
+    }
+
+    /// Answer ssh-agent request `id` with `message`, an ssh-agent response
+    /// without its length prefix. `NOT_FOUND` when the server stopped
+    /// waiting.
+    pub fn agent_reply(
+        &mut self,
+        id: u64,
+        message: Vec<u8>,
+    ) -> Result<ForwardCall<()>, ForwardError> {
+        self.send_forward(ForwardOp::AgentReply { id, message }, done)
+    }
+
     fn send_forward<T>(
         &mut self,
         op: ForwardOp,
@@ -120,7 +146,11 @@ impl ControlPlane {
         if !self.handshake_ready {
             return Err(ForwardError::NotConnected);
         }
-        if !self.forward_supported() {
+        let supported = match op {
+            ForwardOp::AgentOffer | ForwardOp::AgentReply { .. } => self.forward_agent_supported(),
+            _ => self.forward_supported(),
+        };
+        if !supported {
             return Err(ForwardError::Unsupported);
         }
         if !op_fits(&op) {
@@ -137,6 +167,23 @@ impl ControlPlane {
             command: Command::Forward { op },
         });
         Ok(ForwardCall { answer, decode })
+    }
+}
+
+/// The ssh-agent request `event` carries (its id and message), when it is
+/// one: what a connection that called [`ControlPlane::agent_offer`] is
+/// sent for each pane request.
+#[must_use]
+pub fn agent_request(event: super::Event) -> Option<(u64, Vec<u8>)> {
+    let super::Event::Frame(frame) = event else {
+        return None;
+    };
+    match *frame {
+        FrameKind::Event {
+            event: phux_protocol::wire::frame::AgentEvent::SshAgentRequest { id, message },
+            ..
+        } => Some((id, message)),
+        _ => None,
     }
 }
 
