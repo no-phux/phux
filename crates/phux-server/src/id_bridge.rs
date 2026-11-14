@@ -352,4 +352,49 @@ mod tests {
         bridge.set_next(u32::MAX - 1);
         assert_eq!(bridge.intern(ids[0]), WireSessionId(u32::MAX - 1));
     }
+
+    /// The domain's parent facts restate the protocol catalog's
+    /// `ParentRule`: a kind requires a parent exactly when its spawn must
+    /// name one, and only a root (today, only a Terminal, which runs a
+    /// process) can be a parent. A kind that breaks the second pairing must
+    /// say so here.
+    #[test]
+    fn domain_parent_rules_agree_with_the_protocol_catalog() {
+        use phux_core::resource::ResourceKind;
+        use phux_protocol::kinds::{KINDS, ParentRule, parent_rule};
+
+        const SERVED: [ResourceKind; 5] = [
+            ResourceKind::Terminal,
+            ResourceKind::AgentSession,
+            ResourceKind::AccessibilityTree,
+            ResourceKind::PixelSurface,
+            ResourceKind::Document,
+        ];
+        // Stops compiling when a kind is added, so `SERVED` is revisited.
+        const _: () = match ResourceKind::Terminal {
+            ResourceKind::Terminal
+            | ResourceKind::AgentSession
+            | ResourceKind::AccessibilityTree
+            | ResourceKind::PixelSurface
+            | ResourceKind::Document => {}
+        };
+
+        for kind in SERVED {
+            let rule = parent_rule(wire_kind(kind));
+            assert_eq!(
+                kind.requires_parent(),
+                rule == ParentRule::Required,
+                "{kind}: requires_parent disagrees with the catalog",
+            );
+            assert_eq!(
+                kind.can_parent(),
+                rule == ParentRule::Forbidden,
+                "{kind}: can_parent disagrees with the catalog",
+            );
+        }
+        for spec in &KINDS {
+            let kind = core_kind(spec.kind).expect("every catalog kind is served");
+            assert!(SERVED.contains(&kind), "{kind} is missing from SERVED");
+        }
+    }
 }
