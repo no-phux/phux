@@ -18,7 +18,7 @@ use libghostty_vt::effect::{
     SemanticPrompt, SemanticPromptKind,
 };
 
-use super::program_status::{Record, Update};
+use super::program_status::{Record, Update, state_name};
 
 /// One effect the engine reported, in stream order.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -117,25 +117,13 @@ fn program_status(report: ProgramStatus<'_>) -> Option<Update> {
     let text = |text: &[u8]| (!text.is_empty()).then(|| String::from_utf8_lossy(text).into_owned());
     Some(Update::Put(Record {
         id,
-        state: record_state(state)?,
+        state: state_name(state)?,
         kind: report.kind().ok().and_then(record_kind),
         progress: report.progress(),
         app: text(report.app()),
         title: text(report.title()),
         msg: text(report.message()),
     }))
-}
-
-/// The record's state name, or `None` for a state newer than this server.
-const fn record_state(state: ProgramStatusState) -> Option<&'static str> {
-    Some(match state {
-        ProgramStatusState::Idle => "idle",
-        ProgramStatusState::Working => "working",
-        ProgramStatusState::Done => "done",
-        ProgramStatusState::Blocked => "blocked",
-        ProgramStatusState::Error => "error",
-        _ => return None,
-    })
 }
 
 /// The record's kind name, or `None` for a kind newer than this server.
