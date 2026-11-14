@@ -449,10 +449,15 @@ pub fn ime_layer(
     let (fg, bg) = ink;
     let x = f32::from(frame.cursor.col) * metrics.cell_w;
     let y = f32::from(frame.cursor.row) * metrics.cell_h;
+    // An input method's anchor, never drawn: it jumps with the cursor. Under
+    // an inherited spring it glided after every key, and the window drew
+    // every display frame while anyone typed, which put each echo behind a
+    // full swapchain.
     let anchor = el()
         .key("ime-caret")
         .absolute(x, y)
         .size(metrics.cell_w, metrics.cell_h)
+        .motion(rune::Spring::NONE)
         .ime_cursor()
         .ime_option_as_alt(option_as_meta);
     let Some(composed) = preedit.filter(|t| !t.is_empty()) else {
