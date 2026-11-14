@@ -241,6 +241,16 @@ impl Io {
         }
     }
 
+    /// QUIC's own smoothed round-trip estimate; `None` on the other lanes.
+    pub(crate) fn round_trip(&self) -> Option<std::time::Duration> {
+        match self {
+            Self::Stream {
+                quic: Some(link), ..
+            } => Some(link.connection.rtt()),
+            _ => None,
+        }
+    }
+
     /// The QUIC connection per-Terminal streams may open on, when this lane
     /// can carry them (see [`QuicLink`]).
     pub(crate) fn terminal_stream_connection(&self) -> Option<quinn::Connection> {

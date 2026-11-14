@@ -474,7 +474,7 @@ impl<'a> Pump<'a> {
         inbound: Result<Option<Vec<Bytes>>, LinkError>,
     ) -> Result<(), ConnectionEnd> {
         // Any inbound traffic, a pong included, proves liveness.
-        self.probe_deadline = None;
+        self.answer_probe();
         self.note_inbound();
         let mut frames = inbound
             .map_err(|error| self.dropped(&error))?

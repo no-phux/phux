@@ -289,3 +289,39 @@ fn only_decodable_pings_are_peeled() {
     assert!(is_ping_frame(&ping));
     assert!(!is_ping_frame(&[]));
 }
+
+/// An answered probe publishes its round trip: off QUIC, the time since the
+/// probe went out. A new connection forgets the last one.
+#[tokio::test(start_paused = true)]
+async fn an_answered_probe_publishes_its_round_trip() {
+    use tokio::io::AsyncWriteExt as _;
+    let mut fixture = WriteFixture::new(64 * 1024);
+    let wake: Wake = Arc::new(|| {});
+    let mut pump = Pump::new(
+        "round-trip",
+        &mut fixture.io,
+        ConnectOptions::default(),
+        &fixture.shared,
+        &mut fixture.signals,
+        &wake,
+    );
+    let running = pump.run();
+    tokio::pin!(running);
+    assert!(running.as_mut().now_or_never().is_none());
+    fixture.rebind.send_modify(|n| *n += 1);
+    assert!(running.as_mut().now_or_never().is_none());
+    assert_eq!(lock(&fixture.shared).round_trip(), None);
+
+    tokio::time::advance(Duration::from_millis(40)).await;
+    let mut peer = fixture.peer;
+    peer.write_all(&encode(&FrameKind::Pong { nonce: 1 }))
+        .await
+        .unwrap();
+    assert!(running.as_mut().now_or_never().is_none());
+    assert_eq!(
+        lock(&fixture.shared).round_trip(),
+        Some(Duration::from_millis(40))
+    );
+    lock(&fixture.shared).connection_opened();
+    assert_eq!(lock(&fixture.shared).round_trip(), None);
+}

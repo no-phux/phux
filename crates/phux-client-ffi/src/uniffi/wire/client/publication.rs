@@ -35,3 +35,14 @@ impl RemoteClient {
         }
     }
 }
+
+#[uniffi::export]
+impl RemoteClient {
+    /// The latest measured round trip to the server in microseconds, or
+    /// `None` before a liveness probe is answered on this connection.
+    /// `nudge` sends a probe, so a health view refreshes it by nudging.
+    pub fn round_trip_micros(&self) -> Option<u32> {
+        let round_trip = self.runtime_client()?.round_trip()?;
+        Some(u32::try_from(round_trip.as_micros()).unwrap_or(u32::MAX))
+    }
+}

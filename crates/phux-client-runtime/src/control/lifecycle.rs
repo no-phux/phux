@@ -34,6 +34,7 @@ impl ControlPlane {
             detach_requested: false,
             attach_ended: false,
             error: None,
+            round_trip: None,
             server: None,
             engine: None,
             engine_config: None,
@@ -138,6 +139,17 @@ impl ControlPlane {
     #[must_use]
     pub fn last_error(&self) -> Option<&str> {
         self.error.as_deref()
+    }
+
+    /// The latest measured round trip to the server on this connection.
+    #[must_use]
+    pub const fn round_trip(&self) -> Option<std::time::Duration> {
+        self.round_trip
+    }
+
+    /// The driver measured a round trip.
+    pub const fn note_round_trip(&mut self, round_trip: std::time::Duration) {
+        self.round_trip = Some(round_trip);
     }
 
     /// What `HELLO_OK` negotiated on the latest connection.
@@ -366,6 +378,7 @@ impl ControlPlane {
     /// `HELLO`. Frames still queued from the previous connection are
     /// discarded, as they were built against per-connection state.
     pub fn connection_opened(&mut self) {
+        self.round_trip = None;
         self.park_agent_delivery();
         if self.options.session_recovery == SessionRecovery::CallerValidated {
             self.attach_target = None;
