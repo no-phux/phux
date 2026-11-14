@@ -77,9 +77,8 @@ export function detect(eventName: string, eventPath: string | undefined, cwd = R
     : { kind: "paths", paths };
 }
 
-/** Classify the current event, logging why it skips or widens routing. */
-export function classifyEvent(eventName: string, eventPath: string | undefined): Classification {
-  const detection = detect(eventName, eventPath);
+/** Classify one detection, logging why it skips or widens routing. */
+export function classifyDetection(detection: Detection): Classification {
   if (detection.kind === "paths") return new Classifier().classify(detection.paths);
   if (detection.kind === "full") {
     console.error(`Full validation: ${detection.reason}`);
@@ -87,4 +86,9 @@ export function classifyEvent(eventName: string, eventPath: string | undefined):
   }
   console.error("Release metadata only; compile lanes skipped");
   return NO_LANES;
+}
+
+/** Classify the current event, logging why it skips or widens routing. */
+export function classifyEvent(eventName: string, eventPath: string | undefined): Classification {
+  return classifyDetection(detect(eventName, eventPath));
 }

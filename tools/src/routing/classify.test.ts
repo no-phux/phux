@@ -177,7 +177,8 @@ test("the unit plan narrows to the integration test a diff touches", () => {
 
 test("a plugin-index-only diff lints and leaves the unit pool, e2e, and ffi off", () => {
   const classified = classifier.classify(["scripts/plugin-index/src/lib.rs"]);
-  const decided = plan(classified, "pull_request");
+  const paths = ["scripts/plugin-index/src/lib.rs"];
+  const decided = plan(classified, "pull_request", { scope: { kind: "diff", paths } });
   expect(decided.lanes.has("guards")).toBe(true);
   expect(decided.lanes.has("lint")).toBe(true);
   expect(decided.lanes.has("tests")).toBe(false);
