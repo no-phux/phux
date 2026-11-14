@@ -308,7 +308,7 @@ hit unrelated clients or servers. Start the new one with
 panes; the new server brings the sessions back without them, and
 `phux restore` relaunches them.
 
-If you installed with Homebrew, Nix, or `cargo install`, `phux update` changes nothing and prints the command for that package manager instead.
+If you installed with Homebrew, Nix, `cargo install`, or pacman (`phux-bin` on Arch and Omarchy), `phux update` changes nothing and prints the command for that package manager instead.
 
 ### Channels
 

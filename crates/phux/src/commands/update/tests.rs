@@ -301,6 +301,7 @@ fn refusals_cover_every_non_mutable_source_and_carry_a_command() {
         (InstallSource::Nix, Refusal::ImmutableStore),
         (InstallSource::Homebrew, Refusal::PackageManaged),
         (InstallSource::Cargo, Refusal::PackageManaged),
+        (InstallSource::Pacman, Refusal::PackageManaged),
         (InstallSource::Unknown, Refusal::UnknownSource),
     ] {
         let refusal = Refusal::of(source).unwrap();
