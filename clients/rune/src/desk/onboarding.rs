@@ -26,6 +26,7 @@ use crate::onboarding::{
 use crate::system_settings;
 
 mod dock;
+mod start;
 
 const DONE_KEY: &str = "onboarding_done";
 const STEP_KEY: &str = "onboarding_step";
@@ -100,6 +101,8 @@ pub struct Onboarding {
     pub bundle: Option<PathBuf>,
     pub migrate: Migrate,
     pub copied: bool,
+    /// The agent the last step is starting, once its skill is in place.
+    pub starting: Option<String>,
     /// Run the server as a systemd user service when onboarding finishes
     /// (Linux). On unless switched off.
     pub keep_alive: bool,
@@ -127,6 +130,7 @@ impl Default for Onboarding {
             bundle: None,
             migrate: Migrate::Choosing,
             copied: false,
+            starting: None,
             keep_alive: true,
             dock: dock::Dock::default(),
             asked_at: f64::NEG_INFINITY,
@@ -232,28 +236,6 @@ impl Desk {
         self.onboarding.grant_sheet = false;
         let _ = self.prefs.set(DONE_KEY, &true);
         let _ = self.prefs.set(STEP_KEY, Step::Welcome.id());
-    }
-
-    /// The last step's button: a normal session, made if there is none.
-    pub fn start_using(&mut self) {
-        self.finish_onboarding();
-        // Onboarding just taught the keys, so no "New here?" tip after it.
-        let _ = self.prefs.set(super::notice::TOUR_OFFERED, &true);
-        if words::KEEP_ALIVE && self.onboarding.keep_alive {
-            self.ask(&["service", "install", "--adopt"], SLOW, Done::Service);
-        }
-        let Some(topology) = &self.topology else {
-            return;
-        };
-        if !topology.sessions.is_empty() {
-            return;
-        }
-        let taken: Vec<String> = topology.sessions.iter().map(|s| s.name.clone()).collect();
-        let folder = std::env::var_os("HOME")
-            .map(PathBuf::from)
-            .or_else(|| std::env::current_dir().ok())
-            .unwrap_or_default();
-        self.create_session(words::session_name(&folder, &taken));
     }
 
     pub fn toggle_keep_alive(&mut self) {
@@ -458,6 +440,7 @@ impl Desk {
                         Probe::Failed(error) => self.say(NoticeKind::Error, error),
                         probe => self.onboarding.skills = probe,
                     }
+                    self.launch_agent();
                 }
                 Done::Shimmed(result) => self.onboarding.shims = Some(Probe::from(result)),
                 Done::Permissions(result) => {

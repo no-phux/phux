@@ -71,7 +71,10 @@ session (or `--session NAME`). It never creates a session on its own.
   in, and polls until it is granted); **Bring your setup**, shown only with
   Claude Code, Codex or OpenCode installed (`phux migrate --json --agent ID`
   opens the agent's pane beside it; key bindings move, themes and fonts
-  don't); and **All set**, with three keys from the keymap. Enter
+  don't); and **All set**, which starts an agent it found (**Start Claude
+  Code here**, after `phux skill setup`) in a session of its own through
+  your login shell, or offers the keys tour when none is installed, with
+  three keys from the keymap. Enter
   continues; Escape goes back. A quit resumes at the same step. An older
   phux reads **Update phux to enable this**. **Get Started** in the palette
   or Settings reopens it; runs aimed at a server never open it on their own.

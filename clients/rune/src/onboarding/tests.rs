@@ -195,3 +195,26 @@ fn only_a_computer_with_permissions_promises_them() {
         }
     }
 }
+
+#[test]
+fn the_last_step_starts_agents_found_here_through_the_login_shell() {
+    let skill = |agent: &str, detected| AgentSkill {
+        agent: agent.to_owned(),
+        detected,
+        ..AgentSkill::default()
+    };
+    let found = [
+        skill("pi", true),
+        skill("codex", false),
+        skill("claude", true),
+    ];
+    assert_eq!(starters(&found), ["claude", "pi"], "tile order, found only");
+    let argv = agent_argv("echo started");
+    let out = std::process::Command::new(&argv[0])
+        .args(&argv[1..])
+        .env("SHELL", "/bin/sh")
+        .stdin(std::process::Stdio::null())
+        .output()
+        .unwrap();
+    assert!(String::from_utf8_lossy(&out.stdout).contains("started"));
+}

@@ -116,6 +116,28 @@ pub const KEEP_ALIVE: bool = cfg!(target_os = "linux");
 /// The agents the migration can hand the work to, in tile order.
 pub const MIGRATORS: [&str; 3] = ["claude", "codex", "opencode"];
 
+/// The agents the last step can start, in tile order.
+pub const STARTERS: [&str; 4] = ["claude", "codex", "opencode", "pi"];
+
+/// The agents found on this computer that the last step can start.
+pub fn starters(skills: &[AgentSkill]) -> Vec<&'static str> {
+    found(&STARTERS, skills)
+}
+
+fn found(ids: &[&'static str], skills: &[AgentSkill]) -> Vec<&'static str> {
+    ids.iter()
+        .copied()
+        .filter(|id| skills.iter().any(|s| s.detected && s.agent == *id))
+        .collect()
+}
+
+/// A pane's argv running `agent` the way a terminal would: through the
+/// user's login shell, so it finds the agent and the keys set up there.
+pub fn agent_argv(agent: &str) -> Vec<String> {
+    let script = r#"exec "${SHELL:-/bin/sh}" -lic "$0""#;
+    ["/bin/sh", "-c", script, agent].map(str::to_owned).to_vec()
+}
+
 /// An agent's name as people say it.
 pub fn agent_name(id: &str) -> String {
     match id {
@@ -239,10 +261,7 @@ pub fn parse_shims(bytes: &[u8]) -> Result<Vec<String>, String> {
 
 /// The agents found on this computer that can bring a setup over.
 pub fn migrators(skills: &[AgentSkill]) -> Vec<&'static str> {
-    MIGRATORS
-        .into_iter()
-        .filter(|id| skills.iter().any(|s| s.detected && s.agent == *id))
-        .collect()
+    found(&MIGRATORS, skills)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
