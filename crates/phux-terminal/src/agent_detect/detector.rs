@@ -26,7 +26,7 @@ impl AgentDetector {
             self.pending_hook = Some((state, now));
             return None;
         }
-        let Some(kind) = self.identified.clone() else {
+        let Some(kind) = self.identified_kind().map(str::to_owned) else {
             self.pending_hook = Some((state, now));
             return None;
         };
@@ -36,7 +36,6 @@ impl AgentDetector {
             state,
         };
         self.pending_idle = None;
-        self.cadence = Cadence::Identified;
         self.current = Some(state);
         self.published_source = phux_agent_session::state::EvidenceSource::Hook;
         if self.published.as_ref() == Some(&report) {
@@ -63,7 +62,7 @@ impl AgentDetector {
             return None;
         };
         self.published_source = phux_agent_session::state::EvidenceSource::Stream;
-        let Some(kind) = self.identified.clone() else {
+        let Some(kind) = self.identified_kind().map(str::to_owned) else {
             self.pending_hook = Some((state, now));
             return None;
         };
@@ -73,7 +72,6 @@ impl AgentDetector {
             state,
         };
         self.pending_idle = None;
-        self.cadence = Cadence::Identified;
         self.current = Some(state);
         if self.published.as_ref() == Some(&report) {
             return None;
@@ -87,12 +85,10 @@ impl AgentDetector {
         Self {
             rules,
             identified: None,
-            identified_occupant: None,
             last_pgid: None,
             vacant_streak: 0,
             next_identify: now,
             started: now,
-            identified_at: None,
             published: None,
             pending_idle: None,
             current: None,
@@ -103,7 +99,6 @@ impl AgentDetector {
             live_session: None,
             live_session_held: false,
             stream_state: None,
-            cadence: Cadence::Unidentified,
             identity: Box::new(KernelIdentity),
         }
     }
@@ -142,9 +137,26 @@ impl AgentDetector {
         }
     }
 
+    /// The agent kind currently running, if any.
+    pub(super) fn identified_kind(&self) -> Option<&str> {
+        self.identified.as_ref().map(|agent| agent.kind.as_str())
+    }
+
+    /// The tick cadence the current state calls for: slow until an agent is
+    /// identified, fast while a `working -> idle` hold is in flight.
+    pub(super) const fn cadence(&self) -> Cadence {
+        if self.identified.is_none() {
+            Cadence::Unidentified
+        } else if self.pending_idle.is_some() {
+            Cadence::Confirming
+        } else {
+            Cadence::Identified
+        }
+    }
+
     /// The interval the actor should re-arm its detector timer at.
     pub(crate) const fn interval(&self) -> Duration {
-        match self.cadence {
+        match self.cadence() {
             Cadence::Unidentified => TICK_UNIDENTIFIED,
             Cadence::Identified => TICK_IDENTIFIED,
             Cadence::Confirming => TICK_CONFIRMING,
@@ -161,7 +173,7 @@ impl AgentDetector {
         if self.identified.is_none() {
             return false;
         }
-        if self.cadence == Cadence::Confirming {
+        if self.cadence() == Cadence::Confirming {
             return true;
         }
         terminal_dirty || self.current.is_none()

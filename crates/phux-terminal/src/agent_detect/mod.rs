@@ -126,7 +126,8 @@ pub(crate) enum DetectOutcome {
     Retract,
 }
 
-/// The detector's current tick cadence.
+/// The detector's tick cadence, derived from its state by
+/// [`AgentDetector::cadence`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Cadence {
     /// No agent identified yet.
@@ -135,6 +136,19 @@ enum Cadence {
     Identified,
     /// A `working -> idle` transition is being confirmed.
     Confirming,
+}
+
+/// The agent currently occupying the pane.
+#[derive(Debug, Clone)]
+struct Identified {
+    /// The agent kind.
+    kind: String,
+    /// The occupant as `(pgid, leader start time)`: a restart in the same
+    /// pane is a different agent, and re-anchors [`STARTUP_GRACE`]. `None`
+    /// until a process observation supplies it.
+    occupant: Option<identify::Occupant>,
+    /// When this agent was identified; anchors [`STARTUP_GRACE`].
+    at: Instant,
 }
 
 /// An in-flight `working -> idle` hold.
@@ -149,11 +163,8 @@ struct PendingIdle {
 /// One pane's detector, driven by the actor's timer (never by PTY bytes).
 pub(crate) struct AgentDetector {
     rules: Rc<RuleSet>,
-    /// The agent kind currently running, if any.
-    identified: Option<String>,
-    /// The identified occupant as `(pgid, leader start time)`: a restart in
-    /// the same pane is a different agent, and re-anchors [`STARTUP_GRACE`].
-    identified_occupant: Option<identify::Occupant>,
+    /// The agent currently running, if any.
+    identified: Option<Identified>,
     /// The last foreground pgid any successful resolution reported. Between
     /// full rechecks a cheap `tcgetpgrp` is compared against it, and only a
     /// mismatch pays for the argv read. A recycled pgid looks identical, so
@@ -166,8 +177,6 @@ pub(crate) struct AgentDetector {
     next_identify: Instant,
     /// Anchors [`IDENTIFY_ACQUIRE_WINDOW`].
     started: Instant,
-    /// When the current agent was identified; anchors [`STARTUP_GRACE`].
-    identified_at: Option<Instant>,
     /// The last tuple we published (the edge filter). Stale once something
     /// else writes the store; see [`Self::invalidate_published`].
     published: Option<AgentReport>,
@@ -194,7 +203,6 @@ pub(crate) struct AgentDetector {
     /// nothing or retracted. Decides whether a screen `idle` may publish
     /// (see [`Self::screen_may_publish`]).
     stream_state: Option<DetectedState>,
-    cadence: Cadence,
     /// Who answers for the foreground group.
     identity: Box<dyn IdentitySource>,
 }
@@ -203,13 +211,12 @@ impl std::fmt::Debug for AgentDetector {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("AgentDetector")
             .field("identified", &self.identified)
-            .field("identified_occupant", &self.identified_occupant)
             .field("last_pgid", &self.last_pgid)
             .field("vacant_streak", &self.vacant_streak)
             .field("published", &self.published)
             .field("current", &self.current)
             .field("live_session_held", &self.live_session_held)
-            .field("cadence", &self.cadence)
+            .field("cadence", &self.cadence())
             .finish_non_exhaustive()
     }
 }

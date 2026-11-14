@@ -117,7 +117,10 @@ fn a_recycled_pgid_is_invisible_to_the_cheap_probe_but_still_caught_on_recheck()
                  recycle, and must not guess",
         );
         assert_eq!(
-            h.detector.identified_occupant,
+            h.detector
+                .identified
+                .as_ref()
+                .and_then(|agent| agent.occupant),
             Some(Occupant::new(100, Some(700))),
             "tick {i}: still believed to be the ORIGINAL process",
         );
@@ -142,7 +145,7 @@ fn an_unresolvable_cheap_probe_holds_rather_than_guessing() {
         assert_eq!(h.tick("WORKING"), DetectOutcome::Quiet);
     }
     assert_eq!(
-        h.detector.identified.as_deref(),
+        h.detector.identified_kind(),
         Some("t"),
         "still believed present"
     );

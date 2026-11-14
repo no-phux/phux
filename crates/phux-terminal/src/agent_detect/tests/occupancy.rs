@@ -61,7 +61,7 @@ fn an_unresolved_occupancy_never_retracts() {
         );
     }
     assert_eq!(
-        h.detector.identified.as_deref(),
+        h.detector.identified_kind(),
         Some("t"),
         "the pane is still believed to host the agent it hosted",
     );
