@@ -49,6 +49,11 @@ phux runtime-info --json
    completion requires an observed transition, not a quiet pane.
 6. **Verify.** Snapshot or list state again. A quiet pane or an ended watcher is
    not proof of completion.
+7. **Leave no clutter.** A pane you spawn appears in the human's session, so
+   spawn one only for work they should see or that outlives your call
+   (servers, watchers, long builds, interactive programs). Run quick
+   commands with your own shell tool. Once you have read a successful
+   retained run, `phux kill --yes @N` it; leave a failed one for the human.
 
 Exit 124 means an observation timed out. `phux run` reserves 125 for its own
 timeout because it otherwise mirrors the child process exit code. With
@@ -67,7 +72,9 @@ a command because its response was lost.
   it with `--yes` (with no terminal to ask, phux refuses and exits 2), then
   verify. Killing a session terminates every member, removes each, and
   deletes the session, printing one result per member; work added meanwhile
-  survives.
+  survives. The one exception: a pane you spawned whose process already
+  exited successfully, and whose result you have read, you may close without
+  asking.
 - A named session (`phux new NAME`) is persistent: it stays, empty, after its
   last process exits, until `phux rm` or `phux kill` deletes it. `phux
   relaunch` restarts a stopped pane; after a server restart, `phux restore`
@@ -175,6 +182,9 @@ guessing from screen idleness:
 phux spawn --json --retain=300 -- sh -lc 'make check'
 # Use the returned terminal_id, not the human's focused pane:
 phux resource wait --json --timeout 60 @7
+# Exited 0: read what you need, then close it. Keep a failure on screen.
+phux snapshot --json --unwrap @7
+phux kill --yes @7
 ```
 
 `exited` carries the process result; `gone` is not success. Preserve a returned

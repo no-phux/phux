@@ -32,7 +32,9 @@ MCP's `phux_ls`, or native `retain_seconds` with MCP's `retain_secs`.
    `phux_agent_wait`, or `phux_resource_wait` for a process's exit (spawn it
    with `retain_secs` so a finished run keeps its status).
 5. Re-read state. A quiet pane, successful write, or ended watcher is not proof
-   of completion.
+   of completion. Close a spawned pane with `phux_kill` (`confirm: true`)
+   once you have read a successful run; leave a failed one for the human.
+   Quick commands belong in your own shell tool, not a spawned pane.
 6. Diagnose unexpected state with the read-only `phux_status` and `phux_doctor`
    tools before guessing.
 

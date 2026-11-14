@@ -60,6 +60,11 @@ facts; `gone` is not success; `timed_out` means observation ended. Preserve the
 returned cursor and pass it as `after` when resuming observation. Retention is
 not a durable job database.
 
+A spawned pane appears in the human's session. Spawn only work they should
+see or that outlives your call, and run quick commands with your own shell
+tool. Where the harness offers process control, close a successful job's pane
+once you have read it, and leave a failed one for the human.
+
 ## Agent turns and recovery
 
 `phux_agent_prompt` combines submission and edge observation on one connection.
