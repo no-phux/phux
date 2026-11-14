@@ -19,8 +19,14 @@ mod portal;
 pub use builtin::THEMES;
 use builtin::{LATTE, MOCHA};
 pub use ghostty::ghostty;
-pub use omarchy::{omarchy, watch as watch_omarchy};
-pub use portal::{system_dark, watch as watch_portal};
+pub use omarchy::omarchy;
+pub use portal::system_dark;
+
+/// Wake Rune when Omarchy's theme or the desktop's light or dark changes.
+pub fn watch(waker: rune::Waker) {
+    omarchy::watch(waker.clone());
+    portal::watch(waker);
+}
 
 /// What a readable role must clear against the surfaces it sits on: WCAG AA
 /// for body text.
