@@ -16,6 +16,7 @@ explains itself at the top.
 | `phux-protocol` on crates.io                                 | `vX.Y.Z`                                     | `just publish-protocol`, by hand         |
 | Phux Rune (macOS arm64, Linux x86_64, Linux arm64) and its feed `rune.json` in `channels` | `rune-vX.Y.Z-alpha.N`, `rune-vX.Y.Z` | `rune-client.yml` → `rune-build.yml` |
 | `next` prerelease                                            | moving `next` tag                            | `next.yml`                               |
+| `.deb`, `.rpm`; apt, dnf and AUR ([runbook](./runbooks/linux-packages.md)) | attached to `vX.Y.Z`; `repodata` | `release.yml` → `packages.yml` |
 | CycloneDX SBOMs `phux-vX.Y.Z.cdx.json`, `phux-mcp-vX.Y.Z.cdx.json` | attached to `vX.Y.Z`                    | `release.yml` (`sbom` job)               |
 | channel manifests `stable.json`, `next.json`, `lts.json`, each with a `.minisig` | the `channels` release   | `bun tools/main.ts release-manifest`     |
 
@@ -26,9 +27,8 @@ Only CLI releases are GitHub's "Latest". The Homebrew tap discovers stable
 checksums, and renders the formula. GitHub runs that schedule far less often
 under load (every 4-8 hours in November 2026), so `release.yml`'s announce
 job also sends the tap a best-effort `phux-release` dispatch through the
-release app. The tap re-resolves the release itself and ignores the payload;
-if the dispatch fails, the schedule still catches up, so neither credentials
-nor the dispatch are required for correctness. The CLI formula body comes from
+release app. A failed dispatch only costs latency: the tap re-resolves the
+release itself. The CLI formula body comes from
 [`scripts/gen-formula.sh`](../scripts/gen-formula.sh); the tap copies that
 script and re-renders. The formula license is Apache-2.0, matching `LICENSE`
 and the workspace `Cargo.toml`. `release.yml` does not push the tap.

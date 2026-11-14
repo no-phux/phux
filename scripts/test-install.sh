@@ -18,6 +18,7 @@ export HOME="$TMP/home" SHELL=/bin/zsh
 export MISE_TRUSTED_CONFIG_PATHS="$ROOT"
 unset ZDOTDIR XDG_CONFIG_HOME PHUX_NO_MODIFY_PATH PHUX_CHANNEL PHUX_INSTALL_DIR
 export PHUX_NO_SERVICE=1 # lib/test-install-service.sh opts back in
+export PHUX_NO_REPO=1    # lib/test-install-repo.sh opts back in
 mkdir -p "$HOME" "$TMP/bin" "$TMP/served"
 export SERVED="$TMP/served" CALLS="$TMP/calls" METER_CALLS="$TMP/meter-calls"
 
@@ -344,5 +345,6 @@ if PATH="$TMP/bin:/usr/bin:/bin" "$SH" "$ROOT/scripts/install-desktop.sh" 2>"$TM
 grep -Fq 'could not download' "$TMP/err" || fail "shim failure message"
 
 source "$ROOT/scripts/lib/test-install-service.sh"
+source "$ROOT/scripts/lib/test-install-repo.sh"
 
 echo "installer tests passed"

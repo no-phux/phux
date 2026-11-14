@@ -6,6 +6,7 @@
 //! the link into the Cellar separates them).
 
 use std::path::{Component, Path, PathBuf};
+use std::process::{Command, Stdio};
 
 /// The default Nix store prefix, overridable through `NIX_STORE`.
 const DEFAULT_NIX_STORE: &str = "/nix/store";
@@ -37,6 +38,10 @@ pub(crate) enum InstallSource {
     Nix,
     /// `/usr/bin` on an Arch-family host: pacman owns the files.
     Pacman,
+    /// A `.deb` from phux's apt repository (docs/install.md).
+    Apt,
+    /// An `.rpm` from phux's dnf repository.
+    Dnf,
     /// Anything else. Refused rather than overwritten.
     Unknown,
 }
@@ -50,6 +55,8 @@ impl InstallSource {
             Self::Cargo => "cargo",
             Self::Nix => "nix",
             Self::Pacman => "pacman",
+            Self::Apt => "apt",
+            Self::Dnf => "dnf",
             Self::Unknown => "unknown",
         }
     }
@@ -100,6 +107,10 @@ impl Install {
             InstallSource::DirectRelease | InstallSource::Unknown => None,
             InstallSource::Homebrew => Some("brew upgrade no-phux/tap/phux".to_owned()),
             InstallSource::Pacman => Some("sudo pacman -Syu".to_owned()),
+            InstallSource::Apt => {
+                Some("sudo apt update && sudo apt install --only-upgrade phux".to_owned())
+            }
+            InstallSource::Dnf => Some("sudo dnf upgrade phux".to_owned()),
             InstallSource::Cargo => Some(
                 "from a phux checkout:\n  \
                  nix develop -c cargo install --locked --path crates/phux\n  \
@@ -141,6 +152,8 @@ pub(crate) struct Probe {
     pub(crate) nixos: bool,
     /// Whether pacman's local package database exists.
     pub(crate) pacman: bool,
+    /// Apt or Dnf when dpkg or rpm owns the executable.
+    pub(crate) system_package: Option<InstallSource>,
 }
 
 impl Probe {
@@ -152,7 +165,6 @@ impl Probe {
         // An unresolvable path stays as is and falls through to `Unknown`.
         let executable = std::fs::canonicalize(&raw).unwrap_or(raw);
         Ok(Self {
-            executable,
             home: std::env::var_os("HOME").map(PathBuf::from),
             cargo_home: std::env::var_os("CARGO_HOME").map(PathBuf::from),
             install_dir: std::env::var_os("PHUX_INSTALL_DIR").map(PathBuf::from),
@@ -160,8 +172,34 @@ impl Probe {
             homebrew_prefix: std::env::var_os("HOMEBREW_PREFIX").map(PathBuf::from),
             nixos: Path::new(NIXOS_MARKER).exists(),
             pacman: Path::new(PACMAN_DB).exists(),
+            system_package: system_owner(&executable),
+            executable,
         })
     }
+}
+
+/// Apt or Dnf when dpkg or rpm owns `executable`. Only `/usr/bin` is asked
+/// about: nothing but a package puts phux there.
+fn system_owner(executable: &Path) -> Option<InstallSource> {
+    if !is_child_of(executable, Some(Path::new("/usr/bin"))) {
+        return None;
+    }
+    [
+        ("dpkg-query", "-S", InstallSource::Apt),
+        ("rpm", "-qf", InstallSource::Dnf),
+    ]
+    .into_iter()
+    .find(|(tool, flag, _)| {
+        Command::new(tool)
+            .arg(flag)
+            .arg(executable)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .is_ok_and(|status| status.success())
+    })
+    .map(|(_, _, source)| source)
 }
 
 /// Classify `probe`'s executable. Pure; see the module docs for the ordering
@@ -232,6 +270,10 @@ fn classify(probe: &Probe) -> InstallSource {
     // stays `Unknown` until one ships a phux package.
     if probe.pacman && is_child_of(exe, Some(Path::new("/usr/bin"))) {
         return InstallSource::Pacman;
+    }
+    // 6. A package from phux's apt or dnf repository.
+    if let Some(source) = probe.system_package {
+        return source;
     }
 
     InstallSource::Unknown
@@ -393,6 +435,22 @@ mod tests {
     }
 
     #[test]
+    fn an_apt_or_dnf_package_names_its_package_manager() {
+        for (source, command) in [
+            (InstallSource::Apt, "sudo apt install --only-upgrade phux"),
+            (InstallSource::Dnf, "sudo dnf upgrade phux"),
+        ] {
+            let mut probe = probe("/usr/bin/phux");
+            probe.system_package = Some(source);
+            let install = detect(&probe);
+            assert_eq!(install.source, source);
+            assert!(!install.source.is_mutable());
+            let native = install.native_command().unwrap_or_default();
+            assert!(native.contains(command), "{native}");
+        }
+    }
+
+    #[test]
     fn usr_bin_on_an_arch_host_is_pacman_managed() {
         let mut probe = probe("/usr/bin/phux");
         probe.pacman = true;
@@ -443,6 +501,8 @@ mod tests {
         assert_eq!(InstallSource::Cargo.as_str(), "cargo");
         assert_eq!(InstallSource::Nix.as_str(), "nix");
         assert_eq!(InstallSource::Pacman.as_str(), "pacman");
+        assert_eq!(InstallSource::Apt.as_str(), "apt");
+        assert_eq!(InstallSource::Dnf.as_str(), "dnf");
         assert_eq!(InstallSource::Unknown.as_str(), "unknown");
     }
 }

@@ -47,6 +47,10 @@ only when none is found.
   --install-dir <dir>             Where phux, phux-mcp and the phux-rune launcher go
                                   (default: $PHUX_INSTALL_DIR, or ~/.local/bin).
   --no-modify-path                Leave the shell profile alone (also $PHUX_NO_MODIFY_PATH=1).
+  --no-repo                       On Debian, Ubuntu, Fedora and RHEL, install the release
+                                  archive instead of adding phux's apt or dnf repository
+                                  (also $PHUX_NO_REPO=1). The repository is the default for
+                                  the stable channel, so phux updates with the system.
   --service, --no-service         On Linux, run (or skip) `phux service install` without
                                   asking: a systemd user unit plus linger, so sessions
                                   survive logout and reboot. Default: ask on a terminal,
@@ -347,6 +351,136 @@ trap_signals() {
   trap 'exit 143' TERM
 }
 
+# --- Linux package repositories ----------------------------------------------
+
+# On Debian, Ubuntu, Fedora and RHEL the stable CLI comes from phux's signed
+# apt or dnf repository, so it updates with the system. The signing key is
+# repo_key, embedded by scripts/generate-install.sh from packaging/phux.asc:
+# it is as trusted as this script, and nothing else is fetched to trust it.
+# Packages stay on their releases; the signed metadata is the `repodata`
+# release (docs/runbooks/linux-packages.md).
+REPO_URL="${PHUX_REPO_URL:-https://github.com/no-phux/phux/releases/download}"
+
+# apt or dnf when this host is one phux's repositories serve, and the
+# installer can act as root: as root, or through sudo that needs no password
+# or has a terminal to ask on.
+repo_manager() {
+  [ "$(uname -s)" = Linux ] && [ -r "${PHUX_OS_RELEASE:-/etc/os-release}" ] || return 1
+  # shellcheck disable=SC1090,SC1091
+  ids="$(. "${PHUX_OS_RELEASE:-/etc/os-release}" && printf ' %s %s ' "${ID:-}" "${ID_LIKE:-}")"
+  case "$ids" in
+    *' debian '* | *' ubuntu '*) manager=apt tool=apt-get ;;
+    *' fedora '* | *' rhel '* | *' centos '*) manager=dnf tool=dnf ;;
+    *) return 1 ;;
+  esac
+  command -v "$tool" >/dev/null 2>&1 || return 1
+  if [ "$(id -u)" != 0 ]; then
+    command -v sudo >/dev/null 2>&1 || return 1
+    sudo -n true 2>/dev/null || { : </dev/tty; } 2>/dev/null || return 1
+  fi
+  printf '%s\n' "$manager"
+}
+
+# Under curl | sh, stdin is the rest of this script: nothing may read it.
+# sudo asks for a password on the terminal, not stdin.
+as_root() {
+  if [ "$(id -u)" = 0 ]; then "$@" </dev/null; else sudo "$@" </dev/null; fi
+}
+
+# Add the repository for MANAGER and install phux from it. Every step is
+# chained: a caller's `if` turns off set -e.
+install_repo() {
+  phux_message info "adding the phux $1 repository, so phux updates with the system (opt out: --no-repo)"
+  repo_key > "${work}/phux.asc" || return 1
+  case "$1" in
+    apt)
+      printf 'deb [signed-by=/etc/apt/keyrings/phux.asc] %s repodata/\n' "$REPO_URL" > "${work}/phux.list" \
+        && as_root install -d -m 755 /etc/apt/keyrings \
+        && as_root install -m 644 "${work}/phux.asc" /etc/apt/keyrings/phux.asc \
+        && as_root install -m 644 "${work}/phux.list" /etc/apt/sources.list.d/phux.list \
+        && as_root apt-get update -qq -o Dir::Etc::sourcelist=sources.list.d/phux.list \
+          -o Dir::Etc::sourceparts=- -o APT::Get::List-Cleanup=0 \
+        && as_root env DEBIAN_FRONTEND=noninteractive apt-get install -y -qq phux
+      ;;
+    dnf)
+      printf '[phux]\nname=phux\nbaseurl=%s\nenabled=1\ngpgcheck=1\nrepo_gpgcheck=1\nmetadata_expire=1h\ngpgkey=file:///etc/pki/rpm-gpg/RPM-GPG-KEY-phux\n' \
+        "$REPO_URL" > "${work}/phux.repo" \
+        && as_root install -D -m 644 "${work}/phux.asc" /etc/pki/rpm-gpg/RPM-GPG-KEY-phux \
+        && as_root install -m 644 "${work}/phux.repo" /etc/yum.repos.d/phux.repo \
+        && as_root rpm --import /etc/pki/rpm-gpg/RPM-GPG-KEY-phux \
+        && as_root dnf install -y -q phux
+      ;;
+  esac
+}
+repo_key() {
+  cat <<'KEY'
+-----BEGIN PGP PUBLIC KEY BLOCK-----
+
+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
+=2OAY
+-----END PGP PUBLIC KEY BLOCK-----
+KEY
+}
+
 # --- the CLI -----------------------------------------------------------------
 
 LICENSES='README.md LICENSE NOTICE THIRD-PARTY-NOTICES.md LICENSE-MIT LICENSE-APACHE'
@@ -512,6 +646,18 @@ offer_service() {
 
 # PIN and PIN_SHA256 pin the CLI; empty follows the channel.
 install_cli() {
+  if [ "$repo" -eq 1 ] && [ "$channel" = stable ] && [ -z "$1" ] && manager="$(repo_manager)"; then
+    if [ "$dry_run" -eq 1 ]; then
+      printf 'product: phux\nchannel: stable\nrepository: %s %s\ndestination: /usr/bin\n' "$manager" "$REPO_URL"
+      return
+    fi
+    if install_repo "$manager"; then
+      [ "$rune" -eq 1 ] || install_dir=/usr/bin
+      detail ok "installed phux from the phux $manager repository; $manager keeps it updated"
+      return
+    fi
+    phux_message warn "the $manager repository did not install phux; installing the release archive instead"
+  fi
   resolve phux "$target" "$1" "$2"
   name_asset phux "$target"
   if [ "$dry_run" -eq 1 ]; then
@@ -853,6 +999,10 @@ modify_path=1
 case "${PHUX_NO_MODIFY_PATH:-}" in '' | 0) ;; *) modify_path=0 ;; esac
 service=ask
 case "${PHUX_NO_SERVICE:-}" in '' | 0) ;; *) service=0 ;; esac
+# A chosen place or platform means the archive; so does PHUX_NO_REPO.
+repo=1
+case "${PHUX_NO_REPO:-}" in '' | 0) ;; *) repo=0 ;; esac
+[ -z "${PHUX_INSTALL_DIR:-}" ] || repo=0
 
 while [ "$#" -gt 0 ]; do
   case "$1" in
@@ -868,10 +1018,10 @@ while [ "$#" -gt 0 ]; do
       ;;
     --revision) pin="$2" pinned_flag=--revision ;;
     --sha256) pin_sha256="$2" ;;
-    --install-dir) install_dir="$2" ;;
+    --install-dir) install_dir="$2" repo=0 ;;
     --applications-dir) applications_dir="$2" ;;
-    --os) os="$2" ;;
-    --arch) arch="$2" ;;
+    --os) os="$2" repo=0 ;;
+    --arch) arch="$2" repo=0 ;;
     --desktop)
       phux_message info "the GPUI desktop is retired; installing Phux Rune"
       rune=1
@@ -880,12 +1030,13 @@ while [ "$#" -gt 0 ]; do
     --dry-run) dry_run=1 ;;
     --verbose) verbose=1 ;;
     --no-modify-path) modify_path=0 ;;
+    --no-repo) repo=0 ;;
     --service) service=1 ;;
     --no-service) service=0 ;;
     --help | -h) usage; exit 0 ;;
     *) die "unknown option: $1" ;;
   esac
-  case "$1" in --desktop | --rune | --dry-run | --verbose | --no-modify-path | --service | --no-service) shift ;; *) shift 2 ;; esac
+  case "$1" in --desktop | --rune | --dry-run | --verbose | --no-modify-path | --no-repo | --service | --no-service) shift ;; *) shift 2 ;; esac
 done
 
 if [ "$rune" -eq 1 ]; then

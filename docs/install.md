@@ -164,7 +164,9 @@ Windows Terminal, and WSLg is not required.
 curl -fsSL https://phux.sh/install | sh
 ```
 
-The script downloads the release for your platform, checks its SHA-256 before unpacking anything, and puts `phux` and `phux-mcp` in `~/.local/bin`. If that directory isn't on your `PATH`, it adds it to your shell profile. On macOS a stable release also installs [phux Server](#macos-permissions), checked the same way.
+On Debian, Ubuntu, Fedora and RHEL the script asks for sudo, adds the [phux apt or dnf repository](#linux-package-repositories) and installs from it, so phux updates with your system. `--no-repo` (or `PHUX_NO_REPO=1`), `--install-dir`, `--channel`, `--version`, or no way to ask for sudo installs the archive instead.
+
+Everywhere else, the script downloads the release for your platform, checks its SHA-256 before unpacking anything, and puts `phux` and `phux-mcp` in `~/.local/bin`. If that directory isn't on your `PATH`, it adds it to your shell profile. On macOS a stable release also installs [phux Server](#macos-permissions), checked the same way.
 
 On Linux the script ends by offering to keep your sessions running after logout and reboot. Yes runs `phux service install --adopt`, which runs the server as a systemd user unit and turns on linger (`loginctl enable-linger`) so it starts at boot. No sudo is needed. Where your system's policy wants an administrator for linger, it prints the `sudo loginctl enable-linger` command to run. With no terminal to ask on, the script installs the service. `--no-service` or `PHUX_NO_SERVICE=1` skips it. `phux doctor` warns while the server is not supervised.
 
@@ -182,6 +184,7 @@ curl -fsSL https://phux.sh/install | sh -s -- --dry-run
 | ------------------------------- | ------------------------------------------------------------- |
 | `--install-dir <dir>`           | install somewhere other than `~/.local/bin`                   |
 | `--no-modify-path`              | leave your shell profile alone                                |
+| `--no-repo`                     | install the archive, not the apt or dnf repository            |
 | `--service`, `--no-service`     | on Linux, install the systemd user service, or skip it, without asking |
 | `--version <X.Y.Z>`             | install a specific release instead of the latest             |
 | `--channel <stable\|next\|lts>`  | follow tagged releases (the default), every `main` build that passes CI, or the [long-term-support](./runbooks/lts.md) release |
@@ -232,6 +235,31 @@ kubectl exec -it phux-0 -- phux      # attach from inside the pod
 Keep it at one replica: a server owns its sessions. After the pod is
 replaced, `phux ls` lists the sessions again and `phux restore` starts
 their programs.
+
+## Linux package repositories
+
+Signed apt and dnf repositories carry the stable channel for x86_64 and
+arm64; the [install script](#install-script) adds the right one. By hand:
+
+```sh
+R=https://github.com/no-phux/phux/releases/download
+# Debian, Ubuntu
+sudo curl -fsSLo /etc/apt/keyrings/phux.asc $R/repodata/phux.asc
+echo "deb [signed-by=/etc/apt/keyrings/phux.asc] $R repodata/" | sudo tee /etc/apt/sources.list.d/phux.list
+sudo apt update && sudo apt install phux
+# Fedora, RHEL 10
+sudo curl -fsSLo /etc/yum.repos.d/phux.repo $R/repodata/phux.repo
+sudo dnf install phux
+```
+
+`apt upgrade` or `dnf upgrade` then brings each release (`phux update`
+says so), and `phux upgrade` moves the running server onto it without
+stopping your panes. The repositories keep the three newest releases;
+releases also carry the `.deb` and `.rpm` files. The signing key is
+[`packaging/phux.asc`](https://github.com/no-phux/phux/blob/main/packaging/phux.asc),
+fingerprint `0F3D4046E72D0CB23784A58B043A18DFD4D1A4D5`.
+
+On Arch, install `phux-bin` with pacman where a repository carries it.
 
 ## Homebrew
 
@@ -308,7 +336,7 @@ hit unrelated clients or servers. Start the new one with
 panes; the new server brings the sessions back without them, and
 `phux restore` relaunches them.
 
-If you installed with Homebrew, Nix, `cargo install`, or pacman (`phux-bin` on Arch and Omarchy), `phux update` changes nothing and prints the command for that package manager instead.
+If you installed with Homebrew, Nix, apt, dnf, `cargo install`, or pacman (`phux-bin` on Arch and Omarchy), `phux update` changes nothing and prints the command for that package manager instead.
 
 ### Channels
 
@@ -361,7 +389,7 @@ rm -rf ~/.config/phux ~/.local/state/phux ~/.local/share/phux
 rm -rf ~/Library/Application\ Support/sh.phux   # macOS: phux Server
 ```
 
-If you installed the desktop app, also remove `Phux Rune.app` from `/Applications` or `~/Applications` on macOS, or `~/.local/share/phux-rune` and `~/.local/bin/phux-rune` on Linux. With Homebrew, run `brew uninstall phux` instead of the first `rm`. [File locations](./reference/files.md) lists every path phux writes, including where they move when `XDG_*` variables are set.
+If you installed the desktop app, also remove `Phux Rune.app` from `/Applications` or `~/Applications` on macOS, or `~/.local/share/phux-rune` and `~/.local/bin/phux-rune` on Linux. With Homebrew, run `brew uninstall phux` instead of the first `rm`. From apt or dnf: `sudo apt remove phux` or `sudo dnf remove phux`. [File locations](./reference/files.md) lists every path phux writes, including where they move when `XDG_*` variables are set.
 
 ## Troubleshooting
 

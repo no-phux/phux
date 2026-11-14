@@ -75,7 +75,7 @@ resolve_phux() {
     return
   fi
   echo "demo-pi-setup: no phux binary; installing the current release" >&2
-  "$REPO/scripts/install.sh"
+  PHUX_NO_REPO=1 "$REPO/scripts/install.sh"
   local installed="${HOME}/.local/bin/phux"
   [[ -x "$installed" ]] || die "install.sh did not produce $installed"
   printf '%s\n' "$installed"

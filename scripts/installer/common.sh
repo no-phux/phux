@@ -46,6 +46,10 @@ only when none is found.
   --install-dir <dir>             Where phux, phux-mcp and the phux-rune launcher go
                                   (default: $PHUX_INSTALL_DIR, or ~/.local/bin).
   --no-modify-path                Leave the shell profile alone (also $PHUX_NO_MODIFY_PATH=1).
+  --no-repo                       On Debian, Ubuntu, Fedora and RHEL, install the release
+                                  archive instead of adding phux's apt or dnf repository
+                                  (also $PHUX_NO_REPO=1). The repository is the default for
+                                  the stable channel, so phux updates with the system.
   --service, --no-service         On Linux, run (or skip) `phux service install` without
                                   asking: a systemd user unit plus linger, so sessions
                                   survive logout and reboot. Default: ask on a terminal,
