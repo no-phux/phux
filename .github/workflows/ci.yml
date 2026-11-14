@@ -17,8 +17,10 @@ on:
   workflow_dispatch:
 
 concurrency:
-  # Match the safe per-SHA admission and repository/full-ref keys in #2462.
-  # Per-push routing cannot replace A with docs-only B without losing A's work.
+  # PR updates/closes and dispatches share repo:head-ref; queue refs stay unique.
+  # Every main SHA retains its push CI: routing is per-push, so replacing a
+  # pending push would drop its validation and content publication work.
+  # Contracts and key boundaries: docs/ci.md#concurrency.
   group: >-
     ci-${{ github.event_name == 'push' && github.sha
     || github.event_name == 'pull_request' && format('{0}:refs/heads/{1}', github.event.pull_request.head.repo.full_name, github.head_ref)

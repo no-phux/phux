@@ -35,8 +35,8 @@ that receipt (`tools/src/routing/receipt.ts`).
 Apple work. `rune-macos.yml` runs macOS and the native iOS simulator/device
 qualification on main pushes, nightly, and manually. Every Rune-affecting
 queue group runs both Apple legs, whether reached directly or through Cargo.
-Recognized release metadata also selects both native legs, even when ordinary
-CI skips its compile lanes. This qualifies the metadata release's own tree,
+Recognized release metadata also selects both Apple legs, even when CI's
+product lanes are unselected. This qualifies the metadata release's own tree,
 including native code behind any intervening documentation-only commits.
 
 On `merge_group`, **the already-required `ci` aggregate calls and requires
@@ -86,6 +86,12 @@ so different repository/branch splits cannot collide.
 Merge groups retain their own queue-ref group. The Apple child's group
 prefix differs from its calling `ci`, preventing self-cancellation.
 
+First-run timing runs Linux on every event. Its Mac job runs for installer
+changes on PRs and main pushes, nightly, and on manual runs. Only selected
+Mac jobs coalesce: unrelated pushes cannot replace a pending installer
+qualification, and nightly/manual jobs have separate groups. Its output-file
+fixture uses a regular temporary file, like Actions, not a captured `/dev/stdout`.
+
 ## Runner and cache budget
 
 The test lanes compile once (`just test-archive`) and run the unit and e2e
@@ -94,4 +100,5 @@ save them. Main pushes and the 00:10 UTC Linux-only cache-warm dispatch
 save per-lane caches under the 10 GB budget. Post-upload pruning keeps
 current-day keys and never deletes the sole older restore source before
 a stored replacement exists. Rune warming keeps its separate 06:17 clock.
+PR and topic-ref entries are outside the pruner's deletion scope.
 Runners are free hosted Ubuntu x64 and arm64, macOS 26 and `xcode-27`.

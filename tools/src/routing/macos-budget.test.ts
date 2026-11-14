@@ -12,7 +12,7 @@ const MACOS_BUDGET = [
   "ci.yml rune-macos → rune-build.yml macos (macos-arm64) on macos-26 | merge_group",
   "ci.yml rune-macos → rune-build.yml ios-native (ios-native-simulator) on macos-26 | merge_group",
   "ffi-xcframework.yml build on xcode-27 | workflow_dispatch",
-  "first-run-timing.yml macos on macos-26 | pull_request, push branches main, workflow_dispatch",
+  "first-run-timing.yml macos on macos-26 | pull_request, push branches main, schedule 29 4 * * *, workflow_dispatch",
   "next.yml cli → build-cli.yml build aarch64-apple-darwin on xcode-27 | workflow_dispatch, workflow_run ci",
   "release.yml cli-build → build-cli.yml build aarch64-apple-darwin on xcode-27 | schedule 5 15 * * *, workflow_dispatch, workflow_run ci rune-macos",
   "rune-client.yml build → rune-build.yml macos (macos-arm64) on macos-26 | push tags rune-v*",
