@@ -164,7 +164,17 @@ fn every_step_renders_its_parts() {
         assert!(has(&rt, key), "{key}");
     }
     assert_eq!(has(&rt, "onboarding-keep-alive"), KEEP_ALIVE, "Linux only");
+    assert!(has(&rt, "done-agent-claude") && has(&rt, "done-agent-codex"));
+    assert!(!has(&rt, "done-agent-opencode") && !has(&rt, "done-tour"));
     snap(&mut rt, "5-done");
+    let mut rt = window(Step::Done);
+    rt.update(|d, _| d.onboarding.skills = Probe::Ready(Vec::new()));
+    settle(&mut rt);
+    assert!(has(&rt, "done-tour"), "no agent: the tour, not a dead end");
+    snap(&mut rt, "5c-done-no-agent");
+    assert!(rt.accessibility_action("done-tour", Action::Click, None));
+    settle(&mut rt);
+    assert!(!rt.state.onboarding.open && rt.state.palette_open);
     // A fresh window: a second snap's renderer misses glyphs the first uploaded.
     let mut rt = window(Step::Done);
     rt.update(|d, _| d.pairing_fixture());

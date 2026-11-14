@@ -184,3 +184,24 @@ fn a_missing_command_reads_as_update_phux() {
     let probe: Probe<()> = Probe::from(Err("timed out".into()));
     assert_eq!(probe, Probe::Failed("timed out".into()));
 }
+
+#[test]
+fn starting_an_agent_ends_onboarding_after_its_skill() {
+    let mut desk = desk(Prefs::memory());
+    desk.open_onboarding();
+    desk.go_to(Step::Done);
+    desk.onboarding.skills = skills(&["claude"]);
+    desk.start_agent("claude");
+    assert!(!desk.onboarding.open, "onboarding is over");
+    assert_eq!(desk.onboarding.starting.as_deref(), Some("claude"));
+    assert!(desk.onboarding.installing, "the skill goes in first");
+
+    let mut installed = skills(&["claude"]);
+    if let Probe::Ready(s) = &mut installed {
+        s[0].skill = Some("installed".into());
+    }
+    desk.onboarding.skills = installed;
+    desk.onboarding.starting = None;
+    desk.start_agent("claude");
+    assert_eq!(desk.onboarding.starting, None, "in place: it starts now");
+}
