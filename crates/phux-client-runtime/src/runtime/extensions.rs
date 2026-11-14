@@ -10,6 +10,13 @@ use phux_protocol::ids::SatelliteHost;
 use phux_protocol::service_http::{ServiceHttpChunk, ServiceHttpHead, ServiceHttpRequest};
 
 impl Client {
+    /// The latest measured round trip to the server on this connection: one
+    /// is taken whenever a liveness probe is answered, so `nudge` refreshes it.
+    #[must_use]
+    pub fn round_trip(&self) -> Option<std::time::Duration> {
+        self.inner.with(|control| control.round_trip())
+    }
+
     /// Upload bytes into the terminal-owning server's sandbox.
     #[must_use]
     pub fn put_file(&self, terminal_id: ResourceId, extension: String, data: Vec<u8>) -> u64 {

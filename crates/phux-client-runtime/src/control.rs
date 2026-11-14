@@ -228,6 +228,8 @@ pub struct ControlPlane {
     /// attach or connection.
     attach_ended: bool,
     error: Option<String>,
+    /// The latest measured round trip on this connection.
+    round_trip: Option<std::time::Duration>,
     server: Option<ServerInfo>,
     engine: Option<EngineHandle>,
     engine_config: Option<EngineConfig>,
