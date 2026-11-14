@@ -57,7 +57,7 @@ pub use coord::{
     Sent, TakeClaim, WaitMail, caller_address, claim_path, federation, pane_address,
 };
 pub use error::Error;
-pub use id::{Alias, ObjectiveState, OpaqueId, OperationId, SignalKind};
+pub use id::{Alias, ObjectiveState, OpaqueId, OperationId, RunState, SignalKind};
 pub use service::{Endpoint, KeeperExit, run_keeper, run_keeper_with};
 pub use start::{LaunchQueued, OpenRun, StartApplied, StartBinding, StartPlan, StartRequest};
 pub use store::{

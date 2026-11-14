@@ -235,6 +235,39 @@ impl ObjectiveState {
     }
 }
 
+/// Where one run is: the `run.state` column and the JSON `run_state`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RunState {
+    /// Waiting for an agent slot.
+    Queued,
+    /// A worker holds a slot.
+    Running,
+    /// Finished; frees its slot.
+    Ended,
+}
+
+impl RunState {
+    /// The stored and JSON spelling.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Queued => "queued",
+            Self::Running => "running",
+            Self::Ended => "ended",
+        }
+    }
+
+    pub(crate) fn parse(text: &str) -> Result<Self, Error> {
+        match text {
+            "queued" => Ok(Self::Queued),
+            "running" => Ok(Self::Running),
+            "ended" => Ok(Self::Ended),
+            _ => Err(Error::Corrupt(format!("unknown run state {text}"))),
+        }
+    }
+}
+
 /// Signal kinds this store records.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
