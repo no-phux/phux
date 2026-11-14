@@ -10,21 +10,45 @@
 use phux_client_core::handshake::{HelloOkError, validate_hello_ok};
 use phux_protocol::PROTOCOL_VERSION;
 use phux_protocol::caps::{
-    BootstrapLimits, BootstrapProfile, ClientCapabilities, LayerSet, ServerCapabilities,
-    ServerFeature, ServerFeatureExt, ServerFeatureExtSet, ServerFeatureSet,
+    BootstrapLimits, BootstrapProfile, ClientCapabilities, ClientPlatform, LayerSet,
+    ServerCapabilities, ServerFeature, ServerFeatureExt, ServerFeatureExtSet, ServerFeatureSet,
 };
 use phux_protocol::wire::frame::FrameKind;
 
+// ponytail: process-wide, because a process runs on one device. Make it a
+// connection option if one process ever speaks for two.
+static PLATFORM: std::sync::Mutex<Option<ClientPlatform>> = std::sync::Mutex::new(None);
+
+/// Report `platform` in every later `HELLO` of this process instead of the
+/// build's own OS word (an iPad build is `ios` to the compiler). `None`
+/// restores the default.
+pub fn set_platform(platform: Option<ClientPlatform>) {
+    *PLATFORM
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner) = platform;
+}
+
 /// The `HELLO` a client opens every connection with: this build's protocol
 /// triple and the capabilities it offers.
+///
+/// An offer without a platform gets [`set_platform`]'s, else
+/// [`ClientPlatform::host`].
 #[must_use]
-pub const fn hello(client_name: String, client_caps: ClientCapabilities) -> FrameKind {
+pub fn hello(client_name: String, client_caps: ClientCapabilities) -> FrameKind {
+    let platform = client_caps
+        .platform
+        .or_else(|| {
+            *PLATFORM
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+        })
+        .or(ClientPlatform::host());
     FrameKind::Hello {
         client_name,
         protocol_major: PROTOCOL_VERSION.major,
         protocol_minor: PROTOCOL_VERSION.minor,
         protocol_patch: PROTOCOL_VERSION.patch,
-        client_caps,
+        client_caps: client_caps.with_platform(platform),
     }
 }
 
@@ -204,6 +228,10 @@ mod tests {
         assert_eq!(client_name, "probe");
         assert_eq!(protocol_major, PROTOCOL_VERSION.major);
         assert_eq!(protocol_patch, PROTOCOL_VERSION.patch);
-        assert_eq!(client_caps, caps);
+        assert_eq!(client_caps, caps.with_platform(ClientPlatform::host()));
+        assert!(
+            client_caps.platform.is_some(),
+            "this build's OS is reported"
+        );
     }
 }

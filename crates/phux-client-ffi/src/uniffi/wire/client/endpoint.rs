@@ -1,4 +1,5 @@
-//! Classify a remote endpoint string before the runtime owns the session.
+//! Classify a remote endpoint string before the runtime owns the session,
+//! and name the device the app runs on.
 
 use super::*;
 
@@ -37,4 +38,21 @@ fn validate_quic_authority(authority: &str) -> Result<(), String> {
     Err(format!(
         "quic://{authority} needs HOST:PORT with a non-zero numeric port; bracket an IPv6 address"
     ))
+}
+
+/// Report `platform` (1 to 16 bytes of `[a-z0-9-]`, e.g. `ipados`) in every
+/// later `HELLO` of this process; `None` restores the build's own OS word
+/// (`ios`, `android`), which is what an app that never calls this reports.
+/// Call before `connect`. Returns `false`, changing nothing, for a word
+/// outside that alphabet.
+#[uniffi::export]
+pub fn set_client_platform(platform: Option<String>) -> bool {
+    let parsed = platform
+        .as_deref()
+        .map(phux_protocol::caps::ClientPlatform::parse);
+    if parsed == Some(None) {
+        return false;
+    }
+    phux_client_runtime::handshake::set_platform(parsed.flatten());
+    true
 }

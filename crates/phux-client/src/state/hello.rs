@@ -71,14 +71,11 @@ pub async fn probe_hello_features_ext(
 
 /// Send `HELLO` on a raw connection; `Ok` only for a `HELLO_OK`.
 async fn raw_hello(conn: &mut Connection) -> Result<FrameKind, AttachError> {
-    conn.send(&FrameKind::Hello {
-        client_name: format!("phux-cli/{}", env!("CARGO_PKG_VERSION")),
-        protocol_major: phux_protocol::PROTOCOL_VERSION.major,
-        protocol_minor: phux_protocol::PROTOCOL_VERSION.minor,
-        protocol_patch: phux_protocol::PROTOCOL_VERSION.patch,
-        client_caps: ClientCapabilities::default()
+    conn.send(&phux_client_runtime::handshake::hello(
+        format!("phux-cli/{}", env!("CARGO_PKG_VERSION")),
+        ClientCapabilities::default()
             .with_resource_kinds(phux_client_core::session::KERNEL_RESOURCE_KINDS),
-    })
+    ))
     .await?;
     match conn.recv().await? {
         ok @ FrameKind::HelloOk { .. } => Ok(ok),

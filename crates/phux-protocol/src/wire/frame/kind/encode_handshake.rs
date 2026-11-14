@@ -88,6 +88,10 @@ impl FrameKind {
         enc.write_field_with(field::hello::RESOURCE_KINDS, |e| {
             e.write_u64_be(client_caps.resource_kinds.as_wire());
         });
+        // Additive label; an older server skips the unknown field.
+        if let Some(platform) = client_caps.platform {
+            enc.write_field(field::hello::PLATFORM, platform.as_str().as_bytes());
+        }
     }
 
     /// Write the exact protocol version `HELLO_OK` admits the peer at.

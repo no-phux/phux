@@ -261,6 +261,11 @@ fn controller_record_follows_the_typing_connection() {
         s.set_peer_identity(ClientId(1), crate::runtime::test_support::owner_peer());
         s.set_peer_identity(ClientId(2), ssh);
         s.set_client_name(ClientId(2), "phux-mobile".to_owned());
+        s.set_client_platform(ClientId(1), None);
+        s.set_client_platform(
+            ClientId(2),
+            phux_protocol::caps::ClientPlatform::parse("ios"),
+        );
         s.note_controller(&wire, ClientId(1));
     });
     assert_eq!(
@@ -278,6 +283,7 @@ fn controller_record_follows_the_typing_connection() {
         record(),
         Some(serde_json::json!({
             "client": 2, "client_name": "phux-mobile", "route": "ssh-stdio", "remote": true,
+            "platform": "ios",
         }))
     );
     // The earlier typist leaving changes nothing; the current one clears it.
