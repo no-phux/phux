@@ -82,7 +82,7 @@ test: worktree-claim && (worktree-verify "test")
 [group('test')]
 [doc('Run every unit test to the end and report only unexplained failures.')]
 test-report *ARGS: worktree-claim && (worktree-verify "test-report")
-    bash scripts/test-report.sh {{ARGS}}
+    PHUX_TEST_FEATURES='{{TEST_FEATURES}}' bash scripts/test-report.sh {{ARGS}}
 
 
 # `phux-server/measure` builds the e2e lane's `perf` target, which a
