@@ -60,7 +60,7 @@ more, and never for a frame that settles a request.
 1. The client sends `HELLO` (`0x01`): its name, protocol
    `major.minor.patch`, and `ClientCapabilities` (color support, image and
    keyboard protocols, which bootstrap profiles and
-   [resource kinds](./compatibility.md) it can consume, compression).
+   [resource kinds](./compatibility.md) it can consume, compression, a `platform` label).
 2. The server checks the client's major against its own. Any minor or
    patch is admitted; another major gets `ERROR` with
    `VERSION_INCOMPATIBLE` and a close.

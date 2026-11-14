@@ -10,6 +10,7 @@ include!("caps/stream_codec.rs");
 include!("caps/server_features.rs");
 include!("caps/advertisements.rs");
 include!("caps/resource_kinds.rs");
+include!("caps/platform.rs");
 
 #[cfg(test)]
 mod tests {

@@ -190,11 +190,12 @@ pub const RESOURCE_PANE_OCCUPANT_KEY: &str = "phux.pane-occupant/v1";
 /// Server-owned Terminal-scoped record of the connection that last typed
 /// (a key or a paste) into the Terminal (`docs/building.md#who-is-typing`).
 ///
-/// Value: UTF-8 JSON `{ "client", "client_name", "route", "remote" }`,
-/// rewritten only when the typing connection changes and deleted when that
-/// connection closes. `client_name` is the sender's own `HELLO` name and
-/// `route` the whoami `auth_route` word, so the record is a hint and never
-/// an authentication fact. Clients must not set or delete it.
+/// Value: UTF-8 JSON `{ "client", "client_name", "route", "remote" }` plus
+/// `"platform"` when the sender reported one, rewritten only when the typing
+/// connection changes and deleted when that connection closes. `client_name`
+/// and `platform` are the sender's own `HELLO` words and `route` the whoami
+/// `auth_route` word, so the record is a hint and never an authentication
+/// fact. Clients must not set or delete it.
 pub const RESOURCE_CONTROLLER_KEY: &str = "phux.controller/v1";
 
 /// Server-owned OSC 7501 record index and active status (L3 §3.7.3).

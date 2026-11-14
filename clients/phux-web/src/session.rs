@@ -371,7 +371,9 @@ impl Connection {
             protocol_major: PROTOCOL_VERSION.major,
             protocol_minor: PROTOCOL_VERSION.minor,
             protocol_patch: PROTOCOL_VERSION.patch,
-            client_caps: self.offered_caps,
+            client_caps: self
+                .offered_caps
+                .with_platform(phux_protocol::caps::ClientPlatform::host()),
         })]
     }
 
