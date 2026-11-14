@@ -1,22 +1,24 @@
 //! Server-assigned agent names (`docs/agents.md#driving-an-agent-in-a-pane`).
 //!
 //! The detector, the launch wrapper and every integration write a record
-//! whose `name` is its `kind` (`opencode`). Stored as written, two OpenCode
-//! panes would share one name and `%opencode` would reach neither. So every
-//! write of such a record gets a name no other pane's record carries: the
-//! kind itself for the first pane, then `opencode-2`, `opencode-3`, ... A
-//! pane keeps the name it holds for as long as its record does, so
-//! `%opencode` keeps reaching the first pane while it runs. A name a writer
-//! chose (`reviewer`) is never changed.
+//! whose `name` is its `kind` (`opencode`). Stored as written, two
+//! `OpenCode` panes would share one name and `%opencode` would reach
+//! neither. So every write of such a record gets a name no other pane's
+//! record carries: the kind itself for the first pane, then `opencode-2`,
+//! `opencode-3`, ... A pane keeps the name it holds for as long as its
+//! record does, so `%opencode` keeps reaching the first pane while it runs.
+//! A name a writer chose (`reviewer`) is never changed.
 
 use std::collections::HashSet;
 
 use crate::agent_record::AgentRecordJson;
 
-/// `value`, a `phux.agent/v1` record about to be stored on a pane whose
-/// current record is `held`, with a name no record in `others` carries when
-/// its name is its kind. Any other value, and a record whose kind name is
-/// free, comes back byte for byte.
+/// `value` with a server-unique name when its name is its kind.
+///
+/// `value` is a `phux.agent/v1` record about to be stored on a pane whose
+/// current record is `held`; `others` are every other pane's records. Any
+/// other value, and a record whose kind name is free, comes back byte for
+/// byte.
 ///
 /// ponytail: names live in the records, which a graceful upgrade leaves for
 /// their writers to republish, so two panes of one kind can trade names
@@ -48,8 +50,9 @@ pub fn with_unique_name<'a>(
         .map(|current| current.name)
         .filter(|name| is_kind_name(name, &base) && free(name));
     let name = held.unwrap_or_else(|| {
+        // With N names taken, one of the N + 1 candidates is free.
         std::iter::once(base.clone())
-            .chain((2_u32..).map(|n| format!("{base}-{n}")))
+            .chain((2..=taken.len() + 1).map(|n| format!("{base}-{n}")))
             .find(|candidate| free(candidate))
             .unwrap_or_else(|| base.clone())
     });
