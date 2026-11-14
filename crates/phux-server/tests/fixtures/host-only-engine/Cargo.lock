@@ -786,7 +786,7 @@ dependencies = [
 
 [[package]]
 name = "phux-agent-rules"
-version = "0.148.0"
+version = "0.149.0"
 dependencies = [
  "regex",
  "serde",
@@ -796,7 +796,7 @@ dependencies = [
 
 [[package]]
 name = "phux-agent-session"
-version = "0.148.0"
+version = "0.149.0"
 dependencies = [
  "bytes",
  "phux-agent-rules",
@@ -811,7 +811,7 @@ dependencies = [
 
 [[package]]
 name = "phux-client-core"
-version = "0.148.0"
+version = "0.149.0"
 dependencies = [
  "ciborium",
  "phux-perf",
@@ -826,7 +826,7 @@ dependencies = [
 
 [[package]]
 name = "phux-config"
-version = "0.148.0"
+version = "0.149.0"
 dependencies = [
  "chrono",
  "nix",
@@ -845,7 +845,7 @@ dependencies = [
 
 [[package]]
 name = "phux-config-core"
-version = "0.148.0"
+version = "0.149.0"
 dependencies = [
  "nix",
  "serde",
@@ -856,7 +856,7 @@ dependencies = [
 
 [[package]]
 name = "phux-core"
-version = "0.148.0"
+version = "0.149.0"
 dependencies = [
  "serde",
  "sha2",
@@ -866,7 +866,7 @@ dependencies = [
 
 [[package]]
 name = "phux-dial"
-version = "0.148.0"
+version = "0.149.0"
 dependencies = [
  "futures-util",
  "hex",
@@ -883,7 +883,7 @@ dependencies = [
 
 [[package]]
 name = "phux-git"
-version = "0.148.0"
+version = "0.149.0"
 dependencies = [
  "libc",
  "memchr",
@@ -906,7 +906,7 @@ dependencies = [
 
 [[package]]
 name = "phux-perf"
-version = "0.148.0"
+version = "0.149.0"
 dependencies = [
  "libc",
  "nix",
@@ -916,7 +916,7 @@ dependencies = [
 
 [[package]]
 name = "phux-plugin"
-version = "0.148.0"
+version = "0.149.0"
 dependencies = [
  "phux-config",
  "serde",
@@ -927,7 +927,7 @@ dependencies = [
 
 [[package]]
 name = "phux-protocol"
-version = "0.148.0"
+version = "0.149.0"
 dependencies = [
  "bitflags",
  "bytes",
@@ -941,7 +941,7 @@ dependencies = [
 
 [[package]]
 name = "phux-resource"
-version = "0.148.0"
+version = "0.149.0"
 dependencies = [
  "bytes",
  "libc",
@@ -956,7 +956,7 @@ dependencies = [
 
 [[package]]
 name = "phux-server"
-version = "0.148.0"
+version = "0.149.0"
 dependencies = [
  "base64",
  "bytes",
@@ -1010,7 +1010,7 @@ dependencies = [
 
 [[package]]
 name = "phux-terminal-api"
-version = "0.148.0"
+version = "0.149.0"
 dependencies = [
  "bytes",
  "phux-agent-rules",
@@ -1030,7 +1030,7 @@ dependencies = [
 
 [[package]]
 name = "phux-tree"
-version = "0.148.0"
+version = "0.149.0"
 dependencies = [
  "bytes",
  "phux-core",
@@ -1042,7 +1042,7 @@ dependencies = [
 
 [[package]]
 name = "phux-work"
-version = "0.148.0"
+version = "0.149.0"
 dependencies = [
  "chrono",
  "getrandom 0.4.3",
@@ -1093,7 +1093,7 @@ dependencies = [
 
 [[package]]
 name = "quictun"
-version = "0.148.0"
+version = "0.149.0"
 dependencies = [
  "quinn",
  "rcgen",
