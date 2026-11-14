@@ -272,7 +272,14 @@ fn remote_reach(server: Option<&ServerInputs>, reachable: Option<&Check>) -> Ite
         let reasons: Vec<_> = unhealthy
             .iter()
             .map(|slot| {
-                // A bind the server is retrying heals by itself (#2401).
+                // A listener waiting for its address or retrying its bind
+                // heals by itself (#2430, #2401).
+                if slot.is_waiting_for_address() {
+                    return format!(
+                        "{} listener waiting for a private network address; it starts once one appears",
+                        slot.transport
+                    );
+                }
                 if let Some(error) = &slot.waiting {
                     return format!(
                         "{} listener waiting to bind: {}",

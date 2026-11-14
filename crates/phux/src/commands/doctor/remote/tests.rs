@@ -316,3 +316,22 @@ fn an_incompatible_remote_probe_is_not_told_to_remove_the_socket() {
     assert!(!other_hint.contains("stale"), "{other_hint}");
     assert!(!other_hint.contains("remove"), "{other_hint}");
 }
+
+/// An overlay listener waiting for its address warns, names no bogus
+/// address, and says no restart is needed (#2430).
+#[test]
+fn a_listener_waiting_for_its_address_warns() {
+    use phux_protocol::wire::{RemoteListenerSlot, RemoteListenerTransport, RemoteListenersReport};
+
+    let report = RemoteListenersReport::new().with_listeners(vec![
+        RemoteListenerSlot::bound(RemoteListenerTransport::Quic, "100.94.129.125:8788"),
+        RemoteListenerSlot::waiting_for_address(RemoteListenerTransport::Wss),
+    ]);
+    let check = remote_listeners_check(Some(&report), true);
+    assert_eq!(check.status, Status::Warn);
+    assert_eq!(
+        check.detail,
+        "remote surface down: wss waiting for a private network address"
+    );
+    assert!(check.hint.expect("hint").contains("no restart"));
+}

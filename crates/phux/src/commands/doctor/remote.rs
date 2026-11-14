@@ -116,8 +116,11 @@ pub(super) fn remote_listeners_check(
     let detail = unhealthy
         .iter()
         .map(|slot| {
-            let addr = slot.addr.as_deref().unwrap_or("?");
-            format!("{} at {addr} {}", slot.transport, slot.unbound_label())
+            let at = slot
+                .addr
+                .as_ref()
+                .map_or_else(String::new, |addr| format!(" at {addr}"));
+            format!("{}{at} {}", slot.transport, slot.unbound_label())
         })
         .collect::<Vec<_>>()
         .join("; ");
@@ -301,6 +304,11 @@ pub(super) fn server_wss_offer(socket_path: &std::path::Path) -> WssOffer {
     else {
         return WssOffer::Absent;
     };
+    // A listener still waiting has nothing to probe; `remote-listeners`
+    // reports the wait.
+    if slot.waiting.is_some() {
+        return WssOffer::Absent;
+    }
     if slot.is_unhealthy() {
         return slot
             .disabled_reason
