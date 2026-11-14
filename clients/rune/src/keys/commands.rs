@@ -322,6 +322,7 @@ pub const COMMANDS: &[Command] = &[
     row!(Shortcut::CheckForUpdates, "Check for Updates", [], []),
     row!(Shortcut::InstallUpdate, "Update Now", [], []),
     row!(Shortcut::Machines, "Switch or Add Machine", [], []),
+    row!(Shortcut::WhatWorksHere, "What Works Here", [], []),
     row!(Shortcut::PairPhone, "Pair a Phone", [], []),
     row!(Shortcut::RetryConnection, "Retry Connection", [], []),
     row!(Shortcut::CopyDiagnostics, "Copy Diagnostics", [], []),
