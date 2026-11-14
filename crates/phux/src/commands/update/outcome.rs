@@ -10,7 +10,7 @@ use super::{
 pub(crate) enum Refusal {
     /// A Nix store path. Read-only by construction.
     ImmutableStore,
-    /// Homebrew, Cargo or pacman owns these files.
+    /// Homebrew, Cargo, pacman, apt or dnf owns these files.
     PackageManaged,
     /// No recognized layout. Refused rather than overwritten.
     UnknownSource,
@@ -22,9 +22,11 @@ impl Refusal {
         match source {
             InstallSource::DirectRelease => None,
             InstallSource::Nix => Some(Self::ImmutableStore),
-            InstallSource::Homebrew | InstallSource::Cargo | InstallSource::Pacman => {
-                Some(Self::PackageManaged)
-            }
+            InstallSource::Homebrew
+            | InstallSource::Cargo
+            | InstallSource::Pacman
+            | InstallSource::Apt
+            | InstallSource::Dnf => Some(Self::PackageManaged),
             InstallSource::Unknown => Some(Self::UnknownSource),
         }
     }

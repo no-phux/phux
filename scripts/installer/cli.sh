@@ -164,6 +164,18 @@ offer_service() {
 
 # PIN and PIN_SHA256 pin the CLI; empty follows the channel.
 install_cli() {
+  if [ "$repo" -eq 1 ] && [ "$channel" = stable ] && [ -z "$1" ] && manager="$(repo_manager)"; then
+    if [ "$dry_run" -eq 1 ]; then
+      printf 'product: phux\nchannel: stable\nrepository: %s %s\ndestination: /usr/bin\n' "$manager" "$REPO_URL"
+      return
+    fi
+    if install_repo "$manager"; then
+      [ "$rune" -eq 1 ] || install_dir=/usr/bin
+      detail ok "installed phux from the phux $manager repository; $manager keeps it updated"
+      return
+    fi
+    phux_message warn "the $manager repository did not install phux; installing the release archive instead"
+  fi
   resolve phux "$target" "$1" "$2"
   name_asset phux "$target"
   if [ "$dry_run" -eq 1 ]; then
