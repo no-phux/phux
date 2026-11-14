@@ -149,6 +149,7 @@ pub(super) fn run_list(role: Option<HostRole>, json: bool) -> ExitCode {
             "local": {
                 "name": phux_config::instance::local_host_name(),
                 "color": super::color::local_color(),
+                "cert_fingerprint": local_fingerprint(),
             },
         }));
     }
@@ -158,6 +159,15 @@ pub(super) fn run_list(role: Option<HostRole>, json: bool) -> ExitCode {
     }
     out!("{}", render_table(&rows));
     ExitCode::SUCCESS
+}
+
+/// The certificate pin this machine's server presents, as `phux pair` prints
+/// it; `None` until a certificate exists. Public: a paired device already
+/// holds it, which is how a handoff names this machine to one.
+fn local_fingerprint() -> Option<String> {
+    use phux_server::transport::tls;
+    let (cert, _) = tls::operator_tls_paths(|var| std::env::var_os(var));
+    tls::cert_fingerprint(&cert.unwrap_or_else(tls::default_cert_path)).ok()
 }
 
 /// Merged ordering: by name, remotes before satellites on a name shared by

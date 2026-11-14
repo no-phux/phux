@@ -31,6 +31,7 @@ pub(crate) const WATCH_EVENT_NAMES: &[&str] = &[
     "bell",
     "command_finished",
     "command_started",
+    "controller_changed",
     "cwd_changed",
     "dirty",
     "idle",

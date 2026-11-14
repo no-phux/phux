@@ -97,6 +97,7 @@ impl TerminalEngineFactory for TerminalEngine {
             source
         });
         let program_status = actor.subscribe_program_status();
+        let resume = actor.subscribe_resume();
         Ok(EngineBundle {
             handle,
             token,
@@ -106,6 +107,7 @@ impl TerminalEngineFactory for TerminalEngine {
             events,
             agent_state,
             program_status,
+            resume,
         })
     }
     fn bootstrap_capabilities(&self) -> phux_protocol::caps::BootstrapCapabilities {

@@ -13,6 +13,7 @@ pub(crate) const fn watch_item_event(item: &WatchItem) -> &'static str {
     match item {
         WatchItem::Event(ev) => watch_event_kind(&ev.event),
         WatchItem::AgentState(_) => AGENT_STATE_EVENT,
+        WatchItem::Controller(_) => phux_client::watch::CONTROLLER_EVENT,
     }
 }
 
@@ -21,6 +22,15 @@ pub(crate) fn print_watch_item(item: &WatchItem, json: bool) {
     match item {
         WatchItem::Event(ev) => print_watch_event(ev, json),
         WatchItem::AgentState(update) => print_agent_state(update, json),
+        WatchItem::Controller(update) => {
+            let line = update.to_json();
+            if json {
+                outln!("{line}");
+            } else {
+                let terminal = line["terminal"].as_str().unwrap_or_default();
+                outln!("{terminal}\tcontroller_changed {}", line["controller"]);
+            }
+        }
     }
 }
 

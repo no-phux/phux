@@ -82,7 +82,7 @@ error as a toast. A reload is never half-applied.
 | --- | --- |
 | Key bindings, which-key, theme, status bar, `[chrome]`, `[notifications]`, `clipboard-write`, `clipboard-read`, `[[sessions]]` colours, plugin actions, panes and sidebar sections | On `phux config reload` (or the `reload-config` action). |
 | `[sidebar]`, `mouse`, `[experimental] predictive-echo` | The next time you attach. Detach and run `phux attach` again. |
-| The rest of `[defaults]` (shell, `TERM`, scrollback, session names, ...), `[[hooks]]`, plugin event hooks, `[policy]`, `[voice]`, `[limits]` | When the server starts. |
+| The rest of `[defaults]` (shell, `TERM`, scrollback, session names, ...), `[[hooks]]`, plugin event hooks, `[policy]`, `[voice]`, `[limits]`, `[[restore.program]]` | When the server starts. |
 | `[[satellites]]`, `[[uplink]]` ([linked machines](./remote.md#linking-machines)) | On `phux config reload`, by the server. |
 
 The server reads its settings once, at start. `phux upgrade` restarts the

@@ -364,6 +364,7 @@ mod tests {
         }
         for key in [
             RESOURCE_PANE_OCCUPANT_KEY,
+            crate::wire::frame::RESOURCE_CONTROLLER_KEY,
             WHOAMI_KEY,
             crate::wire::frame::RESOURCE_PROGRAM_STATUS_KEY,
             crate::wire::frame::RESOURCE_PROGRAM_STATUS_RECORD_PREFIX,

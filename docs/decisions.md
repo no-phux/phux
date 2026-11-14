@@ -117,6 +117,15 @@ records explain history; [look them up deliberately](./architecture.md#historica
   producers and feeds (ADR-0177) remain the upgrade path if a fact outgrows
   one key ([plan usage](./troubleshooting.md#plan-usage)).
 
+- A program may hand over a resume token (`resume=` on OSC 7501) but never
+  a command: a relaunch runs only the argv the user listed for that `app`
+  in `[[restore.program]]`, with the token as whole arguments and no shell.
+  Any writer to the pane can set the token, so it is untrusted input to
+  that command, and it stays on the server: not metadata, not on the wire,
+  not mirrored to a hub. phux reads the key from the PTY bytes itself until
+  the engine reports unknown keys
+  ([protocol](./program-protocol.md#resume)).
+
 **Substrate**
 
 - One keeper writes each work store; shared work has one authoritative home

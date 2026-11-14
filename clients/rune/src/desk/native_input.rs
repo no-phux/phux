@@ -220,7 +220,7 @@ impl Bridge {
             };
             *model = edited;
             if model.text != before {
-                field.changed(d);
+                field.changed(d, tx);
             }
             tx.instant();
         });

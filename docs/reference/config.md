@@ -36,7 +36,7 @@ The configuration surface of `~/.config/phux/config.toml`. The loader layers you
 | `[policy]` | The authorization posture read at server start: `local` (owner socket only) or `paired` (workload mTLS, scope ceilings enforced at dispatch). |
 | `[voice]` | The server-side transcriber behind `TRANSCRIBE`: an argv that turns an uploaded clip into text for a paste. |
 | `[organize]` | Who judges where panes belong for `phux organize`: `TypeSafe`'s Jev with a key, else repository matching. |
-| `[restore]` | Whether a starting server relaunches the panes the last server stop ended, as `phux restore` does by hand. |
+| `[restore]` | Whether a starting server relaunches the panes the last server stop ended, as `phux restore` does by hand, and the `[[restore.program]]` commands a relaunch may resume a program with. |
 | `[rune]` | Settings the Rune desktop app reads at launch; a key set here wins over the choice saved in the app. |
 | `[limits]` | Server-enforced ceilings that are not a per-pane spawn default: the largest L3 metadata value the server stores at one key. |
 

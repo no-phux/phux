@@ -88,6 +88,7 @@ fn watch_item_json(item: &WatchItem) -> Value {
     match item {
         WatchItem::Event(event) => phux_client::watch::event_json(event),
         WatchItem::AgentState(update) => agent_state_json(update),
+        WatchItem::Controller(update) => update.to_json(),
     }
 }
 

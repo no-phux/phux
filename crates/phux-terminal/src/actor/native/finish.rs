@@ -330,6 +330,7 @@ impl TerminalActor {
             return;
         }
         for (_, bytes) in replay {
+            self.resume.observe(bytes);
             self.terminal.borrow_mut().vt_write(bytes);
             self.source_events();
         }

@@ -255,8 +255,25 @@ impl Desk {
         }
     }
 
+    /// Offer the pane in front to the person's phone. Only the window in
+    /// front speaks: another window's poll must not withdraw its offer.
+    pub(super) fn handoff(&self) {
+        if !self.focused {
+            return;
+        }
+        let machine = self.machines.current.as_deref();
+        crate::handoff::offer(
+            self.shown
+                .as_ref()
+                .map(|shown| crate::handoff::payload(machine, &shown.resource)),
+        );
+    }
+
     pub fn focus_changed(&mut self, focused: bool) {
         self.focused = focused;
+        if !focused {
+            crate::handoff::offer(None);
+        }
         // Back at the window: what's on screen has now been seen, and a
         // laptop's socket may have died while it was away.
         if focused {

@@ -12,10 +12,10 @@ use std::path::Path;
 use std::time::Duration;
 
 use phux_protocol::ids::{ClientId, ResourceId, ResourceKind};
-use phux_protocol::wire::frame::{AgentEvent, EventStamp, FrameKind, Scope};
+use phux_protocol::wire::frame::{AgentEvent, EventStamp, FrameKind};
 use serde_json::{Map, Value, json};
 
-use crate::agent_meta::{AgentRecord, RESOURCE_AGENT_KEY, parse_agent_record};
+use crate::agent_meta::AgentRecord;
 use crate::attach::AttachError;
 use crate::attach::connection::Connection;
 use crate::deadline::Deadline;
@@ -23,6 +23,10 @@ use crate::resource::cursor::{NO_REPLAY, ResumeState};
 use crate::selector::format_terminal_id;
 use crate::state::get_state_on_with_interleaved;
 use crate::wait::FIRST_READ_FLOOR;
+
+mod metadata;
+pub use metadata::{CONTROLLER_EVENT, ControllerUpdate};
+use metadata::{agent_update, controller_update, subscribe_records};
 
 /// One streamed agent event plus the Terminal it concerns (`None` for a
 /// server-scoped event).
@@ -197,6 +201,8 @@ pub enum WatchItem {
     Event(WatchEvent),
     /// A `METADATA_CHANGED` frame for the `phux.agent/v1` key.
     AgentState(AgentStateUpdate),
+    /// A `METADATA_CHANGED` frame for the `phux.controller/v1` key.
+    Controller(ControllerUpdate),
 }
 
 /// Subscribe to the watch stream for `terminal` (server-wide via
@@ -242,12 +248,7 @@ impl FleetSubscription {
         if !terminal.is_local() || !self.terminals.insert(terminal.clone()) {
             return Ok(false);
         }
-        self.conn
-            .send(&FrameKind::SubscribeMetadata {
-                scope: Scope::Resource(terminal),
-                key: RESOURCE_AGENT_KEY.to_owned(),
-            })
-            .await?;
+        subscribe_records(&mut self.conn, &terminal).await?;
         Ok(true)
     }
 
@@ -292,6 +293,9 @@ impl FleetSubscription {
                 Ok(FrameKind::MetadataChanged {
                     scope, key, value, ..
                 }) => {
+                    if let Some(update) = controller_update(&scope, &key, value.as_deref()) {
+                        return Ok(Some(WatchItem::Controller(update)));
+                    }
                     let tracked = |id: &ResourceId| self.terminals.contains(id);
                     if let Some(update) =
                         agent_update(&mut self.last_seen, &scope, &key, value.as_deref(), tracked)
@@ -390,11 +394,7 @@ pub async fn subscribe_fleet_after(
     let mut ordered: Vec<ResourceId> = terminals.iter().cloned().collect();
     ordered.sort();
     for terminal in ordered {
-        conn.send(&FrameKind::SubscribeMetadata {
-            scope: Scope::Resource(terminal),
-            key: RESOURCE_AGENT_KEY.to_owned(),
-        })
-        .await?;
+        subscribe_records(&mut conn, &terminal).await?;
     }
     Ok(FleetSubscription {
         conn,
@@ -458,11 +458,7 @@ async fn send_subscriptions(
     })
     .await?;
     if let Some(id) = terminal {
-        conn.send(&FrameKind::SubscribeMetadata {
-            scope: Scope::Resource(id),
-            key: RESOURCE_AGENT_KEY.to_owned(),
-        })
-        .await?;
+        subscribe_records(conn, &id).await?;
     }
     Ok(())
 }
@@ -494,10 +490,13 @@ where
             Ok(FrameKind::MetadataChanged {
                 scope, key, value, ..
             }) => {
-                if let Some(update) =
-                    agent_update(&mut last_seen, &scope, &key, value.as_deref(), |_| true)
-                    && !sink(WatchItem::AgentState(update))
-                {
+                let item = controller_update(&scope, &key, value.as_deref())
+                    .map(WatchItem::Controller)
+                    .or_else(|| {
+                        agent_update(&mut last_seen, &scope, &key, value.as_deref(), |_| true)
+                            .map(WatchItem::AgentState)
+                    });
+                if item.is_some_and(|item| !sink(item)) {
                     return Ok(());
                 }
             }
@@ -507,37 +506,6 @@ where
             Err(err) => return Err(err),
         }
     }
-}
-
-/// Fold one `METADATA_CHANGED` into an [`AgentStateUpdate`] when it is a
-/// Terminal-scoped `phux.agent/v1` record for a `tracked` Terminal,
-/// remembering it in `last_seen` so the next update carries `previous`.
-fn agent_update(
-    last_seen: &mut HashMap<ResourceId, AgentRecord>,
-    scope: &Scope,
-    key: &str,
-    value: Option<&[u8]>,
-    tracked: impl FnOnce(&ResourceId) -> bool,
-) -> Option<AgentStateUpdate> {
-    if key != RESOURCE_AGENT_KEY {
-        return None;
-    }
-    let Scope::Resource(id) = scope else {
-        return None;
-    };
-    if !tracked(id) {
-        return None;
-    }
-    let record = value.and_then(parse_agent_record);
-    let previous = match &record {
-        Some(new) => last_seen.insert(id.clone(), new.clone()),
-        None => last_seen.remove(id),
-    };
-    Some(AgentStateUpdate {
-        terminal: Some(id.clone()),
-        record,
-        previous,
-    })
 }
 
 /// How a [`watch_resumable`] run ended: the gate was met, it had not been
@@ -661,9 +629,10 @@ mod tests {
         reason = "tests"
     )]
 
-    use crate::agent_meta::AgentMetaState;
+    use crate::agent_meta::{AgentMetaState, RESOURCE_AGENT_KEY};
     use crate::testkit::{EndOfScript, ScriptSpec, ScriptedServer, serve_one};
     use phux_protocol::ids::{SessionId, WindowId};
+    use phux_protocol::wire::frame::Scope;
     use phux_protocol::wire::info::{ResourceInfo, SessionSnapshot};
 
     use super::*;
@@ -996,7 +965,7 @@ mod tests {
             .iter()
             .filter_map(|item| match item {
                 WatchItem::AgentState(update) => Some(update),
-                WatchItem::Event(_) => None,
+                _ => None,
             })
             .collect();
         assert_eq!(updates.len(), 2, "the foreign key is filtered: {items:?}");

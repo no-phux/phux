@@ -281,9 +281,10 @@ fn is_session_create_result(key: &str) -> bool {
 }
 
 /// Keys the server owns and no client may set or delete, in any scope: the
-/// pane occupant, whoami, and the approval records (ADR-0128).
+/// pane occupant, the controller, whoami, and the approval records (ADR-0128).
 fn is_read_only_server_key(key: &str) -> bool {
     key == RESOURCE_PANE_OCCUPANT_KEY
+        || key == crate::wire::frame::RESOURCE_CONTROLLER_KEY
         || key == crate::wire::frame::RESOURCE_PROGRAM_STATUS_KEY
         || key.starts_with(crate::wire::frame::RESOURCE_PROGRAM_STATUS_RECORD_PREFIX)
         || key == WHOAMI_KEY

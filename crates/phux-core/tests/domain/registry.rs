@@ -60,6 +60,7 @@ fn creation_issues_handles_and_seeds_facets_from_the_launch_spec() {
                 cwd: Some("/repo".into()),
                 env: Vec::new(),
                 restore: None,
+                resume: None,
             })),
             ..shell()
         },

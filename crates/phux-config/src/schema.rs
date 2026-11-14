@@ -78,21 +78,13 @@ pub struct Config {
     pub restore: RestoreCfg,
 }
 
-/// `[restore]` table: bringing panes back after a reboot or a crash.
-#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(default, rename_all = "kebab-case", deny_unknown_fields)]
-pub struct RestoreCfg {
-    /// Run `phux restore` when the server starts: relaunch every pane a
-    /// server stop ended, and resume agents whose integration supports it.
-    /// Nothing is typed into a relaunched program.
-    pub on_start: bool,
-}
-
 mod defaults;
 mod keybindings;
+mod restore;
 
 pub use defaults::*;
 pub use keybindings::*;
+pub use restore::*;
 
 // ---------------------------------------------------------------------------
 // [status] / [sidebar] / [chrome]

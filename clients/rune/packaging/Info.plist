@@ -43,5 +43,9 @@
 	<true/>
 	<key>NSSupportsAutomaticGraphicsSwitching</key>
 	<true/>
+	<key>NSUserActivityTypes</key>
+	<array>
+		<string>sh.phux.pane</string>
+	</array>
 </dict>
 </plist>

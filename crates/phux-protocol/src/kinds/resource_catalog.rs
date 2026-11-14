@@ -435,6 +435,7 @@ pub static KINDS: [KindSpec; 5] = [
             RESOURCE_AGENT_KEY,
             RESOURCE_AGENT_SESSION_KEY,
             RESOURCE_PANE_OCCUPANT_KEY,
+            crate::wire::frame::RESOURCE_CONTROLLER_KEY,
             RESOURCE_TAGS_KEY,
             RESOURCE_LINK_KEY,
         ],

@@ -140,6 +140,7 @@ pub(in crate::runtime) fn mirror_config_into_state(
         s.set_window_size(cfg.window_size);
         s.set_keep_awake(cfg.keep_awake);
         s.set_voice(cfg.voice.clone());
+        s.set_restore(cfg.restore.clone());
         s.set_metadata_value_bytes(cfg.metadata_value_bytes);
         s.set_approval_limits(
             approval_ttl,

@@ -47,6 +47,7 @@ pub(crate) mod session_attach;
 pub(crate) use session_attach::prepare::prepare_attach;
 mod upgrade;
 mod whoami;
+pub(crate) use whoami::route_for;
 
 #[cfg(test)]
 mod approval_matrix;

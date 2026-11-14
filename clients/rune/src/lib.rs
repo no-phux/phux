@@ -15,6 +15,7 @@ mod diag;
 mod dock;
 mod galaxy;
 mod grid;
+mod handoff;
 mod hive;
 mod host_color;
 mod inbox;

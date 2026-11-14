@@ -73,6 +73,9 @@ pub(super) struct ClientTable {
     /// `HELLO.client_name` per connection, the label on its `ActorRef`
     /// (ADR-0123). Connection-scoped.
     pub(super) client_names: HashMap<ClientId, String>,
+    /// The connection that last typed into each Terminal, as published
+    /// under `phux.controller/v1`. Cleared by `forget_connection`.
+    pub(super) controllers: HashMap<WireResourceId, ClientId>,
     /// Terminals each connection subscribed as `VIEWER` (ADR-0127), by wire
     /// id. Cleared by `forget_connection`, a `PRIMARY` attach, or reaping.
     pub(super) viewers: HashMap<ClientId, HashSet<WireResourceId>>,
@@ -105,6 +108,7 @@ impl ClientTable {
             revocation_wake: Arc::new(Notify::new()),
             session_create_results: HashMap::new(),
             client_names: HashMap::new(),
+            controllers: HashMap::new(),
             viewers: HashMap::new(),
             next_subscription_epoch: 0,
         }
