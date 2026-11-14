@@ -215,8 +215,10 @@ fn validate_png(bytes: &[u8]) -> Result<(), ()> {
     reader.finish().map_err(|_| ())
 }
 
-/// Exit 1 without diagnostics is the interactive tools' cancel convention.
-/// Noninteractive failures and failures with diagnostics are never pictures.
+/// Treat interactive exit 1 with no output or diagnostics as cancellation.
+/// On Linux this is ambiguous: a silent tool failure is indistinguishable
+/// from dismissal. This policy is not a qualified cancel signal for every
+/// picker or desktop. Neither case produces a picture.
 #[cfg(any(target_os = "macos", target_os = "linux"))]
 fn picked(command: &mut Command, file: &Path, picker: &Picker, interactive: bool) -> Shot {
     let errors = file.with_extension("stderr");

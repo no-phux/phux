@@ -3,6 +3,8 @@
 use phux_client_core::input_replay::INPUT_RETRY_HORIZON;
 use phux_protocol::wire::frame::{Command, CommandResult, CommandValue, ErrorCode, FrameKind};
 
+use crate::control::PrivateUploadDestination;
+
 use super::{
     COMPLETED_UPLOADS_KEPT, ControlPlane, FileUploadOutcome, FileUploadReceipt, Pending,
     PendingUpload, ServerFeature, TranscribeOutcome, TranscribeReceipt, UPLOAD_CHUNK_BYTES,
@@ -19,6 +21,31 @@ impl std::fmt::Debug for PendingUpload {
 }
 
 impl ControlPlane {
+    pub(in crate::control) fn validate_private_frame(
+        &mut self,
+        destination: &PrivateUploadDestination,
+        transfer_id: Option<u64>,
+    ) -> bool {
+        let current = self.private_upload_destination_is_current(destination);
+        let Some(transfer_id) = transfer_id else {
+            return current;
+        };
+        // Expiry or connection loss may already have settled the transfer.
+        if !self.extensions.uploads.contains_key(&transfer_id) {
+            return false;
+        }
+        if !current {
+            self.finish_upload(
+                transfer_id,
+                self.upload_failure_outcome(transfer_id),
+                None,
+                None,
+                "private image destination changed before sending",
+            );
+        }
+        current
+    }
+
     pub(in crate::control) fn cancel_private_uploads(&mut self) {
         let ids: Vec<_> = self
             .extensions
@@ -126,19 +153,29 @@ impl ControlPlane {
                 final_chunk,
                 sha256: final_chunk.then_some(upload.sha256),
             };
-            let request_id = self.next_request_id();
-            let Some(upload) = self.extensions.uploads.get_mut(&transfer_id) else {
-                continue;
-            };
-            upload.attempted = true;
-            upload.in_flight = Some(request_id);
-            self.pending
-                .insert(request_id, Pending::PutFile(transfer_id));
-            self.queue_frame(&FrameKind::Command {
-                request_id,
-                command,
-            });
+            self.queue_upload_chunk(transfer_id, command);
             return;
+        }
+    }
+
+    fn queue_upload_chunk(&mut self, transfer_id: u64, command: Command) {
+        let request_id = self.next_request_id();
+        let Some(upload) = self.extensions.uploads.get_mut(&transfer_id) else {
+            return;
+        };
+        upload.attempted = true;
+        upload.in_flight = Some(request_id);
+        let destination = upload.destination.clone();
+        self.pending
+            .insert(request_id, Pending::PutFile(transfer_id));
+        let frame = FrameKind::Command {
+            request_id,
+            command,
+        };
+        if let Some(destination) = destination {
+            self.queue_private_frame(&frame, destination, Some(transfer_id));
+        } else {
+            self.queue_frame(&frame);
         }
     }
 
@@ -260,7 +297,14 @@ impl ControlPlane {
                 self.extensions.completed_uploads.pop_front();
             }
         }
-        self.extensions.uploads.remove(&transfer_id);
+        if let Some(request_id) = self
+            .extensions
+            .uploads
+            .remove(&transfer_id)
+            .and_then(|upload| upload.in_flight)
+        {
+            self.pending.remove(&request_id);
+        }
         self.extensions.upload_order.retain(|id| *id != transfer_id);
         self.extensions.upload_receipts.push(FileUploadReceipt {
             transfer_id,

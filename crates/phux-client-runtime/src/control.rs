@@ -287,7 +287,7 @@ pub struct ControlPlane {
     /// replica's marks answer instead; see [`ControlPlane::command_state`].
     command_states: HashMap<ResourceId, bool>,
     clock_origin: Instant,
-    outbound: Vec<Vec<u8>>,
+    outbound: Vec<commands::OutboundFrame>,
     events: Vec<Event>,
     clipboard_event_bytes: usize,
     clipboard_focus: Option<ResourceId>,

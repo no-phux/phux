@@ -185,8 +185,10 @@ session (or `--session NAME`). It never creates a session on its own.
   A lost connection may leave the path's delivery uncertain: look before
   retrying. Captures are bounded to 64 MiB, 8192 pixels per side and 256 MiB
   decoded; the private local folder is removed, and closing the main window
-  or quitting cancels and reaps its picker. The uploaded file follows ordinary server
-  upload retention.
+   or quitting cancels and reaps its picker. Linux exit 1 with no output or
+   diagnostics is treated as dismissal, but can also mean a silent tool
+   failure; cancellation behavior still needs qualification per picker and
+   desktop. The uploaded file follows ordinary server upload retention.
 - **Links.** Hold ⌘ over a URL (or an OSC 8 hyperlink) to underline it and
   see where it goes in the title bar; ⌘-click opens it. On the phone form a
   tap on a link opens it, and a drag across one still selects. URLs wrapped

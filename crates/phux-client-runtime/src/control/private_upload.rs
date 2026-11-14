@@ -6,7 +6,7 @@ use phux_protocol::ids::{
 };
 use phux_protocol::wire::frame::ExecState;
 
-use super::{ControlPlane, PasteTrust, ServerFeature, Status};
+use super::{ControlPlane, FrameKind, PasteEvent, PasteTrust, ServerFeature, Status};
 
 /// An opaque, connection-bound destination for a user-selected private image.
 ///
@@ -66,7 +66,7 @@ impl ControlPlane {
             && self.organization.is_live()
             && self.server_has(ServerFeature::FileUpload)
     }
-    /// Check under the same control lock as upload admission or path delivery.
+    /// Check under the same control lock as admission and the outbound drain.
     #[must_use]
     pub fn private_upload_destination_is_current(
         &self,
@@ -79,7 +79,8 @@ impl ControlPlane {
 
     /// Private-image transfers never queue offline or survive a reconnect.
     ///
-    /// The destination is checked again before every chunk and its receipt.
+    /// The destination is checked again before every chunk, its outbound
+    /// drain, and its receipt.
     pub fn put_private_image(
         &mut self,
         destination: &PrivateUploadDestination,
@@ -109,14 +110,22 @@ impl ControlPlane {
         if !self.private_upload_destination_is_current(destination)
             || !self.input_ready(&destination.terminal)
             || self.input_replay.must_order_after(&destination.terminal)
+            || path.len() > super::input::MAX_RAW_PASTE
         {
             return false;
         }
-        self.send_paste(
-            &destination.terminal,
-            path.as_bytes().to_vec(),
-            PasteTrust::Trusted,
-        )
+        self.queue_private_frame(
+            &FrameKind::InputPaste {
+                terminal_id: destination.terminal.clone(),
+                event: PasteEvent {
+                    trust: PasteTrust::Trusted,
+                    data: path.as_bytes().to_vec(),
+                },
+            },
+            destination.clone(),
+            None,
+        );
+        true
     }
 }
 
