@@ -44,6 +44,7 @@ unshipped experiment, and the phone apps are in testing (Android on Google Play)
 
 ## Build on phux
 
+- [Build a phux client](./build-a-client.md): show agents, their questions and answers in your own app, from `phux agent list --json` and `phux watch --json`.
 - [Build on phux](./building.md): the versioned `--json` CLI, the MCP server, `phux watch`, the 1.x server protocol, OSC 7501, the plugin API, and the surfaces this repository does not ship.
 
 ## Build for phux

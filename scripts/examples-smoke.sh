@@ -15,6 +15,8 @@ for example in "$ROOT"/examples/agents/0[1-4]-*.sh; do
     echo "examples smoke: $(basename "$example")"
     bash "$example"
 done
+echo "examples smoke: 06-client.sh"
+bash "$ROOT/examples/agents/06-client.sh"
 echo "examples smoke: agent_loop.py"
 python3 "$ROOT/examples/agents/agent_loop.py"
 

@@ -404,20 +404,8 @@ fn report_answered(
         outln!("answered {} on {label}: {answer}", marker.id);
         return ExitCode::SUCCESS;
     }
-    let document = serde_json::json!({
-        "schema_version": 1,
-        "terminal": label,
-        "ask": {
-            "id": marker.id,
-            "question": marker.question,
-            "suggestions": marker.suggestions,
-        },
-        "answer": answer,
-        "source": source.as_str(),
-        "operation_id": operation.to_string(),
-        "delivered": true,
-    });
-    match serde_json::to_string_pretty(&document) {
+    match serde_json::to_string_pretty(&answered_document(label, marker, answer, source, operation))
+    {
         Ok(rendered) => {
             outln!("{rendered}");
             ExitCode::SUCCESS
@@ -432,6 +420,30 @@ fn report_answered(
             crate::exit_codes::EXIT_FAILURE,
         ),
     }
+}
+
+/// The `agent answer --json` success document. Its shape is documented in
+/// docs/build-a-client.md and checked against it by a test.
+fn answered_document(
+    label: &str,
+    marker: &AskMarker,
+    answer: &str,
+    source: AnswerSource,
+    operation: &uuid::Uuid,
+) -> serde_json::Value {
+    serde_json::json!({
+        "schema_version": 1,
+        "terminal": label,
+        "ask": {
+            "id": marker.id,
+            "question": marker.question,
+            "suggestions": marker.suggestions,
+        },
+        "answer": answer,
+        "source": source.as_str(),
+        "operation_id": operation.to_string(),
+        "delivered": true,
+    })
 }
 
 #[cfg(test)]

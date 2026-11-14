@@ -27,6 +27,8 @@ Start with [Build on phux](./building.md).
   `phux agent doc serve` over a pipe; `[[producers]]` keeps it running.
 - [Agent integrations](./agents.md#agent-setup). Includes Claude Code, pi,
   Oh My Pi, OpenCode, Grok, and any MCP client.
+- [Build a phux client](./build-a-client.md). Agents, questions, answers,
+  and events as JSON.
 - [Calling phux from a program](./agent-quickstart.md#call-phux-from-a-program)
   and [Embed phux](./embedding.md).
 
