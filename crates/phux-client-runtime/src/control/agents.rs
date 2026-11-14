@@ -30,6 +30,16 @@ impl ControlPlane {
                 });
                 return Ok(());
             }
+            // Only a connection that offered its ssh-agent is sent these;
+            // the caller that offered answers them (`forward::agent_reply`).
+            event @ AgentEvent::SshAgentRequest { .. } => {
+                self.push_event(Event::Frame(Box::new(super::FrameKind::Event {
+                    terminal,
+                    event,
+                    stamp: None,
+                })));
+                return Ok(());
+            }
             event => event,
         };
         // Server-scoped events carry no terminal; the server always scopes

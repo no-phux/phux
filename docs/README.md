@@ -101,7 +101,7 @@ Generated from the `phux` binary, so they match the code these docs describe.
 - [Server protocol](./protocol.md): framing, handshake, capabilities, and changing the wire.
 - [File transfer and checkout](./protocol-files.md): the commands that move files and inspect a checkout.
 - [Host services](./host-services.md): HTTP to a host service (OpenCode) over the phux connection.
-- [Port forwarding](./forwarding.md): `phux forward -L`, a local TCP port carried to the server's loopback.
+- [Port and ssh-agent forwarding](./forwarding.md): `phux forward -L`, a local TCP port carried to the server's loopback; `--agent`, your ssh-agent lent to its panes.
 - [Compatibility](./compatibility.md): what an older or newer peer sees.
 - [Embed phux](./embedding.md): put a phux terminal in your own app with `phux-client-runtime` or `phux-client-ffi`.
 - [Development](./development.md): set up, build, and run the checks.

@@ -195,6 +195,8 @@ pub struct ServerState {
     hub: HubState,
     /// Satellite uplinks this server keeps to hubs (ADR-0182).
     uplinks: crate::uplink::Uplinks,
+    /// The ssh-agent broker (`docs/forwarding.md#ssh-agent`).
+    forward_agent: crate::runtime::forward::agent::Broker,
     /// Event-hook dispatcher; `None` when no hooks are configured (firing
     /// is then a no-op).
     hook_dispatcher: Option<crate::hooks::HookDispatcher>,

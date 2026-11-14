@@ -17,6 +17,7 @@
     reason = "the connection dispatcher reaches this facade"
 )]
 
+pub(crate) mod agent;
 mod slots;
 #[cfg(test)]
 mod tests;
@@ -70,11 +71,13 @@ pub(in crate::runtime) async fn submit(
     }
 }
 
-/// Close every forward of an ending connection.
+/// Close every forward of an ending connection, and withdraw its
+/// ssh-agent offer.
 pub(in crate::runtime) fn close_all(state: &SharedState, client: ClientId, forwards: &Forwards) {
     for closed in forwards.close_all() {
         audit_close(state, client, &closed, "disconnected");
     }
+    agent::withdraw(state, client);
 }
 
 /// `Some` is the answer now; `None` means a spawned task answers.
@@ -87,6 +90,9 @@ fn admit(
     let Command::Forward { op } = command else {
         return Some(refuse(ErrorCode::InternalError, "not a forward command"));
     };
+    if matches!(op, ForwardOp::AgentOffer | ForwardOp::AgentReply { .. }) {
+        return Some(agent::admit(&ctx, op));
+    }
     let (enabled, allow) = ctx.state.with(|s| {
         let cfg = s.forward();
         let allow = matches!(op, ForwardOp::Open { .. }).then(|| cfg.allow.clone());
@@ -119,6 +125,7 @@ fn admit(
             }
             return Some(CommandResult::Ok);
         }
+        ForwardOp::AgentOffer | ForwardOp::AgentReply { .. } => return None,
     };
     admitted.err()
 }

@@ -1,5 +1,6 @@
 //! `phux forward -L`: listen here, carry each connection to a port on the
 //! server's loopback (`docs/forwarding.md`). Runs until Ctrl-C.
+//! `phux forward --agent` is in [`super::forward_agent`].
 use std::process::ExitCode;
 use std::sync::Arc;
 
@@ -61,7 +62,7 @@ fn parse(spec: &str) -> Result<Spec, String> {
     })
 }
 
-struct Activity(Notify);
+pub(super) struct Activity(pub(super) Notify);
 
 impl Listener for Activity {
     fn on_activity(&self) {
@@ -69,14 +70,16 @@ impl Listener for Activity {
     }
 }
 
-pub(crate) fn run(local: &str, spec: ServerSpec) -> ExitCode {
-    let forward = match parse(local) {
+/// `-L local`, or with none `--agent` (`yes` skips its per-signature ask).
+pub(crate) fn run(local: Option<&str>, yes: bool, spec: ServerSpec) -> ExitCode {
+    let forward = match local.map(parse).transpose() {
         Ok(forward) => forward,
         Err(err) => {
-            error!("-L {local}: {err}");
+            error!("-L {}: {err}", local.unwrap_or_default());
             return ExitCode::from(2);
         }
     };
+    let host = spec.remote.clone();
     let (rt, server) = match spec.prepare("forward", false) {
         Ok(value) => value,
         Err(code) => return code,
@@ -100,23 +103,35 @@ pub(crate) fn run(local: &str, spec: ServerSpec) -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
-    let status = rt.block_on(serve(&client, &forward));
+    let status = rt.block_on(async {
+        let activity = Arc::new(Activity(Notify::new()));
+        client.set_listener(activity.clone());
+        if let Err(code) = attached(&client, &activity).await {
+            return code;
+        }
+        match &forward {
+            Some(forward) => serve(&client, &activity, forward).await,
+            None => super::forward_agent::serve(&client, &activity, host, yes).await,
+        }
+    });
     client.close();
     rt.shutdown_background();
     status
 }
 
-async fn serve(client: &Arc<Client>, spec: &Spec) -> ExitCode {
-    let activity = Arc::new(Activity(Notify::new()));
-    client.set_listener(activity.clone());
+/// Wait for the first connection to be established.
+async fn attached(client: &Client, activity: &Activity) -> Result<(), ExitCode> {
     loop {
         let _ = client.take_events();
         match client.status() {
-            Status::Attached => break,
-            status if status.is_terminal() => return unreachable_server(client),
+            Status::Attached => return Ok(()),
+            status if status.is_terminal() => return Err(unreachable_server(client)),
             _ => activity.0.notified().await,
         }
     }
+}
+
+async fn serve(client: &Arc<Client>, activity: &Activity, spec: &Spec) -> ExitCode {
     if !client.with_control(|control| control.forward_supported()) {
         error!(
             "the server does not advertise FORWARD_TCP: upgrade phux on that host, or set \
@@ -172,7 +187,7 @@ async fn serve(client: &Arc<Client>, spec: &Spec) -> ExitCode {
     }
 }
 
-fn unreachable_server(client: &Client) -> ExitCode {
+pub(super) fn unreachable_server(client: &Client) -> ExitCode {
     let why = client.last_error().unwrap_or_else(|| "closed".to_owned());
     error!("cannot reach the phux server: {why}");
     ExitCode::FAILURE

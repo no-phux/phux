@@ -38,7 +38,7 @@ fn upload() -> FileUploadId {
     FileUploadId::new([1; 16]).unwrap()
 }
 
-/// One sample per `FORWARD_*` op; all four share a row.
+/// One sample per forwarding op; all share a row.
 fn forward_samples() -> Vec<(Command, &'static Rule)> {
     use crate::forward::ForwardOp;
     [
@@ -56,6 +56,11 @@ fn forward_samples() -> Vec<(Command, &'static Rule)> {
             fin: false,
         },
         ForwardOp::Close { id: 1 },
+        ForwardOp::AgentOffer,
+        ForwardOp::AgentReply {
+            id: 1,
+            message: vec![crate::forward::SSH_AGENT_FAILURE],
+        },
     ]
     .into_iter()
     .map(|op| (Command::Forward { op }, &C_FORWARD))

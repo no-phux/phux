@@ -298,24 +298,33 @@ static C_SERVICE_HTTP: Rule = Rule::verbs(
 // The server dials as the serving user, which an `INPUT` holder on this
 // server can already do from any shell (`nc`): `INPUT` on the server.
 static C_FORWARD: Rule = Rule::verbs(
-    "`FORWARD_OPEN`, `FORWARD_READ`, `FORWARD_WRITE`, `FORWARD_CLOSE`",
+    "`FORWARD_OPEN`, `FORWARD_READ`, `FORWARD_WRITE`, `FORWARD_CLOSE`, `AGENT_OFFER`, `AGENT_REPLY`",
     &[Verb::Input],
     GLOBAL,
 );
-/// One `FORWARD_*` method: all four share a row and a gate.
+/// One forwarding method: all share a row; `$bit` gates it (`FORWARD_TCP`
+/// when not named).
 macro_rules! forward {
     ($name:expr, $tag:expr) => {
+        forward!($name, $tag, ForwardTcp)
+    };
+    ($name:expr, $tag:expr, $bit:ident) => {
         method!(
             $name,
             Carrier::Command($tag),
             [C_FORWARD],
             Some(FeatureGate::FeaturesExt {
-                mask: ServerFeatureExt::ForwardTcp.mask(),
-                wire_name: ServerFeatureExt::ForwardTcp.wire_name(),
+                mask: ServerFeatureExt::$bit.mask(),
+                wire_name: ServerFeatureExt::$bit.wire_name(),
             })
         )
     };
 }
+/// The gate on `SERVICE_HTTP_*`.
+const SERVICE_HTTP: Option<FeatureGate> = Some(FeatureGate::FeaturesExt {
+    mask: ServerFeatureExt::HostServiceHttp.mask(),
+    wire_name: ServerFeatureExt::HostServiceHttp.wire_name(),
+});
 static C_TRANSCRIBE: Rule = Rule::verbs("`TRANSCRIBE`", &[Verb::Input], Subject::NamedTerminal);
 static C_DETACH_CLIENTS_SESSION: Rule = Rule::verbs(
     "`DETACH_CLIENTS { session: Some }`",

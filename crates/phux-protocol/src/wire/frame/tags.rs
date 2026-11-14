@@ -224,4 +224,7 @@ pub(crate) const EVENT_TAG_SESSION_PROJECT_SET: u8 = 0x1d;
 /// relayed unjournaled to a document's producer. `0x1e` and `0x1f` are left
 /// free for concurrent work.
 pub(crate) const EVENT_TAG_DOCUMENT_INPUT: u8 = 0x20;
+/// Wire tag for [`AgentEvent::SshAgentRequest`]: one ssh-agent request from
+/// a pane, sent unjournaled to the connection that offered its agent.
+pub(crate) const EVENT_TAG_AGENT_REQUEST: u8 = 0x21;
 }

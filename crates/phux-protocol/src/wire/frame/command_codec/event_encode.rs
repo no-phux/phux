@@ -123,6 +123,10 @@ pub(in crate::wire) fn encode_agent_event(event: &AgentEvent, enc: &mut Encoder<
                 intent.encode(&mut body_enc);
                 crate::wire::frame::EVENT_TAG_DOCUMENT_INPUT
             }
+            AgentEvent::SshAgentRequest { id, message } => {
+                super::forward::encode_agent_request(*id, message, &mut body_enc);
+                crate::wire::frame::EVENT_TAG_AGENT_REQUEST
+            }
             org @ (AgentEvent::SessionCreated { .. }
             | AgentEvent::SessionRenamed { .. }
             | AgentEvent::SessionProjectSet { .. }
