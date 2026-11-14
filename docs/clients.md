@@ -135,7 +135,8 @@ name is one machine, so an override on either role colours it in both,
 unless the other role has its own override.
 
 `phux host ls --json` reports each host's resolved `color` (`id`, `hex`,
-and whether an `override` chose it) and this machine under `local`. The
+and whether an `override` chose it) and this machine under `local`, with
+the `cert_fingerprint` its server presents. The
 desktop's Machines sheet sets the same override, and a desktop window's
 sessions, tabs and focused terminal take its machine's colour.
 

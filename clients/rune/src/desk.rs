@@ -440,6 +440,7 @@ impl Desk {
         changed |= opened;
         let unfocused = self.sync_focus(&client);
         self.title(tx);
+        self.handoff();
         if rearrange || opened || self.layout_is_stale() {
             changed |= self.refresh_layout(&client);
         }
