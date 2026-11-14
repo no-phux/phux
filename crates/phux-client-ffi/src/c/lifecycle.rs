@@ -289,7 +289,6 @@ fn queue_attach_frame(
         ));
     }
     client.attach_queued = true;
-    client.expected_attach_id = Some(options.attach_id);
     client.drain_outbound();
     Ok(())
 }

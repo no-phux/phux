@@ -74,7 +74,6 @@ impl Client {
         self.resources.clear();
         self.agent_streams.clear();
         self.attach_queued = false;
-        self.expected_attach_id = None;
         self.attached = false;
         self.attached_notified = false;
         self.protocol_ready = false;
@@ -161,7 +160,6 @@ impl Client {
             }
             Event::Attached { .. } => {
                 self.attach_queued = false;
-                self.expected_attach_id = None;
                 self.attached = true;
                 crate::c::arrangement::initial_read(self);
                 return Ok(EventProjection::Handled(true));

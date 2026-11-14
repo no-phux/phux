@@ -116,8 +116,8 @@ impl RemoteClient {
 #[derive(uniffi::Object)]
 pub struct RemoteClient {
     url: String,
-    cols: Mutex<u16>,
-    rows: Mutex<u16>,
+    /// `(cols, rows)`: one lock, so a resize never tears.
+    viewport: Mutex<(u16, u16)>,
     fingerprint: Option<String>,
     token: Option<String>,
     /// The certificate-authority pin beside the leaf pin (ADR-0153), set
@@ -211,8 +211,7 @@ impl RemoteClient {
 
     pub fn resize_viewport(&self, cols: u16, rows: u16) {
         let viewport = (cols.max(1), rows.max(1));
-        *self.cols.lock().unwrap() = viewport.0;
-        *self.rows.lock().unwrap() = viewport.1;
+        *self.viewport.lock().unwrap() = viewport;
         if let Some(client) = self.runtime_client() {
             client.resize_viewport(viewport.0, viewport.1);
         }
@@ -824,7 +823,7 @@ impl RemoteClient {
     fn control_options(&self) -> phux_client_runtime::control::ControlOptions {
         phux_client_runtime::control::ControlOptions {
             client_name: "phux-mobile".to_owned(),
-            viewport: (*self.cols.lock().unwrap(), *self.rows.lock().unwrap()),
+            viewport: *self.viewport.lock().unwrap(),
             scrollback_lines: SCROLLBACK_LINES,
             attach: None,
             attach_role: self.attach_role(),
@@ -843,8 +842,7 @@ impl RemoteClient {
     ) -> Arc<Self> {
         Arc::new(Self {
             url,
-            cols: Mutex::new(cols),
-            rows: Mutex::new(rows),
+            viewport: Mutex::new((cols, rows)),
             fingerprint,
             token,
             authority: Mutex::new(None),
