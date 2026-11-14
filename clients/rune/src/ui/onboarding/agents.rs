@@ -1,4 +1,4 @@
-//! The Agents & permissions step and its grant sheet.
+//! The Agents step (and permissions, on macOS) and its grant sheet.
 
 use super::*;
 
@@ -159,8 +159,8 @@ pub(super) fn agents(desk: &Desk, p: &Ink) -> El {
         .gap(18.0)
         .child(heading(
             &icons::PUZZLE,
-            "Agents & permissions",
-            "Give your agents the phux skill, and phux the access they ask for.",
+            words::PROMISE.agents_title,
+            words::PROMISE.agents_lead,
             p,
         ))
         .child(
