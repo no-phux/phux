@@ -28,6 +28,21 @@ full Rust pool and every lane the diff needs. A `main` push whose tree a
 pull request or merge group already validated with the same lanes reuses
 that receipt (`tools/src/routing/receipt.ts`).
 
+## After the merge
+
+There is no merge queue. A pull request merges once its required `ci` and
+`commitlint` checks pass on its own diff; the ruleset does not make it
+re-run against a newer `main`. Slow lanes run first on `main`'s push:
+native setup, rust icount, full Rune Linux qualification, and the Apple
+legs in `rune-macos`. Releases still ship only from a green `ci` push, so
+a red `main` blocks a release, not a merge.
+
+When a `ci` or `rune-macos` push run on `main` fails,
+[`main-red.yml`](../.github/workflows/main-red.yml) opens one `ci/main-red`
+issue listing the commits since that workflow's last green push; later
+failures comment on it. It closes once every tracked workflow's latest
+`main` push is green. Fix forward or revert the suspect; do not pile on.
+
 ## Native Apple qualification
 
 `ci.yml`'s `rune` lane is Linux. A pull request runs `check.sh` and cargo-deny
