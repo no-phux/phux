@@ -163,18 +163,6 @@ pub enum WireEvent {
     /// on attach, followed live, and re-read after gaps; an older server
     /// that omits it reads as `false`.
     BackgroundWork { terminal_id: String, running: bool },
-    /// The server's held approvals changed; re-read `approvals()`. Only
-    /// after `watch_approvals`.
-    ApprovalsChanged,
-    /// A `decide_approval` resolved: `decided`; `stale` (decided elsewhere,
-    /// expired, or withdrawn first); `refused` with the server's `message`,
-    /// typically no un-held right over the action's subject; or
-    /// `unconfirmed` (re-read `approvals()` before deciding again).
-    ApprovalDecided {
-        id: String,
-        outcome: String,
-        message: Option<String>,
-    },
     /// An exact SDK intent's outcome. Queued is submission, not provider
     /// consumption; Unknown requires reconciliation and must not be replayed.
     NativeAgentResult {
@@ -332,8 +320,6 @@ impl core::fmt::Debug for WireEvent {
             AgentAsked { terminal_id, question_id, text, suggestions, waiting_seconds },
             AgentAskedState { terminal_id, asked },
             BackgroundWork { terminal_id, running },
-            ApprovalsChanged,
-            ApprovalDecided { id, outcome, message },
             NativeAgentResult { agent_session_id, operation_id, disposition, detail },
             AgentStateChanged {
                 terminal_id, name, kind, session, state, attention,
