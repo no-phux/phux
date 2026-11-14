@@ -36,6 +36,7 @@ guards: brand-check shellcheck tools-check docs-check install-surface-check
     actionlint .github/workflows/*.yml
     bash scripts/check-action-pins.sh
     bash scripts/check-file-tokens_test.sh
+    bash scripts/ci/main-red_test.sh
     bash scripts/check-toolchain-sync.sh
     bash scripts/check-cache-portable.sh
     bash scripts/check-frozen-fixtures.sh
