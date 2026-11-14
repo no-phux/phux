@@ -287,6 +287,30 @@ mod tests {
             "iPhone",
             "an ssh or uplink hub"
         );
+        // A person's device paired before scope schema v2, with the legacy
+        // six-verb ceiling plus its watch grants, is believed; the same
+        // ceiling on an automation key, or one verb short, is not.
+        let legacy = [
+            crate::workload::LEGACY_PAIRED_DEVICE_SCOPE,
+            "observe@display",
+            "observe@window",
+            "input@display",
+            "input@window",
+        ];
+        let (old_hub, old_bot, short) = (ClientId(4), ClientId(5), ClientId(6));
+        state.set_connection_grant(
+            old_hub,
+            scoped(&legacy).with_kind(phux_core::actor::PrincipalKind::Human),
+        );
+        state.set_connection_grant(old_bot, scoped(&legacy));
+        state.set_connection_grant(
+            short,
+            scoped(&["inventory,observe,create,bind,input@global"])
+                .with_kind(phux_core::actor::PrincipalKind::Human),
+        );
+        assert_eq!(origin(&state, old_hub, claim), "iPhone");
+        assert_eq!(origin(&state, old_bot, claim), "client:5");
+        assert_eq!(origin(&state, short, claim), "client:6");
         // An automation key's claim is ignored.
         assert_eq!(origin(&state, bot, claim), "client:2");
         assert_eq!(who(&state, bot, claim), "anonymous");
