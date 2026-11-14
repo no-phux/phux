@@ -147,6 +147,7 @@ pub fn find_bar(desk: &Desk, id: &ResourceId, area: [f32; 2], ink: &Ink) -> Opti
     let left = (PAD + area[0] - width - 6.0).max(0.0);
     let field = text_input(&desk.find_query, TextStyle::new(13.0, 400.0).lh(20.0))
         .key("find-query")
+        .label("Find in terminal")
         .single_line()
         .grow(1.0)
         .min_w(0.0)

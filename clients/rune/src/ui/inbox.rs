@@ -153,6 +153,7 @@ fn waiting_card(desk: &Desk, waiting: &Waiting, picked: bool, ink: &Ink) -> El {
                 .child(
                     text_input(&desk.inbox.reply, TextStyle::new(13.0, 400.0).lh(18.0))
                         .key("inbox-reply")
+                        .label("Reply to question")
                         .single_line()
                         .grow(1.0)
                         .color(ink.text)

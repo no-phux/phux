@@ -247,6 +247,7 @@ pub fn rename_sheet(desk: &Desk, ink: &Ink) -> Option<El> {
                 TextStyle::new(14.0, 400.0).lh(20.0),
             )
             .key("rename-field")
+            .label("New name")
             .single_line()
             .grow(1.0)
             .color(ink.text)

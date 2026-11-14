@@ -121,9 +121,10 @@ records explain history; [look them up deliberately](./architecture.md#historica
   a command: a relaunch runs only the argv the user listed for that `app`
   in `[[restore.program]]`, with the token as whole arguments and no shell.
   Any writer to the pane can set the token, so it is untrusted input to
-  that command, and it stays on the server: not metadata, not on the wire,
-  not mirrored to a hub. phux reads the key from the PTY bytes itself until
-  the engine reports unknown keys
+  that command. The stored field is not metadata, an organization wire
+  field, or mirrored to a hub. The original OSC is still readable pane
+  output, so the token is not secret. phux reads the key from the PTY bytes
+  itself until the engine reports unknown keys
   ([protocol](./program-protocol.md#resume)).
 
 **Substrate**

@@ -236,6 +236,7 @@ fn field(desk: &Desk, ink: &Ink) -> El {
                 .child(
                     text_input(&desk.machines.field, TextStyle::new(13.0, 400.0).lh(18.0))
                         .key("machine-field")
+                        .label("Computer SSH address")
                         .single_line()
                         .grow(1.0)
                         .color(ink.text)
