@@ -2995,6 +2995,13 @@ Flags:
                                  list. A link's single-use enrollment ticket
                                  must redeem, or nothing is registered. Phux
                                  Rune runs this for a link it is opened with.
+      --hardware-key             Keep the client certificate's key in this Mac's
+                                 Secure Enclave instead of a file, so a copy of
+                                 the key file is useless anywhere else. For the
+                                 ssh form and `--code`; refused, with nothing
+                                 changed, on a machine without a Secure Enclave.
+                                 A host added this way keeps a hardware key
+                                 through later renewals.
       --session <NAME>           Session to attach on arrival (`--role remote`
                                  only). Omitted: the remote server's own
                                  last-attach memory decides.
@@ -3329,7 +3336,7 @@ the one it replaces on the far host. Nothing else about the entry changes: no
 re-pairing, no service install. Certificates are issued for 90 days; dials warn
 and `phux doctor` reports one within 14 days of expiry.
 
-Usage: phux host renew [--remote-phux <PATH>] [--json] <NAME>
+Usage: phux host renew [FLAGS] <NAME>
 
 Arguments:
   <NAME>  Registered remote name.
@@ -3340,6 +3347,11 @@ Flags:
                             Omitted: the one the entry recorded when it was
                             added.
                             (default: phux)
+      --hardware-key        Make the new key in this Mac's Secure Enclave
+                            instead of a file, and remove the file key it
+                            replaces. Refused, with nothing changed, on a
+                            machine without a Secure Enclave. A host already on
+                            a hardware key stays on one without this flag.
       --json                Emit stable, versioned JSON on stdout instead of the
                             human view. On failure, stdout stays empty and
                             stderr carries one JSON error object.

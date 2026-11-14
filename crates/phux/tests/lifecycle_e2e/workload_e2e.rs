@@ -245,6 +245,7 @@ include!("workload_e2e/host_harness.rs");
 include!("workload_e2e/raw_session.rs");
 include!("workload_e2e/host_enrollment.rs");
 include!("workload_e2e/renewal.rs");
+include!("workload_e2e/hardware_key.rs");
 include!("workload_e2e/host_read.rs");
 include!("workload_e2e/narrow_read.rs");
 include!("workload_e2e/short_lived_identity.rs");

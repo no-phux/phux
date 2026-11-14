@@ -102,6 +102,14 @@ pub(crate) struct AddOpts {
     #[usage(long, value_name = "LINK")]
     pub(crate) code: Option<String>,
 
+    /// Keep the client certificate's key in this Mac's Secure Enclave
+    /// instead of a file, so a copy of the key file is useless anywhere
+    /// else. For the ssh form and `--code`; refused, with nothing changed,
+    /// on a machine without a Secure Enclave. A host added this way keeps a
+    /// hardware key through later renewals.
+    #[usage(long, conflicts("--ssh-only", "--token-file", "--cert-fingerprint"))]
+    pub(crate) hardware_key: bool,
+
     /// Session to attach on arrival (`--role remote` only). Omitted: the
     /// remote server's own last-attach memory decides.
     #[usage(long, value_name = "NAME")]
@@ -267,6 +275,13 @@ pub(crate) enum HostAction {
         /// recorded when it was added.
         #[usage(long, value_name = "PATH", default = "phux")]
         remote_phux: String,
+
+        /// Make the new key in this Mac's Secure Enclave instead of a file,
+        /// and remove the file key it replaces. Refused, with nothing
+        /// changed, on a machine without a Secure Enclave. A host already on
+        /// a hardware key stays on one without this flag.
+        #[usage(long)]
+        hardware_key: bool,
 
         #[usage(flatten)]
         json: JsonOpt,

@@ -127,6 +127,9 @@ pub enum TlsClientIdentity {
     /// platform keystore signs each handshake through [`HeldIdentity`]'s
     /// signer (ADR-0154). Never read from the environment.
     Held(HeldIdentity),
+    /// [`Self::Held`], and refuse a server that does not request the client
+    /// certificate, on the terms of [`Self::RequirePaired`].
+    HeldRequirePaired(HeldIdentity),
     /// [`Self::PemFiles`], and refuse a server that does not request the
     /// client certificate: that is a downgrade, not permission to continue
     /// (`docs/remote.md#who-can-connect`). Session resumption is disabled so
@@ -240,9 +243,11 @@ pub(crate) fn client_config_reporting(
         from_env = client_identity_from_env()?;
         &from_env
     };
-    if matches!(identity, TlsClientIdentity::RequirePaired { .. })
-        && matches!(trust, CertTrust::SkipVerify)
-    {
+    let require_paired = matches!(
+        identity,
+        TlsClientIdentity::RequirePaired { .. } | TlsClientIdentity::HeldRequirePaired(_)
+    );
+    if require_paired && matches!(trust, CertTrust::SkipVerify) {
         // An unpinned server could send the CertificateRequest itself.
         return Err(DialError::Connect(
             "requiring paired authority needs a pinned server certificate, not skip-verify"
@@ -251,7 +256,9 @@ pub(crate) fn client_config_reporting(
     }
     let provider = Arc::new(rustls::crypto::ring::default_provider());
     let pem = match identity {
-        TlsClientIdentity::None | TlsClientIdentity::Held(_) => None,
+        TlsClientIdentity::None
+        | TlsClientIdentity::Held(_)
+        | TlsClientIdentity::HeldRequirePaired(_) => None,
         TlsClientIdentity::PemFiles {
             certificate,
             private_key,
@@ -264,8 +271,7 @@ pub(crate) fn client_config_reporting(
     // Set by the certificate resolver, which rustls consults only when the
     // server sends a CertificateRequest; read by the server-certificate
     // verifier, which TLS 1.3 runs after it.
-    let cert_requested = matches!(identity, TlsClientIdentity::RequirePaired { .. })
-        .then(|| Arc::new(AtomicBool::new(false)));
+    let cert_requested = require_paired.then(|| Arc::new(AtomicBool::new(false)));
     let refusal = AuthorityRefusal::default();
     let verifier = Arc::new(Verifier {
         provider: provider.clone(),
@@ -283,7 +289,7 @@ pub(crate) fn client_config_reporting(
         (Some((certs, key)), _) => builder
             .with_client_auth_cert(certs, key)
             .map_err(|err| DialError::Connect(format!("build workload identity: {err}")))?,
-        (None, TlsClientIdentity::Held(held)) => {
+        (None, TlsClientIdentity::Held(held) | TlsClientIdentity::HeldRequirePaired(held)) => {
             builder.with_client_cert_resolver(Arc::new(PresentHeld(Arc::new(
                 rustls::sign::CertifiedKey::new(held.chain.clone(), Arc::clone(&held.key)),
             ))))
