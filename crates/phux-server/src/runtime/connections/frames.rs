@@ -197,6 +197,7 @@ impl<R: FrameReader> FrameDispatch<'_, R> {
             input_receipt_slots: self.input_receipt_slots,
             held_commands: self.held_commands,
             service_http: self.service_http,
+            forwards: self.forwards,
         })
         .run(request_id, command)
         .await;

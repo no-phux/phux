@@ -57,6 +57,7 @@ mod commands;
 mod error;
 mod events;
 mod extensions;
+pub mod forward;
 mod frames;
 mod geometry;
 mod global_metadata;

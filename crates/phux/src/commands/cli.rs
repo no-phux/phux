@@ -161,6 +161,9 @@ pub(crate) enum Command {
     #[usage(help_heading = "Machines", display_order = 46)]
     Download(DownloadArgs),
 
+    #[usage(help_heading = "Machines", display_order = 47)]
+    Forward(ForwardArgs),
+
     #[usage(help_heading = "Panes", display_order = 23)]
     Paste(PasteArgs),
 

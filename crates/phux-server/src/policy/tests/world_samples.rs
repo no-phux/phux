@@ -460,6 +460,9 @@ fn samples(world: &World, agent: &WireResourceId) -> Vec<FrameKind> {
             request: phux_protocol::checkout::CheckoutRequest::Status,
         }),
         command(Command::ServiceHttpClose { exchange: 1 }),
+        command(Command::Forward {
+            op: phux_protocol::forward::ForwardOp::Close { id: 1 },
+        }),
         command(Command::Transcribe {
             upload_id: upload,
             terminal_id: t.clone(),

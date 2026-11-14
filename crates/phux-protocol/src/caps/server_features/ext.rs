@@ -86,6 +86,12 @@ pub enum ServerFeatureExt {
     /// The server answers `HOST_CHECKLIST`: what works on its host, with
     /// reasons and fixes.
     HostChecklist = 0x0080_0000,
+    // 0x0100_0000 left free for concurrent work.
+    /// The server answers `FORWARD_OPEN`, `FORWARD_READ`, `FORWARD_WRITE`,
+    /// and `FORWARD_CLOSE`: TCP connections it dials on its own loopback
+    /// for the client (`docs/forwarding.md`). Not advertised when
+    /// `[forward] tcp = false`.
+    ForwardTcp = 0x0200_0000,
 }
 
 impl ServerFeatureExt {
@@ -115,6 +121,7 @@ impl ServerFeatureExt {
         Self::TabLock,
         Self::ClipboardRead,
         Self::HostChecklist,
+        Self::ForwardTcp,
     ];
 
     /// The `docs/protocol.md#handshake` constant, e.g. `"PATH_QUERY"`.
@@ -145,6 +152,7 @@ impl ServerFeatureExt {
             Self::TabLock => "TAB_LOCK",
             Self::ClipboardRead => "CLIPBOARD_READ",
             Self::HostChecklist => "HOST_CHECKLIST",
+            Self::ForwardTcp => "FORWARD_TCP",
         }
     }
 

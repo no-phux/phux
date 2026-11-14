@@ -179,6 +179,13 @@ const SECTIONS: &[Section] = &[
                   a program with.",
     },
     Section {
+        key: "forward",
+        header: "[forward]",
+        summary: "What `phux forward` may reach from this server: whether \
+                  it serves TCP forwarding at all, and the targets a client \
+                  may reach besides the server's own loopback.",
+    },
+    Section {
         key: "rune",
         header: "[rune]",
         summary: "Settings the Rune desktop app reads at launch; a key set \

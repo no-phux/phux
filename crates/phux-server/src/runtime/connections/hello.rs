@@ -203,7 +203,7 @@ pub(super) async fn negotiate_hello(
         server_caps: ServerCapabilities::new()
             .with_layers(LayerSet::all())
             .with_features(server_features)
-            .with_features_ext(runtime_server_features_ext())
+            .with_features_ext(server_features_ext(state))
             .with_compression(compression),
         server_id: state.with(|server| server.server_incarnation().as_bytes().to_vec()),
         selected_profile,
@@ -213,6 +213,17 @@ pub(super) async fn negotiate_hello(
         trace!(?client_id, "HELLO_OK send dropped: writer gone");
     }
     Ok(())
+}
+
+/// What this server advertises: everything implemented, less what its
+/// configuration turns off.
+fn server_features_ext(state: &SharedState) -> ServerFeatureExtSet {
+    let features = runtime_server_features_ext();
+    if state.with(|s| s.forward().tcp) {
+        features
+    } else {
+        features.without(ServerFeatureExt::ForwardTcp)
+    }
 }
 
 /// Explicitly implemented extension support, separate from HELLO negotiation.
@@ -243,6 +254,7 @@ const fn runtime_server_features_ext() -> ServerFeatureExtSet {
         ServerFeatureExt::PrivacyStatus,
         ServerFeatureExt::ClipboardRead,
         ServerFeatureExt::HostChecklist,
+        ServerFeatureExt::ForwardTcp,
     ])
 }
 

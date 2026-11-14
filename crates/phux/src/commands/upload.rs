@@ -178,7 +178,7 @@ fn fail(json: bool, message: &str, status: u8) -> ExitCode {
 }
 
 /// Adapt the already validated headless dial without resolving/pairing a second time.
-fn managed_target(dial: Dial) -> Target {
+pub(super) fn managed_target(dial: Dial) -> Target {
     let (mut target, trust) = match dial {
         Dial::Uds(path) => return Target::uds(path),
         Dial::Ssh {

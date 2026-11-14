@@ -70,6 +70,14 @@ records explain history; [look them up deliberately](./architecture.md#historica
   the only gate, `INPUT` on the server as for `GET_FILE`, so revoking a
   device revokes its OpenCode access and no service credential reaches it
   ([host services](./host-services.md)).
+- A TCP port is forwarded through the phux connection as commands on the
+  control lane (open, pull, acknowledged write, close), not a new stream
+  type, so every transport carries it unchanged; a stream path waits for a
+  measured need. The server dials only its own loopback unless its
+  `[forward] allow` lists a target, and never resolves a client's name.
+  `INPUT` on the server as for `GET_FILE`: a holder can already run
+  commands there, so loopback-only limits mistakes, not a determined
+  holder ([port forwarding](./forwarding.md)).
 
 **Public operations**
 
