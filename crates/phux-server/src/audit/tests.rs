@@ -91,6 +91,31 @@ fn reopening_continues_the_chain() {
 }
 
 #[test]
+fn a_second_writer_waits_for_the_first_to_close() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut first = AuditLog::open(dir.path()).unwrap();
+    first.append(entry(0)).unwrap();
+    let path = dir.path().to_owned();
+    let second = std::thread::spawn(move || {
+        let start = std::time::Instant::now();
+        let mut log = AuditLog::open(&path).unwrap();
+        log.append(entry(2)).unwrap();
+        start.elapsed()
+    });
+    std::thread::sleep(std::time::Duration::from_millis(300));
+    first.append(entry(1)).unwrap();
+    drop(first);
+    let waited = second.join().unwrap();
+    assert!(
+        waited >= std::time::Duration::from_millis(250),
+        "waited {waited:?}"
+    );
+    let report = verify_dir(dir.path()).unwrap();
+    assert_eq!(report.failure, None);
+    assert_eq!(report.records, 3);
+}
+
+#[test]
 fn an_edited_line_fails_at_its_seq() {
     let dir = tempfile::tempdir().unwrap();
     write(dir.path(), 4, ROTATE_BYTES);
