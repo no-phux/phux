@@ -197,7 +197,7 @@ fn fall_back(args: &SshAttach<'_>, why: &str) -> ExitCode {
 fn run_attach_over_ssh(host: &str, remote_phux: &str, session: Option<&str>) -> ExitCode {
     use std::os::unix::process::CommandExt as _;
 
-    let program = std::env::var_os("PHUX_SSH").unwrap_or_else(|| "ssh".into());
+    let program = phux_client_runtime::connection::ssh_program();
     let mut command = std::process::Command::new(&program);
     command.args(phux_client_runtime::connection::ssh_control_options());
     command.arg("-t").arg(host).arg(remote_phux).arg("attach");

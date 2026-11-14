@@ -195,7 +195,7 @@ fn login_command(program: &OsString, dir: &std::path::Path, destination: &str) -
 
 /// The ssh program: `$PHUX_SSH` when set, otherwise `ssh`.
 pub(crate) fn ssh_program() -> OsString {
-    std::env::var_os("PHUX_SSH").unwrap_or_else(|| "ssh".into())
+    phux_client_runtime::connection::ssh_program()
 }
 
 /// The host ssh would connect to for `destination`, from `ssh -G`, so an

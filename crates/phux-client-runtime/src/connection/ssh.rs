@@ -140,7 +140,8 @@ pub(super) async fn sign_in(
 }
 
 /// The ssh program: `$PHUX_SSH` when set, otherwise `ssh`.
-fn program() -> std::ffi::OsString {
+#[must_use]
+pub fn program() -> std::ffi::OsString {
     std::env::var_os("PHUX_SSH").unwrap_or_else(|| "ssh".into())
 }
 
