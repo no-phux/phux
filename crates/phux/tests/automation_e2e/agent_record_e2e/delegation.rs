@@ -88,13 +88,32 @@ fn agent_start_runs_the_agent_on_a_delegated_credential() {
     let server = ServerGuard::start("agent");
     let root = tempfile::tempdir().expect("create temp dir");
     let phux = crate::runner::phux_bin();
+    // An unspecified seed cwd defaults to HOME, not this client's workspace.
+    // Request the integration's directory explicitly, with an inert shell.
+    let created = server
+        .cmd(&["new", "--json", "-s", "delegation", "--cwd"])
+        .arg(std::env::current_dir().expect("workspace cwd"))
+        .args(["--", "/bin/sh"])
+        .output()
+        .expect("create delegation pane");
+    assert!(
+        created.status.success(),
+        "create delegation pane: {}",
+        String::from_utf8_lossy(&created.stderr)
+    );
+    let created: serde_json::Value =
+        serde_json::from_slice(&created.stdout).expect("new --json");
+    let terminal = created["terminal_id"]
+        .as_u64()
+        .expect("new names the delegation terminal");
+    let target = format!("@{terminal}");
     let xdg = write_script_integration(
         root.path(),
         &format!(
             "#!/bin/sh\n\
              printf 'SOCK=%s\\n' \"$PHUX_SOCKET\"\n\
              if '{phux}' ls --json >/dev/null 2>&1; then echo LS=ok; else echo LS=refused; fi\n\
-             if '{phux}' kill --yes @1 >/dev/null 2>&1; then echo KILL=ok; else echo KILL=refused; fi\n\
+             if '{phux}' kill --yes {target} >/dev/null 2>&1; then echo KILL=ok; else echo KILL=refused; fi\n\
              exec sleep 60\n"
         ),
     );
@@ -112,8 +131,8 @@ fn agent_start_runs_the_agent_on_a_delegated_credential() {
             "--integration",
             "deleg-agent",
             "--target",
-            "@1",
         ])
+        .arg(&target)
         .arg("--socket")
         .arg(&server.socket)
         .arg("bot")
@@ -126,7 +145,7 @@ fn agent_start_runs_the_agent_on_a_delegated_credential() {
     let wait = common::phux_cmd(crate::runner::phux_bin())
         .args(["wait", "--until", "KILL=", "--timeout", "60", "--socket"])
         .arg(&server.socket)
-        .arg("@1")
+        .arg(&target)
         .stdin(Stdio::null())
         .output()
         .expect("run phux wait");
@@ -135,7 +154,7 @@ fn agent_start_runs_the_agent_on_a_delegated_credential() {
         "the agent never reported: {}",
         String::from_utf8_lossy(&wait.stderr)
     );
-    let screen = server.run_with_env(&["snapshot", "@1"], &[]);
+    let screen = server.run_with_env(&["snapshot", &target], &[]);
     let sock = screen
         .lines()
         .find_map(|line| line.split_once("SOCK=").map(|(_, rest)| rest))
