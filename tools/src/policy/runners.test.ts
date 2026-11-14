@@ -4,6 +4,7 @@ import { expect, test } from "bun:test";
 import { list, str, table, type Table } from "../lib/value.ts";
 import {
   action,
+  actionNames,
   job,
   jobs,
   needs,
@@ -83,16 +84,10 @@ test("pull request lanes never write to the shared cache budget", () => {
     .filter((ref) => ref.startsWith("./.github/workflows/"))
     .map((ref) => workflow(ref.replace("./.github/workflows/", "")));
   const pullRequest = [...triggered, ...called];
-  // A local composite runs inside the caller's job, so its cache steps count too.
-  const expand = (step: Table): Table[] => {
-    const local = /^\.\/\.github\/actions\/([^/@]+)$/.exec(uses(step))?.[1];
-    return local === undefined ? [step] : [step, ...steps(action(local))];
-  };
+  // Enumerate every local composite, including Rune and both web caches.
   const all: Table[] = [
-    ...steps(action("setup-rust-lane")),
-    ...pullRequest.flatMap((document) =>
-      Object.values(jobs(document)).flatMap(steps).flatMap(expand),
-    ),
+    ...actionNames().flatMap((name) => steps(action(name))),
+    ...pullRequest.flatMap((document) => Object.values(jobs(document)).flatMap(steps)),
   ];
   let caches = 0;
   for (const step of all) {

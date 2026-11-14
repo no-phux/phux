@@ -13,7 +13,10 @@ handwritten docs normally run only guards. Docs read by tests, including
 `docs/agents.md` and generated references, select their Rust consumers.
 A library change runs the tests of its dependents.
 
-Release metadata alone runs guards without compile lanes. The classifier
+Release metadata on a PR runs guards without compile lanes. Main and queue
+always run native setup and rust icount, including after receipt reuse.
+Their PR selection is scoped to the job's own paths (or `perf-baseline` for
+icount); unknown or unreadable scope fails closed. The classifier
 compares both full documents: root workspace and lock versions, release
 manifest versions, skill version lines, changelogs, and top-level `version`
 in the five integration packages listed in `release-please-config.json`.

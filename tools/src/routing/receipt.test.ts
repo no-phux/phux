@@ -3,6 +3,8 @@ import { beforeEach, expect, test } from "bun:test";
 import { writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { Table } from "../lib/value.ts";
+import { Classifier } from "./classify.ts";
+import { plan, planOutputs, reused } from "./plan.ts";
 import { artifactName, findValidation, type Receipt, type Source } from "./receipt.ts";
 
 const expected: Receipt = {
@@ -112,6 +114,31 @@ test("release qualification needs a full native receipt from the exact main push
   files["receipt.json"] = JSON.stringify(apple);
   commitTree = "f".repeat(40);
   expect(find(apple, sha)).toBeUndefined();
+});
+
+test("web receipt reuse covers both browser jobs but keeps main's mandatory lanes", () => {
+  const paths = ["crates/phux-server/src/lib.rs"];
+  const c = new Classifier().classify(paths);
+  const options = { scope: { kind: "diff" as const, paths } };
+  const pr = plan(c, "pull_request", options);
+  const main = plan(c, "push", options);
+  const receipt = { ...expected, coverage: main.coverage };
+  expect(main.coverage).toBe(pr.coverage);
+  expect(pr.coverage.split(",")).toContain("web");
+  expect(pr.lanes.has("icount")).toBe(false);
+  expect(pr.lanes.has("native")).toBe(false);
+  files["receipt.json"] = JSON.stringify({ ...receipt, coverage: "guards,web" });
+  expect(find(receipt)).toBeUndefined();
+  files["receipt.json"] = JSON.stringify(receipt);
+  expect(find(receipt)).toBe(3);
+  expect([...reused(main).lanes]).toEqual(["ffi", "icount", "native"]);
+  // Both browser jobs share this output; reuse may skip them, not native/icount.
+  expect(planOutputs(reused(main), c)).toMatchObject({
+    web: false,
+    ffi: true,
+    native: true,
+    icount: true,
+  });
 });
 
 test.each<[string, () => void]>([

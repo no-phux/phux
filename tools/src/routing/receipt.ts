@@ -14,7 +14,11 @@ export interface Receipt extends Table {
   readonly schema: number;
   readonly tree: string;
   readonly workflow: string;
-  /** The pull-request lane set. macOS coverage lives on rune-macos.yml, not here. */
+  /**
+   * Exact coverage. CI receipts contain the PR lane set, never Apple coverage.
+   * Native setup/icount remain mandatory on main even when a PR receipt matches.
+   * Apple qualification has its own workflow receipt.
+   */
   readonly coverage: string;
 }
 
