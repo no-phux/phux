@@ -351,7 +351,29 @@ pub(super) fn activation_ended(
         tx.remove_resource(resource);
         return Ok(Out::ok(None));
     }
+    forget_exited_program(tx, resource, outcome);
     Ok(Out::ok(revision))
+}
+
+/// Clear a normally exited program's resume token in the same durable
+/// transition as its exit. An engine's separate token drain may run after
+/// completion, when launch reports are already stale. Signals and unknown
+/// ends keep the token for recovery.
+fn forget_exited_program(tx: &mut Tx<'_>, resource: ResourceKey, outcome: Outcome) {
+    if !matches!(
+        outcome,
+        Outcome::Exit(crate::process::ExitOutcome {
+            status: Some(_),
+            ..
+        })
+    ) {
+        return;
+    }
+    if let Some(LaunchSpec::Terminal(launch)) =
+        tx.resource_mut(resource).and_then(|r| r.launch.as_mut())
+    {
+        launch.resume = None;
+    }
 }
 
 pub(super) fn activation_lost(
