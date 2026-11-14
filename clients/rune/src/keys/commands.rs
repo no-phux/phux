@@ -310,6 +310,12 @@ pub const COMMANDS: &[Command] = &[
         [m('i').shift(), Chord::opt(Cap::Char(';'))],
         [l(';')]
     ),
+    row!(
+        Shortcut::Screenshot,
+        "Screenshot to Terminal",
+        [m('o').shift()],
+        [l('o')]
+    ),
     row!(Shortcut::KeyboardShortcuts, "Keyboard Shortcuts", [], []),
     row!(
         Shortcut::EssentialShortcuts,

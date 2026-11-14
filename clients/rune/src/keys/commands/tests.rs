@@ -106,6 +106,7 @@ every_shortcut!(
     ChangeTheme,
     SwitchSession,
     InsertPath,
+    Screenshot,
     RenameSession,
     RenameTab,
     LockTab,

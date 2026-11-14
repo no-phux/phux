@@ -88,7 +88,7 @@ impl Desk {
 
     /// Whether what has the keyboard lets a paste through. A paste is a
     /// command like any other, and it must not replace a held question.
-    fn pastes_allowed(&self) -> bool {
+    pub(super) fn pastes_allowed(&self) -> bool {
         self.modal()
             .is_none_or(|modal| modal.allows(Shortcut::Paste))
     }
@@ -110,7 +110,7 @@ impl Desk {
         self.paste(terminal, content.text());
     }
 
-    fn upload_image(&mut self, terminal: &ResourceId, png: Vec<u8>) {
+    pub(super) fn upload_image(&mut self, terminal: &ResourceId, png: Vec<u8>) {
         if self.is_document(terminal) {
             return;
         }
