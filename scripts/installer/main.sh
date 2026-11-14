@@ -9,6 +9,7 @@ install_dir="${PHUX_INSTALL_DIR:-${HOME:-}/.local/bin}"
 applications_dir="${PHUX_DESKTOP_APPLICATIONS_DIR:-}"
 rune=0
 dry_run=0
+verbose=0
 os=""
 arch=""
 modify_path=1
@@ -40,13 +41,14 @@ while [ "$#" -gt 0 ]; do
       ;;
     --rune) rune=1 ;;
     --dry-run) dry_run=1 ;;
+    --verbose) verbose=1 ;;
     --no-modify-path) modify_path=0 ;;
     --service) service=1 ;;
     --no-service) service=0 ;;
     --help | -h) usage; exit 0 ;;
     *) die "unknown option: $1" ;;
   esac
-  case "$1" in --desktop | --rune | --dry-run | --no-modify-path | --service | --no-service) shift ;; *) shift 2 ;; esac
+  case "$1" in --desktop | --rune | --dry-run | --verbose | --no-modify-path | --service | --no-service) shift ;; *) shift 2 ;; esac
 done
 
 if [ "$rune" -eq 1 ]; then
@@ -104,10 +106,17 @@ cleanup() {
 trap cleanup EXIT
 trap_signals
 
+rune_installed=""
 if [ "$rune" -eq 1 ]; then
   install_rune
 else
   install_cli "$pin" "$pin_sha256"
-  [ "$dry_run" -eq 1 ] || report_path
 fi
 [ "$dry_run" -eq 1 ] || offer_service
+if [ "$dry_run" -eq 1 ]; then
+  :
+elif [ -n "$rune_installed" ]; then
+  printf '%s\n' "$rune_installed"
+else
+  report_path
+fi

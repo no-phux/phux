@@ -188,8 +188,9 @@ curl -fsSL https://phux.sh/install | sh -s -- --dry-run
 | `--rune`                        | install the desktop app, [Phux Rune](./clients.md#desktop), adding the CLI if missing |
 | `--desktop`                     | the same as `--rune` (the GPUI desktop is retired)           |
 | `--dry-run`                     | print what would be downloaded and where, and install nothing |
+| `--verbose`                     | also say what went where, and how the download was checked    |
 
-**Signature checks need `minisign`.** With `minisign` on your `PATH`, the script also verifies the release signature. Set `PHUX_REQUIRE_SIGNATURE=1` to refuse to install without that check.
+**Signature checks need `minisign`.** With `minisign` on your `PATH`, the script also verifies the release signature. Without it the SHA-256 alone is checked, which `--verbose` mentions. Set `PHUX_REQUIRE_SIGNATURE=1` to refuse to install without that check.
 
 A tarball saved from a browser can carry `com.apple.quarantine`; clear it with `xattr -d com.apple.quarantine <file>`. `curl` does not set that attribute.
 

@@ -123,7 +123,10 @@ grep -q first "$bundle/phux-rune" || fail "binary not installed"
 for file in phux-rune.release LICENSE NOTICE Inter-OFL.txt JetBrainsMono-OFL.txt; do
   [[ -f "$bundle/$file" ]] || fail "$file not installed"
 done
-grep -Fq 'without its release signature' "$TMP/err" || fail "an unsigned install must say so"
+# One plain line; the SHA-256-only check is a detail for --verbose.
+[[ ! -s $TMP/err ]] || fail "a default install said more: $(cat "$TMP/err")"
+grep -Fxq 'Phux Rune is installed. Open Phux Rune from your apps (or run `phux-rune`).' "$TMP/out" \
+  || fail "last line: $(cat "$TMP/out")"
 [[ -L "$HOME/.local/bin/phux-rune" ]] || fail "no launcher"
 [[ "$("$HOME/.local/bin/phux-rune")" == "phux-rune $VERSION" ]] || fail "launcher does not run"
 entry="$XDG_DATA_HOME/applications/sh.phux.rune.desktop"
@@ -139,12 +142,13 @@ grep -Fxq "Icon=$real/sh.phux.rune.png" "$entry" || fail "Icon: $(cat "$entry")"
 # An update replaces everything; nothing is left beside it.
 pack second
 serve
-installer >/dev/null 2>"$TMP/err" || fail "update: $(cat "$TMP/err")"
+installer --verbose >/dev/null 2>"$TMP/err" || fail "update: $(cat "$TMP/err")"
+grep -Fq 'without its release signature' "$TMP/err" || fail "--verbose must say the signature went unchecked"
 grep -q second "$bundle/phux-rune" || fail "not updated"
 [[ -z "$(find "$XDG_DATA_HOME" -name '.phux-desktop-install*')" ]] || fail "install litter"
 
 # --desktop, the retired GPUI desktop's flag, installs Phux Rune.
-PATH="$TMP/bin:/usr/bin:/bin" "$SH" "$ROOT/scripts/install.sh" --os linux --arch x86_64 --desktop \
+PATH="$TMP/bin:/usr/bin:/bin" "$SH" "$ROOT/scripts/install.sh" --os linux --arch x86_64 --desktop --verbose \
   >/dev/null 2>"$TMP/err" || fail "--desktop: $(cat "$TMP/err")"
 grep -Fq 'installing Phux Rune' "$TMP/err" || fail "--desktop notice: $(cat "$TMP/err")"
 grep -Fq 'installed Phux Rune' "$TMP/err" || fail "--desktop did not install Phux Rune"
