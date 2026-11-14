@@ -191,7 +191,11 @@ pub struct Desk {
     /// A screenshot being taken, and the terminal it is for.
     capture: Option<screenshot::Capture>,
     /// Image uploads on their way, and the terminal each is for.
-    uploads: Vec<(u64, ResourceId)>,
+    uploads: Vec<(
+        u64,
+        ResourceId,
+        Option<phux_client_runtime::control::PrivateUploadDestination>,
+    )>,
     /// User pastes the server hasn't answered yet.
     pastes: HashSet<u64>,
     /// Settings that outlive the window: text size, the sidebar.

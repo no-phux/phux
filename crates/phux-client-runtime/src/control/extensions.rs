@@ -17,7 +17,7 @@ use phux_protocol::wire::frame::{
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
-use super::{ControlPlane, Pending, ServerFeature};
+use super::{ControlPlane, Pending, PrivateUploadDestination, ServerFeature};
 
 mod types;
 mod uploads;
@@ -32,8 +32,8 @@ pub use types::{
     TranscribeOutcome, TranscribeReceipt,
 };
 
-#[derive(Debug)]
 struct PendingUpload {
+    destination: Option<PrivateUploadDestination>,
     upload_id: FileUploadId,
     terminal_id: ResourceId,
     extension: String,
@@ -74,6 +74,16 @@ impl ControlPlane {
 
     /// Queue a reconnect-safe chunked file upload.
     pub fn put_file(&mut self, terminal_id: ResourceId, extension: String, data: Vec<u8>) -> u64 {
+        self.queue_file_upload(terminal_id, extension, data, None)
+    }
+
+    pub(super) fn queue_file_upload(
+        &mut self,
+        terminal_id: ResourceId,
+        extension: String,
+        data: Vec<u8>,
+        destination: Option<PrivateUploadDestination>,
+    ) -> u64 {
         let transfer_id = self.next_upload_id();
         let refusal = if u64::try_from(data.len()).map_or(true, |len| len > MAX_FILE_UPLOAD_SIZE) {
             Some("file exceeds the 64 MiB upload limit")
@@ -103,6 +113,7 @@ impl ControlPlane {
         self.extensions.uploads.insert(
             transfer_id,
             PendingUpload {
+                destination,
                 upload_id,
                 terminal_id,
                 extension,
@@ -410,6 +421,7 @@ impl ControlPlane {
     }
 
     pub(super) fn reset_extension_correlations(&mut self, message: &str) {
+        self.cancel_private_uploads();
         self.reset_checkouts(message);
         self.reset_service_http();
         for (request_id, root) in self.extensions.pending_paths.drain() {
