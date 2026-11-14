@@ -85,9 +85,11 @@ phux host add mini.tail1234.ts.net --name mini --install --accept-new-host-key
 `--accept-new-host-key` is safe here because the tailnet already vouches for
 the address. Machines that run Tailscale SSH need no SSH key.
 
-`--login` opens the Tailscale app if it isn't running, reconnects a client
-that's signed in but disconnected, or starts a sign-in and prints its link.
-It doesn't wait for the browser: run `phux host discover` again afterwards.
+`--login` opens the Tailscale app, reconnects it, or prints a sign-in link;
+run `phux host discover` again after signing in.
+
+Your own devices can skip pairing
+([tailnet owner devices](./config.md#tailnet-owner-devices)).
 
 The desktop app does this from **Add a machine** under the sidebar's machine
 switcher: it takes `me@host` or a machine from your tailnet and runs

@@ -147,6 +147,19 @@ pub fn client_identity_paths(
     }
 }
 
+/// Whether `ip` is in a range Tailscale assigns tailnet addresses from:
+/// `100.64.0.0/10` or `fd7a:115c:a1e0::/48`.
+#[must_use]
+pub fn is_tailnet(ip: std::net::IpAddr) -> bool {
+    match ip {
+        std::net::IpAddr::V6(v6) => v6.segments()[..3] == [0xfd7a, 0x115c, 0xa1e0],
+        std::net::IpAddr::V4(v4) => {
+            let [a, b, ..] = v4.octets();
+            a == 100 && (64..128).contains(&b)
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

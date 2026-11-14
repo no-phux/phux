@@ -56,3 +56,22 @@ pub fn set_client_platform(platform: Option<String>) -> bool {
     phux_client_runtime::handshake::set_platform(parsed.flatten());
     true
 }
+
+/// The certificate authority the phux server at `url` (`quic://HOST:PORT`)
+/// presents, for a machine on your tailnet that was never paired: pin it
+/// with `set_authority_pin` and store it, then connect with no token
+/// (`docs/config.md#tailnet-owner-devices`). Refused for a name that does
+/// not resolve to a tailnet address. Blocks for at most the dial timeout;
+/// call it off the main thread.
+///
+/// # Errors
+///
+/// Not a `quic://` URL, a host off the tailnet, or no answer.
+#[uniffi::export]
+pub fn tailnet_authority(url: String) -> Result<String, WireError> {
+    let runtime_error = |reason: String| WireError::Runtime { reason };
+    let Transport::Quic(authority) = classify_remote_endpoint(&url).map_err(runtime_error)? else {
+        return Err(runtime_error(format!("{url} is not a quic:// address")));
+    };
+    phux_client_runtime::dial::tailnet_authority_blocking(&authority).map_err(runtime_error)
+}

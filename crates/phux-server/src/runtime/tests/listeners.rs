@@ -40,7 +40,7 @@ fn an_injected_engine_survives_either_mode() {
         assert!(fallback.is_none());
         let state = SharedState::new();
         mirror_config_into_state(&cfg, &cfg.socket_path, &state);
-        install_policy_posture(&state, posture, engine);
+        install_policy_posture(&state, posture, engine, false);
         let live = state.with(|s| s.policy_engine().clone());
         assert!(
             std::ptr::addr_eq(

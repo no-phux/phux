@@ -89,6 +89,7 @@ Every scalar knob with its shipped default, serialized from the schema itself, p
 | `organize.jev-key-command` | unset — `TYPESAFE_API_KEY` only. An argv whose trimmed stdout is the key, run when the variable is unset |
 | `organize.offline` | `false` |
 | `policy.mode` | unset — `local`, and a configured remote listener, relay connector, or workload authority location refuses to start the server. `local` admits the owner socket only; `paired` requires an enrolled workload certificate on every TLS connection |
+| `policy.tailnet-owner` | `false` |
 | `restore.on-start` | `false` |
 | `sidebar.agents-share` | `50` |
 | `sidebar.enabled` | `true` |
