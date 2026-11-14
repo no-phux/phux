@@ -88,7 +88,7 @@ pub(crate) fn execute(opts: &UpdateOpts, env: &UpdateEnv<'_>) -> Result<Outcome,
 
     let action = if opts.check {
         Action::Checked
-    } else if plan.changes_version {
+    } else if plan.changes_version() {
         refuse_unpinned_downgrade(&plan, pin.is_some())?;
         return install_release(opts, env, plan);
     } else {
@@ -110,7 +110,7 @@ pub(crate) fn execute(opts: &UpdateOpts, env: &UpdateEnv<'_>) -> Result<Outcome,
 /// could otherwise name an older, genuinely signed release with a known flaw
 /// and roll every `phux update` back to it (ADR-0178).
 fn refuse_unpinned_downgrade(plan: &Plan, pinned: bool) -> Result<(), UpdateError> {
-    if pinned || plan.update_available {
+    if pinned || plan.update_available() {
         return Ok(());
     }
     Err(UpdateError::Downgrade(format!(
@@ -346,8 +346,8 @@ fn rollback(
         current_sha: None,
         latest: None,
         target: Build::Stable(target),
-        changes_version: target != current,
-        update_available: false,
+        // A rollback restores an earlier build: never an upgrade.
+        change: VersionChange::between(target != current, false),
         host_target: release::host_target().unwrap_or("unknown"),
     };
     let handoff = if opts.no_restart {

@@ -15,7 +15,7 @@ use std::io::{BufRead, Write as _};
 use std::net::{IpAddr, SocketAddr};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use phux_client_runtime::pairing::{
     CONNECT_URI_PREFIX, LEGACY_CONNECT_URI_PREFIX, validate_quic_endpoint,
@@ -27,8 +27,10 @@ mod endpoint_tests;
 #[cfg(test)]
 mod link_tests;
 mod manage;
+mod rebind;
 use manage::{parse_expires, run_credential_action};
 use phux_config::overlay::MagicDns;
+use rebind::wait_for_rebind;
 
 use usage::Subcommands;
 
@@ -636,43 +638,6 @@ fn rebind_server(socket: &Path) -> Result<(), String> {
         )),
         Err(err) => Err(format!(
             "could not restart the server at {} to bind a listener: {err}",
-            socket.display()
-        )),
-    }
-}
-
-/// Poll until a listener is bound, or until the restarted server has been
-/// up long enough that overlay detection would have recorded one.
-fn wait_for_rebind(socket: &Path) -> Result<(), String> {
-    let runtime = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .map_err(|err| format!("could not build a runtime to wait for the server: {err}"))?;
-    let deadline = Instant::now() + REBIND_WAIT;
-    let mut saw_gap = false;
-    let mut up_since: Option<Instant> = None;
-    while Instant::now() < deadline {
-        match query_listeners_with(&runtime, socket, Some(REBIND_QUERY_TIMEOUT)) {
-            Ok(_) => return Ok(()),
-            Err(ListenerQueryError::Unbound { .. }) => {
-                if saw_gap {
-                    let since = up_since.get_or_insert_with(Instant::now);
-                    if since.elapsed() >= LISTENER_SETTLE {
-                        return Ok(());
-                    }
-                }
-            }
-            Err(ListenerQueryError::Unavailable(_)) => {
-                saw_gap = true;
-                up_since = None;
-            }
-        }
-        std::thread::sleep(REBIND_POLL);
-    }
-    match query_listeners_with(&runtime, socket, Some(REBIND_QUERY_TIMEOUT)) {
-        Ok(_) | Err(ListenerQueryError::Unbound { .. }) => Ok(()),
-        Err(ListenerQueryError::Unavailable(message)) => Err(format!(
-            "the server at {} did not come back after the restart: {message}",
             socket.display()
         )),
     }

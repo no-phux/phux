@@ -2,7 +2,8 @@
 
 use super::{
     Asset, Build, Channel, DOCUMENT_SCHEMA_VERSION, Entry, Install, InstallSource, PathBuf, Plan,
-    ReleaseSource, UnknownReason, UpdateError, Version, channel, codes, current_protocol, shared,
+    ReleaseSource, UnknownReason, UpdateError, Version, VersionChange, channel, codes,
+    current_protocol, shared,
 };
 
 /// Why `phux update` will not perform an update itself.
@@ -201,7 +202,7 @@ impl Outcome {
             "latest_version": self.plan.latest_tag(),
             "latest_sha": self.plan.latest_sha(),
             "target_version": self.plan.target.tag(),
-            "update_available": self.plan.update_available,
+            "update_available": self.plan.update_available(),
             "install": {
                 "source": install.source.as_str(),
                 "executable": install.executable.display().to_string(),
@@ -297,7 +298,7 @@ impl Outcome {
 }
 
 pub(super) fn checked_lines(install: &Install, plan: &Plan) -> Vec<String> {
-    let mut lines = vec![if plan.update_available {
+    let mut lines = vec![if plan.update_available() {
         format!(
             "an update is available: {} -> {}",
             plan.current,
@@ -316,7 +317,7 @@ pub(super) fn checked_lines(install: &Install, plan: &Plan) -> Vec<String> {
                 .map(|line| format!("  {line}")),
         );
     } else {
-        if plan.update_available {
+        if plan.update_available() {
             lines.push("run `phux update` to install it".to_owned());
         }
         lines.push(switch_line());
@@ -408,8 +409,7 @@ pub(super) fn plan(
         channel,
         current_sha: channel::build_sha().map(str::to_owned),
         latest,
-        changes_version: *installed != target,
-        update_available: shared::is_newer(installed, &target),
+        change: VersionChange::between(*installed != target, shared::is_newer(installed, &target)),
         target,
         host_target,
     })
