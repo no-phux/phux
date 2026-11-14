@@ -196,6 +196,10 @@ fn serve_legacy(listener: &std::os::unix::net::UnixListener, socket: &Path) -> V
             std::thread::sleep(Duration::from_millis(5));
             continue;
         };
+        // An accepted socket inherits the listener's O_NONBLOCK on macOS,
+        // where the read timeout below does nothing and a slow client's
+        // read fails with WouldBlock.
+        stream.set_nonblocking(false).unwrap();
         stream
             .set_read_timeout(Some(Duration::from_secs(1)))
             .unwrap();
