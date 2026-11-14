@@ -76,14 +76,6 @@ pub enum AgentResolveError {
         /// Every Terminal carrying it, in snapshot order.
         candidates: Vec<ResourceId>,
     },
-    /// A candidate's `name` equals its own `kind`: a per-kind manifest
-    /// constant, not a chosen name (exit 2), refused even when unique.
-    KindConstant {
-        /// The name that was typed after `%`.
-        name: String,
-        /// Every Terminal carrying it, in snapshot order.
-        candidates: Vec<ResourceId>,
-    },
     /// The agent index is partial, so no answer is sound (exit 3).
     PartialIndex {
         /// The name that was typed after `%`.
@@ -117,10 +109,7 @@ impl AgentResolveError {
     pub const fn exit_code(&self) -> u8 {
         match self {
             Self::Unknown { .. } => 1,
-            Self::Ambiguous { .. }
-            | Self::KindConstant { .. }
-            | Self::Withdrawn { .. }
-            | Self::AmbiguousSession { .. } => 2,
+            Self::Ambiguous { .. } | Self::Withdrawn { .. } | Self::AmbiguousSession { .. } => 2,
             Self::PartialIndex { .. } => 3,
         }
     }
@@ -132,7 +121,6 @@ impl AgentResolveError {
         match self {
             Self::Unknown { .. } => "no_such_target",
             Self::Ambiguous { .. } | Self::AmbiguousSession { .. } => "selector_not_single",
-            Self::KindConstant { .. } => "invalid_agent_name",
             Self::Withdrawn { .. } => "agent_withdrawn",
             Self::PartialIndex { .. } => "partial_view",
         }
@@ -149,9 +137,6 @@ impl AgentResolveError {
             Self::Ambiguous { .. } | Self::AmbiguousSession { .. } => {
                 "address one candidate directly by @N"
             }
-            Self::KindConstant { .. } => {
-                "name one pane with `phux agent set @N --name <name>` and address that"
-            }
             Self::Withdrawn { .. } => {
                 "inspect the pane with `phux agent explain`; address it by @N to write anyway"
             }
@@ -165,7 +150,6 @@ impl AgentResolveError {
         match self {
             Self::Unknown { name }
             | Self::Ambiguous { name, .. }
-            | Self::KindConstant { name, .. }
             | Self::PartialIndex { name, .. }
             | Self::Withdrawn { name, .. }
             | Self::AmbiguousSession { name, .. } => name,
@@ -181,13 +165,6 @@ impl std::fmt::Display for AgentResolveError {
                 f,
                 "agent name '{name}' is ambiguous: {}; address one directly, \
                  or rename with `phux agent set @N --name <name>`",
-                render_candidates(candidates)
-            ),
-            Self::KindConstant { name, candidates } => write!(
-                f,
-                "'{name}' is an agent kind, not a chosen name — every pane running \
-                 that kind carries it ({}); name one with \
-                 `phux agent set @N --name <name>` and address that",
                 render_candidates(candidates)
             ),
             Self::PartialIndex { name, .. } => write!(
@@ -238,9 +215,10 @@ pub fn is_withdrawn_agent_record(record: &AgentRecord) -> bool {
 /// Resolve `%name` to exactly one agent (with its unique live session
 /// child, if any), or refuse; candidates are enumerated in snapshot order.
 ///
-/// Checks run in the order their conclusions are sound: kind-constant and
-/// ambiguity hold even for a partial index, so they precede "could not
-/// answer".
+/// Checks run in the order their conclusions are sound: ambiguity holds
+/// even for a partial index, so it precedes "could not answer". A name
+/// equal to its kind (`opencode`) resolves like any other: the server gives
+/// each pane of a kind its own name (`opencode`, `opencode-2`, ...).
 ///
 /// # Errors
 ///
@@ -256,16 +234,6 @@ pub fn resolve_agent(
         .filter(|id| index.get(id).is_some_and(|rec| rec.name == name))
         .collect();
 
-    if candidates
-        .iter()
-        .filter_map(|id| index.get(id))
-        .any(is_kind_constant)
-    {
-        return Err(AgentResolveError::KindConstant {
-            name: name.to_owned(),
-            candidates,
-        });
-    }
     if candidates.len() > 1 {
         return Err(AgentResolveError::Ambiguous {
             name: name.to_owned(),
@@ -350,13 +318,4 @@ pub fn agent_address(
         Ok(_) => Err("selector_not_single"),
         Err(err) => Err(err.code()),
     })
-}
-
-/// Whether this record's `name` is its own `kind` (ASCII case-insensitive):
-/// the per-kind manifest constant a detector rule writes.
-fn is_kind_constant(record: &AgentRecord) -> bool {
-    record
-        .kind
-        .as_deref()
-        .is_some_and(|kind| kind.eq_ignore_ascii_case(&record.name))
 }

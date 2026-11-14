@@ -519,29 +519,35 @@ async fn percent_name_reaches_tag_kill_and_spawn_placement() {
     .expect("tag %build");
     assert_eq!(tagged["terminals"][0]["terminal"], "@1");
 
+    // Two panes sharing a name, as an older server stored a kind name.
     let constant = || {
-        agent_spec(&AgentRecord {
+        let record = AgentRecord {
             name: "claude".to_owned(),
             kind: Some("claude".to_owned()),
             state: AgentMetaState::Working,
             ..AgentRecord::default()
-        })
+        };
+        agent_spec(&record).stored_metadata(
+            Scope::Resource(ResourceId::local(2)),
+            RESOURCE_AGENT_KEY,
+            record.encode(),
+        )
     };
     for (tool, args, want) in [
         (
             "phux_kill",
             json!({ "target": "%claude", "confirm": true }),
-            "invalid_agent_name",
+            "selector_not_single",
         ),
         (
             "phux_tag",
             json!({ "action": "ls", "target": "%claude" }),
-            "invalid_agent_name",
+            "selector_not_single",
         ),
         (
             "phux_spawn",
             json!({ "target": "%claude", "split": "vertical" }),
-            "invalid_agent_name",
+            "selector_not_single",
         ),
         (
             "phux_spawn",

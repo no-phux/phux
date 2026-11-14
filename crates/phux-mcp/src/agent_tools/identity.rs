@@ -17,8 +17,9 @@ pub(super) fn set_schema() -> Value {
     schema(
         "phux_agent_set",
         "Declare a pane's agent identity by writing its phux.agent/v1 L3 record. Only `name` is \
-         required. A declared `state` OUTRANKS the server's detector for the record's lifetime, \
-         so declare one only when the caller genuinely knows better than the detector does.",
+         required; without `kind` the pane keeps its current kind. A declared `state` OUTRANKS \
+         the server's detector for the record's lifetime, so declare one only when the caller \
+         genuinely knows better than the detector does.",
         json!({
             "target": target_schema(TARGET_DESC),
             "name": string_schema(),

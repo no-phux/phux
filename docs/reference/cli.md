@@ -627,11 +627,9 @@ Global flags:
 ```text
 List every pane's detected or declared agent and current state.
 
-The third column is the pane's `%name` address, `-` when it has no agent record,
-or why its record name is listed but not `%`-addressable (a name outside
-`[a-z][a-z0-9_-]`, a per-kind constant like `claude`, or one several panes
-share). A per-kind name shows the `phux agent set` that names the pane. JSON
-carries `address` and `address_refusal`.
+The third column is the pane's `%name` (`opencode`, `opencode-2`), `-` with no
+agent record, or the `phux agent set` that names the pane when `%` cannot reach
+its name. JSON carries `address` and `address_refusal`.
 
 Usage: phux agent list [FLAGS]
 
@@ -1130,9 +1128,10 @@ Global flags:
 ```text
 Declare the agent identity and state associated with a pane.
 
-Writes the whole agent record (last writer wins), then reads it back. Exits 1
-(`agent_record_unconfirmed`) when the read-back shows the write did not land or
-the server refused the read; prints the confirmed record on success.
+Writes the whole agent record (last writer wins), keeping the pane's kind when
+`--kind` is omitted, then reads it back. Exits 1 (`agent_record_unconfirmed`)
+when the read-back shows the write did not land or the server refused the read;
+prints the confirmed record on success.
 
 Usage: phux agent set <FLAGS> [TARGET]
 
@@ -1142,7 +1141,8 @@ Arguments:
 Flags:
       --name <NAME>            Human-facing agent name (required, non-empty).
       --kind <KIND>            Open-vocabulary kind slug, e.g. "claude" or
-                               "codex".
+                               "codex". Omitted, the pane keeps its current
+                               kind.
       --state <STATE>          Declared lifecycle state.
                                [possible values: unknown, idle, working,
                                blocked, done]

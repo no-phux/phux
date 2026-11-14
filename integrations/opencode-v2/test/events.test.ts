@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 
-import { applyServerEvent, deletedSessionId } from "../src/events.js";
+import { applyServerEvent, applyV1Event, deletedSessionId } from "../src/events.js";
 import type { OpenCodeLifecycle } from "../src/lifecycle.js";
 
 describe("V2 server events", () => {
@@ -32,6 +32,37 @@ describe("V2 server events", () => {
     await applyServerEvent(lifecycle, { type: "session.deleted", data: {} });
     expect(lifecycle.calls).toEqual([]);
     expect(deletedSessionId({ type: "session.status", data: { sessionID: "ses" } })).toBeUndefined();
+  });
+});
+
+describe("OpenCode 1.x plugin events", () => {
+  test("status, asks and delete read the 1.19 event properties", async () => {
+    const lifecycle = fakeLifecycle();
+    await applyV1Event(lifecycle, { type: "session.status", properties: { sessionID: "ses", status: { type: "busy" } } });
+    await applyV1Event(lifecycle, {
+      type: "permission.asked",
+      properties: { id: "per_1", sessionID: "ses", permission: "bash", patterns: ["ls -la"], metadata: {} },
+    });
+    await applyV1Event(lifecycle, {
+      type: "question.asked",
+      properties: { id: "que_1", sessionID: "ses", questions: [{ question: "Which?", options: [{ label: "a" }, { label: "b" }] }] },
+    });
+    await applyV1Event(lifecycle, { type: "session.idle", properties: { sessionID: "ses" } });
+    await applyV1Event(lifecycle, { type: "session.deleted", properties: { info: { id: "ses" } } });
+    expect(lifecycle.calls).toEqual([
+      ["observeState", "ses", "working"],
+      ["ask", "ses", { kind: "permission", id: "per_1", question: "bash: ls -la" }],
+      ["ask", "ses", { kind: "question", id: "que_1", question: "Which?", suggestions: ["a", "b"] }],
+      ["observeState", "ses", "idle"],
+      ["deleteSession", "ses"],
+    ]);
+  });
+
+  test("ignores events without a session", async () => {
+    const lifecycle = fakeLifecycle();
+    await applyV1Event(lifecycle, { type: "session.idle", properties: {} });
+    await applyV1Event(lifecycle, { type: "permission.asked" });
+    expect(lifecycle.calls).toEqual([]);
   });
 });
 

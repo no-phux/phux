@@ -437,7 +437,7 @@ fn percent_name_reaches_tag_and_kill_and_agent_list_marks_it() {
         "a miss"
     );
 
-    // A per-kind constant is listed but refused, on every verb, with exit 2.
+    // A name equal to its kind addresses the pane like any other name.
     assert_eq!(
         run_status(
             &server,
@@ -449,13 +449,9 @@ fn percent_name_reaches_tag_and_kill_and_agent_list_marks_it() {
     );
     assert_eq!(
         address_of(&server),
-        (
-            serde_json::Value::Null,
-            serde_json::json!("invalid_agent_name")
-        )
+        (serde_json::json!("%claude"), serde_json::Value::Null)
     );
-    assert_eq!(run_status(&server, &["tag", "ls", "%claude"]), 2);
-    assert_eq!(run_status(&server, &["kill", "--yes", "%claude"]), 2);
+    assert_eq!(run_status(&server, &["tag", "ls", "%claude"]), 0);
 
     // Named again, `kill %name` tears down exactly that pane.
     assert_eq!(

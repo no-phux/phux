@@ -195,7 +195,7 @@ Every pane can carry an agent record, `phux.agent/v1`, a JSON object:
 
 | Field | Value |
 | --- | --- |
-| `name` | Required. A record without a non-blank `name` counts as no record. |
+| `name` | Required. A record without a non-blank `name` counts as no record. A `name` equal to `kind` is made unique on the server: `claude`, then `claude-2`, kept while the record stays. |
 | `kind` | A slug such as `claude` or `terraform`. |
 | `state` | `unknown` \| `idle` \| `working` \| `blocked` \| `done`. An unknown word reads as `unknown`. |
 | `attention` | `none` \| `low` \| `normal` \| `high`. An unknown word reads as `normal`. Absent means derived: `blocked` high, `working` normal, `done` and `unknown` low, `idle` none. |
@@ -232,11 +232,12 @@ phux agent clear "@$PHUX_TERMINAL_ID"
 phux agent show "@$PHUX_TERMINAL_ID"
 ```
 
-- `phux agent set` replaces the whole record; nothing is merged. Without
-  `--state` the record says `unknown`, and phux may fill in a state from
-  weaker evidence. A declared state stays until `phux agent clear` or the
-  pane closes, even after the program exits, so a program that declares a
-  state MUST clear it before it exits. `set` and `clear` exit 0 even when the
+- `phux agent set` replaces the whole record, except that it keeps the
+  pane's `kind` when `--kind` is omitted. Without `--state` the record says
+  `unknown`, and phux may fill in a state from weaker evidence. A declared
+  state stays until `phux agent clear` or the pane closes, even after the
+  program exits, so a program that declares a state MUST clear it before it
+  exits. `set` and `clear` exit 0 even when the
   write does not land or cannot be confirmed (they print an error);
   confirm with `phux agent show`.
 - `phux agent report-state @7 working` (also `blocked`, `done`) is for hooks.

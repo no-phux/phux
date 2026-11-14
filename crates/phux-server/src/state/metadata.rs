@@ -293,6 +293,21 @@ impl ServerState {
         value: Vec<u8>,
         writer: Option<ClientId>,
     ) -> Vec<ClientId> {
+        // A record named after its kind gets this server's unique name first,
+        // so the dedup below compares what is actually stored.
+        let value = match scope {
+            Scope::Resource(pane) if key == phux_protocol::wire::frame::RESOURCE_AGENT_KEY => {
+                let held = self.metadata.terminal.get(pane).and_then(|v| v.get(key));
+                let others = self
+                    .metadata
+                    .terminal
+                    .iter()
+                    .filter(|(id, _)| *id != pane)
+                    .filter_map(|(_, values)| values.get(key).map(Vec::as_slice));
+                phux_agent_session::names::with_unique_name(value, held.map(Vec::as_slice), others)
+            }
+            _ => value,
+        };
         // Equal bytes return early before any broadcast or write.
         let prev = self.metadata.get(scope, key);
         if prev.as_ref() == Some(&value) {

@@ -52,6 +52,17 @@ impl Degradation {
     pub fn notices(&self) -> &[String] {
         &self.notices
     }
+
+    /// Both answers' notices, `self`'s first, each notice once.
+    #[must_use]
+    pub fn and(mut self, later: Self) -> Self {
+        for notice in later.notices {
+            if !self.notices.contains(&notice) {
+                self.notices.push(notice);
+            }
+        }
+        self
+    }
 }
 
 /// The stderr line `phux` and `phux-mcp` print per notice when a verb hits

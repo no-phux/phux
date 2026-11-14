@@ -13,11 +13,11 @@ fn write_reporter(dir: &std::path::Path, name: &str, report: &str) -> PathBuf {
 
 /// #1869: the page tells tool authors to send `title`, because phux projects
 /// `title` into the pane's agent name and `app` into its kind. Without a
-/// `title` the name falls back to `app`, and a name equal to its kind is a
-/// per-kind constant that `%name` refuses with `invalid_agent_name`.
+/// `title` the name falls back to `app`, and the server gives each such pane
+/// its own name: `%mytool`, then `%mytool-2`.
 #[test]
 #[ignore = "spawns a real phux server; starves in the full parallel pool. Run via `just e2e`."]
-fn program_status_title_is_the_agent_name_and_app_alone_is_not_addressable() {
+fn program_status_title_is_the_agent_name_and_app_alone_gets_a_unique_name() {
     let home = tempfile::tempdir().expect("create temp dir");
     // `ZGVwbG95` is base64 for `deploy`.
     let titled = write_reporter(
@@ -54,11 +54,19 @@ fn program_status_title_is_the_agent_name_and_app_alone_is_not_addressable() {
     let agent = &json["agents"][0];
     assert_eq!(agent["agent"]["label"], "mytool", "no title: name falls back to app: {json}");
     assert_eq!(agent["agent"]["id"], "mytool", "{json}");
-    assert_eq!(agent["address"], serde_json::Value::Null, "{json}");
-    assert_eq!(
-        agent["address_refusal"], "invalid_agent_name",
-        "a name equal to its kind is a per-kind constant: {json}"
-    );
+    assert_eq!(agent["address"], "%mytool", "the first pane keeps the kind name: {json}");
     let (code, _, stderr) = server.run(&["tag", "ls", "%mytool"]);
-    assert_eq!(code, 2, "`tag ls %mytool` must refuse the kind constant: {stderr}");
+    assert_eq!(code, 0, "`tag ls %mytool` must reach the pane: {stderr}");
+
+    let second_id = server.spawn_pane(&untitled);
+    let json = server.await_agent_state(&format!("@{second_id}"), "blocked", DETECT_DEADLINE);
+    let agent = &json["agents"][0];
+    assert_eq!(agent["agent"]["label"], "mytool-2", "{json}");
+    assert_eq!(agent["address"], "%mytool-2", "{json}");
+    let first = server.agent_show("%mytool");
+    assert_eq!(
+        first["agents"][0]["terminal"],
+        format!("@{untitled_id}"),
+        "%mytool keeps reaching the first pane: {first}"
+    );
 }
