@@ -1,4 +1,8 @@
-**Phux Rune 0.1.25**: 2 changes since 0.1.24.
+**Phux Rune 0.1.26**: 6 changes since 0.1.25.
 
-- Keep the client certificate key in the secure enclave on request (#2503)
-- Stop redrawing every frame while typing, so an echo shows sooner (#2482)
+- Take the app's own titlebar on linux (#2515)
+- End onboarding with an agent running (#2510)
+- Quick look, finder service and hover toolbar (#2514)
+- What works here for each machine (#2512)
+- Light on gnome default; no tip after onboarding; view → playground (#2508)
+- Stop promising permissions where there are none (#2509)
