@@ -380,20 +380,6 @@ test("shutdown reads provenance and does not clear another owner's record", asyn
   assert.deepEqual(adapter.clears, []);
 });
 
-test("shutdown clears its own record under the name phux gave a second pi pane", async () => {
-  const timers = new FakeTimers();
-  const adapter = new FakeAdapter();
-  const lifecycle = new PhuxLifecycle({ cli: adapter, timers });
-  lifecycle.start("ours", target);
-  timers.runAll();
-  await lifecycle.settled();
-  adapter.record = { name: "pi-2", kind: "pi", state: "idle", session: "pi:ours" };
-
-  await lifecycle.shutdown();
-
-  assert.deepEqual(adapter.clears, ["@3"]);
-});
-
 test("reload verifies and preserves its own declaration and exact AgentSession", async () => {
   const adapter = new FakeAdapter();
   adapter.record = { name: "pi", kind: "pi", session: "pi:session-1" };

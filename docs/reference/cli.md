@@ -627,11 +627,9 @@ Global flags:
 ```text
 List every pane's detected or declared agent and current state.
 
-The third column is the pane's `%name` address, `-` when it has no agent record,
-or the `phux agent set` that names the pane when its record name is outside
-`[a-z][a-z0-9_-]` or several panes share it. phux names each detected or
-launched agent after its kind, unique on the server (`opencode`, `opencode-2`).
-JSON carries `address` and `address_refusal`.
+The third column is the pane's `%name` (`opencode`, `opencode-2`), `-` with no
+agent record, or the `phux agent set` that names the pane when `%` cannot reach
+its name. JSON carries `address` and `address_refusal`.
 
 Usage: phux agent list [FLAGS]
 
