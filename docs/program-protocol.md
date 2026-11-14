@@ -319,15 +319,20 @@ controls the pane.
 - Any client that can read the pane's metadata can read its records,
   including remote clients the server admits. Do not put secrets in `msg`
   or `title`.
-- A `resume` token is the exception: it is not metadata, no client can read
-  it, and it is not sent to a hub. It is stored in the server's own records
-  on disk, so it is still not a place for a secret.
+- A stored `resume` token is not metadata or an organization wire field,
+  and that field is not mirrored to a hub. **It is not a secret:** the
+  original OSC is ordinary pane output, visible to clients and hubs that
+  read that stream and to terminal recordings. The token is also stored in
+  the server's organization database on disk, without secret-storage
+  protections, and is passed in the resumed process's argv.
 - Any writer to the pane can set a token for any `app`, so a
   `[[restore.program]]` command MUST treat the token as untrusted input: it
   may contain `/` and `..`, and it may name something the user never
   opened. The command should look the token up among things it created,
   not open it as a path. phux guarantees only its shape: one argument, the
-  listed bytes, no leading `-`.
+  listed bytes, no leading `-`. Do not place the placeholder where the
+  command evaluates it as source code (for example `sh -c` or `python -c`).
+  Explicitly allowing an interpreter is not a sandbox.
 
 ### Examples
 

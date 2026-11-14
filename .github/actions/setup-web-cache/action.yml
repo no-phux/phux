@@ -1,4 +1,4 @@
-# Nix, Cachix, and a dependency-only cargo cache for ci.yml's web jobs.
+# Nix, Cachix, and a dependency-only cargo cache for CI and nightly web jobs.
 # Same policy as setup-rust-lane's deps cache: Swatinem/rust-cache keeps
 # third-party artifacts, keys on rustc and each workspace Cargo.lock, and
 # saves only from main. `shared-key` replaces the job id and ignores `key`,
@@ -16,6 +16,10 @@ inputs:
   workspaces:
     description: rust-cache workspaces, one per line. `root -> target` selects a target directory.
     required: true
+  record-main-cache:
+    description: Permit this repository's main workflow_dispatch to save; CI callers leave this false.
+    required: false
+    default: "false"
 
 runs:
   using: composite
@@ -46,6 +50,7 @@ runs:
       with:
         shared-key: ${{ inputs.cache-key }}-${{ steps.web-cache.outputs.flake }}
         workspaces: ${{ inputs.workspaces }}
-        # Pull requests restore only (see docs/development.md#ci).
-        save-if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+        # PRs and merge groups restore only. A queue receipt can skip the main
+        # web jobs entirely, so the nightly warm explicitly opts into saves.
+        save-if: ${{ github.repository == 'no-phux/phux' && github.ref == 'refs/heads/main' && (github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.record-main-cache == 'true')) }}
         cache-on-failure: "true"

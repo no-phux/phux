@@ -1,12 +1,17 @@
 // Publish decisions stay deterministic: no network, no clock.
 import { describe, expect, test } from "bun:test";
 import {
+  applyRuneGate,
   ciRefusal,
   decide,
   parseTag,
+  releaseRefusal,
+  runeMacosRefusal,
+  nativeReleaseProof,
   splitLanes,
   validationState,
   type CiState,
+  type Plan,
   type Release,
 } from "./publish-plan.ts";
 
@@ -151,4 +156,104 @@ test("a tag needs a finished green ci on main", () => {
   expect(ciRefusal("pending", "abc")).toContain("rerun when green");
   expect(ciRefusal("failure", "abc")).toContain("failure");
   expect(ciRefusal("cancelled", "abc")).toContain("cancelled");
+});
+
+test("rune-macos is required on every release commit", () => {
+  expect(runeMacosRefusal("success", "bump")).toBeUndefined();
+  expect(runeMacosRefusal("pending", "bump")).toContain("rune-macos");
+  expect(runeMacosRefusal("failure", "bump")).toContain("failure");
+  expect(releaseRefusal("success", "bump", "failure")).toContain("rune-macos is failure");
+  expect(releaseRefusal("failure", "bump", "success")).toContain("ci.yml is failure");
+  expect(releaseRefusal("success", "bump", "pending")).toBeDefined();
+});
+
+test.each(["pending", "failure", "cancelled", "missing", "success"])(
+  "both tag and publication gates require exact native state %s to be green",
+  (native) => {
+    const proof = nativeReleaseProof("bump", native, true);
+    expect(proof).toEqual({ evidence: "bump", state: native });
+    const refusal = releaseRefusal("success", "bump", proof.state);
+    expect(refusal === undefined).toBe(native === "success");
+    const plan: Plan = {
+      publish: ["v1.2.3"],
+      delete: [],
+      wait: false,
+      fail: undefined,
+      blocked: "",
+    };
+    const gated = applyRuneGate(
+      plan,
+      "bump",
+      () => proof,
+      () => "bump",
+    );
+    expect(gated.publish).toEqual(native === "success" ? ["v1.2.3"] : []);
+  },
+);
+
+test("a cheap green without exact full-coverage proof is still pending", () => {
+  expect(nativeReleaseProof("docs", "success", false)).toEqual({
+    evidence: "docs",
+    state: "pending",
+  });
+});
+
+describe("applyRuneGate", () => {
+  const ready = (publish: string[], extra: Partial<Plan> = {}): Plan => ({
+    publish,
+    delete: [],
+    wait: false,
+    fail: undefined,
+    blocked: "",
+    ...extra,
+  });
+  const shaOf = (tag: string): string => (tag.startsWith("pi-") ? "other" : "event");
+  const lookup = (state: string) => (sha: string) => ({ evidence: sha, state });
+
+  test("a green proof publishes, but unrelated last-commit changes waive nothing", () => {
+    expect(applyRuneGate(ready(["v0.1.0"]), "event", lookup("success"), shaOf).publish).toEqual([
+      "v0.1.0",
+    ]);
+    const quiet = applyRuneGate(
+      ready(["v0.1.0"]),
+      undefined,
+      () => nativeReleaseProof("quiet", "success", false),
+      () => "quiet",
+    );
+    expect(quiet.publish).toEqual([]);
+    expect(quiet.blocked).toContain("pending");
+    expect(quiet.fail).toBeUndefined();
+  });
+
+  test("the event's own commit waits on rune-macos and fails when it is red", () => {
+    const waiting = applyRuneGate(
+      ready(["v0.1.0", "pi-v0.2.0"]),
+      "event",
+      lookup("pending"),
+      shaOf,
+    );
+    expect([waiting.publish, waiting.wait, waiting.fail]).toEqual([[], true, undefined]);
+    const failed = applyRuneGate(ready(["v0.1.0"]), "event", lookup("failure"), shaOf);
+    expect(failed.publish).toEqual([]);
+    expect(failed.fail).toContain("rune-macos is failure for event");
+    expect(failed.fail).toContain("v0.1.0");
+  });
+
+  test("another draft's red rune-macos stays a draft and does not fail the run", () => {
+    const plan = applyRuneGate(
+      ready(["v0.1.0", "pi-v0.2.0"]),
+      "event",
+      (sha) => ({ evidence: sha, state: sha === "event" ? "success" : "failure" }),
+      shaOf,
+    );
+    expect(plan.publish).toEqual(["v0.1.0"]);
+    expect(plan.fail).toBeUndefined();
+    expect(plan.blocked).toContain("pi-v0.2.0");
+    expect(plan.blocked).toContain("rune-macos failure for other");
+  });
+
+  test("a run already waiting on ci is left to that wait", () => {
+    const waiting = ready([], { wait: true });
+    expect(applyRuneGate(waiting, "event", lookup("failure"), shaOf)).toEqual(waiting);
+  });
 });

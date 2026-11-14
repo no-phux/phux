@@ -498,6 +498,7 @@ fn accessory(desk: &Desk, phone: &Phone, p: &Ink) -> El {
         .press(p.hover)
         .cursor(Cursor::Grab)
         .label("Arrow keys: drag")
+        .touch_drags_at_once()
         .on_drag(|d: &mut Desk, drag, tx| d.pad_drag(drag.phase, drag.dx, drag.dy, tx))
         .child(glyph(&icons::PAD, 20.0, p.text));
     let pair = glass(

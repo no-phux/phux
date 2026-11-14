@@ -82,6 +82,7 @@ const ROUTES: Record<string, Surface[]> = {
   // The Rune client has its own workspace, lock and lane (rune-build.yml).
   "clients/rune/**": ["rune"],
   ".github/workflows/rune-build.yml": ["rune"],
+  ".github/workflows/rune-macos.yml": ["rune"],
   "just/rune.just": ["rune"],
   // What that lane packages and qualifies with, outside its tree.
   "scripts/check-binary-portability.sh": ["rune"],
@@ -111,9 +112,9 @@ const ROUTES: Record<string, Surface[]> = {
   "scripts/setup-rust.sh": ["native", "rune"],
   // How the native and web-engine lanes get libghostty's Zig; the Nix
   // lanes use flake.nix's compiler.
-  ".config/zig-toolchain.json": [...SHARED, ...ZIG],
+  ".config/zig-toolchain.json": [...SHARED, ...ZIG, "rune"],
   "scripts/install-zig.sh": [...ZIG, "rune"],
-  "scripts/lib/dev-toolchain.sh": ZIG,
+  "scripts/lib/dev-toolchain.sh": [...ZIG, "rune"],
   // The lint lane runs build-features-check against the real graph.
   "just/{gates,test,build}.just": ["phux"],
   // Compile-free recipes and scripts that guards or release workflows run.

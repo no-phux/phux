@@ -1,9 +1,9 @@
 //! OSC 7501 `resume=`: a program's resume token, kept on its pane's launch
 //! record and spent on the user's `[[restore.program]]` command at relaunch.
 //!
-//! The token never becomes metadata and `org_wire` does not map it, so no
-//! client and no hub sees it. The pane only supplies an id: what runs is
-//! the argv the user wrote for that app.
+//! The token never becomes metadata and `org_wire` does not map it. The
+//! original OSC is still ordinary PTY output, visible to stream readers.
+//! The pane only supplies an id: what runs is the argv the user wrote.
 
 use phux_core::{LaunchSpec, Op, ResumeToken, TerminalLaunch};
 use phux_protocol::ids::ResourceId;
@@ -76,7 +76,7 @@ pub(super) fn argv(s: &ServerState, launch: &TerminalLaunch) -> Option<Vec<Strin
 #[cfg(test)]
 #[allow(clippy::expect_used, reason = "tests")]
 mod tests {
-    use phux_core::{LaunchSpec, ResumeToken, TerminalLaunch};
+    use phux_core::{Actor, ExitOutcome, ExitPolicy, LaunchSpec, ResumeToken, TerminalLaunch};
 
     use super::{argv, report};
     use crate::state::SharedState;
@@ -88,6 +88,36 @@ mod tests {
                 ref other => panic!("terminal launch: {other:?}"),
             },
         )
+    }
+
+    fn retained(state: &SharedState) -> phux_core::ids::ResourceId {
+        state.with_mut(|s| {
+            s.create_terminal(
+                crate::state::TerminalTarget::NewSession {
+                    name: "resume",
+                    lifetime: phux_core::SessionLifetime::Persistent,
+                },
+                TerminalLaunch::default(),
+                ExitPolicy::Retain,
+                &Actor::owner(),
+            )
+            .expect("create")
+            .1
+        })
+    }
+
+    #[test]
+    fn a_normal_exit_clears_the_token_even_if_the_engine_clear_is_drained_late() {
+        let state = SharedState::new();
+        let pane = retained(&state);
+        let terminal = state.with_mut(|s| s.intern_resource_wire(pane));
+        state.with_mut(|s| report(s, &terminal, ResumeToken::new("demo", "finished")));
+        assert!(stored(&state, pane).resume.is_some());
+        state.with_mut(|s| s.activation_ended(pane, ExitOutcome::exited(0), false));
+        // A ResourceLaunchReported after completion is stale: the exit
+        // transition must clear it, not depend on task scheduling.
+        state.with_mut(|s| report(s, &terminal, None));
+        assert_eq!(stored(&state, pane).resume, None);
     }
 
     #[test]
@@ -108,7 +138,8 @@ mod tests {
             },
             "only the token changes"
         );
-        // Not metadata, and not on the wire: no client can read it.
+        // Not metadata or an organization launch field. The original OSC
+        // remains visible in the pane's ordinary output stream.
         state.with(|s| {
             let record = s.registry().record(pane).expect("record");
             let wire = crate::org_wire::launch(record.launch.as_ref().expect("launch"));

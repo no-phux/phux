@@ -263,6 +263,44 @@ pub(super) fn an_unobserved_end_keeps_even_a_remove_shell() {
 }
 
 #[test]
+pub(super) fn a_resume_token_is_cleared_atomically_only_for_an_observed_normal_exit() {
+    use phux_core::{LaunchSpec, TerminalLaunch};
+
+    let token = phux_core::ResumeToken::new("demo", "session");
+    for outcome in [
+        Outcome::Exit(ExitOutcome::exited(0)),
+        Outcome::Exit(ExitOutcome::exited(7)),
+        Outcome::Exit(ExitOutcome::signaled(9)),
+        Outcome::Exit(ExitOutcome::UNKNOWN),
+        Outcome::Unobserved,
+    ] {
+        let mut h = Harness::new();
+        let resource = h.create_resource(
+            h.inbox(),
+            NewResource {
+                launch: Some(LaunchSpec::Terminal(TerminalLaunch {
+                    resume: token.clone(),
+                    ..TerminalLaunch::default()
+                })),
+                ..job()
+            },
+        );
+        let applied = h.report(ended(resource, outcome)).expect("ended");
+        let Some(LaunchSpec::Terminal(launch)) = h.resource(resource).launch else {
+            panic!("terminal launch")
+        };
+        let expected = match outcome {
+            Outcome::Exit(ExitOutcome {
+                status: Some(_), ..
+            }) => None,
+            _ => token.clone(),
+        };
+        assert_eq!(launch.resume, expected, "{outcome:?}");
+        assert!(applied.effects.is_empty(), "an exit never launches work");
+    }
+}
+
+#[test]
 pub(super) fn remove_and_relaunch_refuse_current_and_lost_execution() {
     let mut h = Harness::new();
     let r = h.create_resource(h.inbox(), job());
