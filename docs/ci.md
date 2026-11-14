@@ -13,7 +13,10 @@ handwritten docs normally run only guards. Docs read by tests, including
 `docs/agents.md` and generated references, select their Rust consumers.
 A library change runs the tests of its dependents.
 
-Release metadata alone runs guards without compile lanes. The classifier
+Release metadata on a PR runs guards without compile lanes. Main and queue
+always run native setup and rust icount, including after receipt reuse.
+Their PR selection is scoped to the job's own paths (or `perf-baseline` for
+icount); unknown or unreadable scope fails closed. The classifier
 compares both full documents: root workspace and lock versions, release
 manifest versions, skill version lines, changelogs, and top-level `version`
 in the five integration packages listed in `release-please-config.json`.
@@ -39,6 +42,9 @@ without starting Apple runners; that receipt covers no Apple work.
 `rune-macos.yml` runs macOS and the native iOS simulator/device
 qualification on main pushes, nightly, and manually. Every Rune-affecting
 queue group runs both Apple legs, whether reached directly or through Cargo.
+Recognized release metadata also selects both Apple legs, even when CI's
+product lanes are unselected. This qualifies the metadata release's own tree,
+including native code behind any intervening documentation-only commits.
 
 On `merge_group`, **the already-required `ci` aggregate calls and requires
 the Apple workflow**. It rejects a skipped, failed, or cancelled child.
@@ -51,8 +57,24 @@ A main push can reuse the exact native receipt from its successful queue
 revision, workflow and both-leg
 coverage. PR and Linux-only receipts cannot attest Apple work.
 Nightly and manual runs always qualify the full tree.
-A red Apple result on a direct main push does not block main; it blocks
-publication when Rune is in that release's closure. See [releasing](./releasing.md).
+Native main pushes upload full-coverage receipts after the aggregate succeeds.
+Every stable draft and Rune tag requires that exact release SHA's successful
+main push plus full native receipt: same tree, workflow and both-leg coverage.
+A skipped/cheap green, ancestor receipt, other SHA, PR or dispatch cannot
+substitute. Missing or expired proof blocks publication.
+
+This deliberately qualifies even integration-only metadata releases rather
+than introducing ancestry tracking or product-specific exemptions. Arbitrary
+tags at unqualified docs-only commits are refused; use a normal version bump.
+A red Apple result on a direct main push does not block main, but cannot ship.
+See [releasing](./releasing.md).
+
+Missing or expired receipts hold a draft; rerunning the original qualified
+push can refresh its proof. A batch merge may produce a push only for its
+final commit. Intermediate version commits without their own push run remain
+blocked under the exact-push policy. Another batch SHA, arbitrary queue/PR
+green or a dispatch is not a substitute; qualified intermediate-main
+eligibility is a separate policy decision.
 
 ## Concurrency
 
@@ -71,10 +93,19 @@ so different repository/branch splits cannot collide.
 Merge groups retain their own queue-ref group. The Apple child's group
 prefix differs from its calling `ci`, preventing self-cancellation.
 
+First-run timing runs Linux on every event. Its Mac job runs for installer
+changes on PRs and main pushes, nightly, and on manual runs. Only selected
+Mac jobs coalesce: unrelated pushes cannot replace a pending installer
+qualification, and nightly/manual jobs have separate groups. Its output-file
+fixture uses a regular temporary file, like Actions, not a captured `/dev/stdout`.
+
 ## Runner and cache budget
 
 The test lanes compile once (`just test-archive`) and run the unit and e2e
 shards from that nextest archive. Pull requests restore caches and never
-save them; main pushes save one entry per lane under a 10 GB repository
-budget, pruned by `prune-build-cache`, warmed by `cache-warm.yml`.
+save them. Main pushes and the 00:10 UTC Linux-only cache-warm dispatch
+save per-lane caches under the 10 GB budget. Post-upload pruning keeps
+current-day keys and never deletes the sole older restore source before
+a stored replacement exists. Rune warming keeps its separate 06:17 clock.
+PR and topic-ref entries are outside the pruner's deletion scope.
 Runners are free hosted Ubuntu x64 and arm64, macOS 26 and `xcode-27`.

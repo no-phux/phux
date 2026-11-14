@@ -98,7 +98,7 @@ test("the runner version is the one iai-callgrind in Cargo.lock", () => {
   expect(runnerVersion(readFileSync(repoPath("Cargo.lock"), "utf8"))).toMatch(/^\d+\.\d+\.\d+/);
 });
 
-test("hot paths select the job and docs do not", () => {
+test("hot paths mark perfIcountNeeded and docs do not", () => {
   const classifier = new Classifier();
   const cases: [string[], boolean][] = [
     [[], true],

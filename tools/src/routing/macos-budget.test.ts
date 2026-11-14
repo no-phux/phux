@@ -7,12 +7,12 @@ import { jobs, uses, workflow, workflowNames } from "../policy/workflows.ts";
 // One line per way a macos-* or xcode-* leg enters the five-slot pool.
 // workflow_call does not start a run, so reusable workflows count through each caller.
 const MACOS_BUDGET = [
-  "cache-warm.yml rune → rune-build.yml macos (macos-arm64) on macos-26 | schedule 17 6 * * *, workflow_dispatch",
-  "cache-warm.yml rune → rune-build.yml ios-native (ios-native-simulator) on macos-26 | schedule 17 6 * * *, workflow_dispatch",
+  "cache-warm.yml rune → rune-build.yml macos (macos-arm64) on macos-26 | schedule 10 0 * * * 17 6 * * *, workflow_dispatch",
+  "cache-warm.yml rune → rune-build.yml ios-native (ios-native-simulator) on macos-26 | schedule 10 0 * * * 17 6 * * *, workflow_dispatch",
   "ci.yml queue-apple → rune-build.yml macos (macos-arm64) on macos-26 | merge_group",
   "ci.yml queue-apple → rune-build.yml ios-native (ios-native-simulator) on macos-26 | merge_group",
   "ffi-xcframework.yml build on xcode-27 | workflow_dispatch",
-  "first-run-timing.yml macos on macos-26 | pull_request, push branches main, workflow_dispatch",
+  "first-run-timing.yml macos on macos-26 | pull_request, push branches main, schedule 29 4 * * *, workflow_dispatch",
   "next.yml cli → build-cli.yml build aarch64-apple-darwin on xcode-27 | workflow_dispatch, workflow_run ci",
   "release.yml cli-build → build-cli.yml build aarch64-apple-darwin on xcode-27 | schedule 5 15 * * *, workflow_dispatch, workflow_run ci rune-macos",
   "rune-client.yml build → rune-build.yml macos (macos-arm64) on macos-26 | push tags rune-v*",

@@ -195,9 +195,11 @@ test("ci rejects a failed or cancelled native queue dependency", () => {
     const proc = Bun.spawnSync(["bash", "-euo", "pipefail", "-c", script], {
       env: {
         ...process.env,
-        REQUIRE_APPLE: "true",
+        EVENT_NAME: "merge_group",
         RESULTS: JSON.stringify({
           plan: { result: "success" },
+          native: { result: "success" },
+          icount: { result: "success" },
           "queue-apple": { result: state },
         }),
       },

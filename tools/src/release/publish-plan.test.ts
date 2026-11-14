@@ -4,18 +4,15 @@ import {
   applyRuneGate,
   ciRefusal,
   decide,
-  isReleaseBot,
   parseTag,
   releaseRefusal,
   runeMacosRefusal,
-  runeMacosProof,
-  runeMacosTarget,
+  nativeReleaseProof,
   splitLanes,
   validationState,
   type CiState,
   type Plan,
   type Release,
-  type RuneEvidence,
 } from "./publish-plan.ts";
 
 const rel = (tag: string, draft: boolean, sha: string): Release => ({ tag, draft, sha });
@@ -161,78 +158,21 @@ test("a tag needs a finished green ci on main", () => {
   expect(ciRefusal("cancelled", "abc")).toContain("cancelled");
 });
 
-const evidence = (sha: string, rune: boolean, bot = false, parent?: string): RuneEvidence =>
-  parent === undefined ? { sha, bot, rune } : { sha, bot, rune, parent };
-
-test("release-bot identity is the app, not a person who mentions it", () => {
-  expect(
-    isReleaseBot("phux-release-bot[bot]\n305320402+phux-release-bot[bot]@users.noreply.github.com"),
-  ).toBe(true);
-  expect(isReleaseBot("phux-release[bot]\nphux-release[bot]@users.noreply.github.com")).toBe(true);
-  expect(isReleaseBot("Release Test\nrelease@example.com")).toBe(false);
-  expect(isReleaseBot("note phux-release-bot[bot] in the message")).toBe(false);
-});
-
-test("rune-macos is required on the release commit when Rune is in its closure", () => {
-  const commit = evidence("bump", true, true, "parent");
-  expect(runeMacosTarget(commit, evidence("parent", true))).toBe("bump");
+test("rune-macos is required on every release commit", () => {
   expect(runeMacosRefusal("success", "bump")).toBeUndefined();
   expect(runeMacosRefusal("pending", "bump")).toContain("rune-macos");
   expect(runeMacosRefusal("failure", "bump")).toContain("failure");
-  expect(releaseRefusal("success", "bump", "failure", "bump")).toContain("rune-macos is failure");
-  expect(releaseRefusal("failure", "bump", "success", "bump")).toContain("ci.yml is failure");
-  expect(releaseRefusal("success", "bump", "pending", undefined)).toBeUndefined();
+  expect(releaseRefusal("success", "bump", "failure")).toContain("rune-macos is failure");
+  expect(releaseRefusal("failure", "bump", "success")).toContain("ci.yml is failure");
+  expect(releaseRefusal("success", "bump", "pending")).toBeDefined();
 });
-
-test("a release-bot commit without Rune uses its validated parent", () => {
-  const commit = evidence("bump", false, true, "parent");
-  const parent = evidence("parent", true);
-  expect(runeMacosTarget(commit, parent)).toBe("parent");
-  expect(runeMacosTarget(commit, evidence("parent", false))).toBeUndefined();
-  expect(runeMacosTarget(evidence("human", false, false, "parent"), parent)).toBeUndefined();
-  expect(runeMacosTarget(evidence("bump", false, true), parent)).toBeUndefined();
-});
-
-test.each(["pending", "failure", "cancelled", "success"])(
-  "inherited native proof remains required when parent ci is %s",
-  (parentCi) => {
-    const commit = evidence("bump", false, true, "parent");
-    const proof = runeMacosProof(commit, evidence("parent", true), parentCi, "failure");
-    expect(proof?.evidence).toBe("parent");
-    expect(proof?.state).toBe(parentCi === "success" ? "failure" : parentCi);
-    // These are the actual shared decisions behind tag preflight and draft publication.
-    expect(
-      releaseRefusal("success", "bump", proof?.state ?? "success", proof?.evidence),
-    ).toBeDefined();
-    const plan: Plan = {
-      publish: ["v1.2.3"],
-      delete: [],
-      wait: false,
-      fail: undefined,
-      blocked: "",
-    };
-    const gated = applyRuneGate(
-      plan,
-      "bump",
-      () => proof,
-      () => "bump",
-    );
-    expect(gated.publish).toEqual([]);
-    expect(gated.wait || gated.fail !== undefined).toBe(true);
-  },
-);
 
 test.each(["pending", "failure", "cancelled", "missing", "success"])(
-  "both tag and publication gates require inherited native state %s to be green",
+  "both tag and publication gates require exact native state %s to be green",
   (native) => {
-    const proof = runeMacosProof(
-      evidence("bump", false, true, "parent"),
-      evidence("parent", true),
-      "success",
-      native,
-    );
-    expect(proof).toEqual({ evidence: "parent", state: native });
-    const refusal = releaseRefusal("success", "bump", proof?.state ?? "success", proof?.evidence);
+    const proof = nativeReleaseProof("bump", native, true);
+    expect(proof).toEqual({ evidence: "bump", state: native });
+    const refusal = releaseRefusal("success", "bump", proof.state);
     expect(refusal === undefined).toBe(native === "success");
     const plan: Plan = {
       publish: ["v1.2.3"],
@@ -251,12 +191,11 @@ test.each(["pending", "failure", "cancelled", "missing", "success"])(
   },
 );
 
-test("direct native proof and genuinely unrelated changes are not confused with inheritance", () => {
-  expect(runeMacosProof(evidence("native", true), undefined, "pending", "success")).toEqual({
-    evidence: "native",
-    state: "success",
+test("a cheap green without exact full-coverage proof is still pending", () => {
+  expect(nativeReleaseProof("docs", "success", false)).toEqual({
+    evidence: "docs",
+    state: "pending",
   });
-  expect(runeMacosProof(evidence("docs", false), undefined, "pending", "failure")).toBeUndefined();
 });
 
 describe("applyRuneGate", () => {
@@ -269,20 +208,20 @@ describe("applyRuneGate", () => {
     ...extra,
   });
   const shaOf = (tag: string): string => (tag.startsWith("pi-") ? "other" : "event");
-  const lookup = (state: string) => (sha: string) =>
-    sha === "quiet" ? undefined : { evidence: sha, state };
+  const lookup = (state: string) => (sha: string) => ({ evidence: sha, state });
 
-  test("a green proof publishes, and a commit outside the closure needs nothing", () => {
+  test("a green proof publishes, but unrelated last-commit changes waive nothing", () => {
     expect(applyRuneGate(ready(["v0.1.0"]), "event", lookup("success"), shaOf).publish).toEqual([
       "v0.1.0",
     ]);
     const quiet = applyRuneGate(
       ready(["v0.1.0"]),
       undefined,
-      () => undefined,
+      () => nativeReleaseProof("quiet", "success", false),
       () => "quiet",
     );
-    expect(quiet.publish).toEqual(["v0.1.0"]);
+    expect(quiet.publish).toEqual([]);
+    expect(quiet.blocked).toContain("pending");
     expect(quiet.fail).toBeUndefined();
   });
 

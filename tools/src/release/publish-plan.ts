@@ -9,7 +9,7 @@ import { writeOutputs } from "../lib/actions.ts";
 import { git } from "../lib/git.ts";
 import { api, gh, ghLines } from "../lib/github.ts";
 import { list, str, table, type Table } from "../lib/value.ts";
-import { classifyRange } from "../routing/detect.ts";
+import { findValidation, type Receipt } from "../routing/receipt.ts";
 
 export type Version = readonly [number, number, number];
 
@@ -186,7 +186,6 @@ export function splitLanes(tags: readonly string[]): {
 
 const CI_WORKFLOW = ".github/workflows/ci.yml";
 const RUNE_MACOS_WORKFLOW = ".github/workflows/rune-macos.yml";
-const RELEASE_BOT = /^(?:phux-release-bot\[bot\]|phux-release\[bot\])$/m;
 
 function workflowConclusion(repository: string, sha: string, file: string, path: string): string {
   const query = new URLSearchParams({ head_sha: sha, event: "push", per_page: "20" });
@@ -217,96 +216,39 @@ export function ciRefusal(state: string, sha: string): string | undefined {
 export function runeMacosRefusal(state: string, sha: string): string | undefined {
   if (state === "success") return undefined;
   if (PENDING.has(state))
-    return `no finished rune-macos push run on main for ${sha}; rerun when green`;
+    return `no finished full-coverage rune-macos push proof on main for ${sha}; rerun the qualified push when green`;
   return `rune-macos is ${state} on main for ${sha}`;
 }
 
-/**
- * ci and, when `runeSha` is set, rune-macos. ci is always the release commit.
- * `runeSha` is that commit or, for a release-bot version bump that does not
- * itself build Rune, the parent whose ci already passed.
- */
-export function releaseRefusal(
-  ci: string,
-  sha: string,
-  rune: string,
-  runeSha: string | undefined,
-): string | undefined {
+/** Both qualified workflows must prove the release commit itself, never an ancestor. */
+export function releaseRefusal(ci: string, sha: string, rune: string): string | undefined {
   const ciNo = ciRefusal(ci, sha);
   if (ciNo !== undefined) return ciNo;
-  if (runeSha === undefined) return undefined;
-  return runeMacosRefusal(rune, runeSha);
+  return runeMacosRefusal(rune, sha);
 }
 
-export interface RuneEvidence {
-  readonly sha: string;
-  readonly bot: boolean;
-  readonly rune: boolean;
-  readonly parent?: string;
-}
-
-/** True when `identity` is the release app (`git log --format=%an%n%ae`). */
-export function isReleaseBot(identity: string): boolean {
-  return RELEASE_BOT.test(identity);
-}
-
-/**
- * The commit whose rune-macos run proves this release, or undefined when
- * Rune is outside the closure. Select the required evidence independently
- * of its state: pending or failed parent ci must never erase the requirement.
- */
-export function runeMacosTarget(
-  commit: RuneEvidence,
-  parent: RuneEvidence | undefined,
-): string | undefined {
-  if (commit.rune) return commit.sha;
-  if (commit.bot && parent !== undefined && commit.parent === parent.sha && parent.rune) {
-    return parent.sha;
-  }
-  return undefined;
-}
-
-/** Conjoin the inherited parent's ci and native proof; missing proof is not a waiver. */
-export function runeMacosProof(
-  commit: RuneEvidence,
-  parent: RuneEvidence | undefined,
-  parentCi: string,
-  native: string,
-): { evidence: string; state: string } | undefined {
-  const target = runeMacosTarget(commit, parent);
-  if (target === undefined) return undefined;
-  const state = target === commit.sha || parentCi === "success" ? native : parentCi;
-  return { evidence: target, state };
-}
-
-function evidence(sha: string): RuneEvidence {
-  const identity = git(["log", "-1", "--format=%an%n%ae", sha]).trim();
-  let parent: string | undefined;
-  try {
-    parent = git(["rev-parse", "--verify", `${sha}^`]).trim();
-  } catch {
-    parent = undefined;
-  }
-  const rune = parent === undefined ? true : classifyRange(parent, sha).needed.has("rune");
-  const row: RuneEvidence = { sha, bot: isReleaseBot(identity), rune };
-  return parent === undefined ? row : { ...row, parent };
-}
-
-function runeMacosOn(
-  repository: string,
+/** A cheap green workflow without both-leg evidence is still unqualified. */
+export function nativeReleaseProof(
   sha: string,
-): { evidence: string; state: string } | undefined {
-  const commit = evidence(sha);
-  if (commit.rune) return { evidence: sha, state: runeMacosConclusion(repository, sha) };
-  if (!commit.bot || commit.parent === undefined) return undefined;
-  const parent = evidence(commit.parent);
-  const target = runeMacosTarget(commit, parent);
-  if (target === undefined) return undefined;
-  return runeMacosProof(
-    commit,
-    parent,
-    ciConclusion(repository, commit.parent),
-    runeMacosConclusion(repository, target),
+  state: string,
+  qualified: boolean,
+): { evidence: string; state: string } {
+  return { evidence: sha, state: state === "success" && !qualified ? "pending" : state };
+}
+
+function runeMacosOn(repository: string, sha: string): { evidence: string; state: string } {
+  const state = runeMacosConclusion(repository, sha);
+  if (state !== "success") return nativeReleaseProof(sha, state, false);
+  const receipt: Receipt = {
+    schema: 2,
+    tree: git(["rev-parse", "--verify", `${sha}^{tree}`]).trim(),
+    workflow: RUNE_MACOS_WORKFLOW,
+    coverage: "macos,rune_ios",
+  };
+  return nativeReleaseProof(
+    sha,
+    state,
+    findValidation(receipt, repository, undefined, sha) !== undefined,
   );
 }
 
@@ -315,32 +257,40 @@ function runeMacosOn(
  * proof of the event's own commit stops the whole publish, the way ci does.
  * Any other draft stays a draft and is named on `blocked`.
  */
+function ownNativeGate(
+  plan: Plan,
+  strictSha: string | undefined,
+  lookup: (sha: string) => { evidence: string; state: string },
+  shaOf: (tag: string) => string,
+): Plan | undefined {
+  if (strictSha === undefined) return undefined;
+  const own = plan.publish.filter((tag) => shaOf(tag) === strictSha);
+  if (own.length === 0) return undefined;
+  const rune = lookup(strictSha);
+  if (rune.state === "success") return undefined;
+  if (PENDING.has(rune.state)) return { ...plan, publish: [], wait: true };
+  return {
+    ...plan,
+    publish: [],
+    fail: `rune-macos is ${rune.state} for ${rune.evidence}; not publishing ${own.join(", ")}`,
+  };
+}
+
+/** Every published SHA needs exact native proof, regardless of its last diff or author. */
 export function applyRuneGate(
   plan: Plan,
   strictSha: string | undefined,
-  lookup: (sha: string) => { evidence: string; state: string } | undefined,
+  lookup: (sha: string) => { evidence: string; state: string },
   shaOf: (tag: string) => string,
 ): Plan {
   if (plan.fail !== undefined || plan.wait) return plan;
-  if (strictSha !== undefined) {
-    const own = plan.publish.filter((tag) => shaOf(tag) === strictSha);
-    if (own.length > 0) {
-      const rune = lookup(strictSha);
-      if (rune !== undefined && rune.state !== "success") {
-        if (PENDING.has(rune.state)) return { ...plan, publish: [], wait: true };
-        return {
-          ...plan,
-          publish: [],
-          fail: `rune-macos is ${rune.state} for ${rune.evidence}; not publishing ${own.join(", ")}`,
-        };
-      }
-    }
-  }
+  const own = ownNativeGate(plan, strictSha, lookup, shaOf);
+  if (own !== undefined) return own;
   const publish: string[] = [];
   const held: string[] = [];
   for (const tag of plan.publish) {
     const rune = lookup(shaOf(tag));
-    if (rune === undefined || rune.state === "success") publish.push(tag);
+    if (rune.state === "success") publish.push(tag);
     else held.push(`${tag} (rune-macos ${rune.state} for ${rune.evidence})`);
   }
   const note = held.length === 0 ? "" : `still draft, rune-macos is not green: ${held.join("; ")}`;
@@ -353,12 +303,7 @@ export function ciGreen(sha: string): number {
   const repository = process.env["GITHUB_REPOSITORY"];
   if (!repository) throw new Failure("GITHUB_REPOSITORY is unset");
   const rune = runeMacosOn(repository, sha);
-  const refusal = releaseRefusal(
-    ciConclusion(repository, sha),
-    sha,
-    rune?.state ?? "success",
-    rune?.evidence,
-  );
+  const refusal = releaseRefusal(ciConclusion(repository, sha), sha, rune.state);
   if (refusal === undefined) return 0;
   console.error(`::error::${refusal}`);
   return 1;

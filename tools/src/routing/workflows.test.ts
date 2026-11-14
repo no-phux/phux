@@ -1,5 +1,6 @@
 // ci.yml runs the plan the way plan.ts promises: one job per lane, gated on
 // the plan's own output, running the recipes `just check` runs locally.
+// The web lane is the exception: two jobs. web-lane.test.ts checks that split.
 import { expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { repoPath } from "../lib/repo.ts";
@@ -92,16 +93,20 @@ test("plan declares every output the planner writes, and jobs read only those", 
   expect(read.filter((key) => !declared.includes(key ?? ""))).toEqual([]);
 });
 
-test("each lane is one job gated on its plan output that runs the lane's recipes", () => {
+test("each lane's jobs are gated on its plan output and together run its recipes", () => {
   for (const lane of LANES) {
     const gated = Object.entries(jobs(CI)).filter(([, lane_job]) =>
       (str(lane_job["if"]) ?? "").includes(`needs.plan.outputs.${lane} == 'true'`),
     );
-    const owner = gated.find(([id]) => id !== "test-build");
-    expect([lane, owner === undefined]).toEqual([lane, false]);
-    const called = uses(owner?.[1] ?? {}).replace("./.github/workflows/", "");
-    const laneJobs = called === "" ? [owner?.[1] ?? {}] : Object.values(jobs(workflow(called)));
-    const commands = laneJobs.map(executed).join("\n");
+    const owners = gated.filter(([id]) => id !== "test-build");
+    expect([lane, owners.length]).toEqual([lane, lane === "web" ? 2 : 1]);
+    const commands = owners
+      .flatMap(([, laneJob]) => {
+        const called = uses(laneJob).replace("./.github/workflows/", "");
+        const laneJobs = called === "" ? [laneJob] : Object.values(jobs(workflow(called)));
+        return laneJobs.map(executed);
+      })
+      .join("\n");
     for (const argv of LANE_RECIPES[lane]) {
       const [recipe] = argv;
       expect([lane, recipe, recipe in RECIPES]).toEqual([lane, recipe, true]);
@@ -133,7 +138,7 @@ test("the ci aggregate needs every lane and accepts only success or a skip", () 
   ] as const) {
     const results = JSON.stringify({ ...baseline, [id]: { result } });
     const exit = Bun.spawnSync(["bash", "-euo", "pipefail", "-c", script], {
-      env: { ...process.env, RESULTS: results },
+      env: { ...process.env, RESULTS: results, EVENT_NAME: "pull_request" },
       stdout: "ignore",
     }).exitCode;
     expect([id, result, exit]).toEqual([id, result, code]);
@@ -182,7 +187,6 @@ test("ci runs Rune's Linux hosts, and rune-macos owns the Apple legs", () => {
   const rune = job(CI, "rune");
   expect(withInput(rune, "hosts")).toBe("linux");
   expect(withInput(rune, "ios")).toBe(false);
-  expect(withInput(rune, "qualify")).toBe("${{ needs.plan.outputs.rune_qualify == 'true' }}");
   expect(workflowText("ci.yml")).not.toContain("rune_ios");
   const mac = workflow("rune-macos.yml");
   const build = job(mac, "build");
@@ -192,20 +196,11 @@ test("ci runs Rune's Linux hosts, and rune-macos owns the Apple legs", () => {
   expect(str(job(mac, "rune-macos")["name"])).toBe("rune-macos");
   expect(steps(job(mac, "plan")).map(run).join("\n")).toContain("rune-macos-plan");
   expect(uses(job(CI, "queue-apple"))).toBe("./.github/workflows/rune-macos.yml");
-  expect(str(job(CI, "queue-apple")["name"])).toBe("queue-apple");
   expect(table(mac["on"])["workflow_call"]).toBeDefined();
   const reusable = workflow("rune-build.yml");
-  const inputs = table(table(table(reusable["on"])["workflow_call"])["inputs"]);
-  const input = table(inputs["ios"]);
-  // rune-client.yml calls it for a tag without inputs: the release keeps iOS
-  // and Linux qualification.
+  const input = table(table(table(table(reusable["on"])["workflow_call"])["inputs"])["ios"]);
+  // rune-client.yml calls it for a tag without inputs: the release keeps iOS.
   expect(input).toMatchObject({ type: "boolean", default: true });
-  expect(table(inputs["qualify"])).toMatchObject({ type: "boolean", default: true });
-  expect(str(job(reusable, "linux-x86_64")["name"])).toBe("linux-x86_64");
-  expect(str(job(reusable, "linux-aarch64")["name"])).toBe("linux-aarch64");
-  expect(str(job(reusable, "linux-aarch64")["if"])).toBe(
-    "inputs.qualify && (inputs.hosts == 'all' || inputs.hosts == 'linux')",
-  );
   expect(str(job(reusable, "ios-native")["if"])).toBe(
     "inputs.ios && (inputs.hosts == 'all' || inputs.hosts == 'macos')",
   );
