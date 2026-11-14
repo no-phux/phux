@@ -27,6 +27,9 @@ quoted from there.
   every client draws; `[[producers]]` keeps the program running.
 - [Agent integrations](./agents.md#agent-setup). The table there includes
   Claude Code, pi, Oh My Pi, OpenCode, Grok, and any MCP client.
+- [Build a phux client](./build-a-client.md). Read agents and their
+  questions, answer one, and follow events, with the JSON a test keeps
+  stable.
 - [Calling phux from a program](./agent-quickstart.md#call-phux-from-a-program)
   and [Embed phux](./embedding.md). Read these for what a library would be,
   and for the SDK status below.

@@ -230,6 +230,12 @@ fn watch_exit(
     }
 }
 
+/// The `--json` resume line on stderr. Its shape is documented in
+/// docs/build-a-client.md and checked against it by a test.
+pub(crate) fn cursor_json(cursor: Option<&str>, cursor_void: bool) -> serde_json::Value {
+    serde_json::json!({ "cursor": cursor, "cursor_void": cursor_void })
+}
+
 /// The last stderr line: where to resume with `--after` (ADR-0123), as JSON
 /// under `--json`. Nothing without an event journal.
 fn report_cursor(resume: &ResumeState, json: bool) {
@@ -239,10 +245,10 @@ fn report_cursor(resume: &ResumeState, json: bool) {
             // Resume-cursor JSON is a machine stderr contract, not a diagnostic.
             eprintln!(
                 "{}",
-                serde_json::json!({
-                    "cursor": cursor.as_ref().map(ToString::to_string),
-                    "cursor_void": resume.cursor_void(),
-                })
+                cursor_json(
+                    cursor.as_ref().map(ToString::to_string).as_deref(),
+                    resume.cursor_void()
+                )
             );
         }
         return;
