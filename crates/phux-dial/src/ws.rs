@@ -27,8 +27,8 @@ use crate::tls::{CertTrust, TlsClientIdentity};
 const WS_PING_INTERVAL: Duration = Duration::from_secs(10);
 
 /// How long a WebSocket may go without *any* inbound message before the peer
-/// is declared gone: three ping intervals, so one lost ping is tolerated.
-pub const WS_LIVENESS_TIMEOUT: Duration = Duration::from_secs(30);
+/// is declared gone: three pings, so losing one is tolerated.
+pub const WS_LIVENESS_TIMEOUT: Duration = WS_PING_INTERVAL.saturating_mul(3);
 
 /// What the keepalive wants done next.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

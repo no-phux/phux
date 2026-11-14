@@ -37,8 +37,8 @@ pub const EVENT_TYPES: &[&str] = &[
 ];
 
 /// Largest encoded record (one JSON object plus its newline) the server
-/// accepts.
-pub const MAX_RECORD_BYTES: usize = 16 * 1024;
+/// accepts; the kernel's reader enforces the same ceiling.
+pub use phux_client_core::session::agent_stream::MAX_RECORD_BYTES;
 
 /// Largest payload one `APPEND_RESOURCE_OUTPUT` carries.
 pub const MAX_APPEND_BYTES: usize = 64 * 1024;

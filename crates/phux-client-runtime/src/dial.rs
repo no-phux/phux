@@ -72,7 +72,7 @@ pub const DIAL_TIMEOUT: Duration = Duration::from_secs(15);
 /// Largest frame body a consumer may hand the WebSocket lane: the SPEC §5
 /// hard bound, the same ceiling Cockpit's socket worker enforces inbound
 /// (`transport.max_frame_bytes` less its 4-byte prefix).
-pub const MAX_FRAME_BODY: usize = 16 * 1024 * 1024;
+pub const MAX_FRAME_BODY: usize = phux_protocol::wire::frame::MAX_FRAME_LEN as usize;
 
 /// Plan the QUIC dial for `authority` (`HOST:PORT`): resolve the name, apply
 /// the pin rule, and parse the bearer token. The returned plan owns the

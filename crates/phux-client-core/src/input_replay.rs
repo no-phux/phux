@@ -71,7 +71,9 @@ use resolve::{disposition_index, retained_event_bytes};
 /// this journal exists to prevent.
 pub const INPUT_RETRY_HORIZON: Duration = Duration::from_mins(10);
 
-const INPUT_RETRY_HORIZON_MS: u64 = 10 * 60 * 1_000;
+/// [`INPUT_RETRY_HORIZON`] in the journal's millisecond clock. The horizon
+/// is whole minutes, so whole seconds lose nothing.
+const INPUT_RETRY_HORIZON_MS: u64 = INPUT_RETRY_HORIZON.as_secs() * 1_000;
 
 /// `HELLO_OK.server_id` length the protocol defines. Anything else is a peer
 /// this journal must not trust with idempotency (mirrors the mobile bridge's
