@@ -225,6 +225,11 @@ pub struct Pane {
     pub group_index: Option<u32>,
     /// That group's name.
     pub group_name: Option<String>,
+    /// The foreground program's name, once its occupant record is read.
+    pub foreground: Option<String>,
+    /// What a list calls the pane: its name, else what runs in it and
+    /// where (`claude · phux`), else its title or folder.
+    pub label: String,
 }
 
 /// One `AgentSession` resource: a record stream bound to a Terminal.
@@ -387,6 +392,7 @@ pub fn session_graph(
                             outcome: None,
                         })
                 });
+            let label = pane.label();
             Pane {
                 terminal_id: id::encode(&pane.terminal_id),
                 session_id: pane.session_id,
@@ -404,6 +410,8 @@ pub fn session_graph(
                 group_id: placed.as_ref().map(|p| group_id_text(&p.id)),
                 group_index: placed.as_ref().map(|p| p.index),
                 group_name: placed.map(|p| p.name),
+                foreground: pane.foreground,
+                label,
             }
         })
         .collect();
@@ -475,6 +483,7 @@ mod tests {
                 name: Some("editor".to_owned()),
                 activation: Some(ActivationId::new(2)),
                 exec: Some(ExecState::Running),
+                foreground: None,
             }],
             agent_sessions: vec![AgentSessionDescriptor {
                 id: ResourceId::local(8),

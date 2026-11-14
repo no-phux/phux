@@ -143,6 +143,13 @@ pub struct PaneDescriptor {
     pub group_id: Option<String>,
     pub group_index: Option<u32>,
     pub group_name: Option<String>,
+    /// The foreground program's name (`zsh`, `claude`), once read.
+    #[uniffi(default)]
+    pub foreground: Option<String>,
+    /// What a list calls the pane: its name, else what runs in it and where
+    /// (`claude · phux`), else its title or folder. One rule for every client.
+    #[uniffi(default)]
+    pub label: String,
 }
 
 impl From<topology::Pane> for PaneDescriptor {
@@ -164,6 +171,8 @@ impl From<topology::Pane> for PaneDescriptor {
             group_id: value.group_id,
             group_index: value.group_index,
             group_name: value.group_name,
+            foreground: value.foreground,
+            label: value.label,
         }
     }
 }

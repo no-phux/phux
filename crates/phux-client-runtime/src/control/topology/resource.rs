@@ -4,7 +4,7 @@
 use phux_protocol::ids::{ResourceId, ResourceKind, SessionId};
 use phux_protocol::wire::info::SessionSnapshot;
 
-use super::{DocumentDescriptor, OrganizationReplica, Topology, session_of};
+use super::{DocumentDescriptor, OrganizationReplica, PaneDescriptor, Topology, session_of};
 
 /// One resource of any kind, denormalized with its session.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -104,6 +104,34 @@ impl Topology {
             .find(|resource| &resource.id == id && resource.kind.is_terminal())
         {
             resource.title = Some(title.to_owned());
+        }
+    }
+}
+
+impl PaneDescriptor {
+    /// What a list calls the pane ([`phux_client_core::pane_label`]):
+    /// its name, else what runs in it and where, else its title or folder.
+    #[must_use]
+    pub fn label(&self) -> String {
+        phux_client_core::pane_label::pane_label(
+            self.name.as_deref(),
+            self.title.as_deref(),
+            self.foreground.as_deref(),
+            self.cwd.as_deref(),
+        )
+        .unwrap_or_else(|| "terminal".to_owned())
+    }
+}
+
+impl Topology {
+    /// Keep the foregrounds `previous` read: a snapshot carries none, and
+    /// the occupant record only arrives again when it changes.
+    pub(in crate::control) fn keep_foregrounds(&mut self, previous: Option<&Self>) {
+        let Some(previous) = previous else { return };
+        for pane in &mut self.panes {
+            pane.foreground = previous
+                .pane(&pane.terminal_id)
+                .and_then(|old| old.foreground.clone());
         }
     }
 }

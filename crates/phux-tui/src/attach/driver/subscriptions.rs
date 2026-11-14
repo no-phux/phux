@@ -12,7 +12,8 @@ use crate::attach::outcome::AttachError;
 use crate::attach::server_frame::AgentMetaIndex;
 use crate::layout::ArrangementDoc;
 use phux_client::agent_meta::{
-    AgentRecord, RESOURCE_AGENT_KEY, RESOURCE_ASKED_KEY, parse_agent_record,
+    AgentRecord, RESOURCE_AGENT_KEY, RESOURCE_ASKED_KEY, RESOURCE_PANE_OCCUPANT_KEY,
+    parse_agent_record,
 };
 use phux_client::layout_ops::{DEFAULT_LAYOUT_GROUP_ID as DEFAULT_GROUP_ID, layout_key};
 
@@ -314,6 +315,9 @@ pub(super) async fn sync_agent_meta_subscriptions(
     agent_meta
         .asked_pending
         .retain(|_, id| pane_ids.contains(id));
+    agent_meta
+        .occupant_pending
+        .retain(|_, id| pane_ids.contains(id));
     // Same hygiene for the attention ladder's clock: a closed pane must not
     // leave a timestamp behind for a recycled ResourceId to inherit.
     agent_meta.change_at.retain(|id, _| pane_ids.contains(id));
@@ -337,22 +341,27 @@ pub(super) async fn sync_agent_meta_subscriptions(
         .await?;
         // ADR-0136: a satellite pane's asked flag is metadata, not an event
         // this client is guaranteed to see. The GET must not share `pending`.
-        if !id.is_local() {
-            let asked_id = *next_request_id;
-            *next_request_id = next_request_id.wrapping_add(1);
-            agent_meta.asked_pending.insert(asked_id, id.clone());
-            conn.send(&FrameKind::GetMetadata {
-                request_id: asked_id,
-                scope: Scope::Resource(id.clone()),
-                key: RESOURCE_ASKED_KEY.to_owned(),
-            })
-            .await?;
-            conn.send(&FrameKind::SubscribeMetadata {
-                scope: Scope::Resource(id.clone()),
-                key: RESOURCE_ASKED_KEY.to_owned(),
-            })
-            .await?;
-        }
+        // A local pane's occupant record names it instead; that record stays
+        // on the pane's own server, so a satellite pane has none to read.
+        let (key, pending) = if id.is_local() {
+            (RESOURCE_PANE_OCCUPANT_KEY, &mut agent_meta.occupant_pending)
+        } else {
+            (RESOURCE_ASKED_KEY, &mut agent_meta.asked_pending)
+        };
+        let side_id = *next_request_id;
+        *next_request_id = next_request_id.wrapping_add(1);
+        pending.insert(side_id, id.clone());
+        conn.send(&FrameKind::GetMetadata {
+            request_id: side_id,
+            scope: Scope::Resource(id.clone()),
+            key: key.to_owned(),
+        })
+        .await?;
+        conn.send(&FrameKind::SubscribeMetadata {
+            scope: Scope::Resource(id.clone()),
+            key: key.to_owned(),
+        })
+        .await?;
         agent_meta.subscribed.insert(id.clone());
     }
     Ok(())
