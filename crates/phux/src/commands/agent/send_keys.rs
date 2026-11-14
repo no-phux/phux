@@ -401,13 +401,22 @@ fn report_failure(
 
 /// Describe how `record` fails the caller's expectation, or `None` if it
 /// meets it (with no expectation, any identified agent does).
+///
+/// `--expect-agent` matches the name or the kind: phux names agents after
+/// their kind (`opencode`, `opencode-2`), and `--expect-agent opencode`
+/// predates the suffix.
 pub(super) fn identity_mismatch(
     record: &AgentRecord,
     expect_agent: Option<&str>,
     expect_kind: Option<&str>,
 ) -> Option<String> {
+    let is = |field: &str, expected: &str| field.trim().eq_ignore_ascii_case(expected.trim());
     if let Some(expected) = expect_agent
-        && !record.name.trim().eq_ignore_ascii_case(expected.trim())
+        && !is(&record.name, expected)
+        && !record
+            .kind
+            .as_deref()
+            .is_some_and(|kind| is(kind, expected))
     {
         return Some(format!("'{}', not '{expected}'", record.name));
     }

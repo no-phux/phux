@@ -358,29 +358,27 @@ fn a_shell_foreground_outranks_agent_words_on_the_screen() {
     );
 }
 
-/// A detected `opencode` pane is named after its kind, which `%` refuses; the
-/// list column prints the command that names it rather than a bare code.
+/// A name `%` cannot use prints the command that names the pane; a partial
+/// view keeps its code.
 #[test]
-fn a_kind_constant_name_prints_the_command_that_names_the_pane() {
+fn an_unaddressable_name_prints_the_command_that_names_the_pane() {
     let mut evidence = PaneEvidence::for_test("@3", Some("OpenCode"), &["some screen"]);
     evidence.record = Some(AgentRecord {
-        name: "opencode".to_owned(),
+        name: "Code Review".to_owned(),
         kind: Some("opencode".to_owned()),
         state: AgentMetaState::Blocked,
         ..AgentRecord::default()
     });
     let mut report = infer_agent_state(&evidence, &[]);
-    report.set_address(Some(Err("invalid_agent_name")));
-    assert_eq!(
-        report.address_column(),
-        "(name it: phux agent set @3 --name NAME --kind opencode)"
-    );
-
-    report.set_address(Some(Err("selector_not_single")));
-    assert_eq!(
-        report.address_column(),
-        "(not %-addressable: selector_not_single)"
-    );
-    report.set_address(Some(Ok("%reviewer".to_owned())));
-    assert_eq!(report.address_column(), "%reviewer");
+    for code in ["invalid_agent_name", "selector_not_single"] {
+        report.set_address(Some(Err(code)));
+        assert_eq!(
+            report.address_column(),
+            "(name it: phux agent set @3 --name NAME)"
+        );
+    }
+    report.set_address(Some(Err("partial_view")));
+    assert_eq!(report.address_column(), "(not %-addressable: partial_view)");
+    report.set_address(Some(Ok("%opencode-2".to_owned())));
+    assert_eq!(report.address_column(), "%opencode-2");
 }

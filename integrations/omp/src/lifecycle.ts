@@ -23,7 +23,8 @@ function owns(pane: AgentPane, id: string): boolean {
   if (sources.length !== 1) return false;
   try {
     const record = JSON.parse(sources[0]!.observed);
-    return record.name === "omp" && record.kind === "omp" && record.session === `omp:${id}`;
+    // phux may store the name as `omp-2`; kind and session identify us.
+    return record.kind === "omp" && record.session === `omp:${id}`;
   } catch { return false; }
 }
 
@@ -58,7 +59,7 @@ function unboundDeclaration(observed: string): boolean {
 
 function unboundIdentity(record: Record<string, unknown>): boolean {
   if (Object.keys(record).some(key => !UNBOUND_FIELDS.has(key))) return false;
-  if (record.name !== "omp" || record.kind !== "omp") return false;
+  if (typeof record.name !== "string" || !/^omp(-\d+)?$/.test(record.name) || record.kind !== "omp") return false;
   if (record.session != null || record.attention != null) return false;
   return record.state == null || OBSERVED_STATES.has(record.state as string);
 }

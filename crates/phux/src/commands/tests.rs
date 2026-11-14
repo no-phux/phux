@@ -42,10 +42,6 @@ fn agent_resolve_refusals_share_one_code_vocabulary() {
             terminal: t.clone(),
             candidates: vec![],
         },
-        AgentResolveError::KindConstant {
-            name: "a".into(),
-            candidates: vec![],
-        },
         AgentResolveError::Withdrawn {
             name: "a".into(),
             terminal: t,

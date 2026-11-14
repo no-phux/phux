@@ -41,8 +41,11 @@ pub async fn get_record(
 
 /// Write `record` to `pane`, then confirm with a trailing `GET_METADATA`.
 ///
-/// The read-back consumes `request_id + 1`. `SET_METADATA` has no reply, so
-/// the ordered read-back proves the write applied before the process exits.
+/// A `record` without a `kind` keeps the pane's current one, read first
+/// with `request_id + 2`, so renaming a detected agent does not make it
+/// kindless. The read-back consumes `request_id + 1`. `SET_METADATA` has no
+/// reply, so the ordered read-back proves the write applied before the
+/// process exits.
 ///
 /// # Errors
 ///
@@ -54,6 +57,13 @@ pub async fn set_record(
     pane: &ResourceId,
     record: &AgentRecord,
 ) -> Result<(Answer<Option<AgentRecord>>, Degradation), AttachError> {
+    let mut record = record.clone();
+    let mut prefetch = Degradation::default();
+    if record.kind.is_none() {
+        let (current, degradation) = get_record(conn, pane, request_id.wrapping_add(2)).await?;
+        record.kind = current.ok().flatten().and_then(|current| current.kind);
+        prefetch = degradation;
+    }
     conn.send(&FrameKind::SetMetadata {
         request_id,
         scope: Scope::Resource(pane.clone()),
@@ -61,7 +71,8 @@ pub async fn set_record(
         value: record.encode(),
     })
     .await?;
-    get_record(conn, pane, request_id.wrapping_add(1)).await
+    let (answer, degradation) = get_record(conn, pane, request_id.wrapping_add(1)).await?;
+    Ok((answer, prefetch.and(degradation)))
 }
 
 /// Delete `pane`'s record, confirmed like [`set_record`].
@@ -207,6 +218,51 @@ mod tests {
                     if *scoped == pane && key == RESOURCE_AGENT_KEY
             )),
             "expected the confirming GET at request_id 2; sent {seen:?}"
+        );
+    }
+
+    /// Renaming without a kind keeps the pane's kind; an explicit kind wins.
+    #[tokio::test]
+    async fn set_without_a_kind_keeps_the_panes_kind() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let pane = ResourceId::local(3);
+        let detected = AgentRecord {
+            name: "opencode".to_owned(),
+            kind: Some("opencode".to_owned()),
+            ..AgentRecord::default()
+        };
+        let spec = ScriptSpec::new().stored_metadata(
+            Scope::Resource(pane.clone()),
+            RESOURCE_AGENT_KEY,
+            detected.encode(),
+        );
+        let (socket, _server) = serve_one(dir.path(), spec);
+        let mut conn = Connection::connect(&socket).await.expect("connect");
+        let renamed = AgentRecord {
+            name: "reviewer".to_owned(),
+            ..AgentRecord::default()
+        };
+        let (answer, _) = set_record(&mut conn, 1, &pane, &renamed)
+            .await
+            .expect("scripted server answers");
+        let confirmed = answer.expect("read back").expect("a record");
+        assert_eq!(confirmed.name, "reviewer");
+        assert_eq!(confirmed.kind.as_deref(), Some("opencode"));
+
+        let rekinded = AgentRecord {
+            kind: Some("codex".to_owned()),
+            ..renamed
+        };
+        let (answer, _) = set_record(&mut conn, 10, &pane, &rekinded)
+            .await
+            .expect("scripted server answers");
+        assert_eq!(
+            answer
+                .expect("read back")
+                .expect("a record")
+                .kind
+                .as_deref(),
+            Some("codex")
         );
     }
 

@@ -464,7 +464,8 @@ function reloadBinding(
 function ownsDeclaration(observed: string | undefined, owner: string): boolean {
   if (observed === undefined) return false;
   const record = parseOwnership(observed);
-  return record?.name === "pi" && record.kind === "pi" && record.session === owner;
+  // phux may store the name as `pi-2`; kind and session identify us.
+  return record?.kind === "pi" && record.session === owner;
 }
 
 interface OwnershipFields {

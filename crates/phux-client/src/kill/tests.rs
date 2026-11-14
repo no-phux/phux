@@ -212,11 +212,6 @@ async fn selected_resolves_percent_name_through_the_agent_resolver() {
             "%build",
             "selector_not_single",
         ),
-        (
-            named(&[(2, "claude", Some("claude"))]),
-            "%claude",
-            "invalid_agent_name",
-        ),
     ] {
         let (result, _, seen) = run_selected(spec, target).await;
         let Err(KillError::Agent(err)) = &result else {

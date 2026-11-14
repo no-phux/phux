@@ -98,6 +98,11 @@ records explain history; [look them up deliberately](./architecture.md#historica
 
 - The server derives agent state. A host's lifecycle stream outranks the
   detector; an occupant-bounded declaration outranks both.
+- The server names agent panes. A record whose name is its kind gets a name
+  unique on the server (`opencode`, `opencode-2`) that the pane keeps while
+  its record stays, so `%name` reaches a detected or launched agent with no
+  naming step and never moves to another pane. Chosen names are stored as
+  written; a shared one is ambiguous, never guessed.
 - The ordinary owner socket has full same-UID authority; delegated sockets
   only narrow it. Remote consumer ingress requires scoped mTLS plus bearer
   admission; reverse federation grants the trusted hub satellite-owner

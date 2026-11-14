@@ -27,10 +27,10 @@ pub(crate) enum AgentAction {
     /// List every pane's detected or declared agent and current state.
     ///
     /// The third column is the pane's `%name` address, `-` when it has no
-    /// agent record, or why its record name is listed but not
-    /// `%`-addressable (a name outside `[a-z][a-z0-9_-]`, a per-kind constant
-    /// like `claude`, or one several panes share). A per-kind name shows the
-    /// `phux agent set` that names the pane. JSON carries `address` and
+    /// agent record, or the `phux agent set` that names the pane when its
+    /// record name is outside `[a-z][a-z0-9_-]` or several panes share it.
+    /// phux names each detected or launched agent after its kind, unique on
+    /// the server (`opencode`, `opencode-2`). JSON carries `address` and
     /// `address_refusal`.
     #[usage(alias = "ls")]
     List {
@@ -86,8 +86,8 @@ pub(crate) enum AgentAction {
     },
     /// Declare the agent identity and state associated with a pane.
     ///
-    /// Writes the whole agent record (last writer wins), then reads
-    /// it back. Exits 1 (`agent_record_unconfirmed`) when the read-back shows
+    /// Writes the whole agent record (last writer wins), keeping the pane's
+    /// kind when `--kind` is omitted, then reads it back. Exits 1 (`agent_record_unconfirmed`) when the read-back shows
     /// the write did not land or the server refused the read; prints the
     /// confirmed record on success.
     Set {
