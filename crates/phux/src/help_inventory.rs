@@ -428,6 +428,7 @@ fn skill_teaches_the_load_bearing_rules() {
         "level read",
         "124",
         "125",
+        "Leave no clutter",
     ] {
         assert!(
             skill.contains(needle),
