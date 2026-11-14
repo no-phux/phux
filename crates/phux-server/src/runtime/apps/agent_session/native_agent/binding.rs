@@ -352,7 +352,7 @@ impl ServerState {
             if let Ok(bytes) = serde_json::to_vec(&binding.launch) {
                 self.metadata_set(
                     &phux_protocol::wire::frame::Scope::Resource(binding.parent.clone()),
-                    "phux.native-launch/v1",
+                    phux_protocol::wire::frame::RESOURCE_NATIVE_LAUNCH_KEY,
                     bytes,
                 );
             }

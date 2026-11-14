@@ -26,17 +26,15 @@ use super::{FrameReader, FrameWriter, Incoming, LENGTH_PREFIX};
 
 /// Upper bound on the token preamble body: room for a longer future token,
 /// never a large allocation.
-const MAX_TOKEN_PREAMBLE: usize = 256;
+pub(crate) const MAX_TOKEN_PREAMBLE: usize = 256;
 
-/// Idle timeout for a connection with no traffic and no keep-alive.
-pub(super) const IDLE_TIMEOUT: Duration = Duration::from_secs(30);
+/// Idle timeout and keep-alive interval, shared with the dialer so neither
+/// side reaps a quiet peer before the other's keep-alive fires.
+pub(crate) use phux_dial::quic::{IDLE_TIMEOUT, KEEP_ALIVE};
 
-/// Keep-alive interval, well under [`IDLE_TIMEOUT`], so a quiet attached
-/// client survives NATs.
-pub(super) const KEEP_ALIVE: Duration = Duration::from_secs(10);
-
-/// QUIC application close code for a connection refused at admission.
-const AUTH_FAILED_CODE: u32 = 0x01;
+/// QUIC application close code for a connection refused at admission, shared
+/// with the dialer and relay (`docs/protocol.md#transports`).
+pub(crate) use phux_dial::quic::AUTH_FAILED_CODE;
 
 /// Cap on client-opened bidi streams per connection (docs/protocol.md#quic-stream-routing): far
 /// above panes-per-attach, far below task exhaustion. quinn enforces it.

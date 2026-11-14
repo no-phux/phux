@@ -30,9 +30,7 @@ const MAX_CALLS: usize = 8;
 /// Longest request line, the work store's own limit.
 const MAX_LINE: usize = 1 << 20;
 
-/// QUIC application close code for a refused satellite, the listener's
-/// `AUTH_FAILED`.
-const AUTH_FAILED_CODE: u32 = 0x01;
+use crate::transport::quic::AUTH_FAILED_CODE;
 
 /// Admit one connection that negotiated the coordination ALPN and serve its
 /// calls, or close it with `AUTH_FAILED` before any stream: the certificate

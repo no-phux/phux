@@ -80,7 +80,7 @@ pub async fn fetch_launch_recipes(
             .request_metadata(
                 request_id,
                 Scope::Resource(resource.id.clone()),
-                "phux.native-launch/v1".to_owned(),
+                phux_protocol::wire::frame::RESOURCE_NATIVE_LAUNCH_KEY.to_owned(),
             )
             .await
             .map_err(ClientError::Transport)?

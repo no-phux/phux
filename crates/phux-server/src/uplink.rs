@@ -34,10 +34,7 @@ mod enroll;
 
 pub use enroll::{JOIN_PREFIX, JoinCode, Joined, join};
 
-use crate::hub::link::Backoff;
-
-const BACKOFF_BASE: Duration = Duration::from_millis(500);
-const BACKOFF_CAP: Duration = Duration::from_secs(30);
+use crate::hub::link::{BACKOFF_BASE, BACKOFF_CAP, Backoff};
 
 /// How long joining may wait for the hub's enrollment answer.
 const JOIN_DEADLINE: Duration = Duration::from_secs(15);
@@ -46,8 +43,7 @@ const JOIN_DEADLINE: Duration = Duration::from_secs(15);
 /// link session, so this only bounds a misbehaving hub.
 const MAX_HUB_STREAMS: usize = 16;
 
-/// The QUIC listener's `AUTH_FAILED` application close.
-const AUTH_FAILED_CODE: u64 = 0x01;
+use crate::transport::quic::AUTH_FAILED_CODE;
 
 /// Why an `[[uplink]]` entry cannot be supervised; refused before anything
 /// binds.
@@ -358,7 +354,7 @@ async fn splice(send: quinn::SendStream, recv: quinn::RecvStream, socket: &Path)
 fn loss_reason(err: &quinn::ConnectionError) -> String {
     match err {
         quinn::ConnectionError::ApplicationClosed(close)
-            if close.error_code.into_inner() == AUTH_FAILED_CODE =>
+            if close.error_code.into_inner() == u64::from(AUTH_FAILED_CODE) =>
         {
             "the hub refused this satellite: its credential is revoked or expired, or the \
              hub has no enabled inbound:// [[satellites]] entry for it"

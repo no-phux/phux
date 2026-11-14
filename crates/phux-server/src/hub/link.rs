@@ -77,18 +77,19 @@ pub(crate) use session::run_link;
 pub use status::{Backoff, HubLinkStatuses, LinkRefusal, LinkStatus};
 use writer::{LinkWrite, QueuedLinkWrite, drive_link_writer, queue_link_write, send_bounded};
 
-/// First redial delay after a failure or a lost connection.
-const BACKOFF_BASE: Duration = Duration::from_millis(500);
+/// First redial delay after a failure or a lost connection; shared by every
+/// outbound link supervisor (hub links, uplinks, relay connectors).
+pub(crate) const BACKOFF_BASE: Duration = Duration::from_millis(500);
 
 /// Ceiling for the exponential redial delay.
-const BACKOFF_CAP: Duration = Duration::from_secs(30);
+pub(crate) const BACKOFF_CAP: Duration = Duration::from_secs(30);
 
-/// Housekeeping tick (keepalive and pruning), matching the QUIC dialer's
+/// Housekeeping tick (keepalive and pruning), the QUIC dialer's
 /// `keep_alive_interval`.
-const LINK_KEEPALIVE_INTERVAL: Duration = Duration::from_secs(10);
+const LINK_KEEPALIVE_INTERVAL: Duration = crate::transport::quic::KEEP_ALIVE;
 
-/// Inbound-idle limit for WS links, matching QUIC's `max_idle_timeout`.
-const LINK_IDLE_TIMEOUT: Duration = Duration::from_secs(30);
+/// Inbound-idle limit for WS links, QUIC's `max_idle_timeout`.
+const LINK_IDLE_TIMEOUT: Duration = crate::transport::quic::IDLE_TIMEOUT;
 
 /// Stall bound on any single write toward the satellite, so a partitioned
 /// peer cannot wedge the supervisor loop.

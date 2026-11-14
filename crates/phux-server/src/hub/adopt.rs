@@ -31,9 +31,7 @@ use tracing::{debug, info, warn};
 /// How often a live adopted connection re-checks its credential.
 pub(crate) const REVOCATION_POLL: Duration = Duration::from_secs(1);
 
-/// QUIC application close code for a refused or revoked satellite, the
-/// listener's `AUTH_FAILED`.
-const AUTH_FAILED_CODE: u32 = 0x01;
+use crate::transport::quic::AUTH_FAILED_CODE;
 
 /// One admitted satellite connection, waiting for its link supervisor.
 #[derive(Debug)]

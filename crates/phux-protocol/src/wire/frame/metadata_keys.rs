@@ -151,6 +151,10 @@ pub fn decode_session_keep_empty(value: &[u8]) -> Option<(&str, bool)> {
     }
 }
 
+/// Terminal-scoped key holding the public native-agent launch recipe (a
+/// serialized `SpawnNativeAgent`) that `relaunch` replays. Stored opaquely.
+pub const RESOURCE_NATIVE_LAUNCH_KEY: &str = "phux.native-launch/v1";
+
 /// Terminal-scoped key holding freeform tags as a JSON array of unique,
 /// non-empty strings (`docs/scripting.md#organizing-panes`, ADR-0027). Stored opaquely.
 pub const RESOURCE_TAGS_KEY: &str = "phux.tags/v1";

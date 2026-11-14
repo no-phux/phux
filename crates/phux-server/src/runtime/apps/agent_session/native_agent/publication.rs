@@ -275,7 +275,7 @@ fn update_native_inventory(s: &mut crate::state::ServerState, agent: &ResourceId
     if let Some(bytes) = recipe {
         s.metadata_set(
             &phux_protocol::wire::frame::Scope::Resource(parent),
-            "phux.native-launch/v1",
+            phux_protocol::wire::frame::RESOURCE_NATIVE_LAUNCH_KEY,
             bytes,
         );
     }

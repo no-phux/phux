@@ -7,7 +7,7 @@ use std::process::ExitCode;
 
 use phux_agent_host::session::HostSpec;
 use phux_protocol::ids::ResourceId;
-use phux_protocol::native_agent::SpawnNativeAgent;
+use phux_protocol::native_agent::{self, SpawnNativeAgent};
 
 pub(super) fn run() -> ExitCode {
     let spec = match bootstrap() {
@@ -87,13 +87,14 @@ fn host_environment(
 }
 
 fn bootstrap() -> Result<HostSpec, String> {
-    let public: SpawnNativeAgent = serde_json::from_str(&required("PHUX_NATIVE_HOST_SPEC")?)
-        .map_err(|error| format!("invalid native spawn configuration: {error}"))?;
+    let public: SpawnNativeAgent =
+        serde_json::from_str(&required(native_agent::NATIVE_HOST_SPEC_ENV)?)
+            .map_err(|error| format!("invalid native spawn configuration: {error}"))?;
     let socket = PathBuf::from(required("PHUX_SOCKET")?);
     let parent = local_resource("PHUX_TERMINAL_ID")?;
-    let agent = local_resource("PHUX_NATIVE_AGENT_ID")?;
-    let activation = required("PHUX_NATIVE_ACTIVATION")?;
-    let binding_proof = required("PHUX_NATIVE_BINDING")?;
+    let agent = local_resource(native_agent::NATIVE_AGENT_ID_ENV)?;
+    let activation = required(native_agent::NATIVE_ACTIVATION_ENV)?;
+    let binding_proof = required(native_agent::NATIVE_BINDING_ENV)?;
     let cwd = host_cwd(public.cwd)?;
     let env = host_environment(public.env, &socket, &parent)?;
     let command = public.command;

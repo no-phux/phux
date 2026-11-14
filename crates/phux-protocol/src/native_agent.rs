@@ -12,6 +12,20 @@ pub const NATIVE_SCHEMA: &str = "phux.native-agent/v1";
 pub const MAX_NATIVE_PAYLOAD_BYTES: usize = 16 * 1024;
 /// Reserved explicit public launch recipe; never a binary/argv heuristic.
 pub const NATIVE_HOST_SPEC_ENV: &str = "PHUX_NATIVE_HOST_SPEC";
+/// Private guardian binding: the native agent resource it serves.
+pub const NATIVE_AGENT_ID_ENV: &str = "PHUX_NATIVE_AGENT_ID";
+/// Private guardian binding: the activation it serves.
+pub const NATIVE_ACTIVATION_ENV: &str = "PHUX_NATIVE_ACTIVATION";
+/// Private guardian binding: the proof that binds it to the server.
+pub const NATIVE_BINDING_ENV: &str = "PHUX_NATIVE_BINDING";
+
+/// Whether `key` belongs to the private host binding, which a native launch
+/// recipe (fresh or saved) may never set: every `PHUX_NATIVE_*` key plus the
+/// delegated socket and parent terminal.
+#[must_use]
+pub fn is_reserved_native_env(key: &str) -> bool {
+    key.starts_with("PHUX_NATIVE_") || matches!(key, "PHUX_SOCKET" | "PHUX_TERMINAL_ID")
+}
 /// Maximum retained operation identities per native owner.
 pub const MAX_NATIVE_OPERATIONS: usize = 1024;
 /// Maximum unresolved operations admitted to a controller queue.

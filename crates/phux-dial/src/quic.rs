@@ -36,10 +36,10 @@ pub type QuicConnection = (
 
 /// QUIC idle timeout, matched to the server's so a quiet consumer is not
 /// reaped before the keep-alive fires.
-const IDLE_TIMEOUT: Duration = Duration::from_secs(30);
+pub const IDLE_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// Keep-alive interval, well under [`IDLE_TIMEOUT`] to hold NAT bindings.
-const KEEP_ALIVE: Duration = Duration::from_secs(10);
+pub const KEEP_ALIVE: Duration = Duration::from_secs(10);
 
 /// QUIC application close code for a refused auth preamble (`AUTH_FAILED`,
 /// `docs/protocol.md#transports`), shared with the server listener and relay.
