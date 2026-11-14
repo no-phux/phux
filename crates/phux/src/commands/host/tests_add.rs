@@ -26,10 +26,44 @@ pub(super) fn opts() -> AddOpts {
         tls_server_name: None,
         ca_fingerprint: None,
         code: None,
+        hardware_key: false,
         session: None,
         disabled: false,
         json: JsonOpt { json: false },
     }
+}
+
+/// `--hardware-key` is refused where no client certificate is enrolled, and
+/// unasked it checks nothing.
+#[test]
+fn hardware_key_applies_only_where_a_certificate_is_enrolled() {
+    use super::add::{hardware_key_misplaced, hardware_key_ready};
+    let manual = AddMode::Manual {
+        name: "mini".to_owned(),
+        endpoint: "quic://mini:8788".to_owned(),
+    };
+    let ssh = AddMode::Ssh {
+        target: "me@mini".to_owned(),
+    };
+    let code = AddMode::Code {
+        name: "mini".to_owned(),
+    };
+    assert!(hardware_key_misplaced(HostRole::Remote, Some(&manual)).is_some());
+    assert!(hardware_key_misplaced(HostRole::Satellite, Some(&ssh)).is_some());
+    assert!(hardware_key_misplaced(HostRole::Remote, Some(&ssh)).is_none());
+    assert!(hardware_key_misplaced(HostRole::Remote, Some(&code)).is_none());
+    assert!(hardware_key_ready(false).is_ok());
+}
+
+/// A machine with no Secure Enclave refuses the flag in plain words, before
+/// anything is contacted.
+#[cfg(not(target_os = "macos"))]
+#[test]
+fn hardware_key_is_refused_without_a_secure_enclave() {
+    let err = super::add::hardware_key_ready(true).expect_err("no enclave");
+    assert_eq!(err.code, codes::WORKLOAD);
+    assert!(err.message.contains("Secure Enclave"), "{}", err.message);
+    assert!(err.remedy.contains("nothing was changed"), "{}", err.remedy);
 }
 
 /// ADR-0180: a manual relay route needs the server's CA, which is

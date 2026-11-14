@@ -99,6 +99,14 @@ serde.workspace = true
 # shared phux-client-core predictor.
 unicode-segmentation.workspace = true
 
+# The Secure Enclave client key (`hardware_key`): Apple's Security framework
+# through the bindings rustls-native-certs already locks at these versions,
+# and the CoreFoundation types they speak, which the `phux` crate carries.
+[target.'cfg(target_os = "macos")'.dependencies]
+core-foundation = "0.10"
+security-framework = "3.7"
+security-framework-sys = "2.17"
+
 [dev-dependencies]
 # A registry fixture file for the resolution tests.
 tempfile.workspace = true

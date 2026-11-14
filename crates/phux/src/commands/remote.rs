@@ -72,14 +72,16 @@ impl RemoteEntry {
     }
 
     /// The TLS client identity to present when dialing this remote: the
-    /// enrolled certificate, required-paired when `PHUX_WORKLOAD_REQUIRE_PAIRED`
+    /// enrolled certificate (its key a PEM file or held by this machine's
+    /// hardware), required-paired when `PHUX_WORKLOAD_REQUIRE_PAIRED`
     /// is set, or `None` when the entry enrolled none (the dialer then reads
     /// `PHUX_WORKLOAD_CERT` / `PHUX_WORKLOAD_KEY` as before).
     ///
     /// # Errors
     ///
-    /// Half an identity or a relative path, which would otherwise dial
-    /// without the certificate the operator enrolled.
+    /// Half an identity, a relative path, or a hardware key this machine
+    /// cannot use, any of which would otherwise dial without the
+    /// certificate the operator enrolled.
     pub(crate) fn client_identity(&self) -> Result<Option<TlsClientIdentity>, String> {
         let paths = phux_config::remote::client_identity_paths(
             &self.name,
@@ -87,19 +89,15 @@ impl RemoteEntry {
             self.client_key.as_deref(),
         )?;
         let require_paired = std::env::var_os(phux_dial::tls::REQUIRE_PAIRED_ENV).is_some();
-        Ok(paths.map(|(certificate, private_key)| {
-            if require_paired {
-                TlsClientIdentity::RequirePaired {
+        paths
+            .map(|(certificate, private_key)| {
+                phux_client_runtime::hardware_key::identity(
                     certificate,
                     private_key,
-                }
-            } else {
-                TlsClientIdentity::PemFiles {
-                    certificate,
-                    private_key,
-                }
-            }
-        }))
+                    require_paired,
+                )
+            })
+            .transpose()
     }
 
     /// Warn on stderr, once per process and remote, when the enrolled

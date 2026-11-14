@@ -26,6 +26,7 @@
 //!       "direct": null,
 //!       "client_cert": "/path/to/mini.client.0123456789abcdef.pem",
 //!       "client_key": "/path/to/mini.client.0123456789abcdef.key",
+//!       "client_key_kind": "file",
 //!       "color": {"id": "magenta", "hex": "#D9629F", "override": false}
 //!     }
 //!   ],
@@ -38,7 +39,9 @@
 //! ```
 //!
 //! `enabled` is `null` for remotes; `session`, `ssh`, `direct`, `client_cert`,
-//! and `client_key` are `null` for satellites. `color` is the host's resolved
+//! `client_key`, and `client_key_kind` are `null` for satellites.
+//! `client_key_kind` is `file` for a PEM key and `hardware` for one this
+//! machine's Secure Enclave holds. `color` is the host's resolved
 //! palette colour ([`phux_config::host_color`]); `override` says a `color`
 //! key chose it rather than the name hash. A name in both registries with a
 //! `color` on only one role reports that colour in both.
@@ -153,8 +156,9 @@ pub(crate) fn run_host(action: &HostAction) -> ExitCode {
         HostAction::Renew {
             name,
             remote_phux,
+            hardware_key,
             json,
-        } => run_renew(name, remote_phux, json.json),
+        } => run_renew(name, remote_phux, *hardware_key, json.json),
         HostAction::Upgrade { name, json } => run_upgrade(name.as_deref(), json.json),
         HostAction::Attach { name } => run_attach(name),
         HostAction::Enable { name, json } => run_enabled(name, true, json.json),

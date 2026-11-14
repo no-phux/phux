@@ -393,8 +393,8 @@ pub struct Resolved {
     /// host: a relay route when the endpoint is a relay (ADR-0149).
     pub tls_server_name: Option<String>,
     /// The workload client certificate the entry enrolled (ADR-0116), or
-    /// [`TlsClientIdentity::None`]. Only paths: the key is read by the TLS
-    /// stack at dial time, and the environment is never consulted.
+    /// [`TlsClientIdentity::None`]. A PEM key is read by the TLS stack at
+    /// dial time, a hardware key is held; the environment is not consulted.
     pub client_identity: TlsClientIdentity,
 }
 
@@ -464,16 +464,13 @@ impl AuthorityPin {
 /// # Errors
 ///
 /// Half an identity or a relative path (see
-/// [`RemoteConfigEntry::client_identity`]).
+/// [`RemoteConfigEntry::client_identity`]), or an unusable hardware key.
 pub fn entry_identity(entry: &RemoteConfigEntry) -> Result<TlsClientIdentity, String> {
-    Ok(entry
+    entry
         .client_identity()?
-        .map_or(TlsClientIdentity::None, |(certificate, private_key)| {
-            TlsClientIdentity::PemFiles {
-                certificate,
-                private_key,
-            }
-        }))
+        .map_or(Ok(TlsClientIdentity::None), |(certificate, private_key)| {
+            crate::hardware_key::identity(certificate, private_key, false)
+        })
 }
 
 /// Resolve `raw` against the registry at `config_path`, or at the CLI's own
