@@ -133,7 +133,9 @@ test("cache eviction happens only after post-step uploads, never on save eligibi
     expect(commands).not.toContain("prune-build-cache.sh");
     expect(commands).not.toContain("--replace-prefix");
   }
-  expect(needs(job(WARM, "prune-build-cache")).toSorted()).toEqual([...LINUX].toSorted());
+  expect(needs(job(WARM, "prune-build-cache")).toSorted()).toEqual(
+    [...LINUX, "web-vt", "web-client"].toSorted(),
+  );
 });
 
 test("dependency cache invalidation includes flake in shared-key, not the ignored key input", () => {
