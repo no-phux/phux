@@ -348,8 +348,8 @@ The command names:
 - The app: `palette`, `settings`, `change-theme`, `toggle-sidebar`,
   `toggle-full-screen`, `keyboard-shortcuts`, `essential-shortcuts`,
   `get-started`, `bare`, `copy-config`, `copy-diagnostics`,
-  `check-for-updates`, `install-update`, `galaxy`, `reef`, `pitch`,
-  `kitchen`, `pit-lane`, `hive`.
+  `check-for-updates`, `install-update`, `playground` (the palette over
+  the scenes), `galaxy`, `reef`, `pitch`, `kitchen`, `pit-lane`, `hive`.
 
 ## Predictive echo
 

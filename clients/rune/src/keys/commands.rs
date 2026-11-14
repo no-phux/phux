@@ -296,6 +296,7 @@ pub const COMMANDS: &[Command] = &[
     row!(Shortcut::Kitchen, "Open Kitchen", [], []),
     row!(Shortcut::PitLane, "Open Pit Lane", [], []),
     row!(Shortcut::Hive, "Open Hive", [], []),
+    row!(Shortcut::Playground, "Playground…", [], []),
     row!(Shortcut::Settings, "Settings", [m(',')], [l(',')]),
     row!(Shortcut::ChangeTheme, "Change Theme", [], []),
     row!(
@@ -506,6 +507,16 @@ pub const COMMANDS: &[Command] = &[
 /// The keys worth learning first, in teaching order: the ones that make a
 /// terminal, move between terminals, and find what needs you. Every one has
 /// a chord on each platform (tested), so the list never shows a bare title.
+/// The playground's scenes, listed under View → Playground rather than in View.
+pub const PLAYGROUND: &[Shortcut] = &[
+    Shortcut::Galaxy,
+    Shortcut::Reef,
+    Shortcut::Pitch,
+    Shortcut::Kitchen,
+    Shortcut::PitLane,
+    Shortcut::Hive,
+];
+
 pub const ESSENTIALS: &[Shortcut] = &[
     Shortcut::NewTerminal,
     Shortcut::NewSession,

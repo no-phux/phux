@@ -29,6 +29,7 @@ pub fn view(desk: &Desk, ink: &Ink, top: f32) -> El {
         Mode::Mirror(source) => source.prompt(),
         Mode::Shortcuts => "Filter keyboard shortcuts…",
         Mode::Essentials => "The keys worth learning first; pick one to try it…",
+        Mode::Playground => "Open a playground scene…",
         Mode::Sessions => "Switch session, or name a new one…",
         Mode::Themes => "Preview a theme…",
         Mode::Paths => "Find a file or folder…",

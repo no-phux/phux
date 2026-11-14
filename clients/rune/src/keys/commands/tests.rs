@@ -102,6 +102,7 @@ every_shortcut!(
     Kitchen,
     PitLane,
     Hive,
+    Playground,
     Settings,
     ChangeTheme,
     SwitchSession,
