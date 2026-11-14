@@ -69,15 +69,17 @@ fn takes_input(surface: El, id: &ResourceId, area: [f32; 2]) -> El {
     let (pressed, wheeled) = (id.clone(), id.clone());
     surface
         .cursor(rune::Cursor::Pointer)
+        .touch_drags_at_once()
         .on_drag(move |d: &mut Desk, drag, _| match drag.phase {
             rune::Phase::Down => d.focus_pane(&pressed),
             rune::Phase::Move => {}
-            rune::Phase::Up => d.document_release(
+            rune::Phase::Up if !drag.cancelled() => d.document_release(
                 &pressed,
                 [drag.start_x, drag.start_y],
                 [drag.x, drag.y],
                 [drag.w, drag.h],
             ),
+            rune::Phase::Up => {}
         })
         .on_wheel(move |d: &mut Desk, event, _| {
             d.document_wheel(&wheeled, area, [event.dx, event.dy])

@@ -43,6 +43,7 @@ pub fn view(desk: &Desk, ink: &Ink, top: f32) -> El {
     };
     let field = text_input(&desk.palette_query, TextStyle::new(16.0, 400.0).lh(24.0))
         .key("palette-query")
+        .label("Command search")
         .single_line()
         .grow(1.0)
         .color(ink.text)

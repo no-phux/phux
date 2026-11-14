@@ -397,6 +397,15 @@ fn native_fields_edit_synchronously_and_never_reach_the_terminal() {
         "machine-field",
     ] {
         let (client, mut rt, mut bridge) = field(key);
+        let editor = rt
+            .elements()
+            .into_iter()
+            .find(|e| e.key.as_deref() == Some(key))
+            .unwrap();
+        assert!(
+            editor.label.is_some_and(|label| !label.is_empty()),
+            "{key} needs a name, not just a placeholder"
+        );
         assert!(replace(&mut bridge, &mut rt, "a🦀c", 3, 1).unwrap());
         let snap = bridge.snapshot(&rt);
         assert_eq!(snap.text, "a🦀c", "{key}");

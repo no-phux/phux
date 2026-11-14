@@ -177,7 +177,8 @@ fn handle(ink: &Ink) -> El {
         ink,
     )
     .cursor(Cursor::Grab)
-    .on_drag(|d: &mut Desk, drag, _| d.phone_navigate(drag, false))
+    .touch_drags_at_once()
+    .on_drag(|d: &mut Desk, drag, tx| d.phone_navigate(drag, false, tx))
 }
 
 /// Inline top-bar tile, not an overlay over terminal text. It replaces the
@@ -208,7 +209,8 @@ fn map(all: &[(ResourceId, Rect)], focus: &ResourceId, ink: &Ink) -> El {
         .border(1.0, ink.edge)
         .label("Pane map: tap a pane or swipe to its neighbor")
         .cursor(Cursor::Pointer)
-        .on_drag(|d: &mut Desk, drag, _| d.phone_navigate(drag, true));
+        .touch_drags_at_once()
+        .on_drag(|d: &mut Desk, drag, tx| d.phone_navigate(drag, true, tx));
     for (id, r) in all {
         map = map.child(
             el().key(format!("phone-map-pane-{id}"))

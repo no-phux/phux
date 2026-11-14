@@ -45,6 +45,7 @@ desktop one, so every CI build and release proves it draws a session.
 | Every pane of the active split tab, in its literal two-dimensional arrangement: a spring camera fills the stage with the focused pane without scaling glyphs; only that pane is resized or marked seen | `src/desk/layout.rs`, `src/ui/spatial.rs` |
 | A small top-right pane map, inline in the header: tap its exact split regions, or swipe the map / dedicated Move handle to one spatial neighbor. With several panes, Move and Panes have a reserved 44-point toolbar outside the measured terminal viewport; a lone terminal has none. Boundary and cancelled drags spring back. Panes opens a named, keyboard-accessible picker for tiny regions | `src/desk/phone/spatial.rs`, `src/ui/spatial.rs` |
 | One finger on the terminal: a drag scrolls and coasts with momentum (history, a pager's arrows or a tracking program's wheel, through the application-aware wheel policy); a hold selects by words and lifting copies; in a program that tracks the mouse a hold hands it the drag, and ⇧ keeps the selection local; a tap opens a URL or OSC 8 link, clicks a tracking program, or brings the keyboard back | `src/desk/phone/touch.rs`, `src/desk/mouse.rs`, `src/desk/links.rs` |
+| Application-owned touch capture through upstream `El::touch_drags_at_once`: terminal holds keep their selection/copy or program-button release; the Move handle, minimap and arrow pad keep responding after a stationary hold. Other controls retain Rune's normal touch scrolling and long press | `src/ui/panes.rs`, `src/ui/spatial.rs`, `src/ui/phone.rs`, `src/desk/phone/spatial/tests/touch_ownership.rs` |
 | Named tab pills and a new tab, once a session has more than one tab; a waiting tab carries a dot | `src/ui/phone.rs` |
 | Accessory bar: ⌘ commands (Done in Settings search), a strip that scrolls through esc, tab, one-shot ⌃ ⌥ ⇧ latches, ⌃C, arrows, `\|` `~` `/` `-` and Paste, a drag pad that sends arrows, the keyboard toggle; commands respect the active modal | `src/ui/phone.rs`, `src/desk/phone.rs` |
 | Keyboard: letters, digits and symbols, shift, delete, space, return; types into the terminal, keeps focus while editing palette/find/Settings search fields, and answers the confirm bar | `src/ui/phone.rs`, `src/desk/phone.rs` |
@@ -62,15 +63,15 @@ desktop one, so every CI build and release proves it draws a session.
 | Tinted controls with a rim and lift; the floating Sessions dock additionally blurs the actual list beneath it through Rune's cross-platform GPU renderer. This is frosted glass, not Apple's UIKit Liquid Glass; controls over flat ground do not waste passes on blur | Rune's native UIKit material support (`SystemMaterial::Glass` is macOS-only today) | Put native Liquid Glass under the same floating surfaces without duplicating controls or covering terminal text |
 | Fixed status/home insets and keyboard height in desktop `--phone` | Already replaced by UIKit layout guides in the native iOS host | Keep desktop snapshots deterministic; qualify rotation, floating keyboards and physical-device safe areas |
 | No installed device/TestFlight distribution yet; Android remains a desktop preview | Apple provisioning/signing and device qualification; an Android activity/lifecycle host | Install and validate a provisioned iOS build before a TestFlight lane; Android is a separate host project |
-| First-finger presses and drags; extra fingers are ignored. The app times a hold itself from its poll clock, since a drag carries no time. Pane navigation keeps a dedicated handle so it never steals a terminal drag | Multi-touch gesture arbitration, long press and edge gestures (a secondary click still opens the desktop context menu) | Two fingers or an edge swipe for panes, and a context menu on a long press (the native host already pinches for text size through UIKit) |
+| First-finger presses and drags; extra fingers are ignored. The terminal owns its selection/program hold policy and times it from the app clock, since a drag carries no time. Pane navigation keeps a dedicated handle so it never steals a terminal drag | Multi-touch gesture arbitration and edge gestures | Two fingers or an edge swipe for panes (the native host already pinches for text size through UIKit) |
 | Haptics only where the native host plays them: a hold and a copy | A haptics API | A tick on latch, tab switch and pad step |
 | No native Rune VoiceOver element bridge or file/image clipboard integration (text copy, paste and links go through the native host) | App/platform adapters over upstream's runtime | Qualify the native accessibility tree and service these through UIKit; desktop accessibility is not iOS evidence |
 
-Upstream `740ecbc9` adds automatic long press, but cancels an application-owned
-terminal drag at 500 ms and consumes its lift. It cannot replace the terminal's
-hold-to-select/program-drag policy without a touch-ownership seam. Keep the pin
-before that change until stationary holds, dragged holds and Shift-local holds
-all retain their selection/copy or program-button release.
+Upstream `99121250` supplies the touch-ownership seam that was missing in
+`740ecbc9`: terminal and dedicated drag surfaces opt out of automatic long
+press through `touch_drags_at_once`. Runtime-clock regressions cover stationary,
+dragged and Shift-local holds, program-button releases, held navigation and
+pad cancellation. The terminal's hold remains selection, not a context menu.
 
 ## Next, no upstream needed
 
