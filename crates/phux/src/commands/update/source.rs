@@ -19,6 +19,10 @@ const NIXOS_MARKER: &str = "/etc/NIXOS";
 /// component, which also covers a relocated `HOMEBREW_PREFIX`.
 const LINUXBREW_PREFIX: &str = "/home/linuxbrew/.linuxbrew";
 
+/// pacman's local package database; its presence marks an Arch-family host,
+/// where `/usr/bin/phux` came from a package (`phux-bin`).
+const PACMAN_DB: &str = "/var/lib/pacman/local";
+
 /// How `phux` was installed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum InstallSource {
@@ -31,6 +35,8 @@ pub(crate) enum InstallSource {
     Cargo,
     /// A `/nix/store` path — read-only by construction.
     Nix,
+    /// `/usr/bin` on an Arch-family host: pacman owns the files.
+    Pacman,
     /// Anything else. Refused rather than overwritten.
     Unknown,
 }
@@ -43,6 +49,7 @@ impl InstallSource {
             Self::Homebrew => "homebrew",
             Self::Cargo => "cargo",
             Self::Nix => "nix",
+            Self::Pacman => "pacman",
             Self::Unknown => "unknown",
         }
     }
@@ -92,6 +99,7 @@ impl Install {
         match self.source {
             InstallSource::DirectRelease | InstallSource::Unknown => None,
             InstallSource::Homebrew => Some("brew upgrade no-phux/tap/phux".to_owned()),
+            InstallSource::Pacman => Some("sudo pacman -Syu".to_owned()),
             InstallSource::Cargo => Some(
                 "from a phux checkout:\n  \
                  nix develop -c cargo install --locked --path crates/phux\n  \
@@ -131,6 +139,8 @@ pub(crate) struct Probe {
     pub(crate) homebrew_prefix: Option<PathBuf>,
     /// Whether `/etc/NIXOS` exists.
     pub(crate) nixos: bool,
+    /// Whether pacman's local package database exists.
+    pub(crate) pacman: bool,
 }
 
 impl Probe {
@@ -149,6 +159,7 @@ impl Probe {
             nix_store: std::env::var_os("NIX_STORE").map(PathBuf::from),
             homebrew_prefix: std::env::var_os("HOMEBREW_PREFIX").map(PathBuf::from),
             nixos: Path::new(NIXOS_MARKER).exists(),
+            pacman: Path::new(PACMAN_DB).exists(),
         })
     }
 }
@@ -215,6 +226,12 @@ fn classify(probe: &Probe) -> InstallSource {
         .any(|dir| is_child_of(exe, Some(dir)))
     {
         return InstallSource::DirectRelease;
+    }
+
+    // 5. A distro package on an Arch-family host. Other distros' `/usr/bin`
+    // stays `Unknown` until one ships a phux package.
+    if probe.pacman && is_child_of(exe, Some(Path::new("/usr/bin"))) {
+        return InstallSource::Pacman;
     }
 
     InstallSource::Unknown
@@ -376,6 +393,24 @@ mod tests {
     }
 
     #[test]
+    fn usr_bin_on_an_arch_host_is_pacman_managed() {
+        let mut probe = probe("/usr/bin/phux");
+        probe.pacman = true;
+        let install = detect(&probe);
+        assert_eq!(install.source, InstallSource::Pacman);
+        assert!(!install.source.is_mutable());
+        assert_eq!(
+            install.native_command().as_deref(),
+            Some("sudo pacman -Syu")
+        );
+
+        // pacman being present does not claim the user's own directories.
+        let mut local = probe;
+        local.executable = PathBuf::from("/home/ada/.local/bin/phux");
+        assert_eq!(detect(&local).source, InstallSource::DirectRelease);
+    }
+
+    #[test]
     fn a_checkout_build_directory_says_so() {
         for path in [
             "/home/ada/src/phux/target/debug/phux",
@@ -407,6 +442,7 @@ mod tests {
         assert_eq!(InstallSource::Homebrew.as_str(), "homebrew");
         assert_eq!(InstallSource::Cargo.as_str(), "cargo");
         assert_eq!(InstallSource::Nix.as_str(), "nix");
+        assert_eq!(InstallSource::Pacman.as_str(), "pacman");
         assert_eq!(InstallSource::Unknown.as_str(), "unknown");
     }
 }
