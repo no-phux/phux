@@ -53,6 +53,7 @@ pub mod pitlane;
 pub mod popup;
 pub mod questions;
 pub mod quick;
+mod quick_look;
 pub mod reef;
 mod reorder;
 pub mod resources;

@@ -163,13 +163,18 @@ impl Desk {
     /// A new terminal in a new tab of the selected session; with nothing on
     /// screen to arrange beside, a plain terminal.
     pub fn new_tab(&mut self) {
+        self.new_tab_at(self.focused_cwd());
+    }
+
+    /// A new tab in `cwd`, as `new_tab`.
+    fn new_tab_at(&mut self, cwd: Option<String>) {
         let Some(client) = &self.client else { return };
         if self.shown.is_none() {
-            return self.new_terminal();
+            return self.new_terminal_at(cwd);
         }
         let request = client.spawn_terminal(SpawnRequest {
             command: None,
-            cwd: self.focused_cwd(),
+            cwd,
             env: None,
             session_id: client.selected_session(),
             initial_size: None,
@@ -177,6 +182,18 @@ impl Desk {
         self.pending_splits
             .insert(request, (self.placement_session(client), None));
         self.zoomed = None;
+    }
+
+    /// Finder's "New phux Terminal at Folder" (`services.rs`).
+    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+    pub fn terminal_at_folder(&mut self, folder: std::path::PathBuf) {
+        if self.machines.current.is_some() {
+            return self.say(
+                NoticeKind::Error,
+                "That folder is on this Mac, and this window shows another machine.",
+            );
+        }
+        self.new_tab_at(Some(folder.display().to_string()));
     }
 
     pub(super) fn write_tab(&mut self, client: &Client, new: &ResourceId) -> Option<OperationId> {

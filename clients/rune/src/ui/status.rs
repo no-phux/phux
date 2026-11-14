@@ -395,6 +395,22 @@ fn place(desk: &Desk, p: &Ink) -> El {
         .children(terminal)
 }
 
+/// With "Show toolbar on hover", a strip along the top edge that grows into
+/// the toolbar while the pointer is over it. It floats over the panes, so
+/// showing it never resizes a terminal.
+pub fn hover_toolbar(desk: &Desk, p: &Ink, lights: f32) -> Option<El> {
+    const EDGE: f32 = 6.0;
+    let shown = desk.pointer.toolbar;
+    desk.settings.hover_toolbar.then(|| {
+        el().key("toolbar-reveal")
+            .absolute(0.0, 0.0)
+            .w_full()
+            .h(if shown { TITLEBAR_H } else { EDGE })
+            .on_hover_change(|d: &mut Desk, over, _| d.pointer.toolbar = over)
+            .children(shown.then(|| title_bar(desk, p, lights).fill(p.sidebar)))
+    })
+}
+
 /// The band over the terminal: draggable, under the traffic lights when the
 /// sidebar is folded, and holding what a status line would.
 pub fn title_bar(desk: &Desk, p: &Ink, lights: f32) -> El {

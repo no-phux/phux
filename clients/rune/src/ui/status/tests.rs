@@ -27,6 +27,31 @@ fn settings_open_from_the_titlebar_with_or_without_the_sidebar() {
 }
 
 #[test]
+fn a_hover_toolbar_shows_at_the_top_edge_and_hides_off_it() {
+    let mut desk = Desk::settings_test_fixture();
+    desk.settings_open = false;
+    desk.sidebar_open = false;
+    desk.settings.hover_toolbar = true;
+    let env = rune::Env::new(false, 1.0);
+    let mut rt = rune::Runtime::new(desk, crate::ui::view, (1100.0, 720.0), env);
+    let at = |rt: &mut rune::Runtime<Desk>, y| {
+        rt.pointer_move(600.0, y);
+        // The hover lands in one frame; the strip grows in the next.
+        rt.frame(0.0);
+        rt.frame(1.0);
+        rt.find("settings-button").is_some()
+    };
+    rt.frame(0.0);
+    assert!(
+        rt.find("settings-button").is_none(),
+        "hidden until the edge"
+    );
+    assert!(at(&mut rt, 2.0));
+    assert!(at(&mut rt, 30.0), "the shown toolbar keeps the pointer");
+    assert!(!at(&mut rt, 400.0));
+}
+
+#[test]
 fn a_remote_servers_update_happens_on_that_machine() {
     let behind = Standing::Incompatible("server requires 12.x; update the phux server".to_owned());
     assert!(updates_can_fix(&behind, false));

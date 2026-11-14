@@ -81,6 +81,10 @@ impl Desk {
     }
 
     pub fn new_terminal(&mut self) {
+        self.new_terminal_at(self.focused_cwd());
+    }
+
+    pub(super) fn new_terminal_at(&mut self, cwd: Option<String>) {
         // A restart left nothing live to host a new terminal; bringing back
         // what it ended is the terminal asked for.
         if !self.ended_by_restart().is_empty() {
@@ -90,7 +94,7 @@ impl Desk {
         let session_id = client.selected_session();
         let request = client.spawn_terminal(SpawnRequest {
             command: None,
-            cwd: self.focused_cwd(),
+            cwd,
             env: None,
             session_id,
             initial_size: None,

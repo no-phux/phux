@@ -311,6 +311,7 @@ pub const COMMANDS: &[Command] = &[
         [m('i').shift(), Chord::opt(Cap::Char(';'))],
         [l(';')]
     ),
+    row!(mac Shortcut::QuickLook, "Quick Look", [m('y')]),
     row!(Shortcut::KeyboardShortcuts, "Keyboard Shortcuts", [], []),
     row!(
         Shortcut::EssentialShortcuts,
