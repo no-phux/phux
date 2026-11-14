@@ -7,17 +7,19 @@ import { NATIVE_SETUP_PATHS } from "./plan.ts";
 
 const CI = workflow("ci.yml");
 const AFTER = ["ci", "content", "prune-build-cache"];
+const script = run(steps(job(CI, "ci"))[0] ?? {});
+const lanes = Object.keys(jobs(CI)).filter((id) => !AFTER.includes(id));
+const baseline = {
+  ...Object.fromEntries(lanes.map((id) => [id, { result: "skipped" }])),
+  plan: { result: "success" },
+};
+const aggregate = (results: unknown, event: string): number =>
+  Bun.spawnSync(["bash", "-euo", "pipefail", "-c", script], {
+    env: { ...process.env, RESULTS: JSON.stringify(results), EVENT_NAME: event },
+    stdout: "ignore",
+  }).exitCode;
 
 test("a deliberate native or icount skip passes on a pull request and fails on main", () => {
-  const script = run(steps(job(CI, "ci"))[0] ?? {});
-  const lanes = Object.keys(jobs(CI)).filter((id) => !AFTER.includes(id));
-  const baseline = Object.fromEntries(lanes.map((id) => [id, { result: "skipped" }]));
-  baseline["plan"] = { result: "success" };
-  const aggregate = (results: unknown, event: string): number =>
-    Bun.spawnSync(["bash", "-euo", "pipefail", "-c", script], {
-      env: { ...process.env, RESULTS: JSON.stringify(results), EVENT_NAME: event },
-      stdout: "ignore",
-    }).exitCode;
   const required = {
     ...baseline,
     native: { result: "success" },
@@ -35,6 +37,42 @@ test("a deliberate native or icount skip passes on a pull request and fails on m
   expect(aggregate(required, "merge_group")).toBe(0);
   expect(aggregate({ ...required, lint: { result: "failure" } }, "push")).toBe(1);
 });
+
+test.each(["push", "merge_group"])("%s rejects either mandatory lane's non-success", (event) => {
+  for (const id of ["native", "icount"]) {
+    for (const result of ["failure", "cancelled", "skipped"]) {
+      const results = {
+        ...baseline,
+        native: { result: "success" },
+        icount: { result: "success" },
+        "web-vt": { result: "success" },
+        "web-client": { result: "success" },
+        [id]: { result },
+      };
+      expect([id, result, aggregate(results, event)]).toEqual([id, result, 1]);
+    }
+  }
+});
+
+test.each(["pull_request", "push", "merge_group"])(
+  "%s checks both browser jobs even when native and icount pass",
+  (event) => {
+    for (const id of ["web-vt", "web-client"]) {
+      for (const result of ["success", "failure", "cancelled", "skipped"]) {
+        const results = {
+          ...baseline,
+          native: { result: "success" },
+          icount: { result: "success" },
+          "web-vt": { result: "success" },
+          "web-client": { result: "success" },
+          [id]: { result },
+        };
+        const expected = ["success", "skipped"].includes(result) ? 0 : 1;
+        expect([id, result, aggregate(results, event)]).toEqual([id, result, expected]);
+      }
+    }
+  },
+);
 
 test("native setup's path list covers every script that job runs", () => {
   const commands = steps(job(CI, "native")).map(run).join("\n");

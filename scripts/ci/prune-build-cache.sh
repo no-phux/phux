@@ -25,10 +25,13 @@ while [[ $# -gt 0 ]]; do
 done
 
 # One series each. ios-native is the Rune simulator leg's rust-cache key.
+# web-vt and web-client are the browser lane's rust-cache keys.
 sweep=(
   linux-arm64-mbx-phux-check-
   linux-arm64-mbx-phux-test-
   v0-rust-phux-uniffi-
+  v0-rust-phux-web-vt-
+  v0-rust-phux-web-client-
   linux-x64-mbx-phux-icount-
   v0-rust-ffi-android-Linux-x64-
   v0-rust-release-deps-Linux-x64-
