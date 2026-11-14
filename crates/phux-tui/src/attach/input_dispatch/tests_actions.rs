@@ -11,7 +11,7 @@ use phux_protocol::wire::frame::{Command, FrameKind};
 use phux_protocol::wire::info::{HostInventory, HostSessionInfo, SessionInfo};
 use toml::Value;
 
-use crate::attach::actions::SplitHost;
+use crate::attach::actions::{Adopt, SplitHost};
 use crate::attach::directory_picker::{DirectorySupport, ListingHost};
 use crate::attach::focus::FocusHistory;
 use crate::attach::jobs::{Job, JobDone, JobKind, Start};
@@ -815,7 +815,7 @@ fn split_onto_a_host_or_an_existing_satellite_pane() {
         "{frame:?}"
     );
     assert_eq!(pending.host, SplitHost::Satellite(devbox));
-    assert!(pending.adopt.is_none() && pending.open_existing.is_none());
+    assert!(pending.adopt.is_none());
     assert!(asks_binding(&frame));
 
     let mut action = split_action();
@@ -826,8 +826,8 @@ fn split_onto_a_host_or_an_existing_satellite_pane() {
     let effects = run(&action, &mut workspace);
     let target = satellite_id("devbox", 7);
     let (_, pending, frame) = effects.spawn_terminal.expect("open parks an ATTACH");
-    assert_eq!(pending.open_existing.as_ref(), Some(&target));
-    assert!(pending.adopt.is_none() && effects.spawn_window.is_none());
+    assert_eq!(pending.adopt, Some(Adopt::Existing(target.clone())));
+    assert!(effects.spawn_window.is_none());
     assert!(
         matches!(&frame, FrameKind::Command { command: Command::AttachResource { terminal_id, .. }, .. } if *terminal_id == target),
         "{frame:?}"

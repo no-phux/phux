@@ -6,7 +6,7 @@ use phux_protocol::ResourceId;
 use phux_protocol::ids::SatelliteHost;
 use phux_protocol::wire::frame::{Command, FrameKind, InputMode};
 
-use crate::attach::actions::{self, ActionError, PendingSplit, SplitHost};
+use crate::attach::actions::{self, ActionError, Adopt, PendingSplit, SplitHost};
 use crate::attach::directory_picker::DirectorySupport;
 use crate::attach::input_dispatch::args::{
     PaneMouseArg, amount_arg, direction_arg, kill_resource_frame, mouse_arg, resource_id_arg,
@@ -149,7 +149,6 @@ pub(in crate::attach) fn split_pane(
         zoom_on_spawn: false,
         host,
         adopt: None,
-        open_existing: None,
     };
     let mut frame = FrameKind::SpawnResource {
         request_id,
@@ -183,10 +182,10 @@ fn open_existing_pane(
         return;
     }
     if attach_in_flight(ctx.pending_windows, &target)
-        || ctx.pending_splits.values().any(|split| {
-            split.open_existing.as_ref() == Some(&target)
-                || split.adopt.as_ref().map(|spawned| &spawned.id) == Some(&target)
-        })
+        || ctx
+            .pending_splits
+            .values()
+            .any(|split| split.adopt.as_ref().map(Adopt::pane) == Some(&target))
     {
         return;
     }
@@ -197,8 +196,7 @@ fn open_existing_pane(
         dir,
         zoom_on_spawn: false,
         host,
-        adopt: None,
-        open_existing: Some(target.clone()),
+        adopt: Some(Adopt::Existing(target.clone())),
     };
     effects.spawn_terminal = Some((request_id, pending, attach_frame(request_id, target)));
 }

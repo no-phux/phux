@@ -137,7 +137,7 @@ pub(super) fn parked_spawned_panes(
     splits: &HashMap<u32, PendingSplit>,
 ) -> Vec<crate::attach::actions::SpawnedPane> {
     let windows = windows.values().filter_map(PendingWindow::spawned_pane);
-    let splits = splits.values().filter_map(|split| split.adopt.as_ref());
+    let splits = splits.values().filter_map(PendingSplit::spawned_pane);
     windows.chain(splits).cloned().collect()
 }
 
@@ -152,7 +152,7 @@ pub(super) fn unanswered_spawns(
         .map(|(id, _)| *id);
     let splits = splits
         .iter()
-        .filter(|(_, split)| split.adopt.is_none() && split.open_existing.is_none())
+        .filter(|(_, split)| split.awaiting_spawn())
         .map(|(id, _)| *id);
     windows.chain(splits).collect()
 }

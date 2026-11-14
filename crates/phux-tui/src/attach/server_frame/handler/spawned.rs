@@ -7,7 +7,9 @@ use super::replies::unreferenced;
 use super::windows::handle_window_spawned;
 use super::{FrameCtx, FrameOutcome};
 use crate::attach::actions;
-use crate::attach::actions::{ParkedAdopt, PendingSplit, SpawnedPane, SplitHost, apply_spawned_ok};
+use crate::attach::actions::{
+    Adopt, ParkedAdopt, PendingSplit, SpawnedPane, SplitHost, apply_spawned_ok,
+};
 use crate::attach::outcome::AttachError;
 use crate::attach::paint::content_rect;
 use crate::attach::pane_state::{PaneSlot, reanchor_predict_to_pane};
@@ -60,10 +62,10 @@ pub(super) fn handle_terminal_spawned<W: crate::attach::RenderSink>(
         SpawnResult::Ok(new_id) | SpawnResult::OkBound { id: new_id, .. } if !new_id.is_local() => {
             Ok(FrameOutcome {
                 adopt_spawned: vec![ParkedAdopt::Split(PendingSplit {
-                    adopt: Some(SpawnedPane {
+                    adopt: Some(Adopt::Spawned(SpawnedPane {
                         id: new_id,
                         instance,
-                    }),
+                    })),
                     ..pending
                 })],
                 ..FrameOutcome::default()
@@ -273,7 +275,7 @@ pub(super) fn apply_split_spawned<W: crate::attach::RenderSink>(
     new_id: ResourceId,
     pending: &PendingSplit,
 ) -> Result<FrameOutcome, AttachError> {
-    let keep_existing = pending.open_existing.is_some();
+    let keep_existing = pending.opens_existing();
     let Some(index) = window_holding_pane(ctx.workspace, &pending.focused_at_request) else {
         return Ok(abandon_split(
             ctx,
