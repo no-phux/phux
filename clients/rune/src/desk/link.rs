@@ -199,6 +199,7 @@ impl Desk {
             }
         }
         crate::theme::watch_omarchy(waker.clone());
+        crate::theme::watch_portal(waker.clone());
         self.watch(waker);
         if !self.quick_idle() {
             self.dial();

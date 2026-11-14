@@ -2707,6 +2707,7 @@ dependencies = [
 name = "phux-rune"
 version = "0.1.25"
 dependencies = [
+ "futures-util",
  "image",
  "objc2 0.6.5",
  "objc2-core-foundation",
@@ -2728,7 +2729,9 @@ dependencies = [
  "sha2",
  "skrifa",
  "tiny-skia",
+ "tokio",
  "url",
+ "zbus 6.2.0",
 ]
 
 [[package]]

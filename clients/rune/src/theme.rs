@@ -15,10 +15,12 @@ use rune::Color;
 mod builtin;
 mod ghostty;
 mod omarchy;
+mod portal;
 pub use builtin::THEMES;
 use builtin::{LATTE, MOCHA};
 pub use ghostty::ghostty;
 pub use omarchy::{omarchy, watch as watch_omarchy};
+pub use portal::{system_dark, watch as watch_portal};
 
 /// What a readable role must clear against the surfaces it sits on: WCAG AA
 /// for body text.
