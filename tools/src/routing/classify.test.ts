@@ -73,7 +73,7 @@ test.each<[string[], Surface[]]>([
   [["crates/phux/build.rs"], ["phux", "web", "native"]],
   [["Cargo.toml"], ["phux", "web", "native", "rune"]],
   [["Cargo.lock"], ["phux", "web", "native"]],
-  [[".config/zig-toolchain.json"], ["phux", "web", "web_engine", "native"]],
+  [[".config/zig-toolchain.json"], ["phux", "web", "web_engine", "native", "rune"]],
   [["scripts/install-zig.sh"], ["web_engine", "native", "rune"]],
   [["scripts/setup-rust.sh"], ["native", "rune"]],
   [["scripts/install-windows.ps1"], []],
@@ -127,6 +127,7 @@ test.each<[string[], Surface[]]>([
   [["clients/rune/README.md"], []],
   [["just/rune.just"], ["rune"]],
   [[".github/workflows/rune-build.yml"], ["rune"]],
+  [[".github/workflows/rune-macos.yml"], ["rune"]],
   [[".github/workflows/rune-client.yml"], []],
   [["crates/phux-client-runtime/src/lib.rs"], ["phux", "web", "rune"]],
   [["docs/development.md", "scripts/doctor.sh"], ["native"]],
@@ -177,7 +178,8 @@ test("the unit plan narrows to the integration test a diff touches", () => {
 
 test("a plugin-index-only diff lints and leaves the unit pool, e2e, and ffi off", () => {
   const classified = classifier.classify(["scripts/plugin-index/src/lib.rs"]);
-  const decided = plan(classified, "pull_request");
+  const paths = ["scripts/plugin-index/src/lib.rs"];
+  const decided = plan(classified, "pull_request", { scope: { kind: "diff", paths } });
   expect(decided.lanes.has("guards")).toBe(true);
   expect(decided.lanes.has("lint")).toBe(true);
   expect(decided.lanes.has("tests")).toBe(false);

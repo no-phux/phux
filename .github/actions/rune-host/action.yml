@@ -1,0 +1,143 @@
+name: rune-host
+description: Test, package, and qualify one Rune desktop host. Linux and macOS jobs share these steps so a tag cannot drift from ci.
+inputs:
+  name:
+    description: Host name for the cache key and the artifacts (linux-x86_64, linux-aarch64, or macos-arm64).
+    required: true
+  apple_developer_id_p12:
+    description: Developer ID certificate, set on a rune-v tag.
+    required: false
+    default: ""
+  apple_developer_id_password:
+    description: Password for the Developer ID certificate.
+    required: false
+    default: ""
+  apple_notary_key_p8:
+    description: App Store Connect API key for notarization.
+    required: false
+    default: ""
+  apple_notary_key_id:
+    description: App Store Connect API key id.
+    required: false
+    default: ""
+  apple_notary_issuer_id:
+    description: App Store Connect API issuer id.
+    required: false
+    default: ""
+runs:
+  using: composite
+  steps:
+    - name: Linux build and qualification dependencies
+      if: runner.os == 'Linux'
+      shell: bash
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y build-essential pkg-config mold libxkbcommon-dev libwayland-dev \
+          libxkbcommon-x11-0 mesa-vulkan-drivers xvfb xauth weston \
+          sway wtype wl-clipboard grim jq fcitx5 fcitx5-chinese-addons dbus
+        icd="$(find /usr/share/vulkan/icd.d -name 'lvp_icd*.json' -print -quit)"
+        test -n "$icd"
+        echo "VK_DRIVER_FILES=$icd" >> "$GITHUB_ENV"
+        echo 'WGPU_BACKEND=vulkan' >> "$GITHUB_ENV"
+    - name: Toolchains
+      shell: bash
+      run: |
+        bash scripts/setup-rust.sh core
+        bash scripts/install-zig.sh "$RUNNER_TEMP/phux-toolchains" >> "$GITHUB_PATH"
+    # Cold, a leg compiled Rune's graph three ways (clippy, test, release)
+    # plus the root `phux` CLI: 15 to 18 minutes (run 41886269436). The
+    # third-party artifacts of both workspaces are kept; saves come from
+    # main (ci.yml's push lane and cache-warm.yml), never a PR or a tag.
+    - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+      with:
+        workspaces: |
+          clients/rune -> target
+          . -> target
+        shared-key: rune-${{ inputs.name }}
+        save-if: ${{ github.ref == 'refs/heads/main' }}
+        cache-on-failure: "true"
+    - uses: ./.github/actions/setup-bun
+    # `just rune-check`, without installing just.
+    - shell: bash
+      run: bash clients/rune/scripts/check.sh
+    # `just rune-deny`, on one leg: the verdict doesn't depend on the host.
+    - name: Check Rune's lockfile
+      if: inputs.name == 'linux-x86_64'
+      shell: bash
+      env:
+        GH_TOKEN: ${{ github.token }}
+      run: |
+        version=0.20.2
+        archive="cargo-deny-${version}-x86_64-unknown-linux-musl.tar.gz"
+        # Through the API: releases/download can 504 one asset for hours.
+        gh release download "$version" --repo EmbarkStudios/cargo-deny --pattern "$archive" --dir "$RUNNER_TEMP"
+        echo "9f12ed4c49936e09b48bf862b595cde2fe64fcbd9d74dfacac6131ca824c8d5f  ${RUNNER_TEMP}/${archive}" | sha256sum -c -
+        tar -xzf "${RUNNER_TEMP}/${archive}" -C "${RUNNER_TEMP}"
+        PATH="${RUNNER_TEMP}/cargo-deny-${version}-x86_64-unknown-linux-musl:$PATH"
+        cargo-deny --manifest-path clients/rune/Cargo.toml --config clients/rune/deny.toml --locked check
+    - name: Require Apple signing configuration before building
+      if: runner.os == 'macOS' && startsWith(github.ref, 'refs/tags/rune-v')
+      shell: bash
+      env:
+        APPLE_DEVELOPER_ID_P12: ${{ inputs.apple_developer_id_p12 }}
+        APPLE_DEVELOPER_ID_PASSWORD: ${{ inputs.apple_developer_id_password }}
+        APPLE_NOTARY_KEY_P8: ${{ inputs.apple_notary_key_p8 }}
+        APPLE_NOTARY_KEY_ID: ${{ inputs.apple_notary_key_id }}
+        APPLE_NOTARY_ISSUER_ID: ${{ inputs.apple_notary_issuer_id }}
+      run: bash scripts/ci/sign-macos-desktop.sh --check-config
+    - name: Package
+      shell: bash
+      run: |
+        version="$(sed -n 's/^version = "\(.*\)"/\1/p' clients/rune/Cargo.toml | head -1)"
+        bash clients/rune/scripts/package.sh "$version" "$RUNNER_TEMP/dist" "$RUNNER_TEMP/app"
+    # Releases ship the app Developer ID signed with the hardened runtime,
+    # notarized and stapled, so it opens from Finder without a Gatekeeper
+    # override.
+    - name: Sign, notarize and staple the macOS app
+      if: runner.os == 'macOS' && startsWith(github.ref, 'refs/tags/rune-v')
+      shell: bash
+      env:
+        APPLE_DEVELOPER_ID_P12: ${{ inputs.apple_developer_id_p12 }}
+        APPLE_DEVELOPER_ID_PASSWORD: ${{ inputs.apple_developer_id_password }}
+        APPLE_NOTARY_KEY_P8: ${{ inputs.apple_notary_key_p8 }}
+        APPLE_NOTARY_KEY_ID: ${{ inputs.apple_notary_key_id }}
+        APPLE_NOTARY_ISSUER_ID: ${{ inputs.apple_notary_issuer_id }}
+      run: |
+        set -euo pipefail
+        version="$(sed -n 's/^version = "\(.*\)"/\1/p' clients/rune/Cargo.toml | head -1)"
+        archive="phux-rune-$version-macos-arm64.zip"
+        dmg="phux-rune-$version-macos-arm64.dmg"
+        rm "$RUNNER_TEMP/dist/$archive" "$RUNNER_TEMP/dist/$archive.sha256"
+        bash scripts/ci/sign-macos-desktop.sh "$RUNNER_TEMP/app/Phux Rune.app" \
+          "$RUNNER_TEMP/signed/$archive" "$RUNNER_TEMP/signed/$dmg"
+        mv "$RUNNER_TEMP/signed/$archive" "$RUNNER_TEMP/signed/$dmg" "$RUNNER_TEMP/dist/"
+        cd "$RUNNER_TEMP/dist"
+        shasum -a 256 "$archive" > "$archive.sha256"
+        shasum -a 256 "$dmg" > "$dmg.sha256"
+        # What a download gets: the stapled ticket, and Gatekeeper's yes.
+        mkdir "$RUNNER_TEMP/verify"
+        ditto -x -k "$archive" "$RUNNER_TEMP/verify"
+        xcrun stapler validate "$RUNNER_TEMP/verify/Phux Rune.app"
+        spctl --assess --type execute --verbose=2 "$RUNNER_TEMP/verify/Phux Rune.app"
+    # Last before upload, on the final bytes: a build that can't open its
+    # window never reaches a client, whose updater only ever moves forward.
+    - name: Launch the packaged app against a same-source server
+      shell: bash
+      run: |
+        set -euo pipefail
+        cargo build --locked -p phux
+        archive="$(find "$RUNNER_TEMP/dist" -name 'phux-rune-*' ! -name '*.sha256' ! -name '*.dmg')"
+        bash clients/rune/scripts/qualify.sh "$archive" target/debug/phux "$RUNNER_TEMP/qualification"
+    - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+      if: always()
+      with:
+        name: qualification-${{ inputs.name }}
+        path: ${{ runner.temp }}/qualification
+        if-no-files-found: warn
+        retention-days: 14
+    - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+      with:
+        name: rune-${{ inputs.name }}
+        path: ${{ runner.temp }}/dist/*
+        if-no-files-found: error
+        retention-days: 14
