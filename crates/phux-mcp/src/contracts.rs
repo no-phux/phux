@@ -68,6 +68,30 @@ pub(crate) fn enhance(catalog: &mut Value) {
         }
         entry["outputSchema"] = output;
         add_resource_id(&mut entry["inputSchema"]);
+        drop_numeric_formats(entry);
+    }
+}
+
+/// Drop the `format` words a Rust schema generator writes for integer widths
+/// (`uint32`, `int64`, `double`): JSON Schema does not define them, and MCP
+/// clients that validate with Ajv print a warning per word, which OpenCode
+/// 1.x paints over its own screen.
+fn drop_numeric_formats(schema: &mut Value) {
+    match schema {
+        Value::Object(object) => {
+            if object.get("format").and_then(Value::as_str).is_some_and(|word| {
+                matches!(word, "double" | "float")
+                    || word
+                        .trim_start_matches('u')
+                        .strip_prefix("int")
+                        .is_some_and(|bits| bits.bytes().all(|b| b.is_ascii_digit()))
+            }) {
+                object.remove("format");
+            }
+            object.values_mut().for_each(drop_numeric_formats);
+        }
+        Value::Array(items) => items.iter_mut().for_each(drop_numeric_formats),
+        _ => {}
     }
 }
 
