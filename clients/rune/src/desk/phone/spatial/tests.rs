@@ -5,6 +5,7 @@ mod ime;
 mod input;
 mod refit;
 mod touch;
+mod touch_ownership;
 mod viewport;
 
 fn id(n: u32) -> ResourceId {

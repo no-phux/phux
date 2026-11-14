@@ -43,6 +43,7 @@ fn a_controlled_surface_takes_a_click_and_keys_until_refused() {
     step(&mut rt);
     assert_eq!(rt.state.document_input_frame(&id(1)), Some([4, 2]));
     outbound(&client);
+    assert_touch_ownership(&client, &mut rt);
     let board = rune::clipboard::memory();
     board.set_text("from this machine");
     rt.use_clipboard(&board);
@@ -161,4 +162,55 @@ fn a_controlled_surface_takes_a_click_and_keys_until_refused() {
         )),
         "a view-only pane sends nothing"
     );
+}
+
+fn assert_touch_ownership(client: &Client, rt: &mut Runtime<Desk>) {
+    use phux_protocol::wire::frame::DocumentInput;
+    use rune::TouchPhase::{Cancelled, Ended, Moved, Started};
+
+    let [x, y] = rt.state.origins[&id(1)];
+    let [w, h] = rt.state.areas[&id(1)];
+    let (x, y) = (x + w / 2.0, y + h / 2.0);
+    for (lift, dx) in [
+        (Cancelled, 0.0),
+        (Cancelled, 40.0),
+        (Ended, 0.0),
+        (Ended, 40.0),
+    ] {
+        rt.touch(1, Started, x, y, 10.0);
+        rt.frame(0.65);
+        assert!(
+            document_intents(client).is_empty(),
+            "a hold is not a remote click"
+        );
+        rt.touch(1, Moved, x + dx, y, 10.7);
+        rt.frame(0.0);
+        rt.touch(1, lift, x + dx, y, 10.8);
+        rt.frame(0.0);
+        let sent = document_intents(client);
+        if lift == Cancelled {
+            assert!(
+                sent.is_empty(),
+                "a cancelled hold must never act on the host"
+            );
+        } else if dx == 0.0 {
+            assert!(matches!(sent.as_slice(), [DocumentInput::Click { .. }]));
+        } else {
+            assert!(matches!(sent.as_slice(), [DocumentInput::Drag { .. }]));
+        }
+        assert!(!rt.touching());
+    }
+}
+
+fn document_intents(client: &Client) -> Vec<phux_protocol::wire::frame::DocumentInput> {
+    outbound(client)
+        .into_iter()
+        .filter_map(|frame| match frame {
+            FrameKind::Command {
+                command: Command::SendDocumentInput { intent, .. },
+                ..
+            } => Some(intent),
+            _ => None,
+        })
+        .collect()
 }
