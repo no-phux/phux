@@ -27,6 +27,7 @@ pub struct Payload {
 }
 
 impl Payload {
+    #[cfg(any(target_os = "macos", test))]
     pub fn entries(&self) -> impl Iterator<Item = (&'static str, &str)> {
         let fp = self.fp.as_deref().map(|fp| ("fp", fp));
         [("host", self.host.as_str()), ("pane", self.pane.as_str())]
