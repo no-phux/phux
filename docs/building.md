@@ -69,7 +69,7 @@ connection that last typed into it (a key or a paste, attached or through
 `phux resource show --json` carries it as `controller`:
 
 ```json
-{ "client": 7, "client_name": "phux-mobile", "route": "bearer-quic", "remote": true }
+{ "client": 7, "client_name": "phux-mobile", "route": "bearer-quic", "remote": true, "platform": "ios" }
 ```
 
 - `client` is the server's id for the connection, the same number
@@ -80,6 +80,12 @@ connection that last typed into it (a key or a paste, attached or through
   reports for that connection.
 - `remote` is `false` for the owner's Unix socket and the loopback
   listeners, and `true` for every other route.
+- `platform` is the device word the client reported in its `HELLO`
+  (field 12, `PLATFORM`): 1 to 16 bytes of `[a-z0-9-]`. The usual words
+  are `macos`, `linux`, `windows`, `ios`, `ipados`, `android` and `web`;
+  the server checks the alphabet, not the vocabulary. The key is absent
+  when the client reported none (every client before the field existed)
+  or sent a word outside that alphabet.
 
 `controller` is `null` when nobody has typed, or when the connection that
 typed has closed. A `phux send-keys` run is one short connection, so its
@@ -102,19 +108,21 @@ exit 1
 `--until controller_changed` waits for one:
 
 ```json
-{"event":"controller_changed","terminal":"@7","controller":{"client":7,"client_name":"phux-mobile","route":"bearer-quic","remote":true}}
+{"event":"controller_changed","terminal":"@7","controller":{"client":7,"client_name":"phux-mobile","route":"bearer-quic","remote":true,"platform":"ios"}}
 ```
 
 The record is a hint for convenience. It is not an authentication fact. A
-client reports its own name, an `ssh-stdio` route is a label the connecting
-side reported, and any client attached to the pane can type. Do not grant
+client reports its own name and platform, an `ssh-stdio` route is a label
+the connecting side reported, and any client attached to the pane can type. Do not grant
 anything on the strength of it; use it to choose which prompt to show.
 
-There is no platform field. A client does not report its operating system
-or device class when it connects, so the record carries only the name it
-chose. On a pane reached through a hub, the pane's own server sees the hub
-as the client, so the record there names the hub (`phux-hub`), not the
-person's device. The record is not copied onto the hub.
+phux's own clients report the operating system they were built for; an
+app that knows better (an iPad build compiles as `ios`) says so through
+`set_client_platform` in the mobile bindings. An older server ignores the
+field. On a pane reached through a hub, the pane's own server sees the hub
+as the client, so the record there names the hub (`phux-hub`) and the
+hub's platform, not the person's device. The record is not copied onto
+the hub.
 
 ## Not shipped
 

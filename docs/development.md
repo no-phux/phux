@@ -281,45 +281,9 @@ server or an explicit `--socket` under a temp directory.
 
 ## CI
 
-One classifier, `bun tools/main.ts detect-changes` over
-[`tools/src/routing/routes.ts`](../tools/src/routing/routes.ts), decides
-which lanes a change can affect. `ci.yml` owns all these lanes. Unknown
-paths fail closed and run everything; handwritten docs normally run only
-guards. Docs read by tests, including `docs/agents.md` and generated
-references, also select their Rust consumers. A library change runs the
-tests of its dependents. The required `ci`
-aggregate rejects a failed or cancelled lane. `just tools-check` tests the
-routes.
-
-Release metadata alone runs guards without compile lanes. The classifier
-compares both full documents: root workspace and lock versions, release
-manifest versions, skill version lines, changelogs, and top-level `version`
-in the five integration packages listed in `release-please-config.json`.
-Any other package field, missing side, unlisted path, or workspace bump
-without all its locks keeps normal routing.
-
-`main` pushes and merge queue groups (`merge_group`) run main policy: the
-full Rust pool and every lane the diff needs. A `main` push whose tree a
-pull request or merge group already validated with the same lanes reuses
-that receipt (`tools/src/routing/receipt.ts`). With the repository variable
-`PHUX_MERGE_QUEUE=true`, a pull request that reaches Rune only through a
-root crate in its Cargo closure skips `rune / ios-native-simulator`. Its
-merge group still runs it, and its receipt never covers a `main` push.
-
-The test lanes compile once (`just test-archive`) and run the unit and e2e
-shards from that nextest archive. Pull requests restore caches and never
-save them. `main` pushes and the 00:10 UTC cache-warm run save one entry per
-Linux Rust lane under the 10 GB budget. `prune-build-cache` drops superseded
-entries and never a key from the current UTC day.
-The same nightly Linux dispatch warms both browser dependency caches using
-the CI web recipes. It explicitly enables saves on this repository's `main`;
-PRs and merge groups stay restore-only. This seeds the caches even when an
-exact-tree queue receipt skips the web jobs on the subsequent `main` push.
-Runners are the free hosted ones:
-Ubuntu x64 and arm64, and macOS 26 plus the `xcode-27` image.
-
-Workflow files carry their own comments; `.github/workflows/` is the
-reference. `just guards` lints them.
+[CI](./ci.md) covers lane routing, validation receipts, concurrency and the
+runner/cache budget. `.github/workflows/` is the executable reference;
+`just guards` lints it and `just tools-check` tests its contracts.
 
 ## Performance
 

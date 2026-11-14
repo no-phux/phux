@@ -264,7 +264,7 @@ pub fn core_launch(
                 cwd: spec.cwd.as_ref().map(std::path::PathBuf::from),
                 env: spec.env.clone(),
                 restore: spec.restore.clone(),
-                // Never on the wire: a client cannot plant or read one.
+                // Not an organization wire field: only PTY reports set it.
                 resume: None,
             }))
         }

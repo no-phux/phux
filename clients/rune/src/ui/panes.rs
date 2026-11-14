@@ -403,6 +403,9 @@ fn terminal_input(host: El, desk: &Desk, id: &ResourceId) -> El {
         d.wheel(&wheel, event.x - PAD, event.y - PAD, event.dy, event.mods);
         true
     })
+    // The terminal owns the entire gesture, including stationary word holds.
+    // Rune must neither add touch slop nor turn its lift into a context menu.
+    .touch_drags_at_once()
     .on_drag(move |d: &mut Desk, drag, tx| {
         // Drag points include the padding; the grid starts inside it.
         let (x, y, mods) = (drag.x - PAD, drag.y - PAD, tx.mods());

@@ -109,9 +109,9 @@ pub struct TerminalLaunch {
     /// at every activation, so a relaunch resumes the same conversation.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub restore: Option<Vec<u8>>,
-    /// What the program in the pane last asked to be resumed with. Never
-    /// sent to a client; a relaunch runs the user's `[[restore.program]]`
-    /// command for its app.
+    /// What the program in the pane last asked to be resumed with. Not an
+    /// organization wire field; a relaunch runs the user's
+    /// `[[restore.program]]` command for its app.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub resume: Option<ResumeToken>,
 }

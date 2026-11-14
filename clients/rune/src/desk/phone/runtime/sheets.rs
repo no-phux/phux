@@ -16,6 +16,10 @@ fn visible_editor(rt: &Runtime<Desk>, key: &str) {
         .find(|e| e.key.as_deref() == Some(key))
         .unwrap();
     let keyboard = rt.presented("phone-keyboard").unwrap().0;
+    assert!(
+        editor.label.as_ref().is_some_and(|label| !label.is_empty()),
+        "{key} needs an accessible name"
+    );
     assert!(!editor.inert, "{key} is behind its own scrim");
     assert!(
         editor.rect[2] > 0.0 && editor.rect[3] > 0.0,

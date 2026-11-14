@@ -80,6 +80,7 @@ test("both web halves fail the aggregate on failure or cancellation", () => {
       const exit = Bun.spawnSync(["bash", "-euo", "pipefail", "-c", gate], {
         env: {
           ...process.env,
+          EVENT_NAME: "pull_request",
           RESULTS: JSON.stringify({ plan: { result: "success" }, [id]: { result } }),
         },
         stdout: "ignore",

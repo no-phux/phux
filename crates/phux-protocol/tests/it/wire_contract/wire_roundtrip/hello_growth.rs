@@ -145,3 +145,62 @@ fn resource_kinds_round_trip_exactly_with_a_newer_clients_bits() {
     );
     assert_eq!(client_caps.resource_kinds.as_wire(), (1u64 << 63) | 1);
 }
+
+/// The platform a `HELLO` built from these top-level fields decodes to.
+fn platform_of(frame: &[u8]) -> Option<phux_protocol::caps::ClientPlatform> {
+    match FrameKind::decode(frame).expect("HELLO decodes").0 {
+        FrameKind::Hello { client_caps, .. } => client_caps.platform,
+        other => panic!("not HELLO: {other:?}"),
+    }
+}
+
+#[test]
+fn platform_round_trips_and_is_absent_from_an_older_hello() {
+    use phux_protocol::caps::{ClientCapabilities, ClientPlatform};
+
+    let encode = |platform| {
+        let mut encoded = bytes::BytesMut::new();
+        FrameKind::Hello {
+            client_name: "p".to_owned(),
+            protocol_major: 1,
+            protocol_minor: 0,
+            protocol_patch: 0,
+            client_caps: ClientCapabilities::new().with_platform(platform),
+        }
+        .encode(&mut encoded);
+        encoded
+    };
+    let ios = ClientPlatform::parse("ios");
+    assert_eq!(ios.expect("valid").as_str(), "ios");
+    assert_eq!(platform_of(&encode(ios)), ios);
+    assert_eq!(platform_of(&encode(None)), None);
+    // Unreported adds no bytes: the frame is the one older builds emit.
+    assert_eq!(encode(ios).len(), encode(None).len() + 3 + "ios".len());
+    // The shape every client sent before the field existed.
+    assert_eq!(platform_of(&hello(&caps(0, 0, 0, 0, (0, 0)))), None);
+}
+
+#[test]
+fn an_invalid_platform_is_dropped_not_refused() {
+    use phux_protocol::caps::ClientPlatform;
+
+    for bad in [
+        &b""[..],
+        b"MacOS",
+        b"mac os",
+        b"seventeen-bytes-x",
+        b"\xFF\xFE",
+        b"ios\n",
+    ] {
+        let mut fields = Vec::new();
+        tlv_field(&mut fields, 1, b"newer");
+        tlv_field(&mut fields, 2, &1u16.to_be_bytes());
+        tlv_field(&mut fields, 3, &0u16.to_be_bytes());
+        tlv_field(&mut fields, 4, &0u16.to_be_bytes());
+        tlv_field(&mut fields, 5, &caps(0, 0, 0, 0, (0, 0)));
+        tlv_field(&mut fields, 12, bad);
+        assert_eq!(platform_of(&framed_tlv(0x01, &fields)), None, "{bad:?}");
+    }
+    assert!(ClientPlatform::parse("sixteen-bytes-ok").is_some());
+    assert!(ClientPlatform::host().is_some());
+}
