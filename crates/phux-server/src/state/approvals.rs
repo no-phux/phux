@@ -171,6 +171,7 @@ impl ServerState {
             EventRecord::new(sole_terminal(command), AgentEvent::ApprovalRequested { id })
                 .with_actor(Some(requester)),
         );
+        crate::push::on_approval(self, sole_terminal(command).as_ref(), &id.to_string());
         crate::audit::emit(
             crate::audit::Kind::ApprovalHeld,
             self.audit_actor(requester),

@@ -302,4 +302,42 @@ fn each_notice_names_its_action_and_question() {
         ("open", Some(BLOCKED_QUESTION))
     );
     assert_eq!(wire_notice(Notice::Finished), ("finished", None));
+    assert_eq!(wire_notice(Notice::Approve("a1")), ("approve", Some("a1")));
+}
+
+/// A hold reaches every absent device as `approve` with its approval id,
+/// and `pane` is its one Terminal or `server` when it names none.
+#[tokio::test(flavor = "current_thread")]
+async fn a_held_action_is_pushed_for_approval_with_its_id() {
+    use phux_protocol::wire::frame::Command;
+    let (url, seen) = gateway().await;
+    let mut s = ServerState::new();
+    s.metadata_set(
+        &Scope::Global,
+        &format!("{PUSH_GRANT_KEY_PREFIX}phone"),
+        value(&url),
+    );
+    let requester = s.new_client_id();
+    let kill = Command::KillResource {
+        terminal_id: WireResourceId::local(3),
+        operation_id: None,
+    };
+    let session = Command::SessionKill {
+        operation: phux_protocol::ids::OperationId::new([6; 16]).expect("id"),
+        session: phux_protocol::ids::SessionKey::new([7; 16]).expect("key"),
+    };
+    let first = s.open_approval(requester, &kill).expect("held").id;
+    let second = s.open_approval(requester, &session).expect("held").id;
+
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    let mut bodies = seen.lock().expect("lock").clone();
+    bodies.sort_by_key(|body| body["pane"].as_str().map(str::to_owned));
+    assert_eq!(bodies.len(), 2, "{bodies:?}");
+    for body in &bodies {
+        assert_eq!(body["action"], "approve");
+    }
+    assert_eq!(bodies[0]["pane"], "local:3");
+    assert_eq!(bodies[0]["question"], first.to_string());
+    assert_eq!(bodies[1]["pane"], SERVER_PANE);
+    assert_eq!(bodies[1]["question"], second.to_string());
 }
