@@ -69,8 +69,8 @@ fn host_environment(
     // override or a production socket inherited from a frontend.
     env.insert("PHUX_SOCKET".into(), socket.display().to_string());
     env.insert(
-        "PHUX_TERMINAL_ID".into(),
-        phux_client::selector::format_terminal_id(parent),
+        crate::environment::TERMINAL_ID_ENV.into(),
+        native_agent::parent_terminal_env_value(parent),
     );
     env.insert("PHUX_AGENT_REPORTING".into(), "0".into());
     env.insert(
@@ -91,7 +91,7 @@ fn bootstrap() -> Result<HostSpec, String> {
         serde_json::from_str(&required(native_agent::NATIVE_HOST_SPEC_ENV)?)
             .map_err(|error| format!("invalid native spawn configuration: {error}"))?;
     let socket = PathBuf::from(required("PHUX_SOCKET")?);
-    let parent = local_resource("PHUX_TERMINAL_ID")?;
+    let parent = local_resource(crate::environment::TERMINAL_ID_ENV)?;
     let agent = local_resource(native_agent::NATIVE_AGENT_ID_ENV)?;
     let activation = required(native_agent::NATIVE_ACTIVATION_ENV)?;
     let binding_proof = required(native_agent::NATIVE_BINDING_ENV)?;

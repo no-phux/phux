@@ -19,9 +19,22 @@ pub const NATIVE_ACTIVATION_ENV: &str = "PHUX_NATIVE_ACTIVATION";
 /// Private guardian binding: the proof that binds it to the server.
 pub const NATIVE_BINDING_ENV: &str = "PHUX_NATIVE_BINDING";
 
-/// Whether `key` belongs to the private host binding, which a native launch
-/// recipe (fresh or saved) may never set: every `PHUX_NATIVE_*` key plus the
-/// delegated socket and parent terminal.
+/// `PHUX_TERMINAL_ID` for a guardian's worker.
+///
+/// The parent pane's id in the bare-digit form the server injects into every
+/// pane, so the worker's tools (and their `@$PHUX_TERMINAL_ID` shell hooks)
+/// read it the same way.
+#[must_use]
+pub fn parent_terminal_env_value(parent: &ResourceId) -> String {
+    parent
+        .local_id()
+        .map_or_else(|| parent.to_string(), |id| id.to_string())
+}
+
+/// Whether `key` belongs to the private host binding.
+///
+/// A native launch recipe, fresh or saved, may never set one: every
+/// `PHUX_NATIVE_*` key plus the delegated socket and parent terminal.
 #[must_use]
 pub fn is_reserved_native_env(key: &str) -> bool {
     key.starts_with("PHUX_NATIVE_") || matches!(key, "PHUX_SOCKET" | "PHUX_TERMINAL_ID")

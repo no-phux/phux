@@ -197,6 +197,13 @@ impl std::fmt::Debug for WorkloadPaths {
     }
 }
 
+/// Overrides the workload CA certificate location.
+pub const WORKLOAD_CA_ENV: &str = "PHUX_WORKLOAD_CA";
+/// Overrides the workload CA private key location.
+pub const WORKLOAD_CA_KEY_ENV: &str = "PHUX_WORKLOAD_CA_KEY";
+/// Overrides the issued workload key ledger location.
+pub const WORKLOAD_KEYS_ENV: &str = "PHUX_WORKLOAD_KEYS";
+
 impl WorkloadPaths {
     /// The configured locations: each environment override, else the
     /// default under the state directory. For the CLI verbs; the server
@@ -205,9 +212,9 @@ impl WorkloadPaths {
     pub fn from_env() -> Self {
         let path = |var: &str| std::env::var_os(var).map(PathBuf::from);
         Self::with_overrides(
-            path("PHUX_WORKLOAD_CA"),
-            path("PHUX_WORKLOAD_CA_KEY"),
-            path("PHUX_WORKLOAD_KEYS"),
+            path(WORKLOAD_CA_ENV),
+            path(WORKLOAD_CA_KEY_ENV),
+            path(WORKLOAD_KEYS_ENV),
         )
     }
 

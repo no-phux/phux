@@ -383,8 +383,7 @@ fn fit(
 /// The pane this process runs in, from the injected `PHUX_TERMINAL_ID`.
 /// `None` outside a pane degrades to "play the bytes, resize nothing".
 fn own_pane() -> Option<ResourceId> {
-    let raw = std::env::var("PHUX_TERMINAL_ID").ok()?;
-    raw.parse::<u32>().ok().map(ResourceId::local)
+    crate::environment::own_terminal_id().map(ResourceId::local)
 }
 
 /// Stop the tty's line discipline from editing the recording: clear `OPOST`

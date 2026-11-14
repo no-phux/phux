@@ -27,8 +27,8 @@ pub(crate) fn run_resource(action: &ResourceAction, socket: Option<PathBuf>) -> 
     match action {
         ResourceAction::Show { json, target } => {
             // Inside a pane the pane itself is the default target.
-            let own = std::env::var("PHUX_TERMINAL_ID").map(|id| format!("@{id}"));
-            let target = target.clone().or_else(|| own.ok());
+            let own = crate::environment::own_terminal_id().map(|id| format!("@{id}"));
+            let target = target.clone().or(own);
             run_show(&socket, target.as_deref(), json.json)
         }
         ResourceAction::Wait {

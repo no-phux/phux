@@ -90,9 +90,9 @@ impl ServerEnv {
             tls_cert,
             tls_key,
             retired_workload_mtls: lookup("PHUX_WORKLOAD_MTLS").is_some(),
-            workload_ca: path("PHUX_WORKLOAD_CA"),
-            workload_ca_key: path("PHUX_WORKLOAD_CA_KEY"),
-            workload_keys: path("PHUX_WORKLOAD_KEYS"),
+            workload_ca: path(crate::workload::WORKLOAD_CA_ENV),
+            workload_ca_key: path(crate::workload::WORKLOAD_CA_KEY_ENV),
+            workload_keys: path(crate::workload::WORKLOAD_KEYS_ENV),
             no_auto_listen: lookup(super::DISABLE_AUTO_LISTEN_ENV).is_some(),
             upload_dir: non_empty("PHUX_UPLOAD_DIR").map(PathBuf::from),
             upload_max_bytes: count(&lookup, "PHUX_UPLOAD_MAX_BYTES"),
@@ -238,9 +238,9 @@ mod tests {
     fn any_named_workload_location_counts_as_configured_authority() {
         assert!(!ServerEnv::default().workload_authority_configured());
         for var in [
-            "PHUX_WORKLOAD_CA",
-            "PHUX_WORKLOAD_CA_KEY",
-            "PHUX_WORKLOAD_KEYS",
+            crate::workload::WORKLOAD_CA_ENV,
+            crate::workload::WORKLOAD_CA_KEY_ENV,
+            crate::workload::WORKLOAD_KEYS_ENV,
         ] {
             let named = ServerEnv::from_lookup(|asked| (asked == var).then(|| "/x".into()));
             assert!(named.workload_authority_configured(), "{var}");
