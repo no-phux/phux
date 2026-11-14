@@ -43,6 +43,7 @@ use phux_protocol::wire::frame::{
     SpawnResult, StateScope, TYPE_COMMAND_RESULT, TYPE_DETACHED, TYPE_HELLO_OK, ViewportInfo,
 };
 use phux_server::ServerError;
+use std::io::ErrorKind::{ConnectionReset, UnexpectedEof};
 use tempfile::TempDir;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::UnixStream;
@@ -174,8 +175,8 @@ pub async fn try_connect_socket(path: &Path, deadline: Duration) -> Option<UnixS
     None
 }
 
-/// Read one length-prefixed frame (header + body), or `None` on a clean EOF
-/// before the header. Panics on timeout, I/O error, or a truncated frame.
+/// Read one length-prefixed frame (header + body), or `None` if the server
+/// left before the header. Panics on timeout, I/O error, or a truncated frame.
 async fn read_framed(stream: &mut UnixStream) -> Option<Vec<u8>> {
     timeout(WIRE_RECV_TIMEOUT, read_framed_unbounded(stream))
         .await
@@ -188,7 +189,8 @@ async fn read_framed_unbounded(stream: &mut UnixStream) -> Option<Vec<u8>> {
     let mut header = [0u8; 4];
     match stream.read_exact(&mut header).await {
         Ok(_) => {}
-        Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => return None,
+        // Linux resets a socket the server exits with unread.
+        Err(e) if matches!(e.kind(), UnexpectedEof | ConnectionReset) => return None,
         Err(e) => panic!("recv header io error: {e}"),
     }
     let body_len = u32::from_be_bytes(header) as usize;
@@ -214,17 +216,15 @@ pub async fn recv_typed(stream: &mut UnixStream) -> (u8, FrameKind) {
     decode_framed(&recv_framed(stream).await)
 }
 
-/// Like [`recv_typed`] but returns `None` on a clean EOF at a frame boundary
-/// (the server exits when its last session is reaped).
+/// Like [`recv_typed`] but `None` once the server has left (it exits when its
+/// last session is reaped).
 pub async fn try_recv_typed(stream: &mut UnixStream) -> Option<(u8, FrameKind)> {
     read_framed(stream).await.as_deref().map(decode_framed)
 }
 
 /// Like [`try_recv_typed`], but bounded only by `deadline`: `Err` once it
-/// passes, `Ok(None)` on a clean EOF. Use this instead of wrapping
-/// [`recv_typed`] in a caller-side timeout, which races the read's own
-/// [`WIRE_RECV_TIMEOUT`] and can replace the caller's diagnostic with a bare
-/// "timed out waiting for frame".
+/// passes. Use it over a caller-side timeout around [`recv_typed`], which
+/// races [`WIRE_RECV_TIMEOUT`] and can hide the caller's diagnostic.
 pub async fn try_recv_typed_before(
     stream: &mut UnixStream,
     deadline: tokio::time::Instant,
