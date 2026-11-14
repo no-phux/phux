@@ -59,6 +59,8 @@ pub struct ServerConfig {
     pub voice: phux_config::VoiceCfg,
     /// `[restore]`: the `[[restore.program]]` commands a relaunch may run.
     pub restore: phux_config::RestoreCfg,
+    /// `[forward]`: whether `FORWARD_*` is served and what it may dial.
+    pub forward: phux_config::ForwardCfg,
     /// `limits.metadata-value-bytes` (ADR-0129): largest L3 metadata value
     /// stored at one key.
     pub metadata_value_bytes: u32,
@@ -163,6 +165,7 @@ impl ServerConfig {
             keep_awake: phux_config::KeepAwake::default(),
             voice: phux_config::VoiceCfg::default(),
             restore: phux_config::RestoreCfg::default(),
+            forward: phux_config::ForwardCfg::default(),
             metadata_value_bytes: phux_config::DEFAULT_METADATA_VALUE_BYTES,
             approval_ttl_secs: phux_config::DEFAULT_APPROVAL_TTL_SECS,
             approval_max_pending: phux_config::DEFAULT_APPROVAL_MAX_PENDING,

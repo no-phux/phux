@@ -30,6 +30,21 @@ pub(crate) struct DownloadArgs {
     pub(crate) remote: RemoteOpt,
 }
 
+/// Forward a local TCP port to a port on the server's machine
+#[derive(Debug, Args)]
+#[usage(
+    long_about = "Listen on this machine and carry each TCP connection to a port on the machine the phux server runs on, like `ssh -L`, through the phux connection you already have.
+
+`-L 3000:localhost:8080` listens on 127.0.0.1:3000 here and reaches localhost:8080 there; a leading BIND_ADDR changes the local address. The server dials only its own loopback (`localhost`, `127.0.0.1`, `::1`) unless its `[forward] allow` lists the target. Runs in the foreground until Ctrl-C. If the phux connection drops, open connections are closed, the listener stays, and new connections are served once it reconnects."
+)]
+pub(crate) struct ForwardArgs {
+    /// What to forward: `[BIND_ADDR:]LOCAL_PORT:REMOTE_HOST:REMOTE_PORT`.
+    #[usage(short = 'L', value_name = "SPEC")]
+    pub(crate) local: String,
+    #[usage(flatten)]
+    pub(crate) remote: RemoteOpt,
+}
+
 /// Mint, rotate, revoke, list, or prune remote credentials
 ///
 /// With no subcommand, mint one credential into the server's store and

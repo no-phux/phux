@@ -122,6 +122,9 @@ pub(crate) fn dispatch(
         }
         Some(Command::Upload(args)) => panes::upload(args, socket),
         Some(Command::Download(args)) => machines::download(args, socket),
+        Some(Command::Forward(commands::ForwardArgs { local, remote })) => {
+            commands::forward::run(&local, remote.with_socket(socket))
+        }
         Some(Command::Paste(commands::PasteArgs {
             target,
             text,

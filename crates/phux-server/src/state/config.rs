@@ -16,6 +16,8 @@ pub(super) struct ServerConfig {
     pub(super) voice: phux_config::VoiceCfg,
     /// `[restore]`: the commands a relaunch may resume a program with.
     pub(super) restore: phux_config::RestoreCfg,
+    /// `[forward]`: whether `FORWARD_*` is served and what it may dial.
+    pub(super) forward: phux_config::ForwardCfg,
     /// Largest stored L3 metadata value (`limits.metadata-value-bytes`,
     /// ADR-0129).
     pub(super) metadata_value_bytes: u32,
@@ -64,6 +66,7 @@ impl Default for ServerConfig {
             agent_log_bytes: phux_config::DEFAULT_AGENT_LOG_BYTES,
             voice: phux_config::VoiceCfg::default(),
             restore: phux_config::RestoreCfg::default(),
+            forward: phux_config::ForwardCfg::default(),
             metadata_value_bytes: phux_config::DEFAULT_METADATA_VALUE_BYTES,
             cwd_inheritance: phux_config::CwdInheritance::default(),
             term: phux_config::DefaultsCfg::default().term,

@@ -76,6 +76,11 @@ that removes the old one. A reinstall changes the key, and so does someone
 intercepting the connection, so confirm the new key with whoever runs the
 host first. phux never removes or accepts a key for you.
 
+## Forwarding a port
+
+[`phux forward -L`](./forwarding.md) does what `ssh -L` does through the
+phux connection, with no SSH session to keep open.
+
 ## Attaching over SSH
 
 `phux attach --ssh` needs no pairing and no service:

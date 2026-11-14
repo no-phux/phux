@@ -101,6 +101,8 @@ fn audit_command(
             | Command::AppendResourceOutput { .. }
             | Command::AcquireInput { .. }
             | Command::ReleaseInput { .. }
+            // Audited as `forward.open` and `forward.close`, never per chunk.
+            | Command::Forward { .. }
     );
     if (routine && !denied) || !crate::audit::enabled() {
         return;

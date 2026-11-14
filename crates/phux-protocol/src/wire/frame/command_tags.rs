@@ -77,7 +77,11 @@ enum CommandTag {
     /// `HOST_CHECKLIST`: what works on this host, each with the reason
     /// and the fix (`phux doctor --json`'s `checklist`).
     HostChecklist = 0x43,
-    // 0x44..=0x47 left free for concurrent work.
+    /// `FORWARD_*`: TCP port forwarding (`docs/forwarding.md`).
+    ForwardOpen = 0x44,
+    ForwardRead = 0x45,
+    ForwardWrite = 0x46,
+    ForwardClose = 0x47,
     /// `SEND_DOCUMENT_INPUT`: relay a viewer's input intent to a document's
     /// producer.
     SendDocumentInput = 0x48,
@@ -146,6 +150,14 @@ pub(crate) const COMMAND_TAG_SERVICE_HTTP_OPEN: u8 = CommandTag::ServiceHttpOpen
 pub(crate) const COMMAND_TAG_SERVICE_HTTP_READ: u8 = CommandTag::ServiceHttpRead as u8;
 /// Wire tag for [`Command::ServiceHttpClose`].
 pub(crate) const COMMAND_TAG_SERVICE_HTTP_CLOSE: u8 = CommandTag::ServiceHttpClose as u8;
+/// Wire tag for [`Command::Forward`] carrying `ForwardOp::Open`.
+pub(crate) const COMMAND_TAG_FORWARD_OPEN: u8 = CommandTag::ForwardOpen as u8;
+/// Wire tag for [`Command::Forward`] carrying `ForwardOp::Read`.
+pub(crate) const COMMAND_TAG_FORWARD_READ: u8 = CommandTag::ForwardRead as u8;
+/// Wire tag for [`Command::Forward`] carrying `ForwardOp::Write`.
+pub(crate) const COMMAND_TAG_FORWARD_WRITE: u8 = CommandTag::ForwardWrite as u8;
+/// Wire tag for [`Command::Forward`] carrying `ForwardOp::Close`.
+pub(crate) const COMMAND_TAG_FORWARD_CLOSE: u8 = CommandTag::ForwardClose as u8;
 /// Wire tag for [`Command::DescribeApi`].
 pub(crate) const COMMAND_TAG_DESCRIBE_API: u8 = CommandTag::DescribeApi as u8;
 /// Wire tag for [`Command::GetCreation`].
@@ -316,6 +328,11 @@ pub(crate) const COMMAND_VALUE_TAG_CHECKOUT: u8 = 0x0b;
 pub(crate) const COMMAND_VALUE_TAG_SERVICE_HTTP_HEAD: u8 = 0x0c;
 /// Wire tag for [`CommandValue::ServiceHttpChunk`].
 pub(crate) const COMMAND_VALUE_TAG_SERVICE_HTTP_CHUNK: u8 = 0x0d;
+// 0x0e left free for concurrent work.
+/// Wire tag for [`CommandValue::ForwardOpened`].
+pub(crate) const COMMAND_VALUE_TAG_FORWARD_OPENED: u8 = 0x0f;
+/// Wire tag for [`CommandValue::ForwardChunk`].
+pub(crate) const COMMAND_VALUE_TAG_FORWARD_CHUNK: u8 = 0x10;
 }
 
 // Wire tags for the `AttachTarget` tagged union (SPEC §13).

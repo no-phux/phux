@@ -75,6 +75,7 @@ Machines:
   relay         Run a standalone relay, or enroll a route with it
   workload      Manage the mTLS workload authority
   download      Download a file from a server or one of its satellites
+  forward       Forward a local TCP port to a port on the server's machine
 
 Maintain:
   status        Report the running server: pid, uptime, clients
@@ -2769,6 +2770,44 @@ Flags:
                                   (default: 60)
       --json                      Print the structured receipt on stdout,
                                   including refusals.
+      --remote <[USER@]HOST[:PORT]>  Run against the phux server on another
+                                  machine instead of the local socket,
+                                  ssh-style: `--remote me@mini`. Same target
+                                  and resolution as `phux attach --remote`: a
+                                  registered host is dialed directly over
+                                  QUIC or WSS, and an unregistered one is
+                                  paired over your ssh trust first and
+                                  remembered (except `upload`, `download`,
+                                  and calls with `--json`: these never pair
+                                  and refuse unregistered hosts, naming
+                                  remedies). PORT defaults to 8788. Cannot
+                                  combine with `--socket`.
+  -h, --help                      Print help
+
+Global flags:
+      --socket <PATH>             Server socket to dial (default:
+                                  `$PHUX_SOCKET`)
+```
+
+## `phux forward`
+
+```text
+Listen on this machine and carry each TCP connection to a port on the machine
+the phux server runs on, like `ssh -L`, through the phux connection you already
+have.
+
+`-L 3000:localhost:8080` listens on 127.0.0.1:3000 here and reaches
+localhost:8080 there; a leading BIND_ADDR changes the local address. The server
+dials only its own loopback (`localhost`, `127.0.0.1`, `::1`) unless its
+`[forward] allow` lists the target. Runs in the foreground until Ctrl-C. If the
+phux connection drops, open connections are closed, the listener stays, and new
+connections are served once it reconnects.
+
+Usage: phux forward <-L <SPEC>> [--remote <[USER@]HOST[:PORT]>]
+
+Flags:
+  -L <SPEC>                       What to forward:
+                                  `[BIND_ADDR:]LOCAL_PORT:REMOTE_HOST:REMOTE_PORT`.
       --remote <[USER@]HOST[:PORT]>  Run against the phux server on another
                                   machine instead of the local socket,
                                   ssh-style: `--remote me@mini`. Same target

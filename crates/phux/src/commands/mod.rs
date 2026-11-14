@@ -35,6 +35,7 @@ pub(crate) fn verb_remote(command: &Command) -> Option<&str> {
         | Command::Detach(DetachArgs { remote, .. })
         | Command::Upload(UploadArgs { remote, .. })
         | Command::Download(DownloadArgs { remote, .. })
+        | Command::Forward(ForwardArgs { remote, .. })
         | Command::Project(ProjectArgs {
             action: ProjectAction::Link { remote, .. } | ProjectAction::Unlink { remote, .. },
         }) => remote.remote.as_deref(),
@@ -60,6 +61,7 @@ pub(crate) mod detach;
 pub(crate) mod doctor;
 pub(crate) mod download;
 pub(crate) mod enroll;
+pub(crate) mod forward;
 pub(crate) mod gen_reference_docs;
 pub(crate) mod git;
 pub(crate) mod host;
