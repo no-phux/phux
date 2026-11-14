@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.10.0](https://github.com/no-phux/phux/compare/opencode-plugin-v0.9.3...opencode-plugin-v0.10.0) (2026-11-14)
+
+
+### Features
+
+* **agent:** unique %name per agent pane, and opencode 1.x support ([#2485](https://github.com/no-phux/phux/issues/2485)) ([93a0b48](https://github.com/no-phux/phux/commit/93a0b4857619fd5023625e771df2bed675cc26ac))
+
 ## [0.9.3](https://github.com/no-phux/phux/compare/opencode-plugin-v0.9.2...opencode-plugin-v0.9.3) (2026-11-13)
 
 
