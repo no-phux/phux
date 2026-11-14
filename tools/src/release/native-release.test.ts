@@ -7,6 +7,7 @@ import { git } from "../lib/git.ts";
 import { classifyDetection, detect } from "../routing/detect.ts";
 import { artifactName, findValidation, type Receipt, type Source } from "../routing/receipt.ts";
 import { runeMacosPlan } from "../routing/rune-macos.ts";
+import { plan, planOutputs } from "../routing/plan.ts";
 import { applyRuneGate, nativeReleaseProof, releaseRefusal } from "./publish-plan.ts";
 
 const repo = mkdtempSync(join(tmpdir(), "phux-native-release-"));
@@ -108,10 +109,18 @@ function publish(sha: string, native: ReturnType<typeof proof>) {
   );
 }
 
-test("metadata C genuinely selects both native legs, while ordinary ci stays compile-free", () => {
+test("metadata C qualifies Apple and preserves main's native/icount policy without changing product routing", () => {
   const change = detection(b, c);
   expect(change.kind).toBe("release-metadata");
   expect(classifyDetection(change).needed.size).toBe(0);
+  const classification = classifyDetection(change);
+  const options = { scope: { kind: "none" as const } };
+  expect([...plan(classification, "pull_request", options).lanes]).toEqual(["guards"]);
+  expect(planOutputs(plan(classification, "push", options), classification)).toMatchObject({
+    native: true,
+    icount: true,
+    rune: false,
+  });
   expect(runeMacosPlan(classifyDetection(change, "qualify-rune"), "push")).toEqual({
     macos: true,
     ios: true,

@@ -111,6 +111,27 @@ test("the ci receipt has no macOS coverage on a pull request or a main push", ()
   expect([...reused(main).lanes]).not.toContain("rune");
 });
 
+test("legacy queue booleans cannot be mistaken for native scope or Apple qualification", () => {
+  const paths = ["crates/phux-client-runtime/src/lib.rs"];
+  const c = classifier.classify(paths);
+  const options: PlanOptions = { scope: { kind: "diff", paths } };
+  expect(planOutputs(plan(c, "pull_request", options), c)).toMatchObject({
+    native: false,
+    icount: false,
+    rune: true,
+  });
+  for (const legacy of [false, true]) {
+    // A legacy boolean supplies no path scope, so those lanes fail closed.
+    const old = plan(c, "pull_request", legacy);
+    expect(planOutputs(old, c)).toMatchObject({ native: true, icount: true, rune: true });
+    expect(old.coverage).not.toContain("rune_ios");
+    expect(old.coverage).not.toContain("macos");
+  }
+  expect(plan(c, "pull_request", { ...options, mergeQueue: true }).coverage).toBe(
+    plan(c, "pull_request", options).coverage,
+  );
+});
+
 describe("native setup and rust icount", () => {
   test("the native setup list is the job's scripts, the files they read, and ci.yml", () => {
     expect([...NATIVE_SETUP_PATHS]).toEqual([

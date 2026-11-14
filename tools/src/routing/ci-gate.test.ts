@@ -3,7 +3,8 @@
 // success-or-skip cases; this file is the event split.
 import { expect, test } from "bun:test";
 import { job, jobs, run, steps, workflow } from "../policy/workflows.ts";
-import { NATIVE_SETUP_PATHS } from "./plan.ts";
+import { NATIVE_SETUP_PATHS, plan, planOutputs, reused, triggerFor } from "./plan.ts";
+import { classifyDetection } from "./detect.ts";
 
 const CI = workflow("ci.yml");
 const AFTER = ["ci", "content", "prune-build-cache"];
@@ -54,6 +55,28 @@ test.each(["push", "merge_group"])("%s rejects either mandatory lane's non-succe
     }
   }
 });
+
+test.each(["push", "merge_group"])(
+  "%s receipt reuse keeps all mandatory native proofs",
+  (event) => {
+    const c = classifyDetection({ kind: "release-metadata" });
+    const p = reused(plan(c, triggerFor(event), { scope: { kind: "none" } }));
+    const output = planOutputs(p, c);
+    expect(output).toMatchObject({ native: true, icount: true, web: false, rune: false });
+    const results = {
+      ...baseline,
+      native: { result: output["native"] ? "success" : "skipped" },
+      icount: { result: output["icount"] ? "success" : "skipped" },
+      "rune-macos": { result: event === "merge_group" ? "success" : "skipped" },
+    };
+    expect(aggregate(results, event)).toBe(0);
+    for (const lane of event === "merge_group"
+      ? ["native", "icount", "rune-macos"]
+      : ["native", "icount"]) {
+      expect(aggregate({ ...results, [lane]: { result: "skipped" } }, event)).toBe(1);
+    }
+  },
+);
 
 test.each(["pull_request", "push", "merge_group"])(
   "%s checks both browser jobs even when native and icount pass",
