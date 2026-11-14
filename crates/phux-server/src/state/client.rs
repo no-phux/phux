@@ -308,6 +308,7 @@ impl ServerState {
         // `VIEWER` marks last until the connection ends (ADR-0127).
         self.clients.viewers.remove(&client_id);
         self.clients.layers.remove(&client_id);
+        self.clear_controller(client_id);
         self.clients.client_names.remove(&client_id);
         self.clients.connection_cancellations.remove(&client_id);
         self.clients.revocation_signals.remove(&client_id);

@@ -94,6 +94,7 @@ fn is_server_owned_key(key: &str) -> bool {
     };
 
     key == RESOURCE_PANE_OCCUPANT_KEY
+        || key == phux_protocol::wire::frame::RESOURCE_CONTROLLER_KEY
         || key == RESOURCE_ASKED_KEY
         || key == phux_protocol::wire::frame::RESOURCE_PROGRAM_STATUS_KEY
         || key.starts_with(phux_protocol::wire::frame::RESOURCE_PROGRAM_STATUS_RECORD_PREFIX)

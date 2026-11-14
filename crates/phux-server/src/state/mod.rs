@@ -28,6 +28,7 @@ mod client_table;
 mod conditional_kill;
 mod config;
 mod construct;
+mod controller;
 mod cwd;
 mod defaults;
 mod delegations;
