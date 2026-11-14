@@ -137,7 +137,7 @@ fn the_prompt_allows_once_or_for_the_pane() {
         OverlayCommand::Dismiss
     );
     assert!(shared.borrow_mut().take_query(now).is_some());
-    shared.borrow_mut().awaiting = None;
+    shared.borrow_mut().phase = ReadPhase::Idle;
     // Granted for the pane: the next read is answered without a prompt.
     assert_eq!(
         shared
@@ -146,4 +146,38 @@ fn the_prompt_allows_once_or_for_the_pane() {
         ReadAction::Query
     );
     assert_eq!(prompt.message, "pane 1 wants to read your clipboard");
+}
+
+/// A prompt left unanswered past its timeout stops holding off reads, and
+/// its late answer cannot replace the read that went ahead without it.
+#[test]
+fn a_late_answer_to_a_timed_out_prompt_leaves_the_next_read_alone() {
+    let now = Instant::now();
+    let shared = reads();
+    let mut r = shared.borrow_mut();
+    assert_eq!(
+        r.on_read(&pane(1), C, true, ClipboardRead::Ask, now),
+        ReadAction::Ask
+    );
+    let soon = now + Duration::from_secs(1);
+    assert_eq!(
+        r.on_read(&pane(2), C, true, ClipboardRead::Allow, soon),
+        ReadAction::Drop,
+        "an open prompt holds off other reads"
+    );
+    let later = now + ASK_TIMEOUT;
+    assert_eq!(
+        r.on_read(&pane(2), C, true, ClipboardRead::Allow, later),
+        ReadAction::Query
+    );
+    r.decide(&pane(1), ClipboardSelection::Primary, Choice::AllowPane);
+    assert_eq!(
+        r.take_query(later).as_deref(),
+        Some(&b"\x1b]52;c;?\x1b\\"[..])
+    );
+    assert_eq!(
+        r.take_reply(b"aGk=", Some(&pane(2)), later),
+        Some((pane(2), C, "hi".to_owned()))
+    );
+    assert!(r.granted.contains(&pane(1)), "a pane grant still sticks");
 }
