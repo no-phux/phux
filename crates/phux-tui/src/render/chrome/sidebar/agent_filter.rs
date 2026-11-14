@@ -47,14 +47,15 @@ impl AgentScope {
 
     /// The scope an `agents-filter { scope }` argument names. Accepts the
     /// chip labels too, so what the strip shows is what a binding can say.
+    /// `needs-you` is a long-standing alias for the attention scope.
     #[must_use]
     pub fn parse(value: &str) -> Option<Self> {
-        match value {
-            "all" => Some(Self::All),
-            "session" | "this" => Some(Self::Session),
-            "attention" | "need" | "needs-you" => Some(Self::Attention),
-            _ => None,
+        if value == "needs-you" {
+            return Some(Self::Attention);
         }
+        Self::ALL
+            .into_iter()
+            .find(|scope| scope.name() == value || scope.label() == value)
     }
 
     /// The scope after this one, wrapping.
@@ -363,6 +364,7 @@ mod tests {
             assert_eq!(AgentScope::parse(scope.name()), Some(scope));
             assert_eq!(AgentScope::parse(scope.label()), Some(scope));
         }
+        assert_eq!(AgentScope::parse("needs-you"), Some(AgentScope::Attention));
         assert_eq!(AgentScope::parse("bogus"), None);
     }
 }
