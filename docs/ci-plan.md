@@ -22,6 +22,12 @@ verification and [`reused`](../tools/src/routing/plan.ts) for the lanes
 kept on reuse. The aggregate waits for both web jobs; a failure or
 cancellation in either fails validation.
 
+Rune's PR Linux lane runs `check.sh` and cargo-deny on x86_64. Queue/main
+and manual dispatches additionally package and launch both Linux hosts.
+Only those full Linux receipts include `linux-aarch64,packaging`; a partial
+PR receipt cannot replace that qualification. Tags and nightly Rune warms
+retain full qualification by default.
+
 The Rune lane here is Linux-only. Its receipt never claims Apple coverage.
 The Apple workflow owns its exact-tree macOS/iOS receipt and release proof;
 see [native qualification](./ci.md#native-apple-qualification).

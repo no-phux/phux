@@ -112,7 +112,11 @@ export const commands: Record<string, Command> = {
           perfBaseline = true;
         }
       }
-      const p = plan(c, triggerFor(event), { scope, perfBaseline });
+      const p = plan(c, triggerFor(event), {
+        scope,
+        perfBaseline,
+        runeQualify: event !== "pull_request",
+      });
       const tree = git(["rev-parse", "HEAD^{tree}"]).trim();
       const receipt: Receipt = { schema: 2, tree, workflow: WORKFLOW, coverage: p.coverage };
       const validated =

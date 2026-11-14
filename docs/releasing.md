@@ -116,7 +116,9 @@ By hand:
    (`clients/rune/scripts/qualify.sh`). That checks the licenses in the
    archive, what the binary links, its version, and that a frame shows the
    session; on Linux it also opens a window under Xvfb and lavapipe. Pull
-   requests run the Linux hosts as the `rune` lane of `ci`. macOS and the
+   requests run `check.sh` and cargo-deny on `linux-x86_64` as the `rune`
+   lane of `ci`. Packaging, the packaged launch, and `linux-aarch64` run on
+   the merge queue, on main, and again in this tag build. macOS and the
    iOS simulator run in `rune-macos.yml`, required by `ci` on the merge queue
    and independently on main,
    unsigned until this tag.

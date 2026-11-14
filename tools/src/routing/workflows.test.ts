@@ -195,7 +195,7 @@ test("ci runs Rune's Linux hosts, and rune-macos owns the Apple legs", () => {
   expect(str(build["if"])).toContain("github.event_name != 'pull_request'");
   expect(str(job(mac, "rune-macos")["name"])).toBe("rune-macos");
   expect(steps(job(mac, "plan")).map(run).join("\n")).toContain("rune-macos-plan");
-  expect(uses(job(CI, "rune-macos"))).toBe("./.github/workflows/rune-macos.yml");
+  expect(uses(job(CI, "queue-apple"))).toBe("./.github/workflows/rune-macos.yml");
   expect(table(mac["on"])["workflow_call"]).toBeDefined();
   const reusable = workflow("rune-build.yml");
   const input = table(table(table(table(reusable["on"])["workflow_call"])["inputs"])["ios"]);

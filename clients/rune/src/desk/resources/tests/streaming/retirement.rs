@@ -2,18 +2,26 @@
 //! decoder workers are real; a test-only waker barrier keeps them occupied
 //! while new PNG jobs and identities arrive, without relying on decode timing.
 use super::*;
-use std::sync::{Condvar, Mutex};
+use std::sync::{Condvar, Mutex, MutexGuard};
 
-struct Release(Arc<(Mutex<bool>, Condvar)>);
+struct Release {
+    blocked: Arc<(Mutex<bool>, Condvar)>,
+    _exclusive: MutexGuard<'static, ()>,
+}
 
 impl Drop for Release {
     fn drop(&mut self) {
-        *self.0.0.lock().unwrap() = true;
-        self.0.1.notify_all();
+        *self.blocked.0.lock().unwrap() = true;
+        self.blocked.1.notify_all();
     }
 }
 
 fn busy_cache(rt: &mut Runtime<Desk>, base: &[u8]) -> (Release, mpsc::Receiver<()>) {
+    // Rune's workers are process-wide, not per cache. Two fixtures warming
+    // concurrently can each block some workers and wait forever for the rest.
+    // Serialize only the pool-blocking section, until Release wakes its workers.
+    static EXCLUSIVE: Mutex<()> = Mutex::new(());
+    let exclusive = EXCLUSIVE.lock().unwrap_or_else(|error| error.into_inner());
     let blocked = Arc::new((Mutex::new(false), Condvar::new()));
     let barrier = Arc::clone(&blocked);
     let (tx, wake) = mpsc::channel();
@@ -22,7 +30,10 @@ fn busy_cache(rt: &mut Runtime<Desk>, base: &[u8]) -> (Release, mpsc::Receiver<(
         let guard = barrier.0.lock().unwrap();
         drop(barrier.1.wait_while(guard, |released| !*released).unwrap());
     })));
-    let release = Release(blocked); // releases workers even if an assertion panics.
+    let release = Release {
+        blocked,
+        _exclusive: exclusive,
+    }; // releases workers even if an assertion panics, before unlocking EXCLUSIVE.
     let workers = std::thread::available_parallelism()
         .map_or(1, |n| n.get())
         .min(surface::MAX_DECODES);

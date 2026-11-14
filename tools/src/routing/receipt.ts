@@ -15,7 +15,7 @@ export interface Receipt extends Table {
   readonly tree: string;
   readonly workflow: string;
   /**
-   * Exact coverage. CI receipts contain the PR lane set, never Apple coverage.
+   * CI coverage is PR lanes plus linux-aarch64/packaging when qualified, never Apple.
    * Native setup/icount remain mandatory on main even when a PR receipt matches.
    * Apple qualification has its own workflow receipt.
    */

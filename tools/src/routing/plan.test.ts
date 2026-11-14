@@ -95,7 +95,7 @@ test("a reused main tree still qualifies the binding, native setup, and icount",
   expect(docs.coverage).toBe("guards");
 });
 
-test("the ci receipt has no macOS coverage on a pull request or a main push", () => {
+test("the ci receipt separates full Linux qualification and never claims Apple coverage", () => {
   // The Linux rune lane still runs. macOS coverage would let a main push
   // reuse a pull request that never started a macOS runner.
   const closure = classifier.classify(["crates/phux-protocol/src/lib.rs"]);
@@ -103,7 +103,7 @@ test("the ci receipt has no macOS coverage on a pull request or a main push", ()
   const main = plan(closure, "push");
   expect(pr.lanes.has("rune")).toBe(true);
   expect(main.lanes.has("rune")).toBe(true);
-  expect(pr.coverage).toBe(main.coverage);
+  expect(main.coverage).toBe(`${pr.coverage},linux-aarch64,packaging`);
   expect(pr.coverage.split(",")).not.toContain("rune_ios");
   expect(pr.coverage.split(",")).not.toContain("macos");
   expect(planOutputs(pr, closure)).not.toHaveProperty("rune_ios");

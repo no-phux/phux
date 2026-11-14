@@ -13,7 +13,7 @@ const lanes = Object.keys(jobs(CI)).filter((id) => !AFTER.includes(id));
 const baseline = {
   ...Object.fromEntries(lanes.map((id) => [id, { result: "skipped" }])),
   plan: { result: "success" },
-  "rune-macos": { result: "success" },
+  "queue-apple": { result: "success" },
 };
 const aggregate = (results: unknown, event: string): number =>
   Bun.spawnSync(["bash", "-euo", "pipefail", "-c", script], {
@@ -67,11 +67,11 @@ test.each(["push", "merge_group"])(
       ...baseline,
       native: { result: output["native"] ? "success" : "skipped" },
       icount: { result: output["icount"] ? "success" : "skipped" },
-      "rune-macos": { result: event === "merge_group" ? "success" : "skipped" },
+      "queue-apple": { result: event === "merge_group" ? "success" : "skipped" },
     };
     expect(aggregate(results, event)).toBe(0);
     for (const lane of event === "merge_group"
-      ? ["native", "icount", "rune-macos"]
+      ? ["native", "icount", "queue-apple"]
       : ["native", "icount"]) {
       expect(aggregate({ ...results, [lane]: { result: "skipped" } }, event)).toBe(1);
     }
