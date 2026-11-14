@@ -241,6 +241,52 @@ fn clients_cannot_forge_server_owned_or_reserved_keys() {
     assert_eq!(get(&state, &scope, key), Some(authoritative));
 }
 
+/// `phux.controller/v1` names the connection that typed last, refuses a
+/// client's write, and leaves with the connection.
+#[test]
+fn controller_record_follows_the_typing_connection() {
+    use phux_protocol::policy::TransportType;
+    let key = phux_protocol::wire::frame::RESOURCE_CONTROLLER_KEY;
+    let state = SharedState::new();
+    let (_session, pane) = state.with_mut(|s| s.seed_session("typed"));
+    let wire = state.with_mut(|s| s.intern_resource_wire(pane));
+    let scope = Scope::Resource(wire.clone());
+    let record = || {
+        get(&state, &scope, key)
+            .map(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).expect("record JSON"))
+    };
+    state.with_mut(|s| {
+        let mut ssh = crate::runtime::test_support::owner_peer();
+        ssh.transport = TransportType::SshTunnel;
+        s.set_peer_identity(ClientId(1), crate::runtime::test_support::owner_peer());
+        s.set_peer_identity(ClientId(2), ssh);
+        s.set_client_name(ClientId(2), "phux-mobile".to_owned());
+        s.note_controller(&wire, ClientId(1));
+    });
+    assert_eq!(
+        record(),
+        Some(serde_json::json!({
+            "client": 1, "client_name": null, "route": "uds", "remote": false,
+        }))
+    );
+    set(&state, &scope, key, b"forged");
+    handle_delete_metadata(&state, ClientId(1), 6, &scope, key);
+    assert_eq!(record().expect("kept")["client"], 1);
+
+    state.with_mut(|s| s.note_controller(&wire, ClientId(2)));
+    assert_eq!(
+        record(),
+        Some(serde_json::json!({
+            "client": 2, "client_name": "phux-mobile", "route": "ssh-stdio", "remote": true,
+        }))
+    );
+    // The earlier typist leaving changes nothing; the current one clears it.
+    state.with_mut(|s| s.forget_connection(ClientId(1)));
+    assert_eq!(record().expect("kept")["client"], 2);
+    state.with_mut(|s| s.forget_connection(ClientId(2)));
+    assert_eq!(record(), None);
+}
+
 /// A create receipt binds the created identity, so it survives a rename
 /// and the reuse of the original name.
 #[tokio::test(flavor = "current_thread")]

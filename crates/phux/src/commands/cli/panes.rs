@@ -293,14 +293,19 @@ pub(crate) enum ResourceAction {
     /// Show one resource: kind, lifecycle, exit, process, tags, agent.
     ///
     /// Prints `key: value` lines, or with `--json` the stable document.
-    /// Read-only: never attaches or resizes.
+    /// Read-only: never attaches or resizes. `controller` is the connection
+    /// that last typed into a pane: its client id, the name it gave itself,
+    /// the route it connected by, and whether that route is remote. It is
+    /// `null` when nobody has typed or that connection has closed.
     Show {
         #[usage(flatten)]
         json: JsonOpt,
 
         /// Target selector. A direct id (`@N`, `host/@N`) is read as given.
+        /// Omit it inside a pane to show that pane (`$PHUX_TERMINAL_ID`);
+        /// elsewhere the default is the most-recently-focused pane.
         #[usage(value_name = "TARGET")]
-        target: String,
+        target: Option<String>,
     },
 
     /// Wait until a resource's process exits.

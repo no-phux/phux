@@ -198,11 +198,7 @@ fn build_record(
     host: &ServingHost,
 ) -> WhoamiRecord {
     let ssh_origin = ssh_origin.filter(|_| matches!(peer.transport, TransportType::UnixSocket));
-    let route = if ssh_origin.is_some() {
-        AUTH_ROUTE_SSH_STDIO
-    } else {
-        auth_route(peer.transport, credential.is_some())
-    };
+    let route = route_word(peer, credential.is_some(), ssh_origin.is_some());
     WhoamiRecord {
         schema_version: WHOAMI_SCHEMA_VERSION,
         principal: credential.map(|credential| credential.principal.clone()),
@@ -217,6 +213,31 @@ fn build_record(
             port: origin.client.port(),
         }),
     }
+}
+
+/// The `auth_route` word for a connection; an admitted ssh origin relabels
+/// a Unix-socket route.
+const fn route_word(peer: &PeerIdentity, bearer: bool, ssh: bool) -> &'static str {
+    if ssh && matches!(peer.transport, TransportType::UnixSocket) {
+        AUTH_ROUTE_SSH_STDIO
+    } else {
+        auth_route(peer.transport, bearer)
+    }
+}
+
+/// The `auth_route` word whoami would report for `client_id`; `None` when
+/// the transport stamped no identity.
+#[allow(
+    clippy::redundant_pub_crate,
+    reason = "private module shared with the state layer; pub would violate unreachable_pub"
+)]
+pub(crate) fn route_for(s: &ServerState, client_id: ClientId) -> Option<&'static str> {
+    let peer = s.peer_identity(client_id)?;
+    Some(route_word(
+        peer,
+        s.authenticated_credential(client_id).is_some(),
+        s.ssh_origin(client_id).is_some(),
+    ))
 }
 
 /// The peer uid, when it came from the kernel's socket credentials. A

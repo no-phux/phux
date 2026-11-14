@@ -141,7 +141,7 @@ static F_RESULT_NAMESPACE_WRITE: Rule = Rule::deny(
 static F_RESULT_NAMESPACE_SUBSCRIBE: Rule =
     Rule::deny("`SUBSCRIBE_METADATA` targeting that result namespace");
 static F_SERVER_OWNED_WRITE: Rule = Rule::deny(
-    "`SET_METADATA` or `DELETE_METADATA` targeting `phux.pane-occupant/v1`, `phux.whoami/v1`, or a `phux.approval/v1/<id>` record, or `DELETE_METADATA` targeting `phux.config.reload/v1`, `phux.session.keep_empty/v1`, or a `phux.approval.decide/v1/<id>` key",
+    "`SET_METADATA` or `DELETE_METADATA` targeting `phux.pane-occupant/v1`, `phux.controller/v1`, `phux.whoami/v1`, or a `phux.approval/v1/<id>` record, or `DELETE_METADATA` targeting `phux.config.reload/v1`, `phux.session.keep_empty/v1`, or a `phux.approval.decide/v1/<id>` key",
 );
 static F_METADATA_WRITE: Rule = Rule::verbs(
     "Other `SET_METADATA`, `DELETE_METADATA`",

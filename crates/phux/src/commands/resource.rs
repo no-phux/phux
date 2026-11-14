@@ -25,7 +25,12 @@ use crate::exit_codes::{EXIT_FAILURE, EXIT_PARTIAL_VIEW, EXIT_USAGE, EXIT_WAIT_T
 pub(crate) fn run_resource(action: &ResourceAction, socket: Option<PathBuf>) -> ExitCode {
     let socket = socket.unwrap_or_else(default_socket_path);
     match action {
-        ResourceAction::Show { json, target } => run_show(&socket, target, json.json),
+        ResourceAction::Show { json, target } => {
+            // Inside a pane the pane itself is the default target.
+            let own = std::env::var("PHUX_TERMINAL_ID").map(|id| format!("@{id}"));
+            let target = target.clone().or_else(|| own.ok());
+            run_show(&socket, target.as_deref(), json.json)
+        }
         ResourceAction::Wait {
             timeout,
             after,
@@ -42,25 +47,25 @@ pub(crate) fn run_resource(action: &ResourceAction, socket: Option<PathBuf>) -> 
 /// like every other one-pane verb.
 async fn resolve(
     socket: &Path,
-    target: &str,
+    target: Option<&str>,
     verb: &str,
     json: bool,
 ) -> Result<ResourceId, ExitCode> {
-    let selector = parse_selector(Some(target))?;
+    let selector = parse_selector(target)?;
     if let Some(id) = selector.explicit_id() {
         return Ok(id);
     }
     resolve_target(socket, &selector, verb, json).await
 }
 
-fn run_show(socket: &Path, target: &str, json: bool) -> ExitCode {
+fn run_show(socket: &Path, target: Option<&str>, json: bool) -> ExitCode {
     let rt = match cli_runtime() {
         Ok(rt) => rt,
         Err(code) => return code,
     };
     rt.block_on(async {
         if let Some(key) = target
-            .strip_prefix('^')
+            .and_then(|target| target.strip_prefix('^'))
             .and_then(phux_protocol::ids::ResourceKey::parse)
         {
             return show_key(socket, key, json).await;
@@ -110,7 +115,7 @@ fn run_methods(socket: &Path, target: &str, json: bool) -> ExitCode {
         Err(code) => return code,
     };
     rt.block_on(async {
-        let id = match resolve(socket, target, "resource methods", json).await {
+        let id = match resolve(socket, Some(target), "resource methods", json).await {
             Ok(id) => id,
             Err(code) => return code,
         };
@@ -142,7 +147,7 @@ fn run_wait(
         // so `--timeout 0` still answers once, as `phux wait` does.
         let first_read = deadline.floored(phux_client::wait::FIRST_READ_FLOOR);
         let id = match first_read
-            .run(resolve(socket, target, "resource wait", json))
+            .run(resolve(socket, Some(target), "resource wait", json))
             .await
         {
             Some(Ok(id)) => id,
@@ -266,6 +271,7 @@ fn print_show(details: &ResourceDetails, json: bool) -> ExitCode {
         "tags",
         "agent",
         "program_status",
+        "controller",
         "agent_session",
     ] {
         if let Some(line) = human_field(&doc, key) {
