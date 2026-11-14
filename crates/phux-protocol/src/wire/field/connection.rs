@@ -24,6 +24,9 @@ pub mod hello {
     /// Resource kinds the client decodes (`u64`, bit `1 << kind tag`);
     /// absent = `ResourceKindSet::LEGACY`.
     pub const RESOURCE_KINDS: u32 = 11;
+    /// The device the client says it runs on: 1 to 16 bytes of `[a-z0-9-]`
+    /// (`ClientPlatform`); absent or anything else = unreported.
+    pub const PLATFORM: u32 = 12;
 }
 
 /// `HELLO_OK` body fields (`docs/protocol.md#handshake`).

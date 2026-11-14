@@ -194,6 +194,7 @@ pub(super) async fn negotiate_hello(
         s.set_client_layers(client_id, client_caps.layers);
         // ADR-0123: an actor label, not an authenticated fact.
         s.set_client_name(client_id, client_name);
+        s.set_client_platform(client_id, client_caps.platform);
     });
     let hello_ok = FrameKind::HelloOk {
         protocol_major: PROTOCOL_VERSION.major,
