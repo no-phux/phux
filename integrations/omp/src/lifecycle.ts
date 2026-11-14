@@ -23,8 +23,8 @@ function owns(pane: AgentPane, id: string): boolean {
   if (sources.length !== 1) return false;
   try {
     const record = JSON.parse(sources[0]!.observed);
-    // phux may store the name as `omp-2`; kind and session identify us.
-    return record.kind === "omp" && record.session === `omp:${id}`;
+    // phux stores a second pane's name as `omp-2`.
+    return /^omp(-\d+)?$/.test(record.name) && record.kind === "omp" && record.session === `omp:${id}`;
   } catch { return false; }
 }
 
