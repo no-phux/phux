@@ -220,6 +220,24 @@ test("required fallback PR Apple admission and concurrency cannot be satisfied b
   expect(evaluate(job(mac, "build")["if"], pr, required)).toBe(true);
   expect(group("rune-macos.yml", pr, required)).not.toBe(group("rune-macos.yml", pr));
   expect(group("rune-macos.yml", pr, required)).not.toBe(group("ci.yml", pr));
+  const prefixedFork = {
+    ...pr,
+    event: { pull_request: { head: { repo: { full_name: "required-no-phux/phux" } } } },
+  };
+  expect(group("rune-macos.yml", pr, required)).not.toBe(group("rune-macos.yml", prefixedFork));
+  const requiredGroup = group("rune-macos.yml", pr, required);
+  expect(requiredGroup).toContain("required:no-phux/phux:refs/heads/topic");
+  expect(group("rune-macos.yml", prefixedFork)).toContain(
+    "standalone:required-no-phux/phux:refs/heads/topic",
+  );
+  const forkDispatch = {
+    ...pr,
+    event_name: "workflow_dispatch",
+    repository: "required-no-phux/phux",
+    ref: "refs/heads/topic",
+  };
+  expect(group("rune-macos.yml", forkDispatch)).toBe(group("rune-macos.yml", prefixedFork));
+  expect(requiredGroup).not.toBe(group("rune-macos.yml", forkDispatch));
 });
 
 test("fallback fork PR qualification grants no signing, release or provisioning authority", () => {

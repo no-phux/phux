@@ -18,6 +18,8 @@ PR fast paths require the live base repository/branch rules endpoint
 The plan reads it once with the read-only GitHub token; variables, queue
 entry and head branch names cannot attest enforcement. Missing/unknown
 policy, malformed responses and API/permission errors select full qualification.
+Queue rules must include all documented parameters, valid grouping/merge
+enums, integer bounds and an ordered minimum/maximum merge group size.
 No repository setting is changed.
 
 Only queue-verified PRs path-scope native setup and rust icount (or use
@@ -106,6 +108,8 @@ Merge groups retain their own queue-ref group. The Apple child's group
 prefix differs from its calling `ci`, preventing self-cancellation.
 Required fallback PR children also use a separate prefix from the standalone
 cheap PR workflow, so that check cannot cancel the actual native proof.
+The `required:` and `standalone:` modes use a colon, forbidden in repository
+and branch names, so a fork name cannot masquerade as the required mode.
 
 First-run timing runs Linux on every event. Its Mac job runs for installer
 changes on PRs and main pushes, nightly, and on manual runs. Only selected

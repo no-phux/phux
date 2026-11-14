@@ -33,8 +33,9 @@ concurrency:
   # Preserve every push SHA, including a pending native change followed by
   # docs-only work. Neither actor identity nor a later push waives its proof.
   # Prefix differs from the calling ci workflow, so it cannot cancel itself.
+  # Colon-delimited modes cannot be confused with a fork's repository name.
   group: >-
-    rune-macos-${{ github.event_name == 'pull_request' && inputs.qualify && 'required-' || '' }}${{ github.event_name == 'push' && github.sha
+    rune-macos-${{ github.event_name == 'pull_request' && inputs.qualify && 'required:' || 'standalone:' }}${{ github.event_name == 'push' && github.sha
     || github.event_name == 'pull_request' && format('{0}:refs/heads/{1}', github.event.pull_request.head.repo.full_name, github.head_ref)
     || github.event_name == 'workflow_dispatch' && format('{0}:{1}', github.repository, github.ref)
     || github.ref }}

@@ -9,9 +9,115 @@ import { capture } from "../lib/process.ts";
 import { repoPath } from "../lib/repo.ts";
 import { mergeQueueVerified } from "./queue-policy.ts";
 import { classifyDetection } from "./detect.ts";
+import { runInNewContext } from "node:vm";
 
+// GitHub repository-rule-merge-queue parameters, not a type-only queue claim.
+const QUEUE_PARAMETERS = {
+  check_response_timeout_minutes: 60,
+  grouping_strategy: "ALLGREEN",
+  max_entries_to_build: 5,
+  max_entries_to_merge: 5,
+  merge_method: "REBASE",
+  min_entries_to_merge: 1,
+  min_entries_to_merge_wait_minutes: 5,
+};
+const queueRules = (parameters: unknown) => JSON.stringify([{ type: "merge_queue", parameters }]);
+const MISSING_PARAMETERS = Object.keys(QUEUE_PARAMETERS).map((field) => {
+  const parameters: Record<string, unknown> = { ...QUEUE_PARAMETERS };
+  delete parameters[field];
+  return [`queue missing ${field}`, queueRules(parameters), 0, false] as const;
+});
 const RESPONSES = [
-  ["queue on", '[{"type":"merge_queue"}]', 0, true],
+  ["queue on", queueRules(QUEUE_PARAMETERS), 0, true],
+  [
+    "queue at schema lower bounds",
+    queueRules({
+      check_response_timeout_minutes: 1,
+      grouping_strategy: "HEADGREEN",
+      max_entries_to_build: 0,
+      max_entries_to_merge: 0,
+      merge_method: "MERGE",
+      min_entries_to_merge: 0,
+      min_entries_to_merge_wait_minutes: 0,
+    }),
+    0,
+    true,
+  ],
+  [
+    "queue at schema upper bounds",
+    queueRules({
+      check_response_timeout_minutes: 360,
+      grouping_strategy: "HEADGREEN",
+      max_entries_to_build: 100,
+      max_entries_to_merge: 100,
+      merge_method: "SQUASH",
+      min_entries_to_merge: 100,
+      min_entries_to_merge_wait_minutes: 360,
+    }),
+    0,
+    true,
+  ],
+  ...MISSING_PARAMETERS,
+  ["queue with null parameters", queueRules(null), 0, false],
+  ["queue with missing parameters", '[{"type":"merge_queue"}]', 0, false],
+  ["queue with incomplete parameters", queueRules({ grouping_strategy: "ALLGREEN" }), 0, false],
+  [
+    "queue with negative build limit",
+    queueRules({ ...QUEUE_PARAMETERS, max_entries_to_build: -1 }),
+    0,
+    false,
+  ],
+  [
+    "queue with invalid grouping",
+    queueRules({ ...QUEUE_PARAMETERS, grouping_strategy: "GREEN" }),
+    0,
+    false,
+  ],
+  [
+    "queue with invalid merge method",
+    queueRules({ ...QUEUE_PARAMETERS, merge_method: "rebase" }),
+    0,
+    false,
+  ],
+  [
+    "queue with wrong timeout type",
+    queueRules({ ...QUEUE_PARAMETERS, check_response_timeout_minutes: "60" }),
+    0,
+    false,
+  ],
+  [
+    "queue with zero timeout",
+    queueRules({ ...QUEUE_PARAMETERS, check_response_timeout_minutes: 0 }),
+    0,
+    false,
+  ],
+  [
+    "queue with fractional wait",
+    queueRules({ ...QUEUE_PARAMETERS, min_entries_to_merge_wait_minutes: 1.5 }),
+    0,
+    false,
+  ],
+  [
+    "queue with inverted merge limits",
+    queueRules({ ...QUEUE_PARAMETERS, min_entries_to_merge: 6 }),
+    0,
+    false,
+  ],
+  [
+    "queue with excessive build limit",
+    queueRules({ ...QUEUE_PARAMETERS, max_entries_to_build: 101 }),
+    0,
+    false,
+  ],
+  [
+    "valid queue beside malformed queue",
+    JSON.stringify([
+      { type: "merge_queue", parameters: QUEUE_PARAMETERS },
+      { type: "merge_queue", parameters: null },
+    ]),
+    0,
+    false,
+  ],
   ["queue off", '[{"type":"pull_request"}]', 0, false],
   ["empty", "[]", 0, false],
   ["malformed JSON", "{", 0, false],
@@ -139,6 +245,24 @@ test.each(RESPONSES)(
         native: String(!verified),
         icount: String(!verified),
       });
+      const appleGate = job(workflow("ci.yml"), "queue-apple")["if"];
+      expect(
+        runInNewContext(String(appleGate), {
+          github: { event_name: "pull_request" },
+          needs: { plan: { outputs: output } },
+        }),
+      ).toBe(!verified);
+      const applePlan = capture([process.execPath, repoPath("tools/main.ts"), "rune-macos-plan"], {
+        env: {
+          ...process.env,
+          GITHUB_EVENT_NAME: "pull_request",
+          GITHUB_EVENT_PATH: eventPath,
+          GITHUB_OUTPUT: "",
+          PHUX_RUNE_QUALIFY: String(!verified),
+        },
+      });
+      expect(applePlan).toContain(`macos=${!verified}`);
+      expect(applePlan).toContain(`ios=${!verified}`);
       const receipt = JSON.parse(output["receipt"] ?? "{}") as { coverage: string };
       expect(receipt.coverage.includes("packaging")).toBe(!verified);
       const script = run(
