@@ -112,6 +112,12 @@ impl SourceState {
         self.last_good = Some(plan);
         self.rate_limited = 0;
         self.retry_at_ms = 0;
+        self.clear_error();
+    }
+
+    /// Forget the last failure: an error and whether it was a rejection
+    /// are one fact, so they are cleared together.
+    pub fn clear_error(&mut self) {
         self.last_error = None;
         self.rejected = false;
     }
