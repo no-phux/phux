@@ -129,8 +129,12 @@ pub(super) async fn main_loop<W: crate::attach::RenderSink>(
     }
     loop {
         match session.step(conn, out, needs_resync).await? {
-            Step::Continue => {}
-            Step::Exit(exit) => return Ok(exit),
+            Step::Continue => session.report_focus(conn, false).await,
+            Step::Exit(exit) => {
+                // The pane left behind by a switch or detach hears it lost focus.
+                session.report_focus(conn, true).await;
+                return Ok(exit);
+            }
         }
     }
 }

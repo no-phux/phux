@@ -185,3 +185,84 @@ async fn side_by_side_loop(
     drop(frames_sent(&mut client, &mut server).await);
     (state, client, server, out)
 }
+
+/// The focus reports a batch of frames carried, in order.
+fn focus_reports(frames: &[FrameKind]) -> Vec<(ResourceId, FocusEvent)> {
+    frames
+        .iter()
+        .filter_map(|frame| match frame {
+            FrameKind::InputFocus { terminal_id, event } => Some((terminal_id.clone(), *event)),
+            _ => None,
+        })
+        .collect()
+}
+
+/// DEC 1004 follows the keyboard: focus-in on attach, focus-out and
+/// focus-in on a pane switch, the outer window's own focus goes to the pane
+/// under the keyboard, and a switch or detach tells the pane it lost focus.
+#[tokio::test(flavor = "current_thread")]
+async fn panes_hear_focus_move_with_the_keyboard() {
+    let (a, b) = (ResourceId::local(1), ResourceId::local(2));
+    let (mut state, mut client, mut server, mut out) = side_by_side_loop(&[]).await;
+    let sidebar = state.sidebar();
+
+    state.report_focus(&mut client, false).await;
+    assert_eq!(
+        focus_reports(&frames_sent(&mut client, &mut server).await),
+        vec![(a.clone(), FocusEvent::Gained)]
+    );
+
+    state
+        .dispatch_batch(
+            &mut client,
+            &mut out,
+            sidebar,
+            vec![chord_press("C-a"), chord_press("o")],
+        )
+        .await
+        .expect("next-pane");
+    state.report_focus(&mut client, false).await;
+    assert_eq!(
+        focus_reports(&frames_sent(&mut client, &mut server).await),
+        vec![(a, FocusEvent::Lost), (b.clone(), FocusEvent::Gained)]
+    );
+
+    // The outer window's report is not forwarded as-is: the pane is told
+    // once, by the reconcile.
+    state
+        .dispatch_batch(
+            &mut client,
+            &mut out,
+            sidebar,
+            vec![InputEvent::Focus(FocusEvent::Lost)],
+        )
+        .await
+        .expect("outer focus lost");
+    state.report_focus(&mut client, false).await;
+    assert_eq!(
+        focus_reports(&frames_sent(&mut client, &mut server).await),
+        vec![(b.clone(), FocusEvent::Lost)]
+    );
+    state
+        .dispatch_batch(
+            &mut client,
+            &mut out,
+            sidebar,
+            vec![InputEvent::Focus(FocusEvent::Gained)],
+        )
+        .await
+        .expect("outer focus gained");
+    state.report_focus(&mut client, false).await;
+    assert_eq!(
+        focus_reports(&frames_sent(&mut client, &mut server).await),
+        vec![(b.clone(), FocusEvent::Gained)]
+    );
+
+    state.report_focus(&mut client, true).await;
+    assert_eq!(
+        focus_reports(&frames_sent(&mut client, &mut server).await),
+        vec![(b, FocusEvent::Lost)]
+    );
+    drop(client);
+    drop(server);
+}

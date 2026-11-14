@@ -346,6 +346,8 @@ pub(super) struct SessionLoop {
     /// One-entry focus MRU, deliberately outside `ArrangementDoc` so focus history
     /// never persists (ADR-0019).
     focus_history: crate::attach::focus::FocusHistory,
+    /// The DEC 1004 reports the panes have had (`report_focus`).
+    focus_reports: crate::attach::focus::FocusReports,
     /// This client's `ClientId` from ATTACHED, for the supervisory badge.
     own_client_id: Option<ClientId>,
     /// The in-flight layout GET's request id.
@@ -624,6 +626,7 @@ impl SessionLoop {
                 PredictionState::new(predict_cfg, 80, 24),
             ),
             focus_history: crate::attach::focus::FocusHistory::default(),
+            focus_reports: crate::attach::focus::FocusReports::default(),
             own_client_id: None,
             layout_get_request_id: None,
             layout_read_complete: false,
@@ -722,6 +725,7 @@ pub(super) use inventory::answers::{
     HostAnswers, federation_notices, host_answers, host_inventory_overdue,
     unexplained_unreachable_notices,
 };
+mod focus;
 mod notify;
 mod paint;
 mod panes;
