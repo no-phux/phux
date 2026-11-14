@@ -39,18 +39,6 @@ pub enum DocumentKey {
 }
 
 impl DocumentKey {
-    /// Every key, in wire order.
-    pub const ALL: [Self; 8] = [
-        Self::Enter,
-        Self::Tab,
-        Self::Backspace,
-        Self::Escape,
-        Self::ArrowUp,
-        Self::ArrowDown,
-        Self::ArrowLeft,
-        Self::ArrowRight,
-    ];
-
     /// The key's name, as the DOM `KeyboardEvent.key` spells it.
     #[must_use]
     pub const fn name(self) -> &'static str {
@@ -91,9 +79,6 @@ pub enum ControlClass {
 }
 
 impl ControlClass {
-    /// Every class, in wire order.
-    pub const ALL: [Self; 3] = [Self::Page, Self::Window, Self::Display];
-
     /// The class's name: `page`, `window` or `display`.
     #[must_use]
     pub const fn name(self) -> &'static str {

@@ -80,7 +80,8 @@ macro_rules! wire_tags {
 }
 
 /// Declare a fieldless `#[repr(u8)]` wire enum with its `$to` / `$from` byte
-/// conversions; `$from` is `None` for a byte this build does not define.
+/// conversions and `ALL`, every value in declaration order; `$from` is
+/// `None` for a byte this build does not define.
 macro_rules! wire_enum {
     ($to:ident / $from:ident;
      $(#[$meta:meta])*
@@ -94,6 +95,9 @@ macro_rules! wire_enum {
         }
 
         impl $name {
+            /// Every value, in declaration order.
+            pub const ALL: [Self; [$(stringify!($variant)),*].len()] = [$(Self::$variant),*];
+
             /// Wire byte for this value.
             #[must_use]
             pub const fn $to(self) -> u8 {
