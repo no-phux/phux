@@ -133,6 +133,7 @@ impl Decoder<'_> {
         let mut ssh_origin = None;
         let mut quic_streams = false;
         let mut resource_kinds = crate::caps::ResourceKindSet::LEGACY;
+        let mut platform = None;
         while let Some((id, value)) = self.read_field()? {
             match id {
                 f::CLIENT_NAME => client_name = Some(utf8_value(value)?),
@@ -152,6 +153,12 @@ impl Decoder<'_> {
                     resource_kinds =
                         crate::caps::ResourceKindSet::from_wire(sub!(value, Decoder::read_u64_be));
                 }
+                // A label: an unreadable one is dropped, never a refusal.
+                f::PLATFORM => {
+                    platform = std::str::from_utf8(value)
+                        .ok()
+                        .and_then(crate::caps::ClientPlatform::parse);
+                }
                 _ => {}
             }
         }
@@ -166,7 +173,8 @@ impl Decoder<'_> {
         }
         client_caps = client_caps
             .with_quic_streams(quic_streams)
-            .with_resource_kinds(resource_kinds);
+            .with_resource_kinds(resource_kinds)
+            .with_platform(platform);
         Ok(FrameKind::Hello {
             client_name: req(client_name)?,
             protocol_major: req(protocol_major)?,

@@ -1,6 +1,7 @@
 //! The `phux.controller/v1` record: which connection last typed into a
 //! Terminal (`docs/building.md#who-is-typing`).
 
+use phux_protocol::caps::ClientPlatform;
 use phux_protocol::ids::ResourceId as WireResourceId;
 use phux_protocol::wire::frame::{
     AUTH_ROUTE_LOOPBACK_QUIC, AUTH_ROUTE_LOOPBACK_WEBTRANSPORT, AUTH_ROUTE_LOOPBACK_WS,
@@ -10,6 +11,13 @@ use phux_protocol::wire::frame::{
 use super::{ClientId, ServerState};
 
 impl ServerState {
+    /// Remember the platform `client_id`'s `HELLO` reported, if any.
+    pub fn set_client_platform(&mut self, client_id: ClientId, platform: Option<ClientPlatform>) {
+        if let Some(platform) = platform {
+            self.clients.client_platforms.insert(client_id, platform);
+        }
+    }
+
     /// `client` typed (a key or a paste) into the local `terminal`. Publishes
     /// the record only when the typing connection changed, so the per-key
     /// cost is one map lookup.
@@ -30,12 +38,15 @@ impl ServerState {
             AUTH_ROUTE_LOOPBACK_WEBTRANSPORT,
         ]
         .contains(&route);
-        let record = serde_json::json!({
+        let mut record = serde_json::json!({
             "client": crate::runtime::wire_client(client).get(),
             "client_name": self.client_name(client),
             "route": route,
             "remote": !local,
         });
+        if let Some(platform) = self.clients.client_platforms.get(&client) {
+            record["platform"] = platform.as_str().into();
+        }
         self.clients.controllers.insert(terminal.clone(), client);
         self.metadata_set(
             &Scope::Resource(terminal.clone()),

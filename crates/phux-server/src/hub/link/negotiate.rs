@@ -83,6 +83,8 @@ pub(super) async fn negotiate_link<C: LinkConn + LinkReader + LinkWriter>(
 pub(super) fn hub_link_capabilities(bootstrap: BootstrapCapabilities) -> ClientCapabilities {
     ClientCapabilities::default()
         .with_bootstrap(bootstrap)
+        // The hub's own host: the link is the hub typing, not the person.
+        .with_platform(phux_protocol::caps::ClientPlatform::host())
         // The relay re-encodes every frame this build's codec reads.
         .with_resource_kinds(phux_protocol::caps::ResourceKindSet::all())
         .with_layers(phux_protocol::caps::LayerSet::with(&[
