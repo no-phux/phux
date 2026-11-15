@@ -37,6 +37,8 @@ pub struct Reorder {
     /// The client the order key is watched on.
     watching: Weak<Client>,
     moves: HashMap<OperationId, moves::Move>,
+    placements: Vec<moves::Placement>,
+    placing: Option<moves::Placing>,
     /// The scroll viewport, excluding the sidebar's footer and other chrome.
     sidebar: Option<[f32; 4]>,
 }
@@ -249,6 +251,7 @@ impl Desk {
                 changed = true;
             }
         }
+        changed |= self.place_sidebar_moves(client);
         changed
     }
 }
