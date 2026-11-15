@@ -203,12 +203,7 @@ fn session_keeps_a_replayed_spawn_replayed_while_retagging_the_id() {
     let key = phux_protocol::ids::IdempotencyKey::new([7; 16]);
     let instance = phux_protocol::ids::ServerInstance::new([3; 16]);
     for original in [None, Some(instance)] {
-        let mut session = RelaySession::new_negotiated(
-            host(),
-            BootstrapLimits::default(),
-            BootstrapProfile::SynthesizedVtRaw,
-            ServerFeatureSet::with(&[ServerFeature::SpawnIdempotency]),
-        );
+        let mut session = negotiated(&[ServerFeature::SpawnIdempotency]);
         let (reply, mut rx) = oneshot::channel();
         let mut request = spawn_request(reply);
         if let RelayRequest::Spawn { spawn, .. } = &mut request {

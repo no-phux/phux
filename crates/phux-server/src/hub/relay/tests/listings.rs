@@ -62,12 +62,7 @@ fn session_relays_a_listing_under_its_own_id_and_resolves_the_reply() {
 
 #[test]
 fn a_satellite_without_list_directory_is_refused_before_the_link() {
-    let mut session = RelaySession::new_negotiated(
-        host(),
-        BootstrapLimits::default(),
-        BootstrapProfile::SynthesizedVtRaw,
-        ServerFeatureSet::new(),
-    );
+    let mut session = negotiated(&[]);
     let (request, mut rx) = listing_request("/srv");
     assert!(session.handle_request_checked(request).is_none());
     let message = refusal_message(rx.try_recv().expect("resolved at once"));

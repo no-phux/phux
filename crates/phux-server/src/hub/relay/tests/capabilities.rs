@@ -60,12 +60,7 @@ fn ordinary_hub_admission_requires_each_commands_own_extended_bit() {
             .iter()
             .map(|&feature| ServerFeatureExtSet::with(&[feature])),
     ) {
-        let mut session = RelaySession::new_negotiated(
-            host(),
-            BootstrapLimits::default(),
-            BootstrapProfile::SynthesizedVtRaw,
-            ServerFeatureSet::with(ServerFeature::ALL),
-        );
+        let mut session = negotiated(ServerFeature::ALL);
         session.set_satellite_features_ext(ext);
         for (command, needed) in &commands {
             assert_eq!(
@@ -81,12 +76,7 @@ fn ordinary_hub_admission_requires_each_commands_own_extended_bit() {
 /// refuses otherwise. A spawn without it still relays.
 #[test]
 fn hub_forwards_retain_secs_only_to_a_satellite_that_honors_it() {
-    let mut capable = RelaySession::new_negotiated(
-        host(),
-        BootstrapLimits::default(),
-        BootstrapProfile::SynthesizedVtRaw,
-        ServerFeatureSet::with(&[ServerFeature::RetainOnExit]),
-    );
+    let mut capable = negotiated(&[ServerFeature::RetainOnExit]);
     let retained =
         || phux_protocol::wire::frame::SpawnResource::default().with_retain_secs(Some(600));
     let (reply, _rx) = oneshot::channel();
@@ -178,12 +168,7 @@ fn a_conditional_kill_reaches_only_a_satellite_that_evaluates_it() {
         }
     ));
 
-    let mut current = RelaySession::new_negotiated(
-        host(),
-        BootstrapLimits::default(),
-        BootstrapProfile::SynthesizedVtRaw,
-        ServerFeatureSet::with(&[ServerFeature::ConditionalKill]),
-    );
+    let mut current = negotiated(&[ServerFeature::ConditionalKill]);
     let relayed = forwarded(send_command(&mut current, command.clone()).0);
     assert_eq!(relayed, command, "the precondition crosses unchanged");
 }
@@ -206,12 +191,7 @@ pub(super) fn keyed_session(
     incarnation: [u8; 16],
     fence: &crate::hub::operation_fence::OperationFence,
 ) -> RelaySession {
-    let mut session = RelaySession::new_negotiated(
-        host(),
-        BootstrapLimits::default(),
-        BootstrapProfile::SynthesizedVtRaw,
-        ServerFeatureSet::with(features),
-    );
+    let mut session = negotiated(features);
     session.set_incarnation(Some(incarnation));
     session.set_operation_fence(fence.clone());
     session

@@ -297,12 +297,7 @@ async fn stale_withdrawal_is_refused_while_the_newer_proxy_stays_live() {
 
 #[test]
 fn upstream_detach_barrier_discards_old_frames_before_a_fresh_attach() {
-    let mut session = RelaySession::new_negotiated(
-        host(),
-        BootstrapLimits::default(),
-        BootstrapProfile::SynthesizedVtRaw,
-        ServerFeatureSet::with(&[ServerFeature::ListDirectory]),
-    );
+    let mut session = negotiated(&[ServerFeature::ListDirectory]);
     session.handle_inbound(&encode(&begin_frame(9, 1))).unwrap();
     session.handle_inbound(&encode(&snapshot_frame(9))).unwrap();
     let (events_tx, mut events_rx) = mpsc::channel(8);
@@ -379,12 +374,7 @@ fn upstream_detach_barrier_discards_old_frames_before_a_fresh_attach() {
 
 #[test]
 fn detach_without_a_proxy_retires_automatic_spawn_output() {
-    let mut session = RelaySession::new_negotiated(
-        host(),
-        BootstrapLimits::default(),
-        BootstrapProfile::SynthesizedVtRaw,
-        ServerFeatureSet::with(&[ServerFeature::ListDirectory]),
-    );
+    let mut session = negotiated(&[ServerFeature::ListDirectory]);
     session.handle_inbound(&encode(&begin_frame(9, 1))).unwrap();
     session.handle_inbound(&encode(&snapshot_frame(9))).unwrap();
     let frames = session.unsubscribe_terminal(ClientId(1), 9, 1);

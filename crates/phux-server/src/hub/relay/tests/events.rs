@@ -228,12 +228,7 @@ fn instance_only_close_preserves_satellite_fence_and_correlates_refusal() {
     })
     .expect("satellite route");
     assert_eq!(target, host());
-    let mut session = RelaySession::new_negotiated(
-        host(),
-        BootstrapLimits::default(),
-        BootstrapProfile::SynthesizedVtRaw,
-        ServerFeatureSet::with(&[ServerFeature::ConditionalKill]),
-    );
+    let mut session = negotiated(&[ServerFeature::ConditionalKill]);
     let (reply, mut rx) = oneshot::channel();
     let wire = session
         .handle_request_checked(RelayRequest::Command {

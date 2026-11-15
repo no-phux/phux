@@ -139,12 +139,7 @@ fn agent_resume_relay_rejects_unadvertised_resume_profiles_and_retags_the_cursor
         routed.1,
         Command::attach_agent_session(ResourceId::local(7), None, Some(42)),
     );
-    let mut session = RelaySession::new_negotiated(
-        host(),
-        BootstrapLimits::default(),
-        BootstrapProfile::SynthesizedVtRaw,
-        ServerFeatureSet::with(&[ServerFeature::ResourceKinds]),
-    );
+    let mut session = negotiated(&[ServerFeature::ResourceKinds]);
     assert!(
         session
             .handle_inbound(&encode(&FrameKind::BootstrapBegin {

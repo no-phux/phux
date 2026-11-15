@@ -18,6 +18,16 @@ pub(super) fn encode(frame: &FrameKind) -> Vec<u8> {
     buf.to_vec()
 }
 
+/// A raw-VT session with a satellite that negotiated `features`.
+pub(super) fn negotiated(features: &[ServerFeature]) -> RelaySession {
+    RelaySession::new_negotiated(
+        host(),
+        BootstrapLimits::default(),
+        BootstrapProfile::SynthesizedVtRaw,
+        ServerFeatureSet::with(features),
+    )
+}
+
 pub(super) fn agent_event(terminal: u32) -> FrameKind {
     FrameKind::Event {
         terminal: Some(ResourceId::local(terminal)),
