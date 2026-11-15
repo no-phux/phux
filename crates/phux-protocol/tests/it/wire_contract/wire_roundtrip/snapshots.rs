@@ -24,8 +24,7 @@ fn snapshot_without_resource_facets_is_byte_stable_and_decodes_defaults() {
         snapshot: plain,
         initial_client_id: ClientId::new(1),
     };
-    let mut buf = BytesMut::new();
-    frame.encode(&mut buf);
+    let buf = crate::common::encode(&frame);
     // The SNAPSHOT field value ends with focused_resource = tag 0 + u32 1.
     let expected_tail = local_id_bytes(1);
     let field_end = {
