@@ -104,6 +104,9 @@ OS before checking continued rendering. The report must also say the surface
 shows its drawable at the screen's scale: Rune reports its own geometry, not
 how the layer presents it. A fresh process then reconnects from
 saved settings and the same Keychain key, with no ticket or pairing payload.
+Backgrounding activates the simulator's already-running Home screen, not a
+cold Settings process. Fresh UIKit receipts and a later presented frame still
+prove the real OS transition; launch success alone never qualifies it.
 It never adopts a user's simulator
 or production socket. Qualification-only socket/command launch arguments
 are compiled out on devices.
