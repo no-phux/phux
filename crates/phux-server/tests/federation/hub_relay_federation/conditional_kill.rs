@@ -132,10 +132,10 @@ fn another_hub_consumer_attaching_or_typing_refuses_the_kill_at_the_hub() {
 
         // Send-keys-style input without attaching counts the same.
         let (typed_into, typed_instance) = spawn_bound(&mut hub, 8104, Some("sat")).await;
-        let send_keys = Command::RouteInput {
-            terminal_id: typed_into.clone(),
-            event: InputEvent::Key(ascii_key('a', PhysicalKey::A)),
-        };
+        let send_keys = phux_server_testkit::route_input(
+            typed_into.clone(),
+            InputEvent::Key(ascii_key('a', PhysicalKey::A)),
+        );
         let typed = command(&mut other, 8105, send_keys).await;
         assert!(matches!(typed, CommandResult::Ok), "{typed:?}");
         let message = refusal_message(kill_if(&mut hub, 8106, &typed_into, typed_instance).await);

@@ -10,7 +10,6 @@
 
 use std::time::Duration;
 
-use phux_protocol::PROTOCOL_VERSION;
 use phux_protocol::caps::{ClientCapabilities, Compression, CompressionSet, LayerSet};
 use phux_protocol::wire::frame::{AttachTarget, FrameKind};
 use phux_server::LaunchCommand as CommandBuilder;
@@ -42,15 +41,12 @@ struct AttachTrace {
 async fn hello(stream: &mut UnixStream, compression: CompressionSet) -> Compression {
     send_frame(
         stream,
-        &FrameKind::Hello {
-            client_name: "compression-gate".to_owned(),
-            protocol_major: PROTOCOL_VERSION.major,
-            protocol_minor: PROTOCOL_VERSION.minor,
-            protocol_patch: PROTOCOL_VERSION.patch,
-            client_caps: ClientCapabilities::new()
+        &phux_server_testkit::hello(
+            "compression-gate",
+            ClientCapabilities::new()
                 .with_layers(LayerSet::all())
                 .with_compression(compression),
-        },
+        ),
     )
     .await;
     let framed = recv_framed(stream).await;

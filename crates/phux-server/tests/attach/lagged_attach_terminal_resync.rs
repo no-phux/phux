@@ -13,12 +13,11 @@ use std::time::{Duration, Instant};
 
 use phux_protocol::ids::{BootstrapId, ResourceId, StreamId};
 use phux_protocol::wire::frame::{
-    Command, CommandResult, CommandValue, FrameKind, ResourceLifecycle, SpawnResource, SpawnResult,
-    StateScope,
+    Command, CommandResult, FrameKind, ResourceLifecycle, SpawnResource, SpawnResult,
 };
 use phux_server_testkit::screen::Screen;
 use phux_server_testkit::{
-    SOCKET_CONNECT_DEADLINE, ServerHandles, Spawn, attach_by_name, command, recv_typed, run_local,
+    SOCKET_CONNECT_DEADLINE, ServerHandles, Spawn, attach_by_name, recv_typed, run_local,
     send_frame, spawn_resource, spawn_server_with_seed_cmd, wait_for_server_screen_text,
     wait_for_socket,
 };
@@ -179,14 +178,7 @@ async fn wait_for_pane(
             started.elapsed() < HANG_GUARD,
             "pane never reached the expected state"
         );
-        let get_state = Command::GetState {
-            scope: StateScope::Server,
-        };
-        let CommandResult::OkWith(CommandValue::State(snapshot)) =
-            command(probe, request_id, get_state).await
-        else {
-            panic!("GET_STATE failed");
-        };
+        let snapshot = phux_server_testkit::server_state(probe, request_id).await;
         let lifecycle = snapshot
             .resources
             .iter()

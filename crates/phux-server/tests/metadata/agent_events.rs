@@ -9,10 +9,7 @@ use phux_protocol::wire::frame::{AgentEvent, FrameKind};
 use tempfile::TempDir;
 use tokio::net::UnixStream;
 
-use phux_server_testkit::{
-    WIRE_RECV_TIMEOUT, join_after_shutdown, recv_typed_before, run_local,
-    spawn_server_with_seed_cmd,
-};
+use phux_server_testkit::{SpawnedServer, WIRE_RECV_TIMEOUT, recv_typed_before, run_local};
 
 use crate::common::{attach_pane, connect_as, full_caps, gated_seed, subscribe_all};
 
@@ -46,19 +43,17 @@ fn has(seen: &[AgentEvent], pred: impl Fn(&AgentEvent) -> bool) -> bool {
 fn attached_and_unattached_subscribers_receive_title_bell_and_pane_closed() {
     run_local(async {
         let tmp = TempDir::new().unwrap();
-        let socket_path = tmp.path().join("phux.sock");
         let release = tmp.path().join("release");
         let seed = gated_seed(
             &release,
             "printf '\\033]2;phux-watch\\007'; printf '\\007'; exit 0",
         );
-        let (shutdown_tx, server_handle) =
-            spawn_server_with_seed_cmd(socket_path.clone(), "demo", seed);
+        let server = SpawnedServer::seeded_in(tmp, "demo", seed);
 
-        let (mut attached, _) = connect_as(&socket_path, "attached", full_caps()).await;
+        let (mut attached, _) = connect_as(&server.socket, "attached", full_caps()).await;
         attach_pane(&mut attached, "demo").await;
         subscribe_all(&mut attached, 1).await;
-        let (mut watcher, _) = connect_as(&socket_path, "watcher", full_caps()).await;
+        let (mut watcher, _) = connect_as(&server.socket, "watcher", full_caps()).await;
         subscribe_all(&mut watcher, 1).await;
         std::fs::write(&release, b"go").unwrap();
 
@@ -78,7 +73,7 @@ fn attached_and_unattached_subscribers_receive_title_bell_and_pane_closed() {
         assert!(has(&watched, closed), "unattached subscriber: {watched:?}");
 
         drop((attached, watcher));
-        join_after_shutdown(shutdown_tx, server_handle).await;
+        server.stop().await;
     });
 }
 
@@ -89,15 +84,13 @@ fn attached_and_unattached_subscribers_receive_title_bell_and_pane_closed() {
 fn subscribed_client_receives_command_and_cwd_events() {
     run_local(async {
         let tmp = TempDir::new().unwrap();
-        let socket_path = tmp.path().join("phux.sock");
         let release = tmp.path().join("release");
         let seed = gated_seed(
             &release,
             "cd /; printf '\\033]133;C\\007out\\r\\n\\033]133;D;7\\007'; sleep 60",
         );
-        let (shutdown_tx, server_handle) =
-            spawn_server_with_seed_cmd(socket_path.clone(), "demo", seed);
-        let (mut stream, _) = connect_as(&socket_path, "agent-events", full_caps()).await;
+        let server = SpawnedServer::seeded_in(tmp, "demo", seed);
+        let (mut stream, _) = connect_as(&server.socket, "agent-events", full_caps()).await;
         attach_pane(&mut stream, "demo").await;
         subscribe_all(&mut stream, 1).await;
         std::fs::write(&release, b"go").unwrap();
@@ -114,6 +107,6 @@ fn subscribed_client_receives_command_and_cwd_events() {
         assert!(has(&events, cwd), "{events:?}");
 
         drop(stream);
-        join_after_shutdown(shutdown_tx, server_handle).await;
+        server.stop().await;
     });
 }

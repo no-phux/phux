@@ -323,18 +323,13 @@ fn a_cursor_subscriber_that_never_reads_blocks_nobody_and_is_replayed_when_it_re
         let mut stalled = server.connect("stalled").await;
         send_frame(
             &mut stalled,
-            &FrameKind::SubscribeEvents {
-                terminal: None,
-                after_seq: Some(0),
-            },
+            &phux_server_testkit::subscribe_events(None, Some(0)),
         )
         .await;
-        send_frame(
+        phux_server_testkit::send_command(
             &mut stalled,
-            &FrameKind::Command {
-                request_id: 7,
-                command: report_asked(&pane, "stalled-still-works"),
-            },
+            7,
+            report_asked(&pane, "stalled-still-works"),
         )
         .await;
         let _ = next_event(&mut watcher, |s| {
@@ -371,10 +366,7 @@ fn resume_after_a_thousand_missed_events_on_a_quiet_server_receives_them_all_in_
         let mut resumer = server.connect("resumer").await;
         send_frame(
             &mut resumer,
-            &FrameKind::SubscribeEvents {
-                terminal: None,
-                after_seq: Some(0),
-            },
+            &phux_server_testkit::subscribe_events(None, Some(0)),
         )
         .await;
         let last = format!("missed-{}", MISSED - 1);

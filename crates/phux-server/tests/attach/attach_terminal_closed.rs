@@ -6,14 +6,12 @@
 //! which the in-order frame loop queues behind any duplicate.
 
 use phux_protocol::ids::ResourceId;
-use phux_protocol::wire::frame::{Command, CommandResult, FrameKind, SpawnResult, StateScope};
-use tempfile::TempDir;
+use phux_protocol::wire::frame::{Command, CommandResult, FrameKind, SpawnResult};
 use tokio::net::UnixStream;
 
 use phux_server_testkit::{
-    SOCKET_CONNECT_DEADLINE, Spawn, WIRE_RECV_TIMEOUT, attach_by_name, command, recv_until,
-    recv_until_deadline, run_local, send_frame, spawn_resource, spawn_server_with_seed_cmd,
-    wait_for_socket,
+    Spawn, SpawnedServer, WIRE_RECV_TIMEOUT, attach_by_name, command, recv_until,
+    recv_until_deadline, run_local, send_frame, spawn_resource,
 };
 
 use super::common::{attached, sh};
@@ -40,9 +38,7 @@ async fn closed_exactly_once(
     .expect("RESOURCE_CLOSED never arrived");
     let get_state = FrameKind::Command {
         request_id: barrier,
-        command: Command::GetState {
-            scope: StateScope::Server,
-        },
+        command: phux_server_testkit::get_state(),
     };
     send_frame(stream, &get_state).await;
     let mut extra = 0;
@@ -62,11 +58,9 @@ async fn closed_exactly_once(
 #[test]
 fn attach_terminal_only_consumer_receives_terminal_closed() {
     run_local(async {
-        let tmp = TempDir::new().unwrap();
-        let socket = tmp.path().join("phux.sock");
-        let (_shutdown, _server) = spawn_server_with_seed_cmd(socket.clone(), "demo", sh(IMMORTAL));
+        let server = SpawnedServer::seeded("demo", sh(IMMORTAL));
 
-        let mut owner = wait_for_socket(&socket, SOCKET_CONNECT_DEADLINE).await;
+        let mut owner = server.connect().await;
         send_frame(&mut owner, &attach_by_name("demo")).await;
         attached(&mut owner).await;
         // A second pane, so its death cannot trip last-pane self-exit.
@@ -76,7 +70,7 @@ fn attach_terminal_only_consumer_receives_terminal_closed() {
             panic!("victim spawn failed");
         };
 
-        let mut watcher = wait_for_socket(&socket, SOCKET_CONNECT_DEADLINE).await;
+        let mut watcher = server.connect().await;
         let subscribe = Command::attach_terminal(victim.clone(), None);
         // The reply proves the subscription is installed before the kill.
         assert_eq!(
@@ -85,10 +79,7 @@ fn attach_terminal_only_consumer_receives_terminal_closed() {
         );
         let kill = FrameKind::Command {
             request_id: 2,
-            command: Command::KillResource {
-                terminal_id: victim.clone(),
-                operation_id: None,
-            },
+            command: phux_server_testkit::kill(victim.clone()),
         };
         send_frame(&mut owner, &kill).await;
 

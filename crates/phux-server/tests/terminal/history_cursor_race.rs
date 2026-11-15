@@ -11,15 +11,14 @@
 #![cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
 
 use bytes::Bytes;
-use phux_protocol::PROTOCOL_VERSION;
 use phux_protocol::caps::{
     BootstrapCapabilities, BootstrapProfile, BootstrapStreamProfile, ClientCapabilities,
     EngineCodec, EngineFeatureSet,
 };
 use phux_protocol::ids::{BootstrapId, ResourceId, StreamId};
 use phux_protocol::wire::frame::{
-    AttachTarget, Command, CommandResult, CommandValue, FrameKind, HistoryTombstoneReason,
-    SpawnResult, StateScope, TombstoneReason, ViewportInfo,
+    AttachTarget, CommandResult, CommandValue, FrameKind, HistoryTombstoneReason, SpawnResult,
+    TombstoneReason, ViewportInfo,
 };
 use phux_server::LaunchCommand as CommandBuilder;
 use tempfile::TempDir;
@@ -44,13 +43,7 @@ async fn connect_native(path: &std::path::Path) -> UnixStream {
         EngineCodec::LibghosttySnapshotV1,
         EngineFeatureSet::required_native(),
     ));
-    let hello = FrameKind::Hello {
-        client_name: "phux-history-cursor-race".to_owned(),
-        protocol_major: PROTOCOL_VERSION.major,
-        protocol_minor: PROTOCOL_VERSION.minor,
-        protocol_patch: PROTOCOL_VERSION.patch,
-        client_caps: caps,
-    };
+    let hello = phux_server_testkit::hello("phux-history-cursor-race", caps);
     send_frame(&mut stream, &hello).await;
     let (_, reply) = recv_typed(&mut stream).await;
     assert!(
@@ -171,9 +164,7 @@ async fn split_pane(stream: &mut UnixStream, request_id: u32) -> Generation {
 const fn get_state(request_id: u32) -> FrameKind {
     FrameKind::Command {
         request_id,
-        command: Command::GetState {
-            scope: StateScope::Server,
-        },
+        command: phux_server_testkit::get_state(),
     }
 }
 

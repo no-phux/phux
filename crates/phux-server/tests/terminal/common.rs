@@ -65,12 +65,7 @@ pub(crate) async fn screen(
     request_id: u32,
     pane: &ResourceId,
 ) -> phux_core::screen::ScreenState {
-    let get = Command::GetScreen {
-        terminal_id: pane.clone(),
-        request_scrollback: None,
-        cells: false,
-        format: 0,
-    };
+    let get = phux_server_testkit::get_screen(pane.clone());
     match command(stream, request_id, get).await {
         CommandResult::OkWith(CommandValue::Json(json)) => serde_json::from_str(&json).unwrap(),
         other => panic!("expected Ok_With(Json(..)), got {other:?}"),

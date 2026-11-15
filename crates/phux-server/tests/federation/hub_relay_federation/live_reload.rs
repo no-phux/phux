@@ -44,12 +44,12 @@ fn spawn_reloading_hub(
 async fn ring_reload(hub: &mut UnixStream, request_id: u32, nonce: &str) {
     send_frame(
         hub,
-        &FrameKind::SetMetadata {
+        &phux_server_testkit::set_metadata(
             request_id,
-            scope: Scope::Global,
-            key: CONFIG_RELOAD_KEY.to_owned(),
-            value: nonce.as_bytes().to_vec(),
-        },
+            Scope::Global,
+            CONFIG_RELOAD_KEY,
+            nonce.as_bytes().to_vec(),
+        ),
     )
     .await;
     send_frame(
@@ -112,7 +112,7 @@ fn reload_dials_added_satellites_and_drops_removed_ones_without_restart() {
         let (ws_port, sat_shutdown, sat_task) = spawn_satellite(tmp.path().join("sat.sock")).await;
         let seed = discover_satellite_pane(ws_port).await;
         let sat_id = ResourceId::satellite("sat", seed);
-        assert_error(
+        assert_command_error(
             &get_screen_via_hub(&mut hub, 2, sat_id.clone()).await,
             ErrorCode::UnsupportedSatelliteRoute,
         );
@@ -133,10 +133,7 @@ fn reload_dials_added_satellites_and_drops_removed_ones_without_restart() {
         // before the reload still delivers afterwards.
         send_frame(
             &mut hub,
-            &FrameKind::SubscribeEvents {
-                terminal: Some(sat_id.clone()),
-                after_seq: None,
-            },
+            &phux_server_testkit::subscribe_events(Some(sat_id.clone()), None),
         )
         .await;
         ring_reload(&mut hub, 30, "noop-2").await;
@@ -167,7 +164,7 @@ fn reload_dials_added_satellites_and_drops_removed_ones_without_restart() {
         // Forget the satellite: routing stops, the hub's pane stays.
         registry.lock().unwrap().clear();
         ring_reload(&mut hub, 50, "remove-3").await;
-        assert_error(
+        assert_command_error(
             &get_screen_via_hub(&mut hub, 60, sat_id).await,
             ErrorCode::UnsupportedSatelliteRoute,
         );

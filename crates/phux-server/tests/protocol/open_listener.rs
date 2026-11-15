@@ -14,14 +14,13 @@ use std::sync::OnceLock;
 use std::time::Duration;
 
 use phux_dial::{CertTrust, QuicDial};
-use phux_protocol::PROTOCOL_VERSION;
 use phux_protocol::caps::{ClientCapabilities, ColorSupport, LayerSet, ServerFeature};
 use phux_protocol::wire::frame::{
     Command, CommandResult, CommandValue, ErrorCode, FrameKind, ListenerTransport,
 };
 use phux_server_testkit::{
-    SERVER_JOIN_DEADLINE, SOCKET_CONNECT_DEADLINE, await_command_result, encode_frame_vec,
-    run_local, send_frame, spawn_server_with, wait_for_socket,
+    SERVER_JOIN_DEADLINE, SOCKET_CONNECT_DEADLINE, assert_command_error, await_command_result,
+    encode_frame_vec, run_local, send_frame, spawn_server_with, wait_for_socket,
 };
 use tempfile::TempDir;
 use tokio::net::UnixStream;
@@ -55,15 +54,12 @@ fn tls() -> &'static Tls {
 }
 
 fn hello() -> FrameKind {
-    FrameKind::Hello {
-        client_name: "open-listener-test".to_owned(),
-        protocol_major: PROTOCOL_VERSION.major,
-        protocol_minor: PROTOCOL_VERSION.minor,
-        protocol_patch: PROTOCOL_VERSION.patch,
-        client_caps: ClientCapabilities::new()
+    phux_server_testkit::hello(
+        "open-listener-test",
+        ClientCapabilities::new()
             .with_color_support(ColorSupport::TrueColor)
             .with_layers(LayerSet::all()),
-    }
+    )
 }
 
 /// Send `OPEN_LISTENER` over `stream` and return the server's answer.
@@ -336,31 +332,13 @@ fn malformed_requests_are_refused_with_invalid_command() {
     with_server(|mut uds| async move {
         // A transport a newer client defines is unsupported, not invalid.
         let unknown = open(&mut uds, 1, ListenerTransport::Unknown(7), None, 0).await;
-        assert!(
-            matches!(
-                unknown,
-                CommandResult::Error {
-                    code: ErrorCode::Unsupported,
-                    ..
-                }
-            ),
-            "{unknown:?}"
-        );
+        assert_command_error(&unknown, ErrorCode::Unsupported);
         for (request_id, transport, range) in [
             (2, ListenerTransport::Quic, Some((9, 3))),
             (3, ListenerTransport::Quic, Some((0, 5))),
         ] {
             let result = open(&mut uds, request_id, transport, range, 0).await;
-            assert!(
-                matches!(
-                    result,
-                    CommandResult::Error {
-                        code: ErrorCode::InvalidCommand,
-                        ..
-                    }
-                ),
-                "{transport:?} {range:?} must be refused, got {result:?}"
-            );
+            assert_command_error(&result, ErrorCode::InvalidCommand);
         }
     });
 }
