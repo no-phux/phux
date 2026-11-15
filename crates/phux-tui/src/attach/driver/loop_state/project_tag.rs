@@ -178,7 +178,7 @@ impl super::SessionLoop {
         if !collapsed.remove(&key) {
             collapsed.insert(key);
         }
-        crate::attach::project_collapse::save(collapsed);
+        crate::attach::client_state::save_collapsed_projects(collapsed);
         self.peers.chrome_dirty = true;
     }
 
@@ -193,7 +193,7 @@ impl super::SessionLoop {
         if !self.sidebar_painter.set_agent_filter(filter) {
             return false;
         }
-        crate::attach::agent_filter_state::save(self.sidebar_painter.agent_filter());
+        crate::attach::client_state::save_agent_filter(self.sidebar_painter.agent_filter());
         true
     }
 

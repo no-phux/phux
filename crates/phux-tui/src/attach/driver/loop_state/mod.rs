@@ -587,7 +587,7 @@ impl SessionLoop {
             vcs: VcsIndex::default(),
             sidebar_painter: settings
                 .sidebar_painter()
-                .with_agent_filter(crate::attach::agent_filter_state::load()),
+                .with_agent_filter(crate::attach::client_state::filter()),
             jobs: Jobs::new(),
             bind_reflow_owed: false,
             _hosts_tx: hosts_tx,
@@ -615,7 +615,7 @@ impl SessionLoop {
                     Vec::new()
                 },
                 origin,
-                collapsed_projects: crate::attach::project_collapse::load(),
+                collapsed_projects: crate::attach::client_state::collapsed(),
                 ..PeerWatch::default()
             },
             pick: initial_pick,

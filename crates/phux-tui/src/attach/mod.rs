@@ -27,18 +27,17 @@ mod paste_safety;
 mod path_picker;
 // phux-foz.11: glass-diff regression + stress tests for the compose
 // invariant (no doubled text under rapid window switching / control spam).
+mod client_state;
 #[cfg(test)]
 #[allow(clippy::expect_used, clippy::unwrap_used, reason = "tests")]
 mod ghost_stress_tests;
 pub mod input_dispatch;
 // ADR-0172: background work that reports back as a toast.
-mod agent_filter_state;
 mod jobs;
 mod kitty_heal;
 mod notify;
 mod onboarding;
 pub mod paint;
-mod project_collapse;
 mod restore_hint;
 // `PaneSlot` and the client-local indices built over it. Shared
 // vocabulary the driver and its siblings both read; see the module doc.
