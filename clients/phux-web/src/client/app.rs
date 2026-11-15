@@ -38,6 +38,10 @@ pub(super) fn build_app(
         rows,
         crate::canvas::device_pixel_ratio(),
     ));
+    // Pointer and wheel input read cells from the canvas's laid-out box
+    // against this geometry, so give the box that size before the first
+    // paint does; the browser's default canvas box would scale every cell.
+    canvas_geometry.get().prepare(&canvas, &ctx)?;
     let mut session = if synthesized_only {
         crate::Connection::new_synthesized_compat(vt, cols, rows)
     } else {
