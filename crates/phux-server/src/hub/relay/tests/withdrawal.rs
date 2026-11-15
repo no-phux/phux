@@ -25,9 +25,7 @@ fn teardown_fails_pending_and_notifies_each_consumer_once() {
             ..
         }
     ));
-    let Outbound::Frame(frame) = out_rx.try_recv().expect("consumer notified") else {
-        panic!("unexpected terminal outbound sentinel")
-    };
+    let frame = next_frame(&mut out_rx, "consumer notified");
     assert!(matches!(
         frame,
         FrameKind::Error {
@@ -48,13 +46,7 @@ fn unsubscribe_client_stops_fan_out() {
     let (out_tx, mut out_rx) = mpsc::channel(8);
     subscribe(&mut session, 9, ClientId(1), out_tx);
     let frames = session.handle_unsubscribe(Unsubscribe::Client(ClientId(1)));
-    session
-        .handle_inbound(&encode(&FrameKind::Event {
-            terminal: Some(ResourceId::local(9)),
-            event: AgentEvent::CommandStarted,
-            stamp: None,
-        }))
-        .expect("valid satellite frame");
+    session.feed(&agent_event(9));
     assert!(out_rx.try_recv().is_err());
     // The last proxy left: detach upstream.
     assert_eq!(frames.len(), 1, "one satellite-side detach expected");
@@ -79,33 +71,15 @@ fn unsubscribe_keeps_satellite_streaming_while_other_subscribers_remain() {
     subscribe(&mut session, 9, ClientId(1), tx_a);
     subscribe(&mut session, 9, ClientId(2), tx_b);
     // Client 2 still observes it: no upstream detach.
-    let frames = session.handle_unsubscribe(Unsubscribe::Terminal {
-        client: ClientId(1),
-        terminal: 9,
-        seq: 2,
-        reply: None,
-    });
+    let frames = session.unsubscribe_terminal(ClientId(1), 9, 2);
     assert!(
         frames.is_empty(),
         "satellite-side detach must wait for the last subscriber"
     );
-    session
-        .handle_inbound(&encode(&FrameKind::Event {
-            terminal: Some(ResourceId::local(9)),
-            event: AgentEvent::CommandStarted,
-            stamp: None,
-        }))
-        .expect("valid satellite frame");
-    let Outbound::Frame(_) = rx_b.try_recv().expect("client 2 still fanned out") else {
-        panic!("unexpected terminal outbound sentinel");
-    };
+    session.feed(&agent_event(9));
+    let _ = next_frame(&mut rx_b, "client 2 still fanned out");
     // Now the last subscriber leaves: exactly one detach goes out.
-    let frames = session.handle_unsubscribe(Unsubscribe::Terminal {
-        client: ClientId(2),
-        terminal: 9,
-        seq: 2,
-        reply: None,
-    });
+    let frames = session.unsubscribe_terminal(ClientId(2), 9, 2);
     assert_eq!(frames.len(), 1);
 }
 
@@ -118,30 +92,21 @@ fn stale_terminal_unsubscribe_does_not_tear_down_a_fresher_reattach() {
     subscribe_at(&mut session, 9, ClientId(1), 1, out_tx.clone());
     subscribe_at(&mut session, 9, ClientId(1), 3, out_tx);
 
-    let frames = session.handle_unsubscribe(Unsubscribe::Terminal {
-        client: ClientId(1),
-        terminal: 9,
-        seq: 2,
-        reply: None,
-    });
+    let frames = session.unsubscribe_terminal(ClientId(1), 9, 2);
     assert!(
         frames.is_empty(),
         "a stale detach must not emit a satellite-side DETACH for a re-attached terminal"
     );
 
     // The re-attached stream is intact.
-    session
-        .handle_inbound(&encode(&FrameKind::ResourceOutput {
-            terminal_id: ResourceId::local(9),
-            stream_id: phux_protocol::ids::StreamId::new(1).expect("test stream id"),
-            bootstrap_id: phux_protocol::ids::BootstrapId::new(1).expect("test bootstrap id"),
-            seq: 7,
-            bytes: bytes::Bytes::from_static(b"live"),
-        }))
-        .expect("valid satellite frame");
-    let Outbound::Frame(frame) = out_rx.try_recv().expect("re-attached stream torn down") else {
-        panic!("unexpected terminal outbound sentinel")
-    };
+    session.feed(&FrameKind::ResourceOutput {
+        terminal_id: ResourceId::local(9),
+        stream_id: phux_protocol::ids::StreamId::new(1).expect("test stream id"),
+        bootstrap_id: phux_protocol::ids::BootstrapId::new(1).expect("test bootstrap id"),
+        seq: 7,
+        bytes: bytes::Bytes::from_static(b"live"),
+    });
+    let frame = next_frame(&mut out_rx, "re-attached stream torn down");
     assert!(matches!(
         frame,
         FrameKind::ResourceOutput { terminal_id, seq: 7, .. }
@@ -149,12 +114,7 @@ fn stale_terminal_unsubscribe_does_not_tear_down_a_fresher_reattach() {
     ));
 
     // A newer detach still withdraws.
-    let frames = session.handle_unsubscribe(Unsubscribe::Terminal {
-        client: ClientId(1),
-        terminal: 9,
-        seq: 4,
-        reply: None,
-    });
+    let frames = session.unsubscribe_terminal(ClientId(1), 9, 4);
     assert_eq!(frames.len(), 1, "an in-order detach still tears down");
 }
 
@@ -209,9 +169,7 @@ async fn withdrawal_receipt_fences_retained_replay_and_live_fanout() {
     assert!(!session.subscribers.contains_key(&9));
     out_rx.try_recv().unwrap();
     session.flush_pending_snapshots();
-    session
-        .handle_inbound(&encode(&output_frame(9, 1, b"after detach")))
-        .unwrap();
+    session.feed(&output_frame(9, 1, b"after detach"));
     assert!(
         out_rx.try_recv().is_err(),
         "no retained or new terminal frame after receipt"
@@ -326,9 +284,7 @@ async fn stale_withdrawal_is_refused_while_the_newer_proxy_stays_live() {
             ..
         }
     ));
-    session
-        .handle_inbound(&encode(&output_frame(9, 1, b"newer attachment")))
-        .unwrap();
+    session.feed(&output_frame(9, 1, b"newer attachment"));
     assert!(matches!(
         out_rx.try_recv(),
         Ok(Outbound::Frame(FrameKind::ResourceOutput { .. }))
@@ -392,11 +348,7 @@ fn upstream_detach_barrier_discards_old_frames_before_a_fresh_attach() {
         "reuse an in-flight barrier"
     );
     session.handle_request_checked(request).unwrap();
-    let event = FrameKind::Event {
-        terminal: Some(ResourceId::local(9)),
-        event: phux_protocol::wire::frame::AgentEvent::CommandStarted,
-        stamp: None,
-    };
+    let event = agent_event(9);
     session.handle_inbound(&encode(&event)).unwrap();
     assert!(
         matches!(
@@ -412,23 +364,17 @@ fn upstream_detach_barrier_discards_old_frames_before_a_fresh_attach() {
     // A prefix queued before withdrawal opens no new gate.
     session.handle_inbound(&encode(&begin_frame(9, 2))).unwrap();
     session.handle_inbound(&encode(&snapshot_frame(9))).unwrap();
-    session
-        .handle_inbound(&encode(&output_frame(9, 1, b"old")))
-        .unwrap();
+    session.feed(&output_frame(9, 1, b"old"));
     assert!(out_rx.try_recv().is_err());
-    session
-        .handle_inbound(&encode(&FrameKind::CommandResult {
-            request_id,
-            result: CommandResult::Ok,
-        }))
-        .unwrap();
+    session.feed(&FrameKind::CommandResult {
+        request_id,
+        result: CommandResult::Ok,
+    });
     assert!(session.pending_detaches.is_empty());
     assert!(!session.bootstrap_flows.contains_key(&9));
     session.handle_inbound(&encode(&begin_frame(9, 1))).unwrap();
     session.handle_inbound(&encode(&snapshot_frame(9))).unwrap();
-    session
-        .handle_inbound(&encode(&output_frame(9, 1, b"fresh")))
-        .unwrap();
+    session.feed(&output_frame(9, 1, b"fresh"));
     assert_eq!(
         out_rx.len(),
         3,
@@ -446,12 +392,7 @@ fn detach_without_a_proxy_retires_automatic_spawn_output() {
     );
     session.handle_inbound(&encode(&begin_frame(9, 1))).unwrap();
     session.handle_inbound(&encode(&snapshot_frame(9))).unwrap();
-    let frames = session.handle_unsubscribe(Unsubscribe::Terminal {
-        client: ClientId(1),
-        terminal: 9,
-        seq: 1,
-        reply: None,
-    });
+    let frames = session.unsubscribe_terminal(ClientId(1), 9, 1);
     assert_eq!(
         frames.len(),
         1,
@@ -460,15 +401,11 @@ fn detach_without_a_proxy_retires_automatic_spawn_output() {
     let FrameKind::Command { request_id, .. } = decode(&frames[0]) else {
         panic!("detach command");
     };
-    session
-        .handle_inbound(&encode(&output_frame(9, 1, b"queued before detach")))
-        .unwrap();
-    session
-        .handle_inbound(&encode(&FrameKind::CommandResult {
-            request_id,
-            result: CommandResult::Ok,
-        }))
-        .unwrap();
+    session.feed(&output_frame(9, 1, b"queued before detach"));
+    session.feed(&FrameKind::CommandResult {
+        request_id,
+        result: CommandResult::Ok,
+    });
     assert!(session.pending_detaches.is_empty());
     assert!(session.bootstrap_flows.is_empty());
 }
@@ -544,9 +481,7 @@ async fn subscribe_on_a_full_mailbox_registers_nothing_and_notifies_the_consumer
             after_seq: None,
         },
     );
-    let Outbound::Frame(frame) = out_rx.try_recv().expect("typed error pushed") else {
-        panic!("unexpected terminal outbound sentinel")
-    };
+    let frame = next_frame(&mut out_rx, "typed error pushed");
     assert!(matches!(
         frame,
         FrameKind::Error {

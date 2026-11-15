@@ -29,13 +29,11 @@ fn hub_restamps_a_satellite_pane_closed_with_the_consumers_actor_by_operation_id
     for operation_id in [key, other] {
         let stamp =
             phux_protocol::wire::frame::EventStamp::new(40, 1_234).with_operation_id(operation_id);
-        session
-            .handle_inbound(&encode(&FrameKind::Event {
-                terminal: Some(ResourceId::local(9)),
-                event: AgentEvent::ResourceClosed { exit_status: None },
-                stamp: Some(Box::new(stamp)),
-            }))
-            .expect("valid satellite frame");
+        session.feed(&FrameKind::Event {
+            terminal: Some(ResourceId::local(9)),
+            event: AgentEvent::ResourceClosed { exit_status: None },
+            stamp: Some(Box::new(stamp)),
+        });
     }
     let stamps: Vec<_> = std::iter::from_fn(|| registry_rx.try_recv().ok())
         .map(|out| match out {
@@ -93,13 +91,11 @@ fn satellite_event_ids_are_retagged_or_vetted_before_hub_consumers_see_them() {
     let (wire, _rx) = send_keyed(&mut session, keyed_kill(7), consumer);
     assert!(wire.is_some(), "the kill for terminal 9 is forwarded");
     let mut relay = |terminal: u32, event: AgentEvent, stamp: Option<Box<_>>| {
-        session
-            .handle_inbound(&encode(&FrameKind::Event {
-                terminal: Some(ResourceId::local(terminal)),
-                event,
-                stamp,
-            }))
-            .expect("valid satellite frame");
+        session.feed(&FrameKind::Event {
+            terminal: Some(ResourceId::local(terminal)),
+            event,
+            stamp,
+        });
         std::iter::from_fn(|| registry_rx.try_recv().ok())
             .filter_map(|out| match out {
                 Outbound::Frame(FrameKind::Event { event, stamp, .. }) => Some((event, stamp)),
@@ -265,12 +261,10 @@ fn instance_only_close_preserves_satellite_fence_and_correlates_refusal() {
         code: ErrorCode::PreconditionFailed,
         message: "satellite incarnation changed".into(),
     };
-    session
-        .handle_inbound(&encode(&FrameKind::CommandResult {
-            request_id,
-            result: refusal.clone(),
-        }))
-        .expect("valid satellite refusal");
+    session.feed(&FrameKind::CommandResult {
+        request_id,
+        result: refusal.clone(),
+    });
     assert_eq!(rx.try_recv().expect("correlated outcome"), refusal);
     assert!(session.pending.is_empty());
 }
@@ -312,12 +306,10 @@ async fn handle_and_session_preserve_spawn_owner_geometry_and_pty_options() {
         let link_request_id = *request_id;
         *request_id = 0;
         assert_eq!(frame, expected);
-        session
-            .handle_inbound(&encode(&FrameKind::ResourceSpawned {
-                request_id: link_request_id,
-                result: SpawnResult::Ok(ResourceId::local(92)),
-            }))
-            .expect("spawn reply");
+        session.feed(&FrameKind::ResourceSpawned {
+            request_id: link_request_id,
+            result: SpawnResult::Ok(ResourceId::local(92)),
+        });
     };
     let (result, ()) = tokio::join!(consumer, satellite);
     assert_eq!(result, SpawnResult::Ok(ResourceId::satellite("devbox", 92)));

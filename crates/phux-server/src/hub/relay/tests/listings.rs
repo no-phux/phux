@@ -53,12 +53,10 @@ fn session_relays_a_listing_under_its_own_id_and_resolves_the_reply() {
         entries: Vec::new(),
         truncated: false,
     };
-    session
-        .handle_inbound(&encode(&FrameKind::DirectoryListing {
-            request_id,
-            result: Ok(listing.clone()),
-        }))
-        .expect("valid satellite frame");
+    session.feed(&FrameKind::DirectoryListing {
+        request_id,
+        result: Ok(listing.clone()),
+    });
     assert_eq!(rx.try_recv().expect("resolved"), Ok(listing));
 }
 
@@ -86,13 +84,11 @@ fn a_correlated_error_and_teardown_both_refuse_pending_listings() {
     let FrameKind::ListDirectory { request_id, .. } = decode(&session.handle_request(first)) else {
         panic!("expected LIST_DIRECTORY");
     };
-    session
-        .handle_inbound(&encode(&FrameKind::Error {
-            request_id: Some(request_id),
-            code: ErrorCode::InvalidCommand,
-            message: "nope".to_owned(),
-        }))
-        .expect("valid satellite frame");
+    session.feed(&FrameKind::Error {
+        request_id: Some(request_id),
+        code: ErrorCode::InvalidCommand,
+        message: "nope".to_owned(),
+    });
     let message = refusal_message(first_rx.try_recv().expect("resolved"));
     assert!(message.contains("refused the listing"), "{message}");
 
@@ -212,12 +208,10 @@ fn path_query_uses_shared_id_and_returns_satellite_results_without_retagging() {
         rows: vec![],
         status: phux_protocol::wire::frame::PathStatus::Complete,
     };
-    session
-        .handle_inbound(&encode(&FrameKind::PathResults {
-            request_id,
-            result: Ok(results.clone()),
-        }))
-        .unwrap();
+    session.feed(&FrameKind::PathResults {
+        request_id,
+        result: Ok(results.clone()),
+    });
     assert_eq!(rx.try_recv().unwrap(), Ok(results));
     assert_eq!(
         session.pending_request_count(),
@@ -242,13 +236,11 @@ fn path_query_correlated_error_and_disconnect_are_typed_refusals() {
     let FrameKind::PathQuery { request_id, .. } = decode(&session.handle_request(request)) else {
         panic!("expected PATH_QUERY");
     };
-    session
-        .handle_inbound(&encode(&FrameKind::Error {
-            request_id: Some(request_id),
-            code: ErrorCode::InvalidCommand,
-            message: "denied".to_owned(),
-        }))
-        .unwrap();
+    session.feed(&FrameKind::Error {
+        request_id: Some(request_id),
+        code: ErrorCode::InvalidCommand,
+        message: "denied".to_owned(),
+    });
     assert!(path_error(rx.try_recv().unwrap(), "/first").contains("denied"));
 
     let (request, mut rx) = path_request("/second");
@@ -269,12 +261,10 @@ fn satellite_path_refusal_preserves_its_specific_error_code() {
         code: PathErrorCode::PermissionDenied,
         message: "access denied".to_owned(),
     };
-    session
-        .handle_inbound(&encode(&FrameKind::PathResults {
-            request_id,
-            result: Err(refusal.clone()),
-        }))
-        .unwrap();
+    session.feed(&FrameKind::PathResults {
+        request_id,
+        result: Err(refusal.clone()),
+    });
     assert_eq!(rx.try_recv().unwrap(), Err(refusal));
 }
 
@@ -288,12 +278,10 @@ fn abandoned_path_query_is_pruned_and_late_results_are_dropped() {
     assert_eq!(session.prune_abandoned(), 0);
     drop(rx);
     assert_eq!(session.prune_abandoned(), 1);
-    session
-        .handle_inbound(&encode(&FrameKind::PathResults {
-            request_id,
-            result: Err(path_refusal("/tmp", "late")),
-        }))
-        .unwrap();
+    session.feed(&FrameKind::PathResults {
+        request_id,
+        result: Err(path_refusal("/tmp", "late")),
+    });
 }
 
 #[tokio::test]

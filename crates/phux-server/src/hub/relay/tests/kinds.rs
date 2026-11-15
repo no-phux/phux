@@ -112,26 +112,22 @@ fn agent_resume_relay_routes_cursors_only_with_support_and_a_sole_consumer() {
                 })
             ));
         }
-        session
-            .handle_inbound(&encode(&FrameKind::BootstrapTombstone {
-                terminal_id: ResourceId::local(7),
-                stream_id,
-                bootstrap_id,
-                reason: TombstoneReason::ExplicitReattach,
-                last_valid_seq: 4,
-            }))
-            .expect("agent generation can be retired");
-        session
-            .handle_inbound(&encode(&FrameKind::BootstrapBegin {
-                terminal_id: ResourceId::local(7),
-                stream_id,
-                bootstrap_id: BootstrapId::new(3).expect("replacement"),
-                profile,
-                cols: 0,
-                rows: 0,
-                base_seq: 4,
-            }))
-            .expect("a fresh agent generation follows the tombstone");
+        session.feed(&FrameKind::BootstrapTombstone {
+            terminal_id: ResourceId::local(7),
+            stream_id,
+            bootstrap_id,
+            reason: TombstoneReason::ExplicitReattach,
+            last_valid_seq: 4,
+        });
+        session.feed(&FrameKind::BootstrapBegin {
+            terminal_id: ResourceId::local(7),
+            stream_id,
+            bootstrap_id: BootstrapId::new(3).expect("replacement"),
+            profile,
+            cols: 0,
+            rows: 0,
+            base_seq: 4,
+        });
     }
 }
 
@@ -225,14 +221,12 @@ async fn relay_kind_lookup_uses_one_bounded_inventory_then_only_learned_facts() 
         "enumeration must not refetch per resource"
     );
 
-    session
-        .handle_inbound(&encode(&FrameKind::ResourceClosed {
-            terminal_id: ResourceId::local(7),
-            exit_status: None,
-            reason: phux_protocol::wire::frame::CloseReason::Exited,
-            signal: None,
-        }))
-        .expect("close invalidates the learned kind");
+    session.feed(&FrameKind::ResourceClosed {
+        terminal_id: ResourceId::local(7),
+        exit_status: None,
+        reason: phux_protocol::wire::frame::CloseReason::Exited,
+        signal: None,
+    });
     assert_eq!(relay.known_resource_kind(7), None);
     assert_eq!(relay.known_resource_kind(8), Some(ResourceKind::Terminal));
     session.teardown("disconnected");
@@ -246,16 +240,14 @@ fn relay_kind_facts_follow_spawn_events_replies_and_connection_incarnations() {
     let (relay, mailbox) = RelayHandle::new(host());
     let mut session = RelaySession::new(host(), BootstrapLimits::default());
     session.set_resource_kinds(Arc::clone(&mailbox.resource_kinds));
-    session
-        .handle_inbound(&encode(&FrameKind::Event {
-            terminal: Some(ResourceId::local(9)),
-            event: AgentEvent::ResourceSpawned {
-                kind: ResourceKind::AgentSession,
-                parent: None,
-            },
-            stamp: None,
-        }))
-        .expect("spawn event");
+    session.feed(&FrameKind::Event {
+        terminal: Some(ResourceId::local(9)),
+        event: AgentEvent::ResourceSpawned {
+            kind: ResourceKind::AgentSession,
+            parent: None,
+        },
+        stamp: None,
+    });
     assert_eq!(
         relay.known_resource_kind(9),
         Some(ResourceKind::AgentSession)
@@ -272,12 +264,10 @@ fn relay_kind_facts_follow_spawn_events_replies_and_connection_incarnations() {
     else {
         panic!("spawn request")
     };
-    session
-        .handle_inbound(&encode(&FrameKind::ResourceSpawned {
-            request_id,
-            result: SpawnResult::Ok(ResourceId::local(10)),
-        }))
-        .expect("spawn response");
+    session.feed(&FrameKind::ResourceSpawned {
+        request_id,
+        result: SpawnResult::Ok(ResourceId::local(10)),
+    });
     assert!(matches!(
         result.try_recv().expect("spawn result"),
         SpawnResult::Ok(_)

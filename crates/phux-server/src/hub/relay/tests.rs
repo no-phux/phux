@@ -18,6 +18,45 @@ pub(super) fn encode(frame: &FrameKind) -> Vec<u8> {
     buf.to_vec()
 }
 
+pub(super) fn agent_event(terminal: u32) -> FrameKind {
+    FrameKind::Event {
+        terminal: Some(ResourceId::local(terminal)),
+        event: AgentEvent::CommandStarted,
+        stamp: None,
+    }
+}
+
+/// The next frame a consumer was sent.
+pub(super) fn next_frame(rx: &mut mpsc::Receiver<Outbound>, what: &str) -> FrameKind {
+    match rx.try_recv().expect(what) {
+        Outbound::Frame(frame) => frame,
+        Outbound::FatalError { .. } => panic!("unexpected terminal outbound sentinel"),
+    }
+}
+
+impl RelaySession {
+    /// Feed one valid satellite frame.
+    pub(super) fn feed(&mut self, frame: &FrameKind) {
+        self.handle_inbound(&encode(frame))
+            .expect("valid satellite frame");
+    }
+
+    /// A receipt-less `Unsubscribe::Terminal`.
+    pub(super) fn unsubscribe_terminal(
+        &mut self,
+        client: ClientId,
+        terminal: u32,
+        seq: u64,
+    ) -> Vec<Vec<u8>> {
+        self.handle_unsubscribe(Unsubscribe::Terminal {
+            client,
+            terminal,
+            seq,
+            reply: None,
+        })
+    }
+}
+
 /// Register a `SUBSCRIBE_EVENTS`-shaped subscription at token 1.
 pub(super) fn subscribe(
     session: &mut RelaySession,

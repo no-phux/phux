@@ -239,118 +239,49 @@ mod tests {
     }
 
     #[test]
-    fn intern_is_idempotent() {
-        let (_reg, ids) = fresh_core_ids(1);
-        let mut bridge = SessionBridge::new();
-        let first = bridge.intern(ids[0]);
-        let again = bridge.intern(ids[0]);
-        assert_eq!(first, again);
-        assert_eq!(bridge.len(), 1);
-    }
-
-    #[test]
-    fn intern_allocates_monotonically_from_one() {
+    fn intern_resolve_and_forget_never_recycle_wire_ids() {
         let (_reg, ids) = fresh_core_ids(3);
-        let mut bridge = SessionBridge::new();
-        let a = bridge.intern(ids[0]);
-        let b = bridge.intern(ids[1]);
-        let c = bridge.intern(ids[2]);
-        assert_eq!(a, WireSessionId(1));
-        assert_eq!(b, WireSessionId(2));
-        assert_eq!(c, WireSessionId(3));
-    }
-
-    #[test]
-    fn default_starts_at_one_like_new() {
-        // The derived `Default` would start at `0`, the reserved sentinel.
-        let bridge = SessionBridge::default();
-        assert_eq!(bridge.next_wire(), SessionBridge::new().next_wire());
+        let mut bridge = SessionBridge::default();
+        // `Default` starts at 1 like `new`; a derived one would mint the 0 sentinel.
         assert_eq!(bridge.next_wire(), 1);
-    }
-
-    #[test]
-    fn resolve_returns_none_for_unknown_wire_id() {
-        let bridge = SessionBridge::new();
-        assert!(bridge.resolve(&WireSessionId(1)).is_none());
-        assert!(bridge.resolve(&WireSessionId(42)).is_none());
-        // `0` is reserved as a sentinel and must also resolve to None.
         assert!(bridge.resolve(&WireSessionId(0)).is_none());
-    }
+        assert!(bridge.resolve(&WireSessionId(1)).is_none());
+        assert_eq!(bridge.forget(ids[0]), None);
 
-    #[test]
-    fn resolve_returns_none_after_forget() {
-        let (_reg, ids) = fresh_core_ids(2);
-        let mut bridge = SessionBridge::new();
         let w0 = bridge.intern(ids[0]);
+        assert_eq!(bridge.intern(ids[0]), w0);
         let w1 = bridge.intern(ids[1]);
+        assert_eq!(
+            (w0, w1, bridge.len()),
+            (WireSessionId(1), WireSessionId(2), 2)
+        );
 
         assert_eq!(bridge.forget(ids[0]), Some(w0));
-
-        assert!(bridge.resolve(&w0).is_none());
-        assert!(bridge.wire(ids[0]).is_none());
-        // Untouched mapping survives.
+        assert_eq!(bridge.forget(ids[0]), None);
+        assert!(bridge.resolve(&w0).is_none() && bridge.wire(ids[0]).is_none());
         assert_eq!(bridge.resolve(&w1), Some(ids[1]));
+        assert_eq!(bridge.intern(ids[2]), WireSessionId(3));
     }
 
     #[test]
-    fn forget_does_not_recycle_wire_ids() {
-        let (_reg, ids) = fresh_core_ids(2);
-        let mut bridge = SessionBridge::new();
-        let w0 = bridge.intern(ids[0]);
-        let _ = bridge.forget(ids[0]);
-        let w1 = bridge.intern(ids[1]);
-        assert_ne!(w0, w1, "freed wire ids must not be reused");
-        assert_eq!(w1, WireSessionId(2));
-    }
-
-    #[test]
-    fn forget_is_idempotent() {
-        let (_reg, ids) = fresh_core_ids(1);
-        let mut bridge = SessionBridge::new();
-        assert_eq!(bridge.forget(ids[0]), None); // never interned
-        let _ = bridge.intern(ids[0]);
-        let _ = bridge.forget(ids[0]);
-        assert_eq!(bridge.forget(ids[0]), None); // double-forget
-        assert!(bridge.is_empty());
-    }
-
-    #[test]
-    fn terminal_bridge_mints_only_local_ids() {
+    fn terminal_bridge_mints_and_resolves_only_local_ids() {
         let (_reg, terminal) = fresh_core_terminal();
         let mut bridge: IdBridge<CoreResourceId, WireResourceId> = IdBridge::new();
         let wire = bridge.intern(terminal);
         assert_eq!(wire, WireResourceId::local(1));
-        assert!(wire.is_local(), "a bridge must never mint a Satellite id");
-    }
-
-    #[test]
-    fn resolve_is_none_for_a_satellite_id() {
-        let (_reg, terminal) = fresh_core_terminal();
-        let mut bridge: IdBridge<CoreResourceId, WireResourceId> = IdBridge::new();
-        let wire = bridge.intern(terminal);
-        let raw = wire.local_id().expect("minted id is Local");
-        // Satellite-tagged: never a bridge's.
-        let satellite = WireResourceId::satellite("peer", raw);
+        let satellite = WireResourceId::satellite("peer", 1);
         assert!(bridge.resolve(&satellite).is_none());
         assert_eq!(bridge.resolve(&wire), Some(terminal));
     }
 
     #[test]
     #[should_panic(expected = "session wire-id space exhausted")]
-    fn intern_panics_on_the_call_that_would_mint_u32_max() {
+    fn intern_mints_u32_max_minus_one_then_panics() {
         let (_reg, ids) = fresh_core_ids(2);
         let mut bridge = SessionBridge::new();
         bridge.set_next(u32::MAX - 1);
-        let _ = bridge.intern(ids[0]);
-        let _ = bridge.intern(ids[1]);
-    }
-
-    #[test]
-    fn last_mintable_wire_id_is_u32_max_minus_one() {
-        let (_reg, ids) = fresh_core_ids(1);
-        let mut bridge = SessionBridge::new();
-        bridge.set_next(u32::MAX - 1);
         assert_eq!(bridge.intern(ids[0]), WireSessionId(u32::MAX - 1));
+        let _ = bridge.intern(ids[1]);
     }
 
     /// The domain's parent facts restate the protocol catalog's

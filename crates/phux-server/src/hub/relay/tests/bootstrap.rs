@@ -289,9 +289,7 @@ fn relay_rejects_identity_change_after_ready_without_fanout_or_mutation() {
             history_cursor: None,
         },
     ] {
-        session
-            .handle_inbound(&encode(&frame))
-            .expect("valid bootstrap prefix");
+        session.feed(&frame);
     }
     let _ = out_rx.try_recv().expect("BEGIN");
     let _ = out_rx.try_recv().expect("READY");

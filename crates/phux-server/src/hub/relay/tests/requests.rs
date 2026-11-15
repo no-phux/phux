@@ -36,18 +36,14 @@ fn session_remaps_request_ids_and_resolves_replies() {
     assert_ne!(id_a, id_b, "link-side request ids must be distinct");
 
     // Resolve out of order: the remap must correlate, not FIFO.
-    session
-        .handle_inbound(&encode(&FrameKind::CommandResult {
-            request_id: id_b,
-            result: CommandResult::OkWith(CommandValue::Json("b".to_owned())),
-        }))
-        .expect("valid satellite frame");
-    session
-        .handle_inbound(&encode(&FrameKind::CommandResult {
-            request_id: id_a,
-            result: CommandResult::Ok,
-        }))
-        .expect("valid satellite frame");
+    session.feed(&FrameKind::CommandResult {
+        request_id: id_b,
+        result: CommandResult::OkWith(CommandValue::Json("b".to_owned())),
+    });
+    session.feed(&FrameKind::CommandResult {
+        request_id: id_a,
+        result: CommandResult::Ok,
+    });
 
     assert_eq!(rx_a.try_recv().expect("a resolved"), CommandResult::Ok);
     assert_eq!(
@@ -68,13 +64,11 @@ fn session_maps_correlated_error_frames_to_command_errors() {
     let FrameKind::Command { request_id, .. } = decode(&wire) else {
         panic!("expected COMMAND");
     };
-    session
-        .handle_inbound(&encode(&FrameKind::Error {
-            request_id: Some(request_id),
-            code: ErrorCode::TerminalNotFound,
-            message: "nope".to_owned(),
-        }))
-        .expect("valid satellite frame");
+    session.feed(&FrameKind::Error {
+        request_id: Some(request_id),
+        code: ErrorCode::TerminalNotFound,
+        message: "nope".to_owned(),
+    });
     assert_eq!(
         rx.try_recv().expect("resolved"),
         CommandResult::Error {
@@ -119,12 +113,10 @@ fn session_relays_spawn_with_stripped_addressing_and_retags_the_reply() {
         satellite, None,
         "the addressing field never crosses the link (no chaining)"
     );
-    session
-        .handle_inbound(&encode(&FrameKind::ResourceSpawned {
-            request_id,
-            result: SpawnResult::Ok(ResourceId::local(42)),
-        }))
-        .expect("valid satellite frame");
+    session.feed(&FrameKind::ResourceSpawned {
+        request_id,
+        result: SpawnResult::Ok(ResourceId::local(42)),
+    });
     assert_eq!(
         rx.try_recv().expect("spawn resolved"),
         SpawnResult::Ok(ResourceId::satellite("devbox", 42))
@@ -140,12 +132,10 @@ fn session_rejects_chained_ids_and_relays_spawn_errors_verbatim() {
     let FrameKind::SpawnResource { request_id, .. } = decode(&wire) else {
         panic!("expected SPAWN_RESOURCE");
     };
-    session
-        .handle_inbound(&encode(&FrameKind::ResourceSpawned {
-            request_id,
-            result: SpawnResult::Ok(ResourceId::satellite("nested", 7)),
-        }))
-        .expect("valid satellite frame");
+    session.feed(&FrameKind::ResourceSpawned {
+        request_id,
+        result: SpawnResult::Ok(ResourceId::satellite("nested", 7)),
+    });
     assert!(matches!(
         rx.try_recv().expect("resolved"),
         SpawnResult::Err(SpawnError::SpawnFailed(_))
@@ -156,12 +146,10 @@ fn session_rejects_chained_ids_and_relays_spawn_errors_verbatim() {
     let FrameKind::SpawnResource { request_id, .. } = decode(&wire) else {
         panic!("expected SPAWN_RESOURCE");
     };
-    session
-        .handle_inbound(&encode(&FrameKind::ResourceSpawned {
-            request_id,
-            result: SpawnResult::Err(SpawnError::GroupNotFound),
-        }))
-        .expect("valid satellite frame");
+    session.feed(&FrameKind::ResourceSpawned {
+        request_id,
+        result: SpawnResult::Err(SpawnError::GroupNotFound),
+    });
     assert_eq!(
         rx.try_recv().expect("resolved"),
         SpawnResult::Err(SpawnError::GroupNotFound)
@@ -193,15 +181,13 @@ fn session_keeps_a_bound_spawn_token_while_retagging_the_id() {
         "the bind request crosses the link"
     );
     let instance = phux_protocol::ids::ServerInstance::new([3; 16]);
-    session
-        .handle_inbound(&encode(&FrameKind::ResourceSpawned {
-            request_id,
-            result: SpawnResult::OkBound {
-                id: ResourceId::local(42),
-                instance,
-            },
-        }))
-        .expect("valid satellite frame");
+    session.feed(&FrameKind::ResourceSpawned {
+        request_id,
+        result: SpawnResult::OkBound {
+            id: ResourceId::local(42),
+            instance,
+        },
+    });
     assert_eq!(
         rx.try_recv().expect("spawn resolved"),
         SpawnResult::OkBound {
@@ -244,15 +230,13 @@ fn session_keeps_a_replayed_spawn_replayed_while_retagging_the_id() {
             key,
             "the key crosses the link"
         );
-        session
-            .handle_inbound(&encode(&FrameKind::ResourceSpawned {
-                request_id,
-                result: SpawnResult::Replayed {
-                    id: ResourceId::local(42),
-                    instance: original,
-                },
-            }))
-            .expect("valid satellite frame");
+        session.feed(&FrameKind::ResourceSpawned {
+            request_id,
+            result: SpawnResult::Replayed {
+                id: ResourceId::local(42),
+                instance: original,
+            },
+        });
         assert_eq!(
             rx.try_recv().expect("spawn resolved"),
             SpawnResult::Replayed {
