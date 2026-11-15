@@ -1,6 +1,7 @@
-//! Directories phux makes for its own state: owner-only from the start,
-//! whatever the umask. A login umask of 002 (stock Ubuntu) would otherwise
-//! leave them group-writable, and the workload store refuses those.
+//! Directories phux makes for its own state, owner-only from the start.
+//!
+//! A login umask of 002 (stock Ubuntu) would otherwise leave them
+//! group-writable, and the workload store refuses those.
 
 use std::io;
 use std::path::Path;
