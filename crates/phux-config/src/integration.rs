@@ -344,10 +344,6 @@ pub fn load_integration_template(path: &Path) -> Result<IntegrationTemplate, Int
 }
 
 /// Parse and validate a template from `text`, attributing errors to `path`.
-///
-/// # Errors
-///
-/// See [`load_integration_template`].
 pub fn parse_integration_template(
     text: &str,
     path: &Path,

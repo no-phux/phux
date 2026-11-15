@@ -123,10 +123,6 @@ impl RemoteConfigEntry {
 
 /// [`RemoteConfigEntry::client_identity`] over the two optional paths, for
 /// callers that hold them outside the schema type.
-///
-/// # Errors
-///
-/// As [`RemoteConfigEntry::client_identity`].
 pub fn client_identity_paths(
     name: &str,
     cert: Option<&std::path::Path>,
