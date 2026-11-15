@@ -89,7 +89,7 @@ fn bringing_your_setup_shows_only_with_an_agent() {
     desk.go_to(Step::Agents);
     desk.onboarding.skills = skills(&["pi"]);
     desk.onboarding_continue();
-    assert_eq!(desk.onboarding.step, Step::Done, "no agent to do it");
+    assert_eq!(desk.onboarding.step, Step::Machines, "no agent to do it");
     desk.onboarding_back();
     assert_eq!(desk.onboarding.step, Step::Agents);
     desk.onboarding.skills = skills(&["codex"]);

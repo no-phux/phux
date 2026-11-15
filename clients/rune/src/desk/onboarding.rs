@@ -209,6 +209,9 @@ impl Desk {
         self.onboarding.grant_sheet = false;
         self.onboarding.copied = false;
         let _ = self.prefs.set(STEP_KEY, step.id());
+        if step == Step::Machines {
+            self.list_machines();
+        }
     }
 
     pub fn onboarding_continue(&mut self) {

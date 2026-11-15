@@ -14,10 +14,11 @@ fn shims_name_only_the_agents_now_launching_in_phux() {
 
 #[test]
 fn bringing_your_setup_is_skipped_without_an_agent() {
-    assert_eq!(Step::Agents.next(false), Some(Step::Done));
-    assert_eq!(Step::Done.back(false), Some(Step::Agents));
+    assert_eq!(Step::Agents.next(false), Some(Step::Machines));
+    assert_eq!(Step::Machines.back(false), Some(Step::Agents));
     assert_eq!(Step::Agents.next(true), Some(Step::Migrate));
-    assert_eq!(Step::Done.back(true), Some(Step::Migrate));
+    assert_eq!(Step::Machines.back(true), Some(Step::Migrate));
+    assert_eq!(Step::Machines.next(true), Some(Step::Done));
     assert_eq!(Step::Welcome.back(true), None);
     assert_eq!(Step::Done.next(true), None);
     for step in Step::ALL {

@@ -6,6 +6,7 @@ use super::overlay::key_hint;
 use super::settings::section;
 use super::{CAPTION, Ink, LABEL, LABEL_STRONG, Sheet, icons, pressable};
 use crate::desk::Desk;
+use crate::desk::machines::ssh::Offered;
 use crate::host_color;
 use crate::machines::{Host, LOCAL, Peer};
 use phux_config_core::host_color::PALETTE;
@@ -232,6 +233,26 @@ fn peer(peer: &Peer, ink: &Ink) -> El {
         )
 }
 
+fn ssh_host(alias: &str, desk: &Desk, ink: &Ink) -> El {
+    let held = alias.to_owned();
+    let (word, color) = match desk.machines.offer_state(alias) {
+        Offered::Waiting => ("Waiting".to_owned(), ink.dim),
+        Offered::Running(_) => ("Setting up…".to_owned(), ink.accent),
+        Offered::Failed(_) => ("Try again".to_owned(), ink.danger),
+        _ => ("Set up".to_owned(), ink.accent),
+    };
+    row_shell(format!("ssh-host-{alias}"), ink)
+        .on_press(move |d: &mut Desk| d.add_ssh_host(&held))
+        .child(
+            text(alias.to_owned())
+                .font(LABEL)
+                .color(ink.text)
+                .truncate(),
+        )
+        .child(el().grow(1.0))
+        .child(text(word).font(CAPTION).color(color))
+}
+
 fn field(desk: &Desk, ink: &Ink) -> El {
     row()
         .w_full()
@@ -333,6 +354,15 @@ pub fn sheet(desk: &Desk, ink: &Ink) -> Option<El> {
             .child(section("On your tailnet", ink));
         for tailnet in &list.peers {
             body = body.child(self::peer(tailnet, ink));
+        }
+    }
+    let config: Vec<_> = list.unregistered_ssh().collect();
+    if !config.is_empty() {
+        body = body
+            .child(el().h(6.0))
+            .child(section("In your ssh config", ink));
+        for alias in config {
+            body = body.child(ssh_host(alias, desk, ink));
         }
     }
     body = body

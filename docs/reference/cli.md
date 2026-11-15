@@ -4691,7 +4691,8 @@ Flags:
                              the address itself).
       --name <NAME>          Human-readable server name to embed in the connect
                              link, shown by the device in its server list.
-                             Omitted: the device picks a default.
+                             Omitted: this machine's name, its `MagicDNS` short
+                             name when the link dials by it, else its host name.
       --json                 Emit the mint, rotation, revocation, list, or prune
                              result as JSON on stdout. `phux host add` consumes
                              the mint document over ssh.
@@ -6428,6 +6429,11 @@ Flags:
                             running process itself is never adopted: neither
                             launchd nor systemd can restart-supervise a process
                             it did not start.
+
+                            When the live server is the one this systemd unit
+                            already runs, the unit is rewritten, and a listener
+                            it gains comes up by restarting that server in
+                            place, panes kept (`phux upgrade`).
       --print               Print the unit (and the restore wrapper) to stdout
                             without writing or loading anything.
   -h, --help                Print help

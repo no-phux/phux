@@ -107,7 +107,8 @@ fn install(ssh_host: &str, on_event: &mut dyn FnMut(EnrollEvent)) -> Result<Stri
 /// output on stderr, and print the installed binary's absolute path last.
 fn install_script(channel: Channel) -> String {
     // The channel is explicit: the installer otherwise follows the far
-    // host's `$PHUX_CHANNEL`.
+    // host's `$PHUX_CHANNEL`. No service: the enrollment installs its own
+    // with the QUIC listener, and one started first holds the socket.
     let channel = channel.as_str();
     format!(
         "set -eu\n\
@@ -117,7 +118,7 @@ fn install_script(channel: Channel) -> String {
          if command -v curl >/dev/null 2>&1; then curl -fsSL {INSTALLER_URL} -o \"$tmp\"\n\
          elif command -v wget >/dev/null 2>&1; then wget -qO \"$tmp\" {INSTALLER_URL}\n\
          else echo 'neither curl nor wget is installed' >&2; exit 1; fi\n\
-         sh \"$tmp\" --channel {channel} --install-dir \"$dir\" >&2\n\
+         sh \"$tmp\" --channel {channel} --install-dir \"$dir\" --no-service >&2\n\
          printf '%s\\n' \"$dir/phux\"\n"
     )
 }
@@ -220,7 +221,8 @@ mod tests {
     fn the_installer_script_follows_the_channel_and_reports_an_absolute_path() {
         let stable = install_script(Channel::Stable);
         assert!(
-            stable.contains("sh \"$tmp\" --channel stable --install-dir \"$dir\" >&2\n"),
+            stable
+                .contains("sh \"$tmp\" --channel stable --install-dir \"$dir\" --no-service >&2\n"),
             "{stable}"
         );
         assert!(stable.contains("curl -fsSL https://phux.sh/install -o \"$tmp\""));
@@ -255,7 +257,7 @@ mod tests {
         );
         assert!(
             String::from_utf8_lossy(&out.stderr).contains(&format!(
-                "installing --channel next --install-dir {}/.local/bin",
+                "installing --channel next --install-dir {}/.local/bin --no-service",
                 dir.path().display()
             )),
             "{out:?}"

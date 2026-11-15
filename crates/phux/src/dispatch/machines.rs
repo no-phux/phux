@@ -65,6 +65,12 @@ pub(super) fn server(args: commands::ServerArgs, socket: Option<PathBuf>) -> Exi
         resume,
         no_seed,
     } = args;
+    // An upgrade re-execs with the old argv; a supervised server takes the
+    // listeners its unit names now (`service install --adopt` rewrote it).
+    let (listen, quic) = match (resume, &socket) {
+        (Some(_), Some(path)) => commands::service::listeners_on_resume(path, listen, quic),
+        _ => (listen, quic),
+    };
     commands::server::run_server(
         (!no_seed).then_some(session.as_str()),
         socket,

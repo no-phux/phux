@@ -117,7 +117,9 @@ impl FarHost {
              while [ \"$1\" = -o ]; do shift 2; done\n\
              shift\n\
              case \"$*\" in\n\
-               *\"phux service install\"*) exec \"$1\" server --ensure ;;\n\
+               *\"phux service install\"*)\n\
+                 [ \"$1\" = 'umask 077;' ] && shift\n\
+                 exec \"$1\" server --ensure ;;\n\
                *) exec /bin/sh -c \"$*\" ;;\n\
              esac\n",
             calls = shell_quote(&root.join("ssh-calls").display().to_string()),

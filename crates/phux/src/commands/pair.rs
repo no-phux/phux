@@ -24,8 +24,10 @@ pub(crate) use phux_client_runtime::pairing::{ConnectLink, parse_connect_link};
 
 #[cfg(test)]
 mod endpoint_tests;
+mod link_name;
 #[cfg(test)]
 mod link_tests;
+use link_name::{link_name, percent_encode};
 mod manage;
 mod rebind;
 use manage::{parse_expires, run_credential_action};
@@ -180,26 +182,6 @@ fn push_link_credentials(link: &mut String, name: Option<&str>, pins: ServerPins
 fn legacy_connect_link(link: &str) -> Option<String> {
     link.strip_prefix(CONNECT_URI_PREFIX)
         .map(|query| format!("{LEGACY_CONNECT_URI_PREFIX}{query}"))
-}
-
-/// Percent-encode everything outside RFC 3986 `unreserved` — conservative on
-/// purpose, since the value lands inside a URI query a phone must parse.
-fn percent_encode(value: &str) -> String {
-    const HEX: &[u8; 16] = b"0123456789ABCDEF";
-    let mut out = String::with_capacity(value.len());
-    for byte in value.bytes() {
-        match byte {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'.' | b'_' | b'~' => {
-                out.push(byte as char);
-            }
-            _ => {
-                out.push('%');
-                out.push(HEX[usize::from(byte >> 4)] as char);
-                out.push(HEX[usize::from(byte & 0x0F)] as char);
-            }
-        }
-    }
-    out
 }
 
 /// Turn a live listener bind into a device-dialable endpoint. An unspecified
@@ -607,10 +589,9 @@ fn bound_or_refusal(
     })
 }
 
-/// Ask the server to re-exec so the config just written takes effect, then
-/// wait until it answers again. Panes stay attached across that re-exec
-/// (`phux upgrade`).
-fn rebind_server(socket: &Path) -> Result<(), String> {
+/// Re-exec the server so the config just written takes effect, then wait
+/// until it answers again. Panes stay attached (`phux upgrade`).
+pub(crate) fn rebind_server(socket: &Path) -> Result<(), String> {
     let outcome = super::upgrade::LiveUpgrade::new(socket, false).and_then(|mut env| {
         // Same consent as `phux upgrade` with no `--close-agent-sessions`:
         // a current server re-binds without a second question. Only a
@@ -930,7 +911,7 @@ fn present_listener_credential(
         build_connect_link_pinned(
             url,
             addresses.quic_endpoint.as_deref(),
-            output.name,
+            Some(&link_name(output.name, addresses.magic_dns_name.as_deref())),
             pins,
             token,
         )
@@ -1157,7 +1138,13 @@ fn mint_relay_link(
         authority: Some(authority.as_str()),
         enrollment: ticket.as_ref().map(|ticket| ticket.secret_hex.as_str()),
     };
-    let link = build_relay_connect_link(&connector.relay, &relay.route, output.name, pins, &token);
+    let link = build_relay_connect_link(
+        &connector.relay,
+        &relay.route,
+        Some(&link_name(output.name, None)),
+        pins,
+        &token,
+    );
     let expires_text = output.expires_at.map(format_rfc3339);
     if output.json {
         let mut doc = pair_document(

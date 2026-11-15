@@ -162,7 +162,8 @@ pub(crate) struct PairArgs {
     pub(crate) host: Option<String>,
 
     /// Human-readable server name to embed in the connect link, shown by
-    /// the device in its server list. Omitted: the device picks a default.
+    /// the device in its server list. Omitted: this machine's name, its
+    /// `MagicDNS` short name when the link dials by it, else its host name.
     #[usage(long, value_name = "NAME")]
     pub(crate) name: Option<String>,
 

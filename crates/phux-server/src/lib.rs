@@ -29,6 +29,7 @@ pub mod keep_awake;
 pub mod org_scale;
 pub mod org_store;
 pub mod org_wire;
+pub mod owner_dir;
 pub mod perf;
 /// Supervised `[[startup]]` sidecars declared by plugins.
 pub mod plugin_startup;
