@@ -2,10 +2,8 @@
 //! [`SelectList`](crate::render::overlay::SelectList) over one
 //! `DIRECTORY_LISTING` reply (`docs/protocol.md`) from the attached server.
 //!
-//! On a federation hub advertising `LIST_DIRECTORY_HOST`, a satellite pane's
-//! listing is relayed from the satellite ([`ListingHost::Satellite`], §4.1)
-//! and every row carries `host`; without the bit the hub lists itself and the
-//! picker says so ([`ListingHost::AttachedInsteadOf`]).
+//! On a federation hub a satellite pane's listing is relayed from the
+//! satellite ([`ListingHost::Satellite`], §4.1) and every row carries `host`.
 //!
 //! Rows commit ordinary actions: "open new tab here" is
 //! `new-window { cwd }`; `..` and children are `go-to-directory { path }`; a
@@ -15,7 +13,6 @@ use std::collections::BTreeMap;
 use std::path::Path;
 
 use phux_config::keybind::ResolvedAction;
-use phux_protocol::caps::{ServerFeature, ServerFeatureSet};
 use phux_protocol::ids::SatelliteHost;
 use phux_protocol::wire::frame::{
     DirectoryEntry, DirectoryErrorCode, DirectoryListing, DirectoryListingError,
@@ -24,32 +21,6 @@ use phux_protocol::wire::frame::{
 
 use crate::render::overlay::SelectItem;
 
-/// What `go-to-directory` can list on the attached server, from its
-/// negotiated feature bits. Fixed for the connection.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) enum DirectorySupport {
-    /// No `LIST_DIRECTORY`: the action bells and sends nothing.
-    Unsupported,
-    /// `LIST_DIRECTORY` alone: only the attached server's own host.
-    ServingHostOnly,
-    /// `LIST_DIRECTORY_HOST` too: a hub lists a satellite on request.
-    HostAware,
-}
-
-impl DirectorySupport {
-    /// Read the support level off a server's advertised features.
-    pub(super) const fn from_features(features: ServerFeatureSet) -> Self {
-        if !features.contains(ServerFeature::ListDirectory) {
-            return Self::Unsupported;
-        }
-        if features.contains(ServerFeature::ListDirectoryHost) {
-            Self::HostAware
-        } else {
-            Self::ServingHostOnly
-        }
-    }
-}
-
 /// Which host one listing reads.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) enum ListingHost {
@@ -57,9 +28,6 @@ pub(super) enum ListingHost {
     Attached,
     /// A satellite, relayed through the attached hub (`LIST_DIRECTORY.host`).
     Satellite(SatelliteHost),
-    /// The attached server's own host, listed in place of this satellite
-    /// because the hub predates `LIST_DIRECTORY.host`.
-    AttachedInsteadOf(SatelliteHost),
 }
 
 impl ListingHost {
@@ -67,7 +35,7 @@ impl ListingHost {
     pub(super) const fn satellite(&self) -> Option<&SatelliteHost> {
         match self {
             Self::Satellite(host) => Some(host),
-            Self::Attached | Self::AttachedInsteadOf(_) => None,
+            Self::Attached => None,
         }
     }
 }
@@ -91,7 +59,6 @@ pub(super) fn picker_title(host: &ListingHost) -> String {
     match host {
         ListingHost::Attached => "New tab in folder".to_owned(),
         ListingHost::Satellite(satellite) => format!("New tab in folder on {satellite}"),
-        ListingHost::AttachedInsteadOf(_) => "New tab in folder on this host".to_owned(),
     }
 }
 
@@ -110,32 +77,17 @@ pub(super) fn picker_status(
     };
     match host {
         ListingHost::Satellite(_) => path.to_owned(),
-        ListingHost::Attached | ListingHost::AttachedInsteadOf(_) => {
-            crate::render::home_to_tilde(path, home)
-        }
+        ListingHost::Attached => crate::render::home_to_tilde(path, home),
     }
 }
 
 /// The picker's rows for one listing reply.
 pub(super) fn picker_items(result: &DirectoryListingResult, host: &ListingHost) -> Vec<SelectItem> {
     let rows_host = host.satellite();
-    let mut items: Vec<SelectItem> = fallback_note(host).into_iter().collect();
-    items.extend(match result {
+    match result {
         Ok(listing) => listing_items(listing, rows_host),
         Err(error) => refusal_items(error, rows_host),
-    });
-    items
-}
-
-/// A hub that predates `LIST_DIRECTORY.host` lists only itself. Say so above
-/// the rows, so its paths are not taken for the satellite pane's.
-fn fallback_note(host: &ListingHost) -> Option<SelectItem> {
-    let ListingHost::AttachedInsteadOf(satellite) = host else {
-        return None;
-    };
-    Some(SelectItem::header(format!(
-        "This hub cannot list {satellite}; showing its own host"
-    )))
+    }
 }
 
 /// Open-here first (the confirm row), then `..`, then the children.
@@ -400,52 +352,6 @@ mod tests {
             items[1..]
                 .iter()
                 .all(|item| arg(item, "host") == Some("edge"))
-        );
-    }
-
-    #[test]
-    fn a_hub_without_host_listing_says_whose_directories_these_are() {
-        let host = ListingHost::AttachedInsteadOf(edge());
-        let result = Ok(listing("/home/hub", Some("/home"), Vec::new()));
-
-        let items = picker_items(&result, &host);
-
-        assert!(items[0].is_header());
-        assert!(
-            items[0].label.contains("cannot list edge"),
-            "{}",
-            items[0].label
-        );
-        assert_eq!(items[1].label, "Open a new tab here");
-        assert!(items.iter().all(|item| arg(item, "host").is_none()));
-        assert_eq!(picker_title(&host), "New tab in folder on this host");
-        assert_eq!(picker_status(&result, &host, None), "/home/hub");
-    }
-
-    #[test]
-    fn support_reads_the_listing_and_host_bits() {
-        let listing = ServerFeatureSet::with(&[ServerFeature::ListDirectory]);
-        let host_aware = ServerFeatureSet::with(&[
-            ServerFeature::ListDirectory,
-            ServerFeature::ListDirectoryHost,
-        ]);
-        let host_only = ServerFeatureSet::with(&[ServerFeature::ListDirectoryHost]);
-        assert_eq!(
-            DirectorySupport::from_features(ServerFeatureSet::new()),
-            DirectorySupport::Unsupported
-        );
-        assert_eq!(
-            DirectorySupport::from_features(listing),
-            DirectorySupport::ServingHostOnly
-        );
-        assert_eq!(
-            DirectorySupport::from_features(host_aware),
-            DirectorySupport::HostAware
-        );
-        assert_eq!(
-            DirectorySupport::from_features(host_only),
-            DirectorySupport::Unsupported,
-            "the host bit means nothing without the query itself"
         );
     }
 }

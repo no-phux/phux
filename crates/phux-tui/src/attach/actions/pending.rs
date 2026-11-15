@@ -85,8 +85,6 @@ pub(in crate::attach) enum SplitHost {
     Attached,
     /// A satellite, through the attached hub: a split of a pane there.
     Satellite(phux_protocol::ids::SatelliteHost),
-    /// This host in place of the satellite: the hub lacks host-aware spawns.
-    AttachedInsteadOf(phux_protocol::ids::SatelliteHost),
 }
 
 /// A window or split parked on a satellite pane's `ATTACH_RESOURCE`.

@@ -4,8 +4,7 @@ use super::{
     ATTACH_READY_DEADLINE, AttachError, AttachTarget, Connection, Duration, FrameKind,
     GhosttyAdapter, HeadlessCompletion, HeadlessSession, HistoryCacheConfig, Instant, Path,
     SessionId, SessionKernel, attach_client_caps, attach_client_name, headless_chrome,
-    request_history_page, request_layout, restart_attach, send_attach_without_size_vote,
-    wait_for_attached,
+    request_history_page, request_layout, restart_attach, send_attach, wait_for_attached,
 };
 
 /// What `phux rec --composited` asks for: where the cast goes, the virtual
@@ -62,7 +61,7 @@ pub async fn record_composited(
     );
     // Zero viewport: the server resizes nothing (L1 §9). The cell grid
     // below is local to the compositor.
-    let mut attach_id = send_attach_without_size_vote(&mut conn, target).await?;
+    let mut attach_id = send_attach(&mut conn, target).await?;
     let attached = match wait_for_attached(&mut conn, attach_id).await {
         Ok(frame) => frame,
         Err(err) => {

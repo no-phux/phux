@@ -8,7 +8,7 @@ use phux_protocol::ids::SatelliteHost;
 use phux_protocol::wire::frame::FrameKind;
 
 use crate::attach::actions::PendingWindow;
-use crate::attach::directory_picker::{DirectorySupport, ListingHost, PendingDirectory};
+use crate::attach::directory_picker::{ListingHost, PendingDirectory};
 use crate::attach::input_dispatch::args::str_arg;
 use crate::attach::input_dispatch::dispatch::spawn_initial_size;
 use crate::attach::pane_state::PaneSlot;
@@ -63,14 +63,7 @@ pub(in crate::attach) fn go_to_directory(
         effects,
     }: ActionCall<'_, '_>,
 ) {
-    if ctx.directory_support == DirectorySupport::Unsupported {
-        tracing::warn!(
-            "go-to-directory: server does not advertise LIST_DIRECTORY; dropping action"
-        );
-        effects.bell = true;
-        return;
-    }
-    let host = listing_host(host_arg(resolved), focused, ctx.directory_support);
+    let host = listing_host(host_arg(resolved), focused);
     let path = str_arg(resolved, "path")
         .or_else(|| pane_cwd_on(host.satellite(), focused, panes))
         .unwrap_or_default();
@@ -102,10 +95,6 @@ pub(in crate::attach) fn find_path(
         effects,
     }: ActionCall<'_, '_>,
 ) {
-    if !ctx.path_query_supported {
-        effects.bell = true;
-        return;
-    }
     let Some(target) = focused else {
         effects.bell = true;
         return;
@@ -195,19 +184,11 @@ fn host_arg(resolved: &phux_config::keybind::ResolvedAction) -> Option<Satellite
 }
 
 /// The host one listing reads: `wanted`, else the focused pane's satellite,
-/// else the attached server. An older hub would list itself, so the request
-/// stays there and the picker says so.
-fn listing_host(
-    wanted: Option<SatelliteHost>,
-    focused: Option<&ResourceId>,
-    support: DirectorySupport,
-) -> ListingHost {
-    let wanted = wanted.or_else(|| focused.and_then(ResourceId::host).cloned());
-    match wanted {
-        None => ListingHost::Attached,
-        Some(host) if support == DirectorySupport::HostAware => ListingHost::Satellite(host),
-        Some(host) => ListingHost::AttachedInsteadOf(host),
-    }
+/// else the attached server.
+fn listing_host(wanted: Option<SatelliteHost>, focused: Option<&ResourceId>) -> ListingHost {
+    wanted
+        .or_else(|| focused.and_then(ResourceId::host).cloned())
+        .map_or(ListingHost::Attached, ListingHost::Satellite)
 }
 
 /// The focused pane's working directory, when that pane lives on `host`

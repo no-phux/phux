@@ -11,7 +11,7 @@ use phux_protocol::wire::frame::FrameKind;
 
 use crate::attach::actions::{PendingSplit, PendingWindow};
 use crate::attach::connection::Connection;
-use crate::attach::directory_picker::{DirectorySupport, PendingDirectory};
+use crate::attach::directory_picker::PendingDirectory;
 use crate::attach::focus::FocusHistory;
 use crate::attach::input_replay::InputReplayJournal;
 use crate::attach::paint::SidebarReservation;

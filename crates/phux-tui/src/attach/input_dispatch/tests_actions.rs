@@ -5,14 +5,13 @@
 use std::collections::HashMap;
 
 use phux_protocol::ResourceId;
-use phux_protocol::caps::{ServerFeature, ServerFeatureSet};
 use phux_protocol::ids::{SatelliteHost, SessionId};
 use phux_protocol::wire::frame::{Command, FrameKind};
 use phux_protocol::wire::info::{HostInventory, HostSessionInfo, SessionInfo};
 use toml::Value;
 
 use crate::attach::actions::{Adopt, SplitHost};
-use crate::attach::directory_picker::{DirectorySupport, ListingHost};
+use crate::attach::directory_picker::ListingHost;
 use crate::attach::focus::FocusHistory;
 use crate::attach::jobs::{Job, JobDone, JobKind, Start};
 use crate::attach::pane_state::PaneSlot;
@@ -102,14 +101,6 @@ fn satellite_pane(cwd: Option<&str>) -> (CtxFixture, HashMap<ResourceId, PaneSlo
         fx(ArrangementDoc::single(pane.clone())),
         HashMap::from([(pane, slot)]),
     )
-}
-
-/// A hub that predates host-aware listing and spawns.
-fn older_hub(f: &mut CtxFixture) {
-    f.directory_support = DirectorySupport::from_features(ServerFeatureSet::with(&[
-        ServerFeature::SpawnInitialSize,
-        ServerFeature::ListDirectory,
-    ]));
 }
 
 // ---- small helpers and frames ----------------------------------------------
@@ -300,23 +291,6 @@ fn split_pane_spawn_carries_the_new_leafs_tile() {
     let effects = run(&split_action(), &mut ArrangementDoc::single(tid(1)));
     let (_, _, frame) = effects.spawn_terminal.expect("split parks a SPAWN");
     assert_eq!(spawn_initial_size_of(&frame), Some((39, 23)));
-}
-
-/// Without `ServerFeature::SpawnInitialSize` the field stays absent
-/// (ADR-0061: no dependence on unadvertised surface).
-#[test]
-fn spawn_omits_initial_size_when_the_server_did_not_advertise_it() {
-    for action in [split_action(), bare_action("new-window")] {
-        let mut f = fx(ArrangementDoc::single(tid(1)));
-        f.spawn_initial_size_supported = false;
-        let effects = f.run(&action);
-        let frame = effects
-            .spawn_terminal
-            .map(|(_, _, frame)| frame)
-            .or_else(|| effects.spawn_window.map(|(_, _, frame)| frame))
-            .expect("SPAWN");
-        assert_eq!(spawn_initial_size_of(&frame), None, "{}", action.action);
-    }
 }
 
 /// A window of panes 1 | (2 / 3), focused on 1.
@@ -607,13 +581,6 @@ fn go_to_directory_requests_a_listing() {
     let (_, frame) = effects.list_directory.expect("LIST_DIRECTORY");
     assert!(matches!(&frame, FrameKind::ListDirectory { path, .. } if path == "/srv"));
     assert!(!effects.bell && effects.layout_mutated);
-
-    // Without `LIST_DIRECTORY` the older server would drop the frame: bell.
-    let mut f = fx(ArrangementDoc::single(tid(1)));
-    f.directory_support =
-        DirectorySupport::from_features(ServerFeatureSet::with(&[ServerFeature::SpawnInitialSize]));
-    let effects = f.run(&bare_action("go-to-directory"));
-    assert!(effects.list_directory.is_none() && effects.bell);
 }
 
 /// `find-path` asks the focused pane's own host, at its directory, and
@@ -688,19 +655,8 @@ fn inserted_path_with_control_bytes_is_rejected_before_paste() {
     );
 }
 
-/// Without the negotiated `PATH_QUERY` bit the picker bells, sending nothing.
-#[test]
-fn unsupported_host_path_query_bells_without_a_wire_request() {
-    let mut f = fx(ArrangementDoc::single(tid(1)));
-    f.path_query_supported = false;
-    let panes = HashMap::from([(tid(1), PaneSlot::new().expect("pane"))]);
-    let effects = f.run_in(&bare_action("find-path"), &panes);
-    assert!(effects.bell);
-    assert!(effects.query_path.is_none());
-}
-
 /// On a satellite pane the listing asks that satellite through the hub, at
-/// the pane's directory (or its home); an older hub keeps it on itself.
+/// the pane's directory (or its home).
 #[test]
 fn go_to_directory_on_a_satellite_pane_names_its_host() {
     for (cwd, path) in [(Some("/home/e/src"), "/home/e/src"), (None, "")] {
@@ -719,27 +675,10 @@ fn go_to_directory_on_a_satellite_pane_names_its_host() {
         );
         assert_eq!(pending.host, ListingHost::Satellite(edge()));
     }
-
-    let (mut f, panes) = satellite_pane(Some("/home/e/src"));
-    older_hub(&mut f);
-    let (pending, frame) = f
-        .run_in(&bare_action("go-to-directory"), &panes)
-        .list_directory
-        .expect("LIST");
-    assert_eq!(
-        frame,
-        FrameKind::ListDirectory {
-            request_id: pending.request_id,
-            path: String::new(),
-            host: None
-        }
-    );
-    assert_eq!(pending.host, ListingHost::AttachedInsteadOf(edge()));
 }
 
 /// Splitting a satellite pane spawns on that satellite at its cwd (bound).
-/// A local pane's split carries that pane's directory. An older hub keeps
-/// a satellite split local and remembers the satellite it stands in for.
+/// A local pane's split carries that pane's directory.
 #[test]
 fn split_pane_follows_the_focused_panes_host() {
     let (mut f, panes) = satellite_pane(Some("/home/e/src"));
@@ -776,26 +715,6 @@ fn split_pane_follows_the_focused_panes_host() {
         "{frame:?}"
     );
     assert_eq!(pending.host, SplitHost::Attached);
-    assert!(!asks_binding(&frame));
-
-    let (mut f, panes) = satellite_pane(Some("/home/e/src"));
-    older_hub(&mut f);
-    let (_, pending, frame) = f
-        .run_in(&split_action(), &panes)
-        .spawn_terminal
-        .expect("SPAWN");
-    assert!(
-        matches!(
-            &frame,
-            FrameKind::SpawnResource {
-                cwd: None,
-                satellite: None,
-                ..
-            }
-        ),
-        "{frame:?}"
-    );
-    assert_eq!(pending.host, SplitHost::AttachedInsteadOf(edge()));
     assert!(!asks_binding(&frame));
 }
 

@@ -12,8 +12,6 @@ use phux_protocol::wire::frame::{AttachTarget, ErrorCode, FrameKind, ViewportInf
 use crate::attach::connection::Connection;
 use crate::attach::outcome::AttachError;
 
-use super::viewport::current_viewport;
-
 /// Whether to emit a `FRAME_ACK`: only a `StateSync` consumer's acks feed the
 /// server's RTT/backpressure accounting; a raw consumer's are dropped, so they
 /// are skipped.
@@ -105,47 +103,13 @@ pub(super) fn attach_client_name() -> String {
     format!("phux-client/{}", env!("CARGO_PKG_VERSION"))
 }
 
-/// ADR-0145: the server applies `RESIZE_TERMINAL`'s cell size, so the TUI
-/// sizes every pane itself and casts no window-size vote.
-pub(super) fn sizes_panes_itself(conn: &Connection) -> bool {
-    conn.negotiated_bootstrap().is_some_and(|negotiated| {
-        negotiated
-            .server_features_ext
-            .contains(phux_protocol::ServerFeatureExt::ResizeCellPx)
-    })
-}
-
-/// Send the TUI's `ATTACH`. Against a server that applies per-pane cell
-/// size it carries no size vote (ADR-0145): the outer window is not any
-/// pane's size, and voting it resized every pane twice per attach (outer
-/// window, then tile), which tore output written for the first width.
-/// An older server still gets the outer-viewport vote, its only source of
-/// cell pixel size.
+/// Send the TUI's `ATTACH` with no window-size vote (ADR-0145): the server
+/// applies per-pane cell size, and the outer window is not any pane's size.
+/// A zero viewport resizes nothing on attach and re-resolves nothing on
+/// detach (L1 §9), so a read-only view leaves live panes alone.
 pub(super) async fn send_attach(
     conn: &mut Connection,
     target: AttachTarget,
-) -> Result<u32, AttachError> {
-    if sizes_panes_itself(conn) {
-        return send_attach_without_size_vote(conn, target).await;
-    }
-    let viewport = current_viewport()?;
-    send_attach_with_viewport(conn, target, viewport).await
-}
-
-/// Send the `ATTACH` frame without a window-size vote: a zero viewport
-/// resizes nothing on attach and re-resolves nothing on detach (L1 §9), so
-/// a read-only view (the headless composite) leaves live panes alone.
-pub(super) async fn send_attach_without_size_vote(
-    conn: &mut Connection,
-    target: AttachTarget,
-) -> Result<u32, AttachError> {
-    send_attach_with_viewport(conn, target, ViewportInfo::new(0, 0)).await
-}
-
-async fn send_attach_with_viewport(
-    conn: &mut Connection,
-    target: AttachTarget,
-    viewport: ViewportInfo,
 ) -> Result<u32, AttachError> {
     // ADR-0127: `--viewer` / `--take`, or nothing for the default.
     let role_policy = crate::attach::attach_role::attach_role_for(conn)?;
@@ -153,7 +117,7 @@ async fn send_attach_with_viewport(
     conn.send(&FrameKind::Attach {
         attach_id,
         target,
-        viewport,
+        viewport: ViewportInfo::new(0, 0),
         // SPEC §13: clients SHOULD opt in to scrollback. The cap below
         // matches the default in docs/config.md; a configurable knob lives
         // with the rest of `phux-config`.

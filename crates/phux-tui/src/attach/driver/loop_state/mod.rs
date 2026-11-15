@@ -23,7 +23,6 @@ pub(super) use std::time::Duration;
 pub(super) use phux_client_core::engine::ghostty::GhosttyAdapter;
 pub(super) use phux_client_core::history::HistoryCacheConfig;
 pub(super) use phux_client_core::session::SessionKernel;
-pub(super) use phux_protocol::caps::ServerFeature;
 pub(super) use phux_protocol::ids::{ClientId, ResourceId, SatelliteHost};
 pub(super) use phux_protocol::wire::frame::{
     AttachTarget, Command, CommandResult, CommandValue, FrameKind, Scope,
@@ -89,7 +88,7 @@ pub(super) use super::terminal::{
 pub(super) use super::viewport::{
     HOST_CELL_PX_FALLBACK, current_viewport, current_viewport_or_default,
     emit_bootstrap_workspace_reflow, emit_moved_tiles, emit_view_reflow, host_cell_px,
-    resize_cell_px, view_rects, viewport_resize_frame,
+    resize_cell_px, view_rects,
 };
 
 pub(super) use handover::CarriedPeers;
@@ -315,14 +314,8 @@ pub(super) struct SessionLoop {
     arrangement_read_owed: bool,
     /// An input action changed shared layout; write it once the batch ends.
     arrangement_write_owed: bool,
-    /// Whether the server builds a spawned pane at the geometry we name.
-    spawn_initial_size_supported: bool,
-    /// What the `go-to-directory` picker can list on this server.
-    directory_support: crate::attach::directory_picker::DirectorySupport,
-    /// The host path picker: whether the server answers, and the query in flight.
-    path: path_picker::PickerState,
-    /// Whether the server advertised `ACKNOWLEDGED_INPUT` (ADR-0053 journal).
-    acknowledged_input_supported: bool,
+    /// The host path picker's query in flight; other reply ids are stale.
+    pending_path: Option<path_picker::PendingPath>,
     /// ADR-0053 replay journal, shared with the CLI reconnect loop so an
     /// unresolved operation is replayed under its original id. `None` on UDS.
     input_replay:
@@ -365,9 +358,6 @@ pub(super) struct SessionLoop {
     orphan_kills: super::orphans::OrphanKills,
     /// Per-identity review status; survives session switches.
     review: crate::attach::review::ReviewIndex,
-    /// Whether the server supports `KILL_RESOURCE_IF`, used to retry stray
-    /// satellite panes.
-    conditional_kill_supported: bool,
     /// The `LIST_DIRECTORY` the directory picker is waiting on, with the host
     /// it reads; a reply with any other id is stale and dropped.
     pending_directory: Option<crate::attach::directory_picker::PendingDirectory>,
@@ -416,11 +406,8 @@ pub(super) struct SessionLoop {
     /// Host per-cell pixel size for `INPUT_MOUSE` pixel scaling, refreshed
     /// with `viewport_dims`.
     cell_px_dims: (u16, u16),
-    /// ADR-0145: the server applies per-pane cell size, so this client casts
-    /// no window-size vote and sizes panes only with `RESIZE_TERMINAL`.
-    sizes_panes_itself: bool,
-    /// The cell size every `RESIZE_TERMINAL` carries (`None` when the server
-    /// does not apply it or the host reports no pixel metrics).
+    /// The cell size every `RESIZE_TERMINAL` carries (ADR-0145; `None` when
+    /// the host reports no pixel metrics).
     resize_cell_px: Option<(u16, u16)>,
     /// In-flight `rename-session` waiting on its `GET_STATE` barrier.
     rename_pending: Option<PendingSessionRename>,
@@ -479,14 +466,6 @@ pub(super) struct SessionLoop {
     project_toggle_request: Option<String>,
     /// A dispatched `agents-filter`, applied after the batch.
     agents_filter_request: Option<crate::render::chrome::sidebar::FilterRequest>,
-    /// phux-c2td.3: did the server advertise
-    /// [`ServerFeature::HostSessions`](phux_protocol::caps::ServerFeature::HostSessions)?
-    /// Unset, the driver sends no host-inventory `GET_STATE` at all: an
-    /// older server would answer without a `hosts` list, and the picker's
-    /// ungrouped shape is the honest rendering of "this client cannot know
-    /// what else is out there".
-    host_sessions_supported: bool,
-    whoami_supported: bool,
     /// An action wants a fresher host inventory; drained into one `GET_STATE`.
     host_refresh_request: bool,
     /// When to next ask which down satellites are back; anchored.
@@ -567,7 +546,6 @@ impl SessionLoop {
         if let Some(width) = carried_sidebar.and_then(|carried| carried.width) {
             settings.sidebar.width = width;
         }
-        let server_features = negotiated.server_features;
         let (hosts_tx, hosts_rx) = tokio::sync::mpsc::unbounded_channel();
         let origin = crate::attach::hosts::recorded_origin();
         if origin.is_some() {
@@ -580,15 +558,7 @@ impl SessionLoop {
         overlays.set_breakpoints(settings.chrome);
         let viewport_dims = current_viewport().map_or((80, 24), |v| (v.cols.max(1), v.rows.max(1)));
         let cell_px_dims = current_viewport().map_or(HOST_CELL_PX_FALLBACK, |v| host_cell_px(&v));
-        let sizes_panes_itself = negotiated
-            .server_features_ext
-            .contains(phux_protocol::ServerFeatureExt::ResizeCellPx);
-        let resize_cell_px = current_viewport()
-            .ok()
-            .and_then(|v| resize_cell_px(sizes_panes_itself, &v));
-        let conditional_kill_supported = server_features.contains(ServerFeature::ConditionalKill);
-        let mut orphan_kills = super::orphans::OrphanKills::default();
-        orphan_kills.set_conditional_kill(conditional_kill_supported);
+        let resize_cell_px = current_viewport().ok().and_then(|v| resize_cell_px(&v));
         Ok(Self {
             control_dial: None,
             organization_supported: negotiated
@@ -598,17 +568,9 @@ impl SessionLoop {
             peer_reader: None,
             arrangement_read_owed: false,
             arrangement_write_owed: false,
-            acknowledged_input_supported: server_features
-                .contains(ServerFeature::AcknowledgedInput),
             input_replay: None,
             delivery_fence_paint_pending: HashSet::new(),
-            spawn_initial_size_supported: server_features.contains(ServerFeature::SpawnInitialSize),
-            directory_support: crate::attach::directory_picker::DirectorySupport::from_features(
-                server_features,
-            ),
-            path: path_picker::PickerState::new(negotiated.server_features_ext),
-            host_sessions_supported: server_features.contains(ServerFeature::HostSessions),
-            whoami_supported: server_features.contains(ServerFeature::Whoami),
+            pending_path: None,
             host_refresh_request: false,
             satellite_probe_at: None,
             session_picker_dirty: false,
@@ -630,9 +592,8 @@ impl SessionLoop {
             deferred_arrangement_edits: Vec::new(),
             bootstrap_outbound: None,
             next_request_id: 1,
-            orphan_kills,
+            orphan_kills: super::orphans::OrphanKills::default(),
             review: crate::attach::review::ReviewIndex::new(),
-            conditional_kill_supported,
             pending_directory: None,
             vcs: VcsIndex::default(),
             sidebar_painter: settings
@@ -654,7 +615,6 @@ impl SessionLoop {
             ),
             viewport_dims,
             cell_px_dims,
-            sizes_panes_itself,
             resize_cell_px,
             rename_pending: None,
             rename_notice: None,

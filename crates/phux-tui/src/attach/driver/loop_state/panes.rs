@@ -57,11 +57,10 @@ impl super::SessionLoop {
         }
         let role = crate::attach::attach_role::pane_attach_role();
         let command = if is_agent {
-            let after_seq = conn
-                .server_features_ext()
-                .contains(phux_protocol::ServerFeatureExt::AgentStreamResume)
-                .then(|| self.mirror.engine_kernel.agent_stream_info(terminal_id))
-                .flatten()
+            let after_seq = self
+                .mirror
+                .engine_kernel
+                .agent_stream_info(terminal_id)
                 .map(|stream| stream.last_seq);
             Command::attach_agent_session(terminal_id.clone(), role, after_seq)
         } else {
@@ -167,8 +166,7 @@ impl super::SessionLoop {
     /// Arm [`SATELLITE_PROBE_INTERVAL`] while any satellite pane
     /// is down and no host inventory is already in flight.
     pub(super) fn arm_satellite_probe(&mut self, now: tokio::time::Instant) {
-        if self.host_sessions_supported
-            && self.peers.hosts_pending.is_none()
+        if self.peers.hosts_pending.is_none()
             && self.mirror.panes.values().any(|slot| slot.satellite_down)
         {
             self.satellite_probe_at
@@ -226,13 +224,8 @@ impl super::SessionLoop {
             .collect()
     }
 
-    /// Take over the orphan record from an earlier entry on this connection,
-    /// stamped with this entry's `CONDITIONAL_KILL` bit.
-    pub(in super::super) fn set_orphan_kills(
-        &mut self,
-        mut kills: super::super::orphans::OrphanKills,
-    ) {
-        kills.set_conditional_kill(self.conditional_kill_supported);
+    /// Take over the orphan record from an earlier entry on this connection.
+    pub(in super::super) fn set_orphan_kills(&mut self, kills: super::super::orphans::OrphanKills) {
         self.orphan_kills = kills;
     }
 

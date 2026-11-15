@@ -55,7 +55,7 @@ impl super::SessionLoop {
         &mut self,
         conn: &mut Connection,
     ) -> Result<(), AttachError> {
-        if !self.whoami_supported || self.peers.serving_host_attempted {
+        if self.peers.serving_host_attempted {
             return Ok(());
         }
         self.peers.serving_host_attempted = true;
@@ -86,12 +86,12 @@ impl super::SessionLoop {
     }
 
     /// Ask for the federation host inventory (one `GET_STATE`). Skipped
-    /// without the feature or while one is already in flight.
+    /// while one is already in flight.
     pub(super) async fn request_host_inventory(
         &mut self,
         conn: &mut Connection,
     ) -> Result<(), AttachError> {
-        if !self.host_sessions_supported || self.peers.hosts_pending.is_some() {
+        if self.peers.hosts_pending.is_some() {
             return Ok(());
         }
         let request_id = self.take_request_id();

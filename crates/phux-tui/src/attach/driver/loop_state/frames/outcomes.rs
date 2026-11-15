@@ -78,7 +78,7 @@ impl super::super::SessionLoop {
         self.fold_chrome_and_notices(&mut outcome, repaint);
         self.open_directory_picker(out, sidebar, outcome.directory_listing.take());
         let reply = outcome.path_results.take();
-        if path_picker::accept_reply(self.path.pending.as_ref(), &mut self.overlays, reply) {
+        if path_picker::accept_reply(self.pending_path.as_ref(), &mut self.overlays, reply) {
             self.paint_overlay(out, sidebar);
         }
         self.emit_outcome_requests(conn, &mut outcome, sidebar, prev_rects)

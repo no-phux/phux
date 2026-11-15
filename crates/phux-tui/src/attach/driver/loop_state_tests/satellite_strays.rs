@@ -264,30 +264,6 @@ async fn a_bound_unreachable_stray_is_retried_conditionally_once_reachable() {
     );
 }
 
-/// Without `CONDITIONAL_KILL` a bound spawn's unreachable refusal records
-/// nothing, as before: neither a reachable inventory nor a spawn on the
-/// satellite sends any kill, conditional or not.
-#[tokio::test(flavor = "current_thread")]
-async fn without_the_bit_an_unreachable_refusal_sends_no_kill_at_all() {
-    use phux_protocol::wire::frame::ErrorCode;
-
-    let (mut state, mut client, mut server, mut out) = Box::pin(loop_with_window_on(
-        ServerFeatureSet::new(),
-        Some(edge_token()),
-    ))
-    .await;
-    Box::pin(refuse_spawned_attach(
-        &mut state,
-        &mut client,
-        &mut out,
-        ErrorCode::SatelliteUnreachable,
-    ))
-    .await;
-    answer_inventory(&mut state, &mut client, vec![edge_row(true)]).await;
-    Box::pin(answer_edge_spawn(&mut state, &mut client, 12)).await;
-    assert_eq!(kill_commands(&mut client, &mut server).await, Vec::new());
-}
-
 /// A bound stray under the conditional kill outlives signs that its
 /// satellite is unreachable (an unreachable inventory row, an uncorrelated
 /// notice): the satellite judges the kill when it answers again.
@@ -319,23 +295,16 @@ async fn a_bound_stray_outlives_unreachable_signals() {
 }
 
 /// A session-switch stray whose spawn was bound is retried with the
-/// conditional kill on a hub with the bit, and with today's unconditional
-/// kill on one without it.
+/// conditional kill.
 #[tokio::test(flavor = "current_thread")]
-async fn a_bound_switch_stray_uses_the_conditional_kill_when_supported() {
-    let cases: [(fn() -> ServerFeatureSet, Command); 2] = [
-        (conditional_kill, conditional_edge_kill()),
-        (ServerFeatureSet::new, plain_edge_kill()),
-    ];
-    for (features, expected) in cases {
-        let (mut state, mut client, mut server) =
-            Box::pin(loop_with_switch_stray_on(features, Some(edge_token()))).await;
-        answer_inventory(&mut state, &mut client, vec![edge_row(true)]).await;
-        assert_eq!(
-            kill_commands(&mut client, &mut server).await,
-            vec![expected]
-        );
-    }
+async fn a_bound_switch_stray_uses_the_conditional_kill() {
+    let (mut state, mut client, mut server) =
+        Box::pin(loop_with_switch_stray_on(conditional_kill, Some(edge_token()))).await;
+    answer_inventory(&mut state, &mut client, vec![edge_row(true)]).await;
+    assert_eq!(
+        kill_commands(&mut client, &mut server).await,
+        vec![conditional_edge_kill()]
+    );
 }
 
 /// An unbound switch stray keeps today's behavior on a hub with the bit:

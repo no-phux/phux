@@ -45,7 +45,7 @@ pub(super) const BOUND_STRAY_TTL: Duration = Duration::from_mins(10);
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum StrayKill {
     /// `KILL_RESOURCE`: phux-c2td.23's retry, for a stray that could not be
-    /// bound or a hub without `CONDITIONAL_KILL`.
+    /// bound.
     Unconditional,
     /// `KILL_RESOURCE_IF` under this instance token with
     /// `UNATTACHED_SINCE_SPAWN`.
@@ -53,12 +53,11 @@ enum StrayKill {
 }
 
 impl StrayKill {
-    /// The kill kind for a spawn bound to `instance`, on a hub with or
-    /// without conditional kills.
-    const fn for_spawn(instance: Option<ServerInstance>, conditional_kill: bool) -> Self {
+    /// The kill kind for a spawn bound to `instance`.
+    const fn for_spawn(instance: Option<ServerInstance>) -> Self {
         match instance {
-            Some(instance) if conditional_kill => Self::Conditional(instance),
-            _ => Self::Unconditional,
+            Some(instance) => Self::Conditional(instance),
+            None => Self::Unconditional,
         }
     }
 
@@ -112,17 +111,9 @@ pub(super) struct OrphanKills {
     /// Spawns still unanswered when the loop left for a switch; a satellite
     /// pane among their replies becomes a stray.
     switch_spawns: HashSet<u32>,
-    /// Whether the hub supports `CONDITIONAL_KILL` (set per loop entry).
-    conditional_kill: bool,
 }
 
 impl OrphanKills {
-    /// Retry bound strays through `KILL_RESOURCE_IF` exactly when
-    /// `supported`, the hub's `CONDITIONAL_KILL` bit.
-    pub(super) const fn set_conditional_kill(&mut self, supported: bool) {
-        self.conditional_kill = supported;
-    }
-
     /// One `KILL_RESOURCE` per orphaned pane, each under a fresh request id
     /// taken from `next_request_id` and tracked so its reply settles here.
     pub(super) fn kill_frames(
@@ -247,11 +238,8 @@ impl OrphanKills {
     }
 
     /// Remember panes an unreachable satellite left running, for a
-    /// conditional retry. Without `CONDITIONAL_KILL` this records nothing.
+    /// conditional retry.
     pub(super) fn record_unreachable(&mut self, stranded: Vec<BoundResource>, now: Instant) {
-        if !self.conditional_kill {
-            return;
-        }
         for bound in stranded {
             self.record(bound.id, StrayKill::Conditional(bound.instance), now);
         }
@@ -305,9 +293,9 @@ impl OrphanKills {
     }
 
     /// Remember a pane a session switch stranded, retried conditionally when
-    /// its spawn was bound and the hub evaluates conditional kills.
+    /// its spawn was bound.
     fn record_spawned(&mut self, pane: SpawnedPane, now: Instant) {
-        let kill = StrayKill::for_spawn(pane.instance, self.conditional_kill);
+        let kill = StrayKill::for_spawn(pane.instance);
         self.record(pane.id, kill, now);
     }
 

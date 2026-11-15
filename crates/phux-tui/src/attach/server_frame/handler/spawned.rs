@@ -72,9 +72,7 @@ pub(super) fn handle_terminal_spawned<W: crate::attach::RenderSink>(
             })
         }
         SpawnResult::Ok(new_id) | SpawnResult::OkBound { id: new_id, .. } => {
-            let mut outcome = apply_split_spawned(ctx, new_id, &pending)?;
-            outcome.notices.extend(split_fallback_notice(&pending.host));
-            Ok(outcome)
+            apply_split_spawned(ctx, new_id, &pending)
         }
         SpawnResult::Err(err) => {
             log_split_spawn_error(request_id, &err);
@@ -253,17 +251,6 @@ fn split_refusal_notice(host: &SplitHost, reason: &str) -> Option<Notice> {
     };
     Some(Notice::warn(format!(
         "could not open on {satellite}: {reason}"
-    )))
-}
-
-/// A satellite split a hub without host-aware spawns opened on itself: say
-/// the pane is on this host.
-fn split_fallback_notice(host: &SplitHost) -> Option<Notice> {
-    let SplitHost::AttachedInsteadOf(satellite) = host else {
-        return None;
-    };
-    Some(Notice::warn(format!(
-        "this hub may not be able to spawn on {satellite}; the split opened on this host"
     )))
 }
 

@@ -201,27 +201,6 @@ fn a_satellite_split_whose_spawn_is_refused_names_the_host() {
     assert!(outcome.adopt_spawned.is_empty());
 }
 
-/// A hub without host-aware spawns opened the split on itself: it applies
-/// locally and the notice says the pane is on this host.
-#[test]
-fn a_satellite_split_on_an_older_hub_says_it_opened_on_this_host() {
-    let (outcome, h) = split_reply(
-        parked_split(
-            SplitHost::AttachedInsteadOf(SatelliteHost::new("edge")),
-            None,
-        ),
-        spawned(tid(2)),
-    );
-    assert_eq!(h.leaves(), vec![tid(1), tid(2)]);
-    assert!(outcome.adopt_spawned.is_empty());
-    assert_eq!(outcome.notices.len(), 1);
-    let text = &outcome.notices[0].text;
-    assert!(
-        text.contains("on this host") && text.contains("edge"),
-        "{text}"
-    );
-}
-
 /// A split parked across a window switch lands beside its source, in that
 /// pane's window, without moving the visible window or focus.
 #[test]

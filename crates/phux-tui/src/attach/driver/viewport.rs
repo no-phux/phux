@@ -176,11 +176,6 @@ fn resizable(conn: &Connection, leaves: SurfaceLeaves<'_>, terminal_id: &Resourc
     conn.can_route_terminal(terminal_id) && !leaves.contains(terminal_id)
 }
 
-/// A `VIEWPORT_RESIZE` frame for `viewport`.
-pub(super) const fn viewport_resize_frame(viewport: ViewportInfo) -> FrameKind {
-    FrameKind::ViewportResize { viewport }
-}
-
 /// The current viewport, or 80x24 (logged) if the query fails.
 pub(super) fn current_viewport_or_default() -> ViewportInfo {
     match current_viewport() {
@@ -199,29 +194,19 @@ pub(super) const HOST_CELL_PX_FALLBACK: (u16, u16) = (8, 16);
 /// The host's per-cell pixel size, floored exactly as the server derives it
 /// (SPEC L1 §9.2.1).
 pub(super) fn host_cell_px(viewport: &ViewportInfo) -> (u16, u16) {
-    reported_cell_px(viewport).unwrap_or(HOST_CELL_PX_FALLBACK)
+    resize_cell_px(viewport).unwrap_or(HOST_CELL_PX_FALLBACK)
 }
 
-/// The cell size the host actually reported, or `None` without usable pixel
-/// metrics (the server then keeps the pane's last cell size).
-fn reported_cell_px(viewport: &ViewportInfo) -> Option<(u16, u16)> {
+/// ADR-0145: the cell size each `RESIZE_TERMINAL` carries: the one the host
+/// actually reported, or `None` without usable pixel metrics (the server
+/// then keeps the pane's last cell size).
+pub(super) fn resize_cell_px(viewport: &ViewportInfo) -> Option<(u16, u16)> {
     if viewport.cols == 0 || viewport.rows == 0 {
         return None;
     }
     let w = viewport.pixel_w? / viewport.cols;
     let h = viewport.pixel_h? / viewport.rows;
     (w > 0 && h > 0).then_some((w, h))
-}
-
-/// ADR-0145: the cell size each `RESIZE_TERMINAL` carries. `None` against a
-/// server that does not apply it (it still gets the legacy viewport vote)
-/// or when the host reports no pixel metrics.
-pub(super) fn resize_cell_px(pane_sized: bool, viewport: &ViewportInfo) -> Option<(u16, u16)> {
-    if pane_sized {
-        reported_cell_px(viewport)
-    } else {
-        None
-    }
 }
 
 /// Read the controlling-TTY size via `tcgetwinsize` and return the
@@ -340,11 +325,10 @@ mod tests {
     /// ADR-0145: the resize cell size is the host's reported cell, only
     /// when the server applies it and the host reports pixel metrics.
     #[test]
-    fn resize_cell_px_needs_the_feature_and_real_metrics() {
+    fn resize_cell_px_needs_real_metrics() {
         let metered = ViewportInfo::new(100, 30).with_pixels(Some(900), Some(540));
-        assert_eq!(resize_cell_px(true, &metered), Some((9, 18)));
-        assert_eq!(resize_cell_px(false, &metered), None);
-        assert_eq!(resize_cell_px(true, &ViewportInfo::new(100, 30)), None);
+        assert_eq!(resize_cell_px(&metered), Some((9, 18)));
+        assert_eq!(resize_cell_px(&ViewportInfo::new(100, 30)), None);
         assert_eq!(
             host_cell_px(&ViewportInfo::new(100, 30)),
             HOST_CELL_PX_FALLBACK

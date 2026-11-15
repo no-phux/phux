@@ -3,7 +3,7 @@ use crate::attach::pane_state::PaneSlot;
 use crate::layout::ArrangementDoc;
 use phux_client::agent_meta::AgentRecord;
 use phux_protocol::WindowId;
-use phux_protocol::caps::{BootstrapLimits, BootstrapProfile, ServerFeatureSet};
+use phux_protocol::caps::{BootstrapLimits, BootstrapProfile, ServerFeature, ServerFeatureSet};
 use phux_protocol::ids::SessionId;
 use phux_protocol::input::InputEvent;
 use phux_protocol::input::key::{KeyAction, KeyEvent, ModSet, PhysicalKey};

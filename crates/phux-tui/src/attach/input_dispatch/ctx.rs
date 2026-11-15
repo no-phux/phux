@@ -69,8 +69,6 @@ pub(in crate::attach) struct DispatchCtx<'a> {
     /// through `APPLY_INPUT`. `None` on UDS.
     pub input_replay:
         Option<&'a std::cell::RefCell<crate::attach::input_replay::InputReplayJournal>>,
-    /// Whether the server supports `SPAWN_RESOURCE.initial_size`.
-    pub spawn_initial_size_supported: bool,
     /// Whether the server advertises `ORGANIZATION` (ADR-0161): session
     /// edits are typed commands, not writes to the translated session keys.
     pub organization_supported: bool,
@@ -85,14 +83,10 @@ pub(in crate::attach) struct DispatchCtx<'a> {
     /// ADR-0147: floating plugin overlay spawns awaiting their
     /// `RESOURCE_SPAWNED`, by request id, with the box title.
     pub pending_floating: &'a mut HashMap<u32, String>,
-    /// What `go-to-directory` can list on this server.
-    pub directory_support: crate::attach::directory_picker::DirectorySupport,
     /// The `LIST_DIRECTORY` the directory picker is waiting on, with the
     /// host it reads. Newest request wins: a reply carrying any other id is
     /// stale (the user already navigated on) and is dropped.
     pub pending_directory: &'a mut Option<crate::attach::directory_picker::PendingDirectory>,
-    /// Negotiated extension capability; older peers must not see `PATH_QUERY`.
-    pub path_query_supported: bool,
     /// Original insertion target and newest in-flight query.
     pub pending_path: &'a mut Option<crate::attach::path_picker::PendingPath>,
     /// Our server-assigned id for input-lease checks.
