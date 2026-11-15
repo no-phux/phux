@@ -64,11 +64,7 @@ fn minimum_desktop_rail_reveals_every_destination_by_tab_and_activates_it() {
     for category in Category::ALL {
         rt.frame(1.0);
         rt.frame(1.0);
-        let item = rt
-            .elements()
-            .into_iter()
-            .find(|el| el.key.as_deref() == Some(category.key()))
-            .unwrap();
+        let item = crate::ui::element(&rt, category.key());
         assert!(item.focused, "Tab reaches {}", category.name());
         assert!(
             item.visible[3] >= 47.0,
@@ -85,11 +81,7 @@ fn minimum_desktop_rail_reveals_every_destination_by_tab_and_activates_it() {
         rt.frame(1.0);
         assert_eq!(rt.state.settings_ui.category, Some(category));
         rt.frame(1.0);
-        let selected = rt
-            .elements()
-            .into_iter()
-            .find(|el| el.key.as_deref() == Some(category.key()))
-            .unwrap();
+        let selected = crate::ui::element(&rt, category.key());
         assert!(
             selected.visible[3] >= 47.0,
             "activated {} remains revealed: {:?}",
@@ -144,11 +136,7 @@ fn native_search_editing_and_tab_do_not_change_preferences() {
 }
 
 fn assert_search_caret_centered(rt: &Runtime<Desk>) {
-    let query = rt
-        .elements()
-        .into_iter()
-        .find(|el| el.key.as_deref() == Some("settings-query"))
-        .unwrap();
+    let query = crate::ui::element(rt, "settings-query");
     let [_, y, _, h] = query.rect;
     let [_, caret_y, _, caret_h] = query.caret.expect("focused search has a native caret");
     assert!(

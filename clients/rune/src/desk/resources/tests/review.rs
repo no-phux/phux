@@ -289,12 +289,7 @@ fn native_json_selection_and_copy_shortcuts_copy_plain_text_without_remote_input
     rt.use_clipboard(&clipboard);
     outbound(&client);
     let key = text_key(&id(2));
-    let rect = rt
-        .elements()
-        .into_iter()
-        .find(|e| e.key.as_deref() == Some(key.as_str()))
-        .unwrap()
-        .rect;
+    let rect = crate::ui::element(&rt, key.as_str()).rect;
     rt.pointer_down(rect[0] + 5.0, rect[1] + 5.0);
     rt.pointer_up(rect[0] + 5.0, rect[1] + 5.0);
     rt.frame(0.0);
@@ -362,12 +357,7 @@ fn dragging_a_secondary_json_selection_also_focuses_its_resource() {
     step(&mut rt);
     outbound(&client);
     let key = text_key(&id(2));
-    let rect = rt
-        .elements()
-        .into_iter()
-        .find(|e| e.key.as_deref() == Some(key.as_str()))
-        .unwrap()
-        .rect;
+    let rect = crate::ui::element(&rt, key.as_str()).rect;
     rt.pointer_down(rect[0] + 1.0, rect[1] + 5.0);
     rt.pointer_move(rect[0] + 100.0, rect[1] + 20.0);
     rt.frame(0.0);

@@ -391,11 +391,7 @@ fn native_fields_edit_synchronously_and_never_reach_the_terminal() {
         "machine-field",
     ] {
         let (client, mut rt, mut bridge) = field(key);
-        let editor = rt
-            .elements()
-            .into_iter()
-            .find(|e| e.key.as_deref() == Some(key))
-            .unwrap();
+        let editor = crate::ui::element(&rt, key);
         assert!(
             editor.label.is_some_and(|label| !label.is_empty()),
             "{key} needs a name, not just a placeholder"

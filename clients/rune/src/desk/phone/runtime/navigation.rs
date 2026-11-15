@@ -175,11 +175,7 @@ fn sessions_remain_usable_in_a_small_phone_with_search_keyboard_open() {
             "phone-session-query",
             "phone-session-new",
         ] {
-            let element = rt
-                .elements()
-                .into_iter()
-                .find(|e| e.key.as_deref() == Some(key))
-                .unwrap();
+            let element = crate::ui::element(&rt, key);
             assert!(element.visible[3] >= 40.0, "{size:?} {key}: {element:?}");
             assert!(element.rect[0] >= 0.0 && element.rect[0] + element.rect[2] <= size.0 + 0.5);
         }

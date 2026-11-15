@@ -202,12 +202,7 @@ pub fn focus(rt: &Runtime<Desk>) -> ResourceId {
     rt.state.shown.as_ref().unwrap().resource.clone()
 }
 
-pub fn geometry(rt: &Runtime<Desk>, key: &str) -> rune::ElementInfo {
-    rt.elements()
-        .into_iter()
-        .find(|e| e.key.as_deref() == Some(key))
-        .unwrap_or_else(|| panic!("no {key}"))
-}
+pub use crate::ui::element as geometry;
 
 pub fn tap(rt: &mut Runtime<Desk>, key: &str) {
     let (x, y) = rt.find(key).unwrap_or_else(|| panic!("no {key}"));

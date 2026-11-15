@@ -475,6 +475,15 @@ pub(crate) fn button(label: &'static str, key: &'static str, p: &Ink, press: fn(
 /// surface a button as `on_press` would.
 pub(crate) fn keep_from_pane(_: &mut Desk, _: &mut rune::Drag, _: &mut rune::Tx) {}
 
+/// The element keyed `key` in `rt`'s last frame.
+#[cfg(test)]
+pub fn element(rt: &rune::Runtime<Desk>, key: &str) -> rune::ElementInfo {
+    rt.elements()
+        .into_iter()
+        .find(|e| e.key.as_deref() == Some(key))
+        .unwrap_or_else(|| panic!("no {key}"))
+}
+
 /// `rt`'s last frame painted `size` pixels big through Rune's real
 /// renderer, as RGBA.
 #[cfg(test)]
