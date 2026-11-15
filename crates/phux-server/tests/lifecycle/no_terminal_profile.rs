@@ -2,7 +2,6 @@
 //! (`docs/resource-kinds.md`, `phux-phiio.3`): it consumes other kinds, and a
 //! Terminal stream is refused when it binds, with the connection kept.
 
-use phux_protocol::PROTOCOL_VERSION;
 use phux_protocol::caps::{
     BootstrapCapabilities, BootstrapProfileSet, ClientCapabilities, LayerSet,
 };
@@ -21,17 +20,14 @@ async fn connect_without_terminal_profile(server: &Server) -> UnixStream {
     let mut viewer = wait_for_raw_socket(&server.socket, SOCKET_CONNECT_DEADLINE).await;
     send_frame(
         &mut viewer,
-        &FrameKind::Hello {
-            client_name: "no-terminal-profile".to_owned(),
-            protocol_major: PROTOCOL_VERSION.major,
-            protocol_minor: PROTOCOL_VERSION.minor,
-            protocol_patch: PROTOCOL_VERSION.patch,
-            client_caps: ClientCapabilities::new()
+        &phux_server_testkit::hello(
+            "no-terminal-profile",
+            ClientCapabilities::new()
                 .with_layers(LayerSet::all())
                 .with_bootstrap(
                     BootstrapCapabilities::new().with_profiles(BootstrapProfileSet::new()),
                 ),
-        },
+        ),
     )
     .await;
     let (_, hello_ok) = recv_typed(&mut viewer).await;

@@ -11,7 +11,6 @@
 #![cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
 
 use bytes::Bytes;
-use phux_protocol::PROTOCOL_VERSION;
 use phux_protocol::caps::{
     BootstrapCapabilities, BootstrapProfile, BootstrapStreamProfile, ClientCapabilities,
     EngineCodec, EngineFeatureSet,
@@ -44,13 +43,7 @@ async fn connect_native(path: &std::path::Path) -> UnixStream {
         EngineCodec::LibghosttySnapshotV1,
         EngineFeatureSet::required_native(),
     ));
-    let hello = FrameKind::Hello {
-        client_name: "phux-history-cursor-race".to_owned(),
-        protocol_major: PROTOCOL_VERSION.major,
-        protocol_minor: PROTOCOL_VERSION.minor,
-        protocol_patch: PROTOCOL_VERSION.patch,
-        client_caps: caps,
-    };
+    let hello = phux_server_testkit::hello("phux-history-cursor-race", caps);
     send_frame(&mut stream, &hello).await;
     let (_, reply) = recv_typed(&mut stream).await;
     assert!(

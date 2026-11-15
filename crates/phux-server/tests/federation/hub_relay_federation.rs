@@ -8,7 +8,6 @@ use std::time::{Duration, Instant};
 
 use futures_util::{SinkExt, StreamExt};
 use phux_config::SatelliteConfigEntry;
-use phux_protocol::PROTOCOL_VERSION;
 use phux_protocol::caps::ClientCapabilities;
 use phux_protocol::ids::{ResourceId, SatelliteHost};
 use phux_protocol::input::InputEvent;
@@ -206,13 +205,8 @@ async fn discover_satellite_pane(ws_port: u16) -> u32 {
         }
         tokio::time::sleep(Duration::from_millis(25)).await;
     };
-    let hello = FrameKind::Hello {
-        client_name: "hub-relay-federation-test".to_owned(),
-        protocol_major: PROTOCOL_VERSION.major,
-        protocol_minor: PROTOCOL_VERSION.minor,
-        protocol_patch: PROTOCOL_VERSION.patch,
-        client_caps: ClientCapabilities::default(),
-    };
+    let hello =
+        phux_server_testkit::hello("hub-relay-federation-test", ClientCapabilities::default());
     let get_state = FrameKind::Command {
         request_id: 900,
         command: Command::GetState {

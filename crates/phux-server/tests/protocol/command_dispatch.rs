@@ -5,7 +5,6 @@ use std::time::Duration;
 
 use base64::Engine as _;
 use phux_core::screen::ScreenState;
-use phux_protocol::PROTOCOL_VERSION;
 use phux_protocol::caps::{ClientCapabilities, ColorSupport, LayerSet, ServerFeature};
 use phux_protocol::ids::{InputOperationId, ResourceId};
 use phux_protocol::input::InputEvent;
@@ -265,15 +264,12 @@ fn hello_ok_advertises_the_command_features() {
         let mut raw = server.connect_raw().await;
         send_frame(
             &mut raw,
-            &FrameKind::Hello {
-                client_name: "features".to_owned(),
-                protocol_major: PROTOCOL_VERSION.major,
-                protocol_minor: PROTOCOL_VERSION.minor,
-                protocol_patch: PROTOCOL_VERSION.patch,
-                client_caps: ClientCapabilities::new()
+            &phux_server_testkit::hello(
+                "features",
+                ClientCapabilities::new()
                     .with_color_support(ColorSupport::TrueColor)
                     .with_layers(LayerSet::all()),
-            },
+            ),
         )
         .await;
         let FrameKind::HelloOk { server_caps, .. } = recv_typed(&mut raw).await.1 else {

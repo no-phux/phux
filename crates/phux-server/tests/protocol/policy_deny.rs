@@ -9,7 +9,6 @@
 
 use std::sync::Arc;
 
-use phux_protocol::PROTOCOL_VERSION;
 use phux_protocol::caps::{ClientCapabilities, ColorSupport, LayerSet};
 use phux_protocol::policy::PeerIdentity;
 use phux_protocol::wire::frame::{DetachReason, ErrorCode, FrameKind, Scope, WHOAMI_KEY};
@@ -45,15 +44,12 @@ impl PolicyEngine for DenyAllPolicy {
 }
 
 fn hello() -> FrameKind {
-    FrameKind::Hello {
-        client_name: "policy-deny-test".to_owned(),
-        protocol_major: PROTOCOL_VERSION.major,
-        protocol_minor: PROTOCOL_VERSION.minor,
-        protocol_patch: PROTOCOL_VERSION.patch,
-        client_caps: ClientCapabilities::new()
+    phux_server_testkit::hello(
+        "policy-deny-test",
+        ClientCapabilities::new()
             .with_color_support(ColorSupport::TrueColor)
             .with_layers(LayerSet::all()),
-    }
+    )
 }
 
 fn cfg(socket_path: std::path::PathBuf, engine: Option<Arc<dyn PolicyEngine>>) -> ServerConfig {

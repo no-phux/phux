@@ -7,7 +7,6 @@
     reason = "tests"
 )]
 
-use phux_protocol::PROTOCOL_VERSION;
 use phux_protocol::caps::{ClientCapabilities, ColorSupport, LayerSet, ServerFeatureExt};
 use phux_protocol::ids::SatelliteHost;
 use phux_protocol::wire::frame::{
@@ -72,15 +71,12 @@ fn paths_are_host_absolute_typed_and_refused_without_rerouting() {
         let mut stream = wait_for_raw_socket(&socket, SOCKET_CONNECT_DEADLINE).await;
         send_frame(
             &mut stream,
-            &FrameKind::Hello {
-                client_name: "path-query-test".to_owned(),
-                protocol_major: PROTOCOL_VERSION.major,
-                protocol_minor: PROTOCOL_VERSION.minor,
-                protocol_patch: PROTOCOL_VERSION.patch,
-                client_caps: ClientCapabilities::new()
+            &phux_server_testkit::hello(
+                "path-query-test",
+                ClientCapabilities::new()
                     .with_color_support(ColorSupport::TrueColor)
                     .with_layers(LayerSet::all()),
-            },
+            ),
         )
         .await;
         let (kind, hello) = recv_typed(&mut stream).await;

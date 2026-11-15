@@ -89,25 +89,28 @@ pub async fn wait_for_socket_with(
     caps: impl FnOnce(ClientCapabilities) -> ClientCapabilities,
 ) -> UnixStream {
     let mut stream = wait_for_raw_socket(path, deadline).await;
-    send_frame(
-        &mut stream,
-        &FrameKind::Hello {
-            client_name: "phux-server-integration-test".to_owned(),
-            protocol_major: PROTOCOL_VERSION.major,
-            protocol_minor: PROTOCOL_VERSION.minor,
-            protocol_patch: PROTOCOL_VERSION.patch,
-            client_caps: caps(
-                ClientCapabilities::new()
-                    .with_color_support(ColorSupport::TrueColor)
-                    .with_layers(LayerSet::all()),
-            ),
-        },
-    )
-    .await;
+    let caps = caps(
+        ClientCapabilities::new()
+            .with_color_support(ColorSupport::TrueColor)
+            .with_layers(LayerSet::all()),
+    );
+    send_frame(&mut stream, &hello("phux-server-integration-test", caps)).await;
     let (type_byte, frame) = recv_typed(&mut stream).await;
     assert_eq!(type_byte, TYPE_HELLO_OK);
     assert!(matches!(frame, FrameKind::HelloOk { .. }));
     stream
+}
+
+/// A `HELLO` at this build's protocol version.
+#[must_use]
+pub fn hello(client_name: &str, client_caps: ClientCapabilities) -> FrameKind {
+    FrameKind::Hello {
+        client_name: client_name.to_owned(),
+        protocol_major: PROTOCOL_VERSION.major,
+        protocol_minor: PROTOCOL_VERSION.minor,
+        protocol_patch: PROTOCOL_VERSION.patch,
+        client_caps,
+    }
 }
 
 /// Poll `UnixStream::connect(path)` without sending protocol frames.

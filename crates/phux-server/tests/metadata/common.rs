@@ -7,7 +7,6 @@
 
 use std::path::Path;
 
-use phux_protocol::PROTOCOL_VERSION;
 use phux_protocol::caps::{ClientCapabilities, ColorSupport, LayerSet};
 use phux_protocol::ids::ResourceId;
 use phux_protocol::wire::frame::{Command, CommandResult, FrameKind, StateScope};
@@ -33,17 +32,7 @@ pub(crate) async fn connect_as(
     caps: ClientCapabilities,
 ) -> (UnixStream, FrameKind) {
     let mut stream = wait_for_raw_socket(socket, SOCKET_CONNECT_DEADLINE).await;
-    send_frame(
-        &mut stream,
-        &FrameKind::Hello {
-            client_name: name.to_owned(),
-            protocol_major: PROTOCOL_VERSION.major,
-            protocol_minor: PROTOCOL_VERSION.minor,
-            protocol_patch: PROTOCOL_VERSION.patch,
-            client_caps: caps,
-        },
-    )
-    .await;
+    send_frame(&mut stream, &phux_server_testkit::hello(name, caps)).await;
     let (_, hello_ok) = recv_typed(&mut stream).await;
     assert!(
         matches!(hello_ok, FrameKind::HelloOk { .. }),

@@ -14,7 +14,6 @@ use std::sync::OnceLock;
 use std::time::Duration;
 
 use phux_dial::{CertTrust, QuicDial};
-use phux_protocol::PROTOCOL_VERSION;
 use phux_protocol::caps::{ClientCapabilities, ColorSupport, LayerSet, ServerFeature};
 use phux_protocol::wire::frame::{
     Command, CommandResult, CommandValue, ErrorCode, FrameKind, ListenerTransport,
@@ -55,15 +54,12 @@ fn tls() -> &'static Tls {
 }
 
 fn hello() -> FrameKind {
-    FrameKind::Hello {
-        client_name: "open-listener-test".to_owned(),
-        protocol_major: PROTOCOL_VERSION.major,
-        protocol_minor: PROTOCOL_VERSION.minor,
-        protocol_patch: PROTOCOL_VERSION.patch,
-        client_caps: ClientCapabilities::new()
+    phux_server_testkit::hello(
+        "open-listener-test",
+        ClientCapabilities::new()
             .with_color_support(ColorSupport::TrueColor)
             .with_layers(LayerSet::all()),
-    }
+    )
 }
 
 /// Send `OPEN_LISTENER` over `stream` and return the server's answer.

@@ -7,7 +7,6 @@
 
 use std::time::Duration;
 
-use phux_protocol::PROTOCOL_VERSION;
 use phux_protocol::caps::{ClientCapabilities, ServerFeature};
 use phux_protocol::ids::{FileUploadId, InputOperationId, ResourceId};
 use phux_protocol::input::InputEvent;
@@ -193,13 +192,7 @@ fn attach_without_role_policy_is_byte_identical_and_behaves_as_before() {
             phux_server_testkit::SOCKET_CONNECT_DEADLINE,
         )
         .await;
-        let hello = FrameKind::Hello {
-            client_name: "roles".to_owned(),
-            protocol_major: PROTOCOL_VERSION.major,
-            protocol_minor: PROTOCOL_VERSION.minor,
-            protocol_patch: PROTOCOL_VERSION.patch,
-            client_caps: ClientCapabilities::new(),
-        };
+        let hello = phux_server_testkit::hello("roles", ClientCapabilities::new());
         send_frame(&mut client, &hello).await;
         let FrameKind::HelloOk { server_caps, .. } = recv_typed(&mut client).await.1 else {
             panic!("expected HELLO_OK");

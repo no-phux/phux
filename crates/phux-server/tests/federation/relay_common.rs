@@ -12,7 +12,6 @@ use std::path::Path;
 use phux_config::ConnectorConfigEntry;
 use phux_dial::quic::{DialedStream, InnerTls};
 use phux_dial::{CertTrust, DialError, QuicDial, TlsClientIdentity};
-use phux_protocol::PROTOCOL_VERSION;
 use phux_protocol::caps::ClientCapabilities;
 use phux_protocol::wire::frame::FrameKind;
 use phux_relay::{RelayConfig, cert_fingerprint};
@@ -165,13 +164,7 @@ pub(crate) fn plan(
 }
 
 pub(crate) fn hello(client_name: &str) -> FrameKind {
-    FrameKind::Hello {
-        client_name: client_name.to_owned(),
-        protocol_major: PROTOCOL_VERSION.major,
-        protocol_minor: PROTOCOL_VERSION.minor,
-        protocol_patch: PROTOCOL_VERSION.patch,
-        client_caps: ClientCapabilities::default(),
-    }
+    phux_server_testkit::hello(client_name, ClientCapabilities::default())
 }
 
 pub(crate) async fn write_frame(
