@@ -58,7 +58,9 @@ mod help_inventory;
 pub use commands::server::AUTO_SPAWN_IDLE_ENV;
 pub use commands::server::ENSURE_TIMEOUT_ENV;
 
-/// Record this build's source checkout `distros/` directory.
+/// Record this build's source checkout `distros/` directory, searched last
+/// for a bundled `--distro`. The binary passes it so no checkout path keys
+/// this library in a content-addressed build cache.
 pub fn set_checkout_distros(dir: &'static str) {
     let _ = commands::config::CHECKOUT_DISTROS.set(std::path::Path::new(dir));
 }
