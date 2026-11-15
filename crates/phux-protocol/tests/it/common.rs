@@ -8,7 +8,7 @@
 
 // `pub` is idiomatic for a shared test module even though the `it` binary is
 // its own crate root, and not every helper has a caller in every build.
-#![allow(dead_code, unreachable_pub, clippy::unwrap_used)]
+#![allow(dead_code, unreachable_pub, clippy::unwrap_used, clippy::panic)]
 
 /// Append an unsigned LEB128 varint.
 pub fn put_varint(out: &mut Vec<u8>, mut v: u64) {
@@ -175,4 +175,41 @@ pub fn attached_with_layout(layout: &[u8]) -> Vec<u8> {
     tlv_field(&mut fields, 2, &7u32.to_be_bytes());
     tlv_field(&mut fields, 3, &1u32.to_be_bytes());
     framed_tlv(0x81, &fields)
+}
+
+/// `snapshot` as the `GET_STATE` reply that carries it.
+pub const fn state_reply(
+    snapshot: phux_protocol::wire::info::SessionSnapshot,
+) -> phux_protocol::wire::frame::FrameKind {
+    use phux_protocol::wire::frame::{CommandResult, CommandValue, FrameKind};
+    FrameKind::CommandResult {
+        request_id: 1,
+        result: CommandResult::OkWith(CommandValue::State(snapshot)),
+    }
+}
+
+/// The snapshot a framed `GET_STATE` reply carries.
+pub fn decode_state(bytes: &[u8]) -> phux_protocol::wire::info::SessionSnapshot {
+    use phux_protocol::wire::frame::{CommandResult, CommandValue, FrameKind};
+    match FrameKind::decode(bytes).unwrap().0 {
+        FrameKind::CommandResult {
+            result: CommandResult::OkWith(CommandValue::State(snapshot)),
+            ..
+        } => snapshot,
+        other => panic!("expected a state result, got {other:?}"),
+    }
+}
+
+/// The snapshot an `ATTACHED` frame built around positional `snapshot`
+/// bytes decodes to.
+pub fn decode_attached_snapshot(snapshot: &[u8]) -> phux_protocol::wire::info::SessionSnapshot {
+    use phux_protocol::wire::frame::FrameKind;
+    let mut fields = Vec::new();
+    tlv_field(&mut fields, 1, snapshot);
+    tlv_field(&mut fields, 2, &1u32.to_be_bytes());
+    tlv_field(&mut fields, 3, &1u32.to_be_bytes());
+    match FrameKind::decode(&framed_tlv(0x81, &fields)).unwrap().0 {
+        FrameKind::Attached { snapshot, .. } => snapshot,
+        other => panic!("expected Attached, got {other:?}"),
+    }
 }

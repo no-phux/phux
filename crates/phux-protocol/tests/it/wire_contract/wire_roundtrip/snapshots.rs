@@ -6,6 +6,7 @@ use super::{
     SessionSnapshot, StreamId, WindowId, assert_round_trip, framed_tlv, local_id_bytes, record,
     tlv_field,
 };
+use crate::common::{decode_attached_snapshot, decode_state, encode, state_reply};
 
 #[test]
 fn snapshot_without_resource_facets_is_byte_stable_and_decodes_defaults() {
@@ -45,29 +46,9 @@ fn snapshot_without_resource_facets_is_byte_stable_and_decodes_defaults() {
 /// a snapshot without it keeps its earlier bytes.
 #[test]
 fn snapshot_journal_head_rides_the_extension_block_and_is_absent_by_default() {
-    use phux_protocol::wire::frame::{CommandResult, CommandValue};
     use phux_protocol::wire::info::ExitFacet;
 
-    let encode = |snapshot: &SessionSnapshot| {
-        let mut buf = BytesMut::new();
-        FrameKind::CommandResult {
-            request_id: 1,
-            result: CommandResult::OkWith(CommandValue::State(snapshot.clone())),
-        }
-        .encode(&mut buf);
-        buf
-    };
-    let decode = |bytes: &[u8]| {
-        let (frame, _) = FrameKind::decode(bytes).unwrap();
-        let FrameKind::CommandResult {
-            result: CommandResult::OkWith(CommandValue::State(snapshot)),
-            ..
-        } = frame
-        else {
-            panic!("expected a state result, got {frame:?}");
-        };
-        snapshot
-    };
+    let encode = |snapshot: &SessionSnapshot| encode(&state_reply(snapshot.clone()));
     let plain = SessionSnapshot::new(SessionId::new(1), WindowId::new(1), ResourceId::local(1))
         .with_resources(vec![ResourceInfo::new(
             ResourceId::local(1),
@@ -81,7 +62,7 @@ fn snapshot_journal_head_rides_the_extension_block_and_is_absent_by_default() {
     let headed = plain.with_journal_head(Some(4242));
     let headed_bytes = encode(&headed);
     assert!(headed_bytes.len() > plain_bytes.len());
-    let decoded = decode(&headed_bytes);
+    let decoded = decode_state(&headed_bytes);
     assert_eq!(decoded.journal_head(), Some(4242));
     assert_eq!(decoded, headed);
     assert_eq!(
@@ -98,7 +79,7 @@ fn snapshot_journal_head_rides_the_extension_block_and_is_absent_by_default() {
                 .with_exit(Some(ExitFacet::new(5, 9).with_exit_status(Some(3)))),
         ])
         .with_journal_head(Some(7));
-    let decoded = decode(&encode(&retained));
+    let decoded = decode_state(&encode(&retained));
     assert_eq!(decoded, retained);
     assert_eq!(decoded.journal_head(), Some(7));
     assert_eq!(decoded.resources[0].exit.unwrap().exit_status, Some(3));
@@ -144,14 +125,7 @@ fn snapshot_resource_facets_join_by_id_and_ignore_unknown_rows() {
     row.extend_from_slice(b"blocked");
     row.extend_from_slice(&[0xEE; 3]);
     snap.extend_from_slice(&record(&row));
-    let mut fields = Vec::new();
-    tlv_field(&mut fields, 1, &snap);
-    tlv_field(&mut fields, 2, &1u32.to_be_bytes());
-    tlv_field(&mut fields, 3, &1u32.to_be_bytes());
-    let (decoded, _) = FrameKind::decode(&framed_tlv(0x81, &fields)).unwrap();
-    let FrameKind::Attached { snapshot, .. } = decoded else {
-        panic!("expected Attached");
-    };
+    let snapshot = decode_attached_snapshot(&snap);
     assert_eq!(snapshot.resources.len(), 1);
     let info = &snapshot.resources[0];
     assert_eq!(info.kind, ResourceKind::AgentSession);
@@ -269,14 +243,9 @@ fn keep_empty_without_hosts_writes_zero_count_anchors() {
         .with_sessions(vec![
             SessionInfo::new(SessionId::new(2), "parked").with_keep_empty(true),
         ]);
-    let reply = FrameKind::CommandResult {
-        request_id: 4,
-        result: CommandResult::OkWith(CommandValue::State(snapshot)),
-    };
+    let reply = state_reply(snapshot);
     assert_round_trip(&reply);
-
-    let mut buf = BytesMut::new();
-    reply.encode(&mut buf);
+    let buf = encode(&reply);
     // The field ends: facets count 0, hosts count 0, rows 1, then the row
     // record (length 5, id 2, flags 1).
     let session_row = record(&[0, 0, 0, 2, 1]);
@@ -310,19 +279,8 @@ fn keep_empty_without_hosts_writes_zero_count_anchors() {
     let after_hosts = [after_facets.as_slice(), &0u32.to_be_bytes()].concat();
     let full = [after_hosts.as_slice(), &1u32.to_be_bytes(), &session_row].concat();
 
-    let decode = |snap: &[u8]| {
-        let mut fields = Vec::new();
-        tlv_field(&mut fields, 1, snap);
-        tlv_field(&mut fields, 2, &1u32.to_be_bytes());
-        tlv_field(&mut fields, 3, &1u32.to_be_bytes());
-        let (decoded, _) = FrameKind::decode(&framed_tlv(0x81, &fields)).unwrap();
-        let FrameKind::Attached { snapshot, .. } = decoded else {
-            panic!("expected Attached");
-        };
-        snapshot
-    };
     for cut in [&prefix, &after_facets, &after_hosts] {
-        let snapshot = decode(cut);
+        let snapshot = decode_attached_snapshot(cut);
         assert_eq!(snapshot.sessions[0].name, "parked");
         assert!(
             !snapshot.sessions[0].keep_empty,
@@ -330,7 +288,7 @@ fn keep_empty_without_hosts_writes_zero_count_anchors() {
         );
         assert!(snapshot.hosts().is_empty());
     }
-    assert!(decode(&full).sessions[0].keep_empty);
+    assert!(decode_attached_snapshot(&full).sessions[0].keep_empty);
 }
 
 /// The `phux.session.name/v1` value codec round-trips `current\0new` and
@@ -381,24 +339,11 @@ fn unknown_session_facet_flag_bits_are_ignored() {
         .with_sessions(vec![
             SessionInfo::new(SessionId::new(1), "work").with_keep_empty(true),
         ]);
-    let reply = FrameKind::CommandResult {
-        request_id: 1,
-        result: CommandResult::OkWith(CommandValue::State(snapshot)),
-    };
-    let mut buf = BytesMut::new();
-    reply.encode(&mut buf);
+    let mut buf = encode(&state_reply(snapshot));
     // The session row is the frame's last five bytes: id (u32) then flags.
     let flags = buf.len() - 1;
     buf[flags] = 0xFF;
-    let (decoded, _) = FrameKind::decode(&buf).unwrap();
-    let FrameKind::CommandResult {
-        result: CommandResult::OkWith(CommandValue::State(state)),
-        ..
-    } = decoded
-    else {
-        panic!("expected a GET_STATE reply");
-    };
-    assert!(state.sessions[0].keep_empty);
+    assert!(decode_state(&buf).sessions[0].keep_empty);
 }
 
 /// A program-set title rides the extension block as `RESOURCE_PROGRAM_TITLE`
@@ -406,15 +351,7 @@ fn unknown_session_facet_flag_bits_are_ignored() {
 /// one keeps its earlier bytes, and an empty title is never written.
 #[test]
 fn snapshot_program_title_rides_the_extension_block_and_is_absent_by_default() {
-    let encode = |snapshot: &SessionSnapshot| {
-        let mut buf = BytesMut::new();
-        FrameKind::CommandResult {
-            request_id: 1,
-            result: CommandResult::OkWith(CommandValue::State(snapshot.clone())),
-        }
-        .encode(&mut buf);
-        buf
-    };
+    let encode = |snapshot: &SessionSnapshot| encode(&state_reply(snapshot.clone()));
     let pane = |title: Option<&str>| {
         SessionSnapshot::new(SessionId::new(1), WindowId::new(1), ResourceId::local(1))
             .with_resources(vec![
@@ -430,20 +367,9 @@ fn snapshot_program_title_rides_the_extension_block_and_is_absent_by_default() {
     );
 
     let titled = pane(Some("OC | Fix the flaky test"));
-    let frame = FrameKind::CommandResult {
-        request_id: 1,
-        result: CommandResult::OkWith(CommandValue::State(titled.clone())),
-    };
-    assert_round_trip(&frame);
+    assert_round_trip(&state_reply(titled.clone()));
     assert!(encode(&titled).len() > plain.len());
-    let (decoded, _) = FrameKind::decode(&encode(&titled)).unwrap();
-    let FrameKind::CommandResult {
-        result: CommandResult::OkWith(CommandValue::State(snapshot)),
-        ..
-    } = decoded
-    else {
-        panic!("expected a state result");
-    };
+    let snapshot = decode_state(&encode(&titled));
     assert_eq!(
         snapshot.resources[0].program_title.as_deref(),
         Some("OC | Fix the flaky test")
