@@ -36,7 +36,7 @@ pub struct WatchEvent {
     pub terminal: Option<ResourceId>,
     /// The event payload.
     pub event: AgentEvent,
-    /// The journal stamp (ADR-0123); `None` without `EVENT_JOURNAL` and on a
+    /// The journal stamp (ADR-0123); `None` from an unstamping peer and on a
     /// `journal_gap` notice.
     pub stamp: Option<EventStamp>,
 }
