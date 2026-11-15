@@ -102,7 +102,15 @@ jobs:
           echo "Building ${expected} (run headSha ${GITHUB_SHA})" >> "$GITHUB_STEP_SUMMARY"
 
       - name: Contributor Zig setup
-        run: bash scripts/install-zig.sh "$RUNNER_TEMP/phux-toolchains" >> "$GITHUB_PATH"
+        run: |
+          bash scripts/install-zig.sh "$RUNNER_TEMP/phux-toolchains" >> "$GITHUB_PATH"
+          # ghostty's build.zig panics when its HEAD carries a tag that is not vX.Y.Z,
+          # and the ghostty fork tags archived branches (phux-1wudz). This step lives
+          # in the workflow, not the checkout, so a dispatch for an older tag gets it too.
+          # Hide git from Zig only; ghostty then uses its dev version.
+          printf '#!/bin/sh\nGIT_DIR=/nonexistent exec zig "$@"\n' > "$RUNNER_TEMP/zig-no-git"
+          chmod +x "$RUNNER_TEMP/zig-no-git"
+          echo "ZIG=$RUNNER_TEMP/zig-no-git" >> "$GITHUB_ENV"
 
       - name: Contributor Rust setup
         run: bash scripts/setup-rust.sh core
