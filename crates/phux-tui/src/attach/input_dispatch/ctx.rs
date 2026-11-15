@@ -25,43 +25,36 @@ use super::effects::ReattachTarget;
     reason = "independent negotiated-capability flags lent from the driver; a bitset would obscure every read site"
 )]
 pub(in crate::attach) struct DispatchCtx<'a> {
-    /// Dial used to open a dedicated request/response connection for actions
-    /// that cannot safely consume interleaved frames from the attach stream.
+    /// Dial for a dedicated request/response connection (the attach stream
+    /// interleaves frames).
     pub control_dial: Option<&'a crate::attach::Dial>,
     /// Connection-owned engine replicas used for terminal queries and local scrolling.
     pub engine_kernel: &'a mut crate::attach::pane_state::AttachKernel,
     /// Non-Terminal resources the server's graph named: placeholder leaves.
     pub leaves: &'a crate::attach::surface_leaf::LeafBook,
-    /// Keybind resolver state. `None` when the on-disk config failed
-    /// to parse; the dispatcher then forwards every key to the focused
-    /// pane unchanged.
+    /// Keybind resolver; `None` when the config failed to parse, so every
+    /// key forwards to the focused pane.
     pub resolver: Option<&'a mut phux_config::keybind::Resolver>,
     /// Client-local focus transition/MRU bookkeeping.
     pub focus_history: FocusHistory,
-    /// Client-side multi-window mirror. Pane actions operate on the
-    /// active window ([`ArrangementDoc::active_group_mut`]); the whole
-    /// workspace is what gets serialized to L3 on a `SET_METADATA`.
+    /// Client-side multi-window mirror; pane actions operate on the active
+    /// window.
     pub workspace: &'a mut ArrangementDoc,
     /// A correlated initial layout GET confirmed valid metadata or absence.
     pub layout_read_complete: bool,
-    /// An arrangement link is still unloaded. A held hidden-view action
-    /// sets this read-owed flag to request one retry, without spinning.
+    /// An unloaded arrangement link: a held hidden-view action sets this to
+    /// request one retry.
     pub unloaded_arrangement_read: Option<&'a mut bool>,
-    /// `close-view` / `reopen-views` pressed before that read. Applied to
-    /// the adopted workspace when the read completes, then saved. `None` in
-    /// a caller that cannot hold them: the keystroke is dropped instead of
-    /// editing the fallback layout.
+    /// `close-view` / `reopen-views` pressed before that read, applied once
+    /// it completes. `None` drops the keystroke instead.
     pub deferred_arrangement_edits: Option<&'a mut Vec<super::deferred::DeferredArrangementEdit>>,
-    /// Set when the session's arrangement is a record the driver writes over
-    /// its control connection: a layout broadcast raises it instead of
-    /// sending `SET_METADATA`, and the driver writes after the batch.
+    /// Set when the arrangement is a record the driver writes after the
+    /// batch; a layout broadcast raises it instead of `SET_METADATA`.
     pub arrangement_write_owed: Option<&'a mut bool>,
-    /// Outer-viewport `(cols, rows)`. Used by `apply_resize` to convert
-    /// `amount` (cells) to a ratio delta.
+    /// Outer-viewport `(cols, rows)`.
     pub viewport: (u16, u16),
-    /// Host cell size in pixels, derived like the server's (`pixel / cells`,
-    /// 8x16 fallback, never zero); `INPUT_MOUSE` is scaled by it at the send
-    /// boundary (docs/protocol.md#input).
+    /// Host cell size in pixels, derived like the server's; `INPUT_MOUSE` is
+    /// scaled by it at the send boundary.
     pub cell_px: (u16, u16),
     /// Monotonic source of request ids.
     pub next_request_id: &'a mut u32,
@@ -69,23 +62,16 @@ pub(in crate::attach) struct DispatchCtx<'a> {
     /// through `APPLY_INPUT`. `None` on UDS.
     pub input_replay:
         Option<&'a std::cell::RefCell<crate::attach::input_replay::InputReplayJournal>>,
-    /// Whether the server advertises `ORGANIZATION` (ADR-0161): session
-    /// edits are typed commands, not writes to the translated session keys.
+    /// Whether the server advertises `ORGANIZATION` (ADR-0161).
     pub organization_supported: bool,
-    /// Parked split actions awaiting their
-    /// `RESOURCE_SPAWNED` reply. `run_action` inserts;
-    /// `handle_server_frame` removes.
+    /// Parked `split-pane`s awaiting `RESOURCE_SPAWNED`, by request id.
     pub pending_splits: &'a mut HashMap<u32, PendingSplit>,
-    /// Parked `new-window` actions awaiting their
-    /// `RESOURCE_SPAWNED` reply. Same lifecycle as `pending_splits`,
-    /// keyed in the same request-id space.
+    /// Parked `new-window`s awaiting `RESOURCE_SPAWNED`, same id space.
     pub pending_windows: &'a mut HashMap<u32, PendingWindow>,
-    /// ADR-0147: floating plugin overlay spawns awaiting their
-    /// `RESOURCE_SPAWNED`, by request id, with the box title.
+    /// ADR-0147: floating overlay spawns awaiting `RESOURCE_SPAWNED`, with
+    /// the box title.
     pub pending_floating: &'a mut HashMap<u32, String>,
-    /// The `LIST_DIRECTORY` the directory picker is waiting on, with the
-    /// host it reads. Newest request wins: a reply carrying any other id is
-    /// stale (the user already navigated on) and is dropped.
+    /// The `LIST_DIRECTORY` the directory picker awaits; newest wins.
     pub pending_directory: &'a mut Option<crate::attach::directory_picker::PendingDirectory>,
     /// Original insertion target and newest in-flight query.
     pub pending_path: &'a mut Option<crate::attach::path_picker::PendingPath>,
@@ -98,36 +84,28 @@ pub(in crate::attach) struct DispatchCtx<'a> {
     /// `request_id` -> Terminal for sent kills; a `TerminalNotFound` refusal
     /// folds the dead leaf out.
     pub pending_kills: &'a mut HashMap<u32, ResourceId>,
-    /// Overlay stack. When non-empty the dispatcher routes
-    /// key events to the active overlay (no resolver, no predict, no
-    /// pane forwarding) and discovery actions push onto it.
+    /// Overlay stack: when non-empty, keys route to the top overlay.
     pub overlays: &'a mut OverlayState,
-    /// Snapshot of the on-disk keybindings, captured at driver start.
-    /// The action finder uses it to show each live chord. `None` when
-    /// config load failed (rows then show as unbound).
+    /// The on-disk keybindings, for chord labels; `None` when config load
+    /// failed.
     pub keybindings: Option<&'a phux_config::KeybindingsCfg>,
     /// Chrome and overlay theme.
     pub theme: &'a Theme,
-    /// The peer-wide view: the server's session graph (and which session is
-    /// ours), the federation host inventory, and the peer layouts, agent
-    /// records, and asks the pickers and the fleet list.
+    /// The peer-wide view: session graph, host inventory, peer layouts,
+    /// agent records, and asks.
     pub peers: PeerInputs<'a>,
     /// Set when an action wants a fresher host inventory.
     pub host_refresh_request: &'a mut bool,
     /// The attached session's name; changed only by a confirmed rename.
     pub session_name: &'a mut String,
-    /// In-flight `rename-session` confirmation, parked by
-    /// [`apply_action_effects`] until the driver consumes the `GET_STATE`
-    /// barrier. `None` when no rename is outstanding.
+    /// In-flight `rename-session` confirmation; `None` when none is
+    /// outstanding.
     pub rename_pending: &'a mut Option<super::effects::PendingSessionRename>,
-    /// A session rename or create the shared name policy refused before any
-    /// write. The driver surfaces it on the status bar after this batch.
-    /// `None` when the batch refused neither.
+    /// A rename or create the name policy refused, for the status bar.
     pub rename_notice: &'a mut Option<String>,
     /// Out-channel for a committed re-attach.
     pub switch_request: &'a mut Option<ReattachTarget>,
-    /// A `DETACH` is in flight; set by the first detach so a second is not
-    /// re-sent.
+    /// A `DETACH` is in flight, so a second is not sent.
     pub detach_pending: &'a mut bool,
     /// The driver's pane-zoom state.
     pub zoomed: &'a mut Option<ResourceId>,
@@ -149,41 +127,27 @@ pub(in crate::attach) struct DispatchCtx<'a> {
     pub drag: &'a mut Option<DragGrab>,
     /// Panes opted out of client mouse handling (`set-pane mouse off`).
     pub mouse_optout: &'a mut std::collections::HashSet<ResourceId>,
-    /// Driver-owned, client-local attention excursion state.
-    /// The first `next-attention` saves an origin; later cycles preserve it,
-    /// and `return-from-attention` consumes it. Never serialized or shared.
+    /// Client-local attention excursion: the first `next-attention` saves an
+    /// origin that `return-from-attention` consumes.
     pub attention_navigation: &'a mut AttentionNavigation,
-    /// Enabled plugins' manifest `[[actions]]`, snapshotted at
-    /// driver start (same lifecycle as `keybindings`). The command palette
-    /// appends one namespaced row per entry under a "Plugin" header.
+    /// Enabled plugins' manifest `[[actions]]`, listed in the palette.
     pub plugin_actions: &'a [PluginActionEntry],
     /// Enabled plugins' hostable `[[panes]]`.
     pub plugin_panes: &'a [PluginPaneEntry],
-    /// The background-job facility an action's `job` effect starts on
-    /// (ADR-0172); results come back through the driver's job arm.
+    /// The background-job facility (ADR-0172).
     pub jobs: &'a Jobs,
-    /// Out-channel for a requested config reload (dispatch borrows exactly
-    /// the state a reload replaces).
+    /// Out-channel for a requested config reload.
     pub reload_request: &'a mut bool,
     /// ADR-0140: out-channel for a dispatched `switch-host`, as
-    /// `(host, session)`. The driver reads it after the batch, detaches, and
-    /// hands the terminal to `phux attach` on that machine; dispatch cannot
-    /// do it because the terminal it would restore belongs to the driver.
+    /// `(host, session)`; the driver owns the terminal it hands over.
     pub host_switch_request: &'a mut Option<(String, String)>,
-    /// ADR-0168: out-channel for a dispatched `toggle-project-group`; the
-    /// driver owns the collapsed set and its file.
+    /// ADR-0168: out-channel for a dispatched `toggle-project-group`.
     pub project_toggle_request: &'a mut Option<String>,
-    /// Out-channel for a dispatched `agents-filter`; the driver owns the
-    /// sidebar painter's filter and its file.
+    /// Out-channel for a dispatched `agents-filter`.
     pub agents_filter_request: &'a mut Option<crate::render::chrome::sidebar::FilterRequest>,
-    /// phux-foz.7 / ADR-0040: the driver's decoded `phux.agent/v1` records
-    /// (`AgentMetaIndex::records`), kept live by the per-pane metadata
-    /// subscriptions. The `agent-fleet` action projects them into the
-    /// dashboard rows.
+    /// ADR-0040: the driver's decoded `phux.agent/v1` records.
     pub agent_meta: &'a HashMap<ResourceId, phux_client::agent_meta::AgentRecord>,
-    /// The driver's pane-cwd index + memoized
-    /// branch cache. The fleet rows resolve each pane's branch through it
-    /// (mut only for the memo).
+    /// Pane cwd index and branch memo, for the fleet rows.
     pub vcs: &'a mut crate::attach::pane_state::VcsIndex,
 }
 
@@ -193,13 +157,11 @@ pub(in crate::attach) struct DispatchCtx<'a> {
 pub(in crate::attach) enum DragGrab {
     /// A pane divider: motion re-tunes the controlling split's ratio.
     Divider(DividerGrab),
-    /// The left-docked sidebar's separator rule: motion resizes the strip. The width
-    /// is runtime chrome like `toggle-sidebar`: it lasts for the attach and
-    /// is never written to `config.toml` (ADR-0101 decision 2).
+    /// The sidebar's separator rule: motion resizes the strip for the attach
+    /// (never written to `config.toml`).
     SidebarEdge,
-    /// A window tab or sidebar window row: motion paints an insertion
-    /// marker at [`WindowGrab::drop_at`]; the release reorders the
-    /// window to the slot it was dropped on.
+    /// A window tab or sidebar window row: the release reorders the window
+    /// to [`WindowGrab::drop_at`].
     Window(WindowGrab),
 }
 
@@ -254,16 +216,12 @@ pub(in crate::attach) struct DividerGrab {
 /// A window picked up from one of the two window strips.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(in crate::attach) struct WindowGrab {
-    /// The grabbed window's durable layout id. The drop re-resolves its
-    /// position, so a reorder, close, or peer layout that lands mid-drag
-    /// cannot redirect the move onto a different window.
+    /// The grabbed window's durable layout id, re-resolved at the drop so a
+    /// mid-drag change cannot redirect the move.
     pub window: [u8; 16],
-    /// Which strip it was picked up from; the drop resolves against the
-    /// same strip, so a tab dropped on the sidebar is a no-op.
+    /// The strip it was picked up from; the drop resolves against it.
     pub strip: WindowStrip,
-    /// Slot under the pointer on [`Self::strip`], painted as the live
-    /// insertion marker. `None` when the pointer is off that strip (the
-    /// drop would be a no-op).
+    /// Slot under the pointer on [`Self::strip`]; `None` off the strip.
     pub drop_at: Option<usize>,
 }
 
