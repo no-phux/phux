@@ -65,18 +65,14 @@ impl UpdateNotice {
     }
 }
 
-/// The version this binary was built as.
-///
-/// Matches what `phux update --check` reports as `current_version`, so a cache
-/// naming another build is stale.
+/// The version this binary was built as, as `phux update --check` reports
+/// `current_version`.
 const fn running_version() -> &'static str {
     env!("CARGO_PKG_VERSION")
 }
 
-/// Parse a `phux update --check --json` document into a notice.
-///
-/// `None` when there is nothing to announce (no update, or an unreadable
-/// document).
+/// Parse a `phux update --check --json` document; `None` when there is
+/// nothing to announce.
 #[must_use]
 pub fn notice_from_document(json: &str) -> Option<UpdateNotice> {
     let doc: serde_json::Value = serde_json::from_str(json).ok()?;
@@ -106,10 +102,8 @@ pub fn notice_from_document(json: &str) -> Option<UpdateNotice> {
     })
 }
 
-/// Label the running version.
-///
-/// `0.45.0` plus a baked sha reads as `0.45.0+next.b0c6858`; without the sha it
-/// is just the version.
+/// Label the running version: `0.45.0+next.b0c6858` with a baked sha, else
+/// the version.
 fn label_current(version: &str, sha: Option<&str>) -> String {
     sha.filter(|sha| !sha.is_empty()).map_or_else(
         || version.to_owned(),
@@ -117,10 +111,7 @@ fn label_current(version: &str, sha: Option<&str>) -> String {
     )
 }
 
-/// Label the published version.
-///
-/// A `next.<40-hex>` tag is shortened to `next.<7>`; a stable `vX.Y.Z` is left
-/// alone.
+/// Label the published version: `next.<40-hex>` shortens to `next.<7>`.
 fn label_latest(tag: &str) -> String {
     tag.strip_prefix("next.")
         .map_or_else(|| tag.to_owned(), |sha| format!("next.{}", short_sha(sha)))
@@ -169,10 +160,8 @@ fn write_json(path: &Path, value: &serde_json::Value) {
     let _ = std::fs::rename(&tmp, path);
 }
 
-/// Kick the background check.
-///
-/// Called once by the production attach entry (`run_from_start`), never by the
-/// test seam, so no test reaches the network.
+/// Kick the background check, once, from the production attach entry (never
+/// a test).
 pub fn spawn_background_refresh() {
     if opted_out() {
         return;

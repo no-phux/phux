@@ -31,10 +31,8 @@ pub use rows::{
 pub const NEW_LABEL: &str = "+ new tab";
 /// Agents header.
 pub const NEEDS_YOU_HEADER: &str = "Agents";
-/// Quiet placeholder under the `need` filter when no agent needs a human.
-///
-/// Short enough for a 20-column strip, and free of the word "agent" so a
-/// row search by agent name cannot match it.
+/// Placeholder under the `need` filter when no agent needs a human: short,
+/// and without "agent" so a search by agent name cannot match it.
 pub const AGENTS_EMPTY_LABEL: &str = "none need you";
 /// The same placeholder under any other filter: nothing it admits is running.
 pub const AGENTS_NONE_LABEL: &str = "none running";
@@ -229,9 +227,7 @@ pub struct SidebarCounts {
     /// for room still shows it.
     pub active_window: Option<usize>,
     /// ADR-0140: bit `j` is set when roster entry `j` opens a machine
-    /// segment (its host differs from entry `j - 1`'s), so a host header row
-    /// precedes it. A bitmask keeps the shape `Copy`; entries past the 128th
-    /// open no segment, which a strip never has the rows to show anyway.
+    /// segment; entries past the 128th open none.
     pub host_starts: u128,
     /// ADR-0168: bit `j` is set when the segment opening at roster entry `j`
     /// is a project group, whose header toggles it rather than switching.

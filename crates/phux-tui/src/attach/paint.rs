@@ -126,10 +126,8 @@ pub(super) fn mirror_dims(
     (cols, rows)
 }
 
-/// Render one pane into `rect` (the caller's tiling; the content rect for a
-/// single-pane bootstrap). Resizes nothing: the mirror grid is
-/// server-authoritative. Returns the renderer's outer-viewport cursor, or
-/// `None` without a slot or with the cursor hidden.
+/// Render one pane into `rect` without resizing it (the mirror grid is
+/// server-authoritative). Returns its outer-viewport cursor, if shown.
 pub(super) fn paint_focused_pane<W: Write>(
     out: &mut W,
     rect: crate::layout::Rect,
@@ -629,10 +627,8 @@ pub(super) fn paint_bar_row<W: Write>(
     }
 }
 
-/// Close a composited frame with its chrome tail: the bar row, the one
-/// cursor placement, then the block's single flush. A frame that emitted
-/// nothing closes to nothing. A failed close invalidates the bar cache and
-/// reports `NotPublished`.
+/// Close a composited frame with its chrome tail: the bar row, the cursor,
+/// then the block's single flush. A failed close invalidates the bar cache.
 pub(super) fn close_frame_with_chrome<W: Write>(
     block: FrameBlock<'_, W>,
     chrome: &mut ChromeCtx<'_>,
@@ -829,10 +825,8 @@ pub(super) fn content_layout(
     ContentLayout { rect, rail }
 }
 
-/// Strip rows where the pane grid's rules meet the sidebar's separator: the
-/// rail, plus every horizontal divider that runs into the strip's side of the
-/// pane area. The strip tees each one so the grid and the strip read as one
-/// frame instead of a divider stopping short against a plain `│`.
+/// Strip rows where the pane grid's rules meet the sidebar's separator (the
+/// rail and every divider reaching the strip), which the strip tees.
 pub(super) fn sidebar_junctions(
     rail: Option<u16>,
     content: crate::layout::Rect,
@@ -1288,10 +1282,8 @@ mod tests {
         assert!(per_cell * 250 * 70 > crate::attach::stdout_writer::CAP_BYTES);
     }
 
-    /// A full frame composites both panes and the divider inside one
-    /// synchronized ED2 transaction, reaching the sink as ONE write and ONE
-    /// flush (so the stdout queue delivers or drops it whole), and ends with
-    /// an explicit cursor placement.
+    /// A full frame composites both panes and the divider inside one ED2
+    /// transaction, shipped as one write and one flush, ending with a cursor.
     #[test]
     fn a_full_frame_is_one_synchronized_chunk() {
         let (left, right) = (ResourceId::local(1), ResourceId::local(2));
@@ -1494,10 +1486,8 @@ mod tests {
         );
     }
 
-    /// The anti-strobe contract: the in-place chrome paint is one
-    /// transaction chunk that never clears the viewport or re-renders a pane,
-    /// ends in the composite cursor, and keeps the strip's cache (an
-    /// unchanged strip re-emits nothing).
+    /// The anti-strobe contract: the in-place chrome paint is one chunk that
+    /// never clears or re-renders a pane and keeps the strip's cache.
     #[test]
     fn paint_chrome_in_place_never_clears_or_repaints_panes() {
         let id = ResourceId::local(1);

@@ -12,10 +12,8 @@ use std::sync::{Arc, Condvar, Mutex};
 use std::thread::JoinHandle;
 use std::time::Instant;
 
-/// Frames at or under this size are written on the runtime thread when the
-/// stdout writer is idle, so a keystroke echo does not wait out a condvar
-/// wakeup. Larger frames, and any frame the nonblocking dup refuses, stay
-/// on the writer thread.
+/// Frames up to this size are written on the runtime thread when the
+/// writer is idle, so a keystroke echo skips the condvar wakeup.
 const DIRECT_MAX: usize = 4096;
 
 /// Backlog cap: how much ALREADY-QUEUED work may pile up before the sink

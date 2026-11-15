@@ -18,10 +18,8 @@ pub mod report;
 // swapped whole on reload.
 pub mod settings;
 
-/// The shared benchmark corpora, compiled into the test build so gates
-/// assert against the grids the benches measure. Declared here because
-/// `#[path]` inside nested inline modules resolves against a directory
-/// that does not exist.
+/// The shared benchmark corpora, so test gates assert against the grids the
+/// benches measure (`#[path]` in nested modules resolves elsewhere).
 #[cfg(test)]
 #[path = "../../../benchmarks/support.rs"]
 pub(crate) mod bench_support;

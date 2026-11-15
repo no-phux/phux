@@ -9,10 +9,8 @@ pub(in crate::attach) const SYNC_OUTPUT_BEGIN: &[u8] = b"\x1b[?2026h";
 pub(in crate::attach) const SYNC_OUTPUT_END: &[u8] = b"\x1b[?2026l";
 
 thread_local! {
-    /// How many [`SyncOutput`] guards are open on this thread. DEC 2026 is a
-    /// mode, not a counter, so only the outermost guard may emit the mode
-    /// bytes. Thread-local because the two nesting layers never see each
-    /// other's state and the paint path runs on one thread.
+    /// How many [`SyncOutput`] guards are open on this thread; only the
+    /// outermost emits, since DEC 2026 is a mode, not a counter.
     static SYNC_OUTPUT_DEPTH: core::cell::Cell<u32> = const { core::cell::Cell::new(0) };
 }
 

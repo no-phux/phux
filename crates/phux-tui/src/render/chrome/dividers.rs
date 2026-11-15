@@ -513,10 +513,8 @@ fn draw_one_title(
     }
 }
 
-/// Inset ` ↑ N ` at the right end of the rule when the pane is scrolled
-/// back `rows` rows, in the focus accent so the state is seen, not
-/// searched for. Returns the cells it took off the title's budget (its
-/// text, the padding, and one rule cell before it), or 0.
+/// Inset ` ↑ N ` at the rule's right end when the pane is scrolled back,
+/// returning the cells taken off the title's budget (or 0).
 fn draw_scroll_mark(
     cells: &mut ChromeCells,
     rect: Rect,

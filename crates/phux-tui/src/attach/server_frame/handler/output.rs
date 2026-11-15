@@ -124,10 +124,9 @@ pub(in crate::attach) struct OutputFrame<'a, W> {
     pub(in crate::attach) predict: &'a mut PredictionState,
 }
 
-/// Composite and ship ONE frame covering every pane in `targets`: a single
-/// DEC 2026 block with each pane interior, the predictive overlay, the bar,
-/// and the cursor, then one flush. A paced settle passes several panes so
-/// they cannot tear across blocks.
+/// Composite and ship one DEC 2026 frame covering every pane in `targets`,
+/// with the predictive overlay, bar, and cursor, so a paced settle of
+/// several panes cannot tear.
 pub(in crate::attach) fn paint_output_frame<W: crate::attach::RenderSink>(
     paint: OutputFrame<'_, W>,
     targets: &[ResourceId],

@@ -84,10 +84,8 @@ impl PaneKitty<'_> {
 }
 
 impl super::TerminalRenderer<'_> {
-    /// The pane left the visible layout (another window, a zoom): it is not
-    /// painted again until it returns, so delete its images from the outer
-    /// terminal, where they would stay over the panes shown there now, and
-    /// record that it holds none.
+    /// The pane left the visible layout: delete its images from the outer
+    /// terminal, where they would cover what is shown now.
     pub(in crate::attach) fn release_kitty(&mut self, out: &mut impl Write) -> io::Result<()> {
         if self.kitty.residency.release(out)? {
             self.front.invalidate_all();

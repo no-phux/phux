@@ -1,7 +1,5 @@
-//! The responsive-chrome breakpoints (`docs/status-bar.md#breakpoints`).
-//!
-//! One `Copy` value built per attach from `[chrome]` and threaded to every
-//! layout site, so the bar, sidebar, and overlays agree on "compact".
+//! The responsive-chrome breakpoints (`docs/status-bar.md#breakpoints`),
+//! built per attach so the bar, sidebar, and overlays agree on "compact".
 
 use phux_config::ChromeCfg;
 

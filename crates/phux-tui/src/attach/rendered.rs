@@ -262,10 +262,8 @@ mod tests {
             .collect()
     }
 
-    /// Panes tile into their rects with a divider between them, and the
-    /// focused pane's cursor is the frame cursor; with a sidebar the strip
-    /// paints its columns (separator at col 19) and the panes inset past it,
-    /// while without one nothing is reserved.
+    /// Panes tile with a divider and the focused cursor is the frame cursor;
+    /// a sidebar paints its columns and insets the panes.
     #[test]
     fn compose_tiles_panes_divider_cursor_and_sidebar() {
         let (left, right) = (ResourceId::local(1), ResourceId::local(2));

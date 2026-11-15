@@ -21,10 +21,8 @@ pub(super) enum TtyInput {
     /// Blocking-pool-backed stdin. Correct everywhere, slower by one
     /// cross-thread wake-up per read.
     Blocking(Box<tokio::io::Stdin>),
-    /// EOF has been reported once; reads never complete again. A terminal at
-    /// EOF answers `Ok(0)` forever, and stdin is polled first in the biased
-    /// `select!`, so re-reporting it starved the signal arms (a client once
-    /// spun a core and ignored `kill`).
+    /// EOF was reported once; reads never complete again. Re-reporting a
+    /// terminal's endless `Ok(0)` starved the signal arms.
     Closed,
 }
 

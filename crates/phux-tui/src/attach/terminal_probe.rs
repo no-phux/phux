@@ -12,26 +12,20 @@ use rustix::event::{PollFd, PollFlags, Timespec};
 use rustix::io::Errno;
 use rustix::termios::{LocalModes, OptionalActions, SpecialCodeIndex, Termios};
 
-/// OSC 10, OSC 11, then primary device attributes (`CSI c`), in that order.
-///
-/// DA1 is the stop signal. A reply means the terminal has finished answering,
-/// so missing colour replies are unsupported rather than still in flight.
+/// OSC 10, OSC 11, then primary device attributes (`CSI c`): a DA1 reply
+/// means missing colour replies are unsupported, not in flight.
 const PROBE_QUERY: &[u8] = b"\x1b]10;?\x1b\\\x1b]11;?\x1b\\\x1b[c";
 
-/// Wall-clock budget for the whole exchange. It sits on the attach critical
-/// path. A terminal that answers the colour queries, or that answers DA1, does
-/// so in about a millisecond and does not spend this. The budget is the
-/// fallback for a terminal that answers neither.
+/// Wall-clock budget for the whole exchange, on the attach critical path;
+/// spent only by a terminal that answers neither query.
 const PROBE_BUDGET: Duration = Duration::from_millis(25);
 
 /// Extra wait after the budget misses with no DA1, to swallow a late colour
 /// reply that would otherwise print on the cooked terminal.
 const LATE_REPLY_BUDGET: Duration = Duration::from_millis(40);
 
-/// Cap on bytes read while looking for the replies.
-///
-/// The tty is shared with the user, so a keystroke or a paste landing during
-/// the probe is read here too. Reply pairs are well under 100 bytes.
+/// Cap on bytes read while looking for the replies (the tty is shared, so
+/// typed input may land here too).
 const MAX_RESPONSE_BYTES: usize = 1024;
 
 /// How far one read of the probe got.
@@ -276,10 +270,8 @@ fn ready_colors(
     })
 }
 
-/// Drop bytes already queued on `fd` without echoing them.
-///
-/// Restores the previous file-status flags. A leftover `NONBLOCK` would
-/// make the shell's next read fail with `EAGAIN`.
+/// Drop bytes already queued on `fd` without echoing them, restoring the
+/// file-status flags (a leftover `NONBLOCK` breaks the shell's next read).
 pub(super) fn discard_pending(fd: impl AsFd) {
     let fd = fd.as_fd();
     let Ok(flags) = rustix::fs::fcntl_getfl(fd) else {

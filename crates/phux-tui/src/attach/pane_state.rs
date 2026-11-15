@@ -120,10 +120,8 @@ pub(super) struct PaneSlot {
     /// The satellite link is down: the leaf stays grey and input is dropped
     /// until an inventory says the host answers again.
     pub satellite_down: bool,
-    /// Progressive history for the published replica is unavailable (pruned,
-    /// tombstoned, rejected): only the scrollback this client already holds
-    /// remains. Cleared when a fresh replica publishes or the cache reports
-    /// a healthy state again; the focused pane badges it.
+    /// Progressive history for the published replica is unavailable: only the
+    /// scrollback already held remains. The focused pane badges it.
     pub history_degraded: bool,
     /// ADR-0147: `Some(title)` for the floating plugin overlay pane, which is
     /// in no layout window and paints in a box over the pane area.

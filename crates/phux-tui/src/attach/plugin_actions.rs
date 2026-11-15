@@ -185,10 +185,8 @@ pub struct PluginRunResult {
     pub result: Result<phux_plugin::PluginActionOutput, String>,
 }
 
-/// One plugin action as a background job (ADR-0172), run through
-/// [`phux_plugin::run_configured_action_logged`] (the `phux config run`
-/// runtime, which also records the run for `phux plugin log`). A failure
-/// finishes with its toast; a success only logs.
+/// One plugin action as a background job (ADR-0172) through
+/// [`phux_plugin::run_configured_action_logged`]; a failure toasts.
 pub(in crate::attach) fn plugin_job(plugin_id: String, action_id: String) -> Job {
     Job::new(
         JobKind::PluginAction,
