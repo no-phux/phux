@@ -1,32 +1,12 @@
 //! Delegated agent credentials at the transport (ADR-0163 §5).
 //!
-//! `HELLO` carries no credential, so a delegated credential is bound by
-//! where a connection arrives: minting one opens an owner-only Unix socket
-//! beside the server's own, and every connection accepted on it acts as that
-//! credential, with its narrowed grant, its principal, and `on_behalf_of`
-//! the launcher's human. An agent reaches it by running with `PHUX_SOCKET`
-//! set to [`DelegatedAgent::socket_path`]; anything it spawns inherits that.
-//!
-//! The socket is a capability for attribution and least privilege among the
-//! owner's own processes, not an isolation boundary: any process of the
-//! serving uid can also reach the owner socket.
-//!
-//! **Lifetime.** The socket closes, and its file is removed, when the
-//! credential is withdrawn ([`revoke_delegated_agent`]), when its session
-//! is deleted, when it expires, or when the server stops. Withdrawal and
-//! session deletion also revoke every live connection acting as it
-//! (`docs/remote.md#managing-credentials`); expiry ends them through the revocation
-//! watcher, which judges the grant's expiry.
-//!
-//! **Upgrade and restart.** A hot upgrade carries every live credential
-//! and its bound socket (`carry_delegations`, `resume_delegations`):
-//! the socket never goes unbound, so an agent's reconnect lands on the new
-//! image as the same credential, provided its session survived and its
-//! launcher still holds a credential. A cold restart carries nothing:
-//! session wire ids restart, so every credential is revoked with the old
-//! process, its socket file is swept at the next start
-//! (`sweep_stale_sockets`), and the agent's connection is refused until
-//! `phux agent start` mints a new one.
+//! `HELLO` carries no credential, so minting one opens an owner-only Unix
+//! socket beside the server's; every connection accepted there acts as the
+//! credential, `on_behalf_of` the launcher. This is attribution and least
+//! privilege, not isolation: any process of the serving uid can reach the
+//! owner socket. The socket closes on withdrawal, session deletion, expiry,
+//! or server stop. A hot upgrade carries live credentials and their bound
+//! sockets; a cold restart revokes them all and sweeps the stale files.
 
 use std::path::PathBuf;
 

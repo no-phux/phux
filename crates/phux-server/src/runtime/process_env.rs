@@ -1,15 +1,8 @@
-//! The server's `PHUX_*` process configuration, resolved once.
-//!
-//! The daemon's remote surface (listener addresses, TLS pair, credential
-//! store, workload authority) is configurable through environment variables, and
-//! a running server exports several of them into every pane. Reading them
-//! ad hoc from deep inside the runtime made every in-process server (tests,
-//! embedders) inherit whatever the launching shell carried: run from a
-//! production pane, a test server picked up the operator's certificate and
-//! credential store. So the binary snapshots them here once, at startup
-//! ([`ServerEnv::from_process`]), and the runtime reads only this snapshot.
-//! [`ServerEnv::default`] sets nothing, which makes an in-process server
-//! hermetic unless its builder opts a variable in.
+//! The server's `PHUX_*` process configuration, snapshotted once at startup
+//! ([`ServerEnv::from_process`]). A running server exports several into its
+//! panes, so reading them ad hoc made in-process test servers inherit the
+//! operator's certificate and credential store; [`ServerEnv::default`] sets
+//! nothing, so an in-process server is hermetic unless opted in.
 
 use std::ffi::OsString;
 use std::net::SocketAddr;

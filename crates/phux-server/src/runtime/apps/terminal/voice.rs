@@ -1,17 +1,7 @@
-//! `TRANSCRIBE` (phux-ypsa): run the operator's transcriber on a finished
-//! `PUT_FILE` upload and paste the text into a Terminal.
-//!
-//! The server embeds no speech model. `[voice] transcriber` is an argv the
-//! server runs with the clip's sandboxed path substituted for `{path}`; its
-//! stdout is the transcript. That is deliberately the same shape as a plugin
-//! action (`phux_plugin::run_command_spec`: `kill_on_drop`, a deadline, no
-//! shell), so wrapping a local ASR server is one `curl` line and no HTTP
-//! client enters the server.
-//!
-//! The transcript is delivered as one acknowledged `APPLY_INPUT` paste under
-//! a fresh operation id, so a reconnect between the reply and the paste can
-//! not double it, and it inserts without submitting: the client shows the
-//! text it got back and the user decides whether to press Enter.
+//! `TRANSCRIBE` (phux-ypsa): run the operator's `[voice] transcriber` argv
+//! on a finished upload (no shell, a deadline, `kill_on_drop`) and paste its
+//! stdout into a Terminal as one acknowledged `APPLY_INPUT` under a fresh
+//! operation id, inserted without submitting.
 
 use phux_protocol::ids::{FileUploadId, InputOperationId, ResourceId};
 use phux_protocol::input::InputEvent;

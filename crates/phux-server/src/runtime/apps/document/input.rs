@@ -1,10 +1,7 @@
-//! `SEND_DOCUMENT_INPUT`: relay a viewer's typed intent to the connection
-//! producing a document. The server reads none of it; the producer maps it
-//! to its source (`docs/resource-kinds.md#producers`). The exceptions are
-//! the clipboard: a copy is held open until the producer answers with the
-//! text, so only the viewer that asked receives it, and a paste is held
-//! briefly for the producer's outcome, so a paste that could not land says
-//! so.
+//! `SEND_DOCUMENT_INPUT`: relay a viewer's typed intent to the document's
+//! producer (`docs/resource-kinds.md#producers`). A copy is held until the
+//! producer answers so only the asking viewer gets the text; a paste is held
+//! briefly so a failed one says so.
 
 use std::collections::HashMap;
 use std::collections::hash_map::Entry;

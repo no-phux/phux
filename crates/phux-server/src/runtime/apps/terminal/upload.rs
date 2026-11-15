@@ -1,17 +1,10 @@
 //! Sandboxed, acknowledged file uploads (`Command::PutFile`, ADR-0059).
 //!
-//! The client never chooses a path. A non-zero upload id maps to one partial
-//! file under the server-owned upload directory; the requested extension is
-//! restricted to a short ASCII token. Chunks are offset-checked and replay-safe,
-//! and the final file becomes visible only after whole-file SHA-256 verification.
-//!
-//! An upload id is bound to the principal that created it (its credential,
-//! else its local peer uid): another principal can neither append to it nor
-//! `TRANSCRIBE` it. The directory as a whole is held to a byte and file quota
-//! ([`UploadLimits`]), and partial uploads untouched for
-//! [`PARTIAL_UPLOAD_TTL`] are swept at startup and on every upload. Completed
-//! files are never deleted (ADR-0059): a full quota refuses new uploads with
-//! the remedy instead.
+//! The client never chooses a path: an upload id maps to one partial file in
+//! the server-owned upload directory, chunks are offset-checked, and the file
+//! appears only after whole-file SHA-256 verification. An id is bound to the
+//! principal that created it. The directory is held to [`UploadLimits`];
+//! stale partials ([`PARTIAL_UPLOAD_TTL`]) are swept, completed files never.
 
 use phux_terminal_api::actor::TerminalResource as _;
 use std::fs;

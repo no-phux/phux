@@ -213,7 +213,6 @@ fn display_text(text: &str) -> String {
 }
 
 #[cfg(test)]
-#[allow(clippy::expect_used, reason = "tests")]
 mod tests {
     use std::collections::HashMap;
 

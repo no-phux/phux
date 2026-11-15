@@ -1,12 +1,7 @@
-//! Held commands (ADR-0128, `docs/agents.md#safety`): the
-//! requester's waiter, the decision handler, and withdrawal on disconnect.
-//!
-//! A held command waits in a task on the requester's own connection, so it
-//! runs, when approved, exactly as the requester's dispatch would have run
-//! it: the requester's client id, `request_id`, mailbox, and tokens, and a
-//! fresh check against the requester's grant under the then-current
-//! topology. The approver only ends the approval; its grant is never used to
-//! run anything.
+//! Held commands (ADR-0128, `docs/agents.md#safety`). A held command waits
+//! on the requester's own connection and, when approved, runs exactly as the
+//! requester's dispatch would have, rechecked against the requester's grant;
+//! the approver's grant is never used to run anything.
 
 use std::time::Duration;
 

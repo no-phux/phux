@@ -1,11 +1,8 @@
-#![allow(clippy::unwrap_used, clippy::expect_used, reason = "tests")]
-
 use std::os::fd::IntoRawFd as _;
 use std::path::Path;
 use std::time::{Duration, Instant};
 
 use tokio::io::AsyncWriteExt as _;
-use tokio::task::LocalSet;
 
 use super::sockets::socket_path_for;
 use super::*;
@@ -71,99 +68,96 @@ fn carried_by_old_image(dir: &Path) -> (DelegationBlob, PathBuf) {
 
 #[tokio::test(flavor = "current_thread")]
 async fn a_hot_upgrade_carries_a_live_credential_and_its_socket() {
-    LocalSet::new()
-        .run_until(async {
-            let dir = tempfile::tempdir().unwrap();
-            let (carried, path) = carried_by_old_image(dir.path());
+    crate::runtime::test_support::local(async {
+        let dir = tempfile::tempdir().unwrap();
+        let (carried, path) = carried_by_old_image(dir.path());
 
-            let root = CancellationToken::new();
-            let (new, _) = server(dir.path(), &root);
-            assert_eq!(
-                resume_delegations(&new, std::slice::from_ref(&carried), None, &root),
-                1
-            );
-            let credential = new
-                .with(|s| s.delegation(&carried.id, Utc::now()).cloned())
-                .expect("reinstated");
-            assert_eq!(credential.on_behalf_of, phux_core::PrincipalId::Owner);
-            assert_eq!(
-                new.with(|s| {
-                    s.delegation_minted_by(&[7; 16], Utc::now())
-                        .map(|minted| minted.id.clone())
-                }),
-                Some(carried.id.clone()),
-                "a retry of the minting operation still answers it"
-            );
-            assert_eq!(
-                new.with(|s| s.delegation_socket(&carried.id).map(Path::to_path_buf)),
-                Some(path.clone())
-            );
+        let root = CancellationToken::new();
+        let (new, _) = server(dir.path(), &root);
+        assert_eq!(
+            resume_delegations(&new, std::slice::from_ref(&carried), None, &root),
+            1
+        );
+        let credential = new
+            .with(|s| s.delegation(&carried.id, Utc::now()).cloned())
+            .expect("reinstated");
+        assert_eq!(credential.on_behalf_of, phux_core::PrincipalId::Owner);
+        assert_eq!(
+            new.with(|s| {
+                s.delegation_minted_by(&[7; 16], Utc::now())
+                    .map(|minted| minted.id.clone())
+            }),
+            Some(carried.id.clone()),
+            "a retry of the minting operation still answers it"
+        );
+        assert_eq!(
+            new.with(|s| s.delegation_socket(&carried.id).map(Path::to_path_buf)),
+            Some(path.clone())
+        );
 
-            // The agent reconnects through the same path, as itself.
-            let mut stream = tokio::net::UnixStream::connect(&path).await.unwrap();
-            stream
-                .write_all(&encode(&hello("delegated-agent")))
-                .await
-                .unwrap();
-            let principal = credential.principal();
-            let deadline = Instant::now() + PATIENCE;
-            while !new.with(|s| {
-                s.watched_connections()
-                    .iter()
-                    .any(|watched| watched.grant.principal() == &principal)
-            }) {
-                assert!(Instant::now() < deadline, "the agent never got its grant");
-                tokio::time::sleep(Duration::from_millis(5)).await;
-            }
+        // The agent reconnects through the same path, as itself.
+        let mut stream = tokio::net::UnixStream::connect(&path).await.unwrap();
+        stream
+            .write_all(&encode(&hello("delegated-agent")))
+            .await
+            .unwrap();
+        let principal = credential.principal();
+        let deadline = Instant::now() + PATIENCE;
+        while !new.with(|s| {
+            s.watched_connections()
+                .iter()
+                .any(|watched| watched.grant.principal() == &principal)
+        }) {
+            assert!(Instant::now() < deadline, "the agent never got its grant");
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
 
-            // The start-up sweep leaves a carried socket alone.
-            sweep_stale_sockets(&new);
-            assert!(path.exists());
-            drop(stream);
-            root.cancel();
-        })
-        .await;
+        // The start-up sweep leaves a carried socket alone.
+        sweep_stale_sockets(&new);
+        assert!(path.exists());
+        drop(stream);
+        root.cancel();
+    })
+    .await;
 }
 
 #[tokio::test(flavor = "current_thread")]
 async fn a_carried_credential_whose_session_is_gone_is_revoked_and_its_socket_removed() {
-    LocalSet::new()
-        .run_until(async {
-            let dir = tempfile::tempdir().unwrap();
-            let (mut carried, path) = carried_by_old_image(dir.path());
-            carried.group += 100;
+    crate::runtime::test_support::local(async {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut carried, path) = carried_by_old_image(dir.path());
+        carried.group += 100;
 
-            let root = CancellationToken::new();
-            let (new, _) = server(dir.path(), &root);
-            assert_eq!(
-                resume_delegations(&new, std::slice::from_ref(&carried), None, &root),
-                0
-            );
-            assert!(new.with(|s| s.delegation(&carried.id, Utc::now()).is_none()));
-            assert!(!path.exists(), "its socket file is removed");
-            root.cancel();
-        })
-        .await;
+        let root = CancellationToken::new();
+        let (new, _) = server(dir.path(), &root);
+        assert_eq!(
+            resume_delegations(&new, std::slice::from_ref(&carried), None, &root),
+            0
+        );
+        assert!(new.with(|s| s.delegation(&carried.id, Utc::now()).is_none()));
+        assert!(!path.exists(), "its socket file is removed");
+        root.cancel();
+    })
+    .await;
 }
 
 #[tokio::test(flavor = "current_thread")]
 async fn a_carried_credential_that_expired_meanwhile_is_revoked() {
-    LocalSet::new()
-        .run_until(async {
-            let dir = tempfile::tempdir().unwrap();
-            let (mut carried, path) = carried_by_old_image(dir.path());
-            carried.expires_at_ms = Utc::now().timestamp_millis() - 1;
+    crate::runtime::test_support::local(async {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut carried, path) = carried_by_old_image(dir.path());
+        carried.expires_at_ms = Utc::now().timestamp_millis() - 1;
 
-            let root = CancellationToken::new();
-            let (new, _) = server(dir.path(), &root);
-            assert_eq!(
-                resume_delegations(&new, std::slice::from_ref(&carried), None, &root),
-                0
-            );
-            assert!(!path.exists());
-            root.cancel();
-        })
-        .await;
+        let root = CancellationToken::new();
+        let (new, _) = server(dir.path(), &root);
+        assert_eq!(
+            resume_delegations(&new, std::slice::from_ref(&carried), None, &root),
+            0
+        );
+        assert!(!path.exists());
+        root.cancel();
+    })
+    .await;
 }
 
 #[test]

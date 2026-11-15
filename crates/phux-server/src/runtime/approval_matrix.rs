@@ -1,19 +1,10 @@
 //! Server-held approvals as clients meet them on the wire (ADR-0128,
-//! `docs/agents.md#safety`).
-//!
-//! Each test runs real client loops (`handle_client`) over transports the
-//! test feeds as it goes, so a decision can name the id the server minted.
-//! An owner connection subscribed to every event observes the journal: it
-//! sees `approval_requested` and `approval_decided` with the actor each
-//! carries, exactly as `phux watch` would.
+//! `docs/agents.md#safety`). An owner connection subscribed to every event
+//! observes the journal, as `phux watch` would.
 
-#![allow(clippy::unwrap_used, clippy::expect_used, reason = "tests")]
-
-use std::io;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use bytes::BytesMut;
 use phux_protocol::ids::{ApprovalId, ResourceId as WireResourceId};
 use phux_protocol::policy::{PeerIdentity, TransportType};
 use phux_protocol::scope::TerminalScopeSet;
@@ -21,14 +12,14 @@ use phux_protocol::wire::frame::{
     APPROVAL_APPROVE, APPROVAL_DENY, AgentEvent, ApprovalOutcome, CONFIG_RELOAD_KEY, Command,
     CommandResult, ErrorCode, FrameKind, Scope,
 };
-use tokio::sync::mpsc;
-use tokio::task::{JoinHandle, LocalSet};
+use tokio::task::LocalSet;
 use tokio_util::sync::CancellationToken;
 
-use super::test_support::{Feed, Wire, hello, owner_peer, workload_identity};
+use super::test_support::{
+    Connection as Peer, PATIENCE, error_code, owner_peer, spawn_connection, workload_identity,
+};
 use crate::auth::AuthenticatedCredential;
 use crate::policy::{ConnectionGrant, GrantFuture, PolicyEngine, PolicyError, ScopedPolicy};
-use crate::runtime::connections::handle_client;
 use crate::state::{ClientId, SharedState};
 
 const REQUESTER: ClientId = ClientId(31);
@@ -114,44 +105,10 @@ fn world(grants: impl FnOnce(u32, u32) -> Vec<(ClientId, Vec<String>)>) -> World
     World { state, alpha, beta }
 }
 
-/// One live connection the test drives.
-struct Peer {
-    feed: Option<mpsc::UnboundedSender<BytesMut>>,
-    wire: Wire,
-    token: CancellationToken,
-    task: JoinHandle<io::Result<()>>,
-}
-
 async fn connect(state: &SharedState, client: ClientId, transport: TransportType) -> Peer {
-    let (feed, frames) = mpsc::unbounded_channel();
-    let wire = Wire::default();
     let root = CancellationToken::new();
-    let token = root.child_token();
-    let task = tokio::task::spawn_local(handle_client(
-        Feed::eof_on_close(frames),
-        wire.clone(),
-        state.clone(),
-        client,
-        token.clone(),
-        root,
-        None,
-        transport,
-        false,
-    ));
-    let peer = Peer {
-        feed: Some(feed),
-        wire,
-        token,
-        task,
-    };
-    peer.send(&hello("approval-matrix"));
-    assert!(
-        peer.until(|frames| frames
-            .iter()
-            .any(|frame| matches!(frame, FrameKind::HelloOk { .. })))
-            .await,
-        "HELLO completes"
-    );
+    let peer = spawn_connection(state, client, transport, &root, None, true);
+    peer.hello().await;
     peer
 }
 
@@ -166,49 +123,6 @@ async fn observer(state: &SharedState) -> Peer {
 }
 
 impl Peer {
-    fn send(&self, frame: &FrameKind) {
-        let mut out = BytesMut::new();
-        frame.encode(&mut out);
-        self.feed.as_ref().expect("connected").send(out).unwrap();
-    }
-
-    fn frames(&self) -> Vec<FrameKind> {
-        self.wire.frames.borrow().clone()
-    }
-
-    async fn until(&self, done: impl Fn(&[FrameKind]) -> bool) -> bool {
-        let deadline = Instant::now() + Duration::from_secs(5);
-        while Instant::now() < deadline {
-            if done(&self.wire.frames.borrow()) {
-                return true;
-            }
-            tokio::time::sleep(Duration::from_millis(5)).await;
-        }
-        false
-    }
-
-    fn results(&self, id: u32) -> Vec<CommandResult> {
-        self.frames()
-            .into_iter()
-            .filter_map(|frame| match frame {
-                FrameKind::CommandResult { request_id, result } if request_id == id => Some(result),
-                _ => None,
-            })
-            .collect()
-    }
-
-    async fn result(&self, id: u32) -> CommandResult {
-        assert!(
-            self.until(|frames| frames.iter().any(
-                |frame| matches!(frame, FrameKind::CommandResult { request_id, .. } if *request_id == id)
-            ))
-            .await,
-            "result {id} arrives: {:?}",
-            self.frames()
-        );
-        self.results(id).remove(0)
-    }
-
     /// Whether request `id` was refused with a correlated `ERROR`.
     async fn refused(&self, id: u32) -> Option<ErrorCode> {
         let refusal = |frames: &[FrameKind]| {
@@ -249,15 +163,6 @@ impl Peer {
             self.frames()
         );
         decided(&self.frames()).flatten()
-    }
-
-    fn disconnect(&mut self) {
-        self.feed = None;
-    }
-
-    async fn close(self) {
-        self.token.cancel();
-        let _ = self.task.await;
     }
 }
 
@@ -313,11 +218,12 @@ fn decision(request_id: u32, id: ApprovalId, value: &[u8]) -> FrameKind {
     }
 }
 
+/// Whether `done` holds of the server state within the patience window.
 async fn until_state(
     state: &SharedState,
     done: impl Fn(&crate::state::ServerState) -> bool,
 ) -> bool {
-    let deadline = Instant::now() + Duration::from_secs(5);
+    let deadline = Instant::now() + PATIENCE;
     while Instant::now() < deadline {
         if state.with(&done) {
             return true;

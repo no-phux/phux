@@ -1,7 +1,5 @@
 //! `phux.whoami/v1` record assembly and admission of the ssh origin.
 
-#![allow(clippy::expect_used, reason = "tests")]
-
 use chrono::Utc;
 use phux_protocol::ids::ResourceId;
 use phux_protocol::policy::{PeerIdentity, TransportType};

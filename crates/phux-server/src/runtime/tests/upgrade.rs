@@ -85,99 +85,96 @@ async fn graceful_upgrade_drops_retained_resources_with_server_shutdown() {
 async fn graceful_upgrade_retires_durable_screens_without_purging_results() {
     use phux_core::{Delta, ExitPolicy, Transition};
     use phux_protocol::wire::frame::CloseReason;
-    tokio::task::LocalSet::new()
-        .run_until(async {
-            let (mut old, wire, _, tokens) = old_image_with_retained_panes();
-            let pane = old.resource_from_wire(&wire).unwrap();
-            let mut record = old.registry().record(pane).unwrap().clone();
-            let key = record.key;
-            record.on_exit = ExitPolicy::Retain;
-            record.durable_result = true;
-            old.registry_mut().commit(&Transition {
-                deltas: vec![Delta::PutResource(record)],
-                ..Transition::default()
-            });
-            old.activation_ended(pane, phux_core::ExitOutcome::exited(5), false);
-            let blob = old.build_upgrade_blob(7).await;
-            let resumed = crate::runtime::apps::terminal::test_support::terminal_state();
-            let root = CancellationToken::new();
-            resume_session_tree(&resumed, &blob, &root).unwrap();
-            let pane = resumed
-                .with(|state| state.resource_from_wire(&wire))
-                .unwrap();
-            let (tx, mut rx) = tokio::sync::mpsc::channel(8);
-            resumed.with_mut(|state| {
-                let client = state.new_client_id();
-                state.subscribe_resource(client, pane, Some(tx));
-            });
+    crate::runtime::test_support::local(async {
+        let (mut old, wire, _, tokens) = old_image_with_retained_panes();
+        let pane = old.resource_from_wire(&wire).unwrap();
+        let mut record = old.registry().record(pane).unwrap().clone();
+        let key = record.key;
+        record.on_exit = ExitPolicy::Retain;
+        record.durable_result = true;
+        old.registry_mut().commit(&Transition {
+            deltas: vec![Delta::PutResource(record)],
+            ..Transition::default()
+        });
+        old.activation_ended(pane, phux_core::ExitOutcome::exited(5), false);
+        let blob = old.build_upgrade_blob(7).await;
+        let resumed = crate::runtime::apps::terminal::test_support::terminal_state();
+        let root = CancellationToken::new();
+        resume_session_tree(&resumed, &blob, &root).unwrap();
+        let pane = resumed
+            .with(|state| state.resource_from_wire(&wire))
+            .unwrap();
+        let (tx, mut rx) = tokio::sync::mpsc::channel(8);
+        resumed.with_mut(|state| {
+            let client = state.new_client_id();
+            state.subscribe_resource(client, pane, Some(tx));
+        });
+        assert_eq!(
+            next_close_of(&mut rx, &wire).await,
+            (CloseReason::ServerShutdown, Some(5))
+        );
+        resumed.with(|state| {
+            let record = state
+                .org()
+                .resource(&key)
+                .expect("durable result survives handoff screen retirement");
+            assert!(record.durable_result);
             assert_eq!(
-                next_close_of(&mut rx, &wire).await,
-                (CloseReason::ServerShutdown, Some(5))
+                record.activation.as_ref().unwrap().state,
+                phux_core::ExecState::Completed
             );
-            resumed.with(|state| {
-                let record = state
-                    .org()
-                    .resource(&key)
-                    .expect("durable result survives handoff screen retirement");
-                assert!(record.durable_result);
-                assert_eq!(
-                    record.activation.as_ref().unwrap().state,
-                    phux_core::ExecState::Completed
-                );
-                assert!(state.resource_handle(pane).is_none());
-            });
-            root.cancel();
-            for token in tokens {
-                token.cancel();
-            }
-        })
-        .await;
+            assert!(state.resource_handle(pane).is_none());
+        });
+        root.cancel();
+        for token in tokens {
+            token.cancel();
+        }
+    })
+    .await;
 }
 
 /// A well-formed empty handoff rebuilds, then the adopted listener accepts.
 #[tokio::test(flavor = "current_thread")]
 async fn transactional_resume_serves_on_the_adopted_listener() {
-    let local = tokio::task::LocalSet::new();
-    local
-        .run_until(async {
-            let dir = tempfile::tempdir().expect("tempdir");
-            let (path, listener_fd) = bind_resume_listener(&dir);
-            let blob = resume_handoff_blob(listener_fd, Vec::new(), Vec::new(), Vec::new());
-            let resume_fd = write_resume_fd(&blob);
-            let cfg = ServerConfig {
-                socket_path: path.clone(),
-                ..ServerConfig::with_default_socket()
-            };
-            let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
-            let server = tokio::task::spawn_local(async move {
-                ServerRuntime::new(cfg, std::sync::Arc::new(phux_terminal::TerminalEngine))
-                    .resume(resume_fd)
-                    .overlay_detect(Vec::new)
-                    .run_async(async move {
-                        let _ = shutdown_rx.await;
-                    })
-                    .await
-            });
-
-            let mut connected = false;
-            for _ in 0..50 {
-                if tokio::net::UnixStream::connect(&path).await.is_ok() {
-                    connected = true;
-                    break;
-                }
-                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
-            }
-            assert!(
-                connected,
-                "a successful resume must accept on the adopted listener"
-            );
-            let _ = shutdown_tx.send(());
-            server
+    crate::runtime::test_support::local(async {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let (path, listener_fd) = bind_resume_listener(&dir);
+        let blob = resume_handoff_blob(listener_fd, Vec::new(), Vec::new(), Vec::new());
+        let resume_fd = write_resume_fd(&blob);
+        let cfg = ServerConfig {
+            socket_path: path.clone(),
+            ..ServerConfig::with_default_socket()
+        };
+        let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
+        let server = tokio::task::spawn_local(async move {
+            ServerRuntime::new(cfg, std::sync::Arc::new(phux_terminal::TerminalEngine))
+                .resume(resume_fd)
+                .overlay_detect(Vec::new)
+                .run_async(async move {
+                    let _ = shutdown_rx.await;
+                })
                 .await
-                .expect("server task")
-                .expect("resumed server shuts down cleanly");
-        })
-        .await;
+        });
+
+        let mut connected = false;
+        for _ in 0..50 {
+            if tokio::net::UnixStream::connect(&path).await.is_ok() {
+                connected = true;
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+        assert!(
+            connected,
+            "a successful resume must accept on the adopted listener"
+        );
+        let _ = shutdown_tx.send(());
+        server
+            .await
+            .expect("server task")
+            .expect("resumed server shuts down cleanly");
+    })
+    .await;
 }
 
 /// An upgrade into a posture a cold start refuses (no mode beside a
@@ -186,122 +183,117 @@ async fn transactional_resume_serves_on_the_adopted_listener() {
 /// configuration cold refuses to start.
 #[tokio::test(flavor = "current_thread")]
 async fn a_refused_posture_on_resume_keeps_the_panes_and_drops_the_remote_door() {
-    let local = tokio::task::LocalSet::new();
-    local
-        .run_until(async {
-            let quic: SocketAddr = "127.0.0.1:0".parse().expect("addr");
-            let dir = tempfile::tempdir().expect("tempdir");
-            let cold = ServerConfig {
-                socket_path: dir.path().join("cold.sock"),
-                ..ServerConfig::with_default_socket()
-            };
-            let refused =
-                ServerRuntime::new(cold, std::sync::Arc::new(phux_terminal::TerminalEngine))
-                    .listen_quic(quic)
-                    .overlay_detect(Vec::new)
-                    .run_async(std::future::pending())
-                    .await
-                    .expect_err("a cold start refuses no mode beside a listener");
-            assert!(
-                matches!(
-                    refused,
-                    ServerError::Policy(crate::policy::PostureError::UnsetWithRemoteListener)
-                ),
-                "{refused:?}"
-            );
+    crate::runtime::test_support::local(async {
+        let quic: SocketAddr = "127.0.0.1:0".parse().expect("addr");
+        let dir = tempfile::tempdir().expect("tempdir");
+        let cold = ServerConfig {
+            socket_path: dir.path().join("cold.sock"),
+            ..ServerConfig::with_default_socket()
+        };
+        let refused = ServerRuntime::new(cold, std::sync::Arc::new(phux_terminal::TerminalEngine))
+            .listen_quic(quic)
+            .overlay_detect(Vec::new)
+            .run_async(std::future::pending())
+            .await
+            .expect_err("a cold start refuses no mode beside a listener");
+        assert!(
+            matches!(
+                refused,
+                ServerError::Policy(crate::policy::PostureError::UnsetWithRemoteListener)
+            ),
+            "{refused:?}"
+        );
 
-            let (path, listener_fd) = bind_resume_listener(&dir);
-            let blob = resume_handoff_blob(listener_fd, Vec::new(), Vec::new(), Vec::new());
-            let resume_fd = write_resume_fd(&blob);
-            let cfg = ServerConfig {
-                socket_path: path.clone(),
-                ..ServerConfig::with_default_socket()
-            };
-            let (report_tx, report_rx) = tokio::sync::oneshot::channel();
-            let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
-            let server = tokio::task::spawn_local(async move {
-                ServerRuntime::new(cfg, std::sync::Arc::new(phux_terminal::TerminalEngine))
-                    .resume(resume_fd)
-                    .listen_quic(quic)
-                    .overlay_detect(Vec::new)
-                    .on_listening(move |report| {
-                        let _ = report_tx.send(report.clone());
-                    })
-                    .run_async(async move {
-                        let _ = shutdown_rx.await;
-                    })
-                    .await
-            });
-
-            let report = report_rx.await.expect("the resumed server reports");
-            assert_eq!(
-                report.listeners,
-                vec![RemoteListenerSlot::disabled(
-                    RemoteListenerTransport::Quic,
-                    Some(quic.to_string()),
-                    ListenerDisabledReason::PolicyModeRefused,
-                )],
-            );
-            assert!(
-                tokio::net::UnixStream::connect(&path).await.is_ok(),
-                "the resumed server serves the adopted socket"
-            );
-            let _ = shutdown_tx.send(());
-            server
+        let (path, listener_fd) = bind_resume_listener(&dir);
+        let blob = resume_handoff_blob(listener_fd, Vec::new(), Vec::new(), Vec::new());
+        let resume_fd = write_resume_fd(&blob);
+        let cfg = ServerConfig {
+            socket_path: path.clone(),
+            ..ServerConfig::with_default_socket()
+        };
+        let (report_tx, report_rx) = tokio::sync::oneshot::channel();
+        let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
+        let server = tokio::task::spawn_local(async move {
+            ServerRuntime::new(cfg, std::sync::Arc::new(phux_terminal::TerminalEngine))
+                .resume(resume_fd)
+                .listen_quic(quic)
+                .overlay_detect(Vec::new)
+                .on_listening(move |report| {
+                    let _ = report_tx.send(report.clone());
+                })
+                .run_async(async move {
+                    let _ = shutdown_rx.await;
+                })
                 .await
-                .expect("server task")
-                .expect("resumed server shuts down cleanly");
-        })
-        .await;
+        });
+
+        let report = report_rx.await.expect("the resumed server reports");
+        assert_eq!(
+            report.listeners,
+            vec![RemoteListenerSlot::disabled(
+                RemoteListenerTransport::Quic,
+                Some(quic.to_string()),
+                ListenerDisabledReason::PolicyModeRefused,
+            )],
+        );
+        assert!(
+            tokio::net::UnixStream::connect(&path).await.is_ok(),
+            "the resumed server serves the adopted socket"
+        );
+        let _ = shutdown_tx.send(());
+        server
+            .await
+            .expect("server task")
+            .expect("resumed server shuts down cleanly");
+    })
+    .await;
 }
 
 /// A dangling topology must not start accept loops: `run_async` returns
 /// the rebuild error and the adopted listener is gone.
 #[tokio::test(flavor = "current_thread")]
 async fn dangling_blob_refuses_to_serve_after_resume() {
-    let local = tokio::task::LocalSet::new();
-    local
-        .run_until(async {
-            let dir = tempfile::tempdir().expect("tempdir");
-            let (path, listener_fd) = bind_resume_listener(&dir);
-            let blob = resume_handoff_blob(
-                listener_fd,
-                vec![crate::upgrade::blob::SessionBlob {
-                    wire_id: 1,
-                    name: "main".to_owned(),
-                    window_wire_ids: vec![99],
-                    active_window: None,
-                    created_at_unix_nanos: 0,
-                    last_touched: None,
-                    root: None,
-                    keep_empty: false,
-                    key: None,
-                }],
-                Vec::new(),
-                Vec::new(),
-            );
-            let resume_fd = write_resume_fd(&blob);
-            let cfg = ServerConfig {
-                socket_path: path.clone(),
-                ..ServerConfig::with_default_socket()
-            };
-            let err = ServerRuntime::new(cfg, std::sync::Arc::new(phux_terminal::TerminalEngine))
-                .resume(resume_fd)
-                .overlay_detect(Vec::new)
-                .run_async(std::future::pending())
-                .await
-                .expect_err("incomplete topology must fail closed");
-            match err {
-                ServerError::Rebuild(crate::state::RebuildError::DanglingRef { kind, id }) => {
-                    assert_eq!(kind, "window");
-                    assert_eq!(id, 99);
-                }
-                other => panic!("expected dangling rebuild error, got {other:?}"),
+    crate::runtime::test_support::local(async {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let (path, listener_fd) = bind_resume_listener(&dir);
+        let blob = resume_handoff_blob(
+            listener_fd,
+            vec![crate::upgrade::blob::SessionBlob {
+                wire_id: 1,
+                name: "main".to_owned(),
+                window_wire_ids: vec![99],
+                active_window: None,
+                created_at_unix_nanos: 0,
+                last_touched: None,
+                root: None,
+                keep_empty: false,
+                key: None,
+            }],
+            Vec::new(),
+            Vec::new(),
+        );
+        let resume_fd = write_resume_fd(&blob);
+        let cfg = ServerConfig {
+            socket_path: path.clone(),
+            ..ServerConfig::with_default_socket()
+        };
+        let err = ServerRuntime::new(cfg, std::sync::Arc::new(phux_terminal::TerminalEngine))
+            .resume(resume_fd)
+            .overlay_detect(Vec::new)
+            .run_async(std::future::pending())
+            .await
+            .expect_err("incomplete topology must fail closed");
+        match err {
+            ServerError::Rebuild(crate::state::RebuildError::DanglingRef { kind, id }) => {
+                assert_eq!(kind, "window");
+                assert_eq!(id, 99);
             }
-            assert!(
-                tokio::net::UnixStream::connect(&path).await.is_err(),
-                "rebuild failure must not keep the adopted listener serving"
-            );
-        })
-        .await;
+            other => panic!("expected dangling rebuild error, got {other:?}"),
+        }
+        assert!(
+            tokio::net::UnixStream::connect(&path).await.is_err(),
+            "rebuild failure must not keep the adopted listener serving"
+        );
+    })
+    .await;
 }

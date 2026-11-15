@@ -1,15 +1,7 @@
 //! TCP port forwarding (`FORWARD_*`, behind `features_ext.FORWARD_TCP`;
-//! `docs/forwarding.md`).
-//!
-//! The client asks this server to dial a TCP port, by default only on its
-//! own loopback, then pulls and pushes the connection's bytes with
-//! commands. All four commands are `INPUT` on the server: a consumer that
-//! can type into a shell here can already open the same connection.
-//!
-//! Every command is admitted on the dispatcher (a slot reserved, a half
-//! leased, a slot removed) and then runs on its own task, so neither a
-//! slow dial, a read parked on a quiet connection, nor a write the target
-//! is slow to take delays other commands. A write is answered only after
+//! `docs/forwarding.md`). Loopback by default; all commands are `INPUT`.
+//! Each is admitted on the dispatcher then runs on its own task, so a slow
+//! dial or parked read delays nothing else; a write answers after
 //! `write_all`, which is the client's backpressure.
 
 #![expect(
