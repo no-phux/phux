@@ -9,8 +9,8 @@
 
 use phux_protocol::ids::ResourceId;
 
-use crate::creature::Agent;
-use crate::reef::{Mood, Pt, Rgb, Rng, hash, lerp};
+use crate::creature::Work;
+use crate::playground::{Mood, Pt, Rgb, Rng, Species, hash, lerp};
 
 mod sim;
 
@@ -64,6 +64,19 @@ pub const PARC: [f32; 4] = [0.745, 0.875, 0.25, 0.42];
 /// A machine as laid out: its name, whether its agents are known, and theirs.
 type Host = (String, bool, Vec<ResourceId>);
 
+/// An agent as the pit lane needs it.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Driver {
+    pub id: ResourceId,
+    pub name: String,
+    /// Its machine's garage.
+    pub host: usize,
+    pub mood: Mood,
+    pub species: &'static Species,
+    /// Its work from its machine's agent stats, when published.
+    pub work: Option<Work>,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Mode {
     Track,
@@ -73,7 +86,7 @@ pub enum Mode {
 /// An agent as a car: who it is, and where it is on the circuit or the pit lane.
 #[derive(Debug, Clone)]
 pub struct Car {
-    pub who: Agent,
+    pub who: Driver,
     /// Its [`crate::creature`] tier, 0 to 4.
     pub tier: usize,
     pub mode: Mode,

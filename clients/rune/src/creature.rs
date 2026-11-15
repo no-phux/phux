@@ -8,50 +8,10 @@
 use std::collections::HashMap;
 
 use phux_protocol::ids::ResourceId;
-
-use crate::reef::{Mood, Species};
 use serde_json::Value;
 
 /// The Global key every machine's server publishes its tallies under.
 pub const KEY: &str = "phux.agent-stats/v1";
-
-/// An agent as the kitchen, pit lane, pitch and hive need it.
-#[derive(Debug, Clone, PartialEq)]
-pub struct Agent {
-    pub id: ResourceId,
-    pub name: String,
-    /// Its machine's line, garage, zone or frame.
-    pub host: usize,
-    pub mood: Mood,
-    pub species: &'static Species,
-    /// Its [`crate::creature`] tier, 0 to 4.
-    pub tier: usize,
-    /// The shirt number on the pitch: its terminal's `@N`.
-    pub number: u32,
-    /// Its work from its machine's agent stats, when published.
-    pub work: Option<Work>,
-}
-
-#[cfg(test)]
-impl Agent {
-    /// Agent `n` on machine `host`: Claude when even, Codex when odd.
-    pub fn test(n: u32, host: usize, mood: Mood) -> Agent {
-        Agent {
-            id: ResourceId::local(n),
-            name: format!("agent-{n}"),
-            host,
-            mood,
-            species: if n.is_multiple_of(2) {
-                &crate::reef::CLAUDE
-            } else {
-                &crate::reef::CODEX
-            },
-            tier: 1,
-            number: n,
-            work: None,
-        }
-    }
-}
 
 /// One agent's work, as of when its document arrived.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -135,6 +95,17 @@ pub enum Form {
 }
 
 impl Form {
+    pub const fn of(harness: crate::playground::Harness) -> Form {
+        use crate::playground::Harness;
+        match harness {
+            Harness::Claude => Form::Lionfish,
+            Harness::Codex => Form::Manta,
+            Harness::OpenCode => Form::Seahorse,
+            Harness::Gemini => Form::Cuttlefish,
+            Harness::Other => Form::Octopus,
+        }
+    }
+
     pub fn name(self) -> &'static str {
         match self {
             Form::Lionfish => "lionfish",

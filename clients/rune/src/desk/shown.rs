@@ -10,50 +10,57 @@ use phux_protocol::wire::frame::AttachTarget;
 use super::{Desk, NoticeKind, Shown, WANTED_GRACE, input, sessions};
 
 // View leases end with their window, including an embedded native host.
-// Keep teardown beside view ownership (and Desk within its file budget).
 impl Drop for Desk {
     fn drop(&mut self) {
-        let Some(client) = self.client.clone() else {
-            return;
-        };
-        // A popup's command ends with the window that showed it.
-        self.close_popup(&client, true);
-        if let Some(view) = self.shown.take().and_then(|s| s.view) {
-            let _ = client.destroy_view(view);
-        }
-        for view in self.others.drain().filter_map(|(_, v)| v) {
-            let _ = client.destroy_view(view);
-        }
+        self.release_connection_views();
     }
 }
 
 impl Desk {
+    /// Shared by window destruction and explicit runtime replacement. Keeping
+    /// external client clones alive must not keep this window's leases alive.
+    pub(super) fn release_connection_views(&mut self) {
+        let Some(client) = self.connection.client.clone() else {
+            return;
+        };
+        // A popup's command ends with the window that showed it.
+        self.close_popup(&client, true);
+        if let Some(view) = self.connection.shown.take().and_then(|s| s.view) {
+            let _ = client.destroy_view(view);
+        }
+        for view in self.connection.others.drain().filter_map(|(_, v)| v) {
+            let _ = client.destroy_view(view);
+        }
+    }
     pub(super) fn want(&mut self, terminal: ResourceId) {
         self.retry_document(&terminal);
-        self.resources.returning = None;
-        if let Some(document) = self.resources.entries.get(&terminal) {
-            self.resources.dismissed.remove(&document.record.key);
+        self.connection.resources.returning = None;
+        if let Some(document) = self.connection.resources.entries.get(&terminal) {
+            self.connection
+                .resources
+                .dismissed
+                .remove(&document.record.key);
         }
-        self.wanted = Some((terminal, Instant::now()));
+        self.connection.wanted = Some((terminal, Instant::now()));
     }
 
     /// Recovery can show a fallback without replacing the person's last choice.
     pub(super) fn want_automatic(&mut self, terminal: ResourceId) {
-        let returning = self.resources.returning;
+        let returning = self.connection.resources.returning;
         self.want(terminal);
-        self.resources.returning = returning;
+        self.connection.resources.returning = returning;
     }
 
     pub(super) fn drop_shown(&mut self, client: &Client) -> Option<ResourceId> {
         if let Some(phone) = self.phone.as_mut() {
             phone.reset_navigation();
         }
-        let shown = self.shown.take()?;
+        let shown = self.connection.shown.take()?;
         if let Some(view) = shown.view {
             let _ = client.destroy_view(view);
         }
-        self.fitted.remove(&shown.resource);
-        self.painted.replace(None);
+        self.connection.fitted.remove(&shown.resource);
+        self.connection.painted.replace(None);
         Some(shown.resource)
     }
 
@@ -61,7 +68,7 @@ impl Desk {
         let next = self.phone_close_target(client, excluded);
         self.drop_shown(client);
         // Fall back to whatever the server now focuses.
-        self.wanted = None;
+        self.connection.wanted = None;
         if let Some(next) = next {
             self.want_automatic(next);
         }
@@ -73,10 +80,11 @@ impl Desk {
     fn phone_close_target(&self, client: &Client, excluded: &[ResourceId]) -> Option<ResourceId> {
         let tree = self.phone.as_ref()?.tree.as_ref()?;
         let shown = self
+            .connection
             .shown
             .as_ref()
             .map(|shown| &shown.resource)
-            .or_else(|| self.wanted.as_ref().map(|(id, _)| id))?;
+            .or_else(|| self.connection.wanted.as_ref().map(|(id, _)| id))?;
         let all = phux_client_core::layout::leaves(tree);
         let at = all.iter().position(|id| id == shown)?;
         let org = client.organization();
@@ -93,13 +101,13 @@ impl Desk {
                 let Some(record) = org.resource_by_live(id) else {
                     return false;
                 };
-                if self.resources.dismissed.contains(&record.key) {
+                if self.connection.resources.dismissed.contains(&record.key) {
                     return false;
                 }
                 if record.kind.is_terminal() {
                     return topology.as_ref().is_some_and(|t| t.pane(id).is_some());
                 }
-                record.kind.is_document() && !self.resources.execution_closed(record)
+                record.kind.is_document() && !self.connection.resources.execution_closed(record)
             })
             .cloned()
     }
@@ -110,15 +118,15 @@ impl Desk {
         if let Some(phone) = self.phone.as_mut() {
             phone.reconcile(None, None);
         }
-        for view in self.others.drain().filter_map(|(_, v)| v) {
+        for view in self.connection.others.drain().filter_map(|(_, v)| v) {
             let _ = client.destroy_view(view);
         }
-        self.fetched.clear();
-        self.fitted.clear();
+        self.connection.fetched.clear();
+        self.connection.fitted.clear();
         let Some(terminal) = self.drop_shown(client) else {
             return false;
         };
-        if self.wanted.is_none() {
+        if self.connection.wanted.is_none() {
             self.want_automatic(terminal);
         }
         true
@@ -130,14 +138,20 @@ impl Desk {
     /// and the layout reopens the rest, as soon as the replica is back.
     pub(super) fn drop_dead_views(&mut self, client: &Client) -> bool {
         let dead = |view| client.view_generation(view).is_none();
-        let before = self.others.len();
-        self.others
+        let before = self.connection.others.len();
+        self.connection
+            .others
             .retain(|_, view| view.is_none_or(|view| !dead(view)));
-        let mut changed = self.others.len() != before;
-        if self.shown.as_ref().and_then(|s| s.view).is_some_and(dead)
+        let mut changed = self.connection.others.len() != before;
+        if self
+            .connection
+            .shown
+            .as_ref()
+            .and_then(|s| s.view)
+            .is_some_and(dead)
             && let Some(terminal) = self.drop_shown(client)
         {
-            if self.wanted.is_none() {
+            if self.connection.wanted.is_none() {
                 self.want_automatic(terminal);
             }
             changed = true;
@@ -149,42 +163,45 @@ impl Desk {
     /// asked for, a new session's once it is selected, else the server's
     /// focus. `None` also while waiting on one of those.
     pub(super) fn target(&mut self, client: &Client) -> Option<ResourceId> {
-        self.topology.as_ref()?;
+        self.connection.topology.as_ref()?;
         if let Some(target) = self.wanted_target() {
             return Some(target);
         }
-        if self.pending_session.is_some() {
+        if self.connection.pending_session.is_some() {
             return self.new_session_target(client);
         }
-        if self.shown.is_some() {
+        if self.connection.shown.is_some() {
             return None;
         }
-        sessions::default_pane(self.topology.as_ref()?, client.selected_session()?)
-            .or_else(|| self.default_document(client.selected_session()?))
+        sessions::default_pane(
+            self.connection.topology.as_ref()?,
+            client.selected_session()?,
+        )
+        .or_else(|| self.default_document(client.selected_session()?))
     }
 
     fn wanted_target(&mut self) -> Option<ResourceId> {
-        if let Some((terminal, since)) = &self.wanted {
+        if let Some((terminal, since)) = &self.connection.wanted {
             let listed = self.lists_resource(terminal);
             if listed || since.elapsed() < WANTED_GRACE {
                 return Some(terminal.clone());
             }
             // Gone (a restarted server, a closed pane): fall back below.
-            self.wanted = None;
+            self.connection.wanted = None;
         }
         None
     }
 
     fn new_session_target(&mut self, client: &Client) -> Option<ResourceId> {
-        let topology = self.topology.as_ref()?;
-        let name = self.pending_session.as_ref()?;
+        let topology = self.connection.topology.as_ref()?;
+        let name = self.connection.pending_session.as_ref()?;
         let session = topology.sessions.iter().find(|s| &s.name == name)?;
         if client.selected_session() != Some(session.id) {
             return None;
         }
         let target = sessions::default_pane(topology, session.id)
             .or_else(|| self.default_document(session.id));
-        self.pending_session = None;
+        self.connection.pending_session = None;
         if target.is_none() {
             // An existing persistent session can be empty. Completing its
             // attach must stop showing the previous session's terminal.
@@ -195,7 +212,7 @@ impl Desk {
 
     /// Whether `terminal` is in a session this client doesn't stream yet.
     fn foreign(&self, client: &Client, terminal: &ResourceId) -> Option<String> {
-        let pane = self.topology.as_ref()?.pane(terminal)?;
+        let pane = self.connection.topology.as_ref()?.pane(terminal)?;
         (client.selected_session() != Some(pane.session_id)).then(|| pane.session_name.clone())
     }
 
@@ -215,15 +232,20 @@ impl Desk {
             return false;
         };
         self.subscribe_document(client, &target);
-        if self.shown.as_ref().is_some_and(|s| s.resource == target) {
-            self.wanted = None;
+        if self
+            .connection
+            .shown
+            .as_ref()
+            .is_some_and(|s| s.resource == target)
+        {
+            self.connection.wanted = None;
             return false;
         }
-        if self.others.contains_key(&target) {
-            let returning = self.resources.returning;
+        if self.connection.others.contains_key(&target) {
+            let returning = self.connection.resources.returning;
             self.focus_pane(&target);
-            self.resources.returning = returning;
-            self.wanted = None;
+            self.connection.resources.returning = returning;
+            self.connection.wanted = None;
             return true;
         }
         let view = if self.is_document(&target) {
@@ -231,7 +253,7 @@ impl Desk {
         } else {
             let Ok(view) = client.create_view(&target) else {
                 // Keep the first asking's clock, or the grace never runs out.
-                if self.wanted.is_none() {
+                if self.connection.wanted.is_none() {
                     self.want_automatic(target.clone());
                 }
                 if let Some(session) = self.foreign(client, &target) {
@@ -242,22 +264,27 @@ impl Desk {
             Some(view)
         };
         // The old focus stays on screen if the layout still shows it.
-        if let Some(old) = self.shown.take() {
-            self.others.insert(old.resource, old.view);
-            self.painted.replace(None);
+        if let Some(old) = self.connection.shown.take() {
+            self.connection.others.insert(old.resource, old.view);
+            self.connection.painted.replace(None);
         }
         self.activities.seen(&target);
-        self.shown = Some(Shown {
+        self.connection.shown = Some(Shown {
             resource: target,
             view,
         });
         if let Some(phone) = self.phone.as_mut() {
             phone.reset_navigation();
-            self.layout = Some(phux_client_core::layout::LayoutNode::Leaf(
-                self.shown.as_ref().expect("just opened").resource.clone(),
+            self.connection.layout = Some(phux_client_core::layout::LayoutNode::Leaf(
+                self.connection
+                    .shown
+                    .as_ref()
+                    .expect("just opened")
+                    .resource
+                    .clone(),
             ));
         }
-        self.wanted = None;
+        self.connection.wanted = None;
         self.clear_passing_notice();
         self.say_link_moved();
         self.generation += 1;
@@ -285,16 +312,18 @@ mod tests {
         ));
         let view = |raw| phux_client_runtime::ViewId::from_raw(raw).expect("nonzero");
         // Nothing is published for either view: both died with the replica.
-        desk.shown = Some(Shown {
+        desk.connection.shown = Some(Shown {
             resource: ResourceId::local(1),
             view: Some(view(1)),
         });
-        desk.others.insert(ResourceId::local(2), Some(view(2)));
+        desk.connection
+            .others
+            .insert(ResourceId::local(2), Some(view(2)));
         assert!(desk.drop_dead_views(&client));
-        assert!(desk.shown.is_none());
-        assert!(desk.others.is_empty());
+        assert!(desk.connection.shown.is_none());
+        assert!(desk.connection.others.is_empty());
         assert_eq!(
-            desk.wanted.as_ref().map(|(t, _)| t),
+            desk.connection.wanted.as_ref().map(|(t, _)| t),
             Some(&ResourceId::local(1))
         );
         assert!(!desk.drop_dead_views(&client), "nothing left to drop");

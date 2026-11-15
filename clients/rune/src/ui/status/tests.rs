@@ -8,7 +8,7 @@ fn settings_open_from_the_titlebar_with_or_without_the_sidebar() {
     use rune::accesskit::Action;
 
     for sidebar_open in [true, false] {
-        let mut desk = Desk::settings_test_fixture();
+        let mut desk = crate::test_support::settings_window();
         desk.settings_open = false;
         desk.sidebar_open = sidebar_open;
         let mut rt = rune::Runtime::new(
@@ -28,7 +28,7 @@ fn settings_open_from_the_titlebar_with_or_without_the_sidebar() {
 
 #[test]
 fn a_hover_toolbar_shows_at_the_top_edge_and_hides_off_it() {
-    let mut desk = Desk::settings_test_fixture();
+    let mut desk = crate::test_support::settings_window();
     desk.settings_open = false;
     desk.sidebar_open = false;
     desk.settings.hover_toolbar = true;
@@ -130,14 +130,14 @@ fn the_phone_app_speaks_of_its_computer_and_of_no_command() {
     // What a desktop says the same way stays as it is.
     assert_eq!(said(&desk, &Standing::NoSessions).0, "No sessions");
     // Refused: the title says why nothing will retry.
-    desk.error = Some("mini refused the pairing token (unauthorized)".to_owned());
+    desk.connection.error = Some("mini refused the pairing token (unauthorized)".to_owned());
     let refused = desk.standing();
     assert!(matches!(&refused, Standing::Unreachable(why) if why.ends_with("Pair again.")));
     assert_eq!(said(&desk, &refused).0, "No longer paired");
     assert!(phone::repairs(&desk, &refused));
     assert!(!phone::repairs(&desk, &Standing::Closed(String::new())));
     // A desktop keeps its own words for all of it.
-    let desktop = Desk::settings_test_fixture();
+    let desktop = crate::test_support::settings_window();
     assert_eq!(said(&desktop, &refused).0, "Can't reach phux");
     assert!(!phone::repairs(&desktop, &refused));
 }
@@ -147,7 +147,7 @@ fn a_narrow_window_folds_the_sidebar_and_the_toggle_peeks() {
     use rune::accesskit::Action;
 
     let width = |rt: &rune::Runtime<Desk>| rt.presented("sidebar-host").expect("host").0[2];
-    let mut desk = Desk::settings_test_fixture();
+    let mut desk = crate::test_support::settings_window();
     desk.settings_open = false;
     desk.sidebar_open = true;
     let mut rt = rune::Runtime::new(

@@ -87,17 +87,23 @@ fn letter(event: &KeyEvent) -> Option<(char, bool)> {
 impl Desk {
     /// Enter copy mode on the focused pane at its cursor, or leave it.
     pub fn toggle_copy_mode(&mut self) {
-        if self.copy_mode.is_some() {
+        if self.connection.copy_mode.is_some() {
             return self.leave_copy_mode(true);
         }
         let Some((terminal, view)) = self
+            .connection
             .shown
             .as_ref()
             .and_then(|s| Some((s.resource.clone(), s.view?)))
         else {
             return;
         };
-        let Some(frame) = self.client.as_ref().and_then(|c| c.acquire_view(view)) else {
+        let Some(frame) = self
+            .connection
+            .client
+            .as_ref()
+            .and_then(|c| c.acquire_view(view))
+        else {
             return;
         };
         let (col, row) = if frame.cursor.visible {
@@ -105,7 +111,7 @@ impl Desk {
         } else {
             (0, frame.rows.saturating_sub(1))
         };
-        self.copy_mode = Some(CopyMode {
+        self.connection.copy_mode = Some(CopyMode {
             terminal,
             view,
             col,
@@ -120,10 +126,10 @@ impl Desk {
     /// Leave copy mode, releasing its anchors; `clear` takes the highlight
     /// down too.
     pub(super) fn leave_copy_mode(&mut self, clear: bool) {
-        let Some(mode) = self.copy_mode.take() else {
+        let Some(mode) = self.connection.copy_mode.take() else {
             return;
         };
-        if let Some(engine) = self.client.as_ref().and_then(|c| c.engine()) {
+        if let Some(engine) = self.connection.client.as_ref().and_then(|c| c.engine()) {
             if clear {
                 let _ = engine.clear_view_selection(mode.view);
             }
@@ -140,8 +146,9 @@ impl Desk {
 
     /// Copy mode belongs to one view; it ends when that pane loses it.
     pub(super) fn keep_copy_mode(&mut self) {
-        let gone = self.copy_mode.as_ref().is_some_and(|mode| {
-            self.shown
+        let gone = self.connection.copy_mode.as_ref().is_some_and(|mode| {
+            self.connection
+                .shown
                 .as_ref()
                 .is_none_or(|s| s.resource != mode.terminal || s.view != Some(mode.view))
         });
@@ -157,7 +164,8 @@ impl Desk {
             column,
             row: u32::from(row),
         };
-        self.client
+        self.connection
+            .client
             .as_ref()?
             .engine()?
             .track_view_anchor(view, point)
@@ -167,9 +175,12 @@ impl Desk {
     /// Select from the pin (or just the cursor's cell) to the cursor, with
     /// the viewport's first row at `top` of the scrollable area.
     fn show_copy_cursor(&mut self, top: u64) {
-        let Some(mode) = &self.copy_mode else { return };
+        let Some(mode) = &self.connection.copy_mode else {
+            return;
+        };
         let (view, col, row, pin) = (mode.view, mode.col, mode.row, mode.pin);
         let Some(last) = self
+            .connection
             .client
             .as_ref()
             .and_then(|c| c.acquire_view(view))
@@ -189,9 +200,9 @@ impl Desk {
             return;
         };
         let block = pin.is_some_and(|pin| pin.shape == Shape::Block);
-        if let Some(engine) = self.client.as_ref().and_then(|c| c.engine()) {
+        if let Some(engine) = self.connection.client.as_ref().and_then(|c| c.engine()) {
             let _ = engine.set_view_selection(view, pinned.unwrap_or(cursor), cursor, block);
-            if let Some(mode) = &mut self.copy_mode {
+            if let Some(mode) = &mut self.connection.copy_mode {
                 for old in std::mem::replace(&mut mode.ends, vec![cursor]) {
                     let _ = engine.release_view_anchor(view, old);
                 }
@@ -203,11 +214,13 @@ impl Desk {
     /// `v`, `V`, `C-v`: start selecting from the cursor, change an open
     /// selection's shape, or (the same key again) drop it.
     fn toggle_copy_selection(&mut self, shape: Shape, frame: &GridFrame) {
-        let Some(mode) = &self.copy_mode else { return };
+        let Some(mode) = &self.connection.copy_mode else {
+            return;
+        };
         let (view, col, row) = (mode.view, mode.col, mode.row);
         let pin = match mode.pin {
             Some(pin) if pin.shape == shape => {
-                if let Some(engine) = self.client.as_ref().and_then(|c| c.engine()) {
+                if let Some(engine) = self.connection.client.as_ref().and_then(|c| c.engine()) {
                     for anchor in pin.anchors {
                         let _ = engine.release_view_anchor(view, anchor);
                     }
@@ -228,7 +241,7 @@ impl Desk {
                 }
             }
         };
-        if let Some(mode) = &mut self.copy_mode {
+        if let Some(mode) = &mut self.connection.copy_mode {
             mode.pin = pin;
         }
     }
@@ -236,7 +249,9 @@ impl Desk {
     /// Copy what is selected and leave. With nothing selected, `word` takes
     /// the word under the cursor and otherwise the cursor's whole row.
     fn copy_and_leave(&mut self, word: bool, frame: &GridFrame, tx: &mut Tx) {
-        let Some(mode) = &self.copy_mode else { return };
+        let Some(mode) = &self.connection.copy_mode else {
+            return;
+        };
         let (view, row) = (mode.view, mode.row);
         if mode.pin.is_none() {
             let (start, end) = if word {
@@ -249,10 +264,10 @@ impl Desk {
                 self.pin_cell(view, end, row),
             );
             if let (Some(start), Some(end)) = ends
-                && let Some(engine) = self.client.as_ref().and_then(|c| c.engine())
+                && let Some(engine) = self.connection.client.as_ref().and_then(|c| c.engine())
             {
                 let _ = engine.set_view_selection(view, start, end, false);
-                if let Some(mode) = &mut self.copy_mode {
+                if let Some(mode) = &mut self.connection.copy_mode {
                     mode.ends.extend([start, end]);
                 }
             }
@@ -264,11 +279,16 @@ impl Desk {
     /// A key while copy mode is on. False leaves it to the app's commands
     /// (a ⌘ chord); everything else is copy mode's, never terminal input.
     pub(super) fn copy_mode_key(&mut self, event: &KeyEvent, tx: &mut Tx) -> bool {
-        let Some(mode) = &self.copy_mode else {
+        let Some(mode) = &self.connection.copy_mode else {
             return false;
         };
         let (view, col, row) = (mode.view, mode.col, mode.row);
-        let Some(frame) = self.client.as_ref().and_then(|c| c.acquire_view(view)) else {
+        let Some(frame) = self
+            .connection
+            .client
+            .as_ref()
+            .and_then(|c| c.acquire_view(view))
+        else {
             self.leave_copy_mode(true);
             return true;
         };
@@ -333,12 +353,12 @@ impl Desk {
             _ => return true,
         };
         let top = scroll.map_or(frame.scrollbar.offset, |scroll| {
-            if let Some(client) = &self.client {
+            if let Some(client) = &self.connection.client {
                 let _ = client.with_control(|control| control.scroll_view(view, scroll));
             }
             top_after(&frame, scroll)
         });
-        if let Some(mode) = &mut self.copy_mode {
+        if let Some(mode) = &mut self.connection.copy_mode {
             mode.col = to_col.min(frame.cols.saturating_sub(1));
             mode.row = to_row.min(bottom);
         }
@@ -373,7 +393,7 @@ mod tests {
         rune::Runtime<Desk>,
     ) {
         let (client, mut rt) =
-            crate::grid::budget::input_fixture_showing("\r\nalpha beta\r\ngamma.delta\r\nlast");
+            crate::test_support::input_fixture_showing("\r\nalpha beta\r\ngamma.delta\r\nlast");
         rt.frame(0.0);
         rt.update(|desk, _| desk.toggle_copy_mode());
         (client, rt)
@@ -388,7 +408,7 @@ mod tests {
         rt.frame(0.0);
         rt.frame(0.0);
         let _ = client.take_outbound();
-        assert!(rt.state.copy_mode.is_some());
+        assert!(rt.state.connection.copy_mode.is_some());
 
         // Up two rows, to the line's start, select two words, copy.
         press(&mut rt, "kk0vee");
@@ -399,7 +419,10 @@ mod tests {
             board.text().as_ref().map(|t| t.as_str()),
             Some("alpha beta")
         );
-        assert!(rt.state.copy_mode.is_none(), "y leaves copy mode");
+        assert!(
+            rt.state.connection.copy_mode.is_none(),
+            "y leaves copy mode"
+        );
         assert_eq!(selected(&rt), None, "and takes the highlight down");
         let out = client.take_outbound();
         assert!(out.is_empty(), "no key was typed: {out:?}");
@@ -427,7 +450,7 @@ mod tests {
         rt.update(|desk, _| desk.toggle_copy_mode());
         rt.key(crate::keys::plain(Key::Escape));
         rt.frame(0.0);
-        assert!(rt.state.copy_mode.is_none());
+        assert!(rt.state.connection.copy_mode.is_none());
         assert_eq!(selected(&rt), None);
     }
 }

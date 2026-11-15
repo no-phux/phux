@@ -5,9 +5,9 @@
 
 use std::f32::consts::TAU;
 
-use super::{Agent, Chef, Goal, Kitchen};
+use super::{Chef, Cook, Goal, Kitchen};
 use crate::creature;
-use crate::reef::{Mood, Rgb, Rng, hash};
+use crate::playground::{Mood, Rgb, Rng, hash};
 
 /// One fixed step of scene time: the same scene whatever the frame rate.
 pub const STEP: f32 = 1.0 / 60.0;
@@ -56,7 +56,7 @@ fn part(kind: PartKind, x: f32, y: f32, [vx, vy]: [f32; 2], r: f32, max: f32) ->
 
 impl Kitchen {
     /// Chefs for exactly `cooks`, keeping each one's place and stride.
-    pub fn sync(&mut self, cooks: Vec<Agent>) {
+    pub fn sync(&mut self, cooks: Vec<Cook>) {
         let mut old = std::mem::take(&mut self.chefs);
         for who in cooks {
             match old.iter().position(|c| c.who.id == who.id) {
@@ -276,7 +276,7 @@ impl Kitchen {
 }
 
 /// A new chef, its looks and rhythm seeded from who it is, at no spot yet.
-fn hire(who: Agent, t: f32) -> Chef {
+fn hire(who: Cook, t: f32) -> Chef {
     let seed = hash(&format!("{}{:?}", who.name, who.id));
     let ph = Rng::new(seed).next() * TAU;
     Chef {

@@ -2,7 +2,7 @@ use super::*;
 use crate::desk::phone::navigation::Page;
 use phux_client_runtime::control::Topology;
 use phux_protocol::ids::{ResourceId, SessionId, WindowId};
-use phux_protocol::wire::frame::CommandValue;
+use phux_protocol::wire::frame::{CommandResult, CommandValue};
 use phux_protocol::wire::info::{ResourceInfo, SessionInfo, SessionSnapshot};
 
 mod layout;
@@ -26,10 +26,15 @@ fn inventory(rt: &mut Runtime<Desk>) {
 }
 
 fn set_inventory(rt: &mut Runtime<Desk>, snapshot: SessionSnapshot) {
-    let client = rt.state.client.clone().unwrap();
+    let client = rt.state.connection.client.clone().unwrap();
     let request_id = client.refresh_topology().unwrap();
-    crate::wire_fixture::answer(&client, request_id, CommandValue::State(snapshot.clone()));
-    rt.update(|d, _| d.topology = Some(Topology::from_snapshot(&snapshot)));
+    client
+        .feed(FrameKind::CommandResult {
+            request_id,
+            result: CommandResult::OkWith(CommandValue::State(snapshot.clone())),
+        })
+        .unwrap();
+    rt.update(|d, _| d.connection.topology = Some(Topology::from_snapshot(&snapshot)));
 }
 
 fn detailed_inventory(rt: &mut Runtime<Desk>) {
@@ -132,15 +137,18 @@ fn selecting_an_empty_session_switches_the_runtime_and_clears_the_old_terminal()
     let _ = client.take_outbound();
     tap(&mut rt, "phone-session-2", 0.1);
     assert!(rt.state.phone_page().is_none());
-    assert_eq!(rt.state.pending_session.as_deref(), Some("empty"));
+    assert_eq!(
+        rt.state.connection.pending_session.as_deref(),
+        Some("empty")
+    );
     assert_eq!(client.selected_session(), Some(2));
     rt.update(|d, _| {
         d.open_wanted(&client);
         d.refresh_layout(&client);
     });
-    assert!(rt.state.pending_session.is_none());
-    assert!(rt.state.shown.is_none());
-    assert!(rt.state.tabs.list.is_empty());
+    assert!(rt.state.connection.pending_session.is_none());
+    assert!(rt.state.connection.shown.is_none());
+    assert!(rt.state.connection.tabs.list.is_empty());
     no_terminal_input(&client);
 }
 
@@ -175,7 +183,11 @@ fn sessions_remain_usable_in_a_small_phone_with_search_keyboard_open() {
             "phone-session-query",
             "phone-session-new",
         ] {
-            let element = crate::ui::element(&rt, key);
+            let element = rt
+                .elements()
+                .into_iter()
+                .find(|e| e.key.as_deref() == Some(key))
+                .unwrap();
             assert!(element.visible[3] >= 40.0, "{size:?} {key}: {element:?}");
             assert!(element.rect[0] >= 0.0 && element.rect[0] + element.rect[2] <= size.0 + 0.5);
         }
@@ -199,7 +211,13 @@ fn a_higher_modal_owns_soft_keys_even_with_session_search_retained_underneath() 
 fn the_native_browser_never_offers_a_nonexistent_local_mac() {
     let (_, mut rt) = fixture();
     rt.update(|d, _| {
-        d.native = Some(crate::mobile::Platform::test());
+        d.native = Some(crate::mobile::Platform {
+            target: phux_client_runtime::Target::uds("/tmp/not-used"),
+            active: true,
+            connection_requested: false,
+            paste_requested: false,
+            away_since: None,
+        });
         d.machines.current = Some("mini".into());
         d.open_phone_sessions();
     });
@@ -225,7 +243,13 @@ fn navigation_reserves_desktop_traffic_lights_but_not_a_second_native_safe_area(
     assert!(inset > 0.0);
     assert!(close[1] >= inset);
     rt.update(|d, tx| {
-        d.native = Some(crate::mobile::Platform::test());
+        d.native = Some(crate::mobile::Platform {
+            target: phux_client_runtime::Target::uds("/tmp/not-used"),
+            active: true,
+            connection_requested: false,
+            paste_requested: false,
+            away_since: None,
+        });
         tx.instant();
     });
     settle(&mut rt);

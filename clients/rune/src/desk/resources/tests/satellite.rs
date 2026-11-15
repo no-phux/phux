@@ -101,8 +101,11 @@ fn a_satellite_surface_on_a_hub_is_listed_shown_and_streamed() {
         client.feed(frame).unwrap();
     }
     step(&mut rt);
-    assert_eq!(rt.state.shown.as_ref().unwrap().resource, surface);
-    let Body::Surface(image) = &rt.state.resources.entries[&surface].body else {
+    assert_eq!(
+        rt.state.connection.shown.as_ref().unwrap().resource,
+        surface
+    );
+    let Body::Surface(image) = &rt.state.connection.resources.entries[&surface].body else {
         panic!("the satellite's image reached the mirror");
     };
     assert_eq!(image.wait(), Ok([4, 2]));

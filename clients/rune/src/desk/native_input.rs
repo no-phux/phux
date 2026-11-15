@@ -104,7 +104,7 @@ impl Bridge {
             {
                 edit.cancel_composition();
             }
-            d.preedit = None;
+            d.connection.preedit = None;
             if let Some(phone) = &mut d.phone {
                 phone.release();
             }
@@ -241,9 +241,9 @@ impl Bridge {
                     d.ime(&rune::Ime::Preedit(text, None, Vec::new()));
                 });
             }
-            Action::Cancel => rt.update(|d, _| d.preedit = None),
+            Action::Cancel => rt.update(|d, _| d.connection.preedit = None),
             Action::Paste { text } => rt.update(|d, _| {
-                if let Some(id) = d.shown.as_ref().map(|s| s.resource.clone()) {
+                if let Some(id) = d.connection.shown.as_ref().map(|s| s.resource.clone()) {
                     d.paste(&id, &text);
                 }
             }),
@@ -284,9 +284,9 @@ impl Bridge {
 }
 
 fn terminal_caret(d: &Desk) -> Option<[f32; 4]> {
-    let shown = d.shown.as_ref()?;
-    let origin = d.origins.get(&shown.resource)?;
-    let frame = d.client.as_ref()?.acquire_view(shown.view?)?;
+    let shown = d.connection.shown.as_ref()?;
+    let origin = d.connection.origins.get(&shown.resource)?;
+    let frame = d.connection.client.as_ref()?.acquire_view(shown.view?)?;
     let metrics = d.metrics();
     Some([
         origin[0] + f32::from(frame.cursor.col) * metrics.cell_w,
@@ -298,7 +298,7 @@ fn terminal_caret(d: &Desk) -> Option<[f32; 4]> {
 
 fn dismiss(rt: &mut Runtime<Desk>, target: &Target) {
     rt.update(|d, tx| {
-        d.preedit = None;
+        d.connection.preedit = None;
         if let Target::Field(field, _) = target
             && let Some(edit) = field.edit_mut(d)
         {

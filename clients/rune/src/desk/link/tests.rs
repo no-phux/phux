@@ -64,15 +64,15 @@ fn a_failed_open_keeps_its_clock_so_a_gone_terminal_is_given_up() {
     let mut desk = desk();
     let client = embedded();
     let asked = Instant::now() - Duration::from_secs(60);
-    desk.topology = Some(topology(vec![pane(1, 1, None)]));
+    desk.connection.topology = Some(topology(vec![pane(1, 1, None)]));
     // Listed but not openable yet: still wanted, and no younger.
-    desk.wanted = Some((ResourceId::local(1), asked));
+    desk.connection.wanted = Some((ResourceId::local(1), asked));
     desk.open_wanted(&client);
-    assert_eq!(desk.wanted.as_ref().map(|w| w.1), Some(asked));
+    assert_eq!(desk.connection.wanted.as_ref().map(|w| w.1), Some(asked));
     // Gone past the grace: let go.
-    desk.topology = Some(topology(Vec::new()));
+    desk.connection.topology = Some(topology(Vec::new()));
     desk.open_wanted(&client);
-    assert_eq!(desk.wanted, None);
+    assert_eq!(desk.connection.wanted, None);
 }
 
 #[test]
@@ -89,16 +89,16 @@ fn the_fallback_pane_is_the_selected_sessions() {
 fn new_work_starts_in_the_focused_panes_directory() {
     let mut desk = desk();
     assert_eq!(desk.focused_cwd(), None);
-    desk.topology = Some(topology(vec![pane(1, 1, Some("/there")), pane(2, 1, None)]));
+    desk.connection.topology = Some(topology(vec![pane(1, 1, Some("/there")), pane(2, 1, None)]));
     let shown = |id| super::super::Shown {
         resource: ResourceId::local(id),
         view: phux_client_runtime::ViewId::from_raw(1),
     };
-    desk.shown = Some(shown(1));
+    desk.connection.shown = Some(shown(1));
     assert_eq!(desk.focused_cwd().as_deref(), Some("/there"));
     // A pane that hasn't reported yet goes by the one beside it.
-    desk.shown = Some(shown(2));
-    desk.layout = Some(phux_client_core::layout::LayoutNode::Split {
+    desk.connection.shown = Some(shown(2));
+    desk.connection.layout = Some(phux_client_core::layout::LayoutNode::Split {
         dir: phux_client_core::layout::SplitDir::Horizontal,
         ratio: 0.5,
         left: Box::new(phux_client_core::layout::LayoutNode::Leaf(
@@ -118,13 +118,13 @@ fn a_window_says_where_it_stands() {
     desk.link.finding = true;
     assert_eq!(desk.standing(), Standing::Starting);
     desk.link.finding = false;
-    desk.client = Some(embedded());
-    desk.status = Status::Connecting;
+    desk.connection.client = Some(embedded());
+    desk.connection.status = Status::Connecting;
     assert!(matches!(desk.standing(), Standing::Connecting(_)));
-    desk.status = Status::Attached;
-    desk.topology = Some(topology(Vec::new()));
+    desk.connection.status = Status::Attached;
+    desk.connection.topology = Some(topology(Vec::new()));
     assert_eq!(desk.standing(), Standing::NoSessions);
-    desk.status = Status::Closed;
+    desk.connection.status = Status::Closed;
     assert!(matches!(desk.standing(), Standing::Closed(_)));
     desk.link.incompatible = Some("server speaks 12".to_owned());
     assert_eq!(
@@ -136,16 +136,16 @@ fn a_window_says_where_it_stands() {
 #[test]
 fn nothing_retries_what_retrying_cant_change() {
     let mut desk = desk();
-    desk.status = Status::Failed;
+    desk.connection.status = Status::Failed;
     assert!(!desk.stuck());
-    desk.error = Some("websocket: 401".to_owned());
+    desk.connection.error = Some("websocket: 401".to_owned());
     assert!(desk.stuck());
     // The QUIC lane's refusal is as final as the WebSocket's.
-    desk.error = Some(QUIC_REFUSED.to_owned());
+    desk.connection.error = Some(QUIC_REFUSED.to_owned());
     assert!(desk.stuck());
-    desk.error = Some("mini did not answer (timed out)".to_owned());
+    desk.connection.error = Some("mini did not answer (timed out)".to_owned());
     assert!(!desk.stuck());
-    desk.error = None;
+    desk.connection.error = None;
     desk.failed_with("server error VersionIncompatible: server speaks 12");
     assert!(desk.stuck());
 }
@@ -171,12 +171,12 @@ fn the_runtime_renders_a_protocol_refusal_as_this_reads_it() {
 /// A desk with a terminal on screen whose connection dropped a while ago.
 fn stale(client: Arc<Client>) -> Desk {
     let mut desk = desk();
-    desk.shown = Some(Shown {
+    desk.connection.shown = Some(Shown {
         resource: ResourceId::local(1),
         view: phux_client_runtime::ViewId::from_raw(1),
     });
-    desk.client = Some(client);
-    desk.status = Status::Connecting;
+    desk.connection.client = Some(client);
+    desk.connection.status = Status::Connecting;
     desk.link.down_since = Some(Instant::now() - Duration::from_secs(5));
     desk
 }
@@ -185,7 +185,7 @@ fn stale(client: Arc<Client>) -> Desk {
 fn a_stale_window_says_when_it_has_stopped_trying() {
     let mut desk = stale(embedded());
     assert!(matches!(desk.banner(), Some(Banner::Reconnecting(_))));
-    desk.status = Status::Failed;
+    desk.connection.status = Status::Failed;
     desk.failed_with("server error VersionIncompatible: server speaks 12");
     assert_eq!(
         desk.banner(),
@@ -194,16 +194,16 @@ fn a_stale_window_says_when_it_has_stopped_trying() {
         )))
     );
     desk.link.incompatible = None;
-    desk.status = Status::Closed;
+    desk.connection.status = Status::Closed;
     desk.link.ended = Some("replaced".to_owned());
     assert_eq!(
         desk.banner(),
         Some(Banner::Stuck(Standing::Closed("replaced".to_owned())))
     );
     desk.link.ended = None;
-    desk.status = Status::Failed;
+    desk.connection.status = Status::Failed;
     for refusal in ["websocket: 401", QUIC_REFUSED] {
-        desk.error = Some(refusal.to_owned());
+        desk.connection.error = Some(refusal.to_owned());
         let Some(Banner::Stuck(Standing::Unreachable(why))) = desk.banner() else {
             panic!("{refusal} keeps retrying");
         };
@@ -217,8 +217,8 @@ fn a_killed_session_leaves_the_link_up_for_the_next_one() {
     use phux_protocol::wire::frame::DetachReason;
     let client = embedded();
     let mut desk = desk();
-    desk.client = Some(client.clone());
-    desk.status = Status::Attached;
+    desk.connection.client = Some(client.clone());
+    desk.connection.status = Status::Attached;
     let ended = |reason| Event::Detached {
         reason: Some(reason),
         message: "the session this attach was rooted in was killed".to_owned(),
@@ -253,7 +253,7 @@ fn a_terminal_that_cant_take_focus_doesnt_wake_the_window() {
     // Down: the connection coming back is the wake.
     assert!(!desk.sync_focus(&client));
     // Up but not ready: a timer looks again, not a loop.
-    desk.status = Status::Attached;
+    desk.connection.status = Status::Attached;
     assert!(desk.sync_focus(&client));
     assert_eq!(wakes.0.load(Ordering::SeqCst), before);
     desk.focused = false;
@@ -272,7 +272,7 @@ fn only_the_first_connection_is_a_replay() {
     assert!(desk.link.heard);
     // A replaced client is the same server, whatever its epoch.
     desk.renew();
-    assert_eq!(desk.epoch, 0);
+    assert_eq!(desk.connection.epoch, 0);
     assert!(desk.link.heard);
 }
 
@@ -301,21 +301,23 @@ fn a_replaced_client_keeps_the_notice_clock() {
 /// A stale window holding everything a server can leave behind.
 fn holding(client: Option<Arc<Client>>) -> Desk {
     let mut desk = stale(embedded());
-    desk.client = client;
+    desk.connection.client = client;
     desk.link.heard = true;
     desk.link.home = Some(("work".to_owned(), None));
     desk.link.org_unavailable = Some(1);
+    desk.link.keep = Some("old machine session".into());
     desk.link.incompatible = Some("server speaks 12".to_owned());
     desk.pending = Some(Pending::Close(ResourceId::local(1)));
-    desk.wanted = Some((ResourceId::local(3), Instant::now()));
+    desk.connection.wanted = Some((ResourceId::local(3), Instant::now()));
     desk
 }
 
 fn assert_nothing_held(desk: &Desk) {
     assert_eq!(desk.pending, None);
-    assert_eq!(desk.wanted, None);
+    assert_eq!(desk.connection.wanted, None);
     assert_eq!(desk.link.home, None);
     assert_eq!(desk.link.org_unavailable, None);
+    assert_eq!(desk.link.keep, None);
     assert_eq!(desk.link.incompatible, None);
     assert!(!desk.link.heard);
     assert_eq!(desk.link.down_since, None);
@@ -362,13 +364,13 @@ const REFUSED: &str = "server error VersionIncompatible: server speaks 12";
 #[test]
 fn a_finished_handoff_outlasts_the_old_servers_refusal() {
     let mut desk = stale(embedded());
-    desk.status = Status::Failed;
+    desk.connection.status = Status::Failed;
     desk.failed_with(REFUSED);
     assert!(desk.stuck());
     desk.server_handed_off();
     assert!(!desk.stuck());
     // The re-exec is still going: that refusal is the old server's.
-    desk.status = Status::Failed;
+    desk.connection.status = Status::Failed;
     desk.failed_with(REFUSED);
     assert!(!desk.stuck());
     assert!(matches!(desk.standing(), Standing::Connecting(_)));
@@ -398,7 +400,7 @@ fn a_new_client_gets_the_chosen_theme() {
     let mut desk = desk();
     let before = desk.generation;
     desk.connect(phux_client_runtime::Target::uds("/nowhere/phux.sock"));
-    assert!(desk.client.is_some());
+    assert!(desk.connection.client.is_some());
     assert_eq!(desk.generation, before + 1, "apply_theme ran on the client");
 }
 
@@ -410,7 +412,7 @@ fn a_failed_search_keeps_the_last_known_server() {
     failed.socket = Err("timed out".to_owned());
     desk.adopt(failed);
     assert_eq!(desk.launch.socket, aimed);
-    assert_eq!(desk.error.as_deref(), Some("timed out"));
+    assert_eq!(desk.connection.error.as_deref(), Some("timed out"));
 }
 
 #[test]

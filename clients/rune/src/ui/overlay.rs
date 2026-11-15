@@ -61,7 +61,7 @@ pub(super) fn icon_button(
 }
 
 /// A key and what it does, as a sheet's footer lists them.
-pub(super) fn key_hint(key: &'static str, what: &'static str, ink: &Ink) -> El {
+pub(crate) fn key_hint(key: &'static str, what: &'static str, ink: &Ink) -> El {
     row()
         .gap(5.0)
         .items_center()
@@ -142,20 +142,27 @@ pub fn toast(desk: &Desk, ink: &Ink) -> Option<El> {
 
 /// The find bar, top right of the pane find belongs to.
 pub fn find_bar(desk: &Desk, id: &ResourceId, area: [f32; 2], ink: &Ink) -> Option<El> {
-    let find = desk.find.as_ref().filter(|f| &f.terminal == id)?;
+    let find = desk
+        .connection
+        .find
+        .as_ref()
+        .filter(|f| &f.terminal == id)?;
     let width = FIND_W.min(area[0] - 8.0).max(160.0);
     let left = (PAD + area[0] - width - 6.0).max(0.0);
-    let field = text_input(&desk.find_query, TextStyle::new(13.0, 400.0).lh(20.0))
-        .key("find-query")
-        .label("Find in terminal")
-        .single_line()
-        .grow(1.0)
-        .min_w(0.0)
-        .color(ink.text)
-        .placeholder("Find", ink.dim)
-        .on_edit(|d: &mut Desk| &mut d.find_query)
-        .on_input_key(|d: &mut Desk, event, tx| d.find_key(event, tx))
-        .on_input_change(|d: &mut Desk, _| d.run_search());
+    let field = text_input(
+        &desk.connection.find_query,
+        TextStyle::new(13.0, 400.0).lh(20.0),
+    )
+    .key("find-query")
+    .label("Find in terminal")
+    .single_line()
+    .grow(1.0)
+    .min_w(0.0)
+    .color(ink.text)
+    .placeholder("Find", ink.dim)
+    .on_edit(|d: &mut Desk| &mut d.connection.find_query)
+    .on_input_key(|d: &mut Desk, event, tx| d.find_key(event, tx))
+    .on_input_change(|d: &mut Desk, _| d.run_search());
     let case = pressable("find-case", ink)
         .size(26.0, 22.0)
         .radius(5.0)
@@ -179,8 +186,8 @@ pub fn find_bar(desk: &Desk, id: &ResourceId, area: [f32; 2], ink: &Ink) -> Opti
                 })
                 .a11y_hidden(),
         );
-    let status = find.status(&desk.find_query.text);
-    let miss = find.index.is_none() && !desk.find_query.text.is_empty();
+    let status = find.status(&desk.connection.find_query.text);
+    let miss = find.index.is_none() && !desk.connection.find_query.text.is_empty();
     Some(
         row()
             .key("find-bar")

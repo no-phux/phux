@@ -403,7 +403,7 @@ impl Desk {
     /// Stop the agent: its pane closes and the tiles come back.
     pub fn cancel_migration(&mut self) {
         if let Migrate::Running(_, Some(pane)) = &self.onboarding.migrate
-            && let Some(client) = &self.client
+            && let Some(client) = &self.connection.client
         {
             let _ = client.close_terminals(vec![pane.clone()]);
         }
@@ -415,11 +415,11 @@ impl Desk {
         match (&pane, migration.session) {
             (Some(pane), Some(session)) => self.show(pane.clone(), &session),
             (None, Some(session)) => {
-                if let Some(client) = &self.client {
+                if let Some(client) = &self.connection.client {
                     client.attach_session(AttachTarget::ByName(session.clone()));
                 }
-                self.pending_session = Some(session);
-                self.wanted = None;
+                self.connection.pending_session = Some(session);
+                self.connection.wanted = None;
             }
             (Some(pane), None) => {
                 self.want(pane.clone());

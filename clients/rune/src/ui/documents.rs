@@ -11,7 +11,7 @@ pub fn view(desk: &Desk, id: &ResourceId, ink: &Ink) -> El {
     let focused = id.clone();
     let selected = id.clone();
     let measured = id.clone();
-    let document = &desk.resources.entries[id];
+    let document = &desk.connection.resources.entries[id];
     let label = document.record.name.as_deref().unwrap_or("Document");
     let detail = document.detail.as_deref().map(|d| format!("{d} · "));
     let area = desk.pane_area(id).unwrap_or([0.0, 0.0]);

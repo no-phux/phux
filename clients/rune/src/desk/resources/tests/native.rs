@@ -6,7 +6,7 @@ fn bootstrap_before_identity_is_adopted_after_organization_seed() {
         &[record(1, ResourceKind::AccessibilityTree)],
         &doc(LayoutNode::Leaf(id(1))),
     );
-    rt.state.resources.entries.clear();
+    rt.state.connection.resources.entries.clear();
     let publication = Arc::new(DocumentPublication {
         resource_id: id(1),
         kind: ResourceKind::AccessibilityTree,
@@ -15,10 +15,10 @@ fn bootstrap_before_identity_is_adopted_after_organization_seed() {
         content_type: None,
     });
     assert!(!rt.state.publish_document(&publication));
-    assert_eq!(rt.state.resources.pending.len(), 1);
+    assert_eq!(rt.state.connection.resources.pending.len(), 1);
     assert!(rt.state.refresh_resources(&client));
-    assert_eq!(rt.state.resources.entries[&id(1)].seq, Some(7));
-    assert!(rt.state.resources.pending.is_empty());
+    assert_eq!(rt.state.connection.resources.entries[&id(1)].seq, Some(7));
+    assert!(rt.state.connection.resources.pending.is_empty());
     let unknown = Arc::new(DocumentPublication {
         resource_id: id(99),
         kind: ResourceKind::AccessibilityTree,
@@ -29,14 +29,19 @@ fn bootstrap_before_identity_is_adopted_after_organization_seed() {
     rt.state.publish_document(&unknown);
     rt.state.refresh_resources(&client);
     assert!(
-        rt.state.resources.pending.contains_key(&id(99)),
+        rt.state.connection.resources.pending.contains_key(&id(99)),
         "a publication can beat a live inventory refetch, not only the first seed"
     );
-    rt.state.resources.pending.get_mut(&id(99)).unwrap().since =
-        Instant::now() - crate::desk::WANTED_GRACE;
+    rt.state
+        .connection
+        .resources
+        .pending
+        .get_mut(&id(99))
+        .unwrap()
+        .since = Instant::now() - crate::desk::WANTED_GRACE;
     rt.state.refresh_resources(&client);
     assert!(
-        !rt.state.resources.pending.contains_key(&id(99)),
+        !rt.state.connection.resources.pending.contains_key(&id(99)),
         "unknown identity does not retain bytes forever"
     );
 }
@@ -75,8 +80,8 @@ fn reconnect_same_or_new_server_retires_bytes_and_restores_key_on_new_handle() {
         step(&mut rt);
         client.with_control(ControlPlane::connection_opened);
         step(&mut rt);
-        assert!(rt.state.resources.entries.is_empty());
-        assert!(rt.state.shown.is_none());
+        assert!(rt.state.connection.resources.entries.is_empty());
+        assert!(rt.state.connection.shown.is_none());
         outbound(&client);
         client.feed(hello(server)).unwrap();
         let moved = record(1, ResourceKind::AccessibilityTree).with_live(Some(id(9)));
@@ -93,12 +98,12 @@ fn reconnect_same_or_new_server_retires_bytes_and_restores_key_on_new_handle() {
             b"{\"fresh\":true}",
         );
         step(&mut rt);
-        assert_eq!(rt.state.shown.as_ref().unwrap().resource, id(9));
+        assert_eq!(rt.state.connection.shown.as_ref().unwrap().resource, id(9));
         assert!(
-            matches!(&rt.state.resources.entries[&id(9)].body, Body::Tree(json) if json.contains("fresh") && !json.contains("old"))
+            matches!(&rt.state.connection.resources.entries[&id(9)].body, Body::Tree(json) if json.contains("fresh") && !json.contains("old"))
         );
         assert!(matches!(
-            rt.state.resources.entries[&id(1)].body,
+            rt.state.connection.resources.entries[&id(1)].body,
             Body::Pending
         ));
     }
@@ -118,19 +123,20 @@ fn epoch_retirement_reopens_by_key_not_reused_numeric_handle() {
     );
     step(&mut rt);
     rt.update(|d, _| d.retire_documents(&client));
-    assert!(rt.state.shown.is_none());
-    assert!(rt.state.resources.entries.is_empty());
-    assert_eq!(rt.state.resources.returning, Some(key(1)));
+    assert!(rt.state.connection.shown.is_none());
+    assert!(rt.state.connection.resources.entries.is_empty());
+    assert_eq!(rt.state.connection.resources.returning, Some(key(1)));
     // A replacement on the same address must not inherit old contents.
     let replacement = record(9, ResourceKind::AccessibilityTree).with_live(Some(id(1)));
     rt.state
+        .connection
         .resources
         .entries
         .insert(id(1), Document::new(replacement));
     rt.state.restore_document(&client);
-    assert!(rt.state.wanted.is_none());
+    assert!(rt.state.connection.wanted.is_none());
     assert!(matches!(
-        rt.state.resources.entries[&id(1)].body,
+        rt.state.connection.resources.entries[&id(1)].body,
         Body::Pending
     ));
 }
@@ -145,13 +151,13 @@ fn native_png_headless_renderer_smoke() {
         &doc(split(1, 2)),
     );
     let (decoded, wake) = std::sync::mpsc::channel();
-    rt.state.resources.images = Some(rune::ImageCache::new(Arc::new(move || {
+    rt.state.connection.resources.images = Some(rune::ImageCache::new(Arc::new(move || {
         let _ = decoded.send(());
     })));
     publish(&client, 1, ResourceKind::PixelSurface, PNG);
     publish(&client, 2, ResourceKind::AccessibilityTree, br#"{"role":"document","title":"Native JSON inspector","children":[{"role":"button","name":"Read-only mirror"}]}"#);
     step(&mut rt);
-    let Body::Surface(image) = &rt.state.resources.entries[&id(1)].body else {
+    let Body::Surface(image) = &rt.state.connection.resources.entries[&id(1)].body else {
         panic!("surface")
     };
     image.wait().unwrap();
@@ -159,7 +165,12 @@ fn native_png_headless_renderer_smoke() {
         .unwrap();
     rt.update(|d, _| {
         d.finish_document_images();
-        assert!(d.resources.entries[&id(1)].surface.flight.is_none());
+        assert!(
+            d.connection.resources.entries[&id(1)]
+                .surface
+                .flight
+                .is_none()
+        );
     });
     rt.frame(1.0);
     rt.frame(1.0);

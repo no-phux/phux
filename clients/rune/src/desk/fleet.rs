@@ -1,8 +1,8 @@
-//! The other machines, watched while the galaxy or the reef is open: one
+//! The other machines, watched while a playground is open: one
 //! read-only connection each (no attach, no views), folding its topology and
 //! agent events the way this window folds its own, so their agents show as
-//! stars and fish, and each one's agent stats ([`crate::creature`]), as
-//! this window's own. Nothing is watched while both views are closed.
+//! scene agents, and each one's agent stats ([`crate::creature`]), as
+//! this window's own. Nothing is watched while all playgrounds are closed.
 
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Weak};
@@ -13,10 +13,12 @@ use phux_protocol::ids::ResourceId;
 use phux_protocol::wire::frame::RolePolicy;
 
 use super::Desk;
-use super::galaxy::Star;
 use super::link::Wake;
 use crate::activity::Activities;
 use crate::creature::{self, Stats};
+
+mod projection;
+pub use projection::{Agent, Machine};
 
 /// One other machine's server, as a watch sees it.
 pub struct Watch {
@@ -32,15 +34,15 @@ pub struct Watch {
 impl Watch {
     /// Its agents, ids tagged with the machine so they never meet this
     /// window's own; `None` until its topology has arrived.
-    pub fn stars(&self, machine: &Option<String>, now: f64) -> Option<Vec<Star>> {
+    pub fn agents(&self, machine: &Option<String>, now: f64) -> Option<Vec<Agent>> {
         let topology = self.topology.as_ref()?;
-        let stars = super::galaxy::stars_on(
+        let agents = projection::agents_on(
             topology,
             &self.activities,
             Some(&self.client),
             (&self.stats, now),
         );
-        Some(tag(stars, machine))
+        Some(tag(agents, machine))
     }
 
     /// Answering, as far as the last observation says.
@@ -49,19 +51,19 @@ impl Watch {
     }
 }
 
-/// Mark `stars` as `machine`'s, with ids that cannot meet another server's.
-fn tag(mut stars: Vec<Star>, machine: &Option<String>) -> Vec<Star> {
+/// Mark `agents` as `machine`'s, with ids that cannot meet another server's.
+fn tag(mut agents: Vec<Agent>, machine: &Option<String>) -> Vec<Agent> {
     let name = machine
         .clone()
         .unwrap_or_else(|| crate::machines::LOCAL.to_owned());
-    for star in &mut stars {
-        star.machine.clone_from(machine);
-        star.here = false;
-        if let Some(id) = star.terminal.local_id() {
-            star.id = ResourceId::satellite(name.clone(), id);
+    for agent in &mut agents {
+        agent.machine.clone_from(machine);
+        agent.here = false;
+        if let Some(id) = agent.terminal.local_id() {
+            agent.id = ResourceId::satellite(name.clone(), id);
         }
     }
-    stars
+    agents
 }
 
 #[derive(Default)]
@@ -93,7 +95,7 @@ fn take_stats(client: &Client, asked: &mut bool, stats: &mut Stats, now: f64) ->
 impl Desk {
     /// Open, drain and close watches. True when any machine's agents changed.
     pub(super) fn tick_fleet(&mut self) -> bool {
-        if !self.galaxy.open && !self.scene_open() {
+        if self.playground.is_none() {
             self.fleet.watches.clear();
             self.fleet.refused.clear();
             return false;
@@ -144,7 +146,7 @@ impl Desk {
     /// This window's own connection's stats, asked for once per client;
     /// [`Desk::take_globals`] drains them.
     fn watch_own_stats(&mut self) {
-        let Some(client) = self.client.clone() else {
+        let Some(client) = self.connection.client.clone() else {
             return;
         };
         let fleet = &mut self.fleet;
@@ -212,8 +214,8 @@ mod tests {
     use super::*;
     use crate::activity::Mark;
 
-    fn star(id: u32) -> Star {
-        Star {
+    fn agent(id: u32) -> Agent {
+        Agent {
             id: ResourceId::local(id),
             terminal: ResourceId::local(id),
             machine: None,
@@ -229,8 +231,8 @@ mod tests {
 
     #[test]
     fn another_machines_agents_keep_their_terminal_but_never_share_an_id() {
-        let here = star(9);
-        let there = tag(vec![star(9)], &Some("powerhouse-1".into())).remove(0);
+        let here = agent(9);
+        let there = tag(vec![agent(9)], &Some("powerhouse-1".into())).remove(0);
         assert_ne!(
             here.id, there.id,
             "the same @9 on two servers is two agents"
@@ -242,7 +244,7 @@ mod tests {
         );
         assert_eq!(there.machine.as_deref(), Some("powerhouse-1"));
         assert!(!there.here);
-        let local = tag(vec![star(9)], &None).remove(0);
+        let local = tag(vec![agent(9)], &None).remove(0);
         assert_eq!(local.machine, None, "this computer, seen from a remote");
         assert_ne!(local.id, here.id);
     }

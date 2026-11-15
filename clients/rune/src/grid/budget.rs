@@ -16,105 +16,20 @@
 use std::sync::Arc;
 use std::time::Instant;
 
-use phux_client_runtime::control::{ControlOptions, ControlPlane};
-use phux_client_runtime::{Client, Runtime as ClientRuntime, ViewId};
+use phux_client_runtime::{Client, ViewId};
 use phux_perf::{MetricValue, PerfReport};
-use phux_protocol::ids::{BootstrapId, ResourceId, SessionId, StreamId, WindowId};
-use phux_protocol::wire::frame::{AttachTarget, FrameKind};
-use phux_protocol::wire::info::{ResourceInfo, SessionInfo, SessionSnapshot, WindowInfo};
+use phux_protocol::ids::ResourceId;
+use phux_protocol::wire::frame::FrameKind;
 use rune::{Cx, El, Env, Runtime, row};
 
 use super::{DEFAULT_FONT_SIZE, Metrics, paint};
-use crate::desk::{Desk, Shown};
-use crate::launch::Resolved;
+use crate::desk::Shown;
 use crate::perf;
-use crate::wire_fixture;
 
-const FILL: &str = "terminal workload terminal workload terminal workload terminal workload ";
+use crate::test_support::input_fixture;
+use crate::test_support::terminal::{FILL, Replica};
 const SCALE: f32 = 2.0;
 const SIZE: (f32, f32) = (1100.0, 720.0);
-
-fn stream() -> StreamId {
-    StreamId::new(1).expect("a stream id")
-}
-
-fn bootstrap() -> BootstrapId {
-    BootstrapId::new(1).expect("a bootstrap id")
-}
-
-/// An attached embedded client showing `payload` in one view per terminal,
-/// the first of which `feed` writes to.
-struct Replica {
-    client: Arc<Client>,
-    views: Vec<ViewId>,
-    terminal: ResourceId,
-    seq: u64,
-}
-
-impl Replica {
-    fn new(cols: u16, rows: u16, terminals: u32) -> Self {
-        let client = ClientRuntime::embedded(ControlOptions {
-            attach: Some(AttachTarget::ByName("budget".into())),
-            viewport: (cols, rows),
-            ..ControlOptions::default()
-        });
-        client.with_control(ControlPlane::connection_opened);
-        let _ = client.take_outbound();
-        client.feed(wire_fixture::hello(1, false)).expect("hello");
-        let attach_id =
-            wire_fixture::attach_id(&wire_fixture::outbound(&client)).expect("attach request");
-        let ids: Vec<ResourceId> = (1..=terminals).map(ResourceId::local).collect();
-        let (session, window) = (SessionId::new(1), WindowId::new(1));
-        let resources = ids
-            .iter()
-            .map(|id| ResourceInfo::new(id.clone(), window, cols, rows))
-            .collect();
-        let snapshot = SessionSnapshot::new(session, window, ids[0].clone())
-            .with_sessions(vec![SessionInfo::new(session, "budget")])
-            .with_windows(vec![
-                WindowInfo::new(window, session, "shell")
-                    .with_active_resource(Some(ids[0].clone())),
-            ])
-            .with_resources(resources);
-        crate::wire_fixture::attached(&client, attach_id, snapshot);
-        let payload = (0..rows)
-            .map(|row| format!("{row:02} {FILL}"))
-            .collect::<Vec<_>>()
-            .join("\r\n");
-        for (index, id) in ids.iter().enumerate() {
-            let number = index as u64 + 1;
-            wire_fixture::bootstrap(&client, id, [number; 2], [cols, rows], payload.as_bytes());
-        }
-        client
-            .feed(FrameKind::AttachReady { attach_id })
-            .expect("attach ready");
-        let _ = client.take_outbound();
-        let _ = client.take_events();
-        let views = ids
-            .iter()
-            .map(|id| client.create_view(id).expect("a view"))
-            .collect();
-        Self {
-            client: Arc::new(client),
-            views,
-            terminal: ids[0].clone(),
-            seq: 0,
-        }
-    }
-
-    fn feed(&mut self, bytes: String) {
-        self.seq += 1;
-        self.client
-            .feed(FrameKind::ResourceOutput {
-                terminal_id: self.terminal.clone(),
-                stream_id: stream(),
-                bootstrap_id: bootstrap(),
-                seq: self.seq,
-                bytes: bytes.into_bytes().into(),
-            })
-            .expect("output");
-    }
-}
 
 /// The bench's whole view: panes side by side, nothing else.
 struct Panes {
@@ -305,12 +220,12 @@ fn window_phase() {
     const FRAMES: u64 = 128;
     let (cols, rows) = (120, 40);
     let mut replica = Replica::new(cols, rows, 1);
-    let mut desk = Desk::new(&Resolved::offline("budget"));
-    desk.client = Some(Arc::clone(&replica.client));
-    desk.layout = Some(phux_client_core::layout::LayoutNode::Leaf(
+    let mut desk = crate::test_support::window();
+    desk.connection.client = Some(Arc::clone(&replica.client));
+    desk.connection.layout = Some(phux_client_core::layout::LayoutNode::Leaf(
         replica.terminal.clone(),
     ));
-    desk.shown = Some(Shown {
+    desk.connection.shown = Some(Shown {
         resource: replica.terminal.clone(),
         view: Some(replica.views[0]),
     });
@@ -330,31 +245,6 @@ fn window_phase() {
 
 /// Set in the child that does the measuring.
 const ALONE: &str = "RUNE_BUDGET_ALONE";
-
-/// A real connected terminal behind the native controls, without a server.
-pub(crate) fn input_fixture() -> (Arc<Client>, Runtime<Desk>) {
-    input_fixture_showing("")
-}
-
-/// [`input_fixture`] with `output` already printed in the terminal.
-pub(crate) fn input_fixture_showing(output: &str) -> (Arc<Client>, Runtime<Desk>) {
-    let mut replica = Replica::new(120, 40, 1);
-    if !output.is_empty() {
-        replica.feed(output.to_owned());
-    }
-    let mut desk = Desk::new(&Resolved::offline("input"));
-    desk.client = Some(Arc::clone(&replica.client));
-    desk.layout = Some(phux_client_core::layout::LayoutNode::Leaf(
-        replica.terminal.clone(),
-    ));
-    desk.shown = Some(Shown {
-        resource: replica.terminal,
-        view: Some(replica.views[0]),
-    });
-    let mut rt = Runtime::new(desk, crate::ui::view, SIZE, Env::new(true, SCALE));
-    rt.on_key = Some(Desk::key);
-    (replica.client, rt)
-}
 
 #[test]
 fn non_typing_keys_follow_runtime_input_and_stop_at_settings() {

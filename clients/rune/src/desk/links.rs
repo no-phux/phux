@@ -56,6 +56,7 @@ impl Desk {
 
     fn cell_at(&self, terminal: &ResourceId, x: f32, y: f32) -> Option<(Arc<GridFrame>, u16, u16)> {
         let frame = self
+            .connection
             .client
             .as_ref()?
             .acquire_view(self.view_of(terminal)?)?;

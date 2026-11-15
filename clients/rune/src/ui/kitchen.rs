@@ -1,37 +1,60 @@
-//! The kitchen's painter (the scene is `crate::kitchen`), back to front as
-//! the prototype: the room once per layout in one canvas, the stations,
-//! pass, chefs, air and night (the lights go down to warm pools) in another,
-//! then the line signs, the neon, name pills, the chefs' press targets and
-//! the readout.
+//! The kitchen: the fleet as a restaurant, each machine a line with its
+//! sign, every agent it can reach a chef in its harness's colours acting out
+//! its state. A press on a chef selects it; a press on the selected one (or
+//! Return) shows its terminal, as the galaxy does. Escape lets go, then
+//! closes. Night follows a dark theme: the lights go down to warm pools.
+//!
+//! Drawn back to front as the prototype: the room once per layout in one
+//! canvas, the stations, pass, chefs, air and night in another, then the
+//! line signs, the neon, name pills, the chefs' press targets and the readout.
 
-use rune::{Cx, El, TextStyle, canvas, el, row, text};
+use rune::{Cx, El, TextStyle, canvas, col, el, row, text};
 
-use super::playground::{self, Who, badge, pill_label, pill_w, place_pills, stage, target};
-use super::reef::pen::{Pen, rgba};
-use super::reef::{Label, pill};
-use super::{CAPTION, Ink};
+use super::playground::labels::{Label, pill};
+use super::playground::pen::{Pen, rgba};
+use super::{CAPTION, Ink, LABEL_STRONG, overlay, pressable};
 use crate::creature;
 use crate::desk::Desk;
 use crate::kitchen::{Goal, Kitchen, PartKind, RANK};
-use crate::reef::{Mood, Pt};
+use crate::playground::{Mood, Pt, Rgb};
 
 mod chef;
 mod room;
 
-use crate::ui::Cover;
 use chef::{AMBER, MINT, pool};
 
 /// The night's darkness is worked out on a grid this many points across.
 const CELL: f32 = 4.0;
+const ON_AMBER: Rgb = [42.0, 22.0, 0.0];
 
 pub(super) fn view(desk: &Desk, p: &Ink, cx: &mut Cx<Desk>) -> El {
+    desk.kitchen.night.set(p.bg.luminance() < 0.5);
+    desk.kitchen.still.set(cx.is_reduced_motion());
     let k = &desk.kitchen.scene;
-    let (root, waiting) = stage(&desk.kitchen, "kitchen", "Kitchen", k.lines.len(), p, cx);
+    let count = |m: Mood| k.chefs.iter().filter(|c| c.who.mood == m).count();
+    let waiting = count(Mood::Waiting);
+    let summary = format!(
+        "Kitchen with {} agents on {} hosts: {} working, {waiting} need you, {} done, {} idle",
+        k.chefs.len(),
+        k.lines.len(),
+        count(Mood::Working),
+        count(Mood::Done),
+        count(Mood::Idle),
+    );
+    let root = el()
+        .key("kitchen")
+        .absolute(0.0, 0.0)
+        .w_full()
+        .h_full()
+        .fill(p.bg)
+        .modal(false, Desk::close_kitchen)
+        .label(summary)
+        .on_layout(|desk: &mut Desk, rect| desk.kitchen_laid_out(rect[2], rect[3]));
     if k.lines.is_empty() {
         return root.child(readout(k, waiting, p));
     }
     let room = {
-        let mut cache = desk.kitchen.paint.room.borrow_mut();
+        let mut cache = desk.kitchen.room.borrow_mut();
         if cache.0 != k.generation {
             *cache = (k.generation, room::room(k));
         }
@@ -43,33 +66,59 @@ pub(super) fn view(desk: &Desk, p: &Ink, cx: &mut Cx<Desk>) -> El {
     glows(&mut over, k);
     let dark = (k.nt > 0.02).then(|| {
         let (w, h, rgba) = night(k);
-        desk.kitchen.paint.mask.set(w, h, rgba);
-        el().cover().pixels(&desk.kitchen.paint.mask)
+        desk.kitchen.mask.set(w, h, rgba);
+        el().absolute(0.0, 0.0)
+            .w_full()
+            .h_full()
+            .pixels(&desk.kitchen.mask)
     });
     let targets = k.chefs.iter().map(|c| {
         let (at, r) = k.hit(c);
         let rad = r.max(10.0) + 8.0;
-        target::<Kitchen>("kitchen-chef", &who(k, c), at, rad)
+        let host = &k.line_of(c).host;
+        let (press, hover) = (c.who.id.clone(), c.who.id.clone());
+        el().key(format!("kitchen-chef-{:?}", c.who.id))
+            .absolute(at[0] - rad, at[1] - rad)
+            .size(2.0 * rad, 2.0 * rad)
+            .radius(rad)
+            .cursor(rune::Cursor::Pointer)
+            .label(format!("{}, {}, {host}", c.who.name, c.who.mood.word()))
+            .on_press(move |desk: &mut Desk| desk.kitchen_press(press.clone()))
+            .on_hover_change(move |desk: &mut Desk, on, _| desk.kitchen_hover(hover.clone(), on))
     });
-    root.child(canvas(room).key("kitchen-room").cover())
-        .child(
-            canvas(pen.into_shape())
-                .key("kitchen-front")
-                .cover()
-                .on_press(Desk::scene_deselect::<Kitchen>),
-        )
-        .children(dark)
-        .child(canvas(over.into_shape()).key("kitchen-over").cover())
-        .children(
-            k.lines
-                .iter()
-                .enumerate()
-                .map(|(i, l)| sign(k, i, [l.x0 + 2.0, l.y0])),
-        )
-        .child(neon(k))
-        .children(pills(k))
-        .children(targets)
-        .child(readout(k, waiting, p))
+    root.child(
+        canvas(room)
+            .key("kitchen-room")
+            .absolute(0.0, 0.0)
+            .w_full()
+            .h_full(),
+    )
+    .child(
+        canvas(pen.into_shape())
+            .key("kitchen-front")
+            .absolute(0.0, 0.0)
+            .w_full()
+            .h_full()
+            .on_press(Desk::kitchen_deselect),
+    )
+    .children(dark)
+    .child(
+        canvas(over.into_shape())
+            .key("kitchen-over")
+            .absolute(0.0, 0.0)
+            .w_full()
+            .h_full(),
+    )
+    .children(
+        k.lines
+            .iter()
+            .enumerate()
+            .map(|(i, l)| sign(k, i, [l.x0 + 2.0, l.y0])),
+    )
+    .child(neon(k))
+    .children(pills(k))
+    .children(targets)
+    .child(readout(k, waiting, p))
 }
 
 /// Everything that moves, in the prototype's order.
@@ -239,7 +288,17 @@ fn sign(k: &Kitchen, i: usize, [x, y]: Pt) -> El {
                         .color(rgba([242.0, 239.0, 228.0], 1.0)),
                 )
                 .child(el().size(5.0, 5.0).radius(2.5).fill(lamp))
-                .children((waiting > 0).then(|| badge(waiting, 15.0, CAPTION))),
+                .children((waiting > 0).then(|| {
+                    el().size(15.0, 15.0)
+                        .radius(7.5)
+                        .center()
+                        .fill(rgba(AMBER, 1.0))
+                        .child(
+                            text(waiting.to_string())
+                                .font(CAPTION)
+                                .color(rgba(ON_AMBER, 1.0)),
+                        )
+                })),
         )
 }
 
@@ -271,49 +330,117 @@ fn pills(k: &Kitchen) -> Vec<El> {
         })
         .collect();
     shown.sort_by(|a, b| b.y.total_cmp(&a.y));
-    let items: Vec<(String, bool, Pt, f32)> = shown
-        .iter()
-        .map(|c| {
-            let (text, amber) = pill_label(&c.who.name, c.who.mood);
-            let (at, r) = k.hit(c);
-            // As `ui::reef::pill` estimates and clamps its width.
-            let w = pill_w(&text, 6.6);
-            (text, amber, [at[0], at[1] - r - 14.0], w)
-        })
-        .collect();
-    let spots = place_pills(&items.iter().map(|i| (i.2, i.3)).collect::<Vec<_>>(), k.w);
-    items
+    let mut placed: Vec<[f32; 3]> = Vec::new();
+    shown
         .into_iter()
-        .zip(spots)
-        .map(|((text, amber, at, _), [_, y])| {
-            let label = Label {
-                at: [at[0], y],
-                text,
-                badge: None,
-                amber,
-                host: None,
+        .map(|c| {
+            let amber = c.who.mood == Mood::Waiting;
+            let text = if amber {
+                format!("{} · needs you", c.who.name)
+            } else {
+                c.who.name.clone()
             };
-            pill(&label, [at[0], y], k.w)
+            let (at, r) = k.hit(c);
+            // As `ui::playground::labels::pill` estimates and clamps its width.
+            let w = text.chars().count() as f32 * 6.6 + 14.0;
+            let x = (at[0] - w / 2.0).clamp(6.0, (k.w - w - 6.0).max(6.0));
+            let mut y = at[1] - r - 14.0;
+            for _ in 0..6 {
+                if !placed
+                    .iter()
+                    .any(|p| (p[1] - y).abs() < 21.0 && x < p[0] + p[2] + 4.0 && p[0] < x + w + 4.0)
+                {
+                    break;
+                }
+                y -= 22.0;
+            }
+            placed.push([x, y, w]);
+            pill(
+                &Label {
+                    at: [at[0], y],
+                    text,
+                    badge: None,
+                    amber,
+                    host: None,
+                },
+                [at[0], y],
+                k.w,
+            )
         })
         .collect()
 }
 
-fn who<'a>(k: &'a Kitchen, c: &'a crate::kitchen::Chef) -> Who<'a> {
-    Who {
-        id: &c.who.id,
-        name: &c.who.name,
-        mood: c.who.mood,
-        host: &k.line_of(c).host,
-    }
-}
-
 fn readout(k: &Kitchen, waiting: usize, p: &Ink) -> El {
+    let working = k
+        .chefs
+        .iter()
+        .filter(|c| c.who.mood == Mood::Working)
+        .count();
     let picked = k.selected_chef().map(|c| {
+        let line = format!(
+            "{} · {} · {}  ↩",
+            c.who.name,
+            c.who.mood.word(),
+            k.line_of(c).host
+        );
         let rank = match c.who.work {
             Some(w) => format!("Rank: {} · Work: {}", RANK[c.tier], creature::work_line(&w)),
             None => format!("Rank: {}", RANK[c.tier]),
         };
-        (who(k, c), Some(rank))
+        pressable("kitchen-open", p)
+            .px(12.0)
+            .py(5.0)
+            .radius(12.0)
+            .fill(p.raised.alpha(0.85))
+            .label(format!("Open {}", c.who.name))
+            .on_press(Desk::open_chef)
+            .child(
+                col()
+                    .gap(2.0)
+                    .child(text(line).font(LABEL_STRONG).color(p.text))
+                    .child(text(rank).font(CAPTION).color(p.dim)),
+            )
     });
-    playground::readout("kitchen", k, [k.lines.len(), waiting], k.h, picked, p)
+    let y = if k.h > 0.0 { k.h - 44.0 } else { 42.0 };
+    row()
+        .absolute(16.0, y)
+        .gap(10.0)
+        .items_center()
+        .child(
+            el().px(10.0)
+                .py(4.0)
+                .radius(10.0)
+                .fill(p.raised.alpha(0.85))
+                .child(
+                    text(format!(
+                        "{} hosts · {} agents · {working} working",
+                        k.lines.len(),
+                        k.chefs.len()
+                    ))
+                    .font(CAPTION)
+                    .color(p.dim),
+                ),
+        )
+        .children((waiting > 0).then(|| {
+            pressable("kitchen-next-waiting", p)
+                .px(12.0)
+                .py(5.0)
+                .radius(12.0)
+                .fill(p.marks.alert)
+                .label("Show the next agent that needs you")
+                .on_press(Desk::kitchen_next_waiting)
+                .child(
+                    text(format!("{waiting} need you"))
+                        .font(LABEL_STRONG)
+                        .color(crate::theme::on_fill(p.marks.alert)),
+                )
+        }))
+        .children(picked)
+        .child(overlay::icon_button(
+            &super::icons::CLOSE,
+            "Close",
+            "kitchen-close",
+            p,
+            Desk::close_kitchen,
+        ))
 }

@@ -176,7 +176,7 @@ pub fn fixture(phone: bool) -> (Arc<Client>, Runtime<Desk>) {
     let mut desk = Desk::new(&Resolved::offline("spatial fixture")).with_phone(phone);
     desk.prefs = Prefs::memory();
     desk.link.heard = true;
-    desk.client = Some(Arc::clone(&client));
+    desk.connection.client = Some(Arc::clone(&client));
     let mut rt = Runtime::new(desk, crate::ui::view, (393.0, 852.0), Env::new(true, 2.0));
     rt.on_key = Some(Desk::key);
     poll(&mut rt);
@@ -199,7 +199,7 @@ pub fn settle(rt: &mut Runtime<Desk>) {
 }
 
 pub fn focus(rt: &Runtime<Desk>) -> ResourceId {
-    rt.state.shown.as_ref().unwrap().resource.clone()
+    rt.state.connection.shown.as_ref().unwrap().resource.clone()
 }
 
 pub use crate::ui::element as geometry;

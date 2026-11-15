@@ -179,7 +179,7 @@ impl Desk {
                 Done::Code(result) => {
                     self.settings_ui.pairing.minting = false;
                     self.settings_ui.pairing.qr = result.as_ref().ok().and_then(|code| {
-                        let cache = self.resources.images.as_ref()?;
+                        let cache = self.connection.resources.images.as_ref()?;
                         let (side, rgba) = pair::qr_rgba(&code.link, QR_PIXELS)?;
                         Some(cache.rgba(side, side, rgba))
                     });
@@ -257,7 +257,7 @@ impl Desk {
             credential: "00f52232cc292e87b6695a8b67d363f6".to_owned(),
             network: pair::Network::Tailnet,
         }));
-        self.settings_ui.pairing.qr = self.resources.images.as_ref().map(|cache| {
+        self.settings_ui.pairing.qr = self.connection.resources.images.as_ref().map(|cache| {
             let (side, rgba) = pair::qr_rgba(link, QR_PIXELS).unwrap();
             let image = cache.rgba(side, side, rgba);
             image.wait().unwrap();

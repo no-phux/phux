@@ -4,7 +4,7 @@ use phux_client_runtime::control::Event;
 
 fn phone(size: (f32, f32)) -> (std::sync::Arc<Client>, Runtime<Desk>) {
     let (client, mut rt) = fixture();
-    rt.state.topology = client.with_control(|control| control.topology().cloned());
+    rt.state.connection.topology = client.with_control(|control| control.topology().cloned());
     rt.set_viewport(size, 2.0);
     (client, rt)
 }
@@ -32,7 +32,7 @@ fn visible_editor(rt: &Runtime<Desk>, key: &str) {
 }
 
 fn ask(rt: &mut Runtime<Desk>, id: &str) {
-    let terminal_id = rt.state.shown.as_ref().unwrap().resource.clone();
+    let terminal_id = rt.state.connection.shown.as_ref().unwrap().resource.clone();
     rt.state.activities.apply(
         &Event::AgentAsked {
             terminal_id,
@@ -56,19 +56,19 @@ fn rename_accepts_drawn_text_submit_and_cancel_without_terminal_input() {
         // The keyboard's own shift: at 320 points the strip's ⇧ is scrolled away.
         tap(&mut rt, "phone-cap-shift", 0.1);
         tap(&mut rt, "phone-cap-120", 0.3);
-        assert_eq!(rt.state.tabs.rename_field.text, "X");
+        assert_eq!(rt.state.connection.tabs.rename_field.text, "X");
         tap(&mut rt, "phone-cap-backspace", 0.5);
-        assert!(rt.state.tabs.rename_field.text.is_empty());
+        assert!(rt.state.connection.tabs.rename_field.text.is_empty());
         tap(&mut rt, "phone-cap-120", 0.7);
         tap(&mut rt, "phone-cap-return", 0.9);
-        assert!(rt.state.tabs.renaming.is_none());
+        assert!(rt.state.connection.tabs.renaming.is_none());
         rt.update(|d, tx| {
             d.rename_session(phux_protocol::ids::SessionKey::new([1; 16]).unwrap(), "old");
             tx.instant();
         });
         settle(&mut rt);
         tap(&mut rt, "phone-key-Escape", 1.1);
-        assert!(rt.state.tabs.renaming.is_none());
+        assert!(rt.state.connection.tabs.renaming.is_none());
         no_terminal_input(&client);
     }
 }
@@ -152,7 +152,7 @@ fn an_inbox_return_submits_only_the_picked_reply() {
 fn retained_acp_focus_cannot_capture_the_drawn_inbox_keyboard() {
     use phux_protocol::native_agent::{NativeCapabilities, NativeQuestion, NativeView};
     let (client, mut rt) = phone((393.0, 852.0));
-    let terminal = rt.state.shown.as_ref().unwrap().resource.clone();
+    let terminal = rt.state.connection.shown.as_ref().unwrap().resource.clone();
     let question = |id: &str| NativeQuestion {
         id: format!("acp-question:{id}"),
         kind: "input".into(),

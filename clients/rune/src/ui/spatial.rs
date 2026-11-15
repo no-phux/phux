@@ -19,16 +19,17 @@ const TOUCH: f32 = 44.0;
 
 fn controls_ink(desk: &Desk, ink: &Ink) -> Ink {
     let ground = desk
+        .connection
         .client
         .as_ref()
-        .zip(desk.shown.as_ref())
+        .zip(desk.connection.shown.as_ref())
         .and_then(|(client, shown)| client.acquire_view(shown.view?))
         .map_or(ink.bg, |frame| crate::grid::background(&frame));
     super::phone::ground_ink(ground, ink.accent, desk.settings.theme)
 }
 
 pub fn view(desk: &Desk, phone: &Phone, ink: &Ink, area: El) -> El {
-    let Some(shown) = desk.shown.as_ref() else {
+    let Some(shown) = desk.connection.shown.as_ref() else {
         return area;
     };
     let fallback = phux_client_core::layout::LayoutNode::Leaf(shown.resource.clone());
@@ -125,7 +126,11 @@ fn canvas(desk: &Desk, phone: &Phone, all: &[(ResourceId, Rect)], focus: Rect, i
         })
         .motion(tok::motion::SNAPPY);
     for (id, rect) in all {
-        let focused = desk.shown.as_ref().is_some_and(|s| &s.resource == id);
+        let focused = desk
+            .connection
+            .shown
+            .as_ref()
+            .is_some_and(|s| &s.resource == id);
         if fallback && !focused {
             continue;
         }
@@ -190,7 +195,7 @@ pub(super) fn minimap(desk: &Desk, ink: &Ink) -> Option<El> {
     if all.len() < 2 {
         return None;
     }
-    let map = map(&all, &desk.shown.as_ref()?.resource, ink);
+    let map = map(&all, &desk.connection.shown.as_ref()?.resource, ink);
     Some(if desk.modal().is_some() {
         map.inert()
     } else {
@@ -316,12 +321,14 @@ fn picker(desk: &Desk, all: &[(ResourceId, Rect)], focus: &ResourceId, ink: &Ink
 }
 
 fn pane_name(desk: &Desk, id: &ResourceId) -> String {
-    desk.topology
+    desk.connection
+        .topology
         .as_ref()
         .and_then(|t| t.pane(id))
         .map(crate::palette::pane_label)
         .or_else(|| {
-            desk.resources
+            desk.connection
+                .resources
                 .entries
                 .get(id)
                 .and_then(|d| d.record.name.clone())

@@ -4,7 +4,12 @@ use phux_client_runtime::{
     control::{ControlOptions, ControlPlane},
 };
 use phux_protocol::{
-    ids::{ArrangementKey, AuthorityId, ResourceKey, ResourceKind, Revision, WindowId},
+    PROTOCOL_VERSION,
+    caps::{
+        BootstrapLimits, BootstrapProfile, ServerCapabilities, ServerFeatureExt,
+        ServerFeatureExtSet,
+    },
+    ids::{ArrangementKey, AuthorityId, ClientId, ResourceKey, ResourceKind, Revision, WindowId},
     wire::{
         frame::{
             Command, CommandValue, FrameKind, OrganizationPage, ResourceRecord, SessionRecord,
@@ -13,8 +18,13 @@ use phux_protocol::{
     },
 };
 
-pub(super) use crate::wire_fixture::outbound;
-use crate::wire_fixture::{answer, attach_id, hello, organization_request, request};
+pub(super) fn outbound(client: &Client) -> Vec<FrameKind> {
+    client
+        .take_outbound()
+        .iter()
+        .map(|bytes| FrameKind::decode(bytes).unwrap().0)
+        .collect()
+}
 
 pub(super) fn session(n: u8) -> SessionKey {
     SessionKey::new([n; 16]).unwrap()
@@ -28,10 +38,36 @@ pub(super) fn connected() -> (Arc<Client>, Desk) {
     }));
     client.with_control(ControlPlane::connection_opened);
     outbound(&client);
-    client.feed(hello(1, true)).unwrap();
+    client
+        .feed(FrameKind::HelloOk {
+            protocol_major: PROTOCOL_VERSION.major,
+            protocol_minor: PROTOCOL_VERSION.minor,
+            protocol_patch: PROTOCOL_VERSION.patch,
+            server_caps: ServerCapabilities::new()
+                .with_features_ext(ServerFeatureExtSet::with(&[ServerFeatureExt::Organization])),
+            server_id: vec![1; 16],
+            selected_profile: Some(BootstrapProfile::SynthesizedVtRaw),
+            bootstrap_limits: BootstrapLimits::default(),
+        })
+        .unwrap();
     let sent = outbound(&client);
-    let attach_id = attach_id(&sent).unwrap();
-    let request_id = organization_request(&sent).unwrap();
+    let attach_id = sent
+        .iter()
+        .find_map(|frame| match frame {
+            FrameKind::Attach { attach_id, .. } => Some(*attach_id),
+            _ => None,
+        })
+        .unwrap();
+    let request_id = sent
+        .iter()
+        .find_map(|frame| match frame {
+            FrameKind::Command {
+                request_id,
+                command: Command::GetOrganization { .. },
+            } => Some(*request_id),
+            _ => None,
+        })
+        .unwrap();
     let page = OrganizationPage::new(AuthorityId::new([1; 16]).unwrap(), Revision::new(1), 0)
         .with_sessions(vec![
             SessionRecord::new(session(1), "work", Revision::new(1))
@@ -51,11 +87,12 @@ pub(super) fn connected() -> (Arc<Client>, Desk) {
             .with_kind(ResourceKind::Terminal)
             .with_live(Some(terminal())),
         ]);
-    answer(
-        &client,
-        request_id,
-        CommandValue::OrganizationPage(Box::new(page)),
-    );
+    client
+        .feed(FrameKind::CommandResult {
+            request_id,
+            result: CommandResult::OkWith(CommandValue::OrganizationPage(Box::new(page))),
+        })
+        .unwrap();
     let snapshot = SessionSnapshot::new(SessionId::new(1), WindowId::new(1), terminal())
         .with_sessions(vec![
             SessionInfo::new(SessionId::new(1), "work").with_key(Some(session(1))),
@@ -65,12 +102,18 @@ pub(super) fn connected() -> (Arc<Client>, Desk) {
             ResourceInfo::new(terminal(), WindowId::new(1), 80, 24)
                 .with_session(Some(SessionId::new(2))),
         ]);
-    crate::wire_fixture::attached(&client, attach_id, snapshot);
+    client
+        .feed(FrameKind::Attached {
+            attach_id,
+            snapshot,
+            initial_client_id: ClientId::new(1),
+        })
+        .unwrap();
     client.feed(FrameKind::AttachReady { attach_id }).unwrap();
-    let mut desk = Desk::settings_test_fixture();
-    desk.status = Status::Attached;
-    desk.topology = client.topology();
-    desk.client = Some(client.clone());
+    let mut desk = crate::test_support::settings_window();
+    desk.connection.status = Status::Attached;
+    desk.connection.topology = client.topology();
+    desk.connection.client = Some(client.clone());
     let _ = client.take_activity();
     outbound(&client);
     (client, desk)
@@ -85,11 +128,22 @@ pub(super) fn begin(
         terminal(),
         Box::new(move |outcome| finish.send(outcome).unwrap()),
     );
-    let operation = desk.quick_move.as_ref().expect("move queued").operation;
-    let request = request(&outbound(client), |c| {
-        matches!(c, Command::ResourceMove { .. })
-    })
-    .expect("move submitted over the protocol");
+    let operation = desk
+        .connection
+        .quick_move
+        .as_ref()
+        .expect("move queued")
+        .operation;
+    let request = outbound(client)
+        .iter()
+        .find_map(|frame| match frame {
+            FrameKind::Command {
+                request_id,
+                command: Command::ResourceMove { .. },
+            } => Some(*request_id),
+            _ => None,
+        })
+        .expect("move submitted over the protocol");
     (request, operation, result)
 }
 
@@ -135,9 +189,10 @@ pub(super) fn install_arrangement(client: &Client, n: u8) {
         Revision::new(1),
         document,
     );
-    answer(
-        client,
-        request_id,
-        CommandValue::Arrangement(Box::new(value)),
-    );
+    client
+        .feed(FrameKind::CommandResult {
+            request_id,
+            result: CommandResult::OkWith(CommandValue::Arrangement(Box::new(value))),
+        })
+        .unwrap();
 }

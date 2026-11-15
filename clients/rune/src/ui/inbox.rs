@@ -338,10 +338,10 @@ pub struct AskCard {
 /// A focused pane's agent is asking: the question over the pane's corner,
 /// answerable with a click. Hidden while find or the inbox covers it.
 pub fn ask_card(desk: &Desk, id: &ResourceId, area: [f32; 2], ink: &Ink) -> Option<AskCard> {
-    if desk.find.is_some() || desk.inbox.open {
+    if desk.connection.find.is_some() || desk.inbox.open {
         return None;
     }
-    let pane = desk.topology.as_ref()?.pane(id)?;
+    let pane = desk.connection.topology.as_ref()?.pane(id)?;
     let ask = inbox::question(pane, &desk.activities).or_else(|| desk.inbox.questions.ask(id))?;
     let width = CARD_W.min(area[0] - 20.0);
     if width < 160.0 {

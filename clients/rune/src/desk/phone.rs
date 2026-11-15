@@ -253,7 +253,7 @@ impl Desk {
             return;
         }
         let edit = match field {
-            Field::Find => &mut self.find_query,
+            Field::Find => &mut self.connection.find_query,
             _ => &mut self.palette_query,
         };
         let before = edit.text.clone();

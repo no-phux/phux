@@ -9,13 +9,17 @@
 
 use std::f32::consts::{PI, TAU};
 
-use super::{Agent, Bit, Car, Ember, GOLD, MINT, Mode, PitLane, at};
+use super::{Bit, Car, Driver, Ember, GOLD, MINT, Mode, PitLane, at};
 use crate::creature;
-use crate::reef::{self, Mood, Rng, ease, hash};
+use crate::playground::{self, Mood, Rng, hash};
 
 /// One fixed step of scene time: the same race whatever the frame rate.
 pub const DT: f32 = 1.0 / 60.0;
 const MAX_EMBERS: usize = 600;
+
+fn ease(dt: f32, rate: f32) -> f32 {
+    1.0 - (-dt * rate).exp()
+}
 
 /// `x` moved toward `to` by at most `by`.
 fn toward(x: f32, to: f32, by: f32) -> f32 {
@@ -24,7 +28,7 @@ fn toward(x: f32, to: f32, by: f32) -> f32 {
 
 impl PitLane {
     /// Cars for exactly `drivers`, keeping each one's place and motion.
-    pub fn sync(&mut self, drivers: Vec<Agent>) {
+    pub fn sync(&mut self, drivers: Vec<Driver>) {
         let mut old = std::mem::take(&mut self.cars);
         for who in drivers {
             let car = match old.iter().position(|c| c.who.id == who.id) {
@@ -236,7 +240,7 @@ impl PitLane {
     }
 
     /// Confetti as a finished car parks.
-    fn burst(&mut self, at: [f32; 2], kit: reef::Rgb) {
+    fn burst(&mut self, at: [f32; 2], kit: playground::Rgb) {
         let cols = [MINT, MINT, [255.0; 3], kit, GOLD, [20.0, 20.0, 24.0]];
         for i in 0..30 {
             let r = &mut self.rng;
@@ -263,11 +267,11 @@ impl PitLane {
                 self.next_firework = 2.5 + r.next() * 4.0;
                 let (x, y) = (gs[0] + r.next() * gs[2], gs[1] + r.next() * gs[3]);
                 let kinds = [
-                    reef::CLAUDE,
-                    reef::CODEX,
-                    reef::OPENCODE,
-                    reef::GEMINI,
-                    reef::OTHER,
+                    playground::CLAUDE,
+                    playground::CODEX,
+                    playground::OPENCODE,
+                    playground::GEMINI,
+                    playground::OTHER,
                 ];
                 let col = kinds[((r.next() * 5.0) as usize).min(4)].body;
                 for i in 0..46 {
@@ -297,7 +301,7 @@ impl PitLane {
 }
 
 /// A new car, its pace and rhythm seeded from who it is, already at its tier.
-fn fresh(who: Agent) -> Car {
+fn fresh(who: Driver) -> Car {
     let tier = creature::tier(who.work.as_ref());
     let f = 0.84 + (hash(&who.name) % 1000) as f32 / 1000.0 * 0.22;
     let seed = Rng::new(hash(&format!("{}{:?}", who.name, who.id))).next();

@@ -75,9 +75,9 @@ fn step(rt: &mut rune::Runtime<Desk>) {
 
 /// The first row of the terminal on screen, or `None` with nothing painted.
 fn on_screen(rt: &rune::Runtime<Desk>, client: &Client) -> Option<String> {
-    let view = rt.state.shown.as_ref()?.view?;
+    let view = rt.state.connection.shown.as_ref()?.view?;
     let frame = client.acquire_view(view)?;
-    rt.state.layout.as_ref()?;
+    rt.state.connection.layout.as_ref()?;
     if rt.find("placeholder-machines").is_some() {
         return None;
     }
@@ -107,7 +107,7 @@ fn reconnects_in_place(phone: bool, size: (f32, f32)) {
     let mut desk = Desk::new(&Resolved::offline("reconnect")).with_phone(phone);
     desk.prefs = rune::prefs::Prefs::memory();
     desk.link.heard = true; // no first-run tour over the terminal
-    desk.client = Some(Arc::clone(&client));
+    desk.connection.client = Some(Arc::clone(&client));
     let env = rune::Env::new(true, 2.0);
     let mut rt = rune::Runtime::new(desk, crate::ui::view, size, env);
 
@@ -122,7 +122,7 @@ fn reconnects_in_place(phone: bool, size: (f32, f32)) {
     // The socket drops. The screen stays, and input says it can't land.
     client.with_control(|control| control.connection_lost(None));
     step(&mut rt);
-    assert_eq!(rt.state.status, Status::Connecting);
+    assert_eq!(rt.state.connection.status, Status::Connecting);
     assert_eq!(on_screen(&rt, &client).as_deref(), Some("one"));
     type_x(&mut rt);
     let notice = rt.state.notice.as_ref().map(|notice| notice.text.as_str());
@@ -135,7 +135,7 @@ fn reconnects_in_place(phone: bool, size: (f32, f32)) {
     assert_eq!(on_screen(&rt, &client).as_deref(), Some("one"));
     greet(&client);
     step(&mut rt);
-    assert_eq!(rt.state.status, Status::Attached);
+    assert_eq!(rt.state.connection.status, Status::Attached);
     assert_eq!(on_screen(&rt, &client).as_deref(), Some("one"));
 
     // The stream resumes into what is on screen, and typing reaches it.

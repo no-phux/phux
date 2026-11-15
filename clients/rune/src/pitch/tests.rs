@@ -3,9 +3,26 @@ use phux_protocol::ids::ResourceId;
 use super::sim::STEP;
 use super::*;
 use crate::creature::Work;
+use crate::playground::{CLAUDE, CODEX};
 
 fn hosts(names: &[&str]) -> Vec<(String, bool)> {
     names.iter().map(|n| (n.to_string(), true)).collect()
+}
+
+fn agent(id: u32, host: usize, mood: Mood) -> Agent {
+    Agent {
+        id: ResourceId::local(id),
+        name: format!("agent-{id}"),
+        host,
+        mood,
+        species: if id.is_multiple_of(2) {
+            &CLAUDE
+        } else {
+            &CODEX
+        },
+        number: id,
+        work: None,
+    }
 }
 
 fn pitch(agents: Vec<Agent>) -> Pitch {
@@ -98,9 +115,9 @@ fn tiers_dress_the_kit_from_rookie_to_legend() {
     );
     assert!(kit(4).star);
     // No stats is tier 1, a regular.
-    let p = pitch(vec![Agent::test(1, 0, Mood::Working)]);
+    let p = pitch(vec![agent(1, 0, Mood::Working)]);
     assert_eq!(p.players[0].tier, 1);
-    let mut vet = Agent::test(2, 0, Mood::Working);
+    let mut vet = agent(2, 0, Mood::Working);
     vet.work = Some(Work {
         turns: 40,
         working_s: 0.0,
@@ -112,10 +129,10 @@ fn tiers_dress_the_kit_from_rookie_to_legend() {
 #[test]
 fn players_settle_where_their_mood_puts_them() {
     let mut p = pitch(vec![
-        Agent::test(1, 0, Mood::Working),
-        Agent::test(2, 1, Mood::Waiting),
-        Agent::test(3, 2, Mood::Idle),
-        Agent::test(4, 2, Mood::Done),
+        agent(1, 0, Mood::Working),
+        agent(2, 1, Mood::Waiting),
+        agent(3, 2, Mood::Idle),
+        agent(4, 2, Mood::Done),
     ]);
     run(&mut p, 6.0);
     let at = |id: u32| {
@@ -143,11 +160,11 @@ fn players_settle_where_their_mood_puts_them() {
 #[test]
 fn each_squad_counts_its_own_bench() {
     let mut p = pitch(vec![
-        Agent::test(1, 0, Mood::Idle),
-        Agent::test(2, 0, Mood::Idle),
-        Agent::test(3, 0, Mood::Waiting),
-        Agent::test(4, 2, Mood::Idle),
-        Agent::test(5, 1, Mood::Working),
+        agent(1, 0, Mood::Idle),
+        agent(2, 0, Mood::Idle),
+        agent(3, 0, Mood::Waiting),
+        agent(4, 2, Mood::Idle),
+        agent(5, 1, Mood::Working),
     ]);
     run(&mut p, 0.1);
     let idle: Vec<usize> = p.zones.iter().map(|z| z.idle).collect();
@@ -156,9 +173,9 @@ fn each_squad_counts_its_own_bench() {
 
 #[test]
 fn finishing_celebrates_once_with_confetti() {
-    let mut p = pitch(vec![Agent::test(1, 0, Mood::Working)]);
+    let mut p = pitch(vec![agent(1, 0, Mood::Working)]);
     run(&mut p, 1.0);
-    p.sync(vec![Agent::test(1, 0, Mood::Done)]);
+    p.sync(vec![agent(1, 0, Mood::Done)]);
     p.step(STEP);
     assert!(p.players[0].cel > 2.5);
     assert_eq!(p.parts.len(), 28);
@@ -168,7 +185,7 @@ fn finishing_celebrates_once_with_confetti() {
 
 #[test]
 fn a_squad_passes_its_ball_around() {
-    let mut p = pitch((1..=3).map(|i| Agent::test(i, 1, Mood::Working)).collect());
+    let mut p = pitch((1..=3).map(|i| agent(i, 1, Mood::Working)).collect());
     let mut owners = std::collections::HashSet::new();
     for _ in 0..(20.0 / STEP) as usize {
         p.step(STEP);
@@ -185,7 +202,7 @@ fn a_squad_passes_its_ball_around() {
 fn the_same_fleet_plays_out_the_same() {
     let fleet = || {
         (1..=6)
-            .map(|i| Agent::test(i, (i % 3) as usize, Mood::Working))
+            .map(|i| agent(i, (i % 3) as usize, Mood::Working))
             .collect()
     };
     let (mut a, mut b) = (pitch(fleet()), pitch(fleet()));
@@ -198,14 +215,11 @@ fn the_same_fleet_plays_out_the_same() {
 
 #[test]
 fn sync_keeps_players_and_drops_a_gone_selection() {
-    let mut p = pitch(vec![
-        Agent::test(1, 0, Mood::Working),
-        Agent::test(2, 0, Mood::Working),
-    ]);
+    let mut p = pitch(vec![agent(1, 0, Mood::Working), agent(2, 0, Mood::Working)]);
     run(&mut p, 1.0);
     let before = p.players[1].l;
     p.selected = Some(ResourceId::local(1));
-    p.sync(vec![Agent::test(2, 0, Mood::Working)]);
+    p.sync(vec![agent(2, 0, Mood::Working)]);
     assert_eq!(p.players.len(), 1);
     assert_eq!(p.players[0].l, before, "kept its place");
     assert_eq!(p.selected, None);

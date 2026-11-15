@@ -23,6 +23,7 @@ use phux_protocol::{
 use rune::{Env, Key, KeyEvent, Mods, Runtime};
 
 use crate::wire_fixture::{answer, attach_id, bootstrap_frames, organization_request, outbound};
+mod decoding;
 
 // A complete 4×2 RGBA PNG: left red, right blue. CRCs and IDAT are real,
 // unlike the header-only fixtures used by some server protocol tests.
@@ -129,8 +130,8 @@ fn fixture(records: &[ResourceRecord], doc: &ArrangementDoc) -> (Arc<Client>, Ru
     client.feed(FrameKind::AttachReady { attach_id }).unwrap();
     let mut desk = Desk::new(&Resolved::offline("fixture only"));
     desk.link.heard = true; // no first-run preferences write
-    desk.client = Some(Arc::clone(&client));
-    desk.resources.images = Some(rune::ImageCache::new(Arc::new(|| {})));
+    desk.connection.client = Some(Arc::clone(&client));
+    desk.connection.resources.images = Some(rune::ImageCache::new(Arc::new(|| {})));
     let mut rt = Runtime::new(desk, crate::ui::view, (800.0, 600.0), Env::new(true, 1.0));
     rt.on_key = Some(Desk::key);
     step(&mut rt);
@@ -236,17 +237,20 @@ fn document_only_startup_adopts_org_identity_secondary_leaves_and_tabs() {
         client.topology().unwrap().panes.is_empty(),
         "Topology stays terminal-only"
     );
-    assert_eq!(rt.state.shown.as_ref().unwrap().resource, id(1));
-    assert!(rt.state.shown.as_ref().unwrap().view.is_none());
-    assert_eq!(rt.state.others.get(&id(2)), Some(&None));
-    assert_eq!(leaves(rt.state.layout.as_ref().unwrap()), [id(1), id(2)]);
-    assert_eq!(rt.state.tabs.list.len(), 2);
+    assert_eq!(rt.state.connection.shown.as_ref().unwrap().resource, id(1));
+    assert!(rt.state.connection.shown.as_ref().unwrap().view.is_none());
+    assert_eq!(rt.state.connection.others.get(&id(2)), Some(&None));
+    assert_eq!(
+        leaves(rt.state.connection.layout.as_ref().unwrap()),
+        [id(1), id(2)]
+    );
+    assert_eq!(rt.state.connection.tabs.list.len(), 2);
     rt.update(|d, _| d.focus_pane(&id(2)));
-    assert!(rt.state.shown.as_ref().unwrap().view.is_none());
-    assert_eq!(rt.state.others.get(&id(1)), Some(&None));
+    assert!(rt.state.connection.shown.as_ref().unwrap().view.is_none());
+    assert_eq!(rt.state.connection.others.get(&id(1)), Some(&None));
     rt.update(|d, _| d.select_tab(1));
     step(&mut rt);
-    assert_eq!(rt.state.shown.as_ref().unwrap().resource, id(3));
+    assert_eq!(rt.state.connection.shown.as_ref().unwrap().resource, id(3));
     assert!(
         rt.state
             .palette_hits()
@@ -262,7 +266,7 @@ fn real_wire_json_updates_replace_plain_native_inspector_and_empty_errors() {
         &doc(LayoutNode::Leaf(id(1))),
     );
     assert!(matches!(
-        rt.state.resources.entries[&id(1)].body,
+        rt.state.connection.resources.entries[&id(1)].body,
         Body::Pending
     ));
     publish(
@@ -273,7 +277,7 @@ fn real_wire_json_updates_replace_plain_native_inspector_and_empty_errors() {
     );
     step(&mut rt);
     assert!(
-        matches!(&rt.state.resources.entries[&id(1)].body, Body::Tree(json) if json.contains("<script>not HTML</script>"))
+        matches!(&rt.state.connection.resources.entries[&id(1)].body, Body::Tree(json) if json.contains("<script>not HTML</script>"))
     );
     for (seq, bytes) in [(1, b"{\"new\":2}".as_slice()), (2, b""), (3, b"not JSON")] {
         client
@@ -286,21 +290,21 @@ fn real_wire_json_updates_replace_plain_native_inspector_and_empty_errors() {
             })
             .unwrap();
         step(&mut rt);
-        assert_eq!(rt.state.resources.entries[&id(1)].seq, Some(seq));
+        assert_eq!(rt.state.connection.resources.entries[&id(1)].seq, Some(seq));
         if seq == 1 {
             assert!(
-                matches!(&rt.state.resources.entries[&id(1)].body, Body::Tree(json) if json.contains("new"))
+                matches!(&rt.state.connection.resources.entries[&id(1)].body, Body::Tree(json) if json.contains("new"))
             );
         }
         if seq == 2 {
             assert!(matches!(
-                rt.state.resources.entries[&id(1)].body,
+                rt.state.connection.resources.entries[&id(1)].body,
                 Body::Empty
             ));
         }
     }
     assert!(
-        matches!(&rt.state.resources.entries[&id(1)].body, Body::Invalid(error) if error.contains("JSON"))
+        matches!(&rt.state.connection.resources.entries[&id(1)].body, Body::Invalid(error) if error.contains("JSON"))
     );
 }
 
@@ -323,70 +327,13 @@ fn document_focus_cannot_send_terminal_input_upload_history_resize_or_paint_ack(
         d.drawn();
     });
     assert!(rt.state.pending.is_none());
-    assert!(rt.state.find.is_none());
-    assert!(rt.state.preedit.is_none());
-    assert!(rt.state.painted.borrow().is_none());
+    assert!(rt.state.connection.find.is_none());
+    assert!(rt.state.connection.preedit.is_none());
+    assert!(rt.state.connection.painted.borrow().is_none());
     assert!(
         outbound(&client).is_empty(),
         "no terminal commands for a document"
     );
-}
-
-#[test]
-fn png_uses_real_decoder_and_reports_truncated_png() {
-    let (decoded, wake) = std::sync::mpsc::channel();
-    let cache = rune::ImageCache::new(Arc::new(move || {
-        let _ = decoded.send(());
-    }));
-    let mut d = Document::new(record(1, ResourceKind::PixelSurface));
-    let mut decodes = surface::Decodes::default();
-    let mut publication = DocumentPublication {
-        resource_id: id(1),
-        kind: ResourceKind::PixelSurface,
-        seq: 0,
-        bytes: PNG.to_vec(),
-        content_type: None,
-    };
-    assert!(d.publish(&publication, Some(&cache), &mut decodes));
-    let Body::Surface(image) = &d.body else {
-        panic!("image")
-    };
-    assert_eq!(image.wait(), Ok([4, 2]));
-    wake.recv_timeout(std::time::Duration::from_secs(10))
-        .unwrap();
-    assert!(
-        !d.publish(&publication, Some(&cache), &mut decodes),
-        "stale sequence ignored"
-    );
-    publication.seq = 1;
-    publication.bytes = PNG[..24].to_vec();
-    assert!(d.publish(&publication, Some(&cache), &mut decodes));
-    // Retire the completed first decode, then decode the queued next cut.
-    d.finish_surface(Some(&cache), &mut decodes);
-    assert!(d.surface.flight.as_ref().unwrap().image.wait().is_err());
-    wake.recv_timeout(std::time::Duration::from_secs(10))
-        .unwrap();
-    d.finish_surface(Some(&cache), &mut decodes);
-    assert!(matches!(&d.body, Body::Invalid(error) if error.contains("PNG")));
-}
-
-#[test]
-fn a_jpeg_frame_uses_the_real_decoder() {
-    const JPEG: &[u8] = include_bytes!("../../../../../crates/phux-core/testdata/baseline-5x3.jpg");
-    let cache = rune::ImageCache::new(Arc::new(|| {}));
-    let mut d = Document::new(record(1, ResourceKind::PixelSurface));
-    let publication = DocumentPublication {
-        resource_id: id(1),
-        kind: ResourceKind::PixelSurface,
-        seq: 0,
-        bytes: JPEG.to_vec(),
-        content_type: None,
-    };
-    assert!(d.publish(&publication, Some(&cache), &mut surface::Decodes::default()));
-    let Body::Surface(image) = &d.body else {
-        panic!("image")
-    };
-    assert_eq!(image.wait(), Ok([5, 3]));
 }
 
 #[test]
@@ -398,10 +345,13 @@ fn organization_removal_prunes_documents_and_hands_focus_to_live_neighbour() {
     let (client, mut rt) = fixture(&records, &doc(split(1, 2)));
     remove(&client, 1, ResourceKind::AccessibilityTree);
     step(&mut rt);
-    assert!(!rt.state.resources.entries.contains_key(&id(1)));
-    assert_eq!(rt.state.shown.as_ref().unwrap().resource, id(2));
-    assert_eq!(leaves(rt.state.layout.as_ref().unwrap()), [id(2)]);
-    assert!(rt.state.others.is_empty());
+    assert!(!rt.state.connection.resources.entries.contains_key(&id(1)));
+    assert_eq!(rt.state.connection.shown.as_ref().unwrap().resource, id(2));
+    assert_eq!(
+        leaves(rt.state.connection.layout.as_ref().unwrap()),
+        [id(2)]
+    );
+    assert!(rt.state.connection.others.is_empty());
     assert!(
         rt.state
             .notice
@@ -432,9 +382,9 @@ fn closing_a_mirror_view_preserves_unrelated_tabs_and_never_ends_its_producer() 
     );
     outbound(&client);
     rt.update(|d, _| d.close_terminal());
-    assert!(rt.state.shown.is_none());
+    assert!(rt.state.connection.shown.is_none());
     assert!(
-        rt.state.resources.entries.contains_key(&id(1)),
+        rt.state.connection.resources.entries.contains_key(&id(1)),
         "source still exists"
     );
     let frames = outbound(&client);
@@ -446,7 +396,7 @@ fn closing_a_mirror_view_preserves_unrelated_tabs_and_never_ends_its_producer() 
     );
     rt.update(|d, _| d.show(id(1), "work"));
     assert_eq!(
-        rt.state.shown.as_ref().unwrap().resource,
+        rt.state.connection.shown.as_ref().unwrap().resource,
         id(1),
         "direct reopen is still available"
     );
@@ -493,7 +443,11 @@ fn mirror_startup_requires_confirmation_and_uses_dedicated_argv_not_shell_input(
             "first;echo no"
         ]
     );
-    rt.state.resources.producers.insert(id(7), Source::Page);
+    rt.state
+        .connection
+        .resources
+        .producers
+        .insert(id(7), Source::Page);
     assert!(rt.state.producer_ended(&id(7), Some(1)));
     assert!(
         rt.state
@@ -517,15 +471,15 @@ fn mixed_layout_keeps_terminal_view_and_readonly_secondary_document() {
     ];
     let (client, mut rt) = fixture(&records, &doc(split(1, 2)));
     step(&mut rt);
-    assert!(rt.state.shown.as_ref().unwrap().view.is_some());
-    assert_eq!(rt.state.others.get(&id(2)), Some(&None));
+    assert!(rt.state.connection.shown.as_ref().unwrap().view.is_some());
+    assert_eq!(rt.state.connection.others.get(&id(2)), Some(&None));
     rt.update(|d, _| d.focus_pane(&id(2)));
-    assert!(rt.state.shown.as_ref().unwrap().view.is_none());
-    assert!(rt.state.others[&id(1)].is_some());
+    assert!(rt.state.connection.shown.as_ref().unwrap().view.is_none());
+    assert!(rt.state.connection.others[&id(1)].is_some());
     remove(&client, 2, ResourceKind::AccessibilityTree);
     step(&mut rt);
-    assert_eq!(rt.state.shown.as_ref().unwrap().resource, id(1));
-    assert!(rt.state.shown.as_ref().unwrap().view.is_some());
+    assert_eq!(rt.state.connection.shown.as_ref().unwrap().resource, id(1));
+    assert!(rt.state.connection.shown.as_ref().unwrap().view.is_some());
 }
 
 mod addressable;

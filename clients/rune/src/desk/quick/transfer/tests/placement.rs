@@ -53,7 +53,11 @@ fn layout_write(client: &Client) -> (u32, OperationId) {
 fn switching_after_the_move_receipt_cancels_the_wait_for_its_original_arrangement() {
     let (client, mut desk) = connected();
     moved(&client, &mut desk);
-    assert_eq!(desk.unplaced_splits.len(), 1, "A arrangement is withheld");
+    assert_eq!(
+        desk.connection.unplaced_splits.len(),
+        1,
+        "A arrangement is withheld"
+    );
     client.attach_session(AttachTarget::ById(SessionId::new(2)));
     install_arrangement(&client, 2);
     outbound(&client);
@@ -61,7 +65,7 @@ fn switching_after_the_move_receipt_cancels_the_wait_for_its_original_arrangemen
     no_layout_write(&client);
     assert!(!desk.splits_waiting());
     assert!(
-        desk.wanted.is_none(),
+        desk.connection.wanted.is_none(),
         "no fallback may focus the A terminal from B"
     );
     assert!(
@@ -85,12 +89,12 @@ fn switching_after_the_move_receipt_cancels_the_wait_for_its_original_arrangemen
 fn the_deferred_move_still_writes_a_tab_into_a_when_its_arrangement_arrives() {
     let (client, mut desk) = connected();
     moved(&client, &mut desk);
-    assert_eq!(desk.unplaced_splits.len(), 1);
+    assert_eq!(desk.connection.unplaced_splits.len(), 1);
     install_arrangement(&client, 1);
     desk.place_pending_splits(&client);
     layout_write(&client);
-    assert!(desk.unplaced_splits.is_empty());
-    assert!(desk.split_write.is_some());
+    assert!(desk.connection.unplaced_splits.is_empty());
+    assert!(desk.connection.split_write.is_some());
 }
 
 #[test]
@@ -99,14 +103,14 @@ fn ordinary_queued_tabs_and_splits_also_cancel_instead_of_following_selection() 
     for place in [None, Some((terminal(), SplitDir::Horizontal))] {
         let (client, mut desk) = connected();
         desk.place_split(&client, &terminal(), place, Some(session(1)));
-        assert_eq!(desk.unplaced_splits.len(), 1);
+        assert_eq!(desk.connection.unplaced_splits.len(), 1);
         client.attach_session(AttachTarget::ById(SessionId::new(2)));
         install_arrangement(&client, 2);
         outbound(&client);
         desk.place_pending_splits(&client);
         no_layout_write(&client);
         assert!(!desk.splits_waiting());
-        assert!(desk.wanted.is_none());
+        assert!(desk.connection.wanted.is_none());
         assert!(
             desk.notice
                 .as_ref()
@@ -124,7 +128,7 @@ fn tab_split_and_mirror_spawns_keep_the_destination_from_before_the_spawn_receip
     use phux_protocol::wire::frame::SpawnResult;
     for action in 0..3 {
         let (client, mut desk) = connected();
-        desk.shown = Some(Shown {
+        desk.connection.shown = Some(Shown {
             resource: terminal(),
             view: None,
         });
@@ -142,7 +146,7 @@ fn tab_split_and_mirror_spawns_keep_the_destination_from_before_the_spawn_receip
                 _ => None,
             })
             .expect("embedded spawn request");
-        assert!(desk.pending_splits.contains_key(&request_id));
+        assert!(desk.connection.pending_splits.contains_key(&request_id));
         client.attach_session(AttachTarget::ById(SessionId::new(2)));
         install_arrangement(&client, 2);
         client
@@ -155,9 +159,9 @@ fn tab_split_and_mirror_spawns_keep_the_destination_from_before_the_spawn_receip
             desk.apply(&client, event, &mut rune::Tx::default());
         }
         no_layout_write(&client);
-        assert!(desk.pending_splits.is_empty());
+        assert!(desk.connection.pending_splits.is_empty());
         assert!(!desk.splits_waiting());
-        assert!(desk.wanted.is_none());
+        assert!(desk.connection.wanted.is_none());
         assert!(
             desk.notice
                 .as_ref()
@@ -188,7 +192,7 @@ fn a_refused_in_flight_a_write_never_retries_or_falls_back_in_b() {
     no_layout_write(&client);
     assert!(!desk.splits_waiting());
     assert!(
-        desk.wanted.is_none(),
+        desk.connection.wanted.is_none(),
         "neither retry nor fallback focuses A in B"
     );
     assert!(
@@ -211,7 +215,7 @@ fn a_cancelled_in_flight_write_ignores_late_success_and_refusal_receipts() {
         install_arrangement(&client, 2);
         outbound(&client);
         desk.place_pending_splits(&client);
-        assert!(!desk.layout_ops.contains(&operation));
+        assert!(!desk.connection.layout_ops.contains(&operation));
         assert!(!desk.splits_waiting());
         let result = if success {
             CommandResult::Accepted { operation }
@@ -232,7 +236,7 @@ fn a_cancelled_in_flight_write_ignores_late_success_and_refusal_receipts() {
         }
         desk.place_pending_splits(&client);
         no_layout_write(&client);
-        assert!(desk.wanted.is_none());
+        assert!(desk.connection.wanted.is_none());
         assert!(
             desk.notice
                 .as_ref()

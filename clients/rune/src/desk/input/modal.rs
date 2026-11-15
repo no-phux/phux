@@ -3,7 +3,6 @@
 
 use crate::desk::Desk;
 use crate::keys::Shortcut;
-use crate::{hive::Hive, kitchen::Kitchen, pitch::Pitch, pitlane::PitLane, reef::Reef};
 
 /// What has the keyboard instead of the terminal, in the order they claim it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -83,19 +82,21 @@ impl Desk {
         modal: Modal,
         event: &rune::KeyEvent,
     ) -> bool {
-        match (modal, &event.key) {
-            (Modal::Galaxy, rune::Key::Escape) => self.close_galaxy(),
-            (Modal::Galaxy, rune::Key::Enter) => self.open_picked(),
-            (Modal::Reef, rune::Key::Escape) => self.scene_escape::<Reef>(),
-            (Modal::Reef, rune::Key::Enter) => self.open_agent::<Reef>(),
-            (Modal::Pitch, rune::Key::Escape) => self.scene_escape::<Pitch>(),
-            (Modal::Pitch, rune::Key::Enter) => self.open_agent::<Pitch>(),
-            (Modal::Kitchen, rune::Key::Escape) => self.scene_escape::<Kitchen>(),
-            (Modal::Kitchen, rune::Key::Enter) => self.open_agent::<Kitchen>(),
-            (Modal::PitLane, rune::Key::Escape) => self.scene_escape::<PitLane>(),
-            (Modal::PitLane, rune::Key::Enter) => self.open_agent::<PitLane>(),
-            (Modal::Hive, rune::Key::Escape) => self.scene_escape::<Hive>(),
-            (Modal::Hive, rune::Key::Enter) => self.open_agent::<Hive>(),
+        type Keys = (Modal, fn(&mut Desk), fn(&mut Desk));
+        let actions: [Keys; 6] = [
+            (Modal::Galaxy, Desk::close_galaxy, Desk::open_picked),
+            (Modal::Reef, Desk::reef_escape, Desk::open_fish),
+            (Modal::Pitch, Desk::pitch_escape, Desk::open_player),
+            (Modal::Kitchen, Desk::kitchen_escape, Desk::open_chef),
+            (Modal::PitLane, Desk::pitlane_escape, Desk::open_car),
+            (Modal::Hive, Desk::hive_escape, Desk::open_bee),
+        ];
+        let Some((_, escape, enter)) = actions.into_iter().find(|a| a.0 == modal) else {
+            return false;
+        };
+        match event.key {
+            rune::Key::Escape => escape(self),
+            rune::Key::Enter => enter(self),
             _ => return false,
         }
         true

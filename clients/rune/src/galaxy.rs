@@ -20,7 +20,7 @@ pub const PERIOD: f32 = 90.0;
 pub const MIN_SCALE: f32 = 0.3;
 pub const MAX_SCALE: f32 = 2.0;
 
-pub type Pt = [f32; 2];
+pub use crate::playground::Pt;
 
 /// One machine's planet and its agents' rings.
 #[derive(Debug, Clone, PartialEq)]
@@ -189,16 +189,6 @@ impl Camera {
         ];
         self.scale = next;
     }
-}
-
-/// A working directory's project: its last component. A path this shallow
-/// (`/`, `/Users/you`) is a home or a root, which says nothing about the work.
-pub fn project(cwd: &str) -> Option<&str> {
-    let trimmed = cwd.trim_end_matches('/');
-    if trimmed.matches('/').count() < 3 {
-        return None;
-    }
-    trimmed.rsplit('/').next().filter(|last| !last.is_empty())
 }
 
 /// What makes two agents related: the same session on the same machine, or

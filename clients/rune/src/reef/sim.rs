@@ -33,34 +33,8 @@ pub struct Swimmer {
     pub work: Option<Work>,
 }
 
-/// How far to ease toward a target at `rate` over `dt` seconds.
-pub fn ease(dt: f32, rate: f32) -> f32 {
+fn ease(dt: f32, rate: f32) -> f32 {
     1.0 - (-dt * rate).exp()
-}
-
-impl super::Cam {
-    /// The prototype's camera target: `at` (a selected creature) at about
-    /// 1.8×, kept inside a `w` by `h` scene; else the whole scene.
-    pub fn on(w: f32, h: f32, at: Option<Pt>) -> super::Cam {
-        let ([x, y], z) = match at {
-            Some(at) => (at, if w < 640.0 { 1.6 } else { 1.85 }),
-            None => ([w / 2.0, h / 2.0], 1.0),
-        };
-        let (hw, hh) = (w / (2.0 * z), h / (2.0 * z));
-        super::Cam {
-            x: x.clamp(hw, (w - hw).max(hw)),
-            y: y.clamp(hh, (h - hh).max(hh)),
-            z,
-        }
-    }
-
-    /// Ease toward `to` over `dt` seconds, quickly for reduced motion.
-    pub fn follow(&mut self, to: super::Cam, dt: f32, reduce: bool) {
-        let k = ease(dt, if reduce { 12.0 } else { 2.6 });
-        self.x += (to.x - self.x) * k;
-        self.y += (to.y - self.y) * k;
-        self.z += (to.z - self.z) * k;
-    }
 }
 
 impl Reef {
@@ -140,7 +114,7 @@ impl Reef {
             self.carry -= STEP;
             self.step(STEP);
         }
-        self.cam.follow(self.camera_target(), dt, self.reduce);
+        self.update_camera(dt);
     }
 
     /// The prototype's `step`, less its demo's random state changes.
@@ -412,8 +386,30 @@ impl Reef {
         self.fish.iter().find(|f| &f.who.id == id)
     }
 
+    /// The prototype's camera target: the selected fish at about 1.8×, kept
+    /// inside the scene; else the whole scene.
     pub fn camera_target(&self) -> super::Cam {
-        super::Cam::on(self.w, self.h, self.selected_fish().map(|f| [f.x, f.y]))
+        let (w, h) = (self.w, self.h);
+        let (mut x, mut y, mut z) = (w / 2.0, h / 2.0, 1.0);
+        if let Some(f) = self.selected_fish() {
+            z = if w < 640.0 { 1.6 } else { 1.85 };
+            x = f.x;
+            y = f.y;
+        }
+        let (hw, hh) = (w / (2.0 * z), h / (2.0 * z));
+        super::Cam {
+            x: x.clamp(hw, (w - hw).max(hw)),
+            y: y.clamp(hh, (h - hh).max(hh)),
+            z,
+        }
+    }
+
+    fn update_camera(&mut self, dt: f32) {
+        let to = self.camera_target();
+        let k = ease(dt, if self.reduce { 12.0 } else { 2.6 });
+        self.cam.x += (to.x - self.cam.x) * k;
+        self.cam.y += (to.y - self.cam.y) * k;
+        self.cam.z += (to.z - self.cam.z) * k;
     }
 
     /// World to screen for a layer with parallax `p` (1 is the scene itself).

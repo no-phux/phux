@@ -4,7 +4,7 @@ use rune::{Key, KeyEvent, Mods};
 
 #[test]
 fn find_clipboard_commands_cannot_escape_to_the_terminal() {
-    let (client, mut rt) = crate::grid::budget::input_fixture();
+    let (client, mut rt) = crate::test_support::input_fixture();
     rt.state.prefs = rune::prefs::Prefs::memory();
     let board = rune::clipboard::memory();
     board.set_text("clipboard sentinel");
@@ -12,8 +12,8 @@ fn find_clipboard_commands_cannot_escape_to_the_terminal() {
     rt.update(|d, tx| {
         tx.instant();
         d.open_find();
-        d.find_query = rune::TextEdit::new("field sentinel");
-        d.find_query.focused = true;
+        d.connection.find_query = rune::TextEdit::new("field sentinel");
+        d.connection.find_query.focused = true;
     });
     rt.frame(0.0);
     rt.frame(1.0);
@@ -21,7 +21,7 @@ fn find_clipboard_commands_cannot_escape_to_the_terminal() {
     rt.pointer_down(x, y);
     rt.pointer_up(x, y);
     rt.frame(0.0);
-    assert!(rt.state.find_query.focused);
+    assert!(rt.state.connection.find_query.focused);
     let _ = client.take_outbound();
 
     // On Linux these used to be native editing chords. Rune now passes
@@ -57,7 +57,7 @@ fn find_clipboard_commands_cannot_escape_to_the_terminal() {
             "{action:?} addressed the terminal"
         );
     }
-    assert_eq!(rt.state.find_query.text, "field sentinel");
+    assert_eq!(rt.state.connection.find_query.text, "field sentinel");
     assert_eq!(
         board.text().as_deref().map(String::as_str),
         Some("clipboard sentinel")
@@ -79,14 +79,14 @@ fn find_clipboard_commands_cannot_escape_to_the_terminal() {
     });
     rt.paste("native field paste");
     rt.frame(0.0);
-    assert_eq!(rt.state.find_query.text, "native field paste");
+    assert_eq!(rt.state.connection.find_query.text, "native field paste");
     assert!(client.take_outbound().is_empty());
 }
 
 #[test]
 fn native_field_ink_follows_live_themes_in_both_forms() {
     for phone in [false, true] {
-        let (_, mut rt) = crate::grid::budget::input_fixture();
+        let (_, mut rt) = crate::test_support::input_fixture();
         rt.state.prefs = rune::prefs::Prefs::memory();
         rt.state.phone = phone.then(crate::desk::phone::Phone::default);
         rt.set_viewport(
@@ -157,7 +157,7 @@ fn native_field_ink_follows_live_themes_in_both_forms() {
 #[test]
 fn native_field_context_menu_edits_only_its_find_field_in_both_forms() {
     for phone in [false, true] {
-        let (client, mut rt) = crate::grid::budget::input_fixture();
+        let (client, mut rt) = crate::test_support::input_fixture();
         rt.state.prefs = rune::prefs::Prefs::memory();
         rt.state.phone = phone.then(crate::desk::phone::Phone::default);
         rt.set_viewport(
@@ -174,8 +174,8 @@ fn native_field_context_menu_edits_only_its_find_field_in_both_forms() {
         rt.update(|d, tx| {
             tx.instant();
             d.open_find();
-            d.find_query = rune::TextEdit::new("field sentinel");
-            d.find_query.focused = true;
+            d.connection.find_query = rune::TextEdit::new("field sentinel");
+            d.connection.find_query.focused = true;
         });
         rt.frame(0.0);
         // Phone stage measurement retargets its camera after the first
@@ -187,7 +187,11 @@ fn native_field_context_menu_edits_only_its_find_field_in_both_forms() {
         rt.pointer_down(x, y);
         rt.pointer_up(x, y);
         rt.frame(0.0);
-        rt.update(|d, _| d.find_query.set_selection(0, d.find_query.text.len()));
+        rt.update(|d, _| {
+            d.connection
+                .find_query
+                .set_selection(0, d.connection.find_query.text.len())
+        });
         rt.frame(0.0);
         let _ = client.take_outbound();
         rt.secondary_down(x, y);
@@ -209,8 +213,8 @@ fn native_field_context_menu_edits_only_its_find_field_in_both_forms() {
         rt.frame(0.0);
         rt.resolve_popup(Some("cut")).expect("cut the field");
         rt.frame(0.0);
-        assert!(rt.state.find_query.text.is_empty());
-        assert!(rt.state.find_query.focused);
+        assert!(rt.state.connection.find_query.text.is_empty());
+        assert!(rt.state.connection.find_query.focused);
         assert!(
             client.take_outbound().is_empty(),
             "menu sent terminal input"

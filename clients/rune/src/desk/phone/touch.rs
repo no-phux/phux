@@ -298,7 +298,7 @@ impl Desk {
         let Some(touch) = self.phone.as_ref().and_then(|p| p.touch.as_ref()) else {
             return false;
         };
-        let shown = self.shown.as_ref().map(|shown| &shown.resource);
+        let shown = self.connection.shown.as_ref().map(|shown| &shown.resource);
         shown != Some(&touch.terminal) || self.phone_content_blocked()
     }
 
@@ -370,6 +370,7 @@ impl Desk {
             return false;
         };
         let focused = self
+            .connection
             .shown
             .as_ref()
             .is_some_and(|s| s.resource == fling.terminal);
@@ -410,6 +411,7 @@ impl Desk {
     fn scrolls_history(&self, terminal: &ResourceId) -> bool {
         !self.tracks_mouse(terminal)
             && self
+                .connection
                 .client
                 .as_ref()
                 .is_none_or(|client| !client.is_alt_screen(terminal))
@@ -422,7 +424,7 @@ impl Desk {
         }
         let frame = self
             .view_of(&fling.terminal)
-            .zip(self.client.as_ref())
+            .zip(self.connection.client.as_ref())
             .and_then(|(view, client)| client.acquire_view(view));
         frame.is_none_or(|frame| {
             if fling.velocity > 0.0 {

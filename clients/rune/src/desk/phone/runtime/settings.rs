@@ -82,7 +82,7 @@ fn native_find_focuses_settings_search_instead_of_the_terminal() {
         });
         settle(&mut rt);
         assert!(rt.state.settings_search_focused());
-        assert!(rt.state.find.is_none());
+        assert!(rt.state.connection.find.is_none());
         rt.update(|d, tx| d.blur_settings_search(tx));
         settle(&mut rt);
         rt.update(|d, tx| d.modal_command(Modal::Settings, Shortcut::Find, tx));
@@ -91,7 +91,7 @@ fn native_find_focuses_settings_search_instead_of_the_terminal() {
             rt.state.settings_search_focused(),
             "menu Find shares chord policy"
         );
-        assert!(rt.state.find.is_none());
+        assert!(rt.state.connection.find.is_none());
         no_terminal_input(&client);
     }
 }

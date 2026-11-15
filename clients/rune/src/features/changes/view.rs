@@ -3,10 +3,9 @@
 
 use rune::{Color, El, TextStyle, col, el, row, text};
 
-use super::overlay::key_hint;
-use super::{CAPTION, Ink, LABEL, Sheet, pressable};
-use crate::changes::{Diff, Line, Row};
+use super::presentation::{Diff, Line, Row};
 use crate::desk::Desk;
+use crate::ui::{CAPTION, Ink, LABEL, Sheet, key_hint, pressable};
 
 const LIST_W: f32 = 290.0;
 /// The files and the diff each scroll inside this.
@@ -95,7 +94,7 @@ fn diff_pane(diff: Option<&Result<Diff, String>>, p: &Ink) -> El {
 }
 
 pub fn view(desk: &Desk, p: &Ink) -> El {
-    let changes = &desk.changes;
+    let changes = &desk.connection.changes;
     let body = match &changes.listing {
         None => message("Reading the checkout…", p),
         Some(Err(words)) => message(words.clone(), p),

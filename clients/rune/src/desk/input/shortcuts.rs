@@ -39,11 +39,11 @@ impl Desk {
             Shortcut::Changes => self.open_changes(),
             Shortcut::Popup => self.ask_popup(),
             Shortcut::Galaxy => self.toggle_galaxy(),
-            Shortcut::Reef => self.toggle_scene::<crate::reef::Reef>(),
-            Shortcut::Pitch => self.toggle_scene::<crate::pitch::Pitch>(),
-            Shortcut::Kitchen => self.toggle_scene::<crate::kitchen::Kitchen>(),
-            Shortcut::PitLane => self.toggle_scene::<crate::pitlane::PitLane>(),
-            Shortcut::Hive => self.toggle_scene::<crate::hive::Hive>(),
+            Shortcut::Reef => self.toggle_reef(),
+            Shortcut::Pitch => self.toggle_pitch(),
+            Shortcut::Kitchen => self.toggle_kitchen(),
+            Shortcut::PitLane => self.toggle_pitlane(),
+            Shortcut::Hive => self.toggle_hive(),
             Shortcut::Playground => self.open_palette(crate::palette::Mode::Playground),
             Shortcut::Settings => self.toggle_settings(),
             Shortcut::ChangeTheme => self.open_themes(),
@@ -88,7 +88,7 @@ impl Desk {
     }
 
     fn active_tab(&self) -> Option<usize> {
-        self.tabs.list.iter().position(|tab| tab.active)
+        self.connection.tabs.list.iter().position(|tab| tab.active)
     }
 
     fn close_active_tab(&mut self) {
@@ -99,7 +99,7 @@ impl Desk {
 
     /// The tab `step` along from the active one, wrapping.
     fn step_tab(&mut self, step: isize) {
-        let count = self.tabs.list.len() as isize;
+        let count = self.connection.tabs.list.len() as isize;
         if let Some(index) = self.active_tab() {
             let next = (index as isize + step).rem_euclid(count) as usize;
             self.select_tab(next);

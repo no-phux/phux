@@ -25,8 +25,8 @@ pub(crate) fn done(d: &mut Desk, tx: &mut Tx) {
     }
     for edit in [
         &mut d.palette_query,
-        &mut d.find_query,
-        &mut d.tabs.rename_field,
+        &mut d.connection.find_query,
+        &mut d.connection.tabs.rename_field,
         &mut d.inbox.reply,
         &mut d.machines.field,
     ] {
@@ -44,7 +44,7 @@ pub(crate) fn done(d: &mut Desk, tx: &mut Tx) {
     if let Some(phone) = &mut d.phone {
         phone.release();
     }
-    d.preedit = None;
+    d.connection.preedit = None;
     // A sheet's focus trap would immediately refocus its first editor after
     // blur. Keep focus on the post-modal Done control while hiding input.
     // The focusable control receives pointer focus before this handler. Do
@@ -115,6 +115,7 @@ fn question(d: &mut Desk, soft: &Soft, tx: &mut Tx) -> bool {
         if let Field::Question { terminal, .. } = &field
             && d.modal().is_none()
             && !d
+                .connection
                 .shown
                 .as_ref()
                 .is_some_and(|shown| &shown.resource == terminal)
@@ -182,7 +183,7 @@ fn held(d: &Desk) -> bool {
 }
 
 pub(super) fn text(d: &mut Desk, text: String, tx: &mut Tx) {
-    d.preedit = None;
+    d.connection.preedit = None;
     if held(d) && text.chars().count() == 1 {
         if let Some(c) = text.chars().next() {
             d.soft(Soft::Char(c), tx);

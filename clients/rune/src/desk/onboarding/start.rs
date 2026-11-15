@@ -10,7 +10,7 @@ impl Desk {
     /// The last step's button: a normal session, made if there is none.
     pub fn start_using(&mut self) {
         self.end_onboarding();
-        let Some(topology) = &self.topology else {
+        let Some(topology) = &self.connection.topology else {
             return;
         };
         if !topology.sessions.is_empty() {
@@ -56,6 +56,7 @@ impl Desk {
             return;
         };
         let taken: Vec<String> = self
+            .connection
             .topology
             .iter()
             .flat_map(|t| t.sessions.iter().map(|s| s.name.clone()))
